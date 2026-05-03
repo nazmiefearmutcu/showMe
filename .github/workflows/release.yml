@@ -1,0 +1,117 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Tag-style version (e.g. v0.0.2)"
+        required: true
+
+jobs:
+  bundle:
+    runs-on: macos-14
+    strategy:
+      matrix:
+        target: [aarch64-apple-darwin, x86_64-apple-darwin]
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - id: metadata
+        run: |
+          VERSION="${GITHUB_REF##*/v}"
+          if [ -z "$VERSION" ] || [ "$VERSION" = "$GITHUB_REF" ]; then
+            VERSION="${{ github.event.inputs.version || '0.0.0' }}"
+            VERSION="${VERSION#v}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Install sidecar
+        working-directory: src-py
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Build sidecar binary
+        env:
+          SHOWME_TBV3_PATH: ${{ github.workspace }}/../TBV3
+        run: bash packaging/build_sidecar.sh || echo "skipping sidecar bundle (requires TBV3 checkout)"
+
+      - name: Install UI deps
+        working-directory: src-ui
+        run: npm install
+
+      - name: Tauri build (signed)
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          npm install --prefix .
+          npx tauri build --target ${{ matrix.target }}
+
+      - name: Stage release artifacts
+        run: |
+          DEST="release/${{ matrix.target == 'aarch64-apple-darwin' && 'darwin-aarch64' || 'darwin-x86_64' }}"
+          mkdir -p "$DEST"
+          cp src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg "$DEST"/ || true
+          # Tauri-signing produces sibling .sig files next to bundles.
+          cp src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg.sig "$DEST"/ || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: release
+
+  publish:
+    needs: bundle
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-incoming
+      - name: Merge artifacts
+        run: |
+          mkdir -p release
+          cp -R release-incoming/release-aarch64-apple-darwin/release/. release/ 2>/dev/null || true
+          cp -R release-incoming/release-x86_64-apple-darwin/release/. release/ 2>/dev/null || true
+
+      - name: Build manifest
+        env:
+          VERSION: ${{ needs.bundle.outputs.version }}
+        run: |
+          python scripts/build_release_manifest.py \
+            --release-dir release \
+            --version "$VERSION" \
+            --notes-file docs/round_notes/$(ls docs/round_notes | tail -1) \
+            --upload-base "https://github.com/${{ github.repository }}/releases/download/v$VERSION" \
+            --out release/latest.json
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.bundle.outputs.version }}
+          files: |
+            release/**/*.dmg
+            release/**/*.dmg.sig
+            release/latest.json

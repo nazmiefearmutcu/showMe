@@ -1,0 +1,142 @@
+/*
+ * showMe design tokens.
+ *
+ * Single source of truth. Tailwind reads these via CSS custom-property
+ * indirection (see tailwind.config.js). Never hardcode hex in components.
+ */
+:root,
+[data-theme="dark"] {
+  --bg-base: #07080a;
+  --bg-elev-1: #0f1115;
+  --bg-elev-2: #161922;
+  --bg-elev-3: #1d2230;
+
+  --accent: #2fd0ff;
+  --accent-soft: rgba(47, 208, 255, 0.16);
+
+  --positive: #00d183;
+  --negative: #ff3b58;
+  --neutral: #a0a4ab;
+  --warn: #ffb547;
+
+  --text-primary: #f0f2f5;
+  --text-secondary: #8e94a0;
+  --text-mute: #5a6070;
+
+  --border-subtle: rgba(255, 255, 255, 0.06);
+  --border-strong: rgba(255, 255, 255, 0.12);
+
+  --shadow-elev: 0 8px 24px rgba(0, 0, 0, 0.5);
+
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+
+  --motion-fast: 80ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  --motion-base: 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  --motion-flash: 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+
+  --grid-titlebar: 36px;
+  --grid-statusbar: 24px;
+  --grid-sidebar: 220px;
+}
+
+[data-accent="amber"] {
+  --accent: #ffb547;
+  --accent-soft: rgba(255, 181, 71, 0.16);
+}
+
+[data-accent="violet"] {
+  --accent: #a78bfa;
+  --accent-soft: rgba(167, 139, 250, 0.16);
+}
+
+[data-accent="lime"] {
+  --accent: #9be15d;
+  --accent-soft: rgba(155, 225, 93, 0.16);
+}
+
+[data-density="comfortable"] {
+  --grid-titlebar: 40px;
+  --grid-statusbar: 28px;
+  --grid-sidebar: 248px;
+}
+
+[data-theme="light"] {
+  --bg-base: #f4f5f7;
+  --bg-elev-1: #ffffff;
+  --bg-elev-2: #f0f2f5;
+  --bg-elev-3: #e6e9ee;
+  --text-primary: #14161b;
+  --text-secondary: #4a4f59;
+  --text-mute: #7a8090;
+  --border-subtle: rgba(0, 0, 0, 0.08);
+  --border-strong: rgba(0, 0, 0, 0.16);
+  --shadow-elev: 0 8px 24px rgba(0, 0, 0, 0.08);
+}
+
+/* Browser hygiene — kill the smells the plan calls out. */
+* {
+  box-sizing: border-box;
+}
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+body {
+  background: transparent;
+  color: var(--text-primary);
+  font-family: "SF Pro Text", "SF Pro Display", system-ui, sans-serif;
+  font-size: 13px;
+  line-height: 1.4;
+  -webkit-font-smoothing: antialiased;
+  -webkit-user-select: none;
+  user-select: none;
+  overflow: hidden;
+}
+input, textarea, [contenteditable="true"] {
+  -webkit-user-select: text;
+  user-select: text;
+}
+::selection {
+  background: var(--accent-soft);
+  color: var(--text-primary);
+}
+
+/* Custom scrollbars only — no browser default. */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border: 2px solid transparent;
+  background-clip: content-box;
+  border-radius: 6px;
+}
+::-webkit-scrollbar-thumb:hover { background-color: var(--text-mute); }
+
+/* Kill default focus ring; we ship a tighter one in components. */
+:focus { outline: none; }
+:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+/* Tabular numerics everywhere a price might land. */
+.num, [data-num], td, .tabular {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1, "ss01" 1;
+}
+
+@keyframes flash-pos {
+  0% { background: rgba(0, 209, 131, 0.4); }
+  100% { background: transparent; }
+}
+@keyframes flash-neg {
+  0% { background: rgba(255, 59, 88, 0.4); }
+  100% { background: transparent; }
+}
+.flash-pos { animation: flash-pos var(--motion-flash) ease-out; }
+.flash-neg { animation: flash-neg var(--motion-flash) ease-out; }

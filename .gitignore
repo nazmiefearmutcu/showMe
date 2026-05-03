@@ -1,0 +1,33 @@
+# node
+node_modules/
+src-ui/dist/
+src-ui/.vite/
+src-ui/*.tsbuildinfo
+src-ui/vite.config.js
+src-ui/vite.config.d.ts
+
+# rust
+src-tauri/target/
+src-tauri/binaries/
+**/*.rs.bk
+
+# python
+__pycache__/
+*.pyc
+.venv/
+src-py/dist/
+src-py/build/
+src-py/*.egg-info/
+src-py/.pytest_cache/
+.pytest_cache/
+
+# misc
+.DS_Store
+*.log
+docs/round_notes/screenshots/
+.env
+
+# local/generated state
+.claude/
+artifacts/
+runtime/

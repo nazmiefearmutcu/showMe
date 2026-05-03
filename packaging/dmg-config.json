@@ -1,0 +1,13 @@
+{
+  "title": "showMe",
+  "icon-size": 96,
+  "background-color": "#0F1115",
+  "window": {
+    "size": { "width": 540, "height": 360 },
+    "position": { "x": 200, "y": 120 }
+  },
+  "contents": [
+    { "x": 140, "y": 180, "type": "file", "path": "showMe.app" },
+    { "x": 400, "y": 180, "type": "link", "path": "/Applications" }
+  ]
+}

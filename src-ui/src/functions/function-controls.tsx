@@ -1,0 +1,205 @@
+import { type CSSProperties, type ReactNode } from "react";
+import { Pill } from "@/design-system";
+import {
+  NEWS_LIMITS,
+  ROW_LIMITS,
+  TOP_N_LIMITS,
+  type LoadState,
+  type NewsLimit,
+  type PrimitiveControlValue,
+  type RowLimit,
+  type TopNLimit,
+} from "./function-control-state";
+
+interface SegmentOption<T extends PrimitiveControlValue> {
+  value: T;
+  label?: string;
+  title?: string;
+}
+
+interface SegmentedControlProps<T extends PrimitiveControlValue> {
+  label: string;
+  value: T;
+  options: readonly (T | SegmentOption<T>)[];
+  onChange: (value: T) => void;
+  disabled?: boolean;
+  title?: string;
+}
+
+export function SegmentedControl<T extends PrimitiveControlValue>({
+  label,
+  value,
+  options,
+  onChange,
+  disabled = false,
+  title,
+}: SegmentedControlProps<T>) {
+  return (
+    <div
+      aria-label={title ?? label}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 2,
+        padding: 2,
+        background: "var(--bg-elev-2)",
+        border: "1px solid var(--border-subtle)",
+        borderRadius: "var(--radius-md)",
+        maxWidth: "100%",
+        overflowX: "auto",
+      }}
+    >
+      <span style={controlLabelStyle}>{label}</span>
+      {options.map((raw) => {
+        const option = normalizeOption(raw);
+        const active = option.value === value;
+        return (
+          <button
+            key={String(option.value)}
+            type="button"
+            disabled={disabled || active}
+            onClick={() => onChange(option.value)}
+            title={option.title ?? `${label} ${option.label ?? option.value}`}
+            style={{
+              height: 18,
+              minWidth: 24,
+              padding: "0 6px",
+              border: "none",
+              borderRadius: "var(--radius-sm)",
+              background: active ? "var(--accent)" : "transparent",
+              color: active ? "#000" : "var(--text-secondary)",
+              fontFamily: "JetBrains Mono, monospace",
+              fontSize: 10,
+              fontWeight: active ? 700 : 500,
+              cursor: "default",
+              opacity: disabled && !active ? 0.45 : 1,
+              whiteSpace: "nowrap",
+            }}
+          >
+            {option.label ?? option.value}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+export function NewsLimitControl({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: NewsLimit;
+  onChange: (value: NewsLimit) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <SegmentedControl
+      label="LAST"
+      value={value}
+      options={NEWS_LIMITS}
+      onChange={onChange}
+      disabled={disabled}
+      title="Last news count"
+    />
+  );
+}
+
+export function RowLimitControl({
+  value,
+  onChange,
+  disabled,
+  label = "ROWS",
+}: {
+  value: RowLimit | TopNLimit;
+  onChange: (value: RowLimit | TopNLimit) => void;
+  disabled?: boolean;
+  label?: string;
+}) {
+  const options = label === "TOP" ? TOP_N_LIMITS : ROW_LIMITS;
+  return (
+    <SegmentedControl
+      label={label}
+      value={value}
+      options={options}
+      onChange={(next) => onChange(next)}
+      disabled={disabled}
+      title={`${label} count`}
+    />
+  );
+}
+
+export function RefreshButton({
+  loading,
+  onClick,
+  disabled,
+  title = "Refresh",
+}: {
+  loading?: boolean;
+  onClick: () => void;
+  disabled?: boolean;
+  title?: string;
+}) {
+  return (
+    <button
+      type="button"
+      className="btn btn--ghost"
+      onClick={onClick}
+      disabled={disabled || loading}
+      title={title}
+      aria-label={title}
+      style={{ height: 24, minWidth: 28, padding: "0 8px" }}
+    >
+      {loading ? "..." : "↻"}
+    </button>
+  );
+}
+
+export function LoadStatePill({ state }: { state: LoadState }) {
+  const tone =
+    state === "ok"
+      ? "positive"
+      : state === "error"
+        ? "negative"
+        : state === "loading"
+          ? "warn"
+          : "muted";
+  return (
+    <Pill tone={tone} withDot={state === "loading" || state === "ok"}>
+      {state}
+    </Pill>
+  );
+}
+
+export function FunctionControlGroup({ children }: { children: ReactNode }) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "flex-end",
+        gap: 6,
+        flexWrap: "wrap",
+        maxWidth: "100%",
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+function normalizeOption<T extends PrimitiveControlValue>(
+  raw: T | SegmentOption<T>,
+): SegmentOption<T> {
+  if (typeof raw === "object" && raw !== null && "value" in raw) return raw;
+  return { value: raw };
+}
+
+const controlLabelStyle: CSSProperties = {
+  padding: "0 5px",
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: 9,
+  color: "var(--text-mute)",
+  letterSpacing: "0.06em",
+  whiteSpace: "nowrap",
+};

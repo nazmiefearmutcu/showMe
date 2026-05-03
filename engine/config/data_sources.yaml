@@ -1,0 +1,404 @@
+# ============================================================================
+# ShowMe — Master Data Source Configuration
+# Plan §5 — every adapter reads chains, rate limits, and credentials from here.
+# Free first, free-quota second, paid last. Keep API keys in `.env`, NEVER here.
+# ============================================================================
+
+defaults:
+  timeout_seconds: 10
+  retry_attempts: 3
+  backoff_seconds: 1.5
+  cache_ttl_seconds: 300
+  circuit_breaker_failures: 5
+  circuit_breaker_window_seconds: 60
+
+# ── Per-adapter declaration ──
+adapters:
+
+  # ── CRYPTO ──
+  binance:
+    base_url: https://fapi.binance.com   # futures default — switch via market_type
+    spot_url: https://api.binance.com
+    ws_url: wss://fstream.binance.com
+    rate_limit_rps: 20
+    api_key_env: BINANCE_API_KEY
+    api_secret_env: BINANCE_API_SECRET
+    testnet_url: https://testnet.binancefuture.com
+    use_testnet_env: USE_TESTNET
+    supported_kinds: [QUOTE, OHLCV, ORDERBOOK, TRADES, REFDATA, ECON_SERIES]
+
+  bybit:
+    base_url: https://api.bybit.com
+    ws_url: wss://stream.bybit.com
+    rate_limit_rps: 10
+    api_key_env: BYBIT_API_KEY
+    api_secret_env: BYBIT_API_SECRET
+    supported_kinds: [QUOTE, OHLCV, ORDERBOOK, TRADES]
+
+  okx:
+    base_url: https://www.okx.com/api/v5
+    ws_url: wss://ws.okx.com:8443
+    rate_limit_rps: 10
+    api_key_env: OKX_API_KEY
+    supported_kinds: [QUOTE, OHLCV, ORDERBOOK]
+
+  coingecko:
+    base_url: https://api.coingecko.com/api/v3
+    rate_limit_rps: 0.5    # 30 calls/min free
+    api_key_env: COINGECKO_API_KEY  # optional
+    supported_kinds: [QUOTE, REFDATA]
+
+  deribit:
+    base_url: https://www.deribit.com/api/v2
+    ws_url: wss://www.deribit.com/ws/api/v2
+    rate_limit_rps: 5
+    api_key_env: DERIBIT_API_KEY
+    supported_kinds: [QUOTE, OPTIONS_CHAIN, OHLCV]
+
+  # ── EQUITY ──
+  yfinance:
+    base_url: https://query1.finance.yahoo.com
+    rate_limit_rps: 2          # generous; Yahoo throttles aggressively
+    api_key_env: null          # public
+    supported_kinds: [QUOTE, OHLCV, REFDATA, FUNDAMENTALS, EVENTS, HOLDINGS, OPTIONS_CHAIN]
+
+  finnhub:
+    base_url: https://finnhub.io/api/v1
+    rate_limit_rps: 1          # 60/minute
+    api_key_env: FINNHUB_API_KEY
+    supported_kinds: [QUOTE, OHLCV, REFDATA, FUNDAMENTALS, EVENTS, NEWS]
+
+  alphavantage:
+    base_url: https://www.alphavantage.co/query
+    rate_limit_rps: 0.083      # 5/minute, 500/day free
+    api_key_env: ALPHAVANTAGE_API_KEY
+    supported_kinds: [QUOTE, OHLCV, FUNDAMENTALS]
+
+  polygon:
+    base_url: https://api.polygon.io
+    ws_url: wss://socket.polygon.io
+    rate_limit_rps: 0.083      # 5/min free
+    api_key_env: POLYGON_API_KEY
+    supported_kinds: [QUOTE, OHLCV, ORDERBOOK, TRADES, OPTIONS_CHAIN, NEWS]
+
+  eodhd:
+    base_url: https://eodhd.com/api
+    rate_limit_rps: 1
+    api_key_env: EODHD_API_KEY
+    supported_kinds: [QUOTE, OHLCV, FUNDAMENTALS, EVENTS]
+
+  stooq:
+    base_url: https://stooq.com/q/d/l
+    rate_limit_rps: 0.5
+    api_key_env: STOOQ_API_KEY
+    supported_kinds: [OHLCV]
+
+  sec_edgar:
+    base_url: https://data.sec.gov
+    submissions_url: https://www.sec.gov/cgi-bin/browse-edgar
+    rate_limit_rps: 8           # 10 rps SEC limit, leave headroom
+    user_agent_env: SEC_EDGAR_USER_AGENT  # required by SEC
+    api_key_env: null
+    supported_kinds: [FUNDAMENTALS, REFDATA, EVENTS, HOLDINGS]
+
+  finra:
+    base_url: https://api.finra.org
+    rate_limit_rps: 1
+    api_key_env: FINRA_API_KEY    # optional for OTC
+    supported_kinds: [TRADES, OTHER]   # dark pool aggregates
+
+  # ── BOND / MACRO ──
+  fred:
+    base_url: https://api.stlouisfed.org/fred
+    rate_limit_rps: 5
+    api_key_env: FRED_API_KEY
+    supported_kinds: [ECON_SERIES, REFDATA]
+
+  ustreasury:
+    base_url: https://home.treasury.gov/resource-center/data-chart-center/interest-rates/daily-treasury-rates.csv/all
+    rate_limit_rps: 0.5
+    api_key_env: null
+    supported_kinds: [ECON_SERIES]
+
+  worldbank:
+    base_url: https://api.worldbank.org/v2
+    rate_limit_rps: 5
+    api_key_env: null
+    supported_kinds: [ECON_SERIES]
+
+  imf:
+    base_url: https://www.imf.org/external/datamapper/api/v1
+    rate_limit_rps: 2
+    api_key_env: null
+    supported_kinds: [ECON_SERIES]
+
+  oecd:
+    base_url: https://stats.oecd.org/SDMX-JSON/data
+    rate_limit_rps: 2
+    api_key_env: null
+    supported_kinds: [ECON_SERIES]
+
+  tradingeconomics:
+    base_url: https://api.tradingeconomics.com
+    rate_limit_rps: 1
+    api_key_env: TRADINGECONOMICS_API_KEY  # demo with "guest:guest"
+    supported_kinds: [ECON_SERIES, EVENTS, QUOTE]
+
+  ecb:
+    base_url: https://data-api.ecb.europa.eu/service/data
+    rate_limit_rps: 5
+    api_key_env: null
+    supported_kinds: [ECON_SERIES, QUOTE]
+
+  bls:
+    base_url: https://api.bls.gov/publicAPI/v2/timeseries/data
+    rate_limit_rps: 1
+    api_key_env: BLS_API_KEY     # optional; raises daily quota
+    supported_kinds: [ECON_SERIES]
+
+  eurostat:
+    base_url: https://ec.europa.eu/eurostat/api/dissemination/sdmx/2.1/data
+    rate_limit_rps: 1
+    api_key_env: null
+    supported_kinds: [ECON_SERIES]
+
+  cme_fedwatch:
+    base_url: https://www.cmegroup.com/CmeWS/mvc/CompoundProbability/MeetingProbability
+    rate_limit_rps: 0.2
+    api_key_env: null
+    supported_kinds: [OTHER]
+
+  # ── FX ──
+  exchangerate_host:
+    base_url: https://api.exchangerate.host
+    rate_limit_rps: 5
+    api_key_env: null
+    supported_kinds: [QUOTE, OHLCV]
+
+  oanda:
+    base_url: https://api-fxpractice.oanda.com/v3
+    rate_limit_rps: 4
+    api_key_env: OANDA_API_TOKEN
+    supported_kinds: [QUOTE, OHLCV, ORDERBOOK]
+
+  twelvedata:
+    base_url: https://api.twelvedata.com
+    rate_limit_rps: 0.13       # 8/min free
+    api_key_env: TWELVEDATA_API_KEY
+    supported_kinds: [QUOTE, OHLCV]
+
+  # ── COMMODITY ──
+  eia:
+    base_url: https://api.eia.gov/v2
+    rate_limit_rps: 1
+    api_key_env: EIA_API_KEY
+    supported_kinds: [ECON_SERIES, QUOTE]
+
+  usda:
+    base_url: https://quickstats.nass.usda.gov/api
+    rate_limit_rps: 1
+    api_key_env: USDA_API_KEY
+    supported_kinds: [ECON_SERIES]
+
+  quandl:
+    base_url: https://data.nasdaq.com/api/v3
+    rate_limit_rps: 0.83        # 50/10s
+    api_key_env: QUANDL_API_KEY
+    supported_kinds: [ECON_SERIES, OHLCV]
+
+  # ── NEWS ──
+  gdelt:
+    base_url: https://api.gdeltproject.org/api/v2/doc/doc
+    rate_limit_rps: 0.2
+    api_key_env: null
+    supported_kinds: [NEWS]
+
+  benzinga:
+    base_url: https://api.benzinga.com/api/v2
+    rate_limit_rps: 1
+    api_key_env: BENZINGA_API_KEY
+    supported_kinds: [NEWS, EVENTS]
+
+  finnhub_news:
+    base_url: https://finnhub.io/api/v1/news
+    rate_limit_rps: 1
+    api_key_env: FINNHUB_API_KEY    # shared with finnhub
+    supported_kinds: [NEWS]
+
+  newsapi:
+    base_url: https://newsapi.org/v2
+    rate_limit_rps: 0.012        # 100/day free dev
+    api_key_env: NEWSAPI_API_KEY
+    supported_kinds: [NEWS]
+
+  rss:
+    base_url: ""                 # adapter-internal feed list
+    rate_limit_rps: 5
+    per_feed_timeout_seconds: 2.5
+    collection_timeout_seconds: 2.0
+    symbol_feed_timeout_seconds: 2.4
+    api_key_env: null
+    market_feeds:
+      - https://feeds.bloomberg.com/markets/news.rss
+      - https://www.ft.com/?format=rss
+      - https://feeds.a.dj.com/rss/RSSMarketsMain.xml
+      - https://feeds.content.dowjones.io/public/rss/mw_topstories
+      - https://www.nasdaq.com/feed/rssoutbound?category=Markets
+      - https://www.cnbc.com/id/100003114/device/rss/rss.html
+      - https://www.investing.com/rss/news_25.rss
+      - https://www.prnewswire.com/rss/financial-services-latest-news/financial-services-latest-news-list.rss
+      - https://www.globenewswire.com/RssFeed/subjectcode/27-News-Releases/feedTitle/GlobeNewswire%20-%20News%20about%20Financial%20Services
+      - https://www.sec.gov/news/pressreleases.rss
+    crypto_feeds:
+      - https://cointelegraph.com/rss
+      - https://decrypt.co/feed
+      - https://www.coindesk.com/arc/outboundfeeds/rss
+      - https://www.theblock.co/rss.xml
+    feeds:
+      - https://feeds.bloomberg.com/markets/news.rss
+      - https://www.ft.com/?format=rss
+      - https://feeds.a.dj.com/rss/RSSMarketsMain.xml
+      - https://feeds.content.dowjones.io/public/rss/mw_topstories
+      - https://www.nasdaq.com/feed/rssoutbound?category=Markets
+      - https://www.cnbc.com/id/100003114/device/rss/rss.html
+      - https://www.investing.com/rss/news_25.rss
+      - https://www.prnewswire.com/rss/financial-services-latest-news/financial-services-latest-news-list.rss
+      - https://www.globenewswire.com/RssFeed/subjectcode/27-News-Releases/feedTitle/GlobeNewswire%20-%20News%20about%20Financial%20Services
+      - https://www.sec.gov/news/pressreleases.rss
+      - https://cointelegraph.com/rss
+      - https://decrypt.co/feed
+      - https://www.coindesk.com/arc/outboundfeeds/rss
+      - https://www.theblock.co/rss.xml
+    supported_kinds: [NEWS]
+
+  # ── ALT ──
+  reddit:
+    base_url: https://www.reddit.com
+    rate_limit_rps: 1
+    api_key_env: REDDIT_CLIENT_ID
+    api_secret_env: REDDIT_CLIENT_SECRET
+    user_agent_env: REDDIT_USER_AGENT
+    subreddits: [wallstreetbets, stocks, investing, cryptocurrency, options]
+    supported_kinds: [SOCIAL]
+
+  stocktwits:
+    base_url: https://api.stocktwits.com/api/2
+    rate_limit_rps: 0.055         # 200/hour
+    api_key_env: null
+    supported_kinds: [SOCIAL]
+
+  openweathermap:
+    base_url: https://api.openweathermap.org/data/3.0
+    rate_limit_rps: 1
+    api_key_env: OPENWEATHERMAP_API_KEY
+    supported_kinds: [WEATHER]
+
+  open_meteo:
+    base_url: https://api.open-meteo.com/v1
+    rate_limit_rps: 1
+    api_key_env: null
+    supported_kinds: [WEATHER]
+
+  noaa:
+    base_url: https://www.ncdc.noaa.gov/cdo-web/api/v2
+    rate_limit_rps: 1
+    api_key_env: NOAA_API_TOKEN
+    supported_kinds: [WEATHER, ECON_SERIES]
+
+  sentinelhub:
+    base_url: https://services.sentinel-hub.com/api/v1
+    rate_limit_rps: 1
+    api_key_env: SENTINELHUB_CLIENT_ID
+    api_secret_env: SENTINELHUB_CLIENT_SECRET
+    supported_kinds: [SATELLITE]
+
+  opensky:
+    base_url: https://opensky-network.org/api
+    rate_limit_rps: 0.05      # 4000/day public, larger with auth
+    api_key_env: OPENSKY_USERNAME
+    api_secret_env: OPENSKY_PASSWORD
+    supported_kinds: [OTHER]
+
+  yelp:
+    base_url: https://api.yelp.com/v3
+    rate_limit_rps: 0.5       # 5000/day
+    api_key_env: YELP_API_KEY
+    supported_kinds: [OTHER]
+
+  # ── REFERENCE ──
+  openfigi:
+    base_url: https://api.openfigi.com/v3
+    rate_limit_rps: 0.41        # 25/min anon, 250/min keyed
+    api_key_env: OPENFIGI_API_KEY
+    supported_kinds: [REFDATA]
+
+  # ── BROKERS ──
+  alpaca:
+    base_url: https://api.alpaca.markets
+    paper_url: https://paper-api.alpaca.markets
+    rate_limit_rps: 3
+    api_key_env: ALPACA_API_KEY
+    api_secret_env: ALPACA_API_SECRET
+    use_paper_env: ALPACA_USE_PAPER
+    supported_kinds: []
+
+  ibkr:
+    base_url: https://localhost:5000/v1/api    # TWS Gateway local
+    rate_limit_rps: 5
+    api_key_env: IBKR_USERNAME
+    api_secret_env: IBKR_PASSWORD
+    supported_kinds: []
+
+  oanda_broker:
+    base_url: https://api-fxpractice.oanda.com/v3
+    rate_limit_rps: 5
+    api_key_env: OANDA_API_TOKEN
+    supported_kinds: []
+
+
+# ── Provider-chain definitions used by DataRouter ──
+chains:
+  crypto:
+    quote: [binance, bybit, okx, coingecko]
+    ohlcv: [binance, bybit, okx, coingecko]
+    orderbook: [binance, bybit]
+    trades: [binance, bybit]
+    options: [deribit]
+  equity:
+    quote: [polygon, finnhub, alphavantage, yfinance]
+    ohlcv: [polygon, eodhd, alphavantage, yfinance, stooq]
+    fundamentals: [sec_edgar, yfinance, finnhub]
+    estimates: [finnhub, yfinance]
+    ratings: [finnhub, yfinance]
+    holdings: [sec_edgar, yfinance]
+    dividends: [yfinance, eodhd]
+    news: [benzinga, finnhub_news, newsapi, gdelt, rss]
+    options: [yfinance, polygon]
+    social: [stocktwits, reddit]
+  bond:
+    yield_curve: [fred, ustreasury, ecb, worldbank]
+    sovereign_yield: [fred, tradingeconomics, worldbank]
+  fx:
+    quote: [exchangerate_host, ecb, oanda, twelvedata]
+    ohlcv: [ecb, yfinance, oanda]
+  commodity:
+    energy: [eia, quandl, yfinance]
+    agri: [usda, quandl]
+    metal: [yfinance, quandl]
+    weather: [openweathermap, open_meteo, noaa]
+  macro:
+    series: [fred, worldbank, imf, oecd, tradingeconomics, bls, eurostat]
+    calendar: [tradingeconomics, finnhub]
+    forecast: [oecd, imf, tradingeconomics]
+  news:
+    global: [rss, finnhub_news, gdelt, benzinga, newsapi]
+
+
+# ── Daily LLM/API budget caps ──
+budgets:
+  llm_daily_usd: 5.00
+  llm_monthly_usd: 100.00
+  finnhub_daily_calls: 50000      # 60/min × 1440 = ~86k available
+  alphavantage_daily_calls: 500
+  newsapi_daily_calls: 100
+  polygon_daily_calls: 7000

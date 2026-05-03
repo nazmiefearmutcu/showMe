@@ -1,0 +1,114 @@
+{
+  "accounts": [
+    {
+      "id": "taxable-main",
+      "type": "taxable",
+      "currency": "USD",
+      "cash": 25000
+    },
+    {
+      "id": "retirement",
+      "type": "retirement",
+      "currency": "USD",
+      "cash": 18000
+    }
+  ],
+  "positions": [
+    {
+      "account": "taxable-main",
+      "symbol": "AAPL",
+      "assetClass": "EQUITY",
+      "quantity": 40,
+      "avgCost": 165.25,
+      "lastPrice": 205.5,
+      "openedAt": "2024-06-14T09:30:00Z"
+    },
+    {
+      "account": "retirement",
+      "symbol": "SPY",
+      "assetClass": "ETF",
+      "quantity": 18,
+      "avgCost": 482.1,
+      "lastPrice": 525.25,
+      "openedAt": "2024-11-05T09:30:00Z"
+    },
+    {
+      "account": "taxable-main",
+      "symbol": "BTCUSDT",
+      "assetClass": "CRYPTO",
+      "quantity": 0.35,
+      "avgCost": 61250,
+      "lastPrice": 69400,
+      "openedAt": "2025-01-22T12:00:00Z"
+    },
+    {
+      "account": "taxable-main",
+      "symbol": "AAPL250620C00210000",
+      "assetClass": "OPTION",
+      "underlying": "AAPL",
+      "quantity": 2,
+      "avgCost": 4.2,
+      "lastPrice": 5.15,
+      "optionType": "CALL",
+      "strike": 210,
+      "expiry": "2025-06-20"
+    }
+  ],
+  "taxLots": [
+    {
+      "lotId": "seed-aapl-001",
+      "account": "taxable-main",
+      "symbol": "AAPL",
+      "quantity": 15,
+      "price": 150.1,
+      "openedAt": "2024-06-14T09:30:00Z",
+      "methodEligible": ["FIFO", "LIFO", "HIFO", "LOFO", "SPECIFIC"]
+    },
+    {
+      "lotId": "seed-aapl-002",
+      "account": "taxable-main",
+      "symbol": "AAPL",
+      "quantity": 25,
+      "price": 174.34,
+      "openedAt": "2024-09-10T09:30:00Z",
+      "methodEligible": ["FIFO", "LIFO", "HIFO", "LOFO", "SPECIFIC"]
+    },
+    {
+      "lotId": "seed-btc-001",
+      "account": "taxable-main",
+      "symbol": "BTCUSDT",
+      "quantity": 0.35,
+      "price": 61250,
+      "openedAt": "2025-01-22T12:00:00Z",
+      "methodEligible": ["FIFO", "LIFO", "HIFO", "LOFO", "SPECIFIC"]
+    }
+  ],
+  "targetWeights": {
+    "AAPL": 0.35,
+    "SPY": 0.35,
+    "BTCUSDT": 0.2,
+    "cash": 0.1
+  },
+  "fills": [
+    {
+      "id": "fill-aapl-001",
+      "symbol": "AAPL",
+      "side": "BUY",
+      "quantity": 15,
+      "price": 150.1,
+      "filledAt": "2024-06-14T09:31:00Z"
+    },
+    {
+      "id": "fill-spy-001",
+      "symbol": "SPY",
+      "side": "BUY",
+      "quantity": 18,
+      "price": 482.1,
+      "filledAt": "2024-11-05T09:32:00Z"
+    }
+  ],
+  "pnl": {
+    "realized": 0,
+    "unrealized": 6665.2
+  }
+}

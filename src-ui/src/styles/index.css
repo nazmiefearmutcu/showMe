@@ -1,0 +1,269 @@
+@import "./tokens.css";
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Layout primitives. */
+.app-shell {
+  display: grid;
+  grid-template-rows: var(--grid-titlebar) 1fr var(--grid-statusbar);
+  height: 100vh;
+  min-height: 0;
+  min-width: 0;
+  background: linear-gradient(
+    180deg,
+    rgba(15, 17, 21, 0.92) 0%,
+    rgba(15, 17, 21, 0.85) 100%
+  );
+  backdrop-filter: blur(40px);
+  -webkit-backdrop-filter: blur(40px);
+  border: 1px solid var(--border-subtle);
+}
+
+.titlebar {
+  display: flex;
+  align-items: center;
+  height: var(--grid-titlebar);
+  padding: 0 12px 0 88px; /* leave space for traffic lights */
+  border-bottom: 1px solid var(--border-subtle);
+  -webkit-app-region: drag;
+  app-region: drag;
+}
+.titlebar > .interactive {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+.statusbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  height: var(--grid-statusbar);
+  padding: 0 12px;
+  border-top: 1px solid var(--border-subtle);
+  font-family: "JetBrains Mono", "SF Mono", monospace;
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.workspace {
+  display: grid;
+  grid-template-columns: var(--grid-sidebar) minmax(0, 1fr);
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  position: relative;
+  transition: grid-template-columns var(--motion-base);
+}
+
+.workspace--sidebar-hidden {
+  grid-template-columns: 0 minmax(0, 1fr);
+}
+
+.sidebar-slot {
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  position: relative;
+}
+
+.sidebar-slot--hidden {
+  overflow: visible;
+  pointer-events: none;
+  z-index: 20;
+}
+
+.sidebar {
+  height: 100%;
+  border-right: 1px solid var(--border-subtle);
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--accent) 10%, transparent), transparent 4px),
+    rgba(0, 0, 0, 0.28);
+  overflow-y: auto;
+}
+
+.sidebar--docked {
+  width: var(--grid-sidebar);
+}
+
+.sidebar--popup {
+  width: 100%;
+  height: 100%;
+  border: 1px solid var(--border-strong);
+  border-left-color: color-mix(in srgb, var(--accent) 52%, transparent);
+  border-radius: 0 var(--radius-md) var(--radius-md) 0;
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--accent) 13%, transparent), transparent 5px),
+    rgba(7, 8, 10, 0.98);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.sidebar-edge-hitbox {
+  background: transparent;
+  border: 0;
+  bottom: 0;
+  cursor: default;
+  left: 0;
+  padding: 0;
+  pointer-events: auto;
+  position: absolute;
+  top: 0;
+  width: 18px;
+  z-index: 35;
+}
+
+.sidebar-edge-hitbox span {
+  align-items: center;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  border-left: 0;
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  color: var(--accent);
+  display: flex;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 9px;
+  height: 72px;
+  justify-content: center;
+  left: 0;
+  letter-spacing: 0;
+  position: absolute;
+  text-orientation: mixed;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 16px;
+  writing-mode: vertical-rl;
+}
+
+.sidebar-popover {
+  filter: drop-shadow(0 18px 40px rgba(0, 0, 0, 0.55));
+  height: min(70vh, 620px);
+  left: 8px;
+  max-height: calc(100% - 36px);
+  opacity: 0;
+  pointer-events: none;
+  position: absolute;
+  top: 18px;
+  transform: translateX(-18px) scale(0.985);
+  transition:
+    opacity var(--motion-fast),
+    transform var(--motion-fast);
+  width: min(278px, calc(100vw - 48px));
+  z-index: 30;
+}
+
+.sidebar-popover--open {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateX(0) scale(1);
+}
+
+.sidebar-function:hover {
+  background: color-mix(in srgb, var(--accent) 10%, transparent) !important;
+}
+
+.sidebar-toggle-button {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  cursor: default;
+  display: flex;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11px;
+  height: 20px;
+  justify-content: center;
+  padding: 0;
+  width: 22px;
+}
+
+.sidebar-toggle-button:hover {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  color: var(--accent);
+}
+
+.surface {
+  background: var(--bg-elev-1);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+}
+
+.btn {
+  background: var(--bg-elev-2);
+  color: var(--text-primary);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  cursor: default;
+  transition:
+    background var(--motion-fast),
+    border-color var(--motion-fast);
+}
+.btn:hover {
+  background: var(--bg-elev-3);
+}
+.btn[disabled] {
+  opacity: 0.4;
+}
+.btn--accent {
+  background: var(--accent);
+  color: black;
+  border-color: var(--accent);
+}
+.btn--ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-secondary);
+}
+.btn--ghost:hover {
+  color: var(--text-primary);
+}
+
+.kbd {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-elev-2);
+  color: var(--text-secondary);
+}
+
+/* Status pill — green/red/grey for sidecar health. */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  height: 18px;
+  border-radius: 9px;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-weight: 600;
+  background: var(--bg-elev-3);
+  color: var(--text-secondary);
+}
+.pill--healthy {
+  color: var(--positive);
+}
+.pill--booting {
+  color: var(--warn);
+}
+.pill--crashed,
+.pill--stopped {
+  color: var(--negative);
+}
+.pill > .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 6px currentColor;
+}

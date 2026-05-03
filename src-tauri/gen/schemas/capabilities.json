@@ -1,0 +1,1 @@
+{"main-window":{"identifier":"main-window","description":"Main showMe terminal window IPC permissions.","local":true,"windows":["main"],"permissions":["core:default","dialog:default","fs:default","global-shortcut:default","notification:default","os:default","process:default","shell:allow-open","store:default","updater:default"]}}

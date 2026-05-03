@@ -1,0 +1,3750 @@
+[
+  {
+    "code": "AGENT",
+    "name": "Best Symbol Agent",
+    "category": "agent",
+    "asset_classes": []
+  },
+  {
+    "code": "ASK",
+    "name": "Ask ShowMe",
+    "category": "agent",
+    "asset_classes": []
+  },
+  {
+    "code": "BQL",
+    "name": "ShowMe Query Language",
+    "category": "api",
+    "description": "",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "ShowMe Query Language function.",
+      "scope": "global",
+      "asset_classes": [],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "BQUANT",
+    "name": "BQuant Notebook",
+    "category": "api",
+    "description": "",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "BQuant Notebook function.",
+      "scope": "global",
+      "asset_classes": [],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "DAPI",
+    "name": "ShowMe Data API",
+    "category": "api",
+    "description": "",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "ShowMe Data API function.",
+      "scope": "global",
+      "asset_classes": [],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "FLDS",
+    "name": "Field Lookup",
+    "category": "api",
+    "description": "",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "Field Lookup function.",
+      "scope": "global",
+      "asset_classes": [],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "ISIN",
+    "name": "Symbol Cross-Reference",
+    "category": "api",
+    "description": "Resolve ISIN/CUSIP/SEDOL/Ticker → OpenFIGI canonical record + cross IDs.",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "Resolve ISIN/CUSIP/SEDOL/Ticker → OpenFIGI canonical record + cross IDs.",
+      "scope": "global",
+      "asset_classes": [],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "ALLQ",
+    "name": "Dealer Quotes (TRACE proxy)",
+    "category": "bond",
+    "description": "",
+    "asset_classes": [
+      "BOND"
+    ],
+    "usage": {
+      "purpose": "Dealer Quotes (TRACE proxy) function.",
+      "scope": "global",
+      "asset_classes": [
+        "BOND"
+      ],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "Use Live for normal provider calls; Deep enables slower provider paths when available.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "CRPR",
+    "name": "Credit Rating Profile",
+    "category": "bond",
+    "description": "",
+    "asset_classes": [
+      "BOND"
+    ],
+    "usage": {
+      "purpose": "Credit Rating Profile function.",
+      "scope": "global",
+      "asset_classes": [
+        "BOND"
+      ],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "Use Live for normal provider calls; Deep enables slower provider paths when available.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "CRVF",
+    "name": "Yield Curve",
+    "category": "bond",
+    "description": "",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "Yield Curve function.",
+      "scope": "global",
+      "asset_classes": [],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "Use Live for normal provider calls; Deep enables slower provider paths when available.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "DDIS",
+    "name": "Debt Distribution by Maturity",
+    "category": "bond",
+    "description": "",
+    "asset_classes": [
+      "EQUITY",
+      "BOND"
+    ],
+    "usage": {
+      "purpose": "Debt Distribution by Maturity function.",
+      "scope": "global",
+      "asset_classes": [
+        "EQUITY",
+        "BOND"
+      ],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "Use Live for normal provider calls; Deep enables slower provider paths when available.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "DEBT",
+    "name": "Sovereign Debt Exposure",
+    "category": "bond",
+    "description": "",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "Sovereign Debt Exposure function.",
+      "scope": "global",
+      "asset_classes": [],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "Use Live for normal provider calls; Deep enables slower provider paths when available.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "GC3D",
+    "name": "Yield Curve 3D (live FRED)",
+    "category": "bond",
+    "description": "",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "Yield Curve 3D (live FRED) function.",
+      "scope": "global",
+      "asset_classes": [],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "Use Live for normal provider calls; Deep enables slower provider paths when available.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "SRSK",
+    "name": "Sovereign Risk",
+    "category": "bond",
+    "description": "",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "Sovereign Risk function.",
+      "scope": "global",
+      "asset_classes": [],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "Use Live for normal provider calls; Deep enables slower provider paths when available.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "TAUC",
+    "name": "Treasury Auction Calendar",
+    "category": "bond",
+    "description": "Upcoming + recent Treasury auctions (Bills/Notes/Bonds/TIPS/FRN).",
+    "asset_classes": [
+      "BOND"
+    ],
+    "usage": {
+      "purpose": "Upcoming + recent Treasury auctions (Bills/Notes/Bonds/TIPS/FRN).",
+      "scope": "global",
+      "asset_classes": [
+        "BOND"
+      ],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "Use Live for normal provider calls; Deep enables slower provider paths when available.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "WB",
+    "name": "World Bonds",
+    "category": "bond",
+    "description": "",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "World Bonds function.",
+      "scope": "global",
+      "asset_classes": [],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "Use Live for normal provider calls; Deep enables slower provider paths when available.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "YAS",
+    "name": "Yield & Spread Analytics",
+    "category": "bond",
+    "description": "",
+    "asset_classes": [
+      "BOND"
+    ],
+    "usage": {
+      "purpose": "Yield & Spread Analytics function.",
+      "scope": "symbol",
+      "asset_classes": [
+        "BOND"
+      ],
+      "inputs": [
+        "symbol"
+      ],
+      "steps": [
+        "Select a compatible market symbol from the function header.",
+        "Use Live for normal provider calls; Deep enables slower provider paths when available.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "symbol": "US10Y",
+        "asset_class": "BOND",
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "CHGS",
+    "name": "Chart Studies",
+    "category": "chart",
+    "description": "",
+    "asset_classes": [
+      "EQUITY",
+      "CRYPTO",
+      "ETF",
+      "FX"
+    ],
+    "usage": {
+      "purpose": "Chart Studies function.",
+      "scope": "symbol",
+      "asset_classes": [
+        "EQUITY",
+        "CRYPTO",
+        "ETF",
+        "FX"
+      ],
+      "inputs": [
+        "symbol"
+      ],
+      "steps": [
+        "Select a compatible market symbol from the function header.",
+        "Use Live for normal provider calls; Deep enables slower provider paths when available.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "symbol": "BTCUSDT",
+        "asset_class": "CRYPTO",
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "GP",
+    "name": "Price Graph",
+    "category": "chart",
+    "description": "Candlestick price history alias backed by ShowMe OHLCV adapters.",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "Candlestick price history alias backed by ShowMe OHLCV adapters.",
+      "scope": "symbol",
+      "asset_classes": [],
+      "inputs": [
+        "symbol"
+      ],
+      "steps": [
+        "Select a compatible market symbol from the function header.",
+        "Use Live for normal provider calls; Deep enables slower provider paths when available.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "symbol": "AAPL",
+        "asset_class": "EQUITY",
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "HP",
+    "name": "Historical Price",
+    "category": "chart",
+    "description": "Historical OHLCV table alias backed by ShowMe OHLCV adapters.",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "Historical OHLCV table alias backed by ShowMe OHLCV adapters.",
+      "scope": "symbol",
+      "asset_classes": [],
+      "inputs": [
+        "symbol"
+      ],
+      "steps": [
+        "Select a compatible market symbol from the function header.",
+        "Use Live for normal provider calls; Deep enables slower provider paths when available.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "symbol": "AAPL",
+        "asset_class": "EQUITY",
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "TECH",
+    "name": "Technical Indicators",
+    "category": "chart",
+    "description": "30+ technical indicators (RSI/MACD/ATR/Bollinger/Stochastic/ADX/OBV/Ichimoku/...)",
+    "asset_classes": [
+      "EQUITY",
+      "CRYPTO",
+      "ETF",
+      "FX",
+      "COMMODITY",
+      "INDEX"
+    ],
+    "usage": {
+      "purpose": "30+ technical indicators (RSI/MACD/ATR/Bollinger/Stochastic/ADX/OBV/Ichimoku/...)",
+      "scope": "symbol",
+      "asset_classes": [
+        "EQUITY",
+        "CRYPTO",
+        "ETF",
+        "FX",
+        "COMMODITY",
+        "INDEX"
+      ],
+      "inputs": [
+        "symbol"
+      ],
+      "steps": [
+        "Select a compatible market symbol from the function header.",
+        "Use Live for normal provider calls; Deep enables slower provider paths when available.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "symbol": "BTCUSDT",
+        "asset_class": "CRYPTO",
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "MEET",
+    "name": "Meeting Briefing",
+    "category": "comm",
+    "description": "Pre-meeting briefing — Notion + Granola + portfolio + news + DES.",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "Pre-meeting briefing — Notion + Granola + portfolio + news + DES.",
+      "scope": "global",
+      "asset_classes": [],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "PEOP",
+    "name": "People Search",
+    "category": "comm",
+    "description": "Search executives, analysts, and contacts (local directory).",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "Search executives, analysts, and contacts (local directory).",
+      "scope": "global",
+      "asset_classes": [],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "BGAS",
+    "name": "Natural Gas Spot",
+    "category": "commodity",
+    "description": "",
+    "asset_classes": [
+      "COMMODITY"
+    ],
+    "usage": {
+      "purpose": "Natural Gas Spot function.",
+      "scope": "global",
+      "asset_classes": [
+        "COMMODITY"
+      ],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "Use Live for normal provider calls; Deep enables slower provider paths when available.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "BOIL",
+    "name": "Oil Spot",
+    "category": "commodity",
+    "description": "",
+    "asset_classes": [
+      "COMMODITY"
+    ],
+    "usage": {
+      "purpose": "Oil Spot function.",
+      "scope": "global",
+      "asset_classes": [
+        "COMMODITY"
+      ],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "Use Live for normal provider calls; Deep enables slower provider paths when available.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "CPF",
+    "name": "Commodity Price Forecasts",
+    "category": "commodity",
+    "description": "",
+    "asset_classes": [
+      "COMMODITY"
+    ],
+    "usage": {
+      "purpose": "Commodity Price Forecasts function.",
+      "scope": "global",
+      "asset_classes": [
+        "COMMODITY"
+      ],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "Use Live for normal provider calls; Deep enables slower provider paths when available.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "GLCO",
+    "name": "Global Commodity Movers",
+    "category": "commodity",
+    "description": "",
+    "asset_classes": [
+      "COMMODITY"
+    ],
+    "usage": {
+      "purpose": "Global Commodity Movers function.",
+      "scope": "global",
+      "asset_classes": [
+        "COMMODITY"
+      ],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "Use Live for normal provider calls; Deep enables slower provider paths when available.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "NGAS",
+    "name": "Natural Gas",
+    "category": "commodity",
+    "description": "",
+    "asset_classes": [
+      "COMMODITY"
+    ],
+    "usage": {
+      "purpose": "Natural Gas function.",
+      "scope": "global",
+      "asset_classes": [
+        "COMMODITY"
+      ],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "Use Live for normal provider calls; Deep enables slower provider paths when available.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "WETR",
+    "name": "Weather Trends",
+    "category": "commodity",
+    "description": "",
+    "asset_classes": [
+      "COMMODITY"
+    ],
+    "usage": {
+      "purpose": "Weather Trends function.",
+      "scope": "global",
+      "asset_classes": [
+        "COMMODITY"
+      ],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "Use Live for normal provider calls; Deep enables slower provider paths when available.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "GEX",
+    "name": "Gamma Exposure",
+    "category": "derivative",
+    "description": "Per-strike dealer gamma exposure + flip + walls.",
+    "asset_classes": [
+      "EQUITY"
+    ],
+    "usage": {
+      "purpose": "Per-strike dealer gamma exposure + flip + walls.",
+      "scope": "symbol",
+      "asset_classes": [
+        "EQUITY"
+      ],
+      "inputs": [
+        "symbol"
+      ],
+      "steps": [
+        "Select a compatible market symbol from the function header.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "symbol": "AAPL",
+        "asset_class": "EQUITY",
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "HVT",
+    "name": "Historical Volatility Trends",
+    "category": "derivative",
+    "description": "",
+    "asset_classes": [
+      "EQUITY",
+      "CRYPTO",
+      "ETF"
+    ],
+    "usage": {
+      "purpose": "Historical Volatility Trends function.",
+      "scope": "symbol",
+      "asset_classes": [
+        "EQUITY",
+        "CRYPTO",
+        "ETF"
+      ],
+      "inputs": [
+        "symbol"
+      ],
+      "steps": [
+        "Select a compatible market symbol from the function header.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "symbol": "BTCUSDT",
+        "asset_class": "CRYPTO",
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "IVOL",
+    "name": "Implied Vol Surface",
+    "category": "derivative",
+    "description": "",
+    "asset_classes": [
+      "EQUITY",
+      "ETF",
+      "DERIVATIVE"
+    ],
+    "usage": {
+      "purpose": "Implied Vol Surface function.",
+      "scope": "symbol",
+      "asset_classes": [
+        "EQUITY",
+        "ETF",
+        "DERIVATIVE"
+      ],
+      "inputs": [
+        "symbol"
+      ],
+      "steps": [
+        "Select a compatible market symbol from the function header.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "symbol": "AAPL",
+        "asset_class": "EQUITY",
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "OMON",
+    "name": "Option Monitor",
+    "category": "derivative",
+    "description": "",
+    "asset_classes": [
+      "EQUITY",
+      "ETF",
+      "DERIVATIVE"
+    ],
+    "usage": {
+      "purpose": "Option Monitor function.",
+      "scope": "symbol",
+      "asset_classes": [
+        "EQUITY",
+        "ETF",
+        "DERIVATIVE"
+      ],
+      "inputs": [
+        "symbol"
+      ],
+      "steps": [
+        "Select a compatible market symbol from the function header.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "symbol": "AAPL",
+        "asset_class": "EQUITY",
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "OSA",
+    "name": "Option Strategy Analysis",
+    "category": "derivative",
+    "description": "",
+    "asset_classes": [
+      "DERIVATIVE"
+    ],
+    "usage": {
+      "purpose": "Multi-leg option strategy P&L curve from editable legs.",
+      "scope": "model",
+      "inputs": [
+        "spot",
+        "legs",
+        "rate"
+      ],
+      "steps": [
+        "Open Advanced and edit the legs array.",
+        "Use positive qty for long legs and negative qty for short legs.",
+        "Run to inspect the payoff/P&L curve and leg table."
+      ],
+      "example": {
+        "spot": 100,
+        "rate": 0.045,
+        "legs": [
+          {
+            "qty": 1,
+            "strike": 100,
+            "type": "CALL",
+            "expiry": 0.25,
+            "vol": 0.25
+          },
+          {
+            "qty": -1,
+            "strike": 110,
+            "type": "CALL",
+            "expiry": 0.25,
+            "vol": 0.25
+          }
+        ]
+      }
+    }
+  },
+  {
+    "code": "OVME",
+    "name": "Option Valuation",
+    "category": "derivative",
+    "description": "",
+    "asset_classes": [
+      "DERIVATIVE"
+    ],
+    "usage": {
+      "purpose": "Black-Scholes option value and Greeks for one option contract.",
+      "scope": "model",
+      "inputs": [
+        "spot",
+        "strike",
+        "years_to_expiry",
+        "vol",
+        "rate",
+        "type"
+      ],
+      "steps": [
+        "Open Advanced to edit pricing assumptions when the defaults are not enough.",
+        "Set spot, strike, expiry in years, volatility, rate, and CALL/PUT type.",
+        "Run to read price, delta, gamma, theta, vega, rho, d1, and d2."
+      ],
+      "example": {
+        "spot": 100,
+        "strike": 105,
+        "years_to_expiry": 0.25,
+        "vol": 0.28,
+        "rate": 0.045,
+        "type": "CALL"
+      }
+    }
+  },
+  {
+    "code": "ANR",
+    "name": "Analyst Recommendations",
+    "category": "equity",
+    "description": "Strong Buy/Buy/Hold/Sell/Strong Sell dağılımı + 12-ay fiyat hedefi (mean/median/min/max).",
+    "asset_classes": [
+      "EQUITY"
+    ],
+    "usage": {
+      "purpose": "Strong Buy/Buy/Hold/Sell/Strong Sell dağılımı + 12-ay fiyat hedefi (mean/median/min/max).",
+      "scope": "symbol",
+      "asset_classes": [
+        "EQUITY"
+      ],
+      "inputs": [
+        "symbol"
+      ],
+      "steps": [
+        "Select a compatible market symbol from the function header.",
+        "Use Live for normal provider calls; Deep enables slower provider paths when available.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "symbol": "AAPL",
+        "asset_class": "EQUITY",
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "APPL",
+    "name": "Industry Taxonomy",
+    "category": "equity",
+    "description": "",
+    "asset_classes": [
+      "EQUITY",
+      "ETF"
+    ],
+    "usage": {
+      "purpose": "Industry Taxonomy function.",
+      "scope": "symbol",
+      "asset_classes": [
+        "EQUITY",
+        "ETF"
+      ],
+      "inputs": [
+        "symbol"
+      ],
+      "steps": [
+        "Select a compatible market symbol from the function header.",
+        "Use Live for normal provider calls; Deep enables slower provider paths when available.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "symbol": "AAPL",
+        "asset_class": "EQUITY",
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "BETA",
+    "name": "CAPM Beta",
+    "category": "equity",
+    "description": "Hedef vs benchmark β = cov(r_i, r_m) / var(r_m). Çoklu pencere ve benchmark.",
+    "asset_classes": [
+      "EQUITY",
+      "ETF",
+      "INDEX"
+    ],
+    "usage": {
+      "purpose": "Hedef vs benchmark β = cov(r_i, r_m) / var(r_m). Çoklu pencere ve benchmark.",
+      "scope": "symbol",
+      "asset_classes": [
+        "EQUITY",
+        "ETF",
+        "INDEX"
+      ],
+      "inputs": [
+        "symbol"
+      ],
+      "steps": [
+        "Select a compatible market symbol from the function header.",
+        "Use Live for normal provider calls; Deep enables slower provider paths when available.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "symbol": "AAPL",
+        "asset_class": "EQUITY",
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "CACT",
+    "name": "Corporate Actions",
+    "category": "equity",
+    "description": "",
+    "asset_classes": [
+      "EQUITY",
+      "ETF"
+    ],
+    "usage": {
+      "purpose": "Corporate Actions function.",
+      "scope": "symbol",
+      "asset_classes": [
+        "EQUITY",
+        "ETF"
+      ],
+      "inputs": [
+        "symbol"
+      ],
+      "steps": [
+        "Select a compatible market symbol from the function header.",
+        "Use Live for normal provider calls; Deep enables slower provider paths when available.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "symbol": "AAPL",
+        "asset_class": "EQUITY",
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "DARK",
+    "name": "Dark Pool Volume",
+    "category": "equity",
+    "description": "FINRA ATS (Alternative Trading System) weekly off-exchange volume by venue.",
+    "asset_classes": [
+      "EQUITY",
+      "ETF"
+    ],
+    "usage": {
+      "purpose": "FINRA ATS (Alternative Trading System) weekly off-exchange volume by venue.",
+      "scope": "symbol",
+      "asset_classes": [
+        "EQUITY",
+        "ETF"
+      ],
+      "inputs": [
+        "symbol"
+      ],
+      "steps": [
+        "Select a compatible market symbol from the function header.",
+        "Use Live for normal provider calls; Deep enables slower provider paths when available.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "symbol": "AAPL",
+        "asset_class": "EQUITY",
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "DCF",
+    "name": "Discounted Cash Flow",
+    "category": "equity",
+    "description": "",
+    "asset_classes": [
+      "EQUITY"
+    ],
+    "usage": {
+      "purpose": "Discounted Cash Flow function.",
+      "scope": "symbol",
+      "asset_classes": [
+        "EQUITY"
+      ],
+      "inputs": [
+        "symbol"
+      ],
+      "steps": [
+        "Select a compatible market symbol from the function header.",
+        "Use Live for normal provider calls; Deep enables slower provider paths when available.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "symbol": "AAPL",
+        "asset_class": "EQUITY",
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "DCFS",
+    "name": "DCF Sensitivity",
+    "category": "equity",
+    "description": "WACC × terminal-growth grid + ±20% input tornado.",
+    "asset_classes": [
+      "EQUITY"
+    ],
+    "usage": {
+      "purpose": "WACC × terminal-growth grid + ±20% input tornado.",
+      "scope": "symbol",
+      "asset_classes": [
+        "EQUITY"
+      ],
+      "inputs": [
+        "symbol"
+      ],
+      "steps": [
+        "Select a compatible market symbol from the function header.",
+        "Use Live for normal provider calls; Deep enables slower provider paths when available.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "symbol": "AAPL",
+        "asset_class": "EQUITY",
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "DDM",
+    "name": "Dividend Discount Model",
+    "category": "equity",
+    "description": "",
+    "asset_classes": [
+      "EQUITY"
+    ],
+    "usage": {
+      "purpose": "Dividend Discount Model function.",
+      "scope": "symbol",
+      "asset_classes": [
+        "EQUITY"
+      ],
+      "inputs": [
+        "symbol"
+      ],
+      "steps": [
+        "Select a compatible market symbol from the function header.",
+        "Use Live for normal provider calls; Deep enables slower provider paths when available.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "symbol": "AAPL",
+        "asset_class": "EQUITY",
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "DES",
+    "name": "Description",
+    "category": "equity",
+    "description": "Şirket özeti — sektör, market cap, çalışan sayısı, IPO tarihi, kısa açıklama.",
+    "asset_classes": [
+      "EQUITY",
+      "ETF",
+      "FUND",
+      "REIT"
+    ],
+    "usage": {
+      "purpose": "Şirket özeti — sektör, market cap, çalışan sayısı, IPO tarihi, kısa açıklama.",
+      "scope": "symbol",
+      "asset_classes": [
+        "EQUITY",
+        "ETF",
+        "FUND",
+        "REIT"
+      ],
+      "inputs": [
+        "symbol"
+      ],
+      "steps": [
+        "Select a compatible market symbol from the function header.",
+        "Use Live for normal provider calls; Deep enables slower provider paths when available.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "symbol": "AAPL",
+        "asset_class": "EQUITY",
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "DPF",
+    "name": "Dark Pool / ATS Volume",
+    "category": "equity",
+    "description": "FINRA-reported off-exchange (ATS) volume + dark-pool % of total.",
+    "asset_classes": [
+      "EQUITY",
+      "ETF"
+    ],
+    "usage": {
+      "purpose": "FINRA-reported off-exchange (ATS) volume + dark-pool % of total.",
+      "scope": "symbol",
+      "asset_classes": [
+        "EQUITY",
+        "ETF"
+      ],
+      "inputs": [
+        "symbol"
+      ],
+      "steps": [
+        "Select a compatible market symbol from the function header.",
+        "Use Live for normal provider calls; Deep enables slower provider paths when available.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "symbol": "AAPL",
+        "asset_class": "EQUITY",
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "DVD",
+    "name": "Dividends & Splits",
+    "category": "equity",
+    "description": "",
+    "asset_classes": [
+      "EQUITY",
+      "ETF"
+    ],
+    "usage": {
+      "purpose": "Dividends & Splits function.",
+      "scope": "symbol",
+      "asset_classes": [
+        "EQUITY",
+        "ETF"
+      ],
+      "inputs": [
+        "symbol"
+      ],
+      "steps": [
+        "Select a compatible market symbol from the function header.",
+        "Use Live for normal provider calls; Deep enables slower provider paths when available.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "symbol": "AAPL",
+        "asset_class": "EQUITY",
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "EE",
+    "name": "Earnings & Estimates",
+    "category": "equity",
+    "description": "Geçmiş kazançlar (actual vs consensus) + sürpriz % + sonraki tahmin tarihi.",
+    "asset_classes": [
+      "EQUITY"
+    ],
+    "usage": {
+      "purpose": "Geçmiş kazançlar (actual vs consensus) + sürpriz % + sonraki tahmin tarihi.",
+      "scope": "symbol",
+      "asset_classes": [
+        "EQUITY"
+      ],
+      "inputs": [
+        "symbol"
+      ],
+      "steps": [
+        "Select a compatible market symbol from the function header.",
+        "Use Live for normal provider calls; Deep enables slower provider paths when available.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "symbol": "AAPL",
+        "asset_class": "EQUITY",
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "EREV",
+    "name": "Earnings Revisions",
+    "category": "equity",
+    "description": "Analyst recommendation buckets month-over-month + revision velocity.",
+    "asset_classes": [
+      "EQUITY"
+    ],
+    "usage": {
+      "purpose": "Analyst recommendation buckets month-over-month + revision velocity.",
+      "scope": "symbol",
+      "asset_classes": [
+        "EQUITY"
+      ],
+      "inputs": [
+        "symbol"
+      ],
+      "steps": [
+        "Select a compatible market symbol from the function header.",
+        "Use Live for normal provider calls; Deep enables slower provider paths when available.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "symbol": "AAPL",
+        "asset_class": "EQUITY",
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "ESG",
+    "name": "ESG Scores",
+    "category": "equity",
+    "description": "",
+    "asset_classes": [
+      "EQUITY",
+      "ETF"
+    ],
+    "usage": {
+      "purpose": "ESG Scores function.",
+      "scope": "symbol",
+      "asset_classes": [
+        "EQUITY",
+        "ETF"
+      ],
+      "inputs": [
+        "symbol"
+      ],
+      "steps": [
+        "Select a compatible market symbol from the function header.",
+        "Use Live for normal provider calls; Deep enables slower provider paths when available.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "symbol": "AAPL",
+        "asset_class": "EQUITY",
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "FA",
+    "name": "Financial Analysis",
+    "category": "equity",
+    "description": "Income statement + balance sheet + cash flow, son 5 yıl trendi.",
+    "asset_classes": [
+      "EQUITY",
+      "ETF"
+    ],
+    "usage": {
+      "purpose": "Income statement + balance sheet + cash flow, son 5 yıl trendi.",
+      "scope": "symbol",
+      "asset_classes": [
+        "EQUITY",
+        "ETF"
+      ],
+      "inputs": [
+        "symbol"
+      ],
+      "steps": [
+        "Select a compatible market symbol from the function header.",
+        "Use Live for normal provider calls; Deep enables slower provider paths when available.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "symbol": "AAPL",
+        "asset_class": "EQUITY",
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "FORM4",
+    "name": "Insider Transactions",
+    "category": "equity",
+    "description": "Recent SEC Form 4 (insider) filings for the given ticker.",
+    "asset_classes": [
+      "EQUITY"
+    ],
+    "usage": {
+      "purpose": "Recent SEC Form 4 (insider) filings for the given ticker.",
+      "scope": "symbol",
+      "asset_classes": [
+        "EQUITY"
+      ],
+      "inputs": [
+        "symbol"
+      ],
+      "steps": [
+        "Select a compatible market symbol from the function header.",
+        "Use Live for normal provider calls; Deep enables slower provider paths when available.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "symbol": "AAPL",
+        "asset_class": "EQUITY",
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "FTS",
+    "name": "SEC Full-Text Search",
+    "category": "equity",
+    "description": "Search SEC EDGAR filings by free text + form type + date range.",
+    "asset_classes": [
+      "EQUITY"
+    ],
+    "usage": {
+      "purpose": "Search SEC EDGAR filings by free text + form type + date range.",
+      "scope": "symbol",
+      "asset_classes": [
+        "EQUITY"
+      ],
+      "inputs": [
+        "symbol"
+      ],
+      "steps": [
+        "Select a compatible market symbol from the function header.",
+        "Use Live for normal provider calls; Deep enables slower provider paths when available.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "symbol": "AAPL",
+        "asset_class": "EQUITY",
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "HDS",
+    "name": "Holders",
+    "category": "equity",
+    "description": "",
+    "asset_classes": [
+      "EQUITY",
+      "ETF"
+    ],
+    "usage": {
+      "purpose": "Holders function.",
+      "scope": "symbol",
+      "asset_classes": [
+        "EQUITY",
+        "ETF"
+      ],
+      "inputs": [
+        "symbol"
+      ],
+      "steps": [
+        "Select a compatible market symbol from the function header.",
+        "Use Live for normal provider calls; Deep enables slower provider paths when available.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "symbol": "AAPL",
+        "asset_class": "EQUITY",
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "HFS",
+    "name": "Holder Search",
+    "category": "equity",
+    "description": "13F reverse lookup — list filers holding a given issuer / CUSIP.",
+    "asset_classes": [
+      "EQUITY"
+    ],
+    "usage": {
+      "purpose": "13F reverse lookup — list filers holding a given issuer / CUSIP.",
+      "scope": "symbol",
+      "asset_classes": [
+        "EQUITY"
+      ],
+      "inputs": [
+        "symbol"
+      ],
+      "steps": [
+        "Select a compatible market symbol from the function header.",
+        "Use Live for normal provider calls; Deep enables slower provider paths when available.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "symbol": "AAPL",
+        "asset_class": "EQUITY",
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "LITM",
+    "name": "Litigation Monitor",
+    "category": "equity",
+    "description": "Recent 8-K Item 1.03/1.04/3.03 filings — bankruptcy, mine safety, security holder rights.",
+    "asset_classes": [
+      "EQUITY"
+    ],
+    "usage": {
+      "purpose": "Recent 8-K Item 1.03/1.04/3.03 filings — bankruptcy, mine safety, security holder rights.",
+      "scope": "symbol",
+      "asset_classes": [
+        "EQUITY"
+      ],
+      "inputs": [
+        "symbol"
+      ],
+      "steps": [
+        "Select a compatible market symbol from the function header.",
+        "Use Live for normal provider calls; Deep enables slower provider paths when available.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "symbol": "AAPL",
+        "asset_class": "EQUITY",
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "PIB",
+    "name": "Public Information Book",
+    "category": "equity",
+    "description": "",
+    "asset_classes": [
+      "EQUITY",
+      "ETF"
+    ],
+    "usage": {
+      "purpose": "Public Information Book function.",
+      "scope": "symbol",
+      "asset_classes": [
+        "EQUITY",
+        "ETF"
+      ],
+      "inputs": [
+        "symbol"
+      ],
+      "steps": [
+        "Select a compatible market symbol from the function header.",
+        "Use Live for normal provider calls; Deep enables slower provider paths when available.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "symbol": "AAPL",
+        "asset_class": "EQUITY",
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "RV",
+    "name": "Relative Valuation",
+    "category": "equity",
+    "description": "",
+    "asset_classes": [
+      "EQUITY"
+    ],
+    "usage": {
+      "purpose": "Relative Valuation function.",
+      "scope": "symbol",
+      "asset_classes": [
+        "EQUITY"
+      ],
+      "inputs": [
+        "symbol"
+      ],
+      "steps": [
+        "Select a compatible market symbol from the function header.",
+        "Use Live for normal provider calls; Deep enables slower provider paths when available.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "symbol": "AAPL",
+        "asset_class": "EQUITY",
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "SPLC",
+    "name": "Supply Chain (approximate)",
+    "category": "equity",
+    "description": "",
+    "asset_classes": [
+      "EQUITY"
+    ],
+    "usage": {
+      "purpose": "Supply Chain (approximate) function.",
+      "scope": "symbol",
+      "asset_classes": [
+        "EQUITY"
+      ],
+      "inputs": [
+        "symbol"
+      ],
+      "steps": [
+        "Select a compatible market symbol from the function header.",
+        "Use Live for normal provider calls; Deep enables slower provider paths when available.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "symbol": "AAPL",
+        "asset_class": "EQUITY",
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "WACC",
+    "name": "Weighted Average Cost of Capital",
+    "category": "equity",
+    "description": "",
+    "asset_classes": [
+      "EQUITY"
+    ],
+    "usage": {
+      "purpose": "Weighted Average Cost of Capital function.",
+      "scope": "symbol",
+      "asset_classes": [
+        "EQUITY"
+      ],
+      "inputs": [
+        "symbol"
+      ],
+      "steps": [
+        "Select a compatible market symbol from the function header.",
+        "Use Live for normal provider calls; Deep enables slower provider paths when available.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "symbol": "AAPL",
+        "asset_class": "EQUITY",
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "FRD",
+    "name": "FX Forward Rates",
+    "category": "fx",
+    "description": "",
+    "asset_classes": [
+      "FX"
+    ],
+    "usage": {
+      "purpose": "FX Forward Rates function.",
+      "scope": "symbol",
+      "asset_classes": [
+        "FX"
+      ],
+      "inputs": [
+        "symbol"
+      ],
+      "steps": [
+        "Select a compatible market symbol from the function header.",
+        "Use Live for normal provider calls; Deep enables slower provider paths when available.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "symbol": "EURUSD",
+        "asset_class": "FX",
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "FXFC",
+    "name": "FX Forecasts",
+    "category": "fx",
+    "description": "",
+    "asset_classes": [
+      "FX"
+    ],
+    "usage": {
+      "purpose": "FX Forecasts function.",
+      "scope": "global",
+      "asset_classes": [
+        "FX"
+      ],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "Use Live for normal provider calls; Deep enables slower provider paths when available.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "FXH",
+    "name": "FX Hedge",
+    "category": "fx",
+    "description": "Forward-rate overlay calculator for foreign-currency exposure.",
+    "asset_classes": [
+      "FX"
+    ],
+    "usage": {
+      "purpose": "Forward-rate overlay calculator for foreign-currency exposure.",
+      "scope": "global",
+      "asset_classes": [
+        "FX"
+      ],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "Use Live for normal provider calls; Deep enables slower provider paths when available.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "FXIP",
+    "name": "FX Information Portal",
+    "category": "fx",
+    "description": "",
+    "asset_classes": [
+      "FX"
+    ],
+    "usage": {
+      "purpose": "FX Information Portal function.",
+      "scope": "symbol",
+      "asset_classes": [
+        "FX"
+      ],
+      "inputs": [
+        "symbol"
+      ],
+      "steps": [
+        "Select a compatible market symbol from the function header.",
+        "Use Live for normal provider calls; Deep enables slower provider paths when available.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "symbol": "EURUSD",
+        "asset_class": "FX",
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "OVDV",
+    "name": "FX Option Volatility Surface",
+    "category": "fx",
+    "description": "",
+    "asset_classes": [
+      "FX",
+      "DERIVATIVE"
+    ],
+    "usage": {
+      "purpose": "FX Option Volatility Surface function.",
+      "scope": "global",
+      "asset_classes": [
+        "FX",
+        "DERIVATIVE"
+      ],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "Use Live for normal provider calls; Deep enables slower provider paths when available.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "WCRS",
+    "name": "World Cross Rates",
+    "category": "fx",
+    "description": "",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "World Cross Rates function.",
+      "scope": "global",
+      "asset_classes": [],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "Use Live for normal provider calls; Deep enables slower provider paths when available.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "BTMM",
+    "name": "Country Rate Environment",
+    "category": "macro",
+    "description": "Central bank policy-rate matrix from BIS CBPOL, with latest rate, last policy move, 3-month trend, and country/region filters.",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "Central bank policy-rate matrix from BIS CBPOL, with latest rate, last policy move, 3-month trend, and country/region filters.",
+      "scope": "global",
+      "asset_classes": [],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "COUN",
+    "name": "Country Guide",
+    "category": "macro",
+    "description": "",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "Country Guide function.",
+      "scope": "global",
+      "asset_classes": [],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "ECFC",
+    "name": "Economic Forecasts",
+    "category": "macro",
+    "description": "",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "Economic Forecasts function.",
+      "scope": "global",
+      "asset_classes": [],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "ECO",
+    "name": "Economic Calendar",
+    "category": "macro",
+    "description": "",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "Economic Calendar function.",
+      "scope": "global",
+      "asset_classes": [],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "ECST",
+    "name": "Economic Statistics",
+    "category": "macro",
+    "description": "",
+    "asset_classes": [
+      "MACRO"
+    ],
+    "usage": {
+      "purpose": "Economic Statistics function.",
+      "scope": "global",
+      "asset_classes": [
+        "MACRO"
+      ],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "GMM",
+    "name": "Global Macro Movers",
+    "category": "macro",
+    "description": "",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "Global Macro Movers function.",
+      "scope": "global",
+      "asset_classes": [],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "REGM",
+    "name": "Market Regime",
+    "category": "macro",
+    "description": "Classify regime via trend + vol + drawdown + curve, optionally cluster history.",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "Classify regime via trend + vol + drawdown + curve, optionally cluster history.",
+      "scope": "global",
+      "asset_classes": [],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "TRDH",
+    "name": "Trading Hours",
+    "category": "macro",
+    "description": "Per-exchange trading session status + next open/close (UTC).",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "Per-exchange trading session status + next open/close (UTC).",
+      "scope": "global",
+      "asset_classes": [],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "WIRP",
+    "name": "World Interest Rate Probability",
+    "category": "macro",
+    "description": "",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "World Interest Rate Probability function.",
+      "scope": "global",
+      "asset_classes": [],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "ALRT",
+    "name": "Alerts",
+    "category": "misc",
+    "description": "",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "Alerts function.",
+      "scope": "global",
+      "asset_classes": [],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "BIO",
+    "name": "Biometric Auth",
+    "category": "misc",
+    "description": "",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "Biometric Auth function.",
+      "scope": "global",
+      "asset_classes": [],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "BMC",
+    "name": "Market Concepts Education",
+    "category": "misc",
+    "description": "",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "Market Concepts Education function.",
+      "scope": "global",
+      "asset_classes": [],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "CDE",
+    "name": "Custom Data Fields",
+    "category": "misc",
+    "description": "",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "Custom Data Fields function.",
+      "scope": "global",
+      "asset_classes": [],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "DINE",
+    "name": "Restaurants",
+    "category": "misc",
+    "description": "",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "Restaurants function.",
+      "scope": "global",
+      "asset_classes": [],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "FLY",
+    "name": "Flight Tracking",
+    "category": "misc",
+    "description": "",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "Flight Tracking function.",
+      "scope": "global",
+      "asset_classes": [],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "GRAB",
+    "name": "Screenshot Email",
+    "category": "misc",
+    "description": "",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "Screenshot Email function.",
+      "scope": "global",
+      "asset_classes": [],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "LANG",
+    "name": "Language Switch",
+    "category": "misc",
+    "description": "",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "Language Switch function.",
+      "scope": "global",
+      "asset_classes": [],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "ONCH",
+    "name": "On-Chain Metrics",
+    "category": "misc",
+    "description": "Crypto on-chain: fees, hash rate, active addresses, gas, mempool.",
+    "asset_classes": [
+      "CRYPTO",
+      "EQUITY",
+      "ETF",
+      "FX",
+      "COMMODITY",
+      "INDEX"
+    ],
+    "usage": {
+      "purpose": "Crypto on-chain: fees, hash rate, active addresses, gas, mempool.",
+      "scope": "global",
+      "asset_classes": [
+        "CRYPTO",
+        "EQUITY",
+        "ETF",
+        "FX",
+        "COMMODITY",
+        "INDEX"
+      ],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "POLY",
+    "name": "Polymarket",
+    "category": "misc",
+    "description": "Prediction-market odds (Polymarket public CLOB markets).",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "Prediction-market odds (Polymarket public CLOB markets).",
+      "scope": "global",
+      "asset_classes": [],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "SAT",
+    "name": "Satellite Imagery",
+    "category": "misc",
+    "description": "Sentinel-2 true-color PNG + NDVI stats for a bbox + date window.",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "Sentinel-2 true-color PNG + NDVI stats for a bbox + date window.",
+      "scope": "global",
+      "asset_classes": [],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "WHAL",
+    "name": "Whale Alerts",
+    "category": "misc",
+    "description": "Large on-chain transfers + balance moves (Glassnode + Etherscan + Mempool).",
+    "asset_classes": [
+      "CRYPTO"
+    ],
+    "usage": {
+      "purpose": "Large on-chain transfers + balance moves (Glassnode + Etherscan + Mempool).",
+      "scope": "global",
+      "asset_classes": [
+        "CRYPTO"
+      ],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "AV",
+    "name": "Audio/Video Archive",
+    "category": "news",
+    "description": "",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "Audio/Video Archive function.",
+      "scope": "global",
+      "asset_classes": [],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "Use limit and query controls to tighten relevance; critical alerts are flagged by importance_score.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "query": "market news",
+        "limit": 10,
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "BRIEF",
+    "name": "Daily Brief",
+    "category": "news",
+    "description": "",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "Daily Brief function.",
+      "scope": "global",
+      "asset_classes": [],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "Use limit and query controls to tighten relevance; critical alerts are flagged by importance_score.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "query": "market news",
+        "limit": 10,
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "CN",
+    "name": "Company News",
+    "category": "news",
+    "description": "",
+    "asset_classes": [
+      "EQUITY",
+      "CRYPTO",
+      "ETF"
+    ],
+    "usage": {
+      "purpose": "Company News function.",
+      "scope": "symbol",
+      "asset_classes": [
+        "EQUITY",
+        "CRYPTO",
+        "ETF"
+      ],
+      "inputs": [
+        "symbol"
+      ],
+      "steps": [
+        "Select a compatible market symbol from the function header.",
+        "Use limit and query controls to tighten relevance; critical alerts are flagged by importance_score.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "symbol": "BTCUSDT",
+        "asset_class": "CRYPTO",
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "EVTS",
+    "name": "Corporate Events",
+    "category": "news",
+    "description": "",
+    "asset_classes": [
+      "EQUITY"
+    ],
+    "usage": {
+      "purpose": "Corporate Events function.",
+      "scope": "symbol",
+      "asset_classes": [
+        "EQUITY"
+      ],
+      "inputs": [
+        "symbol"
+      ],
+      "steps": [
+        "Select a compatible market symbol from the function header.",
+        "Use limit and query controls to tighten relevance; critical alerts are flagged by importance_score.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "symbol": "AAPL",
+        "asset_class": "EQUITY",
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "NALRT",
+    "name": "Critical News Alerts",
+    "category": "news",
+    "description": "Ranks live headlines by market impact and raises critical/high news alerts.",
+    "asset_classes": [
+      "EQUITY",
+      "CRYPTO",
+      "ETF",
+      "INDEX"
+    ],
+    "usage": {
+      "purpose": "Ranks live headlines by market impact and raises critical/high news alerts.",
+      "scope": "symbol",
+      "asset_classes": [
+        "EQUITY",
+        "CRYPTO",
+        "ETF",
+        "INDEX"
+      ],
+      "inputs": [
+        "symbol"
+      ],
+      "steps": [
+        "Select a compatible market symbol from the function header.",
+        "Use limit and query controls to tighten relevance; critical alerts are flagged by importance_score.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "symbol": "BTCUSDT",
+        "asset_class": "CRYPTO",
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "NI",
+    "name": "News by Topic",
+    "category": "news",
+    "description": "",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "News by Topic function.",
+      "scope": "symbol",
+      "asset_classes": [],
+      "inputs": [
+        "symbol"
+      ],
+      "steps": [
+        "Select a compatible market symbol from the function header.",
+        "Use limit and query controls to tighten relevance; critical alerts are flagged by importance_score.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "symbol": "AAPL",
+        "asset_class": "EQUITY",
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "NSE",
+    "name": "News Search Engine",
+    "category": "news",
+    "description": "",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "News Search Engine function.",
+      "scope": "global",
+      "asset_classes": [],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "Use limit and query controls to tighten relevance; critical alerts are flagged by importance_score.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "query": "market news",
+        "limit": 10,
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "READ",
+    "name": "Personalized News (For You)",
+    "category": "news",
+    "description": "",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "Personalized News (For You) function.",
+      "scope": "global",
+      "asset_classes": [],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "Use limit and query controls to tighten relevance; critical alerts are flagged by importance_score.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "query": "market news",
+        "limit": 10,
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "SOSC",
+    "name": "Social Sentiment",
+    "category": "news",
+    "description": "",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "Social Sentiment function.",
+      "scope": "symbol",
+      "asset_classes": [],
+      "inputs": [
+        "symbol"
+      ],
+      "steps": [
+        "Select a compatible market symbol from the function header.",
+        "Use limit and query controls to tighten relevance; critical alerts are flagged by importance_score.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "symbol": "AAPL",
+        "asset_class": "EQUITY",
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "TLDR",
+    "name": "Daily TL;DR",
+    "category": "news",
+    "description": "LLM-summarised portfolio + watchlist day in 5 bullets.",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "LLM-summarised portfolio + watchlist day in 5 bullets.",
+      "scope": "global",
+      "asset_classes": [],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "Use limit and query controls to tighten relevance; critical alerts are flagged by importance_score.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "query": "market news",
+        "limit": 10,
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "TOP",
+    "name": "Top News",
+    "category": "news",
+    "description": "",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "Top News function.",
+      "scope": "global",
+      "asset_classes": [],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "Use limit and query controls to tighten relevance; critical alerts are flagged by importance_score.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "query": "market news",
+        "limit": 10,
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "TRAN",
+    "name": "Earnings Call Transcripts",
+    "category": "news",
+    "description": "",
+    "asset_classes": [
+      "EQUITY"
+    ],
+    "usage": {
+      "purpose": "Earnings Call Transcripts function.",
+      "scope": "symbol",
+      "asset_classes": [
+        "EQUITY"
+      ],
+      "inputs": [
+        "symbol"
+      ],
+      "steps": [
+        "Select a compatible market symbol from the function header.",
+        "Use limit and query controls to tighten relevance; critical alerts are flagged by importance_score.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "symbol": "AAPL",
+        "asset_class": "EQUITY",
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "TRQA",
+    "name": "Transcript Q&A",
+    "category": "news",
+    "description": "Run a list of questions against an earnings call transcript / audio.",
+    "asset_classes": [
+      "EQUITY"
+    ],
+    "usage": {
+      "purpose": "Run a list of questions against an earnings call transcript / audio.",
+      "scope": "global",
+      "asset_classes": [
+        "EQUITY"
+      ],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "Use limit and query controls to tighten relevance; critical alerts are flagged by importance_score.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "query": "market news",
+        "limit": 10,
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "TSAR",
+    "name": "Transcript Search",
+    "category": "news",
+    "description": "Search across stored earnings call transcripts (FTS5).",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "Search across stored earnings call transcripts (FTS5).",
+      "scope": "global",
+      "asset_classes": [],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "Use limit and query controls to tighten relevance; critical alerts are flagged by importance_score.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "query": "market news",
+        "limit": 10,
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "ACCT",
+    "name": "Multi-Account Aggregation",
+    "category": "portfolio",
+    "description": "Per-account position roll-up + cross-account exposure totals.",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "Per-account position roll-up + cross-account exposure totals.",
+      "scope": "portfolio",
+      "asset_classes": [],
+      "inputs": [
+        "local portfolio state"
+      ],
+      "steps": [
+        "Uses the local Application Support portfolio unless Advanced overrides are provided.",
+        "Check sources and warnings; empty portfolios need positions before risk metrics are meaningful.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true,
+        "days": 45,
+        "max_positions": 10
+      }
+    }
+  },
+  {
+    "code": "BLAK",
+    "name": "Black-Litterman",
+    "category": "portfolio",
+    "description": "Posterior expected returns combining market prior with views.",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "Posterior expected returns combining market prior with views.",
+      "scope": "portfolio",
+      "asset_classes": [],
+      "inputs": [
+        "local portfolio state"
+      ],
+      "steps": [
+        "Uses the local Application Support portfolio unless Advanced overrides are provided.",
+        "Check sources and warnings; empty portfolios need positions before risk metrics are meaningful.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true,
+        "days": 45,
+        "max_positions": 10
+      }
+    }
+  },
+  {
+    "code": "BMTX",
+    "name": "Backtest Matrix",
+    "category": "portfolio",
+    "description": "Run multiple strategies across a symbol universe in parallel.",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "Run multiple strategies across a symbol universe in parallel.",
+      "scope": "portfolio",
+      "asset_classes": [],
+      "inputs": [
+        "local portfolio state"
+      ],
+      "steps": [
+        "Uses the local Application Support portfolio unless Advanced overrides are provided.",
+        "Check sources and warnings; empty portfolios need positions before risk metrics are meaningful.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true,
+        "days": 45,
+        "max_positions": 10
+      }
+    }
+  },
+  {
+    "code": "BTFW",
+    "name": "Walk-Forward Backtest",
+    "category": "portfolio",
+    "description": "Run a registered strategy on historical OHLCV; equity curve + Sharpe + drawdown.",
+    "asset_classes": [
+      "EQUITY",
+      "CRYPTO",
+      "ETF",
+      "FX"
+    ],
+    "usage": {
+      "purpose": "Run a registered strategy on historical OHLCV; equity curve + Sharpe + drawdown.",
+      "scope": "symbol",
+      "asset_classes": [
+        "EQUITY",
+        "CRYPTO",
+        "ETF",
+        "FX"
+      ],
+      "inputs": [
+        "symbol"
+      ],
+      "steps": [
+        "Select a compatible market symbol from the function header.",
+        "Check sources and warnings; empty portfolios need positions before risk metrics are meaningful.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "symbol": "BTCUSDT",
+        "asset_class": "CRYPTO",
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "BTUNE",
+    "name": "Backtest Auto-Tuner",
+    "category": "portfolio",
+    "description": "Hyperparameter sweep over a strategy grid; rank by Sharpe / total return / Calmar.",
+    "asset_classes": [
+      "EQUITY",
+      "CRYPTO",
+      "ETF"
+    ],
+    "usage": {
+      "purpose": "Hyperparameter sweep over a strategy grid; rank by Sharpe / total return / Calmar.",
+      "scope": "symbol",
+      "asset_classes": [
+        "EQUITY",
+        "CRYPTO",
+        "ETF"
+      ],
+      "inputs": [
+        "symbol"
+      ],
+      "steps": [
+        "Select a compatible market symbol from the function header.",
+        "Check sources and warnings; empty portfolios need positions before risk metrics are meaningful.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "symbol": "BTCUSDT",
+        "asset_class": "CRYPTO",
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "CORR",
+    "name": "Correlation Matrix",
+    "category": "portfolio",
+    "description": "Pearson + Spearman + downside correlation for a symbol set.",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "Pearson + Spearman + downside correlation for a symbol set.",
+      "scope": "portfolio",
+      "asset_classes": [],
+      "inputs": [
+        "local portfolio state"
+      ],
+      "steps": [
+        "Uses the local Application Support portfolio unless Advanced overrides are provided.",
+        "Check sources and warnings; empty portfolios need positions before risk metrics are meaningful.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true,
+        "days": 45,
+        "max_positions": 10
+      }
+    }
+  },
+  {
+    "code": "GREEKS",
+    "name": "Portfolio Greeks",
+    "category": "portfolio",
+    "description": "Sum delta/gamma/vega/theta/rho across an option book.",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "Sum delta/gamma/vega/theta/rho across an option book.",
+      "scope": "portfolio",
+      "asset_classes": [],
+      "inputs": [
+        "local portfolio state"
+      ],
+      "steps": [
+        "Uses the local Application Support portfolio unless Advanced overrides are provided.",
+        "Check sources and warnings; empty portfolios need positions before risk metrics are meaningful.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true,
+        "days": 45,
+        "max_positions": 10
+      }
+    }
+  },
+  {
+    "code": "LOTS",
+    "name": "Tax Lots",
+    "category": "portfolio",
+    "description": "Open / list / sell tax lots with FIFO/LIFO/HIFO/specific-id selection.",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "Open / list / sell tax lots with FIFO/LIFO/HIFO/specific-id selection.",
+      "scope": "portfolio",
+      "asset_classes": [],
+      "inputs": [
+        "local portfolio state"
+      ],
+      "steps": [
+        "Uses the local Application Support portfolio unless Advanced overrides are provided.",
+        "Check sources and warnings; empty portfolios need positions before risk metrics are meaningful.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true,
+        "days": 45,
+        "max_positions": 10
+      }
+    }
+  },
+  {
+    "code": "MARS",
+    "name": "Multi-Asset Risk",
+    "category": "portfolio",
+    "description": "",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "Multi-Asset Risk function.",
+      "scope": "portfolio",
+      "asset_classes": [],
+      "inputs": [
+        "local portfolio state"
+      ],
+      "steps": [
+        "Uses the local Application Support portfolio unless Advanced overrides are provided.",
+        "Check sources and warnings; empty portfolios need positions before risk metrics are meaningful.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true,
+        "days": 45,
+        "max_positions": 10
+      }
+    }
+  },
+  {
+    "code": "MGN",
+    "name": "Cross-Account Margin",
+    "category": "portfolio",
+    "description": "Margin requirements + buying power per account.",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "Margin requirements + buying power per account.",
+      "scope": "portfolio",
+      "asset_classes": [],
+      "inputs": [
+        "local portfolio state"
+      ],
+      "steps": [
+        "Uses the local Application Support portfolio unless Advanced overrides are provided.",
+        "Check sources and warnings; empty portfolios need positions before risk metrics are meaningful.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true,
+        "days": 45,
+        "max_positions": 10
+      }
+    }
+  },
+  {
+    "code": "MLSIG",
+    "name": "ML Signal Classifier",
+    "category": "portfolio",
+    "description": "Train a classifier on technical features → predict next N-day direction.",
+    "asset_classes": [
+      "EQUITY",
+      "CRYPTO",
+      "ETF",
+      "FX",
+      "COMMODITY",
+      "INDEX"
+    ],
+    "usage": {
+      "purpose": "Train a classifier on technical features → predict next N-day direction.",
+      "scope": "portfolio",
+      "asset_classes": [
+        "EQUITY",
+        "CRYPTO",
+        "ETF",
+        "FX",
+        "COMMODITY",
+        "INDEX"
+      ],
+      "inputs": [
+        "local portfolio state"
+      ],
+      "steps": [
+        "Uses the local Application Support portfolio unless Advanced overrides are provided.",
+        "Check sources and warnings; empty portfolios need positions before risk metrics are meaningful.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true,
+        "days": 45,
+        "max_positions": 10
+      }
+    }
+  },
+  {
+    "code": "PCAS",
+    "name": "PCA Factor Stress",
+    "category": "portfolio",
+    "description": "Apply k-σ shock along principal components (correlated stress).",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "Apply k-σ shock along principal components (correlated stress).",
+      "scope": "portfolio",
+      "asset_classes": [],
+      "inputs": [
+        "local portfolio state"
+      ],
+      "steps": [
+        "Uses the local Application Support portfolio unless Advanced overrides are provided.",
+        "Check sources and warnings; empty portfolios need positions before risk metrics are meaningful.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true,
+        "days": 45,
+        "max_positions": 10
+      }
+    }
+  },
+  {
+    "code": "PFA",
+    "name": "Performance Attribution (Brinson)",
+    "category": "portfolio",
+    "description": "Brinson-Hood-Beebower attribution by sector — allocation + selection + interaction.",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "Brinson-Hood-Beebower attribution by sector — allocation + selection + interaction.",
+      "scope": "portfolio",
+      "asset_classes": [],
+      "inputs": [
+        "local portfolio state"
+      ],
+      "steps": [
+        "Uses the local Application Support portfolio unless Advanced overrides are provided.",
+        "Check sources and warnings; empty portfolios need positions before risk metrics are meaningful.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true,
+        "days": 45,
+        "max_positions": 10
+      }
+    }
+  },
+  {
+    "code": "PORT",
+    "name": "Portfolio Analytics",
+    "category": "portfolio",
+    "description": "",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "Portfolio Analytics function.",
+      "scope": "portfolio",
+      "asset_classes": [],
+      "inputs": [
+        "local portfolio state"
+      ],
+      "steps": [
+        "Uses the local Application Support portfolio unless Advanced overrides are provided.",
+        "Check sources and warnings; empty portfolios need positions before risk metrics are meaningful.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true,
+        "days": 45,
+        "max_positions": 10
+      }
+    }
+  },
+  {
+    "code": "PORT_OPT",
+    "name": "Portfolio Optimizer",
+    "category": "portfolio",
+    "description": "Markowitz min-vol / max-Sharpe / risk-parity / efficient frontier.",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "Markowitz min-vol / max-Sharpe / risk-parity / efficient frontier.",
+      "scope": "portfolio",
+      "asset_classes": [],
+      "inputs": [
+        "local portfolio state"
+      ],
+      "steps": [
+        "Uses the local Application Support portfolio unless Advanced overrides are provided.",
+        "Check sources and warnings; empty portfolios need positions before risk metrics are meaningful.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true,
+        "days": 45,
+        "max_positions": 10
+      }
+    }
+  },
+  {
+    "code": "PORT_WHATIF",
+    "name": "Portfolio What-If",
+    "category": "portfolio",
+    "description": "",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "Portfolio What-If function.",
+      "scope": "symbol",
+      "asset_classes": [],
+      "inputs": [
+        "symbol"
+      ],
+      "steps": [
+        "Select a compatible market symbol from the function header.",
+        "Check sources and warnings; empty portfolios need positions before risk metrics are meaningful.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "symbol": "AAPL",
+        "asset_class": "EQUITY",
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "PSC",
+    "name": "Position Sizing Calculator",
+    "category": "portfolio",
+    "description": "Risk-based position sizing with R-multiples and Kelly fraction.",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "Risk-based position sizing with R-multiples and Kelly fraction.",
+      "scope": "portfolio",
+      "asset_classes": [],
+      "inputs": [
+        "local portfolio state"
+      ],
+      "steps": [
+        "Uses the local Application Support portfolio unless Advanced overrides are provided.",
+        "Check sources and warnings; empty portfolios need positions before risk metrics are meaningful.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true,
+        "days": 45,
+        "max_positions": 10
+      }
+    }
+  },
+  {
+    "code": "PVAR",
+    "name": "Position-level VaR / MCR",
+    "category": "portfolio",
+    "description": "Per-symbol marginal contribution to portfolio risk + parametric VaR decomposition.",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "Per-symbol marginal contribution to portfolio risk + parametric VaR decomposition.",
+      "scope": "portfolio",
+      "asset_classes": [],
+      "inputs": [
+        "local portfolio state"
+      ],
+      "steps": [
+        "Uses the local Application Support portfolio unless Advanced overrides are provided.",
+        "Check sources and warnings; empty portfolios need positions before risk metrics are meaningful.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true,
+        "days": 45,
+        "max_positions": 10
+      }
+    }
+  },
+  {
+    "code": "REBA",
+    "name": "Portfolio Rebalancer",
+    "category": "portfolio",
+    "description": "Compute orders to bring current portfolio to target weights.",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "Compute orders to bring current portfolio to target weights.",
+      "scope": "portfolio",
+      "asset_classes": [],
+      "inputs": [
+        "local portfolio state"
+      ],
+      "steps": [
+        "Uses the local Application Support portfolio unless Advanced overrides are provided.",
+        "Check sources and warnings; empty portfolios need positions before risk metrics are meaningful.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true,
+        "days": 45,
+        "max_positions": 10
+      }
+    }
+  },
+  {
+    "code": "RPAR",
+    "name": "Risk Parity (ERC)",
+    "category": "portfolio",
+    "description": "Compute equal-risk-contribution weights for given universe.",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "Compute equal-risk-contribution weights for given universe.",
+      "scope": "portfolio",
+      "asset_classes": [],
+      "inputs": [
+        "local portfolio state"
+      ],
+      "steps": [
+        "Uses the local Application Support portfolio unless Advanced overrides are provided.",
+        "Check sources and warnings; empty portfolios need positions before risk metrics are meaningful.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true,
+        "days": 45,
+        "max_positions": 10
+      }
+    }
+  },
+  {
+    "code": "STRS",
+    "name": "Portfolio Stress Test",
+    "category": "portfolio",
+    "description": "Apply historical and custom shock scenarios to portfolio.",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "Apply historical and custom shock scenarios to portfolio.",
+      "scope": "portfolio",
+      "asset_classes": [],
+      "inputs": [
+        "local portfolio state"
+      ],
+      "steps": [
+        "Uses the local Application Support portfolio unless Advanced overrides are provided.",
+        "Check sources and warnings; empty portfolios need positions before risk metrics are meaningful.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true,
+        "days": 45,
+        "max_positions": 10
+      }
+    }
+  },
+  {
+    "code": "TLH",
+    "name": "Tax-Loss Harvesting",
+    "category": "portfolio",
+    "description": "Suggest loss lots to sell, estimate tax savings, propose wash-sale-safe swaps.",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "Suggest loss lots to sell, estimate tax savings, propose wash-sale-safe swaps.",
+      "scope": "portfolio",
+      "asset_classes": [],
+      "inputs": [
+        "local portfolio state"
+      ],
+      "steps": [
+        "Uses the local Application Support portfolio unless Advanced overrides are provided.",
+        "Check sources and warnings; empty portfolios need positions before risk metrics are meaningful.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true,
+        "days": 45,
+        "max_positions": 10
+      }
+    }
+  },
+  {
+    "code": "TRA",
+    "name": "Total Return Analysis",
+    "category": "portfolio",
+    "description": "",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "Total Return Analysis function.",
+      "scope": "symbol",
+      "asset_classes": [],
+      "inputs": [
+        "symbol"
+      ],
+      "steps": [
+        "Select a compatible market symbol from the function header.",
+        "Check sources and warnings; empty portfolios need positions before risk metrics are meaningful.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "symbol": "AAPL",
+        "asset_class": "EQUITY",
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "WATCH",
+    "name": "Watchlist",
+    "category": "portfolio",
+    "asset_classes": []
+  },
+  {
+    "code": "CSRC",
+    "name": "Commodity Screener",
+    "category": "screen",
+    "description": "",
+    "asset_classes": [
+      "COMMODITY"
+    ],
+    "usage": {
+      "purpose": "Commodity Screener function.",
+      "scope": "global",
+      "asset_classes": [
+        "COMMODITY"
+      ],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "EQS",
+    "name": "Equity Screener",
+    "category": "screen",
+    "description": "DSL-based equity screener. Örnek: marketCap > 1000000000 AND pe < 15 AND sector = \"Technology\"",
+    "asset_classes": [
+      "EQUITY",
+      "ETF"
+    ],
+    "usage": {
+      "purpose": "DSL-based equity screener. Örnek: marketCap > 1000000000 AND pe < 15 AND sector = \"Technology\"",
+      "scope": "global",
+      "asset_classes": [
+        "EQUITY",
+        "ETF"
+      ],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "FRH",
+    "name": "Funding Rate Heatmap",
+    "category": "screen",
+    "description": "Perpetual funding rates across Binance / Bybit / OKX (top 25 pairs).",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "Perpetual funding rates across Binance / Bybit / OKX (top 25 pairs).",
+      "scope": "global",
+      "asset_classes": [],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "FSRC",
+    "name": "Fund Screener",
+    "category": "screen",
+    "description": "",
+    "asset_classes": [
+      "FUND",
+      "ETF"
+    ],
+    "usage": {
+      "purpose": "Fund Screener function.",
+      "scope": "global",
+      "asset_classes": [
+        "FUND",
+        "ETF"
+      ],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "ICX",
+    "name": "Index Constituents",
+    "category": "screen",
+    "description": "Major equity index constituents (Wikipedia-backed cache).",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "Major equity index constituents (Wikipedia-backed cache).",
+      "scope": "global",
+      "asset_classes": [],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "MAP",
+    "name": "World Market Heatmap",
+    "category": "screen",
+    "description": "MSCI single-country ETF day-change heatmap (25+ countries).",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "MSCI single-country ETF day-change heatmap (25+ countries).",
+      "scope": "global",
+      "asset_classes": [],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "MICRO",
+    "name": "Market Microstructure",
+    "category": "screen",
+    "description": "Order-book depth, imbalance, spread and Kyle's lambda proxy.",
+    "asset_classes": [
+      "CRYPTO",
+      "EQUITY"
+    ],
+    "usage": {
+      "purpose": "Order-book depth, imbalance, spread and Kyle's lambda proxy.",
+      "scope": "symbol",
+      "asset_classes": [
+        "CRYPTO",
+        "EQUITY"
+      ],
+      "inputs": [
+        "symbol"
+      ],
+      "steps": [
+        "Select a compatible market symbol from the function header.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "symbol": "BTCUSDT",
+        "asset_class": "CRYPTO",
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "MOSS",
+    "name": "Most Volatile",
+    "category": "screen",
+    "description": "Realised volatility leaderboard across watchlist or universe.",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "Realised volatility leaderboard across watchlist or universe.",
+      "scope": "global",
+      "asset_classes": [],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "MOST",
+    "name": "Most Active",
+    "category": "screen",
+    "description": "",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "Most Active function.",
+      "scope": "global",
+      "asset_classes": [],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "SECF",
+    "name": "Security Finder",
+    "category": "screen",
+    "description": "",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "Security Finder function.",
+      "scope": "global",
+      "asset_classes": [],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "SECT",
+    "name": "Sector Heatmap",
+    "category": "screen",
+    "description": "S&P 500 sector ETF day/MTD/QTD/YTD performance heatmap.",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "S&P 500 sector ETF day/MTD/QTD/YTD performance heatmap.",
+      "scope": "global",
+      "asset_classes": [],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "SRCH",
+    "name": "Bond Screener",
+    "category": "screen",
+    "description": "",
+    "asset_classes": [
+      "BOND"
+    ],
+    "usage": {
+      "purpose": "Bond Screener function.",
+      "scope": "global",
+      "asset_classes": [
+        "BOND"
+      ],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "WEI",
+    "name": "World Equity Indices",
+    "category": "screen",
+    "description": "",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "World Equity Indices function.",
+      "scope": "global",
+      "asset_classes": [],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "AIM",
+    "name": "Order Management",
+    "category": "trade",
+    "description": "",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "Order Management function.",
+      "scope": "global",
+      "asset_classes": [],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "BBGT",
+    "name": "Multi-Asset Trade Ticket",
+    "category": "trade",
+    "description": "",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "Multi-Asset Trade Ticket function.",
+      "scope": "symbol",
+      "asset_classes": [],
+      "inputs": [
+        "symbol"
+      ],
+      "steps": [
+        "Select a compatible market symbol from the function header.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "symbol": "AAPL",
+        "asset_class": "EQUITY",
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "EMSX",
+    "name": "Execution Management",
+    "category": "trade",
+    "description": "",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "Execution Management function.",
+      "scope": "symbol",
+      "asset_classes": [],
+      "inputs": [
+        "symbol"
+      ],
+      "steps": [
+        "Select a compatible market symbol from the function header.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "symbol": "AAPL",
+        "asset_class": "EQUITY",
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "EXEC",
+    "name": "Execution Monitor",
+    "category": "trade",
+    "description": "Live VWAP/TWAP slice-by-slice fill quality + pace tracking.",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "Live VWAP/TWAP slice-by-slice fill quality + pace tracking.",
+      "scope": "global",
+      "asset_classes": [],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "FXGO",
+    "name": "FX Trading",
+    "category": "trade",
+    "description": "",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "FX Trading function.",
+      "scope": "symbol",
+      "asset_classes": [],
+      "inputs": [
+        "symbol"
+      ],
+      "steps": [
+        "Select a compatible market symbol from the function header.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "symbol": "AAPL",
+        "asset_class": "EQUITY",
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "TCA",
+    "name": "Trade Cost Analysis",
+    "category": "trade",
+    "description": "Implementation shortfall, slippage, opportunity cost across fills.",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "Implementation shortfall, slippage, opportunity cost across fills.",
+      "scope": "global",
+      "asset_classes": [],
+      "inputs": [
+        "query/params when needed"
+      ],
+      "steps": [
+        "Run with the default live profile, then open Advanced only for explicit overrides.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "live": true
+      }
+    }
+  },
+  {
+    "code": "TSOX",
+    "name": "Treasury Order Entry",
+    "category": "trade",
+    "description": "",
+    "asset_classes": [],
+    "usage": {
+      "purpose": "Treasury Order Entry function.",
+      "scope": "symbol",
+      "asset_classes": [],
+      "inputs": [
+        "symbol"
+      ],
+      "steps": [
+        "Select a compatible market symbol from the function header.",
+        "If a provider is unavailable, the status panel shows the exact next action instead of hiding the error."
+      ],
+      "example": {
+        "symbol": "AAPL",
+        "asset_class": "EQUITY",
+        "live": true
+      }
+    }
+  }
+]

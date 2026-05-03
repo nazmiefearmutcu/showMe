@@ -1,0 +1,26 @@
+{
+  "name": "showme",
+  "version": "0.0.1",
+  "private": true,
+  "description": "showMe — native macOS market cockpit with a Python function engine and thin app shell.",
+  "type": "module",
+  "workspaces": ["src-ui"],
+  "scripts": {
+    "dev": "npm --workspace src-ui run dev",
+    "build:ui": "npm --workspace src-ui run build",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build",
+    "sidecar:dev": "cd src-py && uv run python -m showme.server",
+    "sidecar:build": "bash packaging/build_sidecar.sh",
+    "audit:functions": "python3 scripts/showme_function_audit.py",
+    "audit:legacy-functions": "python3 scripts/audit_functions.py",
+    "audit:sentinels": "python3 scripts/showme_sentinel_audit.py",
+    "test:e2e": "npx playwright test tests/e2e/showme-functions.spec.ts",
+    "lint": "npm --workspace src-ui run lint",
+    "format": "npm --workspace src-ui run format"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.1.0"
+  }
+}
