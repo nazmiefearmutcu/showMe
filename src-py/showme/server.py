@@ -1619,6 +1619,36 @@ def build_app(engine_root: Path | None) -> FastAPI:
             "entries": [e.to_dict() for e in led.entries[-50:]],
         }
 
+    @app.get("/api/instant/status")
+    async def instant_line_status() -> dict[str, Any]:
+        from showme.instant_line import instant_status
+
+        return await instant_status()
+
+    @app.get("/api/instant/events")
+    async def instant_line_events(limit: int = 100) -> dict[str, Any]:
+        from showme.instant_line import instant_events
+
+        return await instant_events(limit=limit)
+
+    @app.get("/api/instant/health")
+    async def instant_line_health() -> dict[str, Any]:
+        from showme.instant_line import instant_health
+
+        return await instant_health()
+
+    @app.get("/api/instant/performance")
+    async def instant_line_performance() -> dict[str, Any]:
+        from showme.instant_line import instant_performance
+
+        return await instant_performance()
+
+    @app.post("/api/instant/backfill")
+    async def instant_line_backfill(limit: int = 15) -> dict[str, Any]:
+        from showme.instant_line import instant_backfill
+
+        return await instant_backfill(limit=limit)
+
     @app.get("/api/function-index", response_model=list[FunctionIndexEntry])
     async def function_index() -> list[FunctionIndexEntry]:
         entries = list(await asyncio.to_thread(_load_function_index))

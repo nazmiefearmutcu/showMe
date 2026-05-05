@@ -26,6 +26,7 @@ import { WCRSPane } from "./WCRS";
 import { GLCOPane } from "./GLCO";
 import { AGENTPane } from "./AGENT";
 import { BTMMPane } from "./BTMM";
+import { INSTANTPane } from "./INSTANT";
 
 const PANES: Record<string, ComponentType<FunctionPaneProps>> = {
   AGENT: AGENTPane,
@@ -50,6 +51,7 @@ const PANES: Record<string, ComponentType<FunctionPaneProps>> = {
   WCRS: WCRSPane,
   GLCO: GLCOPane,
   BTMM: BTMMPane,
+  INSTANT: INSTANTPane,
 };
 
 const NATIVE_FUNCTION_ENTRIES: FunctionEntry[] = [
@@ -76,6 +78,12 @@ const NATIVE_FUNCTION_ENTRIES: FunctionEntry[] = [
     name: "Live Watchlist",
     category: "portfolio",
     description: "User-managed watchlist with live last price, change, source, and removal controls.",
+  },
+  {
+    code: "INSTANT",
+    name: "Instant Squawk Line",
+    category: "news",
+    description: "Secondary LiveSquawk-style official-source news, calendar, latency, and audio line.",
   },
 ];
 
