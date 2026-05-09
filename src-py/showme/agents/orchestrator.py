@@ -164,7 +164,9 @@ async def _fanout(plan: Plan, deps: Any) -> dict[str, Any]:
         agents=["search"],
     )
     scan_args = dict(plan.args)
-    scan_args.setdefault("phases", "A,B,C,D")
+    scan_args.setdefault("asset_class", "CRYPTO")
+    scan_args["quick"] = True
+    scan_args.setdefault("phases", "A")
     scan_args.setdefault("top_n", 8)
     scan_args.setdefault("fine_top_k", 4)
     scan_plan = Plan(
@@ -184,10 +186,13 @@ async def _fanout(plan: Plan, deps: Any) -> dict[str, Any]:
 
     async def _run_branch(name: str, p: Plan) -> None:
         try:
-            res = await run_search(p, deps)
+            res = await asyncio.wait_for(run_search(p, deps), timeout=8.0)
             branches[name] = res
             for w in (res.get("warnings") or []):
                 branch_warnings.append(f"{name}: {w}")
+        except asyncio.TimeoutError:
+            branch_warnings.append(f"{name}: timed out after 8.0s")
+            branches[name] = {"kind": "error", "warnings": ["timed out after 8.0s"]}
         except Exception as exc:  # noqa: BLE001
             branch_warnings.append(f"{name}: {exc}")
             branches[name] = {"kind": "error", "warnings": [str(exc)]}
@@ -197,9 +202,70 @@ async def _fanout(plan: Plan, deps: Any) -> dict[str, Any]:
         _run_branch("scan", scan_plan),
         _run_branch("news", news_plan),
     )
+    evidence: list[dict[str, Any]] = []
+    for branch_name, branch in branches.items():
+        for item in _branch_evidence(branch_name, branch):
+            evidence.append(item)
     return {
         "kind": "fanout",
         "branch_names": list(branches.keys()),
         "branches": branches,
+        "evidence": evidence,
         "warnings": branch_warnings,
     }
+
+
+def _branch_evidence(branch_name: str, branch: dict[str, Any]) -> list[dict[str, Any]]:
+    if not isinstance(branch, dict):
+        return []
+    out: list[dict[str, Any]] = []
+    for item in branch.get("evidence") or []:
+        if isinstance(item, dict):
+            out.append({"branch": branch_name, **item})
+    if out:
+        return out
+    data = branch.get("data")
+    rows = []
+    code = branch.get("code") or branch_name.upper()
+    sources: list[str] = []
+    status = branch.get("kind") or "ok"
+    elapsed_ms = None
+    if isinstance(data, dict):
+        payload = data.get("data") if isinstance(data.get("data"), (dict, list)) else data
+        sources = list(data.get("sources") or [])
+        elapsed_ms = data.get("elapsed_ms")
+        rows = _extract_rows_for_evidence(payload)
+        if isinstance(payload, dict):
+            status = str(payload.get("status") or data.get("status") or status)
+    return [{
+        "branch": branch_name,
+        "code": str(code).upper(),
+        "sources": sources,
+        "status": status,
+        "rows": len(rows),
+        "top": [_evidence_row_label(row) for row in rows[:5]],
+        "elapsed_ms": elapsed_ms,
+    }]
+
+
+def _extract_rows_for_evidence(data: Any) -> list[dict[str, Any]]:
+    if isinstance(data, list):
+        return [row for row in data if isinstance(row, dict)]
+    if isinstance(data, dict):
+        for key in ("rows", "items", "news", "articles", "data"):
+            value = data.get(key)
+            if isinstance(value, list):
+                return [row for row in value if isinstance(row, dict)]
+            if isinstance(value, dict):
+                rows = _extract_rows_for_evidence(value)
+                if rows:
+                    return rows
+    return []
+
+
+def _evidence_row_label(row: dict[str, Any]) -> str:
+    for key in ("symbol", "title", "headline", "name", "event", "code"):
+        value = row.get(key)
+        if value:
+            return str(value)
+    return ", ".join(f"{k}={v}" for k, v in list(row.items())[:2])

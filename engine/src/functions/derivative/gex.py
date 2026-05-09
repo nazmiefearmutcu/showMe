@@ -32,7 +32,63 @@ def _model_gex(symbol: str, spot: float, rate: float) -> dict[str, Any]:
     out = chain_gex(spot=spot, calls=calls, puts=puts, rate=rate)
     out["symbol"] = symbol
     out["expiries"] = expiries
-    return out
+    return _shape_gex_payload(out, symbol=symbol, source_mode="reference")
+
+
+_GEX_FIELDS = {
+    "strike": "Option strike bucket.",
+    "gex": "Dealer-perspective gamma exposure in dollars per 1% underlying move.",
+    "value": "Same as gex, provided for chart rendering.",
+    "gamma_flip": "First strike where cumulative gamma exposure changes sign.",
+    "call_wall": "Strike with the largest positive dealer gamma concentration.",
+    "put_wall": "Strike with the largest negative dealer gamma concentration.",
+}
+
+
+def _shape_gex_payload(raw: dict[str, Any], *, symbol: str, source_mode: str) -> dict[str, Any]:
+    rows: list[dict[str, Any]] = []
+    cumulative = 0.0
+    for row in raw.get("gex_per_strike") or []:
+        strike = row.get("strike")
+        gex = row.get("gex")
+        try:
+            strike_num = float(strike)
+            gex_num = float(gex)
+        except (TypeError, ValueError):
+            continue
+        cumulative += gex_num
+        rows.append({
+            "label": f"{strike_num:g}",
+            "strike": strike_num,
+            "gex": gex_num,
+            "value": gex_num,
+            "cumulative_gex": cumulative,
+        })
+    return {
+        "status": "ok",
+        "symbol": symbol,
+        "spot": raw.get("spot"),
+        "expiries": raw.get("expiries") or [],
+        "rows": rows,
+        "curve": rows,
+        "summary": {
+            "net_gex": raw.get("net_gex"),
+            "call_gex_total": raw.get("call_gex_total"),
+            "put_gex_total": raw.get("put_gex_total"),
+            "gamma_flip": raw.get("gamma_flip"),
+            "call_wall": (raw.get("call_wall") or {}).get("strike"),
+            "put_wall": (raw.get("put_wall") or {}).get("strike"),
+            "n_strikes": raw.get("n_strikes") or len(rows),
+            "source_mode": source_mode,
+        },
+        "call_wall": raw.get("call_wall"),
+        "put_wall": raw.get("put_wall"),
+        "methodology": (
+            "Dealer GEX assumes dealers are short call open interest and long put open interest. "
+            "Black-Scholes gamma = N'(d1) / (S * sigma * sqrt(T)); exposure = gamma * OI * contract_size * S^2 * 1%."
+        ),
+        "field_dictionary": _GEX_FIELDS,
+    }
 
 
 @FunctionRegistry.register
@@ -70,7 +126,7 @@ class GEXFunction(BaseFunction):
                 code=self.code,
                 instrument=instrument,
                 data=_model_gex(sym, spot, rate),
-                sources=["yfinance_quote", "gamma_exposure_model"] if self.deps.yfinance else ["gamma_exposure_model"],
+                sources=["yfinance_quote", "black_scholes_gamma_formula"] if self.deps.yfinance else ["black_scholes_gamma_formula"],
             )
         if not self.deps.yfinance:
             return FunctionResult(code=self.code, instrument=instrument,
@@ -152,8 +208,14 @@ class GEXFunction(BaseFunction):
         out = chain_gex(spot=spot, calls=all_calls, puts=all_puts, rate=rate)
         out["symbol"] = sym
         out["expiries"] = expiries
+        shaped = _shape_gex_payload(
+            out,
+            symbol=sym,
+            source_mode="live_chain" if used_live_chain else "reference_chain",
+        )
         return FunctionResult(code=self.code, instrument=instrument,
-                              data=out, sources=["yfinance" if used_live_chain else "gamma_exposure_model"])
+                              data=shaped,
+                              sources=["yfinance_options" if used_live_chain else "black_scholes_gamma_formula"])
 
 
 def _truthy(value: Any) -> bool:

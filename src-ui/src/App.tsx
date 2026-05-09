@@ -1,10 +1,11 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { Titlebar } from "./shell/Titlebar";
 import { Sidebar } from "./shell/Sidebar";
 import { Statusbar } from "./shell/Statusbar";
 import { Workspace } from "./shell/Workspace";
 import { CommandPalette } from "./command-palette/Palette";
 import { ToastHost } from "./shell/ToastHost";
+import { IntroSplash } from "./shell/IntroSplash";
 import { Empty } from "./design-system";
 import { useAppStore } from "./lib/store";
 import {
@@ -116,6 +117,9 @@ function RouteSync() {
 export default function App() {
   const togglePalette = useAppStore((s) => s.togglePalette);
   const sidebarVisible = useAppStore((s) => s.sidebarVisible);
+  const [workspaceReady, setWorkspaceReady] = useState(false);
+  const [backendIndexReady, setBackendIndexReady] = useState(false);
+  const [introDone, setIntroDone] = useState(false);
   const splitFocused = useWorkspace((s) => s.splitFocused);
   const closeFocused = useWorkspace((s) => s.closeFocused);
 
@@ -134,6 +138,7 @@ export default function App() {
         useWorkspace.getState().setFocusedTarget(target.code, target.symbol);
       }
       dispose = startWorkspaceAutosave();
+      setWorkspaceReady(true);
     });
     return () => dispose?.();
   }, []);
@@ -164,17 +169,32 @@ export default function App() {
   useEffect(() => {
     let unmount = false;
     const unsubscribe: Array<() => void> = [];
+    const markBackendReadyIfLoaded = () => {
+      if (unmount) return;
+      const state = useAppStore.getState();
+      if (
+        state.sidecarStatus === "healthy" &&
+        state.engineRoot &&
+        state.functionIndex.length > BACKEND_INDEX_READY_THRESHOLD
+      ) {
+        setBackendIndexReady(true);
+      }
+    };
 
     const boot = async () => {
+      setBackendIndexReady(false);
       useAppStore.getState().setFunctionIndex(staticFunctionIndex());
       await bootstrapSidecarPort();
       if (unmount) return;
       await refreshHealth();
-      void refreshFunctionIndex();
+      await refreshFunctionIndex();
+      if (unmount) return;
+      markBackendReadyIfLoaded();
 
       const offPort = onSidecarPort(() => {
-        refreshHealth();
-        refreshFunctionIndex();
+        refreshHealth()
+          .then(() => refreshFunctionIndex())
+          .then(markBackendReadyIfLoaded);
       });
       unsubscribe.push(offPort);
 
@@ -185,8 +205,9 @@ export default function App() {
           return;
         }
         if (state.sidecarPort) {
-          refreshHealth();
-          refreshFunctionIndex();
+          refreshHealth()
+            .then(() => refreshFunctionIndex())
+            .then(markBackendReadyIfLoaded);
         }
       }, 2_000);
       unsubscribe.push(() => window.clearInterval(warmupRetry));
@@ -198,7 +219,11 @@ export default function App() {
         if (!status) return;
         if (status === "healthy" || status === "booting") {
           useAppStore.getState().setSidecarStatus(status);
-          if (status === "healthy") refreshHealth();
+          if (status === "healthy") {
+            refreshHealth()
+              .then(() => refreshFunctionIndex())
+              .then(markBackendReadyIfLoaded);
+          }
           return;
         }
         refreshHealth().then((ok) => {
@@ -234,16 +259,21 @@ export default function App() {
     };
   }, [togglePalette]);
 
+  const dashboardReady = workspaceReady && backendIndexReady;
+
   return (
-    <div className="app-shell">
-      <Titlebar />
-      <div className={`workspace ${sidebarVisible ? "" : "workspace--sidebar-hidden"}`}>
-        <Sidebar />
-        <RouteSync />
+    <>
+      <div className="app-shell" aria-hidden={!introDone}>
+        <Titlebar />
+        <div className={`workspace ${sidebarVisible ? "" : "workspace--sidebar-hidden"}`}>
+          <Sidebar />
+          <RouteSync />
+        </div>
+        <Statusbar />
+        <CommandPalette />
+        <ToastHost />
       </div>
-      <Statusbar />
-      <CommandPalette />
-      <ToastHost />
-    </div>
+      {!introDone ? <IntroSplash ready={dashboardReady} onDone={() => setIntroDone(true)} /> : null}
+    </>
   );
 }

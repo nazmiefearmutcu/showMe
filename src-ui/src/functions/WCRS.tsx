@@ -5,7 +5,7 @@
  * key emerging market currencies. The sidecar's `/api/fn/WCRS` returns
  * either a flat list of pairs or a 2-D matrix; we accept both.
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import {
   ChangeText,
   DataGrid,
@@ -39,6 +39,15 @@ interface CrossRate {
   ts?: string;
 }
 
+interface WCRSPayload {
+  rows?: CrossRate[];
+  surface?: CrossRate[];
+  matrix?: Record<string, Record<string, number>>;
+  source_mode?: string;
+  methodology?: string;
+  field_dictionary?: Record<string, string>;
+}
+
 const BASES = [
   { id: "USD", label: "USD" },
   { id: "EUR", label: "EUR" },
@@ -66,18 +75,27 @@ export function WCRSPane({ code }: FunctionPaneProps) {
 
   const { state, data, error, refetch } = useFunction<unknown>({
     code,
-    params: { base, tick },
+    params: { bases: base, quotes: "USD,EUR,GBP,JPY,TRY,CHF", tick, live: true },
   });
 
+  const payload = useMemo(
+    () => (data?.data && typeof data.data === "object" ? data.data : {}) as WCRSPayload,
+    [data?.data],
+  );
   const rows = useMemo(() => {
-    const list = normalizeRows(data?.data);
+    const list = normalizeRows(payload);
     // Filter the grid to crosses that involve the active base on either side.
     return list.filter((r) => {
       const b = r.base?.toUpperCase();
       const q = r.quote?.toUpperCase();
       return b === base || q === base;
     });
-  }, [data, base]);
+  }, [payload, base]);
+  const heatmapRows = useMemo(() => normalizeRows(payload.surface ?? payload), [payload]);
+  const fieldRows = useMemo(
+    () => Object.entries(payload.field_dictionary ?? {}),
+    [payload.field_dictionary],
+  );
 
   const cols = useMemo<DataGridColumn<CrossRate>[]>(
     () => [
@@ -173,22 +191,80 @@ export function WCRSPane({ code }: FunctionPaneProps) {
               icon="!"
             />
           ) : rows.length === 0 ? (
-            <Empty title="No crosses" body={`No WCRS rows for base ${base}.`} />
-          ) : (
-            <DataGrid
-              columns={cols}
-              rows={rows}
-              rowKey={(r, i) => fmtPair(r) + i}
-              density="compact"
+            <Empty
+              title="No crosses"
+              body={`No WCRS rows for base ${base}. Source mode: ${payload.source_mode ?? "unknown"}.`}
             />
+          ) : (
+            <div style={{ display: "grid", gap: 12 }}>
+              <CrossHeatmap rows={heatmapRows} activeBase={base} />
+              <DataGrid
+                columns={cols}
+                rows={rows}
+                rowKey={(r, i) => fmtPair(r) + i}
+                density="compact"
+              />
+              <section style={methodPanel}>
+                <div>
+                  <div style={metaLabel}>Methodology</div>
+                  <p style={methodText}>{payload.methodology ?? "No methodology returned."}</p>
+                </div>
+                {fieldRows.length ? (
+                  <div>
+                    <div style={metaLabel}>Field dictionary</div>
+                    <div style={fieldGrid}>
+                      {fieldRows.map(([key, value]) => (
+                        <div key={key} style={fieldRow}>
+                          <span style={{ color: "var(--text-primary)" }}>{key}</span>
+                          <span>{value}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+              </section>
+            </div>
           )}
         </PaneBody>
         <PaneFooter>
           <span>elapsed · {data?.elapsed_ms?.toFixed(0) ?? "—"} ms</span>
           <span>base · {base}</span>
+          <span>source · {payload.source_mode ?? data?.sources?.join(", ") ?? "—"}</span>
         </PaneFooter>
       </Pane>
     </div>
+  );
+}
+
+function CrossHeatmap({ rows, activeBase }: { rows: CrossRate[]; activeBase: string }) {
+  const filtered = rows.filter((row) => row.base?.toUpperCase() === activeBase);
+  if (!filtered.length) return null;
+  const max = Math.max(...filtered.map((row) => Math.abs(Number(row.rate) || 0)), 1);
+  return (
+    <section style={heatmapPanel}>
+      <div style={metaLabel}>Cross-rate heatmap</div>
+      <div style={heatmapGrid}>
+        {filtered.map((row) => {
+          const rate = Number(row.rate) || 0;
+          const intensity = Math.min(0.82, Math.max(0.18, Math.abs(rate) / max));
+          return (
+            <div
+              key={`${row.base}-${row.quote}`}
+              style={{
+                ...heatCell,
+                background:
+                  row.base === row.quote
+                    ? "var(--bg-elev-2)"
+                    : `rgba(49, 203, 124, ${intensity})`,
+              }}
+            >
+              <span>{row.quote}</span>
+              <strong>{fmtRate(rate)}</strong>
+            </div>
+          );
+        })}
+      </div>
+    </section>
   );
 }
 
@@ -199,7 +275,7 @@ function normalizeRows(payload: unknown): CrossRate[] {
     const o = payload as Record<string, unknown>;
     const items = o.pairs ?? o.rates ?? o.rows ?? o.items ?? null;
     if (Array.isArray(items)) return items as CrossRate[];
-    const matrix = o.matrix;
+    const matrix = o.matrix ?? (looksLikeMatrix(o) ? o : null);
     // Matrix shape: { matrix: { USD: { EUR: 0.93, JPY: 156.20 }, ... } }
     if (matrix && typeof matrix === "object") {
       const out: CrossRate[] = [];
@@ -214,6 +290,16 @@ function normalizeRows(payload: unknown): CrossRate[] {
     }
   }
   return [];
+}
+
+function looksLikeMatrix(value: Record<string, unknown>): boolean {
+  return Object.entries(value).some(
+    ([key, row]) =>
+      /^[A-Z]{3}$/.test(key) &&
+      row != null &&
+      typeof row === "object" &&
+      Object.values(row as Record<string, unknown>).some((item) => typeof item === "number"),
+  );
 }
 
 function fmtPair(r: CrossRate): string {
@@ -239,3 +325,65 @@ function fmtPips(r: CrossRate): string {
   const pip = Math.abs(spread * 10000);
   return pip.toFixed(1);
 }
+
+const metaLabel: CSSProperties = {
+  color: "var(--text-mute)",
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: 10,
+  textTransform: "uppercase",
+  letterSpacing: 0.4,
+  marginBottom: 6,
+};
+
+const heatmapPanel: CSSProperties = {
+  border: "1px solid var(--border-subtle)",
+  borderRadius: "var(--radius-md)",
+  padding: 12,
+  background: "var(--bg-elev-1)",
+};
+
+const heatmapGrid: CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "repeat(auto-fit, minmax(92px, 1fr))",
+  gap: 8,
+};
+
+const heatCell: CSSProperties = {
+  minHeight: 54,
+  border: "1px solid var(--border-subtle)",
+  borderRadius: "var(--radius-sm)",
+  padding: 8,
+  display: "grid",
+  alignContent: "space-between",
+  color: "var(--text-primary)",
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: 11,
+};
+
+const methodPanel: CSSProperties = {
+  display: "grid",
+  gap: 10,
+  border: "1px solid var(--border-subtle)",
+  borderRadius: "var(--radius-md)",
+  padding: 12,
+  background: "var(--bg-elev-1)",
+};
+
+const methodText: CSSProperties = {
+  margin: 0,
+  color: "var(--text-secondary)",
+  lineHeight: 1.45,
+};
+
+const fieldGrid: CSSProperties = {
+  display: "grid",
+  gap: 6,
+};
+
+const fieldRow: CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "minmax(120px, 0.35fr) 1fr",
+  gap: 10,
+  fontSize: 12,
+  color: "var(--text-secondary)",
+};

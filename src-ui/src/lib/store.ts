@@ -28,7 +28,7 @@ export const useAppStore = create<AppStateShape>((set) => ({
   engineRoot: null,
   functionIndex: [],
   paletteOpen: false,
-  sidebarVisible: false,
+  sidebarVisible: true,
   setSidecarStatus: (sidecarStatus) => set({ sidecarStatus }),
   setSidecarPort: (sidecarPort) => set({ sidecarPort }),
   setEngineRoot: (engineRoot) => set({ engineRoot }),

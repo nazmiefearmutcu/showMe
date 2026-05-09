@@ -51,6 +51,18 @@ export interface AskFanoutBranch {
   code?: string;
   data?: unknown;
   warnings?: string[];
+  evidence?: AskEvidence[];
+}
+
+export interface AskEvidence {
+  branch?: string;
+  code?: string;
+  sources?: string[];
+  status?: string;
+  rows?: number;
+  top?: string[];
+  elapsed_ms?: number | null;
+  reason?: string | null;
 }
 
 export interface AskResponse {
@@ -64,6 +76,7 @@ export interface AskResponse {
     /** Present when intent === "briefing" — keys are leg names. */
     branches?: Record<string, AskFanoutBranch>;
     branch_names?: string[];
+    evidence?: AskEvidence[];
   };
   narrative: string;
   highlights: AskHighlight[];

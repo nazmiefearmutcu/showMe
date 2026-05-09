@@ -17,6 +17,7 @@ dependencies = [
     "yfinance>=0.2.40",
     "lxml>=5.3",
     "feedparser>=6.0",
+    "python-dotenv>=1.0.1",
 ]
 
 [project.optional-dependencies]

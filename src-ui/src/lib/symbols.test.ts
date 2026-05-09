@@ -5,6 +5,7 @@ import {
   defaultSymbolForFunction,
   inferAssetClassName,
   listRecentSymbols,
+  normalizeSymbolInput,
   pushRecentSymbol,
   quickSymbolsForFunction,
   removeRecentSymbol,
@@ -27,6 +28,13 @@ describe("recent symbols", () => {
   it("normalizes the common APPL typo to AAPL", () => {
     pushRecentSymbol("APPL");
     expect(listRecentSymbols()).toEqual(["AAPL"]);
+  });
+
+  it("normalizes crypto coin names to Binance-style pairs", () => {
+    expect(normalizeSymbolInput("ethereum")).toBe("ETHUSDT");
+    expect(normalizeSymbolInput("Pepe")).toBe("PEPEUSDT");
+    expect(normalizeSymbolInput("flock")).toBe("FLOCKUSDT");
+    expect(inferAssetClassName("dogwifhat")).toBe("CRYPTO");
   });
 
   it("dedupes legacy stored variants while preserving recency order", () => {
@@ -65,6 +73,8 @@ describe("recent symbols", () => {
 
   it("infers broad asset classes from common market symbols", () => {
     expect(inferAssetClassName("BTCUSDT")).toBe("CRYPTO");
+    expect(inferAssetClassName("SUSDT")).toBe("CRYPTO");
+    expect(inferAssetClassName("4USDT")).toBe("CRYPTO");
     expect(inferAssetClassName("EURUSD")).toBe("FX");
     expect(inferAssetClassName("GC=F")).toBe("COMMODITY");
     expect(inferAssetClassName("^GSPC")).toBe("INDEX");
@@ -89,6 +99,24 @@ describe("recent symbols", () => {
     pushRecentSymbol("BTCUSDT");
     expect(defaultSymbolForFunction("equity", [])).toBe("AAPL");
     expect(quickSymbolsForFunction("equity", [])).not.toContain("BTCUSDT");
+  });
+
+  it("keeps market microstructure on crypto defaults even after equity recents", () => {
+    pushRecentSymbol("AAPL");
+    expect(defaultSymbolForFunction("MICRO", ["CRYPTO", "EQUITY"])).toBe("BTCUSDT");
+    expect(quickSymbolsForFunction("MICRO", ["CRYPTO", "EQUITY"])).toEqual(
+      expect.arrayContaining(["BTCUSDT", "ETHUSDT", "SOLUSDT"]),
+    );
+    expect(quickSymbolsForFunction("MICRO", ["CRYPTO", "EQUITY"])).not.toContain("AAPL");
+  });
+
+  it("keeps yield analytics on bond symbols even without asset metadata", () => {
+    pushRecentSymbol("AAPL");
+    expect(defaultSymbolForFunction("YAS", [])).toBe("US10Y");
+    expect(quickSymbolsForFunction("YAS", [])).toEqual(
+      expect.arrayContaining(["US10Y", "US2Y", "US30Y"]),
+    );
+    expect(quickSymbolsForFunction("YAS", [])).not.toContain("AAPL");
   });
 
   it("sends a supported asset class with symbol-first function calls", () => {

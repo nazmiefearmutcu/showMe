@@ -12,6 +12,7 @@ import pandas as pd
 from src.core.base_data_source import DataKind, DataRequest
 from src.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from src.core.instrument import AssetClass, Instrument
+from src.functions.portfolio.return_series import align_return_series, close_to_daily_returns
 from src.services.black_litterman import (
     implied_optimal_weights,
     implied_returns,
@@ -66,7 +67,7 @@ class BLAKFunction(BaseFunction):
                     )),
                     timeout=8,
                 )
-                rets = df["close"].pct_change().dropna()
+                rets = close_to_daily_returns(df)
                 # Market cap proxy: last close × volume_avg, or override.
                 mcap = float(market_caps.get(sym) or 0)
                 if not mcap:
@@ -79,8 +80,7 @@ class BLAKFunction(BaseFunction):
                 return sym, pd.Series(dtype=float), 0.0
         if live and self.deps.yfinance:
             results = await asyncio.gather(*(_ret(s) for s in symbols))
-            rets_dict = {s: r for s, r, _ in results}
-            df = pd.DataFrame(rets_dict).dropna(how="any")
+            df = align_return_series((s, r) for s, r, _ in results)
         else:
             results = [(s, pd.Series(dtype=float), 1.0) for s in symbols]
             df = pd.DataFrame()
@@ -115,10 +115,23 @@ class BLAKFunction(BaseFunction):
         Qv = np.asarray(Q) if Q else None
         pi_bl, sigma_bl = posterior(cov, w_mkt, P, Qv, delta=delta, tau=tau)
         w_opt = implied_optimal_weights(pi_bl, sigma_bl, delta=delta)
+        rows = [
+            {
+                "symbol": sym,
+                "market_weight": float(w_mkt[idx]),
+                "prior_return": float(pi[idx]),
+                "posterior_return": float(pi_bl[idx]),
+                "optimal_weight": float(w_opt[idx]),
+                "view_active": any(row[idx] != 0 for row in P_rows),
+            }
+            for idx, sym in enumerate(cols)
+        ]
         return FunctionResult(
             code=self.code, instrument=None,
             data={
+                "status": "ok",
                 "symbols": cols,
+                "rows": rows,
                 "market_weights": dict(zip(cols, w_mkt.tolist())),
                 "implied_returns_prior": dict(zip(cols, pi.tolist())),
                 "posterior_returns": dict(zip(cols, pi_bl.tolist())),
@@ -126,6 +139,24 @@ class BLAKFunction(BaseFunction):
                 "delta": delta, "tau": tau,
                 "n_views": len(P_rows),
                 "samples": int(df.shape[0]),
+                "summary": {
+                    "symbols": len(cols),
+                    "n_views": len(P_rows),
+                    "samples": int(df.shape[0]),
+                    "tau": tau,
+                    "delta": delta,
+                },
+                "methodology": (
+                    "Black-Litterman starts with market-cap implied equilibrium returns pi = delta * covariance * market_weights, "
+                    "then blends optional investor views through posterior returns using tau-scaled covariance."
+                ),
+                "field_dictionary": {
+                    "market_weight": "Market-cap or proxy weight used as the prior portfolio.",
+                    "prior_return": "Implied equilibrium return before applying views.",
+                    "posterior_return": "Black-Litterman expected return after blending views.",
+                    "optimal_weight": "Mean-variance implied weight from posterior return and covariance.",
+                    "view_active": "Whether the symbol participates in at least one submitted view row.",
+                },
             },
             sources=sources,
         )

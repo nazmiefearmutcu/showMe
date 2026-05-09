@@ -32,6 +32,7 @@ class NSEFunction(BaseFunction):
         results: list = []
         warnings: list[str] = []
         live = _truthy(params.get("live_news") or params.get("live"))
+        limit = _int_param(params, "limit", 100)
         if not live:
             results = [{
                 "title": f"{query} news search snapshot",
@@ -56,14 +57,14 @@ class NSEFunction(BaseFunction):
             results = await asyncio.wait_for(
                 idx.search(
                     query, start=params.get("start"), end=params.get("end"),
-                    limit=params.get("limit", 100),
+                    limit=limit,
                 ),
                 timeout=float(params.get("index_timeout", 5)),
             )
             if results:
                 sources.append("meilisearch" if idx.meili else "sqlite_fts")
         except Exception as e:
-            warnings.append(f"news_index: {e}")
+            warnings.append(f"news_index: {str(e) or type(e).__name__}")
         if not results and self.deps.rss:
             try:
                 timeout = float(params.get("timeout", params.get("news_timeout", 8)))
@@ -81,14 +82,14 @@ class NSEFunction(BaseFunction):
                             "per_feed_timeout_seconds": min(timeout, 3.5),
                             "symbol_feed_timeout_seconds": min(timeout, 4.0),
                         },
-                        limit=params.get("limit", 100),
+                        limit=limit,
                     )),
                     timeout=timeout,
                 )
                 if results:
                     sources.append("rss")
             except Exception as e:
-                warnings.append(f"rss: {e}")
+                warnings.append(f"rss: {str(e) or type(e).__name__}")
         # GDELT is a slow/rate-limited deep fallback, not the default path.
         if not results and self.deps.gdelt and _truthy(params.get("include_gdelt") or params.get("deep")):
             try:
@@ -96,7 +97,7 @@ class NSEFunction(BaseFunction):
                     self.deps.gdelt.fetch(DataRequest(
                         kind=DataKind.NEWS, extra={"query": query},
                         start=params.get("start"), end=params.get("end"),
-                        limit=params.get("limit", 100),
+                        limit=limit,
                     )),
                     timeout=float(params.get("timeout", 8)),
                 )
@@ -108,7 +109,7 @@ class NSEFunction(BaseFunction):
                 except Exception:
                     pass
             except Exception as e:
-                warnings.append(f"gdelt: {e}")
+                warnings.append(f"gdelt: {str(e) or type(e).__name__}")
         threshold = float(params.get("threshold", 70) or 70)
         ranked = enrich_articles(
             results,
@@ -116,8 +117,29 @@ class NSEFunction(BaseFunction):
             query=str(query),
             asset_class=asset_class,
             threshold=threshold,
-            limit=int(params.get("limit", 100) or 100),
+            limit=limit,
         )
+        if live and not ranked:
+            return FunctionResult(
+                code=self.code,
+                instrument=instrument,
+                data={
+                    "status": "provider_unavailable",
+                    "reason": f"No live news rows returned for query '{query}'.",
+                    "rows": [],
+                    "next_actions": [
+                        "Try a more specific company, ticker, or topic query.",
+                        "Click Deep to include the slower GDELT fallback when available.",
+                    ],
+                },
+                sources=sources,
+                metadata={
+                    "query": query,
+                    "provider_errors": warnings or ["news providers returned no usable rows"],
+                    "critical_count": 0,
+                    "top_importance_score": 0.0,
+                },
+            )
         alerts = critical_articles(ranked, threshold=threshold)
         return FunctionResult(
             code=self.code,
@@ -139,6 +161,13 @@ def _truthy(value: Any) -> bool:
     if value is None:
         return False
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _int_param(params: dict[str, Any], name: str, default: int) -> int:
+    try:
+        return max(1, int(params.get(name, default) or default))
+    except Exception:
+        return default
 
 
 def _query_terms(query: str) -> list[str]:

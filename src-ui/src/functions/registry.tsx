@@ -6,6 +6,7 @@
 import type { ComponentType } from "react";
 import type { FunctionEntry } from "@/lib/sidecar";
 import type { FunctionPaneProps } from "./registry-types";
+import { ANRPane } from "./ANR";
 import { DESPane } from "./DES";
 import { FAPane } from "./FA";
 import { GPPane } from "./GP";
@@ -21,19 +22,21 @@ import { NIPane } from "./NI";
 import { MOSTPane } from "./MOST";
 import { WEIPane } from "./WEI";
 import { HPPane } from "./HP";
-import { TRANPane } from "./TRAN";
 import { WCRSPane } from "./WCRS";
 import { GLCOPane } from "./GLCO";
 import { AGENTPane } from "./AGENT";
 import { BTMMPane } from "./BTMM";
+import { BIOPane } from "./BIO";
+import { MarketHeatmapPane } from "./MarketHeatmap";
 import { INSTANTPane } from "./INSTANT";
+import { CORRPane } from "./CORR";
 
 const PANES: Record<string, ComponentType<FunctionPaneProps>> = {
   AGENT: AGENTPane,
+  ANR: ANRPane,
   DES: DESPane,
   FA: FAPane,
   GP: GPPane,
-  TECH: GPPane,           // TECH alias to the same chart pane (Round 14).
   EQS: EQSPane,
   PORT: PORTPane,
   SCAN: SCANPane,
@@ -47,11 +50,14 @@ const PANES: Record<string, ComponentType<FunctionPaneProps>> = {
   MOST: MOSTPane,
   WEI: WEIPane,
   HP: HPPane,
-  TRAN: TRANPane,
   WCRS: WCRSPane,
   GLCO: GLCOPane,
   BTMM: BTMMPane,
+  BIO: BIOPane,
+  CORR: CORRPane,
   INSTANT: INSTANTPane,
+  MAP: MarketHeatmapPane,
+  SECT: MarketHeatmapPane,
 };
 
 const NATIVE_FUNCTION_ENTRIES: FunctionEntry[] = [

@@ -13,6 +13,7 @@ from typing import Any
 
 from src.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from src.core.instrument import AssetClass, Instrument
+from src.functions.equity._common import FIELD_DICTIONARIES
 
 
 @FunctionRegistry.register
@@ -62,11 +63,38 @@ class DDMFunction(BaseFunction):
                                           "d0": d0, "g": g, "r": r},
                                   warnings=["r ≤ g — model not applicable"])
         fair_value = d1 / (r - g)
+        rows = [
+            {"metric": "Dividend TTM", "value": d0, "formula": "D0"},
+            {"metric": "Next dividend", "value": d1, "formula": "D1 = D0 * (1 + g)"},
+            {"metric": "Growth rate", "value": g, "formula": "g"},
+            {"metric": "Required return", "value": r, "formula": "r"},
+            {"metric": "Fair value/share", "value": fair_value, "formula": "P = D1 / (r - g)"},
+        ]
+        sensitivity = []
+        for req in (r - 0.02, r, r + 0.02):
+            for grow in (max(0.0, g - 0.01), g, g + 0.01):
+                value = None if req <= grow else d1 / (req - grow)
+                sensitivity.append({
+                    "required_return": round(req, 4),
+                    "growth": round(grow, 4),
+                    "value": value,
+                    "bucket": f"r {req:.1%} / g {grow:.1%}",
+                })
         return FunctionResult(
             code=self.code, instrument=instrument,
-            data={"dividend_ttm": d0, "next_dividend": d1,
+            data={"status": "ok",
+                   "dividend_ttm": d0, "next_dividend": d1,
                    "growth": g, "required_return": r,
-                   "fair_value_per_share": fair_value},
+                   "fair_value_per_share": fair_value,
+                   "rows": rows,
+                   "surface": sensitivity,
+                   "methodology": "Gordon Growth DDM: P = D1 / (r - g), where D1 is next expected dividend, r is required return, and g is perpetual dividend growth. Required return defaults to WACC when not supplied.",
+                   "field_dictionary": {
+                       "dividend_ttm": "Trailing annual dividend per share from provider or user override.",
+                       "growth": "Long-run dividend growth assumption.",
+                       "required_return": "Discount rate required by equity holders.",
+                       "fair_value_per_share": "The dividend-implied value per share.",
+                   }},
             sources=list(set(sources)), warnings=warnings,
         )
 
@@ -123,7 +151,8 @@ class DCFFunction(BaseFunction):
         for t in range(1, N + 1):
             cf = cf * (1 + g_high)
             cashflows.append({"year": t, "fcfe": cf,
-                              "pv": cf / (1 + wacc) ** t})
+                              "pv": cf / (1 + wacc) ** t,
+                              "discount_factor": 1 / (1 + wacc) ** t})
         pv_explicit = sum(c["pv"] for c in cashflows)
         # Stage 2: terminal value
         tv = (cf * (1 + g_terminal)) / (wacc - g_terminal)
@@ -150,15 +179,27 @@ class DCFFunction(BaseFunction):
                     per_share = equity_value / shares
             except Exception:
                 pass
+        bridge = [
+            {"component": "PV explicit FCFE", "value": pv_explicit},
+            {"component": "PV terminal value", "value": pv_tv},
+            {"component": "Equity value", "value": equity_value},
+            {"component": "Fair value/share", "value": per_share},
+        ]
+        if fcfe <= 0:
+            warnings.append("free_cash_flow: provider returned missing or non-positive free cash flow; user should override fcfe for a tradable DCF.")
         return FunctionResult(
             code=self.code, instrument=instrument,
-            data={"wacc": wacc, "g_high": g_high, "g_terminal": g_terminal,
+            data={"status": "ok" if fcfe > 0 and per_share is not None else "needs_input",
+                   "wacc": wacc, "g_high": g_high, "g_terminal": g_terminal,
                    "years": N, "starting_fcfe": fcfe,
                    "pv_explicit": pv_explicit,
                    "terminal_value": tv, "pv_terminal": pv_tv,
                    "equity_value": equity_value,
                    "fair_value_per_share": per_share,
                    "shares_outstanding": shares,
-                   "cashflows": cashflows},
+                   "rows": cashflows,
+                   "bridge": bridge,
+                   "methodology": "Two-stage FCFE DCF: forecast FCFE for N years at high growth, discount each cash flow by WACC, then add terminal value TV = FCFE_N * (1 + g_terminal) / (WACC - g_terminal).",
+                   "field_dictionary": FIELD_DICTIONARIES["valuation"]},
             sources=list(set(sources)), warnings=warnings,
         )

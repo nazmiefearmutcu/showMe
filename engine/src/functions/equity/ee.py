@@ -7,6 +7,7 @@ from typing import Any
 
 from src.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from src.core.instrument import AssetClass, Instrument
+from src.functions.equity._common import date_label, finite, frame_rows
 
 
 @FunctionRegistry.register
@@ -68,9 +69,18 @@ class EEFunction(BaseFunction):
         return FunctionResult(
             code=self.code, instrument=instrument,
             data={
+                "status": "ok",
+                "rows": _earnings_rows(instrument.symbol, finnhub_data, yf_data, history),
                 "earnings": (finnhub_data or [])[:history] if isinstance(finnhub_data, list) else finnhub_data,
                 "calendar": (yf_data or {}).get("calendar") if yf_data else None,
                 "earnings_dates": (yf_data or {}).get("earnings_dates") if yf_data else None,
+                "methodology": "EE merges Finnhub historical earnings with Yahoo earnings-date tables. Visible rows show actual EPS, consensus/estimate EPS, surprise percent, and source mode when available.",
+                "field_dictionary": {
+                    "actual": "Reported EPS.",
+                    "estimate": "Consensus EPS estimate before report.",
+                    "surprisePercent": "(actual - estimate) / abs(estimate) * 100.",
+                    "next_report": "Next known earnings date or provider calendar item.",
+                },
             },
             sources=sources, warnings=warnings, metadata={"live": True},
         )
@@ -106,6 +116,8 @@ def _earnings_template(instrument: Instrument, history: int) -> dict[str, Any]:
             }
         ]
     return {
+        "status": "reference_model",
+        "rows": rows[:history],
         "earnings": rows[:history],
         "calendar": {
             "next_report": "template-next-cycle",
@@ -113,4 +125,49 @@ def _earnings_template(instrument: Instrument, history: int) -> dict[str, Any]:
             "symbol": symbol,
         },
         "earnings_dates": rows[: min(history, 4)],
+        "methodology": "Reference rows preserve the expected actual-vs-estimate shape when live earnings feeds are disabled.",
     }
+
+
+def _earnings_rows(symbol: str, finnhub_data: Any, yf_data: Any, history: int) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    if isinstance(finnhub_data, list):
+        for item in finnhub_data[:history]:
+            actual = finite(item.get("actual"))
+            estimate = finite(item.get("estimate"))
+            surprise = finite(item.get("surprisePercent"))
+            if surprise is None and actual is not None and estimate not in (None, 0):
+                surprise = (actual - estimate) / abs(estimate) * 100
+            rows.append({
+                "symbol": symbol,
+                "period": item.get("period") or item.get("quarter") or item.get("date"),
+                "date": item.get("period") or item.get("date"),
+                "actual": actual,
+                "estimate": estimate,
+                "surprisePercent": surprise,
+                "source_mode": "finnhub_earnings",
+            })
+    if not rows and yf_data:
+        for item in frame_rows((yf_data or {}).get("earnings_dates"), limit=history):
+            actual = finite(item.get("Reported EPS") or item.get("reportedEPS") or item.get("actual"))
+            estimate = finite(item.get("EPS Estimate") or item.get("epsEstimate") or item.get("estimate"))
+            surprise = finite(item.get("Surprise(%)") or item.get("surprisePercent"))
+            if surprise is not None and abs(surprise) <= 1:
+                surprise *= 100
+            rows.append({
+                "symbol": symbol,
+                "period": date_label(item.get("Earnings Date") or item.get("index") or item.get("date")),
+                "date": date_label(item.get("Earnings Date") or item.get("index") or item.get("date")),
+                "actual": actual,
+                "estimate": estimate,
+                "surprisePercent": surprise,
+                "source_mode": "yfinance_earnings_dates",
+            })
+    return rows[:history] or [{
+        "symbol": symbol,
+        "period": "provider_unavailable",
+        "actual": None,
+        "estimate": None,
+        "surprisePercent": None,
+        "source_mode": "earnings_calendar_unavailable",
+    }]

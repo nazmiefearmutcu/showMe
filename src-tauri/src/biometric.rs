@@ -46,6 +46,7 @@ pub enum BiometryKind {
 
 #[derive(Serialize, Clone, Copy, Debug)]
 #[serde(rename_all = "snake_case")]
+#[allow(dead_code)]
 pub enum BioVia {
     TouchId,
     FaceId,

@@ -33,6 +33,7 @@ import {
 import { confirmAction } from "@/lib/confirm";
 import { invoke, isInTauri } from "@/lib/tauri";
 import { toast } from "@/lib/toast";
+import { fetchQuote, type QuoteSnapshot } from "@/lib/quotes";
 import { FunctionControlGroup, LoadStatePill, RefreshButton } from "./function-controls";
 import type { FunctionPaneProps } from "./registry-types";
 
@@ -50,6 +51,9 @@ export function ALRTPane({ code }: FunctionPaneProps) {
   const [direction, setDirection] = useState<AlertDirection>("above");
   const [field, setField] = useState<AlertRow["field"]>("price");
   const [note, setNote] = useState("");
+  const [quote, setQuote] = useState<QuoteSnapshot | null>(null);
+  const [quoteError, setQuoteError] = useState<string | null>(null);
+  const [quoteLoading, setQuoteLoading] = useState(false);
 
   useEffect(() => {
     loadAlerts().then(setRows);
@@ -77,6 +81,27 @@ export function ALRTPane({ code }: FunctionPaneProps) {
     setRows(await loadAlerts());
     toast.success("Alert added", `${sym} ${direction} ${t}`);
   };
+
+  const onCheckQuote = async () => {
+    const sym = symbol.trim().toUpperCase();
+    if (!sym) return;
+    setQuoteLoading(true);
+    setQuoteError(null);
+    try {
+      setQuote(await fetchQuote(sym));
+    } catch (err) {
+      setQuote(null);
+      setQuoteError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setQuoteLoading(false);
+    }
+  };
+
+  const currentValue = quote ? quoteValue(quote, field) : null;
+  const conditionPreview =
+    currentValue !== null && Number.isFinite(Number(threshold))
+      ? previewCondition(currentValue, direction, Number(threshold))
+      : null;
 
   const onToggle = async (id: string, active: boolean) => {
     setRows(await toggleAlert(id, active));
@@ -241,7 +266,24 @@ export function ALRTPane({ code }: FunctionPaneProps) {
               value={symbol}
               onChange={(e) => setSymbol(e.target.value.toUpperCase())}
               placeholder="AAPL"
+              list="alrt-symbol-suggestions"
+              trailing={
+                <button
+                  type="button"
+                  className="btn btn--ghost"
+                  onClick={onCheckQuote}
+                  disabled={!symbol.trim() || quoteLoading}
+                  style={{ height: 20, fontSize: 10, padding: "0 6px" }}
+                >
+                  check
+                </button>
+              }
             />
+            <datalist id="alrt-symbol-suggestions">
+              {["AAPL", "MSFT", "NVDA", "SPY", "QQQ", "BTCUSDT", "ETHUSDT", "EURUSD", "GC=F"].map((sym) => (
+                <option key={sym} value={sym} />
+              ))}
+            </datalist>
             <label
               style={{
                 display: "flex",
@@ -290,6 +332,21 @@ export function ALRTPane({ code }: FunctionPaneProps) {
               placeholder="e.g. 200"
             />
           </FieldRow>
+          <div style={previewStyle}>
+            <span>
+              quote ·{" "}
+              {quote
+                ? `${quote.symbol} ${field} ${formatPreviewValue(currentValue)} (${quote.source})`
+                : quoteError || "not checked"}
+            </span>
+            <span>
+              preview ·{" "}
+              {conditionPreview
+                ? `${conditionPreview.state} by ${formatPreviewValue(conditionPreview.distance)}`
+                : "enter symbol, threshold, then check quote"}
+            </span>
+            <span>polling · local alert poller / native notification</span>
+          </div>
           <FieldRow>
             <Field
               label="Note"
@@ -353,3 +410,37 @@ const dtStyle: React.CSSProperties = {
   textTransform: "uppercase",
   color: "var(--text-mute)",
 };
+
+const previewStyle: React.CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+  gap: 8,
+  marginTop: 10,
+  padding: "8px 10px",
+  border: "1px solid var(--border-subtle)",
+  borderRadius: "var(--radius-md)",
+  color: "var(--text-mute)",
+  fontSize: 11,
+};
+
+function quoteValue(quote: QuoteSnapshot, field: AlertRow["field"]): number | null {
+  if (field === "price") return quote.price ?? quote.last ?? null;
+  if (field === "change_pct") return quote.change_pct ?? quote.regularMarketChangePercent ?? null;
+  if (field === "volume") return quote.volume ?? null;
+  return null;
+}
+
+function previewCondition(value: number, direction: AlertDirection, threshold: number): { state: string; distance: number } {
+  const distance = value - threshold;
+  if (direction === "above") return { state: value > threshold ? "would fire" : "waiting", distance };
+  if (direction === "below") return { state: value < threshold ? "would fire" : "waiting", distance };
+  if (direction === "cross_up") return { state: value > threshold ? "above trigger" : "below trigger", distance };
+  return { state: value < threshold ? "below trigger" : "above trigger", distance };
+}
+
+function formatPreviewValue(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) return "—";
+  return Math.abs(value) >= 1000
+    ? value.toLocaleString(undefined, { maximumFractionDigits: 2 })
+    : value.toLocaleString(undefined, { maximumFractionDigits: 4 });
+}

@@ -75,11 +75,20 @@ class EREVFunction(BaseFunction):
         return FunctionResult(
             code=self.code, instrument=instrument,
             data={
+                "status": "ok",
                 "symbol": sym,
+                "rows": trend,
                 "trend": trend,
                 "revisions": revs,
                 "velocity_avg": velocity,
                 "current_score": trend[-1] if trend else None,
+                "methodology": "EREV converts analyst recommendation buckets into a weighted score: Strong Buy=+2, Buy=+1, Hold=0, Sell=-1, Strong Sell=-2. Velocity is the latest average-score change vs the prior period.",
+                "field_dictionary": {
+                    "score": "Weighted recommendation score for the period.",
+                    "avg": "Score divided by analyst count.",
+                    "velocity_avg": "Latest average-score change vs previous period.",
+                    "net_pos_change": "Change in Strong Buy + Buy count.",
+                },
             },
             sources=["finnhub" if self.deps.finnhub else "revision_model"],
         )

@@ -52,6 +52,7 @@ export function CardHeader({
         justifyContent: "space-between",
         gap: 12,
         marginBottom: 8,
+        minWidth: 0,
       }}
     >
       <h2
@@ -61,12 +62,16 @@ export function CardHeader({
           letterSpacing: "0.08em",
           textTransform: "uppercase",
           color: "var(--accent)",
+          minWidth: 0,
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
         }}
       >
         {children}
       </h2>
       {trailing && (
-        <div style={{ fontSize: 11, color: "var(--text-mute)" }}>
+        <div style={{ fontSize: 11, color: "var(--text-mute)", minWidth: 0, maxWidth: "62%" }}>
           {trailing}
         </div>
       )}

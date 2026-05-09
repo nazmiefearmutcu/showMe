@@ -23,6 +23,7 @@ import {
   FunctionControlGroup,
   LoadStatePill,
   RefreshButton,
+  SegmentedControl,
 } from "./function-controls";
 import { usePersistentOption } from "./function-control-state";
 import type { FunctionPaneProps } from "./registry-types";
@@ -49,6 +50,19 @@ const RANGES = [
 ] as const;
 type RangeId = (typeof RANGES)[number]["id"];
 const RANGE_IDS = RANGES.map((r) => r.id);
+const COUNTRIES = [
+  { value: "US", label: "US" },
+  { value: "EU", label: "EU" },
+  { value: "GB", label: "UK" },
+  { value: "TR", label: "TR" },
+] as const;
+const COUNTRY_IDS = COUNTRIES.map((item) => item.value);
+const IMPORTANCE = [
+  { value: "all", label: "All" },
+  { value: "high", label: "High" },
+  { value: "medium", label: "Med" },
+] as const;
+const IMPORTANCE_IDS = IMPORTANCE.map((item) => item.value);
 
 const COLS: DataGridColumn<EcoEvent>[] = [
   {
@@ -113,10 +127,20 @@ export function ECOPane({ code }: FunctionPaneProps) {
     RANGE_IDS,
     "week",
   );
+  const [country, setCountry] = usePersistentOption(
+    "showme.eco-country",
+    COUNTRY_IDS,
+    "US",
+  );
+  const [importance, setImportance] = usePersistentOption(
+    "showme.eco-importance",
+    IMPORTANCE_IDS,
+    "all",
+  );
   const days = useMemo(() => RANGES.find((r) => r.id === range)!.days, [range]);
   const { state, data, error, refetch } = useFunction<unknown>({
     code,
-    params: { days },
+    params: { days, country, importance: importance === "all" ? undefined : importance, live_calendar: true },
   });
 
   const events = useMemo(
@@ -130,9 +154,21 @@ export function ECOPane({ code }: FunctionPaneProps) {
         <PaneHeader
           code={code}
           title="Economic calendar"
-          subtitle={`${events.length} event(s) · ${range}`}
+          subtitle={`${events.length} event(s) · ${country} · ${range}`}
           trailing={
             <FunctionControlGroup>
+              <SegmentedControl
+                label="COUNTRY"
+                value={country}
+                options={COUNTRIES}
+                onChange={setCountry}
+              />
+              <SegmentedControl
+                label="IMPORTANCE"
+                value={importance}
+                options={IMPORTANCE}
+                onChange={setImportance}
+              />
               <Tabs
                 variant="segmented"
                 items={RANGES.map((r) => ({ id: r.id, label: r.label }))}
@@ -159,7 +195,10 @@ export function ECOPane({ code }: FunctionPaneProps) {
               action={<button onClick={refetch} className="btn">Retry</button>}
             />
           ) : events.length === 0 ? (
-            <Empty title="Calendar empty" />
+            <Empty
+              title="Calendar empty"
+              body={`${country} · ${importance} · next ${days} days`}
+            />
           ) : (
             <DataGrid
               columns={COLS}
@@ -172,6 +211,7 @@ export function ECOPane({ code }: FunctionPaneProps) {
         <PaneFooter>
           <span>elapsed · {data?.elapsed_ms?.toFixed(0) ?? "—"} ms</span>
           <span>sources · {data?.sources?.join(", ") || "—"}</span>
+          <span>filter · {country}/{importance}</span>
         </PaneFooter>
       </Pane>
     </div>

@@ -65,6 +65,17 @@ describe("runFunction", () => {
     expect(body).toEqual({ symbol_shocks: { BTCUSDT: -0.5 } });
   });
 
+  it("fills elapsed_ms when the backend leaves it empty", async () => {
+    mockHealth();
+    (globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({ ...successPayload, elapsed_ms: null }),
+    } as unknown as Response);
+    const res = await runFunction("HP", { symbol: "AAPL" });
+    expect(res.elapsed_ms).toBeGreaterThanOrEqual(0);
+  });
+
   it("throws FunctionCallError on non-2xx", async () => {
     mockHealth();
     (globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({

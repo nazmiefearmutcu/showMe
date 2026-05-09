@@ -36,14 +36,54 @@ class ESGFunction(BaseFunction):
             warnings.append(f"yfinance esg: {e}")
         if not scores:
             scores = {
+                "status": "provider_unavailable",
+                "reason": "Yahoo sustainability scores are unavailable for this symbol or account context.",
                 "totalEsg": None,
                 "environmentScore": None,
                 "socialScore": None,
                 "governanceScore": None,
                 "controversyLevel": None,
-                "status": "no_vendor_score_available",
+                "rows": [
+                    {"pillar": "total", "score": None, "scale": "0-100 vendor scale", "source_mode": "vendor_unavailable"},
+                    {"pillar": "environment", "score": None, "scale": "0-100 vendor scale", "source_mode": "vendor_unavailable"},
+                    {"pillar": "social", "score": None, "scale": "0-100 vendor scale", "source_mode": "vendor_unavailable"},
+                    {"pillar": "governance", "score": None, "scale": "0-100 vendor scale", "source_mode": "vendor_unavailable"},
+                ],
+                "next_actions": ["Connect an ESG vendor feed or retry a symbol with Yahoo sustainability coverage."],
+                "methodology": "ESG is vendor-scored. ShowMe does not fabricate missing ESG scores; missing provider rows are labelled provider_unavailable.",
+                "field_dictionary": {
+                    "score": "Vendor ESG pillar score, typically 0-100 where lower may indicate lower unmanaged risk depending on vendor.",
+                    "controversyLevel": "Vendor controversy/risk level when available.",
+                    "source_mode": "Provider state for the displayed row.",
+                },
             }
             warnings = []
+        else:
+            rows = []
+            flat = scores
+            if "Value" in scores:
+                flat = scores.get("Value") or scores
+            for key, label in [
+                ("totalEsg", "total"),
+                ("environmentScore", "environment"),
+                ("socialScore", "social"),
+                ("governanceScore", "governance"),
+                ("controversyLevel", "controversy"),
+            ]:
+                value = flat.get(key) if isinstance(flat, dict) else None
+                rows.append({"pillar": label, "score": value, "scale": "vendor scale", "source_mode": "live_yfinance"})
+            if isinstance(scores, dict):
+                scores = {
+                    **scores,
+                    "status": "ok",
+                    "rows": rows,
+                    "methodology": "Scores are passed through from the vendor sustainability table and rendered by pillar. Scale and controversy semantics depend on the upstream provider.",
+                    "field_dictionary": {
+                        "pillar": "ESG component.",
+                        "score": "Provider score for the pillar.",
+                        "source_mode": "Provider state for the row.",
+                    },
+                }
         return FunctionResult(
             code=self.code,
             instrument=instrument,

@@ -56,6 +56,32 @@ class PSCFunction(BaseFunction):
                 "kelly_fraction": kelly,
                 "kelly_dollars": kelly_dollars,
                 "kelly_shares": kelly_shares,
+                "rows": [
+                    {"metric": "risk budget", "value": risk_dollars, "meaning": "account * risk_pct"},
+                    {"metric": "unit risk", "value": per_share_risk, "meaning": "abs(entry - stop)"},
+                    {"metric": "shares", "value": shares, "meaning": "risk_dollars / unit risk"},
+                    {"metric": "notional", "value": notional, "meaning": "shares * entry"},
+                    {"metric": "r multiple", "value": rr, "meaning": "reward_per_share / unit risk"},
+                    {"metric": "kelly fraction", "value": kelly, "meaning": "simple Kelly from win_rate and R multiple"},
+                ],
+                "summary": {
+                    "side": side,
+                    "shares": shares,
+                    "notional": notional,
+                    "risk_dollars": risk_dollars,
+                    "r_multiple": rr,
+                    "kelly_fraction": kelly,
+                },
+                "methodology": (
+                    "Risk sizing: risk budget = account size * risk_pct; unit risk = abs(entry - stop); "
+                    "shares = risk budget / unit risk. R multiple and simple Kelly use the target, stop, and win-rate assumptions."
+                ),
+                "field_dictionary": {
+                    "risk_pct": "Fraction of account equity risked if the stop is hit.",
+                    "per_share_risk": "Absolute distance between entry and stop.",
+                    "r_multiple": "Reward divided by risk per unit.",
+                    "kelly_fraction": "Simple Kelly fraction from win-rate and reward/risk assumptions.",
+                },
             },
-            sources=[],
+            sources=["position_sizing_model"],
         )

@@ -23,7 +23,7 @@ mod window;
 use parking_lot::RwLock;
 use serde::Serialize;
 use std::sync::Arc;
-use tauri::{Emitter, Manager};
+use tauri::Emitter;
 
 /// Shared application state passed to every Tauri command.
 #[derive(Default)]

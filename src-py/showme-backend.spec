@@ -2,7 +2,7 @@
 from PyInstaller.utils.hooks import collect_data_files
 from PyInstaller.utils.hooks import collect_submodules
 
-datas = [('/Users/nazmi/Desktop/Projeler/proje/showMe/engine/src', 'src'), ('/Users/nazmi/Desktop/Projeler/proje/showMe/engine/config', 'config')]
+datas = [('/Users/nazmi/Desktop/Projeler/proje/showMe/engine/src', 'src'), ('/Users/nazmi/Desktop/Projeler/proje/showMe/engine/config', 'config'), ('/Users/nazmi/Desktop/Projeler/veryfinder/veryfinder', 'integrations/veryfinder/veryfinder'), ('/Users/nazmi/Desktop/Projeler/veryfinder/data', 'integrations/veryfinder/data')]
 hiddenimports = ['feedparser', 'lxml', 'sgmllib', 'uvicorn.logging', 'uvicorn.protocols', 'uvicorn.lifespan.on']
 datas += collect_data_files('yfinance')
 hiddenimports += collect_submodules('src')

@@ -56,13 +56,34 @@ class TRANFunction(BaseFunction):
                 sources.append("whisper")
             except Exception as e:
                 warnings.append(f"whisper local: {e}")
+        allow_synthetic = _truthy(params.get("allow_synthetic"))
+        if not items and not whisper_result and not allow_synthetic:
+            return FunctionResult(
+                code=self.code,
+                instrument=instrument,
+                data={
+                    "status": "provider_unavailable",
+                    "reason": f"No live earnings call transcript returned for {instrument.symbol}.",
+                    "transcripts": [],
+                    "whisper": None,
+                    "next_actions": [
+                        "Enable a transcript provider or pass audio_url/audio_path.",
+                        "Use allow_synthetic=true only when you explicitly want template data.",
+                    ],
+                },
+                sources=sources,
+                metadata={
+                    "provider_errors": warnings or ["transcript providers returned no usable rows"],
+                    "live": live,
+                },
+            )
         return FunctionResult(
             code=self.code, instrument=instrument,
             data={
                 "transcripts": items or _template_transcripts(instrument),
                 "whisper": whisper_result,
             },
-            sources=sources or ["transcript_archive_model"],
+            sources=sources or ["transcript_template"],
             metadata={"provider_errors": warnings, "live": live},
         )
 

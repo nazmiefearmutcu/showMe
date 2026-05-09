@@ -6,10 +6,11 @@ describe("function pane registry", () => {
   it("includes Rounds 14/17/19 + Round-23/24/25 panes", () => {
     expect(listNativeCodes()).toEqual(
       expect.arrayContaining([
-        "DES", "FA", "GP", "TECH", "EQS", "PORT", "SCAN", "ASK",
-        "TOP", "ECO", "WATCH", "ALRT",
+        "DES", "FA", "GP", "EQS", "PORT", "SCAN", "ASK",
+        "TOP", "ECO", "WATCH", "ALRT", "ANR",
         "NI", "CN", "MOST", "WEI", "HP",
-        "TRAN", "WCRS", "GLCO", "BTMM", "AGENT",
+        "WCRS", "GLCO", "BTMM", "AGENT",
+        "MAP", "SECT", "BIO", "CORR",
       ]),
     );
   });
@@ -19,12 +20,16 @@ describe("function pane registry", () => {
     expect(resolvePane("des")).toBeTypeOf("function");
   });
 
-  it("treats TECH as an alias for GP", () => {
-    expect(resolvePane("TECH")).toBe(resolvePane("GP"));
+  it("lets TECH fall back to the generic technical-indicator function", () => {
+    expect(resolvePane("TECH")).toBeNull();
   });
 
   it("treats CN as an alias for NI (Round 24)", () => {
     expect(resolvePane("CN")).toBe(resolvePane("NI"));
+  });
+
+  it("lets TRAN fall back to the earnings transcript function", () => {
+    expect(resolvePane("TRAN")).toBeNull();
   });
 
   it("adds native-only panes to a backend function index", () => {

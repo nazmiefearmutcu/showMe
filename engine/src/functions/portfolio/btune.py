@@ -111,6 +111,7 @@ class BTUNEFunction(BaseFunction):
                 bt = Backtest(df, strat_fn, initial_cash=10_000, fee_bps=5)
                 r = bt.run()
                 results.append({
+                    "label": _label_cfg(cfg),
                     "params": cfg,
                     "sharpe": r.metrics["sharpe"],
                     "total_return": r.metrics["total_return"],
@@ -127,13 +128,32 @@ class BTUNEFunction(BaseFunction):
         return FunctionResult(
             code=self.code, instrument=instrument,
             data={
+                "status": "ok",
+                "symbol": instrument.symbol,
                 "strategy": strategy,
                 "best_by_sharpe": results[0],
                 "best_by_return": max(results, key=lambda x: x["total_return"]),
                 "best_by_calmar": max(results, key=lambda x: x["calmar"]),
+                "rows": results,
+                "surface": results,
                 "all_results": results,
                 "param_grid": grid,
                 "combos_tested": len(results),
+                "summary": {
+                    "strategy": strategy,
+                    "combos_tested": len(results),
+                    "best_sharpe": results[0]["sharpe"],
+                    "best_return": max(results, key=lambda x: x["total_return"])["total_return"],
+                    "best_calmar": max(results, key=lambda x: x["calmar"])["calmar"],
+                },
+                "methodology": "Hyperparameter sweep: build each strategy configuration, run the same daily-OHLCV backtest, then rank all configurations by Sharpe, total return, and Calmar.",
+                "field_dictionary": {
+                    "sharpe": "Annualized return/risk score from the backtest equity curve.",
+                    "calmar": "Total return divided by absolute max drawdown.",
+                    "total_return": "Final equity divided by initial equity minus one.",
+                    "max_drawdown": "Worst peak-to-trough equity decline.",
+                    "label": "Readable parameter combination used by the chart.",
+                },
             },
             sources=sources,
         )
@@ -145,6 +165,10 @@ def _truthy(value: Any) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _label_cfg(cfg: dict[str, Any]) -> str:
+    return ", ".join(f"{key}={value}" for key, value in cfg.items())
+
+
 def _tune_template(strategy: str, grid: dict[str, Any]) -> dict[str, Any]:
     keys = list(grid.keys())
     combos = list(itertools.product(*[grid[k] for k in keys]))
@@ -152,6 +176,7 @@ def _tune_template(strategy: str, grid: dict[str, Any]) -> dict[str, Any]:
     for idx, vals in enumerate(combos[:24]):
         cfg = dict(zip(keys, vals))
         results.append({
+            "label": _label_cfg(cfg),
             "params": cfg,
             "sharpe": round(1.25 - idx * 0.018, 3),
             "total_return": round(0.18 - idx * 0.004, 4),
@@ -160,11 +185,28 @@ def _tune_template(strategy: str, grid: dict[str, Any]) -> dict[str, Any]:
             "trades": 10 + idx,
         })
     return {
+        "status": "reference",
         "strategy": strategy,
         "best_by_sharpe": results[0],
         "best_by_return": max(results, key=lambda x: x["total_return"]),
         "best_by_calmar": max(results, key=lambda x: x["calmar"]),
+        "rows": results,
+        "surface": results,
         "all_results": results,
         "param_grid": grid,
         "combos_tested": len(results),
+        "summary": {
+            "strategy": strategy,
+            "combos_tested": len(results),
+            "best_sharpe": results[0]["sharpe"],
+            "source_mode": "reference_model",
+        },
+        "methodology": "Reference hyperparameter sweep used when live backtest data is not requested or unavailable.",
+        "field_dictionary": {
+            "sharpe": "Annualized return/risk score from the backtest equity curve.",
+            "calmar": "Total return divided by absolute max drawdown.",
+            "total_return": "Final equity divided by initial equity minus one.",
+            "max_drawdown": "Worst peak-to-trough equity decline.",
+            "label": "Readable parameter combination used by the chart.",
+        },
     }

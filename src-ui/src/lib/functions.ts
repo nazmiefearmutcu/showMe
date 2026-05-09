@@ -69,6 +69,7 @@ export async function runFunction<TData = unknown>(
   const hasComplex = Object.values(params).some(
     (v) => typeof v === "object" && v !== null,
   );
+  const requestStartedAt = Date.now();
 
   const fetchOnce = () => {
     if (hasComplex) {
@@ -134,6 +135,9 @@ export async function runFunction<TData = unknown>(
     );
   }
   const payload = (await res.json()) as FunctionCallResult<TData>;
+  if (typeof payload.elapsed_ms !== "number" || !Number.isFinite(payload.elapsed_ms)) {
+    payload.elapsed_ms = Math.max(0, Date.now() - requestStartedAt);
+  }
   useAppStore.getState().setSidecarStatus("healthy");
   return payload;
 }

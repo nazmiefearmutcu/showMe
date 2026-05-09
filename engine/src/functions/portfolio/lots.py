@@ -62,10 +62,30 @@ class LOTSFunction(BaseFunction):
                     "next_actions": [
                         "Add a lot with action=open or import portfolio tax lots before rerunning LOTS.",
                     ],
+                    "methodology": _methodology(),
+                    "field_dictionary": _field_dictionary(),
                 },
                 sources=["local_tax_lot_ledger"],
                 warnings=[],
             )
         return FunctionResult(code=self.code, instrument=None,
-                              data={"status": "ok", "lots": lots, "rows": lots, "count": len(lots)},
+                              data={"status": "ok", "lots": lots, "rows": lots, "count": len(lots),
+                                    "methodology": _methodology(),
+                                    "field_dictionary": _field_dictionary()},
                               sources=["local_tax_lot_ledger"])
+
+
+def _methodology() -> str:
+    return (
+        "Maintain a local tax-lot ledger. Open creates a lot with acquisition quantity/cost; sell matches "
+        "open lots by FIFO/LIFO/HIFO or specific lot IDs and records realized gain or loss."
+    )
+
+
+def _field_dictionary() -> dict[str, str]:
+    return {
+        "quantity": "Open quantity remaining in the lot.",
+        "price": "Lot acquisition price or sell price depending on action.",
+        "method": "Lot selection method: FIFO, LIFO, HIFO, or specific lot IDs.",
+        "realized_gain": "Sale proceeds minus matched tax basis.",
+    }

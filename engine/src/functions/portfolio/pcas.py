@@ -12,6 +12,7 @@ import pandas as pd
 from src.core.base_data_source import DataKind, DataRequest
 from src.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from src.core.instrument import AssetClass, Instrument
+from src.functions.portfolio.return_series import align_return_series, close_to_daily_returns
 from src.portfolio.state import PortfolioState
 from src.services import pca_stress
 
@@ -59,14 +60,13 @@ class PCASFunction(BaseFunction):
                         timeout=timeout,
                     )
                     last = float(df["close"].iloc[-1])
-                    return p.instrument.symbol, df["close"].pct_change().dropna(), last
+                    return p.instrument.symbol, close_to_daily_returns(df), last
                 except Exception:
                     return p.instrument.symbol, pd.Series(dtype=float), float(p.avg_cost or 100.0)
 
             results = await asyncio.gather(*(_ret(p) for p in eligible))
-            rets_dict = {s: r for s, r, _ in results}
             last_map = {s: lp for s, _, lp in results}
-            df = pd.DataFrame(rets_dict).dropna(how="any")
+            df = align_return_series((s, r) for s, r, _ in results)
             if df.shape[0] < 30:
                 return _empty_pcas(self.code, None, pc_index, k_sigma, "no live return history")
         else:
@@ -99,6 +99,25 @@ class PCASFunction(BaseFunction):
             )
         top = pca_stress.top_loadings(decomp["loadings"], cols, pc_index=pc_index,
                                       top_n=top_n)
+        asset_returns = [
+            {
+                "symbol": s,
+                "weight": float(weights[i]),
+                "weight_pct": float(weights[i] * 100),
+                "shock_return": float(shock["asset_returns"][i]),
+                "shock_return_pct": float(shock["asset_returns"][i] * 100),
+                "pnl": float(weights[i] * total * shock["asset_returns"][i]),
+            }
+            for i, s in enumerate(cols)
+        ]
+        loading_rows = [
+            {
+                "symbol": item.get("symbol"),
+                "loading": float(item.get("loading") or 0.0),
+                "pc_index": pc_index,
+            }
+            for item in top
+        ]
         return FunctionResult(
             code=self.code, instrument=None,
             data={
@@ -109,13 +128,27 @@ class PCASFunction(BaseFunction):
                 "portfolio_pnl_dollar": shock["portfolio_return"] * total,
                 "total_notional": total,
                 "top_loadings": top,
-                "asset_returns": [
-                    {"symbol": s, "weight": float(weights[i]),
-                     "shock_return": float(shock["asset_returns"][i]),
-                     "pnl": float(weights[i] * total * shock["asset_returns"][i])}
-                    for i, s in enumerate(cols)
-                ],
+                "asset_returns": asset_returns,
+                "rows": asset_returns,
+                "loadings": loading_rows,
                 "samples": int(df.shape[0]),
+                "summary": {
+                    "pc_index": pc_index,
+                    "k_sigma": k_sigma,
+                    "portfolio_return_pct": shock["portfolio_return"] * 100,
+                    "portfolio_pnl_dollar": shock["portfolio_return"] * total,
+                },
+                "methodology": (
+                    "Run PCA on aligned daily return history, shock the selected principal component by "
+                    "k standard deviations, then project the correlated asset return shock through current "
+                    "portfolio weights to estimate P&L."
+                ),
+                "field_dictionary": {
+                    "explained_variance_ratio": "Share of return variance explained by each principal component.",
+                    "shock_return_pct": "Asset return implied by the selected PCA shock.",
+                    "pnl": "Dollar contribution of the shock to portfolio P&L.",
+                    "loading": "Symbol loading on the selected principal component.",
+                },
             },
             sources=["yfinance" if live_prices else "portfolio_state_model"],
         )
@@ -154,6 +187,10 @@ def _empty_pcas(
                 "Add real positions through portfolio state.",
                 "Set live=true and live_prices=true to fetch return history.",
             ],
+            "methodology": (
+                "PCA stress requires portfolio positions plus aligned return history. It shocks one "
+                "principal component and maps the shock through position weights."
+            ),
         },
         sources=["portfolio_state"],
         metadata={"empty": True, "requires_positions": True},

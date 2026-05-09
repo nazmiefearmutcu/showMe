@@ -5,7 +5,7 @@
  * for ~60 indices grouped by region. Cells render last / change / Δ% /
  * intraday range and refresh on tick.
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import {
   ChangeText,
   DataGrid,
@@ -86,6 +86,7 @@ export function WEIPane({ code }: FunctionPaneProps) {
       (r) => (r.region ?? "").toLowerCase() === region.toLowerCase(),
     );
   }, [data, region]);
+  const notice = useMemo(() => statusNotice(data?.data, data?.metadata), [data]);
 
   const cols = useMemo<DataGridColumn<WEIRow>[]>(
     () => [
@@ -246,20 +247,27 @@ export function WEIPane({ code }: FunctionPaneProps) {
               icon="!"
             />
           ) : rows.length === 0 ? (
-            <Empty title="No quotes" body={`No WEI rows for ${region}.`} />
+            <>
+              {notice ? <StatusNotice notice={notice} /> : null}
+              <Empty title="No quotes" body={`No WEI rows for ${region}.`} />
+            </>
           ) : (
-            <DataGrid
-              columns={cols}
-              rows={rows}
-              rowKey={(r, i) => `${r.symbol ?? r.ticker ?? ""}-${i}`}
-              density="compact"
-              onRowDoubleClick={(r) => {
-                const sym = r.symbol ?? r.ticker;
-                if (!sym) return;
-                setFocusedTarget("DES", sym);
-                navigate(`/symbol/${sym}/DES`);
-              }}
-            />
+            <div style={{ display: "grid", gap: 10 }}>
+              {notice ? <StatusNotice notice={notice} /> : null}
+              <IndexPerformanceStrip rows={rows} />
+              <DataGrid
+                columns={cols}
+                rows={rows}
+                rowKey={(r, i) => `${r.symbol ?? r.ticker ?? ""}-${i}`}
+                density="compact"
+                onRowDoubleClick={(r) => {
+                  const sym = r.symbol ?? r.ticker;
+                  if (!sym) return;
+                  setFocusedTarget("DES", sym);
+                  navigate(`/symbol/${sym}/DES`);
+                }}
+              />
+            </div>
           )}
         </PaneBody>
         <PaneFooter>
@@ -282,6 +290,72 @@ function normalizeRows(payload: unknown): WEIRow[] {
   return [];
 }
 
+function statusNotice(
+  payload: unknown,
+  metadata: Record<string, unknown> | undefined,
+): { title: string; body: string } | null {
+  if (!payload || typeof payload !== "object") return null;
+  const o = payload as Record<string, unknown>;
+  const status = String(o.status ?? "").toLowerCase();
+  const degraded = Boolean(metadata?.fallback || metadata?.degraded);
+  if (!status && !degraded) return null;
+  const reason = String(o.reason ?? "Live quote provider did not return a complete WEI snapshot.");
+  const model = degraded ? "Model rows are labelled as model, not live market quotes." : "";
+  return {
+    title: status === "provider_unavailable" ? "Provider unavailable" : "Degraded WEI snapshot",
+    body: [reason, model].filter(Boolean).join(" "),
+  };
+}
+
+function StatusNotice({ notice }: { notice: { title: string; body: string } }) {
+  return (
+    <div
+      style={{
+        border: "1px solid rgba(255,181,71,0.35)",
+        background: "rgba(255,181,71,0.08)",
+        color: "var(--text-secondary)",
+        borderRadius: "var(--radius-sm)",
+        padding: "9px 10px",
+        display: "grid",
+        gap: 4,
+      }}
+    >
+      <strong style={{ color: "var(--warn)" }}>{notice.title}</strong>
+      <span>{notice.body}</span>
+    </div>
+  );
+}
+
+function IndexPerformanceStrip({ rows }: { rows: WEIRow[] }) {
+  const points = rows
+    .map((row) => ({
+      symbol: row.symbol ?? row.ticker ?? "-",
+      name: row.name ?? row.symbol ?? row.ticker ?? "-",
+      change: row.change_pct ?? row.changePercent ?? 0,
+      state: row.market_state ?? "-",
+    }))
+    .slice(0, 16);
+  const maxAbs = Math.max(...points.map((point) => Math.abs(point.change)), 1);
+  return (
+    <section style={indexStrip} aria-label="World index performance strip">
+      {points.map((point) => {
+        const alpha = 0.2 + Math.min(Math.abs(point.change) / maxAbs, 1) * 0.52;
+        const background = point.change >= 0
+          ? `rgba(0,209,131,${alpha})`
+          : `rgba(255,59,88,${alpha})`;
+        return (
+          <div key={point.symbol} style={{ ...indexTile, background }}>
+            <strong>{point.symbol}</strong>
+            <span>{point.name}</span>
+            <b>{point.change.toFixed(2)}%</b>
+            <small>{point.state}</small>
+          </div>
+        );
+      })}
+    </section>
+  );
+}
+
 function fmtNum(v: number | undefined | null): string {
   if (v == null || !Number.isFinite(v)) return "—";
   return v.toLocaleString(undefined, {
@@ -289,3 +363,20 @@ function fmtNum(v: number | undefined | null): string {
     maximumFractionDigits: 2,
   });
 }
+
+const indexStrip: CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "repeat(auto-fit, minmax(110px, 1fr))",
+  gap: 6,
+};
+
+const indexTile: CSSProperties = {
+  border: "1px solid rgba(255,255,255,0.08)",
+  borderRadius: "var(--radius-sm)",
+  minHeight: 70,
+  padding: "8px 9px",
+  display: "grid",
+  gap: 2,
+  color: "var(--text-primary)",
+  fontVariantNumeric: "tabular-nums",
+};
