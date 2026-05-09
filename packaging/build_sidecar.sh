@@ -2,61 +2,37 @@
 # Build the PyInstaller sidecar binary that the Tauri shell launches.
 #
 # Output:
-#   src-tauri/binaries/showme-backend  (arm64 on Apple Silicon)
+#   tauri/binaries/showme-backend                       (arm64 on Apple Silicon)
+#   tauri/binaries/showme-backend-aarch64-apple-darwin  (Tauri externalBin name)
 #
 # Requirements:
 #   - uv
-#   - ShowMe's bundled engine at $SHOWME_ENGINE_PATH (default ./engine).
+#   - The unified Python backend at backend/showme/engine/
+#   - The PyInstaller spec at backend/showme-backend.spec already wires
+#     --add-data, --collect-submodules, hidden imports, and optional
+#     veryfinder integration (auto-detected as a sibling project).
 
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.."; pwd)"
-ENGINE_PATH="${SHOWME_ENGINE_PATH:-$ROOT/engine}"
-VERYFINDER_PATH="${SHOWME_VERYFINDER_ROOT:-$HOME/Desktop/Projeler/veryfinder}"
-DIST="$ROOT/src-tauri/binaries"
+BACKEND="$ROOT/backend"
+DIST="$ROOT/tauri/binaries"
 mkdir -p "$DIST"
 
-if [[ ! -d "$ENGINE_PATH/src" ]]; then
-  echo "ShowMe engine not found at $ENGINE_PATH — set SHOWME_ENGINE_PATH" >&2
+if [[ ! -d "$BACKEND/showme/engine" ]]; then
+  echo "Unified backend not found at $BACKEND/showme/engine" >&2
+  echo "Expected the showme.engine subpackage created by the unified-tree refactor." >&2
   exit 1
 fi
 
-VERYFINDER_ARGS=()
-if [[ -f "$VERYFINDER_PATH/veryfinder/orchestrator.py" ]]; then
-  VERYFINDER_ARGS+=(
-    --add-data "$VERYFINDER_PATH/veryfinder:integrations/veryfinder/veryfinder"
-  )
-  if [[ -d "$VERYFINDER_PATH/data" ]]; then
-    VERYFINDER_ARGS+=(--add-data "$VERYFINDER_PATH/data:integrations/veryfinder/data")
-  fi
-  echo "Including Veryfinder runtime from $VERYFINDER_PATH"
-else
-  echo "Veryfinder runtime not found at $VERYFINDER_PATH; sidecar will use Application Support cache if present." >&2
-fi
+pushd "$BACKEND" >/dev/null
 
-pushd "$ROOT/src-py" >/dev/null
-
+# The spec file collects everything (showme.* submodules, yfinance data,
+# optional veryfinder integration). Just run it in --clean mode.
 uv run --extra dev python -m PyInstaller \
-  --name showme-backend \
-  --onefile \
   --noconfirm \
   --clean \
-  --paths "$ENGINE_PATH" \
-  --add-data "$ENGINE_PATH/src:src" \
-  --add-data "$ENGINE_PATH/config:config" \
-  --collect-submodules src \
-  --collect-submodules yfinance \
-  --collect-data yfinance \
-  --collect-submodules lxml \
-  --hidden-import feedparser \
-  --hidden-import lxml \
-  --hidden-import sgmllib \
-  --hidden-import uvicorn.logging \
-  --hidden-import uvicorn.protocols \
-  --hidden-import uvicorn.lifespan.on \
-  "${VERYFINDER_ARGS[@]}" \
-  --target-arch arm64 \
-  showme/server.py
+  showme-backend.spec
 
 cp dist/showme-backend "$DIST/showme-backend"
 chmod +x "$DIST/showme-backend"

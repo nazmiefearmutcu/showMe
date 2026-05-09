@@ -4,7 +4,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.."; pwd)"
-SOURCE="${1:-$ROOT/src-tauri/target/release/bundle/macos/showMe.app}"
+SOURCE="${1:-$ROOT/tauri/target/release/bundle/macos/showMe.app}"
 TARGET="${SHOWME_APP_TARGET:-/Applications/showMe.app}"
 PREVIOUS="${SHOWME_APP_PREVIOUS:-/Applications/showMe.previous.app}"
 LEGACY_BACKUPS_DIR="/Applications/showMe.app.backups"

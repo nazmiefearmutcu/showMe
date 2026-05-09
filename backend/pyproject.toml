@@ -1,0 +1,44 @@
+[project]
+name = "showme-backend"
+version = "0.0.1"
+description = "showMe backend sidecar — exposes the bundled 138-function engine through a localhost FastAPI server discovered by the Tauri shell."
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
+    "httpx>=0.28",
+    "requests>=2.32",
+    "duckdb>=1.1",
+    "pyyaml>=6.0",
+    "websockets>=13",
+    "numpy>=1.26",
+    "pandas>=2.2",
+    "yfinance>=0.2.40",
+    "lxml>=5.3",
+    "feedparser>=6.0",
+    "python-dotenv>=1.0.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.7",
+    "pyinstaller>=6.10",
+]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["showme*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = ["showme/engine"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
