@@ -5,7 +5,7 @@
  * function returns a dict with keyed pandas DataFrames; the sidecar's
  * `to_dict()` helper converts those to records arrays.
  */
-import { useMemo } from "react";
+import { Fragment, useMemo } from "react";
 import {
   Card,
   CardBody,
@@ -39,6 +39,8 @@ interface FAData {
   balance_sheet?: Record<string, unknown>[] | Record<string, unknown>;
   cash_flow?: Record<string, unknown>[] | Record<string, unknown>;
   ratios?: Record<string, unknown>;
+  methodology?: string;
+  field_dictionary?: Record<string, unknown>;
   [key: string]: unknown;
 }
 
@@ -140,7 +142,14 @@ export function FAPane({ code, symbol }: FunctionPaneProps) {
 
 function FAView({ data, tab }: { data?: FAData; tab: TabId }) {
   if (!data) return <Empty title="Payload unavailable" />;
-  if (tab === "ratios") return <Ratios data={data.ratios} />;
+  if (tab === "ratios") {
+    return (
+      <div data-testid="function-payload" style={{ display: "grid", gap: 12 }}>
+        <Ratios data={data.ratios} />
+        <Methodology data={data} />
+      </div>
+    );
+  }
   const key: keyof FAData =
     tab === "income" ? "income_statement" : tab === "balance" ? "balance_sheet" : "cash_flow";
   const rows = toRows(data[key]);
@@ -148,8 +157,9 @@ function FAView({ data, tab }: { data?: FAData; tab: TabId }) {
     return <Empty title="Section empty" body="This statement section has no returned rows for the current input." />;
   }
   return (
-    <div data-testid="function-payload">
+    <div data-testid="function-payload" style={{ display: "grid", gap: 12 }}>
       <FinancialGrid rows={rows} />
+      <Methodology data={data} />
     </div>
   );
 }
@@ -225,6 +235,48 @@ function Ratios({ data }: { data?: Record<string, unknown> }) {
         </Card>
       ))}
     </div>
+  );
+}
+
+function Methodology({ data }: { data: FAData }) {
+  const entries = Object.entries(data.field_dictionary ?? {}).filter(
+    ([, value]) => value != null && String(value).trim().length > 0,
+  );
+  if (!data.methodology && entries.length === 0) return null;
+  return (
+    <Card density="compact">
+      <CardHeader>Methodology</CardHeader>
+      <CardBody>
+        <div style={{ display: "grid", gap: 10, fontSize: 12 }}>
+          {data.methodology ? (
+            <p style={{ margin: 0, color: "var(--text-secondary)", lineHeight: 1.45 }}>
+              {data.methodology}
+            </p>
+          ) : null}
+          {entries.length ? (
+            <dl
+              style={{
+                margin: 0,
+                display: "grid",
+                gridTemplateColumns: "180px minmax(0, 1fr)",
+                gap: "6px 14px",
+              }}
+            >
+              {entries.map(([key, value]) => (
+                <Fragment key={key}>
+                  <dt style={{ color: "var(--text-primary)" }}>
+                    {key.replace(/_/g, " ")}
+                  </dt>
+                  <dd style={{ margin: 0, color: "var(--text-mute)" }}>
+                    {String(value)}
+                  </dd>
+                </Fragment>
+              ))}
+            </dl>
+          ) : null}
+        </div>
+      </CardBody>
+    </Card>
   );
 }
 

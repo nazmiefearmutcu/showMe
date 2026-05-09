@@ -238,6 +238,7 @@ def compare_scenarios(
     keys: list[str] | None = None,
     *,
     sector_lookup: dict[str, str] | None = None,
+    scale: float = 1.0,
 ) -> list[dict[str, Any]]:
     keys = keys or list(SCENARIOS)
     out = []
@@ -245,7 +246,7 @@ def compare_scenarios(
         sc = SCENARIOS.get(k.upper())
         if not sc:
             continue
-        r = apply_scenario(positions, sc, sector_lookup=sector_lookup)
+        r = apply_scenario(positions, sc, sector_lookup=sector_lookup, scale=scale)
         out.append({
             "key": k, "name": sc.name,
             "horizon_days": sc.horizon_days,

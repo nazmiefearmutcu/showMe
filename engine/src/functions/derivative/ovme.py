@@ -62,6 +62,28 @@ class OVMEFunction(BaseFunction):
         is_call = opt_type == "CALL"
         model = (params.get("model") or "bs").lower()
         result = _bs_price(S, K, T, r, sigma, q, is_call)
+        sensitivity: list[dict[str, float]] = []
+        for step in range(51):
+            s = S * (0.75 + step * 0.01)
+            priced = _bs_price(s, K, T, r, sigma, q, is_call)
+            intrinsic = max(s - K, 0.0) if is_call else max(K - s, 0.0)
+            sensitivity.append({
+                "spot": s,
+                "price": priced["price"],
+                "intrinsic": intrinsic,
+                "time_value": priced["price"] - intrinsic,
+                "delta": priced["delta"],
+            })
+        rows = [
+            {"metric": "price", "value": result["price"], "unit": "currency/share"},
+            {"metric": "delta", "value": result["delta"], "unit": "price delta per 1 underlying unit"},
+            {"metric": "gamma", "value": result["gamma"], "unit": "delta change per 1 underlying unit"},
+            {"metric": "theta", "value": result["theta"], "unit": "price/day"},
+            {"metric": "vega", "value": result["vega"], "unit": "price per 1 vol point"},
+            {"metric": "rho", "value": result["rho"], "unit": "price per 1 rate point"},
+            {"metric": "d1", "value": result.get("d1"), "unit": "standard deviations"},
+            {"metric": "d2", "value": result.get("d2"), "unit": "standard deviations"},
+        ]
         if model == "heston":
             try:
                 from src.functions.derivative.heston import HestonParams, heston_mc
@@ -80,9 +102,44 @@ class OVMEFunction(BaseFunction):
                 result["heston_paths"] = hr["paths"]
             except Exception as e:
                 result["heston_error"] = str(e)
+        payload = {
+            "status": "ok",
+            **result,
+            "spot": S,
+            "strike": K,
+            "T": T,
+            "years_to_expiry": T,
+            "vol": sigma,
+            "rate": r,
+            "div_yield": q,
+            "type": opt_type,
+            "model": model,
+            "rows": rows,
+            "curve": sensitivity,
+            "sensitivity": sensitivity,
+            "summary": {
+                "price": result["price"],
+                "delta": result["delta"],
+                "gamma": result["gamma"],
+                "theta_per_day": result["theta"],
+                "vega_per_vol_point": result["vega"],
+                "rho_per_rate_point": result["rho"],
+            },
+            "methodology": (
+                "Black-Scholes-Merton: price = S*e^(-qT)*N(d1) - K*e^(-rT)*N(d2) for calls; "
+                "puts use put-call parity form. d1 = [ln(S/K) + (r-q+0.5*sigma^2)T] / (sigma*sqrt(T)); d2 = d1 - sigma*sqrt(T)."
+            ),
+            "field_dictionary": {
+                "spot": "Current underlying price used by the calculation.",
+                "strike": "Option strike price.",
+                "years_to_expiry": "Time to expiry in years.",
+                "vol": "Annualized implied volatility as a decimal.",
+                "theta": "Per-day option decay under the current assumptions.",
+                "curve.price": "Option value across a spot sensitivity range.",
+            },
+        }
         return FunctionResult(
             code=self.code, instrument=instrument,
-            data={**result, "spot": S, "strike": K, "T": T, "vol": sigma,
-                   "rate": r, "div_yield": q, "type": opt_type, "model": model},
-            sources=[],
+            data=payload,
+            sources=["black_scholes_formula" if model != "heston" else "black_scholes_formula", "heston_formula"] if model == "heston" else ["black_scholes_formula"],
         )

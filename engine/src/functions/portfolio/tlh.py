@@ -48,37 +48,41 @@ class TLHFunction(BaseFunction):
         bracket = float(params.get("tax_bracket", 0.24))     # marginal income / ST cap rate
         lt_rate = float(params.get("lt_cap_rate", 0.15))     # long-term cap gains
         lt_threshold_days = int(params.get("lt_threshold_days", 365))
-        live = _truthy(params.get("live_tax") or params.get("deep"))
+        live = _truthy(params.get("live_tax") or params.get("live") or params.get("deep"))
         if not live:
             symbol = params.get("symbol") or (instrument.symbol if instrument else "BTCUSDT")
+            candidate = {
+                "symbol": symbol,
+                "asset_class": params.get("asset_class") or (
+                    instrument.asset_class.value if instrument else "CRYPTO"
+                ),
+                "quantity": 1.0,
+                "avg_cost": 100.0,
+                "current_price": 92.0,
+                "unrealized_pnl": -8.0,
+                "held_days": lt_threshold_days + 1,
+                "long_term": True,
+                "tax_rate_applied": lt_rate,
+                "estimated_tax_savings": 8.0 * lt_rate,
+                "sector": "model_baseline",
+                "replacement_etf": None,
+                "wash_sale_window": [
+                    (datetime.utcnow() - timedelta(days=30)).strftime("%Y-%m-%d"),
+                    (datetime.utcnow() + timedelta(days=30)).strftime("%Y-%m-%d"),
+                ],
+            }
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
                 data={
-                    "candidates": [{
-                        "symbol": symbol,
-                        "asset_class": params.get("asset_class") or (
-                            instrument.asset_class.value if instrument else "CRYPTO"
-                        ),
-                        "quantity": 1.0,
-                        "avg_cost": 100.0,
-                        "current_price": 92.0,
-                        "unrealized_pnl": -8.0,
-                        "held_days": lt_threshold_days + 1,
-                        "long_term": True,
-                        "tax_rate_applied": lt_rate,
-                        "estimated_tax_savings": 8.0 * lt_rate,
-                        "sector": "model_baseline",
-                        "replacement_etf": None,
-                        "wash_sale_window": [
-                            (datetime.utcnow() - timedelta(days=30)).strftime("%Y-%m-%d"),
-                            (datetime.utcnow() + timedelta(days=30)).strftime("%Y-%m-%d"),
-                        ],
-                    }],
+                    "candidates": [candidate],
+                    "rows": [candidate],
                     "total_estimated_tax_savings": 8.0 * lt_rate,
                     "n_loss_positions": 1,
                     "tax_bracket_used": bracket,
                     "lt_cap_rate_used": lt_rate,
+                    "methodology": _methodology(),
+                    "field_dictionary": _field_dictionary(),
                 },
                 sources=["tax_loss_model"],
                 metadata={"live": False},
@@ -92,10 +96,13 @@ class TLHFunction(BaseFunction):
                 instrument=None,
                 data={
                     "candidates": [],
+                    "rows": [],
                     "total_estimated_tax_savings": 0,
                     "n_loss_positions": 0,
                     "tax_bracket_used": bracket,
                     "lt_cap_rate_used": lt_rate,
+                    "methodology": _methodology(),
+                    "field_dictionary": _field_dictionary(),
                 },
                 sources=["portfolio_state"],
             )
@@ -167,10 +174,18 @@ class TLHFunction(BaseFunction):
             code=self.code, instrument=None,
             data={
                 "candidates": candidates,
+                "rows": candidates,
                 "total_estimated_tax_savings": total_savings,
                 "n_loss_positions": len(candidates),
                 "tax_bracket_used": bracket,
                 "lt_cap_rate_used": lt_rate,
+                "summary": {
+                    "n_loss_positions": len(candidates),
+                    "total_estimated_tax_savings": total_savings,
+                    "tax_bracket_used": bracket,
+                },
+                "methodology": _methodology(),
+                "field_dictionary": _field_dictionary(),
             },
             sources=["yfinance"],
             metadata={"note": "Wash-sale rule (US §1091): repurchasing 'substantially identical' security 30d before/after disallows the loss. Replacement ETFs are *similar-not-identical*; consult a CPA before acting."},
@@ -183,3 +198,20 @@ def _truthy(value: Any) -> bool:
     if value is None:
         return False
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _methodology() -> str:
+    return (
+        "Find positions whose current price is below cost basis, estimate realized loss if sold, apply the "
+        "short- or long-term tax rate, and suggest non-identical replacement ETFs by sector when available. "
+        "The output is advisory and not a tax filing or trade instruction."
+    )
+
+
+def _field_dictionary() -> dict[str, str]:
+    return {
+        "unrealized_pnl": "Current price minus average cost, multiplied by quantity.",
+        "estimated_tax_savings": "Absolute unrealized loss multiplied by the applicable tax rate.",
+        "wash_sale_window": "US wash-sale observation window: 30 days before through 30 days after sale.",
+        "replacement_etf": "Similar sector ETF candidate, not guaranteed to be tax-safe.",
+    }

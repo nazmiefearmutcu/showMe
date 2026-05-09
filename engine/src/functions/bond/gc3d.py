@@ -16,6 +16,11 @@ _FRED_TENORS = [
     ("10Y", "DGS10"), ("20Y", "DGS20"), ("30Y", "DGS30"),
 ]
 
+_TENOR_YEARS = {
+    "3M": 0.25, "6M": 0.5, "1Y": 1.0, "2Y": 2.0, "3Y": 3.0,
+    "5Y": 5.0, "7Y": 7.0, "10Y": 10.0, "20Y": 20.0, "30Y": 30.0,
+}
+
 
 def _surface_template() -> dict[str, Any]:
     tenors = [t for t, _ in _FRED_TENORS]
@@ -26,9 +31,38 @@ def _surface_template() -> dict[str, Any]:
     surface: list[dict[str, Any]] = []
     for i, date in enumerate(dates):
         for tenor in tenors:
-            surface.append({"date": date, "tenor": tenor,
+            surface.append({"date": date, "tenor": tenor, "tenor_years": _TENOR_YEARS.get(tenor, 0),
                             "yield": round(base.get(tenor, 4.5) + i * 0.015, 4)})
-    return {"surface": surface, "tenors": tenors, "dates": dates}
+    return _surface_payload(surface, tenors, dates, "yield_curve_model", 30)
+
+
+def _surface_payload(
+    surface: list[dict[str, Any]],
+    tenors: list[str],
+    dates: list[str],
+    source_mode: str,
+    days: int,
+) -> dict[str, Any]:
+    return {
+        "surface": surface,
+        "rows": surface,
+        "tenors": tenors,
+        "dates": dates,
+        "summary": {
+            "source_mode": source_mode,
+            "dates": len(dates),
+            "tenors": len(tenors),
+            "points": len(surface),
+            "days": days,
+        },
+        "methodology": "GC3D builds a date-by-tenor yield surface. The native renderer shows it as a heatmap/surface table with date, tenor, tenor_years, and yield; this is the truthful 2D native fallback for the 3D curve concept.",
+        "field_dictionary": {
+            "date": "Observation date.",
+            "tenor": "Treasury maturity label.",
+            "tenor_years": "Numeric maturity for ordering.",
+            "yield": "FRED Treasury yield percentage.",
+        },
+    }
 
 
 @FunctionRegistry.register
@@ -75,13 +109,18 @@ class GC3DFunctionLive(BaseFunction):
                     if row[tenor] != row[tenor]:
                         continue
                     surface.append({"date": date.strftime("%Y-%m-%d"),
-                                    "tenor": tenor, "yield": float(row[tenor])})
+                                    "tenor": tenor, "tenor_years": _TENOR_YEARS.get(tenor, 0),
+                                    "yield": float(row[tenor])})
         if not surface:
             return FunctionResult(code=self.code, instrument=None,
                                   data=_surface_template(),
                                   sources=["yield_curve_model"])
         return FunctionResult(code=self.code, instrument=None,
-                              data={"surface": surface,
-                                     "tenors": [t for t, _ in _FRED_TENORS],
-                                     "dates": [d.strftime("%Y-%m-%d") for d in frame.index]},
+                              data=_surface_payload(
+                                  surface,
+                                  [t for t, _ in _FRED_TENORS],
+                                  [d.strftime("%Y-%m-%d") for d in frame.index],
+                                  "fred",
+                                  days,
+                              ),
                               sources=["fred"])

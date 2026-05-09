@@ -5,6 +5,7 @@ import {
   pushRecentSymbol,
   removeRecentSymbol,
 } from "@/lib/symbols";
+import { resolveSymbolInput } from "@/lib/symbol-resolver";
 import { navigate } from "@/lib/router";
 import { Pill } from "@/design-system";
 
@@ -13,11 +14,40 @@ interface SymbolBarProps {
   symbol?: string;
 }
 
+const MARKET_SYMBOL_OPTIONS = [
+  "AAPL",
+  "MSFT",
+  "NVDA",
+  "TSLA",
+  "SPY",
+  "QQQ",
+  "BTCUSDT",
+  "ETHUSDT",
+  "SOLUSDT",
+  "ethereum",
+  "solana",
+  "pepe",
+  "dogwifhat",
+  "flock",
+  "EURUSD",
+  "GBPUSD=X",
+  "GC=F",
+  "CL=F",
+  "US10Y",
+];
+
 export function SymbolBar({ code, symbol }: SymbolBarProps) {
   const [draft, setDraft] = useState(
     () => normalizeSymbolInput(symbol) || listRecentSymbols()[0] || "AAPL",
   );
   const [recent, setRecent] = useState<string[]>(() => listRecentSymbols());
+  const suggestions = Array.from(
+    new Set([
+      normalizeSymbolInput(symbol),
+      ...recent,
+      ...MARKET_SYMBOL_OPTIONS,
+    ].filter(Boolean)),
+  ).slice(0, 24);
 
   useEffect(() => {
     const normalized = normalizeSymbolInput(symbol);
@@ -32,8 +62,8 @@ export function SymbolBar({ code, symbol }: SymbolBarProps) {
     setRecent(listRecentSymbols());
   }, [symbol]);
 
-  const submit = (sym: string) => {
-    const next = normalizeSymbolInput(sym);
+  const submit = async (sym: string) => {
+    const next = await resolveSymbolInput(sym);
     if (!next) return;
     pushRecentSymbol(next);
     navigate(`/symbol/${next}/${code}`);
@@ -75,7 +105,7 @@ export function SymbolBar({ code, symbol }: SymbolBarProps) {
       <form
         onSubmit={(e) => {
           e.preventDefault();
-          submit(draft);
+          void submit(draft);
         }}
         style={{
           display: "flex",
@@ -92,6 +122,7 @@ export function SymbolBar({ code, symbol }: SymbolBarProps) {
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           placeholder="AAPL"
+          list={`symbol-bar-options-${code}`}
           style={{
             background: "transparent",
             border: "none",
@@ -103,9 +134,13 @@ export function SymbolBar({ code, symbol }: SymbolBarProps) {
             textTransform: "uppercase",
           }}
         />
+        <datalist id={`symbol-bar-options-${code}`}>
+          {suggestions.map((item) => (
+            <option key={item} value={item} />
+          ))}
+        </datalist>
         <button
           type="submit"
-          onClick={() => submit(draft)}
           style={{
             background: "var(--accent)",
             color: "#000",
@@ -146,7 +181,7 @@ export function SymbolBar({ code, symbol }: SymbolBarProps) {
           >
             <button
               type="button"
-              onClick={() => submit(s)}
+              onClick={() => void submit(s)}
               style={{
                 background: "transparent",
                 border: "none",

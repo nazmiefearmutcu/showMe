@@ -86,9 +86,10 @@ class PORTFunction(BaseFunction):
         # Best-effort: get last prices via yfinance for non-crypto, last close from runtime for crypto.
         prices: dict[str, float] = {}
         rows: list[dict[str, Any]] = []
+        used_sources = {"portfolio_state"}
         for pos in portfolio.positions:
             sym = pos.instrument.symbol
-            last = pos.avg_cost  # naïve fallback
+            last = _position_last_price(pos)
             try:
                 if self.deps.yfinance and pos.instrument.asset_class.value not in ("CRYPTO",):
                     from src.core.base_data_source import DataKind, DataRequest
@@ -96,6 +97,7 @@ class PORTFunction(BaseFunction):
                         kind=DataKind.QUOTE, instrument=pos.instrument
                     ))
                     last = q.last or last
+                    used_sources.add("yfinance")
             except Exception:
                 pass
             prices[sym] = last
@@ -124,5 +126,16 @@ class PORTFunction(BaseFunction):
                 },
                 "by_asset_class": df.groupby("asset_class")["market_value"].sum().to_dict(),
             },
-            sources=["yfinance", "legacy"],
+            sources=sorted(used_sources),
         )
+
+
+def _position_last_price(pos: Any) -> float:
+    metadata = getattr(getattr(pos, "instrument", None), "metadata", {}) or {}
+    current = metadata.get("current_price")
+    if current not in (None, ""):
+        try:
+            return float(current)
+        except (TypeError, ValueError):
+            pass
+    return float(getattr(pos, "avg_cost", 0) or 0)

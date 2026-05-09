@@ -21,6 +21,7 @@ import {
 } from "@/design-system";
 import {
   ask,
+  type AskEvidence,
   type AskFanoutBranch,
   type AskHighlight,
   type AskResponse,
@@ -155,7 +156,7 @@ export function ASKPane({ code }: FunctionPaneProps) {
                       <span style={{ display: "flex", gap: 4 }}>
                         {result.phases.map((p) => (
                           <Pill key={p.name} tone="muted" withDot={false}>
-                            {p.name} · {Math.round(p.elapsed_ms)}ms
+                            {p.name} · {formatMs(p.elapsed_ms)}
                           </Pill>
                         ))}
                       </span>
@@ -239,6 +240,17 @@ export function ASKPane({ code }: FunctionPaneProps) {
                   </Card>
                 )}
 
+                {collectEvidence(result).length > 0 && (
+                  <Card style={{ gridColumn: "1 / -1" }}>
+                    <CardHeader trailing={`${collectEvidence(result).length} refs`}>
+                      Evidence
+                    </CardHeader>
+                    <CardBody>
+                      <EvidenceTable evidence={collectEvidence(result)} />
+                    </CardBody>
+                  </Card>
+                )}
+
                 <Card style={{ gridColumn: "1 / -1" }}>
                   <CardHeader>Suggested view</CardHeader>
                   <CardBody>
@@ -253,7 +265,7 @@ export function ASKPane({ code }: FunctionPaneProps) {
           </div>
         </PaneBody>
         <PaneFooter>
-          <span>elapsed · {result ? Math.round(result.elapsed_ms) : "—"} ms</span>
+          <span>elapsed · {result ? formatMs(result.elapsed_ms) : "—"}</span>
           {result?.warnings?.length ? (
             <span>{result.warnings.length} warn</span>
           ) : null}
@@ -261,6 +273,12 @@ export function ASKPane({ code }: FunctionPaneProps) {
       </Pane>
     </div>
   );
+}
+
+function formatMs(ms: number | null | undefined): string {
+  if (ms == null || !Number.isFinite(ms)) return "—";
+  if (ms > 0 && ms < 1) return "<1ms";
+  return `${Math.max(1, Math.round(ms))}ms`;
 }
 
 function HighlightChip({ h }: { h: AskHighlight }) {
@@ -323,6 +341,72 @@ function VizPanel({
           {p.symbol ? ` · ${p.symbol}` : ""}
         </button>
       ))}
+    </div>
+  );
+}
+
+function collectEvidence(result: AskResponse): AskEvidence[] {
+  const direct = result.search.evidence ?? [];
+  if (direct.length) return direct;
+  const branches = result.search.branches ?? {};
+  return Object.entries(branches).flatMap(([branch, value]) =>
+    (value.evidence ?? []).map((item) => ({ branch, ...item })),
+  );
+}
+
+function EvidenceTable({ evidence }: { evidence: AskEvidence[] }) {
+  return (
+    <div
+      style={{
+        display: "grid",
+        gap: 8,
+      }}
+    >
+      {evidence.map((item, index) => {
+        const top = item.top?.filter(Boolean).slice(0, 4) ?? [];
+        return (
+          <div
+            key={`${item.branch ?? "root"}-${item.code ?? "?"}-${index}`}
+            style={{
+              display: "grid",
+              gridTemplateColumns: "90px 72px 82px 70px minmax(0, 1fr)",
+              gap: 8,
+              alignItems: "start",
+              borderBottom: "1px solid var(--border-subtle)",
+              paddingBottom: 8,
+              fontSize: 11,
+            }}
+          >
+            <Pill tone="accent" withDot={false}>
+              {item.branch ?? "root"}
+            </Pill>
+            <strong style={{ color: "var(--accent)" }}>{item.code ?? "—"}</strong>
+            <span style={{ color: "var(--text-secondary)" }}>
+              {item.status ?? "ok"}
+            </span>
+            <span style={{ color: "var(--text-secondary)" }}>
+              {item.rows ?? 0} rows
+            </span>
+            <div style={{ minWidth: 0 }}>
+              <div
+                style={{
+                  color: "var(--text-primary)",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+                title={top.join(" · ")}
+              >
+                {top.length ? top.join(" · ") : item.reason ?? "No row evidence"}
+              </div>
+              <div style={{ color: "var(--text-mute)", marginTop: 2 }}>
+                source · {(item.sources ?? []).join(" + ") || "—"} · elapsed ·{" "}
+                {formatMs(item.elapsed_ms)}
+              </div>
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }

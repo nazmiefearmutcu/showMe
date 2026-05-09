@@ -11,6 +11,7 @@ import pandas as pd
 from src.core.base_data_source import DataKind, DataRequest
 from src.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from src.core.instrument import AssetClass, Instrument
+from src.functions.portfolio.return_series import align_return_series, close_to_daily_returns
 from src.portfolio.state import PortfolioPosition, PortfolioState
 
 
@@ -48,7 +49,27 @@ class PORTWhatIfFunction(BaseFunction):
                               data={"hypothetical_added": {"symbol": instrument.symbol,
                                                               "qty": qty, "cost": cost},
                                      "before": before.data, "after": after.data,
-                                     "delta": delta},
+                                     "delta": delta,
+                                     "rows": [
+                                         {"metric": key, "before": bt.get(key), "after": at.get(key), "value": value}
+                                         for key, value in delta.items()
+                                     ],
+                                     "summary": {
+                                         "symbol": instrument.symbol,
+                                         "quantity": qty,
+                                         "cost": cost,
+                                         "market_value_delta": delta["market_value"],
+                                         "unrealized_pnl_delta": delta["unrealized_pnl"],
+                                     },
+                                     "methodology": (
+                                         "Clone the current portfolio state, add the hypothetical position, "
+                                         "rerun portfolio analytics before and after, then display the delta."
+                                     ),
+                                     "field_dictionary": {
+                                         "market_value": "Change in portfolio market value after the hypothetical trade.",
+                                         "unrealized_pnl": "Change in unrealized P&L after adding the position.",
+                                         "n_positions": "Change in position count.",
+                                     }},
                               sources=list(set((before.sources or []) + (after.sources or []))))
 
 
@@ -146,6 +167,31 @@ class TRAFunction(BaseFunction):
                 "n_observations": int(len(close)),
                 "first_date": close.index[0].strftime("%Y-%m-%d"),
                 "last_date":  close.index[-1].strftime("%Y-%m-%d"),
+                "series": [
+                    {
+                        "date": idx.strftime("%Y-%m-%d") if hasattr(idx, "strftime") else str(idx)[:10],
+                        "close": float(value),
+                        "growth_of_1": float(value / close.iloc[0]) if close.iloc[0] else None,
+                    }
+                    for idx, value in close.iloc[:: max(1, len(close) // 250)].items()
+                ],
+                "summary": {
+                    "symbol": instrument.symbol,
+                    "price_return_total": price_ret,
+                    "twr_total": twr,
+                    "irr_annualized": irr,
+                    "dividends_total": float(divs.sum()) if len(divs) else 0.0,
+                },
+                "methodology": (
+                    "Compute price return from first and last adjusted closes, compound daily returns for "
+                    "time-weighted return, and estimate XIRR from buy, dividend, and sale cash flows."
+                ),
+                "field_dictionary": {
+                    "price_return_total": "Last close divided by first close minus one.",
+                    "twr_total": "Time-weighted return from compounded daily returns.",
+                    "irr_annualized": "Money-weighted annualized return from cash flows.",
+                    "growth_of_1": "Value of one invested dollar over the selected period.",
+                },
             },
             sources=sources,
         )
@@ -172,7 +218,7 @@ class MARSFunction(BaseFunction):
         }
         years = int(params.get("years", 3))
         days = 365 * years
-        live = _truthy(params.get("live_risk") or params.get("deep"))
+        live = _truthy(params.get("live_risk") or params.get("live") or params.get("deep"))
 
         symbols = params.get("symbols") or []
         if isinstance(symbols, str):
@@ -197,13 +243,18 @@ class MARSFunction(BaseFunction):
 
         async def _ret(sym):
             try:
+                inst = Instrument(symbol=sym, asset_class=AssetClass.ETF)
+                if self.deps.symbol_registry:
+                    resolved = await self.deps.symbol_registry.resolve(sym)
+                    if resolved:
+                        inst = resolved
                 df = await self.deps.yfinance.fetch(DataRequest(
                     kind=DataKind.OHLCV,
-                    instrument=Instrument(symbol=sym, asset_class=AssetClass.ETF),
+                    instrument=inst,
                     start=datetime.utcnow() - timedelta(days=days),
                     interval="1d",
                 ))
-                return df["close"].pct_change().dropna()
+                return close_to_daily_returns(df)
             except Exception:
                 return pd.Series(dtype=float)
         import asyncio
@@ -214,7 +265,7 @@ class MARSFunction(BaseFunction):
                 return pd.Series(dtype=float)
 
         rs = await asyncio.gather(*(_ret_with_timeout(s) for s in proxies.values())) if self.deps.yfinance else []
-        factors = pd.DataFrame({k: r for k, r in zip(proxies.keys(), rs)}).dropna(how="any")
+        factors = align_return_series(zip(proxies.keys(), rs))
         if factors.empty:
             from src.functions.portfolio.rpar import _template_returns
             factors = _template_returns(list(proxies.keys()), days)
@@ -226,11 +277,11 @@ class MARSFunction(BaseFunction):
         if not symbols:
             symbols = ["SPY", "TLT", "GLD"]
         rets = await asyncio.gather(*(_ret_with_timeout(str(s)) for s in symbols))
-        weights = np.ones(len(symbols)) / len(symbols)
-        port_ret = pd.DataFrame({s: r for s, r in zip(symbols, rets)}).dropna()
+        port_ret = align_return_series(zip((str(s) for s in symbols), rets))
         if port_ret.empty:
             from src.functions.portfolio.rpar import _template_returns
             port_ret = _template_returns([str(s) for s in symbols], days)
+        weights = np.ones(port_ret.shape[1]) / max(port_ret.shape[1], 1)
         port_series = (port_ret * weights).sum(axis=1)
         return _mars_result(
             code=self.code,
@@ -284,14 +335,51 @@ def _mars_result(
             "alpha_daily": alpha,
             "alpha_annualized": alpha * 252,
             "factor_loadings": loadings,
+            "rows": [
+                {
+                    "factor": factor,
+                    "loading": loading,
+                    "abs_loading": abs(loading),
+                    "meaning": _factor_meaning(factor),
+                }
+                for factor, loading in loadings.items()
+            ],
             "r_squared": r2,
             "annualized_volatility": ann_vol,
             "var_95_daily": var_95,
             "etl_95_daily": etl_95,
             "samples": int(len(joined)),
+            "summary": {
+                "r_squared": r2,
+                "annualized_volatility": ann_vol,
+                "var_95_daily": var_95,
+                "samples": int(len(joined)),
+            },
+            "methodology": (
+                "Regress the selected multi-asset portfolio return series on ETF factor proxies. "
+                "Loadings measure sensitivity to market, size, value, momentum, quality, and low-volatility "
+                "factors; VaR/ETL are estimated from daily portfolio returns."
+            ),
+            "field_dictionary": {
+                "loading": "Regression beta to the named factor return.",
+                "r_squared": "Share of portfolio return variance explained by the factor model.",
+                "var_95_daily": "5th percentile daily portfolio return.",
+                "etl_95_daily": "Average daily return on days worse than VaR.",
+            },
         },
         sources=sources,
     )
+
+
+def _factor_meaning(factor: str) -> str:
+    return {
+        "MKT": "Broad equity market beta.",
+        "SMB": "Small-cap versus large-cap tilt.",
+        "HML": "Value versus growth tilt.",
+        "MOM": "Momentum factor sensitivity.",
+        "QMJ": "Quality factor sensitivity.",
+        "BAB": "Low-volatility / betting-against-beta proxy.",
+    }.get(factor, "Portfolio factor sensitivity.")
 
 
 def _tz_naive_series(series: pd.Series) -> pd.Series:

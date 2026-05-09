@@ -121,6 +121,7 @@ pub fn delete<R: Runtime>(app: &AppHandle<R>, name: &str) -> Result<bool, String
     Ok(true)
 }
 
+#[allow(dead_code)]
 pub fn root_path<R: Runtime>(app: &AppHandle<R>) -> Option<PathBuf> {
     root(app)
 }

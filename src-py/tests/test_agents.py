@@ -60,6 +60,13 @@ def test_planner_skips_function_codes_as_symbols():
     assert "AAPL" in p.args["symbols"]
 
 
+def test_planner_does_not_treat_i_as_ticker():
+    p = plan_for("morning briefing what should I watch")
+    assert p.intent == "briefing"
+    assert "I" not in p.args.get("symbols", [])
+    assert "symbols" not in p.rationale
+
+
 def test_planner_picks_direction_hint():
     p = plan_for("find me bullish breakouts in equities")
     assert p.args.get("direction") == "LONG"

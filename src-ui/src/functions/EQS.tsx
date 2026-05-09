@@ -18,7 +18,11 @@ import {
   Pill,
   Skeleton,
 } from "@/design-system";
-import { runFunction, FunctionCallError } from "@/lib/functions";
+import {
+  runFunction,
+  FunctionCallError,
+  type FunctionCallResult,
+} from "@/lib/functions";
 import { navigate } from "@/lib/router";
 import {
   FunctionControlGroup,
@@ -32,18 +36,10 @@ import {
 } from "./function-control-state";
 import type { FunctionPaneProps } from "./registry-types";
 
-interface EQSData {
-  rows?: Array<Record<string, unknown>>;
-  query?: string;
-  evaluated?: number;
-  matched?: number;
-  [key: string]: unknown;
-}
-
 const SAMPLES = [
-  'sector = "Information Technology" AND market_cap > 50_000_000_000',
-  'pe < 15 AND div_yield > 0.03 AND beta < 1',
-  'sector = "Energy" AND debt_to_equity < 0.5',
+  'sector = "Technology" AND marketCap > 50000000000',
+  "pe < 35 AND beta < 1.3",
+  'country = "US" AND marketCap > 100000000000',
 ];
 
 export function EQSPane({ code }: FunctionPaneProps) {
@@ -55,20 +51,25 @@ export function EQSPane({ code }: FunctionPaneProps) {
   );
   const [universe, setUniverse] = useState("SP500");
   const [running, setRunning] = useState(false);
-  const [data, setData] = useState<EQSData | null>(null);
+  const [result, setResult] = useState<FunctionCallResult<unknown> | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState<number | null>(null);
 
   const run = async () => {
     setRunning(true);
     setError(null);
-    setData(null);
+    setResult(null);
     setElapsed(null);
     try {
-      const res = await runFunction<EQSData>(code, {
-        params: { query, limit, universe },
+      const parsedUniverse = parseUniverse(universe);
+      const res = await runFunction<unknown>(code, {
+        params: {
+          query,
+          limit,
+          ...(parsedUniverse ? { universe: parsedUniverse } : {}),
+        },
       });
-      setData(res.data);
+      setResult(res);
       setElapsed(res.elapsed_ms);
     } catch (err) {
       const msg =
@@ -83,7 +84,7 @@ export function EQSPane({ code }: FunctionPaneProps) {
     }
   };
 
-  const rows = useMemo(() => data?.rows ?? [], [data?.rows]);
+  const rows = useMemo(() => normalizeRows(result?.data), [result?.data]);
   const cols = useMemo<DataGridColumn<Record<string, unknown>>[]>(() => {
     if (!rows.length) return [];
     const sample = rows[0];
@@ -136,7 +137,7 @@ export function EQSPane({ code }: FunctionPaneProps) {
                 onChange={(next) => setLimit(next as RowLimit)}
                 disabled={running}
               />
-              <LoadStatePill state={running ? "loading" : error ? "error" : data ? "ok" : "idle"} />
+              <LoadStatePill state={running ? "loading" : error ? "error" : result ? "ok" : "idle"} />
               <button
                 type="button"
                 onClick={run}
@@ -220,7 +221,7 @@ export function EQSPane({ code }: FunctionPaneProps) {
                 <Skeleton height={14} width="64%" />
               </div>
             )}
-            {!running && data && (
+            {!running && result && (
               <>
                 <div
                   style={{
@@ -231,13 +232,16 @@ export function EQSPane({ code }: FunctionPaneProps) {
                   }}
                 >
                   <Pill tone="positive" withDot={false}>
-                    matched · {data.matched ?? rows.length}
+                    matched · {Number(result.metadata?.matched ?? rows.length)}
                   </Pill>
-                  {data.evaluated != null && (
+                  {result.metadata?.scanned != null && (
                     <Pill tone="muted" withDot={false}>
-                      evaluated · {data.evaluated}
+                      scanned · {Number(result.metadata.scanned)}
                     </Pill>
                   )}
+                  <Pill tone="muted" withDot={false}>
+                    source · {(result.sources ?? []).join(", ") || "none"}
+                  </Pill>
                 </div>
                 {rows.length === 0 ? (
                   <Empty title="No matches" />
@@ -255,4 +259,25 @@ export function EQSPane({ code }: FunctionPaneProps) {
       </Pane>
     </div>
   );
+}
+
+function normalizeRows(payload: unknown): Array<Record<string, unknown>> {
+  if (Array.isArray(payload)) return payload.filter(isRecord);
+  if (!isRecord(payload)) return [];
+  const rows = payload.rows ?? payload.data ?? payload.items;
+  return Array.isArray(rows) ? rows.filter(isRecord) : [];
+}
+
+function parseUniverse(value: string): string[] | null {
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.toUpperCase() === "SP500") return null;
+  const symbols = trimmed
+    .split(/[\s,]+/)
+    .map((item) => item.trim().toUpperCase())
+    .filter(Boolean);
+  return symbols.length ? symbols : null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

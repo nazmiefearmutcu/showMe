@@ -15,12 +15,14 @@ FnStatus = str
 OK: FnStatus = "ok"
 EMPTY: FnStatus = "empty"
 INPUT_ERROR: FnStatus = "input_error"
+INPUT_REQUIRED: FnStatus = "input_required"
 PROVIDER_UNAVAILABLE: FnStatus = "provider_unavailable"
 CALC_ERROR: FnStatus = "calc_error"
 
 ERROR_STATUSES = {
     EMPTY,
     INPUT_ERROR,
+    INPUT_REQUIRED,
     PROVIDER_UNAVAILABLE,
     CALC_ERROR,
     "unsupported_asset",
@@ -43,6 +45,7 @@ TABLE_KEYS = (
     "lots",
     "news",
     "ohlcv",
+    "orders",
     "positions",
     "records",
     "results",
@@ -161,7 +164,7 @@ def _derive_status(
             reason or _first(metadata.get("provider_errors")) or "provider unavailable",
             _first(actions) or "Connect the required provider and rerun the function.",
         )
-    if data_status in {"unsupported_asset", INPUT_ERROR}:
+    if data_status in {"unsupported_asset", INPUT_ERROR, INPUT_REQUIRED}:
         return (
             INPUT_ERROR,
             reason or "input is not compatible with this function",

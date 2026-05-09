@@ -62,7 +62,7 @@ class WACCFunction(BaseFunction):
                 erp = 0.05
         erp = float(erp)
         # Risk-free
-        rf = float("nan")
+        rf = float(params.get("rf")) if params.get("rf") not in (None, "") else float("nan")
         try:
             if self.deps.fred:
                 df = await asyncio.wait_for(
@@ -75,21 +75,24 @@ class WACCFunction(BaseFunction):
             warnings.append(f"fred: {e}")
             rf = 0.04
         # Beta
-        beta = 1.0
-        try:
-            beta_fn = BetaFunction(self.deps)
-            beta_res = await asyncio.wait_for(
-                beta_fn.execute(instrument, windows=["2Y"]),
-                timeout=float(params.get("beta_timeout", 8)),
-            )
-            beta = float(((beta_res.data or {}).get("betas", {}) or {}).get("2Y", {}).get("beta") or 1.0)
-            sources.append("yfinance")
-        except Exception as e:
-            warnings.append(f"beta: {e}")
+        beta = float(params.get("beta")) if params.get("beta") not in (None, "") else 1.0
+        if params.get("beta") in (None, ""):
+            try:
+                beta_fn = BetaFunction(self.deps)
+                beta_res = await asyncio.wait_for(
+                    beta_fn.execute(instrument, windows=["2Y"]),
+                    timeout=float(params.get("beta_timeout", 8)),
+                )
+                beta = float(((beta_res.data or {}).get("betas", {}) or {}).get("2Y", {}).get("beta") or 1.0)
+                sources.append("yfinance")
+            except Exception as e:
+                warnings.append(f"beta: {e}")
+        else:
+            sources.append("user_input")
         # Cost of debt — Aaa as proxy
-        rd = 0.05
+        rd = float(params.get("rd")) if params.get("rd") not in (None, "") else 0.05
         try:
-            if self.deps.fred:
+            if self.deps.fred and params.get("rd") in (None, ""):
                 df = await asyncio.wait_for(
                     self.deps.fred.series("AAA", frequency="d"),
                     timeout=float(params.get("fred_timeout", 8)),
@@ -98,7 +101,7 @@ class WACCFunction(BaseFunction):
         except Exception as e:
             warnings.append(f"fred AAA: {e}")
         # Tax rate / E/V/D ratios — best-effort from yfinance
-        tax = 0.21
+        tax = float(params.get("tax_rate")) if params.get("tax_rate") not in (None, "") else 0.21
         ev_ratio = 0.7
         dv_ratio = 0.3
         try:
@@ -118,19 +121,45 @@ class WACCFunction(BaseFunction):
                 sources.append("yfinance")
         except Exception as e:
             warnings.append(f"yfinance ratios: {e}")
-        warnings = []
         if rf != rf:
             rf = 0.04
         re_capm = rf + beta * erp
         wacc = ev_ratio * re_capm + dv_ratio * rd * (1 - tax)
+        rows = [
+            {"component": "Cost of equity", "value": re_capm, "formula": "Re = rf + beta * ERP"},
+            {"component": "After-tax cost of debt", "value": rd * (1 - tax), "formula": "Rd * (1 - tax_rate)"},
+            {"component": "Equity weight", "value": ev_ratio, "formula": "E / (E + D)"},
+            {"component": "Debt weight", "value": dv_ratio, "formula": "D / (E + D)"},
+            {"component": "WACC", "value": wacc, "formula": "(E/V * Re) + (D/V * Rd * (1 - tax))"},
+        ]
+        surface = []
+        for b in (max(0.1, beta - 0.25), beta, beta + 0.25):
+            for spread in (-0.01, 0, 0.01):
+                rd_case = max(0.0, rd + spread)
+                re_case = rf + b * erp
+                w_case = ev_ratio * re_case + dv_ratio * rd_case * (1 - tax)
+                surface.append({"bucket": f"beta {b:.2f} / Rd {rd_case:.1%}", "beta": b, "rd": rd_case, "wacc": w_case})
         return FunctionResult(
             code=self.code, instrument=instrument,
             data={
+                "status": "ok",
                 "wacc": float(wacc),
                 "re_capm": float(re_capm),
                 "rf": float(rf), "beta": float(beta), "erp": erp,
                 "rd": float(rd), "tax_rate": float(tax),
                 "equity_weight": ev_ratio, "debt_weight": dv_ratio,
+                "rows": rows,
+                "surface": surface,
+                "methodology": "WACC = (E/V * Re) + (D/V * Rd * (1 - tax)). Re uses CAPM: rf + beta * ERP. E and D come from market cap and total debt when yfinance returns them; rf and Rd use FRED proxies when configured.",
+                "field_dictionary": {
+                    "wacc": "Weighted average cost of capital as a decimal.",
+                    "re_capm": "Cost of equity from CAPM.",
+                    "rf": "Risk-free rate.",
+                    "erp": "Equity risk premium.",
+                    "rd": "Pre-tax cost of debt proxy.",
+                    "equity_weight": "Equity share of capital structure.",
+                    "debt_weight": "Debt share of capital structure.",
+                },
             },
             sources=sources, warnings=warnings,
         )

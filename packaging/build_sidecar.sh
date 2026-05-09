@@ -12,12 +12,26 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.."; pwd)"
 ENGINE_PATH="${SHOWME_ENGINE_PATH:-$ROOT/engine}"
+VERYFINDER_PATH="${SHOWME_VERYFINDER_ROOT:-$HOME/Desktop/Projeler/veryfinder}"
 DIST="$ROOT/src-tauri/binaries"
 mkdir -p "$DIST"
 
 if [[ ! -d "$ENGINE_PATH/src" ]]; then
   echo "ShowMe engine not found at $ENGINE_PATH — set SHOWME_ENGINE_PATH" >&2
   exit 1
+fi
+
+VERYFINDER_ARGS=()
+if [[ -f "$VERYFINDER_PATH/veryfinder/orchestrator.py" ]]; then
+  VERYFINDER_ARGS+=(
+    --add-data "$VERYFINDER_PATH/veryfinder:integrations/veryfinder/veryfinder"
+  )
+  if [[ -d "$VERYFINDER_PATH/data" ]]; then
+    VERYFINDER_ARGS+=(--add-data "$VERYFINDER_PATH/data:integrations/veryfinder/data")
+  fi
+  echo "Including Veryfinder runtime from $VERYFINDER_PATH"
+else
+  echo "Veryfinder runtime not found at $VERYFINDER_PATH; sidecar will use Application Support cache if present." >&2
 fi
 
 pushd "$ROOT/src-py" >/dev/null
@@ -40,6 +54,7 @@ uv run --extra dev python -m PyInstaller \
   --hidden-import uvicorn.logging \
   --hidden-import uvicorn.protocols \
   --hidden-import uvicorn.lifespan.on \
+  "${VERYFINDER_ARGS[@]}" \
   --target-arch arm64 \
   showme/server.py
 

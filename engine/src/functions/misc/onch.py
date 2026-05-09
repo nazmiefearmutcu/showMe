@@ -8,6 +8,7 @@ ETH için: Etherscan gas + Glassnode metrics.
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 from typing import Any
 
 from src.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
@@ -50,21 +51,22 @@ class ONCHFunction(BaseFunction):
         live = _truthy(params.get("live_onchain") or params.get("live"))
 
         if not live or asset_class != "CRYPTO":
-            out.update(_template_onchain(chain, base.upper(), asset_class))
+            out.update(_onchain_unavailable(chain, base.upper(), asset_class))
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
                 data=out,
-                sources=["onchain_proxy_model"],
-                metadata={"mode": "local_model", "asset_class": asset_class},
+                sources=["onchain_provider"],
+                metadata={"asset_class": asset_class},
             )
 
         if chain == "BTC" and self.deps.mempool:
             try:
-                fees, mp, blocks = await asyncio.gather(
+                fees, mp, blocks, hashrate = await asyncio.gather(
                     asyncio.wait_for(self.deps.mempool.fees(), timeout=timeout),
                     asyncio.wait_for(self.deps.mempool.mempool_stats(), timeout=timeout),
                     asyncio.wait_for(self.deps.mempool.blocks(limit=5), timeout=timeout),
+                    asyncio.wait_for(self.deps.mempool.hashrate(), timeout=timeout),
                     return_exceptions=True,
                 )
                 if not isinstance(fees, Exception):
@@ -79,6 +81,10 @@ class ONCHFunction(BaseFunction):
                     out["recent_blocks"] = blocks
                 else:
                     provider_errors.append(f"mempool.blocks: {blocks}")
+                if not isinstance(hashrate, Exception):
+                    out["hashrate"] = hashrate
+                else:
+                    provider_errors.append(f"mempool.hashrate: {hashrate}")
                 if any(key in out for key in ("mempool_fees", "mempool_stats", "recent_blocks")):
                     sources.append("mempool")
             except Exception as e:
@@ -122,11 +128,33 @@ class ONCHFunction(BaseFunction):
                 provider_errors.append(f"glassnode: {e}")
 
         if len(out) <= 2:
-            out.update(_template_onchain(chain, base.upper(), asset_class))
-            sources.append("onchain_proxy_model")
+            out.update(_onchain_unavailable(chain, base.upper(), asset_class))
 
+        rows, history = _shape_onchain_rows(out, chain)
+        out.update({
+            "rows": rows,
+            "history": history,
+            "cards": [
+                {"label": "Chain", "value": chain},
+                {"label": "Metrics", "value": len(rows)},
+                {"label": "Blocks", "value": len(history)},
+            ],
+            "methodology": (
+                "ONCH normalizes crypto-native provider payloads into metric rows. BTC uses mempool.space "
+                "fees, mempool statistics, recent blocks, and mining hash-rate endpoints. Glassnode/Etherscan "
+                "metrics are included only when credentials are available; missing vendors are reported as "
+                "provider errors rather than replaced with fake active-address values."
+            ),
+            "field_dictionary": {
+                "metric": "Human-readable on-chain metric.",
+                "value": "Latest normalized value.",
+                "unit": "Metric unit.",
+                "source_mode": "Provider endpoint used for the row.",
+                "date": "Observation timestamp/date when available.",
+            },
+        })
         return FunctionResult(code=self.code, instrument=instrument,
-                              data=out, sources=sources or ["onchain_proxy_model"],
+                              data=out, sources=sources or ["onchain_provider"],
                               metadata={"provider_errors": provider_errors} if provider_errors else {})
 
 
@@ -134,41 +162,88 @@ def _truthy(value: Any) -> bool:
     return str(value).lower() in {"1", "true", "yes", "on", "live"}
 
 
-def _template_onchain(chain: str, asset: str, asset_class: str = "CRYPTO") -> dict[str, Any]:
+def _onchain_unavailable(chain: str, asset: str, asset_class: str = "CRYPTO") -> dict[str, Any]:
     if asset_class != "CRYPTO":
         return {
-            "status": f"not_applicable_for_{asset_class.lower()}",
-            "readthrough": {
-                "asset": asset,
-                "metric_family": "onchain",
-                "coverage": "crypto_native_only",
-                "compatible_response": True,
-            },
-            "glassnode": {
-                "active_addresses": {"latest": None, "samples": 0},
-                "tx_count": {"latest": None, "samples": 0},
-            },
-        }
-    if chain == "ETH":
-        return {
-            "gas": {"safeGasPrice": "12", "proposeGasPrice": "14", "fastGasPrice": "18"},
-            "glassnode": {
-                "active_addresses": {"latest": 420000, "samples": 1},
-                "tx_count": {"latest": 1150000, "samples": 1},
-            },
-            "status": f"{asset} on-chain provider unavailable; showing local on-chain proxy",
+            "status": "unsupported_asset",
+            "reason": f"ONCH is crypto-native; {asset_class} does not have on-chain metrics.",
+            "rows": [],
+            "next_actions": ["Use BTCUSDT or ETHUSDT, or open a non-on-chain market function for this asset."],
         }
     return {
-        "mempool_fees": {"fastestFee": 18, "halfHourFee": 12, "hourFee": 8, "economyFee": 4},
-        "mempool_stats": {"count": 120000, "vsize": 45000000, "total_fee": 210000000},
-        "recent_blocks": [
-            {"height": 840000, "tx_count": 3800, "timestamp": None},
-            {"height": 839999, "tx_count": 3500, "timestamp": None},
+        "status": "provider_unavailable",
+        "reason": f"{asset} {chain} on-chain providers returned no usable metrics.",
+        "rows": [],
+        "next_actions": [
+            "For BTC, keep live=true and allow mempool.space access.",
+            "For ETH and Glassnode metrics, configure ETHERSCAN_API_KEY or GLASSNODE_API_KEY.",
         ],
-        "glassnode": {
-            "active_addresses": {"latest": 760000, "samples": 1},
-            "tx_count": {"latest": 520000, "samples": 1},
-            "mvrv": {"latest": 2.1, "samples": 1},
-        },
-        "status": f"{asset} on-chain provider unavailable; showing local on-chain proxy",
     }
+
+
+def _shape_onchain_rows(out: dict[str, Any], chain: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    rows: list[dict[str, Any]] = []
+    fees = out.get("mempool_fees") if isinstance(out.get("mempool_fees"), dict) else {}
+    for key, label in (
+        ("fastestFee", "Fastest fee"),
+        ("halfHourFee", "Half-hour fee"),
+        ("hourFee", "Hour fee"),
+        ("economyFee", "Economy fee"),
+    ):
+        value = fees.get(key)
+        if value is not None:
+            rows.append({"chain": chain, "metric": label, "value": value, "unit": "sat/vB", "source_mode": "mempool_fees"})
+    stats = out.get("mempool_stats") if isinstance(out.get("mempool_stats"), dict) else {}
+    for key, label, unit in (
+        ("count", "Mempool transactions", "tx"),
+        ("vsize", "Mempool virtual size", "vbytes"),
+        ("total_fee", "Mempool total fees", "sats"),
+    ):
+        value = stats.get(key)
+        if value is not None:
+            rows.append({"chain": chain, "metric": label, "value": value, "unit": unit, "source_mode": "mempool_stats"})
+    hashrate = out.get("hashrate") if isinstance(out.get("hashrate"), dict) else {}
+    current_hashrate = _find_numeric(hashrate, ("currentHashrate", "current_hashrate", "hashrate", "avgHashrate"))
+    if current_hashrate is not None:
+        rows.append({"chain": chain, "metric": "Hash rate", "value": current_hashrate, "unit": "H/s", "source_mode": "mempool_hashrate"})
+    gas = out.get("gas") if isinstance(out.get("gas"), dict) else {}
+    for key, label in (("SafeGasPrice", "Safe gas"), ("ProposeGasPrice", "Propose gas"), ("FastGasPrice", "Fast gas"), ("safeGasPrice", "Safe gas"), ("proposeGasPrice", "Propose gas"), ("fastGasPrice", "Fast gas")):
+        value = gas.get(key)
+        if value is not None:
+            rows.append({"chain": chain, "metric": label, "value": _to_float(value), "unit": "gwei", "source_mode": "etherscan_gas"})
+    glassnode = out.get("glassnode") if isinstance(out.get("glassnode"), dict) else {}
+    for metric, item in glassnode.items():
+        if isinstance(item, dict) and item.get("latest") is not None:
+            rows.append({"chain": chain, "metric": metric, "value": item.get("latest"), "unit": "value", "samples": item.get("samples"), "source_mode": "glassnode"})
+    history = []
+    for block in out.get("recent_blocks") or []:
+        if not isinstance(block, dict):
+            continue
+        ts = block.get("timestamp")
+        date = datetime.fromtimestamp(float(ts), tz=timezone.utc).isoformat() if ts else None
+        history.append({
+            "date": date or str(block.get("height")),
+            "height": block.get("height"),
+            "tx_count": block.get("tx_count"),
+            "value": block.get("tx_count"),
+            "size": block.get("size"),
+            "source_mode": "mempool_blocks",
+        })
+    return rows, history
+
+
+def _find_numeric(payload: dict[str, Any], keys: tuple[str, ...]) -> float | None:
+    for key in keys:
+        value = _to_float(payload.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def _to_float(value: Any) -> float | None:
+    try:
+        if value is None or value == "":
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None

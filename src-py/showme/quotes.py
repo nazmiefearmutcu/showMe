@@ -16,26 +16,11 @@ from typing import Any
 
 import requests
 
-
-CRYPTO_QUOTES = ("USDT", "USDC", "USD", "BTC", "ETH", "EUR")
-CRYPTO_BASES = {
-    "BTC",
-    "ETH",
-    "SOL",
-    "BNB",
-    "XRP",
-    "ADA",
-    "DOGE",
-    "AVAX",
-    "DOT",
-    "LINK",
-    "MATIC",
-    "TRX",
-    "LTC",
-    "BCH",
-    "UNI",
-    "ATOM",
-}
+from showme.crypto_aliases import (
+    is_crypto_symbol as _is_crypto_symbol,
+    resolve_crypto_symbol_alias,
+    split_crypto_symbol,
+)
 COINGECKO_IDS = {
     "BTC": "bitcoin",
     "ETH": "ethereum",
@@ -53,6 +38,7 @@ COINGECKO_IDS = {
     "BCH": "bitcoin-cash",
     "UNI": "uniswap",
     "ATOM": "cosmos",
+    "FLOCK": "flock-2",
 }
 
 
@@ -95,32 +81,21 @@ def fallback_quote_snapshot(symbol: str, reason: str | None = None) -> dict[str,
 
 
 def clean_symbol(symbol: str) -> str:
-    return str(symbol or "").strip().upper()
+    return resolve_crypto_symbol_alias(symbol, allow_network=False) or str(symbol or "").strip().upper()
 
 
 def is_crypto_symbol(symbol: str) -> bool:
-    value = clean_symbol(symbol).replace("-", "").replace("/", "")
-    if value in CRYPTO_BASES:
-        return True
-    return any(
-        value.endswith(suffix)
-        and value[: -len(suffix)] in CRYPTO_BASES
-        and len(value) > len(suffix)
-        for suffix in CRYPTO_QUOTES
-    )
-
-
-def split_crypto_symbol(symbol: str) -> tuple[str, str]:
-    value = clean_symbol(symbol).replace("-", "").replace("/", "")
-    for quote in sorted(CRYPTO_QUOTES, key=len, reverse=True):
-        if value.endswith(quote) and len(value) > len(quote):
-            return value[: -len(quote)], quote
-    return value, "USD"
+    return _is_crypto_symbol(clean_symbol(symbol))
 
 
 def fetch_crypto_quote_sync(symbol: str) -> dict[str, Any]:
     attempts: list[str] = []
-    for provider in (_fetch_binance_quote, _fetch_cryptocompare_quote, _fetch_coingecko_quote):
+    for provider in (
+        _fetch_binance_quote,
+        _fetch_binance_futures_quote,
+        _fetch_cryptocompare_quote,
+        _fetch_coingecko_quote,
+    ):
         try:
             snapshot = provider(symbol)
             if snapshot.get("last") is not None:
@@ -169,6 +144,38 @@ def _fetch_binance_quote(symbol: str) -> dict[str, Any]:
             "high": number(payload.get("highPrice")),
             "low": number(payload.get("lowPrice")),
             "quote_volume": number(payload.get("quoteVolume")),
+        },
+    )
+
+
+def _fetch_binance_futures_quote(symbol: str) -> dict[str, Any]:
+    response = requests.get(
+        "https://fapi.binance.com/fapi/v1/ticker/24hr",
+        params={"symbol": clean_symbol(symbol)},
+        headers={"User-Agent": "showMe/1.0"},
+        timeout=2.5,
+    )
+    response.raise_for_status()
+    payload = response.json() or {}
+    last = number(payload.get("lastPrice"))
+    prev = number(payload.get("openPrice"))
+    return normalized_snapshot(
+        symbol=symbol,
+        asset_class="CRYPTO",
+        last=last,
+        previous_close=prev,
+        change_pct=number(payload.get("priceChangePercent")),
+        volume=number(payload.get("volume")),
+        bid=None,
+        ask=None,
+        source="binance_futures",
+        provider_symbol=str(payload.get("symbol") or symbol).upper(),
+        currency=split_crypto_symbol(symbol)[1],
+        raw={
+            "high": number(payload.get("highPrice")),
+            "low": number(payload.get("lowPrice")),
+            "quote_volume": number(payload.get("quoteVolume")),
+            "venue": "usdm_futures",
         },
     )
 

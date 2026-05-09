@@ -74,6 +74,7 @@ class BMTXFunction(BaseFunction):
                     bt = Backtest(df, fn, initial_cash=10_000, fee_bps=fee_bps)
                     r = bt.run()
                     cells.append({
+                        "label": f"{sym} {strat}",
                         "symbol": sym, "strategy": strat,
                         "sharpe": r.metrics["sharpe"],
                         "total_return": r.metrics["total_return"],
@@ -90,14 +91,41 @@ class BMTXFunction(BaseFunction):
             if sym not in best_per_symbol or cell["sharpe"] > best_per_symbol[sym]["sharpe"]:
                 best_per_symbol[sym] = cell
         cells.sort(key=lambda x: -x["sharpe"])
+        surface = [
+            {
+                "label": cell["label"],
+                "symbol": cell["symbol"],
+                "strategy": cell["strategy"],
+                "sharpe": cell["sharpe"],
+                "total_return": cell["total_return"],
+                "max_drawdown": cell["max_drawdown"],
+            }
+            for cell in cells
+        ]
         return FunctionResult(
             code=self.code, instrument=None,
             data={
+                "status": "ok",
                 "symbols": list(bars_dict.keys()),
                 "strategies": strategies,
                 "cells": cells,
+                "surface": surface,
                 "best_per_symbol": best_per_symbol,
                 "top_10_by_sharpe": cells[:10],
+                "summary": {
+                    "symbols": len(bars_dict),
+                    "strategies": len(strategies),
+                    "runs": len(cells),
+                    "best_sharpe": cells[0]["sharpe"] if cells else None,
+                },
+                "methodology": "Runs each selected strategy on each symbol's daily OHLCV history with the selected fee, then ranks cells by Sharpe and total return.",
+                "field_dictionary": {
+                    "sharpe": "Annualized return/risk score from the backtest equity curve.",
+                    "total_return": "Final equity divided by initial equity minus one.",
+                    "max_drawdown": "Worst peak-to-trough equity decline during the test.",
+                    "trades": "Number of trade events created by the strategy.",
+                    "surface": "Strategy-by-symbol grid used by the heatmap.",
+                },
             },
             sources=sources,
         )
@@ -114,6 +142,7 @@ def _matrix_template(symbols: list[str], strategies: list[str]) -> dict[str, Any
     for i, sym in enumerate(symbols[:8]):
         for j, strat in enumerate(strategies[:5]):
             cells.append({
+                "label": f"{sym} {strat}",
                 "symbol": sym,
                 "strategy": strat,
                 "sharpe": round(1.05 + i * 0.04 - j * 0.03, 3),
@@ -129,9 +158,34 @@ def _matrix_template(symbols: list[str], strategies: list[str]) -> dict[str, Any
             best_per_symbol[sym] = cell
     cells.sort(key=lambda item: -item["sharpe"])
     return {
+        "status": "reference",
         "symbols": symbols[:8],
         "strategies": strategies[:5],
         "cells": cells,
+        "surface": [
+            {
+                "label": cell["label"],
+                "symbol": cell["symbol"],
+                "strategy": cell["strategy"],
+                "sharpe": cell["sharpe"],
+                "total_return": cell["total_return"],
+                "max_drawdown": cell["max_drawdown"],
+            }
+            for cell in cells
+        ],
         "best_per_symbol": best_per_symbol,
         "top_10_by_sharpe": cells[:10],
+        "summary": {
+            "symbols": len(symbols[:8]),
+            "strategies": len(strategies[:5]),
+            "runs": len(cells),
+            "source_mode": "reference_model",
+        },
+        "methodology": "Reference strategy-by-symbol matrix used when live backtest data is not requested or unavailable.",
+        "field_dictionary": {
+            "sharpe": "Annualized return/risk score from the backtest equity curve.",
+            "total_return": "Final equity divided by initial equity minus one.",
+            "max_drawdown": "Worst peak-to-trough equity decline during the test.",
+            "surface": "Strategy-by-symbol grid used by the heatmap.",
+        },
     }

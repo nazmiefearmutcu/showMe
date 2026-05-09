@@ -36,15 +36,23 @@ export interface AgentCandidateResult {
   top_evidence: AgentFunctionEvidence[];
 }
 
+export interface AgentExcludedFunction {
+  code: string;
+  reason: string;
+}
+
 export interface BestSymbolAgentResult {
   best: AgentCandidateResult | null;
   ranked: AgentCandidateResult[];
   function_count: number;
+  catalog_count?: number;
+  excluded_functions?: AgentExcludedFunction[];
   candidate_count: number;
   started_at: string;
   completed_at: string;
   elapsed_ms: number;
   method: string;
+  methodology?: string;
 }
 
 export interface RunBestSymbolAgentRequest {

@@ -19,6 +19,7 @@ import pandas as pd
 
 from src.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from src.core.instrument import AssetClass, Instrument
+from src.functions.portfolio.return_series import align_return_series, close_to_daily_returns
 from src.portfolio.state import PortfolioState
 
 
@@ -68,7 +69,7 @@ class PVARFunction(BaseFunction):
                 except Exception:
                     return p.instrument.symbol, pd.Series(dtype=float), None
             rs = await asyncio.gather(*(_ret(p) for p in eligible))
-            rets_df = pd.DataFrame({s: r for s, r, _ in rs if not r.empty}).dropna(how="any")
+            rets_df = align_return_series((s, r) for s, r, _ in rs)
             last_map = {s: px for s, _, px in rs if px is not None}
             if rets_df.empty:
                 return _empty_pvar(self.code, confidence, params, instrument, "no live return history")
@@ -117,6 +118,23 @@ class PVARFunction(BaseFunction):
                 "positions_analyzed": int(len(rets_df.columns)),
                 "max_positions": max_positions,
                 "rows": rows,
+                "summary": {
+                    "confidence": confidence,
+                    "positions_analyzed": int(len(rets_df.columns)),
+                    "portfolio_daily_var_dollar": var_pct * total,
+                },
+                "methodology": (
+                    "Parametric position-level VaR: estimate annualized covariance from daily returns, "
+                    "compute portfolio volatility sqrt(w'Σw), then decompose marginal and component "
+                    "risk contributions by symbol. Daily VaR uses the selected normal z-score."
+                ),
+                "field_dictionary": {
+                    "portfolio_daily_var_pct": "One-day parametric VaR as a return percentage.",
+                    "portfolio_daily_var_dollar": "One-day VaR in portfolio dollars.",
+                    "marginal_contribution_to_risk": "Derivative of portfolio volatility with respect to symbol weight.",
+                    "component_pct_of_portfolio_risk": "Symbol share of portfolio risk contribution.",
+                    "notional_usd": "Position notional used for portfolio weights.",
+                },
             },
             sources=["yfinance"] if live else ["portfolio_state", "risk_model"],
             metadata={"live_risk": live, "positions_analyzed": int(len(rets_df.columns))},
@@ -145,7 +163,8 @@ def _download_returns(symbol: str, days: int, timeout: float) -> tuple[pd.Series
         close = pd.to_numeric(close, errors="coerce").dropna()
         if close.empty:
             return pd.Series(dtype=float), None
-        return close.pct_change().dropna(), float(close.iloc[-1])
+        returns = close_to_daily_returns(pd.DataFrame({"close": close}))
+        return returns, float(close.iloc[-1])
     except Exception:
         return pd.Series(dtype=float), None
 
@@ -201,6 +220,14 @@ def _sample_pvar(
             ],
             "confidence": confidence,
             "samples": 252,
+            "methodology": (
+                "Reference parametric VaR decomposition using sample positions; live mode uses saved "
+                "portfolio positions and return covariance."
+            ),
+            "field_dictionary": {
+                "component_pct_of_portfolio_risk": "Symbol share of portfolio risk contribution.",
+                "portfolio_daily_var_dollar": "One-day VaR in portfolio dollars.",
+            },
         },
         sources=["portfolio_state"],
         metadata={"live": False},
@@ -230,6 +257,10 @@ def _empty_pvar(
                 "Add real positions through portfolio state.",
                 "Set live=true so the function can fetch return history.",
             ],
+            "methodology": (
+                "Parametric VaR requires positions and a return covariance matrix. No decomposition is "
+                "shown until portfolio positions and return history are available."
+            ),
         },
         sources=["portfolio_state"],
         metadata={"empty": True, "requires_positions": True, "live": _truthy(params.get("live"))},

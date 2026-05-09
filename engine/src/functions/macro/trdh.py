@@ -33,7 +33,7 @@ class TRDHFunction(BaseFunction):
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         cal = CalendarRegistry()
-        exchanges = params.get("exchanges") or _DEFAULT_EXCHANGES
+        exchanges = _parse_exchanges(params.get("exchanges") or params.get("exchange") or _DEFAULT_EXCHANGES)
         rows: list[dict[str, Any]] = []
         now = datetime.now(timezone.utc)
         for code in exchanges:
@@ -51,9 +51,52 @@ class TRDHFunction(BaseFunction):
                 "is_open_now": is_open,
                 "next_open_utc": nxt.isoformat() if nxt else None,
                 "seconds_until_open": secs,
+                "hours_until_open": round(secs / 3600, 3) if secs is not None else None,
+                "value": round(secs / 3600, 3) if secs is not None else None,
             })
+        data = {
+            "rows": rows,
+            "surface": [
+                {
+                    "exchange": row.get("exchange"),
+                    "status": "open" if row.get("is_open_now") else "closed",
+                    "hours_until_open": row.get("hours_until_open"),
+                    "value": row.get("hours_until_open"),
+                }
+                for row in rows
+                if row.get("hours_until_open") is not None
+            ],
+            "cards": [
+                {"label": "Open now", "value": sum(1 for row in rows if row.get("is_open_now"))},
+                {"label": "Exchanges", "value": len(rows)},
+            ],
+            "methodology": (
+                "TRDH evaluates each exchange with the local exchange calendar and timezone registry. "
+                "next_open_utc is the next scheduled open in UTC; seconds_until_open and hours_until_open "
+                "are computed from the current UTC timestamp. Holiday coverage depends on the local calendar registry."
+            ),
+            "field_dictionary": {
+                "is_open_now": "Whether the exchange is currently inside a regular session.",
+                "next_open_utc": "Next regular-session open in UTC.",
+                "seconds_until_open": "Seconds until next regular open.",
+                "timezone": "Exchange local timezone used for the session clock.",
+            },
+            "source_mode": "exchange_calendar_registry",
+        }
         return FunctionResult(
-            code=self.code, instrument=None, data=rows,
+            code=self.code,
+            instrument=None,
+            data=data,
             sources=["exchange_calendars"],
-            metadata={"now_utc": now.isoformat()},
+            metadata={"now_utc": now.isoformat(), "exchanges": exchanges},
         )
+
+
+def _parse_exchanges(value: Any) -> list[str]:
+    if isinstance(value, str):
+        parts = [part.strip().upper() for part in value.split(",") if part.strip()]
+    elif isinstance(value, (list, tuple, set)):
+        parts = [str(part).strip().upper() for part in value if str(part).strip()]
+    else:
+        parts = []
+    return parts or _DEFAULT_EXCHANGES

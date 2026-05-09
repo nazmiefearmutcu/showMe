@@ -14,6 +14,7 @@ from typing import Any
 from src.core.base_data_source import DataKind, DataRequest
 from src.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from src.core.instrument import AssetClass, Instrument
+from src.functions.equity._common import EXCHANGE_LEGEND
 
 
 @FunctionRegistry.register
@@ -80,6 +81,34 @@ class DESFunction(BaseFunction):
                 ],
             }
             sources_used = ["yfinance", "finnhub", "sec_edgar"]
+        if isinstance(rd, dict):
+            if rd.get("exchange"):
+                rd["exchange_name"] = EXCHANGE_LEGEND.get(str(rd.get("exchange")), rd.get("exchange"))
+            rd.setdefault("methodology", "DES is a live company profile assembled from yfinance, Finnhub, and SEC reference data in priority order. Missing profile fields remain blank only when no provider returned the field.")
+            rd.setdefault("field_dictionary", _des_field_dictionary())
+        else:
+            try:
+                raw = (rd.extras or {}).get("raw", {}) if hasattr(rd, "extras") else {}
+                data = rd.__dict__.copy() if hasattr(rd, "__dict__") else dict(rd)
+                data["exchange_name"] = EXCHANGE_LEGEND.get(str(data.get("exchange") or ""), data.get("exchange"))
+                data["market_cap"] = data.get("market_cap") or raw.get("marketCap")
+                data["employees"] = data.get("employees") or raw.get("fullTimeEmployees")
+                data["ipo_date"] = data.get("ipo_date") or raw.get("firstTradeDateEpochUtc")
+                data["description"] = data.get("description") or raw.get("longBusinessSummary") or "Provider did not return a business summary."
+                data["rows"] = [
+                    {"field": "Name", "value": data.get("name"), "source_mode": data.get("source") or "provider"},
+                    {"field": "Sector", "value": data.get("sector"), "source_mode": data.get("source") or "provider"},
+                    {"field": "Industry", "value": data.get("industry"), "source_mode": data.get("source") or "provider"},
+                    {"field": "Market cap", "value": data.get("market_cap"), "source_mode": data.get("source") or "provider"},
+                    {"field": "Employees", "value": data.get("employees"), "source_mode": data.get("source") or "provider"},
+                    {"field": "Exchange", "value": data.get("exchange_name"), "raw_code": data.get("exchange"), "source_mode": data.get("source") or "provider"},
+                    {"field": "Website", "value": data.get("website"), "source_mode": data.get("source") or "provider"},
+                ]
+                data["methodology"] = "DES is a live company profile assembled from yfinance, Finnhub, and SEC reference data in priority order. Exchange codes are expanded for readability."
+                data["field_dictionary"] = _des_field_dictionary()
+                rd = data
+            except Exception:
+                pass
         return FunctionResult(
             code=self.code,
             instrument=instrument,
@@ -111,3 +140,12 @@ class DESFunction(BaseFunction):
   <p class="fn-summary">{rd.description or ''}</p>
   <footer class="fn-footer">sources: {', '.join(r.sources)} · {r.fetched_at:%Y-%m-%d %H:%M}</footer>
 </section>"""
+
+
+def _des_field_dictionary() -> dict[str, str]:
+    return {
+        "market_cap": "Latest provider market capitalization in quote currency.",
+        "employees": "Full-time employees, when reported by provider.",
+        "description": "Business summary from the reference-data provider.",
+        "exchange_name": "Human-readable exchange name expanded from provider code.",
+    }

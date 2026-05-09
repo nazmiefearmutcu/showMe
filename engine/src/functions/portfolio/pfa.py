@@ -77,6 +77,24 @@ class PFAFunction(BaseFunction):
                     "selection": se_total,
                     "interaction": ie_total,
                 },
+                "summary": {
+                    "active_return": rp_total - rb_total,
+                    "allocation": ae_total,
+                    "selection": se_total,
+                    "interaction": ie_total,
+                    "sectors": len(rows),
+                },
+                "methodology": (
+                    "Brinson-Hood-Beebower attribution: active return is decomposed by sector into "
+                    "allocation, selection, and interaction effects using portfolio and benchmark "
+                    "weights and sector returns."
+                ),
+                "field_dictionary": {
+                    "allocation_effect": "(portfolio_weight - benchmark_weight) * (benchmark_sector_return - benchmark_total_return).",
+                    "selection_effect": "benchmark_weight * (portfolio_sector_return - benchmark_sector_return).",
+                    "interaction_effect": "(portfolio_weight - benchmark_weight) * (portfolio_sector_return - benchmark_sector_return).",
+                    "total_effect": "Allocation + selection + interaction for the sector.",
+                },
             },
-            sources=[],
+            sources=["brinson_model"],
         )

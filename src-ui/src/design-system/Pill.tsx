@@ -27,6 +27,8 @@ export function Pill({
         display: "inline-flex",
         alignItems: "center",
         gap: 6,
+        minWidth: 0,
+        maxWidth: "100%",
         padding: "0 8px",
         height: 18,
         borderRadius: 9,
@@ -37,12 +39,17 @@ export function Pill({
         fontWeight: 600,
         background: "var(--bg-elev-3)",
         color,
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+        whiteSpace: "nowrap",
       }}
     >
       {withDot && (
         <span
+          className="dot"
           style={{
             width: 6,
+            flex: "0 0 6px",
             height: 6,
             borderRadius: "50%",
             background: "currentColor",
@@ -50,7 +57,9 @@ export function Pill({
           }}
         />
       )}
-      {children}
+      <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>
+        {children}
+      </span>
     </span>
   );
 }

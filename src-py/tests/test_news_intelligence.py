@@ -8,7 +8,7 @@ ENGINE = ROOT / "engine"
 if str(ENGINE) not in sys.path:
     sys.path.insert(0, str(ENGINE))
 
-from src.services.news_intelligence import enrich_articles, health_summary
+from src.services.news_intelligence import enrich_articles, health_summary  # noqa: E402
 
 
 def test_enrich_articles_flags_symbol_specific_critical_news() -> None:

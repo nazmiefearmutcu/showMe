@@ -19,6 +19,7 @@ from typing import Any
 
 from src.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from src.core.instrument import Instrument
+from src.functions.comm.peop import reference_people_search
 
 
 @FunctionRegistry.register
@@ -102,12 +103,43 @@ class MEETFunction(BaseFunction):
                 pass
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
-        if "recent_news" not in out:
-            out["recent_news"] = [{"title": f"{topic} briefing item", "source": "local_briefing"}]
-        if warnings and out:
-            warnings = []
+        people = reference_people_search(str(topic), limit=int(params.get("people_limit", 6)))
+        if people:
+            out["participants"] = people
+            sources.append("people_public_reference")
+
+        recent_news = _normalise_news(out.get("recent_news"))
+        out["recent_news"] = recent_news
+        out["meeting_date"] = str(params.get("date") or datetime.utcnow().date().isoformat())
+        out["connection_status"] = [
+            {"source": "notion", "status": "configured" if self.deps.notion else "not_configured"},
+            {"source": "granola", "status": "configured" if self.deps.granola else "not_configured"},
+            {"source": "gdelt", "status": "configured" if self.deps.gdelt else "not_configured"},
+            {"source": "people_public_reference", "status": "used" if people else "no_match"},
+        ]
+        out["rows"] = _briefing_rows(topic, people, recent_news, out)
+        out["briefing_sections"] = [
+            {"section": "participants", "status": "ready" if people else "needs_data", "count": len(people)},
+            {"section": "meeting_notes", "status": "ready" if out.get("granola_recent") else "not_configured_or_empty", "count": len(out.get("granola_recent") or [])},
+            {"section": "news", "status": "ready" if recent_news else "not_available", "count": len(recent_news)},
+            {"section": "portfolio", "status": "ready" if out.get("portfolio_position") else "not_linked", "count": 1 if out.get("portfolio_position") else 0},
+        ]
+        out["questions"] = [
+            "What changed since the last meeting or review?",
+            "Which person owns the next follow-up?",
+            "What market, portfolio, or product risk should be raised?",
+        ]
+        out["methodology"] = (
+            "MEET builds a meeting brief from configured connectors plus local/public reference context. "
+            "Missing connectors are shown in connection_status instead of being replaced with fake notes."
+        )
+        out["field_dictionary"] = {
+            "participants": "People matched from local directory or public reference sources.",
+            "connection_status": "Whether Notion, Granola, news, and people sources were available.",
+            "rows": "Briefing table grouped by participant, notes, news, and portfolio sections.",
+        }
         return FunctionResult(code=self.code, instrument=instrument,
-                              data=out, sources=list(set(sources)) or ["local_briefing"], warnings=warnings)
+                              data=out, sources=list(dict.fromkeys(sources)) or ["meeting_briefing"], warnings=warnings)
 
 
 def _truthy(value: Any) -> bool:
@@ -149,3 +181,94 @@ def _meeting_template(topic: str, instrument: Instrument | None) -> dict[str, An
             "What action or follow-up is required?",
         ],
     }
+
+
+def _normalise_news(value: Any) -> list[dict[str, Any]]:
+    if value is None:
+        return []
+    if hasattr(value, "to_dict"):
+        try:
+            value = value.to_dict("records")
+        except Exception:
+            value = []
+    if not isinstance(value, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for item in value[:10]:
+        if isinstance(item, dict):
+            title = item.get("title") or item.get("headline") or item.get("name")
+            if not title:
+                continue
+            out.append({
+                "title": title,
+                "source": item.get("source") or item.get("provider") or "news",
+                "published_at": item.get("published_at") or item.get("date"),
+                "url": item.get("url"),
+            })
+    return out
+
+
+def _briefing_rows(
+    topic: Any,
+    people: list[dict[str, Any]],
+    recent_news: list[dict[str, Any]],
+    out: dict[str, Any],
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for person in people:
+        rows.append({
+            "section": "participant",
+            "name": person.get("full_name"),
+            "role": person.get("role"),
+            "company": person.get("company"),
+            "status": person.get("contact_status", "public_profile_only"),
+            "source": person.get("source"),
+            "source_url": person.get("source_url"),
+        })
+    notes = out.get("granola_recent") or []
+    if isinstance(notes, list) and notes:
+        for note in notes[:5]:
+            rows.append({
+                "section": "meeting_note",
+                "title": note.get("title") if isinstance(note, dict) else str(note),
+                "status": "ready",
+                "source": "granola",
+            })
+    else:
+        rows.append({
+            "section": "meeting_note",
+            "title": "No recent Granola notes returned",
+            "status": "not_configured_or_empty",
+            "source": "granola",
+        })
+    if recent_news:
+        for item in recent_news[:5]:
+            rows.append({
+                "section": "news",
+                "title": item.get("title"),
+                "published_at": item.get("published_at"),
+                "status": "ready",
+                "source": item.get("source"),
+                "url": item.get("url"),
+            })
+    else:
+        rows.append({
+            "section": "news",
+            "title": f"No recent live news returned for {topic}",
+            "status": "not_available",
+            "source": "news",
+        })
+    if out.get("portfolio_position"):
+        rows.append({
+            "section": "portfolio",
+            **out["portfolio_position"],
+            "status": "linked",
+        })
+    else:
+        rows.append({
+            "section": "portfolio",
+            "title": "No matching portfolio position found",
+            "status": "not_linked",
+            "source": "portfolio_state",
+        })
+    return rows

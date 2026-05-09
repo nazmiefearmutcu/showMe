@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { useAppStore } from "@/lib/store";
 import type { FunctionEntry } from "@/lib/sidecar";
-import { navigate } from "@/lib/router";
+import { navigate, useRoute } from "@/lib/router";
 import { listNativeCodes } from "@/functions/registry";
 
 const CATEGORY_ORDER = [
@@ -40,6 +40,8 @@ export function Sidebar() {
   const toggleSidebar = useAppStore((s) => s.toggleSidebar);
   const [query, setQuery] = useState("");
   const [peekOpen, setPeekOpen] = useState(false);
+  const route = useRoute();
+  const activeCode = route.kind === "function" ? route.code : route.kind === "welcome" ? "HOME" : "PREF";
   const nativeCodes = useMemo(() => new Set(listNativeCodes()), []);
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -64,6 +66,7 @@ export function Sidebar() {
           filteredCount={filtered.length}
           grouped={grouped}
           nativeCodes={nativeCodes}
+          activeCode={activeCode}
           onHide={() => {
             setPeekOpen(false);
             toggleSidebar(false);
@@ -78,7 +81,7 @@ export function Sidebar() {
             onClick={() => setPeekOpen(true)}
             aria-label="Show functions preview"
           >
-            <span>FN</span>
+            <span>Functions</span>
           </button>
           {peekOpen && (
             <div
@@ -94,6 +97,7 @@ export function Sidebar() {
                 filteredCount={filtered.length}
                 grouped={grouped}
                 nativeCodes={nativeCodes}
+                activeCode={activeCode}
                 onPin={() => {
                   setPeekOpen(false);
                   toggleSidebar(true);
@@ -116,6 +120,7 @@ interface SidebarPanelProps {
   filteredCount: number;
   grouped: Array<[string, FunctionEntry[]]>;
   nativeCodes: Set<string>;
+  activeCode: string;
   onHide?: () => void;
   onPin?: () => void;
   onClose?: () => void;
@@ -129,6 +134,7 @@ function SidebarPanel({
   filteredCount,
   grouped,
   nativeCodes,
+  activeCode,
   onHide,
   onPin,
   onClose,
@@ -266,10 +272,17 @@ function SidebarPanel({
               className="sidebar-function"
               style={{
                 width: "100%",
-                background: "transparent",
+                background:
+                  activeCode === it.code
+                    ? "color-mix(in srgb, var(--accent) 14%, transparent)"
+                    : "transparent",
                 border: "none",
+                borderLeft:
+                  activeCode === it.code
+                    ? "2px solid var(--accent)"
+                    : "2px solid transparent",
                 textAlign: "left",
-                padding: "4px 12px",
+                padding: "4px 12px 4px 10px",
                 fontFamily: "JetBrains Mono, monospace",
                 fontSize: 11,
                 color: "var(--text-secondary)",

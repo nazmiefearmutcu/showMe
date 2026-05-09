@@ -5,7 +5,7 @@
  * render a candlestick series + volume histogram and overlay any returned
  * indicators (sma, ema, rsi, macd, bollinger).
  */
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, type CSSProperties } from "react";
 import {
   type CandlestickData,
   type HistogramData,
@@ -25,6 +25,14 @@ import {
   Skeleton,
   Tabs,
 } from "@/design-system";
+import {
+  chartResizeHandleStyle,
+  measureChartElement,
+  resizeChartToElement,
+  terminalChartHostStyle,
+  terminalChartViewportStyle,
+  usePersistentChartSize,
+} from "@/lib/chart-layout";
 import { useFunction } from "@/lib/useFunction";
 import { SymbolBar } from "@/shell/SymbolBar";
 import {
@@ -58,15 +66,36 @@ const RANGES = [
   { id: "6M", days: 180 },
   { id: "1Y", days: 365 },
   { id: "5Y", days: 365 * 5 },
+  { id: "MAX", days: 365 * 25 },
 ] as const;
 type RangeId = (typeof RANGES)[number]["id"];
 const RANGE_IDS = RANGES.map((r) => r.id);
+const INTERVALS = ["1m", "5m", "15m", "1h", "4h", "1d", "1w"] as const;
+type IntervalId = (typeof INTERVALS)[number];
+const DEPTHS = [
+  { id: "300", label: "300" },
+  { id: "1000", label: "1K" },
+  { id: "3000", label: "3K" },
+  { id: "10000", label: "10K" },
+] as const;
+type DepthId = (typeof DEPTHS)[number]["id"];
+const DEPTH_IDS = DEPTHS.map((d) => d.id);
 
 export function GPPane({ code, symbol }: FunctionPaneProps) {
   const [range, setRange] = usePersistentOption<RangeId>(
     `showme.${code.toLowerCase()}-range`,
     RANGE_IDS,
     "1Y",
+  );
+  const [interval, setInterval] = usePersistentOption<IntervalId>(
+    `showme.${code.toLowerCase()}-interval`,
+    INTERVALS,
+    "1d",
+  );
+  const [depth, setDepth] = usePersistentOption<DepthId>(
+    `showme.${code.toLowerCase()}-depth`,
+    DEPTH_IDS,
+    "1000",
   );
   const days = useMemo(
     () => RANGES.find((r) => r.id === range)?.days ?? 365,
@@ -76,7 +105,7 @@ export function GPPane({ code, symbol }: FunctionPaneProps) {
     code,
     symbol,
     enabled: !!symbol,
-    params: { days },
+    params: { days, range, interval, bars: Number(depth) },
   });
 
   const ohlc = useMemo(() => normalizeOHLC(data?.data?.ohlcv), [data]);
@@ -95,7 +124,12 @@ export function GPPane({ code, symbol }: FunctionPaneProps) {
       }
     />
   ) : (
-    <ChartView candles={ohlc} indicators={data?.data?.indicators} />
+    <ChartView
+      chartId={code.toUpperCase()}
+      candles={ohlc}
+      indicators={data?.data?.indicators}
+      interval={interval}
+    />
   );
 
   return (
@@ -104,7 +138,7 @@ export function GPPane({ code, symbol }: FunctionPaneProps) {
         <PaneHeader
           code={code}
           title={`Price — ${symbol ?? ""}`}
-          subtitle={`${range} · ${ohlc.length} candles`}
+          subtitle={`${range} · ${interval} · ${ohlc.length} candles`}
           trailing={
             <FunctionControlGroup>
               <Tabs
@@ -113,12 +147,25 @@ export function GPPane({ code, symbol }: FunctionPaneProps) {
                 active={range}
                 onChange={(id) => setRange(id as RangeId)}
               />
+              <Tabs
+                variant="segmented"
+                items={INTERVALS.map((id) => ({ id, label: id }))}
+                active={interval}
+                onChange={(id) => setInterval(id as IntervalId)}
+              />
+              <Tabs
+                variant="segmented"
+                items={DEPTHS.map((d) => ({ id: d.id, label: d.label }))}
+                active={depth}
+                onChange={(id) => setDepth(id as DepthId)}
+              />
               <LoadStatePill state={state} />
               <RefreshButton
                 loading={state === "loading"}
                 onClick={refetch}
                 disabled={!symbol}
-                title="Refresh chart"
+                title="Run price graph"
+                label="Run"
               />
             </FunctionControlGroup>
           }
@@ -155,25 +202,35 @@ function normalizeOHLC(input: GPData["ohlcv"]): OHLCRow[] {
 }
 
 function timeOf(row: OHLCRow): Time {
-  const v = row.date ?? row.ts ?? row.time;
-  if (typeof v === "number") return v as Time;
-  // lightweight-charts accepts {year,month,day} or 'YYYY-MM-DD'
-  return String(v ?? "").slice(0, 10) as Time;
+  const v = row.time ?? row.ts ?? row.date;
+  if (typeof v === "number") return (v > 10_000_000_000 ? Math.floor(v / 1000) : v) as Time;
+  const text = String(v ?? "");
+  if (text.includes("T")) {
+    const ts = Date.parse(text);
+    if (Number.isFinite(ts)) return Math.floor(ts / 1000) as Time;
+  }
+  return text.slice(0, 10) as Time;
 }
 
 function ChartView({
+  chartId,
   candles,
   indicators,
+  interval,
 }: {
+  chartId: string;
   candles: OHLCRow[];
   indicators?: GPData["indicators"];
+  interval: string;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
+  const resize = usePersistentChartSize(`${chartId}.price`);
 
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
+    const size = measureChartElement(el, 460);
     const chart = createChart(el, {
       layout: {
         background: { color: "transparent" },
@@ -186,13 +243,17 @@ function ChartView({
         horzLines: { color: "rgba(255,255,255,0.04)" },
       },
       timeScale: {
-        rightOffset: 4,
+        rightOffset: 8,
+        barSpacing: 7,
+        minBarSpacing: 0.3,
+        timeVisible: interval !== "1d" && interval !== "1w",
+        secondsVisible: interval === "1m",
         borderColor: "rgba(255,255,255,0.08)",
       },
       rightPriceScale: { borderColor: "rgba(255,255,255,0.08)" },
       crosshair: { mode: 1 },
-      width: el.clientWidth,
-      height: el.clientHeight,
+      width: size.width,
+      height: size.height,
     });
 
     const candleSeries: ISeriesApi<"Candlestick"> = chart.addCandlestickSeries({
@@ -256,11 +317,10 @@ function ChartView({
     }
 
     chartRef.current = chart;
-    chart.timeScale().fitContent();
+    focusLatestBars(chart, candles.length, size.width);
 
     const ro = new ResizeObserver(() => {
-      if (!el) return;
-      chart.applyOptions({ width: el.clientWidth, height: el.clientHeight });
+      resizeChartToElement(chart, el, 460);
     });
     ro.observe(el);
 
@@ -269,7 +329,7 @@ function ChartView({
       chart.remove();
       chartRef.current = null;
     };
-  }, [candles, indicators]);
+  }, [candles, indicators, interval]);
 
   if (candles.length === 0) {
     return <Empty title="No price data" body="Function returned no candles." />;
@@ -277,13 +337,61 @@ function ChartView({
 
   return (
     <div
-      style={{
-        position: "relative",
-        height: "calc(100vh - 320px)",
-        minHeight: 360,
-      }}
+      ref={resize.frameRef}
+      style={{ ...terminalChartViewportStyle, ...resize.frameStyle }}
     >
-      <div ref={containerRef} style={{ width: "100%", height: "100%" }} />
+      <div style={chartToolbarStyle}>
+        <span>{candles.length.toLocaleString()} candles loaded · drag/scroll to inspect history</span>
+        <div style={{ display: "flex", gap: 6, pointerEvents: "auto" }}>
+          <button type="button" className="btn btn--ghost" onClick={() => chartRef.current?.timeScale().fitContent()}>
+            Fit
+          </button>
+          <button
+            type="button"
+            className="btn btn--ghost"
+            onClick={() => {
+              const el = containerRef.current;
+              if (chartRef.current && el) focusLatestBars(chartRef.current, candles.length, el.clientWidth);
+            }}
+          >
+            Last
+          </button>
+        </div>
+      </div>
+      <div ref={containerRef} style={terminalChartHostStyle} />
+      <button
+        type="button"
+        aria-label="Resize chart"
+        title="Drag to resize chart. Double-click to reset."
+        onPointerDown={resize.startResize}
+        onDoubleClick={resize.resetSize}
+        style={chartResizeHandleStyle}
+      />
     </div>
   );
 }
+
+function focusLatestBars(chart: IChartApi, count: number, width: number): void {
+  if (count <= 0) return;
+  const visible = Math.max(90, Math.min(240, Math.floor(width / 7)));
+  chart.timeScale().setVisibleLogicalRange({
+    from: Math.max(0, count - visible),
+    to: count + 8,
+  });
+}
+
+const chartToolbarStyle: CSSProperties = {
+  position: "absolute",
+  top: 8,
+  left: 10,
+  right: 10,
+  zIndex: 2,
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  gap: 8,
+  pointerEvents: "none",
+  color: "var(--text-mute)",
+  fontSize: 10,
+  textTransform: "uppercase",
+};

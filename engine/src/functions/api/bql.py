@@ -111,6 +111,106 @@ def _template_rows(query: BQLQuery, instrument: Instrument | None, params: dict[
     return rows
 
 
+def _apply_runtime_window(query: BQLQuery, params: dict[str, Any]) -> None:
+    if query.params.get("start") or query.params.get("end") or query.params.get("period"):
+        return
+    try:
+        days = int(params.get("days") or 90)
+    except Exception:
+        days = 90
+    days = max(5, min(days, 365 * 5))
+    query.params["period"] = f"{days}d"
+
+
+def _limit_rows(rows: list[dict[str, Any]], limit: Any) -> list[dict[str, Any]]:
+    try:
+        n = int(limit)
+    except Exception:
+        n = 250
+    n = max(10, min(n, 1000))
+    if len(rows) <= n:
+        return rows
+    symbols = list(dict.fromkeys(str(row.get("symbol") or "") for row in rows))
+    symbols = [symbol for symbol in symbols if symbol]
+    if len(symbols) <= 1:
+        return rows[-n:]
+    per_symbol = max(1, n // len(symbols))
+    grouped: dict[str, list[dict[str, Any]]] = {symbol: [] for symbol in symbols}
+    for row in rows:
+        symbol = str(row.get("symbol") or "")
+        if symbol in grouped:
+            grouped[symbol].append(row)
+    kept: list[dict[str, Any]] = []
+    for symbol in symbols:
+        kept.extend(grouped[symbol][-per_symbol:])
+    return kept
+
+
+def _history_rows(rows: list[dict[str, Any]], field: str = "close") -> list[dict[str, Any]]:
+    first_symbol = next((str(row.get("symbol")) for row in rows if row.get("symbol")), "")
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        if first_symbol and str(row.get("symbol")) != first_symbol:
+            continue
+        value = row.get(field)
+        if value is None:
+            continue
+        out.append({"date": row.get("date"), "symbol": row.get("symbol"), field: value})
+    return out
+
+
+def _format_payload(
+    query: BQLQuery,
+    rows: list[dict[str, Any]],
+    mode: str,
+    warnings: list[str] | None = None,
+) -> dict[str, Any]:
+    date_values = [str(row.get("date")) for row in rows if row.get("date")]
+    field = next((f for f in query.fields if f.lower() in {"close", "px_last", "last", "price"}), query.fields[0])
+    history = _history_rows(rows, field)
+    return {
+        "rows": rows,
+        "history": history,
+        "summary": {
+            "mode": mode,
+            "symbols": len(query.universe),
+            "fields": ", ".join(query.fields),
+            "rows": len(rows),
+            "first_date": min(date_values) if date_values else None,
+            "last_date": max(date_values) if date_values else None,
+            "by": query.by or "date",
+        },
+        "query_plan": [
+            {
+                "step": "parse",
+                "detail": "get(...) fields, for([...]) universe, with(...) date/period params, by(...) grouping parsed from the visible query.",
+            },
+            {
+                "step": "fetch",
+                "detail": "Live mode requests OHLCV rows from yfinance for each parsed symbol and requested period.",
+            },
+            {
+                "step": "shape",
+                "detail": "Returned rows are symbol/date records; chart history is the first symbol's selected price field.",
+            },
+        ],
+        "methodology": (
+            "ShowMe BQL is a constrained query DSL: get(field list) selects output columns, "
+            "for(symbol list) defines the universe, with(period/start/end/interval) defines the time window, "
+            "and by(date) requests date-level rows. It is intentionally limited to provider-backed market fields."
+        ),
+        "field_dictionary": {
+            "query": "Visible DSL text sent to the backend.",
+            "symbol": "Security identifier from the for([...]) universe.",
+            "date": "Provider timestamp for the OHLCV row.",
+            "close": "Closing/last price from the provider.",
+            "volume": "Provider-reported session volume.",
+            "mode": "live when provider data is used; computed_model only for explicit offline fallback.",
+        },
+        "warnings": warnings or [],
+    }
+
+
 @FunctionRegistry.register
 class BQLFunction(BaseFunction):
     code = "BQL"
@@ -124,13 +224,15 @@ class BQLFunction(BaseFunction):
             q.universe = _default_universe(instrument, params)
         if not q.fields:
             q.fields = ["close", "volume"]
+        _apply_runtime_window(q, params)
         rows: list[dict[str, Any]] = []
         if not (params.get("live_query") or params.get("live")):
             rows = _template_rows(q, instrument, params)
+            rows = _limit_rows(rows, params.get("limit"))
             return FunctionResult(
                 code=self.code,
                 instrument=None,
-                data=rows,
+                data=_format_payload(q, rows, "computed_model"),
                 sources=["showme_query_model"],
                 metadata={"parsed": q.__dict__, "rows": len(rows), "mode": "computed_model"},
             )
@@ -173,6 +275,7 @@ class BQLFunction(BaseFunction):
                         col = row.index[row.index.str.lower() == f.lower()][0]
                         d[f] = float(row[col])
                 rows.append(d)
+        rows = _limit_rows(rows, params.get("limit"))
         if not rows:
             return FunctionResult(
                 code=self.code,
@@ -199,7 +302,7 @@ class BQLFunction(BaseFunction):
         return FunctionResult(
             code=self.code,
             instrument=None,
-            data=rows,
+            data=_format_payload(q, rows, "live", provider_errors),
             sources=["yfinance"],
             warnings=provider_errors,
             metadata={"parsed": q.__dict__, "rows": len(rows), "mode": "live"},

@@ -41,8 +41,13 @@ interface CommodityRow {
   change?: number;
   change_pct?: number;
   changePercent?: number;
+  chg_pct?: number;
   unit?: string;
   contract_month?: string;
+  contract?: string;
+  source?: string;
+  source_mode?: string;
+  as_of?: string;
   open_interest?: number;
 }
 
@@ -76,6 +81,11 @@ export function GLCOPane({ code }: FunctionPaneProps) {
     code,
     params: { sector: sector === "all" ? undefined : sector, tick },
   });
+  const payload = useMemo(() => (isRecord(data?.data) ? data?.data : null), [data]);
+  const status = typeof payload?.status === "string" ? payload.status : "";
+  const reason = typeof payload?.reason === "string" ? payload.reason : "";
+  const methodology = typeof payload?.methodology === "string" ? payload.methodology : "";
+  const sources = data?.sources?.join(", ") || String(payload?.source_mode ?? "—");
 
   const rows = useMemo(() => {
     const all = normalizeRows(data?.data);
@@ -176,9 +186,9 @@ export function GLCOPane({ code }: FunctionPaneProps) {
       },
       {
         key: "contract_month",
-        header: "Cont.",
-        width: 80,
-        render: (r) => r.contract_month ?? "—",
+        header: "Contract",
+        width: 170,
+        render: (r) => r.contract ?? r.contract_month ?? "—",
       },
       {
         key: "open_interest",
@@ -186,6 +196,12 @@ export function GLCOPane({ code }: FunctionPaneProps) {
         numeric: true,
         width: 100,
         render: (r) => fmtCompact(r.open_interest),
+      },
+      {
+        key: "source",
+        header: "Source",
+        width: 120,
+        render: (r) => r.source_mode ?? r.source ?? "—",
       },
     ],
     [setFocusedTarget],
@@ -231,26 +247,109 @@ export function GLCOPane({ code }: FunctionPaneProps) {
           ) : rows.length === 0 ? (
             <Empty title="No contracts" body={`No GLCO rows for ${sector}.`} />
           ) : (
-            <DataGrid
-              columns={cols}
-              rows={rows}
-              rowKey={(r, i) => `${r.symbol ?? r.ticker ?? ""}-${i}`}
-              density="compact"
-              onRowDoubleClick={(r) => {
-                const sym = r.symbol ?? r.ticker;
-                if (!sym) return;
-                setFocusedTarget("DES", sym);
-                navigate(`/symbol/${sym}/DES`);
-              }}
-            />
+            <div style={{ display: "grid", gap: 12 }}>
+              {status && status !== "ok" ? (
+                <section
+                  style={{
+                    border: "1px solid var(--warn)",
+                    borderRadius: "var(--radius-md)",
+                    padding: 10,
+                    background: "rgba(255,176,32,0.10)",
+                    color: "var(--text-secondary)",
+                    fontSize: 12,
+                  }}
+                >
+                  <strong style={{ color: "var(--warn)", display: "block", marginBottom: 4 }}>
+                    {status}
+                  </strong>
+                  {reason || "Commodity provider returned a labelled fallback state."}
+                </section>
+              ) : null}
+              <MoverBars rows={rows} />
+              {methodology ? (
+                <section
+                  style={{
+                    border: "1px solid var(--border-subtle)",
+                    borderRadius: "var(--radius-md)",
+                    padding: 10,
+                    color: "var(--text-secondary)",
+                    fontSize: 12,
+                  }}
+                >
+                  {methodology}
+                </section>
+              ) : null}
+              <DataGrid
+                columns={cols}
+                rows={rows}
+                rowKey={(r, i) => `${r.symbol ?? r.ticker ?? ""}-${i}`}
+                density="compact"
+                onRowDoubleClick={(r) => {
+                  const sym = r.symbol ?? r.ticker;
+                  if (!sym) return;
+                  setFocusedTarget("DES", sym);
+                  navigate(`/symbol/${sym}/DES`);
+                }}
+              />
+            </div>
           )}
         </PaneBody>
         <PaneFooter>
           <span>elapsed · {data?.elapsed_ms?.toFixed(0) ?? "—"} ms</span>
           <span>sector · {sector}</span>
+          <span>sources · {sources}</span>
         </PaneFooter>
       </Pane>
     </div>
+  );
+}
+
+function MoverBars({ rows }: { rows: CommodityRow[] }) {
+  const movers = [...rows]
+    .filter((row) => numeric(row.change_pct ?? row.changePercent ?? row.chg_pct) != null)
+    .sort((a, b) => Math.abs(numeric(b.change_pct ?? b.changePercent ?? b.chg_pct) ?? 0) - Math.abs(numeric(a.change_pct ?? a.changePercent ?? a.chg_pct) ?? 0))
+    .slice(0, 8);
+  if (!movers.length) return null;
+  const maxAbs = Math.max(...movers.map((row) => Math.abs(numeric(row.change_pct ?? row.changePercent ?? row.chg_pct) ?? 0)), 1);
+  return (
+    <section
+      style={{
+        display: "grid",
+        gap: 8,
+        border: "1px solid var(--border-subtle)",
+        borderRadius: "var(--radius-md)",
+        padding: 10,
+      }}
+    >
+      {movers.map((row) => {
+        const value = numeric(row.change_pct ?? row.changePercent ?? row.chg_pct) ?? 0;
+        const width = Math.max(4, Math.min(100, (Math.abs(value) / maxAbs) * 100));
+        return (
+          <div
+            key={row.symbol ?? row.ticker}
+            style={{
+              display: "grid",
+              gridTemplateColumns: "80px minmax(0, 1fr) 70px",
+              alignItems: "center",
+              gap: 8,
+              fontSize: 12,
+            }}
+          >
+            <strong style={{ color: "var(--text-primary)" }}>{row.symbol ?? row.ticker}</strong>
+            <div style={{ height: 8, background: "var(--bg-elev-2)", borderRadius: 2, overflow: "hidden" }}>
+              <div
+                style={{
+                  height: "100%",
+                  width: `${width}%`,
+                  background: value >= 0 ? "var(--positive)" : "var(--negative)",
+                }}
+              />
+            </div>
+            <ChangeText value={value} digits={2} suffix="%" />
+          </div>
+        );
+      })}
+    </section>
   );
 }
 
@@ -288,4 +387,13 @@ function fmtCompact(v: number | undefined | null): string {
   if (a >= 1e6) return `${(v / 1e6).toFixed(2)}M`;
   if (a >= 1e3) return `${(v / 1e3).toFixed(2)}K`;
   return v.toLocaleString(undefined, { maximumFractionDigits: 0 });
+}
+
+function numeric(v: unknown): number | null {
+  const n = typeof v === "number" ? v : Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
 }

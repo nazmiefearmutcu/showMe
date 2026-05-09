@@ -15,6 +15,7 @@ export function Statusbar() {
   }, []);
 
   const utc = now.toISOString().slice(11, 19) + " UTC";
+  const dataRoot = engineRoot ? shortenPath(engineRoot) : "—";
 
   return (
     <footer className="statusbar">
@@ -25,9 +26,15 @@ export function Statusbar() {
       </span>
       <span>functions · {total}</span>
       <span style={{ flex: 1, color: "var(--text-mute)" }}>
-        data · {engineRoot || "—"}
+        data · {dataRoot}
       </span>
       <span style={{ color: "var(--text-primary)" }}>{utc}</span>
     </footer>
   );
+}
+
+function shortenPath(path: string): string {
+  const home = "/Users/nazmi/";
+  if (path.startsWith(home)) return `~/${path.slice(home.length)}`;
+  return path;
 }
