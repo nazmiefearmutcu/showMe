@@ -5,11 +5,11 @@
 #   APPLE_ID                  Apple developer account email
 #   APPLE_TEAM_ID             Team ID (10 chars)
 #   APPLE_APP_SPECIFIC_PASSWORD  app-specific password from appleid.apple.com
-#   DMG_PATH                  path to the dmg (default: src-tauri/target/.../*.dmg)
+#   DMG_PATH                  path to the dmg (default: tauri/target/.../*.dmg)
 
 set -euo pipefail
 
-DMG_PATH="${DMG_PATH:-$(ls -1 src-tauri/target/release/bundle/dmg/*.dmg 2>/dev/null | head -1)}"
+DMG_PATH="${DMG_PATH:-$(ls -1 tauri/target/release/bundle/dmg/*.dmg 2>/dev/null | head -1)}"
 APPLE_ID="${APPLE_ID:?APPLE_ID env var required}"
 APPLE_TEAM_ID="${APPLE_TEAM_ID:?APPLE_TEAM_ID env var required}"
 APPLE_APP_SPECIFIC_PASSWORD="${APPLE_APP_SPECIFIC_PASSWORD:?APPLE_APP_SPECIFIC_PASSWORD env var required}"

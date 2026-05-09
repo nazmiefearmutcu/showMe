@@ -1,34 +1,79 @@
 # showMe
 
-Native macOS Apple Silicon market cockpit powered by ShowMe's bundled Python
-function engine (141 indexed functions, 14 categories). The OS shell and view
-layer stay thin; function routing, defaults, provider handling, audit, and
-payload quality gates live in Python.
+Native macOS Apple Silicon market cockpit. A thin Tauri shell, a React/Vite UI,
+and a unified Python backend that ships the 138+ function market engine as a
+regular `showme.engine` subpackage.
 
 ## Layout
 
 ```
 showMe/
-├── src-tauri/   Thin macOS shell: app lifecycle, tray, menubar, deep links
-├── src-py/      Python runtime: FastAPI, function routing, quality audit
-├── src-ui/      Thin presentation layer: views, controls, layout
-├── engine/      Python function engine source/config
-├── packaging/   build / sign / notarize / dmg config
-└── docs/        architecture, ui_standards, coder_log, engine_independence
+├── tauri/                  Native macOS shell (Rust)
+│   ├── src/                lifecycle, tray, menubar, dock, deep-link, biometric
+│   ├── tauri.conf.json
+│   ├── entitlements.plist
+│   ├── icons/
+│   ├── capabilities/
+│   ├── binaries/           PyInstaller backend goes here
+│   └── Cargo.toml
+│
+├── ui/                     React + Vite + Tailwind + zustand frontend
+│   ├── src/
+│   │   ├── App.tsx, main.tsx
+│   │   ├── shell/          titlebar, sidebar, statusbar, symbolbar
+│   │   ├── panes/          Splash, Welcome, Preferences, FunctionStub
+│   │   ├── functions/      37 function components (PORT, WATCH, SCAN, …)
+│   │   ├── lib/            sidecar HTTP client, store, router, state
+│   │   ├── design-system/  Card, Toolbar, Pane, Tabs, Field, Crumb, …
+│   │   ├── command-palette/
+│   │   ├── i18n/           en, tr (12-lang ready)
+│   │   └── styles/         tokens.css
+│   ├── package.json
+│   └── vite.config.ts
+│
+├── backend/                Unified Python sidecar + bundled engine
+│   ├── pyproject.toml
+│   ├── showme-backend.spec PyInstaller spec
+│   ├── tests/              pytest suite (17 files)
+│   ├── config/             default.yaml (engine thresholds, cooldowns)
+│   └── showme/             single Python package
+│       ├── server.py       FastAPI entry; /api/health, /function-index, /fn/*
+│       ├── function_contracts.py
+│       ├── scanner.py
+│       ├── streams.py      Binance WS + polling fan-out
+│       ├── quotes.py, state_api.py, chart_history.py, instant_line.py,
+│       ├── migration.py, llm.py, crypto_aliases.py, veryfinder_bridge.py,
+│       ├── agents/         orchestrator, planner, search, summarizer, viz
+│       ├── brokers/        base, paper, alpaca, factory
+│       ├── core/, services/, persistence/, ipc/, data_sources/
+│       └── engine/         the bundled function engine (was engine/src/*)
+│           ├── consensus/, indicators/ (24), functions/ (138 in 14 cats)
+│           ├── data/, data_sources/, services/, trading/, control/
+│           ├── monitoring/, persistence/, portfolio/, reference/
+│           ├── core/, assets/, agents/, api/, utils/
+│           └── main.py
+│
+├── packaging/              build / sign / notarize / dmg / deploy
+├── scripts/                audit + dev tools (function audit, sentinels, …)
+├── tests/                  cross-cutting Playwright e2e
+├── docs/                   architecture, ui_standards, engine_independence,
+│                           coder_log, round_notes/13.md → 33.md
+├── package.json            root npm workspace (tauri, ui)
+└── pyproject.toml          (lives at backend/, root has only npm/cargo)
 ```
 
-The app is self-contained: production builds bundle `engine/src` and
-`engine/config` into the Python sidecar. `SHOWME_ENGINE_PATH` exists only as a
-developer override for testing a different engine tree.
+The engine is now a regular Python subpackage (`from showme.engine.X import Y`)
+— no more `sys.path` injection. Production builds bundle `backend/showme/engine/`
+and `backend/config/` via the PyInstaller spec.
 
 ## Quickstart
 
 ```bash
 # 1 — install front-end deps once
-cd src-ui && npm install && cd ..
+cd ui && npm install && cd ..
 
 # 2 — install sidecar deps
-cd src-py && python3 -m pip install -e ".[dev]" && cd ..
+cd backend && python3 -m pip install -e ".[dev]" && cd ..
 
 # 3 — run dev (Tauri spawns sidecar + UI together)
 npm run tauri:dev
@@ -38,28 +83,30 @@ Without the Rust toolchain you can still inspect the UI in browser-mode:
 
 ```bash
 # in two terminals:
-cd src-py && python3 -m showme.server --port 8765
-cd src-ui && npm run dev    # http://localhost:5173
+cd backend && python3 -m showme.server --port 8765
+cd ui && npm run dev    # http://localhost:5173
 ```
 
 ## Production build
 
 ```bash
-bash packaging/build_sidecar.sh         # PyInstaller universal2 backend
-npm run tauri:build                     # bundles .app + .dmg
+bash packaging/build_sidecar.sh          # PyInstaller arm64 backend
+npm run tauri:build                      # bundles .app + .dmg
 APPLE_SIGNING_IDENTITY="Developer ID Application: ..." \
   bash packaging/sign.sh
 APPLE_ID=... APPLE_TEAM_ID=... APPLE_APP_SPECIFIC_PASSWORD=... \
   bash packaging/notarize.sh
 ```
 
-## Quality status
-
-Run the Python function quality audit against a live runtime before handing the
-app to a user:
+## Quality audits
 
 ```bash
-python3 scripts/audit_functions.py --port 8765 --timeout 18
+npm run audit:functions         # asset-aware function sweep
+npm run audit:sentinels         # sentinel / watchdog audit
+npm run audit:legacy-functions  # legacy audit harness
+npm run test:backend            # pytest in backend/
+npm run lint && npm run lint:py # ESLint 9 + ruff
+npm run test:e2e                # Playwright
 ```
 
 The audit is asset-aware: it tests each function with a compatible crypto,
@@ -68,18 +115,29 @@ single symbol into every function.
 
 ## Runtime protocol
 
-The macOS shell discovers the Python runtime port from a single stdout line:
+The Tauri shell discovers the Python runtime port from a single stdout line:
+
 ```
 SIDECAR_PORT=<u16>
 ```
+
 Lifecycle: 3× restart with exponential backoff (250 / 750 / 2250 ms), then
-fatal alert. SIGTERM → 5 s grace → SIGKILL on quit.
+fatal `NSAlert`. SIGTERM → 5 s grace → SIGKILL on quit.
 
 ## Native conventions
 
-- Custom titlebar (`Overlay`, hidden title) + macOS traffic lights.
+- Custom titlebar (`Overlay`, hidden title) + macOS traffic lights at (14, 18).
 - `app-region: drag` on titlebar; everything `.interactive` opts out.
-- NSVisualEffect vibrancy via `windowEffects: ["sidebar","underWindowBackground"]`.
+- NSVisualEffect vibrancy via `windowEffects: ["sidebar", "underWindowBackground"]`.
 - `~/Library/Application Support/showMe` for state; `~/Library/Logs/showMe`
   symlink for Console.app streaming.
-- API keys in macOS Keychain.
+- API keys in macOS Keychain (`app.showme.terminal/<name>`).
+- All native chrome (NSMenuBar, NSStatusItem, NSDockTile, deep-link, hotkeys,
+  LocalAuthentication) lives in `tauri/src/`; the WKWebView stays presentation-only.
+
+## Refactor history
+
+May 2026 — single-tree unification: merged `engine/` into `backend/showme/engine/`,
+collapsed `src-tauri` → `tauri`, `src-py` → `backend`, `src-ui` → `ui`. Imports
+rewritten from `src.X` to `showme.engine.X`. Pre-refactor snapshot at tag
+`refactor-base-2026-05-09` and branch `backup-pre-restructure`.

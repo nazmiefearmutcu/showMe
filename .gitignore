@@ -1,33 +1,78 @@
-# node
+# ─────────────────────────────────────────────────────────────────────────────
+# showMe — version control hygiene
+# ─────────────────────────────────────────────────────────────────────────────
+
+# OS
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# Editor / IDE
+.vscode/
+.idea/
+*.iml
+.claude/
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# ── Node / UI ───────────────────────────────────────────────────────────────
 node_modules/
+ui/dist/
+ui/.vite/
+ui/*.tsbuildinfo
 src-ui/dist/
 src-ui/.vite/
 src-ui/*.tsbuildinfo
-src-ui/vite.config.js
-src-ui/vite.config.d.ts
 
-# rust
+# ── Rust / Tauri ────────────────────────────────────────────────────────────
+tauri/target/
+tauri/binaries/
 src-tauri/target/
 src-tauri/binaries/
 **/*.rs.bk
 
-# python
+# ── Python / Backend ────────────────────────────────────────────────────────
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
 .venv/
-src-py/dist/
+venv/
+*.egg-info/
+backend/build/
+backend/dist/
 src-py/build/
-src-py/*.egg-info/
-src-py/.pytest_cache/
+src-py/dist/
 .pytest_cache/
+.ruff_cache/
+.mypy_cache/
 
-# misc
-.DS_Store
-*.log
-docs/round_notes/screenshots/
-.env
+# ── Build / packaging output ────────────────────────────────────────────────
+dist/
+build/
+*.dmg
+*.pkg
+*.app/
 
-# local/generated state
-.claude/
-artifacts/
+# ── Generated / runtime state ───────────────────────────────────────────────
 runtime/
+*/runtime/
+backend/showme/runtime/
+
+# ── Test / audit artifacts ──────────────────────────────────────────────────
+artifacts/
+output/
+test-artifacts/
+test-results/
+playwright-report/
+.playwright-cli/
+
+# ── Logs ────────────────────────────────────────────────────────────────────
+*.log
+logs/
+
+# ── Docs scratch ────────────────────────────────────────────────────────────
+docs/round_notes/screenshots/

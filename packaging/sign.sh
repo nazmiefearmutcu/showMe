@@ -7,9 +7,9 @@
 
 set -euo pipefail
 
-APP_PATH="${APP_PATH:-$PWD/src-tauri/target/release/bundle/macos/showMe.app}"
+APP_PATH="${APP_PATH:-$PWD/tauri/target/release/bundle/macos/showMe.app}"
 IDENTITY="${APPLE_SIGNING_IDENTITY:?APPLE_SIGNING_IDENTITY env var required}"
-ENTITLEMENTS="${ENTITLEMENTS:-$PWD/src-tauri/entitlements.plist}"
+ENTITLEMENTS="${ENTITLEMENTS:-$PWD/tauri/entitlements.plist}"
 
 if [[ ! -d "$APP_PATH" ]]; then
   echo "Bundle not found at $APP_PATH — build first with 'cargo tauri build'." >&2
