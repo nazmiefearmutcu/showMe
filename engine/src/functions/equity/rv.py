@@ -9,6 +9,7 @@ import pandas as pd
 
 from src.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from src.core.instrument import AssetClass, Instrument
+from src.functions.equity._common import finite, reference_profile
 
 
 @FunctionRegistry.register
@@ -21,16 +22,20 @@ class RVFunction(BaseFunction):
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         if instrument is None:
             raise ValueError
-        peers: list[str] = []
+        raw_peers = params.get("peers")
+        peers: list[str] = [str(p).strip().upper() for p in raw_peers if str(p).strip()] if isinstance(raw_peers, (list, tuple, set)) else []
         if self.deps.finnhub:
             try:
-                peers = await asyncio.wait_for(
-                    self.deps.finnhub.peers(instrument.symbol),
-                    timeout=float(params.get("finnhub_timeout", 8)),
-                )
+                if not peers:
+                    peers = await asyncio.wait_for(
+                        self.deps.finnhub.peers(instrument.symbol),
+                        timeout=float(params.get("finnhub_timeout", 8)),
+                    )
             except Exception:
-                peers = []
+                peers = peers or []
         peers = [p for p in peers if p != instrument.symbol][:8]
+        if not peers:
+            peers = [p for p in reference_profile(instrument.symbol).get("peers", []) if p != instrument.symbol][:6]
         full = [instrument.symbol] + peers
         rows: list[dict[str, Any]] = []
         if self.deps.yfinance:
@@ -60,6 +65,7 @@ class RVFunction(BaseFunction):
                     "roa": raw.get("returnOnAssets"),
                     "debt_equity": raw.get("debtToEquity"),
                     "div_yield": raw.get("dividendYield"),
+                    "source_mode": "live_yfinance",
                 })
         if not rows:
             rows = [{
@@ -75,10 +81,40 @@ class RVFunction(BaseFunction):
                 "debt_equity": None,
                 "div_yield": None,
                 "status": "provider_unavailable",
+                "source_mode": "provider_unavailable",
             }]
+        rows = _rank_rows(rows, instrument.symbol)
         return FunctionResult(
             code=self.code, instrument=instrument,
-            data=pd.DataFrame(rows),
+            data={
+                "status": "ok" if len(rows) > 1 else "provider_unavailable",
+                "rows": rows,
+                "peers": peers,
+                "methodology": "RV compares the target against a peer set from Finnhub or a labelled sector-reference peer map. Multiples are live yfinance fields when available; rank is computed within returned peers.",
+                "field_dictionary": {
+                    "pe": "Trailing price/earnings multiple.",
+                    "fwd_pe": "Forward price/earnings multiple.",
+                    "ev_ebitda": "Enterprise value / EBITDA.",
+                    "rank_pe": "Ascending PE rank within peer set.",
+                    "percentile_pe": "Peer percentile for PE, lower is cheaper.",
+                },
+            },
             sources=["finnhub", "yfinance"] if self.deps.yfinance else ["relative_value_model"],
             metadata={"peers": peers},
         )
+
+
+def _rank_rows(rows: list[dict[str, Any]], target: str) -> list[dict[str, Any]]:
+    valid = sorted(
+        [r for r in rows if finite(r.get("pe")) is not None],
+        key=lambda r: finite(r.get("pe")) or 0,
+    )
+    n = max(1, len(valid) - 1)
+    ranks = {r["symbol"]: (idx + 1, idx / n if n else 0) for idx, r in enumerate(valid)}
+    for row in rows:
+        rank = ranks.get(row.get("symbol"))
+        if rank:
+            row["rank_pe"] = rank[0]
+            row["percentile_pe"] = round(rank[1] * 100, 2)
+        row["is_target"] = row.get("symbol") == target
+    return rows

@@ -28,12 +28,13 @@ class DCFSensitivityFunction(BaseFunction):
         g_range    = params.get("g_range")    or [0.01, 0.02, 0.025, 0.03, 0.035]
         base = DCFFunction(self.deps)
         base_params = {
-            "wacc": params.get("wacc", 0.09),
-            "fcfe": params.get("fcfe", 10_000_000_000),
-            "shares_outstanding": params.get("shares_outstanding", 15_000_000_000),
             "years": int(params.get("years", 5)),
             "growth_high": float(params.get("growth_high", 0.08)),
         }
+        for key in ("wacc", "fcfe", "shares_outstanding"):
+            value = params.get(key)
+            if value not in (None, ""):
+                base_params[key] = float(value)
         if params.get("live_valuation"):
             try:
                 base_res = await asyncio.wait_for(
@@ -55,17 +56,25 @@ class DCFSensitivityFunction(BaseFunction):
         for w in wacc_range:
             for g in g_range:
                 try:
-                    r = await base.execute(instrument, **base_params, **shared, wacc=w, growth_terminal=g,
-                                            years=int(params.get("years", 5)),
-                                            growth_high=float(params.get("growth_high", 0.08)))
+                    grid_params = {
+                        **base_params,
+                        **shared,
+                        "wacc": float(w),
+                        "growth_terminal": float(g),
+                        "years": int(params.get("years", 5)),
+                        "growth_high": float(params.get("growth_high", 0.08)),
+                    }
+                    r = await base.execute(instrument, **grid_params)
                     grid.append({
                         "wacc": w, "g_terminal": g,
                         "fair_value_per_share": (r.data or {}).get("fair_value_per_share"),
                         "equity_value": (r.data or {}).get("equity_value"),
+                        "bucket": f"WACC {float(w):.1%} / g {float(g):.1%}",
                     })
                 except Exception:
                     grid.append({"wacc": w, "g_terminal": g,
-                                  "fair_value_per_share": None})
+                                  "fair_value_per_share": None,
+                                  "bucket": f"WACC {float(w):.1%} / g {float(g):.1%}"})
         # Tornado: which input has biggest effect at ±20% perturbation
         base_fv = base_data.get("fair_value_per_share")
         tornado: list[dict[str, Any]] = []
@@ -84,8 +93,8 @@ class DCFSensitivityFunction(BaseFunction):
                 if base_v == 0:
                     continue
                 try:
-                    low = await base.execute(instrument, **base_params, **shared, **{key: base_v * 0.8})
-                    high = await base.execute(instrument, **base_params, **shared, **{key: base_v * 1.2})
+                    low = await base.execute(instrument, **{**base_params, **shared, key: base_v * 0.8})
+                    high = await base.execute(instrument, **{**base_params, **shared, key: base_v * 1.2})
                     lv = (low.data or {}).get("fair_value_per_share")
                     hv = (high.data or {}).get("fair_value_per_share")
                     tornado.append({
@@ -93,6 +102,7 @@ class DCFSensitivityFunction(BaseFunction):
                         "low_value":  base_v * 0.8,
                         "high_value": base_v * 1.2,
                         "low_fv": lv, "high_fv": hv,
+                        "value": abs((hv or 0) - (lv or 0)),
                         "delta": (hv or 0) - (lv or 0),
                     })
                 except Exception:
@@ -101,9 +111,19 @@ class DCFSensitivityFunction(BaseFunction):
         return FunctionResult(
             code=self.code, instrument=instrument,
             data={
+                "status": "ok" if base_fv is not None else "needs_input",
                 "base_fair_value": base_fv,
                 "wacc_range": wacc_range, "g_range": g_range,
+                "surface": grid,
                 "grid": grid, "tornado": tornado,
+                "rows": tornado or grid,
+                "methodology": "DCFS runs the DCF engine across a WACC x terminal-growth grid, then perturbs key assumptions by +/-20% for a tornado sensitivity. Heatmap cells are fair value per share.",
+                "field_dictionary": {
+                    "fair_value_per_share": "DCF-implied value per share at the selected WACC and terminal-growth pair.",
+                    "wacc": "Discount rate in the grid.",
+                    "g_terminal": "Terminal growth assumption in the grid.",
+                    "delta": "High-case fair value minus low-case fair value for a perturbed input.",
+                },
             },
             sources=base_res.sources,
         )

@@ -134,11 +134,13 @@ export function RefreshButton({
   onClick,
   disabled,
   title = "Refresh",
+  label,
 }: {
   loading?: boolean;
   onClick: () => void;
   disabled?: boolean;
   title?: string;
+  label?: string;
 }) {
   return (
     <button
@@ -148,25 +150,37 @@ export function RefreshButton({
       disabled={disabled || loading}
       title={title}
       aria-label={title}
-      style={{ height: 24, minWidth: 28, padding: "0 8px" }}
+      style={{ height: 24, minWidth: label ? 44 : 28, padding: "0 8px" }}
     >
-      {loading ? "..." : "↻"}
+      {loading ? "..." : label ?? "↻"}
     </button>
   );
 }
 
-export function LoadStatePill({ state }: { state: LoadState }) {
+export function LoadStatePill({
+  state,
+  status,
+}: {
+  state: LoadState;
+  status?: string | null;
+}) {
+  const normalized = status?.trim().toLowerCase();
+  const label = state === "ok" && normalized && normalized !== "ok" ? normalized : state;
   const tone =
-    state === "ok"
-      ? "positive"
-      : state === "error"
+    state === "loading"
+      ? "warn"
+      : state === "error" || normalized === "input_error" || normalized === "calc_error"
         ? "negative"
-        : state === "loading"
+        : normalized === "empty" ||
+            normalized === "provider_unavailable" ||
+            normalized === "ready_no_positions"
           ? "warn"
+          : state === "ok"
+      ? "positive"
           : "muted";
   return (
-    <Pill tone={tone} withDot={state === "loading" || state === "ok"}>
-      {state}
+    <Pill tone={tone} withDot={state === "loading" || tone === "positive"}>
+      {label}
     </Pill>
   );
 }

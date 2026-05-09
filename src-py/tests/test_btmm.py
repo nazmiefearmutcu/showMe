@@ -12,8 +12,8 @@ ENGINE = ROOT / "engine"
 if str(ENGINE) not in sys.path:
     sys.path.insert(0, str(ENGINE))
 
-import src.functions.macro.btmm as btmm
-from src.functions.macro.btmm import BTMMFunction
+import src.functions.macro.btmm as btmm  # noqa: E402
+from src.functions.macro.btmm import BTMMFunction  # noqa: E402
 
 
 def test_parse_bis_cbpol_zip_builds_policy_rate_rows() -> None:

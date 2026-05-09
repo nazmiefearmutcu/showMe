@@ -7,6 +7,7 @@
 use crate::{biometric, dock, notifications as notif, presets, AppState, SidecarHealth};
 use serde::Serialize;
 use serde_json::Value;
+use std::fs;
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager, Runtime, State, Window, WindowEvent};
 use tauri_plugin_updater::UpdaterExt;
@@ -49,6 +50,7 @@ pub fn install_to_applications<R: Runtime>(app: AppHandle<R>) -> Result<InstallR
         .and_then(|s| s.to_str())
         .unwrap_or("showMe.app");
     let target = PathBuf::from("/Applications").join(app_name);
+    cleanup_legacy_app_backups();
     if same_path(&source, &target) {
         return Ok(InstallResult {
             ok: true,
@@ -59,14 +61,11 @@ pub fn install_to_applications<R: Runtime>(app: AppHandle<R>) -> Result<InstallR
     }
     #[cfg(target_os = "macos")]
     {
-        let status = std::process::Command::new("/usr/bin/ditto")
-            .arg(&source)
-            .arg(&target)
-            .status()
-            .map_err(|e| format!("ditto: {e}"))?;
-        if !status.success() {
-            return Err(format!("ditto exited with {status}"));
-        }
+        let previous = PathBuf::from("/Applications/showMe.previous.app");
+        retain_previous_app(&target, &previous)?;
+        remove_path(&target)?;
+        ditto_copy(&source, &target)?;
+        cleanup_legacy_app_backups();
         let _ = tauri::Emitter::emit(&app, "app:installed", target.to_string_lossy().to_string());
         Ok(InstallResult {
             ok: true,
@@ -179,6 +178,54 @@ fn same_path(a: &Path, b: &Path) -> bool {
         (Ok(a), Ok(b)) => a == b,
         _ => a == b,
     }
+}
+
+fn remove_path(path: &Path) -> Result<(), String> {
+    if !path.exists() {
+        return Ok(());
+    }
+    if path.is_dir() {
+        fs::remove_dir_all(path).map_err(|e| format!("remove {}: {e}", path.display()))
+    } else {
+        fs::remove_file(path).map_err(|e| format!("remove {}: {e}", path.display()))
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn ditto_copy(source: &Path, target: &Path) -> Result<(), String> {
+    let status = std::process::Command::new("/usr/bin/ditto")
+        .arg(source)
+        .arg(target)
+        .status()
+        .map_err(|e| format!("ditto: {e}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("ditto exited with {status}"))
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn retain_previous_app(target: &Path, previous: &Path) -> Result<(), String> {
+    remove_path(previous)?;
+    if target.exists() {
+        ditto_copy(target, previous)?;
+    }
+    Ok(())
+}
+
+fn cleanup_legacy_app_backups() {
+    let Ok(entries) = fs::read_dir("/Applications") else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with("showMe.app.bak-") || name.starts_with("showMe.app.backup-") {
+            let _ = remove_path(&entry.path());
+        }
+    }
+    let _ = remove_path(Path::new("/Applications/showMe.app.backups"));
 }
 
 #[allow(dead_code)]
@@ -464,7 +511,7 @@ pub async fn run_migration<R: Runtime>(
     // Last line of stdout is the JSON summary.
     let stdout = String::from_utf8_lossy(&output.stdout);
     let summary_text = stdout.lines().rev().find(|l| l.trim().starts_with("{"));
-    if let Some(line) = summary_text {
+    if let Some(_line) = summary_text {
         // Migration prints a multi-line pretty JSON; reparse the whole tail.
         let start = stdout.rfind("{").unwrap_or(0);
         let blob = &stdout[start..];

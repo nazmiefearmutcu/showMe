@@ -52,12 +52,16 @@ def hedge_one(
     unhedged_notional = exp.notional - hedged_notional
     # Carry PnL on the hedged leg: locked-in forward minus today's spot.
     carry_pnl = (fwd - exp.spot_rate) * hedged_notional
-    # Scenario: home currency strengthens / weakens by usd_shock_pct
-    # If home strengthens, foreign currency weakens → unhedged loses (1-shock).
-    weak_spot = exp.spot_rate * (1 - usd_shock_pct)
-    strong_spot = exp.spot_rate * (1 + usd_shock_pct)
-    pnl_weak = unhedged_notional * (weak_spot - exp.spot_rate) + carry_pnl
-    pnl_strong = unhedged_notional * (strong_spot - exp.spot_rate) + carry_pnl
+    # Scenario: quote/home currency strengthens -> fewer home units per one
+    # foreign unit; quote/home weakens -> more home units per foreign unit.
+    spot_if_home_strengthens = exp.spot_rate * (1 - usd_shock_pct)
+    spot_if_home_weakens = exp.spot_rate * (1 + usd_shock_pct)
+    pnl_if_home_strengthens = (
+        unhedged_notional * (spot_if_home_strengthens - exp.spot_rate) + carry_pnl
+    )
+    pnl_if_home_weakens = (
+        unhedged_notional * (spot_if_home_weakens - exp.spot_rate) + carry_pnl
+    )
     return {
         "currency": exp.currency, "home_currency": exp.home_currency,
         "notional_foreign": exp.notional,
@@ -70,8 +74,10 @@ def hedge_one(
         "days_to_maturity": days,
         "carry_pnl_home": carry_pnl,
         "scenario_usd_strengthens_pct": usd_shock_pct * 100,
-        "pnl_if_home_strengthens": pnl_strong,
-        "pnl_if_home_weakens": pnl_weak,
+        "spot_if_home_strengthens": spot_if_home_strengthens,
+        "spot_if_home_weakens": spot_if_home_weakens,
+        "pnl_if_home_strengthens": pnl_if_home_strengthens,
+        "pnl_if_home_weakens": pnl_if_home_weakens,
     }
 
 

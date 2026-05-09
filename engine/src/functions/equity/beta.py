@@ -18,6 +18,7 @@ import pandas as pd
 from src.core.base_data_source import DataKind, DataRequest
 from src.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from src.core.instrument import AssetClass, Instrument
+from src.functions.equity._common import date_label
 
 
 @FunctionRegistry.register
@@ -31,8 +32,8 @@ class BetaFunction(BaseFunction):
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         if instrument is None:
             raise ValueError("BETA requires instrument")
-        benchmark_sym = params.get("benchmark") or "^GSPC"
-        windows = params.get("windows", ["1Y", "2Y", "5Y"])
+        benchmark_sym = params.get("benchmark") or "SPY"
+        windows = _parse_windows(params.get("windows", ["1Y", "2Y", "5Y"]))
         warnings: list[str] = []
         sources: list[str] = []
         if not self.deps.yfinance:
@@ -91,6 +92,7 @@ class BetaFunction(BaseFunction):
                 metadata={"provider_errors": ["insufficient overlapping return history"]},
             )
         out: dict[str, Any] = {}
+        rows: list[dict[str, Any]] = []
         for w in windows:
             n_days = {"1Y": 252, "2Y": 504, "5Y": 1260}.get(w, 252)
             df = joined.tail(n_days)
@@ -100,13 +102,32 @@ class BetaFunction(BaseFunction):
             var = np.var(df["b"])
             beta = cov / var if var else float("nan")
             corr = float(df.corr().iloc[0, 1])
-            out[w] = {"beta": float(beta), "correlation": corr,
-                       "samples": int(len(df)),
-                       "annualized_volatility_target": float(df["t"].std() * np.sqrt(252)),
-                       "annualized_volatility_bench": float(df["b"].std() * np.sqrt(252))}
+            row = {"window": w, "window_days": n_days, "beta": float(beta), "correlation": corr,
+                   "samples": int(len(df)),
+                   "annualized_volatility_target": float(df["t"].std() * np.sqrt(252)),
+                   "annualized_volatility_bench": float(df["b"].std() * np.sqrt(252))}
+            out[w] = {k: v for k, v in row.items() if k != "window"}
+            rows.append(row)
+        history = _rolling_beta_history(joined, int(params.get("rolling_window", 60) or 60))
         return FunctionResult(
             code=self.code, instrument=instrument,
-            data={"benchmark": benchmark_sym, "betas": out},
+            data={
+                "status": "ok",
+                "benchmark": benchmark_sym,
+                "rows": rows,
+                "history": history,
+                "betas": out,
+                "return_frequency": "daily close-to-close returns",
+                "dividend_handling": "price returns from Yahoo daily close; dividends are not reinvested unless the provider close is adjusted upstream.",
+                "risk_free_treatment": "CAPM beta itself is estimated from excess-return covariance but this implementation uses raw daily returns; risk-free input is applied in WACC, not in beta.",
+                "methodology": "Beta = cov(target daily returns, benchmark daily returns) / var(benchmark daily returns). Window rows use trailing 1Y/2Y/5Y samples; the chart uses rolling beta over the selected rolling window.",
+                "field_dictionary": {
+                    "beta": "Return sensitivity to the benchmark.",
+                    "correlation": "Pearson correlation between target and benchmark daily returns.",
+                    "samples": "Overlapping daily return count after date alignment.",
+                    "rolling_window": "Number of daily observations in each rolling beta point.",
+                },
+            },
             sources=sources, warnings=warnings,
         )
 
@@ -128,6 +149,38 @@ def _daily_returns(df: pd.DataFrame) -> pd.Series:
     close = close[~close.index.isna()]
     close = close[~close.index.duplicated(keep="last")]
     return close.sort_index().pct_change().dropna()
+
+
+def _parse_windows(raw: Any) -> list[str]:
+    if isinstance(raw, str):
+        parts = [p.strip().upper() for p in raw.replace(";", ",").split(",") if p.strip()]
+    elif isinstance(raw, (list, tuple, set)):
+        parts = [str(p).strip().upper() for p in raw if str(p).strip()]
+    else:
+        parts = []
+    return [p for p in parts if p in {"1Y", "2Y", "5Y"}] or ["1Y", "2Y", "5Y"]
+
+
+def _rolling_beta_history(joined: pd.DataFrame, window: int) -> list[dict[str, Any]]:
+    window = max(30, min(window, 252))
+    if len(joined) < window + 5:
+        return []
+    rows: list[dict[str, Any]] = []
+    for idx in range(window, len(joined) + 1):
+        if idx % 5 and idx != len(joined):
+            continue
+        df = joined.iloc[idx - window:idx]
+        var = float(np.var(df["b"]))
+        if not var:
+            continue
+        beta = float(np.cov(df["t"], df["b"])[0, 1] / var)
+        rows.append({
+            "date": date_label(df.index[-1]),
+            "beta": beta,
+            "rolling_window": window,
+            "samples": int(len(df)),
+        })
+    return rows[-120:]
 
 
 def _beta_baseline(symbol: str, benchmark: str) -> dict[str, Any]:

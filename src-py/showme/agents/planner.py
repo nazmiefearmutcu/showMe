@@ -36,6 +36,7 @@ class Plan:
 
 _TICKER = re.compile(r"\b[A-Z]{1,6}(?:USDT?)?\b")
 _FUNCTION_CODE = re.compile(r"\b[A-Z]{2,6}\b")
+_SYMBOL_STOPWORDS = {"A", "I"}
 
 _INTENT_PHRASES: list[tuple[str, str]] = [
     # (pattern, intent)
@@ -143,6 +144,8 @@ def _extract_symbols(text: str, function_codes: set[str]) -> list[str]:
     out: list[str] = []
     for match in _TICKER.finditer(text):
         token = match.group(0)
+        if token in _SYMBOL_STOPWORDS:
+            continue
         # Skip pure function codes ("FA", "DES") that the user just used as verbs.
         if token in function_codes and len(token) <= 4:
             continue

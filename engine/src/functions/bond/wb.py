@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 from typing import Any
 
 from src.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
@@ -27,6 +28,31 @@ def _world_bond_template() -> dict[str, float]:
             "IT": 3.86, "ES": 3.24, "AU": 4.12}
 
 
+def _rows_from_yields(values: dict[str, float], source_mode: str, tenor: str = "10Y") -> dict[str, Any]:
+    rows = [
+        {
+            "country": country,
+            "tenor": tenor,
+            "yield": float(yield_pct),
+            "as_of": datetime.now(timezone.utc).date().isoformat(),
+            "source_mode": source_mode,
+        }
+        for country, yield_pct in values.items()
+    ]
+    rows.sort(key=lambda row: str(row["country"]))
+    return {
+        "rows": rows,
+        "summary": {"countries": len(rows), "tenor": tenor, "source_mode": source_mode},
+        "methodology": "WB shows sovereign benchmark yields by country. The bundled default is a 10Y comparison; each row labels country, tenor, yield, source mode, and snapshot date.",
+        "field_dictionary": {
+            "country": "ISO-style country code.",
+            "tenor": "Benchmark maturity used for comparison.",
+            "yield": "Annualized sovereign yield percentage.",
+            "source_mode": "fred when live data is available, otherwise sovereign_yield_model.",
+        },
+    }
+
+
 @FunctionRegistry.register
 class WBFunction(BaseFunction):
     code = "WB"
@@ -34,13 +60,24 @@ class WBFunction(BaseFunction):
     category = "bond"
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
+        raw_countries = params.get("countries")
+        country_filter = {
+            str(item).strip().upper()
+            for item in (raw_countries if isinstance(raw_countries, (list, tuple, set)) else str(raw_countries or "").split(","))
+            if str(item).strip()
+        }
+        fred_ids = {
+            country: fred_id
+            for country, fred_id in _SOVEREIGN_FRED_IDS.items()
+            if not country_filter or country in country_filter
+        }
         if not (params.get("live_bonds") or params.get("live")):
-            data = _world_bond_template()
-            return FunctionResult(code=self.code, instrument=None, data=data,
+            data = {country: value for country, value in _world_bond_template().items() if not country_filter or country in country_filter}
+            return FunctionResult(code=self.code, instrument=None, data=_rows_from_yields(data, "sovereign_yield_model"),
                                   sources=["sovereign_yield_model"])
         if not self.deps.fred:
-            data = _world_bond_template()
-            return FunctionResult(code=self.code, instrument=None, data=data,
+            data = {country: value for country, value in _world_bond_template().items() if not country_filter or country in country_filter}
+            return FunctionResult(code=self.code, instrument=None, data=_rows_from_yields(data, "sovereign_yield_model"),
                                   sources=["sovereign_yield_model"])
         out: dict[str, float] = {}
         timeout = float(params.get("fred_timeout", 5))
@@ -51,11 +88,12 @@ class WBFunction(BaseFunction):
             except Exception:
                 return country, float("nan")
         results = await asyncio.gather(*(
-            _one(c, fid) for c, fid in _SOVEREIGN_FRED_IDS.items()
+            _one(c, fid) for c, fid in fred_ids.items()
         ))
         for c, y in results:
             out[c] = y
         out = {c: y for c, y in out.items() if y == y}
         if not out:
             out = _world_bond_template()
-        return FunctionResult(code=self.code, instrument=None, data=out, sources=["fred"])
+            return FunctionResult(code=self.code, instrument=None, data=_rows_from_yields(out, "sovereign_yield_model"), sources=["sovereign_yield_model"])
+        return FunctionResult(code=self.code, instrument=None, data=_rows_from_yields(out, "fred"), sources=["fred"])

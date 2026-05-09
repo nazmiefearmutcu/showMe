@@ -42,6 +42,7 @@ interface MostRow {
   asset_class?: string;
   exchange?: string;
   last?: number;
+  prev_close?: number;
   price?: number;
   change?: number;
   change_pct?: number;
@@ -49,6 +50,22 @@ interface MostRow {
   volume?: number;
   dollar_volume?: number;
   market_cap?: number;
+  quote_state?: string;
+  activity_score?: number;
+}
+
+interface MostPayload {
+  status?: string;
+  rows: MostRow[];
+  universe?: string[];
+  universe_size?: number;
+  asset_class_filter?: string;
+  sort?: string;
+  live?: boolean;
+  as_of?: string;
+  reason?: string | null;
+  methodology?: string;
+  field_dictionary?: Array<{ field?: string; meaning?: string }>;
 }
 
 const ASSET_TABS = [
@@ -91,15 +108,18 @@ export function MOSTPane({ code }: FunctionPaneProps) {
   );
   const { state, data, error, refetch } = useFunction<unknown>({
     code,
-    params: { asset_class: assetClass, limit },
+    params: { asset_class: assetClass, limit, sort, live_screen: true },
   });
 
+  const payload = useMemo(() => normalizePayload(data?.data), [data]);
   const rows = useMemo(() => {
-    const base = normalizeRows(data?.data);
+    const base = payload?.rows ?? [];
     return [...base]
       .sort((a, b) => sortVal(b, sort) - sortVal(a, sort))
       .slice(0, limit);
-  }, [data, sort, limit]);
+  }, [payload, sort, limit]);
+  const sourceLabel = data?.sources?.length ? data.sources.join(" + ") : "—";
+  const warnings = data?.warnings ?? [];
 
   const cols = useMemo<DataGridColumn<MostRow>[]>(
     () => [
@@ -151,7 +171,17 @@ export function MOSTPane({ code }: FunctionPaneProps) {
             </Pill>
           ) : (
             "—"
-          ),
+        ),
+      },
+      {
+        key: "exchange",
+        header: "Venue",
+        width: 100,
+        render: (r) => (
+          <span style={{ color: "var(--text-secondary)" }}>
+            {r.exchange ?? "—"}
+          </span>
+        ),
       },
       {
         key: "last",
@@ -184,8 +214,18 @@ export function MOSTPane({ code }: FunctionPaneProps) {
         width: 100,
         render: (r) => fmtCompact(r.dollar_volume ?? estimateDollar(r)),
       },
+      {
+        key: "quote_state",
+        header: "State",
+        width: 90,
+        render: (r) => (
+          <Pill tone={r.quote_state === "live" ? "positive" : "muted"} withDot={false}>
+            {r.quote_state ?? (payload?.live ? "live" : "reference")}
+          </Pill>
+        ),
+      },
     ],
-    [setFocusedTarget],
+    [payload?.live, setFocusedTarget],
   );
 
   return (
@@ -194,7 +234,7 @@ export function MOSTPane({ code }: FunctionPaneProps) {
         <PaneHeader
           code={code}
           title="Most active"
-          subtitle={`${rows.length} row(s) · sorted by ${sort}`}
+          subtitle={`${rows.length} row(s) · ${payload?.asset_class_filter ?? assetClass ?? "all"} · sorted by ${sort}`}
           trailing={
             <FunctionControlGroup>
               <RowLimitControl
@@ -242,41 +282,199 @@ export function MOSTPane({ code }: FunctionPaneProps) {
               }
             />
           ) : rows.length === 0 ? (
-            <Empty title="No movers" body={`No ${tab} payload right now.`} />
-          ) : (
-            <DataGrid
-              columns={cols}
-              rows={rows}
-              rowKey={(r, i) => `${r.symbol ?? r.ticker ?? ""}-${i}`}
-              density="compact"
-              onRowDoubleClick={(r) => {
-                const sym = r.symbol ?? r.ticker;
-                if (!sym) return;
-                setFocusedTarget("DES", sym);
-                navigate(`/symbol/${sym}/DES`);
-              }}
+            <Empty
+              title="No movers"
+              body={payload?.reason ?? `No ${tab} payload right now.`}
             />
+          ) : (
+            <>
+              <MostSummary
+                payload={payload}
+                sourceLabel={sourceLabel}
+                warnings={warnings}
+              />
+              <ActivityBars rows={rows} sort={sort} />
+              <DataGrid
+                columns={cols}
+                rows={rows}
+                rowKey={(r, i) => `${r.symbol ?? r.ticker ?? ""}-${i}`}
+                density="compact"
+                onRowDoubleClick={(r) => {
+                  const sym = r.symbol ?? r.ticker;
+                  if (!sym) return;
+                  setFocusedTarget("DES", sym);
+                  navigate(`/symbol/${sym}/DES`);
+                }}
+              />
+            </>
           )}
         </PaneBody>
         <PaneFooter>
           <span>elapsed · {data?.elapsed_ms?.toFixed(0) ?? "—"} ms</span>
           <span>asset · {assetClass ?? "all"}</span>
           <span>rows · {rows.length}/{limit}</span>
+          <span>source · {sourceLabel}</span>
         </PaneFooter>
       </Pane>
     </div>
   );
 }
 
-function normalizeRows(payload: unknown): MostRow[] {
-  if (!payload) return [];
-  if (Array.isArray(payload)) return payload as MostRow[];
+function normalizePayload(payload: unknown): MostPayload | null {
+  if (!payload) return null;
+  if (Array.isArray(payload)) return { rows: payload as MostRow[] };
   if (typeof payload === "object") {
     const o = payload as Record<string, unknown>;
     const items = o.items ?? o.rows ?? o.movers ?? o.most_active ?? null;
-    if (Array.isArray(items)) return items as MostRow[];
+    if (Array.isArray(items)) {
+      return {
+        ...o,
+        rows: items as MostRow[],
+      } as MostPayload;
+    }
   }
-  return [];
+  return null;
+}
+
+function MostSummary({
+  payload,
+  sourceLabel,
+  warnings,
+}: {
+  payload: MostPayload | null;
+  sourceLabel: string;
+  warnings: string[];
+}) {
+  const asOf = payload?.as_of ? new Date(payload.as_of).toLocaleTimeString() : "—";
+  const fields = payload?.field_dictionary?.slice(0, 4) ?? [];
+  return (
+    <div
+      style={{
+        display: "grid",
+        gap: 8,
+        padding: "12px 0 14px",
+        borderBottom: "1px solid var(--border-subtle)",
+        marginBottom: 12,
+      }}
+    >
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))",
+          gap: 8,
+        }}
+      >
+        <SummaryMetric label="source" value={sourceLabel.toUpperCase()} />
+        <SummaryMetric label="status" value={(payload?.status ?? "ok").toUpperCase()} />
+        <SummaryMetric label="universe" value={String(payload?.universe_size ?? "—")} />
+        <SummaryMetric label="as of" value={asOf} />
+      </div>
+      {payload?.methodology ? (
+        <div style={{ color: "var(--text-secondary)", fontSize: 12, lineHeight: 1.45 }}>
+          {payload.methodology}
+        </div>
+      ) : null}
+      {fields.length ? (
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          {fields.map((field) => (
+            <Pill key={field.field ?? field.meaning} tone="muted" withDot={false}>
+              {field.field}: {field.meaning}
+            </Pill>
+          ))}
+        </div>
+      ) : null}
+      {warnings.length ? (
+        <div style={{ color: "var(--negative)", fontSize: 12 }}>
+          {warnings.join(" · ")}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function SummaryMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div
+      style={{
+        border: "1px solid var(--border-subtle)",
+        borderRadius: 6,
+        padding: "8px 10px",
+        minWidth: 0,
+      }}
+    >
+      <div style={{ color: "var(--text-muted)", fontSize: 10, textTransform: "uppercase" }}>
+        {label}
+      </div>
+      <div
+        style={{
+          color: "var(--text-primary)",
+          fontSize: 12,
+          fontWeight: 700,
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+        }}
+        title={value}
+      >
+        {value}
+      </div>
+    </div>
+  );
+}
+
+function ActivityBars({ rows, sort }: { rows: MostRow[]; sort: SortKey }) {
+  const visible = rows.slice(0, 8);
+  const max = Math.max(1, ...visible.map((row) => Math.abs(sortVal(row, sort))));
+  return (
+    <div
+      style={{
+        display: "grid",
+        gap: 6,
+        marginBottom: 14,
+      }}
+    >
+      {visible.map((row) => {
+        const symbol = row.symbol ?? row.ticker ?? "—";
+        const value = Math.abs(sortVal(row, sort));
+        const pct = Math.max(3, Math.min(100, (value / max) * 100));
+        const change = row.change_pct ?? row.changePercent;
+        return (
+          <div
+            key={symbol}
+            style={{
+              display: "grid",
+              gridTemplateColumns: "92px minmax(0, 1fr) 90px",
+              alignItems: "center",
+              gap: 10,
+              fontSize: 12,
+            }}
+          >
+            <span style={{ fontWeight: 700, color: "var(--accent)" }}>{symbol}</span>
+            <div
+              style={{
+                height: 10,
+                background: "var(--bg-elev-2)",
+                border: "1px solid var(--border-subtle)",
+                borderRadius: 6,
+                overflow: "hidden",
+              }}
+            >
+              <div
+                style={{
+                  width: `${pct}%`,
+                  height: "100%",
+                  background: change != null && change < 0 ? "var(--negative)" : "var(--positive)",
+                }}
+              />
+            </div>
+            <span style={{ textAlign: "right", color: "var(--text-secondary)" }}>
+              {formatSortValue(row, sort)}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 function sortVal(r: MostRow, key: SortKey): number {
@@ -286,6 +484,15 @@ function sortVal(r: MostRow, key: SortKey): number {
   if (key === "dollar_volume")
     return Number(r.dollar_volume ?? estimateDollar(r));
   return 0;
+}
+
+function formatSortValue(r: MostRow, key: SortKey): string {
+  if (key === "abs_change") {
+    const v = Math.abs(Number(r.change_pct ?? r.changePercent ?? 0));
+    return `${v.toFixed(2)}%`;
+  }
+  if (key === "dollar_volume") return fmtCompact(r.dollar_volume ?? estimateDollar(r));
+  return fmtCompact(r.volume);
 }
 
 function estimateDollar(r: MostRow): number {

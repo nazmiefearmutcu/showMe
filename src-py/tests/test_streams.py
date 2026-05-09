@@ -11,6 +11,7 @@ from showme.streams import (
     Source,
     StreamHub,
     Tick,
+    fetch_binance_24h_ticker,
     is_crypto_symbol,
     parse_binance_ticker,
 )
@@ -19,6 +20,8 @@ from showme.streams import (
 def test_is_crypto_symbol_recognizes_usdt_pairs() -> None:
     assert is_crypto_symbol("BTCUSDT")
     assert is_crypto_symbol("ETHUSD")
+    assert is_crypto_symbol("SUSDT")
+    assert is_crypto_symbol("4USDT")
     assert not is_crypto_symbol("AAPL")
 
 
@@ -50,6 +53,38 @@ def test_parse_binance_ticker_handles_missing_optional_fields() -> None:
     assert tick.price == 3000
     assert tick.bid is None
     assert tick.ask is None
+
+
+def test_fetch_binance_24h_ticker_falls_back_to_futures(monkeypatch) -> None:
+    class FakeResponse:
+        def __init__(self, payload: dict) -> None:
+            self._payload = payload
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return self._payload
+
+    def fake_get(url: str, *_args, **_kwargs) -> FakeResponse:
+        if "fapi.binance.com" in url:
+            return FakeResponse({
+                "symbol": "4USDT",
+                "lastPrice": "0.01231",
+                "priceChangePercent": "-5.482",
+                "volume": "518439928",
+                "closeTime": 1714508400000,
+            })
+        return FakeResponse({"code": -1121, "msg": "Invalid symbol."})
+
+    monkeypatch.setattr("showme.streams.requests.get", fake_get)
+
+    tick = fetch_binance_24h_ticker("4USDT")
+
+    assert tick.symbol == "4USDT"
+    assert tick.price == pytest.approx(0.01231)
+    assert tick.change_pct == pytest.approx(-5.482)
+    assert tick.source == "binance_futures"
 
 
 # ── StreamHub tests with a fake source ────────────────────────────────────

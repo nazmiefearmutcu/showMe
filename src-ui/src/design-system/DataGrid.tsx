@@ -12,7 +12,9 @@ export interface DataGridColumn<T> {
 interface DataGridProps<T> {
   columns: DataGridColumn<T>[];
   rows: T[];
+  className?: string;
   rowKey?: (row: T, idx: number) => string | number;
+  rowClassName?: (row: T, idx: number) => string | undefined;
   empty?: ReactNode;
   density?: "compact" | "comfortable";
   onRowClick?: (row: T, idx: number) => void;
@@ -24,10 +26,17 @@ const ROW_HEIGHT: Record<"compact" | "comfortable", number> = {
   comfortable: 28,
 };
 
+function textTitle(value: ReactNode): string | undefined {
+  if (typeof value === "string" || typeof value === "number") return String(value);
+  return undefined;
+}
+
 export function DataGrid<T>({
   columns,
   rows,
+  className,
   rowKey,
+  rowClassName,
   empty,
   density = "comfortable",
   onRowClick,
@@ -40,6 +49,7 @@ export function DataGrid<T>({
     ).join(" "),
     fontSize: 12,
     fontFamily: "JetBrains Mono, monospace",
+    minWidth: 0,
   };
   const rowBaseStyle: CSSProperties = {
     ...grid,
@@ -51,8 +61,11 @@ export function DataGrid<T>({
   };
   return (
     <div
+      className={className}
       style={{
         overflow: "auto",
+        minWidth: 0,
+        maxWidth: "100%",
         border: "1px solid var(--border-subtle)",
         borderRadius: "var(--radius-md)",
         background: "rgba(0,0,0,0.14)",
@@ -62,6 +75,7 @@ export function DataGrid<T>({
         {columns.map((c) => (
           <div
             key={c.key}
+            title={textTitle(c.header)}
             style={{
               padding: "6px 10px",
               fontSize: 10,
@@ -69,6 +83,10 @@ export function DataGrid<T>({
               textTransform: "uppercase",
               color: "var(--text-mute)",
               textAlign: c.align ?? (c.numeric ? "right" : "left"),
+              minWidth: 0,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
             }}
           >
             {c.header}
@@ -83,6 +101,7 @@ export function DataGrid<T>({
         rows.map((row, idx) => (
           <div
             key={rowKey ? rowKey(row, idx) : idx}
+            className={rowClassName?.(row, idx)}
             role={onRowClick ? "button" : undefined}
             tabIndex={onRowClick ? 0 : undefined}
             onClick={onRowClick ? () => onRowClick(row, idx) : undefined}
@@ -118,11 +137,13 @@ export function DataGrid<T>({
               return (
                 <div
                   key={c.key}
+                  title={textTitle(value)}
                   style={{
                     padding: "4px 10px",
                     color: idx % 2 === 0 ? "var(--text-primary)" : "var(--text-secondary)",
                     textAlign: c.align ?? (c.numeric ? "right" : "left"),
                     fontVariantNumeric: c.numeric ? "tabular-nums" : undefined,
+                    minWidth: 0,
                     overflow: "hidden",
                     textOverflow: "ellipsis",
                     whiteSpace: "nowrap",

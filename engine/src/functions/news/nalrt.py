@@ -35,6 +35,7 @@ class NewsAlertFunction(BaseFunction):
         limit = int(params.get("limit", 30) or 30)
         scan_limit = max(limit * 3, 60)
         threshold = float(params.get("threshold", 70) or 70)
+        max_alert_age_hours = float(params.get("max_alert_age_hours", 48) or 48)
         timeout = float(params.get("news_timeout", params.get("timeout", 6)) or 6)
         include_health = _truthy(params.get("health", True))
         feed_group = "crypto" if asset_class == "CRYPTO" else "market"
@@ -194,9 +195,11 @@ class NewsAlertFunction(BaseFunction):
             query=query,
             asset_class=asset_class,
             threshold=threshold,
+            max_alert_age_minutes=max_alert_age_hours * 60,
             limit=limit,
         )
         alerts = critical_articles(ranked, threshold=threshold)
+        feed_errors = _feed_error_summaries(provider_health)
         return FunctionResult(
             code=self.code,
             instrument=instrument,
@@ -206,6 +209,7 @@ class NewsAlertFunction(BaseFunction):
                 "health": health_summary(provider_health),
                 "feed_health": provider_health,
                 "threshold": threshold,
+                "freshness_max_hours": max_alert_age_hours,
                 "query": query,
                 "symbol": symbol,
                 "alert_count": len(alerts),
@@ -213,12 +217,18 @@ class NewsAlertFunction(BaseFunction):
                     [float(row.get("importance_score") or 0) for row in ranked],
                     default=0.0,
                 ),
+                "methodology": (
+                    "deterministic_impact_score_v2: symbol/query relevance + catalyst keyword "
+                    "weights + source quality + freshness; headlines older than the alert "
+                    "freshness window cannot become critical alerts."
+                ),
             },
             sources=sources,
             metadata={
-                "provider_errors": warnings,
-                "method": "deterministic_impact_score_v1",
+                "provider_errors": [*warnings, *feed_errors],
+                "method": "deterministic_impact_score_v2",
                 "terms": terms,
+                "freshness_max_hours": max_alert_age_hours,
             },
         )
 
@@ -260,3 +270,16 @@ def _health_ok_rate(rows: list[dict[str, Any]]) -> float:
     if not rows:
         return 0.0
     return sum(1 for row in rows if row.get("ok")) / len(rows)
+
+
+def _feed_error_summaries(rows: list[dict[str, Any]]) -> list[str]:
+    errors: list[str] = []
+    for row in rows:
+        if row.get("ok"):
+            continue
+        feed = str(row.get("feed") or row.get("url") or "feed")
+        reason = str(row.get("error") or row.get("status_code") or "failed")
+        errors.append(f"{feed}: {reason}")
+        if len(errors) >= 5:
+            break
+    return errors

@@ -11,6 +11,7 @@ import pandas as pd
 from src.core.base_data_source import DataKind, DataRequest
 from src.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from src.core.instrument import AssetClass, Instrument
+from src.functions.portfolio.return_series import align_return_series, close_to_daily_returns
 from src.services.optimizer import (
     efficient_frontier, max_sharpe, min_volatility, risk_parity,
 )
@@ -47,12 +48,12 @@ class PortOptFunction(BaseFunction):
                     )),
                     timeout=float(params.get("quote_timeout", 8)),
                 )
-                return s, df["close"].pct_change().dropna()
+                return s, close_to_daily_returns(df)
             except Exception:
                 return s, pd.Series(dtype=float)
         if live and self.deps.yfinance:
             results = await asyncio.gather(*(_ret(s) for s in symbols))
-            rets = pd.DataFrame({s: r for s, r in results}).dropna(how="any")
+            rets = align_return_series(results)
         else:
             rets = pd.DataFrame()
         if rets.empty or len(rets.columns) < 2:
@@ -65,7 +66,7 @@ class PortOptFunction(BaseFunction):
         if mode in ("frontier", "all"):
             ef = efficient_frontier(rets, allow_short=allow_short, risk_free=rf)
             out["efficient_frontier"] = [
-                {"return": p.expected_return, "vol": p.volatility,
+                {"label": f"vol {p.volatility:.2%}", "return": p.expected_return, "vol": p.volatility,
                  "sharpe": p.sharpe, "weights": p.weights} for p in ef
             ]
         if mode in ("max_sharpe", "all"):
@@ -86,6 +87,45 @@ class PortOptFunction(BaseFunction):
                 "weights": rp.weights, "return": rp.expected_return,
                 "vol": rp.volatility, "sharpe": rp.sharpe,
             }
+        weight_rows: list[dict[str, Any]] = []
+        for section in ("max_sharpe", "min_volatility", "risk_parity"):
+            result = out.get(section)
+            if not isinstance(result, dict):
+                continue
+            weights = result.get("weights") or {}
+            if not isinstance(weights, dict):
+                continue
+            for symbol, weight in weights.items():
+                weight_rows.append({
+                    "label": f"{section}:{symbol}",
+                    "mode": section,
+                    "symbol": symbol,
+                    "weight": float(weight),
+                    "weight_pct": float(weight) * 100,
+                    "return": result.get("return"),
+                    "vol": result.get("vol"),
+                    "sharpe": result.get("sharpe"),
+                })
+        if weight_rows:
+            out["rows"] = weight_rows
+        out["summary"] = {
+            "mode": mode,
+            "symbols": len(rets.columns),
+            "samples": int(len(rets)),
+            "risk_free": rf,
+            "allow_short": allow_short,
+        }
+        out["methodology"] = (
+            "Estimate daily return covariance and annualized expected returns for the selected universe. "
+            "The efficient frontier plots volatility on the x-axis and expected return on the y-axis; "
+            "optimizer modes compute max-Sharpe, min-volatility, and risk-parity weights."
+        )
+        out["field_dictionary"] = {
+            "vol": "Annualized portfolio volatility.",
+            "return": "Annualized expected portfolio return.",
+            "sharpe": "(return - risk_free_rate) / volatility.",
+            "weight_pct": "Optimizer allocation weight for a symbol.",
+        }
         return FunctionResult(code=self.code, instrument=None, data=out,
                               sources=sources,
                               metadata={"mode": mode, "days": days,

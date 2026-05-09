@@ -55,6 +55,20 @@ class TSARFunction(BaseFunction):
         # default: search
         query = params.get("query") or params.get("q") or ""
         sym = params.get("symbol") or (instrument.symbol if instrument else None)
+        if not str(query).strip():
+            return FunctionResult(
+                code=self.code,
+                instrument=instrument,
+                data={
+                    "status": "input_required",
+                    "reason": "Transcript Search needs a search query.",
+                    "query": query,
+                    "items": [],
+                    "next_actions": ["Enter keywords such as revenue, margin, guidance, or risk."],
+                },
+                sources=["transcripts_archive"],
+                metadata={"provider_errors": ["missing transcript search query"]},
+            )
         try:
             items = await asyncio.wait_for(
                 asyncio.to_thread(
@@ -67,6 +81,23 @@ class TSARFunction(BaseFunction):
             )
         except Exception:
             items = [{"symbol": sym, "query": query, "status": "archive_unavailable"}]
+        if not items:
+            return FunctionResult(
+                code=self.code,
+                instrument=instrument,
+                data={
+                    "status": "provider_unavailable",
+                    "reason": f"No stored transcript matches found for '{query}'.",
+                    "query": query,
+                    "items": [],
+                    "next_actions": [
+                        "Ingest transcripts first with action=ingest.",
+                        "Try a broader query or provide a symbol with archived transcripts.",
+                    ],
+                },
+                sources=["transcripts_archive"],
+                metadata={"provider_errors": ["transcript archive returned no matches"]},
+            )
         return FunctionResult(code=self.code, instrument=instrument,
                               data={"query": query, "items": items},
                               sources=["transcripts_archive"])

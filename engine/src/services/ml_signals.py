@@ -127,6 +127,7 @@ def fit_predict(features: pd.DataFrame) -> dict[str, Any]:
             Xtest_aug = np.column_stack([np.ones(len(X_test)), X_test.values])
             pred_test = np.sign(Xtest_aug @ beta - 0.5)
             pred_full = np.sign(np.column_stack([np.ones(n), X.values]) @ beta - 0.5)
+            feat_imp = dict(zip(X.columns, np.abs(beta[1:]).tolist()))
             backend = "lstsq_logistic"
         except Exception:
             return {"error": "no ML backend available"}

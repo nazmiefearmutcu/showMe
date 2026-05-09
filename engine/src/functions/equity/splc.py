@@ -15,6 +15,7 @@ import pandas as pd
 from src.core.base_data_source import DataKind, DataRequest
 from src.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from src.core.instrument import AssetClass, Instrument
+from src.functions.equity._common import reference_profile, frame_rows
 
 
 @FunctionRegistry.register
@@ -81,14 +82,35 @@ class SPLCFunction(BaseFunction):
         except Exception as e:
             warnings.append(f"sec_edgar: {e}")
         data: dict[str, Any] = {
+            "status": "ok" if customers or suppliers else "reference_relationships",
             "filings": filings,
             "customers": customers,
             "suppliers": suppliers,
             "debt_maturity_section": (debt_section or "")[:1000],
         }
+        data["rows"] = _relationship_rows(instrument.symbol, customers, suppliers, filings)
         sources = ["sec_edgar"]
-        if (not isinstance(filings, pd.DataFrame) or filings.empty) and not customers and not suppliers:
+        if not customers and not suppliers:
+            ref = reference_profile(instrument.symbol)
+            ref_rows = [
+                {"symbol": instrument.symbol, **item, "source_mode": "reference_supply_chain_10k_language"}
+                for item in [*ref.get("customers", []), *ref.get("suppliers", [])]
+            ]
+            if ref_rows:
+                data["rows"] = ref_rows
+                data["customers"] = [r for r in ref_rows if "customer" in str(r.get("relationship", ""))]
+                data["suppliers"] = [r for r in ref_rows if "supplier" in str(r.get("relationship", ""))]
+                sources = ["sec_edgar", "supply_chain_reference"]
+        if (not isinstance(filings, pd.DataFrame) or filings.empty) and not data.get("rows"):
             data = {
+                "status": "provider_unavailable",
+                "rows": [{
+                    "symbol": instrument.symbol,
+                    "relationship": "provider_unavailable",
+                    "counterparty": None,
+                    "confidence": None,
+                    "source_mode": "supply_chain_unavailable",
+                }],
                 "filings": [{
                     "symbol": instrument.symbol,
                     "form": "10-K",
@@ -99,6 +121,13 @@ class SPLCFunction(BaseFunction):
                 "debt_maturity_section": "",
             }
             sources = ["supply_chain_model"]
+        data["methodology"] = "SPLC approximates supply-chain relationships by scanning recent 10-K sections for customer/supplier concentration language. Reference rows are labelled when extraction finds no explicit counterparty rows."
+        data["field_dictionary"] = {
+            "relationship": "customer, supplier, partner, or unavailable state.",
+            "counterparty": "Named or summarized relationship counterparty.",
+            "confidence": "Extraction confidence; lower values indicate approximate/reference rows.",
+            "source_mode": "SEC extraction or labelled reference fallback.",
+        }
         return FunctionResult(
             code=self.code, instrument=instrument,
             data=data,
@@ -108,3 +137,15 @@ class SPLCFunction(BaseFunction):
                 "provider_errors": warnings,
             },
         )
+
+
+def _relationship_rows(symbol: str, customers: list[dict[str, Any]], suppliers: list[dict[str, Any]], filings: pd.DataFrame) -> list[dict[str, Any]]:
+    rows = []
+    for item in customers:
+        rows.append({"symbol": symbol, "relationship": "customer", "counterparty": item.get("name") or item.get("counterparty") or item.get("text"), "confidence": item.get("confidence", 0.55), "source_mode": "sec_10k_customer_extraction"})
+    for item in suppliers:
+        rows.append({"symbol": symbol, "relationship": "supplier", "counterparty": item.get("name") or item.get("counterparty") or item.get("text"), "confidence": item.get("confidence", 0.55), "source_mode": "sec_10k_supplier_extraction"})
+    if not rows:
+        for item in frame_rows(filings, limit=3):
+            rows.append({"symbol": symbol, "relationship": "evidence_filing", "counterparty": item.get("form"), "filingDate": item.get("filingDate"), "confidence": 0.2, "source_mode": "sec_10k_filing_evidence"})
+    return rows

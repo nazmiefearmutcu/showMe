@@ -21,14 +21,31 @@ class FXHFunction(BaseFunction):
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         action = (params.get("action") or "calc").lower()
-        home = (params.get("home_currency") or "USD").upper()
+        pair = _normalize_pair(
+            str(params.get("pair") or params.get("symbol") or (instrument.symbol if instrument else "") or "EURUSD")
+        )
+        pair_base, pair_quote = pair[:3], pair[3:6]
+        home = (params.get("home_currency") or pair_quote or "USD").upper()
         days = int(params.get("days", 90))
-        ratio = float(params.get("hedge_ratio", 1.0))
+        ratio = float(params.get("hedge_ratio", 0.75))
         shock = float(params.get("usd_shock_pct", 0.05))
-        # explicit exposures override portfolio-derived
+        source_mode = "manual_exposure"
+        # explicit exposures override manual defaults; portfolio state is only
+        # used when explicitly requested so crypto/stablecoin positions do not
+        # masquerade as an FX hedge book.
         exposures = params.get("exposures")
         if not exposures:
-            exposures = await self._derive_exposures(home)
+            if _truthy(params.get("use_portfolio") or params.get("portfolio")):
+                exposures = await self._derive_exposures(home)
+                source_mode = "portfolio_state"
+            else:
+                exposures = [{
+                    "currency": (params.get("currency") or pair_base or "EUR").upper(),
+                    "notional": float(params.get("notional", 1_000_000)),
+                    "spot_rate": params.get("spot_rate") or params.get("spot"),
+                    "base_rate": params.get("base_rate", 0.035),
+                    "home_rate": params.get("home_rate", 0.045),
+                }]
         # Resolve spot rates if missing
         await self._fill_spots(exposures, home)
         objs = [
@@ -53,6 +70,23 @@ class FXHFunction(BaseFunction):
                 } for e in objs]},
             )
         out = hedge_book(objs, hedge_ratio=ratio, days=days, usd_shock_pct=shock)
+        out["rows"] = list(out.get("exposures") or [])
+        out["curve"] = _scenario_curve(objs, ratio, days)
+        out["source_mode"] = source_mode
+        out["methodology"] = (
+            "FXH computes a forward overlay for foreign-currency exposure. "
+            "Forward rate uses covered interest parity: F = S * (1 + home_rate*T) / (1 + base_rate*T). "
+            "Hedged notional = exposure * hedge_ratio. Scenario P&L applies shocks to the unhedged residual plus locked-in carry."
+        )
+        out["field_dictionary"] = {
+            "notional_foreign": "Exposure amount in the foreign/base currency.",
+            "spot_rate": "Home currency units per one foreign/base currency.",
+            "forward_rate": "Covered-interest-parity forward rate for the selected maturity.",
+            "hedge_ratio": "Share of the foreign exposure hedged with forwards.",
+            "carry_pnl_home": "Forward carry P&L on the hedged notional.",
+            "pnl_if_home_strengthens": "Residual exposure P&L if home currency strengthens by shock_pct, plus carry.",
+            "pnl_if_home_weakens": "Residual exposure P&L if home currency weakens by shock_pct, plus carry.",
+        }
         return FunctionResult(code=self.code, instrument=instrument,
                               data=out, sources=["yfinance", "ecb"])
 
@@ -84,3 +118,46 @@ class FXHFunction(BaseFunction):
             except Exception:
                 e["spot_rate"] = 1.0
         await asyncio.gather(*(_q(e) for e in exposures))
+
+
+def _normalize_pair(raw: str) -> str:
+    value = raw.upper().strip().replace("/", "").replace("-", "").replace(" ", "")
+    value = value.replace("=X", "")
+    if len(value) >= 6 and value[:3].isalpha() and value[3:6].isalpha():
+        return value[:6]
+    return "EURUSD"
+
+
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _scenario_curve(objs: list[FXExposure], hedge_ratio: float, days: int) -> list[dict[str, Any]]:
+    curve = []
+    shocks = [-0.10, -0.05, 0.0, 0.05, 0.10]
+    for shock in shocks:
+        total = 0.0
+        unhedged = 0.0
+        for exp in objs:
+            fwd = forward_rate(
+                spot=exp.spot_rate,
+                home_rate=exp.home_rate,
+                base_rate=exp.base_rate,
+                days=days,
+            )
+            hedged_notional = exp.notional * hedge_ratio
+            residual = exp.notional - hedged_notional
+            shocked_spot = exp.spot_rate * (1 + shock)
+            carry = (fwd - exp.spot_rate) * hedged_notional
+            total += residual * (shocked_spot - exp.spot_rate) + carry
+            unhedged += exp.notional * (shocked_spot - exp.spot_rate)
+        curve.append({
+            "shock_pct": round(shock * 100, 2),
+            "total_pnl": total,
+            "unhedged_pnl": unhedged,
+            "days": days,
+            "hedge_ratio": hedge_ratio,
+        })
+    return curve

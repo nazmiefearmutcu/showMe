@@ -35,25 +35,61 @@ class EMSXFunction(BaseFunction):
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         if instrument is None:
             raise ValueError
+        quantity = _float_param(params.get("quantity"))
+        side = str(params.get("side", "BUY")).upper()
+        order_type = str(params.get("type", params.get("order_type", "MARKET"))).upper()
+        tif = str(params.get("tif", params.get("time_in_force", "GTC"))).upper()
+        submit = _truthy(params.get("submit"))
+        if quantity <= 0:
+            return FunctionResult(
+                code=self.code,
+                instrument=instrument,
+                data={
+                    "status": "input_required",
+                    "reason": "Trade ticket needs a positive quantity before it can be previewed or submitted.",
+                    "broker": "paper",
+                    "symbol": instrument.symbol,
+                    "asset_class": instrument.asset_class.value,
+                    "side": side,
+                    "quantity": quantity,
+                    "order_type": order_type,
+                    "time_in_force": tif,
+                    "tif": tif,
+                    "next_actions": [
+                        "Enter a positive quantity in the ticket controls.",
+                        "Keep submit=false for preview-only runs.",
+                    ],
+                },
+                sources=["paper_ticket"],
+                metadata={"preview_only": True},
+            )
         broker = _select_broker(self.deps, instrument.asset_class)
-        if broker is None:
+        if broker is None or not submit:
             preview = {
                 "broker": "paper",
                 "status": "preview",
+                "submit": False,
                 "symbol": instrument.symbol,
                 "asset_class": instrument.asset_class.value,
-                "side": params.get("side", "BUY"),
-                "quantity": float(params.get("quantity", 0) or 0),
+                "side": side,
+                "quantity": quantity,
+                "order_type": order_type,
+                "time_in_force": tif,
+                "tif": tif,
+                "next_actions": [
+                    "Review the ticket values.",
+                    "Use the broker order endpoint or Advanced submit=true only after confirming the trade.",
+                ],
             }
             return FunctionResult(code=self.code, instrument=instrument, data=preview,
-                                  sources=["paper_ticket"])
+                                  sources=["paper_ticket"], metadata={"preview_only": True})
         order = BrokerOrder(
             instrument=instrument,
-            side=OrderSide(params.get("side", "BUY")),
-            quantity=float(params.get("quantity", 0)),
-            order_type=OrderType(params.get("type", "MARKET")),
+            side=OrderSide(side),
+            quantity=quantity,
+            order_type=OrderType(order_type),
             price=params.get("price"),
-            time_in_force=TimeInForce(params.get("tif", "GTC")),
+            time_in_force=TimeInForce(tif),
             leverage=params.get("leverage"),
         )
         order_id = await broker.place_order(order)
@@ -98,8 +134,28 @@ class AIMFunction(BaseFunction):
         except Exception:
             out["history"] = []
         if not any(out.values()):
-            out["history"] = [{"status": "no_open_orders", "broker": "paper"}]
-        return FunctionResult(code=self.code, instrument=None, data=out)
+            return FunctionResult(
+                code=self.code,
+                instrument=None,
+                data={
+                    "status": "empty",
+                    "reason": "No open or recent orders were found in configured brokers or local order history.",
+                    "orders": [],
+                    "brokers_checked": [
+                        "binance_broker",
+                        "alpaca_broker",
+                        "ibkr_broker",
+                        "oanda_broker",
+                    ],
+                    "next_actions": [
+                        "Use BBGT/EMSX/FXGO/TSOX to preview a ticket.",
+                        "Submitted broker orders will appear here after they are accepted or filled.",
+                    ],
+                },
+                sources=["order_history"],
+                metadata={"empty": True},
+            )
+        return FunctionResult(code=self.code, instrument=None, data=out, sources=["order_history"])
 
 
 @FunctionRegistry.register
@@ -107,6 +163,7 @@ class TSOXFunction(EMSXFunction):
     """TSOX — Treasury / Bond order ticket."""
     code = "TSOX"
     name = "Treasury Order Entry"
+    asset_classes = (AssetClass.BOND,)
 
 
 @FunctionRegistry.register
@@ -159,3 +216,18 @@ class TCAFunction(BaseFunction):
                    "by_parent": list(by_parent.values())[:50]},
             sources=["algo_audit"],
         )
+
+
+def _float_param(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value if value not in (None, "") else default)
+    except Exception:
+        return default
+
+
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}

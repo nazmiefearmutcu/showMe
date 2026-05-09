@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timedelta, timezone
+from html import unescape
 from typing import Any
 
 
@@ -122,6 +123,7 @@ def enrich_articles(
     asset_class: str | None = None,
     threshold: float = 70.0,
     limit: int | None = None,
+    max_alert_age_minutes: float | None = None,
 ) -> list[dict[str, Any]]:
     terms = symbol_terms(symbol, query)
     enriched: list[dict[str, Any]] = []
@@ -129,6 +131,7 @@ def enrich_articles(
         if not isinstance(raw, dict):
             continue
         item = dict(raw)
+        clean_article_text(item)
         if str(item.get("status") or "").startswith("provider_"):
             item.update({
                 "importance_score": 0,
@@ -143,10 +146,15 @@ def enrich_articles(
             terms=terms,
             asset_class=asset_class,
         )
+        age_minutes = item.get("age_minutes")
+        if max_alert_age_minutes and isinstance(age_minutes, (int, float)) and age_minutes > max_alert_age_minutes:
+            score = min(score, threshold - 1.0)
+            reasons.append(f"stale for alert window >{max_alert_age_minutes / 60:.0f}h")
+            item["stale_for_alert"] = True
         item["relevance_score"] = round(relevance, 2)
         item["importance_score"] = round(score, 2)
         item["severity"] = severity_for_score(score)
-        item["alert"] = score >= threshold
+        item["alert"] = score >= threshold and not bool(item.get("stale_for_alert"))
         item["matched_terms"] = matched
         item["importance_reasons"] = reasons[:6]
         enriched.append(item)
@@ -244,7 +252,12 @@ def severity_for_score(score: float) -> str:
 
 
 def critical_articles(items: list[dict[str, Any]], threshold: float = 70.0) -> list[dict[str, Any]]:
-    return [item for item in items if float(item.get("importance_score") or 0) >= threshold]
+    return [
+        item
+        for item in items
+        if float(item.get("importance_score") or 0) >= threshold
+        and not bool(item.get("stale_for_alert"))
+    ]
 
 
 def sort_articles_newest_first(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -283,9 +296,24 @@ def health_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 def text_for(item: dict[str, Any], title_only: bool = False) -> str:
     keys = ("title",) if title_only else (
-        "title", "summary", "body", "description", "categories", "feed", "source", "publisher", "provider"
+        "title", "summary", "body", "description", "categories"
     )
     return " ".join(str(item.get(k) or "") for k in keys).lower()
+
+
+def clean_article_text(item: dict[str, Any]) -> dict[str, Any]:
+    for key in ("title", "headline", "summary", "description", "snippet"):
+        value = item.get(key)
+        if isinstance(value, str):
+            item[key] = strip_markup(value)
+    return item
+
+
+def strip_markup(value: str) -> str:
+    text = unescape(value)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
 
 
 def term_in_text(term: str, text: str) -> bool:

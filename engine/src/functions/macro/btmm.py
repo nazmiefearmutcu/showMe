@@ -401,10 +401,22 @@ class BTMMFunction(BaseFunction):
                 "region": region,
                 "rows": filtered,
                 "summary": summary,
+                "history": _history_for_rows(filtered),
                 "usage": {
                     "country": "Use ALL, US, EU, GB, JP, TR, or a BIS ISO country code.",
                     "region": "Use all, g10, em, americas, europe, asia_pacific, or mea.",
                     "source": "Rates are read from BIS WS_CBPOL daily series and cached for 6 hours.",
+                },
+                "methodology": (
+                    "BTMM reads BIS CBPOL policy-rate series. Latest rate is the most recent observation, "
+                    "last move is the latest rate minus the previous distinct rate, and 3M bp compares "
+                    "the latest rate with the observation on or before roughly 90 calendar days earlier."
+                ),
+                "field_dictionary": {
+                    "policy_rate": "Latest central-bank policy rate in percent.",
+                    "change_bp": "Latest move in basis points versus the previous distinct rate.",
+                    "trend_3m_bp": "Basis-point change over roughly 90 calendar days.",
+                    "as_of": "Latest observation date from BIS CBPOL.",
                 },
             },
             sources=sources,
@@ -551,6 +563,10 @@ def _parse_bis_row(row: dict[str, str], fields: list[str]) -> dict[str, Any] | N
         "last_move": _last_move(change_bp),
         "trend_3m_bp": trend_3m_bp,
         "frequency": freq or None,
+        "history": [
+            {"date": period, "policy_rate": round(value, 4), "country_code": display_code}
+            for period, value in values[-260:]
+        ],
         "source": "BIS CBPOL",
     }
 
@@ -660,6 +676,19 @@ def _summary(rows: list[dict[str, Any]], *, universe: list[dict[str, Any]]) -> d
         **move_counts,
         "largest_last_move": hottest,
     }
+
+
+def _history_for_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    history: list[dict[str, Any]] = []
+    for row in rows[:6]:
+        for point in row.get("history") or []:
+            if isinstance(point, dict):
+                history.append({
+                    **point,
+                    "country": row.get("country"),
+                    "central_bank": row.get("central_bank"),
+                })
+    return history[-400:]
 
 
 def _normalize_country(value: Any) -> str:

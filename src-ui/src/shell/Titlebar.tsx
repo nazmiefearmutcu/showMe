@@ -77,7 +77,7 @@ export function Titlebar() {
             color: sidebarVisible ? "var(--accent)" : "var(--text-secondary)",
           }}
         >
-          ▦
+          Fn
         </button>
         <button
           type="button"
@@ -85,7 +85,7 @@ export function Titlebar() {
           title="Split right (⌘\\)"
           onClick={() => splitFocused("h")}
         >
-          ⫼
+          Split R
         </button>
         <button
           type="button"
@@ -93,7 +93,7 @@ export function Titlebar() {
           title="Split below (⌘⇧\\)"
           onClick={() => splitFocused("v")}
         >
-          ☰
+          Split B
         </button>
         <button
           type="button"
@@ -101,7 +101,7 @@ export function Titlebar() {
           title="Close pane (⌘W)"
           onClick={() => closeFocused()}
         >
-          ✕
+          Close
         </button>
       </div>
 
@@ -133,7 +133,7 @@ export function Titlebar() {
           onClick={newWindow}
           title="New window (⌘N)"
         >
-          ⊞
+          New
         </button>
         <button
           type="button"
@@ -149,7 +149,7 @@ export function Titlebar() {
           onClick={() => navigate("/preferences")}
           title={t("shell.preferences")}
         >
-          ⚙
+          Prefs
         </button>
         <button
           type="button"
@@ -157,7 +157,7 @@ export function Titlebar() {
           onClick={() => invoke("open_data_folder")}
           title="Reveal data folder"
         >
-          ⤴
+          Data
         </button>
       </div>
     </header>

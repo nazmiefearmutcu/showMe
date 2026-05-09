@@ -223,6 +223,14 @@ def _normalise_fa_payload(
             "cash_flow": len(cash_rows),
             "ratios": len(ratios),
         },
+        "methodology": "FA normalizes income statement, balance sheet, and cash-flow rows into canonical line items, then computes ratios from latest available values. Ratios tab is only meaningful when the ratios payload is non-empty.",
+        "field_dictionary": {
+            "gross_margin": "gross_profit / revenue.",
+            "net_margin": "net_income / revenue.",
+            "roe": "net_income / total_equity.",
+            "current_ratio": "current_assets / current_liabilities.",
+            "free_cash_flow": "cash from operations minus capital expenditure when available.",
+        },
     }
     if status != "ok":
         payload["reason"] = "Unable to compute financial ratios from returned statement fields."

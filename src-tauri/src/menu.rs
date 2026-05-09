@@ -6,7 +6,7 @@
 use tauri::menu::{
     AboutMetadataBuilder, MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder,
 };
-use tauri::{App, Manager};
+use tauri::App;
 
 pub fn install(app: &App) -> tauri::Result<()> {
     let about_meta = AboutMetadataBuilder::new()

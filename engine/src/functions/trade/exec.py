@@ -55,6 +55,39 @@ class EXECFunction(BaseFunction):
             status=params.get("status"),
             symbol=params.get("symbol"),
             limit=int(params.get("limit", 50)))
+        if not rows:
+            return FunctionResult(
+                code=self.code,
+                instrument=None,
+                data={
+                    "status": "empty",
+                    "reason": "No execution parent orders are being monitored.",
+                    "orders": [],
+                    "n": 0,
+                    "next_actions": [
+                        "Open a parent order with action=open before monitoring slices.",
+                        "Use action=slice to record fill slices, then action=close when complete.",
+                    ],
+                },
+                sources=["exec_monitor"],
+                metadata={"empty": True},
+            )
+        filled_not_closed = [row for row in rows if row.get("status") == "filled_not_closed"]
+        status = "needs_close" if filled_not_closed else "ok"
+        reason = (
+            f"{len(filled_not_closed)} parent order(s) are fully filled but still stored as live."
+            if filled_not_closed
+            else None
+        )
         return FunctionResult(code=self.code, instrument=None,
-                              data={"orders": rows, "n": len(rows)},
+                              data={
+                                  "status": status,
+                                  "reason": reason,
+                                  "orders": rows,
+                                  "n": len(rows),
+                                  "next_actions": [
+                                      "Close fully filled parent orders with action=close after confirming fills.",
+                                      "Inspect per_slice metrics for slippage and benchmark quality.",
+                                  ] if filled_not_closed else [],
+                              },
                               sources=["exec_monitor"])

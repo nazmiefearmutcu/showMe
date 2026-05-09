@@ -32,7 +32,7 @@ class TLDRFunction(BaseFunction):
                 return 0.0
             return max(floor, min(float(default), remaining))
 
-        symbols = list(params.get("symbols") or [])
+        symbols = _parse_symbols(params.get("symbols"))
         # Pull from PortfolioState if no list
         if not symbols:
             try:
@@ -63,7 +63,11 @@ class TLDRFunction(BaseFunction):
                     )
                 if not inst:
                     inst = Instrument(symbol=s, asset_class=AssetClass.EQUITY)
-                src = self.deps.yfinance if inst.asset_class.value != "CRYPTO" else None
+                src_name = "yfinance"
+                src = self.deps.yfinance
+                if inst.asset_class.value == "CRYPTO" and getattr(self.deps, "ccxt_failover", None):
+                    src_name = "ccxt_failover"
+                    src = self.deps.ccxt_failover
                 if src is None:
                     return {"symbol": s}
                 q = await asyncio.wait_for(
@@ -78,7 +82,7 @@ class TLDRFunction(BaseFunction):
                 )
                 last = q.last; prev = q.close_prev
                 chg_pct = ((last or 0) / (prev or 1) - 1) * 100 if prev else None
-                return {"symbol": s, "last": last, "change_pct": chg_pct}
+                return {"symbol": s, "last": last, "change_pct": chg_pct, "quote_source": src_name}
             except Exception:
                 return {"symbol": s}
         try:
@@ -125,6 +129,7 @@ class TLDRFunction(BaseFunction):
 
         # LLM summary if available
         prose = ""
+        summary_model = "local_deterministic_tldr_v2"
         try:
             llm_timeout = _remaining(float(params.get("llm_timeout", 2)), floor=0.75)
             if llm_timeout <= 0:
@@ -153,7 +158,8 @@ class TLDRFunction(BaseFunction):
             )
             if r.text:
                 prose = r.text
-                sources.append(f"llm:{r.model}")
+                summary_model = f"llm:{r.model}"
+                sources.append(summary_model)
         except Exception as e:
             warnings.append(f"llm: {e}")
 
@@ -187,18 +193,16 @@ class TLDRFunction(BaseFunction):
 
         # Fallback markdown
         if not prose:
-            ups = sorted([q for q in quotes if q.get("change_pct") is not None],
-                          key=lambda x: -(x["change_pct"] or 0))[:3]
-            downs = sorted([q for q in quotes if q.get("change_pct") is not None],
-                            key=lambda x: (x["change_pct"] or 0))[:3]
+            movers = [q for q in quotes if q.get("change_pct") is not None]
+            ups_line = _format_movers(movers, positive=True)
+            downs_line = _format_movers(movers, positive=False)
             prose = (
                 f"# ShowMe TL;DR — {datetime.utcnow():%Y-%m-%d}\n\n"
-                f"- **Top movers up:** "
-                + ", ".join(f"{q['symbol']} ({q['change_pct']:+.2f}%)" for q in ups)
-                + "\n- **Top movers down:** "
-                + ", ".join(f"{q['symbol']} ({q['change_pct']:+.2f}%)" for q in downs)
+                f"- **Top movers up:** {ups_line}"
+                f"\n- **Top movers down:** {downs_line}"
                 + "\n- **News themes:** " + "; ".join(news_summary[:3])
                 + f"\n- **Calendar items:** {len(events)} scheduled."
+                + "\n- **Summary engine:** local deterministic template; no LLM response was available in the latency budget."
                 + "\n- **Action items:** review portfolio positions, scan ALRT log."
             )
 
@@ -206,7 +210,34 @@ class TLDRFunction(BaseFunction):
             code=self.code, instrument=None,
             data={"markdown": prose, "quotes": quotes,
                    "news": news_summary, "events": events,
-                   "watchlist": symbols},
+                   "watchlist": symbols, "summary_model": summary_model,
+                   "quote_count": len([q for q in quotes if q.get("last") is not None]),
+                   "mover_count": len([q for q in quotes if q.get("change_pct") is not None])},
             sources=list(set(sources)) or ["local_briefing_model"],
-            metadata={"format": "markdown", "provider_errors": warnings},
+            metadata={"format": "markdown", "provider_errors": warnings, "summary_model": summary_model},
         )
+
+
+def _parse_symbols(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [item.strip().upper() for item in value.split(",") if item.strip()]
+    if isinstance(value, (list, tuple, set)):
+        return [str(item).strip().upper() for item in value if str(item).strip()]
+    return []
+
+
+def _format_movers(quotes: list[dict[str, Any]], *, positive: bool) -> str:
+    if positive:
+        rows = sorted(
+            [q for q in quotes if (q.get("change_pct") or 0) > 0],
+            key=lambda x: -(x["change_pct"] or 0),
+        )[:3]
+        empty = "No live positive movers returned by quote providers."
+    else:
+        rows = sorted(
+            [q for q in quotes if (q.get("change_pct") or 0) < 0],
+            key=lambda x: (x["change_pct"] or 0),
+        )[:3]
+        empty = "No live negative movers returned by quote providers."
+    line = ", ".join(f"{q['symbol']} ({q['change_pct']:+.2f}%)" for q in rows)
+    return line or empty

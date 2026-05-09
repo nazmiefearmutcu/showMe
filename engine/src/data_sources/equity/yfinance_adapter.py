@@ -55,6 +55,39 @@ def _as_utc(value: datetime) -> datetime:
     return value.astimezone(timezone.utc)
 
 
+def _json_scalar(value: Any) -> Any:
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except Exception:
+        pass
+    if isinstance(value, pd.Timestamp):
+        return _as_utc(value.to_pydatetime()).isoformat()
+    if isinstance(value, datetime):
+        return _as_utc(value).isoformat()
+    if hasattr(value, "item"):
+        try:
+            return value.item()
+        except Exception:
+            pass
+    return value
+
+
+def _frame_records(frame: Any, *, limit: int | None = None) -> list[dict[str, Any]]:
+    if not isinstance(frame, pd.DataFrame) or frame.empty:
+        return []
+    df = frame.copy()
+    if limit is not None:
+        df = df.head(limit)
+    df = df.reset_index()
+    records: list[dict[str, Any]] = []
+    for raw in df.to_dict(orient="records"):
+        records.append({str(k): _json_scalar(v) for k, v in raw.items()})
+    return records
+
+
 class YFinanceAdapter(BaseDataSource):
     """yfinance is a read-only, anonymous-friendly Yahoo wrapper.
 
@@ -392,10 +425,47 @@ class YFinanceAdapter(BaseDataSource):
     async def _fetch_refdata(self, req: DataRequest) -> ReferenceData:
         sym = self._yf_symbol(req.instrument, req.symbols[0] if req.symbols else None)
         cached = self._info_cache.get(sym)
-        if cached and (utcnow() - cached[0]) < timedelta(hours=12):
+        include_recommendations = bool(req.extra.get("include_recommendations"))
+        if cached and not include_recommendations and (utcnow() - cached[0]) < timedelta(hours=12):
             return cached[1]
         ticker = await asyncio.to_thread(self._ticker, sym)
-        info = await asyncio.to_thread(getattr, ticker, "info", {}) or {}
+        try:
+            info = await asyncio.wait_for(
+                asyncio.to_thread(lambda: getattr(ticker, "info", {}) or {}),
+                timeout=float(req.extra.get("info_timeout", 8)),
+            )
+        except Exception as exc:
+            info = {}
+            info_error = str(exc)
+        else:
+            info_error = ""
+        raw = {k: v for k, v in info.items() if k not in {"longBusinessSummary"}}
+        if info_error:
+            raw["info_error"] = info_error
+        if include_recommendations:
+            try:
+                recs = await asyncio.wait_for(
+                    asyncio.to_thread(lambda: getattr(ticker, "recommendations_summary", pd.DataFrame())),
+                    timeout=float(req.extra.get("recommendations_timeout", 8)),
+                )
+                if not isinstance(recs, pd.DataFrame) or recs.empty:
+                    recs = await asyncio.wait_for(
+                        asyncio.to_thread(lambda: getattr(ticker, "recommendations", pd.DataFrame())),
+                        timeout=float(req.extra.get("recommendations_timeout", 8)),
+                    )
+                raw["recommendations_summary"] = _frame_records(recs)
+            except Exception as exc:
+                raw["recommendations_error"] = str(exc)
+            try:
+                actions = await asyncio.wait_for(
+                    asyncio.to_thread(lambda: getattr(ticker, "upgrades_downgrades", pd.DataFrame())),
+                    timeout=float(req.extra.get("actions_timeout", 8)),
+                )
+                if isinstance(actions, pd.DataFrame) and not actions.empty:
+                    actions = actions.sort_index(ascending=False)
+                raw["upgrades_downgrades"] = _frame_records(actions, limit=80)
+            except Exception as exc:
+                raw["upgrades_downgrades_error"] = str(exc)
         rd = ReferenceData(
             symbol=sym,
             name=info.get("shortName") or info.get("longName"),
@@ -416,9 +486,10 @@ class YFinanceAdapter(BaseDataSource):
             isin=info.get("isin"),
             source=self.name,
             fetched_at=utcnow(),
-            extras={"raw": {k: v for k, v in info.items() if k not in {"longBusinessSummary"}}},
+            extras={"raw": raw},
         )
-        self._info_cache[sym] = (utcnow(), rd)
+        if not include_recommendations:
+            self._info_cache[sym] = (utcnow(), rd)
         return rd
 
     async def _fetch_fundamentals(self, req: DataRequest) -> dict[str, pd.DataFrame]:

@@ -4,7 +4,7 @@
  * Dedicated native pane for the BIS CBPOL-backed policy-rate matrix. This is
  * intentionally not symbol-driven; it monitors country/rate environment.
  */
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import {
   ChangeText,
   DataGrid,
@@ -41,6 +41,7 @@ interface BTMMRow {
   change_bp?: number | null;
   last_move?: "hike" | "cut" | "hold" | string;
   trend_3m_bp?: number | null;
+  history?: Array<{ date?: string; policy_rate?: number; country_code?: string }>;
   source?: string;
 }
 
@@ -171,9 +172,12 @@ export function BTMMPane({ code }: FunctionPaneProps) {
     params: { country, region, limit: 80 },
   });
   const payload = useMemo(() => normalizePayload(data?.data), [data]);
-  const rows = payload.rows;
+  const rawRows = payload.rows;
+  const [search, setSearch] = useState("");
+  const rows = useMemo(() => filterRows(rawRows, search), [rawRows, search]);
   const summary = payload.summary;
   const largestMove = summary?.largest_last_move;
+  const chartRow = rows[0] ?? rawRows[0];
 
   return (
     <div style={{ padding: 18, height: "100%" }}>
@@ -204,6 +208,33 @@ export function BTMMPane({ code }: FunctionPaneProps) {
           }}
         >
           <FunctionControlGroup>
+            <label
+              style={{
+                display: "grid",
+                gap: 3,
+                fontFamily: "JetBrains Mono, monospace",
+                fontSize: 10,
+                color: "var(--text-mute)",
+                textTransform: "uppercase",
+              }}
+            >
+              Search
+              <input
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder="country, bank, ccy"
+                style={{
+                  minWidth: 180,
+                  background: "var(--bg-elev-1)",
+                  border: "1px solid var(--border-subtle)",
+                  borderRadius: "var(--radius-sm)",
+                  color: "var(--text-primary)",
+                  padding: "6px 8px",
+                  font: "inherit",
+                  textTransform: "none",
+                }}
+              />
+            </label>
             <SegmentedControl
               label="COUNTRY"
               value={country}
@@ -255,6 +286,7 @@ export function BTMMPane({ code }: FunctionPaneProps) {
           ) : (
             <>
               <SummaryBand summary={summary} largestMove={largestMove} />
+              <PolicyRateHistory row={chartRow} />
               <DataGrid
                 columns={COLS}
                 rows={rows}
@@ -356,6 +388,77 @@ function SummaryBand({
         </div>
       ))}
     </div>
+  );
+}
+
+function PolicyRateHistory({ row }: { row?: BTMMRow }) {
+  const points = (row?.history ?? []).filter(
+    (point) => typeof point.policy_rate === "number" && point.date,
+  );
+  if (points.length < 2) return null;
+  const values = points.map((point) => Number(point.policy_rate));
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const span = max - min || 1;
+  const width = 680;
+  const height = 118;
+  const path = points
+    .map((point, index) => {
+      const x = (index / Math.max(1, points.length - 1)) * width;
+      const y = height - ((Number(point.policy_rate) - min) / span) * (height - 18) - 9;
+      return `${index === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`;
+    })
+    .join(" ");
+  const latest = points[points.length - 1];
+  return (
+    <div
+      style={{
+        border: "1px solid var(--border-subtle)",
+        borderRadius: "var(--radius-md)",
+        background: "rgba(0,0,0,0.12)",
+        padding: 10,
+        display: "grid",
+        gap: 8,
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          gap: 12,
+          fontFamily: "JetBrains Mono, monospace",
+          fontSize: 11,
+          color: "var(--text-secondary)",
+        }}
+      >
+        <span>{row?.country_code ?? "—"} policy-rate history</span>
+        <span>{latest?.date} · {fmtPct(latest?.policy_rate)}</span>
+      </div>
+      <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" style={{ width: "100%", height }}>
+        <line x1="0" y1={height - 9} x2={width} y2={height - 9} stroke="rgba(255,255,255,0.12)" />
+        <line x1="0" y1="9" x2={width} y2="9" stroke="rgba(255,255,255,0.08)" />
+        <path d={path} fill="none" stroke="var(--accent)" strokeWidth="2.2" vectorEffect="non-scaling-stroke" />
+      </svg>
+    </div>
+  );
+}
+
+function filterRows(rows: BTMMRow[], search: string): BTMMRow[] {
+  const needle = search.trim().toLowerCase();
+  if (!needle) return rows;
+  return rows.filter((row) =>
+    [
+      row.country_code,
+      row.bis_ref_area,
+      row.country,
+      row.central_bank,
+      row.currency,
+      row.region,
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase()
+      .includes(needle),
   );
 }
 

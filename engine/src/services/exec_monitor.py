@@ -26,7 +26,7 @@ import math
 import sqlite3
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -143,6 +143,7 @@ def get_parent(parent_id: str) -> dict[str, Any] | None:
             d["metadata"] = json.loads(d.pop("metadata_json", "{}") or "{}")
         except Exception:
             d["metadata"] = {}
+        _add_time_labels(d)
         slices = [dict(r) for r in conn.execute(
             "SELECT slice_idx, ts, qty, avg_px, benchmark_px, vwap_running "
             "FROM slices WHERE parent_id=? ORDER BY slice_idx",
@@ -150,6 +151,7 @@ def get_parent(parent_id: str) -> dict[str, Any] | None:
         ).fetchall()]
         d["slices"] = slices
         d["metrics"] = compute_metrics(d, slices)
+        _decorate_execution_status(d)
         return d
 
 
@@ -169,11 +171,17 @@ def list_parents(*, status: str | None = None, symbol: str | None = None,
     out = []
     for r in rows:
         d = dict(r)
+        try:
+            d["metadata"] = json.loads(d.pop("metadata_json", "{}") or "{}")
+        except Exception:
+            d["metadata"] = {}
+        _add_time_labels(d)
         slices = [dict(rr) for rr in _connect().execute(
             "SELECT slice_idx, ts, qty, avg_px, benchmark_px, vwap_running "
             "FROM slices WHERE parent_id=? ORDER BY slice_idx",
             (d["parent_id"],)).fetchall()]
         d["metrics"] = compute_metrics(d, slices)
+        _decorate_execution_status(d)
         out.append(d)
     return out
 
@@ -191,10 +199,17 @@ def compute_metrics(parent: dict[str, Any], slices: list[dict[str, Any]]) -> dic
     notional = sum(float(s["qty"]) * float(s["avg_px"]) for s in slices)
     avg_fill = (notional / filled_qty) if filled_qty else None
     fill_rate = filled_qty / target if target else 0
-    pace = fill_rate - (elapsed / horizon)
     residual_qty = max(target - filled_qty, 0)
+    fully_filled = target > 0 and filled_qty >= target and residual_qty <= 1e-9
+    pace = 0.0 if fully_filled else fill_rate - (elapsed / horizon)
     is_per_share = (sign * (avg_fill - arrival)) if (avg_fill and arrival) else None
     is_bps = (is_per_share / arrival * 1e4) if (is_per_share is not None and arrival) else None
+    stored_status = parent.get("status")
+    computed_status = (
+        "filled_not_closed"
+        if stored_status == "live" and fully_filled and not parent.get("ended_at")
+        else stored_status
+    )
     # Per-slice slippage vs benchmark.
     per_slice = []
     for s in slices:
@@ -216,5 +231,36 @@ def compute_metrics(parent: dict[str, Any], slices: list[dict[str, Any]]) -> dic
         "pace_pct": pace * 100,
         "n_slices": len(slices),
         "per_slice": per_slice,
-        "status": parent.get("status"),
+        "status": computed_status,
+        "stored_status": stored_status,
+        "next_action": (
+            "Close the parent order with action=close after confirming all fills."
+            if computed_status == "filled_not_closed"
+            else None
+        ),
     }
+
+
+def _iso_ts(value: Any) -> str | None:
+    try:
+        ts = int(value)
+    except Exception:
+        return None
+    if ts <= 0:
+        return None
+    return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+
+
+def _add_time_labels(row: dict[str, Any]) -> None:
+    row["started_at_iso"] = _iso_ts(row.get("started_at"))
+    row["ended_at_iso"] = _iso_ts(row.get("ended_at"))
+
+
+def _decorate_execution_status(row: dict[str, Any]) -> None:
+    metrics = row.get("metrics") or {}
+    computed = metrics.get("status")
+    if computed and computed != row.get("status"):
+        row["stored_status"] = row.get("status")
+        row["status"] = computed
+    if metrics.get("next_action"):
+        row["next_action"] = metrics["next_action"]

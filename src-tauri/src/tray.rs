@@ -153,8 +153,9 @@ fn apply_ticker<R: Runtime>(handle: &AppHandle<R>, ticker: &Ticker) {
     let mut t = TICKER.lock();
     if let Some(item) = &t.bot {
         let label = format!(
-            "Bot · {} · cycle {}",
+            "Bot · {} · {} · cycle {}",
             if ticker.bot.running { "RUNNING" } else { "STOPPED" },
+            ticker.bot.mode.as_deref().unwrap_or("mode —"),
             ticker.bot.cycle.map(|c| c.to_string()).unwrap_or_else(|| "—".into()),
         );
         let _ = item.set_text(label);

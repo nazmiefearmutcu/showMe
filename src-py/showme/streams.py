@@ -27,6 +27,8 @@ from typing import Any, AsyncIterator, Awaitable, Callable
 
 import requests
 
+from showme.crypto_aliases import is_crypto_symbol as _is_crypto_symbol
+
 LOG = logging.getLogger("showme.streams")
 
 
@@ -105,8 +107,7 @@ def parse_binance_ticker(payload: dict[str, Any]) -> Tick:
 
 
 def is_crypto_symbol(symbol: str) -> bool:
-    s = symbol.upper()
-    return s.endswith("USDT") or s.endswith("USD") or s.endswith("BTC")
+    return _is_crypto_symbol(symbol)
 
 
 class BinanceWsSource(Source):
@@ -170,6 +171,7 @@ class BinanceRestSource(Source):
     """Polls Binance's 24h ticker endpoint for crypto pairs."""
 
     URL = "https://api.binance.com/api/v3/ticker/24hr"
+    FUTURES_URL = "https://fapi.binance.com/fapi/v1/ticker/24hr"
 
     def __init__(self, symbol: str, *, interval: float = 5.0) -> None:
         super().__init__(symbol)
@@ -189,15 +191,13 @@ class BinanceRestSource(Source):
 
 
 def fetch_binance_24h_ticker(symbol: str) -> Tick:
-    response = requests.get(
-        BinanceRestSource.URL,
-        params={"symbol": symbol.upper()},
-        headers={"User-Agent": "showMe/1.0"},
-        timeout=6,
-    )
-    response.raise_for_status()
-    payload = response.json()
-    return parse_binance_ticker({
+    try:
+        payload = _fetch_binance_ticker_payload(symbol, futures=False)
+        source = "binance"
+    except Exception:  # noqa: BLE001
+        payload = _fetch_binance_ticker_payload(symbol, futures=True)
+        source = "binance_futures"
+    tick = parse_binance_ticker({
         "s": payload.get("symbol"),
         "c": payload.get("lastPrice"),
         "P": payload.get("priceChangePercent"),
@@ -206,6 +206,22 @@ def fetch_binance_24h_ticker(symbol: str) -> Tick:
         "a": payload.get("askPrice"),
         "E": payload.get("closeTime"),
     })
+    tick.source = source
+    return tick
+
+
+def _fetch_binance_ticker_payload(symbol: str, *, futures: bool) -> dict[str, Any]:
+    response = requests.get(
+        BinanceRestSource.FUTURES_URL if futures else BinanceRestSource.URL,
+        params={"symbol": symbol.upper()},
+        headers={"User-Agent": "showMe/1.0"},
+        timeout=6,
+    )
+    response.raise_for_status()
+    payload = response.json() or {}
+    if payload.get("code") is not None and payload.get("lastPrice") in (None, ""):
+        raise RuntimeError(str(payload.get("msg") or payload))
+    return payload
 
 
 # ── Polling fallback for non-crypto symbols ───────────────────────────────

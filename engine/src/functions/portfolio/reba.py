@@ -125,11 +125,14 @@ class REBAFunction(BaseFunction):
                 "target_weights_pct": {k: v * 100 for k, v in targets.items()},
                 "orders": orders,
                 "liquidations": liquidations,
+                "rows": orders + liquidations,
                 "summary": {
                     "n_orders": len(orders),
                     "n_liquidations": len(liquidations),
                     "gross_notional": sum(abs(o["notional_delta"]) for o in orders + liquidations),
                 },
+                "methodology": _methodology(),
+                "field_dictionary": _field_dictionary(),
             },
             sources=["yfinance"],
         )
@@ -174,9 +177,30 @@ def _rebalance_model(
         "target_weights_pct": {k.upper(): v * 100 for k, v in targets.items()},
         "orders": orders,
         "liquidations": [],
+        "rows": orders,
         "summary": {
             "n_orders": len(orders),
             "n_liquidations": 0,
             "gross_notional": sum(abs(o["notional_delta"]) for o in orders),
         },
+        "methodology": _methodology(),
+        "field_dictionary": _field_dictionary(),
+    }
+
+
+def _methodology() -> str:
+    return (
+        "Normalize target weights, estimate current weights from position market values, then propose "
+        "BUY/SELL deltas where target minus current weight exceeds the drift threshold. Output is a preview, "
+        "not an executed order."
+    )
+
+
+def _field_dictionary() -> dict[str, str]:
+    return {
+        "current_weight_pct": "Current portfolio weight for the symbol.",
+        "target_weight_pct": "Desired portfolio weight after rebalance.",
+        "drift_pct": "Target weight minus current weight.",
+        "notional_delta": "Dollar buy/sell amount required to move toward target.",
+        "quantity": "Estimated units based on the displayed price.",
     }

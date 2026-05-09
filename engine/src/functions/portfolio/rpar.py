@@ -12,6 +12,7 @@ import pandas as pd
 from src.core.base_data_source import DataKind, DataRequest
 from src.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from src.core.instrument import AssetClass, Instrument
+from src.functions.portfolio.return_series import align_return_series, close_to_daily_returns
 from src.services.risk_parity import (
     equal_risk_contribution,
     naive_inverse_vol,
@@ -72,12 +73,12 @@ class RPARFunction(BaseFunction):
                     )),
                     timeout=8,
                 )
-                return sym, df["close"].pct_change().dropna()
+                return sym, close_to_daily_returns(df)
             except Exception:
                 return sym, pd.Series(dtype=float)
         if live and self.deps.yfinance:
             rs = await asyncio.gather(*(_ret(s) for s in symbols))
-            df = pd.DataFrame({s: r for s, r in rs}).dropna(how="any")
+            df = align_return_series(rs)
         else:
             df = pd.DataFrame()
         if df.shape[0] < 10:
@@ -98,6 +99,17 @@ class RPARFunction(BaseFunction):
             )
             info["method"] = "erc"
         rc = risk_contributions(w, cov)
+        rows = [
+            {
+                "symbol": symbol,
+                "weight": float(w[i]),
+                "weight_pct": float(w[i] * 100),
+                "risk_contribution_pct": float(rc["risk_contributions_pct"][i] * 100),
+                "annualized_vol": float(np.sqrt(cov[i, i])),
+                "method": info.get("method"),
+            }
+            for i, symbol in enumerate(df.columns)
+        ]
         return FunctionResult(
             code=self.code, instrument=None,
             data={
@@ -107,6 +119,23 @@ class RPARFunction(BaseFunction):
                 "risk_contributions_pct": dict(zip(df.columns, rc["risk_contributions_pct"])),
                 "samples": int(df.shape[0]),
                 "info": info,
+                "rows": rows,
+                "summary": {
+                    "method": info.get("method"),
+                    "symbols": len(rows),
+                    "portfolio_vol": rc["portfolio_vol"],
+                },
+                "methodology": (
+                    "Estimate the annualized covariance matrix from daily returns. ERC mode solves for "
+                    "weights whose percentage risk contributions match the target; inverse-vol mode is "
+                    "shown explicitly as a faster approximation, not true ERC."
+                ),
+                "field_dictionary": {
+                    "weight_pct": "Portfolio allocation weight in percent.",
+                    "risk_contribution_pct": "Share of total portfolio variance contribution.",
+                    "annualized_vol": "Single-asset annualized volatility from the covariance diagonal.",
+                    "portfolio_vol": "Annualized portfolio volatility sqrt(w' covariance w).",
+                },
             },
             sources=sources,
         )
@@ -148,4 +177,24 @@ def _fast_template(symbols: list[str], days: int) -> dict[str, Any]:
         "risk_contributions_pct": risk_pct,
         "samples": max(60, min(days, 504)),
         "info": {"method": "inverse_vol_model", "iterations": 0, "residual": 0.0},
+        "rows": [
+            {
+                "symbol": symbol,
+                "weight": weights[symbol],
+                "weight_pct": weights[symbol] * 100,
+                "risk_contribution_pct": risk_pct[symbol] * 100,
+                "annualized_vol": vol_by_symbol[symbol],
+                "method": "inverse_vol_model",
+            }
+            for symbol in clean
+        ],
+        "methodology": (
+            "Fast reference allocation using inverse volatility. Live ERC mode can solve equal risk "
+            "contribution from return covariance when method=erc is supplied."
+        ),
+        "field_dictionary": {
+            "weight_pct": "Portfolio allocation weight in percent.",
+            "risk_contribution_pct": "Share of total portfolio risk contribution.",
+            "annualized_vol": "Model annualized volatility used by inverse-vol weighting.",
+        },
     }

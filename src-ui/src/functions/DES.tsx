@@ -22,6 +22,11 @@ import { FunctionControlGroup, LoadStatePill, RefreshButton } from "./function-c
 import type { FunctionPaneProps } from "./registry-types";
 
 interface DESData {
+  status?: string;
+  reason?: string;
+  nextAction?: string;
+  next_actions?: string[];
+  name?: string;
   longName?: string;
   shortName?: string;
   symbol?: string;
@@ -29,13 +34,19 @@ interface DESData {
   industry?: string;
   country?: string;
   city?: string;
+  headquarters?: string;
   fullTimeEmployees?: number;
+  employees?: number;
   website?: string;
   longBusinessSummary?: string;
+  description?: string;
   marketCap?: number;
+  market_cap?: number;
   exchange?: string;
+  exchange_name?: string;
   currency?: string;
   ipoDate?: string;
+  ipo_date?: string;
   [key: string]: unknown;
 }
 
@@ -56,6 +67,7 @@ export function DESPane({ code, symbol }: FunctionPaneProps) {
     symbol,
     enabled: !!symbol,
   });
+  const payloadStatus = data?.status ?? data?.data?.status;
 
   const body = !symbol ? (
     <Empty
@@ -90,11 +102,11 @@ export function DESPane({ code, symbol }: FunctionPaneProps) {
       <Pane>
         <PaneHeader
           code={code}
-          title={data?.data?.longName || data?.data?.shortName || symbol || "Description"}
+          title={data?.data?.longName || data?.data?.shortName || data?.data?.name || symbol || "Description"}
           subtitle={
             data?.data
-              ? [
-                  data.data.exchange,
+                ? [
+                  data.data.exchange_name || data.data.exchange,
                   data.data.industry,
                   data.data.country,
                 ]
@@ -108,7 +120,7 @@ export function DESPane({ code, symbol }: FunctionPaneProps) {
             <FunctionControlGroup>
               {data?.data?.sector && <Pill tone="accent" withDot={false}>{data.data.sector}</Pill>}
               {symbol && <Pill tone="muted" withDot={false}>{symbol}</Pill>}
-              <LoadStatePill state={state} />
+              <LoadStatePill state={state} status={payloadStatus} />
               <RefreshButton
                 loading={state === "loading"}
                 onClick={refetch}
@@ -131,6 +143,13 @@ export function DESPane({ code, symbol }: FunctionPaneProps) {
 
 function DESView({ data }: { data?: DESData }) {
   if (!data) return <Empty title="No description data" />;
+  const summary = data.longBusinessSummary ?? data.description ?? "(no summary)";
+  const degraded = data.status && data.status !== "ok";
+  const employees = data.fullTimeEmployees ?? data.employees;
+  const marketCap = data.marketCap ?? data.market_cap;
+  const hq = data.headquarters ?? ([data.city, data.country].filter(Boolean).join(", ") || "—");
+  const exchange = data.exchange_name ?? data.exchange ?? "—";
+  const ipo = data.ipoDate ?? data.ipo_date ?? "—";
   return (
     <div
       style={{
@@ -139,6 +158,7 @@ function DESView({ data }: { data?: DESData }) {
         gap: 14,
       }}
     >
+      {degraded ? <DESStatusPanel data={data} /> : null}
       <Card>
         <CardHeader>Business summary</CardHeader>
         <CardBody>
@@ -150,7 +170,7 @@ function DESView({ data }: { data?: DESData }) {
               color: "var(--text-secondary)",
             }}
           >
-            {data.longBusinessSummary ?? "(no summary)"}
+            {summary}
           </p>
         </CardBody>
       </Card>
@@ -169,14 +189,12 @@ function DESView({ data }: { data?: DESData }) {
           >
             <Term k="Sector">{data.sector ?? "—"}</Term>
             <Term k="Industry">{data.industry ?? "—"}</Term>
-            <Term k="HQ">
-              {[data.city, data.country].filter(Boolean).join(", ") || "—"}
-            </Term>
-            <Term k="Employees">{fmtNum(data.fullTimeEmployees)}</Term>
-            <Term k="Market cap">{fmtMcap(data.marketCap)}</Term>
-            <Term k="Exchange">{data.exchange ?? "—"}</Term>
+            <Term k="HQ">{hq}</Term>
+            <Term k="Employees">{fmtNum(employees)}</Term>
+            <Term k="Market cap">{fmtMcap(marketCap)}</Term>
+            <Term k="Exchange">{exchange}</Term>
             <Term k="Currency">{data.currency ?? "—"}</Term>
-            <Term k="IPO">{data.ipoDate ?? "—"}</Term>
+            <Term k="IPO">{ipo}</Term>
             <Term k="Website">
               {data.website ? (
                 <a href={data.website} target="_blank" rel="noopener noreferrer">
@@ -190,6 +208,49 @@ function DESView({ data }: { data?: DESData }) {
         </CardBody>
       </Card>
     </div>
+  );
+}
+
+function DESStatusPanel({ data }: { data: DESData }) {
+  const actions = data.next_actions ?? (data.nextAction ? [data.nextAction] : []);
+  return (
+    <Card
+      variant="elev-2"
+      style={{
+        gridColumn: "1 / -1",
+        borderColor: "color-mix(in srgb, var(--warn) 36%, var(--border-subtle))",
+      }}
+    >
+      <CardHeader
+        trailing={<Pill tone="warn">{data.status ?? "degraded"}</Pill>}
+      >
+        Data quality
+      </CardHeader>
+      <CardBody>
+        <div style={{ display: "grid", gap: 8, fontSize: 12 }}>
+          <div style={{ color: "var(--text-primary)" }}>
+            {data.reason ?? "The function completed but did not return a full live profile."}
+          </div>
+          {actions.length ? (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+              {actions.slice(0, 3).map((action) => (
+                <span
+                  key={action}
+                  style={{
+                    border: "1px solid var(--border-subtle)",
+                    borderRadius: "var(--radius-sm)",
+                    color: "var(--text-secondary)",
+                    padding: "4px 7px",
+                  }}
+                >
+                  {action}
+                </span>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      </CardBody>
+    </Card>
   );
 }
 

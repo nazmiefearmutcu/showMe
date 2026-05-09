@@ -100,6 +100,7 @@ fn sanitize(account: &str) -> Result<String, String> {
     Ok(trimmed.to_string())
 }
 
+#[allow(dead_code)]
 pub const fn service_id() -> &'static str {
     SERVICE
 }

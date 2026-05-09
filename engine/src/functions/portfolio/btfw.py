@@ -85,6 +85,8 @@ class BTFWFunction(BaseFunction):
         return FunctionResult(
             code=self.code, instrument=instrument,
             data={
+                "status": "ok",
+                "symbol": instrument.symbol,
                 "strategy": strategy_name,
                 "metrics": res.metrics,
                 "final_equity": res.final_equity,
@@ -93,6 +95,22 @@ class BTFWFunction(BaseFunction):
                     {"ts": idx_strs[i], "equity": float(eq.iloc[i])}
                     for i in range(0, len(eq), max(1, len(eq) // 500))
                 ],
+                "summary": {
+                    "strategy": strategy_name,
+                    "total_return": res.metrics.get("total_return"),
+                    "sharpe": res.metrics.get("sharpe"),
+                    "max_drawdown": res.metrics.get("max_drawdown"),
+                    "trades": res.metrics.get("trades"),
+                    "samples": res.metrics.get("samples"),
+                },
+                "methodology": "Single-symbol walk-forward backtest: the selected strategy is evaluated on daily OHLCV, equity is marked each bar, and metrics are derived from the equity curve after fees.",
+                "field_dictionary": {
+                    "equity": "Account equity after marking the strategy position on each bar.",
+                    "sharpe": "Annualized mean daily equity return divided by daily volatility.",
+                    "total_return": "Final equity divided by initial equity minus one.",
+                    "max_drawdown": "Worst peak-to-trough equity decline.",
+                    "trades": "Number of entry/exit trade events.",
+                },
             },
             sources=sources,
             metadata={"days": days, "fee_bps": fee_bps, "allow_short": allow_short},
@@ -112,6 +130,8 @@ def _walk_forward_template(symbol: str, strategy: str, cash: float) -> dict[str,
     ]
     final_equity = curve[-1]["equity"]
     return {
+        "status": "reference",
+        "symbol": symbol,
         "strategy": strategy,
         "metrics": {
             "sharpe": 1.18,
@@ -125,4 +145,19 @@ def _walk_forward_template(symbol: str, strategy: str, cash: float) -> dict[str,
             {"symbol": symbol, "side": "SELL", "qty": 1, "price": 104.2, "ts": "template-020"},
         ],
         "equity_curve": curve,
+        "summary": {
+            "strategy": strategy,
+            "total_return": round((final_equity / cash) - 1, 4),
+            "sharpe": 1.18,
+            "max_drawdown": -0.061,
+            "trades": 8,
+            "source_mode": "reference_model",
+        },
+        "methodology": "Reference walk-forward equity curve used when live backtest data is not requested or unavailable.",
+        "field_dictionary": {
+            "equity": "Account equity after marking the strategy position on each bar.",
+            "sharpe": "Annualized mean daily equity return divided by daily volatility.",
+            "total_return": "Final equity divided by initial equity minus one.",
+            "max_drawdown": "Worst peak-to-trough equity decline.",
+        },
     }

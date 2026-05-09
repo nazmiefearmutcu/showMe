@@ -22,17 +22,58 @@ def instant_base_url() -> str:
     return os.environ.get("SHOWME_INSTANT_URL", DEFAULT_INSTANT_URL).rstrip("/")
 
 
-def instant_root() -> Path:
+def _candidate_instant_roots() -> list[Path]:
+    candidates: list[Path] = []
+    seen: set[Path] = set()
+
+    def add(path: Path | None) -> None:
+        if path is None:
+            return
+        try:
+            resolved = path.expanduser().resolve()
+        except Exception:
+            return
+        if resolved in seen:
+            return
+        seen.add(resolved)
+        candidates.append(resolved)
+
     override = os.environ.get("SHOWME_INSTANT_ROOT")
     if override:
-        return Path(override).expanduser().resolve()
-    return Path(__file__).resolve().parents[3] / "instant"
+        add(Path(override))
+
+    home = Path.home()
+    add(home / "Library" / "Application Support" / "showMe" / "instant")
+    add(home / "Desktop" / "Projeler" / "proje" / "instant")
+    add(home / "Desktop" / "Projeler" / "instant")
+    add(home / "Projeler" / "proje" / "instant")
+    add(home / "instant")
+
+    try:
+        source_root = Path(__file__).resolve().parents[3] / "instant"
+        add(source_root)
+    except Exception:
+        pass
+
+    return candidates
+
+
+def instant_root() -> Path:
+    for candidate in _candidate_instant_roots():
+        if (candidate / "data" / "instant.db").exists():
+            return candidate
+    candidates = _candidate_instant_roots()
+    return candidates[0] if candidates else Path.home() / "instant"
 
 
 def instant_db_path() -> Path:
     override = os.environ.get("SHOWME_INSTANT_DB")
     if override:
         return Path(override).expanduser().resolve()
+    for candidate in _candidate_instant_roots():
+        db = candidate / "data" / "instant.db"
+        if db.exists():
+            return db
     return instant_root() / "data" / "instant.db"
 
 

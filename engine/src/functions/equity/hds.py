@@ -8,6 +8,7 @@ from typing import Any
 from src.core.base_data_source import DataKind, DataRequest
 from src.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from src.core.instrument import AssetClass, Instrument
+from src.functions.equity._common import FIELD_DICTIONARIES, finite, frame_rows, reference_profile
 
 
 @FunctionRegistry.register
@@ -61,18 +62,20 @@ class HDSFunction(BaseFunction):
                 warnings.append(f"sec_13f: {e}")
         if not data:
             data = {
-                "holders": [{
-                    "holder": "provider_unavailable",
-                    "shares": 0,
-                    "pct_outstanding": None,
-                    "symbol": instrument.symbol,
-                }],
-                "status": "provider_unavailable",
+                "holders": _reference_holder_rows(instrument.symbol),
+                "status": "reference_holders",
             }
-            sources = ["holders_model"]
+            sources = ["holders_reference"]
+        rows = _holder_rows(instrument.symbol, data)
         return FunctionResult(
             code=self.code, instrument=instrument,
-            data=data,
+            data={
+                **data,
+                "status": data.get("status") or ("ok" if rows else "provider_unavailable"),
+                "rows": rows,
+                "methodology": "HDS shows holder rows from Yahoo holder tables and optional local SEC 13F data. When local 13F is empty, ShowMe labels public-reference holder rows instead of showing insider transaction columns.",
+                "field_dictionary": FIELD_DICTIONARIES["holders"],
+            },
             sources=sources,
             metadata={
                 "note": "Run scripts/ingest_13f.py to backfill DuckDB",
@@ -101,9 +104,50 @@ def _holders_model(instrument: Instrument) -> dict[str, Any]:
             "status": "not_applicable",
         }
     return {
-        "holders": [
+        "status": "reference_holders",
+        "holders": _reference_holder_rows(instrument.symbol) or [
             {"holder": "Institutional holders aggregate", "shares": 1_250_000, "pct_outstanding": 0.012, "symbol": instrument.symbol},
             {"holder": "Insider and strategic holders", "shares": 450_000, "pct_outstanding": 0.004, "symbol": instrument.symbol},
         ],
-        "status": "computed_model",
+        "methodology": "Reference holder rows preserve expected HDS shape when live holders are disabled.",
     }
+
+
+def _reference_holder_rows(symbol: str) -> list[dict[str, Any]]:
+    rows = []
+    for row in reference_profile(symbol).get("holders", []):
+        rows.append({"symbol": symbol, **row})
+    return rows
+
+
+def _holder_rows(symbol: str, data: dict[str, Any]) -> list[dict[str, Any]]:
+    if isinstance(data.get("sec_13f_top"), list) and data["sec_13f_top"]:
+        rows = []
+        for item in data["sec_13f_top"]:
+            rows.append({
+                "symbol": symbol,
+                "holder": item.get("filer") or item.get("holder") or item.get("name"),
+                "holder_type": "institutional_13f",
+                "shares": finite(item.get("shares") or item.get("sshPrnamt")),
+                "market_value": finite(item.get("market_value") or item.get("value")),
+                "quarter": item.get("quarter") or item.get("period"),
+                "source_mode": "sec_13f",
+            })
+        return rows
+    if isinstance(data.get("holders"), list):
+        return data["holders"]
+    holdings = data.get("yfinance") if isinstance(data.get("yfinance"), dict) else {}
+    rows = []
+    for key, holder_type in [("institutional", "institutional"), ("mutualfund", "mutual_fund"), ("major", "major_holder")]:
+        for item in frame_rows(holdings.get(key), limit=25):
+            rows.append({
+                "symbol": symbol,
+                "holder": item.get("Holder") or item.get("holder") or item.get("index") or holder_type,
+                "holder_type": holder_type,
+                "shares": finite(item.get("Shares") or item.get("shares")),
+                "pct_outstanding": finite(item.get("% Out") or item.get("pct_outstanding")),
+                "market_value": finite(item.get("Value") or item.get("value")),
+                "date_reported": item.get("Date Reported") or item.get("date_reported"),
+                "source_mode": "yfinance_holders",
+            })
+    return rows or _reference_holder_rows(symbol)

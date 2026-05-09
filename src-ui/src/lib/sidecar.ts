@@ -82,8 +82,12 @@ export function sidecarBaseUrl(): string {
   if (_port) return `http://127.0.0.1:${_port}`;
   if (isInTauri()) return "http://127.0.0.1:0";
   const storedPort = browserStoredSidecarPort();
-  if (storedPort) return `http://127.0.0.1:${storedPort}`;
+  if (storedPort) {
+    publishPort(storedPort);
+    return `http://127.0.0.1:${storedPort}`;
+  }
   // Fallback for browser-only dev.
+  publishPort(8765);
   return "http://127.0.0.1:8765";
 }
 
@@ -91,7 +95,11 @@ export function sidecarWsUrl(): string {
   if (_port) return `ws://127.0.0.1:${_port}`;
   if (isInTauri()) return "ws://127.0.0.1:0";
   const storedPort = browserStoredSidecarPort();
-  if (storedPort) return `ws://127.0.0.1:${storedPort}`;
+  if (storedPort) {
+    publishPort(storedPort);
+    return `ws://127.0.0.1:${storedPort}`;
+  }
+  publishPort(8765);
   return "ws://127.0.0.1:8765";
 }
 

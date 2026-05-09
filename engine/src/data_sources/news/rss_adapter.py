@@ -375,7 +375,7 @@ def _score_article(
 def _article_text(article: dict[str, Any]) -> str:
     text = " ".join(
         str(article.get(k) or "")
-        for k in ("title", "summary", "feed", "source", "category")
+        for k in ("title", "summary", "category")
     ).lower()
     return text
 

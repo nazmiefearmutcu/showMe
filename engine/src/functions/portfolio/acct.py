@@ -64,7 +64,11 @@ class ACCTFunction(BaseFunction):
                 for p in slot["positions"]:
                     cross["by_symbol"][p["symbol"]] = cross["by_symbol"].get(p["symbol"], 0) + p["market_value"]
             return FunctionResult(code=self.code, instrument=None,
-                                  data={"accounts": list(accounts.values()), "cross": cross},
+                                  data={"accounts": list(accounts.values()),
+                                        "rows": [_account_row(slot) for slot in accounts.values()],
+                                        "cross": cross,
+                                        "methodology": _methodology(),
+                                        "field_dictionary": _field_dictionary()},
                                   sources=["user_positions"])
         # Resolve last prices per symbol (single fetch each).
         symbols = {p.instrument.symbol: p for p in portfolio.positions}
@@ -122,6 +126,47 @@ class ACCTFunction(BaseFunction):
             cross["total_mv"] += slot["total_mv"]
         return FunctionResult(
             code=self.code, instrument=None,
-            data={"accounts": list(by_account.values()), "cross": cross},
+            data={"accounts": list(by_account.values()),
+                  "rows": [_account_row(slot) for slot in by_account.values()],
+                  "cross": cross,
+                  "summary": {
+                      "accounts": len(by_account),
+                      "positions": sum(slot["n_positions"] for slot in by_account.values()),
+                      "total_market_value": cross["total_mv"],
+                  },
+                  "methodology": _methodology(),
+                  "field_dictionary": _field_dictionary()},
             sources=["yfinance"],
         )
+
+
+def _account_row(slot: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "account": slot.get("account"),
+        "positions": slot.get("n_positions"),
+        "market_value": slot.get("total_mv"),
+        "unrealized_pnl": slot.get("total_unrealized_pnl"),
+        "top_asset_class": _top_key(slot.get("by_asset_class") or {}),
+    }
+
+
+def _top_key(values: dict[str, float]) -> str | None:
+    if not values:
+        return None
+    return max(values.items(), key=lambda item: abs(float(item[1] or 0)))[0]
+
+
+def _methodology() -> str:
+    return (
+        "Group saved or supplied positions by account, mark each position with the latest available price, "
+        "then aggregate market value, unrealized P&L, asset-class exposure, and symbol exposure across accounts."
+    )
+
+
+def _field_dictionary() -> dict[str, str]:
+    return {
+        "market_value": "Position quantity multiplied by latest price or cost fallback.",
+        "unrealized_pnl": "(latest price - average cost) * quantity.",
+        "top_asset_class": "Largest asset-class exposure for the account.",
+        "cross": "Cross-account aggregate exposure by asset class and symbol.",
+    }

@@ -22,7 +22,8 @@ class FTSFunction(BaseFunction):
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         sec = getattr(self.deps, "sec_efts", None)
-        query = params.get("query") or (instrument.symbol if instrument else "")
+        base_query = params.get("query") or params.get("search") or "risk factors"
+        query = f"{instrument.symbol} {base_query}".strip() if instrument and instrument.symbol.upper() not in str(base_query).upper() else str(base_query)
         if not query:
             return FunctionResult(code=self.code, instrument=instrument, data={},
                                   warnings=["empty query"])
@@ -31,11 +32,13 @@ class FTSFunction(BaseFunction):
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
-                data=_fallback_hits(query, instrument),
+                data={"status": "provider_unavailable", "rows": _fallback_hits(query, instrument), "query": query,
+                      "methodology": "FTS searches SEC full-text filings by query, optional form list, and date range. Query is symbol-scoped when a symbol is open.",
+                      "field_dictionary": {"score": "Provider relevance score when available.", "snippet": "Matched filing text excerpt.", "form": "SEC form type."}},
                 sources=["sec_search_model"],
                 metadata={"query": query, "live": False},
             )
-        forms = params.get("forms") or None
+        forms = _parse_forms(params.get("forms")) or None
         try:
             hits = await asyncio.wait_for(
                 sec.search(
@@ -48,13 +51,24 @@ class FTSFunction(BaseFunction):
             )
         except Exception as e:
             return FunctionResult(code=self.code, instrument=instrument,
-                                  data=_fallback_hits(query, instrument),
+                                  data={"status": "provider_unavailable", "rows": _fallback_hits(query, instrument), "query": query,
+                                        "methodology": "FTS searches SEC full-text filings by query, optional form list, and date range. Provider errors are shown instead of unrelated hits.",
+                                        "field_dictionary": {"score": "Provider relevance score when available.", "snippet": "Matched filing text excerpt.", "form": "SEC form type."}},
                                   sources=["sec_search_model"],
                                   metadata={"provider_errors": [f"sec_efts: {e}"]})
-        return FunctionResult(code=self.code, instrument=instrument, data=hits,
+        limit = max(1, min(int(params.get("limit", 50) or 50), 100))
+        rows = _normalise_hits(hits, instrument)[:limit]
+        status = "provider_unavailable" if rows and rows[0].get("status") == "provider_unavailable" else "ok"
+        return FunctionResult(code=self.code, instrument=instrument, data={
+                              "status": status,
+                              "rows": rows,
+                              "query": query,
+                              "forms": forms,
+                              "methodology": "FTS searches SEC full-text filings by query, optional form list, and date range. The visible rows include company, form, filing date, accession/link, score, and snippet evidence.",
+                              "field_dictionary": {"score": "Provider relevance score when available.", "snippet": "Matched filing text excerpt.", "form": "SEC form type."}},
                               sources=["sec_efts"],
                               metadata={"query": query, "forms": forms,
-                                         "count": len(hits)})
+                                         "count": len(rows)})
 
 
 def _fallback_hits(query: str, instrument: Instrument | None = None) -> list[dict[str, Any]]:
@@ -72,9 +86,45 @@ def _fallback_hits(query: str, instrument: Instrument | None = None) -> list[dic
     }]
 
 
+def _normalise_hits(hits: Any, instrument: Instrument | None) -> list[dict[str, Any]]:
+    raw_rows = hits if isinstance(hits, list) else []
+    rows: list[dict[str, Any]] = []
+    symbol = instrument.symbol.upper() if instrument else None
+    for item in raw_rows:
+        if not isinstance(item, dict):
+            continue
+        company = item.get("company") or item.get("companyName") or item.get("entity")
+        snippet = item.get("snippet") or item.get("snippets") or item.get("description")
+        if isinstance(snippet, list):
+            snippet = " | ".join(str(s) for s in snippet[:2])
+        row = {
+            "symbol": symbol,
+            "company": company,
+            "form": item.get("form") or item.get("formType"),
+            "filing_date": item.get("filing_date") or item.get("filedAt") or item.get("filingDate"),
+            "accession": item.get("accession") or item.get("adsh") or item.get("accessionNumber"),
+            "url": item.get("url") or item.get("filingUrl") or item.get("linkToFilingDetails"),
+            "score": item.get("score") or item.get("rank") or item.get("relevance"),
+            "snippet": snippet,
+            "source_mode": "sec_efts",
+        }
+        if symbol and (symbol not in str(company or "").upper()) and (symbol not in str(snippet or "").upper()):
+            row["symbol_match"] = "query_scoped_not_direct_snippet"
+        rows.append(row)
+    return rows or _fallback_hits(symbol or "", instrument)
+
+
 def _truthy(value: Any) -> bool:
     if isinstance(value, bool):
         return value
     if value is None:
         return False
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _parse_forms(raw: Any) -> list[str]:
+    if isinstance(raw, str):
+        return [p.strip().upper() for p in raw.split(",") if p.strip()]
+    if isinstance(raw, (list, tuple, set)):
+        return [str(p).strip().upper() for p in raw if str(p).strip()]
+    return []

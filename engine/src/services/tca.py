@@ -117,11 +117,42 @@ def analyze_orders(
 ) -> dict[str, Any]:
     rows = order_history.list_orders(broker=broker, symbol=symbol, limit=limit)
     analyses = [analyze_order(o) for o in rows]
+    equations = {
+        "implementation_shortfall_per_share": "side_sign * (avg_fill - arrival_price)",
+        "implementation_shortfall_bps": "implementation_shortfall_per_share / arrival_price * 10000",
+        "opportunity_cost_notional": "side_sign * (close - arrival_price) * unfilled_qty",
+    }
+    if not rows:
+        return {
+            "status": "empty",
+            "reason": "No order history or fills are available for trade cost analysis.",
+            "orders": [],
+            "summary": {},
+            "n": 0,
+            "methodology": "TCA needs order-history rows with arrival price and fill metadata before it can compute implementation shortfall, slippage, and opportunity cost.",
+            "equations": equations,
+            "next_actions": [
+                "Submit or import orders with fill metadata.",
+                "Use EXEC to monitor parent orders or BBGT/EMSX/FXGO/TSOX to preview a ticket before submission.",
+            ],
+        }
     # Aggregate metrics on filled orders only.
     filled = [a for a in analyses if a.get("avg_fill") is not None
               and a.get("arrival_price") is not None]
     if not filled:
-        return {"orders": analyses, "summary": {}, "n": 0}
+        return {
+            "status": "input_required",
+            "reason": "Order history exists, but the rows do not include enough arrival/fill price metadata for TCA metrics.",
+            "orders": analyses,
+            "summary": {},
+            "n": 0,
+            "methodology": "Each analyzed order needs arrival_price plus fills[] or avg_fill/filled_qty metadata.",
+            "equations": equations,
+            "next_actions": [
+                "Import fills with px, qty, and timestamp fields.",
+                "Include arrival_price or decision_price in order metadata.",
+            ],
+        }
     n = len(filled)
     is_per_share = [a["implementation_shortfall_per_share"] for a in filled]
     is_bps = [a.get("implementation_shortfall_bps", 0) for a in filled]
@@ -137,7 +168,10 @@ def analyze_orders(
     for slot in by_symbol.values():
         slot["avg_is_bps"] /= max(slot["n"], 1)
     return {
+        "status": "ok",
         "orders": analyses, "n": n,
+        "methodology": "Implementation shortfall is side-aware, so positive values are worse for buys and better for sells only after applying side_sign.",
+        "equations": equations,
         "summary": {
             "n_filled": n,
             "mean_is_bps": sum(is_bps) / n,

@@ -41,6 +41,7 @@ export function AGENTPane(_props: FunctionPaneProps) {
 
   const candidates = useMemo(() => parseCandidateText(candidateText), [candidateText]);
   const evidence = result?.best?.top_evidence ?? [];
+  const exclusions = result?.excluded_functions ?? [];
 
   const run = async () => {
     abortRef.current?.abort();
@@ -128,6 +129,8 @@ export function AGENTPane(_props: FunctionPaneProps) {
               <div style={metricGrid}>
                 <Metric label="candidates" value={candidates.length} />
                 <Metric label="functions" value={result?.function_count ?? "-"} />
+                <Metric label="catalog" value={result?.catalog_count ?? "-"} />
+                <Metric label="excluded" value={exclusions.length || "-"} />
                 <Metric label="elapsed" value={result ? formatMs(result.elapsed_ms) : "-"} />
               </div>
               {result?.best && (
@@ -139,8 +142,22 @@ export function AGENTPane(_props: FunctionPaneProps) {
                   <div style={{ color: "var(--text-secondary)", fontSize: 11 }}>
                     {result.best.asset_class} / {formatScore(result.best.score)}
                   </div>
+                  <div style={{ color: "var(--text-mute)", fontSize: 10 }}>
+                    {result.best.signal_functions} signal functions / {evidence.length} evidence rows
+                  </div>
                 </div>
               )}
+              {exclusions.length > 0 ? (
+                <div style={excludedBox}>
+                  <div style={labelStyle}>Excluded</div>
+                  {exclusions.map((row) => (
+                    <div key={row.code} style={excludedRow}>
+                      <strong>{row.code}</strong>
+                      <span>{row.reason}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
             </aside>
 
             <main
@@ -190,6 +207,7 @@ export function AGENTPane(_props: FunctionPaneProps) {
         <PaneFooter>
           <span>method {result?.method ?? "all_function_symbol_agent_v1"}</span>
           <span>best {result?.best?.symbol ?? "-"}</span>
+          <span>catalog {result?.catalog_count ?? "-"}</span>
           <span>fail {result?.ranked.reduce((sum, row) => sum + row.fail, 0) ?? 0}</span>
         </PaneFooter>
       </Pane>
@@ -287,7 +305,7 @@ const textareaStyle: CSSProperties = {
 
 const metricGrid: CSSProperties = {
   display: "grid",
-  gridTemplateColumns: "repeat(3, 1fr)",
+  gridTemplateColumns: "repeat(2, 1fr)",
   gap: 10,
 };
 
@@ -296,4 +314,24 @@ const winnerBox: CSSProperties = {
   borderRadius: "var(--radius-md)",
   background: "rgba(255,122,0,0.08)",
   padding: 12,
+  display: "grid",
+  gap: 6,
+};
+
+const excludedBox: CSSProperties = {
+  borderTop: "1px solid var(--border-subtle)",
+  paddingTop: 10,
+  display: "grid",
+  gap: 6,
+  minWidth: 0,
+};
+
+const excludedRow: CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "52px minmax(0, 1fr)",
+  gap: 8,
+  color: "var(--text-mute)",
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: 10,
+  lineHeight: 1.35,
 };
