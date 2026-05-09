@@ -6,6 +6,19 @@
 
 ---
 
+## 2026-05-09 — Round 34 — Yekpare tek-ağaç refactor
+
+Üç-süreçli ağaç (`src-tauri`/`src-ui`/`src-py`/`engine`) tek bir yekpare
+ağaca konsolide edildi: `tauri/`, `ui/`, `backend/`. `engine/src/*` artık
+`backend/showme/engine/*` alt-paketi; 234 import `from src.X` →
+`from showme.engine.X` olarak yeniden yazıldı. PyInstaller spec yol-bağımsız
+hâle geldi (`collect_submodules('showme')`). Tüm doğrulama (P0–P6) yeşil:
+backend pytest 179 pass, UI vitest 119 pass, tsc/eslint/ruff clean, sidecar
+binary 19s'de boot edip 141 fonksiyon expose ediyor, `showMe.app` + `.dmg`
+üretildi. Detaylar: [docs/round_notes/34.md](round_notes/34.md).
+
+---
+
 ## 2026-05-01 — Round 33 — BTCUSDT function sweep and native stability
 
 ### Root cause
