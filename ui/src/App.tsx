@@ -5,7 +5,9 @@ import { Statusbar } from "./shell/Statusbar";
 import { Workspace } from "./shell/Workspace";
 import { CommandPalette } from "./command-palette/Palette";
 import { ToastHost } from "./shell/ToastHost";
+import { ShortcutsHelp } from "./shell/ShortcutsHelp";
 import { IntroSplash } from "./shell/IntroSplash";
+import { ThemeTransitionOverlay } from "./shell/ThemeTransitionOverlay";
 import { Empty } from "./design-system";
 import { useAppStore } from "./lib/store";
 import {
@@ -16,6 +18,7 @@ import {
 } from "./lib/sidecar";
 import { listen } from "./lib/tauri";
 import { applyAppearancePrefs } from "./lib/theme";
+import { refreshAutoTimezone } from "./lib/timezone";
 import { setLocale, locale } from "./i18n";
 import { useRoute, navigate, parseRoute, type Route } from "./lib/router";
 import { toast } from "./lib/toast";
@@ -50,7 +53,10 @@ async function refreshHealth(): Promise<boolean> {
     return h.ok;
   } catch {
     const state = useAppStore.getState();
-    if (state.sidecarPort && state.functionIndex.length > 0) return true;
+    if (state.sidecarPort && state.functionIndex.length > 0) {
+      state.setSidecarStatus("crashed");
+      return true;
+    }
     state.setSidecarStatus(state.sidecarPort ? "crashed" : "booting");
     return false;
   }
@@ -82,7 +88,7 @@ function RouteSync() {
   }, [route, setFocusedTarget]);
   if (route.kind === "not-found") {
     return (
-      <div style={{ padding: 32 }}>
+      <div className="welcome-route-empty">
         <Empty
           title="Route not found"
           body={
@@ -91,19 +97,7 @@ function RouteSync() {
             </span>
           }
           action={
-            <button
-              type="button"
-              onClick={() => navigate("/")}
-              style={{
-                background: "var(--bg-elev-2)",
-                color: "var(--text-primary)",
-                border: "1px solid var(--border-strong)",
-                borderRadius: "var(--radius-md)",
-                padding: "6px 12px",
-                fontSize: 11,
-                cursor: "default",
-              }}
-            >
+            <button type="button" onClick={() => navigate("/")}>
               Back to welcome
             </button>
           }
@@ -120,6 +114,8 @@ export default function App() {
   const [workspaceReady, setWorkspaceReady] = useState(false);
   const [backendIndexReady, setBackendIndexReady] = useState(false);
   const [introDone, setIntroDone] = useState(false);
+  const sidecarStatus = useAppStore((s) => s.sidecarStatus);
+  const functionCount = useAppStore((s) => s.functionIndex.length);
   const splitFocused = useWorkspace((s) => s.splitFocused);
   const closeFocused = useWorkspace((s) => s.closeFocused);
 
@@ -127,6 +123,19 @@ export default function App() {
   useEffect(() => {
     applyAppearancePrefs();
     setLocale(locale());
+    // When the user has timezone in auto-mode, re-poll the OS each time the
+    // app re-gains focus. Handles the "laptop crossed a timezone border
+    // and woke from sleep" case without forcing a manual restart.
+    refreshAutoTimezone();
+    const onVisible = () => {
+      if (document.visibilityState === "visible") refreshAutoTimezone();
+    };
+    window.addEventListener("focus", refreshAutoTimezone);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.removeEventListener("focus", refreshAutoTimezone);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, []);
 
   // Workspace tree restore + autosave (per-window, persists across restarts).
@@ -200,7 +209,10 @@ export default function App() {
 
       const warmupRetry = window.setInterval(() => {
         const state = useAppStore.getState();
-        if (state.functionIndex.length > BACKEND_INDEX_READY_THRESHOLD && state.engineRoot) {
+        if (
+          state.functionIndex.length > BACKEND_INDEX_READY_THRESHOLD &&
+          state.engineRoot
+        ) {
           window.clearInterval(warmupRetry);
           return;
         }
@@ -259,7 +271,12 @@ export default function App() {
     };
   }, [togglePalette]);
 
-  const dashboardReady = workspaceReady && backendIndexReady;
+  const shellFallbackReady =
+    functionCount > BACKEND_INDEX_READY_THRESHOLD &&
+    (sidecarStatus === "crashed" ||
+      sidecarStatus === "stopped" ||
+      sidecarStatus === "stub");
+  const dashboardReady = workspaceReady && (backendIndexReady || shellFallbackReady);
 
   return (
     <>
@@ -271,9 +288,13 @@ export default function App() {
         </div>
         <Statusbar />
         <CommandPalette />
+        <ShortcutsHelp />
         <ToastHost />
       </div>
-      {!introDone ? <IntroSplash ready={dashboardReady} onDone={() => setIntroDone(true)} /> : null}
+      {!introDone ? (
+        <IntroSplash ready={dashboardReady} onDone={() => setIntroDone(true)} />
+      ) : null}
+      <ThemeTransitionOverlay />
     </>
   );
 }

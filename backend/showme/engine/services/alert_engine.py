@@ -15,12 +15,35 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from datetime import datetime
-from pathlib import Path
+from datetime import datetime, timezone
 from typing import Any, Callable
 
-_ALERTS_PATH = Path("runtime/alerts.json")
-_FIRES_LOG = Path("runtime/alert_fires.jsonl")
+from showme.app_paths import runtime_path
+
+
+def _alerts_path():
+    return runtime_path("alerts.json")
+
+
+def _fires_log():
+    return runtime_path("alert_fires.jsonl")
+
+
+def _compare(value: float, op: str, threshold: float) -> bool:
+    """Shared numeric comparison used by quote + news alerts."""
+    if op == ">":
+        return value > threshold
+    if op == ">=":
+        return value >= threshold
+    if op == "<":
+        return value < threshold
+    if op == "<=":
+        return value <= threshold
+    if op in ("=", "=="):
+        return value == threshold
+    if op == "!=":
+        return value != threshold
+    return False
 
 
 class AlertEngine:
@@ -37,16 +60,16 @@ class AlertEngine:
         self.notifiers.append(fn)
 
     def load_alerts(self) -> list[dict[str, Any]]:
-        if not _ALERTS_PATH.exists():
+        if not _alerts_path().exists():
             return []
         try:
-            return json.loads(_ALERTS_PATH.read_text()) or []
+            return json.loads(_alerts_path().read_text()) or []
         except Exception:
             return []
 
     def save_alerts(self, alerts: list[dict[str, Any]]) -> None:
-        _ALERTS_PATH.parent.mkdir(parents=True, exist_ok=True)
-        _ALERTS_PATH.write_text(json.dumps(alerts, indent=2))
+        _alerts_path().parent.mkdir(parents=True, exist_ok=True)
+        _alerts_path().write_text(json.dumps(alerts, indent=2))
 
     async def evaluate(self, condition: str) -> tuple[bool, dict[str, Any]]:
         """Evaluate "<SYMBOL>.<FIELD> <OP> <VAL>" against a live quote.
@@ -54,6 +77,10 @@ class AlertEngine:
         Supported ops: >, >=, <, <=, ==, !=
         Supported FIELDs: price (=last), bid, ask, volume_24h, change_pct
         News form: NEWS(BTCUSDT).importance >= 70
+
+        Per PY-LINT-04 (R3A): the rule-parse / quote-resolve / comparison
+        logic now sits in three named helpers so the public method's CC
+        stays under 10.
         """
         news_match = re.match(
             r"\s*NEWS\(([^)]+)\)\.importance\s*([<>!=]=?|==)\s*(\d+(?:\.\d+)?)\s*",
@@ -63,57 +90,78 @@ class AlertEngine:
         if news_match:
             return await self._evaluate_news_alert(*news_match.groups())
 
+        parsed = self._parse_quote_rule(condition)
+        if parsed is None:
+            return (False, {"error": "unparseable condition"})
+        sym, field, op, val = parsed
+        inst, err = await self._resolve_instrument(sym)
+        if err is not None:
+            return (False, err)
+        quote = await self._resolve_quote(inst)
+        if quote is None:
+            return (False, {"error": "no quote"})
+        return self._compare_quote_field(sym, field, op, val, quote)
+
+    @staticmethod
+    def _parse_quote_rule(condition: str) -> tuple[str, str, str, float] | None:
         m = re.match(
             r"\s*([A-Za-z0-9._\^]+)\.(\w+)\s*([<>!=]=?|==)\s*(-?\d+(?:\.\d+)?)\s*",
             condition or "",
         )
         if not m:
-            return (False, {"error": "unparseable condition"})
+            return None
         sym, field, op, val_s = m.groups()
-        val = float(val_s)
-        # Resolve quote via DAPI surface — symbol_registry + yfinance/finnhub chain.
+        return sym, field, op, float(val_s)
+
+    async def _resolve_instrument(self, sym: str) -> tuple[Any | None, dict[str, Any] | None]:
         if not self.deps or not self.deps.symbol_registry:
-            return (False, {"error": "no deps/symbol_registry"})
+            return None, {"error": "no deps/symbol_registry"}
         inst = await self.deps.symbol_registry.resolve(sym)
         if inst is None:
-            return (False, {"error": f"unknown symbol {sym}"})
+            return None, {"error": f"unknown symbol {sym}"}
+        return inst, None
+
+    async def _resolve_quote(self, inst: Any) -> Any | None:
         from showme.engine.core.base_data_source import DataKind, DataRequest
-        chain = []
+
+        chain: list[Any] = []
         if inst.asset_class.value == "CRYPTO":
             chain = []  # Crypto WS handled by legacy bot; use yfinance fallback
         chain += [
             self.deps.yfinance, self.deps.finnhub, self.deps.alphavantage,
             self.deps.exchangerate_host,
         ]
-        q = None
         for src in chain:
             if src is None:
                 continue
             try:
                 q = await src.fetch(DataRequest(kind=DataKind.QUOTE, instrument=inst))
                 if q is not None:
-                    break
+                    return q
             except Exception:
                 continue
-        if q is None:
-            return (False, {"error": "no quote"})
-        # Pull the requested field
+        return None
+
+    @staticmethod
+    def _compare_quote_field(
+        sym: str, field: str, op: str, val: float, q: Any
+    ) -> tuple[bool, dict[str, Any]]:
         f = field.lower()
-        if f == "price": v = q.last
-        elif f == "bid": v = q.bid
-        elif f == "ask": v = q.ask
-        elif f == "volume": v = q.volume_24h
+        if f == "price":
+            v = q.last
+        elif f == "bid":
+            v = q.bid
+        elif f == "ask":
+            v = q.ask
+        elif f == "volume":
+            v = q.volume_24h
         elif f in ("change_pct", "chg"):
             v = ((q.last or 0) / (q.close_prev or 1) - 1) * 100 if q.close_prev else None
         else:
             return (False, {"error": f"unknown field {field}"})
         if v is None:
             return (False, {"error": f"field {field} missing"})
-        ok = (
-            (op == ">" and v > val) or (op == ">=" and v >= val) or
-            (op == "<" and v < val) or (op == "<=" and v <= val) or
-            (op in ("=", "==") and v == val) or (op == "!=" and v != val)
-        )
+        ok = _compare(v, op, val)
         return (ok, {"value": v, "threshold": val, "op": op,
                      "symbol": sym, "field": field})
 
@@ -139,11 +187,7 @@ class AlertEngine:
         )
         data = res.data if isinstance(res.data, dict) else {}
         value = float(data.get("top_importance_score") or 0)
-        ok = (
-            (op == ">" and value > threshold) or (op == ">=" and value >= threshold) or
-            (op == "<" and value < threshold) or (op == "<=" and value <= threshold) or
-            (op in ("=", "==") and value == threshold) or (op == "!=" and value != threshold)
-        )
+        ok = _compare(value, op, threshold)
         alerts = data.get("alerts") if isinstance(data.get("alerts"), list) else []
         return (ok, {
             "value": value,
@@ -157,53 +201,67 @@ class AlertEngine:
         })
 
     async def tick(self) -> int:
-        """Run one evaluation pass over all alerts. Returns number of fires."""
+        """Run one evaluation pass over all alerts. Returns number of fires.
+
+        Per PY-LINT-04: cooldown handling + fire dispatch are split into
+        helpers so this stays a thin loop.
+        """
         alerts = self.load_alerts()
         fires = 0
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         for a in alerts:
             if not a.get("enabled", True):
                 continue
-            last_fired = a.get("last_fired")
-            cooldown = int(a.get("cooldown_seconds", 300))
-            if last_fired:
-                try:
-                    last = datetime.fromisoformat(last_fired)
-                    if (now - last).total_seconds() < cooldown:
-                        continue
-                except Exception:
-                    pass
+            if self._in_cooldown(a, now):
+                continue
             ok, ctx = await self.evaluate(a.get("condition", ""))
             if ok:
-                a["last_fired"] = now.isoformat()
+                await self._fire(a, ctx, now)
                 fires += 1
-                event = {
-                    "ts": now.isoformat(),
-                    "alert_id": a.get("id"),
-                    "condition": a.get("condition"),
-                    "actions": a.get("actions"),
-                    "context": ctx,
-                }
-                # Append fire log
-                _FIRES_LOG.parent.mkdir(parents=True, exist_ok=True)
-                with _FIRES_LOG.open("a") as f:
-                    f.write(json.dumps(event) + "\n")
-                # Dispatch
-                for n in self.notifiers:
-                    try:
-                        res = n(event)
-                        if asyncio.iscoroutine(res):
-                            await res
-                    except Exception:
-                        continue
-                # Optional: execute order or run function
-                actions = a.get("actions") or []
-                if "run:DES" in actions or any(act.startswith("run:") for act in actions):
-                    pass  # left for orchestrator to handle
         if fires:
             self.save_alerts(alerts)
         self._tick += 1
         return fires
+
+    @staticmethod
+    def _in_cooldown(alert: dict[str, Any], now: datetime) -> bool:
+        last_fired = alert.get("last_fired")
+        if not last_fired:
+            return False
+        cooldown = int(alert.get("cooldown_seconds", 300))
+        try:
+            last = datetime.fromisoformat(last_fired)
+        except Exception:
+            return False
+        return (now - last).total_seconds() < cooldown
+
+    async def _fire(
+        self, alert: dict[str, Any], ctx: dict[str, Any], now: datetime
+    ) -> None:
+        alert["last_fired"] = now.isoformat()
+        event = {
+            "ts": now.isoformat(),
+            "alert_id": alert.get("id"),
+            "condition": alert.get("condition"),
+            "actions": alert.get("actions"),
+            "context": ctx,
+        }
+        # Append fire log
+        _fires_log().parent.mkdir(parents=True, exist_ok=True)
+        with _fires_log().open("a") as f:
+            f.write(json.dumps(event) + "\n")
+        # Dispatch
+        for n in self.notifiers:
+            try:
+                res = n(event)
+                if asyncio.iscoroutine(res):
+                    await res
+            except Exception:
+                continue
+        # Optional: execute order or run function
+        actions = alert.get("actions") or []
+        if "run:DES" in actions or any(act.startswith("run:") for act in actions):
+            pass  # left for orchestrator to handle
 
     async def loop(self, interval_seconds: int = 30) -> None:
         while True:

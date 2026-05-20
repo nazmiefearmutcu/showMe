@@ -130,10 +130,15 @@ def _fallback_dark(symbol: str) -> dict[str, Any]:
 
 
 def _stale_reason(value: Any) -> str | None:
+    if value in (None, ""):
+        return None
     try:
         dt = datetime.fromisoformat(str(value)[:10]).date()
-        if dt < (datetime.now(timezone.utc).date() - timedelta(days=180)):
-            return f"FINRA latest week {dt.isoformat()} is stale for a current market cockpit."
-    except Exception:
-        return None
+    except (TypeError, ValueError):
+        # Malformed FINRA dates must NOT be treated as "fresh". Surface as a
+        # data-quality reason instead so DARK's status flips to
+        # provider_unavailable, matching the intent of the methodology line.
+        return f"FINRA latest week {value!r} could not be parsed; treating as stale until reproccessed."
+    if dt < (datetime.now(timezone.utc).date() - timedelta(days=180)):
+        return f"FINRA latest week {dt.isoformat()} is stale for a current market cockpit."
     return None

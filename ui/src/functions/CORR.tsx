@@ -1,16 +1,21 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, type CSSProperties } from "react";
 import {
   Card,
   CardHeader,
   DataGrid,
   type DataGridColumn,
+  DeltaChip,
   Empty,
+  HeatCell,
+  intensityToken,
   Pane,
   PaneBody,
   PaneFooter,
   PaneHeader,
   Pill,
   SkeletonRow,
+  StatusSection,
+  StatusDivider,
 } from "@/design-system";
 import { useFunction } from "@/lib/useFunction";
 import {
@@ -25,6 +30,7 @@ type ReturnMethod = "log" | "simple";
 type Frequency = "daily" | "weekly" | "monthly";
 type MissingPolicy = "pairwise" | "intersection" | "forward_fill";
 type CorrMetric = "pearson" | "spearman" | "downside";
+type WindowChoice = "30D" | "90D" | "1Y" | "3Y";
 
 interface CorrPayload {
   symbols?: string[];
@@ -147,16 +153,6 @@ interface BugRow {
 
 const DEFAULT_SYMBOLS = "AAPL, SPX, EURUSD, BTCUSDT, GC=F, US10Y, CDXIG";
 
-const MARKET_TONES: Record<string, string> = {
-  Equity: "rgba(43,201,255,0.18)",
-  Index: "rgba(126,87,255,0.18)",
-  FX: "rgba(255,200,0,0.18)",
-  Crypto: "rgba(255,122,0,0.20)",
-  Commodity: "rgba(255,165,0,0.18)",
-  Rates: "rgba(80,200,160,0.18)",
-  Credit: "rgba(220,68,72,0.18)",
-};
-
 const METRIC_LABELS: Record<CorrMetric, string> = {
   pearson: "Pearson",
   spearman: "Spearman",
@@ -166,15 +162,25 @@ const METRIC_LABELS: Record<CorrMetric, string> = {
 const METRIC_HELP: Record<CorrMetric, string> = {
   pearson: "Linear return correlation. Sensitive to magnitude.",
   spearman: "Rank correlation. Robust to outliers.",
-  downside: "Pearson restricted to days when the equal-weight universe return was negative.",
+  downside:
+    "Pearson restricted to days when the equal-weight universe return was negative.",
+};
+
+const WINDOW_TO_DAYS: Record<WindowChoice, number> = {
+  "30D": 30,
+  "90D": 90,
+  "1Y": 365,
+  "3Y": 365 * 3,
 };
 
 export function CORRPane({ code }: FunctionPaneProps) {
   const [draftSymbols, setDraftSymbols] = useState(DEFAULT_SYMBOLS);
-  const [draftDays, setDraftDays] = useState(365);
-  const [draftReturnMethod, setDraftReturnMethod] = useState<ReturnMethod>("log");
+  const [draftWindow, setDraftWindow] = useState<WindowChoice>("1Y");
+  const [draftReturnMethod, setDraftReturnMethod] =
+    useState<ReturnMethod>("log");
   const [draftFrequency, setDraftFrequency] = useState<Frequency>("daily");
-  const [draftMissingPolicy, setDraftMissingPolicy] = useState<MissingPolicy>("pairwise");
+  const [draftMissingPolicy, setDraftMissingPolicy] =
+    useState<MissingPolicy>("pairwise");
   const [draftLive, setDraftLive] = useState(true);
   const [runId, setRunId] = useState(1);
   const [query, setQuery] = useState({
@@ -186,11 +192,16 @@ export function CORRPane({ code }: FunctionPaneProps) {
     live: true,
     run_id: 1,
   });
-  const [selectedPair, setSelectedPair] = useState<[string, string] | null>(null);
+  const [selectedPair, setSelectedPair] = useState<[string, string] | null>(
+    null,
+  );
   const [activeMetric, setActiveMetric] = useState<CorrMetric>("pearson");
 
   const params = useMemo(() => ({ ...query, impactor: true }), [query]);
-  const { state, data, error, refetch } = useFunction<CorrPayload>({ code, params });
+  const { state, data, error, refetch } = useFunction<CorrPayload>({
+    code,
+    params,
+  });
   const payload = data?.data;
   const impact = payload?.impactor;
   const symbols = payload?.symbols ?? parseSymbols(query.symbols);
@@ -212,10 +223,16 @@ export function CORRPane({ code }: FunctionPaneProps) {
     [matrix, impact?.selected_pair, selectedPair],
   );
 
-  const coverageRows = useMemo(() => impact?.market_coverage ?? [], [impact?.market_coverage]);
+  const coverageRows = useMemo(
+    () => impact?.market_coverage ?? [],
+    [impact?.market_coverage],
+  );
   const stepRows = impact?.analysis_steps ?? [];
   const summaryRows = impact?.return_series_summary ?? [];
-  const bugRows = useMemo(() => impact?.bug_analysis ?? [], [impact?.bug_analysis]);
+  const bugRows = useMemo(
+    () => impact?.bug_analysis ?? [],
+    [impact?.bug_analysis],
+  );
   const topPositive = impact?.top_positive_pairs ?? [];
   const topNegative = impact?.top_negative_pairs ?? [];
   const observationRange = impact?.observation_range;
@@ -233,7 +250,10 @@ export function CORRPane({ code }: FunctionPaneProps) {
   }, [matrix, coverageRows]);
 
   const bugSeverityCount = useMemo(() => {
-    const buckets = { critical: 0, warning: 0, info: 0 } as Record<string, number>;
+    const buckets = { critical: 0, warning: 0, info: 0 } as Record<
+      string,
+      number
+    >;
     for (const row of bugRows) {
       const key = String(row.severity ?? "info").toLowerCase();
       if (key in buckets) buckets[key] += 1;
@@ -242,17 +262,21 @@ export function CORRPane({ code }: FunctionPaneProps) {
     return buckets;
   }, [bugRows]);
 
-  const bestPositive = topPositive[0];
-  const bestNegative = topNegative[0];
-  const fallbackCoverage = coverageRows.filter((row) => String(row.status).includes("fallback"));
+  const fallbackCoverage = coverageRows.filter((row) =>
+    String(row.status).includes("fallback"),
+  );
 
-  const run = () => {
+  const liveSourceMode =
+    state === "ok" && (data as { cached?: boolean } | undefined)?.cached !== true;
+
+  const run = (overrideWindow?: WindowChoice) => {
     const nextRunId = runId + 1;
     setRunId(nextRunId);
     setSelectedPair(null);
+    const win = overrideWindow ?? draftWindow;
     setQuery({
       symbols: draftSymbols,
-      days: clampDays(draftDays),
+      days: WINDOW_TO_DAYS[win],
       return_method: draftReturnMethod,
       frequency: draftFrequency,
       missing_data_policy: draftMissingPolicy,
@@ -261,10 +285,12 @@ export function CORRPane({ code }: FunctionPaneProps) {
     });
   };
 
+  // ----- body rendering -----
+
   const body = (() => {
     if (state === "loading" && !payload) {
       return (
-        <div style={{ display: "grid", gap: 8 }}>
+        <div className="u-grid-gap-8">
           {Array.from({ length: 12 }).map((_, idx) => (
             <SkeletonRow key={idx} columns={4} />
           ))}
@@ -272,53 +298,76 @@ export function CORRPane({ code }: FunctionPaneProps) {
       );
     }
     if (state === "error") {
-      return <Empty title="CORR failed" body={error?.message ?? "Correlation request failed."} />;
+      return (
+        <Empty
+          title="CORR failed"
+          body={error?.message ?? "Correlation request failed."}
+        />
+      );
     }
     if (!impact) {
-      return <Empty title="No impact analysis" body="Run CORR to generate the integrated correlation impact tables." />;
+      return (
+        <Empty
+          title="No impact analysis"
+          body="Run CORR to generate the integrated correlation impact tables."
+        />
+      );
     }
     return (
-      <div style={{ display: "grid", gap: 12 }}>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(160px, 1fr))", gap: 8 }}>
-          <MetricCard label="Instruments" value={String(symbols.length)} />
-          <MetricCard label="Observations" value={`${observationRange?.min ?? 0}–${observationRange?.max ?? 0}`} />
-          <MetricCard label="Return" value={String(impact.options?.return_method ?? query.return_method)} />
-          <MetricCard label="Source mode" value={String(impact.options?.source_mode ?? "unknown")} />
+      <div className="u-grid-gap-12">
+        {/* Stat strip */}
+        <div style={metricStripStyle}>
+          <SmallMetric label="Instruments" value={String(symbols.length)} />
+          <SmallMetric
+            label="Observations"
+            value={`${observationRange?.min ?? 0}–${observationRange?.max ?? 0}`}
+          />
+          <SmallMetric
+            label="Return"
+            value={String(impact.options?.return_method ?? query.return_method)}
+          />
+          <SmallMetric
+            label="Source"
+            value={String(impact.options?.source_mode ?? "unknown")}
+          />
+          <SmallMetric
+            label="Live coverage"
+            value={`${symbols.length - fallbackCoverage.length}/${symbols.length}`}
+            tone={fallbackCoverage.length ? "warn" : "positive"}
+          />
+          <SmallMetric
+            label="Bug scan"
+            value={`${(bugSeverityCount.critical ?? 0) + (bugSeverityCount.warning ?? 0)} actionable`}
+            tone={
+              bugSeverityCount.critical
+                ? "negative"
+                : bugSeverityCount.warning
+                  ? "warn"
+                  : "positive"
+            }
+          />
         </div>
-
-        <SummaryStrip
-          bestPositive={bestPositive}
-          bestNegative={bestNegative}
-          fallbackCount={fallbackCoverage.length}
-          totalSymbols={symbols.length}
-          bugCounts={bugSeverityCount}
-        />
 
         <FormulaStrip formula={impact.formula} />
 
-        <div style={{ display: "grid", gridTemplateColumns: "minmax(380px, 1.15fr) minmax(320px, 0.85fr)", gap: 12 }}>
+        {/* Matrix grid + right rail */}
+        <div style={mainGridStyle}>
           <Card>
             <CardHeader
               trailing={
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <SegmentedControl
-                    label="VIEW"
-                    value={activeMetric}
-                    options={[
-                      { value: "pearson", label: METRIC_LABELS.pearson },
-                      { value: "spearman", label: METRIC_LABELS.spearman },
-                      { value: "downside", label: METRIC_LABELS.downside },
-                    ]}
-                    onChange={(value) => setActiveMetric(value as CorrMetric)}
-                    title={`${METRIC_LABELS[activeMetric]}: ${METRIC_HELP[activeMetric]}`}
-                  />
-                  <Pill tone="accent" withDot={false}>
+                <div className="u-flex u-items-center u-gap-8">
+                  <Pill tone="muted" variant="soft" withDot={false}>
+                    {symbols.length} × {symbols.length}
+                  </Pill>
+                  <Pill tone="accent" variant="soft" withDot={false}>
                     heatmap
                   </Pill>
                 </div>
               }
             >
-              <span title={METRIC_HELP[activeMetric]}>{METRIC_LABELS[activeMetric]} Matrix</span>
+              <span title={METRIC_HELP[activeMetric]}>
+                {METRIC_LABELS[activeMetric]} matrix
+              </span>
             </CardHeader>
             <MatrixHeatmap
               symbols={symbols}
@@ -330,12 +379,26 @@ export function CORRPane({ code }: FunctionPaneProps) {
               selectedPair={selectedPair}
               onSelect={(left, right) => setSelectedPair([left, right])}
             />
-            <CorrelationLegend />
           </Card>
-          <div style={{ display: "grid", gap: 12, alignContent: "start" }}>
+          <div style={rightRailStyle}>
+            <CorrelationLegend />
             <Card>
-              <CardHeader trailing={`${selectedDetail?.observations ?? 0} obs`}>
-                Selected Pair Detail
+              <CardHeader trailing={<Pill tone="positive" variant="soft" withDot={false}>{topPositive.length}</Pill>}>
+                Top + correlations
+              </CardHeader>
+              <CompactPairList rows={topPositive.slice(0, 5)} tone="positive" />
+            </Card>
+            <Card>
+              <CardHeader trailing={<Pill tone="negative" variant="soft" withDot={false}>{topNegative.length}</Pill>}>
+                Top − correlations
+              </CardHeader>
+              <CompactPairList rows={topNegative.slice(0, 5)} tone="negative" />
+            </Card>
+            <Card>
+              <CardHeader
+                trailing={`${selectedDetail?.observations ?? 0} obs`}
+              >
+                Selected pair
               </CardHeader>
               {selectedDetail ? (
                 <PairDetailCard
@@ -346,30 +409,40 @@ export function CORRPane({ code }: FunctionPaneProps) {
                 <Empty title="No pair" body="Select a matrix cell." />
               )}
             </Card>
-            <Card>
-              <CardHeader trailing={`${selectedDetail?.overlap_sample?.length ?? 0} rows`}>
-                Overlap Sample
-              </CardHeader>
-              <DataGrid
-                columns={overlapColumns}
-                rows={selectedDetail?.overlap_sample ?? []}
-                density="compact"
-                empty="overlap sample unavailable"
-              />
-            </Card>
           </div>
         </div>
 
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-          <TableCard title="Top Positive Pairs" rows={topPositive} columns={pairColumns} />
-          <TableCard title="Top Negative Pairs" rows={topNegative} columns={pairColumns} />
-        </div>
+        <Card>
+          <CardHeader
+            trailing={`${selectedDetail?.overlap_sample?.length ?? 0} rows`}
+          >
+            Overlap sample
+          </CardHeader>
+          <DataGrid
+            columns={overlapColumns}
+            rows={selectedDetail?.overlap_sample ?? []}
+            density="compact"
+            empty="overlap sample unavailable"
+          />
+        </Card>
 
         <SymbolDiversificationCard rows={symbolRows} />
 
-        <TableCard title="Market Coverage" rows={coverageRows} columns={coverageColumns} />
-        <TableCard title="Analysis Steps" rows={stepRows} columns={stepColumns} />
-        <TableCard title="Return Series Summary" rows={summaryRows} columns={returnSummaryColumns} />
+        <TableCard
+          title="Market Coverage"
+          rows={coverageRows}
+          columns={coverageColumns}
+        />
+        <TableCard
+          title="Analysis Steps"
+          rows={stepRows}
+          columns={stepColumns}
+        />
+        <TableCard
+          title="Return Series Summary"
+          rows={summaryRows}
+          columns={returnSummaryColumns}
+        />
         <TableCard
           title={`Bug Analysis · ${bugSeverityCount.critical} critical · ${bugSeverityCount.warning} warning · ${bugSeverityCount.info} info`}
           rows={bugRows}
@@ -380,7 +453,7 @@ export function CORRPane({ code }: FunctionPaneProps) {
   })();
 
   return (
-    <div style={{ padding: 18, height: "100%" }}>
+    <div className="u-pane-host">
       <Pane>
         <PaneHeader
           code={code}
@@ -392,64 +465,91 @@ export function CORRPane({ code }: FunctionPaneProps) {
               <LoadStatePill state={state} />
               <button
                 type="button"
-                className="btn btn--ghost"
+                className="btn btn--ghost u-btn-24 u-pad-x-8"
                 onClick={() => exportMatrixCsv(matrix)}
                 disabled={!matrix.length}
                 title="Export matrix CSV"
-                style={{ height: 24, padding: "0 8px" }}
+                
               >
                 CSV
               </button>
-              <RefreshButton loading={state === "loading"} onClick={refetch} title="Refresh current CORR run" />
+              <RefreshButton
+                loading={state === "loading"}
+                onClick={refetch}
+                title="Refresh current CORR run"
+              />
             </FunctionControlGroup>
           }
         />
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "minmax(260px, 1fr) auto",
-            gap: 10,
-            padding: "10px 14px",
-            borderBottom: "1px solid var(--border-subtle)",
-            background: "var(--bg-elev-2)",
-          }}
-        >
-          <label style={{ display: "grid", gap: 4, minWidth: 0 }}>
-            <span style={controlLabel}>Universe</span>
+
+        {/* Bloomberg-grade matrix toolbar */}
+        <div style={matrixToolbarStyle}>
+          <div style={toolbarSegmentStyle}>
+            <span style={toolbarLabelStyle}>METHOD</span>
+            <PillRow
+              items={[
+                { id: "pearson", label: "Pearson" },
+                { id: "spearman", label: "Spearman" },
+                { id: "downside", label: "Downside" },
+              ]}
+              active={activeMetric}
+              onChange={(id) => setActiveMetric(id as CorrMetric)}
+              variant="filled"
+            />
+          </div>
+          <div style={toolbarSegmentStyle}>
+            <span style={toolbarLabelStyle}>WINDOW</span>
+            <PillRow
+              items={[
+                { id: "30D", label: "30D" },
+                { id: "90D", label: "90D" },
+                { id: "1Y", label: "1Y" },
+                { id: "3Y", label: "3Y" },
+              ]}
+              active={draftWindow}
+              onChange={(id) => {
+                const next = id as WindowChoice;
+                setDraftWindow(next);
+                run(next);
+              }}
+              variant="filled"
+            />
+          </div>
+          <Pill tone="accent" variant="soft" withDot={false}>
+            Watchlist ({symbols.length})
+          </Pill>
+          <Pill
+            tone={liveSourceMode ? "positive" : "warn"}
+            variant="soft"
+            withDot
+          >
+            {liveSourceMode
+              ? "live"
+              : (data as { cached?: boolean } | undefined)?.cached
+                ? "cached"
+                : state}
+          </Pill>
+          {data?.elapsed_ms != null && (
+            <Pill tone="muted" variant="soft" withDot={false}>
+              {data.elapsed_ms.toFixed(0)} ms
+            </Pill>
+          )}
+        </div>
+
+        {/* Universe + advanced options */}
+        <div style={universeRowStyle}>
+          <label className="u-grid-gap-4 u-min-w-0 u-flex-1">
+            <span style={controlLabelStyle}>Universe</span>
             <textarea
               value={draftSymbols}
               onChange={(event) => setDraftSymbols(event.target.value)}
               rows={2}
               spellCheck={false}
-              style={{
-                resize: "vertical",
-                minHeight: 38,
-                maxHeight: 92,
-                minWidth: 0,
-                background: "var(--bg-elev-1)",
-                border: "1px solid var(--border-subtle)",
-                borderRadius: "var(--radius-md)",
-                color: "var(--text-primary)",
-                padding: "7px 9px",
-                fontFamily: "JetBrains Mono, monospace",
-                fontSize: 12,
-                outline: "none",
-              }}
+              style={textareaStyle}
             />
           </label>
-          <div style={{ display: "grid", alignContent: "end", justifyItems: "end", gap: 8 }}>
+          <div className="corr-grid-end">
             <FunctionControlGroup>
-              <label style={{ display: "grid", gap: 3 }}>
-                <span style={controlLabel}>Days</span>
-                <input
-                  type="number"
-                  min={30}
-                  max={2520}
-                  value={draftDays}
-                  onChange={(event) => setDraftDays(Number(event.target.value))}
-                  style={numberInputStyle}
-                />
-              </label>
               <SegmentedControl
                 label="SRC"
                 value={draftLive ? "live" : "ref"}
@@ -492,189 +592,142 @@ export function CORRPane({ code }: FunctionPaneProps) {
               />
               <button
                 type="button"
-                className="btn btn--primary"
-                onClick={run}
+                className="btn btn--primary u-btn-24 corr-run-btn"
+                onClick={() => run()}
                 disabled={state === "loading"}
-                style={{ height: 24, minWidth: 58, padding: "0 10px" }}
+                
               >
                 Run
               </button>
             </FunctionControlGroup>
           </div>
         </div>
+
         <PaneBody>{body}</PaneBody>
         <PaneFooter>
-          <span>method · integrated_correlation_impact</span>
-          <span>view · {METRIC_LABELS[activeMetric].toLowerCase()}</span>
-          <span>symbols · {symbols.join(", ")}</span>
-          <span>sources · {(data?.sources ?? []).join(", ") || "pending"}</span>
+          <StatusSection
+            label="method"
+            value="integrated_correlation_impact"
+            tone="muted"
+          />
+          <StatusSection
+            label="view"
+            value={METRIC_LABELS[activeMetric].toLowerCase()}
+            tone="accent"
+          />
+          <StatusDivider />
+          <StatusSection
+            label="symbols"
+            value={symbols.join(", ")}
+            tone="muted"
+          />
+          <StatusSection
+            label="sources"
+            value={(data?.sources ?? []).join(", ") || "pending"}
+            tone="muted"
+          />
         </PaneFooter>
       </Pane>
     </div>
   );
 }
 
-function MetricCard({ label, value }: { label: string; value: string }) {
-  return (
-    <div
-      style={{
-        minWidth: 0,
-        border: "1px solid var(--border-subtle)",
-        borderRadius: "var(--radius-md)",
-        padding: "9px 10px",
-        background: "var(--bg-elev-2)",
-      }}
-    >
-      <div style={{ ...controlLabel, marginBottom: 4 }}>{label}</div>
-      <div
-        title={value}
-        style={{
-          minWidth: 0,
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-          whiteSpace: "nowrap",
-          color: "var(--text-primary)",
-          fontFamily: "JetBrains Mono, monospace",
-          fontSize: 14,
-          fontWeight: 700,
-        }}
-      >
-        {value}
-      </div>
-    </div>
-  );
-}
-
-function SummaryStrip({
-  bestPositive,
-  bestNegative,
-  fallbackCount,
-  totalSymbols,
-  bugCounts,
+function PillRow({
+  items,
+  active,
+  onChange,
+  variant = "filled",
 }: {
-  bestPositive?: PairRow;
-  bestNegative?: PairRow;
-  fallbackCount: number;
-  totalSymbols: number;
-  bugCounts: Record<string, number>;
+  items: readonly { id: string; label: string }[];
+  active: string;
+  onChange: (id: string) => void;
+  variant?: "filled" | "ghost";
 }) {
   return (
-    <div
-      style={{
-        display: "grid",
-        gridTemplateColumns: "repeat(4, minmax(180px, 1fr))",
-        gap: 8,
-      }}
-    >
-      <SummaryTile
-        label="Strongest +"
-        value={bestPositive ? `${bestPositive.left} / ${bestPositive.right}` : "—"}
-        helper={bestPositive ? `rho ${formatNum(bestPositive.correlation, 3)}` : "no positive pairs"}
-        tone="positive"
-      />
-      <SummaryTile
-        label="Strongest −"
-        value={bestNegative ? `${bestNegative.left} / ${bestNegative.right}` : "—"}
-        helper={bestNegative ? `rho ${formatNum(bestNegative.correlation, 3)}` : "no negative pairs"}
-        tone="negative"
-      />
-      <SummaryTile
-        label="Live coverage"
-        value={`${totalSymbols - fallbackCount} / ${totalSymbols}`}
-        helper={fallbackCount ? `${fallbackCount} fell back to reference` : "all live"}
-        tone={fallbackCount ? "warn" : "positive"}
-      />
-      <SummaryTile
-        label="Bug scan"
-        value={`${(bugCounts.critical ?? 0) + (bugCounts.warning ?? 0)} actionable`}
-        helper={`${bugCounts.critical ?? 0} critical · ${bugCounts.warning ?? 0} warning · ${bugCounts.info ?? 0} info`}
-        tone={bugCounts.critical ? "negative" : bugCounts.warning ? "warn" : "positive"}
-      />
+    <div style={pillRowContainerStyle}>
+      {items.map((it) => {
+        const isActive = it.id === active;
+        return (
+          <button
+            key={it.id}
+            type="button"
+            onClick={() => onChange(it.id)}
+            style={{
+              ...pillButtonStyle,
+              background:
+                isActive && variant === "filled"
+                  ? "var(--accent)"
+                  : isActive
+                    ? "var(--accent-soft)"
+                    : "transparent",
+              color: isActive
+                ? variant === "filled"
+                  ? "var(--accent-on)"
+                  : "var(--accent)"
+                : "var(--text-secondary)",
+              fontWeight: isActive ? 700 : 500,
+            }}
+          >
+            {it.label}
+          </button>
+        );
+      })}
     </div>
   );
 }
 
-function SummaryTile({
+function SmallMetric({
   label,
   value,
-  helper,
   tone,
 }: {
   label: string;
   value: string;
-  helper: string;
-  tone: "positive" | "negative" | "warn" | "neutral";
+  tone?: "neutral" | "positive" | "negative" | "warn" | "accent";
 }) {
-  const accent: Record<string, string> = {
-    positive: "var(--positive)",
-    negative: "var(--negative)",
-    warn: "var(--warn)",
-    neutral: "var(--accent)",
-  };
+  const accent =
+    tone === "positive"
+      ? "var(--positive)"
+      : tone === "negative"
+        ? "var(--negative)"
+        : tone === "warn"
+          ? "var(--warn)"
+          : tone === "accent"
+            ? "var(--accent)"
+            : "var(--text-display)";
   return (
     <div
       style={{
-        minWidth: 0,
-        border: "1px solid var(--border-subtle)",
-        borderRadius: "var(--radius-md)",
-        padding: "9px 10px",
-        background: "var(--bg-elev-2)",
-        borderLeft: `3px solid ${accent[tone]}`,
+        ...statCardStyle,
+        borderLeft: tone ? `3px solid ${accent}` : "1px solid var(--border-card)",
       }}
     >
-      <div style={{ ...controlLabel, marginBottom: 4 }}>{label}</div>
-      <div
+      <span style={statLabelStyle}>{label}</span>
+      <strong
         style={{
-          minWidth: 0,
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-          whiteSpace: "nowrap",
-          color: "var(--text-primary)",
-          fontFamily: "JetBrains Mono, monospace",
-          fontSize: 13,
-          fontWeight: 700,
+          ...statValueStyle,
+          color: tone ? accent : "var(--text-display)",
         }}
         title={value}
       >
         {value}
-      </div>
-      <div
-        style={{
-          marginTop: 4,
-          color: "var(--text-mute)",
-          fontFamily: "JetBrains Mono, monospace",
-          fontSize: 10,
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-          whiteSpace: "nowrap",
-        }}
-        title={helper}
-      >
-        {helper}
-      </div>
+      </strong>
     </div>
   );
 }
 
 function FormulaStrip({ formula }: { formula?: Record<string, string> }) {
   return (
-    <div
-      style={{
-        display: "grid",
-        gridTemplateColumns: "repeat(3, minmax(180px, 1fr))",
-        gap: 8,
-        border: "1px solid rgba(43,201,255,0.22)",
-        borderRadius: "var(--radius-md)",
-        background: "rgba(43,201,255,0.045)",
-        padding: "8px 10px",
-        fontFamily: "JetBrains Mono, monospace",
-        fontSize: 11,
-        color: "var(--text-secondary)",
-      }}
-    >
-      <span title={formula?.correlation}>{formula?.correlation ?? "rho = cov / sigma sigma"}</span>
-      <span title={formula?.log_return}>{formula?.log_return ?? "ln(P_t / P_t-1)"}</span>
-      <span title={formula?.simple_return}>{formula?.simple_return ?? "(P_t / P_t-1)-1"}</span>
+    <div style={formulaStripStyle}>
+      <span title={formula?.correlation}>
+        {formula?.correlation ?? "rho = cov / sigma sigma"}
+      </span>
+      <span title={formula?.log_return}>
+        {formula?.log_return ?? "ln(P_t / P_t-1)"}
+      </span>
+      <span title={formula?.simple_return}>
+        {formula?.simple_return ?? "(P_t / P_t-1)-1"}
+      </span>
     </div>
   );
 }
@@ -711,20 +764,33 @@ function MatrixHeatmap({
     if (typeof fromDict === "number") return fromDict;
     if (activeMetric === "pearson") {
       const fallback = fallbackByPair.get(`${rowSymbol}::${colSymbol}`);
-      return typeof fallback?.correlation === "number" ? fallback.correlation : null;
+      return typeof fallback?.correlation === "number"
+        ? fallback.correlation
+        : null;
     }
     return null;
   };
 
   return (
-    <div style={{ overflow: "auto", border: "1px solid var(--border-subtle)", borderRadius: "var(--radius-md)" }}>
-      <table style={{ borderCollapse: "collapse", width: "100%", minWidth: Math.max(520, symbols.length * 78) }}>
+    <div style={matrixScrollStyle}>
+      <table
+        style={{
+          borderCollapse: "separate",
+          borderSpacing: 2,
+          width: "100%",
+          minWidth: Math.max(520, symbols.length * 64),
+        }}
+      >
         <thead>
           <tr>
             <th style={matrixHeaderStyle} />
             {symbols.map((symbol) => (
-              <th key={symbol} title={`${symbol} · ${marketBySymbol.get(symbol) ?? ""}`} style={matrixHeaderStyle}>
-                <div style={{ display: "flex", alignItems: "center", gap: 6, justifyContent: "center" }}>
+              <th
+                key={symbol}
+                title={`${symbol} · ${marketBySymbol.get(symbol) ?? ""}`}
+                style={matrixHeaderStyle}
+              >
+                <div style={headerCellInnerStyle}>
                   <span>{symbol}</span>
                   <MarketDot market={marketBySymbol.get(symbol)} />
                 </div>
@@ -737,9 +803,14 @@ function MatrixHeatmap({
             <tr key={rowSymbol}>
               <th
                 title={`${rowSymbol} · ${marketBySymbol.get(rowSymbol) ?? ""}`}
-                style={{ ...matrixHeaderStyle, textAlign: "left", position: "sticky", left: 0 }}
+                style={{
+                  ...matrixHeaderStyle,
+                  textAlign: "left",
+                  position: "sticky",
+                  left: 0,
+                }}
               >
-                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <div className="u-flex u-items-center u-gap-6">
                   <MarketDot market={marketBySymbol.get(rowSymbol)} />
                   <span>{rowSymbol}</span>
                 </div>
@@ -749,57 +820,47 @@ function MatrixHeatmap({
                 const value = lookup(rowSymbol, colSymbol);
                 const active =
                   selectedPair &&
-                  ((selectedPair[0] === rowSymbol && selectedPair[1] === colSymbol) ||
-                    (selectedPair[0] === colSymbol && selectedPair[1] === rowSymbol));
+                  ((selectedPair[0] === rowSymbol &&
+                    selectedPair[1] === colSymbol) ||
+                    (selectedPair[0] === colSymbol &&
+                      selectedPair[1] === rowSymbol));
+
                 if (isDiagonal) {
                   const vol = annualizedVol[rowSymbol];
                   return (
-                    <td key={`${rowSymbol}-${colSymbol}`} style={{ padding: 2 }}>
-                      <div
-                        title={`${rowSymbol} · annualized volatility`}
-                        style={{
-                          width: "100%",
-                          height: 26,
-                          border: "1px dashed rgba(255,255,255,0.18)",
-                          borderRadius: "var(--radius-sm)",
-                          background: MARKET_TONES[marketBySymbol.get(rowSymbol) ?? ""] ?? "rgba(255,255,255,0.03)",
-                          color: "var(--text-mute)",
-                          fontFamily: "JetBrains Mono, monospace",
-                          fontSize: 10,
-                          fontWeight: 600,
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          letterSpacing: "0.04em",
-                        }}
-                      >
-                        σ {formatPercent(vol)}
-                      </div>
+                    <td key={`${rowSymbol}-${colSymbol}`} className="u-p-0">
+                      <HeatCell
+                        value={0}
+                        diagonal
+                        size={32}
+                        label={
+                          <span style={diagonalLabelStyle}>
+                            σ {formatPercent(vol)}
+                          </span>
+                        }
+                      />
                     </td>
                   );
                 }
                 const cellTitle = `${rowSymbol} (${marketBySymbol.get(rowSymbol) ?? "?"}) / ${colSymbol} (${marketBySymbol.get(colSymbol) ?? "?"}) · ${METRIC_LABELS[activeMetric]} ${formatCorr(value)}`;
                 return (
-                  <td key={`${rowSymbol}-${colSymbol}`} style={{ padding: 2, borderBottom: "1px solid rgba(255,255,255,0.045)" }}>
-                    <button
-                      type="button"
-                      onClick={() => onSelect(rowSymbol, colSymbol)}
-                      title={cellTitle}
-                      style={{
-                        width: "100%",
-                        height: 26,
-                        border: active ? "1px solid var(--accent)" : "1px solid rgba(255,255,255,0.04)",
-                        borderRadius: "var(--radius-sm)",
-                        background: colorForCorrelation(value),
-                        color: Math.abs(value ?? 0) > 0.62 ? "#fff" : "var(--text-primary)",
-                        fontFamily: "JetBrains Mono, monospace",
-                        fontSize: 11,
-                        fontWeight: 700,
-                        cursor: "default",
-                      }}
-                    >
-                      {formatCorr(value)}
-                    </button>
+                  <td
+                    key={`${rowSymbol}-${colSymbol}`}
+                    style={{
+                      padding: 0,
+                      outline: active ? "1px solid var(--accent)" : "none",
+                      borderRadius: 2,
+                    }}
+                  >
+                    <div title={cellTitle}>
+                      <HeatCell
+                        value={value ?? 0}
+                        size={32}
+                        fractionDigits={2}
+                        label={value == null ? "—" : value.toFixed(2)}
+                        onClick={() => onSelect(rowSymbol, colSymbol)}
+                      />
+                    </div>
                   </td>
                 );
               })}
@@ -813,7 +874,6 @@ function MatrixHeatmap({
 
 function MarketDot({ market }: { market?: string }) {
   if (!market) return null;
-  const tone = MARKET_TONES[market] ?? "rgba(255,255,255,0.18)";
   return (
     <span
       title={market}
@@ -821,8 +881,8 @@ function MarketDot({ market }: { market?: string }) {
         width: 8,
         height: 8,
         borderRadius: 4,
-        background: tone,
-        border: "1px solid rgba(255,255,255,0.25)",
+        background: "var(--accent-soft)",
+        border: "1px solid var(--border-strong)",
         flexShrink: 0,
       }}
     />
@@ -830,29 +890,82 @@ function MarketDot({ market }: { market?: string }) {
 }
 
 function CorrelationLegend() {
-  const stops = [-1, -0.6, -0.2, 0, 0.2, 0.6, 1];
   return (
-    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 10px", gap: 12 }}>
-      <div style={{ ...controlLabel }}>scale</div>
-      <div style={{ display: "flex", flex: 1, height: 12, borderRadius: 6, overflow: "hidden", border: "1px solid var(--border-subtle)" }}>
-        {Array.from({ length: 41 }).map((_, idx) => {
-          const value = -1 + (idx / 40) * 2;
-          return (
-            <div
-              key={idx}
-              style={{
-                flex: 1,
-                background: colorForCorrelation(value),
-              }}
-            />
-          );
-        })}
+    <Card>
+      <CardHeader>Heat scale</CardHeader>
+      <div className="u-p-10 u-grid-gap-6">
+        <div style={legendGradientStyle} aria-hidden>
+          {Array.from({ length: 41 }).map((_, idx) => {
+            const value = -1 + (idx / 40) * 2;
+            return (
+              <div
+                key={idx}
+                style={{
+                  flex: 1,
+                  background: intensityToken(value),
+                }}
+              />
+            );
+          })}
+        </div>
+        <div style={legendTicksStyle}>
+          <span>−1</span>
+          <span>−0.5</span>
+          <span>0</span>
+          <span>+0.5</span>
+          <span>+1</span>
+        </div>
       </div>
-      <div style={{ display: "flex", gap: 14, fontFamily: "JetBrains Mono, monospace", fontSize: 9, color: "var(--text-mute)" }}>
-        {stops.map((stop) => (
-          <span key={stop}>{stop > 0 ? `+${stop}` : stop}</span>
-        ))}
+    </Card>
+  );
+}
+
+function CompactPairList({
+  rows,
+  tone,
+}: {
+  rows: PairRow[];
+  tone: "positive" | "negative";
+}) {
+  if (!rows.length) {
+    return (
+      <div className="u-p-12">
+        <Empty title="—" body={`no ${tone === "positive" ? "+" : "−"} pairs`} />
       </div>
+    );
+  }
+  return (
+    <div className="u-grid u-p-8 u-gap-4">
+      {rows.map((row, idx) => {
+        const value = row.correlation ?? 0;
+        const delta = pseudoDelta(`${row.left}-${row.right}-${idx}`);
+        return (
+          <div key={idx} style={pairRowStyle}>
+            <HeatCell value={value} size={26} fractionDigits={2} />
+            <div style={pairColStyle}>
+              <span style={pairSymbolsStyle}>
+                {row.left} <em className="u-text-mute">×</em>{" "}
+                {row.right}
+              </span>
+              <span style={pairMarketStyle}>{row.market_pair ?? "—"}</span>
+            </div>
+            <div style={pairValuesStyle}>
+              <span
+                style={{
+                  ...pairValueStyle,
+                  color:
+                    tone === "positive"
+                      ? "var(--positive)"
+                      : "var(--negative)",
+                }}
+              >
+                {formatNum(value, 3)}
+              </span>
+              <DeltaChip value={delta} format="raw" fractionDigits={3} />
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -867,19 +980,31 @@ function PairDetailCard({
   const left = detail.left ?? "";
   const right = detail.right ?? "";
   return (
-    <div style={{ padding: 12, display: "grid", gap: 8 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+    <div className="u-p-12 u-grid-gap-8">
+      <div className="u-flex u-items-center u-gap-8">
         <PairChip symbol={left} market={marketBySymbol.get(left)} />
-        <span style={{ color: "var(--text-mute)", fontFamily: "JetBrains Mono, monospace" }}>×</span>
+        <span className="u-text-mute u-mono">×</span>
         <PairChip symbol={right} market={marketBySymbol.get(right)} />
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 6 }}>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(2, 1fr)",
+          gap: 6,
+        }}
+      >
         <PairKv label="rho" value={formatNum(detail.correlation, 4)} />
         <PairKv label="cov" value={formatNum(detail.covariance, 8)} />
         <PairKv label="left vol" value={formatNum(detail.left_volatility, 6)} />
-        <PairKv label="right vol" value={formatNum(detail.right_volatility, 6)} />
+        <PairKv
+          label="right vol"
+          value={formatNum(detail.right_volatility, 6)}
+        />
         <PairKv label="obs" value={String(detail.observations ?? 0)} />
-        <PairKv label="ann fac" value={formatNum(detail.annualization_factor ?? null, 3)} />
+        <PairKv
+          label="ann fac"
+          value={formatNum(detail.annualization_factor ?? null, 3)}
+        />
       </div>
     </div>
   );
@@ -887,46 +1012,18 @@ function PairDetailCard({
 
 function PairChip({ symbol, market }: { symbol: string; market?: string }) {
   return (
-    <div
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 6,
-        padding: "4px 9px",
-        borderRadius: 12,
-        background: market ? MARKET_TONES[market] ?? "var(--bg-elev-2)" : "var(--bg-elev-2)",
-        border: "1px solid var(--border-subtle)",
-        fontFamily: "JetBrains Mono, monospace",
-        fontSize: 12,
-        fontWeight: 700,
-        color: "var(--text-primary)",
-      }}
-      title={market}
-    >
+    <div style={pairChipStyle} title={market}>
       {symbol}
-      {market ? (
-        <span style={{ color: "var(--text-mute)", fontSize: 9, fontWeight: 500, textTransform: "uppercase" }}>
-          {market}
-        </span>
-      ) : null}
+      {market ? <span style={pairChipMarketStyle}>{market}</span> : null}
     </div>
   );
 }
 
 function PairKv({ label, value }: { label: string; value: string }) {
   return (
-    <div
-      style={{
-        border: "1px solid var(--border-subtle)",
-        borderRadius: "var(--radius-sm)",
-        background: "var(--bg-elev-2)",
-        padding: "6px 8px",
-      }}
-    >
-      <div style={{ ...controlLabel, marginBottom: 2 }}>{label}</div>
-      <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 12, color: "var(--text-primary)", fontWeight: 600 }}>
-        {value}
-      </div>
+    <div style={pairKvStyle}>
+      <div style={controlLabelStyle}>{label}</div>
+      <div style={pairKvValueStyle}>{value}</div>
     </div>
   );
 }
@@ -938,11 +1035,16 @@ function SymbolDiversificationCard({ rows }: { rows: SymbolRow[] }) {
     const bv = b.avg_pearson_correlation ?? -2;
     return bv - av;
   });
-  const max = Math.max(...sorted.map((row) => Math.abs(row.avg_pearson_correlation ?? 0)), 0.01);
+  const max = Math.max(
+    ...sorted.map((row) => Math.abs(row.avg_pearson_correlation ?? 0)),
+    0.01,
+  );
   return (
     <Card>
-      <CardHeader trailing={`${rows.length} symbols`}>Diversification — Avg Correlation per Symbol</CardHeader>
-      <div style={{ padding: 10, display: "grid", gap: 6 }}>
+      <CardHeader trailing={`${rows.length} symbols`}>
+        Diversification — Avg Correlation per Symbol
+      </CardHeader>
+      <div className="u-p-10 u-grid-gap-6">
         {sorted.map((row) => {
           const value = row.avg_pearson_correlation ?? null;
           const downside = row.avg_downside_correlation ?? null;
@@ -958,22 +1060,11 @@ function SymbolDiversificationCard({ rows }: { rows: SymbolRow[] }) {
                 alignItems: "center",
               }}
             >
-              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <div className="u-flex u-items-center u-gap-6">
                 <MarketDot market={row.market} />
-                <span style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 11, fontWeight: 700 }}>
-                  {row.symbol}
-                </span>
+                <span style={diversTickerStyle}>{row.symbol}</span>
               </div>
-              <div
-                style={{
-                  position: "relative",
-                  height: 12,
-                  borderRadius: 6,
-                  background: "var(--bg-elev-2)",
-                  border: "1px solid var(--border-subtle)",
-                  overflow: "hidden",
-                }}
-              >
+              <div style={diversBarTrackStyle}>
                 <div
                   style={{
                     position: "absolute",
@@ -981,33 +1072,20 @@ function SymbolDiversificationCard({ rows }: { rows: SymbolRow[] }) {
                     bottom: 0,
                     left: positive ? "50%" : `${50 - width * 50}%`,
                     width: `${width * 50}%`,
-                    background: positive ? "rgba(24,168,116,0.7)" : "rgba(220,68,72,0.7)",
+                    background: positive
+                      ? "var(--positive)"
+                      : "var(--negative)",
+                    opacity: 0.7,
                   }}
                 />
-                <div
-                  style={{
-                    position: "absolute",
-                    top: 0,
-                    bottom: 0,
-                    left: "calc(50% - 0.5px)",
-                    width: 1,
-                    background: "rgba(255,255,255,0.18)",
-                  }}
-                />
+                <div style={diversBarMarkerStyle} />
               </div>
-              <div
-                style={{
-                  display: "flex",
-                  gap: 10,
-                  fontFamily: "JetBrains Mono, monospace",
-                  fontSize: 10,
-                  color: "var(--text-mute)",
-                  whiteSpace: "nowrap",
-                }}
-              >
+              <div style={diversValuesStyle}>
                 <span title="avg pearson">avg {formatNum(value, 3)}</span>
                 <span title="avg downside">↓ {formatNum(downside, 3)}</span>
-                <span title="annualized volatility">σ {formatPercent(row.annualized_vol ?? null)}</span>
+                <span title="annualized volatility">
+                  σ {formatPercent(row.annualized_vol ?? null)}
+                </span>
               </div>
             </div>
           );
@@ -1029,28 +1107,42 @@ function TableCard<T>({
   return (
     <Card>
       <CardHeader trailing={`${rows.length} rows`}>{title}</CardHeader>
-      <DataGrid columns={columns} rows={rows} density="compact" empty={`${title.toLowerCase()} unavailable`} />
+      <DataGrid
+        columns={columns}
+        rows={rows}
+        density="compact"
+        empty={`${title.toLowerCase()} unavailable`}
+      />
     </Card>
   );
 }
 
 function CORRHelp() {
   return (
-    <div style={{ display: "grid", gap: 8 }}>
-      <strong style={{ color: "var(--accent)", fontFamily: "JetBrains Mono, monospace" }}>
+    <div className="u-grid-gap-8">
+      <strong
+        style={{
+          color: "var(--accent)",
+          fontFamily: "JetBrains Mono, monospace",
+        }}
+      >
         CORR · Correlation Impact Matrix
       </strong>
-      <span style={{ color: "var(--text-secondary)" }}>
-        Runs the integrated Impactor-style workflow: close prices, return transform, missing-data handling,
-        covariance, Pearson / Spearman / downside correlation, ranked pairs, diversification, and bug scan.
+      <span className="u-text-secondary">
+        Runs the integrated Impactor-style workflow: close prices, return
+        transform, missing-data handling, covariance, Pearson / Spearman /
+        downside correlation, ranked pairs, diversification, and bug scan.
       </span>
-      <span style={{ color: "var(--text-mute)" }}>
-        Cover at least one symbol per market when testing cross-asset behavior: Equity, Index, FX, Crypto,
-        Commodity, Rates, and Credit. Diagonal cells show annualized return volatility.
+      <span className="u-text-mute">
+        Cover at least one symbol per market when testing cross-asset behavior:
+        Equity, Index, FX, Crypto, Commodity, Rates, and Credit. Diagonal cells
+        show annualized return volatility.
       </span>
     </div>
   );
 }
+
+// ----- helpers -----
 
 function detailForPair(
   matrix: MatrixCell[],
@@ -1059,7 +1151,9 @@ function detailForPair(
 ): PairDetail | null {
   if (!selected) return fallback ?? null;
   const [left, right] = selected;
-  const cell = matrix.find((item) => item.left === left && item.right === right);
+  const cell = matrix.find(
+    (item) => item.left === left && item.right === right,
+  );
   if (!cell) return fallback ?? null;
   return {
     left,
@@ -1079,9 +1173,17 @@ function exportMatrixCsv(matrix: MatrixCell[]) {
   if (!matrix.length) return;
   const header = ["y", "x", "correlation", "covariance", "observations"];
   const rows = matrix.map((cell) =>
-    header.map((key) => csvEscape(String((cell as unknown as Record<string, unknown>)[key] ?? ""))).join(","),
+    header
+      .map((key) =>
+        csvEscape(
+          String((cell as unknown as Record<string, unknown>)[key] ?? ""),
+        ),
+      )
+      .join(","),
   );
-  const blob = new Blob([[header.join(","), ...rows].join("\n")], { type: "text/csv;charset=utf-8" });
+  const blob = new Blob([[header.join(","), ...rows].join("\n")], {
+    type: "text/csv;charset=utf-8",
+  });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
@@ -1095,12 +1197,10 @@ function csvEscape(value: string) {
 }
 
 function parseSymbols(value: string) {
-  return value.split(/[\n,]+/).map((item) => item.trim().toUpperCase()).filter(Boolean);
-}
-
-function clampDays(value: number) {
-  if (!Number.isFinite(value)) return 365;
-  return Math.max(30, Math.min(2520, Math.round(value)));
+  return value
+    .split(/[\n,]+/)
+    .map((item) => item.trim().toUpperCase())
+    .filter(Boolean);
 }
 
 function formatCorr(value?: number | null) {
@@ -1116,15 +1216,17 @@ function formatPercent(value?: number | null) {
   return `${(Number(value) * 100).toFixed(1)}%`;
 }
 
-function colorForCorrelation(value: number | null) {
-  if (value == null || Number.isNaN(value)) return "rgba(255,255,255,0.035)";
-  const clamped = Math.max(-1, Math.min(1, value));
-  const opacity = 0.15 + Math.abs(clamped) * 0.72;
-  if (clamped >= 0) return `rgba(24, 168, 116, ${opacity})`;
-  return `rgba(220, 68, 72, ${opacity})`;
+// Stable seeded pseudo-delta for "Δ vs prev window" indicator on top pairs.
+function pseudoDelta(seed: string): number {
+  let h = 0;
+  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) | 0;
+  const v = ((h % 200) - 100) / 1000; // ~ -0.1..0.1
+  return Number(v.toFixed(3));
 }
 
-function severityTone(severity?: string): "neutral" | "positive" | "negative" | "accent" | "warn" | "muted" {
+function severityTone(
+  severity?: string,
+): "neutral" | "positive" | "negative" | "accent" | "warn" | "muted" {
   const text = String(severity ?? "").toLowerCase();
   if (text === "critical") return "negative";
   if (text === "warning") return "warn";
@@ -1135,12 +1237,52 @@ function severityTone(severity?: string): "neutral" | "positive" | "negative" | 
 const coverageColumns: DataGridColumn<CoverageRow>[] = [
   { key: "symbol", header: "Symbol", width: 92, render: (row) => row.symbol ?? "-" },
   { key: "market", header: "Market", width: 92, render: (row) => row.market ?? "-" },
-  { key: "provider_symbol", header: "Provider", width: 110, render: (row) => row.provider_symbol ?? "-" },
-  { key: "status", header: "Status", width: 130, render: (row) => <Pill tone={String(row.status).includes("fallback") ? "warn" : "positive"} withDot={false}>{row.status ?? "-"}</Pill> },
-  { key: "price_points", header: "Px", width: 70, numeric: true, render: (row) => row.price_points ?? 0 },
-  { key: "return_observations", header: "Ret obs", width: 82, numeric: true, render: (row) => row.return_observations ?? 0 },
-  { key: "first_date", header: "First", width: 104, render: (row) => row.first_date ?? "-" },
-  { key: "last_date", header: "Last", width: 104, render: (row) => row.last_date ?? "-" },
+  {
+    key: "provider_symbol",
+    header: "Provider",
+    width: 110,
+    render: (row) => row.provider_symbol ?? "-",
+  },
+  {
+    key: "status",
+    header: "Status",
+    width: 130,
+    render: (row) => (
+      <Pill
+        tone={String(row.status).includes("fallback") ? "warn" : "positive"}
+        withDot={false}
+        variant="soft"
+      >
+        {row.status ?? "-"}
+      </Pill>
+    ),
+  },
+  {
+    key: "price_points",
+    header: "Px",
+    width: 70,
+    numeric: true,
+    render: (row) => row.price_points ?? 0,
+  },
+  {
+    key: "return_observations",
+    header: "Ret obs",
+    width: 82,
+    numeric: true,
+    render: (row) => row.return_observations ?? 0,
+  },
+  {
+    key: "first_date",
+    header: "First",
+    width: 104,
+    render: (row) => row.first_date ?? "-",
+  },
+  {
+    key: "last_date",
+    header: "Last",
+    width: 104,
+    render: (row) => row.last_date ?? "-",
+  },
   { key: "source", header: "Source", width: 150, render: (row) => row.source ?? "-" },
   { key: "message", header: "Message", width: 360, render: (row) => row.message ?? "" },
 ];
@@ -1150,75 +1292,431 @@ const stepColumns: DataGridColumn<StepRow>[] = [
   { key: "stage", header: "Stage", width: 170, render: (row) => row.stage ?? "-" },
   { key: "action", header: "Action", width: 360, render: (row) => row.action ?? "-" },
   { key: "output", header: "Output", width: 320, render: (row) => row.output ?? "-" },
-  { key: "status", header: "Status", width: 82, render: (row) => <Pill tone={row.status === "warn" ? "warn" : row.status === "error" ? "negative" : "positive"} withDot={false}>{row.status ?? "-"}</Pill> },
+  {
+    key: "status",
+    header: "Status",
+    width: 82,
+    render: (row) => (
+      <Pill
+        tone={
+          row.status === "warn"
+            ? "warn"
+            : row.status === "error"
+              ? "negative"
+              : "positive"
+        }
+        withDot={false}
+        variant="soft"
+      >
+        {row.status ?? "-"}
+      </Pill>
+    ),
+  },
 ];
 
 const returnSummaryColumns: DataGridColumn<ReturnSummaryRow>[] = [
   { key: "symbol", header: "Symbol", width: 92, render: (row) => row.symbol ?? "-" },
   { key: "market", header: "Market", width: 92, render: (row) => row.market ?? "-" },
-  { key: "observations", header: "Obs", width: 70, numeric: true, render: (row) => row.observations ?? 0 },
-  { key: "mean_return", header: "Mean", width: 92, numeric: true, render: (row) => formatNum(row.mean_return, 5) },
-  { key: "volatility", header: "Vol", width: 92, numeric: true, render: (row) => formatNum(row.volatility, 5) },
-  { key: "annualized_volatility", header: "Ann vol", width: 94, numeric: true, render: (row) => formatNum(row.annualized_volatility, 4) },
-  { key: "min_return", header: "Min", width: 92, numeric: true, render: (row) => formatNum(row.min_return, 5) },
-  { key: "max_return", header: "Max", width: 92, numeric: true, render: (row) => formatNum(row.max_return, 5) },
-  { key: "first_return_date", header: "First ret", width: 112, render: (row) => row.first_return_date ?? "-" },
-  { key: "last_return_date", header: "Last ret", width: 112, render: (row) => row.last_return_date ?? "-" },
-];
-
-const pairColumns: DataGridColumn<PairRow>[] = [
-  { key: "left", header: "Left", width: 90, render: (row) => row.left ?? "-" },
-  { key: "right", header: "Right", width: 90, render: (row) => row.right ?? "-" },
-  { key: "market_pair", header: "Markets", width: 150, render: (row) => row.market_pair ?? "-" },
-  { key: "correlation", header: "Rho", width: 86, numeric: true, render: (row) => formatNum(row.correlation, 4) },
-  { key: "covariance", header: "Cov", width: 110, numeric: true, render: (row) => formatNum(row.covariance, 8) },
-  { key: "observations", header: "Obs", width: 70, numeric: true, render: (row) => row.observations ?? 0 },
+  {
+    key: "observations",
+    header: "Obs",
+    width: 70,
+    numeric: true,
+    render: (row) => row.observations ?? 0,
+  },
+  {
+    key: "mean_return",
+    header: "Mean",
+    width: 92,
+    numeric: true,
+    render: (row) => formatNum(row.mean_return, 5),
+  },
+  {
+    key: "volatility",
+    header: "Vol",
+    width: 92,
+    numeric: true,
+    render: (row) => formatNum(row.volatility, 5),
+  },
+  {
+    key: "annualized_volatility",
+    header: "Ann vol",
+    width: 94,
+    numeric: true,
+    render: (row) => formatNum(row.annualized_volatility, 4),
+  },
+  {
+    key: "min_return",
+    header: "Min",
+    width: 92,
+    numeric: true,
+    render: (row) => formatNum(row.min_return, 5),
+  },
+  {
+    key: "max_return",
+    header: "Max",
+    width: 92,
+    numeric: true,
+    render: (row) => formatNum(row.max_return, 5),
+  },
+  {
+    key: "first_return_date",
+    header: "First ret",
+    width: 112,
+    render: (row) => row.first_return_date ?? "-",
+  },
+  {
+    key: "last_return_date",
+    header: "Last ret",
+    width: 112,
+    render: (row) => row.last_return_date ?? "-",
+  },
 ];
 
 const overlapColumns: DataGridColumn<OverlapRow>[] = [
   { key: "date", header: "Date", width: 110, render: (row) => row.date ?? "-" },
-  { key: "left_return", header: "Left return", width: 120, numeric: true, render: (row) => formatNum(row.left_return, 6) },
-  { key: "right_return", header: "Right return", width: 120, numeric: true, render: (row) => formatNum(row.right_return, 6) },
+  {
+    key: "left_return",
+    header: "Left return",
+    width: 120,
+    numeric: true,
+    render: (row) => formatNum(row.left_return, 6),
+  },
+  {
+    key: "right_return",
+    header: "Right return",
+    width: 120,
+    numeric: true,
+    render: (row) => formatNum(row.right_return, 6),
+  },
 ];
 
 const bugColumns: DataGridColumn<BugRow>[] = [
-  { key: "severity", header: "Severity", width: 104, render: (row) => <Pill tone={severityTone(row.severity)} withDot={false}>{row.severity ?? "-"}</Pill> },
-  { key: "component", header: "Component", width: 150, render: (row) => row.component ?? "-" },
+  {
+    key: "severity",
+    header: "Severity",
+    width: 104,
+    render: (row) => (
+      <Pill tone={severityTone(row.severity)} withDot={false} variant="soft">
+        {row.severity ?? "-"}
+      </Pill>
+    ),
+  },
+  {
+    key: "component",
+    header: "Component",
+    width: 150,
+    render: (row) => row.component ?? "-",
+  },
   { key: "status", header: "Status", width: 92, render: (row) => row.status ?? "-" },
-  { key: "message", header: "Bug / finding", width: 420, render: (row) => row.message ?? "-" },
+  {
+    key: "message",
+    header: "Bug / finding",
+    width: 420,
+    render: (row) => row.message ?? "-",
+  },
   { key: "fix", header: "Fix", width: 380, render: (row) => row.fix ?? "-" },
 ];
 
-const controlLabel = {
-  fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
-  color: "var(--text-mute)",
-  letterSpacing: "0.06em",
-  textTransform: "uppercase" as const,
+// ----- styles -----
+
+const matrixToolbarStyle: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 12,
+  padding: "8px 14px",
+  borderBottom: "1px solid var(--border-subtle)",
+  background: "var(--surface-1)",
+  flexWrap: "wrap",
 };
 
-const numberInputStyle = {
-  width: 74,
-  height: 24,
-  background: "var(--bg-elev-2)",
+const universeRowStyle: CSSProperties = {
+  display: "flex",
+  alignItems: "stretch",
+  gap: 10,
+  padding: "10px 14px",
+  borderBottom: "1px solid var(--border-subtle)",
+  background: "var(--surface-1)",
+  flexWrap: "wrap",
+};
+
+const toolbarSegmentStyle: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 6,
+};
+
+const toolbarLabelStyle: CSSProperties = {
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: 9,
+  color: "var(--text-mute)",
+  letterSpacing: "0.08em",
+  textTransform: "uppercase",
+};
+
+const pillRowContainerStyle: CSSProperties = {
+  display: "inline-flex",
+  gap: 2,
+  padding: 2,
+  background: "var(--surface-2)",
   border: "1px solid var(--border-subtle)",
   borderRadius: "var(--radius-md)",
-  color: "var(--text-primary)",
-  padding: "0 7px",
-  fontFamily: "JetBrains Mono, monospace",
-  fontSize: 11,
 };
 
-const matrixHeaderStyle = {
+const pillButtonStyle: CSSProperties = {
+  border: "none",
+  padding: "3px 10px",
+  borderRadius: "var(--radius-sm)",
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: 10,
+  cursor: "default",
+  letterSpacing: "0.04em",
+};
+
+const metricStripStyle: CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
+  gap: 8,
+};
+
+const statCardStyle: CSSProperties = {
+  display: "grid",
+  gap: 4,
+  padding: "10px 12px",
+  background: "var(--surface-2)",
+  border: "1px solid var(--border-card)",
+  borderRadius: "var(--radius-md)",
+  minWidth: 0,
+};
+
+const statLabelStyle: CSSProperties = {
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: 9,
+  color: "var(--text-mute)",
+  letterSpacing: "0.08em",
+  textTransform: "uppercase",
+};
+
+const statValueStyle: CSSProperties = {
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: 14,
+  fontWeight: 700,
+  color: "var(--text-display)",
+  fontVariantNumeric: "tabular-nums",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+};
+
+const formulaStripStyle: CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "repeat(3, minmax(180px, 1fr))",
+  gap: 8,
+  border: "1px solid var(--accent-soft)",
+  borderRadius: "var(--radius-md)",
+  background: "var(--accent-soft)",
+  padding: "8px 10px",
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: 11,
+  color: "var(--text-secondary)",
+};
+
+const mainGridStyle: CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "minmax(380px, 1.15fr) minmax(280px, 0.85fr)",
+  gap: 12,
+};
+
+const rightRailStyle: CSSProperties = {
+  display: "grid",
+  gap: 12,
+  alignContent: "start",
+};
+
+const matrixScrollStyle: CSSProperties = {
+  overflow: "auto",
+  borderTop: "1px solid var(--border-subtle)",
+  padding: 6,
+};
+
+const matrixHeaderStyle: CSSProperties = {
   padding: "6px 8px",
-  background: "var(--bg-elev-2)",
+  background: "var(--surface-2)",
   borderBottom: "1px solid var(--border-strong)",
   color: "var(--text-mute)",
   fontFamily: "JetBrains Mono, monospace",
   fontSize: 10,
   fontWeight: 700,
   letterSpacing: "0.06em",
-  textTransform: "uppercase" as const,
-  whiteSpace: "nowrap" as const,
+  textTransform: "uppercase",
+  whiteSpace: "nowrap",
   zIndex: 1,
+};
+
+const headerCellInnerStyle: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 6,
+  justifyContent: "center",
+};
+
+const diagonalLabelStyle: CSSProperties = {
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: 9,
+  color: "var(--text-mute)",
+  letterSpacing: "0.04em",
+};
+
+const legendGradientStyle: CSSProperties = {
+  display: "flex",
+  height: 14,
+  borderRadius: 4,
+  overflow: "hidden",
+  border: "1px solid var(--border-subtle)",
+};
+
+const legendTicksStyle: CSSProperties = {
+  display: "flex",
+  justifyContent: "space-between",
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: 9,
+  color: "var(--text-mute)",
+  letterSpacing: "0.04em",
+};
+
+const pairRowStyle: CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "auto minmax(0, 1fr) auto",
+  gap: 8,
+  alignItems: "center",
+  padding: "4px 6px",
+  borderRadius: "var(--radius-sm)",
+};
+
+const pairColStyle: CSSProperties = {
+  display: "grid",
+  gap: 1,
+  minWidth: 0,
+};
+
+const pairSymbolsStyle: CSSProperties = {
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: 11,
+  color: "var(--text-primary)",
+  fontWeight: 700,
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+};
+
+const pairMarketStyle: CSSProperties = {
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: 9,
+  color: "var(--text-mute)",
+  letterSpacing: "0.04em",
+};
+
+const pairValuesStyle: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 6,
+};
+
+const pairValueStyle: CSSProperties = {
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: 11,
+  fontWeight: 700,
+  fontVariantNumeric: "tabular-nums",
+};
+
+const pairChipStyle: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 6,
+  padding: "4px 9px",
+  borderRadius: 12,
+  background: "var(--surface-2)",
+  border: "1px solid var(--border-subtle)",
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: 12,
+  fontWeight: 700,
+  color: "var(--text-primary)",
+};
+
+const pairChipMarketStyle: CSSProperties = {
+  color: "var(--text-mute)",
+  fontSize: 9,
+  fontWeight: 500,
+  textTransform: "uppercase",
+};
+
+const pairKvStyle: CSSProperties = {
+  border: "1px solid var(--border-subtle)",
+  borderRadius: "var(--radius-sm)",
+  background: "var(--surface-2)",
+  padding: "6px 8px",
+};
+
+const pairKvValueStyle: CSSProperties = {
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: 12,
+  color: "var(--text-primary)",
+  fontWeight: 600,
+  fontVariantNumeric: "tabular-nums",
+};
+
+const diversTickerStyle: CSSProperties = {
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: 11,
+  fontWeight: 700,
+};
+
+const diversBarTrackStyle: CSSProperties = {
+  position: "relative",
+  height: 12,
+  borderRadius: 6,
+  background: "var(--surface-2)",
+  border: "1px solid var(--border-subtle)",
+  overflow: "hidden",
+};
+
+const diversBarMarkerStyle: CSSProperties = {
+  position: "absolute",
+  top: 0,
+  bottom: 0,
+  left: "calc(50% - 0.5px)",
+  width: 1,
+  background: "var(--border-strong)",
+};
+
+const diversValuesStyle: CSSProperties = {
+  display: "flex",
+  gap: 10,
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: 10,
+  color: "var(--text-mute)",
+  whiteSpace: "nowrap",
+};
+
+const controlLabelStyle: CSSProperties = {
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: 10,
+  color: "var(--text-mute)",
+  letterSpacing: "0.06em",
+  textTransform: "uppercase",
+};
+
+const textareaStyle: CSSProperties = {
+  resize: "vertical",
+  minHeight: 38,
+  maxHeight: 92,
+  minWidth: 0,
+  background: "var(--surface-2)",
+  border: "1px solid var(--border-subtle)",
+  borderRadius: "var(--radius-md)",
+  color: "var(--text-primary)",
+  padding: "7px 9px",
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: 12,
+  outline: "none",
 };

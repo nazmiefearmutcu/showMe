@@ -17,13 +17,19 @@
     "audit:functions": "python3 scripts/showme_function_audit.py",
     "audit:legacy-functions": "python3 scripts/audit_functions.py",
     "audit:sentinels": "python3 scripts/showme_sentinel_audit.py",
-    "test:e2e": "npx playwright test tests/e2e/showme-functions.spec.ts",
+    "audit:rust": "cd tauri && cargo audit --deny warnings",
+    "audit:npm": "npm audit --omit=dev --audit-level=high",
+    "test:e2e": "npx playwright test --config tests/e2e/playwright.config.ts",
+    "test:e2e:smoke": "PLAYWRIGHT_E2E_MODE=smoke npx playwright test --config tests/e2e/playwright.config.ts --project=smoke",
+    "test:e2e:audit": "npx playwright test --config tests/e2e/playwright.config.ts --project=audit",
+    "test:e2e:list": "npx playwright list --config tests/e2e/playwright.config.ts",
     "test:backend": "cd backend && uv run pytest",
     "lint": "npm --workspace ui run lint",
     "lint:py": "cd backend && uv run ruff check .",
     "format": "npm --workspace ui run format"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2.1.0"
+    "@playwright/test": "1.49.1",
+    "@tauri-apps/cli": "2.1.0"
   }
 }

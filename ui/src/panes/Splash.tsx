@@ -6,102 +6,35 @@ export function Splash() {
   const total = useAppStore((s) => s.functionIndex.length);
 
   return (
-    <main
-      style={{
-        padding: 24,
-        display: "grid",
-        gridTemplateColumns: "1fr",
-        gridAutoRows: "min-content",
-        gap: 16,
-        overflowY: "auto",
-      }}
-    >
+    <main className="splash-main">
       <header>
-        <h1
-          style={{
-            fontFamily: "Inter, SF Pro Text, system-ui",
-            fontSize: 22,
-            margin: 0,
-            letterSpacing: 0,
-          }}
-        >
-          showMe
-          <span style={{ color: "var(--text-mute)", fontWeight: 400, marginLeft: 8 }}>
-            market cockpit
-          </span>
+        <h1 className="splash-main__h1">
+          show
+          <span className="u-text-accent-strong">Me</span>
+          <span className="splash-main__h1-tag">market cockpit</span>
         </h1>
-        <p
-          style={{
-            color: "var(--text-secondary)",
-            fontSize: 13,
-            maxWidth: 720,
-            marginTop: 4,
-          }}
-        >
+        <p className="splash-main__lede">
           Native macOS app hosting the Python market engine ({total || "—"} functions).
         </p>
       </header>
 
-      <section className="surface" style={{ padding: 16 }}>
-        <h2
-          style={{
-            fontSize: 11,
-            letterSpacing: "0.08em",
-            color: "var(--accent)",
-            margin: 0,
-            textTransform: "uppercase",
-          }}
-        >
-          Runtime
-        </h2>
-        <dl
-          style={{
-            display: "grid",
-            gridTemplateColumns: "120px 1fr",
-            gap: "6px 16px",
-            marginTop: 8,
-            fontSize: 12,
-          }}
-        >
-          <dt style={{ color: "var(--text-mute)" }}>status</dt>
-          <dd style={{ margin: 0, color: "var(--text-primary)" }}>{status}</dd>
+      <section className="surface splash-main__card">
+        <h2 className="splash-main__h2">Runtime</h2>
+        <dl className="splash-main__dl">
+          <dt className="u-text-mute">status</dt>
+          <dd className="splash-main__dd splash-main__dd--primary">{status}</dd>
 
-          <dt style={{ color: "var(--text-mute)" }}>engine root</dt>
-          <dd
-            style={{
-              margin: 0,
-              fontFamily: "JetBrains Mono, monospace",
-              color: "var(--text-secondary)",
-            }}
-          >
-            {engine || "(not attached)"}
-          </dd>
+          <dt className="u-text-mute">engine root</dt>
+          <dd className="splash-main__dd splash-main__dd--mono">{engine || "(not attached)"}</dd>
 
-          <dt style={{ color: "var(--text-mute)" }}>functions</dt>
-          <dd style={{ margin: 0 }}>{total}</dd>
+          <dt className="u-text-mute">functions</dt>
+          <dd className="splash-main__dd">{total}</dd>
         </dl>
       </section>
 
-      <section className="surface" style={{ padding: 16 }}>
-        <h2
-          style={{
-            fontSize: 11,
-            letterSpacing: "0.08em",
-            color: "var(--accent)",
-            margin: 0,
-            textTransform: "uppercase",
-          }}
-        >
-          Quality standard
-        </h2>
-        <ul
-          style={{
-            color: "var(--text-secondary)",
-            fontSize: 12,
-            paddingLeft: 16,
-            marginTop: 8,
-          }}
-        >
+      <section className="surface splash-main__card">
+        <h2 className="splash-main__h2">Quality standard</h2>
+        <ul className="splash-main__list">
           <li>Function payloads come from the Python engine.</li>
           <li>Provider failures are surfaced with next actions.</li>
           <li>Settings persist theme, accent, density, language, secrets, and install controls.</li>

@@ -5,6 +5,8 @@ with ADX/DI. ATR remains a directional NEUTRAL filter; only volatility
 classification is reported in raw_values.
 """
 
+from __future__ import annotations
+
 import pandas as pd
 
 from showme.engine.indicators.base import BaseIndicator, IndicatorResult, Signal

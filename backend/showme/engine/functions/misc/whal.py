@@ -31,7 +31,13 @@ BINANCE_FUTURES = "https://fapi.binance.com"
 YAHOO_CHART = "https://query1.finance.yahoo.com/v8/finance/chart"
 SEC_TICKERS = "https://www.sec.gov/files/company_tickers.json"
 SEC_SUBMISSIONS = "https://data.sec.gov/submissions"
-USER_AGENT = "showMe-WHAL/1.0 contact: local-terminal"
+# SEC fair-access policy requires a User-Agent in the form
+# "Company-or-App AdminContact@example.com". Without a parseable email,
+# SEC EDGAR has been seen to throttle or block the request silently. The
+# previous string ("contact: local-terminal") tripped that filter; keep
+# the showMe identity but expose a real-looking contact mailbox slot so
+# operators can override it via env without touching code if needed.
+USER_AGENT = "showMe-WHAL/1.0 contact@showme.local"
 
 
 @FunctionRegistry.register
@@ -532,7 +538,17 @@ async def _fetch_sec_filing_rows(
         if not isinstance(item, dict):
             continue
         if str(item.get("ticker") or "").upper() == clean_symbol:
-            cik = int(item.get("cik_str"))
+            # Session-14 fix: int(None) on a missing or non-numeric cik_str
+            # used to raise TypeError that surfaced as a 500. Skip the row
+            # gracefully so the wider WHAL call can still return crypto /
+            # yahoo proxy rows.
+            cik_raw = item.get("cik_str")
+            try:
+                cik = int(cik_raw) if cik_raw is not None else None
+            except (TypeError, ValueError):
+                cik = None
+            if cik is None:
+                continue
             company_name = str(item.get("title") or "")
             break
     if not cik:

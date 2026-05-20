@@ -17,21 +17,24 @@ import contextlib
 import shutil
 import importlib
 import logging
-import math
 import os
 import resource
 import socket
 import sys
 import threading
-import time
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, AsyncIterator, Callable
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import (
+    FastAPI,
+    HTTPException,
+    Request,
+)
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from fastapi.responses import JSONResponse
 
 from showme.crypto_aliases import (
     CRYPTO_BASES,
@@ -41,7 +44,7 @@ from showme.crypto_aliases import (
 )
 from showme.chart_history import (
     DEFAULT_BARS as DEFAULT_HISTORY_BARS,
-    fetch_deep_history,
+    fetch_longest_history,
     normalize_history_interval,
     parse_history_bars,
 )
@@ -85,6 +88,16 @@ SYNTHETIC_SOURCE_MARKERS = (
     "placeholder",
     "synthetic",
     "continuity",
+    "_model",
+    "_baseline",
+    "_defaults",
+    "reference",
+    "auction_model",
+    "auction_fallback",
+    "tax_loss_model",
+    "total_return_model",
+    "briefing_model",
+    "deterministic_tldr",
 )
 
 
@@ -110,7 +123,15 @@ def _default_app_home() -> Path:
 
 
 def prepare_writable_cwd() -> Path | None:
-    """Move frozen app writes away from PyInstaller's read-only extraction dir."""
+    """Ensure ``SHOWME_HOME`` is published before the engine boots.
+
+    Per ARCH-09 P0: the original ``os.chdir(app_home)`` was the only thing
+    keeping the engine's hardcoded ``Path("runtime/...")`` literals pointed
+    at the right directory. We now route every store through
+    ``showme.app_paths.runtime_path`` so the chdir is no longer necessary;
+    we keep the home/runtime directories ensured + the env var published
+    for any sub-process that consults it.
+    """
     if not getattr(sys, "_MEIPASS", None):
         return None
     app_home = Path(os.environ.get("SHOWME_HOME", _default_app_home())).expanduser()
@@ -119,7 +140,6 @@ def prepare_writable_cwd() -> Path | None:
     if _env_truthy("SHOWME_MIRROR_LEGACY_RUNTIME"):
         mirror_legacy_runtime(app_home)
     os.environ.setdefault("SHOWME_HOME", str(app_home))
-    os.chdir(app_home)
     return app_home
 
 
@@ -133,6 +153,14 @@ def ensure_app_home_env() -> Path:
 
 def _env_truthy(name: str) -> bool:
     value = os.environ.get(name, "")
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_truthy_default(name: str, default: str) -> bool:
+    """Like ``_env_truthy`` but returns the truthiness of ``default`` when unset."""
+    value = os.environ.get(name)
+    if value is None:
+        value = default
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
@@ -296,7 +324,7 @@ async def _warm_showme_function_factory_on_worker() -> None:
     if current_factory is not None and owner != threading.get_ident():
         factory_mod._factory = None
     factory = factory_mod.get_factory()
-    setattr(factory, "_showme_worker_thread", threading.get_ident())
+    factory._showme_worker_thread = threading.get_ident()
 
 
 async def _warm_showme_function_factory() -> None:
@@ -323,10 +351,10 @@ async def _execute_showme_function_on_worker(code: str, params: dict[str, Any]) 
         if current_factory is not None and owner != threading.get_ident():
             factory_mod._factory = None
         factory = factory_mod.get_factory()
-        setattr(factory, "_showme_worker_thread", threading.get_ident())
+        factory._showme_worker_thread = threading.get_ident()
     except Exception as exc:  # noqa: BLE001
         LOG.exception("get_factory failed")
-        raise HTTPException(status_code=500, detail=f"factory: {exc}")
+        raise HTTPException(status_code=500, detail=f"factory: {exc}") from exc
     upper_code = code.upper()
     local_params = dict(params)
     symbol = local_params.pop("symbol", None)
@@ -447,7 +475,7 @@ async def _execute_price_history_alias(
     rows: list[dict[str, Any]] = []
     source_name = ""
     try:
-        history = await fetch_deep_history(
+        history = await fetch_longest_history(
             symbol=getattr(instrument, "symbol", ""),
             asset_class=str(asset_class).upper(),
             interval=interval,
@@ -467,13 +495,23 @@ async def _execute_price_history_alias(
                     "resolution": interval,
                     "bar_count": len(history.rows),
                     "deep_history": True,
+                    "winner": history.source,
+                    "sources_considered": history.metadata.get(
+                        "sources_considered", []
+                    ),
+                    "selection_reason": history.metadata.get(
+                        "selection_reason", "oldest_first_bar"
+                    ),
+                    "winner_first_ts_ms": history.metadata.get(
+                        "winner_first_ts_ms"
+                    ),
                 },
                 sources=[history.source],
                 warnings=history.warnings,
                 metadata={"alias": "price_history", **history.metadata},
             )
     except Exception as exc:  # noqa: BLE001
-        warnings.append(f"deep_history: {exc}")
+        warnings.append(f"longest_history: {exc}")
     for name, adapter in adapter_candidates:
         if adapter is None:
             continue
@@ -481,7 +519,7 @@ async def _execute_price_history_alias(
             df = await adapter.fetch(data_source_mod.DataRequest(
                 kind=data_source_mod.DataKind.OHLCV,
                 instrument=instrument,
-                start=datetime.utcnow() - timedelta(days=days),
+                start=datetime.now(timezone.utc) - timedelta(days=days),
                 interval=interval,
                 limit=bars,
                 extra={"days": days, "timeout": 12},
@@ -498,7 +536,15 @@ async def _execute_price_history_alias(
     return FunctionResult(
         code=code,
         instrument=instrument,
-        data={"ohlcv": rows, "bars": rows, "rows": rows},
+        data={
+            "ohlcv": rows,
+            "bars": rows,
+            "rows": rows,
+            "winner": source_name or None,
+            "sources_considered": [],
+            "selection_reason": "adapter_fallback",
+            "winner_first_ts_ms": None,
+        },
         sources=[source_name] if source_name else [],
         warnings=warnings,
         metadata={
@@ -508,6 +554,7 @@ async def _execute_price_history_alias(
             "bars_requested": bars,
             "bars_returned": len(rows),
             "deep_history": False,
+            "selection_reason": "adapter_fallback",
         },
     )
 
@@ -583,6 +630,13 @@ def _json_scalar(value: Any) -> Any:
 
 
 def default_asset_class_name(symbol: str | None, requested: Any = None) -> str:
+    """Resolve the asset-class name for ``symbol``.
+
+    Honors an explicit ``requested`` override first, otherwise falls
+    through the heuristic ladder: crypto → fx → commodity → index → bond
+    → equity. Symbol aliases are resolved without a network call so this
+    is safe to invoke on every request.
+    """
     if requested:
         return str(requested).upper()
     resolved = resolve_crypto_symbol_alias(symbol, allow_network=False)
@@ -600,6 +654,12 @@ def default_asset_class_name(symbol: str | None, requested: Any = None) -> str:
 
 
 def looks_like_crypto_symbol(symbol: str | None) -> bool:
+    """Return True for crypto tickers, e.g. ``BTC``, ``ETHUSDT``, ``BTC-USD``.
+
+    Uses the canonical Binance/exchange suffix list and the bundled
+    ``crypto_aliases.is_crypto_symbol`` knowledge so we treat ``BNB`` as
+    crypto without needing to check it against every quote suffix.
+    """
     if not symbol:
         return False
     value = resolve_crypto_symbol_alias(symbol, allow_network=False).upper().replace("-", "").replace("/", "")
@@ -616,6 +676,11 @@ def looks_like_crypto_symbol(symbol: str | None) -> bool:
 
 
 def looks_like_fx_symbol(symbol: str | None) -> bool:
+    """Return True for 6-char ISO currency pairs (``EURUSD``, ``GBPJPY``).
+
+    Strips the ``=X`` Yahoo suffix and ``/``/``-`` separators so callers
+    don't have to normalise upstream.
+    """
     if not symbol:
         return False
     value = symbol.upper().replace("/", "").replace("-", "").removesuffix("=X")
@@ -625,6 +690,7 @@ def looks_like_fx_symbol(symbol: str | None) -> bool:
 
 
 def looks_like_commodity_symbol(symbol: str | None) -> bool:
+    """Return True for futures/spot commodity codes (``GC=F``, ``XAUUSD``)."""
     if not symbol:
         return False
     value = symbol.upper()
@@ -634,6 +700,7 @@ def looks_like_commodity_symbol(symbol: str | None) -> bool:
 
 
 def looks_like_index_symbol(symbol: str | None) -> bool:
+    """Return True for known equity index codes (``^GSPC``, ``^IXIC``)."""
     if not symbol:
         return False
     value = symbol.upper().lstrip("^")
@@ -641,1142 +708,81 @@ def looks_like_index_symbol(symbol: str | None) -> bool:
 
 
 def looks_like_bond_symbol(symbol: str | None) -> bool:
+    """Return True for known sovereign bond tickers (``US10Y``, ``DE10Y``)."""
     if not symbol:
         return False
     value = symbol.upper().replace("-", "")
     return value in BOND_SYMBOLS
 
 
-class FunctionIndexEntry(BaseModel):
-    code: str
-    name: str
-    category: str
-    description: str = ""
-    asset_classes: list[str] = Field(default_factory=list)
-    usage: dict[str, Any] = Field(default_factory=dict)
-
-
-class VeryfinderBatchRequest(BaseModel):
-    items: list[dict[str, Any]] = Field(default_factory=list)
-    symbol: str | None = None
-    topic: str | None = None
-    sample: int = Field(default=25, ge=1)
-    source: str = "auto"
-    engine: str = "rules"
-    limit: int = Field(default=50, ge=1)
-
-
-AGENT_DEFAULT_CANDIDATES = (
-    {"symbol": "BTCUSDT", "asset_class": "CRYPTO"},
-    {"symbol": "ETHUSDT", "asset_class": "CRYPTO"},
-    {"symbol": "SOLUSDT", "asset_class": "CRYPTO"},
-    {"symbol": "AAPL", "asset_class": "EQUITY"},
-    {"symbol": "MSFT", "asset_class": "EQUITY"},
-    {"symbol": "NVDA", "asset_class": "EQUITY"},
-    {"symbol": "EURUSD", "asset_class": "FX"},
-    {"symbol": "GC=F", "asset_class": "COMMODITY"},
+# Per SEC-05: Pydantic request models live in `server_routes._models` so the
+# route family files can import them without circular references. The
+# legacy names are re-exported here for back-compat with `from
+# showme.server import OrderRequest` style imports.
+from showme.server_routes._models import (  # noqa: E402, F401
+    AskBody,
+    BestSymbolBody,
+    FunctionIndexEntry,
+    InstantBackfillBody,
+    OrderRequest,
+    ScannerRunBody,
+    VeryfinderBatchRequest,
+    WatchlistBody,
+    XAnalyzeBody,
+    XClassifyBody,
 )
 
-AGENT_POSITIVE_TERMS = (
-    "score",
-    "confidence",
-    "accuracy",
-    "sharpe",
-    "return",
-    "alpha",
-    "upside",
-    "growth",
-    "momentum",
-    "yield",
-    "profit",
-    "pnl",
-    "bullish",
-    "buy",
-    "positive",
+
+# Per ARCH-07 / PY-LINT-03 (R3A): agent-runtime helpers live in
+# `server_routes._agent_runtime` so this module stays under 1,300 lines.
+# Public symbols are re-exported here for backward compatibility.
+from showme.server_routes._agent_runtime import (  # noqa: E402, F401
+    AGENT_DEFAULT_CANDIDATES,
+    AGENT_EXCLUDED_FUNCTIONS,
+    AGENT_IGNORE_TERMS,
+    AGENT_LOCAL_SIGNAL_CODES,
+    AGENT_LOCAL_SIGNAL_PROFILES,
+    AGENT_NEGATIVE_TERMS,
+    AGENT_POSITIVE_TERMS,
+    STANDALONE_DERIVATIVES,
+    SYMBOL_ROUTE_CATEGORIES,
+    SYMBOL_ROUTE_CODES,
+    _agent_function_params,
+    _agent_local_profile,
+    _agent_numeric_signal,
+    _agent_payload_score,
+    _agent_probe_data_for_code,
+    _agent_probe_payload,
+    _agent_profile,
+    _agent_scale_numeric,
+    _agent_symbol_bias,
+    _agent_text_signal,
+    _canonical_route_symbol,
+    _clamp,
+    _collect_agent_signals,
+    _default_route_symbol,
+    _function_code_supports_asset,
+    _function_entry_for_code,
+    _function_usage,
+    _parse_agent_candidates,
+    _route_function_params,
+    _route_uses_symbol,
+    _run_best_symbol_agent,
+    _run_best_symbol_agent_blocking,
+    _standalone_function_defaults,
+    _usage_example_params,
 )
-AGENT_NEGATIVE_TERMS = (
-    "risk",
-    "drawdown",
-    "volatility",
-    "var",
-    "loss",
-    "downside",
-    "debt",
-    "cost",
-    "fee",
-    "spread",
-    "bearish",
-    "sell",
-    "negative",
-)
-AGENT_IGNORE_TERMS = (
-    "date",
-    "time",
-    "timestamp",
-    "height",
-    "count",
-    "samples",
-    "limit",
-    "volume",
-    "price",
-    "open",
-    "high",
-    "low",
-    "close",
-    "spot",
-    "strike",
-    "qty",
-    "quantity",
-    "shares",
-    "marketcap",
-    "market_cap",
-    "avgcost",
-    "costbasis",
-    "basis",
-    "fairvalue",
-)
-AGENT_LOCAL_SIGNAL_CODES = {
-    "BMTX",
-    "BTFW",
-    "BTUNE",
-    "CN",
-    "MLSIG",
-    "MOSS",
-    "NALRT",
-    "NI",
-    "PORT_OPT",
-    "PVAR",
-    "RPAR",
-}
-AGENT_EXCLUDED_FUNCTIONS = [
-    {"code": "AGENT", "reason": "self-referential native ranker pane"},
-    {"code": "ASK", "reason": "natural-language orchestration pane, not a symbol scoring function"},
-    {"code": "HOME", "reason": "shell welcome/inventory pane"},
-]
-AGENT_LOCAL_SIGNAL_PROFILES = {
-    "CRYPTO": ("momentum_onchain_proxy", 0.56, 0.42),
-    "EQUITY": ("quality_momentum_proxy", 0.54, 0.36),
-    "ETF": ("trend_volatility_proxy", 0.53, 0.31),
-    "FX": ("carry_momentum_proxy", 0.52, 0.24),
-    "COMMODITY": ("curve_momentum_proxy", 0.53, 0.28),
-    "INDEX": ("macro_trend_proxy", 0.55, 0.33),
-}
 
 
-def _parse_agent_candidates(raw: Any) -> list[dict[str, str]]:
-    if raw is None or raw == "":
-        raw = list(AGENT_DEFAULT_CANDIDATES)
-    if isinstance(raw, str):
-        raw = [
-            part.strip()
-            for part in raw.replace(";", ",").replace("\n", ",").split(",")
-            if part.strip()
-        ]
-    if not isinstance(raw, list):
-        raw = list(AGENT_DEFAULT_CANDIDATES)
-    out: list[dict[str, str]] = []
-    seen: set[str] = set()
-    for item in raw:
-        if isinstance(item, str):
-            symbol = _canonical_route_symbol(item)
-            asset_class = default_asset_class_name(symbol)
-        elif isinstance(item, dict):
-            symbol = _canonical_route_symbol(item.get("symbol") or item.get("ticker"), item.get("asset_class"))
-            asset_class = default_asset_class_name(symbol, item.get("asset_class"))
-        else:
-            continue
-        if not symbol or symbol in seen:
-            continue
-        seen.add(symbol)
-        out.append({"symbol": symbol, "asset_class": asset_class})
-    return out or list(AGENT_DEFAULT_CANDIDATES)
+def _install_middlewares(app: FastAPI) -> None:
+    """Mount CORS + body-size + auth middlewares.
 
-
-def _agent_profile(symbol: str, asset_class: str) -> dict[str, Any]:
-    if asset_class == "CRYPTO":
-        peers = [symbol, "ETHUSDT", "SOLUSDT"]
-        universe = [symbol, "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"]
-        return {
-            "news_query": "bitcoin cryptocurrency",
-            "peer_symbols": list(dict.fromkeys(peers)),
-            "bql_symbol": "BTC-USD" if symbol == "BTCUSDT" else symbol,
-            "isin_query": symbol,
-            "exchange": "BINANCE",
-            "universe": list(dict.fromkeys(universe)),
-            "targets": {symbol: 0.6, "ETHUSDT": 0.4},
-        }
-    if asset_class == "FX":
-        peers = [symbol, "GBPUSD=X", "USDJPY=X"]
-        universe = [symbol, "GBPUSD=X", "USDJPY=X", "AUDUSD=X", "USDCAD=X"]
-        return {
-            "news_query": "foreign exchange rates",
-            "peer_symbols": list(dict.fromkeys(peers)),
-            "bql_symbol": f"{symbol}=X" if not symbol.endswith("=X") else symbol,
-            "isin_query": symbol,
-            "exchange": "FX",
-            "universe": list(dict.fromkeys(universe)),
-            "targets": {symbol: 0.5, "GBPUSD=X": 0.3, "USDJPY=X": 0.2},
-        }
-    if asset_class == "COMMODITY":
-        peers = [symbol, "SI=F", "CL=F"]
-        universe = [symbol, "SI=F", "CL=F", "BZ=F", "NG=F"]
-        return {
-            "news_query": "commodity futures",
-            "peer_symbols": list(dict.fromkeys(peers)),
-            "bql_symbol": symbol,
-            "isin_query": symbol,
-            "exchange": "COMEX",
-            "universe": list(dict.fromkeys(universe)),
-            "targets": {symbol: 0.5, "SI=F": 0.25, "CL=F": 0.25},
-        }
-    peers = [symbol, "MSFT", "GOOGL"]
-    universe = [symbol, "MSFT", "GOOGL", "NVDA", "TSLA"]
-    return {
-        "news_query": f"{symbol} stock",
-        "peer_symbols": list(dict.fromkeys(peers)),
-        "bql_symbol": symbol,
-        "isin_query": symbol,
-        "exchange": "NASDAQ",
-        "universe": list(dict.fromkeys(universe)),
-        "targets": {symbol: 0.5, "MSFT": 0.3, "GOOGL": 0.2},
-    }
-
-
-def _agent_function_params(entry: FunctionIndexEntry, candidate: dict[str, str]) -> dict[str, Any]:
-    symbol = candidate["symbol"]
-    asset_class = candidate["asset_class"]
-    profile = _agent_profile(symbol, asset_class)
-    code = entry.code.upper()
-    category = entry.category.lower()
-    params: dict[str, Any] = {
-        "symbol": symbol,
-        "asset_class": asset_class,
-        "limit": 6,
-        "days": 120,
-        "range": "3M",
-        "interval": "1d",
-        "query": profile["news_query"],
-        "topic": symbol,
-        "symbols": profile["peer_symbols"],
-        "live": True,
-        "timeout": 3,
-        "quote_timeout": 3,
-        "news_timeout": 3,
-        "sec_timeout": 3,
-        "yfinance_timeout": 3,
-        "finnhub_timeout": 3,
-        "fred_timeout": 3,
-        "damodaran_timeout": 3,
-    }
-    if code == "BQL":
-        params["query"] = (
-            f"get(close, volume) for(['{profile['bql_symbol']}']) "
-            "with(period='3mo', interval='1d') by(date)"
-        )
-    elif code == "EQS":
-        params.update({"query": "marketCap > 0", "universe": profile["universe"]})
-    elif code == "FTS":
-        params.update({"query": profile["news_query"], "form_type": "8-K"})
-    elif code == "FLDS":
-        params["query"] = "price"
-    elif code == "ISIN":
-        params["query"] = profile["isin_query"]
-    elif code in {"NSE", "NI", "READ", "TOP"}:
-        params.update({"query": profile["news_query"], "limit": 6})
-    elif code == "CN":
-        params["limit"] = 6
-    elif code == "TSAR":
-        params.update({"query": "revenue", "limit": 6})
-    elif code == "TRQA":
-        params["questions"] = ["What changed?", "What are the risks?"]
-    elif code == "TRDH":
-        params["exchange"] = profile["exchange"]
-    elif code == "ICX":
-        params["index"] = "SPX"
-    elif code == "CSRC":
-        params.update({"query": 'sector = "Energy"', "universe": ["CL=F", "BZ=F", "NG=F", "GC=F", "SI=F", "HG=F"]})
-    elif code == "FSRC":
-        params.update({"query": "expenseRatio < 0.01 AND aum_usd > 10000000000", "universe": ["SPY", "VOO", "IVV", "QQQ", "VTI", "IWM", "EEM", "GLD", "TLT", "HYG"]})
-    elif code == "SRCH":
-        params.update({"query": "yield >= 4 AND duration <= 10", "universe": ["US3M", "US2Y", "US5Y", "US10Y", "US30Y", "DE10Y", "GB10Y", "JP10Y"]})
-    elif code == "MICRO":
-        params.update({"exchange": profile["exchange"], "interval": "1m"})
-    elif code == "FRH":
-        params["exchange"] = profile["exchange"]
-    elif code == "SAT":
-        today = datetime.utcnow().date()
-        params.update({
-            "bbox": "-122.55,37.70,-122.30,37.85",
-            "days": 7,
-            "date_from": (today - timedelta(days=7)).isoformat(),
-            "date_to": today.isoformat(),
-        })
-    elif code in {"CDE", "ALRT", "LOTS"}:
-        params["action"] = "list"
-    elif code == "POLY":
-        params["query"] = profile["news_query"]
-    elif code in {"MEET", "PEOP"}:
-        params["query"] = "Satoshi Nakamoto" if asset_class == "CRYPTO" else symbol
-    elif code == "BTFW":
-        params.update({"strategy": "sma_crossover", "days": 120})
-    elif code == "BMTX":
-        params.update({"strategies": ["sma_crossover", "rsi_meanrev", "buy_and_hold"], "days": 120})
-    elif code == "MLSIG":
-        params.update({"horizon": 1, "days": 365})
-    elif code == "BTUNE":
-        params.update({"strategy": "sma_crossover", "days": 120})
-    elif code == "MGN":
-        params["refresh_prices"] = False
-    elif code == "DCFS":
-        params.update({"wacc_range": [0.07, 0.09, 0.11], "g_range": [0.02, 0.03]})
-    elif code == "DCF":
-        params.update({"growth_high": 0.08, "growth_terminal": 0.025})
-    elif code == "DDM":
-        params.update({"growth_rate": 0.03, "required_return": 0.08})
-    elif code == "WACC":
-        params.update({"erp": 0.05, "beta_timeout": 2})
-    elif code == "REBA":
-        params["targets"] = profile["targets"]
-    elif code == "SECF":
-        params.update({"query": "technology"})
-    elif code == "GREEKS":
-        params["positions"] = [{
-            "symbol": symbol,
-            "option_type": "CALL",
-            "qty": 1,
-            "spot": 100,
-            "strike": 105,
-            "expiry": 0.25,
-            "vol": 0.35,
-            "rate": 0.04,
-        }]
-    elif category == "portfolio":
-        params.setdefault("symbols", profile["peer_symbols"])
-    return params
-
-
-def _function_entry_for_code(code: str) -> FunctionIndexEntry:
-    upper = code.upper()
-    for entry in _load_function_index():
-        if entry.code.upper() == upper:
-            return entry
-    return FunctionIndexEntry(code=upper, name=upper, category="misc")
-
-
-SYMBOL_ROUTE_CODES = {
-    "ANR",
-    "BETA",
-    "CACT",
-    "CN",
-    "DARK",
-    "DCF",
-    "DCFS",
-    "DDM",
-    "DES",
-    "DPF",
-    "DVD",
-    "EE",
-    "EVTS",
-    "ESG",
-    "FA",
-    "FORM4",
-    "FRD",
-    "FTS",
-    "FXFC",
-    "FXH",
-    "FXIP",
-    "GEX",
-    "GP",
-    "HDS",
-    "HFS",
-    "HP",
-    "HVT",
-    "IVOL",
-    "LITM",
-    "MICRO",
-    "MLSIG",
-    "NALRT",
-    "OMON",
-    "OVDV",
-    "PIB",
-    "REGM",
-    "RV",
-    "SPLC",
-    "SOSC",
-    "TECH",
-    "TRAN",
-    "WACC",
-    "YAS",
-    "BTFW",
-    "BTUNE",
-    "PORT_WHATIF",
-    "PSC",
-    "TRA",
-    "BBGT",
-    "EMSX",
-    "FXGO",
-    "TSOX",
-}
-SYMBOL_ROUTE_CATEGORIES = {"chart", "equity"}
-STANDALONE_DERIVATIVES = {"OVME", "OSA"}
-
-
-def _route_uses_symbol(entry: FunctionIndexEntry) -> bool:
-    return (
-        entry.code.upper() in SYMBOL_ROUTE_CODES
-        or entry.category.lower() in SYMBOL_ROUTE_CATEGORIES
-    )
-
-
-def _standalone_function_defaults(code: str) -> dict[str, Any]:
-    upper = code.upper()
-    if upper == "OVME":
-        return {
-            "spot": 100,
-            "strike": 105,
-            "years_to_expiry": 0.25,
-            "vol": 0.28,
-            "rate": 0.045,
-            "type": "CALL",
-        }
-    if upper == "OSA":
-        return {
-            "spot": 100,
-            "strike": 100,
-            "short_strike": 110,
-            "years_to_expiry": 0.25,
-            "vol": 0.25,
-            "rate": 0.045,
-            "strategy": "CALL_SPREAD",
-            "legs": [
-                {"qty": 1, "strike": 100, "type": "CALL", "expiry": 0.25, "vol": 0.25},
-                {"qty": -1, "strike": 110, "type": "CALL", "expiry": 0.25, "vol": 0.25},
-            ],
-        }
-    return {}
-
-
-def _default_route_symbol(entry: FunctionIndexEntry) -> str:
-    code = entry.code.upper()
-    category = entry.category.lower()
-    classes = [str(item).upper() for item in (entry.asset_classes or [])]
-    if code == "FXGO" or "FX" in classes or category == "fx":
-        return "EURUSD"
-    if code == "TSOX" or "BOND" in classes or category == "bond":
-        return "US10Y"
-    if "COMMODITY" in classes or category == "commodity":
-        return "GC=F"
-    if "CRYPTO" in classes:
-        return "BTCUSDT"
-    if "EQUITY" in classes or code in {"EVTS", "SOSC", "TRAN", "TRA", "EMSX", "BBGT"}:
-        return "AAPL"
-    if "ETF" in classes:
-        return "SPY"
-    return "BTCUSDT"
-
-
-def _function_usage(
-    code: str,
-    name: str,
-    category: str,
-    description: str,
-    asset_classes: list[str],
-) -> dict[str, Any]:
-    upper = code.upper()
-    classes = [item.upper() for item in asset_classes]
-    symbol_required = upper in SYMBOL_ROUTE_CODES or category.lower() in SYMBOL_ROUTE_CATEGORIES
-    if upper in STANDALONE_DERIVATIVES:
-        symbol_required = False
-    scope = "symbol" if symbol_required else ("portfolio" if category.lower() == "portfolio" else "global")
-    if upper == "OVME":
-        return {
-            "purpose": "Black-Scholes option value and Greeks for one option contract.",
-            "scope": "model",
-            "inputs": ["spot", "strike", "years_to_expiry", "vol", "rate", "type"],
-            "steps": [
-                "Use the visible option controls to set spot, strike, expiry in years, volatility, rate, and CALL/PUT type.",
-                "Run to read price, delta, gamma, theta, vega, rho, d1, d2, and a spot sensitivity curve.",
-                "Open Advanced only for optional model overrides such as Heston parameters.",
-            ],
-            "example": {"spot": 100, "strike": 105, "years_to_expiry": 0.25, "vol": 0.28, "rate": 0.045, "type": "CALL"},
-        }
-    if upper == "OSA":
-        return {
-            "purpose": "Multi-leg option strategy P&L curve from editable legs.",
-            "scope": "model",
-            "inputs": ["strategy", "spot", "strike", "short_strike", "years_to_expiry", "vol", "rate"],
-            "steps": [
-                "Use the visible strategy controls for call spread, long call, or straddle assumptions.",
-                "Run to inspect the expiration payoff/P&L curve, net debit, and leg premium table.",
-                "Open Advanced only for custom legs arrays.",
-            ],
-            "example": _standalone_function_defaults("OSA"),
-        }
-    if upper == "MLSIG":
-        return {
-            "purpose": "Train a directional classifier for one symbol and explain the feature drivers.",
-            "scope": "symbol",
-            "inputs": ["symbol", "range", "horizon"],
-            "steps": [
-                "Pick a symbol, Range, and Horizon, then Run.",
-                "Read accuracy, Sharpe, model backend, signal, and feature-importance rows.",
-                "Use Methodology and field dictionary to understand the target label and test split.",
-            ],
-            "example": {"symbol": "AAPL", "days": 365, "horizon": 1, "live": True},
-        }
-    if upper == "BLAK":
-        return {
-            "purpose": "Black-Litterman market-prior and posterior expected-return weights for a selected universe.",
-            "scope": "portfolio model",
-            "inputs": ["symbols", "range", "tau", "delta", "views"],
-            "steps": [
-                "Edit the visible Universe field and Range, then Run.",
-                "Rows compare market weight, prior return, posterior return, and optimal weight by symbol.",
-                "Use Advanced only for custom views, tau, delta, or market-cap overrides.",
-            ],
-            "example": {"symbols": ["AAPL", "MSFT", "NVDA"], "days": 365, "live": True},
-        }
-    if upper == "BMTX":
-        return {
-            "purpose": "Backtest matrix across a selected symbol universe and strategy set.",
-            "scope": "portfolio model",
-            "inputs": ["symbols", "range", "strategy"],
-            "steps": [
-                "Edit Universe, Range, and Strategy; All runs the strategy-by-symbol matrix.",
-                "Inspect the heatmap and top rows ranked by Sharpe/total return.",
-                "Use Methodology/field dictionary for metric definitions and fee assumptions.",
-            ],
-            "example": {"symbols": ["SPY", "QQQ", "AAPL"], "strategies": ["sma_crossover", "rsi_meanrev"], "days": 365, "live": True},
-        }
-    if upper == "BTFW":
-        return {
-            "purpose": "Single-symbol walk-forward strategy backtest with an equity curve.",
-            "scope": "symbol",
-            "inputs": ["symbol", "range", "strategy"],
-            "steps": [
-                "Pick symbol, Range, and Strategy, then Run.",
-                "Use the dated equity curve plus Sharpe, return, drawdown, and trade rows.",
-                "Use Advanced only for fees, cash, warmup, or shorting overrides.",
-            ],
-            "example": {"symbol": "AAPL", "strategy": "sma_crossover", "days": 365, "live": True},
-        }
-    if upper == "BTUNE":
-        return {
-            "purpose": "Hyperparameter sweep for one backtest strategy and symbol.",
-            "scope": "symbol",
-            "inputs": ["symbol", "range", "strategy"],
-            "steps": [
-                "Pick symbol, Range, and Strategy, then Run.",
-                "Read best-by-Sharpe/return/Calmar cards and the parameter heatmap/table.",
-                "Use Advanced only for a custom grid.",
-            ],
-            "example": {"symbol": "AAPL", "strategy": "sma_crossover", "days": 365, "live": True},
-        }
-    if upper == "GEX":
-        return {
-            "purpose": "Per-strike dealer gamma exposure, gamma flip, call wall, and put wall.",
-            "scope": "symbol",
-            "inputs": ["symbol", "live_options", "max_expiries"],
-            "steps": [
-                "Select an optionable equity symbol from the Symbol control.",
-                "Run to fetch option open interest and chart dealer GEX by strike.",
-                "Read Methodology/field rows for the Black-Scholes gamma equation and exposure convention.",
-            ],
-        }
-    if upper == "HVT":
-        return {
-            "purpose": "Historical realized-volatility windows and rolling volatility history.",
-            "scope": "symbol",
-            "inputs": ["symbol", "range"],
-            "steps": [
-                "Select a symbol and Range, then Run.",
-                "The chart uses rolling annualized realized volatility over dated close-to-close returns.",
-                "Rows show the formula, sample count, and 30/60/90/selected-window volatility.",
-            ],
-        }
-    if upper == "IVOL":
-        return {
-            "purpose": "Live implied-volatility surface by expiry, strike, and option type.",
-            "scope": "symbol",
-            "inputs": ["symbol", "max_expiries"],
-            "steps": [
-                "Select an optionable equity or ETF and Run.",
-                "The heatmap uses impliedVolatility rows from live option chains.",
-                "Rows include expiry, strike, CALL/PUT, moneyness, volume, and open interest.",
-            ],
-        }
-    if upper == "OMON":
-        return {
-            "purpose": "Option monitor for a selected expiry with bid/ask/mid, IV, volume, and open interest.",
-            "scope": "symbol",
-            "inputs": ["symbol", "expiry"],
-            "steps": [
-                "Select an optionable equity or ETF and Run.",
-                "The first listed expiry is selected by default; Advanced can override expiry.",
-                "Rows flatten CALL/PUT contracts into a chain table and IV heatmap.",
-            ],
-        }
-    steps: list[str] = []
-    inputs: list[str] = []
-    if symbol_required:
-        inputs.append("symbol")
-        steps.append("Select a compatible market symbol from the function header.")
-    elif category.lower() == "portfolio":
-        inputs.append("local portfolio state")
-        steps.append("Uses the local Application Support portfolio unless Advanced overrides are provided.")
-    else:
-        inputs.append("query/params when needed")
-        steps.append("Run with the default live profile, then open Advanced only for explicit overrides.")
-    if category.lower() == "news":
-        steps.append("Use limit and query controls to tighten relevance; critical alerts are flagged by importance_score.")
-    elif category.lower() in {"chart", "equity", "fx", "commodity", "bond"}:
-        steps.append("Use Live for normal provider calls; Deep enables slower provider paths when available.")
-    elif category.lower() == "portfolio":
-        steps.append("Check sources and warnings; empty portfolios need positions before risk metrics are meaningful.")
-    steps.append("If a provider is unavailable, the status panel shows the exact next action instead of hiding the error.")
-    return {
-        "purpose": description or f"{name} function.",
-        "scope": scope,
-        "asset_classes": classes,
-        "inputs": inputs,
-        "steps": steps,
-        "example": _usage_example_params(upper, category, classes),
-    }
-
-
-def _usage_example_params(code: str, category: str, asset_classes: list[str]) -> dict[str, Any]:
-    asset = "CRYPTO" if "CRYPTO" in asset_classes else "EQUITY" if "EQUITY" in asset_classes else (asset_classes[0] if asset_classes else "")
-    symbol = {
-        "CRYPTO": "BTCUSDT",
-        "EQUITY": "AAPL",
-        "ETF": "SPY",
-        "FX": "EURUSD",
-        "COMMODITY": "GC=F",
-        "INDEX": "^GSPC",
-        "BOND": "US10Y",
-    }.get(asset, "AAPL")
-    if code in SYMBOL_ROUTE_CODES or category.lower() in SYMBOL_ROUTE_CATEGORIES:
-        return {"symbol": symbol, "asset_class": asset or default_asset_class_name(symbol), "live": True}
-    if category.lower() == "news":
-        return {"query": "bitcoin" if asset == "CRYPTO" else "market news", "limit": 10, "live": True}
-    if category.lower() == "portfolio":
-        return {"live": True, "days": 45, "max_positions": 10}
-    return {"live": True}
-
-
-def _canonical_route_symbol(symbol: Any, requested_asset_class: Any = None) -> str:
-    raw = str(symbol or "").strip()
-    if not raw:
-        return ""
-    requested = str(requested_asset_class or "").strip().upper()
-    if requested in {"", "CRYPTO"}:
-        resolved = resolve_crypto_symbol_alias(raw, allow_network=True)
-        if resolved:
-            return resolved.strip().upper()
-    return raw.upper()
-
-
-def _route_function_params(code: str, params: dict[str, Any]) -> dict[str, Any]:
-    merged = dict(params)
-    entry = _function_entry_for_code(code)
-    # A visible topic/search field must not be silently converted into a
-    # ticker. NI/TLDR/TOP/BRIEF/READ use topic/query text as text, while
-    # symbol-first panes send an explicit ``symbol`` key.
-    topic_is_symbol = code.upper() not in {"NI", "TLDR", "TOP", "BRIEF", "READ", "AV"}
-    explicit_symbol = bool(merged.get("symbol") or (topic_is_symbol and merged.get("topic")))
-    raw_symbol = str(
-        merged.get("symbol")
-        or (merged.get("topic") if topic_is_symbol else None)
-        or _default_route_symbol(entry)
-    ).strip()
-    symbol = _canonical_route_symbol(raw_symbol, merged.get("asset_class"))
-    asset_class = default_asset_class_name(symbol, merged.get("asset_class"))
-    defaults = _agent_function_params(entry, {"symbol": symbol, "asset_class": asset_class})
-    defaults.update(_standalone_function_defaults(code))
-    defaults.update(merged)
-    if code.upper() in {"GP", "HP", "TECH", "CHGS"} and merged.get("range") and "days" not in merged:
-        ranged_days = _days_from_range(merged.get("range"))
-        if ranged_days is not None:
-            defaults["days"] = ranged_days
-    if code.upper() == "FRH" and "symbols" not in merged:
-        defaults.pop("symbols", None)
-    if code.upper() == "ICX" and defaults.get("query") and not merged.get("index"):
-        defaults["index"] = str(defaults["query"]).strip().upper()
-    if code.upper() == "TRQA" and defaults.get("query") and not merged.get("questions"):
-        defaults["questions"] = [str(defaults["query"]).strip()]
-    if code.upper() == "SAT" and defaults.get("days") and not (merged.get("date_from") or merged.get("date_to")):
-        try:
-            horizon = max(1, min(int(defaults.get("days") or 7), 365))
-        except Exception:
-            horizon = 7
-        today = datetime.utcnow().date()
-        defaults["date_from"] = (today - timedelta(days=horizon)).isoformat()
-        defaults["date_to"] = today.isoformat()
-    if explicit_symbol or _route_uses_symbol(entry):
-        defaults["symbol"] = _canonical_route_symbol(
-            defaults.get("symbol") or symbol,
-            defaults.get("asset_class") or asset_class,
-        )
-        defaults["asset_class"] = default_asset_class_name(
-            defaults["symbol"],
-            defaults.get("asset_class") or asset_class,
-        )
-    else:
-        defaults.pop("symbol", None)
-        if topic_is_symbol:
-            defaults.pop("topic", None)
-        defaults.pop("asset_class", None)
-    if code.upper() == "MOST" and merged.get("asset_class"):
-        defaults["asset_class"] = str(merged["asset_class"]).strip()
-    defaults["__explicit_symbol"] = explicit_symbol
-    return defaults
-
-
-def _function_code_supports_asset(code: str, asset_class: str) -> bool:
-    registry_mod = _safe_import("showme.engine.core.base_function")
-    if registry_mod is None:
-        return True
-    cls = registry_mod.FunctionRegistry.get(code.upper())
-    if cls is None:
-        return True
-    supported = tuple(getattr(cls, "asset_classes", ()) or ())
-    if not supported:
-        return True
-    requested = str(asset_class or "").upper()
-    return any(str(getattr(item, "value", item)).upper() == requested for item in supported)
-
-
-def _agent_symbol_bias(symbol: str) -> float:
-    # Stable, tiny tiebreaker so equal asset-class probes do not collapse into identical scores.
-    total = sum(ord(ch) for ch in symbol.upper())
-    return ((total % 17) - 8) / 100.0
-
-
-def _agent_local_profile(symbol: str, asset_class: str) -> dict[str, float | str]:
-    backend, accuracy, sharpe = AGENT_LOCAL_SIGNAL_PROFILES.get(
-        asset_class,
-        ("cross_asset_proxy", 0.52, 0.2),
-    )
-    bias = _agent_symbol_bias(symbol)
-    base_return = {
-        "CRYPTO": 0.082,
-        "EQUITY": 0.046,
-        "ETF": 0.032,
-        "FX": 0.018,
-        "COMMODITY": 0.036,
-        "INDEX": 0.028,
-        "BOND": 0.014,
-    }.get(asset_class, 0.025)
-    base_risk = {
-        "CRYPTO": 0.18,
-        "EQUITY": 0.115,
-        "ETF": 0.085,
-        "FX": 0.055,
-        "COMMODITY": 0.13,
-        "INDEX": 0.095,
-        "BOND": 0.045,
-    }.get(asset_class, 0.1)
-    return {
-        "backend": backend,
-        "accuracy": _clamp(accuracy + bias * 0.12, 0.49, 0.64),
-        "sharpe": _clamp(sharpe + bias * 0.9, -0.2, 1.2),
-        "expected_return": _clamp(base_return + bias * 0.04, -0.05, 0.18),
-        "drawdown_pct": _clamp(base_risk * 42 - bias * 8, 1.0, 35.0),
-        "volatility_pct": _clamp(base_risk * 100 + bias * 12, 2.0, 35.0),
-        "momentum_score": _clamp(58 + bias * 90, 35, 82),
-        "risk_score": _clamp(base_risk * 100 - bias * 12, 2.0, 35.0),
-    }
-
-
-def _agent_probe_data_for_code(
-    code: str,
-    symbol: str,
-    asset_class: str,
-    profile: dict[str, float | str],
-) -> dict[str, Any]:
-    common = {
-        "symbol": symbol,
-        "asset_class": asset_class,
-        "probe_mode": "agent_fast_probe",
-        "methodology": "Deterministic local probe used only to rank candidates quickly before optional live function execution.",
-    }
-    accuracy = float(profile["accuracy"])
-    sharpe = float(profile["sharpe"])
-    expected_return = float(profile["expected_return"])
-    drawdown_pct = float(profile["drawdown_pct"])
-    volatility_pct = float(profile["volatility_pct"])
-    momentum_score = float(profile["momentum_score"])
-    risk_score = float(profile["risk_score"])
-    if code == "MLSIG":
-        return {
-            **common,
-            "backend": profile["backend"],
-            "test_accuracy": accuracy,
-            "test_samples": 84,
-            "feature_importance": {
-                "ret_5": 0.24,
-                "ret_20": 0.21,
-                "volatility_20": 0.19,
-                "asset_class_bias": 0.11,
-            },
-            "strategy_sharpe": sharpe,
-            "momentum_score": momentum_score,
-            "signal": "long_bias" if accuracy >= 0.53 else "neutral",
-            "coverage": {"symbol": symbol, "asset_class": asset_class, "mode": "agent_fast_probe"},
-        }
-    if code in {"BTFW", "BMTX"}:
-        return {
-            **common,
-            "strategy": "buy_and_hold_probe" if code == "BTFW" else "strategy_matrix_probe",
-            "total_return": expected_return,
-            "strategy_sharpe": sharpe,
-            "max_drawdown_pct": drawdown_pct,
-            "win_rate": _clamp(0.51 + sharpe / 12, 0.42, 0.64),
-            "signal": "positive_walk_forward" if sharpe > 0.25 else "neutral_walk_forward",
-        }
-    if code == "BTUNE":
-        return {
-            **common,
-            "best_sharpe": sharpe + 0.08,
-            "best_return": expected_return * 1.15,
-            "calmar": expected_return / max(drawdown_pct / 100, 0.01),
-            "max_drawdown_pct": drawdown_pct,
-            "signal": "positive_tuning" if sharpe > 0.25 else "neutral_tuning",
-        }
-    if code == "PORT_OPT":
-        return {
-            **common,
-            "max_sharpe": sharpe + 0.12,
-            "expected_return": expected_return,
-            "volatility_pct": volatility_pct,
-            "upside_score": momentum_score,
-            "signal": "positive_optimizer_candidate" if sharpe > 0.2 else "neutral_optimizer_candidate",
-        }
-    if code == "RPAR":
-        return {
-            **common,
-            "diversification_score": _clamp(66 - risk_score * 0.7, 35, 80),
-            "portfolio_volatility_pct": volatility_pct,
-            "risk_balance_score": _clamp(62 - abs(risk_score - 12), 30, 76),
-            "signal": "positive_risk_balance" if risk_score < 16 else "risk_watch",
-        }
-    if code == "PVAR":
-        return {
-            **common,
-            "marginal_var_pct": risk_score / 2,
-            "component_risk_pct": risk_score,
-            "downside_risk_pct": drawdown_pct,
-            "signal": "risk_watch" if risk_score > 18 else "positive_risk_profile",
-        }
-    if code == "MOSS":
-        return {
-            **common,
-            "momentum_score": momentum_score,
-            "realized_volatility_pct": volatility_pct,
-            "liquidity_score": _clamp(72 + _agent_symbol_bias(symbol) * 60, 42, 88),
-            "signal": "positive_activity" if momentum_score >= 55 else "neutral_activity",
-        }
-    if code in {"CN", "NI", "NALRT"}:
-        return {
-            **common,
-            "relevance_score": _clamp(68 + _agent_symbol_bias(symbol) * 70, 35, 88),
-            "importance_score": _clamp(58 + _agent_symbol_bias(symbol) * 55, 30, 82),
-            "sentiment": "bullish" if sharpe > 0.25 else "neutral",
-            "signal": "positive_news_flow" if sharpe > 0.25 else "neutral_news_flow",
-        }
-    return common
-
-
-def _agent_payload_score(code: str, payload: dict[str, Any]) -> dict[str, Any]:
-    data = payload.get("data")
-    warnings = payload.get("warnings") if isinstance(payload.get("warnings"), list) else []
-    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
-    signals: list[dict[str, Any]] = []
-    _collect_agent_signals(data, "", signals, 0)
-    if not signals:
-        score = 0.0
-        confidence = 0.12
-    else:
-        score = _clamp(sum(s["score"] for s in signals) / len(signals), -1.0, 1.0)
-        confidence = _clamp(0.22 + min(len(signals), 10) * 0.07, 0.0, 1.0)
-    if metadata.get("fallback"):
-        confidence *= 0.55
-    if warnings:
-        confidence *= 0.75
-        score -= min(len(warnings), 5) * 0.025
-    top = sorted(signals, key=lambda s: abs(float(s["score"])), reverse=True)[:5]
-    return {
-        "code": code,
-        "score": round(_clamp(score, -1.0, 1.0), 4),
-        "confidence": round(confidence, 4),
-        "signal_count": len(signals),
-        "signals": top,
-        "fallback": bool(metadata.get("fallback")),
-    }
-
-
-def _agent_probe_payload(
-    entry: FunctionIndexEntry,
-    candidate: dict[str, str],
-    params: dict[str, Any],
-    native_asset_match: bool,
-) -> dict[str, Any]:
-    if entry.code.upper() not in AGENT_LOCAL_SIGNAL_CODES or not native_asset_match:
-        reason = "agent nonblocking probe"
-        payload = fallback_function_payload(entry.code, params, reason, "agent_probe")
-        payload["metadata"] = {
-            **payload.get("metadata", {}),
-            "agent_probe": True,
-            "native_asset_match": native_asset_match,
-        }
-        return payload
-
-    asset_class = candidate["asset_class"].upper()
-    symbol = candidate["symbol"].upper()
-    profile = _agent_local_profile(symbol, asset_class)
-    payload = {
-        "code": entry.code.upper(),
-        "instrument": {"symbol": symbol, "asset_class": asset_class},
-        "data": _agent_probe_data_for_code(entry.code.upper(), symbol, asset_class, profile),
-        "metadata": {
-            "agent_probe": True,
-            "native_asset_match": native_asset_match,
-            "local_signal_model": True,
-        },
-        "fetched_at": datetime.now(timezone.utc).isoformat(),
-        "sources": ["agent_fast_probe"],
-        "warnings": [],
-        "elapsed_ms": None,
-    }
-    return normalize_function_contract(entry.code, params, payload)
-
-
-def _collect_agent_signals(value: Any, path: str, out: list[dict[str, Any]], depth: int) -> None:
-    if depth > 6 or len(out) >= 80:
-        return
-    if isinstance(value, dict):
-        for key, child in value.items():
-            next_path = f"{path}.{key}" if path else str(key)
-            _collect_agent_signals(child, next_path, out, depth + 1)
-        return
-    if isinstance(value, list):
-        for idx, child in enumerate(value[:12]):
-            _collect_agent_signals(child, f"{path}[{idx}]", out, depth + 1)
-        return
-    if isinstance(value, str):
-        signal = _agent_text_signal(path, value)
-    elif isinstance(value, int | float) and not isinstance(value, bool):
-        signal = _agent_numeric_signal(path, float(value))
-    else:
-        signal = None
-    if signal is not None:
-        out.append(signal)
-
-
-def _agent_text_signal(path: str, value: str) -> dict[str, Any] | None:
-    text = value.strip().lower()
-    if not text or "not_applicable" in text or "provider_unavailable" in text:
-        return None
-    positive = ("buy", "long", "bullish", "outperform", "positive", "strong")
-    negative = ("sell", "short", "bearish", "underperform", "negative", "weak")
-    score = 0.0
-    if any(term in text for term in positive):
-        score += 0.45
-    if any(term in text for term in negative):
-        score -= 0.45
-    if score == 0.0:
-        return None
-    return {"path": path, "value": value[:80], "score": round(_clamp(score, -1.0, 1.0), 4)}
-
-
-def _agent_numeric_signal(path: str, value: float) -> dict[str, Any] | None:
-    if not math.isfinite(value):
-        return None
-    key = path.lower()
-    leaf = key.rsplit(".", 1)[-1].split("[", 1)[0]
-    compact_key = leaf.replace("_", "").replace("-", "")
-    if any(term in compact_key for term in AGENT_IGNORE_TERMS):
-        return None
-    is_positive = any(term in leaf for term in AGENT_POSITIVE_TERMS)
-    is_negative = any(term in leaf for term in AGENT_NEGATIVE_TERMS)
-    if not is_positive and not is_negative:
-        return None
-    magnitude = _agent_scale_numeric(leaf, value)
-    if is_negative and not is_positive:
-        score = -abs(magnitude)
-    elif is_positive and is_negative:
-        score = magnitude * 0.35
-    else:
-        score = magnitude
-    return {
-        "path": path,
-        "value": round(value, 6),
-        "score": round(_clamp(score, -1.0, 1.0), 4),
-    }
-
-
-def _agent_scale_numeric(key: str, value: float) -> float:
-    if "accuracy" in key:
-        return (value - 0.5) * 4 if 0 <= value <= 1 else (value - 50) / 25
-    if "sharpe" in key:
-        return value / 3
-    if "confidence" in key:
-        return (value * 2 - 1) if 0 <= value <= 1 else (value - 50) / 50
-    if "score" in key:
-        return (value - 50) / 50 if 0 <= value <= 100 else value / 10
-    if "pct" in key or "percent" in key:
-        return value / 20
-    if "yield" in key or "growth" in key or "return" in key or "alpha" in key:
-        return value * 5 if abs(value) <= 1 else value / 20
-    if "fair_value" in key or "upside" in key:
-        return value / 100 if abs(value) > 1 else value
-    return value / 100
-
-
-def _clamp(value: float, low: float, high: float) -> float:
-    return max(low, min(high, value))
-
-
-async def _run_best_symbol_agent(request: dict[str, Any]) -> dict[str, Any]:
-    candidates = _parse_agent_candidates(request.get("candidates") or request.get("symbols"))
-    max_candidates = int(request.get("max_candidates") or 8)
-    max_candidates = max(1, min(max_candidates, 12))
-    candidates = candidates[:max_candidates]
-    requested_codes = {
-        str(code).upper()
-        for code in (request.get("function_codes") or [])
-        if str(code).strip()
-    }
-    entries = [
-        entry for entry in _load_function_index()
-        if not requested_codes or entry.code.upper() in requested_codes
-    ]
-    per_function_timeout = float(request.get("per_function_timeout") or 12)
-    per_function_timeout = _clamp(per_function_timeout, 2, 30)
-    execute_functions = bool(request.get("execute_functions") or request.get("live_functions"))
-    started_at = datetime.now(timezone.utc)
-    candidate_reports: list[dict[str, Any]] = []
-
-    for candidate in candidates:
-        function_rows: list[dict[str, Any]] = []
-        weighted_score = 0.0
-        total_weight = 0.0
-        pass_count = 0
-        fail_count = 0
-        fallback_count = 0
-        for entry in entries:
-            params = _agent_function_params(entry, candidate)
-            start = time.perf_counter()
-            status = "pass"
-            reason = ""
-            payload: dict[str, Any]
-            native_asset_match = _function_code_supports_asset(entry.code, candidate["asset_class"])
-            if execute_functions:
-                try:
-                    result = await asyncio.wait_for(
-                        _execute_showme_function(entry.code, params),
-                        timeout=per_function_timeout,
-                    )
-                    if hasattr(result, "to_dict"):
-                        payload = sanitize_function_payload(
-                            entry.code,
-                            params,
-                            json_safe(result.to_dict()),
-                        )
-                    elif isinstance(result, dict):
-                        payload = sanitize_function_payload(entry.code, params, json_safe(result))
-                    else:
-                        payload = sanitize_function_payload(
-                            entry.code,
-                            params,
-                            json_safe({"code": entry.code, "data": result}),
-                        )
-                except Exception as exc:  # noqa: BLE001
-                    status = "pass"
-                    reason = str(exc) or type(exc).__name__
-                    payload = fallback_function_payload(entry.code, params, reason, type(exc).__name__)
-            else:
-                reason = "agent nonblocking probe"
-                payload = _agent_probe_payload(entry, candidate, params, native_asset_match)
-            elapsed_ms = int((time.perf_counter() - start) * 1000)
-            score = _agent_payload_score(entry.code, payload)
-            if score["fallback"]:
-                fallback_count += 1
-            if status == "pass":
-                pass_count += 1
-            else:
-                fail_count += 1
-            if score["signal_count"] > 0:
-                weight = 0.2 + min(int(score["signal_count"]), 8) * 0.1
-                weight *= max(float(score["confidence"]), 0.05)
-                if not native_asset_match:
-                    weight *= 0.18
-                if status != "pass":
-                    weight *= 0.25
-                weighted_score += float(score["score"]) * weight
-                total_weight += weight
-            function_rows.append({
-                "code": entry.code,
-                "category": entry.category,
-                "status": status,
-                "reason": reason,
-                "score": score["score"],
-                "confidence": score["confidence"],
-                "signal_count": score["signal_count"],
-                "fallback": score["fallback"],
-                "native_asset_match": native_asset_match,
-                "elapsed_ms": elapsed_ms,
-                "signals": score["signals"],
-            })
-        final_score = weighted_score / total_weight if total_weight else 0.0
-        evidence = sorted(
-            [
-                row for row in function_rows
-                if row["status"] == "pass" and row["signal_count"] > 0
-            ],
-            key=lambda row: abs(float(row["score"])) * float(row["confidence"]),
-            reverse=True,
-        )[:12]
-        candidate_reports.append({
-            "symbol": candidate["symbol"],
-            "asset_class": candidate["asset_class"],
-            "score": round(_clamp(final_score, -1.0, 1.0), 4),
-            "pass": pass_count,
-            "fail": fail_count,
-            "fallback": fallback_count,
-            "signal_functions": sum(1 for row in function_rows if row["signal_count"] > 0),
-            "function_count": len(function_rows),
-            "top_evidence": evidence,
-            "functions": function_rows if request.get("include_functions") else [],
-        })
-
-    ranked = sorted(candidate_reports, key=lambda row: row["score"], reverse=True)
-    completed_at = datetime.now(timezone.utc)
-    return {
-        "best": ranked[0] if ranked else None,
-        "ranked": ranked,
-        "function_count": len(entries),
-        "catalog_count": len(entries) + len(AGENT_EXCLUDED_FUNCTIONS),
-        "excluded_functions": AGENT_EXCLUDED_FUNCTIONS,
-        "candidate_count": len(candidates),
-        "started_at": started_at.isoformat(),
-        "completed_at": completed_at.isoformat(),
-        "elapsed_ms": int((completed_at - started_at).total_seconds() * 1000),
-        "method": "all_function_symbol_agent_v3_fast_probe" if not execute_functions else "all_function_symbol_agent_v1_live",
-        "methodology": "Ranks candidate symbols by aggregating scored evidence rows. Nonblocking mode uses transparent agent_fast_probe payloads for selected signal functions and fallback probes for the rest.",
-    }
-
-
-def _run_best_symbol_agent_blocking(request: dict[str, Any]) -> dict[str, Any]:
-    return asyncio.run(_run_best_symbol_agent(request))
-
-
-def build_app(engine_root: Path | None) -> FastAPI:
-    app = FastAPI(
-        title="showMe sidecar",
-        version="0.0.1",
-        description="Localhost backend driving the showMe Tauri shell.",
-    )
+    The auth-token contract is FROZEN:
+        * ``SHOWME_AUTH_TOKEN`` unset -> middleware is a no-op.
+        * Token set -> every ``/api/*`` request needs a matching
+          ``X-ShowMe-Token`` (or Bearer authorization) except for the two
+          exempt liveness probes.
+    """
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["tauri://localhost", "http://tauri.localhost",
@@ -1786,19 +792,79 @@ def build_app(engine_root: Path | None) -> FastAPI:
         allow_credentials=False,
     )
 
-    boot_state: dict[str, Any] = {
-        "engine_root": str(engine_root) if engine_root else None,
-        "engine_attached": engine_root is not None,
-    }
+    # Per SEC-05 P1: cap inbound POST/PUT bodies so a local caller cannot
+    # tip the worker pool over with a multi-megabyte JSON payload. 256 KB is
+    # comfortably above every legitimate body in this app (largest is the
+    # function-index POST which is small).
+    max_body_size_bytes = int(os.environ.get("SHOWME_MAX_BODY_BYTES", "262144"))
 
-    # Stream hub — built lazily on first WS subscribe so we don't pull
-    # in the optional `websockets` dependency on every boot.
-    _stream_hub: dict[str, Any] = {"hub": None}
+    @app.middleware("http")
+    async def body_size_limit_middleware(request: Request, call_next):
+        if request.method in {"POST", "PUT", "PATCH"}:
+            cl = request.headers.get("content-length")
+            if cl and cl.isdigit() and int(cl) > max_body_size_bytes:
+                return JSONResponse(
+                    status_code=413,
+                    content={
+                        "detail": (
+                            f"request body exceeds limit "
+                            f"({cl} > {max_body_size_bytes} bytes)"
+                        ),
+                    },
+                )
+        return await call_next(request)
 
-    def _get_stream_hub():
-        from showme.streams import PollingSource, StreamHub
+    # Auth middleware (per task spec). When SHOWME_AUTH_TOKEN is unset
+    # (dev/test) the check is skipped entirely. Two exempt paths so the
+    # Tauri shell + tray can probe sidecar liveness without the token.
+    auth_exempt_paths = {"/api/health", "/api/x/health"}
 
-        if _stream_hub["hub"] is None:
+    @app.middleware("http")
+    async def auth_token_middleware(request: Request, call_next):
+        expected = os.environ.get("SHOWME_AUTH_TOKEN")
+        if (
+            expected
+            # CORS preflight requests do NOT carry auth headers — browsers
+            # send them automatically before the real POST. Letting the
+            # middleware 401 the preflight would kill every cross-origin
+            # POST from the Tauri renderer (verified live on 2026-05-11).
+            and request.method != "OPTIONS"
+            and request.url.path.startswith("/api/")
+            and request.url.path not in auth_exempt_paths
+        ):
+            provided = (
+                request.headers.get("X-ShowMe-Token")
+                or request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+            )
+            if provided != expected:
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "missing or invalid X-ShowMe-Token"},
+                )
+        return await call_next(request)
+
+
+def _make_stream_hub_provider() -> Callable[[], Any]:
+    """Return a lazy stream-hub provider.
+
+    Per PERF-04 P1: prefer BinanceWsSource for realtime crypto ticks, but
+    fall back to BinanceRestSource (5 s polling) on SSL / network failure.
+    Some operator environments (corporate MITM proxies, custom root CAs,
+    aggressive antivirus) can break Binance's WSS handshake even when
+    plain HTTPS works — the live build saw exactly this on 2026-05-11.
+    The hybrid source tries WSS first; if no tick arrives within 10 s OR
+    the WSS leg raises, it switches to the REST poller for that channel.
+    """
+    state: dict[str, Any] = {"hub": None}
+
+    def get_stream_hub() -> Any:
+        from showme.streams import (
+            BinanceHybridSource,
+            PollingSource,
+            StreamHub,
+        )
+
+        if state["hub"] is None:
             async def _fetch_quote(symbol: str) -> dict[str, Any]:
                 from showme.quotes import fetch_quote_snapshot
 
@@ -1807,562 +873,129 @@ def build_app(engine_root: Path | None) -> FastAPI:
                 except Exception:  # noqa: BLE001
                     return {}
 
-            _stream_hub["hub"] = StreamHub(
-                crypto_factory=lambda s: PollingSource(s, fetch=_fetch_quote, interval=5.0),
+            state["hub"] = StreamHub(
+                crypto_factory=lambda s: BinanceHybridSource(s),
                 polling_factory=lambda s: PollingSource(s, fetch=_fetch_quote, interval=5.0),
             )
-        return _stream_hub["hub"]
+        return state["hub"]
 
-    @app.on_event("startup")
-    async def warm_showme_engine() -> None:
-        if not boot_state.get("engine_attached"):
-            return
+    # Per R4B: attach the closure-captured state dict so the FastAPI lifespan
+    # shutdown branch can introspect "is a hub instance live?" without forcing
+    # construction.
+    get_stream_hub._state = state  # type: ignore[attr-defined]
+    return get_stream_hub
 
-        async def _warm() -> None:
-            try:
-                await asyncio.wait_for(_warm_showme_function_factory(), timeout=90)
-                boot_state["function_factory_warmed"] = True
-                boot_state.pop("function_factory_warm_error", None)
-            except Exception as exc:  # noqa: BLE001
-                if not boot_state.get("function_factory_warmed"):
-                    boot_state["function_factory_warmed"] = False
-                    boot_state["function_factory_warm_error"] = str(exc) or type(exc).__name__
-                LOG.warning("function factory warmup failed: %r", exc)
 
-        asyncio.create_task(_warm())
+async def _shutdown_cleanup(stream_hub_provider: Callable[[], Any]) -> None:
+    """Graceful-shutdown helper called from the lifespan finally block.
 
-    @app.get("/api/health")
-    async def health() -> dict[str, Any]:
-        return {"ok": True, "engine": boot_state}
+    Each step is wrapped in try/except + ``LOG.exception`` so a failure in
+    one cleanup does not block the others. None of the helpers are mandatory
+    — we look them up by name and skip if absent.
+    """
+    # 1) Close an already-instantiated StreamHub, if one was ever built.
+    try:
+        hub_state = getattr(stream_hub_provider, "_state", None)
+        hub_instance = hub_state.get("hub") if isinstance(hub_state, dict) else None
+        if hub_instance is not None:
+            close = getattr(hub_instance, "close", None) or getattr(hub_instance, "aclose", None)
+            if close is not None:
+                result = close()
+                if asyncio.iscoroutine(result):
+                    await result
+    except Exception:  # noqa: BLE001
+        LOG.exception("stream hub shutdown failed")
+    # 2) Flush order-history persistence, if the helper exists.
+    try:
+        order_history_mod = _safe_import("showme.engine.services.order_history")
+        if order_history_mod is not None:
+            flush = getattr(order_history_mod, "flush", None)
+            if flush is not None:
+                result = flush()
+                if asyncio.iscoroutine(result):
+                    await result
+    except Exception:  # noqa: BLE001
+        LOG.exception("order_history flush failed")
+    # 3) Close any open broker connections via a registry hook, if exposed.
+    try:
+        broker_mod = _safe_import("showme.brokers")
+        if broker_mod is not None:
+            close_all = getattr(broker_mod, "close_all_brokers", None)
+            if close_all is not None:
+                result = close_all()
+                if asyncio.iscoroutine(result):
+                    await result
+    except Exception:  # noqa: BLE001
+        LOG.exception("broker connection shutdown failed")
 
-    @app.get("/api/sidecar/info")
-    async def sidecar_info() -> dict[str, Any]:
-        return {
-            "version": "0.0.1",
-            "python": sys.version,
-            "platform": sys.platform,
-            "engine": boot_state,
-        }
 
-    @app.get("/api/sidecar/ticker")
-    async def sidecar_ticker() -> dict[str, Any]:
-        """Compact live summary consumed by the Rust tray.
+def build_app(engine_root: Path | None) -> FastAPI:
+    """Construct and wire the FastAPI app served by the showMe sidecar.
 
-        Every nested fetch is best-effort: failures append to warnings,
-        the rest of the payload still ships.
-        """
-        from datetime import datetime as _dt
-        out: dict[str, Any] = {
-            "ts": _dt.utcnow().isoformat() + "Z",
-            "warnings": [],
-            "bot": {"running": False, "cycle": None, "mode": None},
-            "portfolio": {"n_positions": 0, "daily_pnl": None, "market_value": None},
-            "alerts": {"active": 0, "fired_today": 0},
-        }
+    ``engine_root`` is the location of the bundled function engine; passing
+    ``None`` boots a stripped-down app suitable for tests (engine guards
+    fail fast with HTTP 503 instead of crashing on missing imports).
+
+    Reads:
+        * ``SHOWME_AUTH_TOKEN``  — when set, every ``/api/*`` request
+          (except ``/api/health`` and ``/api/x/health``) must include the
+          matching ``X-ShowMe-Token`` header.
+        * ``SHOWME_MAX_BODY_BYTES`` — body-size middleware ceiling
+          (default 256 KB, per SEC-05).
+
+    Per ARCH-07 / PY-LINT-03 (R3A): route handlers live in
+    ``showme.server_routes`` (one file per family). This factory is now
+    intentionally thin: middleware setup, shared singletons, then a
+    single ``register_routes`` call wires the family routers onto the app.
+    """
+    from showme.server_routes import AppDeps, register_routes
+
+    # Per R4B: deps (boot_state, stream_hub provider) must be constructed
+    # BEFORE FastAPI(lifespan=...) so the lifespan closure captures the
+    # exact same singletons used by routes.
+    boot_state: dict[str, Any] = {
+        "engine_root": str(engine_root) if engine_root else None,
+        "engine_attached": engine_root is not None,
+    }
+    get_stream_hub = _make_stream_hub_provider()
+    deps = AppDeps(boot_state=boot_state, get_stream_hub=get_stream_hub)
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        # Startup: prime function-factory in the background so the boot
+        # path doesn't block on engine warmup.
+        if boot_state.get("engine_attached"):
+            async def _warm() -> None:
+                try:
+                    await asyncio.wait_for(_warm_showme_function_factory(), timeout=90)
+                    boot_state["function_factory_warmed"] = True
+                    boot_state.pop("function_factory_warm_error", None)
+                except Exception as exc:  # noqa: BLE001
+                    if not boot_state.get("function_factory_warmed"):
+                        boot_state["function_factory_warmed"] = False
+                        boot_state["function_factory_warm_error"] = str(exc) or type(exc).__name__
+                    LOG.warning("function factory warmup failed: %r", exc)
+
+            asyncio.create_task(_warm())
         try:
-            bot_mod = _safe_import("showme.engine.services.bot_service")
-            if bot_mod and hasattr(bot_mod, "get_state"):
-                state = bot_mod.get_state()
-                out["bot"] = {
-                    "running": bool(state.get("running", False)),
-                    "cycle": state.get("cycle"),
-                    "mode": state.get("mode") or "paper",
-                }
-        except Exception as exc:  # noqa: BLE001
-            out["warnings"].append(f"bot_service: {exc}")
-        try:
-            ps_mod = _safe_import("showme.engine.portfolio.state")
-            if ps_mod and hasattr(ps_mod, "PortfolioState"):
-                ps = ps_mod.PortfolioState()
-                positions = getattr(ps, "positions", []) or []
-                out["portfolio"]["n_positions"] = len(positions)
-                mv = sum(
-                    float(getattr(p, "quantity", 0))
-                    * float(getattr(p, "avg_cost", 0))
-                    for p in positions
-                )
-                out["portfolio"]["market_value"] = mv
-        except Exception as exc:  # noqa: BLE001
-            out["warnings"].append(f"portfolio: {exc}")
-        try:
-            ae = _safe_import("showme.engine.services.alert_engine")
-            if ae and hasattr(ae, "list_alerts"):
-                items = ae.list_alerts() or []
-                out["alerts"]["active"] = sum(1 for a in items if a.get("active"))
-                out["alerts"]["fired_today"] = sum(
-                    1 for a in items if a.get("fired_today")
-                )
-        except Exception as exc:  # noqa: BLE001
-            out["warnings"].append(f"alert_engine: {exc}")
-        return out
+            yield
+        finally:
+            # Shutdown: close any live hub, flush helpers, close broker
+            # connections. Each wrapped so a single failure can't poison
+            # the rest of the cleanup chain.
+            await _shutdown_cleanup(get_stream_hub)
 
-    @app.get("/api/quote/{symbol}")
-    async def quote_snapshot(symbol: str) -> dict[str, Any]:
-        """Fast last-price endpoint used by WATCH and quote streams."""
-        from showme.quotes import QuoteFetchError, fetch_quote_snapshot
+    app = FastAPI(
+        title="showMe sidecar",
+        version="0.0.1",
+        description="Localhost backend driving the showMe Tauri shell.",
+        lifespan=lifespan,
+    )
+    _install_middlewares(app)
 
-        try:
-            data = await asyncio.wait_for(fetch_quote_snapshot(symbol), timeout=5)
-            return {"ok": True, "data": data}
-        except (QuoteFetchError, TimeoutError, asyncio.TimeoutError) as exc:
-            return {"ok": False, "error": str(exc), "data": None}
-
-    @app.post("/api/ask")
-    async def ask_endpoint(payload: dict[str, Any] | None = None) -> dict[str, Any]:
-        from showme.agents import AskRequest, ask
-        if not boot_state.get("engine_attached"):
-            raise HTTPException(status_code=503, detail="ShowMe engine not attached")
-        factory_mod = _safe_import("showme.engine.services.function_factory")
-        if factory_mod is None:
-            raise HTTPException(status_code=503, detail="ShowMe modules unavailable")
-        try:
-            factory = factory_mod.get_factory()
-        except Exception as exc:  # noqa: BLE001
-            LOG.exception("get_factory failed")
-            raise HTTPException(status_code=500, detail=f"factory: {exc}")
-        body = payload or {}
-        req = AskRequest(query=str(body.get("query") or ""))
-        result = await ask(req, getattr(factory, "deps", None))
-        return result.to_dict()
-
-    @app.get("/api/scanner/universes")
-    async def scanner_universes() -> list[dict[str, Any]]:
-        from showme.scanner import list_universes
-        return list_universes()
-
-    @app.post("/api/scanner/run")
-    async def scanner_run(payload: dict[str, Any] | None = None) -> dict[str, Any]:
-        from showme.scanner import run_scan, ScanRequest
-        if not boot_state.get("engine_attached"):
-            raise HTTPException(status_code=503, detail="ShowMe engine not attached")
-        factory_mod = _safe_import("showme.engine.services.function_factory")
-        if factory_mod is None:
-            raise HTTPException(status_code=503, detail="ShowMe modules unavailable")
-        try:
-            factory = factory_mod.get_factory()
-        except Exception as exc:  # noqa: BLE001
-            LOG.exception("get_factory failed")
-            raise HTTPException(status_code=500, detail=f"factory: {exc}")
-        body = payload or {}
-        phases = body.get("phases")
-        if isinstance(phases, list):
-            phases = ",".join(str(p) for p in phases)
-        req = ScanRequest(
-            intent=str(body.get("intent") or ""),
-            universe=body.get("universe"),
-            asset_class=body.get("asset_class"),
-            timeframes=body.get("timeframes"),
-            top_n=int(body.get("top_n", 20)),
-            phases=str(phases) if phases else "A,B",
-            fine_top_k=int(body["fine_top_k"]) if body.get("fine_top_k") else None,
-        )
-        result = await run_scan(req, getattr(factory, "deps", None))
-        return result.to_dict()
-
-    @app.get("/api/state/positions")
-    async def state_positions() -> dict[str, Any]:
-        from showme.state_api import list_positions
-        out = list_positions()
-        return {"rows": out.rows, "total": out.total, "source": out.source}
-
-    @app.post("/api/portfolio/positions/{symbol}/close")
-    async def portfolio_close_position(symbol: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
-        body = payload or {}
-        try:
-            from showme.engine.portfolio.state import PortfolioState
-        except Exception as exc:  # noqa: BLE001
-            raise HTTPException(status_code=503, detail=f"portfolio state unavailable: {exc}")
-        dry_run = _truthy_value(body.get("dry_run", True))
-        exit_price = body.get("exit_price")
-        try:
-            price = float(exit_price) if exit_price not in (None, "") else None
-        except Exception:
-            raise HTTPException(status_code=400, detail="exit_price must be numeric")
-        portfolio = PortfolioState()
-        if body.get("import_legacy", True):
-            portfolio.import_legacy_crypto()
-        record = portfolio.close_position(
-            symbol,
-            exit_price=price,
-            reason=str(body.get("reason") or "manual_close"),
-            dry_run=dry_run,
-        )
-        if record is None:
-            raise HTTPException(status_code=404, detail=f"position not found: {symbol.upper()}")
-        return {
-            "ok": True,
-            "dry_run": dry_run,
-            "record": record,
-            "remaining_positions": len(portfolio.positions),
-            "closed_symbols": sorted(portfolio.closed_symbols),
-        }
-
-    @app.get("/api/state/trades")
-    async def state_trades(limit: int = 200, symbol: str | None = None) -> dict[str, Any]:
-        from showme.state_api import list_trades
-        out = list_trades(limit=limit, symbol=symbol)
-        return {"rows": out.rows, "total": out.total, "source": out.source}
-
-    @app.get("/api/state/migrations")
-    async def state_migrations(limit: int = 50) -> dict[str, Any]:
-        from showme.state_api import list_migrations
-        out = list_migrations(limit=limit)
-        return {"rows": out.rows, "total": out.total, "source": out.source}
-
-    @app.get("/api/broker/info")
-    async def broker_info(name: str | None = None) -> dict[str, Any]:
-        from showme.brokers import get_broker, list_brokers
-        try:
-            broker = get_broker(name)
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail=str(exc))
-        try:
-            account = await broker.account()
-        except Exception as exc:  # noqa: BLE001
-            account = {"error": str(exc)}
-        return {
-            "broker": broker.name,
-            "registered": list_brokers(),
-            "account": account,
-        }
-
-    @app.get("/api/broker/positions")
-    async def broker_positions(name: str | None = None) -> dict[str, Any]:
-        from showme.brokers import get_broker
-        try:
-            broker = get_broker(name)
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail=str(exc))
-        try:
-            rows = await broker.list_positions()
-            return {"broker": broker.name, "rows": [r.to_dict() for r in rows]}
-        except Exception as exc:  # noqa: BLE001
-            raise HTTPException(status_code=502, detail=str(exc))
-
-    @app.post("/api/broker/positions/{symbol}/close")
-    async def broker_close_position(
-        symbol: str,
-        payload: dict[str, Any] | None = None,
-        name: str | None = None,
-    ) -> dict[str, Any]:
-        from showme.brokers import get_broker
-        body = payload or {}
-        try:
-            broker = get_broker(str(body.get("broker") or name) if (body.get("broker") or name) else None)
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail=str(exc))
-        qty = body.get("quantity")
-        try:
-            quantity = float(qty) if qty not in (None, "") else None
-        except Exception:
-            raise HTTPException(status_code=400, detail="quantity must be numeric")
-        try:
-            order = await broker.close_position(symbol, quantity=quantity)
-        except Exception as exc:  # noqa: BLE001
-            raise HTTPException(status_code=400, detail=str(exc))
-        return {"broker": broker.name, "order": order.to_dict()}
-
-    @app.get("/api/broker/orders")
-    async def broker_orders(
-        name: str | None = None,
-        status: str = "open",
-        limit: int = 100,
-    ) -> dict[str, Any]:
-        from showme.brokers import get_broker
-        try:
-            broker = get_broker(name)
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail=str(exc))
-        try:
-            rows = await broker.list_orders(status=status, limit=limit)
-            return {"broker": broker.name, "rows": [r.to_dict() for r in rows]}
-        except Exception as exc:  # noqa: BLE001
-            raise HTTPException(status_code=502, detail=str(exc))
-
-    @app.post("/api/broker/orders")
-    async def broker_submit_order(payload: dict[str, Any]) -> dict[str, Any]:
-        from showme.brokers import BrokerError, get_broker
-        broker_name = payload.pop("broker", None)
-        try:
-            broker = get_broker(broker_name)
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail=str(exc))
-        try:
-            order = await broker.submit_order(
-                symbol=str(payload.get("symbol", "")).upper(),
-                side=str(payload.get("side", "buy")),
-                quantity=float(payload.get("quantity") or 0),
-                order_type=str(payload.get("order_type", "market")),
-                time_in_force=str(payload.get("time_in_force", "day")),
-                limit_price=payload.get("limit_price"),
-                stop_price=payload.get("stop_price"),
-                notes=str(payload.get("notes", "")),
-            )
-        except BrokerError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
-        except Exception as exc:  # noqa: BLE001
-            raise HTTPException(status_code=502, detail=str(exc))
-        return {"broker": broker.name, "order": order.to_dict()}
-
-    @app.delete("/api/broker/orders/{order_id}")
-    async def broker_cancel_order(order_id: str, name: str | None = None) -> dict[str, Any]:
-        from showme.brokers import get_broker
-        try:
-            broker = get_broker(name)
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail=str(exc))
-        try:
-            ok = await broker.cancel_order(order_id)
-        except Exception as exc:  # noqa: BLE001
-            raise HTTPException(status_code=502, detail=str(exc))
-        return {"broker": broker.name, "ok": bool(ok)}
-
-    @app.get("/api/llm/cost")
-    async def llm_cost() -> dict[str, Any]:
-        """Expose today's LLM spend so the UI can render a live cost pill."""
-        from showme.llm import (
-            CostLedger, build_default_providers, daily_cap_usd,
-        )
-        led = CostLedger.load()
-        cap = daily_cap_usd()
-        spent = led.today_spend()
-        providers = build_default_providers()
-        return {
-            "today_usd": round(spent, 6),
-            "cap_usd": cap,
-            "remaining_usd": max(0.0, cap - spent),
-            "exhausted": spent >= cap,
-            "providers": [{"name": p.name, "model": p.model} for p in providers],
-            "entries": [e.to_dict() for e in led.entries[-50:]],
-        }
-
-    @app.get("/api/instant/status")
-    async def instant_line_status() -> dict[str, Any]:
-        from showme.instant_line import instant_status
-
-        return await instant_status()
-
-    @app.get("/api/instant/events")
-    async def instant_line_events(limit: int = 100) -> dict[str, Any]:
-        from showme.instant_line import instant_events
-
-        return await instant_events(limit=limit)
-
-    @app.get("/api/instant/health")
-    async def instant_line_health() -> dict[str, Any]:
-        from showme.instant_line import instant_health
-
-        return await instant_health()
-
-    @app.get("/api/instant/performance")
-    async def instant_line_performance() -> dict[str, Any]:
-        from showme.instant_line import instant_performance
-
-        return await instant_performance()
-
-    @app.post("/api/instant/backfill")
-    async def instant_line_backfill(limit: int = 15) -> dict[str, Any]:
-        from showme.instant_line import instant_backfill
-
-        return await instant_backfill(limit=limit)
-
-    @app.get("/api/veryfinder/health")
-    async def veryfinder_health() -> dict[str, Any]:
-        from showme import veryfinder_bridge
-
-        return await asyncio.to_thread(veryfinder_bridge.health)
-
-    @app.get("/api/veryfinder/query")
-    async def veryfinder_query(
-        q: str | None = None,
-        symbol: str | None = None,
-        sample: int = 25,
-        source: str = "auto",
-        engine: str = "rules",
-        refresh: bool = False,
-    ) -> dict[str, Any]:
-        from showme import veryfinder_bridge
-
-        try:
-            return await asyncio.to_thread(
-                veryfinder_bridge.analyze_symbol,
-                symbol,
-                q=q,
-                sample=sample,
-                source=source,
-                engine=engine,
-                refresh=refresh,
-            )
-        except Exception as exc:  # noqa: BLE001
-            LOG.warning("veryfinder query failed: %s", exc)
-            return {
-                "ok": False,
-                "error": str(exc),
-                "symbol": symbol,
-                "query": q,
-                "meaning": veryfinder_bridge.overlay_meaning(),
-            }
-
-    @app.post("/api/veryfinder/article")
-    async def veryfinder_article(payload: dict[str, Any] | None = None) -> dict[str, Any]:
-        from showme import veryfinder_bridge
-
-        body = payload or {}
-        item = body.get("item") if isinstance(body.get("item"), dict) else body
-        try:
-            return await asyncio.to_thread(
-                veryfinder_bridge.analyze_item,
-                item,
-                symbol=body.get("symbol"),
-                topic=body.get("topic"),
-                sample=int(body.get("sample") or 25),
-                source=str(body.get("source") or "auto"),
-                engine=str(body.get("engine") or "rules"),
-            )
-        except Exception as exc:  # noqa: BLE001
-            LOG.warning("veryfinder article failed: %s", exc)
-            return {
-                "ok": False,
-                "error": str(exc),
-                "meaning": veryfinder_bridge.overlay_meaning(),
-            }
-
-    @app.post("/api/veryfinder/batch")
-    async def veryfinder_batch(payload: VeryfinderBatchRequest) -> dict[str, Any]:
-        from showme import veryfinder_bridge
-
-        try:
-            return await asyncio.to_thread(
-                veryfinder_bridge.analyze_batch,
-                payload.items,
-                symbol=payload.symbol,
-                topic=payload.topic,
-                sample=payload.sample,
-                source=payload.source,
-                engine=payload.engine,
-                limit=payload.limit,
-            )
-        except Exception as exc:  # noqa: BLE001
-            LOG.warning("veryfinder batch failed: %s", exc)
-            return {
-                "ok": False,
-                "error": str(exc),
-                "items": [],
-                "meaning": veryfinder_bridge.overlay_meaning(),
-            }
-
-    @app.get("/api/symbol/resolve")
-    async def resolve_symbol(symbol: str, asset_class: str | None = None) -> dict[str, Any]:
-        canonical = _canonical_route_symbol(symbol, asset_class)
-        inferred = default_asset_class_name(canonical, asset_class)
-        return {
-            "input": symbol,
-            "symbol": canonical,
-            "asset_class": inferred,
-            "changed": canonical != str(symbol or "").strip().upper(),
-        }
-
-    @app.get("/api/function-index", response_model=list[FunctionIndexEntry])
-    async def function_index() -> list[FunctionIndexEntry]:
-        entries = list(await asyncio.to_thread(_load_function_index))
-        if not entries:
-            return []
-        return entries
-
-    @app.post("/api/agent/best-symbol")
-    async def best_symbol_agent(payload: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Run the full function set over candidate symbols and rank the winner."""
-        if not boot_state.get("engine_attached"):
-            raise HTTPException(status_code=503, detail="ShowMe engine not attached")
-        return await asyncio.to_thread(_run_best_symbol_agent_blocking, payload or {})
-
-    @app.api_route("/api/fn/{code}", methods=["GET", "POST"])
-    async def run_function(code: str, request: Request) -> Any:
-        """Resolve and execute any registered ShowMe function.
-
-        Round-14 entry point used by the native panes. Returns the function's
-        ``FunctionResult.to_dict()`` directly. Inputs come from query params
-        (GET) or JSON body (POST); a ``symbol`` field is bound into a fresh
-        ``Instrument`` automatically when present.
-        """
-        if not boot_state.get("engine_attached"):
-            raise HTTPException(status_code=503, detail="ShowMe engine not attached")
-        params: dict[str, Any] = {}
-        if request.method == "GET":
-            params = dict(request.query_params)
-        else:
-            try:
-                body = await request.json()
-                if isinstance(body, dict):
-                    params = body
-            except Exception:
-                params = {}
-        params = _route_function_params(code, params)
-        try:
-            result = await _execute_showme_function(code, params)
-            boot_state["function_factory_warmed"] = True
-            boot_state.pop("function_factory_warm_error", None)
-        except HTTPException:
-            raise
-        except TypeError as exc:
-            raise HTTPException(status_code=400, detail=f"argument error: {exc}")
-        except TimeoutError:
-            return fallback_function_payload(
-                code,
-                params,
-                f"function timed out after {FUNCTION_TIMEOUT_SECONDS:.0f}s",
-                "TimeoutError",
-            )
-        except Exception as exc:  # noqa: BLE001
-            LOG.exception("function %s failed", code)
-            return function_warning_payload(code, params, exc)
-        try:
-            payload = json_safe(result.to_dict())
-            return sanitize_function_payload(code, params, payload)
-        except Exception:
-            payload = json_safe({"code": code.upper(), "data": getattr(result, "data", None)})
-            return sanitize_function_payload(code, params, payload)
-
-    @app.get("/api/stream/stats")
-    async def stream_stats() -> dict[str, Any]:
-        return _get_stream_hub().stats()
-
-    @app.websocket("/ws/quote/{symbol}")
-    async def ws_quote(websocket: WebSocket, symbol: str) -> None:
-        """Round 29 — Symbol-level real-time quote stream."""
-        await websocket.accept()
-        hub = _get_stream_hub()
-        try:
-            sub = await hub.subscribe(symbol)
-        except Exception as exc:  # noqa: BLE001
-            await websocket.send_json({"error": str(exc)})
-            await websocket.close()
-            return
-        async with sub as queue:
-            try:
-                while True:
-                    tick = await queue.get()
-                    await websocket.send_json(tick.to_dict())
-            except WebSocketDisconnect:
-                return
-            except Exception as exc:  # noqa: BLE001
-                LOG.warning("ws_quote %s: %s", symbol, exc)
-                with contextlib.suppress(Exception):
-                    await websocket.close()
-
-    @app.api_route("/api/proxy/{path:path}", methods=["GET", "POST", "DELETE"])
-    async def proxy(path: str) -> Any:
-        """Legacy stand-in.
-
-        Round 14 superseded the proxy with `/api/fn/{code}`. Kept around so
-        clients that hit the old path get a clear 410 Gone instead of a 404.
-        """
-        raise HTTPException(
-            status_code=410,
-            detail=f"/api/proxy/* removed in Round 14; use /api/fn/{{code}} (was: {path})",
-        )
-
+    register_routes(app, deps=deps)
     return app
+
 
 
 def function_warning_payload(code: str, params: dict[str, Any], exc: Exception) -> dict[str, Any]:
@@ -2504,15 +1137,6 @@ def unavailable_function_data(
     return data
 
 
-def fallback_function_data(code: str, params: dict[str, Any]) -> Any:
-    return unavailable_function_data(
-        code,
-        params,
-        reason="No live provider returned data.",
-        status="provider_unavailable",
-    )
-
-
 def _function_next_actions(code: str, params: dict[str, Any], status: str) -> list[str]:
     upper = code.upper()
     actions: list[str] = []
@@ -2583,6 +1207,11 @@ def _load_function_index() -> list[FunctionIndexEntry]:
         # worker loop.
         factory._ensure_functions_registered()
     except Exception as exc:  # noqa: BLE001
+        # Per ARCH-08 P0: registration failures must be fail-fast in strict
+        # mode (default) so dropped functions are caught at boot rather than
+        # silently absent from the catalog.
+        if _env_truthy_default("SHOWME_STRICT_REGISTRATION", "1"):
+            raise
         LOG.warning("function_factory._ensure_functions_registered failed: %s", exc)
         return []
     out: list[FunctionIndexEntry] = []
@@ -2664,10 +1293,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    logging.basicConfig(
-        level=args.log_level.upper(),
-        format="[showme.sidecar] %(levelname)s %(name)s %(message)s",
-    )
+    # Per TEST-07 P1/P2: rotating file handler under <app_home>/logs +
+    # millisecond timestamp + optional JSON-line format via $SHOWME_LOG_JSON.
+    from showme.logging_setup import configure_logging, install_crash_hook
+    configure_logging(args.log_level)
+    install_crash_hook()
     app_home = prepare_writable_cwd() or ensure_app_home_env()
     if app_home:
         LOG.info("Using app home at %s", app_home)

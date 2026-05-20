@@ -16,8 +16,13 @@ describe("function pane registry", () => {
   });
 
   it("resolves canonical and lower-case codes", () => {
-    expect(resolvePane("DES")).toBeTypeOf("function");
-    expect(resolvePane("des")).toBeTypeOf("function");
+    // Round-2B: registry returns React.lazy()-wrapped components (objects with
+    // $$typeof = react.lazy), not raw function components.
+    const upper = resolvePane("DES");
+    const lower = resolvePane("des");
+    expect(upper).toBeTruthy();
+    expect(lower).toBeTruthy();
+    expect(lower).toBe(upper);
   });
 
   it("lets TECH fall back to the generic technical-indicator function", () => {
@@ -50,5 +55,42 @@ describe("function pane registry", () => {
 
   it("returns null for unknown codes (caller falls back to FunctionStub)", () => {
     expect(resolvePane("ZZZ")).toBeNull();
+  });
+});
+
+describe("147-function merged catalog invariant", () => {
+  // The static index ships 141 codes from the backend catalog; the native
+  // registry contributes 6 codes not in the static index (AGENT, ASK,
+  // INSTANT, MIS, WATCH, XSEN — CN overlaps and is dedup'd). Total 147.
+  // This is the contract the sidebar, command palette, and FunctionStub
+  // fallback all depend on.
+  const NATIVE_ONLY = ["AGENT", "ASK", "INSTANT", "MIS", "WATCH", "XSEN"];
+
+  it("static index is exactly 141 entries", () => {
+    expect(STATIC_FUNCTION_INDEX).toHaveLength(141);
+  });
+
+  it("merged catalog is exactly 147 entries", () => {
+    expect(mergeNativeFunctionIndex(STATIC_FUNCTION_INDEX)).toHaveLength(147);
+  });
+
+  it("every native-only entry is appended after merge", () => {
+    const codes = new Set(
+      mergeNativeFunctionIndex(STATIC_FUNCTION_INDEX).map((e) => e.code),
+    );
+    for (const code of NATIVE_ONLY) {
+      expect(codes.has(code)).toBe(true);
+    }
+  });
+
+  it("every merged code resolves to a surface (native pane or stub fallback)", () => {
+    // Resolution is total: resolvePane returns either a lazy component or
+    // null. Null is the FunctionStub fallback path; that still counts as a
+    // working surface.
+    const merged = mergeNativeFunctionIndex(STATIC_FUNCTION_INDEX);
+    for (const entry of merged) {
+      const pane = resolvePane(entry.code);
+      expect(pane === null || typeof pane === "object").toBe(true);
+    }
   });
 });

@@ -4,6 +4,8 @@ Smoothed candles for trend confirmation. Consecutive same-color HA candles
 indicate strong trend; doji or wicks-on-both-sides → indecision.
 """
 
+from __future__ import annotations
+
 import pandas as pd
 import numpy as np
 

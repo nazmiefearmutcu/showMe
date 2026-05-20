@@ -40,7 +40,7 @@ class ScanHistoryStore:
             scans = data.get("scans", []) if isinstance(data, dict) else []
             self._scans = self._prune(scans)
         except Exception as e:
-            logger.warning(f"scan_history load failed: {e}")
+            logger.warning("scan_history load failed: %s", e)
             self._scans = []
 
     def _save(self) -> None:
@@ -49,7 +49,7 @@ class ScanHistoryStore:
             tmp.write_text(json.dumps({"scans": self._scans}, default=str, indent=2))
             tmp.replace(self.path)
         except Exception as e:
-            logger.warning(f"scan_history save failed: {e}")
+            logger.warning("scan_history save failed: %s", e)
 
     @staticmethod
     def _prune(scans: list[dict[str, Any]]) -> list[dict[str, Any]]:

@@ -1,4 +1,6 @@
 """ADX + Directional Index (DI) — Wilder RMA smoothing (per ShowMe audit E.3)."""
+from __future__ import annotations
+
 
 import pandas as pd
 import numpy as np

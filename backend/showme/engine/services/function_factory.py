@@ -132,6 +132,24 @@ class FunctionFactory:
             "cryptocompare":   CryptoCompareAdapter(cfg_for("cryptocompare")),
             "ccxt_failover":   CCXTFailoverAdapter(cfg_for("ccxt_failover")),
         }
+        # Route every OHLCV request through the cross-source longest-history
+        # race so chart-consuming functions (TECH, BETA, BTMM, CORR, ANR,
+        # portfolio/*) automatically pick the deepest available history.
+        # Non-OHLCV kinds (QUOTE, REFDATA, NEWS, ...) pass through unchanged.
+        from showme.chart_history import OhlcvLongestHistoryWrapper
+
+        for key in (
+            "yfinance",
+            "coingecko",
+            "cryptocompare",
+            "ccxt_failover",
+            "eodhd",
+            "alphavantage",
+            "polygon",
+        ):
+            if key in instances:
+                instances[key] = OhlcvLongestHistoryWrapper(instances[key])
+
         self._adapters = instances
         # Bind to typed slots
         for name, inst in instances.items():

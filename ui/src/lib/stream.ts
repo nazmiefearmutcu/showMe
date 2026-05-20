@@ -43,6 +43,18 @@ export function subscribeQuote(symbol: string, opts: StreamOpts): StreamHandle {
   let closed = false;
   let attempt = 0;
   let socket: WebSocket | null = null;
+  // PERF-03 P1: track the reconnect timer so close() can cancel it instead
+  // of letting orphaned timers fire and pin React closures.
+  let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const stop = () => {
+    closed = true;
+    if (reconnectTimer != null) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+    socket?.close();
+  };
 
   const connect = () => {
     if (closed) return;
@@ -77,20 +89,15 @@ export function subscribeQuote(symbol: string, opts: StreamOpts): StreamHandle {
       opts.onStatus?.("offline");
       const wait = Math.min(MAX_BACKOFF_MS, 250 * 2 ** attempt);
       attempt += 1;
-      setTimeout(connect, wait);
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        connect();
+      }, wait);
     };
   };
 
   connect();
-  opts.signal?.addEventListener("abort", () => {
-    closed = true;
-    socket?.close();
-  });
+  opts.signal?.addEventListener("abort", stop);
 
-  return {
-    close: () => {
-      closed = true;
-      socket?.close();
-    },
-  };
+  return { close: stop };
 }

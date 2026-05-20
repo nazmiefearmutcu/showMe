@@ -1,7 +1,7 @@
 /**
  * ASKB orchestrator client — talks to the sidecar's `/api/ask` endpoint.
  */
-import { sidecarBaseUrl } from "./sidecar";
+import { sidecarFetch } from "./sidecar";
 
 export type AskIntent =
   | "scan"
@@ -87,14 +87,11 @@ export interface AskResponse {
 }
 
 export async function ask(query: string): Promise<AskResponse> {
-  const res = await fetch(`${sidecarBaseUrl()}/api/ask`, {
+  // Routed through sidecarFetch so the auth token + port-discovery layer
+  // both apply. See ARCH-05 P2 in the quality audit.
+  return sidecarFetch<AskResponse>("/api/ask", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ query }),
   });
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`ask: ${res.status} ${body}`);
-  }
-  return res.json();
 }

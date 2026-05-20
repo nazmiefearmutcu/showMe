@@ -20,10 +20,17 @@ def test_prepare_writable_cwd_is_noop_outside_frozen(monkeypatch) -> None:
     assert server.prepare_writable_cwd() is None
 
 
-def test_prepare_writable_cwd_moves_frozen_runtime_to_app_home(
+def test_prepare_writable_cwd_publishes_app_home_without_chdir(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
+    """ARCH-09 P0: process-wide ``os.chdir`` removed.
+
+    ``prepare_writable_cwd`` must still ensure the app-home/runtime directories
+    exist and publish ``SHOWME_HOME`` to the environment, but it must NOT call
+    ``os.chdir`` — every store now resolves paths via
+    ``showme.app_paths.runtime_path`` instead of relying on cwd.
+    """
     frozen_extract = tmp_path / "_MEI"
     app_home = tmp_path / "app-home"
     frozen_extract.mkdir()
@@ -34,7 +41,8 @@ def test_prepare_writable_cwd_moves_frozen_runtime_to_app_home(
     resolved = server.prepare_writable_cwd()
 
     assert resolved == app_home
-    assert Path.cwd() == app_home
+    # cwd MUST stay where it was — no implicit chdir.
+    assert Path.cwd() == frozen_extract
     assert (app_home / "runtime").is_dir()
     assert os.environ["SHOWME_HOME"] == str(app_home)
 

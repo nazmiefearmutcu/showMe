@@ -7,7 +7,7 @@ backtest eder; her hücrede Sharpe ve total return raporlar.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from showme.engine.core.base_data_source import DataKind, DataRequest
@@ -51,7 +51,7 @@ class BMTXFunction(BaseFunction):
                     inst = Instrument(symbol=sym, asset_class=AssetClass.EQUITY)
                 return sym, await self.deps.yfinance.fetch(DataRequest(
                     kind=DataKind.OHLCV, instrument=inst,
-                    start=datetime.utcnow() - timedelta(days=days),
+                    start=datetime.now(timezone.utc) - timedelta(days=days),
                     interval="1d",
                 ))
             except Exception:

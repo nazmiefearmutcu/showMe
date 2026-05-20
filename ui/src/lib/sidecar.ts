@@ -11,6 +11,14 @@ let _port: number | null = null;
 let _listenStarted = false;
 const subs = new Set<(port: number) => void>();
 
+// Auth token captured at sidecar boot. The Tauri shell exposes it via the
+// `sidecar_auth_token` invoke command and republishes on respawn through the
+// `sidecar:auth_token` event. Backend rejects /api/* requests (except
+// /api/health and /api/x/health) without a matching X-ShowMe-Token header.
+// See ARCH-05 P2 in the quality audit.
+let _authToken: string | null = null;
+let _authTokenListenStarted = false;
+
 function publishPort(port: number) {
   _port = port;
   useAppStore.getState().setSidecarPort(port);
@@ -60,9 +68,57 @@ async function ensureSidecarPortListener() {
   }
 }
 
+async function ensureSidecarAuthTokenListener() {
+  if (_authTokenListenStarted || !isInTauri()) return;
+  _authTokenListenStarted = true;
+  try {
+    await listen<string | null>("sidecar:auth_token", (e) => {
+      // Tauri republishes on respawn so the renderer always carries the
+      // current token. Null payloads clear the cache.
+      _authToken = e.payload ?? null;
+    });
+  } catch (err) {
+    _authTokenListenStarted = false;
+    console.warn("sidecar:auth_token listen failed", err);
+  }
+}
+
+/**
+ * Fetch (and memoize) the current sidecar auth token from the Tauri shell.
+ * Returns null when running outside Tauri or when the shell has not produced
+ * a token yet. Subsequent calls hit the cache; respawn refresh comes from
+ * the `sidecar:auth_token` event.
+ */
+export async function loadSidecarAuthToken(): Promise<string | null> {
+  if (!isInTauri()) {
+    // Browser-mode dev fallback: if the operator started a dev sidecar with
+    // `SHOWME_AUTH_TOKEN=<x>` and stashed the same string in
+    // `localStorage["showme.devAuthToken"]`, attach it to outgoing fetches.
+    // Tauri builds never read this — they go through the invoke path below.
+    if (typeof window !== "undefined") {
+      const fromLs = window.localStorage.getItem("showme.devAuthToken");
+      if (fromLs) return fromLs;
+    }
+    return null;
+  }
+  await ensureSidecarAuthTokenListener();
+  if (_authToken) return _authToken;
+  try {
+    const t = await invoke<string | null>("sidecar_auth_token");
+    if (t) _authToken = t;
+    return _authToken;
+  } catch (err) {
+    console.warn("sidecar_auth_token invoke failed", err);
+    return null;
+  }
+}
+
 export async function bootstrapSidecarPort(timeoutMs = 45_000): Promise<number | null> {
   if (!isInTauri()) return null;
   await ensureSidecarPortListener();
+  // Install the auth-token listener early so respawn events don't slip past
+  // before the first protected fetch fires.
+  await ensureSidecarAuthTokenListener();
   const deadline = Date.now() + timeoutMs;
   do {
     const port = await readPortSnapshot();
@@ -141,7 +197,15 @@ export async function waitForSidecarReady(timeoutMs = 12_000): Promise<string> {
 export async function sidecarFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const base = path === "/api/health" ? sidecarBaseUrl() : await waitForSidecarReady();
   const url = base + path;
-  const res = await fetch(url, init);
+  // Attach the per-process auth token to every protected request. Health
+  // probes (/api/health, /api/x/health) are open by contract; everything
+  // else needs X-ShowMe-Token to clear the backend's middleware. See ARCH-05.
+  const headers = new Headers(init?.headers || {});
+  const token = await loadSidecarAuthToken();
+  if (token && !headers.has("X-ShowMe-Token")) {
+    headers.set("X-ShowMe-Token", token);
+  }
+  const res = await fetch(url, { ...init, headers });
   if (!res.ok) throw new Error(`${path}: ${res.status} ${res.statusText}`);
   useAppStore.getState().setSidecarStatus("healthy");
   return (await res.json()) as T;

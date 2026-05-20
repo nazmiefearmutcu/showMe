@@ -1,65 +1,28 @@
-import type { ReactNode } from "react";
+import { memo, type ReactNode } from "react";
 
 type Tone = "neutral" | "positive" | "negative" | "accent" | "warn" | "muted";
+type Variant = "ghost" | "soft" | "filled";
 
-const TONE: Record<Tone, string> = {
-  neutral: "var(--neutral)",
-  positive: "var(--positive)",
-  negative: "var(--negative)",
-  accent: "var(--accent)",
-  warn: "var(--warn)",
-  muted: "var(--text-mute)",
-};
-
-export function Pill({
+function PillImpl({
   children,
   tone = "neutral",
   withDot = true,
+  variant = "ghost",
+  arrow,
 }: {
   children: ReactNode;
   tone?: Tone;
   withDot?: boolean;
+  variant?: Variant;
+  arrow?: "up" | "down" | null;
 }) {
-  const color = TONE[tone];
   return (
-    <span
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 6,
-        minWidth: 0,
-        maxWidth: "100%",
-        padding: "0 8px",
-        height: 18,
-        borderRadius: 9,
-        fontSize: 10,
-        fontFamily: "JetBrains Mono, monospace",
-        letterSpacing: "0.08em",
-        textTransform: "uppercase",
-        fontWeight: 600,
-        background: "var(--bg-elev-3)",
-        color,
-        overflow: "hidden",
-        textOverflow: "ellipsis",
-        whiteSpace: "nowrap",
-      }}
-    >
-      {withDot && (
-        <span
-          className="dot"
-          style={{
-            width: 6,
-            flex: "0 0 6px",
-            height: 6,
-            borderRadius: "50%",
-            background: "currentColor",
-            boxShadow: "0 0 6px currentColor",
-          }}
-        />
-      )}
-      <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>
-        {children}
-      </span>
+    <span className={`ds-pill ds-pill--${variant} ds-pill--tone-${tone}`}>
+      {withDot && <span className="dot ds-pill__dot" />}
+      {arrow && <span aria-hidden className="ds-pill__arrow">{arrow === "up" ? "▲" : "▼"}</span>}
+      <span className="ds-pill__label">{children}</span>
     </span>
   );
 }
+
+export const Pill = memo(PillImpl);

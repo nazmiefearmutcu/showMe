@@ -35,20 +35,7 @@ export function SegmentedControl<T extends PrimitiveControlValue>({
   title,
 }: SegmentedControlProps<T>) {
   return (
-    <div
-      aria-label={title ?? label}
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 2,
-        padding: 2,
-        background: "var(--bg-elev-2)",
-        border: "1px solid var(--border-subtle)",
-        borderRadius: "var(--radius-md)",
-        maxWidth: "100%",
-        overflowX: "auto",
-      }}
-    >
+    <div aria-label={title ?? label} className="fn-segmented">
       <span style={controlLabelStyle}>{label}</span>
       {options.map((raw) => {
         const option = normalizeOption(raw);
@@ -60,21 +47,7 @@ export function SegmentedControl<T extends PrimitiveControlValue>({
             disabled={disabled || active}
             onClick={() => onChange(option.value)}
             title={option.title ?? `${label} ${option.label ?? option.value}`}
-            style={{
-              height: 18,
-              minWidth: 24,
-              padding: "0 6px",
-              border: "none",
-              borderRadius: "var(--radius-sm)",
-              background: active ? "var(--accent)" : "transparent",
-              color: active ? "#000" : "var(--text-secondary)",
-              fontFamily: "JetBrains Mono, monospace",
-              fontSize: 10,
-              fontWeight: active ? 700 : 500,
-              cursor: "default",
-              opacity: disabled && !active ? 0.45 : 1,
-              whiteSpace: "nowrap",
-            }}
+            className={`fn-segmented__opt${active ? " fn-segmented__opt--active" : ""}${disabled && !active ? " fn-segmented__opt--disabled" : ""}`}
           >
             {option.label ?? option.value}
           </button>
@@ -145,12 +118,11 @@ export function RefreshButton({
   return (
     <button
       type="button"
-      className="btn btn--ghost"
+      className={`btn btn--ghost fn-refresh-btn${label ? " fn-refresh-btn--labeled" : ""}`}
       onClick={onClick}
       disabled={disabled || loading}
       title={title}
       aria-label={title}
-      style={{ height: 24, minWidth: label ? 44 : 28, padding: "0 8px" }}
     >
       {loading ? "..." : label ?? "↻"}
     </button>
@@ -186,20 +158,7 @@ export function LoadStatePill({
 }
 
 export function FunctionControlGroup({ children }: { children: ReactNode }) {
-  return (
-    <div
-      style={{
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "flex-end",
-        gap: 6,
-        flexWrap: "wrap",
-        maxWidth: "100%",
-      }}
-    >
-      {children}
-    </div>
-  );
+  return <div className="fn-control-group">{children}</div>;
 }
 
 function normalizeOption<T extends PrimitiveControlValue>(

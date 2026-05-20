@@ -5,6 +5,8 @@ delta = taker_buy − taker_sell  →  CVD = cumsum(delta)
 Detects order-flow imbalance and divergences.
 """
 
+from __future__ import annotations
+
 import pandas as pd
 
 from showme.engine.indicators.base import BaseIndicator, IndicatorResult, Signal

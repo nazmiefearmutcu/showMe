@@ -4,6 +4,8 @@ Contrarian signal: extreme positive funding = longs crowded = squeeze risk.
 Uses z-score over a 30-day rolling window of the 8-hour funding cycles.
 """
 
+from __future__ import annotations
+
 import time
 from typing import Any
 import pandas as pd

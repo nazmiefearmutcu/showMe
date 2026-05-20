@@ -4,6 +4,8 @@ Keltner uses ATR (vs Bollinger's stddev). The "TTM Squeeze" pattern is when
 Bollinger bands enter Keltner channel — releases give directional momentum bursts.
 """
 
+from __future__ import annotations
+
 import pandas as pd
 
 from showme.engine.indicators.base import BaseIndicator, IndicatorResult, Signal

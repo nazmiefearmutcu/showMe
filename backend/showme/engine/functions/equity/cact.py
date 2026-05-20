@@ -20,7 +20,7 @@ class CACTFunction(BaseFunction):
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         if instrument is None:
-            raise ValueError
+            raise ValueError("CACT requires an instrument symbol")
         warnings: list[str] = []
         sec_filings = None
         events_8k: list[dict[str, Any]] = []
@@ -90,6 +90,7 @@ class CACTFunction(BaseFunction):
             # Corporate actions still has SEC filings when Yahoo events are slow
             # or throttled; keep the pane usable instead of timing out.
             yfin = {"status": "unavailable", "reason": str(e) or type(e).__name__}
+            warnings.append(f"yfinance: {e or type(e).__name__}")
         rows = _corporate_action_rows(instrument.symbol, sec_filings, events_8k, yfin)
         if not rows:
             rows = [{
@@ -116,9 +117,24 @@ class CACTFunction(BaseFunction):
                 "methodology": "CACT normalizes Yahoo dividends/splits/actions plus recent SEC 8-K filings into corporate-action rows. Event rows expose action type, date, value, source mode, and raw filing/action fields.",
                 "field_dictionary": FIELD_DICTIONARIES["corporate_actions"],
             },
-            sources=["sec_edgar", "yfinance"] if not warnings else ["corporate_actions_model", "yfinance"],
+            sources=_cact_sources(sec_filings, yfin, warnings),
+            warnings=warnings,
             metadata={"provider_errors": warnings} if warnings else {},
         )
+
+
+def _cact_sources(sec_filings: Any, yfin: dict[str, Any], warnings: list[str]) -> list[str]:
+    """Honest source labels: only claim a provider if it actually returned data."""
+    out: list[str] = []
+    sec_ok = sec_filings is not None and hasattr(sec_filings, "to_dict")
+    yfin_ok = isinstance(yfin, dict) and yfin.get("status") != "unavailable" and bool(yfin)
+    if sec_ok:
+        out.append("sec_edgar")
+    if yfin_ok:
+        out.append("yfinance")
+    if not out:
+        out.append("corporate_actions_unavailable")
+    return out
 
 
 def _corporate_action_rows(symbol: str, sec_filings: Any, events_8k: list[dict[str, Any]], yfin: dict[str, Any]) -> list[dict[str, Any]]:

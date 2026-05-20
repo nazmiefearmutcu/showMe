@@ -82,7 +82,7 @@ class MarketDataProvider:
                 return None
             return df
         except Exception as e:
-            logger.debug(f"cache read failed for {symbol}/{self.timeframe}: {e}")
+            logger.debug("cache read failed for %s/%s: %s", symbol, self.timeframe, e)
             return None
 
     # ── source: store ──────────────────────────────────────
@@ -94,7 +94,7 @@ class MarketDataProvider:
                 return None
             return df
         except Exception as e:
-            logger.debug(f"store read failed for {symbol}/{self.timeframe}: {e}")
+            logger.debug("store read failed for %s/%s: %s", symbol, self.timeframe, e)
             return None
 
     # ── source: REST (legacy) ──────────────────────────────
@@ -107,7 +107,7 @@ class MarketDataProvider:
         )
 
         if not raw_klines:
-            logger.error(f"No kline data returned for {symbol}")
+            logger.error("No kline data returned for %s", symbol)
             return None
 
         try:
@@ -128,7 +128,7 @@ class MarketDataProvider:
             return self._finalize(df, symbol)
 
         except Exception as e:
-            logger.error(f"Error processing OHLCV data for {symbol}: {e}")
+            logger.error("Error processing OHLCV data for %s: %s", symbol, e)
             return None
 
     def _finalize(self, df: pd.DataFrame, symbol: str) -> pd.DataFrame:

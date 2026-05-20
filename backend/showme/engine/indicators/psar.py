@@ -6,6 +6,8 @@ Old logic emitted BUY/SELL every cycle while in trend. v2 emits:
   NEUTRAL on distance < 0.5% (flip risk).
 """
 
+from __future__ import annotations
+
 import pandas as pd
 import numpy as np
 
@@ -90,7 +92,13 @@ class PSARIndicator(BaseIndicator):
         current_psar = psar[-1]
         current_close = close[-1]
 
-        distance_pct = abs(current_close - current_psar) / current_close * 100.0
+        # Guard a zero/None close so a delisted-feed glitch can't ZeroDivisionError
+        # the whole consensus run. Audit FUNC-07 P0.
+        distance_pct = (
+            abs(current_close - current_psar) / current_close * 100.0
+            if current_close
+            else 0.0
+        )
 
         raw = {
             "psar": round(float(current_psar), 6),

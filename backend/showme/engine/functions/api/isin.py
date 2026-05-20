@@ -11,14 +11,61 @@ from showme.engine.core.instrument import Instrument
 _ID_TYPES = ("ID_ISIN", "ID_CUSIP", "ID_SEDOL", "TICKER", "ID_BB_GLOBAL")
 
 
+def _isin_check_digit(s: str) -> bool:
+    """Luhn-like check digit for 12-char ISIN identifiers."""
+    if len(s) != 12 or not s[-1].isdigit():
+        return False
+    digits = ""
+    for ch in s[:-1]:
+        if ch.isdigit():
+            digits += ch
+        elif ch.isalpha():
+            digits += str(ord(ch) - 55)
+        else:
+            return False
+    total = 0
+    for idx, ch in enumerate(reversed(digits)):
+        n = int(ch)
+        if idx % 2 == 0:
+            n *= 2
+            if n >= 10:
+                n -= 9
+        total += n
+    check = (10 - (total % 10)) % 10
+    return check == int(s[-1])
+
+
 def _detect_id_type(s: str) -> str:
     s = s.strip().upper()
-    # Heuristics
-    if len(s) == 12 and s[:2].isalpha() and s[2:].isalnum():
+    if not s:
+        return "TICKER"
+    # ISIN: 12 chars, 2 alpha country prefix + 9 alnum + 1 numeric check
+    if (
+        len(s) == 12
+        and s[:2].isalpha()
+        and s[2:11].isalnum()
+        and s[-1].isdigit()
+        and _isin_check_digit(s)
+    ):
         return "ID_ISIN"
-    if len(s) == 9 and s[:8].isalnum() and s[8].isalnum():
+    # CUSIP: 9 alphanumeric chars with a numeric check digit at the end.
+    # CUSIPs may be all-digit (e.g. AAPL = 037833100) or contain letters,
+    # so do not require an alpha character — just check the structural
+    # pattern: 9 alnum + last digit + at least one digit in the prefix.
+    if (
+        len(s) == 9
+        and s.isalnum()
+        and s[-1].isdigit()
+        and any(c.isdigit() for c in s[:-1])
+    ):
         return "ID_CUSIP"
-    if len(s) == 7 and s.isalnum():
+    # SEDOL: 7 chars, last numeric, no vowels in the first 6 (UK convention)
+    if (
+        len(s) == 7
+        and s.isalnum()
+        and s[-1].isdigit()
+        and not any(c in "AEIOU" for c in s[:6])
+    ):
         return "ID_SEDOL"
     return "TICKER"
 

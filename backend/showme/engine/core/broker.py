@@ -8,11 +8,15 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, AsyncIterator
 
 from showme.engine.core.instrument import Instrument
+
+
+def _now_utc() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 class OrderSide(str, Enum):
@@ -69,7 +73,7 @@ class BrokerFill:
     price: float
     fee: float = 0.0
     fee_currency: str = "USD"
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=_now_utc)
 
 
 @dataclass

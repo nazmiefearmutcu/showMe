@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -73,7 +73,7 @@ class PolygonAdapter(BaseDataSource):
                        "1h": ("1", "hour"), "1d": ("1", "day"), "1w": ("1", "week")}
             mult, span = tf_map.get(interval, ("1", "day"))
             start = (request.start or datetime(2024, 1, 1)).strftime("%Y-%m-%d")
-            end = (request.end or datetime.utcnow()).strftime("%Y-%m-%d")
+            end = (request.end or datetime.now(timezone.utc)).strftime("%Y-%m-%d")
             data = await self._get(f"/v2/aggs/ticker/{sym}/range/{mult}/{span}/{start}/{end}")
             results = data.get("results") or []
             df = pd.DataFrame([{

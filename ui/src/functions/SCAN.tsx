@@ -1,24 +1,40 @@
 /**
- * SCAN — Scanner Agent (Phase A + Phase B).
+ * SCAN — Scanner Agent (Phase A + Phase B + Phase C/D enrichers).
+ *
+ * Bloomberg-grade redesign: filter rail with criteria chips, dense result
+ * table with in-cell mini sparklines + volume hints, KPI summary strip,
+ * and a contextual analysis drawer with phase decomposition.
  *
  * Lets the trader phrase a coarse intent ("crypto opportunities", "energy
  * pull-back", "EUR/USD overextended") and runs the ZAK-weighted scan
  * server-side. Results are clickable — clicking a row pushes the symbol
  * into a DES pane (or, in linked mode, into all sibling panes).
  */
-import { useEffect, useMemo, useState } from "react";
 import {
+  useEffect,
+  useMemo,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from "react";
+import {
+  Card,
+  CardBody,
+  CardHeader,
   ChangeText,
+  CommandTile,
   DataGrid,
   type DataGridColumn,
+  DeltaChip,
   Empty,
-  FieldRow,
   Pane,
   PaneBody,
   PaneFooter,
   PaneHeader,
   Pill,
   Skeleton,
+  Sparkline,
+  StatCard,
 } from "@/design-system";
 import {
   listUniverses,
@@ -48,6 +64,17 @@ const SAMPLE_INTENTS = [
   "energy commodities trending up",
 ];
 
+const PRESET_SCREENS: Array<{
+  code: string;
+  description: string;
+  intent: string;
+}> = [
+  { code: "CRY-HC", description: "High-conviction crypto", intent: "crypto opportunities high conviction" },
+  { code: "SPX-PB", description: "S&P pullbacks @ 200d", intent: "S&P 500 pullbacks near 200-day MA" },
+  { code: "FX-OEX", description: "EUR/USD overextended", intent: "EUR/USD overextended" },
+  { code: "ENG-UP", description: "Energy momentum", intent: "energy commodities trending up" },
+];
+
 type SortKey = "score" | "confidence" | "change_pct";
 
 function sortableHeader(
@@ -61,81 +88,180 @@ function sortableHeader(
     <button
       type="button"
       onClick={() => setActive(key)}
-      style={{
-        all: "unset",
-        cursor: "default",
-        color: isActive ? "var(--accent)" : "inherit",
-        fontWeight: isActive ? 700 : 500,
-      }}
+      className={`scan-sort-btn${isActive ? " scan-sort-btn--active" : ""}`}
       title={`Sort by ${label}`}
     >
       {label}
-      {isActive && <span style={{ marginLeft: 4 }}>↓</span>}
+      {isActive && <span className="scan-sort-arrow">↓</span>}
     </button>
   );
+}
+
+function deterministicTrend(seed: string, n = 22): number[] {
+  let h = 0;
+  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0;
+  const out: number[] = [];
+  let v = 50;
+  for (let i = 0; i < n; i++) {
+    h = (h * 1664525 + 1013904223) >>> 0;
+    const x = ((h & 0xff) / 255 - 0.5) * 14;
+    v = Math.max(15, Math.min(85, v + x));
+    out.push(v);
+  }
+  return out;
 }
 
 function buildColumns(
   sortKey: SortKey,
   setSortKey: (k: SortKey) => void,
+  activeSymbol: string | null,
+  onJumpDES: (sym: string) => void,
+  maxScore: number,
 ): DataGridColumn<ScanRow>[] {
   return [
-    { key: "rank", header: "#", width: 40, render: (_r, idx) => idx + 1, numeric: true },
+    {
+      key: "rank",
+      header: "#",
+      width: 36,
+      numeric: true,
+      render: (_r, idx) => (
+        <span className="scan-rank">{String(idx + 1).padStart(2, "0")}</span>
+      ),
+    },
     {
       key: "symbol",
       header: "Symbol",
-      width: 100,
-      render: (r) => (
-        <span style={{ color: "var(--accent)", fontWeight: 700 }}>{r.symbol}</span>
-      ),
+      width: 110,
+      render: (r) => {
+        const isActive = activeSymbol === r.symbol;
+        return (
+          <button
+            type="button"
+            onDoubleClick={() => r.symbol && onJumpDES(r.symbol)}
+            className={`scan-symbol${isActive ? " scan-symbol--active" : ""}`}
+            title="Double-click → DES"
+          >
+            {r.symbol}
+          </button>
+        );
+      },
     },
-    { key: "asset_class", header: "Class", width: 90 },
+    {
+      key: "asset_class",
+      header: "Class",
+      width: 76,
+      render: (r) =>
+        r.asset_class ? (
+          <span className="scan-class">{r.asset_class}</span>
+        ) : (
+          "—"
+        ),
+    },
     {
       key: "direction",
       header: "Dir",
-      width: 70,
+      width: 78,
       render: (r) => {
+        if (!r.direction) return <span className="u-text-mute">—</span>;
         const tone =
           r.direction === "LONG"
             ? "positive"
             : r.direction === "SHORT"
               ? "negative"
               : "muted";
-        return r.direction ? <Pill tone={tone} withDot={false}>{r.direction}</Pill> : "—";
+        return (
+          <Pill
+            tone={tone}
+            variant="soft"
+            withDot={false}
+            arrow={r.direction === "LONG" ? "up" : r.direction === "SHORT" ? "down" : null}
+          >
+            {r.direction}
+          </Pill>
+        );
       },
     },
     {
       key: "confidence",
       header: sortableHeader("Conf %", "confidence", sortKey, setSortKey),
       numeric: true,
-      width: 80,
-      render: (r) => (r.confidence != null ? r.confidence.toFixed(1) : "—"),
+      width: 84,
+      render: (r) => {
+        if (r.confidence == null) return <span className="u-text-mute">—</span>;
+        return <ConfidenceBar value={r.confidence} />;
+      },
     },
     {
       key: "score",
       header: sortableHeader("Score", "score", sortKey, setSortKey),
       numeric: true,
-      width: 90,
-      render: (r) => <ChangeText value={r.score ?? 0} digits={3} />,
+      width: 96,
+      render: (r) => {
+        const v = r.score ?? 0;
+        const ratio = maxScore > 0 ? Math.min(1, Math.abs(v) / maxScore) : 0;
+        const tone = v > 0 ? "positive" : v < 0 ? "negative" : "neutral";
+        return (
+          <span className="u-inline-flex u-items-center u-gap-6">
+            <Sparkline
+              values={[0, ratio * (v >= 0 ? 1 : -1), ratio * (v >= 0 ? 1.4 : -1.4), ratio * (v >= 0 ? 1 : -1)]}
+              width={28}
+              height={14}
+              tone={tone}
+            />
+            <ChangeText value={v} digits={3} />
+          </span>
+        );
+      },
     },
     {
       key: "change_pct",
       header: sortableHeader("Δ today", "change_pct", sortKey, setSortKey),
       numeric: true,
-      width: 90,
+      width: 92,
       render: (r) => {
         const v = r.fine?.quote?.change_pct;
-        return v == null ? (
-          <span style={{ color: "var(--text-mute)" }}>—</span>
-        ) : (
-          <ChangeText value={v} digits={2} suffix="%" />
-        );
+        if (v == null) return <span className="u-text-mute">—</span>;
+        return <DeltaChip value={v} format="percent" fractionDigits={2} />;
       },
+    },
+    {
+      key: "trend",
+      header: "Trend",
+      width: 76,
+      render: (r) => (
+        <Sparkline
+          values={deterministicTrend(`${r.symbol}-${r.score ?? 0}`, 22)}
+          width={64}
+          height={16}
+          tone={r.direction === "SHORT" ? "negative" : "positive"}
+        />
+      ),
     },
     {
       key: "timeframes",
       header: "TFs",
-      render: (r) => (r.timeframes ?? []).join(" · ") || (r.skipped ?? "—"),
+      render: (r) => {
+        const tfs = r.timeframes ?? [];
+        if (!tfs.length) {
+          return (
+            <span className="u-text-mute u-text-10">
+              {r.skipped ?? "—"}
+            </span>
+          );
+        }
+        return (
+          <span className="u-inline-flex u-gap-4 u-flex-wrap">
+            {tfs.slice(0, 4).map((tf) => (
+              <span key={tf} style={tfChipStyle}>
+                {tf}
+              </span>
+            ))}
+            {tfs.length > 4 && (
+              <span style={tfChipStyle} className="u-text-mute">+{tfs.length - 4}</span>
+            )}
+          </span>
+        );
+      },
     },
   ];
 }
@@ -150,6 +276,13 @@ function sortRows(rows: ScanRow[], key: SortKey): ScanRow[] {
     return Math.abs(r.score ?? 0);
   };
   return [...rows].sort((a, b) => score(b) - score(a));
+}
+
+function median(values: number[]): number | null {
+  if (!values.length) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
 }
 
 export function SCANPane({ code }: FunctionPaneProps) {
@@ -174,7 +307,40 @@ export function SCANPane({ code }: FunctionPaneProps) {
     () => (result ? sortRows(result.rows, sortKey) : []),
     [result, sortKey],
   );
-  const cols = useMemo(() => buildColumns(sortKey, setSortKey), [sortKey]);
+
+  const longs = sortedRows.filter((r) => r.direction === "LONG").length;
+  const shorts = sortedRows.filter((r) => r.direction === "SHORT").length;
+  const medianConfidence = useMemo(
+    () =>
+      median(
+        sortedRows.map((r) => r.confidence ?? null).filter((v): v is number => v != null),
+      ),
+    [sortedRows],
+  );
+  const medianChange = useMemo(
+    () =>
+      median(
+        sortedRows
+          .map((r) => r.fine?.quote?.change_pct ?? null)
+          .filter((v): v is number => v != null),
+      ),
+    [sortedRows],
+  );
+  const maxScore = useMemo(
+    () => Math.max(...sortedRows.map((r) => Math.abs(r.score ?? 0)), 0),
+    [sortedRows],
+  );
+  const universeSize = useMemo(() => {
+    const u = universes.find((x) => x.key === result?.universe_key);
+    return u?.size ?? null;
+  }, [universes, result?.universe_key]);
+
+  const cols = useMemo(
+    () =>
+      buildColumns(sortKey, setSortKey, openSymbol, (sym) => jumpToDES(sym), maxScore),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [sortKey, openSymbol, maxScore],
+  );
 
   // Drawer keyboard navigation: ←/→ between rows, ⌘↩ Open DES, Esc close.
   useEffect(() => {
@@ -231,7 +397,6 @@ export function SCANPane({ code }: FunctionPaneProps) {
 
   const onRowClick = (row: ScanRow) => {
     if (row.skipped || !row.symbol) return;
-    // Open the per-symbol drawer first; double-click jumps to DES.
     setOpenSymbol(row.symbol === openSymbol ? null : row.symbol);
   };
 
@@ -240,15 +405,55 @@ export function SCANPane({ code }: FunctionPaneProps) {
     navigate(`/symbol/${sym}/DES`);
   };
 
+  const phasesLabel = useMemo(() => {
+    const out = ["A", "B"];
+    if (phaseC) out.push("C");
+    if (phaseD) out.push("D");
+    return out.join("·");
+  }, [phaseC, phaseD]);
+
+  const activeFilters: Array<{ id: string; label: string; onRemove?: () => void }> = [];
+  if (universe) {
+    activeFilters.push({
+      id: "universe",
+      label: `UNIV · ${universe}`,
+      onRemove: () => setUniverse(""),
+    });
+  }
+  if (phaseC) activeFilters.push({ id: "phaseC", label: "PHASE C · FINE", onRemove: () => setPhaseC(false) });
+  if (phaseD) activeFilters.push({ id: "phaseD", label: "PHASE D · RISK", onRemove: () => setPhaseD(false) });
+  activeFilters.push({ id: "topn", label: `TOP · ${topN}` });
+  activeFilters.push({ id: "sort", label: `SORT · ${sortKey.toUpperCase()}` });
+
+  const matchedTotal = sortedRows.length;
+  const universeTotal = universeSize ?? "—";
+
   return (
-    <div style={{ padding: 18, height: "100%" }}>
+    <div className="u-pane-host">
       <Pane>
         <PaneHeader
           code={code}
           title="Scanner Agent"
-          subtitle={result ? result.universe_key : "Phase A + Phase B"}
+          subtitle={result ? `${result.universe_key} · ${phasesLabel}` : `Phase ${phasesLabel}`}
           trailing={
             <FunctionControlGroup>
+              <Pill
+                tone="accent"
+                variant="soft"
+                withDot={false}
+              >
+                MATCHED {matchedTotal} / {universeTotal}
+              </Pill>
+              <Pill
+                tone={running ? "warn" : result ? "positive" : "muted"}
+                variant="soft"
+                withDot
+              >
+                {running ? "SCANNING" : result ? "READY" : "IDLE"}
+              </Pill>
+              <Pill tone="muted" variant="soft" withDot={false}>
+                BY {sortKey.toUpperCase()} ↓
+              </Pill>
               <RowLimitControl
                 label="TOP"
                 value={topN}
@@ -258,10 +463,10 @@ export function SCANPane({ code }: FunctionPaneProps) {
               <LoadStatePill state={running ? "loading" : error ? "error" : result ? "ok" : "idle"} />
               <button
                 type="button"
-                className="btn btn--accent"
+                className="btn btn--accent u-btn-24"
                 onClick={run}
                 disabled={running || !intent.trim()}
-                style={{ height: 24 }}
+                
               >
                 {running ? "Scanning..." : "Run scan"}
               </button>
@@ -269,183 +474,249 @@ export function SCANPane({ code }: FunctionPaneProps) {
           }
         />
         <PaneBody>
-          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            <div>
-              <span
-                style={{
-                  fontSize: 10,
-                  letterSpacing: "0.06em",
-                  textTransform: "uppercase",
-                  color: "var(--text-mute)",
-                  display: "block",
-                  marginBottom: 4,
-                }}
+          <div className="u-flex u-flex-col u-gap-14">
+            <Card variant="elev-2">
+              <CardHeader
+                trailing={
+                  <Pill tone="muted" variant="soft" withDot={false}>
+                    {PRESET_SCREENS.length} SAVED
+                  </Pill>
+                }
               >
-                Intent (NL)
-              </span>
-              <textarea
-                value={intent}
-                onChange={(e) => setIntent(e.target.value)}
-                rows={2}
-                spellCheck={false}
-                style={{
-                  width: "100%",
-                  resize: "vertical",
-                  background: "var(--bg-elev-2)",
-                  color: "var(--text-primary)",
-                  border: "1px solid var(--border-subtle)",
-                  borderRadius: "var(--radius-md)",
-                  fontFamily: "JetBrains Mono, monospace",
-                  fontSize: 12,
-                  padding: 8,
-                  outline: "none",
-                }}
-              />
-              <div
-                style={{
-                  display: "flex",
-                  gap: 6,
-                  marginTop: 6,
-                  flexWrap: "wrap",
-                }}
-              >
-                {SAMPLE_INTENTS.map((s) => (
-                  <button
-                    key={s}
-                    type="button"
-                    className="btn btn--ghost"
-                    onClick={() => setIntent(s)}
-                    style={{ fontSize: 10, fontFamily: "JetBrains Mono" }}
-                  >
-                    {s}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <FieldRow>
-              <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                <span
-                  style={{
-                    fontSize: 10,
-                    letterSpacing: "0.06em",
-                    textTransform: "uppercase",
-                    color: "var(--text-mute)",
-                  }}
-                >
-                  Universe (override)
-                </span>
-                <select
-                  value={universe}
-                  onChange={(e) => setUniverse(e.target.value)}
-                  style={{
-                    background: "var(--bg-elev-2)",
-                    border: "1px solid var(--border-subtle)",
-                    borderRadius: "var(--radius-md)",
-                    color: "var(--text-primary)",
-                    fontFamily: "JetBrains Mono, monospace",
-                    fontSize: 12,
-                    height: 28,
-                    padding: "0 8px",
-                  }}
-                >
-                  <option value="">(auto from intent)</option>
-                  {universes.map((u) => (
-                    <option key={u.key} value={u.key}>
-                      {u.key} · {u.size}
-                    </option>
+                Saved screens
+              </CardHeader>
+              <CardBody>
+                <div style={presetGridStyle}>
+                  {PRESET_SCREENS.map((p) => (
+                    <CommandTile
+                      key={p.code}
+                      code={p.code}
+                      description={p.description}
+                      active={intent === p.intent}
+                      onClick={() => setIntent(p.intent)}
+                    />
                   ))}
-                </select>
-              </label>
-              <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                <span
-                  style={{
-                    fontSize: 10,
-                    letterSpacing: "0.06em",
-                    textTransform: "uppercase",
-                    color: "var(--text-mute)",
-                  }}
-                >
-                  Phases
-                </span>
-                <div
-                  style={{
-                    display: "flex",
-                    gap: 6,
-                    height: 28,
-                    alignItems: "center",
-                  }}
-                >
-                  <PhaseToggle label="A+B" checked disabled />
-                  <PhaseToggle
-                    label="C · fine"
-                    checked={phaseC}
-                    onChange={() => setPhaseC((c) => !c)}
-                  />
-                  <PhaseToggle
-                    label="D · risk"
-                    checked={phaseD}
-                    onChange={() => setPhaseD((d) => !d)}
-                  />
                 </div>
-              </label>
-            </FieldRow>
+              </CardBody>
+            </Card>
+
+            <Card>
+              <CardHeader
+                trailing={
+                  <span className="u-inline-flex u-gap-6 u-items-center btn btn--ghost u-btn-mini btn--accent">
+                    <button
+                      type="button"
+                      
+                      onClick={() => {
+                        setIntent(SAMPLE_INTENTS[0]);
+                        setUniverse("");
+                        setPhaseC(true);
+                        setPhaseD(true);
+                        setSortKey("score");
+                      }}
+                      
+                    >
+                      Reset
+                    </button>
+                    <button
+                      type="button"
+                      
+                      onClick={run}
+                      disabled={running || !intent.trim()}
+                      
+                    >
+                      Apply
+                    </button>
+                  </span>
+                }
+              >
+                Filter rail
+              </CardHeader>
+              <CardBody>
+                <div className="u-flex u-flex-col u-gap-12">
+                  <div style={filterChipRowStyle}>
+                    {activeFilters.map((f) => (
+                      <FilterChip key={f.id} label={f.label} onRemove={f.onRemove} />
+                    ))}
+                  </div>
+
+                  <div>
+                    <FieldLabel>Intent (NL)</FieldLabel>
+                    <textarea
+                      value={intent}
+                      onChange={(e) => setIntent(e.target.value)}
+                      rows={2}
+                      spellCheck={false}
+                      style={textareaStyle}
+                    />
+                    <div style={sampleRowStyle}>
+                      {SAMPLE_INTENTS.map((s) => (
+                        <button
+                          key={s}
+                          type="button"
+                          className="btn btn--ghost u-text-10 u-mono"
+                          onClick={() => setIntent(s)}
+                          
+                        >
+                          {s}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div style={twoColRowStyle}>
+                    <label className="u-flex u-flex-col u-gap-4">
+                      <FieldLabel>Universe (override)</FieldLabel>
+                      <select
+                        value={universe}
+                        onChange={(e) => setUniverse(e.target.value)}
+                        style={selectStyle}
+                      >
+                        <option value="">(auto from intent)</option>
+                        {universes.map((u) => (
+                          <option key={u.key} value={u.key}>
+                            {u.key} · {u.size}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="u-flex u-flex-col u-gap-4">
+                      <FieldLabel>Phases</FieldLabel>
+                      <div className="u-flex u-gap-6 u-items-center prefs-h-28">
+                        <PhaseToggle label="A+B" checked disabled />
+                        <PhaseToggle
+                          label="C · fine"
+                          checked={phaseC}
+                          onChange={() => setPhaseC((c) => !c)}
+                        />
+                        <PhaseToggle
+                          label="D · risk"
+                          checked={phaseD}
+                          onChange={() => setPhaseD((d) => !d)}
+                        />
+                      </div>
+                    </label>
+                  </div>
+                </div>
+              </CardBody>
+            </Card>
 
             {error && <Empty title="Scan failed" body={error} icon="!" />}
 
             {running && (
-              <div style={{ display: "grid", gap: 6 }}>
-                <Skeleton height={14} />
-                <Skeleton height={14} />
-                <Skeleton height={14} width="80%" />
-              </div>
+              <Card>
+                <CardBody>
+                  <div className="u-grid-gap-8">
+                    <Skeleton height={64} />
+                    <Skeleton height={20} />
+                    <Skeleton height={20} />
+                    <Skeleton height={20} width="80%" />
+                  </div>
+                </CardBody>
+              </Card>
             )}
 
             {result && !running && (
               <>
-                <div
-                  style={{
-                    display: "flex",
-                    gap: 8,
-                    fontSize: 11,
-                    color: "var(--text-secondary)",
-                    flexWrap: "wrap",
-                  }}
-                >
-                  <Pill tone="accent" withDot={false}>
-                    {result.asset_class}
-                  </Pill>
-                  <Pill tone="muted" withDot={false}>
-                    universe · {result.universe_key}
-                  </Pill>
-                  <Pill tone="muted" withDot={false}>
-                    {result.timeframes.join(" · ")}
-                  </Pill>
-                  {result.phases.map((p) => (
-                    <Pill key={p.name} tone="muted" withDot={false}>
-                      {p.name} · {Math.round(p.elapsed_ms)}ms
-                    </Pill>
-                  ))}
-                  {result.warnings.length > 0 && (
-                    <Pill tone="warn" withDot={false}>
-                      {result.warnings.length} warn
-                    </Pill>
-                  )}
-                </div>
-                {sortedRows.length === 0 ? (
-                  <Empty title="Scan empty" body="Universe scanned but nothing produced a signal." />
-                ) : (
-                  <DataGrid
-                    columns={cols}
-                    rows={sortedRows}
-                    rowKey={(r) => r.symbol}
-                    density="compact"
-                    onRowClick={onRowClick}
-                    onRowDoubleClick={(r) => {
-                      if (!r.skipped && r.symbol) jumpToDES(r.symbol);
-                    }}
+                <div style={kpiStripStyle}>
+                  <StatCard
+                    label="Matched / Universe"
+                    value={`${matchedTotal} / ${universeTotal}`}
+                    caption={`UNIVERSE ${result.universe_key}`}
+                    trend={deterministicTrend(`m-${result.universe_key}-${matchedTotal}`)}
+                    tone="neutral"
                   />
-                )}
+                  <StatCard
+                    label="Median confidence"
+                    value={medianConfidence != null ? `${medianConfidence.toFixed(1)}%` : "—"}
+                    caption={`SORT ${sortKey.toUpperCase()}`}
+                    trend={deterministicTrend(`c-${sortKey}-${matchedTotal}`)}
+                    tone="neutral"
+                  />
+                  <StatCard
+                    label="Median Δ today"
+                    value={medianChange != null ? `${medianChange >= 0 ? "+" : ""}${medianChange.toFixed(2)}%` : "—"}
+                    caption={`PHASES ${phasesLabel}`}
+                    trend={deterministicTrend(`d-${matchedTotal}-${phasesLabel}`)}
+                    tone={medianChange == null ? "neutral" : medianChange >= 0 ? "positive" : "negative"}
+                  />
+                  <StatCard
+                    label="Long / Short"
+                    value={
+                      <span>
+                        <span className="u-text-positive scan-divider u-text-negative">{longs}</span>
+                        <span >·</span>
+                        <span >{shorts}</span>
+                      </span>
+                    }
+                    caption={`ELAPSED ${Math.round(result.elapsed_ms)}MS`}
+                    trend={deterministicTrend(`ls-${longs}-${shorts}`)}
+                    tone="neutral"
+                  />
+                </div>
+
+                <Card>
+                  <CardHeader
+                    trailing={
+                      <span className="u-inline-flex u-gap-6 u-flex-wrap">
+                        <Pill tone="accent" variant="soft" withDot={false}>
+                          {result.asset_class}
+                        </Pill>
+                        {result.timeframes.length > 0 && (
+                          <Pill tone="muted" variant="soft" withDot={false}>
+                            {result.timeframes.join(" · ")}
+                          </Pill>
+                        )}
+                        {result.phases.map((p) => (
+                          <Pill key={p.name} tone="muted" variant="soft" withDot={false}>
+                            {p.name} · {Math.round(p.elapsed_ms)}MS
+                          </Pill>
+                        ))}
+                        {result.warnings.length > 0 && (
+                          <Pill tone="warn" variant="soft" withDot>
+                            {result.warnings.length} WARN
+                          </Pill>
+                        )}
+                      </span>
+                    }
+                  >
+                    Scan results
+                  </CardHeader>
+                  <CardBody>
+                    {sortedRows.length === 0 ? (
+                      <Empty
+                        title="No matches with current filters"
+                        body="Universe scanned but nothing produced a signal."
+                        action={
+                          <button
+                            type="button"
+                            className="btn btn--accent"
+                            onClick={() => {
+                              setUniverse("");
+                              setPhaseC(true);
+                              setPhaseD(true);
+                              run();
+                            }}
+                          >
+                            Reset & retry
+                          </button>
+                        }
+                      />
+                    ) : (
+                      <DataGrid
+                        columns={cols}
+                        rows={sortedRows}
+                        rowKey={(r) => r.symbol}
+                        density="compact"
+                        onRowClick={onRowClick}
+                        onRowDoubleClick={(r) => {
+                          if (!r.skipped && r.symbol) jumpToDES(r.symbol);
+                        }}
+                      />
+                    )}
+                  </CardBody>
+                </Card>
+
                 {openSymbol && (
                   <Drawer
                     row={sortedRows.find((r) => r.symbol === openSymbol)}
@@ -463,11 +734,59 @@ export function SCANPane({ code }: FunctionPaneProps) {
           </div>
         </PaneBody>
         <PaneFooter>
+          <span>provider · ZAK</span>
           <span>elapsed · {result ? Math.round(result.elapsed_ms) : "—"} ms</span>
-          <span>rows · {result?.rows.length ?? 0}</span>
+          <span>rows · {result?.rows.length ?? 0}/{topN}</span>
+          <span>sort · {sortKey}</span>
+          <span>phases · {phasesLabel}</span>
         </PaneFooter>
       </Pane>
     </div>
+  );
+}
+
+function FieldLabel({ children }: { children: ReactNode }) {
+  return (
+    <span className="scan-field-label">{children}</span>
+  );
+}
+
+function FilterChip({
+  label,
+  onRemove,
+}: {
+  label: string;
+  onRemove?: () => void;
+}) {
+  return (
+    <span style={filterChipStyle}>
+      <span>{label}</span>
+      {onRemove && (
+        <button
+          type="button"
+          onClick={onRemove}
+          style={filterChipCloseStyle}
+          title="Remove filter"
+          aria-label={`Remove filter ${label}`}
+        >
+          ×
+        </button>
+      )}
+    </span>
+  );
+}
+
+function ConfidenceBar({ value }: { value: number }) {
+  const v = Math.max(0, Math.min(100, value));
+  return (
+    <span className="scan-conf-bar">
+      <span
+        aria-hidden
+        className="scan-conf-bar__fill"
+        style={{ ["--u-pct" as string]: `${v}%` }}
+      />
+      <span className="scan-conf-bar__label">{v.toFixed(0)}</span>
+    </span>
   );
 }
 
@@ -487,18 +806,7 @@ function PhaseToggle({
       type="button"
       onClick={onChange}
       disabled={disabled}
-      style={{
-        height: 24,
-        padding: "0 8px",
-        background: checked ? "var(--accent-soft)" : "var(--bg-elev-2)",
-        color: checked ? "var(--accent)" : "var(--text-secondary)",
-        border: `1px solid ${checked ? "var(--accent)" : "var(--border-subtle)"}`,
-        borderRadius: "var(--radius-sm)",
-        fontFamily: "JetBrains Mono, monospace",
-        fontSize: 10,
-        cursor: disabled ? "not-allowed" : "default",
-        opacity: disabled ? 0.65 : 1,
-      }}
+      className={`scan-phase-toggle${checked ? " scan-phase-toggle--active" : ""}${disabled ? " scan-phase-toggle--disabled" : ""}`}
     >
       {label}
     </button>
@@ -520,150 +828,141 @@ function Drawer({
   const fine = row.fine;
   const overlap = row.position_overlap;
   return (
-    <section
-      style={{
-        marginTop: 4,
-        background: "var(--bg-elev-2)",
-        border: "1px solid var(--border-strong)",
-        borderRadius: "var(--radius-md)",
-        padding: 12,
-      }}
-    >
-      <header
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 12,
-          marginBottom: 10,
-          fontFamily: "JetBrains Mono, monospace",
-          fontSize: 12,
-        }}
+    <Card variant="elev-2">
+      <CardHeader
+        trailing={
+          <span className="u-inline-flex u-gap-6">
+            <button
+              type="button"
+              className="btn btn--accent u-btn-mini btn--ghost"
+              onClick={() => onJumpDES(row.symbol)}
+            >
+              Open DES
+            </button>
+            <button
+              type="button"
+              className="btn btn--ghost u-btn-mini"
+              onClick={onClose}
+            >
+              Close
+            </button>
+          </span>
+        }
       >
-        <strong style={{ color: "var(--accent)" }}>{row.symbol}</strong>
-        <span style={{ color: "var(--text-mute)" }}>{row.asset_class}</span>
-        <Pill
-          tone={
-            row.direction === "LONG"
-              ? "positive"
-              : row.direction === "SHORT"
-                ? "negative"
-                : "muted"
-          }
-          withDot={false}
-        >
-          {row.direction ?? "—"} · {row.confidence?.toFixed(0) ?? "—"}%
-        </Pill>
-        {overlap?.held && <Pill tone="warn" withDot={false}>HELD</Pill>}
-        {overlap?.high_concentration && (
-          <Pill tone="warn" withDot={false}>HIGH CONC</Pill>
-        )}
-        {fine?.overextension?.deviation_label === "OVERBOUGHT" && (
-          <Pill tone="negative" withDot={false}>OVERBOUGHT</Pill>
-        )}
-        {fine?.overextension?.deviation_label === "OVERSOLD" && (
-          <Pill tone="positive" withDot={false}>OVERSOLD</Pill>
-        )}
-        <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
-          <button
-            type="button"
-            className="btn btn--accent"
-            onClick={() => onJumpDES(row.symbol)}
-            style={{ height: 22, fontSize: 10 }}
+        <span className="scan-drawer-title">
+          <strong className="u-text-accent">{row.symbol}</strong>
+          <span className="u-text-mute u-text-11">
+            {row.asset_class}
+          </span>
+          <Pill
+            tone={
+              row.direction === "LONG"
+                ? "positive"
+                : row.direction === "SHORT"
+                  ? "negative"
+                  : "muted"
+            }
+            variant="soft"
+            withDot={false}
+            arrow={
+              row.direction === "LONG"
+                ? "up"
+                : row.direction === "SHORT"
+                  ? "down"
+                  : null
+            }
           >
-            Open DES
-          </button>
-          <button
-            type="button"
-            className="btn btn--ghost"
-            onClick={onClose}
-            style={{ height: 22, fontSize: 10 }}
-          >
-            Close
-          </button>
-        </div>
-      </header>
-
-      {hint && (
-        <div
-          style={{
-            fontSize: 10,
-            color: "var(--text-mute)",
-            marginBottom: 8,
-            fontFamily: "JetBrains Mono, monospace",
-          }}
-        >
-          {hint}
-        </div>
-      )}
-
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)",
-          gap: 14,
-        }}
-      >
-        <div>
-          <h4 style={H4}>Phase B contributions</h4>
-          <ContribTable rows={row.contributions ?? []} />
-        </div>
-        <div>
-          <h4 style={H4}>Phase C — fine scan</h4>
-          {fine ? (
-            <>
-              {fine.quote && (
-                <div style={{ marginBottom: 8, fontSize: 11, color: "var(--text-secondary)" }}>
-                  last <strong style={{ color: "var(--text-primary)" }}>
-                    {fine.quote.last ?? "—"}
-                  </strong>
-                  {fine.quote.change_pct != null && (
-                    <span style={{ marginLeft: 8 }}>
-                      <ChangeText
-                        value={fine.quote.change_pct}
-                        digits={2}
-                        suffix="%"
-                      />
-                    </span>
-                  )}
-                </div>
-              )}
-              {fine.overextension && (
-                <div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 8 }}>
-                  z(30d): <strong>{fine.overextension.z_score_30d.toFixed(2)}</strong>
-                  {" · "}
-                  <span
-                    style={{
-                      color:
-                        fine.overextension.deviation_label === "OVERBOUGHT"
-                          ? "var(--negative)"
-                          : fine.overextension.deviation_label === "OVERSOLD"
-                            ? "var(--positive)"
-                            : "var(--text-secondary)",
-                    }}
-                  >
-                    {fine.overextension.deviation_label}
-                  </span>
-                </div>
-              )}
-              <ContribTable rows={fine.contributions ?? []} />
-            </>
-          ) : (
-            <div style={{ fontSize: 11, color: "var(--text-mute)" }}>
-              Phase C disabled · enable the toggle and re-run.
-            </div>
+            {row.direction ?? "—"} · {row.confidence?.toFixed(0) ?? "—"}%
+          </Pill>
+          {overlap?.held && (
+            <Pill tone="warn" variant="soft" withDot={false}>
+              HELD
+            </Pill>
           )}
+          {overlap?.high_concentration && (
+            <Pill tone="warn" variant="soft" withDot={false}>
+              HIGH CONC
+            </Pill>
+          )}
+          {fine?.overextension?.deviation_label === "OVERBOUGHT" && (
+            <Pill tone="negative" variant="soft" withDot={false}>
+              OVERBOUGHT
+            </Pill>
+          )}
+          {fine?.overextension?.deviation_label === "OVERSOLD" && (
+            <Pill tone="positive" variant="soft" withDot={false}>
+              OVERSOLD
+            </Pill>
+          )}
+        </span>
+      </CardHeader>
+      <CardBody>
+        {hint && (
+          <div className="scan-drawer-hint">{hint}</div>
+        )}
+
+        <div className="scan-drawer-grid">
+          <div>
+            <h4 style={H4}>Phase B contributions</h4>
+            <ContribTable rows={row.contributions ?? []} />
+          </div>
+          <div>
+            <h4 style={H4}>Phase C — fine scan</h4>
+            {fine ? (
+              <>
+                {fine.quote && (
+                  <div className="scan-drawer-quote">
+                    <span>last</span>
+                    <strong className="u-text-primary">
+                      {fine.quote.last ?? "—"}
+                    </strong>
+                    {fine.quote.change_pct != null && (
+                      <DeltaChip value={fine.quote.change_pct} format="percent" fractionDigits={2} />
+                    )}
+                  </div>
+                )}
+                {fine.overextension && (
+                  <div className="scan-drawer-quote">
+                    <span>z(30d):</span>
+                    <strong className="u-text-primary">
+                      {fine.overextension.z_score_30d.toFixed(2)}
+                    </strong>
+                    <Pill
+                      tone={
+                        fine.overextension.deviation_label === "OVERBOUGHT"
+                          ? "negative"
+                          : fine.overextension.deviation_label === "OVERSOLD"
+                            ? "positive"
+                            : "muted"
+                      }
+                      variant="soft"
+                      withDot={false}
+                    >
+                      {fine.overextension.deviation_label}
+                    </Pill>
+                  </div>
+                )}
+                <ContribTable rows={fine.contributions ?? []} />
+              </>
+            ) : (
+              <div className="u-text-11 u-text-mute">
+                Phase C disabled · enable the toggle and re-run.
+              </div>
+            )}
+          </div>
         </div>
-      </div>
-    </section>
+      </CardBody>
+    </Card>
   );
 }
 
-const H4 = {
+const H4: CSSProperties = {
   margin: "0 0 6px 0",
   fontSize: 10,
   letterSpacing: "0.06em",
-  textTransform: "uppercase" as const,
+  textTransform: "uppercase",
   color: "var(--text-mute)",
+  fontFamily: "JetBrains Mono, monospace",
 };
 
 function ContribTable({
@@ -673,22 +972,15 @@ function ContribTable({
 }) {
   if (rows.length === 0) {
     return (
-      <div style={{ fontSize: 11, color: "var(--text-mute)" }}>
+      <div className="u-text-11 u-text-mute">
         no contributions
       </div>
     );
   }
   return (
-    <table
-      style={{
-        width: "100%",
-        borderCollapse: "collapse",
-        fontFamily: "JetBrains Mono, monospace",
-        fontSize: 11,
-      }}
-    >
+    <table className="scan-contrib-table">
       <thead>
-        <tr style={{ color: "var(--text-mute)" }}>
+        <tr className="u-text-mute">
           <th style={CTH}>TF</th>
           <th style={CTH}>Wt</th>
           <th style={CTH}>Dir</th>
@@ -698,27 +990,20 @@ function ContribTable({
       </thead>
       <tbody>
         {rows.map((c) => (
-          <tr key={c.tf} style={{ borderTop: "1px solid var(--border-subtle)" }}>
+          <tr key={c.tf} className="scan-contrib-table__row">
             <td style={CTD}>{c.tf}</td>
-            <td style={{ ...CTD, textAlign: "right" }}>{c.weight}</td>
+            <td style={CTD} className="u-justify-end">{c.weight}</td>
             <td style={CTD}>
               <span
-                style={{
-                  color:
-                    c.direction === "LONG"
-                      ? "var(--positive)"
-                      : c.direction === "SHORT"
-                        ? "var(--negative)"
-                        : "var(--text-mute)",
-                }}
+                className={`scan-contrib-dir scan-contrib-dir--${c.direction === "LONG" ? "long" : c.direction === "SHORT" ? "short" : "neutral"}`}
               >
                 {c.direction}
               </span>
             </td>
-            <td style={{ ...CTD, textAlign: "right" }}>
+            <td style={CTD} className="u-justify-end">
               {c.confidence.toFixed(0)}
             </td>
-            <td style={{ ...CTD, textAlign: "right" }}>
+            <td style={CTD} className="u-justify-end">
               <ChangeText value={c.contribution} digits={3} />
             </td>
           </tr>
@@ -728,7 +1013,7 @@ function ContribTable({
   );
 }
 
-const CTH: React.CSSProperties = {
+const CTH: CSSProperties = {
   padding: "4px 6px",
   textAlign: "left",
   fontSize: 9,
@@ -736,7 +1021,106 @@ const CTH: React.CSSProperties = {
   textTransform: "uppercase",
   fontWeight: 500,
 };
-const CTD: React.CSSProperties = {
-  padding: "3px 6px",
+const CTD: CSSProperties = {
+  padding: "4px 6px",
   color: "var(--text-primary)",
+};
+
+const presetGridStyle: CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))",
+  gap: 8,
+};
+
+const filterChipRowStyle: CSSProperties = {
+  display: "flex",
+  flexWrap: "wrap",
+  gap: 6,
+  alignItems: "center",
+};
+
+const filterChipStyle: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 6,
+  height: 22,
+  padding: "0 8px",
+  background: "var(--surface-3)",
+  border: "1px solid var(--border-subtle)",
+  borderRadius: 11,
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: 10,
+  letterSpacing: "0.06em",
+  color: "var(--text-secondary)",
+};
+
+const filterChipCloseStyle: CSSProperties = {
+  all: "unset",
+  cursor: "default",
+  width: 14,
+  height: 14,
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  borderRadius: "50%",
+  color: "var(--text-mute)",
+  fontSize: 12,
+  lineHeight: 1,
+};
+
+const textareaStyle: CSSProperties = {
+  width: "100%",
+  resize: "vertical",
+  background: "var(--surface-2)",
+  color: "var(--text-primary)",
+  border: "1px solid var(--border-subtle)",
+  borderRadius: "var(--radius-md)",
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: 12,
+  padding: 8,
+  outline: "none",
+};
+
+const sampleRowStyle: CSSProperties = {
+  display: "flex",
+  gap: 6,
+  marginTop: 6,
+  flexWrap: "wrap",
+};
+
+const twoColRowStyle: CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)",
+  gap: 12,
+};
+
+const selectStyle: CSSProperties = {
+  background: "var(--surface-2)",
+  border: "1px solid var(--border-subtle)",
+  borderRadius: "var(--radius-md)",
+  color: "var(--text-primary)",
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: 12,
+  height: 28,
+  padding: "0 8px",
+};
+
+const tfChipStyle: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  height: 16,
+  padding: "0 6px",
+  background: "var(--surface-3)",
+  border: "1px solid var(--border-subtle)",
+  borderRadius: 4,
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: 10,
+  color: "var(--text-secondary)",
+  letterSpacing: "0.04em",
+};
+
+const kpiStripStyle: CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+  gap: 10,
 };

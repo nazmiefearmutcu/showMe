@@ -17,16 +17,23 @@ import shlex
 import sqlite3
 import sys
 import time
-from pathlib import Path
 from typing import Any
 
-_DB = Path("runtime/jobs.sqlite")
-_LOG_DIR = Path("runtime/jobs")
+from showme.app_paths import runtime_path
+
+
+def _db_file():
+    return runtime_path("jobs.sqlite")
+
+
+def _log_dir():
+    base = runtime_path("jobs/.placeholder").parent
+    base.mkdir(parents=True, exist_ok=True)
+    return base
 
 
 def _db() -> sqlite3.Connection:
-    _DB.parent.mkdir(parents=True, exist_ok=True)
-    con = sqlite3.connect(str(_DB))
+    con = sqlite3.connect(str(_db_file()))
     con.execute("""
         CREATE TABLE IF NOT EXISTS jobs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -142,8 +149,8 @@ async def run_job(name: str) -> dict[str, Any]:
     if not cmd:
         con.close()
         return {"error": f"no command for kind {kind}"}
-    _LOG_DIR.mkdir(parents=True, exist_ok=True)
-    log_path = _LOG_DIR / f"{name}-{int(time.time())}.log"
+    log_dir = _log_dir()
+    log_path = log_dir / f"{name}-{int(time.time())}.log"
     started = int(time.time())
     cur = con.execute(
         "INSERT INTO runs(job_name, started_at, log_path) VALUES (?,?,?)",

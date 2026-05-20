@@ -21,9 +21,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 from dataclasses import asdict, dataclass, field
-from typing import Any, AsyncIterator, Awaitable, Callable
+from typing import Any, Literal
+from collections.abc import AsyncIterator, Awaitable, Callable
 
 import requests
 
@@ -167,23 +169,110 @@ def _default_ws_transport(url: str) -> WsConn:
     return _WebsocketsTransport(url)  # type: ignore[return-value]
 
 
+class BinanceHybridSource(Source):
+    """Try Binance WSS first; fall back to REST polling on SSL / network error.
+
+    Some operator environments (corporate MITM proxies, custom root CAs,
+    antivirus that injects its own cert chain) can break Binance's WSS
+    handshake even when plain HTTPS works — verified on 2026-05-11 against
+    a live macOS install. Without a fallback the live ``/ws/quote/{symbol}``
+    stream goes silent and every crypto pane shows stale data forever.
+
+    Strategy:
+      1. Try ``BinanceWsSource``. If the first tick arrives, stay on WSS.
+      2. If the WSS leg raises BEFORE the first tick (SSL handshake fail,
+         DNS, connection refused, …) catch the error and switch to
+         ``BinanceRestSource`` (5 s polling) for the rest of this run.
+      3. If WSS yielded ticks but then errors out, the outer ``_pump``
+         reconnect loop handles it — we propagate the exception so the
+         backoff window kicks in instead of silently downgrading.
+
+    Set ``SHOWME_DISABLE_WSS=1`` in the env to skip the WSS attempt and
+    go straight to REST polling (useful for known-bad networks).
+    """
+
+    def __init__(
+        self,
+        symbol: str,
+        *,
+        rest_interval: float = 5.0,
+        skip_wss: bool | None = None,
+    ) -> None:
+        super().__init__(symbol)
+        self._rest_interval = rest_interval
+        if skip_wss is None:
+            skip_wss = os.environ.get("SHOWME_DISABLE_WSS", "").lower() in {"1", "true", "yes"}
+        self._skip_wss = skip_wss
+
+    async def run(self) -> AsyncIterator[Tick]:
+        if not self._skip_wss:
+            wss = BinanceWsSource(self.symbol)
+            wss._stop = self._stop  # share the cancellation flag
+            yielded_any = False
+            try:
+                async for tick in wss.run():
+                    yielded_any = True
+                    yield tick
+                # WSS exhausted cleanly — let the outer pump decide whether
+                # to reconnect or move on.
+                return
+            except Exception as exc:  # noqa: BLE001
+                if yielded_any:
+                    # Don't downgrade once we've proven WSS works for this
+                    # symbol — propagate so the pump's backoff kicks in.
+                    raise
+                LOG.warning(
+                    "binance WSS failed for %s (%s) — falling back to REST polling",
+                    self.symbol,
+                    exc,
+                )
+        # REST fallback (or explicit opt-in).
+        rest = BinanceRestSource(self.symbol, interval=self._rest_interval, venue="spot")
+        rest._stop = self._stop
+        async for tick in rest.run():
+            yield tick
+
+
 class BinanceRestSource(Source):
-    """Polls Binance's 24h ticker endpoint for crypto pairs."""
+    """Polls Binance's 24h ticker endpoint for crypto pairs.
+
+    ``venue`` selects the endpoint explicitly. Per FUNC-01 P0: do NOT
+    silently fall through from spot to futures — perpetuals trade at a
+    basis vs spot (often ±0.1–0.5%, spiking to 2%+ during liquidation
+    cascades), so a venue change must be a deliberate caller decision.
+    """
 
     URL = "https://api.binance.com/api/v3/ticker/24hr"
     FUTURES_URL = "https://fapi.binance.com/fapi/v1/ticker/24hr"
 
-    def __init__(self, symbol: str, *, interval: float = 5.0) -> None:
+    def __init__(
+        self,
+        symbol: str,
+        *,
+        interval: float = 5.0,
+        venue: Literal["spot", "futures"] = "spot",
+    ) -> None:
         super().__init__(symbol)
         self._interval = max(1.0, float(interval))
+        self._venue = venue
 
     async def run(self) -> AsyncIterator[Tick]:
+        fetch_fn = (
+            fetch_binance_futures_24h_ticker
+            if self._venue == "futures"
+            else fetch_binance_24h_ticker
+        )
         while not self.stopping:
             try:
-                tick = await asyncio.to_thread(fetch_binance_24h_ticker, self.symbol)
+                tick = await asyncio.to_thread(fetch_fn, self.symbol)
                 yield tick
             except Exception as exc:  # noqa: BLE001
-                LOG.debug("binance rest fetch failed for %s: %s", self.symbol, exc)
+                LOG.debug(
+                    "binance rest fetch failed for %s (%s): %s",
+                    self.symbol,
+                    self._venue,
+                    exc,
+                )
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=self._interval)
             except asyncio.TimeoutError:
@@ -191,12 +280,8 @@ class BinanceRestSource(Source):
 
 
 def fetch_binance_24h_ticker(symbol: str) -> Tick:
-    try:
-        payload = _fetch_binance_ticker_payload(symbol, futures=False)
-        source = "binance"
-    except Exception:  # noqa: BLE001
-        payload = _fetch_binance_ticker_payload(symbol, futures=True)
-        source = "binance_futures"
+    """Fetch a Binance SPOT 24h ticker. Raises on failure (no venue swap)."""
+    payload = _fetch_binance_ticker_payload(symbol, futures=False)
     tick = parse_binance_ticker({
         "s": payload.get("symbol"),
         "c": payload.get("lastPrice"),
@@ -206,7 +291,23 @@ def fetch_binance_24h_ticker(symbol: str) -> Tick:
         "a": payload.get("askPrice"),
         "E": payload.get("closeTime"),
     })
-    tick.source = source
+    tick.source = "binance"
+    return tick
+
+
+def fetch_binance_futures_24h_ticker(symbol: str) -> Tick:
+    """Fetch a Binance USDT-M futures 24h ticker. Caller must opt in."""
+    payload = _fetch_binance_ticker_payload(symbol, futures=True)
+    tick = parse_binance_ticker({
+        "s": payload.get("symbol"),
+        "c": payload.get("lastPrice"),
+        "P": payload.get("priceChangePercent"),
+        "v": payload.get("volume"),
+        "b": payload.get("bidPrice"),
+        "a": payload.get("askPrice"),
+        "E": payload.get("closeTime"),
+    })
+    tick.source = "binance_futures"
     return tick
 
 
@@ -416,24 +517,66 @@ class StreamHub:
             return Subscription(hub=self, symbol=sym, queue=queue)
 
     async def _pump(self, channel: _Channel) -> None:
+        # Per PERF-04 P1 / FUNC-03 P1: wrap the source iterator in a reconnect
+        # loop with exponential backoff so a transient upstream drop does not
+        # silently freeze the channel forever. The first successful tick after
+        # a (re)connect resets the backoff window.
+        backoff = 1.0
+        max_backoff = 60.0
         try:
-            async for tick in channel.source.run():
-                channel.last_tick = tick
-                for q in list(channel.queues):
-                    if q.full():
-                        # Drop oldest — backpressure. Subscriber is too slow.
-                        try:
-                            q.get_nowait()
-                        except asyncio.QueueEmpty:
-                            pass
-                    try:
-                        q.put_nowait(tick)
-                    except asyncio.QueueFull:
-                        pass
-        except Exception as exc:  # noqa: BLE001
-            LOG.warning("source for %s ended: %s", channel.symbol, exc)
+            while not channel.source.stopping:
+                got_tick = False
+                try:
+                    async for tick in channel.source.run():
+                        got_tick = True
+                        backoff = 1.0
+                        channel.last_tick = tick
+                        for q in list(channel.queues):
+                            if q.full():
+                                # Drop oldest — backpressure. Subscriber is too slow.
+                                try:
+                                    q.get_nowait()
+                                except asyncio.QueueEmpty:
+                                    pass
+                            try:
+                                q.put_nowait(tick)
+                            except asyncio.QueueFull:
+                                pass
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # noqa: BLE001
+                    LOG.warning(
+                        "source for %s raised (reconnect in %.1fs): %s",
+                        channel.symbol, backoff, exc,
+                    )
+                if channel.source.stopping or not channel.queues:
+                    return
+                # Source exhausted (Binance 24h disconnect, network blip).
+                # Sleep with exponential backoff, then rebuild the source via
+                # the same factory and try again.
+                if not got_tick:
+                    LOG.debug(
+                        "source for %s ended without a tick; reconnect in %.1fs",
+                        channel.symbol, backoff,
+                    )
+                try:
+                    await asyncio.sleep(backoff)
+                except asyncio.CancelledError:
+                    raise
+                backoff = min(backoff * 2, max_backoff)
+                # Rebuild via the hub's factory chain so we get a fresh socket.
+                try:
+                    channel.source.stop()
+                except Exception:  # noqa: BLE001
+                    pass
+                channel.source = self._build_source(channel.symbol)
+        except asyncio.CancelledError:
+            return
         finally:
-            channel.source.stop()
+            try:
+                channel.source.stop()
+            except Exception:  # noqa: BLE001
+                pass
 
     async def _release(self, symbol: str, queue: asyncio.Queue[Tick]) -> None:
         async with self._lock:
@@ -450,8 +593,13 @@ class StreamHub:
                     channel.task.cancel()
                     try:
                         await channel.task
-                    except (asyncio.CancelledError, Exception):
+                    except asyncio.CancelledError:
+                        # Cooperative cancellation — expected and recoverable.
                         pass
+                    except Exception as exc:  # noqa: BLE001
+                        # Per PY-LINT-05 P1: log unexpected pump-task failures
+                        # at warning level so cleanup oddities are visible.
+                        LOG.warning("stream cleanup task for %s raised: %s", symbol, exc)
                 self._channels.pop(symbol, None)
 
 
@@ -469,6 +617,7 @@ class Subscription:
 
 
 __all__ = [
+    "BinanceHybridSource",
     "BinanceWsSource",
     "BinanceRestSource",
     "PollingSource",

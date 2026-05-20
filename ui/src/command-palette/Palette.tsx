@@ -2,6 +2,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useAppStore } from "@/lib/store";
 import { navigate } from "@/lib/router";
 import { t } from "@/i18n";
+import { fuzzyRank } from "@/lib/fuzzy";
+import { listRecentCodes, recordRecentCode } from "@/lib/palette-recents";
+import { useFocusTrap } from "@/lib/a11y";
 
 interface PaletteEntry {
   id: string;
@@ -28,6 +31,9 @@ const STATIC_ENTRIES: PaletteEntry[] = [
   },
 ];
 
+const LISTBOX_ID = "showme-palette-listbox";
+const INPUT_ID = "showme-palette-input";
+
 export function CommandPalette() {
   const open = useAppStore((s) => s.paletteOpen);
   const togglePalette = useAppStore((s) => s.togglePalette);
@@ -35,6 +41,8 @@ export function CommandPalette() {
   const [query, setQuery] = useState("");
   const [cursor, setCursor] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const recents = useMemo(() => listRecentCodes(), [open]);
 
   const all: PaletteEntry[] = useMemo(
     () => [
@@ -51,17 +59,17 @@ export function CommandPalette() {
   );
 
   const filtered = useMemo(() => {
-    if (!query.trim()) return all.slice(0, 60);
-    const needle = query.toLowerCase();
-    return all
-      .filter(
-        (i) =>
-          i.code.toLowerCase().includes(needle) ||
-          i.name.toLowerCase().includes(needle) ||
-          i.category.toLowerCase().includes(needle),
-      )
-      .slice(0, 60);
-  }, [all, query]);
+    if (!query.trim()) {
+      // Recents first when palette opens with no query.
+      const recentSet = new Set(recents.map((c) => c.toUpperCase()));
+      const recentEntries = recents
+        .map((code) => all.find((e) => e.code.toUpperCase() === code.toUpperCase()))
+        .filter((e): e is PaletteEntry => Boolean(e));
+      const others = all.filter((e) => !recentSet.has(e.code.toUpperCase()));
+      return [...recentEntries, ...others].slice(0, 60);
+    }
+    return fuzzyRank(all, query, recents, 60);
+  }, [all, query, recents]);
 
   useEffect(() => {
     if (open) {
@@ -77,7 +85,10 @@ export function CommandPalette() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") togglePalette(false);
+      if (e.key === "Escape" && open) {
+        e.preventDefault();
+        togglePalette(false);
+      }
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();
         togglePalette();
@@ -85,11 +96,16 @@ export function CommandPalette() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [togglePalette]);
+  }, [open, togglePalette]);
+
+  // A11Y-03 P1: trap Tab inside the dialog while it's open and restore focus
+  // on close. focus-trap handles backdrop clicks safely too.
+  useFocusTrap(dialogRef, open);
 
   if (!open) return null;
 
   const choose = (entry: PaletteEntry) => {
+    recordRecentCode(entry.code);
     navigate(entry.hash);
     togglePalette(false);
   };
@@ -105,125 +121,98 @@ export function CommandPalette() {
       e.preventDefault();
       const sel = filtered[cursor];
       if (sel) choose(sel);
+    } else if ((e.metaKey || e.ctrlKey) && /^[1-9]$/.test(e.key)) {
+      // UI-INT-10 P2: ⌘1..⌘9 jump straight to the Nth result.
+      const idx = Number(e.key) - 1;
+      const target = filtered[idx];
+      if (target) {
+        e.preventDefault();
+        choose(target);
+      }
     }
   };
 
+  const showingRecents = !query.trim() && recents.length > 0;
+
   return (
     <div
-      style={{
-        position: "fixed",
-        inset: 0,
-        background: "rgba(0,0,0,0.45)",
-        zIndex: 9000,
-        display: "flex",
-        justifyContent: "center",
-        alignItems: "flex-start",
-        paddingTop: "14vh",
-        backdropFilter: "blur(6px)",
-      }}
+      className="palette__backdrop"
       onClick={() => togglePalette(false)}
     >
       <div
-        className="surface"
+        ref={dialogRef}
+        className="surface palette__panel"
+        role="dialog"
+        aria-modal="true"
+        aria-label={t("shell.palette.aria_label")}
         onClick={(e) => e.stopPropagation()}
         onKeyDown={onListKey}
-        style={{
-          width: "560px",
-          maxHeight: "62vh",
-          overflow: "hidden",
-          display: "flex",
-          flexDirection: "column",
-          boxShadow: "var(--shadow-elev)",
-        }}
       >
         <input
           ref={inputRef}
+          id={INPUT_ID}
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder={t("shell.palette.placeholder")}
-          style={{
-            background: "transparent",
-            border: "none",
-            color: "var(--text-primary)",
-            fontFamily: "JetBrains Mono, monospace",
-            fontSize: 14,
-            padding: "16px 20px",
-            outline: "none",
-            borderBottom: "1px solid var(--border-subtle)",
-          }}
+          aria-label={t("shell.palette.aria_label")}
+          aria-autocomplete="list"
+          aria-controls={LISTBOX_ID}
+          aria-activedescendant={
+            filtered[cursor] ? `palette-opt-${filtered[cursor].code}` : undefined
+          }
+          role="combobox"
+          aria-expanded
+          autoComplete="off"
+          spellCheck={false}
+          className="palette__input"
         />
-        <div style={{ overflowY: "auto", padding: "4px 0" }}>
+        <div
+          id={LISTBOX_ID}
+          role="listbox"
+          aria-label={t("shell.palette.aria_label")}
+          className="palette__listbox"
+        >
           {filtered.length === 0 && (
-            <div
-              style={{
-                padding: "24px 20px",
-                color: "var(--text-mute)",
-                fontSize: 12,
-              }}
-            >
-              {t("shell.palette.empty")}
-            </div>
+            <div className="palette__empty">{t("shell.palette.empty")}</div>
+          )}
+          {showingRecents && (
+            <div className="palette__section-head">{t("shell.palette.recents")}</div>
           )}
           {filtered.map((it, i) => {
             const isCursor = i === cursor;
+            const recencyHint = i < 9 && (
+              <span aria-hidden className="palette__recency-hint">⌘{i + 1}</span>
+            );
             return (
-              <div
+              <a
                 key={it.id}
+                id={`palette-opt-${it.code}`}
                 role="option"
                 aria-selected={isCursor}
+                href={`#${it.hash}`}
                 onMouseEnter={() => setCursor(i)}
-                onClick={() => choose(it)}
-                style={{
-                  padding: "8px 20px",
-                  display: "flex",
-                  gap: 12,
-                  fontFamily: "JetBrains Mono, monospace",
-                  fontSize: 12,
-                  cursor: "default",
-                  background: isCursor ? "var(--bg-elev-2)" : "transparent",
-                  borderLeft: isCursor
-                    ? "2px solid var(--accent)"
-                    : "2px solid transparent",
+                onClick={(e) => {
+                  if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+                  e.preventDefault();
+                  choose(it);
                 }}
+                className={`palette__option${isCursor ? " palette__option--cursor" : ""}`}
               >
-                <span
-                  style={{
-                    color: "var(--accent)",
-                    width: 80,
-                    fontWeight: 600,
-                  }}
-                >
-                  {it.code}
-                </span>
-                <span style={{ color: "var(--text-primary)" }}>{it.name}</span>
-                <span
-                  style={{
-                    marginLeft: "auto",
-                    color: "var(--text-mute)",
-                    fontSize: 10,
-                    textTransform: "uppercase",
-                    letterSpacing: "0.06em",
-                  }}
-                >
+                <span className="palette__option-code">{it.code}</span>
+                <span className="palette__option-name">{it.name}</span>
+                <span className="palette__option-meta">
                   {it.category}
+                  {recencyHint}
                 </span>
-              </div>
+              </a>
             );
           })}
         </div>
-        <div
-          style={{
-            padding: "8px 16px",
-            borderTop: "1px solid var(--border-subtle)",
-            fontSize: 10,
-            color: "var(--text-mute)",
-            display: "flex",
-            justifyContent: "space-between",
-          }}
-        >
+        <div className="palette__footer">
           <span>
             <span className="kbd">↑↓</span> {t("shell.palette.navigate")} ·{" "}
-            <span className="kbd">↵</span> {t("shell.palette.open")}
+            <span className="kbd">↵</span> {t("shell.palette.open")} ·{" "}
+            <span className="kbd">⌘N</span> jump
           </span>
           <span>
             <span className="kbd">esc</span> {t("shell.palette.close")}

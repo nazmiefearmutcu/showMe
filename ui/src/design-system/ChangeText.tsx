@@ -16,7 +16,7 @@ export function ChangeText({
   signed?: boolean;
 }) {
   if (value == null || Number.isNaN(value)) {
-    return <span style={{ color: "var(--text-mute)" }}>—</span>;
+    return <span className="u-text-mute">—</span>;
   }
   const color =
     value > 0

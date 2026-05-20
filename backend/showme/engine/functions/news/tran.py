@@ -18,7 +18,10 @@ class TRANFunction(BaseFunction):
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         if instrument is None:
-            raise ValueError
+            raise ValueError(
+                "TRAN requires an instrument — pass `symbol=<ticker>` or open the pane via "
+                "the symbol search so an earnings call transcript can be located."
+            )
         items: list = []
         sources: list[str] = []
         warnings: list[str] = []

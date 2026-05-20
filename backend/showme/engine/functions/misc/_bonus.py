@@ -9,7 +9,7 @@ APPL — Applicable Industry/Sector codes (GICS lookup)
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from showme.engine.core.base_data_source import DataKind, DataRequest
@@ -29,7 +29,7 @@ class LITMFunction(BaseFunction):
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         if instrument is None:
-            raise ValueError
+            raise ValueError("LITM requires an instrument symbol")
         live = _truthy(params.get("live_litigation") or params.get("live_filings") or params.get("live"))
         if not live or instrument.asset_class.value != "EQUITY" or not self.deps.sec_edgar:
             return FunctionResult(code=self.code, instrument=instrument,
@@ -43,8 +43,8 @@ class LITMFunction(BaseFunction):
                                  yfinance_timeout=max(1.0, min(float(params.get("yfinance_timeout", 3)), 5.0)),
                                  max_documents=params.get("max_documents", 1))
         events = (res.data or {}).get("events_8k", []) or []
-        # Filter for litigation/governance items.
-        keep = {"1.03", "1.04", "3.03", "5.02", "5.03", "5.07", "8.01"}
+        # Narrow filter for litigation/governance items.
+        keep = {"1.03", "1.04", "3.03", "5.02", "5.03"}
         litm = [e for e in events if e.get("code") in keep]
         rows = [{
             "symbol": instrument.symbol,
@@ -67,11 +67,12 @@ class LITMFunction(BaseFunction):
                 "all_8k_events": len(events),
             }]
         return FunctionResult(code=self.code, instrument=instrument,
-                              data={"status": "ok" if litm else "no_matching_event",
+                              data={"status": "ok" if litm else "empty",
                                      "rows": rows,
                                      "litigation_filings": litm,
+                                     "kept_item_codes": sorted(keep),
                                      "all_8k_events": len(events),
-                                     "methodology": "LITM filters recent SEC 8-K event rows for litigation/governance-relevant items 1.03, 1.04, 3.03, 5.02, 5.03, 5.07, and 8.01. No-event rows are labelled rather than presented as a legal case.",
+                                     "methodology": "LITM filters recent SEC 8-K event rows for litigation/governance-relevant items 1.03, 1.04, 3.03, 5.02, and 5.03. No-event rows are labelled rather than presented as a legal case.",
                                      "field_dictionary": {
                                          "item_code": "SEC 8-K item code.",
                                          "event_type": "Normalized litigation/governance category.",
@@ -152,7 +153,7 @@ class MOSSFunction(BaseFunction):
                     self.deps.yfinance.fetch(DataRequest(
                         kind=DataKind.OHLCV,
                         instrument=inst,
-                        start=datetime.utcnow() - timedelta(days=days),
+                        start=datetime.now(timezone.utc) - timedelta(days=days),
                         interval="1d",
                     )),
                     timeout=timeout,
@@ -221,12 +222,19 @@ class CHGSFunction(BaseFunction):
     """CHGS — Chart Studies (preset TECH bundle)."""
     code = "CHGS"
     name = "Chart Studies"
-    asset_classes = (AssetClass.EQUITY, AssetClass.CRYPTO, AssetClass.ETF, AssetClass.FX)
+    asset_classes = (
+        AssetClass.EQUITY,
+        AssetClass.CRYPTO,
+        AssetClass.ETF,
+        AssetClass.FX,
+        AssetClass.COMMODITY,
+        AssetClass.BOND,
+    )
     category = "chart"
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         if instrument is None:
-            raise ValueError
+            raise ValueError("CHGS requires an instrument symbol")
         if not _truthy(params.get("live_chart") or params.get("live")):
             rows = _chart_template(instrument.symbol)
             return FunctionResult(
@@ -266,15 +274,22 @@ class APPLFunction(BaseFunction):
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         if instrument is None:
-            raise ValueError
+            raise ValueError("APPL requires an instrument symbol")
         live = _truthy(params.get("live_refdata") or params.get("live"))
         if not live or not self.deps.yfinance:
+            reason = (
+                "yfinance adapter not configured; taxonomy fell back to bundled defaults"
+                if not self.deps.yfinance
+                else "live=false; serving bundled taxonomy crosswalk"
+            )
+            warnings = [reason] if not self.deps.yfinance else []
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
                 data=_taxonomy_template(instrument),
                 sources=["taxonomy_model"],
-                metadata={"live": False},
+                metadata={"live": False, "provider_errors": [reason]},
+                warnings=warnings,
             )
         timeout = max(1.0, min(float(params.get("yfinance_timeout", 4)), 6.0))
         try:

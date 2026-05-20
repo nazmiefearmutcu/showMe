@@ -6,6 +6,8 @@ v2 changes (per ShowMe audit E.4):
 - Strength tied to obv_z magnitude
 """
 
+from __future__ import annotations
+
 import pandas as pd
 import numpy as np
 

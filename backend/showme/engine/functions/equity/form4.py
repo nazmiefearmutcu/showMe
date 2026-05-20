@@ -87,14 +87,20 @@ class FORM4Function(BaseFunction):
 
 
 def _fallback_form4(symbol: str) -> dict[str, Any]:
+    # Returns empty rows/filings so the UI does not see all-None sentinel rows
+    # masquerading as real Form 4 data. next_actions guides the user to a fix.
     return {
         "status": "provider_unavailable",
         "symbol": symbol,
         "n": 0,
-        "rows": [{"filingDate": None, "insider": None, "transaction": None, "shares": None, "value": None, "status": "provider_unavailable"}],
-        "filings": [{"filingDate": None, "reportingOwner": None, "status": "provider_unavailable"}],
+        "rows": [],
+        "filings": [],
         "by_month": [],
         "methodology": "SEC Form 4 or provider insider transaction data is required.",
+        "next_actions": [
+            "Configure the SEC EDGAR Form 4 adapter or enable yfinance holdings.",
+            "Retry the call with live=true once a provider is available.",
+        ],
     }
 
 
