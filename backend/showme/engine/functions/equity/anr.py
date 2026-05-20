@@ -221,126 +221,196 @@ class ANRFunction(BaseFunction):
     description = "Equity analyst consensus; crypto için canlı market-consensus proxy."
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
+        """Equity analyst consensus pane.
+
+        Per PY-LINT-04 (R3A): this used to be one CC≈67 mega-function. It now
+        delegates to four named stages so each stage can be tested + reasoned
+        about independently:
+
+          1. ``_resolve_inputs``  — fetch provider data + fill target ranges.
+          2. ``_collect_signals`` — apply the 1-year stale rule, aggregate.
+          3. ``_assemble_cards``  — bucket / target / analyst row scaffolding.
+          4. ``_compose_result``  — build the final ``FunctionResult``.
+        """
         if instrument is None:
-            raise ValueError("ANR requires instrument")
+            # BUG-HUNT S01: previously raise ValueError which the generic
+            # Exception handler in function_index.py converted to a
+            # provider_unavailable envelope (misleading). Return an
+            # explicit input_required so the contract envelope routes to
+            # input_error and the UI prompts for a symbol.
+            return FunctionResult(
+                code=self.code,
+                instrument=None,
+                data={
+                    "status": "input_required",
+                    "reason": "ANR requires a symbol (instrument).",
+                    "rows": [],
+                    "next_actions": [
+                        "Provide a symbol via the function symbol field or Params JSON.",
+                    ],
+                },
+                sources=[],
+            )
         if instrument.asset_class == AssetClass.CRYPTO:
             return await self._execute_crypto(instrument, **params)
-        warnings: list[str] = []
-        sources: list[str] = []
-        recs: list[dict[str, Any]] = []
-        target: dict[str, Any] = {}
-        spot: float | None = None
-        yfinance_raw: dict[str, Any] = {}
+        inputs = await self._resolve_inputs(instrument, params)
+        signals = self._collect_signals(inputs)
+        cards = self._assemble_cards(instrument, inputs, signals)
+        return self._compose_result(instrument, inputs, signals, cards)
+
+    async def _resolve_inputs(
+        self, instrument: Instrument, params: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Stage 1 — provider fetches (Finnhub + Yahoo) + target fallback."""
+        state: dict[str, Any] = {
+            "warnings": [],
+            "sources": [],
+            "recs": [],
+            "target": {},
+            "spot": None,
+            "yfinance_raw": {},
+        }
+        await self._fetch_finnhub(instrument, state)
+        await self._fetch_yfinance(instrument, params, state)
+        if not state["recs"] and self.deps.yfinance:
+            await self._fetch_yfinance_retry(instrument, params, state)
+        if state["recs"] and "yfinance_recommendations" in state["sources"]:
+            state["warnings"] = [
+                w for w in state["warnings"] if "FINNHUB_API_KEY not set" not in w
+            ]
+        if not state["recs"]:
+            state["warnings"].append(
+                "Analyst consensus live feed unavailable; no consensus buckets were fabricated."
+            )
+        self._fill_target_fallback(state)
+        return state
+
+    async def _fetch_finnhub(self, instrument: Instrument, state: dict[str, Any]) -> None:
         try:
             if self.deps.finnhub:
-                recs = await self.deps.finnhub.recommendations(instrument.symbol)
-                target = await self.deps.finnhub.price_target(instrument.symbol)
-                sources.append("finnhub")
+                state["recs"] = await self.deps.finnhub.recommendations(instrument.symbol)
+                state["target"] = await self.deps.finnhub.price_target(instrument.symbol)
+                state["sources"].append("finnhub")
         except Exception as e:
-            warnings.append(f"finnhub: {e}")
-        try:
-            if self.deps.yfinance:
-                rd = await self.deps.yfinance.fetch(DataRequest(
-                    kind=DataKind.REFDATA,
-                    instrument=instrument,
-                    extra={
-                        "timeout": float(params.get("yfinance_timeout", 24)),
-                        "info_timeout": float(params.get("yfinance_info_timeout", 8)),
-                        "recommendations_timeout": float(params.get("yfinance_recommendations_timeout", 10)),
-                        "actions_timeout": float(params.get("yfinance_actions_timeout", 6)),
-                        "include_recommendations": True,
-                    },
-                ))
-                yfinance_raw = (rd.extras or {}).get("raw", {}) if hasattr(rd, "extras") else {}
-                spot = finite(
-                    yfinance_raw.get("currentPrice")
-                    or yfinance_raw.get("regularMarketPrice")
-                    or yfinance_raw.get("previousClose")
-                )
-                yf_recs = _yfinance_recommendations(yfinance_raw)
-                if not recs and yf_recs:
-                    recs = yf_recs
-                    sources.append("yfinance_recommendations")
-                yf_target = _target_from_yfinance_raw(yfinance_raw)
-                if (not target or not any(finite(v) for v in target.values())) and yf_target:
-                    target = yf_target
-                    sources.append("yfinance_targets")
-                if (spot is not None or yf_recs or yf_target) and "yfinance" not in sources:
-                    sources.append("yfinance")
-        except Exception as e:
-            warnings.append(f"yfinance: {e}")
-        if not recs and self.deps.yfinance:
-            try:
-                retry_rd = await self.deps.yfinance.fetch(DataRequest(
-                    kind=DataKind.REFDATA,
-                    instrument=instrument,
-                    extra={
-                        "timeout": float(params.get("yfinance_retry_timeout", 40)),
-                        "info_timeout": float(params.get("yfinance_retry_info_timeout", 2)),
-                        "recommendations_timeout": float(params.get("yfinance_retry_recommendations_timeout", 20)),
-                        "actions_timeout": float(params.get("yfinance_retry_actions_timeout", 2)),
-                        "include_recommendations": True,
-                    },
-                ))
-                retry_raw = (retry_rd.extras or {}).get("raw", {}) if hasattr(retry_rd, "extras") else {}
-                retry_recs = _yfinance_recommendations(retry_raw)
-                if retry_recs:
-                    yfinance_raw = {**yfinance_raw, **retry_raw}
-                    recs = retry_recs
-                    for source in ("yfinance_recommendations", "yfinance"):
-                        if source not in sources:
-                            sources.append(source)
-                retry_target = _target_from_yfinance_raw(retry_raw)
-                if (not target or not any(finite(v) for v in target.values())) and retry_target:
-                    target = retry_target
-                    if "yfinance_targets" not in sources:
-                        sources.append("yfinance_targets")
-                if spot is None:
-                    spot = finite(
-                        retry_raw.get("currentPrice")
-                        or retry_raw.get("regularMarketPrice")
-                        or retry_raw.get("previousClose")
-                    )
-            except Exception as e:
-                warnings.append(f"yfinance retry: {e}")
-        if recs and "yfinance_recommendations" in sources:
-            warnings = [w for w in warnings if "FINNHUB_API_KEY not set" not in w]
+            state["warnings"].append(f"finnhub: {e}")
 
-        if not recs:
-            warnings.append("Analyst consensus live feed unavailable; no consensus buckets were fabricated.")
-        if not target or not any(finite(v) for v in target.values()):
-            if spot is not None:
-                target = {
-                    "targetHigh": round(spot * 1.28, 2),
-                    "targetLow": round(spot * 0.82, 2),
-                    "targetMean": round(spot * 1.08, 2),
-                    "targetMedian": round(spot * 1.06, 2),
-                    "source_mode": "price_target_reference_from_spot",
-                }
-            else:
-                target = {
-                    "targetHigh": None,
-                    "targetLow": None,
-                    "targetMean": None,
-                    "targetMedian": None,
-                    "source_mode": "price_target_unavailable_no_spot",
-                }
-            if "analyst_target_reference" not in sources:
-                sources.append("analyst_target_reference")
+    async def _fetch_yfinance(
+        self, instrument: Instrument, params: dict[str, Any], state: dict[str, Any]
+    ) -> None:
+        try:
+            if not self.deps.yfinance:
+                return
+            rd = await self.deps.yfinance.fetch(DataRequest(
+                kind=DataKind.REFDATA,
+                instrument=instrument,
+                extra={
+                    "timeout": float(params.get("yfinance_timeout", 24)),
+                    "info_timeout": float(params.get("yfinance_info_timeout", 8)),
+                    "recommendations_timeout": float(params.get("yfinance_recommendations_timeout", 10)),
+                    "actions_timeout": float(params.get("yfinance_actions_timeout", 6)),
+                    "include_recommendations": True,
+                },
+            ))
+            yfinance_raw = (rd.extras or {}).get("raw", {}) if hasattr(rd, "extras") else {}
+            state["yfinance_raw"] = yfinance_raw
+            state["spot"] = finite(
+                yfinance_raw.get("currentPrice")
+                or yfinance_raw.get("regularMarketPrice")
+                or yfinance_raw.get("previousClose")
+            )
+            yf_recs = _yfinance_recommendations(yfinance_raw)
+            if not state["recs"] and yf_recs:
+                state["recs"] = yf_recs
+                state["sources"].append("yfinance_recommendations")
+            yf_target = _target_from_yfinance_raw(yfinance_raw)
+            target = state["target"]
+            if (not target or not any(finite(v) for v in target.values())) and yf_target:
+                state["target"] = yf_target
+                state["sources"].append("yfinance_targets")
+            if (state["spot"] is not None or yf_recs or yf_target) and "yfinance" not in state["sources"]:
+                state["sources"].append("yfinance")
+        except Exception as e:
+            state["warnings"].append(f"yfinance: {e}")
+
+    async def _fetch_yfinance_retry(
+        self, instrument: Instrument, params: dict[str, Any], state: dict[str, Any]
+    ) -> None:
+        try:
+            retry_rd = await self.deps.yfinance.fetch(DataRequest(
+                kind=DataKind.REFDATA,
+                instrument=instrument,
+                extra={
+                    "timeout": float(params.get("yfinance_retry_timeout", 40)),
+                    "info_timeout": float(params.get("yfinance_retry_info_timeout", 2)),
+                    "recommendations_timeout": float(params.get("yfinance_retry_recommendations_timeout", 20)),
+                    "actions_timeout": float(params.get("yfinance_retry_actions_timeout", 2)),
+                    "include_recommendations": True,
+                },
+            ))
+            retry_raw = (retry_rd.extras or {}).get("raw", {}) if hasattr(retry_rd, "extras") else {}
+            retry_recs = _yfinance_recommendations(retry_raw)
+            if retry_recs:
+                state["yfinance_raw"] = {**state["yfinance_raw"], **retry_raw}
+                state["recs"] = retry_recs
+                for source in ("yfinance_recommendations", "yfinance"):
+                    if source not in state["sources"]:
+                        state["sources"].append(source)
+            retry_target = _target_from_yfinance_raw(retry_raw)
+            target = state["target"]
+            if (not target or not any(finite(v) for v in target.values())) and retry_target:
+                state["target"] = retry_target
+                if "yfinance_targets" not in state["sources"]:
+                    state["sources"].append("yfinance_targets")
+            if state["spot"] is None:
+                state["spot"] = finite(
+                    retry_raw.get("currentPrice")
+                    or retry_raw.get("regularMarketPrice")
+                    or retry_raw.get("previousClose")
+                )
+        except Exception as e:
+            state["warnings"].append(f"yfinance retry: {e}")
+
+    def _fill_target_fallback(self, state: dict[str, Any]) -> None:
+        target = state["target"]
+        spot = state["spot"]
+        if target and any(finite(v) for v in target.values()):
+            return
+        if spot is not None:
+            state["target"] = {
+                "targetHigh": round(spot * 1.28, 2),
+                "targetLow": round(spot * 0.82, 2),
+                "targetMean": round(spot * 1.08, 2),
+                "targetMedian": round(spot * 1.06, 2),
+                "source_mode": "price_target_reference_from_spot",
+            }
+        else:
+            state["target"] = {
+                "targetHigh": None,
+                "targetLow": None,
+                "targetMean": None,
+                "targetMedian": None,
+                "source_mode": "price_target_unavailable_no_spot",
+            }
+        if "analyst_target_reference" not in state["sources"]:
+            state["sources"].append("analyst_target_reference")
+
+    def _collect_signals(self, inputs: dict[str, Any]) -> dict[str, Any]:
+        """Stage 2 — apply the 365-day staleness rule and aggregate buckets."""
+        recs = inputs["recs"]
+        warnings = inputs["warnings"]
         cutoff = _today() - timedelta(days=365)
         consensus_recs = _latest_recommendation_rows(recs)
         dated_recs = [(row, _date_from_row(row)) for row in consensus_recs if isinstance(row, dict)]
         included = [row for row, dt in dated_recs if dt is None or dt >= cutoff]
         excluded_stale = [row for row, dt in dated_recs if dt is not None and dt < cutoff]
         if consensus_recs and not included:
-            warnings.append("All recommendation rows are stale by the one-year rule; consensus totals are zero.")
+            warnings.append(
+                "All recommendation rows are stale by the one-year rule; consensus totals are zero."
+            )
 
         totals = _aggregate_recommendations(included)
         analyst_count = sum(totals.values())
         score = _consensus_score(totals)
-        positive = totals["strongBuy"] + totals["buy"]
-        neutral = totals["hold"]
-        negative = totals["sell"] + totals["strongSell"]
         included_dates = [dt for _, dt in dated_recs if dt is not None and dt >= cutoff]
         stale_dates = [dt for _, dt in dated_recs if dt is not None and dt < cutoff]
         last_updated = max(included_dates).date().isoformat() if included_dates else None
@@ -355,6 +425,31 @@ class ANRFunction(BaseFunction):
             "undated_provider_rows": sum(1 for _, dt in dated_recs if dt is None),
             "rule": "Recommendation rows older than one year are excluded from consensus.",
         }
+        return {
+            "cutoff": cutoff,
+            "consensus_recs": consensus_recs,
+            "totals": totals,
+            "analyst_count": analyst_count,
+            "score": score,
+            "last_updated": last_updated,
+            "oldest_included": oldest_included,
+            "stale_rule": stale_rule,
+        }
+
+    def _assemble_cards(
+        self,
+        instrument: Instrument,
+        inputs: dict[str, Any],
+        signals: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Stage 3 — bucket / target / analyst row scaffolding + summary card."""
+        totals = signals["totals"]
+        analyst_count = signals["analyst_count"]
+        target = inputs["target"]
+        spot = inputs["spot"]
+        positive = totals["strongBuy"] + totals["buy"]
+        neutral = totals["hold"]
+        negative = totals["sell"] + totals["strongSell"]
         target_source_mode, target_source_label, not_analyst_target = _target_source(target, spot)
         target_rows = _target_rows(target, target_source_mode, not_analyst_target)
         bucket_rows = [
@@ -367,7 +462,7 @@ class ANRFunction(BaseFunction):
             }
             for key, label, score_value in BUCKETS
         ]
-        analyst_rows = _analyst_rows_from_yfinance_raw(yfinance_raw, cutoff)
+        analyst_rows = _analyst_rows_from_yfinance_raw(inputs["yfinance_raw"], signals["cutoff"])
         if analyst_rows:
             analyst_detail_status = "broker_actions_available"
             analyst_detail_reason = (
@@ -383,20 +478,21 @@ class ANRFunction(BaseFunction):
         summary = {
             "title": f"{instrument.symbol} Analyst Consensus",
             "analyst_count": analyst_count,
-            "consensus_score": score,
-            "label": _consensus_label(score),
+            "consensus_score": signals["score"],
+            "label": _consensus_label(signals["score"]),
             "positive_pct": _pct(positive, analyst_count),
             "neutral_pct": _pct(neutral, analyst_count),
             "negative_pct": _pct(negative, analyst_count),
-            "last_updated": last_updated,
+            "last_updated": signals["last_updated"],
             "included_count": analyst_count,
-            "excluded_stale_count": stale_rule["excluded_stale_count"],
-            "oldest_included_rating_date": oldest_included,
+            "excluded_stale_count": signals["stale_rule"]["excluded_stale_count"],
+            "oldest_included_rating_date": signals["oldest_included"],
             "target_price_source": target_source_label,
             "target_price_source_mode": target_source_mode,
             "not_analyst_target": not_analyst_target,
             "analyst_detail_status": analyst_detail_status,
         }
+        sources = inputs["sources"]
         if "finnhub" in sources:
             consensus_source = "finnhub"
         elif "yfinance_recommendations" in sources:
@@ -404,19 +500,45 @@ class ANRFunction(BaseFunction):
         else:
             consensus_source = "provider_unavailable"
         summary["consensus_source"] = consensus_source
+        return {
+            "summary": summary,
+            "bucket_rows": bucket_rows,
+            "target_rows": target_rows,
+            "analyst_rows": analyst_rows,
+            "analyst_detail_status": analyst_detail_status,
+            "analyst_detail_reason": analyst_detail_reason,
+            "consensus_source": consensus_source,
+            "target_source_mode": target_source_mode,
+            "target_source_label": target_source_label,
+            "not_analyst_target": not_analyst_target,
+        }
+
+    def _compose_result(
+        self,
+        instrument: Instrument,
+        inputs: dict[str, Any],
+        signals: dict[str, Any],
+        cards: dict[str, Any],
+    ) -> FunctionResult:
+        """Stage 4 — final ``FunctionResult`` assembly."""
+        target = inputs["target"]
+        analyst_count = signals["analyst_count"]
+        summary = cards["summary"]
+        analyst_rows = cards["analyst_rows"]
+        analyst_detail_status = cards["analyst_detail_status"]
         source_details = [
             {
-                "name": consensus_source,
+                "name": cards["consensus_source"],
                 "status": "aggregate_consensus_available"
-                if consensus_source in {"finnhub", "yfinance_recommendations"}
+                if cards["consensus_source"] in {"finnhub", "yfinance_recommendations"}
                 else "unavailable_no_fabricated_consensus",
-                "asOf": last_updated,
+                "asOf": signals["last_updated"],
                 "fields": "recommendation buckets used for consensus score",
             },
             {
                 "name": "target_price",
-                "status": target_source_mode,
-                "asOf": target.get("lastUpdated") or target.get("last_update") or last_updated,
+                "status": cards["target_source_mode"],
+                "asOf": target.get("lastUpdated") or target.get("last_update") or signals["last_updated"],
                 "fields": "high, mean, median, low target-price statistics",
             },
             {
@@ -434,12 +556,12 @@ class ANRFunction(BaseFunction):
                 "summary": summary,
                 "metrics": {
                     "analyst_count": analyst_count,
-                    "consensus_score": score,
+                    "consensus_score": signals["score"],
                     "positive_pct": summary["positive_pct"],
                     "neutral_pct": summary["neutral_pct"],
                     "negative_pct": summary["negative_pct"],
                     "included_count": analyst_count,
-                    "excluded_stale_count": stale_rule["excluded_stale_count"],
+                    "excluded_stale_count": signals["stale_rule"]["excluded_stale_count"],
                 },
                 "rows": analyst_rows,
                 "analyst_rows": analyst_rows,
@@ -455,20 +577,20 @@ class ANRFunction(BaseFunction):
                     "last_update",
                 ],
                 "analyst_detail_status": analyst_detail_status,
-                "analyst_detail_reason": analyst_detail_reason,
-                "bucket_rows": bucket_rows,
-                "target_rows": target_rows,
+                "analyst_detail_reason": cards["analyst_detail_reason"],
+                "bucket_rows": cards["bucket_rows"],
+                "target_rows": cards["target_rows"],
                 "target_price_source": {
-                    "mode": target_source_mode,
-                    "label": target_source_label,
-                    "not_analyst_target": not_analyst_target,
+                    "mode": cards["target_source_mode"],
+                    "label": cards["target_source_label"],
+                    "not_analyst_target": cards["not_analyst_target"],
                 },
-                "stale_rule": stale_rule,
-                "recommendations": recs,
-                "consensus_recommendations": consensus_recs,
+                "stale_rule": signals["stale_rule"],
+                "recommendations": inputs["recs"],
+                "consensus_recommendations": signals["consensus_recs"],
                 "price_target": target,
                 "analyst_count": analyst_count,
-                "spot": spot,
+                "spot": inputs["spot"],
                 "source_details": source_details,
                 "data_notes": [
                     "Broker-level analyst rows require a provider that supplies analyst-detail recommendations.",
@@ -476,7 +598,7 @@ class ANRFunction(BaseFunction):
                     "When aggregate analyst buckets are unavailable, ShowMe leaves consensus empty instead of reusing a static distribution.",
                 ],
                 "analyst_quality": {
-                    "status": "provider_not_configured",
+                    "status": analyst_detail_status,
                     "required_inputs": [
                         "broker-level rating history",
                         "named analyst identifiers",
@@ -485,8 +607,10 @@ class ANRFunction(BaseFunction):
                     ],
                     "methodology": (
                         "Accuracy scoring should compare each analyst's historical rating/target "
-                        "changes against subsequent realized returns. The current aggregate feed "
-                        "cannot support that calculation."
+                        "changes against subsequent realized returns. Broker rating actions, when "
+                        "supplied, capture upgrade/downgrade and target revisions but still miss "
+                        "named-analyst identifiers and realized forward returns required for a full "
+                        "hit-rate score."
                     ),
                 },
                 "alert_rules": [
@@ -529,8 +653,8 @@ class ANRFunction(BaseFunction):
                     "oldest_included_rating_date": "Oldest rating date still included in the current consensus.",
                 },
             },
-            metadata={"stale_cutoff_date": cutoff.date().isoformat()},
-            sources=sources, warnings=warnings,
+            metadata={"stale_cutoff_date": signals["cutoff"].date().isoformat()},
+            sources=inputs["sources"], warnings=inputs["warnings"],
         )
 
     async def _execute_crypto(self, instrument: Instrument, **params: Any) -> FunctionResult:

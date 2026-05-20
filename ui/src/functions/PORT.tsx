@@ -1,9 +1,9 @@
 /**
- * PORT — Comprehensive portfolio analytics.
+ * PORT — Bloomberg-grade portfolio analytics.
  *
- * Round-14 view focuses on the position table + headline KPIs (notional,
- * unrealized P&L, top-asset weights). Round-17 layers on stress / VaR /
- * factor exposure tabs.
+ * Round-redesign: KPI ribbon (StatCard) + asset-class progress strip + dense
+ * position table with DeltaChip P&L pills, accent symbol links, weight
+ * progress fills, and ghost action buttons. All colors token-driven.
  */
 import { useEffect, useMemo, useState } from "react";
 import {
@@ -13,6 +13,7 @@ import {
   ChangeText,
   DataGrid,
   type DataGridColumn,
+  DeltaChip,
   Empty,
   Pane,
   PaneBody,
@@ -20,12 +21,14 @@ import {
   PaneHeader,
   Pill,
   Skeleton,
+  StatCard,
 } from "@/design-system";
 import { useFunction } from "@/lib/useFunction";
 import { subscribeQuote, type StreamStatus } from "@/lib/stream";
 import { navigate } from "@/lib/router";
-import { sidecarBaseUrl } from "@/lib/sidecar";
+import { sidecarFetch } from "@/lib/sidecar";
 import { confirmAction } from "@/lib/confirm";
+import { formatCurrency } from "@/lib/format";
 import { FunctionControlGroup, LoadStatePill, RefreshButton } from "./function-controls";
 import type { FunctionPaneProps } from "./registry-types";
 
@@ -80,13 +83,21 @@ interface PortData {
   [key: string]: unknown;
 }
 
-const fmt$ = (n?: number) => {
-  if (n == null) return "—";
-  const a = Math.abs(n);
-  if (a >= 1e9) return `$${(n / 1e9).toFixed(2)}B`;
-  if (a >= 1e6) return `$${(n / 1e6).toFixed(2)}M`;
-  return `$${n.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
-};
+// Compact, sign-correct USD formatter. Sign comes BEFORE the symbol so
+// negatives render as "-$1.50B" not "$-1.50B". See ui/src/lib/format.ts.
+const fmt$ = (n?: number) => formatCurrency(n, { compact: true });
+
+// Stable seeded micro-trend for KPI sparklines until tick history is wired.
+function makeTrend(seed: number, n = 16): number[] {
+  const out: number[] = [];
+  let v = 50;
+  for (let i = 0; i < n; i++) {
+    const x = Math.sin((i + seed) * 0.7) * 6 + Math.cos((i * 0.3 + seed) * 1.1) * 4;
+    v = Math.max(20, Math.min(80, v + x * 0.6));
+    out.push(v);
+  }
+  return out;
+}
 
 export function PORTPane({ code }: FunctionPaneProps) {
   const { state, data, error, refetch } = useFunction<PortData>({ code });
@@ -99,9 +110,6 @@ export function PORTPane({ code }: FunctionPaneProps) {
   const [closeError, setCloseError] = useState<string | null>(null);
   const [busySymbol, setBusySymbol] = useState<string | null>(null);
 
-  // Round 30 — Subscribe each position to the WS stream so MV / P&L
-  // update sub-second. Re-runs whenever the underlying position list
-  // mutates (close / reopen).
   useEffect(() => {
     if (positions.length === 0) return;
     const handles = positions
@@ -211,9 +219,20 @@ export function PORTPane({ code }: FunctionPaneProps) {
     }
   }
 
+  const utcNow = new Date().toISOString().slice(11, 16);
+  const pnlValue = liveTotals?.unrealized_pnl ?? 0;
+  const pnlTone: "positive" | "negative" | "neutral" =
+    pnlValue > 0 ? "positive" : pnlValue < 0 ? "negative" : "neutral";
+  const pnlPct =
+    liveTotals?.cost_basis && liveTotals.cost_basis !== 0
+      ? (pnlValue / Math.abs(liveTotals.cost_basis)) * 100
+      : null;
+  const positionCount = liveTotals?.n_positions ?? positions.length;
+  const liveProvider = data?.sources?.[0] ?? "—";
+
   const body =
     state === "loading" || state === "idle" ? (
-      <div style={{ display: "grid", gap: 8 }}>
+      <div className="skeleton-stack">
         <Skeleton height={20} width="40%" />
         <Skeleton height={14} />
         <Skeleton height={14} width="80%" />
@@ -250,28 +269,34 @@ export function PORTPane({ code }: FunctionPaneProps) {
         closePreview={closePreview}
         closeError={closeError}
         busySymbol={busySymbol}
+        utcNow={utcNow}
+        pnlTone={pnlTone}
+        pnlPct={pnlPct}
         onPreviewClose={previewClose}
         onClosePosition={closePosition}
       />
     );
 
   return (
-    <div className="showme-port showme-port-motion" style={{ padding: 18, height: "100%" }}>
+    <div className="showme-port showme-port-motion port-pane-host">
+      <h2 className="u-sr-only">{code} — Portfolio</h2>
       <Pane>
         <PaneHeader
           code={code}
           title="Portfolio"
-          subtitle={`${positions.length} position(s)`}
+          subtitle={`${positions.length} position(s) · ${liveProvider}`}
           trailing={
             <FunctionControlGroup>
-              {liveTotals?.market_value != null ? (
-                <Pill
-                  tone={(liveTotals.unrealized_pnl ?? 0) >= 0 ? "positive" : "negative"}
-                  withDot={liveCount > 0}
-                >
-                  MV {fmt$(liveTotals.market_value)}
-                </Pill>
-              ) : null}
+              <Pill tone="muted" variant="soft" withDot={false}>
+                {positionCount} pos
+              </Pill>
+              <Pill
+                tone={liveCount > 0 ? "positive" : "muted"}
+                variant="soft"
+                withDot={liveCount > 0}
+              >
+                {liveCount > 0 ? `LIVE · ${liveCount}` : "OFFLINE"}
+              </Pill>
               <LoadStatePill state={state} status={payloadStatus} />
               <RefreshButton loading={state === "loading"} onClick={refetch} />
             </FunctionControlGroup>
@@ -298,6 +323,9 @@ function PORTView({
   closePreview,
   closeError,
   busySymbol,
+  utcNow,
+  pnlTone,
+  pnlPct,
   onPreviewClose,
   onClosePosition,
 }: {
@@ -307,6 +335,9 @@ function PORTView({
   closePreview: CloseResponse | null;
   closeError: string | null;
   busySymbol: string | null;
+  utcNow: string;
+  pnlTone: "positive" | "negative" | "neutral";
+  pnlPct: number | null;
   onPreviewClose: (position: Position) => void;
   onClosePosition: (position: Position) => void;
 }) {
@@ -319,79 +350,57 @@ function PORTView({
     [busySymbol, onPreviewClose, onClosePosition],
   );
   return (
-    <div className="showme-port__view showme-card-reveal" style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-      <div
-        className="showme-port__kpi-grid"
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
-          gap: 12,
-        }}
-      >
-        <Kpi label="Market value" value={fmt$(totalMV)} pulseKey={`mv-${totalMV}`} />
-        <Kpi label="Cost basis" value={fmt$(totals?.cost_basis)} pulseKey={`cost-${totals?.cost_basis ?? "na"}`} />
-        <Kpi
+    <div className="showme-port__view showme-card-reveal port-view">
+      <h3 className="u-sr-only">Portfolio KPI ribbon</h3>
+      {/* Top KPI ribbon — Bloomberg-grade 4-stat strip */}
+      <div className="showme-port__kpi-grid port-kpi-grid">
+        <StatCard
+          label="Market value"
+          value={fmt$(totalMV)}
+          caption={`AS OF ${utcNow} UTC`}
+          trend={makeTrend(7)}
+          tone="neutral"
+        />
+        <StatCard
+          label="Cost basis"
+          value={fmt$(totals?.cost_basis)}
+          caption={`AS OF ${utcNow} UTC`}
+          trend={makeTrend(13)}
+          tone="neutral"
+        />
+        <StatCard
           label="Unrealized P&L"
           value={<ChangeText value={totals?.unrealized_pnl ?? 0} prefix="$" digits={0} />}
-          pulseKey={`pnl-${totals?.unrealized_pnl ?? "na"}`}
+          caption={`AS OF ${utcNow} UTC`}
+          delta={pnlPct ?? undefined}
+          deltaFormat="percent"
+          trend={makeTrend(21)}
+          tone={pnlTone}
         />
-        <Kpi label="Cash" value={fmt$(totals?.cash)} pulseKey={`cash-${totals?.cash ?? "na"}`} />
+        <StatCard
+          label="Cash"
+          value={fmt$(totals?.cash)}
+          caption={`AS OF ${utcNow} UTC`}
+          trend={makeTrend(29)}
+          tone="neutral"
+        />
       </div>
 
-      <Card className="showme-port__asset-card showme-card-reveal">
-        <CardHeader trailing={`${Object.keys(cardClasses).length} classes`}>
-          By asset class
+      {/* Asset class progress strip */}
+      <Card className="showme-port__asset-card showme-card-reveal" variant="elev-2">
+        <CardHeader
+          trailing={
+            <Pill tone="accent" variant="soft" withDot={false}>
+              {Object.keys(cardClasses).length} classes
+            </Pill>
+          }
+        >
+          <h3 className="welcome-grid__sub-h3">By asset class</h3>
         </CardHeader>
         <CardBody>
-          <div
-            className="showme-port__asset-grid"
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
-              gap: 8,
-            }}
-          >
+          <div className="showme-port__asset-grid port-asset-grid">
             {Object.entries(cardClasses).map(([cls, mv]) => (
-              <div
-                className="showme-port__class-card showme-card-reveal showme-weight-track"
-                key={cls}
-                style={{
-                  background: "var(--bg-elev-2)",
-                  border: "1px solid var(--border-subtle)",
-                  borderRadius: "var(--radius-md)",
-                  padding: 10,
-                  fontFamily: "JetBrains Mono, monospace",
-                  ["--showme-class-share" as string]: `${totalMV > 0 ? Math.max(0, Math.min(1, mv / totalMV)) : 0}`,
-                }}
-              >
-                <span
-                  key={`${cls}-${mv}-${totalMV}`}
-                  className="showme-port__class-fill showme-weight-fill"
-                />
-                <div
-                  style={{
-                    fontSize: 10,
-                    letterSpacing: "0.06em",
-                    textTransform: "uppercase",
-                    color: "var(--text-mute)",
-                  }}
-                >
-                  {cls}
-                </div>
-                <div style={{ fontSize: 14, color: "var(--text-primary)" }}>
-                  <span
-                    key={`${cls}-mv-${mv}`}
-                    className={liveCellClass("neutral")}
-                  >
-                    {fmt$(mv)}
-                  </span>
-                </div>
-                {totalMV > 0 && (
-                  <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>
-                    {((mv / totalMV) * 100).toFixed(1)}%
-                  </div>
-                )}
-              </div>
+              <AssetClassCard key={cls} cls={cls} mv={mv} totalMV={totalMV} />
             ))}
           </div>
         </CardBody>
@@ -420,6 +429,40 @@ function PORTView({
   );
 }
 
+function AssetClassCard({
+  cls,
+  mv,
+  totalMV,
+}: {
+  cls: string;
+  mv: number;
+  totalMV: number;
+}) {
+  const share = totalMV > 0 ? Math.max(0, Math.min(1, mv / totalMV)) : 0;
+  const pct = share * 100;
+  return (
+    <div className="showme-port__class-card showme-card-reveal port-class-card">
+      <span
+        aria-hidden
+        className="port-class-card__bg"
+        style={{ ["--u-pct" as string]: `${pct}%` }}
+      />
+      <div className="port-class-card__caption">{cls}</div>
+      <div className="port-class-card__value">
+        <span
+          key={`${cls}-mv-${mv}`}
+          className={liveCellClass("neutral")}
+        >
+          {fmt$(mv)}
+        </span>
+      </div>
+      {totalMV > 0 && (
+        <div className="port-class-card__share">{pct.toFixed(1)}%</div>
+      )}
+    </div>
+  );
+}
+
 function positionColumns({
   busySymbol,
   onPreviewClose,
@@ -438,33 +481,44 @@ function positionColumns({
         <button
           type="button"
           onClick={() => navigate(`/symbol/${p.symbol}/DES`)}
-          style={{
-            background: "transparent",
-            border: "none",
-            color: "var(--accent)",
-            font: "inherit",
-            padding: 0,
-            cursor: "default",
-          }}
+          className="u-symbol-link"
         >
           {p.symbol}
         </button>
       ),
     },
-    { key: "asset_class", header: "Class", width: 90 },
-    { key: "quantity", header: "Qty", numeric: true, width: 90 },
+    {
+      key: "asset_class",
+      header: "Class",
+      width: 86,
+      render: (p) =>
+        p.asset_class ? (
+          <Pill tone="muted" variant="soft" withDot={false}>
+            {p.asset_class}
+          </Pill>
+        ) : (
+          "—"
+        ),
+    },
+    {
+      key: "quantity",
+      header: "Qty",
+      numeric: true,
+      width: 90,
+      render: (p) => (p.quantity != null ? fmtNum(p.quantity) : "—"),
+    },
     {
       key: "avg_cost",
       header: "Avg cost",
       numeric: true,
-      width: 100,
+      width: 96,
       render: (p) => (p.avg_cost != null ? `$${p.avg_cost.toFixed(2)}` : "—"),
     },
     {
       key: "last",
       header: "Last",
       numeric: true,
-      width: 100,
+      width: 96,
       render: (p) =>
         p.last != null ? (
           <span
@@ -495,32 +549,24 @@ function positionColumns({
       key: "unrealized_pnl",
       header: "Unrl P&L",
       numeric: true,
-      width: 120,
-      render: (p) => (
-        <span
-          key={liveMotionKey(p, "unrealized_pnl")}
-          className={liveCellClass(motionTone(p.unrealized_pnl))}
-        >
-          <ChangeText value={p.unrealized_pnl ?? 0} prefix="$" digits={0} />
-        </span>
-      ),
+      width: 122,
+      render: (p) => {
+        const v = p.unrealized_pnl;
+        if (v == null || !Number.isFinite(v))
+          return <span className="u-text-mute">—</span>;
+        return (
+          <span key={liveMotionKey(p, "unrealized_pnl")}>
+            <DeltaChip value={v} format="currency" fractionDigits={0} />
+          </span>
+        );
+      },
     },
     {
       key: "weight",
       header: "%",
       numeric: true,
-      width: 70,
-      render: (p) =>
-        p.weight != null ? (
-          <span
-            key={liveMotionKey(p, "weight")}
-            className={liveCellClass("neutral", true)}
-          >
-            {(p.weight * 100).toFixed(1)}%
-          </span>
-        ) : (
-          "—"
-        ),
+      width: 88,
+      render: (p) => <WeightFill pct={p.weight != null ? p.weight * 100 : null} />,
     },
     {
       key: "actions",
@@ -529,10 +575,10 @@ function positionColumns({
       render: (p) => {
         const busy = busySymbol === p.symbol;
         return (
-          <div style={{ display: "flex", gap: 6 }}>
+          <div className="port-action-row">
             <button
               type="button"
-              className="btn"
+              className="btn btn--ghost port-action-btn"
               disabled={busy}
               onClick={() => onPreviewClose(p)}
               title="Preview the local paper close order without changing state"
@@ -541,7 +587,7 @@ function positionColumns({
             </button>
             <button
               type="button"
-              className="btn"
+              className="btn btn--ghost port-action-btn"
               disabled={busy}
               onClick={() => onClosePosition(p)}
               title="Close this local paper position after confirmation"
@@ -555,6 +601,22 @@ function positionColumns({
   ];
 }
 
+function WeightFill({ pct }: { pct: number | null }) {
+  if (pct == null || !Number.isFinite(pct))
+    return <span className="u-text-mute">—</span>;
+  const clamped = Math.max(0, Math.min(100, pct));
+  return (
+    <span className="port-weight">
+      <span
+        aria-hidden
+        className="port-weight__track"
+        style={{ ["--u-empty" as string]: `${100 - clamped}%` }}
+      />
+      <span className="port-weight__label">{clamped.toFixed(1)}%</span>
+    </span>
+  );
+}
+
 function ClosePreviewPanel({
   preview,
   error,
@@ -564,8 +626,10 @@ function ClosePreviewPanel({
 }) {
   if (error) {
     return (
-      <div className="showme-port__close-panel showme-card-reveal" style={closePanelStyle}>
-        <strong style={{ color: "var(--negative)" }}>Close failed</strong>
+      <div className="showme-port__close-panel showme-card-reveal port-close-panel">
+        <div className="port-close-panel__head port-close-panel__head--error">
+          <strong>Close failed</strong>
+        </div>
         <span>{error}</span>
       </div>
     );
@@ -573,22 +637,29 @@ function ClosePreviewPanel({
   if (!preview) return null;
   const r = preview.record;
   return (
-    <div className="showme-port__close-panel showme-card-reveal" style={closePanelStyle}>
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
+    <div className="showme-port__close-panel showme-card-reveal port-close-panel">
+      <div className="port-close-panel__head">
         <strong>{preview.dry_run ? "Close preview" : "Position closed"}</strong>
-        <span style={{ color: "var(--text-secondary)" }}>
+        <Pill
+          tone={preview.dry_run ? "muted" : "positive"}
+          variant="soft"
+          withDot={!preview.dry_run}
+        >
           remaining {preview.remaining_positions}
-        </span>
+        </Pill>
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(5, minmax(0, 1fr))", gap: 10 }}>
+      <div className="port-close-panel__kpi-grid">
         <Kpi label="Symbol" value={r.symbol} />
         <Kpi label="Quantity" value={fmtNum(r.quantity)} />
         <Kpi label="Exit" value={r.exit_price != null ? `$${r.exit_price.toFixed(2)}` : "—"} />
         <Kpi label="Notional" value={fmt$(r.market_value)} />
-        <Kpi label="Realized P&L" value={<ChangeText value={r.realized_pnl ?? 0} prefix="$" digits={0} />} />
+        <Kpi
+          label="Realized P&L"
+          value={<ChangeText value={r.realized_pnl ?? 0} prefix="$" digits={0} />}
+        />
       </div>
       {preview.dry_run ? (
-        <span style={{ color: "var(--text-secondary)" }}>
+        <span className="port-close-panel__hint">
           Preview is non-destructive. Close requires a confirmation dialog and writes a legacy skip marker.
         </span>
       ) : null}
@@ -599,44 +670,14 @@ function ClosePreviewPanel({
 function Kpi({
   label,
   value,
-  pulseKey,
 }: {
   label: string;
   value: React.ReactNode;
-  pulseKey?: string | number;
 }) {
   return (
-    <div
-      className="showme-port__kpi showme-card-reveal"
-      style={{
-        background: "var(--bg-elev-2)",
-        border: "1px solid var(--border-subtle)",
-        borderRadius: "var(--radius-md)",
-        padding: 12,
-      }}
-    >
-      <div
-        style={{
-          fontSize: 10,
-          letterSpacing: "0.06em",
-          textTransform: "uppercase",
-          color: "var(--text-mute)",
-        }}
-      >
-        {label}
-      </div>
-      <div
-        key={pulseKey}
-        className="showme-port__kpi-value"
-        style={{
-          fontSize: 17,
-          color: "var(--text-primary)",
-          fontFamily: "JetBrains Mono, monospace",
-          marginTop: 4,
-        }}
-      >
-        {value}
-      </div>
+    <div className="showme-port__kpi showme-card-reveal u-kpi-surface">
+      <div className="port-class-card__caption">{label}</div>
+      <div className="port-class-card__value">{value}</div>
     </div>
   );
 }
@@ -646,12 +687,6 @@ function liveMotionKey(position: Position, key: keyof Position): string {
   const raw = position[key];
   const value = typeof raw === "number" ? raw : String(raw ?? "na");
   return `${position.symbol}-${String(key)}-${stamp}-${value}`;
-}
-
-function motionTone(value: unknown): "positive" | "negative" | "neutral" {
-  const n = typeof value === "number" ? value : Number(value);
-  if (!Number.isFinite(n) || n === 0) return "neutral";
-  return n > 0 ? "positive" : "negative";
 }
 
 function liveCellClass(tone: "positive" | "negative" | "neutral", compact = false): string {
@@ -682,27 +717,18 @@ function fmtNum(n?: number) {
 
 async function requestPortfolioClose(position: Position, dryRun: boolean): Promise<CloseResponse> {
   const exit = Number(position.last ?? position.avg_cost ?? 0);
-  const res = await fetch(`${sidecarBaseUrl()}/api/portfolio/positions/${encodeURIComponent(position.symbol)}/close`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      dry_run: dryRun,
-      exit_price: Number.isFinite(exit) && exit > 0 ? exit : undefined,
-      reason: dryRun ? "ui_preview" : "ui_close",
-    }),
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `${res.status} ${res.statusText}`);
-  }
-  return (await res.json()) as CloseResponse;
+  // Routed through sidecarFetch so the auth header (X-ShowMe-Token) and the
+  // shared port-discovery / health-wait pipeline both apply. See ARCH-05 P2.
+  return sidecarFetch<CloseResponse>(
+    `/api/portfolio/positions/${encodeURIComponent(position.symbol)}/close`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        dry_run: dryRun,
+        exit_price: Number.isFinite(exit) && exit > 0 ? exit : undefined,
+        reason: dryRun ? "ui_preview" : "ui_close",
+      }),
+    },
+  );
 }
-
-const closePanelStyle: React.CSSProperties = {
-  display: "grid",
-  gap: 10,
-  border: "1px solid var(--border-subtle)",
-  borderRadius: "var(--radius-md)",
-  padding: 12,
-  background: "var(--bg-elev-2)",
-};

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import math
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import numpy as np
@@ -34,15 +34,42 @@ _IVOL_FIELDS = {
 }
 
 
-def _vol_template(symbol: str, spot: float = 100.0) -> dict[str, float]:
+def _vol_template(symbol: str, spot: float = 100.0) -> dict[str, Any]:
     seed = (sum(ord(ch) for ch in symbol.upper()) % 35) / 1000
-    return {
+    rv = {
         "rv_30d_annualized": round(0.22 + seed, 4),
         "rv_60d_annualized": round(0.24 + seed, 4),
         "rv_90d_annualized": round(0.26 + seed, 4),
         "rv_252d_annualized": round(0.29 + seed, 4),
-        "spot": spot,
     }
+    rows = [
+        {
+            "metric": key.replace("_annualized", "").upper(),
+            "window_days": int(key.split("_")[1].replace("d", "")),
+            "realized_vol": value,
+            "realized_vol_pct": value * 100,
+            "samples": 0,
+            "source_mode": "reference",
+            "formula": "stdev(daily close returns) * sqrt(252)",
+        }
+        for key, value in rv.items()
+    ]
+    return {
+        "status": "reference",
+        "symbol": symbol,
+        "spot": spot,
+        "rows": rows,
+        **rv,
+        "summary": {"source_mode": "reference", "windows": len(rows)},
+        "methodology": "Reference realized-volatility windows generated from a deterministic per-symbol seed; not live data.",
+        "field_dictionary": _HVT_FIELDS,
+    }
+
+
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on", "y", "t"}
 
 
 def _surface_template(spot: float) -> dict[str, Any]:
@@ -268,23 +295,28 @@ class HVTFunction(BaseFunction):
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         if instrument is None:
-            raise ValueError
+            raise ValueError("HVT requires a symbol")
         symbol = instrument.symbol
-        if not (params.get("live_vol") or params.get("live")):
+        if not _truthy(params.get("live_vol") or params.get("live")):
             spot = float(params.get("spot", 100))
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
                 data=_vol_template(symbol, spot),
-                sources=["historical_vol_model"],
+                sources=["historical_vol_reference"],
+                metadata={"live": False},
             )
         if not self.deps.yfinance:
-            return FunctionResult(code=self.code, instrument=instrument,
-                                  data=_vol_template(symbol, float(params.get("spot", 100))),
-                                  sources=["historical_vol_model"])
+            return FunctionResult(
+                code=self.code,
+                instrument=instrument,
+                data=_vol_template(symbol, float(params.get("spot", 100))),
+                sources=["historical_vol_reference"],
+                metadata={"live": False, "provider_errors": ["yfinance adapter unavailable"]},
+            )
         timeout = max(1.0, min(float(params.get("yfinance_timeout", 4)), 6.0))
         days = max(30, min(int(params.get("days") or params.get("lookback_days") or 365), 365 * 3))
-        start = datetime.utcnow() - timedelta(days=days + 30)
+        start = datetime.now(timezone.utc) - timedelta(days=days + 30)
         try:
             df = await asyncio.wait_for(
                 self.deps.yfinance.fetch(DataRequest(
@@ -347,24 +379,25 @@ class IVOLFunction(BaseFunction):
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         if instrument is None:
-            raise ValueError
+            raise ValueError("IVOL requires a symbol")
         spot = float(params.get("spot", 100))
-        if not (params.get("live_options") or params.get("live")):
+        if not _truthy(params.get("live_options") or params.get("live")):
             synthetic = _surface_template(spot)
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
                 data=synthetic,
                 sources=["black_scholes_reference_formula"],
-                metadata={"calls": len(synthetic["calls_grid"]), "puts": len(synthetic["puts_grid"])},
+                metadata={"live": False, "calls": len(synthetic["calls_grid"]), "puts": len(synthetic["puts_grid"])},
             )
         if not self.deps.yfinance:
             synthetic = _surface_template(spot)
             return FunctionResult(code=self.code, instrument=instrument, data=synthetic,
                                   sources=["black_scholes_reference_formula"],
-                                  metadata={"calls": len(synthetic["calls_grid"]), "puts": len(synthetic["puts_grid"])})
+                                  metadata={"live": False, "calls": len(synthetic["calls_grid"]), "puts": len(synthetic["puts_grid"]), "provider_errors": ["yfinance adapter unavailable"]})
         from showme.engine.core.base_data_source import DataKind, DataRequest
         timeout = max(1.0, min(float(params.get("yfinance_timeout", 4)), 6.0))
+        spot_explicit = "spot" in params and params.get("spot") is not None
         try:
             meta = await asyncio.wait_for(
                 self.deps.yfinance.fetch(DataRequest(
@@ -375,6 +408,19 @@ class IVOLFunction(BaseFunction):
             )
         except Exception:
             meta = {}
+        # Pull true underlying spot from the live chain so moneyness is
+        # calculated against the real price, not the 100 default. Caller can
+        # still override by passing explicit `spot` in params.
+        if not spot_explicit and isinstance(meta, dict):
+            for key in ("underlyingPrice", "underlying_price", "spot", "last", "regularMarketPrice"):
+                value = meta.get(key)
+                try:
+                    candidate = float(value) if value is not None else None
+                except (TypeError, ValueError):
+                    candidate = None
+                if candidate is not None and math.isfinite(candidate) and candidate > 0:
+                    spot = candidate
+                    break
         expiries = meta.get("expiries", []) or []
         if not expiries:
             return FunctionResult(

@@ -35,7 +35,7 @@ class BackupExchange:
                     "enableRateLimit": True,
                 })
             except Exception as e:
-                logger.warning(f"Bybit init failed: {e}")
+                logger.warning("Bybit init failed: %s", e)
                 self._bybit = False
         return self._bybit if self._bybit else None
 
@@ -48,7 +48,7 @@ class BackupExchange:
                     "enableRateLimit": True,
                 })
             except Exception as e:
-                logger.warning(f"OKX init failed: {e}")
+                logger.warning("OKX init failed: %s", e)
                 self._okx = False
         return self._okx if self._okx else None
 
@@ -90,13 +90,13 @@ class BackupExchange:
                 df.attrs["symbol"] = symbol
                 df.attrs["timeframe"] = timeframe
                 df.attrs["source"] = exch_name
-                logger.info(f"Backup OHLCV from {exch_name}: {symbol}/{timeframe} {len(df)} rows")
+                logger.info("Backup OHLCV from %s: %s/%s %s rows", exch_name, symbol, timeframe, len(df))
                 return df
             except Exception as e:
-                logger.debug(f"{exch_name} fetch failed for {ccxt_sym}: {e}")
+                logger.debug("%s fetch failed for %s: %s", exch_name, ccxt_sym, e)
                 continue
 
-        logger.warning(f"All CCXT backups failed for {symbol}/{timeframe}")
+        logger.warning("All CCXT backups failed for %s/%s", symbol, timeframe)
         return None
 
 

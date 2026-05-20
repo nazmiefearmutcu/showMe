@@ -66,11 +66,11 @@ class StateStore:
             return self.state
 
         except json.JSONDecodeError as e:
-            logger.error(f"State file corrupt: {e}. Using defaults.")
+            logger.error("State file corrupt: %s. Using defaults.", e)
             self.state = DEFAULT_STATE.copy()
             return self.state
         except Exception as e:
-            logger.error(f"Error loading state: {e}. Using defaults.")
+            logger.error("Error loading state: %s. Using defaults.", e)
             self.state = DEFAULT_STATE.copy()
             return self.state
 
@@ -84,7 +84,7 @@ class StateStore:
             tmp_path.replace(self.state_path)
             logger.debug("State saved to disk")
         except Exception as e:
-            logger.error(f"Error saving state: {e}")
+            logger.error("Error saving state: %s", e)
 
     def update(self, **kwargs: Any) -> None:
         """Update specific state fields and save."""
@@ -101,4 +101,4 @@ class StateStore:
         self.state["paper_balance"] = starting_balance
         self.state["daily_start_balance"] = starting_balance
         self.save()
-        logger.info(f"State reset with balance={starting_balance}")
+        logger.info("State reset with balance=%s", starting_balance)

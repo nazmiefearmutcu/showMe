@@ -10,7 +10,9 @@ jobs:
     runs-on: macos-14
     strategy:
       matrix:
-        target: [aarch64-apple-darwin, x86_64-apple-darwin]
+        # Apple Silicon only — backend/showme-backend.spec hardcodes arm64
+        # and the PyInstaller --onefile bundle ships an arm64 sidecar binary.
+        target: [aarch64-apple-darwin]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -24,32 +26,30 @@ jobs:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri
+          workspaces: tauri
 
-      - name: Install sidecar
-        working-directory: src-py
+      - name: Install uv
         run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev]"
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Install sidecar deps
+        working-directory: backend
+        run: uv sync --all-extras
 
       - name: Build sidecar binary
-        env:
-          SHOWME_TBV3_PATH: ${{ github.workspace }}/../TBV3
-        run: bash packaging/build_sidecar.sh || echo "skipping sidecar bundle (requires TBV3 checkout)"
+        run: bash packaging/build_sidecar.sh
 
-      - name: Install UI deps
-        working-directory: src-ui
-        run: npm install
+      - name: Install root + UI deps
+        run: npm ci
 
       - name: Tauri build
-        run: |
-          npm install --prefix .
-          npx tauri build --target ${{ matrix.target }}
+        run: npx tauri build --config tauri/tauri.conf.json --target ${{ matrix.target }}
 
       - name: Upload bundle
         uses: actions/upload-artifact@v4
         with:
           name: showme-${{ matrix.target }}
           path: |
-            src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app
-            src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+            tauri/target/${{ matrix.target }}/release/bundle/macos/*.app
+            tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg

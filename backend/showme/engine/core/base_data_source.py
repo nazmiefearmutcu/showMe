@@ -12,7 +12,7 @@ import time
 from abc import ABC, abstractmethod
 from collections import deque
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, AsyncIterator, Iterable
 
@@ -132,7 +132,7 @@ class BaseDataSource(ABC):
 
     def _record_failure(self, exc: Exception) -> None:
         self._consecutive_failures += 1
-        self._last_failure = datetime.utcnow()
+        self._last_failure = datetime.now(timezone.utc)
         if self._consecutive_failures >= 5:
             self._health = False  # circuit-breaker open
 

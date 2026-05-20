@@ -97,17 +97,44 @@ def _calendar_feed_model(country: str | None, importance: str | None) -> list[di
     return events
 
 
+# S05 BUGHUNT B4: trading-economics tags UK/EU/JP events with ISO 3166 alpha-2
+# codes ("UK", "EU", "JP") AND human-readable forms ("United Kingdom",
+# "European Union", "Japan"); the UI's SegmentedControl meanwhile defaults to
+# "GB"/"EZ" etc. Without a canonical normalisation, picking "UK" silently
+# drops every live row whose `country` field reads "United Kingdom". The map
+# folds known aliases onto a single canonical token before equality matching.
+_COUNTRY_ALIASES: dict[str, str] = {
+    "GB": "UK", "GBR": "UK", "UK": "UK", "UNITED KINGDOM": "UK", "BRITAIN": "UK",
+    "EZ": "EU", "EUR": "EU", "EU": "EU", "EUROZONE": "EU", "EUROPEAN UNION": "EU", "EMU": "EU",
+    "US": "US", "USA": "US", "UNITED STATES": "US", "UNITED STATES OF AMERICA": "US",
+    "JP": "JP", "JPN": "JP", "JAPAN": "JP",
+    "DE": "DE", "DEU": "DE", "GERMANY": "DE",
+    "FR": "FR", "FRA": "FR", "FRANCE": "FR",
+    "TR": "TR", "TUR": "TR", "TURKEY": "TR", "TÜRKIYE": "TR", "TURKIYE": "TR",
+    "CN": "CN", "CHN": "CN", "CHINA": "CN",
+    "IN": "IN", "IND": "IN", "INDIA": "IN",
+    "BR": "BR", "BRA": "BR", "BRAZIL": "BR",
+}
+
+
+def _canonical_country(value: Any) -> str:
+    raw = str(value or "").strip().upper()
+    if not raw:
+        return ""
+    return _COUNTRY_ALIASES.get(raw, raw)
+
+
 def _normalize_events(events: list[Any], *, country: Any, importance: Any, days: int) -> list[dict[str, Any]]:
     start = datetime.now(timezone.utc).date() - timedelta(days=1)
     end = start + timedelta(days=days + 1)
-    wanted_country = str(country or "").upper()
+    wanted_country = _canonical_country(country)
     wanted_importance = str(importance or "").lower()
     rows: list[dict[str, Any]] = []
     for raw in events:
         if not isinstance(raw, dict):
             continue
         row = {str(k).lower(): v for k, v in raw.items()}
-        event_country = str(row.get("country") or row.get("region") or "").upper()
+        event_country = _canonical_country(row.get("country") or row.get("region"))
         event_importance = str(row.get("importance") or row.get("impact") or "").lower()
         if wanted_country and event_country and event_country != wanted_country:
             continue

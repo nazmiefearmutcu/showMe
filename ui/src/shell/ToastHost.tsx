@@ -1,4 +1,6 @@
 import { useToastStore, type ToastTone } from "@/lib/toast";
+import { useReducedMotion } from "@/lib/a11y";
+import { t as tr } from "@/i18n";
 
 const TONE_COLORS: Record<ToastTone, { fg: string; bg: string; border: string }> = {
   info:    { fg: "var(--text-primary)", bg: "var(--bg-elev-2)", border: "var(--border-strong)" },
@@ -10,75 +12,45 @@ const TONE_COLORS: Record<ToastTone, { fg: string; bg: string; border: string }>
 export function ToastHost() {
   const toasts = useToastStore((s) => s.toasts);
   const dismiss = useToastStore((s) => s.dismiss);
+  const reducedMotion = useReducedMotion();
 
   return (
-    <div
-      style={{
-        position: "fixed",
-        right: 16,
-        bottom: 32,
-        display: "flex",
-        flexDirection: "column",
-        gap: 8,
-        zIndex: 8500,
-        pointerEvents: "none",
-      }}
-    >
+    <div className="toast-host">
       {toasts.map((t) => {
         const tone = TONE_COLORS[t.tone];
         return (
           <div
             key={t.id}
             role={t.tone === "error" ? "alert" : "status"}
+            className={`toast-host__card${reducedMotion ? " toast-host__card--reduced" : ""}`}
             style={{
-              minWidth: 260,
-              maxWidth: 360,
-              background: tone.bg,
-              border: `1px solid ${tone.border}`,
-              borderLeft: `3px solid ${tone.fg}`,
-              borderRadius: "var(--radius-md)",
-              padding: "10px 12px",
-              fontSize: 12,
-              color: "var(--text-primary)",
-              boxShadow: "var(--shadow-elev)",
-              pointerEvents: "auto",
-              animation: "fade-in var(--motion-base)",
+              ["--toast-bg" as string]: tone.bg,
+              ["--toast-border" as string]: tone.border,
+              ["--toast-fg" as string]: tone.fg,
             }}
             onClick={() => dismiss(t.id)}
           >
-            <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
+            <div className="toast-host__head">
               <strong style={{ color: tone.fg }}>{t.title}</strong>
               <button
+                type="button"
+                aria-label={tr("shell.toast.dismiss")}
+                title={tr("shell.toast.dismiss")}
                 onClick={(e) => {
                   e.stopPropagation();
                   dismiss(t.id);
                 }}
-                style={{
-                  background: "transparent",
-                  border: "none",
-                  color: "var(--text-mute)",
-                  cursor: "default",
-                  padding: 0,
-                  font: "inherit",
-                }}
+                className="toast-host__dismiss"
               >
-                ✕
+                <span aria-hidden>✕</span>
               </button>
             </div>
             {t.body && (
-              <div style={{ marginTop: 4, color: "var(--text-secondary)" }}>
-                {t.body}
-              </div>
+              <div className="toast-host__body">{t.body}</div>
             )}
           </div>
         );
       })}
-      <style>{`
-        @keyframes fade-in {
-          from { opacity: 0; transform: translateY(8px); }
-          to   { opacity: 1; transform: translateY(0); }
-        }
-      `}</style>
     </div>
   );
 }

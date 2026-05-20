@@ -4,7 +4,7 @@
  * Round 14 keeps this HTTP-based; Round 18 will swap the underlying
  * transport for a proper Tauri command without touching the call sites.
  */
-import { waitForSidecarReady } from "./sidecar";
+import { loadSidecarAuthToken, waitForSidecarReady } from "./sidecar";
 import { useAppStore } from "./store";
 
 export interface FunctionCallResult<TData = unknown> {
@@ -71,11 +71,20 @@ export async function runFunction<TData = unknown>(
   );
   const requestStartedAt = Date.now();
 
-  const fetchOnce = () => {
+  const fetchOnce = async () => {
+    // 2026-05-11 hotfix: runFunction used to bypass sidecarFetch and never
+    // attached the X-ShowMe-Token header, so every `useFunction(...)` call
+    // hit the auth middleware and returned 401 on the live signed build.
+    // Welcome's portfolio panel + PORT pane both went silent because of
+    // this. Pull the token here so /api/fn/{code} always carries it.
+    const token = await loadSidecarAuthToken();
+    const headers: Record<string, string> = {};
+    if (token) headers["X-ShowMe-Token"] = token;
     if (hasComplex) {
+      headers["content-type"] = "application/json";
       return fetch(url, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers,
         body: JSON.stringify(params),
         signal: ac.signal,
       });
@@ -85,7 +94,10 @@ export async function runFunction<TData = unknown>(
       if (v == null) continue;
       qs.set(k, String(v));
     }
-    return fetch(`${url}${qs.size ? `?${qs}` : ""}`, { signal: ac.signal });
+    return fetch(`${url}${qs.size ? `?${qs}` : ""}`, {
+      headers,
+      signal: ac.signal,
+    });
   };
 
   let res: Response | undefined;

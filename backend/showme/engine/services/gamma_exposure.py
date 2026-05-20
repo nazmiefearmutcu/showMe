@@ -44,8 +44,8 @@ def chain_gex(
     ``impliedVolatility`` (or ``iv``), and ``expiry`` (datetime str / "YYYY-MM-DD")
     or ``T`` (years).
     """
-    from datetime import datetime
-    today = datetime.utcnow().date()
+    from datetime import datetime, timezone
+    today = datetime.now(timezone.utc).date()
 
     def _T(opt: dict[str, Any]) -> float:
         T = opt.get("T")

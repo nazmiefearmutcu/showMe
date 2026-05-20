@@ -8,11 +8,6 @@ interface CardProps {
   style?: CSSProperties;
 }
 
-const PAD: Record<"comfortable" | "compact", string> = {
-  comfortable: "12px 14px",
-  compact: "8px 10px",
-};
-
 export function Card({
   children,
   className,
@@ -22,15 +17,8 @@ export function Card({
 }: CardProps) {
   return (
     <section
-      className={className}
-      style={{
-        background:
-          variant === "elev-1" ? "var(--bg-elev-1)" : "var(--bg-elev-2)",
-        border: "1px solid var(--border-subtle)",
-        borderRadius: "var(--radius-md)",
-        padding: PAD[density],
-        ...style,
-      }}
+      className={`ds-card ds-card--${variant} ds-card--${density}${className ? ` ${className}` : ""}`}
+      style={style}
     >
       {children}
     </section>
@@ -40,41 +28,21 @@ export function Card({
 export function CardHeader({
   children,
   trailing,
+  level = 2,
 }: {
   children: ReactNode;
   trailing?: ReactNode;
+  /**
+   * Heading level. Defaults to `2`. Welcome / Preferences pass `3` so the
+   * h1 (app) → h2 (pane) → h3 (subsection) ordering stays valid. A11Y-05.
+   */
+  level?: 1 | 2 | 3 | 4 | 5 | 6;
 }) {
+  const Tag = `h${level}` as "h2";
   return (
-    <header
-      style={{
-        display: "flex",
-        alignItems: "baseline",
-        justifyContent: "space-between",
-        gap: 12,
-        marginBottom: 8,
-        minWidth: 0,
-      }}
-    >
-      <h2
-        style={{
-          margin: 0,
-          fontSize: 11,
-          letterSpacing: "0.08em",
-          textTransform: "uppercase",
-          color: "var(--accent)",
-          minWidth: 0,
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-          whiteSpace: "nowrap",
-        }}
-      >
-        {children}
-      </h2>
-      {trailing && (
-        <div style={{ fontSize: 11, color: "var(--text-mute)", minWidth: 0, maxWidth: "62%" }}>
-          {trailing}
-        </div>
-      )}
+    <header className="ds-card__header">
+      <Tag className="ds-card__title">{children}</Tag>
+      {trailing && <div className="ds-card__trailing">{trailing}</div>}
     </header>
   );
 }
@@ -84,17 +52,5 @@ export function CardBody({ children }: { children: ReactNode }) {
 }
 
 export function CardFooter({ children }: { children: ReactNode }) {
-  return (
-    <footer
-      style={{
-        marginTop: 10,
-        paddingTop: 8,
-        borderTop: "1px solid var(--border-subtle)",
-        fontSize: 11,
-        color: "var(--text-secondary)",
-      }}
-    >
-      {children}
-    </footer>
-  );
+  return <footer className="ds-card__footer">{children}</footer>;
 }

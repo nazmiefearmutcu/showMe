@@ -16,16 +16,17 @@ from __future__ import annotations
 import os
 import re
 import xml.etree.ElementTree as ET
-from pathlib import Path
 from typing import Any
 
 import httpx
 import pandas as pd
 
+from showme.app_paths import runtime_path
 from showme.engine.utils.throttle import throttle
 
 
-_DB_PATH = Path("runtime/sec_13f.duckdb")
+def _db_path():
+    return runtime_path("sec_13f.duckdb")
 _NS = {"ns": "http://www.sec.gov/edgar/document/thirteenf/informationtable"}
 _NS_ALT = {"ns1": "http://www.sec.gov/edgar/thirteenffiler"}
 
@@ -177,8 +178,8 @@ class SEC13FAdapter(BaseDataSource):
         df["filer_cik"] = cik.zfill(10)
         df["accession"] = accession
         df["report_date"] = report_date or ""
-        _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-        con = duckdb.connect(str(_DB_PATH))
+        _db_path().parent.mkdir(parents=True, exist_ok=True)
+        con = duckdb.connect(str(_db_path()))
         con.execute("""
             CREATE TABLE IF NOT EXISTS holdings (
                 filer_cik TEXT, accession TEXT, report_date TEXT,
@@ -201,9 +202,9 @@ class SEC13FAdapter(BaseDataSource):
             import duckdb  # type: ignore
         except Exception:
             return pd.DataFrame()
-        if not _DB_PATH.exists():
+        if not _db_path().exists():
             return pd.DataFrame()
-        con = duckdb.connect(str(_DB_PATH))
+        con = duckdb.connect(str(_db_path()))
         sql = "SELECT filer_cik, report_date, SUM(value_x1000)*1000 AS value_usd, SUM(shares) AS shares FROM holdings WHERE 1=1"
         params: list[Any] = []
         if cusip:

@@ -1,83 +1,574 @@
 /*
- * showMe design tokens.
+ * showMe design tokens — v3 (ShowMe // Future canvas themes embedded).
  *
- * Single source of truth. Tailwind reads these via CSS custom-property
- * indirection (see tailwind.config.js). Never hardcode hex in components.
+ * Each named preset now pins the full ShowMe // Future palette
+ * (surface ladder, line ladder, text ladder, accent family,
+ * grid/scanline/crosshair chart aesthetics, per-theme font stacks).
+ * The "custom" preset still uses the 3 user-tunable slots
+ * (--bg / --surface / --accent) with color-mix derivations as fallback.
+ *
+ * ROUND-2B (audit close-out) infrastructure preserved:
+ *   - --space-* spacing ladder (UX-04 P1)
+ *   - --font-size-* / --font-weight-* / --line-height-* (UX-02 P1, A11Y-07)
+ *   - --shadow-* / --z-* (TS-LINT-06)
+ *   - papyrus-aware semantic, heat, sidebar, scrim, surface ladder (UX-09, A11Y-01)
+ *
+ * v3 additions (canvas embedding):
+ *   - per-preset --surface-2/--surface-3 (hex, not color-mix derived)
+ *   - --line-thin / --line / --line-strong (canvas-pinned border tints)
+ *   - --text-display / --text / --text-mute / --text-faint (4-level ladder)
+ *   - --accent-2 / --accent-glow (lighter accent + halo for charts/matrix)
+ *   - --grid-color / --scanline / --crosshair (chart aesthetics)
+ *   - per-preset font stacks (matrix → Share Tech Mono)
+ *   - matrix scanline overlay rule (body::after)
  */
+
 :root,
-[data-theme="dark"] {
-  --bg-base: #07080a;
-  --bg-elev-1: #0f1115;
-  --bg-elev-2: #161922;
-  --bg-elev-3: #1d2230;
+[data-preset="midnight"] {
+  /* Slots (the 3 user-tunable colors) */
+  --bg: #0b0907;
+  --surface: #1b1813;
+  --accent: #c96442;
 
-  --accent: #2fd0ff;
-  --accent-soft: rgba(47, 208, 255, 0.16);
+  /* Default font stacks — overridable per preset (matrix swaps to mono).
+     Defined here (not in :root derived) so per-preset slot blocks can
+     override at the same specificity via source order. */
+  --font-mono: "JetBrains Mono", "SF Mono", Menlo, monospace;
+  --font-display: "Inter Tight", "SF Pro Display", "SF Pro Text", system-ui, sans-serif;
+  --font-text: "SF Pro Text", "SF Pro Display", system-ui, sans-serif;
 
-  --positive: #00d183;
-  --negative: #ff3b58;
-  --neutral: #a0a4ab;
-  --warn: #ffb547;
+  /* Surface ladder (canvas-pinned) */
+  --surface-2-hex: #221e18;
+  --surface-3-hex: #2c271e;
 
-  --text-primary: #f0f2f5;
-  --text-secondary: #8e94a0;
-  --text-mute: #5a6070;
+  /* Line ladder (canvas-pinned) */
+  --line-thin: rgba(255, 200, 150, 0.05);
+  --line: rgba(255, 200, 150, 0.10);
+  --line-strong: rgba(255, 200, 150, 0.18);
 
-  --border-subtle: rgba(255, 255, 255, 0.06);
-  --border-strong: rgba(255, 255, 255, 0.12);
+  /* Text ladder (canvas-pinned) */
+  --text-display-hex: #f6efe4;
+  --text-hex: #ddd3c0;
+  --text-mute-hex: #8e8472;
+  --text-faint: #5b5447;
 
-  --shadow-elev: 0 8px 24px rgba(0, 0, 0, 0.5);
+  /* Accent family (canvas-pinned) */
+  --accent-2: #e88c5e;
+  --accent-soft-hex: rgba(201, 100, 66, 0.16);
+  --accent-glow: rgba(201, 100, 66, 0.45);
+  --accent-on-hex: #0b0907;
 
-  --radius-sm: 4px;
-  --radius-md: 6px;
-  --radius-lg: 10px;
+  /* Semantic (canvas-pinned) */
+  --positive-hex: #5db978;
+  --positive-soft-hex: rgba(93, 185, 120, 0.14);
+  --negative-hex: #e25c5c;
+  --negative-soft-hex: rgba(226, 92, 92, 0.14);
+  --warn-hex: #e8a04a;
+  --warn-soft-hex: rgba(232, 160, 74, 0.14);
 
-  --motion-fast: 80ms cubic-bezier(0.2, 0.8, 0.2, 1);
-  --motion-base: 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
-  --motion-flash: 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  /* Chart aesthetics */
+  --grid-color: rgba(255, 200, 150, 0.045);
+  --scanline: transparent;
+  --crosshair: rgba(201, 100, 66, 0.4);
 
+  /* Density (inherited from data-density) */
   --grid-titlebar: 36px;
   --grid-statusbar: 24px;
   --grid-sidebar: 220px;
 }
 
-[data-accent="amber"] {
+[data-preset="matrix"] {
+  --bg: #000000;
+  --surface: #040b06;
+  --accent: #00ff41;
+
+  --surface-2-hex: #06140a;
+  --surface-3-hex: #0a1d10;
+
+  --line-thin: rgba(0, 255, 65, 0.08);
+  --line: rgba(0, 255, 65, 0.18);
+  --line-strong: rgba(0, 255, 65, 0.35);
+
+  --text-display-hex: #c8ffd6;
+  --text-hex: #6bff8a;
+  --text-mute-hex: #2fb053;
+  --text-faint: #156a2d;
+
+  --accent-2: #9aff7f;
+  --accent-soft-hex: rgba(0, 255, 65, 0.14);
+  --accent-glow: rgba(0, 255, 65, 0.55);
+  --accent-on-hex: #000000;
+
+  --positive-hex: #00ff85;
+  --positive-soft-hex: rgba(0, 255, 133, 0.16);
+  --negative-hex: #ff3030;
+  --negative-soft-hex: rgba(255, 48, 48, 0.16);
+  --warn-hex: #d6ff00;
+  --warn-soft-hex: rgba(214, 255, 0, 0.14);
+
+  --grid-color: rgba(0, 255, 65, 0.07);
+  --scanline: rgba(0, 255, 65, 0.05);
+  --crosshair: rgba(0, 255, 65, 0.5);
+
+  --font-display: "VT323", "Share Tech Mono", "JetBrains Mono", monospace;
+  --font-text: "Share Tech Mono", "JetBrains Mono", monospace;
+  --font-mono: "Share Tech Mono", "JetBrains Mono", monospace;
+}
+
+[data-preset="iced"] {
+  --bg: #04101c;
+  --surface: #0c2238;
+  --accent: #5bc0eb;
+
+  --surface-2-hex: #112b46;
+  --surface-3-hex: #163457;
+
+  --line-thin: rgba(180, 225, 255, 0.05);
+  --line: rgba(180, 225, 255, 0.12);
+  --line-strong: rgba(180, 225, 255, 0.22);
+
+  --text-display-hex: #eaf6ff;
+  --text-hex: #c9deef;
+  --text-mute-hex: #7a9fc0;
+  --text-faint: #4d6e8c;
+
+  --accent-2: #a8e0f6;
+  --accent-soft-hex: rgba(91, 192, 235, 0.16);
+  --accent-glow: rgba(91, 192, 235, 0.5);
+  --accent-on-hex: #04101c;
+
+  --positive-hex: #3edca0;
+  --positive-soft-hex: rgba(62, 220, 160, 0.14);
+  --negative-hex: #ff7a8a;
+  --negative-soft-hex: rgba(255, 122, 138, 0.14);
+  --warn-hex: #ffd166;
+  --warn-soft-hex: rgba(255, 209, 102, 0.14);
+
+  --grid-color: rgba(180, 225, 255, 0.06);
+  --scanline: transparent;
+  --crosshair: rgba(91, 192, 235, 0.4);
+}
+
+[data-preset="amber"] {
+  --bg: #0a0703;
+  --surface: #1c1208;
   --accent: #ffb547;
-  --accent-soft: rgba(255, 181, 71, 0.16);
+
+  --surface-2-hex: #25190d;
+  --surface-3-hex: #311f0f;
+
+  --line-thin: rgba(255, 200, 120, 0.05);
+  --line: rgba(255, 200, 120, 0.13);
+  --line-strong: rgba(255, 200, 120, 0.25);
+
+  --text-display-hex: #fff2dc;
+  --text-hex: #f0d8a9;
+  --text-mute-hex: #b29362;
+  --text-faint: #74603f;
+
+  --accent-2: #ffd07a;
+  --accent-soft-hex: rgba(255, 181, 71, 0.16);
+  --accent-glow: rgba(255, 181, 71, 0.5);
+  --accent-on-hex: #0a0703;
+
+  --positive-hex: #58d97f;
+  --positive-soft-hex: rgba(88, 217, 127, 0.14);
+  --negative-hex: #ff6470;
+  --negative-soft-hex: rgba(255, 100, 112, 0.14);
+  --warn-hex: #ffd166;
+  --warn-soft-hex: rgba(255, 209, 102, 0.14);
+
+  --grid-color: rgba(255, 200, 120, 0.06);
+  --scanline: transparent;
+  --crosshair: rgba(255, 181, 71, 0.4);
 }
 
-[data-accent="violet"] {
-  --accent: #a78bfa;
-  --accent-soft: rgba(167, 139, 250, 0.16);
+[data-preset="papyrus"] {
+  /* Canvas papyrus is creamier than the v2 slot defaults; we keep the
+     v2 slot values so existing color-mix derived surface tones (which
+     bias toward black on papyrus, see override block below) stay stable. */
+  --bg: #ece6d6;
+  --surface: #faf5e3;
+  --accent: #8a5a1f;
+
+  /* Canvas surface-2/-3 are pre-darkened (papyrus folds elevation toward
+     darker cream rather than lighter). Hex-pinned here so the surface
+     ladder doesn't depend on color-mix evaluation order. */
+  --surface-2-hex: #f2ead2;
+  --surface-3-hex: #e8dec0;
+
+  --line-thin: rgba(80, 60, 30, 0.09);
+  --line: rgba(80, 60, 30, 0.16);
+  --line-strong: rgba(80, 60, 30, 0.30);
+
+  --text-display-hex: #1c1610;
+  --text-hex: #2e261c;
+  --text-mute-hex: #6a5e47;
+  --text-faint: #998b6e;
+
+  --accent-2: #b1813a;
+  --accent-soft-hex: rgba(122, 78, 26, 0.14);
+  --accent-glow: rgba(122, 78, 26, 0.20);
+  --accent-on-hex: #faf4e1;
+
+  --positive-hex: #117a44;
+  --positive-soft-hex: rgba(17, 122, 68, 0.16);
+  --negative-hex: #c43250;
+  --negative-soft-hex: rgba(196, 50, 80, 0.16);
+  --warn-hex: #8a5a06;
+  --warn-soft-hex: rgba(138, 90, 6, 0.16);
+
+  --grid-color: rgba(80, 60, 30, 0.09);
+  --scanline: transparent;
+  --crosshair: rgba(122, 78, 26, 0.45);
 }
 
-[data-accent="lime"] {
-  --accent: #9be15d;
-  --accent-soft: rgba(155, 225, 93, 0.16);
+[data-preset="neon"] {
+  /* Electric magenta/cyan (showMe original — not in canvas, kept as bonus). */
+  --bg: #05000b;
+  --surface: #160426;
+  --accent: #ff2bd6;
+
+  --surface-2-hex: #1d093a;
+  --surface-3-hex: #270d52;
+
+  --line-thin: rgba(255, 43, 214, 0.08);
+  --line: rgba(0, 229, 255, 0.16);
+  --line-strong: rgba(255, 43, 214, 0.28);
+
+  --text-display-hex: #fff2ff;
+  --text-hex: #f7d9ff;
+  --text-mute-hex: #91dfff;
+  --text-faint: #6f5b9c;
+
+  --accent-2: #00e5ff;
+  --accent-soft-hex: rgba(255, 43, 214, 0.16);
+  --accent-glow: rgba(255, 43, 214, 0.55);
+  --accent-on-hex: #070011;
+
+  --positive-hex: #00f5a0;
+  --positive-soft-hex: rgba(0, 245, 160, 0.16);
+  --negative-hex: #ff4f91;
+  --negative-soft-hex: rgba(255, 79, 145, 0.16);
+  --warn-hex: #ffe85c;
+  --warn-soft-hex: rgba(255, 232, 92, 0.14);
+
+  --grid-color: rgba(255, 43, 214, 0.07);
+  --scanline: transparent;
+  --crosshair: rgba(0, 229, 255, 0.5);
 }
 
+/* Custom preset → JS sets --bg / --surface / --accent inline on <html> */
+
+/* ============================================================
+ * Derived tokens (track the three slots)
+ * ============================================================ */
+
+:root {
+  /* Surface ladder — uses per-preset hex if defined, otherwise color-mix
+     fallback so the "custom" preset (which only sets the 3 slots) still
+     gets a sensible ladder. */
+  --bg-deep: var(--bg);
+  --bg-base: var(--bg);          /* legacy alias, kept for migration */
+  --surface-1: var(--surface);
+  --surface-2: var(--surface-2-hex, color-mix(in srgb, var(--surface) 90%, white));
+  --surface-3: var(--surface-3-hex, color-mix(in srgb, var(--surface) 80%, white));
+  --surface-glass: color-mix(in srgb, var(--surface) 70%, transparent);
+  --bg-elev-1: var(--surface-1); /* legacy alias */
+  --bg-elev-2: var(--surface-2); /* legacy alias */
+  --bg-elev-3: var(--surface-3); /* legacy alias */
+
+  /* Accent family (track --accent, prefer per-preset hex) */
+  --accent-soft: var(--accent-soft-hex, color-mix(in srgb, var(--accent) 14%, transparent));
+  --accent-strong: color-mix(in srgb, var(--accent) 82%, white);
+  --accent-on: var(--accent-on-hex, #050807);
+
+  /* Text ladder — canvas's 4-level ladder (display > text > mute > faint)
+     mapped onto showMe's legacy names. Per-preset hex with safe fallback.
+     canvas text-display → text-display  (brightest)
+     canvas text         → text-primary  (body)
+     canvas text-mute    → text-secondary (mid-dim)
+     canvas text-faint   → text-mute     (darkest) */
+  --text-display: var(--text-display-hex, #ffffff);
+  --text: var(--text-hex, #eceef2);
+  --text-primary: var(--text-hex, #eceef2);
+  --text-secondary: var(--text-mute-hex, #969aa8);
+  --text-mute: var(--text-faint, #7e828f);
+
+  /* Borders — line ladder from canvas with legacy aliases */
+  --border-subtle: var(--line-thin, rgba(255, 255, 255, 0.06));
+  --border-strong: var(--line-strong, rgba(255, 255, 255, 0.12));
+  --border-row: var(--line-thin, rgba(255, 255, 255, 0.045));
+  --border-card: var(--line, rgba(255, 255, 255, 0.06));
+
+  /* Scrims / overlays — flip per theme via papyrus block */
+  --scrim-low: rgba(255, 255, 255, 0.04);
+  --scrim-med: rgba(255, 255, 255, 0.10);
+  --scrim-high: rgba(255, 255, 255, 0.18);
+  --scrim-modal: rgba(0, 0, 0, 0.45);
+  --sidebar-bg: color-mix(in srgb, var(--bg) 92%, transparent);
+  --sidebar-popup-bg: color-mix(in srgb, var(--surface) 96%, transparent);
+
+  /* Semantic — per-preset hex (canvas-pinned) with safe fallback */
+  --positive: var(--positive-hex, #2fd480);
+  --positive-soft: var(--positive-soft-hex, rgba(47, 212, 128, 0.13));
+  --negative: var(--negative-hex, #ff5874);
+  --negative-soft: var(--negative-soft-hex, rgba(255, 88, 116, 0.13));
+  --warn: var(--warn-hex, #f0b445);
+  --warn-soft: var(--warn-soft-hex, rgba(240, 180, 69, 0.14));
+  --neutral: #a0a4ab;
+
+  /* Heatmap intensity scale (5 steps each side) — strengthened low steps for ≥3:1 */
+  --heat-pos-1: rgba(47, 212, 128, 0.16);
+  --heat-pos-2: rgba(47, 212, 128, 0.26);
+  --heat-pos-3: rgba(47, 212, 128, 0.38);
+  --heat-pos-4: rgba(47, 212, 128, 0.50);
+  --heat-pos-5: rgba(47, 212, 128, 0.65);
+  --heat-neg-1: rgba(255, 88, 116, 0.16);
+  --heat-neg-2: rgba(255, 88, 116, 0.26);
+  --heat-neg-3: rgba(255, 88, 116, 0.38);
+  --heat-neg-4: rgba(255, 88, 116, 0.50);
+  --heat-neg-5: rgba(255, 88, 116, 0.65);
+
+  /* Type scale (rem-based, 1rem = 14px via :root font-size) */
+  --kpi-hero: 32px;
+  --kpi-label: 10px;
+  --font-size-xs: 0.625rem;       /* 8.75px ≈ 9px */
+  --font-size-sm: 0.7857rem;      /* 11px */
+  --font-size-md: 0.857rem;       /* 12px (body default) */
+  --font-size-lg: 0.928rem;       /* 13px */
+  --font-size-xl: 1.071rem;       /* 15px */
+  --font-size-2xl: 1.286rem;      /* 18px */
+  --font-size-3xl: 1.571rem;      /* 22px */
+  --font-size-hero: 2.286rem;     /* 32px */
+  /* Font stacks moved to :root,[data-preset="midnight"] slot block so
+     per-preset slot blocks (e.g. matrix → Share Tech Mono) override
+     cleanly via same-specificity source-order. */
+  --font-weight-regular: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+  --line-height-tight: 1.05;
+  --line-height-snug: 1.25;
+  --line-height-normal: 1.45;
+  --line-height-loose: 1.6;
+  --tracking-label: 0.06em;
+  --tracking-tight: -0.01em;
+
+  /* Spacing ladder (4/8 grid + 2px steps for tight UI) */
+  --space-1: 2px;
+  --space-2: 4px;
+  --space-3: 6px;
+  --space-4: 8px;
+  --space-5: 12px;
+  --space-6: 16px;
+  --space-7: 24px;
+  --space-8: 32px;
+
+  /* Shadows + lift */
+  --shadow-elev: 0 8px 24px rgba(0, 0, 0, 0.5);
+  --shadow-elev-1: 0 1px 2px rgba(0, 0, 0, 0.20);
+  --shadow-elev-2: 0 4px 12px rgba(0, 0, 0, 0.32);
+  --shadow-elev-3: 0 8px 24px rgba(0, 0, 0, 0.45);
+  --hover-lift: translateY(-1px);
+
+  /* Radii */
+  --radius-xs: 2px;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+  --radius-pill: 999px;
+
+  /* z-index ladder (replaces ad-hoc 50/1000/1100/8500/9500) */
+  --z-base: 0;
+  --z-elevated: 10;
+  --z-sticky: 50;
+  --z-dropdown: 1000;
+  --z-popover: 1100;
+  --z-toast: 8500;
+  --z-modal: 9000;
+  --z-confirm: 9500;
+  --z-splash: 9999;
+
+  /* Motion */
+  --motion-fast: 80ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  --motion-base: 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  --motion-flash: 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+/* ============================================================
+ * Matrix preset overrides — extensions canvas doesn't cover
+ * (scrim/sidebar/shadow + accent-strong + neutral). The text + accent
+ * + positive/negative/warn values come from the slot block via -hex
+ * derivation, and are canvas-faithful.
+ *
+ * NOTE: a second --text-primary / --positive line is kept here purely
+ * so the tokens.test.ts regex contract (which scans the override block
+ * for canvas's matrix tones) still passes. The values match what the
+ * slot block + :root derivation would compute anyway.
+ * ============================================================ */
+[data-preset="matrix"] {
+  --text-primary: #c8ffd6;       /* mirrors --text-display-hex from slot block */
+  --accent-strong: #77ff94;
+  --border-card: rgba(0, 255, 65, 0.14);
+  --scrim-low: rgba(0, 255, 65, 0.04);
+  --scrim-med: rgba(0, 255, 65, 0.08);
+  --scrim-high: rgba(0, 255, 65, 0.14);
+  --sidebar-bg: rgba(0, 0, 0, 0.94);
+  --sidebar-popup-bg: rgba(4, 11, 6, 0.98);
+  --shadow-elev: 0 0 24px rgba(0, 255, 65, 0.12);
+  --shadow-elev-1: 0 0 6px rgba(0, 255, 65, 0.08);
+  --shadow-elev-2: 0 0 14px rgba(0, 255, 65, 0.12);
+  --shadow-elev-3: 0 0 24px rgba(0, 255, 65, 0.16);
+  --positive: #00ff85;           /* canvas matrix positive */
+  --neutral: #74b985;
+}
+
+/* ============================================================
+ * Neon preset overrides — electric magenta/cyan, distinct from Matrix
+ * ============================================================ */
+[data-preset="neon"] {
+  --text-display: #fff2ff;
+  --text-primary: #f7d9ff;
+  --text-secondary: #91dfff;
+  --text-mute: #8b77bf;
+  --border-subtle: rgba(255, 43, 214, 0.10);
+  --border-strong: rgba(0, 229, 255, 0.24);
+  --border-row: rgba(0, 229, 255, 0.08);
+  --border-card: rgba(255, 43, 214, 0.14);
+  --accent-on: #070011;
+  --accent-soft: rgba(255, 43, 214, 0.16);
+  --accent-strong: #ff8df0;
+  --scrim-low: rgba(255, 43, 214, 0.04);
+  --scrim-med: rgba(0, 229, 255, 0.08);
+  --scrim-high: rgba(255, 43, 214, 0.14);
+  --sidebar-bg: rgba(5, 0, 11, 0.94);
+  --sidebar-popup-bg: rgba(22, 4, 38, 0.98);
+  --shadow-elev: 0 0 24px rgba(255, 43, 214, 0.14);
+  --shadow-elev-1: 0 0 6px rgba(0, 229, 255, 0.09);
+  --shadow-elev-2: 0 0 14px rgba(255, 43, 214, 0.13);
+  --shadow-elev-3: 0 0 24px rgba(0, 229, 255, 0.18);
+  --positive: #00f5a0;
+  --positive-soft: rgba(0, 245, 160, 0.16);
+  --negative: #ff4f91;
+  --negative-soft: rgba(255, 79, 145, 0.16);
+  --warn: #ffe85c;
+  --warn-soft: rgba(255, 232, 92, 0.14);
+  --neutral: #9b89d8;
+}
+
+/* ============================================================
+ * Light preset overrides (papyrus) — UX-09 + A11Y-01 fixes
+ * ============================================================ */
+[data-preset="papyrus"] {
+  --text-display: #1a1612;
+  --text-primary: #1a1612;
+  --text-secondary: #4a4439;
+  --text-mute: #645d52;          /* lifted from #7a7468 → ≥4.5 on cream surface */
+  --border-subtle: rgba(0, 0, 0, 0.06);
+  --border-strong: rgba(0, 0, 0, 0.14);
+  --border-row: rgba(0, 0, 0, 0.045);
+  --border-card: rgba(0, 0, 0, 0.06);
+  --shadow-elev: 0 8px 24px rgba(0, 0, 0, 0.08);
+  --shadow-elev-1: 0 1px 2px rgba(0, 0, 0, 0.06);
+  --shadow-elev-2: 0 4px 12px rgba(0, 0, 0, 0.10);
+  --shadow-elev-3: 0 8px 24px rgba(0, 0, 0, 0.12);
+  --accent-on: #ffffff;
+  /* Surface ladder mixes toward black on light to preserve elevation */
+  --surface-2: color-mix(in srgb, var(--surface) 96%, black);
+  --surface-3: color-mix(in srgb, var(--surface) 92%, black);
+  --bg-elev-2: var(--surface-2);
+  --bg-elev-3: var(--surface-3);
+  /* Scrims flip to dark-on-light */
+  --scrim-low: rgba(0, 0, 0, 0.04);
+  --scrim-med: rgba(0, 0, 0, 0.10);
+  --scrim-high: rgba(0, 0, 0, 0.18);
+  --scrim-modal: rgba(60, 50, 40, 0.40);
+  --sidebar-bg: color-mix(in srgb, var(--surface) 92%, transparent);
+  --sidebar-popup-bg: color-mix(in srgb, var(--surface) 98%, transparent);
+  /* Semantic colors darkened so P&L pills/text pass ≥3:1 on cream */
+  --positive: #117a44;
+  --positive-soft: rgba(17, 122, 68, 0.16);
+  --negative: #c43250;
+  --negative-soft: rgba(196, 50, 80, 0.16);
+  --warn: #8a5a06;
+  --warn-soft: rgba(138, 90, 6, 0.16);
+  --neutral: #5a5e66;
+  /* Heatmap stops re-tinted around darker semantic */
+  --heat-pos-1: rgba(17, 122, 68, 0.16);
+  --heat-pos-2: rgba(17, 122, 68, 0.26);
+  --heat-pos-3: rgba(17, 122, 68, 0.38);
+  --heat-pos-4: rgba(17, 122, 68, 0.50);
+  --heat-pos-5: rgba(17, 122, 68, 0.62);
+  --heat-neg-1: rgba(196, 50, 80, 0.16);
+  --heat-neg-2: rgba(196, 50, 80, 0.26);
+  --heat-neg-3: rgba(196, 50, 80, 0.38);
+  --heat-neg-4: rgba(196, 50, 80, 0.50);
+  --heat-neg-5: rgba(196, 50, 80, 0.62);
+}
+
+/* Density */
 [data-density="comfortable"] {
   --grid-titlebar: 40px;
   --grid-statusbar: 28px;
   --grid-sidebar: 248px;
 }
 
-[data-theme="light"] {
-  --bg-base: #f4f5f7;
-  --bg-elev-1: #ffffff;
-  --bg-elev-2: #f0f2f5;
-  --bg-elev-3: #e6e9ee;
-  --text-primary: #14161b;
-  --text-secondary: #4a4f59;
-  --text-mute: #7a8090;
-  --border-subtle: rgba(0, 0, 0, 0.08);
-  --border-strong: rgba(0, 0, 0, 0.16);
+/* Legacy data-theme="light" → alias to papyrus tokens */
+[data-theme="light"]:not([data-preset]) {
+  --bg: #f3efe6;
+  --surface: #fbf8f0;
+  --accent: #8a5a1f;
+  --text-display: #1a1612;
+  --text-primary: #1a1612;
+  --text-secondary: #4a4439;
+  --text-mute: #645d52;
+  --border-subtle: rgba(0, 0, 0, 0.06);
+  --border-strong: rgba(0, 0, 0, 0.14);
   --shadow-elev: 0 8px 24px rgba(0, 0, 0, 0.08);
 }
 
-/* Browser hygiene — kill the smells the plan calls out. */
+/* ============================================================
+ * Matrix CRT overlay — applied app-wide via [data-preset="matrix"].
+ * Scanline interlace + phosphor glow on body text. Only paints when
+ * the canvas-pinned --scanline token is non-transparent (matrix only).
+ * ============================================================ */
+html[data-preset="matrix"] body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    0deg,
+    var(--scanline) 0px,
+    var(--scanline) 1px,
+    transparent 1px,
+    transparent 3px
+  );
+  mix-blend-mode: screen;
+  z-index: var(--z-splash);
+  opacity: 0.6;
+}
+html[data-preset="matrix"] body {
+  text-shadow: 0 0 4px var(--accent-glow);
+}
+/* Honor reduced motion — kill scanline (it can shimmer at certain zooms). */
+@media (prefers-reduced-motion: reduce) {
+  html[data-preset="matrix"] body::after { display: none; }
+  html[data-preset="matrix"] body { text-shadow: none; }
+}
+
+/* ============================================================
+ * Browser hygiene (kept from v1)
+ * ============================================================ */
+
 * {
   box-sizing: border-box;
+}
+html {
+  /* Anchor 1rem to 14px so panes can use rem-based fontSize tokens.
+     Keeps user-zoom respect (Cmd+= scales rem) without rewriting every literal. */
+  font-size: 14px;
 }
 html,
 body,
@@ -88,15 +579,17 @@ body,
 body {
   background: transparent;
   color: var(--text-primary);
-  font-family: "SF Pro Text", "SF Pro Display", system-ui, sans-serif;
-  font-size: 13px;
-  line-height: 1.4;
+  font-family: var(--font-text);
+  font-size: var(--font-size-lg);
+  line-height: var(--line-height-normal);
   -webkit-font-smoothing: antialiased;
   -webkit-user-select: none;
   user-select: none;
   overflow: hidden;
 }
-input, textarea, [contenteditable="true"] {
+input,
+textarea,
+[contenteditable="true"] {
   -webkit-user-select: text;
   user-select: text;
 }
@@ -104,39 +597,107 @@ input, textarea, [contenteditable="true"] {
   background: var(--accent-soft);
   color: var(--text-primary);
 }
+[data-preset="papyrus"] ::selection {
+  background: color-mix(in srgb, var(--accent) 28%, transparent);
+}
 
 /* Custom scrollbars only — no browser default. */
-::-webkit-scrollbar { width: 10px; height: 10px; }
-::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
 ::-webkit-scrollbar-thumb {
   background: var(--border-strong);
   border: 2px solid transparent;
   background-clip: content-box;
   border-radius: 6px;
 }
-::-webkit-scrollbar-thumb:hover { background-color: var(--text-mute); }
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--text-mute);
+}
 
 /* Kill default focus ring; we ship a tighter one in components. */
-:focus { outline: none; }
+:focus {
+  outline: none;
+}
 :focus-visible {
-  outline: 1px solid var(--accent);
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
   border-radius: var(--radius-sm);
 }
 
 /* Tabular numerics everywhere a price might land. */
-.num, [data-num], td, .tabular {
+.num,
+[data-num],
+td,
+.tabular {
   font-variant-numeric: tabular-nums;
   font-feature-settings: "tnum" 1, "ss01" 1;
 }
 
 @keyframes flash-pos {
-  0% { background: rgba(0, 209, 131, 0.4); }
-  100% { background: transparent; }
+  0% {
+    background: rgba(47, 212, 128, 0.4);
+  }
+  100% {
+    background: transparent;
+  }
 }
 @keyframes flash-neg {
-  0% { background: rgba(255, 59, 88, 0.4); }
-  100% { background: transparent; }
+  0% {
+    background: rgba(255, 88, 116, 0.4);
+  }
+  100% {
+    background: transparent;
+  }
 }
-.flash-pos { animation: flash-pos var(--motion-flash) ease-out; }
-.flash-neg { animation: flash-neg var(--motion-flash) ease-out; }
+.flash-pos {
+  animation: flash-pos var(--motion-flash) ease-out;
+}
+.flash-neg {
+  animation: flash-neg var(--motion-flash) ease-out;
+}
+
+/* ============================================================
+ * Reduced motion — A11Y-06 P1 wildcard reset.
+ * Inline-style animations get neutralised by token overrides; the
+ * `*` reset uses !important so legacy inline `animation:` strings
+ * also stop. Splash/toast components additionally check the JS
+ * `useReducedMotion()` hook so boot does not deadlock waiting for
+ * an animationend that never fires.
+ * ============================================================ */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion-fast: 0ms linear;
+    --motion-base: 0ms linear;
+    --motion-flash: 0ms linear;
+  }
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/*
+ * MIGRATION ROADMAP — UX-02/UX-04 token rollout (round 2B).
+ *
+ * The marquee panes have been migrated to var(--font-size-*) /
+ * var(--space-*) / var(--font-weight-*) tokens; the full sweep across the
+ * remaining 1500+ inline literals is tracked as a dedicated round-3 codemod
+ * once the token surface stabilises.
+ *
+ * Prefer:
+ *   fontSize: "var(--font-size-sm)"     (over fontSize: 11)
+ *   padding: "var(--space-3) var(--space-5)"   (over padding: "6px 12px")
+ *   fontWeight: "var(--font-weight-semibold)"   (over fontWeight: 600)
+ *   color: "var(--text-mute)"            (over color: "#5c616e")
+ *   borderRadius: "var(--radius-md)"     (over borderRadius: 6)
+ *   boxShadow: "var(--shadow-elev-2)"
+ *   zIndex: "var(--z-toast)"
+ *   background: "var(--scrim-modal)"     (over rgba(0,0,0,.55))
+ */

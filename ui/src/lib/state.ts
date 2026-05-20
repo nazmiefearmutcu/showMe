@@ -3,7 +3,7 @@
  * endpoints over the Faz B portfolio.db. The native TRAN pane lives on
  * `listTrades`; PORT and the welcome card both consume `listPositions`.
  */
-import { sidecarBaseUrl } from "./sidecar";
+import { sidecarFetch } from "./sidecar";
 
 export interface StatePosition {
   id: number;
@@ -57,10 +57,9 @@ interface StateRead<T> {
 }
 
 async function get<T>(path: string): Promise<StateRead<T>> {
-  const url = `${sidecarBaseUrl()}${path}`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`${path}: ${res.status} ${res.statusText}`);
-  return (await res.json()) as StateRead<T>;
+  // Routed through sidecarFetch so the auth token (X-ShowMe-Token) and the
+  // shared port-discovery / health-wait pipeline both apply. See ARCH-05.
+  return sidecarFetch<StateRead<T>>(path);
 }
 
 export const listPositions = (): Promise<StateRead<StatePosition>> =>

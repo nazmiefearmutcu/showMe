@@ -105,6 +105,12 @@ class SECTFunction(BaseFunction):
                                   },
                                   sources=["sector_heatmap_model"],
                                   metadata={"fallback": True, "degraded": True})
+        # S12 BugHunt: live-mode quote provider only ships intraday change_pct.
+        # Surface that explicitly via change_period/change_pct_period instead of
+        # silently overwriting the user-selected period header. Also keep the
+        # requested period in `period` so downstream UI knows what the user
+        # asked for vs. what was satisfied.
+        live_period = "1D"
         async def _one(name: str, etf: str):
             try:
                 inst = Instrument(symbol=etf, asset_class=AssetClass.ETF)
@@ -121,12 +127,14 @@ class SECTFunction(BaseFunction):
                 return {
                     "sector": name, "etf": etf, "last": last,
                     "change_pct": chg_pct,
-                    "period": "1D",
+                    "change_pct_period": live_period,
+                    "period": period,
                     "quote_type": "live",
                     "high_24h": q.high_24h, "low_24h": q.low_24h,
                 }
             except Exception:
                 return {"sector": name, "etf": etf, "last": None, "change_pct": None,
+                        "change_pct_period": None,
                         "period": period, "quote_type": "unavailable"}
         rows = await asyncio.gather(*(_one(n, e) for n, e in _SECTOR_ETFS.items()))
         rows.sort(key=lambda x: x.get("change_pct") or 0, reverse=True)
@@ -153,7 +161,21 @@ class SECTFunction(BaseFunction):
                     "provider_errors": ["yfinance sector ETF quotes unavailable"],
                 },
             )
+        warnings: list[str] = []
+        if period != live_period:
+            warnings.append(
+                f"SECT live mode currently delivers intraday {live_period} changes only; the {period} header reflects the request, not the change values"
+            )
         return FunctionResult(
-            code=self.code, instrument=None, data={"status": "ok", "period": "1D", "rows": rows},
+            code=self.code,
+            instrument=None,
+            data={
+                "status": "ok",
+                "period": period,
+                "change_pct_period": live_period,
+                "rows": rows,
+            },
             sources=["yfinance"],
+            warnings=warnings,
+            metadata={"live": True, "requested_period": period, "live_period": live_period},
         )

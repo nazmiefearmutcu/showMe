@@ -149,8 +149,8 @@ export function ALRTPane({ code }: FunctionPaneProps) {
           <button
             type="button"
             onClick={() => onToggle(r.id, !r.active)}
-            className="btn btn--ghost"
-            style={{ height: 18, fontSize: 10, padding: "0 6px" }}
+            className="btn btn--ghost u-btn-mini watch-remove-btn"
+            
             title={r.active ? "Disable" : "Enable"}
           >
             {r.active ? "●" : "○"}
@@ -162,9 +162,7 @@ export function ALRTPane({ code }: FunctionPaneProps) {
         header: "Symbol",
         width: 100,
         render: (r) => (
-          <span style={{ color: "var(--accent)", fontWeight: 700 }}>
-            {r.symbol}
-          </span>
+          <span className="alrt-symbol">{r.symbol}</span>
         ),
       },
       { key: "field", header: "Field", width: 90 },
@@ -215,21 +213,21 @@ export function ALRTPane({ code }: FunctionPaneProps) {
         header: "",
         width: 100,
         render: (r) => (
-          <span style={{ display: "flex", gap: 4 }}>
+          <span className="u-flex u-gap-4">
             <button
               type="button"
-              className="btn btn--ghost"
+              className="btn btn--ghost u-btn-mini watch-remove-btn"
               onClick={() => onTestFire(r)}
-              style={{ height: 18, fontSize: 10, padding: "0 6px" }}
+              
               title="Fire a test notification"
             >
               test
             </button>
             <button
               type="button"
-              className="btn btn--ghost"
+              className="btn btn--ghost u-btn-mini watch-remove-btn"
               onClick={() => onDelete(r)}
-              style={{ height: 18, fontSize: 10, padding: "0 6px" }}
+              
               title="Delete alert"
             >
               ✕
@@ -241,15 +239,29 @@ export function ALRTPane({ code }: FunctionPaneProps) {
     [],
   );
 
+  const activeCount = rows?.filter((r) => r.active).length ?? 0;
+  const firedCount = rows?.filter((r) => r.fired_count > 0).length ?? 0;
+
   return (
-    <div style={{ padding: 18, height: "100%" }}>
+    <div className="u-pane-host">
       <Pane>
         <PaneHeader
           code={code}
           title="Alerts"
-          subtitle={`${rows?.length ?? 0} alarm(s)`}
+          subtitle={`${activeCount} active · ${rows?.length ?? 0} total`}
           trailing={
             <FunctionControlGroup>
+              <Pill tone="positive" variant="soft" withDot={activeCount > 0}>
+                {activeCount} on
+              </Pill>
+              {firedCount > 0 && (
+                <Pill tone="warn" variant="soft" withDot>
+                  {firedCount} fired
+                </Pill>
+              )}
+              <Pill tone={isInTauri() ? "accent" : "muted"} variant="soft" withDot={false}>
+                {isInTauri() ? "native" : "browser"}
+              </Pill>
               <LoadStatePill state={rows == null ? "loading" : "ok"} />
               <RefreshButton
                 loading={rows == null}
@@ -270,10 +282,9 @@ export function ALRTPane({ code }: FunctionPaneProps) {
               trailing={
                 <button
                   type="button"
-                  className="btn btn--ghost"
+                  className="btn btn--ghost alrt-check-btn"
                   onClick={onCheckQuote}
                   disabled={!symbol.trim() || quoteLoading}
-                  style={{ height: 20, fontSize: 10, padding: "0 6px" }}
                 >
                   check
                 </button>
@@ -284,14 +295,7 @@ export function ALRTPane({ code }: FunctionPaneProps) {
                 <option key={sym} value={sym} />
               ))}
             </datalist>
-            <label
-              style={{
-                display: "flex",
-                flexDirection: "column",
-                gap: 4,
-                width: "100%",
-              }}
-            >
+            <label className="migration-mode-label">
               <span style={dtStyle}>Field</span>
               <select
                 value={field}
@@ -303,14 +307,7 @@ export function ALRTPane({ code }: FunctionPaneProps) {
                 <option value="volume">volume</option>
               </select>
             </label>
-            <label
-              style={{
-                display: "flex",
-                flexDirection: "column",
-                gap: 4,
-                width: "100%",
-              }}
-            >
+            <label className="migration-mode-label">
               <span style={dtStyle}>Direction</span>
               <select
                 value={direction}
@@ -354,20 +351,19 @@ export function ALRTPane({ code }: FunctionPaneProps) {
               onChange={(e) => setNote(e.target.value)}
               placeholder="optional rationale"
             />
-            <div style={{ display: "flex", alignItems: "flex-end", height: 50 }}>
+            <div className="alrt-add-row">
               <button
                 type="button"
-                className="btn btn--accent"
+                className="btn btn--accent u-btn-28"
                 onClick={onAdd}
                 disabled={!symbol.trim() || !threshold}
-                style={{ height: 28 }}
               >
                 Add alert
               </button>
             </div>
           </FieldRow>
 
-          <div style={{ marginTop: 12 }}>
+          <div className="u-mt-12">
             {rows == null ? (
               <Skeleton height={120} />
             ) : rows.length === 0 ? (
@@ -394,7 +390,7 @@ export function ALRTPane({ code }: FunctionPaneProps) {
 }
 
 const selectStyle: React.CSSProperties = {
-  background: "var(--bg-elev-2)",
+  background: "var(--surface-2)",
   border: "1px solid var(--border-subtle)",
   borderRadius: "var(--radius-md)",
   color: "var(--text-primary)",
@@ -416,11 +412,14 @@ const previewStyle: React.CSSProperties = {
   gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
   gap: 8,
   marginTop: 10,
-  padding: "8px 10px",
+  padding: "10px 12px",
+  background: "var(--surface-2)",
   border: "1px solid var(--border-subtle)",
   borderRadius: "var(--radius-md)",
-  color: "var(--text-mute)",
+  color: "var(--text-secondary)",
   fontSize: 11,
+  fontFamily: "JetBrains Mono, monospace",
+  lineHeight: 1.6,
 };
 
 function quoteValue(quote: QuoteSnapshot, field: AlertRow["field"]): number | null {

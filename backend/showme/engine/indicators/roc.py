@@ -5,6 +5,9 @@ decelerating (peak indicator). v2 requires momentum to be accelerating
 to emit a directional signal.
 """
 
+from __future__ import annotations
+
+import numpy as np
 import pandas as pd
 
 from showme.engine.indicators.base import BaseIndicator, IndicatorResult, Signal
@@ -21,7 +24,10 @@ class ROCIndicator(BaseIndicator):
         weak_threshold = self.thresholds.get("weak_threshold", 1.0)
 
         close = df["close"]
-        prev_close = close.shift(period)
+        # Per FUNC-07 P1: replace 0 prev-close with NaN so divisions yield NaN
+        # instead of inf — otherwise ROC > strong_threshold fires a fake
+        # STRONG_BUY on the first non-zero bar after a zero close.
+        prev_close = close.shift(period).replace(0, np.nan)
         roc = ((close - prev_close) / prev_close) * 100.0
 
         if len(roc) < 2:

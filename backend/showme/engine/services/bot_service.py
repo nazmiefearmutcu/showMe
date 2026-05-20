@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+from showme.app_paths import runtime_path
 from showme.engine.api.binance_client import BinanceClient
 from showme.engine.data.market_data import MarketDataProvider
 from showme.engine.services.signal_service import SignalService
@@ -154,7 +155,7 @@ class BotService:
         # Clean stale manual scan lock from previous runs
         # (auto_scan_progress.json is kept — it has last_auto_scan timestamp)
         try:
-            p = Path("runtime/manual_scan_active.json")
+            p = runtime_path("manual_scan_active.json")
             if p.exists():
                 p.unlink()
                 logger.info("Cleaned stale manual scan lock file")
@@ -162,7 +163,7 @@ class BotService:
             pass
         # Mark any in-progress auto-scan as not-scanning (stale from previous run)
         try:
-            p = Path("runtime/auto_scan_progress.json")
+            p = runtime_path("auto_scan_progress.json")
             if p.exists():
                 _d = json.loads(p.read_text())
                 if _d.get("scanning"):
@@ -604,6 +605,13 @@ class BotService:
         def _worker():
             try:
                 results = {}
+                # Per PERF-10 P1: cache one SignalService + ConsensusEngine per
+                # timeframe on the bot instance so we don't re-instantiate ~24
+                # indicator objects on every active-coin tick.
+                if not hasattr(self, "_signal_service_cache"):
+                    self._signal_service_cache = {}
+                if not hasattr(self, "_consensus_engine_cache"):
+                    self._consensus_engine_cache = ConsensusEngine(self.config)
                 for tf in self._multi_tfs:
                     try:
                         md = MarketDataProvider(
@@ -614,13 +622,16 @@ class BotService:
                         if df is None or df.empty:
                             results[tf] = {"signal": "N/A", "confidence": 0, "risk_level": "N/A"}
                             continue
-                        svc = SignalService(
-                            {**self.config, "timeframe": tf},
-                            binance_client=self.binance_client,
-                            cache=self.market_cache, store=self.market_store,
-                        )
+                        svc = self._signal_service_cache.get(tf)
+                        if svc is None:
+                            svc = SignalService(
+                                {**self.config, "timeframe": tf},
+                                binance_client=self.binance_client,
+                                cache=self.market_cache, store=self.market_store,
+                            )
+                            self._signal_service_cache[tf] = svc
                         indicators = svc.calculate_all(df)
-                        consensus = ConsensusEngine(self.config).evaluate(indicators)
+                        consensus = self._consensus_engine_cache.evaluate(indicators)
                         conf = consensus["confidence"]
                         zak = self._ZAK.get(tf, 50)
                         results[tf] = {
@@ -631,7 +642,7 @@ class BotService:
                             "nihai_skor": round((conf ** 2) * (zak / 100), 2),
                         }
                     except Exception as e:
-                        logger.debug(f"Active coin signal calc failed for {tf}: {e}")
+                        logger.debug("Active coin signal calc failed for %s: %s", tf, e)
                         results[tf] = {"signal": "N/A", "confidence": 0, "risk_level": "N/A"}
 
                 # Write to file
@@ -1041,7 +1052,7 @@ class BotService:
                 auto_select_on = _fresh_cfg.get("auto_select_enabled", True)
             except Exception:
                 pass
-            if Path("runtime/auto_select_disabled").exists():
+            if runtime_path("auto_select_disabled").exists():
                 auto_select_on = False
             if auto_select_on is None:
                 auto_select_on = self.config.get("auto_select_enabled", True)

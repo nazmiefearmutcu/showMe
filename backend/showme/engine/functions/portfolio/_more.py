@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import numpy as np
@@ -123,7 +123,7 @@ class TRAFunction(BaseFunction):
                 df = await asyncio.wait_for(
                     self.deps.yfinance.fetch(DataRequest(
                     kind=DataKind.OHLCV, instrument=instrument,
-                    start=datetime.utcnow() - timedelta(days=365 * years),
+                    start=datetime.now(timezone.utc) - timedelta(days=365 * years),
                     interval="1d",
                     )),
                     timeout=float(params.get("quote_timeout", 8)),
@@ -251,7 +251,7 @@ class MARSFunction(BaseFunction):
                 df = await self.deps.yfinance.fetch(DataRequest(
                     kind=DataKind.OHLCV,
                     instrument=inst,
-                    start=datetime.utcnow() - timedelta(days=days),
+                    start=datetime.now(timezone.utc) - timedelta(days=days),
                     interval="1d",
                 ))
                 return close_to_daily_returns(df)

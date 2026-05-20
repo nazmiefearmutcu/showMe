@@ -39,7 +39,9 @@ class GMMFunction(BaseFunction):
                         continue
             except Exception as exc:
                 provider_errors.append(f"tradingeconomics: {exc}")
+        used_fallback = False
         if not events:
+            used_fallback = True
             events = [
                 {"country": "US", "event": "CPI", "actual": 3.1, "forecast": 3.0,
                  "surprise": 0.1, "abs_surprise": 0.1, "importance": "high", "unit": "% y/y"},
@@ -53,7 +55,20 @@ class GMMFunction(BaseFunction):
             rows = [row for row in rows if min_importance in str(row.get("importance") or "").lower()]
         rows.sort(key=lambda x: x.get("score", 0), reverse=True)
         rows = rows[: int(params.get("limit", 50))]
-        source_mode = "tradingeconomics" if self.deps.tradingeconomics and not provider_errors else "reference_macro_mover_table"
+        # source_mode must reflect what the rows actually came from. The
+        # earlier check trusted tradingeconomics whenever the dependency
+        # existed and didn't error — but if the provider returned 0 events
+        # we silently rendered the hardcoded reference table while still
+        # advertising it as live data. used_fallback gates that lie.
+        source_mode = (
+            "tradingeconomics"
+            if self.deps.tradingeconomics and not provider_errors and not used_fallback
+            else "reference_macro_mover_table"
+        )
+        if used_fallback and self.deps.tradingeconomics and not provider_errors:
+            provider_errors.append(
+                "tradingeconomics returned no qualifying events (need Actual+Forecast); served reference table instead."
+            )
         return FunctionResult(
             code=self.code,
             instrument=None,

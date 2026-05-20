@@ -459,7 +459,6 @@ def _build_impactor_payload(
         "label": "Correlation Impact Analysis",
         "origin": {
             "tool": "Impactor prototype",
-            "repo_path": "/Users/nazmi/Desktop/Projeler/Impactor",
             "integration": "ported provider-independent correlation engine inside CORR",
         },
         "formula": {

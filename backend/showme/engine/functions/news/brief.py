@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import html
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
@@ -30,7 +30,16 @@ class BRIEFFunction(BaseFunction):
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
-                data=markdown,
+                data={
+                    "status": "reference",
+                    "markdown": markdown,
+                    "articles": [],
+                    "watchlist": [str(s).upper() for s in watchlist],
+                    "article_count": 0,
+                    "next_actions": [
+                        "Pass live=true to fetch real watchlist headlines.",
+                    ],
+                },
                 sources=["watchlist_brief_builder"],
                 metadata={"format": "markdown", "live": False},
             )
@@ -49,7 +58,7 @@ class BRIEFFunction(BaseFunction):
         provider_errors = list(getattr(news_res, "metadata", {}).get("provider_errors", []) or [])
         # Markdown brief
         lines = [
-            f"# ShowMe Daily Brief — {datetime.utcnow():%Y-%m-%d}",
+            f"# ShowMe Daily Brief — {datetime.now(timezone.utc):%Y-%m-%d}",
             "",
             f"**Watchlist:** {', '.join(watchlist)}",
             "",
@@ -121,7 +130,7 @@ def _strip_html(value: str) -> str:
 def _brief_template(watchlist: list[str]) -> str:
     symbols = [str(s).upper() for s in watchlist[:8]] or ["AAPL", "BTCUSDT"]
     lines = [
-        f"# ShowMe Daily Brief - {datetime.utcnow():%Y-%m-%d}",
+        f"# ShowMe Daily Brief - {datetime.now(timezone.utc):%Y-%m-%d}",
         "",
         f"**Watchlist:** {', '.join(symbols)}",
         "",

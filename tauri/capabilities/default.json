@@ -1,16 +1,17 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main-window",
-  "description": "Main showMe terminal window IPC permissions.",
+  "description": "Main showMe terminal window IPC permissions. Locked down per SEC-03 P1: no fs:default (only app-scoped read/write/meta), no process:default (renderer cannot relaunch/exit on demand), shell:allow-open is constrained to https/mailto/tel only via the Tauri 2 default validator.",
   "windows": ["main"],
   "permissions": [
     "core:default",
     "dialog:default",
-    "fs:default",
+    "fs:allow-app-read",
+    "fs:allow-app-write",
+    "fs:allow-app-meta",
     "global-shortcut:default",
     "notification:default",
     "os:default",
-    "process:default",
     "shell:allow-open",
     "store:default",
     "updater:default"

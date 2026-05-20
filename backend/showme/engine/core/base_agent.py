@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
+from showme.engine.utils.helpers import datetime_now
+
 
 @dataclass
 class AgentTask:
@@ -40,7 +42,7 @@ class AgentResult:
     model: str | None = None
     elapsed_ms: float | None = None
     error: str | None = None
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=datetime_now)
 
     @property
     def ok(self) -> bool:

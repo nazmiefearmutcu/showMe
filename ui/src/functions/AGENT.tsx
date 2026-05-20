@@ -1,4 +1,4 @@
-import { type CSSProperties, useMemo, useRef, useState } from "react";
+import { type CSSProperties, useEffect, useMemo, useRef, useState } from "react";
 import {
   DataGrid,
   type DataGridColumn,
@@ -8,6 +8,8 @@ import {
   PaneBody,
   PaneFooter,
   PaneHeader,
+  Pill,
+  Sparkline,
 } from "@/design-system";
 import {
   parseCandidateText,
@@ -40,6 +42,10 @@ export function AGENTPane(_props: FunctionPaneProps) {
   const abortRef = useRef<AbortController | null>(null);
 
   const candidates = useMemo(() => parseCandidateText(candidateText), [candidateText]);
+
+  // Round-2B (TS-LINT-04 P1): abort the in-flight agent request on unmount
+  // so a closed pane never sets state on a dead component.
+  useEffect(() => () => abortRef.current?.abort(), []);
   const evidence = result?.best?.top_evidence ?? [];
   const exclusions = result?.excluded_functions ?? [];
 
@@ -68,49 +74,51 @@ export function AGENTPane(_props: FunctionPaneProps) {
   };
 
   return (
-    <div style={{ padding: 18, height: "100%" }}>
+    <div className="u-pane-host">
       <Pane>
         <PaneHeader
           code="AGENT"
           title="Symbol Agent"
           subtitle={result ? `${result.function_count} functions` : "all-function ranker"}
           trailing={
-            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-              <span className={`pill pill--${state === "error" ? "crashed" : state === "loading" ? "booting" : "healthy"}`}>
+            <div className="u-flex u-gap-8 u-items-center btn btn--accent u-btn-26">
+              <Pill
+                tone={
+                  state === "error"
+                    ? "negative"
+                    : state === "loading"
+                      ? "warn"
+                      : state === "ok"
+                        ? "positive"
+                        : "muted"
+                }
+                variant="soft"
+                withDot={state !== "idle"}
+              >
                 {state}
-              </span>
+              </Pill>
+              <Pill tone="accent" variant="soft" withDot={false}>
+                {candidates.length} cand
+              </Pill>
+              <Pill tone="muted" variant="ghost" withDot={false}>
+                {timeout}s/fn
+              </Pill>
               <button
                 type="button"
-                className="btn btn--accent"
+                
                 onClick={run}
                 disabled={state === "loading" || candidates.length === 0}
-                style={{ height: 26 }}
+                
               >
-                {state === "loading" ? "Running" : "Run"}
+                {state === "loading" ? "Running…" : "Run Agent"}
               </button>
             </div>
           }
         />
-        <PaneBody style={{ padding: 0 }}>
-          <section
-            style={{
-              display: "grid",
-              gridTemplateColumns: "minmax(260px, 340px) minmax(0, 1fr)",
-              height: "100%",
-              minHeight: 0,
-            }}
-          >
-            <aside
-              style={{
-                borderRight: "1px solid var(--border-subtle)",
-                padding: 14,
-                display: "flex",
-                flexDirection: "column",
-                gap: 12,
-                minHeight: 0,
-              }}
-            >
-              <label style={{ display: "grid", gap: 6, minHeight: 180 }}>
+        <PaneBody className="u-p-0">
+          <section className="agent-layout">
+            <aside className="agent-aside">
+              <label className="agent-candidates-label">
                 <span style={labelStyle}>Candidates</span>
                 <textarea
                   value={candidateText}
@@ -124,7 +132,7 @@ export function AGENTPane(_props: FunctionPaneProps) {
                 value={timeout}
                 onChange={(e) => setTimeoutValue(e.target.value)}
                 inputMode="numeric"
-                trailing={<span style={{ color: "var(--text-mute)", fontSize: 10 }}>sec</span>}
+                trailing={<span className="u-text-mute u-text-10">sec</span>}
               />
               <div style={metricGrid}>
                 <Metric label="candidates" value={candidates.length} />
@@ -135,16 +143,28 @@ export function AGENTPane(_props: FunctionPaneProps) {
               </div>
               {result?.best && (
                 <div style={winnerBox}>
-                  <div style={labelStyle}>Best</div>
-                  <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 22 }}>
+                  <div className="u-flex u-items-center u-justify-between u-gap-6">
+                    <span style={labelStyle} className="u-text-accent-strong">Best candidate</span>
+                    <Pill tone="accent" variant="filled" withDot={false}>
+                      {formatScore(result.best.score)}
+                    </Pill>
+                  </div>
+                  <div className="agent-best-symbol">
                     {result.best.symbol}
                   </div>
-                  <div style={{ color: "var(--text-secondary)", fontSize: 11 }}>
-                    {result.best.asset_class} / {formatScore(result.best.score)}
+                  <div className="agent-best-asset">{result.best.asset_class}</div>
+                  <div className="agent-best-meta">
+                    {result.best.signal_functions} signal · {evidence.length} evidence rows
                   </div>
-                  <div style={{ color: "var(--text-mute)", fontSize: 10 }}>
-                    {result.best.signal_functions} signal functions / {evidence.length} evidence rows
-                  </div>
+                  {result.ranked.length > 1 && (
+                    <Sparkline
+                      values={result.ranked.slice(0, 12).map((r) => r.score)}
+                      width={200}
+                      height={24}
+                      tone="accent"
+                      ariaLabel="rank distribution"
+                    />
+                  )}
                 </div>
               )}
               {exclusions.length > 0 ? (
@@ -160,19 +180,9 @@ export function AGENTPane(_props: FunctionPaneProps) {
               ) : null}
             </aside>
 
-            <main
-              style={{
-                display: "grid",
-                gridTemplateRows: "minmax(180px, 0.9fr) minmax(180px, 1fr)",
-                gap: 12,
-                padding: 14,
-                minHeight: 0,
-              }}
-            >
+            <main className="agent-main">
               {error && (
-                <div style={{ color: "var(--negative)", fontFamily: "JetBrains Mono, monospace" }}>
-                  {error}
-                </div>
+                <div className="agent-error">{error}</div>
               )}
               {result ? (
                 <>
@@ -192,11 +202,16 @@ export function AGENTPane(_props: FunctionPaneProps) {
                 </>
               ) : (
                 <Empty
-                  title="No scan yet"
-                  body={`${candidates.length} candidates ready`}
+                  title="Ready to scan"
+                  body={`Symbol Agent will rank ${candidates.length} candidates across all native functions, return per-symbol score + per-function evidence.`}
                   action={
-                    <button type="button" className="btn btn--accent" onClick={run}>
-                      Run Agent
+                    <button
+                      type="button"
+                      className="btn btn--accent agent-run-btn"
+                      onClick={run}
+                      disabled={candidates.length === 0}
+                    >
+                      Run agent · {timeout}s/fn
                     </button>
                   }
                 />
@@ -266,7 +281,7 @@ function Metric({ label, value }: { label: string; value: string | number }) {
   return (
     <div>
       <div style={labelStyle}>{label}</div>
-      <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 13 }}>
+      <div className="agent-help-block">
         {value}
       </div>
     </div>
@@ -310,12 +325,13 @@ const metricGrid: CSSProperties = {
 };
 
 const winnerBox: CSSProperties = {
-  border: "1px solid rgba(255,122,0,0.32)",
+  border: "1px solid var(--accent)",
   borderRadius: "var(--radius-md)",
-  background: "rgba(255,122,0,0.08)",
+  background: "var(--accent-soft)",
   padding: 12,
   display: "grid",
   gap: 6,
+  boxShadow: "var(--shadow-elev-1)",
 };
 
 const excludedBox: CSSProperties = {

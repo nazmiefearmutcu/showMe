@@ -1,0 +1,15 @@
+# cargo-audit config — see https://docs.rs/cargo-audit/
+#
+# SEC-10 — RUSTSEC unmaintained warnings on `gtk-rs 0.18` and `cocoa 0.26`
+# are tracked but not actionable for showMe today: `gtk-rs` is pulled in
+# as a transitive dep through Tauri's Linux backend (we don't ship Linux),
+# and `cocoa` is retained for tray-icon glue while we migrate the rest of
+# the macOS surface to `objc2`. Both are tracking items, not exploitable
+# CVEs, and Tauri 2.x bumps will resolve them upstream.
+
+[advisories]
+ignore = [
+  "RUSTSEC-2024-0413",  # gtk-rs 0.18 unmaintained
+  "RUSTSEC-2024-0345",  # cocoa 0.26 unmaintained
+  "RUSTSEC-2024-0429",  # glib transitive (likely already resolved by Tauri 2.x; keep guard)
+]

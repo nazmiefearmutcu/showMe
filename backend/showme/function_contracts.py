@@ -7,9 +7,15 @@ discarding the legacy ``data`` field that existing panes consume.
 
 from __future__ import annotations
 
+import logging
+import os
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
+
+LOG = logging.getLogger("showme.function_contracts")
 
 FnStatus = str
 OK: FnStatus = "ok"
@@ -18,6 +24,54 @@ INPUT_ERROR: FnStatus = "input_error"
 INPUT_REQUIRED: FnStatus = "input_required"
 PROVIDER_UNAVAILABLE: FnStatus = "provider_unavailable"
 CALC_ERROR: FnStatus = "calc_error"
+
+# Bumped on every breaking-shape change to the envelope.
+CONTRACT_VERSION = 1
+
+
+class FunctionEnvelope(BaseModel):
+    """Pydantic model describing the envelope shipped to the UI/audit.
+
+    ``extra="allow"`` so we don't break in-flight callers that ship
+    additional keys (e.g. legacy ``data``, ``metadata``, ``warnings``,
+    ``rowCount``). Validation is best-effort: ``validate_envelope`` returns
+    a coerced model and re-raises with an explicit message on failure.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    code: str
+    status: Literal[
+        "ok",
+        "empty",
+        "input_error",
+        "input_required",
+        "provider_unavailable",
+        "calc_error",
+    ]
+    as_of: str | None = Field(default=None, alias="asOf")
+    input_echo: dict | None = Field(default=None, alias="inputEcho")
+    payload: dict = Field(default_factory=dict)
+    rows: list[dict] | None = None
+    series: list[dict] | None = None
+    cards: list[dict] | None = None
+    source_details: list[dict] | None = Field(default=None, alias="sourceDetails")
+    warnings: list[str] = Field(default_factory=list)
+    contract_version: int = Field(default=CONTRACT_VERSION, alias="contractVersion")
+
+
+def validate_envelope(payload: dict) -> FunctionEnvelope:
+    """Best-effort coerce a function payload into ``FunctionEnvelope``.
+
+    Re-raises ``ValueError`` with the concrete pydantic error chain so
+    callers can log a clear contract-drift signal.
+    """
+    try:
+        return FunctionEnvelope.model_validate(payload)
+    except ValidationError as exc:
+        raise ValueError(
+            f"function envelope validation failed for code={payload.get('code')!r}: {exc}"
+        ) from exc
 
 ERROR_STATUSES = {
     EMPTY,
@@ -139,6 +193,12 @@ def normalize_function_contract(
         payload["nextAction"] = next_action
     else:
         payload.pop("nextAction", None)
+    payload.setdefault("contractVersion", CONTRACT_VERSION)
+    if os.environ.get("SHOWME_VALIDATE_CONTRACT"):
+        try:
+            validate_envelope(payload)
+        except ValueError as exc:
+            LOG.warning("contract drift: %s", exc)
     return payload
 
 

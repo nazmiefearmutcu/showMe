@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pandas as pd
@@ -43,7 +43,7 @@ class PortOptFunction(BaseFunction):
                 df = await asyncio.wait_for(
                     self.deps.yfinance.fetch(DataRequest(
                         kind=DataKind.OHLCV, instrument=inst,
-                        start=datetime.utcnow() - timedelta(days=days),
+                        start=datetime.now(timezone.utc) - timedelta(days=days),
                         interval="1d",
                     )),
                     timeout=float(params.get("quote_timeout", 8)),

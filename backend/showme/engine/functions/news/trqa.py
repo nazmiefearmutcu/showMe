@@ -38,6 +38,11 @@ class TRQAFunction(BaseFunction):
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         text = params.get("text") or ""
+        # Session-14 fix: Whisper transcription failures used to be silently
+        # swallowed, leaving the user with a misleading "missing transcript
+        # input" reason when the real cause was a transcription error. Track
+        # the failures so they surface in `provider_errors`.
+        transcribe_errors: list[str] = []
         # Whisper-transcribe if needed
         if not text and params.get("audio_url"):
             try:
@@ -49,8 +54,8 @@ class TRQAFunction(BaseFunction):
                     timeout=float(params.get("transcribe_timeout", 15)),
                 )
                 text = w.get("text") or ""
-            except Exception:
-                pass
+            except Exception as exc:
+                transcribe_errors.append(f"transcribe_url: {exc}")
         if not text and params.get("audio_path"):
             try:
                 from showme.engine.services.transcription import transcribe
@@ -61,15 +66,24 @@ class TRQAFunction(BaseFunction):
                     timeout=float(params.get("transcribe_timeout", 15)),
                 )
                 text = w.get("text") or ""
-            except Exception:
-                pass
+            except Exception as exc:
+                transcribe_errors.append(f"transcribe: {exc}")
         if not text:
+            # Session-14 fix: when transcription was attempted but failed,
+            # surface the underlying provider errors instead of pretending
+            # the user simply forgot to pass anything.
+            attempted = bool(params.get("audio_url") or params.get("audio_path"))
+            reason = (
+                "Transcript Q&A could not transcribe the provided audio; check provider_errors."
+                if attempted and transcribe_errors
+                else "Transcript Q&A needs transcript text, audio_url, or audio_path before it can answer."
+            )
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
                 data={
-                    "status": "input_required",
-                    "reason": "Transcript Q&A needs transcript text, audio_url, or audio_path before it can answer.",
+                    "status": "input_required" if not attempted else "provider_unavailable",
+                    "reason": reason,
                     "text_chars": 0,
                     "answers": [],
                     "next_actions": [
@@ -78,7 +92,7 @@ class TRQAFunction(BaseFunction):
                     ],
                 },
                 sources=[],
-                metadata={"provider_errors": ["missing transcript input"]},
+                metadata={"provider_errors": transcribe_errors or ["missing transcript input"]},
             )
         questions = _coerce_questions(params.get("questions"), params.get("query"))
         # LLM router for Q&A

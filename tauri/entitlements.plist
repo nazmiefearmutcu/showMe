@@ -2,25 +2,36 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+    <!--
+      Hardened-runtime entitlements — minimal set per TEST-09 / SEC-03.
+
+      Round 1 already removed `cs.disable-library-validation` and
+      `cs.disable-executable-page-protection`. Round 2C also drops:
+        * `network.server` — sidecar binds 127.0.0.1, loopback is exempt
+          from the sandbox network rules. Removing this denies the app
+          permission to accept any inbound socket as a defence-in-depth
+          measure (TEST-09 P1).
+        * `automation.apple-events` — the cockpit does not script other
+          apps; keeping this would let a renderer compromise pivot via
+          AppleScript (TEST-09 P1).
+        * `files.user-selected.read-write` — sandbox-only entitlement,
+          no-op outside the App Sandbox; cargo cult (TEST-09 P1).
+        * Explicit `<false/>` entitlements (`device.audio-input`,
+          `personal-information.location`) — defaults are off, the
+          explicit false is misleading (TEST-09 P1).
+
+      Kept:
+        * `cs.allow-jit` — required for the WKWebView's JS engine.
+        * `cs.allow-unsigned-executable-memory` — needed by the
+          PyInstaller bootloader; without it the sidecar refuses to
+          map its compiled .pyc bundle.
+        * `network.client` — outbound HTTPS to data providers.
+    -->
     <key>com.apple.security.cs.allow-jit</key>
     <true/>
     <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
     <true/>
-    <key>com.apple.security.cs.disable-library-validation</key>
-    <true/>
-    <key>com.apple.security.cs.disable-executable-page-protection</key>
-    <true/>
     <key>com.apple.security.network.client</key>
     <true/>
-    <key>com.apple.security.network.server</key>
-    <true/>
-    <key>com.apple.security.files.user-selected.read-write</key>
-    <true/>
-    <key>com.apple.security.automation.apple-events</key>
-    <true/>
-    <key>com.apple.security.device.audio-input</key>
-    <false/>
-    <key>com.apple.security.personal-information.location</key>
-    <false/>
 </dict>
 </plist>

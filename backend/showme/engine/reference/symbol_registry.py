@@ -12,6 +12,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+from showme.app_paths import runtime_path
 from showme.engine.core.instrument import AssetClass, Instrument
 from showme.engine.reference.exchange_registry import ExchangeRegistry
 
@@ -63,11 +64,14 @@ class SymbolRegistry:
 
     def __init__(
         self,
-        cache_path: Path | str = "runtime/symbols.sqlite",
+        cache_path: Path | str | None = None,
         openfigi_adapter: Any | None = None,
     ) -> None:
-        self.cache_path = Path(cache_path)
-        self.cache_path.parent.mkdir(parents=True, exist_ok=True)
+        if cache_path is None:
+            self.cache_path = runtime_path("symbols.sqlite")
+        else:
+            self.cache_path = Path(cache_path)
+            self.cache_path.parent.mkdir(parents=True, exist_ok=True)
         self._db = sqlite3.connect(self.cache_path)
         self._db.execute(
             "CREATE TABLE IF NOT EXISTS symbols("

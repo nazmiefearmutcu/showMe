@@ -12,13 +12,14 @@ Yatay-yardımcı fonksiyon — broker bağlamaz; sadece öneri üretir.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from showme.engine.core.base_data_source import DataKind, DataRequest
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from showme.engine.core.instrument import AssetClass, Instrument
 from showme.engine.portfolio.state import PortfolioState
+from showme.engine.utils.helpers import datetime_now
 
 
 # Sector → similar-but-not-identical replacement ETF map.
@@ -67,8 +68,8 @@ class TLHFunction(BaseFunction):
                 "sector": "model_baseline",
                 "replacement_etf": None,
                 "wash_sale_window": [
-                    (datetime.utcnow() - timedelta(days=30)).strftime("%Y-%m-%d"),
-                    (datetime.utcnow() + timedelta(days=30)).strftime("%Y-%m-%d"),
+                    (datetime_now() - timedelta(days=30)).strftime("%Y-%m-%d"),
+                    (datetime_now() + timedelta(days=30)).strftime("%Y-%m-%d"),
                 ],
             }
             return FunctionResult(
@@ -144,15 +145,15 @@ class TLHFunction(BaseFunction):
             if unrealized >= 0:
                 continue
             # Holding period
-            held_days = max(1, (datetime.utcnow() - pos.opened_at).days)
+            held_days = max(1, (datetime_now() - pos.opened_at).days)
             is_long = held_days >= lt_threshold_days
             tax_rate = lt_rate if is_long else bracket
             saved = -unrealized * tax_rate
             replacement = _SECTOR_REPLACEMENT.get(sector) if sector else None
             if replacement and replacement.upper() == pos.instrument.symbol.upper():
                 replacement = None  # would be substantially identical
-            wash_open = (datetime.utcnow() - timedelta(days=30)).strftime("%Y-%m-%d")
-            wash_close = (datetime.utcnow() + timedelta(days=30)).strftime("%Y-%m-%d")
+            wash_open = (datetime_now() - timedelta(days=30)).strftime("%Y-%m-%d")
+            wash_close = (datetime_now() + timedelta(days=30)).strftime("%Y-%m-%d")
             candidates.append({
                 "symbol": pos.instrument.symbol,
                 "asset_class": pos.instrument.asset_class.value,

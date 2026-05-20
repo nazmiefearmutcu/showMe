@@ -16,17 +16,7 @@ interface TabsProps {
 export function Tabs({ items, active, onChange, variant = "underline" }: TabsProps) {
   if (variant === "segmented") {
     return (
-      <div
-        role="tablist"
-        style={{
-          display: "inline-flex",
-          background: "var(--bg-elev-2)",
-          border: "1px solid var(--border-subtle)",
-          borderRadius: "var(--radius-md)",
-          padding: 2,
-          gap: 2,
-        }}
-      >
+      <div role="tablist" className="tabs--segmented">
         {items.map((it) => {
           const isActive = it.id === active;
           return (
@@ -36,24 +26,10 @@ export function Tabs({ items, active, onChange, variant = "underline" }: TabsPro
               type="button"
               key={it.id}
               onClick={() => onChange(it.id)}
-              style={{
-                background: isActive ? "var(--bg-elev-3)" : "transparent",
-                color: isActive ? "var(--text-primary)" : "var(--text-secondary)",
-                border: "none",
-                borderRadius: "var(--radius-sm)",
-                padding: "4px 10px",
-                fontSize: 11,
-                letterSpacing: "0.02em",
-                cursor: "default",
-                transition: "background var(--motion-fast)",
-              }}
+              className={`tabs__seg${isActive ? " tabs__seg--active" : ""}`}
             >
               {it.label}
-              {it.badge != null && (
-                <span style={{ marginLeft: 6, color: "var(--accent)" }}>
-                  {it.badge}
-                </span>
-              )}
+              {it.badge != null && <span className="tabs__seg-badge">{it.badge}</span>}
             </button>
           );
         })}
@@ -61,14 +37,7 @@ export function Tabs({ items, active, onChange, variant = "underline" }: TabsPro
     );
   }
   return (
-    <div
-      role="tablist"
-      style={{
-        display: "flex",
-        gap: 4,
-        borderBottom: "1px solid var(--border-subtle)",
-      }}
-    >
+    <div role="tablist" className="tabs--underline">
       {items.map((it) => {
         const isActive = it.id === active;
         return (
@@ -78,31 +47,10 @@ export function Tabs({ items, active, onChange, variant = "underline" }: TabsPro
             type="button"
             key={it.id}
             onClick={() => onChange(it.id)}
-            style={{
-              background: "transparent",
-              border: "none",
-              color: isActive ? "var(--text-primary)" : "var(--text-secondary)",
-              padding: "8px 12px 6px",
-              fontSize: 12,
-              borderBottom: `2px solid ${
-                isActive ? "var(--accent)" : "transparent"
-              }`,
-              cursor: "default",
-              transition: "color var(--motion-fast), border-color var(--motion-fast)",
-            }}
+            className={`tabs__under${isActive ? " tabs__under--active" : ""}`}
           >
             {it.label}
-            {it.badge != null && (
-              <span
-                style={{
-                  marginLeft: 6,
-                  color: "var(--text-mute)",
-                  fontSize: 10,
-                }}
-              >
-                {it.badge}
-              </span>
-            )}
+            {it.badge != null && <span className="tabs__under-badge">{it.badge}</span>}
           </button>
         );
       })}
@@ -111,5 +59,5 @@ export function Tabs({ items, active, onChange, variant = "underline" }: TabsPro
 }
 
 export function Tab({ children }: { children: ReactNode }) {
-  return <div style={{ paddingTop: 12 }}>{children}</div>;
+  return <div className="tabs__panel">{children}</div>;
 }

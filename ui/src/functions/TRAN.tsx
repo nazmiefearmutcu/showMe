@@ -1,15 +1,29 @@
 /**
- * TRAN — Trade blotter native pane.
+ * TRAN — Bloomberg-grade transaction ledger.
  *
- * Reads the closed-trade history from Round 22's portfolio.db over
- * `/api/state/trades`. Optional symbol filter; CSV export reuses the
- * pattern from HP.tsx.
+ * Dense ledger table with side pills (BUY/LONG positive, SELL/SHORT
+ * accent-tinted), DeltaChip realized P&L, and a top KPI strip
+ * (realized total / wins / losses / avg P&L per trade). Reads closed-trade
+ * history from Round 22's portfolio.db over `/api/state/trades`.
+ *
+ * ⚠ S13 BUG HUNT 2026-05-17 — this pane is currently NOT registered in
+ * `ui/src/functions/registry.tsx`'s PANES map. The official function
+ * code `TRAN` corresponds to "Earnings Call Transcripts" in
+ * `ui/src/functions/static-index.ts:773` and is backed by
+ * `backend/showme/engine/functions/news/tran.py`, so registering this
+ * implementation under TRAN would override the correct earnings surface
+ * with an unrelated trade blotter. Leave this file in-tree until a new
+ * fn-code is allocated for "Trade Blotter" (e.g. BLTR / TXNS); at that
+ * point this component should be renamed and re-wired. Until then the
+ * file is intentionally orphaned dead code, kept so the trade-blotter
+ * design is recoverable without a git archaeology session.
  */
 import { useEffect, useMemo, useState } from "react";
 import {
   ChangeText,
   DataGrid,
   type DataGridColumn,
+  DeltaChip,
   Empty,
   Field,
   FieldRow,
@@ -19,6 +33,7 @@ import {
   PaneHeader,
   Pill,
   Skeleton,
+  StatCard,
 } from "@/design-system";
 import { listTrades, type StateTrade } from "@/lib/state";
 import { useWorkspace } from "@/lib/workspace";
@@ -86,12 +101,14 @@ export function TRANPane({ code, symbol }: FunctionPaneProps) {
         key: "closed_at",
         header: "Closed",
         width: 140,
-        render: (r) => fmtDate(r.closed_at ?? r.opened_at),
+        render: (r) => (
+          <span className="tran-date-cell">{fmtDate(r.closed_at ?? r.opened_at)}</span>
+        ),
       },
       {
         key: "symbol",
         header: "Symbol",
-        width: 90,
+        width: 92,
         render: (r) => (
           <button
             type="button"
@@ -99,15 +116,7 @@ export function TRANPane({ code, symbol }: FunctionPaneProps) {
               setFocusedTarget("DES", r.symbol);
               navigate(`/symbol/${r.symbol}/DES`);
             }}
-            style={{
-              background: "transparent",
-              border: "none",
-              color: "var(--accent)",
-              cursor: "default",
-              font: "inherit",
-              padding: 0,
-              fontWeight: 600,
-            }}
+            className="u-symbol-link"
           >
             {r.symbol}
           </button>
@@ -116,13 +125,20 @@ export function TRANPane({ code, symbol }: FunctionPaneProps) {
       {
         key: "side",
         header: "Side",
-        width: 70,
+        width: 72,
         render: (r) => (
           <Pill
-            tone={r.side === "LONG" ? "positive" : r.side === "SHORT" ? "negative" : "muted"}
+            tone={
+              r.side === "LONG"
+                ? "positive"
+                : r.side === "SHORT"
+                  ? "accent"
+                  : "muted"
+            }
+            variant="soft"
             withDot={false}
           >
-            {r.side}
+            {r.side ?? "—"}
           </Pill>
         ),
       },
@@ -130,34 +146,41 @@ export function TRANPane({ code, symbol }: FunctionPaneProps) {
         key: "quantity",
         header: "Qty",
         numeric: true,
-        width: 80,
-        render: (r) => fmtNum(r.quantity, 4),
+        width: 86,
+        render: (r) => (
+          <span style={ledgerNumStyle}>{fmtNum(r.quantity, 4)}</span>
+        ),
       },
       {
         key: "entry_price",
         header: "Entry",
         numeric: true,
-        width: 90,
-        render: (r) => fmtNum(r.entry_price),
+        width: 92,
+        render: (r) => <span style={ledgerNumStyle}>{fmtNum(r.entry_price)}</span>,
       },
       {
         key: "exit_price",
         header: "Exit",
         numeric: true,
-        width: 90,
-        render: (r) => fmtNum(r.exit_price),
+        width: 92,
+        render: (r) => <span style={ledgerNumStyle}>{fmtNum(r.exit_price)}</span>,
       },
       {
         key: "realized_pnl",
         header: "Realized",
         numeric: true,
-        width: 110,
-        render: (r) =>
-          r.realized_pnl != null ? (
-            <ChangeText value={r.realized_pnl} digits={2} prefix="$" />
-          ) : (
-            "—"
-          ),
+        width: 124,
+        render: (r) => {
+          if (r.realized_pnl == null || !Number.isFinite(r.realized_pnl))
+            return <span className="u-text-mute">—</span>;
+          return (
+            <DeltaChip
+              value={r.realized_pnl}
+              format="currency"
+              fractionDigits={2}
+            />
+          );
+        },
       },
       {
         key: "mode",
@@ -166,6 +189,7 @@ export function TRANPane({ code, symbol }: FunctionPaneProps) {
         render: (r) => (
           <Pill
             tone={r.mode === "writable" ? "warn" : "muted"}
+            variant="soft"
             withDot={false}
           >
             {r.mode ?? "—"}
@@ -185,11 +209,15 @@ export function TRANPane({ code, symbol }: FunctionPaneProps) {
     );
     const wins = closed.filter((r) => Number(r.realized_pnl) > 0).length;
     const losses = closed.filter((r) => Number(r.realized_pnl) < 0).length;
-    return { realized, wins, losses, n: closed.length };
+    const avg = closed.length ? realized / closed.length : 0;
+    return { realized, wins, losses, n: closed.length, avg };
   }, [rows]);
 
+  const utcNow = new Date().toISOString().slice(11, 16);
+  const oldestRow = rows && rows.length ? rows[rows.length - 1] : null;
+
   return (
-    <div style={{ padding: 18, height: "100%" }}>
+    <div className="u-pane-host">
       <Pane>
         <PaneHeader
           code={code}
@@ -201,6 +229,9 @@ export function TRANPane({ code, symbol }: FunctionPaneProps) {
           }
           trailing={
             <FunctionControlGroup>
+              <Pill tone="muted" variant="soft" withDot={false}>
+                {rows?.length ?? 0} rows
+              </Pill>
               <RowLimitControl
                 value={limit}
                 onChange={(next) => setLimit(next as RowLimit)}
@@ -227,13 +258,7 @@ export function TRANPane({ code, symbol }: FunctionPaneProps) {
             </FunctionControlGroup>
           }
         />
-        <div
-          style={{
-            padding: "8px 14px",
-            borderBottom: "1px solid var(--border-subtle)",
-            background: "var(--bg-elev-2)",
-          }}
-        >
+        <div className="most-tab-strip">
           <FieldRow>
             <Field
               label="Symbol filter"
@@ -255,32 +280,78 @@ export function TRANPane({ code, symbol }: FunctionPaneProps) {
             />
           ) : (
             <>
-              {summary && (
-                <div
-                  style={{
-                    display: "flex",
-                    gap: 8,
-                    flexWrap: "wrap",
-                    marginBottom: 8,
-                  }}
-                >
-                  <Pill tone="muted" withDot={false}>
+              {summary ? (
+                <div className="watch-kpi-strip">
+                  <StatCard
+                    label="Realized P&L"
+                    value={
+                      <ChangeText value={summary.realized} prefix="$" digits={2} />
+                    }
+                    caption={`AS OF ${utcNow} UTC`}
+                    tone={
+                      summary.realized > 0
+                        ? "positive"
+                        : summary.realized < 0
+                          ? "negative"
+                          : "neutral"
+                    }
+                  />
+                  <StatCard
+                    label="Wins"
+                    value={String(summary.wins)}
+                    caption={`${summary.n} closed`}
+                    tone={summary.wins > summary.losses ? "positive" : "neutral"}
+                  />
+                  <StatCard
+                    label="Losses"
+                    value={String(summary.losses)}
+                    caption={`win rate ${summary.n ? ((summary.wins / summary.n) * 100).toFixed(0) : "0"}%`}
+                    tone={summary.losses > summary.wins ? "negative" : "neutral"}
+                  />
+                  <StatCard
+                    label="Avg P&L / trade"
+                    value={
+                      <ChangeText value={summary.avg} prefix="$" digits={2} />
+                    }
+                    caption={`limit ${limit}`}
+                    tone={
+                      summary.avg > 0
+                        ? "positive"
+                        : summary.avg < 0
+                          ? "negative"
+                          : "neutral"
+                    }
+                  />
+                </div>
+              ) : null}
+
+              {/* Filter chips */}
+              {summary ? (
+                <div className="tran-chip-row">
+                  <Pill tone="muted" variant="soft" withDot={false}>
                     closed · {summary.n}
                   </Pill>
-                  <Pill tone="positive" withDot={false}>
+                  <Pill tone="positive" variant="soft" withDot={false}>
                     wins · {summary.wins}
                   </Pill>
-                  <Pill tone="negative" withDot={false}>
+                  <Pill tone="negative" variant="soft" withDot={false}>
                     losses · {summary.losses}
                   </Pill>
                   <Pill
                     tone={summary.realized >= 0 ? "positive" : "negative"}
-                    withDot={false}
+                    variant="soft"
+                    withDot
                   >
                     realized · ${summary.realized.toFixed(2)}
                   </Pill>
+                  {filter ? (
+                    <Pill tone="accent" variant="soft" withDot={false}>
+                      filter · {filter}
+                    </Pill>
+                  ) : null}
                 </div>
-              )}
+              ) : null}
+
               <DataGrid
                 columns={cols}
                 rows={rows}
@@ -298,6 +369,12 @@ export function TRANPane({ code, symbol }: FunctionPaneProps) {
           <span>refresh · {REFRESH_MS / 1000}s</span>
           <span>filter · {filter || "(all)"}</span>
           <span>limit · {limit}</span>
+          {oldestRow ? (
+            <span>
+              oldest · {fmtDate(oldestRow.closed_at ?? oldestRow.opened_at)}
+            </span>
+          ) : null}
+          <span>fee model · gross of fees</span>
         </PaneFooter>
       </Pane>
     </div>
@@ -335,3 +412,10 @@ function downloadCsv(label: string, rows: StateTrade[]): void {
   document.body.removeChild(a);
   setTimeout(() => URL.revokeObjectURL(url), 0);
 }
+
+const ledgerNumStyle: React.CSSProperties = {
+  color: "var(--text-primary)",
+  fontFamily: "JetBrains Mono, monospace",
+  fontVariantNumeric: "tabular-nums",
+  fontSize: 12,
+};

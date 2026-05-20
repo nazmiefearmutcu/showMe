@@ -44,10 +44,40 @@ class ACCTFunction(BaseFunction):
                     sources=["portfolio_state"],
                     metadata={"empty": True, "requires_positions": True},
                 )
+            # BUG-HUNT S01: previously user-supplied `positions` were
+            # blindly cast through float(); a non-numeric quantity or
+            # avg_cost bubbled as a 500 with no actionable error. Validate
+            # each row + collect skipped entries into a warning so the
+            # user can fix their Params JSON.
             accounts: dict[str, dict[str, Any]] = {}
-            for p in positions:
+            skipped: list[dict[str, Any]] = []
+            if not isinstance(positions, list):
+                return FunctionResult(
+                    code=self.code,
+                    instrument=None,
+                    data={
+                        "status": "input_error",
+                        "reason": "positions must be a JSON array of position objects.",
+                        "rows": [],
+                        "next_actions": [
+                            "Pass positions=[{symbol, asset_class, quantity, avg_cost, last, account}, ...].",
+                        ],
+                    },
+                    sources=[],
+                )
+            for idx, p in enumerate(positions):
+                if not isinstance(p, dict) or not p.get("symbol"):
+                    skipped.append({"index": idx, "reason": "missing dict or symbol"})
+                    continue
+                try:
+                    qty = float(p.get("quantity", 0))
+                    price = float(p.get("last", p.get("avg_cost", 0)))
+                except (TypeError, ValueError):
+                    skipped.append({"index": idx, "symbol": p.get("symbol"),
+                                    "reason": "quantity/last/avg_cost not numeric"})
+                    continue
                 acct = p.get("account", "paper")
-                mv = float(p.get("quantity", 0)) * float(p.get("last", p.get("avg_cost", 0)))
+                mv = qty * price
                 slot = accounts.setdefault(acct, {"account": acct, "positions": [],
                                                    "total_mv": 0.0, "n_positions": 0,
                                                    "by_asset_class": {}})
@@ -63,13 +93,20 @@ class ACCTFunction(BaseFunction):
                     cross["by_asset_class"][ac] = cross["by_asset_class"].get(ac, 0) + mv
                 for p in slot["positions"]:
                     cross["by_symbol"][p["symbol"]] = cross["by_symbol"].get(p["symbol"], 0) + p["market_value"]
+            metadata: dict[str, Any] = {}
+            if skipped:
+                metadata["provider_errors"] = [
+                    f"ACCT: skipped {len(skipped)} invalid position row(s)"
+                ]
+                metadata["skipped_positions"] = skipped
             return FunctionResult(code=self.code, instrument=None,
                                   data={"accounts": list(accounts.values()),
                                         "rows": [_account_row(slot) for slot in accounts.values()],
                                         "cross": cross,
                                         "methodology": _methodology(),
                                         "field_dictionary": _field_dictionary()},
-                                  sources=["user_positions"])
+                                  sources=["user_positions"],
+                                  metadata=metadata)
         # Resolve last prices per symbol (single fetch each).
         symbols = {p.instrument.symbol: p for p in portfolio.positions}
         async def _q(sym: str) -> tuple[str, float]:

@@ -24,6 +24,7 @@ use parking_lot::RwLock;
 use serde::Serialize;
 use std::sync::Arc;
 use tauri::Emitter;
+use tauri_plugin_log::{Target, TargetKind, RotationStrategy};
 
 /// Shared application state passed to every Tauri command.
 #[derive(Default)]
@@ -31,6 +32,12 @@ pub struct AppState {
     pub sidecar_port: Arc<RwLock<Option<u16>>>,
     pub sidecar_health: Arc<RwLock<SidecarHealth>>,
     pub data_root: Arc<RwLock<Option<std::path::PathBuf>>>,
+    /// Random per-boot token shared with the Python sidecar via the
+    /// `SHOWME_AUTH_TOKEN` env var. The frontend reads it via
+    /// `sidecar_auth_token` and attaches an `X-ShowMe-Token` header to
+    /// every HTTP/WS call so a co-resident process on loopback cannot
+    /// hit the broker/portfolio endpoints (ARCH-05 P2).
+    pub sidecar_auth_token: Arc<RwLock<Option<String>>>,
 }
 
 #[derive(Default, Clone, Debug, Serialize)]
@@ -50,8 +57,78 @@ pub enum SidecarStatus {
     Stopped,
 }
 
+/// Install a process-wide panic hook (TEST-10 P1).
+///
+/// On any unwinding panic in Rust code (Tauri shell, sidecar bookkeeping,
+/// Tauri commands), we:
+///   1. format a single-line summary plus the captured backtrace,
+///   2. write it to `<app_data>/logs/crash/<utc>.log`,
+///   3. emit `app:panic` so a still-running webview can render an alert,
+///   4. delegate to the original hook so stderr / debugger output is
+///      unchanged.
+///
+/// The hook is registered exactly once via `std::sync::Once`.
+fn install_panic_hook() {
+    use std::backtrace::Backtrace;
+    use std::sync::Once;
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        // Force the runtime to capture a backtrace even when RUST_BACKTRACE is
+        // unset; cheap on macOS arm64.
+        std::env::set_var("RUST_BACKTRACE", "1");
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            let payload = if let Some(s) = info.payload().downcast_ref::<&str>() {
+                s.to_string()
+            } else if let Some(s) = info.payload().downcast_ref::<String>() {
+                s.clone()
+            } else {
+                "<non-string panic payload>".to_string()
+            };
+            let location = info
+                .location()
+                .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+                .unwrap_or_else(|| "<unknown>".into());
+            let bt = Backtrace::force_capture();
+            let body = format!(
+                "showMe panic at {location}\npayload: {payload}\nbacktrace:\n{bt}\n"
+            );
+            // Write to the configured app data dir, falling back to /tmp so
+            // even a panic before `ensure_layout` ran lands somewhere.
+            let candidate_root = dirs_home()
+                .map(|h| h.join("Library/Application Support/showMe"))
+                .unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
+            let crash_dir = candidate_root.join("logs/crash");
+            let _ = std::fs::create_dir_all(&crash_dir);
+            let stamp = chrono_like_stamp();
+            let path = crash_dir.join(format!("panic-{stamp}.log"));
+            let _ = std::fs::write(&path, body.as_bytes());
+            // Best-effort log + delegate.
+            log::error!("panic captured to {}: {payload}", path.display());
+            prev(info);
+        }));
+    });
+}
+
+/// Tiny, allocation-light UTC timestamp helper. We avoid pulling `chrono`
+/// into the crash hook because the panic context might already be on a
+/// half-broken allocator path.
+fn chrono_like_stamp() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    format!("{secs}")
+}
+
+fn dirs_home() -> Option<std::path::PathBuf> {
+    std::env::var_os("HOME").map(std::path::PathBuf::from)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    install_panic_hook();
     let state = AppState::default();
 
     tauri::Builder::default()
@@ -62,7 +139,25 @@ pub fn run() {
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_store::Builder::default().build())
-        .plugin(tauri_plugin_log::Builder::default().build())
+        // TEST-10 P1 — explicit log target + per-env level + 10 MiB rotation.
+        // Default builder shipped Info to both stdout and the bundle log file
+        // with no rotation cap; on a long-running cockpit that is unbounded
+        // disk growth.
+        .plugin(
+            tauri_plugin_log::Builder::default()
+                .targets([
+                    Target::new(TargetKind::Stdout),
+                    Target::new(TargetKind::LogDir { file_name: None }),
+                ])
+                .level(if cfg!(debug_assertions) {
+                    log::LevelFilter::Debug
+                } else {
+                    log::LevelFilter::Info
+                })
+                .max_file_size(10 * 1024 * 1024) // 10 MiB
+                .rotation_strategy(RotationStrategy::KeepAll)
+                .build(),
+        )
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -70,6 +165,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::sidecar_status,
             commands::sidecar_port,
+            commands::sidecar_auth_token,
             commands::open_data_folder,
             commands::install_to_applications,
             commands::reload_function_index,
@@ -93,6 +189,7 @@ pub fn run() {
             commands::run_migration,
             commands::check_for_updates,
             commands::apply_update,
+            commands::open_devtools,
         ])
         .setup(|app| {
             // 1. Build app data layout under ~/Library/Application Support/showMe.

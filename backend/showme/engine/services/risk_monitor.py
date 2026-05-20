@@ -14,14 +14,18 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime
-from pathlib import Path
+from datetime import datetime, timezone
 from typing import Any
 
+from showme.app_paths import runtime_path
 
 
-_RISK_FIRES = Path("runtime/risk_fires.jsonl")
-_PEAK_FILE = Path("runtime/risk_peak.json")
+def _risk_fires():
+    return runtime_path("risk_fires.jsonl")
+
+
+def _peak_file():
+    return runtime_path("risk_peak.json")
 
 
 class RiskMonitor:
@@ -43,24 +47,24 @@ class RiskMonitor:
         self.notifiers.append(fn)
 
     def _load_peak(self) -> dict[str, Any]:
-        if _PEAK_FILE.exists():
+        if _peak_file().exists():
             try:
-                return json.loads(_PEAK_FILE.read_text())
+                return json.loads(_peak_file().read_text())
             except Exception:
                 pass
         return {"peak_mv": 0, "peak_ts": None,
                 "day_open_mv": 0, "day_open_ts": None}
 
     def _save_peak(self, state: dict[str, Any]) -> None:
-        _PEAK_FILE.parent.mkdir(parents=True, exist_ok=True)
-        _PEAK_FILE.write_text(json.dumps(state))
+        _peak_file().parent.mkdir(parents=True, exist_ok=True)
+        _peak_file().write_text(json.dumps(state))
 
     def _fire(self, kind: str, message: str, ctx: dict[str, Any]) -> None:
-        evt = {"ts": datetime.utcnow().isoformat(),
+        evt = {"ts": datetime.now(timezone.utc).isoformat(),
                "kind": "risk", "subkind": kind,
                "condition": message, "actions": ["notify"], "context": ctx}
-        _RISK_FIRES.parent.mkdir(parents=True, exist_ok=True)
-        with _RISK_FIRES.open("a") as f:
+        _risk_fires().parent.mkdir(parents=True, exist_ok=True)
+        with _risk_fires().open("a") as f:
             f.write(json.dumps(evt) + "\n")
         for n in self.notifiers:
             try:
@@ -88,11 +92,11 @@ class RiskMonitor:
         if mv <= 0:
             return 0
         peak = self._load_peak()
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         # Refresh peak / day-open
         if mv > (peak.get("peak_mv") or 0):
             peak["peak_mv"] = mv; peak["peak_ts"] = now
-        today = datetime.utcnow().strftime("%Y-%m-%d")
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         if (peak.get("day_open_ts") or "")[:10] != today:
             peak["day_open_mv"] = mv; peak["day_open_ts"] = now
         self._save_peak(peak)

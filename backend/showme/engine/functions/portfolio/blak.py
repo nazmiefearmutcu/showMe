@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import numpy as np
@@ -22,7 +22,7 @@ from showme.engine.services.black_litterman import (
 
 def _template_returns(symbols: list[str], days: int) -> pd.DataFrame:
     periods = max(60, min(days, 504))
-    index = pd.date_range(end=datetime.utcnow().date(), periods=periods, freq="B")
+    index = pd.date_range(end=datetime.now(timezone.utc).date(), periods=periods, freq="B")
     periods = len(index)
     t = np.arange(periods, dtype=float)
     rows = {}
@@ -62,7 +62,7 @@ class BLAKFunction(BaseFunction):
                 df = await asyncio.wait_for(
                     self.deps.yfinance.fetch(DataRequest(
                         kind=DataKind.OHLCV, instrument=inst,
-                        start=datetime.utcnow() - timedelta(days=days),
+                        start=datetime.now(timezone.utc) - timedelta(days=days),
                         interval="1d",
                     )),
                     timeout=8,

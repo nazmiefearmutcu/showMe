@@ -107,7 +107,12 @@ class MAPFunction(BaseFunction):
                     timeout=timeout + 1,
                 )
                 last = q.last; prev = q.close_prev
-                chg = ((last or 0) / (prev or 1) - 1) * 100 if prev else None
+                # Guard both legs — ``last=None`` previously coerced to 0 and
+                # produced a phantom -100% drop instead of an "unknown" row.
+                if prev and last is not None:
+                    chg = (float(last) / float(prev) - 1) * 100
+                else:
+                    chg = None
                 return {"country": country, "etf": etf,
                          "last": last, "change_pct": chg,
                          "period": "1D", "quote_type": "live"}

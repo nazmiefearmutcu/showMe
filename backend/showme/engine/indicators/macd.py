@@ -1,4 +1,6 @@
 """MACD (Moving Average Convergence Divergence) indicator."""
+from __future__ import annotations
+
 
 import pandas as pd
 

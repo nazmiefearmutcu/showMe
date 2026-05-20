@@ -2,12 +2,51 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from showme.engine.core.base_data_source import DataKind, DataRequest
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from showme.engine.core.instrument import AssetClass, Instrument
 from showme.engine.functions.derivative._stubs import _IVOL_FIELDS, _surface_rows
+
+
+async def _resolve_spot(deps: Any, instrument: Instrument, params: dict[str, Any]) -> float:
+    """Pull the live underlying price for OMON.
+
+    2026-05-17 BugHunt S10: previously OMON did ``spot = params.get("spot", 100)``
+    in both the reference and live branches, which gave every non-$100 symbol
+    (AAPL ~$200, NVDA ~$1400, etc.) wildly wrong moneyness on every row. We
+    now mirror the GEX pattern: explicit param wins, otherwise yfinance QUOTE
+    fills it; final fallback to 100 only when no other signal is available.
+    """
+    if "spot" in params:
+        try:
+            value = float(params["spot"])
+            if value > 0:
+                return value
+        except (TypeError, ValueError):
+            pass
+    yfinance = getattr(deps, "yfinance", None)
+    if yfinance is None:
+        return 100.0
+    timeout = max(1.0, min(float(params.get("yfinance_timeout", 3)), 4.0))
+    try:
+        quote = await asyncio.wait_for(
+            yfinance.fetch(DataRequest(
+                kind=DataKind.QUOTE, instrument=instrument,
+                extra={"timeout": timeout},
+            )),
+            timeout=timeout + 0.5,
+        )
+    except Exception:
+        return 100.0
+    last = getattr(quote, "last", None)
+    try:
+        value = float(last) if last is not None else 0.0
+        return value if value > 0 else 100.0
+    except (TypeError, ValueError):
+        return 100.0
 
 
 def _has_no_rows(value: Any) -> bool:
@@ -56,10 +95,14 @@ class OMONFunction(BaseFunction):
         warnings: list[str] = []
         data = {}
         if not (params.get("live_options") or params.get("live")):
+            # Reference path: still pull a live quote so the model surface is
+            # anchored on the real underlying (avoids the $100-strike trap on
+            # AAPL/NVDA/etc.). If the quote also fails we fall back to 100.
+            ref_spot = await _resolve_spot(self.deps, instrument, dict(params))
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
-                data=_options_surface_model(float(params.get("spot", 100))),
+                data=_options_surface_model(ref_spot),
                 sources=["black_scholes_reference_formula"],
             )
         try:
@@ -115,7 +158,9 @@ class OMONFunction(BaseFunction):
         if puts is not None and hasattr(puts, "iterrows"):
             for _, row in puts.iterrows():
                 raw_puts.append({"expiry": selected_expiry, **row.to_dict()})
-        spot = float(params.get("spot", 100))
+        # 2026-05-17 BugHunt S10: spot must come from the live quote so
+        # moneyness reflects the real underlying, not a $100 placeholder.
+        spot = await _resolve_spot(self.deps, instrument, dict(params))
         rows = _surface_rows(raw_calls, raw_puts, spot=spot)
         if not rows:
             return FunctionResult(
@@ -140,6 +185,7 @@ class OMONFunction(BaseFunction):
         payload = {
             "status": "ok",
             "symbol": instrument.symbol,
+            "spot": spot,
             "selected_expiry": selected_expiry,
             "expiries": expiries,
             "rows": rows,

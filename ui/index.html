@@ -1,10 +1,46 @@
 <!doctype html>
-<html lang="en" data-theme="dark">
+<html lang="en" data-preset="papyrus">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-    <meta name="color-scheme" content="dark" />
+    <meta name="color-scheme" content="dark light" />
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%2307080a'/%3E%3Cpath d='M14 38h10l6-18 8 28 6-16h6' fill='none' stroke='%232fd0ff' stroke-width='5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
+    <script>
+      // FOUC blocker — applies stored preset before the React bundle paints.
+      // Reads `showme.theme.v2` JSON shape `{preset, density}` and falls back
+      // to Papyrus before React paints. UX-09 P3.
+      (function () {
+        try {
+          var key = "showme.theme.v2";
+          var migrationKey = "showme.theme.defaultPapyrus.v1";
+          var raw = localStorage.getItem(key);
+          var parsed = raw ? JSON.parse(raw) : null;
+          if (
+            parsed &&
+            parsed.preset === "midnight" &&
+            !localStorage.getItem(migrationKey)
+          ) {
+            parsed.preset = "papyrus";
+            parsed.custom = {
+              bg: "#ece6d6",
+              surface: "#faf5e3",
+              accent: "#8a5a1f"
+            };
+            localStorage.setItem(key, JSON.stringify(parsed));
+            localStorage.setItem(migrationKey, "1");
+          }
+          var preset = parsed && parsed.preset ? parsed.preset : null;
+          var density = parsed && parsed.density ? parsed.density : "compact";
+          if (!preset) {
+            preset = "papyrus";
+          }
+          document.documentElement.setAttribute("data-preset", preset);
+          document.documentElement.setAttribute("data-density", density);
+        } catch (_e) {
+          document.documentElement.setAttribute("data-preset", "papyrus");
+        }
+      })();
+    </script>
     <title>showMe</title>
   </head>
   <body>

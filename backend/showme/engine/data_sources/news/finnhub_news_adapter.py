@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
@@ -37,8 +37,8 @@ class FinnhubNewsAdapter(BaseDataSource):
             request.symbols[0] if request.symbols else None
         )
         if sym:
-            start = (request.start or (datetime.utcnow() - timedelta(days=14))).strftime("%Y-%m-%d")
-            end = (request.end or datetime.utcnow()).strftime("%Y-%m-%d")
+            start = (request.start or (datetime.now(timezone.utc) - timedelta(days=14))).strftime("%Y-%m-%d")
+            end = (request.end or datetime.now(timezone.utc)).strftime("%Y-%m-%d")
             r = await client.get("/company-news", params={
                 "symbol": sym, "from": start, "to": end, "token": self.api_key,
             })

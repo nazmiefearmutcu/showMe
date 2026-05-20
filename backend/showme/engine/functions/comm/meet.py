@@ -14,7 +14,7 @@ Topluyor:
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
@@ -65,7 +65,7 @@ class MEETFunction(BaseFunction):
             tasks.append(_safe(self.deps.gdelt.fetch(DataRequest(
                 kind=DataKind.NEWS,
                 extra={"query": topic},
-                start=datetime.utcnow() - timedelta(days=2),
+                start=datetime.now(timezone.utc) - timedelta(days=2),
                 limit=10,
             )), "recent_news", "gdelt"))
         # DES if instrument is equity
@@ -110,7 +110,7 @@ class MEETFunction(BaseFunction):
 
         recent_news = _normalise_news(out.get("recent_news"))
         out["recent_news"] = recent_news
-        out["meeting_date"] = str(params.get("date") or datetime.utcnow().date().isoformat())
+        out["meeting_date"] = str(params.get("date") or datetime.now(timezone.utc).date().isoformat())
         out["connection_status"] = [
             {"source": "notion", "status": "configured" if self.deps.notion else "not_configured"},
             {"source": "granola", "status": "configured" if self.deps.granola else "not_configured"},

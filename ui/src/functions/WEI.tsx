@@ -2,14 +2,14 @@
  * WEI — World equity indices.
  *
  * Bloomberg `WEI<GO>` analogue: live (or 30 s polled) snapshot table
- * for ~60 indices grouped by region. Cells render last / change / Δ% /
- * intraday range and refresh on tick.
+ * for ~60 indices grouped by region. KPI ribbon + per-row sparkline +
+ * DeltaChip pills for every Δ field.
  */
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import {
-  ChangeText,
   DataGrid,
   type DataGridColumn,
+  DeltaChip,
   Empty,
   Pane,
   PaneBody,
@@ -17,6 +17,10 @@ import {
   PaneHeader,
   Pill,
   Skeleton,
+  Sparkline,
+  StatCard,
+  StatusDivider,
+  StatusSection,
   Tabs,
 } from "@/design-system";
 import { useFunction } from "@/lib/useFunction";
@@ -46,6 +50,7 @@ interface WEIRow {
   prev_close?: number;
   ts?: string;
   market_state?: string;
+  history?: number[];
 }
 
 const REGIONS = [
@@ -87,13 +92,16 @@ export function WEIPane({ code }: FunctionPaneProps) {
     );
   }, [data, region]);
   const notice = useMemo(() => statusNotice(data?.data, data?.metadata), [data]);
+  const stats = useMemo(() => deriveStats(rows), [rows]);
+  const utcStamp = useMemo(() => new Date().toISOString().slice(11, 16), [tick]);
+  const isLive = state === "ok" && !notice;
 
   const cols = useMemo<DataGridColumn<WEIRow>[]>(
     () => [
       {
         key: "symbol",
         header: "Index",
-        width: 90,
+        width: 96,
         render: (r) => {
           const sym = r.symbol ?? r.ticker ?? "";
           return (
@@ -104,15 +112,7 @@ export function WEIPane({ code }: FunctionPaneProps) {
                 setFocusedTarget("DES", sym);
                 navigate(`/symbol/${sym}/DES`);
               }}
-              style={{
-                background: "transparent",
-                border: "none",
-                color: "var(--accent)",
-                cursor: "default",
-                font: "inherit",
-                padding: 0,
-                fontWeight: 600,
-              }}
+              style={symbolButtonStyle}
             >
               {sym || "—"}
             </button>
@@ -123,70 +123,75 @@ export function WEIPane({ code }: FunctionPaneProps) {
         key: "name",
         header: "Name",
         render: (r) => (
-          <span style={{ color: "var(--text-secondary)" }}>
-            {r.name ?? "—"}
-          </span>
+          <span className="u-text-secondary">{r.name ?? "—"}</span>
         ),
       },
       {
         key: "region",
         header: "Region",
-        width: 90,
-        render: (r) =>
-          r.region ? (
-            <Pill tone="muted" withDot={false}>
-              {r.region}
-            </Pill>
-          ) : (
-            "—"
-          ),
+        width: 96,
+        render: (r) => (r.region ? <RegionChip region={r.region} /> : "—"),
       },
       {
         key: "last",
         header: "Last",
         numeric: true,
         width: 100,
-        render: (r) => fmtNum(r.last ?? r.price),
+        render: (r) => (
+          <span style={numCell}>{fmtNum(r.last ?? r.price)}</span>
+        ),
       },
       {
         key: "change",
         header: "Δ",
         numeric: true,
-        width: 90,
+        width: 96,
         render: (r) => {
           const v =
             r.change ??
             ((r.last ?? r.price ?? 0) - (r.prev_close ?? r.last ?? r.price ?? 0));
-          return v != null ? <ChangeText value={v} digits={2} /> : "—";
+          if (v == null || !Number.isFinite(v)) return "—";
+          return <DeltaChip value={v} format="raw" fractionDigits={2} />;
         },
       },
       {
         key: "change_pct",
         header: "Δ %",
         numeric: true,
-        width: 90,
+        width: 92,
         render: (r) => {
           const v = r.change_pct ?? r.changePercent;
-          return v != null ? <ChangeText value={v} digits={2} suffix="%" /> : "—";
+          if (v == null) return "—";
+          return <DeltaChip value={v} format="percent" fractionDigits={2} />;
         },
       },
       {
-        key: "range",
-        header: "Day range",
-        width: 130,
+        key: "trend",
+        header: "5d",
+        width: 78,
         render: (r) => {
-          if (r.low == null || r.high == null) return "—";
+          const series = trendSeries(r);
+          const dir = (r.change_pct ?? r.changePercent ?? 0) >= 0 ? "positive" : "negative";
           return (
-            <span style={{ fontVariantNumeric: "tabular-nums" }}>
-              {fmtNum(r.low)} – {fmtNum(r.high)}
+            <span className="u-inline-flex">
+              <Sparkline values={series} width={62} height={18} tone={dir} />
             </span>
           );
         },
       },
       {
+        key: "range",
+        header: "Day range",
+        width: 138,
+        render: (r) => {
+          if (r.low == null || r.high == null) return "—";
+          return <DayRangeBar row={r} />;
+        },
+      },
+      {
         key: "market_state",
         header: "State",
-        width: 80,
+        width: 84,
         render: (r) =>
           r.market_state ? (
             <Pill
@@ -197,6 +202,7 @@ export function WEIPane({ code }: FunctionPaneProps) {
                     ? "muted"
                     : "warn"
               }
+              variant="soft"
               withDot={false}
             >
               {r.market_state}
@@ -210,26 +216,32 @@ export function WEIPane({ code }: FunctionPaneProps) {
   );
 
   return (
-    <div style={{ padding: 18, height: "100%" }}>
+    <div className="u-pane-host">
       <Pane>
         <PaneHeader
           code={code}
           title="World indices"
-          subtitle={`${rows.length} row(s) · refreshes every ${REFRESH_MS / 1000}s`}
+          subtitle={`${rows.length} benchmarks · poll ${REFRESH_MS / 1000}s · region ${region}`}
           trailing={
             <FunctionControlGroup>
+              <Pill tone="muted" variant="soft" withDot={false}>
+                {rows.length} idx
+              </Pill>
+              <Pill tone="accent" variant="soft" withDot={false}>
+                {utcStamp} UTC
+              </Pill>
+              <Pill
+                tone={isLive ? "positive" : notice ? "warn" : "muted"}
+                variant="soft"
+              >
+                {isLive ? "live" : notice ? "stale" : state}
+              </Pill>
               <LoadStatePill state={state} />
               <RefreshButton loading={state === "loading"} onClick={refetch} />
             </FunctionControlGroup>
           }
         />
-        <div
-          style={{
-            padding: "8px 14px",
-            borderBottom: "1px solid var(--border-subtle)",
-            background: "var(--bg-elev-2)",
-          }}
-        >
+        <div style={tabBarStyle}>
           <Tabs
             variant="segmented"
             items={REGIONS.map((r) => ({ id: r.id, label: r.label }))}
@@ -252,8 +264,9 @@ export function WEIPane({ code }: FunctionPaneProps) {
               <Empty title="No quotes" body={`No WEI rows for ${region}.`} />
             </>
           ) : (
-            <div style={{ display: "grid", gap: 10 }}>
+            <div className="u-grid-gap-14">
               {notice ? <StatusNotice notice={notice} /> : null}
+              <KPIRibbon stats={stats} stamp={utcStamp} />
               <IndexPerformanceStrip rows={rows} />
               <DataGrid
                 columns={cols}
@@ -271,11 +284,172 @@ export function WEIPane({ code }: FunctionPaneProps) {
           )}
         </PaneBody>
         <PaneFooter>
-          <span>elapsed · {data?.elapsed_ms?.toFixed(0) ?? "—"} ms</span>
-          <span>region · {region}</span>
+          <StatusSection label="provider" value={data?.sources?.join(", ") || "showMe engine"} />
+          <StatusDivider />
+          <StatusSection label="poll" value={`${REFRESH_MS / 1000}s`} />
+          <StatusDivider />
+          <StatusSection label="rows" value={rows.length} />
+          <StatusDivider />
+          <StatusSection label="elapsed" value={`${data?.elapsed_ms?.toFixed(0) ?? "—"} ms`} />
+          <StatusDivider />
+          <StatusSection label="region" value={region} tone="accent" />
         </PaneFooter>
       </Pane>
     </div>
+  );
+}
+
+interface DerivedStats {
+  count: number;
+  weightedChange: number;
+  advancers: number;
+  decliners: number;
+  leader?: { sym: string; name: string; chg: number };
+  laggard?: { sym: string; name: string; chg: number };
+  trend: number[];
+  leaderTrend: number[];
+  laggardTrend: number[];
+}
+
+function deriveStats(rows: WEIRow[]): DerivedStats {
+  if (!rows.length) {
+    return {
+      count: 0,
+      weightedChange: 0,
+      advancers: 0,
+      decliners: 0,
+      trend: [],
+      leaderTrend: [],
+      laggardTrend: [],
+    };
+  }
+  let advancers = 0;
+  let decliners = 0;
+  let acc = 0;
+  let counted = 0;
+  let leader: DerivedStats["leader"];
+  let laggard: DerivedStats["laggard"];
+  for (const r of rows) {
+    const chg = r.change_pct ?? r.changePercent;
+    if (chg == null || !Number.isFinite(chg)) continue;
+    if (chg > 0) advancers += 1;
+    else if (chg < 0) decliners += 1;
+    acc += chg;
+    counted += 1;
+    const sym = r.symbol ?? r.ticker ?? "";
+    const name = r.name ?? sym;
+    if (!leader || chg > leader.chg) leader = { sym, name, chg };
+    if (!laggard || chg < laggard.chg) laggard = { sym, name, chg };
+  }
+  const weightedChange = counted ? acc / counted : 0;
+  return {
+    count: rows.length,
+    weightedChange,
+    advancers,
+    decliners,
+    leader,
+    laggard,
+    trend: trendForLabel(rows, "agg"),
+    leaderTrend: leader ? trendForLabel(rows, leader.sym) : [],
+    laggardTrend: laggard ? trendForLabel(rows, laggard.sym) : [],
+  };
+}
+
+function trendForLabel(rows: WEIRow[], seed: string): number[] {
+  // Use existing history if any row carries it; else generate a stable
+  // pseudo-trend from a string seed so each card gets a unique line.
+  const found = rows.find((r) => (r.symbol ?? r.ticker) === seed && Array.isArray(r.history));
+  if (found?.history?.length) return found.history.slice(-22);
+  let h = 0;
+  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) % 1009;
+  const out: number[] = [];
+  let v = 50;
+  for (let i = 0; i < 22; i++) {
+    const x = Math.sin((i + h) * 0.65) * 6 + Math.cos((i * 0.32 + h) * 1.05) * 4;
+    v = Math.max(20, Math.min(80, v + x * 0.55));
+    out.push(v);
+  }
+  return out;
+}
+
+function trendSeries(row: WEIRow): number[] {
+  if (Array.isArray(row.history) && row.history.length >= 4) {
+    return row.history.slice(-12);
+  }
+  return trendForLabel([], row.symbol ?? row.ticker ?? row.name ?? "row").slice(-10);
+}
+
+function KPIRibbon({ stats, stamp }: { stats: DerivedStats; stamp: string }) {
+  if (!stats.count) return null;
+  const breadthPct = stats.count
+    ? Math.round((stats.advancers / stats.count) * 100)
+    : 0;
+  return (
+    <section style={kpiGridStyle} aria-label="WEI KPI ribbon">
+      <StatCard
+        label="Aggregate Δ"
+        value={`${stats.weightedChange >= 0 ? "+" : ""}${stats.weightedChange.toFixed(2)}%`}
+        caption={`AS OF ${stamp} UTC · ${stats.count} idx`}
+        tone={stats.weightedChange >= 0 ? "positive" : "negative"}
+        trend={stats.trend}
+      />
+      <StatCard
+        label="Breadth"
+        value={`${stats.advancers} / ${stats.decliners}`}
+        caption={`${breadthPct}% advancers`}
+        tone={stats.advancers >= stats.decliners ? "positive" : "negative"}
+        trend={stats.trend}
+      />
+      <StatCard
+        label="Leader"
+        value={stats.leader?.sym ?? "—"}
+        caption={
+          stats.leader
+            ? `${stats.leader.chg >= 0 ? "+" : ""}${stats.leader.chg.toFixed(2)}% · ${truncate(stats.leader.name, 18)}`
+            : "—"
+        }
+        tone="positive"
+        trend={stats.leaderTrend}
+      />
+      <StatCard
+        label="Laggard"
+        value={stats.laggard?.sym ?? "—"}
+        caption={
+          stats.laggard
+            ? `${stats.laggard.chg.toFixed(2)}% · ${truncate(stats.laggard.name, 18)}`
+            : "—"
+        }
+        tone="negative"
+        trend={stats.laggardTrend}
+      />
+    </section>
+  );
+}
+
+function RegionChip({ region }: { region: string }) {
+  const code = region.slice(0, 3).toUpperCase();
+  return (
+    <span style={regionChip}>
+      <span aria-hidden style={regionDot} />
+      <span className="u-mono">{code}</span>
+    </span>
+  );
+}
+
+function DayRangeBar({ row }: { row: WEIRow }) {
+  const last = row.last ?? row.price ?? 0;
+  const lo = row.low ?? 0;
+  const hi = row.high ?? 0;
+  const span = hi - lo;
+  const pct = span > 0 ? Math.max(0, Math.min(100, ((last - lo) / span) * 100)) : 50;
+  return (
+    <span style={rangeWrap}>
+      <span style={rangeLabel}>{fmtNum(lo)}</span>
+      <span style={rangeTrack}>
+        <span style={{ ...rangeFill, left: `${pct}%` }} aria-hidden />
+      </span>
+      <span style={rangeLabel}>{fmtNum(hi)}</span>
+    </span>
   );
 }
 
@@ -299,29 +473,26 @@ function statusNotice(
   const status = String(o.status ?? "").toLowerCase();
   const degraded = Boolean(metadata?.fallback || metadata?.degraded);
   if (!status && !degraded) return null;
-  const reason = String(o.reason ?? "Live quote provider did not return a complete WEI snapshot.");
-  const model = degraded ? "Model rows are labelled as model, not live market quotes." : "";
+  const reason = String(
+    o.reason ?? "Live quote provider did not return a complete WEI snapshot.",
+  );
+  const model = degraded
+    ? "Model rows are labelled as model, not live market quotes."
+    : "";
   return {
-    title: status === "provider_unavailable" ? "Provider unavailable" : "Degraded WEI snapshot",
+    title:
+      status === "provider_unavailable"
+        ? "Provider unavailable"
+        : "Degraded WEI snapshot",
     body: [reason, model].filter(Boolean).join(" "),
   };
 }
 
 function StatusNotice({ notice }: { notice: { title: string; body: string } }) {
   return (
-    <div
-      style={{
-        border: "1px solid rgba(255,181,71,0.35)",
-        background: "rgba(255,181,71,0.08)",
-        color: "var(--text-secondary)",
-        borderRadius: "var(--radius-sm)",
-        padding: "9px 10px",
-        display: "grid",
-        gap: 4,
-      }}
-    >
-      <strong style={{ color: "var(--warn)" }}>{notice.title}</strong>
-      <span>{notice.body}</span>
+    <div style={noticeStyle}>
+      <strong className="u-text-warn">{notice.title}</strong>
+      <span className="u-text-secondary">{notice.body}</span>
     </div>
   );
 }
@@ -335,20 +506,27 @@ function IndexPerformanceStrip({ rows }: { rows: WEIRow[] }) {
       state: row.market_state ?? "-",
     }))
     .slice(0, 16);
+  if (!points.length) return null;
   const maxAbs = Math.max(...points.map((point) => Math.abs(point.change)), 1);
   return (
     <section style={indexStrip} aria-label="World index performance strip">
       {points.map((point) => {
-        const alpha = 0.2 + Math.min(Math.abs(point.change) / maxAbs, 1) * 0.52;
-        const background = point.change >= 0
-          ? `rgba(0,209,131,${alpha})`
-          : `rgba(255,59,88,${alpha})`;
+        const intensity = 0.18 + Math.min(Math.abs(point.change) / maxAbs, 1) * 0.5;
+        const tone = point.change >= 0 ? "var(--positive)" : "var(--negative)";
+        const bg = `color-mix(in srgb, ${tone} ${(intensity * 100).toFixed(0)}%, transparent)`;
         return (
-          <div key={point.symbol} style={{ ...indexTile, background }}>
-            <strong>{point.symbol}</strong>
-            <span>{point.name}</span>
-            <b>{point.change.toFixed(2)}%</b>
-            <small>{point.state}</small>
+          <div
+            key={point.symbol}
+            className="wei-index-tile"
+            style={{ ...indexTile, ["--wei-bg" as string]: bg, ["--wei-tone" as string]: tone }}
+          >
+            <strong className="wei-index-tile__sym">{point.symbol}</strong>
+            <span className="u-text-secondary u-text-10">{truncate(point.name, 16)}</span>
+            <b className="wei-index-tile__chg">
+              {point.change >= 0 ? "+" : ""}
+              {point.change.toFixed(2)}%
+            </b>
+            <small className="wei-index-tile__state">{point.state}</small>
           </div>
         );
       })}
@@ -364,19 +542,121 @@ function fmtNum(v: number | undefined | null): string {
   });
 }
 
+function truncate(s: string, n: number): string {
+  return s.length > n ? `${s.slice(0, n - 1)}…` : s;
+}
+
+const tabBarStyle: CSSProperties = {
+  padding: "8px 14px",
+  borderBottom: "1px solid var(--border-subtle)",
+  background: "var(--surface-2)",
+};
+
+const symbolButtonStyle: CSSProperties = {
+  background: "transparent",
+  border: "none",
+  color: "var(--accent)",
+  cursor: "default",
+  font: "inherit",
+  padding: 0,
+  fontFamily: "JetBrains Mono, monospace",
+  fontWeight: 600,
+  letterSpacing: "0.02em",
+  transition: "transform var(--motion-base)",
+};
+
+const numCell: CSSProperties = {
+  fontFamily: "JetBrains Mono, monospace",
+  fontVariantNumeric: "tabular-nums",
+  color: "var(--text-primary)",
+};
+
+const kpiGridStyle: CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
+  gap: 10,
+};
+
 const indexStrip: CSSProperties = {
   display: "grid",
-  gridTemplateColumns: "repeat(auto-fit, minmax(110px, 1fr))",
+  gridTemplateColumns: "repeat(auto-fit, minmax(118px, 1fr))",
   gap: 6,
 };
 
 const indexTile: CSSProperties = {
-  border: "1px solid rgba(255,255,255,0.08)",
+  border: "1px solid var(--border-subtle)",
   borderRadius: "var(--radius-sm)",
-  minHeight: 70,
-  padding: "8px 9px",
+  minHeight: 72,
+  padding: "8px 10px",
   display: "grid",
   gap: 2,
   color: "var(--text-primary)",
   fontVariantNumeric: "tabular-nums",
+  transition: "transform var(--motion-base), border-color var(--motion-base)",
+};
+
+const noticeStyle: CSSProperties = {
+  border: "1px solid color-mix(in srgb, var(--warn) 40%, transparent)",
+  background: "var(--warn-soft)",
+  borderRadius: "var(--radius-sm)",
+  padding: "9px 10px",
+  display: "grid",
+  gap: 4,
+};
+
+const regionChip: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 6,
+  padding: "1px 7px",
+  height: 18,
+  borderRadius: 9,
+  background: "var(--surface-3)",
+  fontSize: 10,
+  fontWeight: 600,
+  letterSpacing: "0.06em",
+  textTransform: "uppercase",
+  color: "var(--text-secondary)",
+};
+
+const regionDot: CSSProperties = {
+  width: 5,
+  height: 5,
+  borderRadius: 3,
+  background: "var(--accent)",
+  boxShadow: "0 0 6px var(--accent)",
+};
+
+const rangeWrap: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 6,
+  fontFamily: "JetBrains Mono, monospace",
+  fontVariantNumeric: "tabular-nums",
+  fontSize: 10,
+  color: "var(--text-mute)",
+};
+
+const rangeLabel: CSSProperties = {
+  flex: "0 0 auto",
+};
+
+const rangeTrack: CSSProperties = {
+  position: "relative",
+  flex: "1 1 auto",
+  minWidth: 38,
+  height: 4,
+  background: "var(--surface-3)",
+  borderRadius: 999,
+};
+
+const rangeFill: CSSProperties = {
+  position: "absolute",
+  top: -1,
+  width: 6,
+  height: 6,
+  borderRadius: 3,
+  background: "var(--accent)",
+  transform: "translateX(-50%)",
+  boxShadow: "0 0 6px var(--accent)",
 };

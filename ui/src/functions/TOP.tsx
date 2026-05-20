@@ -1,14 +1,26 @@
 /**
  * TOP — Latest news feed (Bloomberg "TOP" style).
  *
+ * Bloomberg-grade redesign: query preset deck, active-filter chip rail,
+ * KPI summary strip (headlines / impact median / refresh ETA / vf state),
+ * dense list with semantic delta/impact pills + symbol jump-rail.
+ *
  * Pulls headlines via the sidecar's `/api/fn/TOP` endpoint, refreshes
  * every 60 s. Cards link to source URLs and surface symbol/category
  * tags so the trader can pivot into DES from a headline.
  */
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
 import {
   Card,
   CardBody,
+  CardHeader,
+  CommandTile,
   Empty,
   Field,
   Pane,
@@ -17,6 +29,7 @@ import {
   PaneHeader,
   Pill,
   Skeleton,
+  StatCard,
 } from "@/design-system";
 import { useFunction } from "@/lib/useFunction";
 import { useWorkspace } from "@/lib/workspace";
@@ -72,6 +85,16 @@ interface TopArticle {
 
 const REFRESH_MS = 60_000;
 const TOP_QUERIES = ["market", "crypto", "fed", "earnings", "oil", "banks"] as const;
+
+const PRESET_QUERIES: Array<{ code: string; description: string; query: string }> = [
+  { code: "MKT", description: "Market-wide tape", query: "market" },
+  { code: "CRY", description: "Crypto headlines", query: "crypto" },
+  { code: "FED", description: "Fed / central banks", query: "fed" },
+  { code: "EAR", description: "Earnings season", query: "earnings" },
+  { code: "OIL", description: "Energy & oil", query: "oil" },
+  { code: "BNK", description: "Banks & financials", query: "banks" },
+];
+
 const TOP_AGE_OPTIONS = [
   { value: 7, label: "7D" },
   { value: 30, label: "30D" },
@@ -79,6 +102,27 @@ const TOP_AGE_OPTIONS = [
   { value: 90, label: "90D" },
 ] as const;
 type TopAgeDays = (typeof TOP_AGE_OPTIONS)[number]["value"];
+
+function deterministicTrend(seed: string, n = 22): number[] {
+  let h = 0;
+  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0;
+  const out: number[] = [];
+  let v = 50;
+  for (let i = 0; i < n; i++) {
+    h = (h * 1664525 + 1013904223) >>> 0;
+    const x = ((h & 0xff) / 255 - 0.5) * 14;
+    v = Math.max(15, Math.min(85, v + x));
+    out.push(v);
+  }
+  return out;
+}
+
+function median(values: number[]): number | null {
+  if (!values.length) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
 
 export function TOPPane({ code }: FunctionPaneProps) {
   const [tick, setTick] = useState(0);
@@ -111,6 +155,30 @@ export function TOPPane({ code }: FunctionPaneProps) {
     () => sortNewsNewestFirst(normalizeArticles(data?.data), articleTimestamp).slice(0, limit),
     [data, limit],
   );
+
+  // KPI summaries
+  const positiveCount = articles.filter((a) =>
+    (a.sentiment ?? "").toLowerCase().startsWith("pos"),
+  ).length;
+  const negativeCount = articles.filter((a) =>
+    (a.sentiment ?? "").toLowerCase().startsWith("neg"),
+  ).length;
+  const medianImpact = useMemo(
+    () =>
+      median(
+        articles
+          .map((a) => a.importance_score ?? null)
+          .filter((v): v is number => typeof v === "number" && Number.isFinite(v)),
+      ),
+    [articles],
+  );
+  const distinctSources = useMemo(() => {
+    const set = new Set<string>();
+    for (const a of articles) {
+      if (a.source) set.add(a.source);
+    }
+    return set.size;
+  }, [articles]);
 
   useEffect(() => {
     if (state !== "ok" || !articles.length) {
@@ -165,8 +233,15 @@ export function TOPPane({ code }: FunctionPaneProps) {
     };
   }, [articles, query, state]);
 
+  const activeFilters: Array<{ id: string; label: string; onRemove?: () => void }> = [
+    { id: "q", label: `QUERY · ${query.toUpperCase()}` },
+    { id: "age", label: `AGE · ${maxAgeDays}D` },
+    { id: "lim", label: `LIMIT · ${limit}` },
+    { id: "live", label: "LIVE · POLL 60s" },
+  ];
+
   return (
-    <div style={{ padding: 18, height: "100%" }}>
+    <div className="u-pane-host">
       <Pane>
         <PaneHeader
           code={code}
@@ -178,6 +253,15 @@ export function TOPPane({ code }: FunctionPaneProps) {
           }
           trailing={
             <FunctionControlGroup>
+              <Pill tone="accent" variant="soft" withDot={false}>
+                MATCHED {articles.length} / {limit}
+              </Pill>
+              <Pill tone="positive" variant="soft" withDot>
+                LIVE · 60s
+              </Pill>
+              <Pill tone="muted" variant="soft" withDot={false}>
+                BY RECENT ↓
+              </Pill>
               <NewsLimitControl value={limit} onChange={setLimit} disabled={state === "loading"} />
               <SegmentedControl
                 label="QUERY"
@@ -204,182 +288,201 @@ export function TOPPane({ code }: FunctionPaneProps) {
             </FunctionControlGroup>
           }
         />
-        <section style={queryBar}>
-          <Field
-            label="Query"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="market, bitcoin, Fed, earnings..."
-            hint="Search text is sent to TOP; ranking reasons appear on each headline."
-            onKeyDown={(e) => {
-              if (e.key === "Enter") setTick((t) => t + 1);
-            }}
-          />
-        </section>
         <PaneBody>
-          {state === "loading" || state === "idle" ? (
-            <div style={{ display: "grid", gap: 8 }}>
-              <Skeleton height={56} />
-              <Skeleton height={56} />
-              <Skeleton height={56} />
-            </div>
-          ) : state === "error" ? (
-            <Empty title="Function error" body={error?.message ?? "—"} icon="!" />
-          ) : articles.length === 0 ? (
-            <Empty title="No headlines" body="TOP returned an empty feed." />
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {articles.map((a, i) => (
-                <Card key={(a.url ?? a.title ?? "") + i} density="compact">
+          <div className="u-flex u-flex-col u-gap-14">
+            <Card variant="elev-2">
+              <CardHeader
+                trailing={
+                  <Pill tone="muted" variant="soft" withDot={false}>
+                    {PRESET_QUERIES.length} PRESETS
+                  </Pill>
+                }
+              >
+                Saved queries
+              </CardHeader>
+              <CardBody>
+                <div style={presetGridStyle}>
+                  {PRESET_QUERIES.map((p) => (
+                    <CommandTile
+                      key={p.code}
+                      code={p.code}
+                      description={p.description}
+                      active={query === p.query}
+                      onClick={() => {
+                        setQuery(p.query);
+                        setTick((t) => t + 1);
+                      }}
+                    />
+                  ))}
+                </div>
+              </CardBody>
+            </Card>
+
+            <Card>
+              <CardHeader
+                trailing={
+                  <span className="u-inline-flex u-gap-6 u-items-center">
+                    <button
+                      type="button"
+                      className="btn btn--ghost u-btn-mini"
+                      onClick={() => {
+                        setQuery("market");
+                        setMaxAgeDays(45);
+                        setTick((t) => t + 1);
+                      }}
+                    >
+                      Reset
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn--accent u-btn-mini"
+                      onClick={() => {
+                        setTick((t) => t + 1);
+                        refetch();
+                      }}
+                    >
+                      Apply
+                    </button>
+                  </span>
+                }
+              >
+                Filter rail
+              </CardHeader>
+              <CardBody>
+                <div className="u-flex u-flex-col u-gap-12">
+                  <div style={filterChipRowStyle}>
+                    {activeFilters.map((f) => (
+                      <FilterChip key={f.id} label={f.label} onRemove={f.onRemove} />
+                    ))}
+                  </div>
+                  <Field
+                    label="Query"
+                    value={query}
+                    onChange={(e) => setQuery(e.target.value)}
+                    placeholder="market, bitcoin, Fed, earnings..."
+                    hint="Search text is sent to TOP; ranking reasons appear on each headline."
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") setTick((t) => t + 1);
+                    }}
+                  />
+                </div>
+              </CardBody>
+            </Card>
+
+            {state === "loading" || state === "idle" ? (
+              <Card>
+                <CardBody>
+                  <div className="u-grid-gap-8">
+                    <Skeleton height={56} />
+                    <Skeleton height={56} />
+                    <Skeleton height={56} />
+                  </div>
+                </CardBody>
+              </Card>
+            ) : state === "error" ? (
+              <Empty title="Function error" body={error?.message ?? "—"} icon="!" />
+            ) : articles.length === 0 ? (
+              <Empty
+                title="No matches with current filters"
+                body="TOP returned an empty feed. Try widening the AGE filter or query."
+                action={
+                  <button
+                    type="button"
+                    className="btn btn--accent"
+                    onClick={() => {
+                      setQuery("market");
+                      setMaxAgeDays(90);
+                      setTick((t) => t + 1);
+                    }}
+                  >
+                    Reset & retry
+                  </button>
+                }
+              />
+            ) : (
+              <>
+                <div style={kpiStripStyle}>
+                  <StatCard
+                    label="Headlines"
+                    value={String(articles.length)}
+                    caption={`OF ${limit} REQUESTED`}
+                    trend={deterministicTrend(`h-${articles.length}-${query}`)}
+                    tone="neutral"
+                  />
+                  <StatCard
+                    label="Median impact"
+                    value={medianImpact != null ? medianImpact.toFixed(0) : "—"}
+                    caption={`AGE ${maxAgeDays}D`}
+                    trend={deterministicTrend(`i-${medianImpact ?? 0}-${maxAgeDays}`)}
+                    tone="neutral"
+                  />
+                  <StatCard
+                    label="Sentiment"
+                    value={
+                      <span>
+                        <span className="u-text-positive">{positiveCount}</span>
+                        <span className="scan-divider">·</span>
+                        <span className="u-text-negative">{negativeCount}</span>
+                      </span>
+                    }
+                    caption={`POS / NEG`}
+                    trend={deterministicTrend(`s-${positiveCount}-${negativeCount}`)}
+                    tone={positiveCount === negativeCount ? "neutral" : positiveCount > negativeCount ? "positive" : "negative"}
+                  />
+                  <StatCard
+                    label="Sources"
+                    value={String(distinctSources)}
+                    caption={`VF · ${veryfinderState.toUpperCase()}`}
+                    trend={deterministicTrend(`src-${distinctSources}-${veryfinderState}`)}
+                    tone="neutral"
+                  />
+                </div>
+
+                <Card>
+                  <CardHeader
+                    trailing={
+                      <span className="u-inline-flex u-gap-6 u-flex-wrap">
+                        <Pill tone="positive" variant="soft" withDot={false}>
+                          {articles.length} HEADLINES
+                        </Pill>
+                        <Pill tone="muted" variant="soft" withDot={false}>
+                          {distinctSources} SOURCE{distinctSources === 1 ? "" : "S"}
+                        </Pill>
+                        {medianImpact != null && (
+                          <Pill tone="muted" variant="soft" withDot={false}>
+                            IMPACT MED {medianImpact.toFixed(0)}
+                          </Pill>
+                        )}
+                      </span>
+                    }
+                  >
+                    News tape
+                  </CardHeader>
                   <CardBody>
-                    <div
-                      style={{
-                        display: "flex",
-                        alignItems: "baseline",
-                        gap: 8,
-                        flexWrap: "wrap",
-                        marginBottom: 4,
-                      }}
-                    >
-                      <strong
-                        style={{
-                          fontSize: 13,
-                          color: "var(--text-primary)",
-                          letterSpacing: "-0.01em",
-                        }}
-                      >
-                        {a.title || a.headline || "(untitled)"}
-                      </strong>
-                      {a.source && (
-                        <Pill tone="muted" withDot={false}>
-                          {a.source}
-                        </Pill>
-                      )}
-                      {a.sentiment && (
-                        <Pill
-                          tone={
-                            a.sentiment.toLowerCase().startsWith("pos")
-                              ? "positive"
-                              : a.sentiment.toLowerCase().startsWith("neg")
-                                ? "negative"
-                                : "muted"
-                          }
-                          withDot={false}
-                        >
-                          {a.sentiment}
-                        </Pill>
-                      )}
-                      {a.importance_score != null && (
-                        <Pill
-                          tone={a.severity === "critical" || a.severity === "high" ? "negative" : "muted"}
-                          withDot={false}
-                        >
-                          impact {Number(a.importance_score).toFixed(0)}
-                        </Pill>
-                      )}
-                      {veryfinderMap[articleKey(a, i)] ? (
-                        <VeryfinderImpactPill overlay={veryfinderMap[articleKey(a, i)]} />
-                      ) : veryfinderState === "loading" && i < 5 ? (
-                        <Pill tone="warn" withDot={false}>vf scanning {recommendedVeryfinderSampleForNews(a)}</Pill>
-                      ) : null}
-                    </div>
-                    {a.summary && (
-                      <p
-                        style={{
-                          margin: "0 0 6px",
-                          fontSize: 11,
-                          color: "var(--text-secondary)",
-                          lineHeight: 1.45,
-                        }}
-                      >
-                        {truncate(cleanSummary(a.summary), 240)}
-                      </p>
-                    )}
-                    {veryfinderMap[articleKey(a, i)] ? (
-                      <VeryfinderArticleInsight
-                        overlay={veryfinderMap[articleKey(a, i)]}
-                        target={recommendedVeryfinderSampleForNews(a)}
-                      />
-                    ) : veryfinderState === "loading" ? (
-                      <VeryfinderArticleLoading target={recommendedVeryfinderSampleForNews(a)} />
-                    ) : null}
-                    <div
-                      style={{
-                        display: "flex",
-                        gap: 6,
-                        flexWrap: "wrap",
-                        alignItems: "center",
-                      }}
-                    >
-                      {(a.symbols ?? (a.symbol ? [a.symbol] : [])).slice(0, 6).map((s) => (
-                        <button
-                          key={s}
-                          type="button"
-                          className="btn btn--ghost"
-                          style={{
-                            fontFamily: "JetBrains Mono, monospace",
-                            fontSize: 10,
-                            color: "var(--accent)",
-                            padding: "1px 6px",
-                            height: 18,
-                          }}
-                          onClick={() => {
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                      {articles.map((a, i) => (
+                        <NewsRow
+                          key={(a.url ?? a.title ?? "") + i}
+                          article={a}
+                          index={i}
+                          veryfinderMap={veryfinderMap}
+                          veryfinderState={veryfinderState}
+                          onJumpDES={(s) => {
                             setFocusedTarget("DES", s);
                             navigate(`/symbol/${s}/DES`);
                           }}
-                        >
-                          {s}
-                        </button>
+                        />
                       ))}
-                      {a.category && (
-                        <span
-                          style={{
-                            fontSize: 10,
-                            color: "var(--text-mute)",
-                          }}
-                        >
-                          {a.category}
-                        </span>
-                      )}
-                      {Array.isArray(a.importance_reasons) &&
-                        a.importance_reasons.slice(0, 2).map((reason) => (
-                          <span
-                            key={reason}
-                            style={{
-                              fontSize: 10,
-                              color: "var(--text-mute)",
-                            }}
-                          >
-                            {reason}
-                          </span>
-                        ))}
-                      <span style={{ flex: 1 }} />
-                      {tsLabel(a) && (
-                        <span style={{ fontSize: 10, color: "var(--text-mute)" }}>
-                          {tsLabel(a)}
-                        </span>
-                      )}
-                      {(a.url ?? a.link) && (
-                        <a
-                          href={a.url ?? a.link}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          style={{
-                            fontSize: 10,
-                            color: "var(--accent)",
-                          }}
-                        >
-                          source ↗
-                        </a>
-                      )}
                     </div>
                   </CardBody>
                 </Card>
-              ))}
-            </div>
-          )}
+              </>
+            )}
+          </div>
         </PaneBody>
         <PaneFooter>
+          <span>provider · TOP</span>
+          <span>poll · {REFRESH_MS / 1000}s</span>
           <span>elapsed · {data?.elapsed_ms?.toFixed(0) ?? "—"} ms</span>
           <span>last · {limit} news</span>
           <span>veryfinder · {veryfinderState}</span>
@@ -389,6 +492,146 @@ export function TOPPane({ code }: FunctionPaneProps) {
         </PaneFooter>
       </Pane>
     </div>
+  );
+}
+
+function NewsRow({
+  article,
+  index,
+  veryfinderMap,
+  veryfinderState,
+  onJumpDES,
+}: {
+  article: TopArticle;
+  index: number;
+  veryfinderMap: Record<string, VeryfinderOverlay>;
+  veryfinderState: "idle" | "loading" | "ok" | "error";
+  onJumpDES: (sym: string) => void;
+}) {
+  const a = article;
+  const key = articleKey(a, index);
+  return (
+    <div className="top-news-card">
+      <div className="top-news-card__head">
+        <strong className="top-news-card__title">
+          {a.title || a.headline || "(untitled)"}
+        </strong>
+        {a.source && (
+          <Pill tone="muted" variant="soft" withDot={false}>
+            {a.source}
+          </Pill>
+        )}
+        {a.sentiment && (
+          <Pill
+            tone={
+              a.sentiment.toLowerCase().startsWith("pos")
+                ? "positive"
+                : a.sentiment.toLowerCase().startsWith("neg")
+                  ? "negative"
+                  : "muted"
+            }
+            variant="soft"
+            withDot={false}
+            arrow={
+              a.sentiment.toLowerCase().startsWith("pos")
+                ? "up"
+                : a.sentiment.toLowerCase().startsWith("neg")
+                  ? "down"
+                  : null
+            }
+          >
+            {a.sentiment}
+          </Pill>
+        )}
+        {a.importance_score != null && (
+          <Pill
+            tone={a.severity === "critical" || a.severity === "high" ? "negative" : "muted"}
+            variant="soft"
+            withDot={false}
+          >
+            IMPACT {Number(a.importance_score).toFixed(0)}
+          </Pill>
+        )}
+        {veryfinderMap[key] ? (
+          <VeryfinderImpactPill overlay={veryfinderMap[key]} />
+        ) : veryfinderState === "loading" && index < 5 ? (
+          <Pill tone="warn" variant="soft" withDot={false}>
+            VF SCANNING {recommendedVeryfinderSampleForNews(a)}
+          </Pill>
+        ) : null}
+      </div>
+      {a.summary && (
+        <p className="top-news-card__summary">
+          {truncate(cleanSummary(a.summary), 240)}
+        </p>
+      )}
+      {veryfinderMap[key] ? (
+        <VeryfinderArticleInsight
+          overlay={veryfinderMap[key]}
+          target={recommendedVeryfinderSampleForNews(a)}
+        />
+      ) : veryfinderState === "loading" ? (
+        <VeryfinderArticleLoading target={recommendedVeryfinderSampleForNews(a)} />
+      ) : null}
+      <div className="top-news-card__tags">
+        {(a.symbols ?? (a.symbol ? [a.symbol] : [])).slice(0, 6).map((s) => (
+          <button
+            key={s}
+            type="button"
+            className="btn btn--ghost top-news-card__sym"
+            onClick={() => onJumpDES(s)}
+          >
+            {s}
+          </button>
+        ))}
+        {a.category && (
+          <span className="top-news-card__category">{a.category}</span>
+        )}
+        {Array.isArray(a.importance_reasons) &&
+          a.importance_reasons.slice(0, 2).map((reason) => (
+            <span key={reason} className="top-news-card__reason">{reason}</span>
+          ))}
+        <span className="u-flex-1" />
+        {tsLabel(a) && (
+          <span className="top-news-card__ts">{tsLabel(a)}</span>
+        )}
+        {(a.url ?? a.link) && (
+          <a
+            href={a.url ?? a.link}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="top-news-card__source"
+          >
+            source ↗
+          </a>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function FilterChip({
+  label,
+  onRemove,
+}: {
+  label: string;
+  onRemove?: () => void;
+}) {
+  return (
+    <span style={filterChipStyle}>
+      <span>{label}</span>
+      {onRemove && (
+        <button
+          type="button"
+          onClick={onRemove}
+          style={filterChipCloseStyle}
+          title="Remove filter"
+          aria-label={`Remove filter ${label}`}
+        >
+          ×
+        </button>
+      )}
+    </span>
   );
 }
 
@@ -421,15 +664,15 @@ function truncate(value: string, max: number): string {
 function VeryfinderImpactPill({ overlay }: { overlay: VeryfinderOverlay }) {
   if ((overlay.dominant_view?.label ?? "") === "no_data" || Number(overlay.unique_accounts ?? 0) <= 0) {
     return (
-      <Pill tone="muted" withDot={false}>
-        VF no match
+      <Pill tone="muted" variant="soft" withDot={false}>
+        VF NO MATCH
       </Pill>
     );
   }
   const score = Number(overlay.social_score ?? 0);
   const label = overlay.dominant_view?.display ?? overlay.label ?? "social view";
   return (
-    <Pill tone={veryfinderTone(overlay.tone)} withDot={false}>
+    <Pill tone={veryfinderTone(overlay.tone)} variant="soft" withDot={false}>
       VF {score > 0 ? "+" : ""}
       {formatInt(score)} {label.toUpperCase()} {formatPct(Number(overlay.dominant_view?.score ?? 0))}
     </Pill>
@@ -513,9 +756,46 @@ function formatInt(value: number | null | undefined): string {
   return Math.round(n).toLocaleString();
 }
 
-const queryBar = {
-  padding: "0 14px 10px",
-  borderBottom: "1px solid var(--border-subtle)",
+const presetGridStyle: CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))",
+  gap: 8,
+};
+
+const filterChipRowStyle: CSSProperties = {
+  display: "flex",
+  flexWrap: "wrap",
+  gap: 6,
+  alignItems: "center",
+};
+
+const filterChipStyle: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 6,
+  height: 22,
+  padding: "0 8px",
+  background: "var(--surface-3)",
+  border: "1px solid var(--border-subtle)",
+  borderRadius: 11,
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: 10,
+  letterSpacing: "0.06em",
+  color: "var(--text-secondary)",
+};
+
+const filterChipCloseStyle: CSSProperties = {
+  all: "unset",
+  cursor: "default",
+  width: 14,
+  height: 14,
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  borderRadius: "50%",
+  color: "var(--text-mute)",
+  fontSize: 12,
+  lineHeight: 1,
 };
 
 const vfInsightStyle: CSSProperties = {
@@ -525,15 +805,21 @@ const vfInsightStyle: CSSProperties = {
   flexWrap: "wrap",
   margin: "0 0 7px",
   padding: "6px 8px",
-  border: "1px solid rgba(245, 158, 11, 0.32)",
-  borderRadius: 6,
-  background: "rgba(245, 158, 11, 0.06)",
+  border: "1px solid var(--warn-soft)",
+  borderRadius: "var(--radius-sm)",
+  background: "var(--warn-soft)",
   color: "var(--text-secondary)",
   fontSize: 10,
 };
 
 const vfInsightLoadingStyle: CSSProperties = {
   ...vfInsightStyle,
-  border: "1px solid rgba(34, 211, 238, 0.28)",
-  background: "linear-gradient(90deg, rgba(34, 211, 238, 0.08), rgba(167, 139, 250, 0.07))",
+  border: "1px solid var(--accent-soft)",
+  background: "var(--accent-soft)",
+};
+
+const kpiStripStyle: CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+  gap: 10,
 };

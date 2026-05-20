@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import json
 import time
-from pathlib import Path
+from showme.app_paths import runtime_path
 from typing import Any
 
 import httpx
@@ -24,7 +24,8 @@ import httpx
 from showme.engine.core.base_data_source import BaseDataSource, DataKind, DataRequest
 
 
-_CACHE_PATH = Path("runtime/damodaran_erp.json")
+def _cache_path():
+    return runtime_path("damodaran_erp.json")
 _CACHE_TTL = 30 * 24 * 3600  # 30 gün
 
 
@@ -63,10 +64,10 @@ class DamodaranAdapter(BaseDataSource):
         return self._client
 
     def _cache_load(self) -> dict[str, Any] | None:
-        if not _CACHE_PATH.exists():
+        if not _cache_path().exists():
             return None
         try:
-            data = json.loads(_CACHE_PATH.read_text())
+            data = json.loads(_cache_path().read_text())
             if (time.time() - data.get("ts", 0)) < _CACHE_TTL:
                 return data["payload"]
         except Exception:
@@ -74,8 +75,8 @@ class DamodaranAdapter(BaseDataSource):
         return None
 
     def _cache_save(self, payload: dict[str, Any]) -> None:
-        _CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        _CACHE_PATH.write_text(json.dumps({"ts": int(time.time()), "payload": payload}))
+        _cache_path().parent.mkdir(parents=True, exist_ok=True)
+        _cache_path().write_text(json.dumps({"ts": int(time.time()), "payload": payload}))
 
     async def country_erp(self) -> dict[str, float]:
         cached = self._cache_load()

@@ -97,7 +97,12 @@ class NIFunction(BaseFunction):
                     timeout=float(params.get("news_timeout", params.get("timeout", 5))) + 1,
                 )
                 if top.data:
-                    results = top.data
+                    # TOPFunction now returns dict {items, alerts, status} per
+                    # FUNC-10 P1; unwrap to the bare list enrich_articles wants.
+                    if isinstance(top.data, dict):
+                        results = list(top.data.get("items") or [])
+                    elif isinstance(top.data, list):
+                        results = top.data
                     sources.extend(top.sources or [])
             except Exception as exc:  # noqa: BLE001
                 warnings.append(f"top: {exc}")
@@ -111,8 +116,16 @@ class NIFunction(BaseFunction):
             limit=int(params.get("limit", 50) or 50),
         )
         alerts = critical_articles(ranked, threshold=threshold)
+        # Per FUNC-10 P1: wrap list payload as ``{items: ...}`` so the shared
+        # contract envelope works (was a bare list which silently bypassed
+        # status injection in function_contracts._attach_data_status).
         return FunctionResult(
-            code=self.code, instrument=None, data=ranked,
+            code=self.code, instrument=None,
+            data={
+                "items": ranked,
+                "alerts": alerts,
+                "status": "ok" if ranked else "empty",
+            },
             sources=sources, metadata={
                 "topic": topic,
                 "query": query,

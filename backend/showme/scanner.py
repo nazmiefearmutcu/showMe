@@ -123,7 +123,8 @@ def _macd(closes: list[float]) -> tuple[float, float, float] | None:
         return None
     ema12 = _ema(closes, 12)
     ema26 = _ema(closes, 26)
-    macd_line = [a - b for a, b in zip(ema12[-len(ema26):], ema26)]
+    # Lengths match by construction: ema12[-len(ema26):] has the same length as ema26.
+    macd_line = [a - b for a, b in zip(ema12[-len(ema26):], ema26, strict=True)]
     signal = _ema(macd_line, 9)
     return macd_line[-1], signal[-1], macd_line[-1] - signal[-1]
 
@@ -255,7 +256,7 @@ async def _fetch_closes(deps: Any, symbol: str, asset_class: str,
                         timeframe: str, days: int) -> list[float]:
     """Best-effort OHLCV close-series fetch via ShowMe adapters."""
     try:
-        from datetime import datetime, timedelta
+        from datetime import datetime, timedelta, timezone
         from showme.engine.core.base_data_source import DataKind, DataRequest
         from showme.engine.core.instrument import AssetClass, Instrument
     except Exception as exc:  # noqa: BLE001
@@ -279,7 +280,7 @@ async def _fetch_closes(deps: Any, symbol: str, asset_class: str,
     try:
         df = await adapter.fetch(DataRequest(
             kind=DataKind.OHLCV, instrument=inst,
-            start=datetime.utcnow() - timedelta(days=days),
+            start=datetime.now(timezone.utc) - timedelta(days=days),
             interval=timeframe,
         ))
     except Exception as exc:  # noqa: BLE001
@@ -440,7 +441,11 @@ async def _last_quote(deps: Any, symbol: str, asset_class: str) -> dict[str, Any
     try:
         from showme.engine.core.base_data_source import DataKind, DataRequest
         from showme.engine.core.instrument import AssetClass, Instrument
-    except Exception:
+    except (ImportError, ModuleNotFoundError) as exc:
+        # Per PY-LINT-05 P1: only catch import errors here. AttributeError
+        # from a renamed symbol must still surface so the overextension
+        # overlay isn't silently dropped.
+        LOG.debug("scanner._last_quote: engine adapters unavailable: %s", exc)
         return {}
     ac_map = {
         "EQUITY": AssetClass.EQUITY,
@@ -461,7 +466,10 @@ async def _last_quote(deps: Any, symbol: str, asset_class: str) -> dict[str, Any
     try:
         q = await adapter.fetch(DataRequest(kind=DataKind.QUOTE, instrument=inst))
     except Exception as exc:  # noqa: BLE001
-        return {"error": str(exc)}
+        # Per PY-LINT-05 P1: surface the failure to operators rather than
+        # silently encoding it as a result-shaped dict that callers ignore.
+        LOG.warning("scanner._last_quote failed for %s: %s", symbol, exc)
+        return {}
     if q is None:
         return {}
     last = getattr(q, "last", None)
