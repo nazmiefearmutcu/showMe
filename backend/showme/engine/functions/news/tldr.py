@@ -8,7 +8,7 @@ Falls back to a deterministic template when no LLM is configured.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
@@ -197,7 +197,7 @@ class TLDRFunction(BaseFunction):
             ups_line = _format_movers(movers, positive=True)
             downs_line = _format_movers(movers, positive=False)
             prose = (
-                f"# ShowMe TL;DR — {datetime.utcnow():%Y-%m-%d}\n\n"
+                f"# ShowMe TL;DR — {datetime.now(timezone.utc):%Y-%m-%d}\n\n"
                 f"- **Top movers up:** {ups_line}"
                 f"\n- **Top movers down:** {downs_line}"
                 + "\n- **News themes:** " + "; ".join(news_summary[:3])

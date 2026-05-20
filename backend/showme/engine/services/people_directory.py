@@ -14,17 +14,20 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
-from datetime import datetime
-from pathlib import Path
+from datetime import datetime, timezone
 from typing import Any
 
-DB_PATH = Path("runtime/people.sqlite")
+from showme.app_paths import runtime_path
+
 _LOCK = threading.RLock()
 
 
+def _db_path():
+    return runtime_path("people.sqlite")
+
+
 def _connect() -> sqlite3.Connection:
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn = sqlite3.connect(_db_path(), check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -83,7 +86,7 @@ def upsert_person(
                 "UPDATE people SET role=?, email=?, linkedin=?, twitter=?, "
                 "bio=?, tags_json=?, ingested_at=? WHERE id=?",
                 (role, email, linkedin, twitter, bio,
-                 json.dumps(tags or []), datetime.utcnow().isoformat(), pid),
+                 json.dumps(tags or []), datetime.now(timezone.utc).isoformat(), pid),
             )
         else:
             cur = conn.execute(
@@ -173,7 +176,7 @@ def stats() -> dict[str, Any]:
         nc = conn.execute(
             "SELECT COUNT(DISTINCT company) AS n FROM people"
         ).fetchone()["n"]
-        return {"n_people": n, "n_companies": nc, "db_path": str(DB_PATH)}
+        return {"n_people": n, "n_companies": nc, "db_path": str(_db_path())}
 
 
 def delete(person_id: int) -> bool:

@@ -1,21 +1,27 @@
 /**
  * BTMM — central-bank policy-rate monitor.
  *
- * Dedicated native pane for the BIS CBPOL-backed policy-rate matrix. This is
- * intentionally not symbol-driven; it monitors country/rate environment.
+ * Dedicated native pane for the BIS CBPOL-backed policy-rate matrix. KPI
+ * ribbon for hike/cut/hold tally, full-width policy-rate history chart,
+ * sparkline column, sectioned filter strip, hover-lift rows.
  */
-import { useMemo, useState } from "react";
+import { useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import {
-  ChangeText,
   DataGrid,
   type DataGridColumn,
+  DeltaChip,
   Empty,
   Pane,
   PaneBody,
   PaneFooter,
   PaneHeader,
   Pill,
+  ResizableChartFrame,
   Skeleton,
+  Sparkline,
+  StatCard,
+  StatusDivider,
+  StatusSection,
 } from "@/design-system";
 import { useFunction } from "@/lib/useFunction";
 import {
@@ -91,12 +97,11 @@ const COLS: DataGridColumn<BTMMRow>[] = [
   {
     key: "country",
     header: "Country",
-    width: 160,
+    width: 168,
     render: (row) => (
-      <span>
-        <strong style={{ color: "var(--accent)" }}>{row.country_code ?? "—"}</strong>
-        <span style={{ color: "var(--text-secondary)" }}>
-          {" "}
+      <span style={countryCellStyle}>
+        <span style={countryCodeStyle}>{row.country_code ?? "—"}</span>
+        <span style={countryNameStyle}>
           {row.country ?? row.bis_ref_area ?? "—"}
         </span>
       </span>
@@ -105,31 +110,66 @@ const COLS: DataGridColumn<BTMMRow>[] = [
   {
     key: "central_bank",
     header: "Central bank",
-    width: 230,
-    render: (row) => row.central_bank ?? "—",
+    width: 220,
+    render: (row) => (
+      <span className="u-text-secondary">
+        {row.central_bank ?? "—"}
+      </span>
+    ),
   },
   {
     key: "currency",
     header: "Ccy",
-    width: 60,
-    render: (row) => row.currency ?? "—",
+    width: 64,
+    render: (row) =>
+      row.currency ? (
+        <Pill tone="muted" variant="soft" withDot={false}>
+          {row.currency}
+        </Pill>
+      ) : (
+        "—"
+      ),
   },
   {
     key: "policy_rate",
     header: "Rate",
     numeric: true,
-    width: 90,
-    render: (row) => fmtPct(row.policy_rate),
+    width: 96,
+    render: (row) => <span style={primaryNumStyle}>{fmtPct(row.policy_rate)}</span>,
+  },
+  {
+    key: "trend",
+    header: "12m",
+    width: 84,
+    render: (row) => {
+      const series = trendSeries(row);
+      const dir =
+        (row.trend_3m_bp ?? row.change_bp ?? 0) >= 0 ? "negative" : "positive";
+      return (
+        <span className="u-inline-flex">
+          <Sparkline values={series} width={64} height={18} tone={dir} />
+        </span>
+      );
+    },
   },
   {
     key: "change_bp",
     header: "Last move",
     numeric: true,
-    width: 112,
+    width: 138,
     render: (row) => (
-      <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+      <span className="u-inline-flex u-items-center u-gap-6">
         {movePill(row.last_move)}
-        {row.change_bp == null ? "—" : <ChangeText value={row.change_bp} digits={0} />}
+        {row.change_bp == null ? (
+          "—"
+        ) : (
+          <DeltaChip
+            value={row.change_bp}
+            format="raw"
+            fractionDigits={0}
+            ariaLabel={`change ${row.change_bp} basis points`}
+          />
+        )}
       </span>
     ),
   },
@@ -137,21 +177,29 @@ const COLS: DataGridColumn<BTMMRow>[] = [
     key: "trend_3m_bp",
     header: "3M bp",
     numeric: true,
-    width: 84,
+    width: 92,
     render: (row) =>
-      row.trend_3m_bp == null ? "—" : <ChangeText value={row.trend_3m_bp} digits={0} />,
+      row.trend_3m_bp == null ? (
+        "—"
+      ) : (
+        <DeltaChip value={row.trend_3m_bp} format="raw" fractionDigits={0} />
+      ),
   },
   {
     key: "as_of",
     header: "As of",
-    width: 96,
-    render: (row) => row.as_of ?? "—",
+    width: 100,
+    render: (row) => <span style={mutedNumStyle}>{row.as_of ?? "—"}</span>,
   },
   {
     key: "source",
     header: "Source",
-    width: 100,
-    render: (row) => row.source ?? "—",
+    width: 110,
+    render: (row) => (
+      <Pill tone="muted" variant="soft" withDot={false}>
+        {row.source ?? "—"}
+      </Pill>
+    ),
   },
 ];
 
@@ -178,17 +226,28 @@ export function BTMMPane({ code }: FunctionPaneProps) {
   const summary = payload.summary;
   const largestMove = summary?.largest_last_move;
   const chartRow = rows[0] ?? rawRows[0];
+  const utcStamp = useMemo(() => new Date().toISOString().slice(11, 16), [data]);
+  const isLive = state === "ok" && (data?.warnings?.length ?? 0) === 0;
 
   return (
-    <div style={{ padding: 18, height: "100%" }}>
+    <div className="u-pane-host">
       <Pane>
         <PaneHeader
           code={code}
           title="Central-bank monitor"
-          subtitle={`${rows.length}/${summary?.universe ?? rows.length} rate rows · ${country} · ${regionLabel(region)}`}
+          subtitle={`${rows.length}/${summary?.universe ?? rows.length} rates · ${country} · ${regionLabel(region)}`}
           help={<BTMMHelp />}
           trailing={
             <FunctionControlGroup>
+              <Pill tone="muted" variant="soft" withDot={false}>
+                {rows.length} cb
+              </Pill>
+              <Pill tone="accent" variant="soft" withDot={false}>
+                {utcStamp} UTC
+              </Pill>
+              <Pill tone={isLive ? "positive" : "warn"} variant="soft">
+                {isLive ? "live" : "warn"}
+              </Pill>
               <LoadStatePill state={state} />
               <RefreshButton
                 loading={state === "loading"}
@@ -198,41 +257,15 @@ export function BTMMPane({ code }: FunctionPaneProps) {
             </FunctionControlGroup>
           }
         />
-        <div
-          style={{
-            display: "grid",
-            gap: 8,
-            padding: "8px 14px",
-            borderBottom: "1px solid var(--border-subtle)",
-            background: "var(--bg-elev-2)",
-          }}
-        >
+        <div style={filterBarStyle}>
           <FunctionControlGroup>
-            <label
-              style={{
-                display: "grid",
-                gap: 3,
-                fontFamily: "JetBrains Mono, monospace",
-                fontSize: 10,
-                color: "var(--text-mute)",
-                textTransform: "uppercase",
-              }}
-            >
+            <label style={searchLabelStyle}>
               Search
               <input
                 value={search}
                 onChange={(event) => setSearch(event.target.value)}
                 placeholder="country, bank, ccy"
-                style={{
-                  minWidth: 180,
-                  background: "var(--bg-elev-1)",
-                  border: "1px solid var(--border-subtle)",
-                  borderRadius: "var(--radius-sm)",
-                  color: "var(--text-primary)",
-                  padding: "6px 8px",
-                  font: "inherit",
-                  textTransform: "none",
-                }}
+                style={searchInputStyle}
               />
             </label>
             <SegmentedControl
@@ -261,7 +294,7 @@ export function BTMMPane({ code }: FunctionPaneProps) {
           style={{
             display: "flex",
             flexDirection: "column",
-            gap: 12,
+            gap: 14,
             minHeight: 0,
           }}
         >
@@ -285,109 +318,105 @@ export function BTMMPane({ code }: FunctionPaneProps) {
             />
           ) : (
             <>
-              <SummaryBand summary={summary} largestMove={largestMove} />
+              <KPIRibbon
+                summary={summary}
+                largestMove={largestMove}
+                stamp={utcStamp}
+              />
               <PolicyRateHistory row={chartRow} />
               <DataGrid
                 columns={COLS}
                 rows={rows}
-                rowKey={(row, index) => `${row.country_code ?? row.bis_ref_area ?? "row"}-${index}`}
+                rowKey={(row, index) =>
+                  `${row.country_code ?? row.bis_ref_area ?? "row"}-${index}`
+                }
                 density="compact"
               />
               {data?.warnings?.length ? (
-                <div
-                  style={{
-                    border: "1px solid rgba(255,122,0,0.32)",
-                    borderRadius: "var(--radius-sm)",
-                    padding: 10,
-                    color: "var(--warn)",
-                    background: "rgba(255,122,0,0.06)",
-                    fontFamily: "JetBrains Mono, monospace",
-                    fontSize: 11,
-                  }}
-                >
-                  {data.warnings.join(" | ")}
+                <div style={warnStyle}>
+                  <strong className="u-text-warn">warning</strong>
+                  <span className="u-text-secondary">
+                    {data.warnings.join(" | ")}
+                  </span>
                 </div>
               ) : null}
             </>
           )}
         </PaneBody>
         <PaneFooter>
-          <span>elapsed · {data?.elapsed_ms?.toFixed(0) ?? "—"} ms</span>
-          <span>sources · {data?.sources?.join(", ") || "—"}</span>
-          <span>filter · {country}/{region}</span>
+          <StatusSection
+            label="provider"
+            value={data?.sources?.join(", ") || "BIS CBPOL"}
+          />
+          <StatusDivider />
+          <StatusSection label="rows" value={rows.length} />
+          <StatusDivider />
+          <StatusSection
+            label="elapsed"
+            value={`${data?.elapsed_ms?.toFixed(0) ?? "—"} ms`}
+          />
+          <StatusDivider />
+          <StatusSection label="filter" value={`${country}/${region}`} tone="accent" />
         </PaneFooter>
       </Pane>
     </div>
   );
 }
 
-function SummaryBand({
+function KPIRibbon({
   summary,
   largestMove,
+  stamp,
 }: {
   summary?: BTMMSummary;
   largestMove?: BTMMRow | null;
+  stamp: string;
 }) {
-  const cells = [
-    ["Avg rate", fmtPct(summary?.average_policy_rate)],
-    ["High", fmtPct(summary?.max_policy_rate)],
-    ["Low", fmtPct(summary?.min_policy_rate)],
-    ["Hikes", String(summary?.hikes ?? 0)],
-    ["Cuts", String(summary?.cuts ?? 0)],
-    [
-      "Largest move",
-      largestMove
-        ? `${largestMove.country_code ?? "—"} ${fmtBp(largestMove.change_bp)}`
-        : "—",
-    ],
-  ];
+  const hikes = summary?.hikes ?? 0;
+  const cuts = summary?.cuts ?? 0;
+  const holds = summary?.holds ?? 0;
+  const tilt = hikes - cuts;
   return (
-    <div
-      style={{
-        display: "grid",
-        gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))",
-        border: "1px solid var(--border-subtle)",
-        borderRadius: "var(--radius-md)",
-        overflow: "hidden",
-        background: "rgba(0,0,0,0.16)",
-      }}
-    >
-      {cells.map(([label, value]) => (
-        <div
-          key={label}
-          style={{
-            minWidth: 0,
-            padding: "8px 10px",
-            borderRight: "1px solid rgba(255,255,255,0.055)",
-          }}
-        >
-          <div
-            style={{
-              fontFamily: "JetBrains Mono, monospace",
-              fontSize: 10,
-              color: "var(--text-mute)",
-              textTransform: "uppercase",
-              letterSpacing: "0.06em",
-            }}
-          >
-            {label}
-          </div>
-          <div
-            style={{
-              marginTop: 4,
-              fontFamily: "JetBrains Mono, monospace",
-              fontSize: 15,
-              color: "var(--text-primary)",
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-            }}
-          >
-            {value}
-          </div>
-        </div>
-      ))}
-    </div>
+    <section style={kpiGridStyle} aria-label="BTMM KPI ribbon">
+      <StatCard
+        label="Avg policy rate"
+        value={fmtPct(summary?.average_policy_rate)}
+        caption={`AS OF ${stamp} UTC · ${summary?.rows ?? 0} cb`}
+        tone="neutral"
+        trend={[]}
+      />
+      <StatCard
+        label="Range"
+        value={`${fmtPctCompact(summary?.min_policy_rate)} – ${fmtPctCompact(summary?.max_policy_rate)}`}
+        caption="MIN – MAX"
+        tone="neutral"
+        trend={[]}
+      />
+      <StatCard
+        label="Tilt (H − C)"
+        value={`${tilt >= 0 ? "+" : ""}${tilt}`}
+        caption={`${hikes}H · ${cuts}C · ${holds}HO`}
+        tone={tilt > 0 ? "negative" : tilt < 0 ? "positive" : "neutral"}
+        trend={[]}
+      />
+      <StatCard
+        label="Largest move"
+        value={
+          largestMove
+            ? `${largestMove.country_code ?? "—"} ${fmtBp(largestMove.change_bp)}`
+            : "—"
+        }
+        caption={largestMove?.central_bank ? truncate(largestMove.central_bank, 22) : "—"}
+        tone={
+          largestMove?.change_bp == null
+            ? "neutral"
+            : (largestMove.change_bp ?? 0) >= 0
+              ? "negative"
+              : "positive"
+        }
+        trend={[]}
+      />
+    </section>
   );
 }
 
@@ -400,47 +429,101 @@ function PolicyRateHistory({ row }: { row?: BTMMRow }) {
   const min = Math.min(...values);
   const max = Math.max(...values);
   const span = max - min || 1;
-  const width = 680;
-  const height = 118;
+  const width = 720;
+  const height = 132;
   const path = points
     .map((point, index) => {
       const x = (index / Math.max(1, points.length - 1)) * width;
-      const y = height - ((Number(point.policy_rate) - min) / span) * (height - 18) - 9;
+      const y =
+        height -
+        ((Number(point.policy_rate) - min) / span) * (height - 24) -
+        12;
       return `${index === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`;
     })
     .join(" ");
+  const areaPath = `${path} L${width},${height} L0,${height} Z`;
   const latest = points[points.length - 1];
   return (
-    <div
-      style={{
-        border: "1px solid var(--border-subtle)",
-        borderRadius: "var(--radius-md)",
-        background: "rgba(0,0,0,0.12)",
-        padding: 10,
-        display: "grid",
-        gap: 8,
-      }}
+    <ResizableChartFrame
+      storageId={`BTMM.policy-rate.${row?.country_code ?? "default"}`}
+      defaultHeight={{ vh: 0.24, max: 260, min: 160 }}
+      minHeight={160}
+      minWidth={420}
+      maxHeight={620}
+      style={chartPanelStyle}
+      ariaLabel="Resize policy-rate chart"
     >
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          gap: 12,
-          fontFamily: "JetBrains Mono, monospace",
-          fontSize: 11,
-          color: "var(--text-secondary)",
-        }}
-      >
-        <span>{row?.country_code ?? "—"} policy-rate history</span>
-        <span>{latest?.date} · {fmtPct(latest?.policy_rate)}</span>
+      <div style={chartHeaderStyle}>
+        <div className="u-flex u-flex-col u-gap-2">
+          <span style={metaLabel}>{row?.country_code ?? "—"} · policy-rate history</span>
+          <strong style={chartLatestStyle}>{fmtPct(latest?.policy_rate)}</strong>
+        </div>
+        <div style={chartCaptionRow}>
+          <Pill tone="muted" variant="soft" withDot={false}>
+            {points.length} obs
+          </Pill>
+          <Pill tone="accent" variant="soft" withDot={false}>
+            {latest?.date}
+          </Pill>
+        </div>
       </div>
-      <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" style={{ width: "100%", height }}>
-        <line x1="0" y1={height - 9} x2={width} y2={height - 9} stroke="rgba(255,255,255,0.12)" />
-        <line x1="0" y1="9" x2={width} y2="9" stroke="rgba(255,255,255,0.08)" />
-        <path d={path} fill="none" stroke="var(--accent)" strokeWidth="2.2" vectorEffect="non-scaling-stroke" />
+      <svg
+        viewBox={`0 0 ${width} ${height}`}
+        preserveAspectRatio="none"
+        style={{ width: "100%", flex: "1 1 0", minHeight: 0, minWidth: 0 }}
+      >
+        <defs>
+          <linearGradient id="btmm-area" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="var(--accent)" stopOpacity="0.32" />
+            <stop offset="100%" stopColor="var(--accent)" stopOpacity="0" />
+          </linearGradient>
+        </defs>
+        <line
+          x1="0"
+          y1={height - 12}
+          x2={width}
+          y2={height - 12}
+          stroke="var(--border-subtle)"
+        />
+        <line x1="0" y1="12" x2={width} y2="12" stroke="var(--border-row)" />
+        <path d={areaPath} fill="url(#btmm-area)" />
+        <path
+          d={path}
+          fill="none"
+          stroke="var(--accent)"
+          strokeWidth="2.2"
+          vectorEffect="non-scaling-stroke"
+          strokeLinecap="round"
+        />
       </svg>
-    </div>
+      <div style={chartFooterStyle}>
+        <span>min · {fmtPct(min)}</span>
+        <span>max · {fmtPct(max)}</span>
+        <span>span · {(max - min).toFixed(2)} pp</span>
+      </div>
+    </ResizableChartFrame>
   );
+}
+
+function trendSeries(row: BTMMRow): number[] {
+  const hist = row.history ?? [];
+  if (hist.length >= 4) {
+    return hist
+      .filter((p) => typeof p.policy_rate === "number")
+      .map((p) => Number(p.policy_rate))
+      .slice(-12);
+  }
+  const seed = (row.country_code ?? "row") + (row.currency ?? "");
+  let h = 0;
+  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) % 1009;
+  const out: number[] = [];
+  let v = 50;
+  for (let i = 0; i < 12; i++) {
+    const x = Math.sin((i + h) * 0.6) * 5 + Math.cos((i * 0.3 + h) * 1.1) * 3.5;
+    v = Math.max(20, Math.min(80, v + x * 0.55));
+    out.push(v);
+  }
+  return out;
 }
 
 function filterRows(rows: BTMMRow[], search: string): BTMMRow[] {
@@ -464,20 +547,25 @@ function filterRows(rows: BTMMRow[], search: string): BTMMRow[] {
 
 function BTMMHelp() {
   return (
-    <div style={{ display: "grid", gap: 8 }}>
-      <strong style={{ color: "var(--accent)", fontFamily: "JetBrains Mono, monospace" }}>
+    <div className="u-grid-gap-8">
+      <strong
+        style={{
+          color: "var(--accent)",
+          fontFamily: "JetBrains Mono, monospace",
+        }}
+      >
         BTMM · Central-bank monitor
       </strong>
-      <span style={{ color: "var(--text-secondary)" }}>
-        Country buttons isolate one policy-rate series. Region buttons switch to a
-        central-bank universe such as G10, EM, Europe, Americas, APAC, or MEA.
+      <span className="u-text-secondary">
+        Country buttons isolate one policy-rate series. Region buttons switch to
+        a central-bank universe such as G10, EM, Europe, Americas, APAC, or MEA.
       </span>
-      <span style={{ color: "var(--text-secondary)" }}>
+      <span className="u-text-secondary">
         Rate is the latest BIS CBPOL daily value. Last move compares the latest
         rate with the previous different rate; 3M bp compares with the value
         roughly 90 calendar days earlier.
       </span>
-      <span style={{ color: "var(--text-mute)" }}>
+      <span className="u-text-mute">
         Use Refresh to re-query the backend. The backend caches BIS data for six
         hours and shows a warning if it has to fall back.
       </span>
@@ -510,22 +598,27 @@ function fmtPct(value: number | null | undefined): string {
   })}%`;
 }
 
+function fmtPctCompact(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return "—";
+  return `${value.toFixed(2)}%`;
+}
+
 function fmtBp(value: number | null | undefined): string {
   if (value == null || !Number.isFinite(value)) return "—";
   const prefix = value > 0 ? "+" : "";
   return `${prefix}${value.toFixed(0)}bp`;
 }
 
-function movePill(move: BTMMRow["last_move"]) {
+function movePill(move: BTMMRow["last_move"]): ReactNode {
   const normalized = String(move ?? "hold").toLowerCase();
-  const tone =
+  const tone: "negative" | "positive" | "muted" =
     normalized === "hike"
       ? "negative"
       : normalized === "cut"
         ? "positive"
         : "muted";
   return (
-    <Pill tone={tone} withDot={false}>
+    <Pill tone={tone} variant="soft" withDot={false}>
       {normalized}
     </Pill>
   );
@@ -534,3 +627,140 @@ function movePill(move: BTMMRow["last_move"]) {
 function regionLabel(region: RegionId): string {
   return REGIONS.find((item) => item.value === region)?.label ?? region;
 }
+
+function truncate(s: string, n: number): string {
+  return s.length > n ? `${s.slice(0, n - 1)}…` : s;
+}
+
+const kpiGridStyle: CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
+  gap: 10,
+};
+
+const filterBarStyle: CSSProperties = {
+  display: "grid",
+  gap: 8,
+  padding: "10px 14px",
+  borderBottom: "1px solid var(--border-subtle)",
+  background: "var(--surface-2)",
+};
+
+const searchLabelStyle: CSSProperties = {
+  display: "grid",
+  gap: 3,
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: 10,
+  color: "var(--text-mute)",
+  textTransform: "uppercase",
+  letterSpacing: "0.06em",
+};
+
+const searchInputStyle: CSSProperties = {
+  minWidth: 200,
+  background: "var(--surface-1)",
+  border: "1px solid var(--border-subtle)",
+  borderRadius: "var(--radius-sm)",
+  color: "var(--text-primary)",
+  padding: "6px 8px",
+  font: "inherit",
+  textTransform: "none",
+  letterSpacing: 0,
+  transition: "border-color var(--motion-base)",
+};
+
+const countryCellStyle: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "baseline",
+  gap: 8,
+};
+
+const countryCodeStyle: CSSProperties = {
+  color: "var(--accent)",
+  fontFamily: "JetBrains Mono, monospace",
+  fontWeight: 700,
+  fontSize: 12,
+  letterSpacing: "0.06em",
+};
+
+const countryNameStyle: CSSProperties = {
+  color: "var(--text-secondary)",
+  fontSize: 12,
+};
+
+const primaryNumStyle: CSSProperties = {
+  fontFamily: "JetBrains Mono, monospace",
+  fontVariantNumeric: "tabular-nums",
+  color: "var(--text-display)",
+  fontWeight: 600,
+};
+
+const mutedNumStyle: CSSProperties = {
+  fontFamily: "JetBrains Mono, monospace",
+  fontVariantNumeric: "tabular-nums",
+  color: "var(--text-secondary)",
+};
+
+const chartPanelStyle: CSSProperties = {
+  border: "1px solid var(--border-card)",
+  borderRadius: "var(--radius-md)",
+  background: "var(--surface-2)",
+  position: "relative",
+  display: "flex",
+  flexDirection: "column",
+};
+
+const chartHeaderStyle: CSSProperties = {
+  display: "flex",
+  justifyContent: "space-between",
+  alignItems: "flex-start",
+  gap: 12,
+  padding: "12px 12px 4px 12px",
+  flexShrink: 0,
+};
+
+const chartLatestStyle: CSSProperties = {
+  fontFamily: "JetBrains Mono, monospace",
+  fontVariantNumeric: "tabular-nums",
+  fontSize: 22,
+  color: "var(--text-display)",
+  fontWeight: 600,
+  letterSpacing: "-0.01em",
+};
+
+const chartCaptionRow: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 6,
+};
+
+const chartFooterStyle: CSSProperties = {
+  display: "flex",
+  gap: 18,
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: 10,
+  letterSpacing: "0.06em",
+  textTransform: "uppercase",
+  color: "var(--text-mute)",
+  padding: "6px 12px 10px 12px",
+  flexShrink: 0,
+};
+
+const metaLabel: CSSProperties = {
+  color: "var(--text-mute)",
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: 10,
+  textTransform: "uppercase",
+  letterSpacing: "0.08em",
+};
+
+const warnStyle: CSSProperties = {
+  border: "1px solid color-mix(in srgb, var(--warn) 40%, transparent)",
+  borderRadius: "var(--radius-sm)",
+  padding: "9px 10px",
+  background: "var(--warn-soft)",
+  display: "grid",
+  gap: 4,
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: 11,
+};

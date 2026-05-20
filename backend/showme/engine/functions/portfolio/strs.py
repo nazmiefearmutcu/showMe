@@ -33,8 +33,33 @@ class STRSFunction(BaseFunction):
         portfolio = PortfolioState()
         portfolio.import_legacy_crypto()
         if not portfolio.positions:
-            return FunctionResult(code=self.code, instrument=None, data={},
-                                  warnings=["empty portfolio"])
+            # Empty-portfolio path used to return `data={}` which gave the UI
+            # no `rows`/`status` to render — the pane went blank instead of
+            # telling the user what to do. Return a structured empty payload
+            # with next_actions so the front-end can surface an Empty card.
+            return FunctionResult(
+                code=self.code,
+                instrument=None,
+                data={
+                    "status": "empty_portfolio",
+                    "rows": [],
+                    "comparisons": [],
+                    "summary": {
+                        "scenarios": 0,
+                        "positions": 0,
+                        "worst_total_pnl": 0,
+                        "price_source": "n/a",
+                    },
+                    "methodology": _methodology(),
+                    "field_dictionary": _field_dictionary(),
+                    "next_actions": [
+                        "Add positions in PORT or run the legacy-crypto import.",
+                        "Use action=list to inspect the predefined scenario catalog without a portfolio.",
+                    ],
+                },
+                warnings=["empty portfolio"],
+                sources=["portfolio_state"],
+            )
         # Build position dicts with current MV. Stress comparison should never
         # block on public quote/refdata providers; live price refresh is opt-in.
         symbols = list({p.instrument.symbol for p in portfolio.positions})

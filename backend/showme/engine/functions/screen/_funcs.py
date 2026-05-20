@@ -277,10 +277,20 @@ class WEIFunction(BaseFunction):
             )
             if rows:
                 rows = [_enrich_world_index_row(row) for row in rows]
+                # Session-14 contract fix: WEI used to return `data=rows`
+                # (list) on the live path and `data={status, rows, ...}`
+                # (dict) on every fallback. UI panes that expected a stable
+                # shape silently broke. Wrap live rows in the same dict
+                # envelope used everywhere else.
                 return FunctionResult(
                     code=self.code,
                     instrument=None,
-                    data=rows,
+                    data={
+                        "status": "ok",
+                        "rows": rows,
+                        "universe_size": len(indices),
+                        "source_mode": "yfinance_live",
+                    },
                     metadata={"live": True, "universe_size": len(indices)},
                     sources=["yfinance"],
                     warnings=warnings,
@@ -312,7 +322,12 @@ class WEIFunction(BaseFunction):
         return FunctionResult(
             code=self.code,
             instrument=None,
-            data=_world_index_template(),
+            data={
+                "status": "ok" if not live else "provider_unavailable",
+                "rows": _world_index_template(),
+                "universe_size": len(indices),
+                "source_mode": "world_index_template",
+            },
             metadata={"live": False, "universe_size": len(indices)},
             sources=["showme_local_baseline"],
             warnings=warnings,
@@ -366,6 +381,26 @@ _MOST_FIELDS = [
 ]
 
 
+def _supported_screen_columns(
+    field_dictionary: list[dict[str, str]],
+    rows: list[dict[str, Any]],
+) -> set[str]:
+    supported = {str(entry.get("field") or "").strip() for entry in field_dictionary if entry.get("field")}
+    for row in rows[:50]:
+        supported.update(str(key) for key in row.keys())
+    return {column for column in supported if column}
+
+
+def _extract_predicate_columns(rewritten: str) -> list[str]:
+    columns: list[str] = []
+    for match in re.finditer(r"([A-Za-z_][A-Za-z0-9_]*)\s*(?:<=|>=|==|!=|<|>|=|\sin\s)", rewritten, flags=re.I):
+        token = match.group(1)
+        if token.upper() in {"AND", "OR", "NOT", "IN", "TRUE", "FALSE"}:
+            continue
+        columns.append(token)
+    return columns
+
+
 def _screen_result(
     code: str,
     rows: list[dict[str, Any]],
@@ -378,14 +413,29 @@ def _screen_result(
 ) -> FunctionResult:
     rewritten = _rewrite_screen_query(query)
     scanned = len(rows)
+    parse_error: str | None = None
+    unsupported: list[str] = []
+    if rewritten.strip() and _looks_like_dsl(rewritten):
+        supported = _supported_screen_columns(field_dictionary, rows)
+        used_columns = _extract_predicate_columns(rewritten)
+        if used_columns and not any(column in supported for column in used_columns):
+            unsupported = used_columns
+            parse_error = (
+                f"Filter references unknown columns: {', '.join(sorted(set(used_columns)))}. "
+                f"Supported: {', '.join(sorted(supported))[:200]}"
+            )
     try:
-        filtered = _apply_screen_query(rows, rewritten)
-        parse_error = None
+        filtered = [] if parse_error else _apply_screen_query(rows, rewritten)
     except Exception as exc:  # noqa: BLE001
         filtered = []
-        parse_error = str(exc) or type(exc).__name__
+        parse_error = parse_error or (str(exc) or type(exc).__name__)
     limited = filtered[:limit]
-    status = "ok" if limited and parse_error is None else ("input_error" if parse_error else "empty")
+    if parse_error:
+        status = "unsupported_predicate" if unsupported else "input_error"
+    elif limited:
+        status = "ok"
+    else:
+        status = "empty"
     reason = None
     next_actions: list[str] = []
     if parse_error:
@@ -414,8 +464,16 @@ def _screen_result(
             "limit": limit,
             "reason": reason,
             "next_actions": next_actions,
+            "unsupported_columns": unsupported,
         },
-        metadata={"query": query, "filter": rewritten, "matched": len(filtered), "scanned": scanned, "limit": limit},
+        metadata={
+            "query": query,
+            "filter": rewritten,
+            "matched": len(filtered),
+            "scanned": scanned,
+            "limit": limit,
+            "unsupported_columns": unsupported,
+        },
         sources=sources,
         warnings=warnings or [],
     )

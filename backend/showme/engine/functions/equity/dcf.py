@@ -45,6 +45,10 @@ class DDMFunction(BaseFunction):
             except Exception as e:
                 warnings.append(f"yfinance: {e}")
         d0 = float(d0 or 0)
+        if d0 <= 0:
+            warnings.append(
+                "dividend_ttm: provider returned 0 or no dividend; DDM is not applicable for non-dividend payers. Pass dividend_ttm explicitly to override."
+            )
         # Required return: WACC if not specified
         if r is None:
             try:
@@ -128,7 +132,11 @@ class DCFFunction(BaseFunction):
                 warnings.append(f"wacc: {e}")
                 wacc = 0.08
         wacc = float(wacc)
-        # FCFE proxy: yfinance freeCashflow
+        # FCFE proxy: yfinance freeCashflow. Preserve negative values as-is so
+        # distressed companies aren't silently coerced to a zero base case
+        # (the surface payload would then look real but be driven entirely by
+        # growth compounding from zero — see fix in 2026-05-17 audit).
+        provider_raw_fcfe: Any = None
         if fcfe is None and self.deps.yfinance:
             try:
                 from showme.engine.core.base_data_source import DataKind, DataRequest
@@ -136,11 +144,19 @@ class DCFFunction(BaseFunction):
                     kind=DataKind.REFDATA, instrument=instrument
                 ))
                 raw = (rd.extras or {}).get("raw", {}) if hasattr(rd, "extras") else {}
-                fcfe = raw.get("freeCashflow") or 0
+                provider_raw_fcfe = raw.get("freeCashflow")
+                if provider_raw_fcfe is not None:
+                    fcfe = provider_raw_fcfe
                 sources.append("yfinance")
             except Exception as e:
                 warnings.append(f"yfinance: {e}")
-        fcfe = float(fcfe or 0)
+        if fcfe is None:
+            fcfe = 0.0
+        fcfe = float(fcfe)
+        if provider_raw_fcfe is not None and float(provider_raw_fcfe) < 0:
+            warnings.append(
+                "free_cash_flow: provider reported negative free cash flow; DCF surface compounds the negative base value — pass fcfe explicitly for a tradable model."
+            )
         if wacc <= g_terminal:
             return FunctionResult(code=self.code, instrument=instrument,
                                   data={"error": "wacc must exceed terminal growth"},

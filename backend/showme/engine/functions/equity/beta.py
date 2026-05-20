@@ -9,7 +9,7 @@ DATA PIPELINE:
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import numpy as np
@@ -31,53 +31,88 @@ class BetaFunction(BaseFunction):
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         if instrument is None:
-            raise ValueError("BETA requires instrument")
+            # BUG-HUNT S01: return input_required envelope instead of
+            # raising ValueError (which was being misclassified as
+            # provider_unavailable by the generic exception handler).
+            return FunctionResult(
+                code=self.code,
+                instrument=None,
+                data={
+                    "status": "input_required",
+                    "reason": "BETA requires a symbol (instrument).",
+                    "rows": [],
+                    "next_actions": [
+                        "Provide a symbol via the function symbol field or Params JSON.",
+                    ],
+                },
+                sources=[],
+            )
         benchmark_sym = params.get("benchmark") or "SPY"
         windows = _parse_windows(params.get("windows", ["1Y", "2Y", "5Y"]))
         warnings: list[str] = []
         sources: list[str] = []
         if not self.deps.yfinance:
-            return FunctionResult(code=self.code, instrument=instrument, data={},
-                                  warnings=["no yfinance adapter"])
+            # BUG-HUNT S01: previously returned `data={}` + a single warning
+            # which the contract envelope flagged as EMPTY with no specific
+            # reason. Surface as provider_unavailable so the UI knows the
+            # yfinance adapter is missing.
+            return FunctionResult(
+                code=self.code,
+                instrument=instrument,
+                data={
+                    "status": "provider_unavailable",
+                    "reason": "yfinance adapter not configured; BETA cannot compute live regression.",
+                    "rows": [],
+                    "next_actions": [
+                        "Install/configure the yfinance data source before running BETA.",
+                        "Re-run BETA after the provider is wired in deps.",
+                    ],
+                },
+                sources=["no_live_source"],
+                metadata={"fallback": True, "provider_errors": ["no yfinance adapter"]},
+            )
         timeout = max(1.0, min(float(params.get("yfinance_timeout", 6)), 8.0))
-        try:
-            target_df = await asyncio.wait_for(
-                self.deps.yfinance.fetch(DataRequest(
-                    kind=DataKind.OHLCV, instrument=instrument,
-                    start=datetime.utcnow() - timedelta(days=365 * 6),
-                    interval="1d",
-                    extra={"timeout": timeout},
-                )),
-                timeout=timeout + 1,
-            )
-            sources.append("yfinance")
-        except Exception as e:
+        # BUG-HUNT S01: target + benchmark fetches now run in parallel
+        # so total wait time stays inside FUNCTION_TIMEOUT_SECONDS even
+        # when both providers hit their per-fetch timeout. Previously
+        # they were sequential awaits, doubling worst-case latency.
+        from showme.engine.core.instrument import Instrument as I, AssetClass as AC
+        bm_inst = I(symbol=benchmark_sym, asset_class=AC.INDEX)
+        start_at = datetime.now(timezone.utc) - timedelta(days=365 * 6)
+        target_task = asyncio.wait_for(
+            self.deps.yfinance.fetch(DataRequest(
+                kind=DataKind.OHLCV, instrument=instrument,
+                start=start_at, interval="1d",
+                extra={"timeout": timeout},
+            )),
+            timeout=timeout + 1,
+        )
+        bench_task = asyncio.wait_for(
+            self.deps.yfinance.fetch(DataRequest(
+                kind=DataKind.OHLCV, instrument=bm_inst,
+                start=start_at, interval="1d",
+                extra={"timeout": timeout},
+            )),
+            timeout=timeout + 1,
+        )
+        results = await asyncio.gather(target_task, bench_task, return_exceptions=True)
+        target_df, bench_df = results
+        if isinstance(target_df, Exception):
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
                 data=_beta_baseline(instrument.symbol, benchmark_sym),
                 sources=["beta_market_model"],
-                metadata={"provider_errors": [f"yfinance target: {e}"]},
+                metadata={"provider_errors": [f"yfinance target: {target_df}"]},
             )
-        try:
-            from showme.engine.core.instrument import Instrument as I, AssetClass as AC
-            bm_inst = I(symbol=benchmark_sym, asset_class=AC.INDEX)
-            bench_df = await asyncio.wait_for(
-                self.deps.yfinance.fetch(DataRequest(
-                    kind=DataKind.OHLCV, instrument=bm_inst,
-                    start=datetime.utcnow() - timedelta(days=365 * 6),
-                    interval="1d",
-                    extra={"timeout": timeout},
-                )),
-                timeout=timeout + 1,
-            )
-        except Exception as e:
+        sources.append("yfinance")
+        if isinstance(bench_df, Exception):
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
                 data=_beta_baseline(instrument.symbol, benchmark_sym),
                 sources=["beta_market_model"],
-                metadata={"provider_errors": [f"yfinance benchmark: {e}"]},
+                metadata={"provider_errors": [f"yfinance benchmark: {bench_df}"]},
             )
 
         target_ret = _daily_returns(target_df)

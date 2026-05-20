@@ -11,18 +11,21 @@ from __future__ import annotations
 import sqlite3
 import time
 import uuid
-from datetime import datetime
-from pathlib import Path
+from datetime import datetime, timezone
 from typing import Any, Iterable
 
+from showme.app_paths import runtime_path
 
-_DB = Path("runtime/tax_lots.sqlite")
+
+def _db_file():
+    return runtime_path("tax_lots.sqlite")
+
+
 _LT_THRESHOLD_DAYS = 365
 
 
 def _db() -> sqlite3.Connection:
-    _DB.parent.mkdir(parents=True, exist_ok=True)
-    con = sqlite3.connect(str(_DB))
+    con = sqlite3.connect(str(_db_file()))
     con.execute("""
         CREATE TABLE IF NOT EXISTS lots (
             lot_id TEXT PRIMARY KEY,
@@ -58,7 +61,7 @@ def open_lot(*, symbol: str, quantity: float, price: float,
     con.execute(
         "INSERT INTO lots(lot_id, symbol, quantity, price, opened_at, account, closed_qty) VALUES (?,?,?,?,?,?,0)",
         [lot_id, symbol.upper(), float(quantity), float(price),
-         int((opened_at or datetime.utcnow()).timestamp()), account],
+         int((opened_at or datetime.now(timezone.utc)).timestamp()), account],
     )
     con.commit(); con.close()
     return lot_id

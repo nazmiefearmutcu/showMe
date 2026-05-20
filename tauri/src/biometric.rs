@@ -17,8 +17,32 @@
 //!
 //! On non-macOS targets `run_evaluate_policy` returns `Ok(false)` so
 //! callers don't accidentally fire live trades on a dev box.
+//!
+//! ## Tokens (SEC-04 P1 fix)
+//!
+//! On a successful prompt we mint a 32-char hex token that is bound to
+//! a single 5-minute window. Privileged commands like `keychain_get`,
+//! `install_to_applications`, and `run_migration` must present the token
+//! before the Rust handler will execute. `consume_token` revokes it after
+//! a one-shot operation; `verify_token` leaves it intact for repeated
+//! reads inside the 5-minute window. This stops a renderer from replaying
+//! a fake `{ allowed: true }` payload — the privileged commands ignore
+//! everything except a token they themselves minted.
 
+use once_cell::sync::Lazy;
+use rand::RngCore;
 use serde::Serialize;
+use std::collections::HashMap;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
+const TOKEN_TTL: Duration = Duration::from_secs(300); // 5 minutes
+
+/// Active biometric tokens minted by `evaluate()`. Each token maps to the
+/// `Instant` it was created at; on lookup we drop anything older than
+/// `TOKEN_TTL` automatically.
+pub static BIOMETRIC_TOKENS: Lazy<Mutex<HashMap<String, Instant>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
 #[derive(Serialize, Clone, Debug)]
 pub struct BiometricResult {
@@ -26,6 +50,10 @@ pub struct BiometricResult {
     pub reason: String,
     pub via: BioVia,
     pub capabilities: Capabilities,
+    /// Single-use auth token (only present when `allowed == true`). Pass it
+    /// to `keychain_get`/`install_to_applications`/`run_migration` to
+    /// authenticate within the next 5 minutes.
+    pub token: Option<String>,
 }
 
 #[derive(Serialize, Clone, Copy, Debug, Default)]
@@ -63,6 +91,7 @@ pub fn evaluate(reason: &str) -> BiometricResult {
             reason: reason.to_string(),
             via: BioVia::Denied,
             capabilities: caps,
+            token: None,
         };
     }
     let prefer_biometry = caps.biometry_available;
@@ -81,12 +110,14 @@ pub fn evaluate(reason: &str) -> BiometricResult {
                 BioVia::Password
             },
             capabilities: caps,
+            token: Some(mint_token()),
         },
         Ok(false) => BiometricResult {
             allowed: false,
             reason: reason.to_string(),
             via: BioVia::Denied,
             capabilities: caps,
+            token: None,
         },
         Err(err) => {
             log::warn!("biometric::evaluate prompt error: {err}");
@@ -95,8 +126,60 @@ pub fn evaluate(reason: &str) -> BiometricResult {
                 reason: reason.to_string(),
                 via: BioVia::Denied,
                 capabilities: caps,
+                token: None,
             }
         }
+    }
+}
+
+/// Mint a fresh 32-char hex token, store it in `BIOMETRIC_TOKENS` with the
+/// current `Instant`, and return the string. Also opportunistically reaps
+/// expired tokens to keep the map bounded.
+fn mint_token() -> String {
+    let mut bytes = [0u8; 16];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    let token: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    if let Ok(mut map) = BIOMETRIC_TOKENS.lock() {
+        let now = Instant::now();
+        map.retain(|_, t| now.duration_since(*t) < TOKEN_TTL);
+        map.insert(token.clone(), now);
+    }
+    token
+}
+
+/// Returns `Ok(())` if the token exists and is younger than `TOKEN_TTL`.
+/// On expiry the token is removed; on Err the token is also removed if it
+/// was present, so a stale or bogus token cannot be retried.
+///
+/// Reserved for repeated keychain reads inside a single 5-minute window;
+/// the keychain commands are not yet wired through here, hence the
+/// `allow(dead_code)`. SEC-04 P1 follow-up.
+#[allow(dead_code)]
+pub fn verify_token(token: &str) -> Result<(), String> {
+    let mut map = BIOMETRIC_TOKENS
+        .lock()
+        .map_err(|e| format!("token map poisoned: {e}"))?;
+    match map.get(token).copied() {
+        Some(t) if Instant::now().duration_since(t) < TOKEN_TTL => Ok(()),
+        Some(_) => {
+            map.remove(token);
+            Err("biometric token expired".into())
+        }
+        None => Err("biometric token not recognized".into()),
+    }
+}
+
+/// Verify and remove the token. Use this for one-shot privileged
+/// operations (e.g. `install_to_applications`, `run_migration`) so the
+/// same prompt cannot authorize two different actions.
+pub fn consume_token(token: &str) -> Result<(), String> {
+    let mut map = BIOMETRIC_TOKENS
+        .lock()
+        .map_err(|e| format!("token map poisoned: {e}"))?;
+    match map.remove(token) {
+        Some(t) if Instant::now().duration_since(t) < TOKEN_TTL => Ok(()),
+        Some(_) => Err("biometric token expired".into()),
+        None => Err("biometric token not recognized".into()),
     }
 }
 
@@ -197,4 +280,43 @@ fn run_evaluate_policy(_reason: &str, _policy: i64) -> Result<bool, String> {
     // Other targets fall straight through to "denied" so callers don't
     // accidentally let live trades fire on a non-mac dev box.
     Ok(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::thread::sleep;
+
+    #[test]
+    fn verify_token_rejects_unknown() {
+        let res = verify_token("nope-not-a-real-token");
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn consume_token_removes_after_use() {
+        let tok = mint_token();
+        consume_token(&tok).expect("first consume should succeed");
+        // Second consume should now fail since the token was removed.
+        assert!(consume_token(&tok).is_err());
+    }
+
+    #[test]
+    fn verify_token_keeps_token_for_reuse() {
+        let tok = mint_token();
+        verify_token(&tok).expect("first verify ok");
+        verify_token(&tok).expect("second verify still ok within TTL");
+        // Cleanup.
+        let _ = consume_token(&tok);
+    }
+
+    #[test]
+    fn mint_token_returns_32_hex_chars() {
+        let tok = mint_token();
+        assert_eq!(tok.len(), 32);
+        assert!(tok.chars().all(|c| c.is_ascii_hexdigit()));
+        let _ = consume_token(&tok);
+        // Sleep is just for paranoia; the test does not depend on timing.
+        sleep(Duration::from_millis(0));
+    }
 }

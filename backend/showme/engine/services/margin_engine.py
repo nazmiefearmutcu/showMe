@@ -12,12 +12,14 @@ Persistence: ``runtime/margin_config.json`` for account configs and overrides.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Any
 
+from showme.app_paths import runtime_path
 from showme.engine.portfolio.state import PortfolioState
 
-CONFIG_PATH = Path("runtime/margin_config.json")
+
+def _config_path():
+    return runtime_path("margin_config.json")
 
 
 # ─── Default rules ───────────────────────────────────────────────────
@@ -69,17 +71,17 @@ DEFAULT_RULES: dict[str, dict[str, Any]] = {
 
 
 def _load_config() -> dict[str, Any]:
-    if not CONFIG_PATH.exists():
+    if not _config_path().exists():
         return {}
     try:
-        return json.loads(CONFIG_PATH.read_text())
+        return json.loads(_config_path().read_text())
     except Exception:
         return {}
 
 
 def _save_config(cfg: dict[str, Any]) -> None:
-    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    CONFIG_PATH.write_text(json.dumps(cfg, indent=2))
+    _config_path().parent.mkdir(parents=True, exist_ok=True)
+    _config_path().write_text(json.dumps(cfg, indent=2))
 
 
 def list_accounts() -> list[dict[str, Any]]:

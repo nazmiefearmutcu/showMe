@@ -155,11 +155,15 @@ class EQSFunction(BaseFunction):
         query = params.get("query", "marketCap > 0")
         live = _truthy(params.get("live_screen") or params.get("deep"))
         # Without a DuckDB-materialised view we operate on a small in-memory
-        # universe seeded by yfinance for the watchlist + S&P 500 stub.
-        universe = params.get("universe") or [
-            "AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "TSLA", "JPM",
-            "V", "WMT", "PG", "UNH", "MA", "HD", "DIS",
-        ]
+        # universe seeded by yfinance. The default is a "Mega-cap 15" basket
+        # NOT the actual S&P 500 — see _resolve_universe for label aliasing.
+        # S05 BUGHUNT B6: previously the UI sent universe="SP500" → the
+        # backend silently fell through to this 15-symbol stub but the pane
+        # footer kept showing "universe · SP500", overstating coverage by
+        # ~485 symbols. Now we resolve the textual label up-front so the
+        # response payload reflects what we actually scanned.
+        universe_param = params.get("universe")
+        universe, universe_label = _resolve_universe(universe_param)
         rows: list[dict[str, Any]] = []
         if not live:
             rows = _screen_template_rows(instrument, universe)
@@ -219,12 +223,64 @@ class EQSFunction(BaseFunction):
                                   warnings=[f"DSL parse error: {e}"])
         if filtered.empty:
             filtered = df.head(3)
+        # S05 BUGHUNT B6: surface the actual universe label + size so the UI
+        # cannot continue to claim "SP500" coverage when only the mega-cap
+        # stub was scanned. `universe_label` flows up untouched.
         return FunctionResult(
             code=self.code, instrument=None,
             data=filtered.reset_index(drop=True),
             sources=["yfinance" if live and self.deps.yfinance else "equity_screener_model"],
-            metadata={"query": query, "matched": int(len(filtered)), "scanned": int(len(df)), "live": live},
+            metadata={
+                "query": query,
+                "matched": int(len(filtered)),
+                "scanned": int(len(df)),
+                "live": live,
+                "universe": universe_label,
+                "universe_size": len(universe),
+            },
         )
+
+
+# S05 BUGHUNT B6: resolve a universe-name string ("SP500", "MEGA15", "TECH10",
+# explicit comma list, or already-a-list) into a concrete symbol list AND a
+# label that accurately describes what we scanned. The 15-symbol stub keeps
+# its existing constituents but is now labeled "MEGA15" instead of riding
+# under whatever label the caller provided. SP500 + NDX100 + DOW30 fall back
+# to the same MEGA15 stub today because we do not yet bundle the full
+# constituent files; the label is degraded so downstream renderers can show
+# the truth instead of the request.
+_UNIVERSE_PRESETS: dict[str, list[str]] = {
+    "MEGA15": [
+        "AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "TSLA", "JPM",
+        "V", "WMT", "PG", "UNH", "MA", "HD", "DIS",
+    ],
+    "TECH10": [
+        "AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "TSLA", "AMD",
+        "AVGO", "ORCL",
+    ],
+}
+_UNIVERSE_FALLBACK_LABEL = "MEGA15 (stub for SP500/NDX/DOW until constituents bundle)"
+
+
+def _resolve_universe(value: Any) -> tuple[list[str], str]:
+    if isinstance(value, list):
+        cleaned = [str(s).strip().upper() for s in value if str(s).strip()]
+        if cleaned:
+            return cleaned, f"custom ({len(cleaned)} symbols)"
+        return _UNIVERSE_PRESETS["MEGA15"], "MEGA15"
+    if isinstance(value, str):
+        token = value.strip().upper()
+        if token in _UNIVERSE_PRESETS:
+            return _UNIVERSE_PRESETS[token], token
+        if token in {"SP500", "S&P500", "S&P 500", "NDX100", "NDX", "NASDAQ100", "DJIA", "DOW30"}:
+            return _UNIVERSE_PRESETS["MEGA15"], _UNIVERSE_FALLBACK_LABEL
+        if "," in token:
+            cleaned = [s.strip().upper() for s in token.split(",") if s.strip()]
+            if cleaned:
+                return cleaned, f"custom ({len(cleaned)} symbols)"
+        if token:
+            return [token], f"single ({token})"
+    return _UNIVERSE_PRESETS["MEGA15"], "MEGA15"
 
 
 def _truthy(value: Any) -> bool:

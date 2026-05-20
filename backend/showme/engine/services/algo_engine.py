@@ -14,17 +14,18 @@ import asyncio
 import json
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
-from pathlib import Path
+from datetime import datetime, timezone
 from typing import Any
 
+from showme.app_paths import runtime_path
 from showme.engine.core.broker import (
     BaseBroker, BrokerOrder, OrderSide, OrderType, TimeInForce
 )
 from showme.engine.core.instrument import Instrument
 
 
-_AUDIT_PATH = Path("runtime/algo_audit.jsonl")
+def _audit_path():
+    return runtime_path("algo_audit.jsonl")
 
 
 @dataclass
@@ -95,14 +96,14 @@ class AlgoEngine:
                 child_id = await self.broker.place_order(order)
                 self._audit({
                     "parent_id": parent.parent_id, "child_id": child_id,
-                    "ts": datetime.utcnow().isoformat(),
+                    "ts": datetime.now(timezone.utc).isoformat(),
                     "algo": parent.algo, "qty": qty,
                     "instrument": str(parent.instrument), "side": parent.side.value,
                 })
             except Exception as e:
                 self._audit({
                     "parent_id": parent.parent_id,
-                    "ts": datetime.utcnow().isoformat(),
+                    "ts": datetime.now(timezone.utc).isoformat(),
                     "error": str(e),
                 })
 
@@ -115,6 +116,6 @@ class AlgoEngine:
 
     @staticmethod
     def _audit(entry: dict[str, Any]) -> None:
-        _AUDIT_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with _AUDIT_PATH.open("a") as f:
+        _audit_path().parent.mkdir(parents=True, exist_ok=True)
+        with _audit_path().open("a") as f:
             f.write(json.dumps(entry, default=str) + "\n")

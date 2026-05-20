@@ -14,17 +14,22 @@ from __future__ import annotations
 import json
 import re
 import time
-from pathlib import Path
 from typing import Any
 
 import httpx
 import pandas as pd
 
+from showme.app_paths import runtime_path
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from showme.engine.core.instrument import Instrument
 
 
-_CACHE_DIR = Path("runtime/index_constituents")
+def _cache_dir():
+    # runtime_path ensures parent (`<home>/runtime/`) exists; the index
+    # cache is itself a subdirectory under that.
+    base = runtime_path("index_constituents/.placeholder").parent
+    base.mkdir(parents=True, exist_ok=True)
+    return base
 _TTL_SECONDS = 24 * 3600
 
 
@@ -42,7 +47,7 @@ _WIKI_URLS = {
 
 
 async def _fetch_wiki(url: str, table_idx: int) -> pd.DataFrame:
-    cache_path = _CACHE_DIR / f"wiki_{re.sub(r'[^A-Za-z0-9]', '_', url)}.json"
+    cache_path = _cache_dir() / f"wiki_{re.sub(r'[^A-Za-z0-9]', '_', url)}.json"
     if cache_path.exists():
         try:
             data = json.loads(cache_path.read_text())
@@ -83,15 +88,37 @@ class ICXFunction(BaseFunction):
                 params.get("query") or
                 (instrument.symbol.lstrip("^") if instrument else "") or "SPX").upper()
         limit = _int_param(params, "limit", 50)
-        # Map common Yahoo tickers
+        # Map common Yahoo / Bloomberg tickers
         alias = {"GSPC": "SPX", "NDX": "NDX", "IXIC": "NDX", "DJI": "DJI",
                   "RUT": "RUT", "FTSE": "FTSE", "GDAXI": "DAX", "FCHI": "CAC",
-                  "STOXX50E": "STOXX", "XU100": "BIST", "TR": "BIST"}
+                  "STOXX50E": "STOXX", "XU100": "BIST", "TR": "BIST",
+                  "N225": "NIKKEI", "NIKKEI225": "NIKKEI",
+                  "HSI": "HSI", "HK50": "HSI",
+                  "KS11": "KOSPI", "KOSPI200": "KOSPI",
+                  "BVSP": "IBOV", "IBOVESPA": "IBOV",
+                  "GSPTSE": "TSX", "TSX": "TSX",
+                  "SSEC": "SHCOMP", "SHANGHAI": "SHCOMP",
+                  "AXJO": "ASX", "AORD": "ASX",
+                  "NSE": "NIFTY", "NIFTY50": "NIFTY",
+                  "SSMI": "SMI"}
         idx = alias.get(idx, idx)
         spec = _WIKI_URLS.get(idx)
         if not spec:
-            return FunctionResult(code=self.code, instrument=None, data={},
-                                  warnings=[f"unknown index {idx}"])
+            return FunctionResult(
+                code=self.code,
+                instrument=None,
+                data={
+                    "status": "input_error",
+                    "reason": f"Unknown or unsupported index: {idx}.",
+                    "rows": [],
+                    "next_actions": [
+                        "Try one of: SPX, NDX, DJI, DAX, CAC, FTSE, STOXX, BIST, RUT.",
+                        "Pass index via the Index control (queryParam=query, queryLabel=Index).",
+                    ],
+                    "supported_indexes": sorted(_WIKI_URLS.keys()),
+                },
+                warnings=[f"unknown index {idx}"],
+            )
         if not _truthy(params.get("live_constituents") or params.get("live")):
             df = _template_constituents(idx)
             return FunctionResult(
@@ -183,8 +210,83 @@ def _template_constituents(index: str) -> pd.DataFrame:
             {"symbol": "CAT", "company": "Caterpillar Inc.", "sector": "Industrials"},
             {"symbol": "AMGN", "company": "Amgen Inc.", "sector": "Health Care"},
         ],
+        "DAX": [
+            {"symbol": "SAP.DE", "company": "SAP SE", "sector": "Information Technology"},
+            {"symbol": "SIE.DE", "company": "Siemens AG", "sector": "Industrials"},
+            {"symbol": "ALV.DE", "company": "Allianz SE", "sector": "Financials"},
+            {"symbol": "DTE.DE", "company": "Deutsche Telekom AG", "sector": "Communication Services"},
+            {"symbol": "MBG.DE", "company": "Mercedes-Benz Group AG", "sector": "Consumer Discretionary"},
+            {"symbol": "BMW.DE", "company": "BMW AG", "sector": "Consumer Discretionary"},
+            {"symbol": "BAS.DE", "company": "BASF SE", "sector": "Materials"},
+            {"symbol": "BAYN.DE", "company": "Bayer AG", "sector": "Health Care"},
+            {"symbol": "MUV2.DE", "company": "Munich Re", "sector": "Financials"},
+            {"symbol": "AIR.DE", "company": "Airbus SE", "sector": "Industrials"},
+        ],
+        "CAC": [
+            {"symbol": "LVMH.PA", "company": "LVMH Moët Hennessy", "sector": "Consumer Discretionary"},
+            {"symbol": "TTE.PA", "company": "TotalEnergies SE", "sector": "Energy"},
+            {"symbol": "MC.PA", "company": "LVMH", "sector": "Consumer Discretionary"},
+            {"symbol": "OR.PA", "company": "L'Oréal SA", "sector": "Consumer Staples"},
+            {"symbol": "SAN.PA", "company": "Sanofi", "sector": "Health Care"},
+            {"symbol": "AIR.PA", "company": "Airbus SE", "sector": "Industrials"},
+            {"symbol": "BNP.PA", "company": "BNP Paribas", "sector": "Financials"},
+            {"symbol": "SU.PA", "company": "Schneider Electric SE", "sector": "Industrials"},
+            {"symbol": "EL.PA", "company": "EssilorLuxottica", "sector": "Health Care"},
+            {"symbol": "ASML.PA", "company": "ASML Holding", "sector": "Information Technology"},
+        ],
+        "FTSE": [
+            {"symbol": "SHEL.L", "company": "Shell plc", "sector": "Energy"},
+            {"symbol": "AZN.L", "company": "AstraZeneca plc", "sector": "Health Care"},
+            {"symbol": "HSBA.L", "company": "HSBC Holdings plc", "sector": "Financials"},
+            {"symbol": "ULVR.L", "company": "Unilever plc", "sector": "Consumer Staples"},
+            {"symbol": "BP.L", "company": "BP plc", "sector": "Energy"},
+            {"symbol": "GLEN.L", "company": "Glencore plc", "sector": "Materials"},
+            {"symbol": "RIO.L", "company": "Rio Tinto plc", "sector": "Materials"},
+            {"symbol": "DGE.L", "company": "Diageo plc", "sector": "Consumer Staples"},
+            {"symbol": "GSK.L", "company": "GSK plc", "sector": "Health Care"},
+            {"symbol": "LSEG.L", "company": "LSEG plc", "sector": "Financials"},
+        ],
+        "STOXX": [
+            {"symbol": "ASML.AS", "company": "ASML Holding NV", "sector": "Information Technology"},
+            {"symbol": "MC.PA", "company": "LVMH", "sector": "Consumer Discretionary"},
+            {"symbol": "SAP.DE", "company": "SAP SE", "sector": "Information Technology"},
+            {"symbol": "SIE.DE", "company": "Siemens AG", "sector": "Industrials"},
+            {"symbol": "TTE.PA", "company": "TotalEnergies SE", "sector": "Energy"},
+            {"symbol": "NESN.SW", "company": "Nestlé SA", "sector": "Consumer Staples"},
+            {"symbol": "NOVN.SW", "company": "Novartis AG", "sector": "Health Care"},
+            {"symbol": "ROG.SW", "company": "Roche Holding AG", "sector": "Health Care"},
+            {"symbol": "ALV.DE", "company": "Allianz SE", "sector": "Financials"},
+            {"symbol": "OR.PA", "company": "L'Oréal SA", "sector": "Consumer Staples"},
+        ],
+        "BIST": [
+            {"symbol": "AKBNK.IS", "company": "Akbank T.A.Ş.", "sector": "Financials"},
+            {"symbol": "GARAN.IS", "company": "Türkiye Garanti Bankası", "sector": "Financials"},
+            {"symbol": "ISCTR.IS", "company": "Türkiye İş Bankası", "sector": "Financials"},
+            {"symbol": "ASELS.IS", "company": "Aselsan", "sector": "Industrials"},
+            {"symbol": "BIMAS.IS", "company": "BİM Birleşik Mağazalar", "sector": "Consumer Staples"},
+            {"symbol": "EREGL.IS", "company": "Ereğli Demir ve Çelik", "sector": "Materials"},
+            {"symbol": "FROTO.IS", "company": "Ford Otosan", "sector": "Consumer Discretionary"},
+            {"symbol": "KCHOL.IS", "company": "Koç Holding", "sector": "Industrials"},
+            {"symbol": "PETKM.IS", "company": "Petkim Petrokimya", "sector": "Materials"},
+            {"symbol": "THYAO.IS", "company": "Türk Hava Yolları", "sector": "Industrials"},
+        ],
+        "RUT": [
+            {"symbol": "IWM", "company": "Russell 2000 ETF (proxy)", "sector": "ETF"},
+            {"symbol": "VTWO", "company": "Vanguard Russell 2000 ETF", "sector": "ETF"},
+        ],
     }
-    return pd.DataFrame(rows.get(index, rows["SPX"]))
+    if index not in rows:
+        # Don't silently return SPX for unknown indexes — surface a single
+        # placeholder row that names the unsupported index so the UI can
+        # render a meaningful empty state instead of S&P 500 noise.
+        return pd.DataFrame([
+            {
+                "symbol": "N/A",
+                "company": f"No reference constituents for {index}",
+                "sector": "unsupported_index",
+            }
+        ])
+    return pd.DataFrame(rows[index])
 
 
 def _flatten_column(col: Any) -> str:

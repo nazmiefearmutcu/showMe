@@ -26,6 +26,8 @@ class HFSFunction(BaseFunction):
     description = "13F reverse lookup — list filers holding a given issuer / CUSIP."
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
+        if instrument is None and not (params.get("issuer") or params.get("cusip")):
+            raise ValueError("HFS requires a symbol, issuer, or cusip")
         issuer = params.get("issuer") or (instrument.symbol if instrument else None)
         if not _truthy(params.get("live_holders") or params.get("live")):
             rows = _holder_search_template(issuer, instrument)
@@ -51,13 +53,20 @@ class HFSFunction(BaseFunction):
                                   sources=["holder_search_model"])
         cusip = params.get("cusip")
         quarter = params.get("quarter")
-        top_n = int(params.get("top_n", 30))
+        try:
+            top_n = max(1, min(int(params.get("top_n", 30) or 30), 250))
+        except (TypeError, ValueError):
+            top_n = 30
+        try:
+            timeout_s = max(1.0, min(float(params.get("timeout", 8) or 8), 30.0))
+        except (TypeError, ValueError):
+            timeout_s = 8.0
         try:
             df = await asyncio.wait_for(
                 sec.query_holdings_by_security(
                     cusip=cusip, issuer=issuer, quarter=quarter, top_n=top_n,
                 ),
-                timeout=float(params.get("timeout", 8)),
+                timeout=timeout_s,
             )
         except Exception as e:
             rows = [{"filer": "No local 13F match", "issuer": issuer,

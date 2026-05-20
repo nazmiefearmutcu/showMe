@@ -484,7 +484,15 @@ class BGASFunction(BaseFunction):
         days = _int_param(params, "days", 365, 20, 1095)
         quote_timeout = max(1.0, min(float(params.get("quote_timeout", params.get("yfinance_timeout", 4))), 8.0))
         contract = str(params.get("contract") or (instrument.symbol if instrument else "") or "NG=F").strip().upper()
+        # BUG-HUNT S01: previously a non-NG=F contract was silently
+        # reverted to NG=F. Track the override so the user knows.
+        original_contract = contract
         symbol = contract if contract in COMMODITY_CONTRACTS else "NG=F"
+        provider_errors: list[str] = []
+        if original_contract != symbol:
+            provider_errors.append(
+                f"contract={original_contract!r} not in COMMODITY_CONTRACTS; using NG=F"
+            )
         try:
             if self.deps.eia:
                 df = await self.deps.eia.fetch(DataRequest(
@@ -502,19 +510,26 @@ class BGASFunction(BaseFunction):
                     },
                     sources=["eia"],
                 )
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001
+            # BUG-HUNT S01: previously `except Exception: pass` hid EIA
+            # transport failures so the yfinance fallback ran silently
+            # even when EIA was the configured primary. Capture into
+            # provider_errors so the source/status panel can show why.
+            provider_errors.append(f"eia: {exc}")
         row = None
         history: list[dict[str, Any]] = []
-        provider_errors: list[str] = []
         if live and self.deps.yfinance:
-            row, history, provider_errors = await _contract_snapshot(
+            # BUG-HUNT S01: preserve the EIA + contract-override errors
+            # we already accumulated; don't let _contract_snapshot's own
+            # error list overwrite them.
+            row, history, snapshot_errors = await _contract_snapshot(
                 self.deps.yfinance,
                 symbol,
                 days=days,
                 timeout=quote_timeout,
                 include_history=True,
             )
+            provider_errors.extend(snapshot_errors)
         if row:
             data = {
                 "status": "ok",

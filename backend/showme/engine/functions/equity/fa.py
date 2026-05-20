@@ -9,7 +9,7 @@ DATA PIPELINE:
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 import re
 from typing import Any
 
@@ -212,7 +212,7 @@ def _normalise_fa_payload(
         "status": status,
         "period": period,
         "source": source,
-        "asOf": datetime.utcnow().isoformat(),
+        "asOf": datetime.now(timezone.utc).isoformat(),
         "income_statement": income_rows,
         "balance_sheet": balance_rows,
         "cash_flow": cash_rows,

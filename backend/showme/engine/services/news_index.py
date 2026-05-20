@@ -14,11 +14,15 @@ from __future__ import annotations
 
 import os
 import sqlite3
-from pathlib import Path
 from typing import Any
 
+from showme.app_paths import runtime_path
 
-_SQLITE_PATH = Path("runtime/news.sqlite")
+
+def _sqlite_path():
+    return runtime_path("news.sqlite")
+
+
 _FTS_TABLE = "news_fts"
 _INDEX_NAME = "showme_news"
 
@@ -49,8 +53,7 @@ class NewsIndex:
 
     # ── SQLite FTS5 ──
     def _init_sqlite(self) -> None:
-        _SQLITE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        self.db = sqlite3.connect(str(_SQLITE_PATH))
+        self.db = sqlite3.connect(str(_sqlite_path()))
         self.db.execute(f"""
             CREATE VIRTUAL TABLE IF NOT EXISTS {_FTS_TABLE} USING fts5(
                 id UNINDEXED, title, body, source, published_at UNINDEXED, url UNINDEXED

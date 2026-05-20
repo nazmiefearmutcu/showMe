@@ -79,23 +79,40 @@ class CRVFFunction(BaseFunction):
         country = (params.get("country") or "US").upper()
         warnings: list[str] = []
         curve: dict[str, float] = {}
-        if not (params.get("live_curve") or params.get("live")):
+        live = bool(params.get("live_curve") or params.get("live"))
+        if not live:
             curve = _curve_model()
-            return FunctionResult(code=self.code, instrument=None, data=_curve_payload(country, curve, "computed_model"),
-                                  sources=["curve_model"],
-                                  warnings=[],
-                                  metadata={"country": country, "mode": "computed_model"})
+            return FunctionResult(
+                code=self.code,
+                instrument=None,
+                data=_curve_payload(country, curve, "computed_model"),
+                sources=["curve_model"],
+                warnings=[],
+                metadata={"country": country, "mode": "computed_model"},
+            )
+        # Live branch: FRED currently only ships the US Treasury curve. Be
+        # honest when the requested country is not US, or when the FRED
+        # adapter is missing / failed.
         if country == "US" and self.deps.fred:
             try:
                 curve = await self.deps.fred.yield_curve()
                 curve = {k: v for k, v in curve.items() if v is not None and v == v}
             except Exception as e:
-                warnings.append(f"fred: {e}")
+                warnings.append(f"fred: {e or type(e).__name__}")
+        elif country != "US":
+            warnings.append(
+                f"live curve for {country} is not wired; using computed_model fallback"
+            )
+        elif not self.deps.fred:
+            warnings.append("fred adapter unavailable; using computed_model fallback")
+        source_mode = "fred" if curve and not warnings else "computed_model"
         if not curve:
             curve = _curve_model()
-            warnings = []
-        source_mode = "fred" if not warnings else "curve_model"
-        return FunctionResult(code=self.code, instrument=None, data=_curve_payload(country, curve, source_mode),
-                              sources=[source_mode],
-                              warnings=[],
-                              metadata={"country": country})
+        return FunctionResult(
+            code=self.code,
+            instrument=None,
+            data=_curve_payload(country, curve, source_mode),
+            sources=[source_mode],
+            warnings=warnings,
+            metadata={"country": country, "mode": source_mode},
+        )

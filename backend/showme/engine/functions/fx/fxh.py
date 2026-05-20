@@ -46,33 +46,86 @@ class FXHFunction(BaseFunction):
                     "base_rate": params.get("base_rate", 0.035),
                     "home_rate": params.get("home_rate", 0.045),
                 }]
-        # Resolve spot rates if missing
-        await self._fill_spots(exposures, home)
+        # Resolve spot rates if missing. _fill_spots returns the list of
+        # currencies whose spot could NOT be resolved live and were not
+        # supplied manually. We do not substitute 1.0 silently — the hedge
+        # book would otherwise compute fictitious notionals and carry P&L.
+        spot_failed, fetched_live = await self._fill_spots(exposures, home)
+        warnings: list[str] = []
+        if spot_failed:
+            warnings.append(
+                "FXH: spot rate unavailable for "
+                + ", ".join(sorted(set(spot_failed)))
+                + "; rows for those currencies are omitted from the hedge book."
+            )
+            exposures = [
+                e for e in exposures
+                if e.get("spot_rate") and e["currency"].upper() not in {c.upper() for c in spot_failed}
+            ]
+        if not exposures:
+            return FunctionResult(
+                code=self.code,
+                instrument=None,
+                data={
+                    "status": "data_unavailable",
+                    "reason": "No exposure has a usable spot rate; provide spot_rate manually or retry when the FX quote provider recovers.",
+                    "rows": [],
+                    "source_mode": "no_spot_data",
+                    "methodology": "FXH refuses to compute a hedge book without a real spot rate to avoid fictitious notionals.",
+                },
+                sources=[source_mode],
+                warnings=warnings,
+            )
         objs = [
             FXExposure(
                 currency=e["currency"].upper(), home_currency=home,
                 notional=float(e["notional"]),
-                spot_rate=float(e.get("spot_rate") or 1.0),
+                spot_rate=float(e["spot_rate"]),
                 base_rate=float(e.get("base_rate", 0.04)),
                 home_rate=float(e.get("home_rate", 0.045)),
             ) for e in exposures
         ]
+        # Effective source_mode reflects whether ANY spot came from the live
+        # provider — not a blanket "yfinance,ecb" claim.
+        effective_source = (
+            "live_yfinance_quote" if fetched_live and source_mode == "manual_exposure"
+            else source_mode
+        )
+        sources_used = sorted(
+            {effective_source, *(["yfinance"] if fetched_live else [])}
+        )
         if action == "forward":
             return FunctionResult(
                 code=self.code, instrument=None,
-                data={"forwards": [{
-                    "pair": f"{e.currency}/{home}",
-                    "spot": e.spot_rate,
-                    "forward": forward_rate(spot=e.spot_rate,
-                                            home_rate=e.home_rate,
-                                            base_rate=e.base_rate, days=days),
-                    "days": days,
-                } for e in objs]},
+                data={
+                    "forwards": [{
+                        "pair": f"{e.currency}/{home}",
+                        "spot": e.spot_rate,
+                        "forward": forward_rate(
+                            spot=e.spot_rate,
+                            home_rate=e.home_rate,
+                            base_rate=e.base_rate, days=days,
+                        ),
+                        "days": days,
+                    } for e in objs],
+                    "source_mode": effective_source,
+                    "methodology": (
+                        "FXH forward branch returns covered-interest-parity forward rates "
+                        "F = S * (1 + home_rate*T) / (1 + base_rate*T) for each exposure pair."
+                    ),
+                    "field_dictionary": {
+                        "spot": "Live or supplied spot rate in home currency units per foreign unit.",
+                        "forward": "Covered-interest-parity forward rate for the selected maturity.",
+                        "days": "Maturity (days) used for the forward calculation.",
+                    },
+                },
+                sources=sources_used,
+                warnings=warnings,
             )
         out = hedge_book(objs, hedge_ratio=ratio, days=days, usd_shock_pct=shock)
         out["rows"] = list(out.get("exposures") or [])
         out["curve"] = _scenario_curve(objs, ratio, days)
-        out["source_mode"] = source_mode
+        out["source_mode"] = effective_source
         out["methodology"] = (
             "FXH computes a forward overlay for foreign-currency exposure. "
             "Forward rate uses covered interest parity: F = S * (1 + home_rate*T) / (1 + base_rate*T). "
@@ -87,8 +140,13 @@ class FXHFunction(BaseFunction):
             "pnl_if_home_strengthens": "Residual exposure P&L if home currency strengthens by shock_pct, plus carry.",
             "pnl_if_home_weakens": "Residual exposure P&L if home currency weakens by shock_pct, plus carry.",
         }
-        return FunctionResult(code=self.code, instrument=instrument,
-                              data=out, sources=["yfinance", "ecb"])
+        return FunctionResult(
+            code=self.code,
+            instrument=instrument,
+            data=out,
+            sources=sources_used,
+            warnings=warnings,
+        )
 
     async def _derive_exposures(self, home: str) -> list[dict[str, Any]]:
         """Group portfolio positions by foreign currency."""
@@ -103,10 +161,21 @@ class FXHFunction(BaseFunction):
             by_ccy[ccy] = by_ccy.get(ccy, 0.0) + p.quantity * p.avg_cost
         return [{"currency": c, "notional": n} for c, n in by_ccy.items()]
 
-    async def _fill_spots(self, exposures: list[dict[str, Any]], home: str) -> None:
+    async def _fill_spots(
+        self, exposures: list[dict[str, Any]], home: str,
+    ) -> tuple[list[str], bool]:
+        """Resolve missing spot rates from the FX provider.
+
+        Returns (failed_currencies, fetched_live). Does NOT substitute 1.0
+        for a missing rate — callers must filter or surface the failure.
+        """
         if not self.deps.yfinance:
-            return
+            return ([e["currency"] for e in exposures if not e.get("spot_rate")], False)
+        failed: list[str] = []
+        live_hits = 0
+
         async def _q(e: dict[str, Any]) -> None:
+            nonlocal live_hits
             if e.get("spot_rate"):
                 return
             pair = f"{e['currency']}{home}=X"
@@ -114,10 +183,17 @@ class FXHFunction(BaseFunction):
                 inst = Instrument(symbol=pair, asset_class=AssetClass.FX)
                 quote = await self.deps.yfinance.fetch(DataRequest(
                     kind=DataKind.QUOTE, instrument=inst))
-                e["spot_rate"] = float(getattr(quote, "last", 0) or 0) or 1.0
+                last = float(getattr(quote, "last", 0) or 0)
+                if last > 0:
+                    e["spot_rate"] = last
+                    live_hits += 1
+                else:
+                    failed.append(e["currency"])
             except Exception:
-                e["spot_rate"] = 1.0
+                failed.append(e["currency"])
+
         await asyncio.gather(*(_q(e) for e in exposures))
+        return (failed, live_hits > 0)
 
 
 def _normalize_pair(raw: str) -> str:

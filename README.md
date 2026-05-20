@@ -1,8 +1,12 @@
 # showMe
 
 Native macOS Apple Silicon market cockpit. A thin Tauri shell, a React/Vite UI,
-and a unified Python backend that ships the 138+ function market engine as a
-regular `showme.engine` subpackage.
+and a unified Python backend that ships the **141-function** market engine
+(live snapshot of `/api/function-index`; baseline ≥138) as a regular
+`showme.engine` subpackage.
+
+> Last updated: 2026-05-11. Function/indicator/pane counts are the live
+> values; if they drift, run `npm run audit:functions` and update.
 
 ## Layout
 
@@ -22,7 +26,7 @@ showMe/
 │   │   ├── App.tsx, main.tsx
 │   │   ├── shell/          titlebar, sidebar, statusbar, symbolbar
 │   │   ├── panes/          Splash, Welcome, Preferences, FunctionStub
-│   │   ├── functions/      37 function components (PORT, WATCH, SCAN, …)
+│   │   ├── functions/      30 function components (PORT, WATCH, SCAN, …)
 │   │   ├── lib/            sidecar HTTP client, store, router, state
 │   │   ├── design-system/  Card, Toolbar, Pane, Tabs, Field, Crumb, …
 │   │   ├── command-palette/
@@ -47,7 +51,7 @@ showMe/
 │       ├── brokers/        base, paper, alpaca, factory
 │       ├── core/, services/, persistence/, ipc/, data_sources/
 │       └── engine/         the bundled function engine (was engine/src/*)
-│           ├── consensus/, indicators/ (24), functions/ (138 in 14 cats)
+│           ├── consensus/, indicators/ (23), functions/ (141 in 14 cats)
 │           ├── data/, data_sources/, services/, trading/, control/
 │           ├── monitoring/, persistence/, portfolio/, reference/
 │           ├── core/, assets/, agents/, api/, utils/

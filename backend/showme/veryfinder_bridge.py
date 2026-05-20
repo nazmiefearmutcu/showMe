@@ -89,7 +89,6 @@ QUERY_STOPWORDS = {
     "with",
     "without",
     "women",
-    "with",
 }
 
 _CACHE: dict[tuple[str, int, str, str, str], tuple[float, dict[str, Any]]] = {}
@@ -1012,16 +1011,6 @@ def _dedupe_strings(values: list[str]) -> list[str]:
         seen.add(key)
         output.append(clean)
     return output
-
-
-def require_veryfinder_root() -> Path:
-    root = veryfinder_root()
-    if root is None:
-        raise FileNotFoundError(
-            "Veryfinder runtime not found. Set SHOWME_VERYFINDER_ROOT or install it under "
-            f"{app_support_veryfinder_root()}."
-        )
-    return root
 
 
 def default_fixture_path(root: Path) -> Path:

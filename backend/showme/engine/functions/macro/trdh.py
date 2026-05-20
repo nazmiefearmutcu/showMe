@@ -41,18 +41,29 @@ class TRDHFunction(BaseFunction):
             if ex is None:
                 continue
             is_open = cal.is_open(code, now)
-            nxt = cal.next_open(code, now)
-            secs = int((nxt - now).total_seconds()) if nxt else None
+            nxt_open = cal.next_open(code, now)
+            nxt_close = cal.next_close(code, now)
+            secs_open = int((nxt_open - now).total_seconds()) if nxt_open else None
+            secs_close = int((nxt_close - now).total_seconds()) if nxt_close else None
+            # When the exchange is open right now, "value" / "hours_until_open"
+            # used to silently point at the *next* session — burying the
+            # actually-useful number (time-to-close) and giving the UI a
+            # 16h+ countdown on an open exchange. Report both deltas
+            # explicitly so the chip can render the correct one.
+            primary_delta_seconds = secs_close if is_open and secs_close is not None else secs_open
             rows.append({
                 "exchange": code, "name": ex.name, "country": ex.country,
                 "currency": ex.currency,
                 "open_local": ex.open_local, "close_local": ex.close_local,
                 "timezone": ex.timezone,
                 "is_open_now": is_open,
-                "next_open_utc": nxt.isoformat() if nxt else None,
-                "seconds_until_open": secs,
-                "hours_until_open": round(secs / 3600, 3) if secs is not None else None,
-                "value": round(secs / 3600, 3) if secs is not None else None,
+                "next_open_utc": nxt_open.isoformat() if nxt_open else None,
+                "next_close_utc": nxt_close.isoformat() if nxt_close else None,
+                "seconds_until_open": secs_open,
+                "seconds_until_close": secs_close,
+                "hours_until_open": round(secs_open / 3600, 3) if secs_open is not None else None,
+                "hours_until_close": round(secs_close / 3600, 3) if secs_close is not None else None,
+                "value": round(primary_delta_seconds / 3600, 3) if primary_delta_seconds is not None else None,
             })
         data = {
             "rows": rows,
@@ -61,10 +72,11 @@ class TRDHFunction(BaseFunction):
                     "exchange": row.get("exchange"),
                     "status": "open" if row.get("is_open_now") else "closed",
                     "hours_until_open": row.get("hours_until_open"),
-                    "value": row.get("hours_until_open"),
+                    "hours_until_close": row.get("hours_until_close"),
+                    "value": row.get("value"),
                 }
                 for row in rows
-                if row.get("hours_until_open") is not None
+                if row.get("value") is not None
             ],
             "cards": [
                 {"label": "Open now", "value": sum(1 for row in rows if row.get("is_open_now"))},
@@ -72,13 +84,18 @@ class TRDHFunction(BaseFunction):
             ],
             "methodology": (
                 "TRDH evaluates each exchange with the local exchange calendar and timezone registry. "
-                "next_open_utc is the next scheduled open in UTC; seconds_until_open and hours_until_open "
-                "are computed from the current UTC timestamp. Holiday coverage depends on the local calendar registry."
+                "next_open_utc is the next scheduled open in UTC; next_close_utc is the next scheduled "
+                "close in UTC. seconds_until_open / seconds_until_close are computed from the current UTC "
+                "timestamp. `value` is the seconds-to-close-of-current-session for open exchanges, otherwise "
+                "seconds-to-next-open; this makes the UI countdown point at the next state change. "
+                "Holiday coverage depends on the local calendar registry."
             ),
             "field_dictionary": {
                 "is_open_now": "Whether the exchange is currently inside a regular session.",
                 "next_open_utc": "Next regular-session open in UTC.",
+                "next_close_utc": "Next regular-session close in UTC.",
                 "seconds_until_open": "Seconds until next regular open.",
+                "seconds_until_close": "Seconds until next regular close.",
                 "timezone": "Exchange local timezone used for the session clock.",
             },
             "source_mode": "exchange_calendar_registry",

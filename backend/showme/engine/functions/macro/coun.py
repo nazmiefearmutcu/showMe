@@ -20,13 +20,20 @@ class COUNFunction(BaseFunction):
         country = (params.get("country") or "US").upper()
         live = _truthy(params.get("live_macro") or params.get("live"))
         profile = _country_profile_model(country)
+        country_is_known = country in _KNOWN_PROFILE_COUNTRIES
+        baseline_warnings: list[str] = []
+        if not country_is_known:
+            baseline_warnings.append(
+                f"country '{country}' has no curated profile; using generic reference fallback"
+            )
         if not live:
             return FunctionResult(
                 code=self.code,
                 instrument=None,
                 data=profile,
                 sources=["country_reference_profile"],
-                metadata={"live": False},
+                warnings=baseline_warnings,
+                metadata={"live": False, "country_known": country_is_known},
             )
         provider_errors: list[str] = []
         try:
@@ -54,6 +61,15 @@ class COUNFunction(BaseFunction):
             except Exception as exc:
                 provider_errors.append(f"ecst.{sid}: {exc}")
         rows = _country_rows(country, profile, policy_row, indicator_rows)
+        # Honest source attribution: only include "fred" if we actually invoked
+        # any ECST series, and only include "btmm" if the policy row resolved.
+        live_sources: list[str] = []
+        if policy_row:
+            live_sources.append("btmm")
+        if indicator_rows and series:
+            live_sources.append("fred")
+        live_sources.append("country_reference_profile")
+        all_warnings = baseline_warnings + provider_errors
         return FunctionResult(
             code=self.code,
             instrument=None,
@@ -74,11 +90,20 @@ class COUNFunction(BaseFunction):
                     "source_mode": "Provider or reference layer used for the row.",
                 },
                 "source_mode": "live_macro" if indicator_rows or policy_row else "reference_country_profile",
+                "country_known": country_is_known,
             },
-            sources=_unique(["btmm", "fred", "country_reference_profile"]),
-            warnings=provider_errors,
-            metadata={"country": country, "series": series, "provider_errors": provider_errors},
+            sources=_unique(live_sources),
+            warnings=all_warnings,
+            metadata={
+                "country": country,
+                "series": series,
+                "provider_errors": provider_errors,
+                "country_known": country_is_known,
+            },
         )
+
+
+_KNOWN_PROFILE_COUNTRIES = frozenset({"US", "EU", "GB", "TR"})
 
 
 def _country_profile_model(country: str) -> dict[str, Any]:

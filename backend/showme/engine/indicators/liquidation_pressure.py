@@ -6,6 +6,8 @@ signal — heavy long liquidations often mark capitulation lows; heavy
 short liquidations often mark squeeze tops.
 """
 
+from __future__ import annotations
+
 import time
 from typing import Any, Optional
 

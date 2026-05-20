@@ -8,23 +8,25 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from showme.app_paths import runtime_path
 from showme.engine.control.config_watcher import load_config
 from showme.engine.services.bot_service import BotService
 from showme.engine.utils.logger import setup_logger, get_logger
 
-PID_FILE = Path("runtime/bot.pid")
+
+def _pid_file() -> Path:
+    return runtime_path("bot.pid")
 
 
 def _write_pid() -> None:
     """Write current PID to file so dashboard can find and stop us."""
-    PID_FILE.parent.mkdir(parents=True, exist_ok=True)
-    PID_FILE.write_text(str(os.getpid()))
+    _pid_file().write_text(str(os.getpid()))
 
 
 def _remove_pid() -> None:
     """Remove PID file on exit."""
     try:
-        PID_FILE.unlink(missing_ok=True)
+        _pid_file().unlink(missing_ok=True)
     except Exception:
         pass
 

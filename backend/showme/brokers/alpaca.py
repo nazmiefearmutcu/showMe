@@ -11,7 +11,8 @@ Environment:
 from __future__ import annotations
 
 import os
-from typing import Any, Awaitable, Callable
+from typing import Any
+from collections.abc import Awaitable, Callable
 
 from .base import (
     BaseBroker,

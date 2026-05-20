@@ -13,17 +13,19 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Install sidecar deps
-        working-directory: src-py
+      - name: Install uv
         run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev]"
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Install sidecar deps
+        working-directory: backend
+        run: uv sync --all-extras
       - name: Lint
-        working-directory: src-py
-        run: ruff check showme
+        working-directory: backend
+        run: uv run ruff check showme
       - name: Pytest
-        working-directory: src-py
-        run: pytest -q || true   # round-12: no tests yet, allow
+        working-directory: backend
+        run: uv run pytest -q
 
   ui:
     runs-on: ubuntu-latest
@@ -33,20 +35,80 @@ jobs:
         with:
           node-version: "20"
           cache: npm
-          cache-dependency-path: src-ui/package-lock.json
-      - working-directory: src-ui
+          cache-dependency-path: package-lock.json
+      - name: Install root + UI deps
+        run: npm ci
+      - name: Type-check + build UI
+        working-directory: ui
         run: |
-          npm install
+          npx tsc --noEmit
           npm run build
+      - name: Vitest
+        working-directory: ui
+        run: npx vitest run
+      - name: npm audit (production deps only)
+        # SEC-09 — fail PRs that introduce a high/critical CVE in the
+        # production tree. Dev-only advisories (Vite/Vitest dev-server
+        # CORS / path-traversal) are noisy on every install, so we skip
+        # the dev tree here and surface them via a separate audit job.
+        run: npm audit --omit=dev --audit-level=high
 
   rust:
-    runs-on: macos-latest
+    runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri
+          workspaces: tauri
       - name: Cargo check
-        working-directory: src-tauri
+        working-directory: tauri
         run: cargo check --all-features
+      - name: Cargo test (lib)
+        working-directory: tauri
+        run: cargo test --lib
+      - name: Install cargo-audit
+        # SEC-10 — pinned floor; cached via rust-cache so subsequent
+        # runs don't re-build it.
+        run: cargo install cargo-audit --locked --version "^0.21" || true
+      - name: Cargo audit
+        working-directory: tauri
+        run: cargo audit --deny warnings
+
+  e2e-smoke:
+    # TEST-01/03 — wire a fast Playwright smoke spec into PR CI. The
+    # full 144-function audit is gated behind a manual `workflow_dispatch`
+    # so we don't bog down PRs.
+    runs-on: macos-14
+    needs: [python, ui, rust]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Install root + UI deps
+        run: npm ci
+      - name: Install sidecar deps
+        working-directory: backend
+        run: uv sync --all-extras
+      - name: Install Playwright + browsers
+        working-directory: ui
+        run: |
+          npx --yes playwright install --with-deps chromium
+      - name: Validate playwright config
+        run: npx playwright list --config tests/e2e/playwright.config.ts
+      - name: Run Playwright smoke
+        env:
+          # The smoke spec stubs all sidecar HTTP and runs against a
+          # static `vite preview` so the suite is hermetic in CI.
+          PLAYWRIGHT_E2E_MODE: smoke
+        run: npx playwright test --config tests/e2e/playwright.config.ts --project=smoke

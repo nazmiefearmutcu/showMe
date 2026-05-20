@@ -51,16 +51,7 @@ class CNFunction(BaseFunction):
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         if instrument is None:
             raise ValueError("CN requires a symbol")
-        limit = int(params.get("limit", 50) or 50)
-        live_news = bool(params.get("live_news") or params.get("live"))
-        if not live_news and instrument.asset_class not in (AssetClass.EQUITY, AssetClass.CRYPTO, AssetClass.ETF):
-            return FunctionResult(
-                code=self.code,
-                instrument=instrument,
-                data=_fallback_news(instrument, limit, topic="market"),
-                sources=["local_news_cache"],
-                metadata={"mode": "computed_model"},
-            )
+        limit = max(1, int(params.get("limit", 50) or 50))
         if instrument.asset_class == AssetClass.CRYPTO:
             return await self._execute_crypto(instrument, limit, params)
         results: list = []
@@ -130,7 +121,12 @@ class CNFunction(BaseFunction):
         )
         data = _prefer_direct_symbol_matches(data, min_rows=max(3, min(limit, 8)))
         if not data:
-            data = _provider_unavailable_rows(instrument, limit, "No directly relevant company headlines were returned for this symbol.")
+            reason = _format_unavailable_reason(
+                base="No directly relevant company headlines were returned for this symbol.",
+                sources=sources,
+                warnings=warnings,
+            )
+            data = _provider_unavailable_rows(instrument, limit, reason)
             sources = sources or ["no_live_source"]
         alerts = critical_articles(data, threshold=float(params.get("threshold", 70) or 70))
         return FunctionResult(
@@ -233,7 +229,12 @@ class CNFunction(BaseFunction):
             sources.extend(src for src in fallback_sources if src not in sources)
             warnings.extend(fallback_warnings)
         if not data:
-            data = _provider_unavailable_rows(instrument, limit, "No directly relevant crypto headlines or market context were returned for this symbol.")
+            reason = _format_unavailable_reason(
+                base="No directly relevant crypto headlines or market context were returned for this symbol.",
+                sources=sources,
+                warnings=warnings,
+            )
+            data = _provider_unavailable_rows(instrument, limit, reason)
             sources = sources or ["no_live_source"]
         alerts = critical_articles(data, threshold=float(params.get("threshold", 70) or 70))
 
@@ -341,7 +342,11 @@ def _prefer_direct_symbol_matches(items: list[dict[str, Any]], *, min_rows: int)
         and item.get("matched_terms")
         and not bool(item.get("stale_for_alert"))
     ]
-    return direct if len(direct) >= min_rows else direct
+    if len(direct) >= min_rows:
+        return direct
+    direct_ids = {id(item) for item in direct}
+    extras = [item for item in items if id(item) not in direct_ids]
+    return direct + extras
 
 
 def _news_relevance_score(item: dict[str, Any], terms: list[str]) -> float:
@@ -694,19 +699,13 @@ def _fmt_price(value: float | None) -> str:
     return f"{value:.8f}".rstrip("0").rstrip(".")
 
 
-def _fallback_news(instrument: Instrument, limit: int, topic: str = "company") -> list[dict[str, Any]]:
-    rows = [
-        {
-            "title": f"{instrument.symbol} {topic} news feed unavailable",
-            "summary": "External news providers returned no usable headlines for this request.",
-            "symbol": instrument.symbol,
-            "source": "showMe",
-            "published_at": None,
-            "url": None,
-            "status": "news_feed_empty",
-        }
-    ]
-    return rows[: max(1, limit)]
+def _format_unavailable_reason(*, base: str, sources: list[str], warnings: list[str]) -> str:
+    parts: list[str] = [base]
+    if sources:
+        parts.append(f"Sources tried: {', '.join(sources)}.")
+    if warnings:
+        parts.append("Provider errors: " + "; ".join(warnings[:3]) + ("…" if len(warnings) > 3 else ""))
+    return " ".join(parts)
 
 
 def _provider_unavailable_rows(instrument: Instrument, limit: int, reason: str) -> list[dict[str, Any]]:

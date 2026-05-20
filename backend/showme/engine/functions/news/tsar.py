@@ -36,8 +36,25 @@ class TSARFunction(BaseFunction):
             return FunctionResult(code=self.code, instrument=instrument,
                                   data={"items": items})
         if action == "ingest":
+            # Session-14 bug fix: action=ingest used to KeyError when `symbol`
+            # was missing — the function would 500 instead of returning a
+            # labelled input_required payload. Guard required params and emit
+            # the same shape every other action uses.
+            symbol_param = params.get("symbol") or (instrument.symbol if instrument else None)
+            if not symbol_param:
+                return FunctionResult(
+                    code=self.code,
+                    instrument=instrument,
+                    data={
+                        "status": "input_required",
+                        "reason": "Transcript ingest requires a symbol.",
+                        "next_actions": ["Pass `symbol` (or focus an instrument) before action=ingest."],
+                    },
+                    sources=["transcripts_archive"],
+                    metadata={"provider_errors": ["missing ingest symbol"]},
+                )
             tid = archive.upsert(
-                symbol=params["symbol"], company=params.get("company"),
+                symbol=str(symbol_param), company=params.get("company"),
                 quarter=params.get("quarter"), fiscal_year=params.get("fiscal_year"),
                 event_date=params.get("event_date"), source=params.get("source"),
                 url=params.get("url"), content=params.get("content", ""),
@@ -46,10 +63,28 @@ class TSARFunction(BaseFunction):
             return FunctionResult(code=self.code, instrument=None,
                                   data={"id": tid, "ingested": True})
         if action == "get":
+            row_id = _safe_int(params.get("id"))
+            if row_id is None:
+                return FunctionResult(
+                    code=self.code, instrument=None,
+                    data={"status": "input_required",
+                          "reason": "action=get requires a numeric `id`.",
+                          "next_actions": ["Pass id=<row id> in params."]},
+                    sources=["transcripts_archive"],
+                )
             return FunctionResult(code=self.code, instrument=None,
-                                  data=archive.get(int(params["id"])) or {})
+                                  data=archive.get(row_id) or {})
         if action == "delete":
-            ok = archive.delete(int(params["id"]))
+            row_id = _safe_int(params.get("id"))
+            if row_id is None:
+                return FunctionResult(
+                    code=self.code, instrument=None,
+                    data={"status": "input_required",
+                          "reason": "action=delete requires a numeric `id`.",
+                          "next_actions": ["Pass id=<row id> in params."]},
+                    sources=["transcripts_archive"],
+                )
+            ok = archive.delete(row_id)
             return FunctionResult(code=self.code, instrument=None,
                                   data={"deleted": ok})
         # default: search
@@ -101,3 +136,10 @@ class TSARFunction(BaseFunction):
         return FunctionResult(code=self.code, instrument=instrument,
                               data={"query": query, "items": items},
                               sources=["transcripts_archive"])
+
+
+def _safe_int(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None

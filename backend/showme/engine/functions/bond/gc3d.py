@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
@@ -23,8 +23,13 @@ _TENOR_YEARS = {
 
 
 def _surface_template() -> dict[str, Any]:
+    # Use rolling dates anchored to "today" so the model fallback never
+    # advertises stale 2026-04 timestamps weeks after the file was written.
+    # The yield levels remain a labelled reference template.
     tenors = [t for t, _ in _FRED_TENORS]
-    dates = ["2026-04-01", "2026-04-15", "2026-05-01"]
+    today = datetime.now(timezone.utc).date()
+    offsets = (45, 30, 15)  # ~6-week, ~4-week, ~2-week look-back snapshots
+    dates = [(today - timedelta(days=d)).strftime("%Y-%m-%d") for d in offsets]
     base = {"3M": 5.28, "6M": 5.15, "1Y": 4.92, "2Y": 4.62,
             "3Y": 4.47, "5Y": 4.38, "7Y": 4.42, "10Y": 4.45,
             "20Y": 4.61, "30Y": 4.67}
@@ -72,7 +77,13 @@ class GC3DFunctionLive(BaseFunction):
     category = "bond"
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
-        days = int(params.get("days", 365))
+        # Clamp to a sane look-back window: a request for `days=999999` used
+        # to balloon the FRED query without bound.
+        try:
+            requested_days = int(params.get("days", 365))
+        except (TypeError, ValueError):
+            requested_days = 365
+        days = max(7, min(requested_days, 3650))
         if not (params.get("live_curve") or params.get("live")):
             return FunctionResult(code=self.code, instrument=None,
                                   data=_surface_template(),
@@ -86,7 +97,7 @@ class GC3DFunctionLive(BaseFunction):
                 df = await asyncio.wait_for(
                     self.deps.fred.series(
                         sid,
-                        start=(datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%d"),
+                        start=(datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d"),
                     ),
                     timeout=float(params.get("fred_timeout", 5)),
                 )

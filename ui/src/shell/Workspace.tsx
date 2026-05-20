@@ -4,8 +4,13 @@
  * Single source of multi-pane layout. Each leaf renders the focused
  * pane via `resolvePane`; the registry's `FunctionStub` handles codes
  * we haven't ported natively.
+ *
+ * ROUND-2B (PERF-02): every pane (including the three "always-loaded"
+ * panes Welcome / Preferences / FunctionStub) is lazy-loaded so the
+ * entry chunk only ships the shell + design system. A small Suspense
+ * fallback paints a token-coloured shimmer while the chunk arrives.
  */
-import { useEffect, useRef } from "react";
+import { lazy, Suspense, useEffect, useRef } from "react";
 import {
   useWorkspace,
   type LeafNode,
@@ -13,10 +18,42 @@ import {
   type WorkspaceNode,
 } from "@/lib/workspace";
 import { resolvePane } from "@/functions/registry";
-import { FunctionStub } from "@/panes/FunctionStub";
-import { Welcome } from "@/panes/Welcome";
-import { Preferences } from "@/panes/Preferences";
+import {
+  DesignExportRenderer,
+  hasDesignExportComponent,
+} from "@/design-export/showme-design-export";
 import { PaneChrome } from "./PaneChrome";
+import { PaneErrorBoundary } from "./PaneErrorBoundary";
+
+const Welcome = lazy(() => import("@/panes/Welcome").then((m) => ({ default: m.Welcome })));
+const Preferences = lazy(() =>
+  import("@/panes/Preferences").then((m) => ({ default: m.Preferences })),
+);
+const FunctionStub = lazy(() =>
+  import("@/panes/FunctionStub").then((m) => ({ default: m.FunctionStub })),
+);
+const TemplateRenderer = lazy(() =>
+  import("@/templates/TemplateRenderer").then((m) => ({
+    default: m.TemplateRenderer,
+  })),
+);
+// Synchronously imported predicate — checking it must not lazy-load the
+// template module on cold paint. The module is small, but importing
+// asynchronously here would force a 2-tick render and a flash of stub.
+import { hasTemplate } from "@/templates/TemplateRenderer";
+
+function PaneFallback() {
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      aria-label="Loading pane"
+      className="pane-fallback"
+    >
+      loading…
+    </div>
+  );
+}
 
 const HANDLE_PX = 4;
 
@@ -34,38 +71,31 @@ function Leaf({ node }: { node: LeafNode }) {
   const focusedId = useWorkspace((s) => s.focusedId);
   const setFocused = useWorkspace((s) => s.setFocused);
   const isFocused = focusedId === node.id;
+  // A leaf is "design-only" when there is NO native pane / template for it
+  // and the only renderer left is the static Claude Design export. The
+  // Pro design components ship their own PrShell chrome, so we suppress
+  // the outer PaneChrome to avoid a doubled toolbar/statusbar. When the
+  // native pane wins (current default for the 10 in-scope codes) the
+  // outer PaneChrome still renders so SymbolBar / RefreshButton work.
+  const hasNative = resolvePane(node.code) !== null;
+  const hasTpl = hasTemplate(node.code);
+  const isDesignLeaf =
+    node.code === "PREF" ||
+    (!hasNative && !hasTpl && hasDesignExportComponent(node.code));
   return (
     <div
       onMouseDownCapture={() => setFocused(node.id)}
-      style={{
-        height: "100%",
-        width: "100%",
-        outline: isFocused
-          ? "1px solid var(--accent)"
-          : "1px solid transparent",
-        outlineOffset: -1,
-        transition: "outline-color var(--motion-fast)",
-        display: "grid",
-        gridTemplateRows: "auto 1fr",
-        background: "var(--bg-base)",
-        minHeight: 0,
-        minWidth: 0,
-      }}
+      className={`ws-leaf${isFocused ? " ws-leaf--focused" : ""}${isDesignLeaf ? " ws-leaf--design" : ""}`}
     >
-      <PaneChrome
-        leafId={node.id}
-        code={node.code}
-        symbol={node.symbol}
-        linkGroup={node.linkGroup}
-      />
-      <div
-        style={{
-          overflow: "hidden",
-          position: "relative",
-          minHeight: 0,
-          minWidth: 0,
-        }}
-      >
+      {!isDesignLeaf && (
+        <PaneChrome
+          leafId={node.id}
+          code={node.code}
+          symbol={node.symbol}
+          linkGroup={node.linkGroup}
+        />
+      )}
+      <div className="ws-leaf__body">
         <PaneContent leafId={node.id} code={node.code} symbol={node.symbol} />
       </div>
     </div>
@@ -81,11 +111,55 @@ function PaneContent({
   code: string;
   symbol?: string;
 }) {
-  if (code === "HOME") return <Welcome />;
-  if (code === "PREF") return <Preferences />;
-  const Native = resolvePane(code);
-  if (Native) return <Native code={code} symbol={symbol} />;
-  return <FunctionStub leafId={leafId} code={code} symbol={symbol} />;
+  let body: React.ReactNode;
+  if (code === "HOME") {
+    body = hasDesignExportComponent(code) ? (
+      <DesignExportRenderer code={code} symbol={symbol} variant="pro" />
+    ) : (
+      <Welcome />
+    );
+  } else if (code === "PREF") {
+    body = <Preferences />;
+  } else {
+    // Resolution precedence — native pane wins so that bespoke, live-data
+    // panes (HP, GP, BTMM, DES, EQS, FA, ASK, BIO, MIS, NI/CN, …) take
+    // priority over the Claude Design export's static Pro mockups. The
+    // design export is kept as a token-styled fallback for catalog codes
+    // that don't have a native pane yet, and as a last resort we fall
+    // back to FunctionStub (the generic `/api/fn/{code}` surface).
+    const Native = resolvePane(code);
+    if (Native) {
+      body = <Native code={code} symbol={symbol} />;
+    } else if (hasTemplate(code)) {
+      // Design-template-backed renderer (Claude Design Basic variant ported
+      // into a token-driven layout). Preferred over the static Pro design
+      // export and FunctionStub whenever a matching template exists in
+      // ui/src/templates/mock-data.ts.
+      body = <TemplateRenderer code={code} symbol={symbol} />;
+    } else if (hasDesignExportComponent(code)) {
+      body = <DesignExportRenderer code={code} symbol={symbol} variant="pro" />;
+    } else {
+      body = <FunctionStub leafId={leafId} code={code} symbol={symbol} />;
+    }
+  }
+  return (
+    <PaneErrorBoundary code={code}>
+      <Suspense fallback={<PaneFallback />}>{body}</Suspense>
+    </PaneErrorBoundary>
+  );
+}
+
+export type PaneRendererChoice = "native" | "template" | "design-export" | "stub";
+
+/**
+ * Public regression hook for pane resolution. The actual render path above
+ * intentionally keeps the same order: native > template > design-export > stub.
+ */
+export function choosePaneRenderer(code: string): PaneRendererChoice {
+  if (resolvePane(code)) return "native";
+  if (hasTemplate(code)) return "template";
+  if (hasDesignExportComponent(code)) return "design-export";
+  return "stub";
 }
 
 function Split({ node }: { node: SplitNode }) {
@@ -137,31 +211,22 @@ function Split({ node }: { node: SplitNode }) {
     draggingIdx.current = idx;
   };
 
+  const trackTemplate = node.sizes
+    .map((s) => `${(s * 100).toFixed(4)}fr`)
+    .join(` ${HANDLE_PX}px `);
+  const splitStyle =
+    node.direction === "h"
+      ? { ["--ws-cols" as string]: trackTemplate }
+      : { ["--ws-rows" as string]: trackTemplate };
   return (
     <div
       ref={containerRef}
-      style={{
-        display: "grid",
-        gridTemplateColumns:
-          node.direction === "h"
-            ? node.sizes.map((s) => `${(s * 100).toFixed(4)}fr`).join(` ${HANDLE_PX}px `)
-            : "1fr",
-        gridTemplateRows:
-          node.direction === "v"
-            ? node.sizes.map((s) => `${(s * 100).toFixed(4)}fr`).join(` ${HANDLE_PX}px `)
-            : "1fr",
-        height: "100%",
-        width: "100%",
-        minHeight: 0,
-        minWidth: 0,
-      }}
+      className={`ws-split ws-split--${node.direction}`}
+      style={splitStyle}
     >
       {node.children.flatMap((child, i) => {
         const items: React.ReactNode[] = [
-          <div
-            key={`pane-${child.id}`}
-            style={{ overflow: "hidden", minWidth: 0, minHeight: 0 }}
-          >
+          <div key={`pane-${child.id}`} className="ws-split__cell">
             <Node node={child} />
           </div>,
         ];
@@ -170,13 +235,7 @@ function Split({ node }: { node: SplitNode }) {
             <div
               key={`handle-${child.id}`}
               onMouseDown={startDrag(i)}
-              style={{
-                background: "var(--border-subtle)",
-                cursor: node.direction === "h" ? "col-resize" : "row-resize",
-                userSelect: "none",
-                width: node.direction === "h" ? HANDLE_PX : "100%",
-                height: node.direction === "v" ? HANDLE_PX : "100%",
-              }}
+              className={`ws-split__handle ws-split__handle--${node.direction}`}
               role="separator"
               aria-orientation={node.direction === "h" ? "vertical" : "horizontal"}
             />,

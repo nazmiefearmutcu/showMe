@@ -9,6 +9,8 @@ Strategy:
   STRONG_SELL : trend just flipped DOWN
 """
 
+from __future__ import annotations
+
 import pandas as pd
 import numpy as np
 
@@ -46,8 +48,8 @@ class SupertrendIndicator(BaseIndicator):
         basic_lower = hl2 - multiplier * atr
 
         n = len(close)
-        final_upper = basic_upper.copy().values
-        final_lower = basic_lower.copy().values
+        final_upper = basic_upper.to_numpy(copy=True)
+        final_lower = basic_lower.to_numpy(copy=True)
         st = np.zeros(n)
         trend = np.ones(n, dtype=int)  # +1 UP, -1 DOWN
 

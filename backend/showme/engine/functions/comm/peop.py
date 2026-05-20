@@ -138,10 +138,22 @@ class PEOPFunction(BaseFunction):
 
 
 def reference_people_search(query: str, *, limit: int = 25) -> list[dict[str, Any]]:
+    """Search the small public-reference people set.
+
+    2026-05-17 BugHunt S10: previously when the caller passed an empty query
+    (or only single-char tokens), this function silently substituted
+    ``tokens = ["apple"]`` and returned the 3 Apple-leadership reference
+    entries. That meant PEOP responded to ``q=""``, ``q="BTC"``, ``q="?"``
+    with three fabricated Apple matches, marked the response ``status="ok"``,
+    and gave the UI no signal that the query never actually hit the index.
+    The fix: return an empty list when the query has no usable tokens; the
+    caller already converts that to ``status="needs_data"`` and surfaces a
+    "broaden the search query" next-action.
+    """
     q = str(query or "").strip().lower()
     tokens = [t for t in q.replace(",", " ").split() if len(t) > 1]
     if not tokens:
-        tokens = ["apple"]
+        return []
     scored: list[tuple[int, dict[str, Any]]] = []
     for row in PUBLIC_REFERENCE_PEOPLE:
         haystack = " ".join(

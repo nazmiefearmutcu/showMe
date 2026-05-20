@@ -2,36 +2,69 @@
  * Pane registry — maps a ShowMe function code to its native React component.
  * Codes not present here fall back to `FunctionStub`, which talks to the
  * sidecar via `/api/fn/{code}` and renders the raw payload.
+ *
+ * ROUND-2B (PERF-02): every pane is loaded via `React.lazy` + Suspense in
+ * `Workspace.PaneContent`. The eager modulepreload count drops from 38 → ~3.
+ * Welcome / FunctionStub / Preferences are imported lazily as well so the
+ * entry chunk only ships shell + design system.
  */
-import type { ComponentType } from "react";
+import { lazy, type ComponentType, type LazyExoticComponent } from "react";
 import type { FunctionEntry } from "@/lib/sidecar";
 import type { FunctionPaneProps } from "./registry-types";
-import { ANRPane } from "./ANR";
-import { DESPane } from "./DES";
-import { FAPane } from "./FA";
-import { GPPane } from "./GP";
-import { EQSPane } from "./EQS";
-import { PORTPane } from "./PORT";
-import { SCANPane } from "./SCAN";
-import { ASKPane } from "./ASK";
-import { TOPPane } from "./TOP";
-import { ECOPane } from "./ECO";
-import { WATCHPane } from "./WATCH";
-import { ALRTPane } from "./ALRT";
-import { NIPane } from "./NI";
-import { MOSTPane } from "./MOST";
-import { WEIPane } from "./WEI";
-import { HPPane } from "./HP";
-import { WCRSPane } from "./WCRS";
-import { GLCOPane } from "./GLCO";
-import { AGENTPane } from "./AGENT";
-import { BTMMPane } from "./BTMM";
-import { BIOPane } from "./BIO";
-import { MarketHeatmapPane } from "./MarketHeatmap";
-import { INSTANTPane } from "./INSTANT";
-import { CORRPane } from "./CORR";
 
-const PANES: Record<string, ComponentType<FunctionPaneProps>> = {
+type PaneComponent =
+  | ComponentType<FunctionPaneProps>
+  | LazyExoticComponent<ComponentType<FunctionPaneProps>>;
+
+// Each lazy-loaded pane chunk is named via the `webpackChunkName`-style hint
+// in the import path; Vite's manualChunks splits by `/src/functions/` already.
+const ANRPane = lazy(() => import("./ANR").then((m) => ({ default: m.ANRPane })));
+const DESPane = lazy(() => import("./DES").then((m) => ({ default: m.DESPane })));
+const FAPane = lazy(() => import("./FA").then((m) => ({ default: m.FAPane })));
+const GPPane = lazy(() => import("./GP").then((m) => ({ default: m.GPPane })));
+const EQSPane = lazy(() => import("./EQS").then((m) => ({ default: m.EQSPane })));
+const PORTPane = lazy(() => import("./PORT").then((m) => ({ default: m.PORTPane })));
+const SCANPane = lazy(() => import("./SCAN").then((m) => ({ default: m.SCANPane })));
+const MISPane = lazy(() => import("./MIS").then((m) => ({ default: m.MISPane })));
+const ASKPane = lazy(() => import("./ASK").then((m) => ({ default: m.ASKPane })));
+const TOPPane = lazy(() => import("./TOP").then((m) => ({ default: m.TOPPane })));
+const ECOPane = lazy(() => import("./ECO").then((m) => ({ default: m.ECOPane })));
+const WATCHPane = lazy(() => import("./WATCH").then((m) => ({ default: m.WATCHPane })));
+const ALRTPane = lazy(() => import("./ALRT").then((m) => ({ default: m.ALRTPane })));
+const NIPane = lazy(() => import("./NI").then((m) => ({ default: m.NIPane })));
+const MOSTPane = lazy(() => import("./MOST").then((m) => ({ default: m.MOSTPane })));
+const WEIPane = lazy(() => import("./WEI").then((m) => ({ default: m.WEIPane })));
+const HPPane = lazy(() => import("./HP").then((m) => ({ default: m.HPPane })));
+const WCRSPane = lazy(() => import("./WCRS").then((m) => ({ default: m.WCRSPane })));
+const GLCOPane = lazy(() => import("./GLCO").then((m) => ({ default: m.GLCOPane })));
+const AGENTPane = lazy(() => import("./AGENT").then((m) => ({ default: m.AGENTPane })));
+const BTMMPane = lazy(() => import("./BTMM").then((m) => ({ default: m.BTMMPane })));
+const BIOPane = lazy(() => import("./BIO").then((m) => ({ default: m.BIOPane })));
+const GEXPane = lazy(() => import("./GEX").then((m) => ({ default: m.GEXPane })));
+const MarketHeatmapPane = lazy(() =>
+  import("./MarketHeatmap").then((m) => ({ default: m.MarketHeatmapPane })),
+);
+const INSTANTPane = lazy(() => import("./INSTANT").then((m) => ({ default: m.INSTANTPane })));
+const CORRPane = lazy(() => import("./CORR").then((m) => ({ default: m.CORRPane })));
+const XSENPane = lazy(() => import("./XSEN").then((m) => ({ default: m.XSENPane })));
+const DPFPane = lazy(() => import("./DPF").then((m) => ({ default: m.DPFPane })));
+const DVDPane = lazy(() => import("./DVD").then((m) => ({ default: m.DVDPane })));
+const ECFCPane = lazy(() => import("./ECFC").then((m) => ({ default: m.ECFCPane })));
+const ECSTPane = lazy(() => import("./ECST").then((m) => ({ default: m.ECSTPane })));
+const EEPane = lazy(() => import("./EE").then((m) => ({ default: m.EEPane })));
+const EMSXPane = lazy(() => import("./EMSX").then((m) => ({ default: m.EMSXPane })));
+const EREVPane = lazy(() => import("./EREV").then((m) => ({ default: m.EREVPane })));
+const ESGPane = lazy(() => import("./ESG").then((m) => ({ default: m.ESGPane })));
+const TRQAPane = lazy(() => import("./TRQA").then((m) => ({ default: m.TRQAPane })));
+const TSARPane = lazy(() => import("./TSAR").then((m) => ({ default: m.TSARPane })));
+const TSOXPane = lazy(() => import("./TSOX").then((m) => ({ default: m.TSOXPane })));
+const WACCPane = lazy(() => import("./WACC").then((m) => ({ default: m.WACCPane })));
+const WBPane = lazy(() => import("./WB").then((m) => ({ default: m.WBPane })));
+const WETRPane = lazy(() => import("./WETR").then((m) => ({ default: m.WETRPane })));
+const WHALPane = lazy(() => import("./WHAL").then((m) => ({ default: m.WHALPane })));
+const WIRPPane = lazy(() => import("./WIRP").then((m) => ({ default: m.WIRPPane })));
+
+const PANES: Record<string, PaneComponent> = {
   AGENT: AGENTPane,
   ANR: ANRPane,
   DES: DESPane,
@@ -40,6 +73,7 @@ const PANES: Record<string, ComponentType<FunctionPaneProps>> = {
   EQS: EQSPane,
   PORT: PORTPane,
   SCAN: SCANPane,
+  MIS: MISPane,
   ASK: ASKPane,
   TOP: TOPPane,
   ECO: ECOPane,
@@ -54,10 +88,28 @@ const PANES: Record<string, ComponentType<FunctionPaneProps>> = {
   GLCO: GLCOPane,
   BTMM: BTMMPane,
   BIO: BIOPane,
+  GEX: GEXPane,
   CORR: CORRPane,
   INSTANT: INSTANTPane,
+  XSEN: XSENPane,
   MAP: MarketHeatmapPane,
   SECT: MarketHeatmapPane,
+  DPF: DPFPane,
+  DVD: DVDPane,
+  ECFC: ECFCPane,
+  ECST: ECSTPane,
+  EE: EEPane,
+  EMSX: EMSXPane,
+  EREV: EREVPane,
+  ESG: ESGPane,
+  TRQA: TRQAPane,
+  TSAR: TSARPane,
+  TSOX: TSOXPane,
+  WACC: WACCPane,
+  WB: WBPane,
+  WETR: WETRPane,
+  WHAL: WHALPane,
+  WIRP: WIRPPane,
 };
 
 const NATIVE_FUNCTION_ENTRIES: FunctionEntry[] = [
@@ -86,14 +138,28 @@ const NATIVE_FUNCTION_ENTRIES: FunctionEntry[] = [
     description: "User-managed watchlist with live last price, change, source, and removal controls.",
   },
   {
+    code: "MIS",
+    name: "Multi Indicator Scan",
+    category: "screen",
+    description:
+      "23 indikatörlü konsensüs ile tüm piyasalarda (kripto, hisse, ETF, FX, emtia, tahvil) yüksek skorlu sembol taraması. Sonuçlardan + butonu ile WATCH listesine ekleme. Her piyasa için ayrı kalibrasyon sekmesi.",
+  },
+  {
     code: "INSTANT",
     name: "Instant Squawk Line",
     category: "news",
     description: "Secondary LiveSquawk-style official-source news, calendar, latency, and audio line.",
   },
+  {
+    code: "XSEN",
+    name: "X Sentiment AI",
+    category: "news",
+    description:
+      "Account-free X scrape + fine-tuned RoBERTa (sentiment / emotion / topic) with a bullish score, examples, and INSTANT feed contribution.",
+  },
 ];
 
-export function resolvePane(code: string): ComponentType<FunctionPaneProps> | null {
+export function resolvePane(code: string): PaneComponent | null {
   return PANES[code.toUpperCase()] ?? null;
 }
 

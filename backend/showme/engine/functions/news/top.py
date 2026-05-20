@@ -36,6 +36,15 @@ class TOPFunction(BaseFunction):
         source_order = ["rss"]
         if params.get("include_gdelt") or params.get("deep"):
             source_order.append("gdelt")
+        # Clamp the caller-supplied timeout once and reuse — the original
+        # code clamped each `collection_*` field to 4.0s individually but
+        # left `asyncio.wait_for` using the raw (unclamped) timeout, so a
+        # caller passing `news_timeout=10` got per-feed 4s budgets inside
+        # a 10s outer wait that no inner feed could ever exhaust.
+        raw_timeout = float(params.get("news_timeout", params.get("timeout", 5)))
+        outer_timeout = max(1.0, min(raw_timeout, 10.0))
+        collection_budget = min(outer_timeout, 4.0)
+        per_feed_budget = min(outer_timeout, 3.5)
         for src_name in source_order:
             src = getattr(self.deps, src_name, None)
             if src is None:
@@ -45,9 +54,9 @@ class TOPFunction(BaseFunction):
                     "feed_group": "crypto" if asset_class == "CRYPTO" else "market",
                     "asset_class": asset_class,
                     "symbol": symbol,
-                    "collection_timeout_seconds": min(float(params.get("news_timeout", params.get("timeout", 5))), 4.0),
-                    "per_feed_timeout_seconds": min(float(params.get("news_timeout", params.get("timeout", 5))), 3.5),
-                    "symbol_feed_timeout_seconds": min(float(params.get("news_timeout", params.get("timeout", 5))), 4.0),
+                    "collection_timeout_seconds": collection_budget,
+                    "per_feed_timeout_seconds": per_feed_budget,
+                    "symbol_feed_timeout_seconds": collection_budget,
                 }
                 if symbol:
                     terms = symbol_terms(symbol, str(query or symbol))
@@ -59,7 +68,7 @@ class TOPFunction(BaseFunction):
                     extra["terms"] = _query_terms(str(query))
                 items = await asyncio.wait_for(
                     src.fetch(DataRequest(kind=DataKind.NEWS, extra=extra, limit=limit)),
-                    timeout=float(params.get("news_timeout", params.get("timeout", 5))),
+                    timeout=outer_timeout,
                 )
                 if items:
                     sources.append(src_name)
@@ -78,9 +87,16 @@ class TOPFunction(BaseFunction):
         ranked = [article for article in ranked if _within_age_window(article, max_age_days)]
         ranked = ranked[:limit]
         alerts = critical_articles(ranked, threshold=threshold)
+        # Per FUNC-10 P1: wrap the list payload as ``{items: ranked, ...}`` so
+        # function_contracts._extract_rows can pick it up and the contract
+        # envelope stays uniform with every other function.
         return FunctionResult(
             code=self.code, instrument=None,
-            data=ranked,
+            data={
+                "items": ranked,
+                "alerts": alerts,
+                "status": "ok" if ranked else "empty",
+            },
             sources=sources,
             metadata={
                 "count": len(results),

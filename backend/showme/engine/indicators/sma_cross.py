@@ -8,6 +8,8 @@ consensus. v2 emits:
   NEUTRAL         : cross-less and |divergence| < weak_pct
 """
 
+from __future__ import annotations
+
 import pandas as pd
 
 from showme.engine.indicators.base import BaseIndicator, IndicatorResult, Signal

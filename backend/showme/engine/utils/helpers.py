@@ -1,14 +1,15 @@
-"""Utility helper functions for the trading bot."""
+"""Utility helper functions for the trading bot.
+
+Per PY-LINT-02 cleanup, the unused ``timestamp_now``, ``round_down``,
+``safe_float`` and ``format_price`` helpers were dropped — none had any
+remaining callers.
+"""
+
+from __future__ import annotations
 
 import time
 from datetime import datetime, timezone
-from decimal import Decimal, ROUND_DOWN
-from typing import Any, Optional
-
-
-def timestamp_now() -> float:
-    """Return current UTC timestamp in seconds."""
-    return time.time()
+from typing import Any
 
 
 def datetime_now() -> datetime:
@@ -21,36 +22,16 @@ def iso_now() -> str:
     return datetime_now().isoformat()
 
 
-def round_down(value: float, decimals: int) -> float:
-    """Round a float down to a given number of decimal places (for quantity/price)."""
-    d = Decimal(str(value))
-    factor = Decimal(10) ** -decimals
-    return float(d.quantize(factor, rounding=ROUND_DOWN))
-
-
-def safe_float(value: Any, default: float = 0.0) -> float:
-    """Safely convert a value to float."""
-    try:
-        return float(value)
-    except (ValueError, TypeError):
-        return default
-
-
 def pct_change(old_val: float, new_val: float) -> float:
-    """Calculate percentage change between two values."""
+    """Return the fractional change ``(new - old) / |old|`` (0.0 when ``old == 0``)."""
     if old_val == 0:
         return 0.0
     return (new_val - old_val) / abs(old_val)
 
 
 def clamp(value: float, min_val: float, max_val: float) -> float:
-    """Clamp a value between min and max."""
+    """Clamp ``value`` to the inclusive ``[min_val, max_val]`` interval."""
     return max(min_val, min(max_val, value))
-
-
-def format_price(price: float, precision: int = 8) -> str:
-    """Format a price with given precision."""
-    return f"{price:.{precision}f}"
 
 
 def retry_with_backoff(
@@ -60,8 +41,11 @@ def retry_with_backoff(
     max_delay: float = 30.0,
     exceptions: tuple = (Exception,),
 ) -> Any:
-    """Execute a function with exponential backoff retry."""
-    last_exception: Optional[Exception] = None
+    """Execute ``func`` with exponential backoff up to ``max_retries`` attempts.
+
+    Re-raises the final exception if all attempts fail.
+    """
+    last_exception: Exception | None = None
     for attempt in range(max_retries):
         try:
             return func()
@@ -70,4 +54,4 @@ def retry_with_backoff(
             if attempt < max_retries - 1:
                 delay = min(base_delay * (2 ** attempt), max_delay)
                 time.sleep(delay)
-    raise last_exception  # type: ignore
+    raise last_exception  # type: ignore[misc]

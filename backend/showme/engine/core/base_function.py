@@ -16,6 +16,7 @@ from datetime import datetime
 from typing import Any, Literal
 
 from showme.engine.core.instrument import AssetClass, Instrument
+from showme.engine.utils.helpers import datetime_now
 
 
 RenderFormat = Literal["json", "html", "cli", "markdown"]
@@ -33,12 +34,18 @@ class FunctionResult:
     instrument: Instrument | None
     data: Any
     metadata: dict[str, Any] = field(default_factory=dict)
-    fetched_at: datetime = field(default_factory=datetime.utcnow)
+    fetched_at: datetime = field(default_factory=datetime_now)
     sources: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     elapsed_ms: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
+        """Return a JSON-serialisable view of the result.
+
+        Pandas DataFrames are converted via ``to_dict(orient="records")``
+        so the envelope can be encoded by FastAPI's default ``jsonable``
+        path. Other ``data`` shapes are passed through verbatim.
+        """
         try:
             import pandas as pd  # noqa: F401
             data = self.data
@@ -79,7 +86,15 @@ class BaseFunction(ABC):
     @abstractmethod
     async def execute(
         self, instrument: Instrument | None = None, **params: Any
-    ) -> FunctionResult: ...
+    ) -> FunctionResult:
+        """Run the function and return a :class:`FunctionResult` envelope.
+
+        Subclasses may raise on irrecoverable provider failures, but the
+        recommended convention is to return a ``FunctionResult`` whose
+        ``data`` carries a ``status`` string from
+        ``showme.function_contracts.ERROR_STATUSES``. The shared envelope
+        layer turns that into the public ``payload.status``.
+        """
 
     def render(
         self, result: FunctionResult, format: RenderFormat = "json"
@@ -181,9 +196,14 @@ class FunctionDeps:
     market_cache: Any = None      # in-memory L1 cache
     symbol_registry: Any = None
     llm_router: Any = None
+    # DAPI live route-table provider — populated by server.py at startup so
+    # the DAPI function can return the actual FastAPI router manifest
+    # instead of the curated fallback. Callable or pre-materialised list.
+    dapi_route_provider: Any = None
     extras: dict[str, Any] = field(default_factory=dict)
 
     def get(self, key: str) -> Any:
+        """Return the named adapter (or ``None`` when not wired)."""
         return getattr(self, key, None) or self.extras.get(key)
 
 
@@ -197,27 +217,52 @@ class FunctionRegistry:
 
     @classmethod
     def register(cls, fn_cls: type[BaseFunction]) -> type[BaseFunction]:
+        """Register a BaseFunction subclass keyed on its uppercased ``code``.
+
+        Raises ``ValueError`` if ``code`` is missing or if another class is
+        already registered under the same code (per ARCH-10 P1 — duplicate
+        registrations silently overwrote each other and made the loser dead
+        code). Re-registering the same class object is a no-op so module
+        re-imports during tests stay safe.
+        """
         if not getattr(fn_cls, "code", None):
             raise ValueError(f"{fn_cls.__name__} missing 'code' attribute")
-        cls._instances[fn_cls.code.upper()] = fn_cls
+        upper = fn_cls.code.upper()
+        existing = cls._instances.get(upper)
+        if existing is not None and existing is not fn_cls:
+            raise ValueError(
+                f"FunctionRegistry: code '{upper}' is already registered by "
+                f"{existing.__module__}.{existing.__name__}; cannot register "
+                f"{fn_cls.__module__}.{fn_cls.__name__}"
+            )
+        cls._instances[upper] = fn_cls
         return fn_cls
 
     @classmethod
     def get(cls, code: str) -> type[BaseFunction] | None:
+        """Return the ``BaseFunction`` subclass for ``code``, or ``None`` if unknown.
+
+        Lookup is case-insensitive — both ``"DES"`` and ``"des"`` resolve
+        to the same class.
+        """
         return cls._instances.get(code.upper())
 
     @classmethod
     def list_all(cls) -> list[type[BaseFunction]]:
+        """Return every registered ``BaseFunction`` subclass."""
         return list(cls._instances.values())
 
     @classmethod
     def by_asset_class(cls, ac: AssetClass) -> list[type[BaseFunction]]:
+        """Return classes whose ``asset_classes`` tuple includes ``ac``."""
         return [f for f in cls._instances.values() if ac in f.asset_classes]
 
     @classmethod
     def by_category(cls, category: str) -> list[type[BaseFunction]]:
+        """Return classes filed under ``category`` (e.g. ``"equity"``)."""
         return [f for f in cls._instances.values() if f.category == category]
 
     @classmethod
     def codes(cls) -> list[str]:
+        """Return every registered uppercased function code, sorted."""
         return sorted(cls._instances.keys())

@@ -3,28 +3,29 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Any
 
+from showme.app_paths import runtime_path
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from showme.engine.core.instrument import Instrument
 
 
-_STORE = Path("runtime/cde_fields.json")
+def _store():
+    return runtime_path("cde_fields.json")
 
 
 def _load() -> dict[str, str]:
-    if _STORE.exists():
+    if _store().exists():
         try:
-            return json.loads(_STORE.read_text())
+            return json.loads(_store().read_text())
         except Exception:
             return {}
     return {}
 
 
 def _save(data: dict[str, str]) -> None:
-    _STORE.parent.mkdir(parents=True, exist_ok=True)
-    _STORE.write_text(json.dumps(data, indent=2))
+    _store().parent.mkdir(parents=True, exist_ok=True)
+    _store().write_text(json.dumps(data, indent=2))
 
 
 @FunctionRegistry.register

@@ -1,16 +1,16 @@
 /**
- * WATCH — User-managed watchlist with live last/change% per symbol.
+ * WATCH — Bloomberg-grade live watchlist with inline sparklines.
  *
- * Watchlist persists via the Round 16 preset filesystem (Tauri) or
- * localStorage (browser dev). Symbol prices come from the sidecar
- * `/api/quote/{symbol}` endpoint. Round 27+ also subscribes to the sidecar
- * websocket stream, which is backed by the same quote service.
+ * Each row is a dense quote line: symbol (accent link), tag, last (tabular),
+ * delta chip, sparkline, age, stream pill, source, remove. Top KPI strip
+ * surfaces #symbols / median Δ% / advancers / decliners. Sidecar `/api/quote`
+ * polls every 30s; the WS stream overlays sub-second ticks.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  ChangeText,
   DataGrid,
   type DataGridColumn,
+  DeltaChip,
   Empty,
   Pane,
   PaneBody,
@@ -18,6 +18,8 @@ import {
   PaneHeader,
   Pill,
   Skeleton,
+  Sparkline,
+  StatCard,
 } from "@/design-system";
 import {
   addSymbol,
@@ -34,6 +36,12 @@ import { useAppStore } from "@/lib/store";
 import { isInTauri } from "@/lib/tauri";
 import { useWorkspace } from "@/lib/workspace";
 import { navigate } from "@/lib/router";
+import { formatMissing, formatPercent, formatPrice } from "@/lib/format";
+import {
+  formatTime as formatTzTime,
+  readTimezone as readTzId,
+  timezoneOffsetLabel as tzOffset,
+} from "@/lib/timezone";
 import { FunctionControlGroup, LoadStatePill, RefreshButton } from "./function-controls";
 import type { FunctionPaneProps } from "./registry-types";
 
@@ -97,6 +105,35 @@ export function WATCHPane({ code }: FunctionPaneProps) {
     [prices, rows, streamStatus],
   );
 
+  const summary = useMemo(() => {
+    const changes: number[] = [];
+    let advancers = 0;
+    let decliners = 0;
+    let unchanged = 0;
+    for (const r of rows) {
+      const c = prices[r.symbol]?.change_pct;
+      if (c == null || !Number.isFinite(c)) continue;
+      changes.push(c);
+      if (c > 0) advancers += 1;
+      else if (c < 0) decliners += 1;
+      else unchanged += 1;
+    }
+    const sorted = [...changes].sort((a, b) => a - b);
+    const median =
+      sorted.length === 0
+        ? null
+        : sorted.length % 2 === 1
+          ? sorted[Math.floor(sorted.length / 2)]
+          : (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2;
+    return {
+      median,
+      advancers,
+      decliners,
+      unchanged,
+      sampled: changes.length,
+    };
+  }, [prices, rows]);
+
   useEffect(() => {
     loadWatchlist().then(setRows);
   }, []);
@@ -151,7 +188,6 @@ export function WATCHPane({ code }: FunctionPaneProps) {
     return () => clearInterval(id);
   }, [refreshPrices]);
 
-  // Round 29 — Subscribe each watchlist symbol to the sidecar WS stream.
   useEffect(() => {
     if (rows.length === 0 || !sidecarReady) return;
     const handles = rows.map((r) =>
@@ -229,15 +265,7 @@ export function WATCHPane({ code }: FunctionPaneProps) {
               setFocusedTarget("DES", r.symbol);
               navigate(`/symbol/${r.symbol}/DES`);
             }}
-            style={{
-              background: "transparent",
-              border: "none",
-              color: "var(--accent)",
-              fontWeight: 700,
-              cursor: "default",
-              padding: 0,
-              font: "inherit",
-            }}
+            className="u-symbol-link"
           >
             {r.symbol}
           </button>
@@ -246,34 +274,37 @@ export function WATCHPane({ code }: FunctionPaneProps) {
       {
         key: "label",
         header: "Tag",
+        width: 90,
         render: (r) =>
           r.label ? (
-            <Pill tone="muted" withDot={false}>
+            <Pill tone="muted" variant="soft" withDot={false}>
               {r.label}
             </Pill>
           ) : (
-            "—"
+            <span className="u-text-mute">—</span>
           ),
       },
       {
         key: "last",
         header: "Last",
         numeric: true,
-        width: 100,
+        width: 110,
         render: (r) => {
           const p = prices[r.symbol];
-          if (!p) return "—";
-          if (p.error) return <span style={{ color: "var(--negative)" }}>err</span>;
+          if (!p) return <span className="u-text-mute">—</span>;
+          if (p.error)
+            return <span className="u-text-negative">err</span>;
           const tone = (p.change_pct ?? 0) >= 0 ? "positive" : "negative";
           return p.last != null ? (
             <span
               key={`${r.symbol}-last-${p.fetched_at}-${p.last}`}
               className={liveCellClass(tone)}
             >
-              {p.last.toLocaleString(undefined, { maximumFractionDigits: 4 })}
+              {/* Adaptive precision: keeps sub-dollar prices readable. */}
+              {formatPrice(p.last)}
             </span>
           ) : (
-            "—"
+            <span className="u-text-mute">{formatMissing}</span>
           );
         },
       },
@@ -281,50 +312,63 @@ export function WATCHPane({ code }: FunctionPaneProps) {
         key: "change_pct",
         header: "Δ %",
         numeric: true,
-        width: 90,
+        width: 96,
         render: (r) => {
-          const p = prices[r.symbol];
-          const tone = (p?.change_pct ?? 0) >= 0 ? "positive" : "negative";
+          const c = prices[r.symbol]?.change_pct;
+          if (c == null || !Number.isFinite(c))
+            return <span className="u-text-mute">—</span>;
           return (
             <span
-              key={`${r.symbol}-change-${p?.fetched_at ?? 0}-${p?.change_pct ?? "na"}`}
-              className={liveCellClass(tone, true)}
+              key={`${r.symbol}-change-${prices[r.symbol]?.fetched_at ?? 0}-${c}`}
             >
-              <ChangeText value={p?.change_pct ?? null} digits={2} suffix="%" />
+              <DeltaChip value={c} format="percent" fractionDigits={2} />
             </span>
           );
         },
       },
       {
         key: "sparkline",
-        header: "30D",
-        width: 130,
+        header: "Trend",
+        width: 96,
         render: (r) => {
           const points = sparks[r.symbol] ?? [];
+          if (points.length < 2)
+            return <span className="u-text-mute">—</span>;
+          const c = prices[r.symbol]?.change_pct ?? 0;
+          const tone: "positive" | "negative" | "neutral" =
+            c > 0 ? "positive" : c < 0 ? "negative" : "neutral";
           return (
-            <MiniSparkline
-              key={`${r.symbol}-spark-${sparkMotionKey(points)}`}
-              points={points}
-              tone={(prices[r.symbol]?.change_pct ?? 0) >= 0 ? "positive" : "negative"}
-            />
+            <span key={`${r.symbol}-spark-${sparkMotionKey(points)}`}>
+              <Sparkline
+                values={points.map((p) => p.value)}
+                width={80}
+                height={22}
+                tone={tone}
+              />
+            </span>
           );
         },
       },
       {
         key: "fetched_at",
         header: "Updated",
-        width: 90,
+        width: 80,
         render: (r) => {
           const p = prices[r.symbol];
-          return p ? formatAge(p.fetched_at) : "—";
+          if (!p) return <span className="u-text-mute">—</span>;
+          return (
+            <span className="u-mono-xs u-text-secondary">{formatAge(p.fetched_at)}</span>
+          );
         },
       },
       {
         key: "stream",
         header: "Stream",
-        width: 80,
+        width: 84,
         render: (r) => {
-          const status = prices[r.symbol]?.error ? "error" : streamStatus[r.symbol] ?? "connecting";
+          const status = prices[r.symbol]?.error
+            ? "error"
+            : streamStatus[r.symbol] ?? "connecting";
           const tone =
             status === "live"
               ? "positive"
@@ -335,7 +379,7 @@ export function WATCHPane({ code }: FunctionPaneProps) {
                   : "warn";
           return (
             <span className={`showme-watch__stream showme-watch__stream--${status}`}>
-              <Pill tone={tone} withDot={status === "live"}>
+              <Pill tone={tone} variant="soft" withDot={status === "live"}>
                 {status}
               </Pill>
             </span>
@@ -350,12 +394,14 @@ export function WATCHPane({ code }: FunctionPaneProps) {
           const p = prices[r.symbol];
           if (p?.error) {
             return (
-              <span title={p.error} style={{ color: "var(--negative)" }}>
-                quote error
+              <span title={p.error} className="u-text-negative u-text-11">
+                quote err
               </span>
             );
           }
-          return p?.source ?? "—";
+          return (
+            <span className="u-text-secondary u-text-11">{p?.source ?? "—"}</span>
+          );
         },
       },
       {
@@ -365,10 +411,9 @@ export function WATCHPane({ code }: FunctionPaneProps) {
         render: (r) => (
           <button
             type="button"
-            className="btn btn--ghost"
+            className="btn btn--ghost watch-remove-btn"
             onClick={() => onRemove(r.symbol)}
             title={`Remove ${r.symbol}`}
-            style={{ height: 18, fontSize: 10, padding: "0 6px" }}
           >
             ✕
           </button>
@@ -378,28 +423,47 @@ export function WATCHPane({ code }: FunctionPaneProps) {
     [prices, sparks, streamStatus, setFocusedTarget, onRemove],
   );
 
+  const utcNow = formatTzTime(new Date()) + " " + tzOffset(readTzId(), new Date());
+  const medianTone: "positive" | "negative" | "neutral" =
+    summary.median == null
+      ? "neutral"
+      : summary.median > 0
+        ? "positive"
+        : summary.median < 0
+          ? "negative"
+          : "neutral";
+
   return (
-    <div className="showme-watch showme-watch-motion" style={{ padding: 18, height: "100%" }}>
+    <div className="showme-watch showme-watch-motion port-pane-host">
+      <h2 className="u-sr-only">{code} — Watchlist</h2>
       <Pane>
         <PaneHeader
           code={code}
           title="Watchlist"
           subtitle={`${rows.length} symbol(s) · refresh ${REFRESH_MS / 1000}s`}
           help={
-            <div style={{ display: "grid", gap: 8 }}>
-              <strong style={{ color: "var(--accent)", fontFamily: "JetBrains Mono, monospace" }}>
-                WATCH · Live watchlist
-              </strong>
-              <span style={{ color: "var(--text-secondary)" }}>
+            <div className="fn-help-grid">
+              <strong>WATCH · Live watchlist</strong>
+              <span className="fn-help-grid__hint">
                 Add symbols such as AAPL or BTCUSDT, refresh live quotes, open a symbol by clicking it, and remove rows with the x button.
               </span>
-              <span style={{ color: "var(--text-mute)" }}>
+              <span className="fn-help-grid__hint-mute">
                 Prices come from the quote endpoint. Provider failures are shown as err instead of template prices.
               </span>
             </div>
           }
           trailing={
             <FunctionControlGroup>
+              <Pill tone="muted" variant="soft" withDot={false}>
+                {rows.length} sym
+              </Pill>
+              <Pill
+                tone={liveStreamCount > 0 ? "positive" : "muted"}
+                variant="soft"
+                withDot={liveStreamCount > 0}
+              >
+                {liveStreamCount > 0 ? `LIVE · ${liveStreamCount}` : "OFFLINE"}
+              </Pill>
               <LoadStatePill state={busy ? "loading" : rows.length ? "ok" : "idle"} />
               <RefreshButton
                 loading={busy}
@@ -411,60 +475,68 @@ export function WATCHPane({ code }: FunctionPaneProps) {
           }
         />
         <PaneBody>
+          {/* Top KPI strip */}
+          {rows.length > 0 ? (
+            <div className="watch-kpi-strip">
+              <h3 className="u-sr-only">Watchlist KPIs</h3>
+              <StatCard
+                label="Symbols"
+                value={String(rows.length)}
+                caption={`AS OF ${utcNow}`}
+                tone="neutral"
+              />
+              <StatCard
+                label="Median Δ%"
+                value={formatPercent(summary.median, { signed: true })}
+                caption={`${summary.sampled} sampled`}
+                tone={medianTone}
+              />
+              <StatCard
+                label="Advancers"
+                value={String(summary.advancers)}
+                caption={`${summary.unchanged} flat`}
+                tone={summary.advancers > summary.decliners ? "positive" : "neutral"}
+              />
+              <StatCard
+                label="Decliners"
+                value={String(summary.decliners)}
+                caption={`live · ${liveStreamCount}/${rows.length}`}
+                tone={summary.decliners > summary.advancers ? "negative" : "neutral"}
+              />
+            </div>
+          ) : null}
+
+          {/* Composer */}
           <form
-            className="showme-watch__composer"
+            className="showme-watch__composer watch-composer"
             onSubmit={(e) => {
               e.preventDefault();
               onAdd();
             }}
-            style={{ display: "flex", gap: 8, marginBottom: 12 }}
           >
             <input
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               placeholder="add symbol — AAPL, BTCUSDT…"
               list="watch-symbol-options"
-              style={{
-                flex: 1,
-                background: "var(--bg-elev-2)",
-                border: "1px solid var(--border-subtle)",
-                borderRadius: "var(--radius-sm)",
-                color: "var(--text-primary)",
-                font: "inherit",
-                fontSize: 12,
-                padding: "0 10px",
-                height: 26,
-                fontFamily: "JetBrains Mono, monospace",
-                textTransform: "uppercase",
-              }}
+              className="watch-composer__input"
             />
             <datalist id="watch-symbol-options">
               {suggestions.map((item) => (
                 <option key={item} value={item} />
               ))}
             </datalist>
-            <button type="submit" className="btn btn--accent" style={{ height: 26 }}>
+            <button type="submit" className="btn btn--accent u-btn-26">
               Add
             </button>
           </form>
           {lastRemoved ? (
-            <div
-              className="showme-watch__undo"
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-                marginBottom: 12,
-                color: "var(--text-secondary)",
-                fontSize: 12,
-              }}
-            >
+            <div className="showme-watch__undo watch-undo">
               <span>Removed {lastRemoved.symbol}</span>
               <button
                 type="button"
-                className="btn btn--ghost"
+                className="btn btn--ghost watch-undo__btn"
                 onClick={onUndoRemove}
-                style={{ height: 22, padding: "0 8px" }}
               >
                 Undo
               </button>
@@ -573,64 +645,6 @@ function liveCellClass(tone: "positive" | "negative", compact = false): string {
     `showme-live-value--${tone}`,
     `showme-live-cell--${tone === "positive" ? "up" : "down"}`,
   ].filter(Boolean).join(" ");
-}
-
-function MiniSparkline({
-  points,
-  tone,
-}: {
-  points: SparkPoint[];
-  tone: "positive" | "negative";
-}) {
-  if (points.length < 2) {
-    return <span style={{ color: "var(--text-mute)" }}>—</span>;
-  }
-  const width = 108;
-  const height = 28;
-  const values = points.map((p) => p.value);
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  const range = max - min || 1;
-  const path = points
-    .map((point, index) => {
-      const x = (index / Math.max(1, points.length - 1)) * width;
-      const y = height - ((point.value - min) / range) * height;
-      return `${index === 0 ? "M" : "L"}${x.toFixed(1)} ${y.toFixed(1)}`;
-    })
-    .join(" ");
-  const color = tone === "positive" ? "var(--positive)" : "var(--negative)";
-  const last = points[points.length - 1];
-  const lastX = width;
-  const lastY = height - (((last?.value ?? min) - min) / range) * height;
-  return (
-    <span className="showme-sparkline-frame">
-      <svg
-        className="showme-sparkline"
-        viewBox={`0 0 ${width} ${height}`}
-        width={width}
-        height={height}
-        role="img"
-        aria-label={`${points.length} point price sparkline`}
-        style={{ display: "block" }}
-      >
-        <path
-          className="showme-sparkline__path"
-          d={path}
-          fill="none"
-          pathLength={1}
-          stroke={color}
-          strokeWidth="1.6"
-        />
-        <circle
-          className="showme-sparkline__dot"
-          cx={lastX}
-          cy={lastY}
-          fill={color}
-          r="2"
-        />
-      </svg>
-    </span>
-  );
 }
 
 function formatAge(ts: number): string {

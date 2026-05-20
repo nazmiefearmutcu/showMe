@@ -6,6 +6,8 @@ v2 changes:
 - Pure squeeze without breakout = NEUTRAL ("watching for breakout")
 """
 
+from __future__ import annotations
+
 import pandas as pd
 import numpy as np
 
@@ -70,6 +72,9 @@ class BollingerBandsIndicator(BaseIndicator):
         high_volume = bool(
             not pd.isna(vol_avg) and vol_avg > 0 and current_vol >= vol_avg * high_volume_multiplier
         )
+        # Per FUNC-07 P0: compute once, with NaN fallback when vol_avg is 0/NaN.
+        # The f-strings below would otherwise hit ZeroDivisionError on flat-volume bars.
+        vol_ratio = current_vol / vol_avg if vol_avg else float("nan")
 
         # ADX for regime detection (inline Wilder)
         adx_value = self._compute_adx(high, low, close, adx_period)
@@ -93,7 +98,7 @@ class BollingerBandsIndicator(BaseIndicator):
                 if high_volume:
                     return self._make_result(
                         Signal.STRONG_BUY,
-                        f"Trend breakout up: close>upper, vol×{current_vol/vol_avg:.1f} (ADX={adx_value:.0f})",
+                        f"Trend breakout up: close>upper, vol×{vol_ratio:.1f} (ADX={adx_value:.0f})",
                         raw,
                     )
                 return self._make_result(
@@ -105,7 +110,7 @@ class BollingerBandsIndicator(BaseIndicator):
                 if high_volume:
                     return self._make_result(
                         Signal.STRONG_SELL,
-                        f"Trend breakout down: close<lower, vol×{current_vol/vol_avg:.1f} (ADX={adx_value:.0f})",
+                        f"Trend breakout down: close<lower, vol×{vol_ratio:.1f} (ADX={adx_value:.0f})",
                         raw,
                     )
                 return self._make_result(
