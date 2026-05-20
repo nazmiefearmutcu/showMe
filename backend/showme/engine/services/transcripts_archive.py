@@ -12,17 +12,20 @@ from __future__ import annotations
 
 import sqlite3
 import threading
-from datetime import datetime
-from pathlib import Path
+from datetime import datetime, timezone
 from typing import Any
 
-DB_PATH = Path("runtime/transcripts.sqlite")
+from showme.app_paths import runtime_path
+
 _LOCK = threading.RLock()
 
 
+def _db_path():
+    return runtime_path("transcripts.sqlite")
+
+
 def _connect() -> sqlite3.Connection:
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn = sqlite3.connect(_db_path(), check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -98,7 +101,7 @@ def upsert(
                 "UPDATE transcripts SET company=?, source=?, url=?, "
                 "content=?, summary=?, sentiment=?, ingested_at=? WHERE id=?",
                 (company, source, url, content, summary, sentiment,
-                 datetime.utcnow().isoformat(), tid),
+                 datetime.now(timezone.utc).isoformat(), tid),
             )
         else:
             cur = conn.execute(
@@ -209,7 +212,7 @@ def stats() -> dict[str, Any]:
         "n_symbols": symbols,
         "latest_ingest": latest,
         "fts5": fts5_active,
-        "db_path": str(DB_PATH),
+        "db_path": str(_db_path()),
     }
 
 

@@ -54,6 +54,29 @@ class CalendarRegistry:
             cand = cand + timedelta(days=1)
         return cand.astimezone(timezone.utc)
 
+    def next_close(self, exchange_code: str, after: datetime | None = None) -> datetime | None:
+        """Next close timestamp in UTC for ``exchange_code``.
+
+        For 24/7 venues returns ``None`` (no scheduled close). For others the
+        next session's close (today if before close, otherwise the next
+        weekday's close). Used by TRDH so currently-open exchanges report a
+        meaningful "until close" delta instead of the next-open delta.
+        """
+        ex = EXCHANGES.get(exchange_code.upper())
+        if ex is None:
+            return None
+        after = after or datetime.now(tz=timezone.utc)
+        if ex.code in {"BINANCE", "BYBIT", "OKX", "DERIBIT", "COINBASE"}:
+            return None
+        local = after.astimezone(ZoneInfo(ex.timezone))
+        h_c, m_c = (int(x) for x in ex.close_local.split(":"))
+        cand = local.replace(hour=h_c, minute=m_c, second=0, microsecond=0)
+        if cand <= local:
+            cand = cand + timedelta(days=1)
+        while cand.weekday() >= 5:
+            cand = cand + timedelta(days=1)
+        return cand.astimezone(timezone.utc)
+
     def session_dates(self, exchange_code: str, start: date, end: date) -> list[date]:
         out: list[date] = []
         d = start

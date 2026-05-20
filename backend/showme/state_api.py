@@ -33,9 +33,16 @@ class StateRead:
 
 
 def _connect(db_path: Path) -> sqlite3.Connection:
+    """Open ``db_path`` in WAL mode with a busy-timeout via the shared helper.
+
+    Per ARCH-09 P2: every persistence connection now goes through
+    ``open_sqlite`` so we get consistent WAL + busy_timeout settings instead
+    of each module rolling its own.
+    """
     if not db_path.exists():
         raise FileNotFoundError(str(db_path))
-    conn = sqlite3.connect(str(db_path))
+    from .persistence_helpers import open_sqlite
+    conn = open_sqlite(db_path)
     conn.row_factory = sqlite3.Row
     return conn
 

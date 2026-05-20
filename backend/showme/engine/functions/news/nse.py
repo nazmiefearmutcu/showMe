@@ -34,21 +34,24 @@ class NSEFunction(BaseFunction):
         live = _truthy(params.get("live_news") or params.get("live"))
         limit = _int_param(params, "limit", 100)
         if not live:
-            results = [{
-                "title": f"{query} news search snapshot",
-                "summary": "Local continuity result for the current symbol/query.",
-                "query": query,
-                "source": "local_news_template",
-                "published_at": None,
-                "url": None,
-                "status": "ready",
-            }]
+            # 2026-05-17 BugHunt S10: previously this branch emitted a single
+            # fabricated row titled "<query> news search snapshot" and shipped
+            # it as `data` with `sources=["local_news_cache"]`. The legacy
+            # source label does not match SYNTHETIC_SOURCE_MARKERS, so the
+            # server-side live-source guard let the placeholder reach the UI
+            # as a legitimate-looking article. Return an empty result set with
+            # an explicit synthetic-marked source so the response is honestly
+            # reported as "no live provider used" instead of inventing news.
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
-                data=results,
-                sources=["local_news_cache"],
-                metadata={"query": query, "provider_errors": [], "live": False},
+                data=[],
+                sources=["local_news_template"],
+                metadata={
+                    "query": query,
+                    "provider_errors": ["live=false; NSE is search-only and needs live providers"],
+                    "live": False,
+                },
             )
         # Try local index first (Meili → SQLite FTS5)
         try:

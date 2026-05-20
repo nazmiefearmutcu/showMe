@@ -121,6 +121,12 @@ class GEXFunction(BaseFunction):
             except Exception:
                 pass
 
+        # A bad quote (or a manual spot=0 input) used to slip through to the
+        # model-only branch and produce a strike grid centered at 0 — every
+        # cell came out garbage. Clamp before any consumer uses `spot`.
+        if spot <= 0:
+            spot = float(params.get("spot") or 100)
+
         if not live_options:
             return FunctionResult(
                 code=self.code,
@@ -132,8 +138,6 @@ class GEXFunction(BaseFunction):
             return FunctionResult(code=self.code, instrument=instrument,
                                   data=_model_gex(sym, spot, rate),
                                   sources=["gamma_exposure_model"])
-        if spot <= 0:
-            spot = float(params.get("spot", 100))
         # 2. Pull all expiries up to ``max_expiries`` and combine.
         timeout = max(1.0, min(float(params.get("yfinance_timeout", 3)), 4.0))
         max_expiries = max(1, min(int(params.get("max_expiries", 1)), 3))

@@ -10,8 +10,25 @@
 //! - `app::ExitRequested` → SIGTERM, 5 s grace, then SIGKILL.
 //!
 //! In dev (`cargo tauri dev`) we expect the user to have a Python venv with
-//! the `showme` package installed; in release we expect the PyInstaller
-//! one-file binary at `Contents/MacOS/showme-backend`.
+//! the `showme` package installed; in release we look for the PyInstaller
+//! output in TWO supported layouts so we can ship `--onefile` and `--onedir`
+//! interchangeably without forking the spawn code:
+//!
+//!   1. PERF-06 (`--onedir`, preferred): the launcher and its `_internal/`
+//!      sibling live at `Contents/Resources/binaries/showme-backend/showme-backend`.
+//!      Tauri's `bundle.resources` glob (`binaries/showme-backend/**/*`)
+//!      copies the entire directory tree into the bundle. Boot is ~10× faster
+//!      than `--onefile` because PyInstaller doesn't have to unpack a self-
+//!      extracting archive to `$TMPDIR` on first launch.
+//!   2. Legacy `--onefile` fallback: the single binary still lives at
+//!      `Contents/MacOS/showme-backend` because Tauri's `externalBin` field
+//!      places it there. Boot involves a one-time self-extract.
+//!
+//! `build_command` tries layout (1) first and silently falls through to (2)
+//! if the resource path is missing — so the backend sibling agent can flip
+//! `backend/showme-backend.spec` from `--onefile` to `--onedir` without
+//! coordinating a same-commit change here. Set `SHOWME_FORCE_ONEFILE=1` to
+//! short-circuit the auto-detection (dev / debug aid).
 
 use crate::{AppState, SidecarHealth, SidecarStatus};
 use parking_lot::Mutex;
@@ -20,6 +37,7 @@ use std::net::{SocketAddr, TcpStream};
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::time::Duration;
+use tauri::path::BaseDirectory;
 use tauri::{AppHandle, Emitter, Manager};
 
 static CHILD: once_cell::sync::Lazy<Arc<Mutex<Option<Child>>>> =
@@ -58,7 +76,30 @@ pub fn spawn(handle: AppHandle) {
 }
 
 fn boot_one(handle: &AppHandle) -> Result<(), String> {
+    // Mint a random auth token for this sidecar boot. The Python process
+    // reads it from `SHOWME_AUTH_TOKEN` and rejects any request missing the
+    // `X-ShowMe-Token` header. Stash it in `AppState` so the frontend can
+    // read it back via the `sidecar_auth_token` invoke (ARCH-05 P2).
+    let token = format!("{:032x}", rand::random::<u128>());
+    {
+        let state = handle.state::<AppState>();
+        *state.sidecar_auth_token.write() = Some(token.clone());
+    }
+
     let mut command = build_command(handle)?;
+    command.env("SHOWME_AUTH_TOKEN", &token);
+
+    // Bundle-id reconciliation: Tauri writes to `app.showme.terminal/`
+    // (macOS bundle-id convention) while the Python sidecar's
+    // `app_paths.py` defaults to `~/Library/Application Support/showMe/`.
+    // Without publishing `SHOWME_HOME` the two halves silently maintain
+    // two parallel data roots — portfolio.db never gets created in the
+    // place the engine actually looks at, and every "no positions" UI
+    // bug we saw on the live build traces back to this split. Pin the
+    // sidecar to the Tauri-owned data root so both halves agree.
+    if let Ok(data_root) = handle.path().app_data_dir() {
+        command.env("SHOWME_HOME", &data_root);
+    }
     let mut child = command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -69,6 +110,10 @@ fn boot_one(handle: &AppHandle) -> Result<(), String> {
     let stderr = child.stderr.take();
     *CHILD.lock() = Some(child);
     let handle = handle.clone();
+
+    // Notify the frontend immediately so it can attach the header on the
+    // very first fetch, even before the port arrives.
+    let _ = handle.emit("sidecar:auth_token", &token);
 
     if let Some(stderr) = stderr {
         std::thread::spawn(move || {
@@ -130,18 +175,59 @@ fn build_command(handle: &AppHandle) -> Result<Command, String> {
             .current_dir(default_sidecar_cwd());
         Ok(cmd)
     } else {
-        // Bundle mode: `Contents/MacOS/showme-backend` is the PyInstaller bin.
-        let resolver = handle.path();
-        let resource_path = resolver
-            .resource_dir()
-            .map_err(|e| format!("resource_dir: {e}"))?;
-        let exe = resource_path.join("../MacOS/showme-backend");
+        // Bundle mode: pick the PyInstaller layout that's actually
+        // present in the bundle. See module docstring for the rationale.
+        let exe = resolve_bundled_sidecar(handle)?;
         let mut cmd = Command::new(exe);
         cmd.arg("--host").arg("127.0.0.1")
             .arg("--port").arg("0")
             .env("PYTHONUNBUFFERED", "1");
         Ok(cmd)
     }
+}
+
+/// PERF-06 (Round 3C) — find the bundled sidecar binary, preferring the
+/// `--onedir` layout under `Contents/Resources/binaries/showme-backend/`
+/// and falling back to the legacy `--onefile` path under `Contents/MacOS/`.
+///
+/// The auto-detection means the backend agent can flip
+/// `backend/showme-backend.spec` from `--onefile` to `--onedir` without
+/// requiring a coordinated change here, and a bisect across the two
+/// layouts always has at least one working binary.
+fn resolve_bundled_sidecar(handle: &AppHandle) -> Result<std::path::PathBuf, String> {
+    let resolver = handle.path();
+    let force_onefile = std::env::var("SHOWME_FORCE_ONEFILE")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+
+    if !force_onefile {
+        // Layout 1: `--onedir` under Contents/Resources/.
+        // Tauri's `BaseDirectory::Resource` resolves to `Contents/Resources`
+        // on macOS; the spec's COLLECT step places the launcher in a
+        // subdirectory of the same name so `_internal/` sits beside it.
+        if let Ok(candidate) =
+            resolver.resolve("binaries/showme-backend/showme-backend", BaseDirectory::Resource)
+        {
+            if candidate.exists() {
+                log::info!("sidecar: using --onedir layout at {}", candidate.display());
+                return Ok(candidate);
+            }
+        }
+    }
+
+    // Layout 2: legacy `--onefile` under Contents/MacOS/.
+    let resource_path = resolver
+        .resource_dir()
+        .map_err(|e| format!("resource_dir: {e}"))?;
+    let legacy = resource_path.join("../MacOS/showme-backend");
+    if legacy.exists() {
+        log::info!("sidecar: using --onefile layout at {}", legacy.display());
+        return Ok(legacy);
+    }
+    Err(format!(
+        "no sidecar binary found (looked under Resources/binaries/showme-backend/ and {})",
+        legacy.display()
+    ))
 }
 
 fn wait_for_health(port: u16) -> bool {

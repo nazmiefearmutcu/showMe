@@ -19,13 +19,31 @@ class SOSCFunction(BaseFunction):
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         if instrument is None:
             raise ValueError
-        if not _truthy(params.get("live_social") or params.get("live")):
+        # S12 BugHunt: default flipped to LIVE when either provider is wired up.
+        # The previous behavior returned the same `bullish=42 bearish=18` mock for
+        # every symbol unless the UI explicitly opted into `live=true`, which
+        # nothing in the cockpit did. Callers can still force the template via
+        # `model=true` (e.g. demos, offline builds).
+        force_model = _truthy(params.get("model"))
+        live_param = params.get("live_social")
+        if live_param is None:
+            live_param = params.get("live")
+        if live_param is None:
+            live = bool(self.deps.stocktwits or self.deps.reddit) and not force_model
+        else:
+            live = _truthy(live_param)
+        if force_model or not live:
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
                 data=_social_template(instrument.symbol),
                 sources=["social_sentiment_model"],
-                metadata={"live": False},
+                metadata={
+                    "live": False,
+                    "fallback": True,
+                    "fallback_reason": "model_requested" if force_model else "no_social_providers_configured",
+                },
+                warnings=["SOSC served a deterministic template; configure Stocktwits/Reddit or pass live=true for live sentiment"],
             )
         warnings: list[str] = []
         twits = {}
@@ -56,7 +74,16 @@ class SOSCFunction(BaseFunction):
             warnings.append(f"reddit: {e}")
         bullish = (twits.get("bullish_count", 0) if isinstance(twits, dict) else 0)
         bearish = (twits.get("bearish_count", 0) if isinstance(twits, dict) else 0)
-        ratio = bullish / max(bearish, 1)
+        # S12 BugHunt: refuse to publish a ratio computed from too few messages.
+        # The previous `bullish / max(bearish, 1)` shouted 42x bullish on a brand
+        # new ticker with one bull message — a false signal that ranked SOSC
+        # rows ahead of real, validated sentiment.
+        total_msgs = bullish + bearish
+        if total_msgs < 10:
+            ratio: float | None = None
+        else:
+            ratio = round(bullish / max(bearish, 1), 4)
+        ratio_reliable = total_msgs >= 10
         # ML sentiment over Reddit titles
         ml_pos = ml_neg = ml_neu = 0
         ml_avg = 0.0
@@ -64,7 +91,10 @@ class SOSCFunction(BaseFunction):
         try:
             from showme.engine.services.sentiment import score_batch
             titles = [r.get("title") or "" for r in (reddit or [])][:30]
-            scores = score_batch(titles) if titles else []
+            # S12 BugHunt: RoBERTa scoring is CPU-bound and was previously
+            # blocking the event loop on every SOSC request. Push it onto a
+            # worker thread so concurrent requests do not starve other panes.
+            scores = await asyncio.to_thread(score_batch, titles) if titles else []
             for s in scores:
                 lbl = (s.get("label") or "").lower()
                 if "pos" in lbl: ml_pos += 1
@@ -105,6 +135,7 @@ class SOSCFunction(BaseFunction):
                 "stocktwits": twits, "reddit": reddit,
                 "bullish": bullish, "bearish": bearish,
                 "bull_bear_ratio": ratio,
+                "bull_bear_ratio_reliable": ratio_reliable,
                 "ml_pos": ml_pos, "ml_neg": ml_neg, "ml_neu": ml_neu,
                 "ml_avg_score": ml_avg,
             },

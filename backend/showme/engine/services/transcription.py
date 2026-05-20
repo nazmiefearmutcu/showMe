@@ -16,8 +16,13 @@ import os
 from pathlib import Path
 from typing import Any
 
+from showme.app_paths import runtime_path
 
-_CACHE_DIR = Path("runtime/transcripts")
+
+def _cache_dir() -> Path:
+    base = runtime_path("transcripts/.placeholder").parent
+    base.mkdir(parents=True, exist_ok=True)
+    return base
 
 
 def _cache_key(audio_bytes: bytes) -> str:
@@ -25,7 +30,7 @@ def _cache_key(audio_bytes: bytes) -> str:
 
 
 def _cache_path(key: str) -> Path:
-    return _CACHE_DIR / f"{key}.txt"
+    return _cache_dir() / f"{key}.txt"
 
 
 async def transcribe(audio_path: str | Path,

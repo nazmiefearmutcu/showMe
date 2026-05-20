@@ -33,14 +33,31 @@ fn ensure_dir(p: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Strict allow-list sanitizer for preset names.
+///
+/// SEC-04 P2 / SEC-07 P1: the previous implementation allowed `..`, leading
+/// dots, and Unicode whitespace, all of which let a renderer write outside
+/// `state/layout-presets/` (e.g. by naming a preset `../../state/secrets.index`)
+/// or create dotfiles. We now match `^[A-Za-z0-9 _-]{1,64}$` exactly and
+/// reject anything else, including names that begin with `.` or contain `..`.
 fn safe_name(name: &str) -> Option<String> {
     let trimmed = name.trim();
     if trimmed.is_empty() {
         return None;
     }
-    if trimmed.contains(|c: char| {
-        c == '/' || c == '\\' || c.is_control() || c == ':' || c == '\0'
-    }) {
+    if trimmed.len() > 64 {
+        return None;
+    }
+    if trimmed.starts_with('.') {
+        return None;
+    }
+    if trimmed.contains("..") {
+        return None;
+    }
+    if !trimmed
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == ' ' || c == '_' || c == '-')
+    {
         return None;
     }
     Some(trimmed.to_string())
@@ -105,7 +122,7 @@ pub fn write<R: Runtime>(
     ensure_dir(&dir).map_err(|e| e.to_string())?;
     let path = dir.join(format!("{safe}.json"));
     let text = serde_json::to_string_pretty(content).map_err(|e| e.to_string())?;
-    std::fs::write(&path, text).map_err(|e| e.to_string())
+    crate::filesystem::atomic_write(&path, text.as_bytes()).map_err(|e| e.to_string())
 }
 
 pub fn delete<R: Runtime>(app: &AppHandle<R>, name: &str) -> Result<bool, String> {
@@ -124,4 +141,63 @@ pub fn delete<R: Runtime>(app: &AppHandle<R>, name: &str) -> Result<bool, String
 #[allow(dead_code)]
 pub fn root_path<R: Runtime>(app: &AppHandle<R>) -> Option<PathBuf> {
     root(app)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::safe_name;
+
+    #[test]
+    fn rejects_empty_and_whitespace() {
+        assert_eq!(safe_name(""), None);
+        assert_eq!(safe_name("   "), None);
+    }
+
+    #[test]
+    fn rejects_double_dot() {
+        assert_eq!(safe_name(".."), None);
+        assert_eq!(safe_name("../../etc/passwd"), None);
+        assert_eq!(safe_name("foo..bar"), None);
+    }
+
+    #[test]
+    fn rejects_leading_dot() {
+        assert_eq!(safe_name(".hidden"), None);
+        assert_eq!(safe_name(".gitignore"), None);
+    }
+
+    #[test]
+    fn rejects_path_separators() {
+        assert_eq!(safe_name("a/b"), None);
+        assert_eq!(safe_name("a\\b"), None);
+        assert_eq!(safe_name("a:b"), None);
+    }
+
+    #[test]
+    fn rejects_quotes_and_punctuation() {
+        // `Q4 ' 26` contains an apostrophe which is not in the allow-list,
+        // so it must be rejected per the new SEC-07 policy.
+        assert_eq!(safe_name("Q4 ' 26"), None);
+    }
+
+    #[test]
+    fn allows_typical_names() {
+        assert_eq!(safe_name("Layout 1"), Some("Layout 1".to_string()));
+        assert_eq!(safe_name("my-preset"), Some("my-preset".to_string()));
+        assert_eq!(safe_name("Q4_26"), Some("Q4_26".to_string()));
+        assert_eq!(safe_name("Default"), Some("Default".to_string()));
+    }
+
+    #[test]
+    fn rejects_names_over_64_chars() {
+        let long = "a".repeat(65);
+        assert_eq!(safe_name(&long), None);
+        let limit = "a".repeat(64);
+        assert_eq!(safe_name(&limit), Some(limit));
+    }
+
+    #[test]
+    fn trims_surrounding_whitespace() {
+        assert_eq!(safe_name("  Layout 1  "), Some("Layout 1".to_string()));
+    }
 }

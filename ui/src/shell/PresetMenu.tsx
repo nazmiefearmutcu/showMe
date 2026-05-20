@@ -48,7 +48,7 @@ export function PresetMenu() {
   };
 
   return (
-    <div ref={ref} style={{ position: "relative" }} className="interactive">
+    <div ref={ref} className="u-position-relative interactive" >
       <button
         type="button"
         className="btn btn--ghost"
@@ -58,82 +58,30 @@ export function PresetMenu() {
         ⌘ Layout
       </button>
       {open && (
-        <div
-          style={{
-            position: "absolute",
-            top: 28,
-            right: 0,
-            background: "var(--bg-elev-2)",
-            border: "1px solid var(--border-strong)",
-            borderRadius: "var(--radius-md)",
-            boxShadow: "var(--shadow-elev)",
-            width: 280,
-            zIndex: 1000,
-            display: "flex",
-            flexDirection: "column",
-          }}
-        >
-          <div
-            style={{
-              padding: "8px 10px",
-              borderBottom: "1px solid var(--border-subtle)",
-              display: "flex",
-              gap: 6,
-            }}
-          >
+        <div className="preset-menu">
+          <div className="preset-menu__head">
             <input
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="Preset name"
               onKeyDown={(e) => e.key === "Enter" && onSave()}
-              style={{
-                flex: 1,
-                background: "var(--bg-elev-3)",
-                border: "1px solid var(--border-subtle)",
-                borderRadius: "var(--radius-sm)",
-                color: "var(--text-primary)",
-                font: "inherit",
-                fontSize: 11,
-                padding: "2px 6px",
-                outline: "none",
-              }}
+              className="preset-menu__input"
             />
             <button
               type="button"
               onClick={onSave}
               disabled={!name.trim()}
-              className="btn btn--accent"
-              style={{ height: 22, fontSize: 10 }}
+              className="btn btn--accent u-btn-mini"
             >
               Save
             </button>
           </div>
-          <div style={{ maxHeight: 280, overflowY: "auto" }}>
+          <div className="preset-menu__list">
             {presets.length === 0 && (
-              <div
-                style={{
-                  padding: 12,
-                  color: "var(--text-mute)",
-                  fontSize: 11,
-                  textAlign: "center",
-                }}
-              >
-                no presets yet
-              </div>
+              <div className="preset-menu__empty">no presets yet</div>
             )}
             {presets.map((p) => (
-              <div
-                key={p.name}
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "1fr auto auto",
-                  gap: 6,
-                  padding: "6px 10px",
-                  borderBottom: "1px solid var(--border-subtle)",
-                  fontSize: 11,
-                  alignItems: "center",
-                }}
-              >
+              <div key={p.name} className="preset-menu__row">
                 <button
                   type="button"
                   onClick={async () => {
@@ -141,20 +89,12 @@ export function PresetMenu() {
                       toast.info("Layout loaded", p.name);
                     setOpen(false);
                   }}
-                  style={{
-                    background: "transparent",
-                    border: "none",
-                    color: "var(--text-primary)",
-                    fontFamily: "JetBrains Mono, monospace",
-                    cursor: "default",
-                    textAlign: "left",
-                    padding: 0,
-                  }}
+                  className="preset-menu__row-btn"
                   title={`Saved ${p.savedAt}`}
                 >
                   {p.name}
                 </button>
-                <span style={{ color: "var(--text-mute)", fontSize: 10 }}>
+                <span className="u-text-mute u-text-10">
                   {p.savedAt.slice(0, 10)}
                 </span>
                 <button
@@ -166,14 +106,7 @@ export function PresetMenu() {
                     }
                   }}
                   title="Delete preset"
-                  style={{
-                    background: "transparent",
-                    border: "none",
-                    color: "var(--text-mute)",
-                    fontSize: 10,
-                    cursor: "default",
-                    padding: 0,
-                  }}
+                  className="preset-menu__delete"
                 >
                   ✕
                 </button>

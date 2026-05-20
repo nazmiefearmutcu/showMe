@@ -8,24 +8,12 @@ interface CrumbSpec {
 
 export function Crumbs({ items }: { items: CrumbSpec[] }) {
   return (
-    <nav
-      aria-label="breadcrumb"
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 4,
-        fontSize: 11,
-        fontFamily: "JetBrains Mono, monospace",
-        color: "var(--text-secondary)",
-      }}
-    >
+    <nav aria-label="breadcrumb" className="ds-crumbs">
       {items.map((it, idx) => {
         const isLast = idx === items.length - 1;
         return (
-          <span key={idx} style={{ display: "flex", alignItems: "center" }}>
-            {idx > 0 && (
-              <span style={{ margin: "0 6px", color: "var(--text-mute)" }}>›</span>
-            )}
+          <span key={idx} className="ds-crumbs__item">
+            {idx > 0 && <span className="ds-crumbs__sep">›</span>}
             <Crumb {...it} active={isLast} />
           </span>
         );
@@ -40,35 +28,20 @@ export function Crumb({
   onClick,
   active,
 }: CrumbSpec & { active?: boolean }) {
-  const color = active ? "var(--text-primary)" : "var(--text-secondary)";
+  const klass = `ds-crumb${active ? " ds-crumb--active" : ""}`;
   if (href) {
     return (
-      <a
-        href={href}
-        onClick={onClick}
-        style={{ color, textDecoration: "none" }}
-      >
+      <a href={href} onClick={onClick} className={klass}>
         {label}
       </a>
     );
   }
   if (onClick) {
     return (
-      <button
-        type="button"
-        onClick={onClick}
-        style={{
-          background: "transparent",
-          border: "none",
-          color,
-          cursor: "default",
-          padding: 0,
-          font: "inherit",
-        }}
-      >
+      <button type="button" onClick={onClick} className={klass}>
         {label}
       </button>
     );
   }
-  return <span style={{ color }}>{label}</span>;
+  return <span className={klass}>{label}</span>;
 }

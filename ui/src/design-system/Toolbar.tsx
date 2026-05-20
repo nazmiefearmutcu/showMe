@@ -39,5 +39,5 @@ export function ToolbarGroup({ children }: { children: ReactNode }) {
 }
 
 export function ToolbarSpacer() {
-  return <div style={{ flex: 1 }} />;
+  return <div className="u-flex-1" />;
 }

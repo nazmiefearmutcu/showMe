@@ -22,7 +22,8 @@ import os
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Iterable
+from typing import Any
+from collections.abc import Awaitable, Callable, Iterable
 
 from .agents.planner import Plan, plan_for
 

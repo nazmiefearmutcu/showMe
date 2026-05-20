@@ -55,7 +55,39 @@ def test_parse_binance_ticker_handles_missing_optional_fields() -> None:
     assert tick.ask is None
 
 
-def test_fetch_binance_24h_ticker_falls_back_to_futures(monkeypatch) -> None:
+def test_fetch_binance_24h_ticker_raises_on_spot_failure(monkeypatch) -> None:
+    """FUNC-01 P0: spot ticker must NOT silently fall back to futures.
+
+    Per the audit, the previous behavior swapped venues mid-stream when spot
+    failed, which yielded futures pricing under a spot ``Tick.symbol``. Callers
+    that want futures must opt in via ``fetch_binance_futures_24h_ticker``.
+    """
+    from showme.streams import fetch_binance_futures_24h_ticker
+
+    class FakeResponse:
+        def __init__(self, payload: dict) -> None:
+            self._payload = payload
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return self._payload
+
+    def fake_spot_get(url: str, *_args, **_kwargs) -> FakeResponse:
+        # Spot endpoint returns the Binance "invalid symbol" envelope.
+        return FakeResponse({"code": -1121, "msg": "Invalid symbol."})
+
+    monkeypatch.setattr("showme.streams.requests.get", fake_spot_get)
+
+    with pytest.raises(RuntimeError):
+        fetch_binance_24h_ticker("4USDT")
+
+
+def test_fetch_binance_futures_24h_ticker_explicit_opt_in(monkeypatch) -> None:
+    """Caller must explicitly request futures; tick source is ``binance_futures``."""
+    from showme.streams import fetch_binance_futures_24h_ticker
+
     class FakeResponse:
         def __init__(self, payload: dict) -> None:
             self._payload = payload
@@ -67,20 +99,19 @@ def test_fetch_binance_24h_ticker_falls_back_to_futures(monkeypatch) -> None:
             return self._payload
 
     def fake_get(url: str, *_args, **_kwargs) -> FakeResponse:
-        if "fapi.binance.com" in url:
-            return FakeResponse({
-                "symbol": "4USDT",
-                "lastPrice": "0.01231",
-                "priceChangePercent": "-5.482",
-                "volume": "518439928",
-                "closeTime": 1714508400000,
-            })
-        return FakeResponse({"code": -1121, "msg": "Invalid symbol."})
+        # Only the futures endpoint should ever be hit on this opt-in path.
+        assert "fapi.binance.com" in url, f"unexpected URL hit: {url}"
+        return FakeResponse({
+            "symbol": "4USDT",
+            "lastPrice": "0.01231",
+            "priceChangePercent": "-5.482",
+            "volume": "518439928",
+            "closeTime": 1714508400000,
+        })
 
     monkeypatch.setattr("showme.streams.requests.get", fake_get)
 
-    tick = fetch_binance_24h_ticker("4USDT")
-
+    tick = fetch_binance_futures_24h_ticker("4USDT")
     assert tick.symbol == "4USDT"
     assert tick.price == pytest.approx(0.01231)
     assert tick.change_pct == pytest.approx(-5.482)

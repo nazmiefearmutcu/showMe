@@ -1,4 +1,4 @@
-import type { CSSProperties, InputHTMLAttributes, ReactNode } from "react";
+import type { InputHTMLAttributes, ReactNode } from "react";
 
 interface FieldProps extends InputHTMLAttributes<HTMLInputElement> {
   label: string;
@@ -12,68 +12,22 @@ export function Field({
 }: FieldProps) {
   return (
     <label
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        gap: 4,
-        width: width ?? "100%",
-      }}
+      className="ds-field"
+      style={{ width: width ?? "100%" }}
     >
-      <span
-        style={{
-          fontSize: 10,
-          letterSpacing: "0.06em",
-          textTransform: "uppercase",
-          color: "var(--text-mute)",
-        }}
-      >
-        {label}
-      </span>
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          background: "var(--bg-elev-2)",
-          border: "1px solid var(--border-subtle)",
-          borderRadius: "var(--radius-md)",
-          height: 28,
-          padding: "0 8px",
-          transition: "border-color var(--motion-fast)",
-        }}
-      >
+      <span className="ds-field__label">{label}</span>
+      <div className="ds-field__row">
         <input
           {...rest}
-          style={{
-            background: "transparent",
-            border: "none",
-            outline: "none",
-            color: "var(--text-primary)",
-            font: "inherit",
-            fontSize: 12,
-            flex: 1,
-            ...(rest.style as CSSProperties),
-          }}
+          className={`ds-field__input${rest.className ? ` ${rest.className}` : ""}`}
         />
         {trailing}
       </div>
-      {hint && (
-        <span style={{ fontSize: 10, color: "var(--text-mute)" }}>{hint}</span>
-      )}
+      {hint && <span className="ds-field__hint">{hint}</span>}
     </label>
   );
 }
 
 export function FieldRow({ children }: { children: ReactNode }) {
-  return (
-    <div
-      style={{
-        display: "grid",
-        gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
-        gap: 12,
-        alignItems: "end",
-      }}
-    >
-      {children}
-    </div>
-  );
+  return <div className="ds-field-row">{children}</div>;
 }

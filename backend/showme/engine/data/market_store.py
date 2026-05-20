@@ -83,7 +83,7 @@ class MarketStore:
         with self._lock:
             for ddl in SCHEMA_DDL:
                 self._conn.execute(ddl)
-        logger.info(f"MarketStore initialized at {self.db_path}")
+        logger.info("MarketStore initialized at %s", self.db_path)
 
     # ── candles ──────────────────────────────────────────────
 
@@ -144,7 +144,7 @@ class MarketStore:
                     (symbol, timeframe, limit),
                 ).df()
             except Exception as e:
-                logger.error(f"query_candles failed for {symbol}/{timeframe}: {e}")
+                logger.error("query_candles failed for %s/%s: %s", symbol, timeframe, e)
                 return None
         return df if not df.empty else None
 

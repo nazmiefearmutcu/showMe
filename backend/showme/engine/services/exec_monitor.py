@@ -26,16 +26,19 @@ import sqlite3
 import threading
 import time
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
-DB_PATH = Path("runtime/exec_monitor.sqlite")
+from showme.app_paths import runtime_path
+
 _LOCK = threading.RLock()
 
 
+def _db_path():
+    return runtime_path("exec_monitor.sqlite")
+
+
 def _connect() -> sqlite3.Connection:
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn = sqlite3.connect(_db_path(), check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
 

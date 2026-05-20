@@ -1,23 +1,30 @@
 [project]
 name = "showme-backend"
 version = "0.0.1"
-description = "showMe backend sidecar — exposes the bundled 138-function engine through a localhost FastAPI server discovered by the Tauri shell."
+description = "showMe backend sidecar — exposes the bundled 139-function engine through a localhost FastAPI server discovered by the Tauri shell."
 requires-python = ">=3.11"
+# Floors are pinned per SEC-10 to versions that include published security
+# fixes (torch RCE via torch.load, transformers unsafe deserialization,
+# requests cert-verify reuse, pydantic ReDoS via email-validator).
 dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
-    "pydantic>=2.9",
+    "pydantic>=2.10.6",
     "httpx>=0.28",
-    "requests>=2.32",
+    "requests>=2.32.4",
     "duckdb>=1.1",
     "pyyaml>=6.0",
-    "websockets>=13",
+    "websockets>=14",
     "numpy>=1.26",
     "pandas>=2.2",
-    "yfinance>=0.2.40",
+    "yfinance>=0.2.55",
     "lxml>=5.3",
     "feedparser>=6.0",
     "python-dotenv>=1.0.1",
+    "torch>=2.6.0,<3",
+    "transformers>=4.48,<5",
+    "tokenizers>=0.20",
+    "safetensors>=0.4",
 ]
 
 [project.optional-dependencies]
@@ -25,7 +32,7 @@ dev = [
     "pytest>=8",
     "pytest-asyncio>=0.24",
     "ruff>=0.7",
-    "pyinstaller>=6.10",
+    "pyinstaller>=6.11",
 ]
 
 [build-system]

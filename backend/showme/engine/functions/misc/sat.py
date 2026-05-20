@@ -6,7 +6,7 @@ Plan §6.6 + EK D: alt-veri katmanı. Basit rapor: image fetch + NDVI stats.
 from __future__ import annotations
 
 import base64
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
@@ -160,7 +160,7 @@ def _parse_bbox(value: Any) -> tuple[float, float, float, float] | None:
 
 
 def _date_window(params: dict[str, Any]) -> tuple[str, str]:
-    date_to = str(params.get("date_to") or datetime.utcnow().date().isoformat())
+    date_to = str(params.get("date_to") or datetime.now(timezone.utc).date().isoformat())
     if params.get("date_from"):
         return str(params["date_from"]), date_to
     try:

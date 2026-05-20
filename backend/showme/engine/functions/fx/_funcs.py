@@ -115,7 +115,9 @@ class FXFCFunction(BaseFunction):
             instrument=instrument or Instrument(symbol=pair, asset_class=AssetClass.FX),
             data=data,
             sources=[spot_source, "covered_interest_parity_formula"],
-            warnings=[] if source_mode == "live_yfinance_quote" else ["live spot unavailable; using labelled reference spot"],
+            # Only warn when the spot came from the static reference template
+            # — manual_input and any live_* source mode are real values.
+            warnings=[] if source_mode != "reference_model" else ["live spot unavailable; using labelled reference spot"],
         )
 
 
@@ -177,7 +179,9 @@ class FXIPFunction(BaseFunction):
             instrument=instrument or Instrument(symbol=pair, asset_class=AssetClass.FX),
             data=data,
             sources=_unique(sources),
-            warnings=[] if source_mode.startswith("live") else ["live spot unavailable; using labelled reference spot"],
+            # manual_input + any live_* counts as a real spot; warn only for
+            # the static reference_model fallback.
+            warnings=[] if source_mode != "reference_model" else ["live spot unavailable; using labelled reference spot"],
         )
 
 

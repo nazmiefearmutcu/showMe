@@ -81,117 +81,40 @@ export function SymbolBar({ code, symbol }: SymbolBarProps) {
   };
 
   return (
-    <div
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 8,
-        padding: "8px 14px",
-        borderBottom: "1px solid var(--border-subtle)",
-        background: "var(--bg-elev-2)",
-        minWidth: 0,
-      }}
-    >
-      <span
-        style={{
-          fontSize: 10,
-          letterSpacing: "0.08em",
-          textTransform: "uppercase",
-          color: "var(--text-mute)",
-        }}
-      >
-        Symbol
-      </span>
+    <div className="symbol-bar-host">
+      <span className="symbol-bar-host__label">Symbol</span>
       <form
         onSubmit={(e) => {
           e.preventDefault();
           void submit(draft);
         }}
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 6,
-          background: "var(--bg-elev-3)",
-          border: "1px solid var(--border-subtle)",
-          borderRadius: "var(--radius-md)",
-          padding: "0 8px",
-          height: 24,
-        }}
+        className="symbol-bar-host__form"
       >
         <input
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           placeholder="AAPL"
           list={`symbol-bar-options-${code}`}
-          style={{
-            background: "transparent",
-            border: "none",
-            outline: "none",
-            color: "var(--text-primary)",
-            fontFamily: "JetBrains Mono, monospace",
-            fontSize: 12,
-            width: 120,
-            textTransform: "uppercase",
-          }}
+          className="symbol-bar-host__input"
         />
         <datalist id={`symbol-bar-options-${code}`}>
           {suggestions.map((item) => (
             <option key={item} value={item} />
           ))}
         </datalist>
-        <button
-          type="submit"
-          style={{
-            background: "var(--accent)",
-            color: "#000",
-            border: "none",
-            borderRadius: "var(--radius-sm)",
-            fontSize: 10,
-            padding: "2px 6px",
-            cursor: "default",
-            fontWeight: 700,
-          }}
-        >
-          GO
-        </button>
+        <button type="submit" className="symbol-bar-host__go">GO</button>
       </form>
 
-      <div
-        style={{
-          display: "flex",
-          gap: 4,
-          marginLeft: 12,
-          minWidth: 0,
-          flex: "1 1 auto",
-          flexWrap: "wrap",
-        }}
-      >
+      <div className="symbol-bar-host__recents">
         {recent.slice(0, 6).map((s) => (
           <span
             key={s}
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              background:
-                s === symbol ? "var(--accent-soft)" : "var(--bg-elev-3)",
-              border: "1px solid var(--border-subtle)",
-              borderRadius: "var(--radius-sm)",
-              overflow: "hidden",
-            }}
+            className={`symbol-bar-chip${s === symbol ? " symbol-bar-chip--active" : ""}`}
           >
             <button
               type="button"
               onClick={() => void submit(s)}
-              style={{
-                background: "transparent",
-                border: "none",
-                color: s === symbol ? "var(--accent)" : "var(--text-secondary)",
-                fontFamily: "JetBrains Mono, monospace",
-                fontSize: 11,
-                padding: "2px 7px",
-                cursor: "default",
-                height: 22,
-              }}
+              className={`symbol-bar-chip__btn${s === symbol ? " symbol-bar-chip__btn--active" : ""}`}
               title={`Open ${s}/${code}`}
             >
               {s}
@@ -203,17 +126,7 @@ export function SymbolBar({ code, symbol }: SymbolBarProps) {
                 e.stopPropagation();
                 removeSymbol(s);
               }}
-              style={{
-                background: "transparent",
-                border: "none",
-                borderLeft: "1px solid var(--border-subtle)",
-                color: "var(--text-mute)",
-                cursor: "default",
-                fontSize: 12,
-                height: 22,
-                lineHeight: "20px",
-                padding: "0 6px",
-              }}
+              className="symbol-bar-chip__remove"
               title={`Remove ${s}`}
             >
               x
@@ -222,7 +135,7 @@ export function SymbolBar({ code, symbol }: SymbolBarProps) {
         ))}
       </div>
 
-      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+      <div className="u-inline-flex u-items-center u-gap-6">
         <Pill tone="accent" withDot={false}>
           {code}
         </Pill>

@@ -7,6 +7,25 @@ import type { FunctionEntry } from "./sidecar";
 
 export type SidecarStatus = "booting" | "healthy" | "crashed" | "stopped" | "stub";
 
+const SIDEBAR_VISIBLE_KEY = "showme.sidebar.visible.v1";
+const SIDEBAR_DESIGN_DEFAULT_KEY = "showme.sidebar.designDefaultHidden.v1";
+
+function readSidebarVisible(): boolean {
+  if (typeof localStorage === "undefined") return false;
+  if (!localStorage.getItem(SIDEBAR_DESIGN_DEFAULT_KEY)) {
+    localStorage.setItem(SIDEBAR_DESIGN_DEFAULT_KEY, "1");
+    localStorage.setItem(SIDEBAR_VISIBLE_KEY, "false");
+    return false;
+  }
+  const raw = localStorage.getItem(SIDEBAR_VISIBLE_KEY);
+  return raw === null ? false : raw === "true";
+}
+
+function writeSidebarVisible(value: boolean): void {
+  if (typeof localStorage === "undefined") return;
+  localStorage.setItem(SIDEBAR_VISIBLE_KEY, String(value));
+}
+
 interface AppStateShape {
   sidecarStatus: SidecarStatus;
   sidecarPort: number | null;
@@ -28,7 +47,7 @@ export const useAppStore = create<AppStateShape>((set) => ({
   engineRoot: null,
   functionIndex: [],
   paletteOpen: false,
-  sidebarVisible: true,
+  sidebarVisible: readSidebarVisible(),
   setSidecarStatus: (sidecarStatus) => set({ sidecarStatus }),
   setSidecarPort: (sidecarPort) => set({ sidecarPort }),
   setEngineRoot: (engineRoot) => set({ engineRoot }),
@@ -38,7 +57,10 @@ export const useAppStore = create<AppStateShape>((set) => ({
       paletteOpen: typeof force === "boolean" ? force : !state.paletteOpen,
     })),
   toggleSidebar: (force) =>
-    set((state) => ({
-      sidebarVisible: typeof force === "boolean" ? force : !state.sidebarVisible,
-    })),
+    set((state) => {
+      const sidebarVisible =
+        typeof force === "boolean" ? force : !state.sidebarVisible;
+      writeSidebarVisible(sidebarVisible);
+      return { sidebarVisible };
+    }),
 }));

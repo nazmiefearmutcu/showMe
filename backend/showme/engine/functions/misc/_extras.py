@@ -88,8 +88,8 @@ class LANGFunction(BaseFunction):
             return FunctionResult(code=self.code, instrument=None,
                                   data={"status": "input_error", "supported": list(self.SUPPORTED)},
                                   warnings=[f"unsupported language {target}"])
-        from pathlib import Path
-        Path("runtime/lang.txt").write_text(target)
+        from showme.app_paths import runtime_path
+        runtime_path("lang.txt").write_text(target)
         rows = [
             {
                 "lang": code,
@@ -466,10 +466,43 @@ def _normalize_opensky(data: Any, callsign_filter: str, country_filter: str, lim
     return rows
 
 
+_NOMINATIM_USER_AGENT = (
+    "showMe-local-restaurant-search/0.2 (+https://github.com/nazmiefearmutcu/showMe; "
+    "contact: showme-dine@users.noreply.github.com)"
+)
+_NOMINATIM_MIN_INTERVAL_SEC = 1.0  # OSM Nominatim policy: ≤1 req/sec absolute.
+_nominatim_last_call_ts: float = 0.0
+_nominatim_lock: asyncio.Lock | None = None
+
+
+async def _nominatim_throttle() -> None:
+    """Enforce OSM Nominatim's 1 req/sec policy so we never trip a ban.
+
+    A single process-wide async lock + monotonic clock is enough because
+    every DINE call goes through this helper; concurrent DINE requests
+    queue behind one another rather than firing parallel HTTP requests."""
+    global _nominatim_last_call_ts, _nominatim_lock
+    if _nominatim_lock is None:
+        _nominatim_lock = asyncio.Lock()
+    async with _nominatim_lock:
+        now = asyncio.get_running_loop().time()
+        wait = _NOMINATIM_MIN_INTERVAL_SEC - (now - _nominatim_last_call_ts)
+        if wait > 0:
+            await asyncio.sleep(wait)
+        _nominatim_last_call_ts = asyncio.get_running_loop().time()
+
+
 async def _nominatim_restaurants(query: str, location: str, limit: int) -> list[dict[str, Any]]:
     import httpx
 
-    headers = {"User-Agent": "showMe-local-restaurant-search/0.1"}
+    await _nominatim_throttle()
+    headers = {
+        "User-Agent": _NOMINATIM_USER_AGENT,
+        # OSM policy also accepts a separate ``From`` header for the contact
+        # email — providing both keeps us policy-compliant regardless of
+        # which header the operator inspects.
+        "From": "showme-dine@users.noreply.github.com",
+    }
     params = {
         "q": f"{query} {location}",
         "format": "jsonv2",
@@ -479,6 +512,12 @@ async def _nominatim_restaurants(query: str, location: str, limit: int) -> list[
     }
     async with httpx.AsyncClient(timeout=8, headers=headers) as client:
         resp = await client.get("https://nominatim.openstreetmap.org/search", params=params)
+        if resp.status_code == 429:
+            # Surface OSM's rate-limit explicitly so DINE flips to
+            # ``provider_unavailable`` instead of pretending success.
+            raise RuntimeError(
+                f"Nominatim rate-limited (HTTP 429); Retry-After: {resp.headers.get('Retry-After')}"
+            )
         resp.raise_for_status()
         payload = resp.json() or []
     if not payload:
@@ -499,6 +538,10 @@ async def _nominatim_restaurants(query: str, location: str, limit: int) -> list[
             "distance_km": _haversine(origin_lat, origin_lon, lat, lon),
             "osm_type": item.get("osm_type"),
             "osm_id": item.get("osm_id"),
+            # ``place_id`` is the canonical Nominatim identifier; callers
+            # need it to round-trip back to the OSM details endpoint or to
+            # deduplicate identical hits across queries.
+            "place_id": item.get("place_id"),
             "category": item.get("category"),
             "type": item.get("type"),
             "opening_hours": tags.get("opening_hours"),

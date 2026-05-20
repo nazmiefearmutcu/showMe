@@ -20,7 +20,7 @@ class HDSFunction(BaseFunction):
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         if instrument is None:
-            raise ValueError
+            raise ValueError("HDS requires a symbol")
         if not _truthy(params.get("live_holders") or params.get("live")):
             return FunctionResult(
                 code=self.code,

@@ -107,13 +107,17 @@ class BaseBroker(abc.ABC):
 
     @abc.abstractmethod
     async def list_positions(self) -> list[Position]:
-        ...
+        """Return all open positions, newest first."""
 
     @abc.abstractmethod
     async def list_orders(
         self, *, status: str = "open", limit: int = 100,
     ) -> list[Order]:
-        ...
+        """Return up to ``limit`` orders matching ``status``.
+
+        ``status`` accepts ``"open"``, ``"closed"`` or any provider-native
+        value the adapter passes through.
+        """
 
     @abc.abstractmethod
     async def submit_order(
@@ -128,25 +132,37 @@ class BaseBroker(abc.ABC):
         stop_price: float | None = None,
         notes: str = "",
     ) -> Order:
-        ...
+        """Submit a new order.
+
+        Implementations should raise :class:`BrokerError` on validation /
+        provider failures. The returned :class:`Order` reflects the broker's
+        ack (status may still be ``NEW``/``ACCEPTED`` until the fill).
+        """
 
     @abc.abstractmethod
     async def cancel_order(self, order_id: str) -> bool:
-        ...
+        """Cancel ``order_id``. Return ``True`` on success, ``False`` if unknown."""
 
     @abc.abstractmethod
     async def close_position(self, symbol: str, *, quantity: float | None = None) -> Order:
-        ...
+        """Close all (or ``quantity``) of the position in ``symbol``.
+
+        Returns the closing :class:`Order`. Raises :class:`BrokerError`
+        when no such position exists.
+        """
 
     # ── Helpers used by adapters ──────────────────────────────────────────
     @staticmethod
     def coerce_side(side: OrderSide | str) -> OrderSide:
+        """Normalise a string or enum to :class:`OrderSide`."""
         return side if isinstance(side, OrderSide) else OrderSide(str(side).lower())
 
     @staticmethod
     def coerce_type(t: OrderType | str) -> OrderType:
+        """Normalise a string or enum to :class:`OrderType`."""
         return t if isinstance(t, OrderType) else OrderType(str(t).lower())
 
     @staticmethod
     def coerce_tif(t: TimeInForce | str) -> TimeInForce:
+        """Normalise a string or enum to :class:`TimeInForce`."""
         return t if isinstance(t, TimeInForce) else TimeInForce(str(t).lower())

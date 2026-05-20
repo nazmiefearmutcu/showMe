@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import numpy as np
@@ -22,7 +22,7 @@ from showme.engine.services.risk_parity import (
 
 def _template_returns(symbols: list[str], days: int) -> pd.DataFrame:
     periods = max(60, min(days, 504))
-    index = pd.date_range(end=datetime.utcnow().date(), periods=periods, freq="B")
+    index = pd.date_range(end=datetime.now(timezone.utc).date(), periods=periods, freq="B")
     periods = len(index)
     t = np.arange(periods, dtype=float)
     rows = {}
@@ -48,14 +48,32 @@ class RPARFunction(BaseFunction):
         days = int(params.get("days", 504))
         target = params.get("target")  # optional list of weights
         method = (params.get("method") or "inverse_vol").lower()
-        live = _truthy(params.get("live_risk") or params.get("live"))
-        if not live and "method" not in params and not target:
+        # S12 BugHunt: default flipped to LIVE when yfinance is available.
+        # Previous behavior silently returned a deterministic template (with
+        # source `risk_parity_model`) on every call that did not explicitly
+        # set `live_risk=true` or `method=erc`. Callers can still opt back
+        # into the fast template by passing `model=true`.
+        force_model = _truthy(params.get("model"))
+        live_param = params.get("live_risk")
+        if live_param is None:
+            live_param = params.get("live")
+        if live_param is None:
+            live = bool(self.deps.yfinance) and not force_model
+        else:
+            live = _truthy(live_param)
+        if (force_model or not live) and "method" not in params and not target:
             return FunctionResult(
                 code=self.code,
                 instrument=None,
                 data=_fast_template(symbols, days),
                 sources=["risk_parity_model"],
-                metadata={"live": False, "method": "inverse_vol_model"},
+                metadata={
+                    "live": False,
+                    "method": "inverse_vol_model",
+                    "fallback": True,
+                    "fallback_reason": "model_requested" if force_model else "yfinance_unavailable",
+                },
+                warnings=["RPAR served a deterministic risk-parity_model template; pass live_risk=true for yfinance-derived weights"],
             )
         sources = ["yfinance"] if live else ["computed_return_model"]
         async def _ret(sym: str) -> tuple[str, pd.Series]:
@@ -68,7 +86,7 @@ class RPARFunction(BaseFunction):
                 df = await asyncio.wait_for(
                     self.deps.yfinance.fetch(DataRequest(
                         kind=DataKind.OHLCV, instrument=inst,
-                        start=datetime.utcnow() - timedelta(days=days),
+                        start=datetime.now(timezone.utc) - timedelta(days=days),
                         interval="1d",
                     )),
                     timeout=8,
@@ -81,7 +99,14 @@ class RPARFunction(BaseFunction):
             df = align_return_series(rs)
         else:
             df = pd.DataFrame()
+        fallback_used = False
+        fallback_reason: str | None = None
         if df.shape[0] < 10:
+            # S12 BugHunt: when live mode falls through to the synthetic
+            # return series, surface it via metadata + warnings so the UI
+            # can render a visible badge instead of trusting the table.
+            fallback_used = True
+            fallback_reason = "yfinance_returned_insufficient_history"
             df = _template_returns(symbols, days)
             sources = ["computed_return_model"]
         cov = df.cov().values * 252
@@ -110,6 +135,11 @@ class RPARFunction(BaseFunction):
             }
             for i, symbol in enumerate(df.columns)
         ]
+        warnings: list[str] = []
+        if fallback_used:
+            warnings.append(
+                f"RPAR live mode fell through to deterministic returns: {fallback_reason}"
+            )
         return FunctionResult(
             code=self.code, instrument=None,
             data={
@@ -120,6 +150,8 @@ class RPARFunction(BaseFunction):
                 "samples": int(df.shape[0]),
                 "info": info,
                 "rows": rows,
+                "fallback": fallback_used,
+                "fallback_reason": fallback_reason,
                 "summary": {
                     "method": info.get("method"),
                     "symbols": len(rows),
@@ -138,6 +170,8 @@ class RPARFunction(BaseFunction):
                 },
             },
             sources=sources,
+            warnings=warnings,
+            metadata={"live": bool(live and not fallback_used), "fallback": fallback_used, "fallback_reason": fallback_reason},
         )
 
 

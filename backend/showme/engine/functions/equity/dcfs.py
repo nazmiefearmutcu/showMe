@@ -97,17 +97,38 @@ class DCFSensitivityFunction(BaseFunction):
                     high = await base.execute(instrument, **{**base_params, **shared, key: base_v * 1.2})
                     lv = (low.data or {}).get("fair_value_per_share")
                     hv = (high.data or {}).get("fair_value_per_share")
+                    # Skip the perturbation entirely when either endpoint failed
+                    # validation (e.g. WACC * 0.8 ≤ g_terminal). Treating a
+                    # missing fair-value as zero used to inflate the
+                    # corresponding bar and corrupt sort order.
+                    if lv is None or hv is None:
+                        tornado.append({
+                            "input": label,
+                            "low_value":  base_v * 0.8,
+                            "high_value": base_v * 1.2,
+                            "low_fv": lv, "high_fv": hv,
+                            "value": None,
+                            "delta": None,
+                            "status": "invalid_perturbation",
+                            "reason": "One side of the ±20% perturbation produced no fair value (e.g. WACC fell below terminal growth).",
+                        })
+                        continue
                     tornado.append({
                         "input": label,
                         "low_value":  base_v * 0.8,
                         "high_value": base_v * 1.2,
                         "low_fv": lv, "high_fv": hv,
-                        "value": abs((hv or 0) - (lv or 0)),
-                        "delta": (hv or 0) - (lv or 0),
+                        "value": abs(hv - lv),
+                        "delta": hv - lv,
                     })
                 except Exception:
                     continue
-            tornado.sort(key=lambda x: abs(x.get("delta") or 0), reverse=True)
+            tornado.sort(
+                key=lambda x: (
+                    0 if x.get("delta") is None else abs(x.get("delta") or 0)
+                ),
+                reverse=True,
+            )
         return FunctionResult(
             code=self.code, instrument=instrument,
             data={

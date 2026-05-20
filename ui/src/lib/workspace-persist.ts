@@ -117,12 +117,54 @@ export async function restoreWorkspace(): Promise<boolean> {
 
 /** Subscribe the store to disk-write on change (debounced). Returns disposer. */
 export function startWorkspaceAutosave(): () => void {
-  return useWorkspace.subscribe(() => {
+  const unsubStore = useWorkspace.subscribe(() => {
     if (timer) clearTimeout(timer);
     timer = setTimeout(() => {
       persist(serializeWorkspace()).catch(() => {});
     }, DEBOUNCE_MS);
   });
+
+  // Flush-on-close: the 400 ms debounce silently drops the user's last edit
+  // when they hit ⌘W or quit immediately after a mutation. Wire both the
+  // browser-native `beforeunload` and (when running inside Tauri) the
+  // `tauri://close-requested` event to flush before teardown.
+  // See FUNC-04 P0 in the quality audit.
+  const browserFlush = () => {
+    void flushWorkspaceAutosave();
+  };
+  if (typeof window !== "undefined") {
+    window.addEventListener("beforeunload", browserFlush);
+  }
+
+  // Tauri close-requested listener is async; capture the unlisten handle so
+  // we can detach in the disposer. Browser-mode (`isInTauri()` false) skips
+  // this entirely — the dynamic import would throw otherwise.
+  let unlistenTauri: (() => void) | null = null;
+  if (isInTauri()) {
+    void import("@tauri-apps/api/window")
+      .then((mod) => mod.getCurrentWindow().listen("tauri://close-requested", browserFlush))
+      .then((unlisten) => {
+        unlistenTauri = unlisten;
+      })
+      .catch((err) => {
+        console.warn("workspace flush: tauri close-requested listen failed", err);
+      });
+  }
+
+  return () => {
+    unsubStore();
+    if (typeof window !== "undefined") {
+      window.removeEventListener("beforeunload", browserFlush);
+    }
+    if (unlistenTauri) {
+      try {
+        unlistenTauri();
+      } catch {
+        /* no-op */
+      }
+      unlistenTauri = null;
+    }
+  };
 }
 
 /** Used by tests — fire the persisted save immediately. */

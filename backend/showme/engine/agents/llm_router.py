@@ -15,11 +15,13 @@ import json
 import os
 import time
 from dataclasses import dataclass
-from datetime import datetime
-from pathlib import Path
+from datetime import datetime, timezone
+
+from showme.app_paths import runtime_path
 
 
-_LOG_PATH = Path("runtime/llm_calls.jsonl")
+def _log_path():
+    return runtime_path("llm_calls.jsonl")
 
 
 @dataclass
@@ -63,12 +65,12 @@ class LLMRouter:
         self.openai_key = os.environ.get("OPENAI_API_KEY")
 
     def _load_today_spend(self) -> float:
-        if not _LOG_PATH.exists():
+        if not _log_path().exists():
             return 0.0
-        today = datetime.utcnow().date().isoformat()
+        today = datetime.now(timezone.utc).date().isoformat()
         total = 0.0
         try:
-            for line in _LOG_PATH.read_text().splitlines():
+            for line in _log_path().read_text().splitlines():
                 try:
                     entry = json.loads(line)
                 except Exception:
@@ -160,14 +162,14 @@ class LLMRouter:
         return text, r.usage.prompt_tokens, r.usage.completion_tokens
 
     def _log(self, req: LLMRequest, res: LLMResult) -> None:
-        _LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _log_path().parent.mkdir(parents=True, exist_ok=True)
         entry = {
-            "ts": datetime.utcnow().isoformat(),
-            "date": datetime.utcnow().date().isoformat(),
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "date": datetime.now(timezone.utc).date().isoformat(),
             "role": req.role, "model": res.model,
             "tokens_in": res.tokens_in, "tokens_out": res.tokens_out,
             "cost_usd": res.cost_usd, "elapsed_ms": res.elapsed_ms,
             "error": res.error,
         }
-        with _LOG_PATH.open("a") as f:
+        with _log_path().open("a") as f:
             f.write(json.dumps(entry) + "\n")

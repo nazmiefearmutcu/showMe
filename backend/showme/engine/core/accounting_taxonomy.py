@@ -101,9 +101,5 @@ def to_canonical(field: str) -> str:
     return CANONICAL_FIELD.get(field, field[0].lower() + field[1:])
 
 
-def gaap_to_ifrs(field: str) -> str:
-    return GAAP_TO_IFRS.get(field, field)
-
-
-def ifrs_to_gaap(field: str) -> str:
-    return IFRS_TO_GAAP.get(field, field)
+# gaap_to_ifrs / ifrs_to_gaap helpers were removed as dead code (PY-LINT-02);
+# every consumer goes through ``to_canonical`` which is the canonical entry point.

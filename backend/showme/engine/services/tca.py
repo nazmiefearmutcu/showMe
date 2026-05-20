@@ -164,6 +164,12 @@ def analyze_orders(
         slot["avg_is_bps"] += a.get("implementation_shortfall_bps", 0)
     for slot in by_symbol.values():
         slot["avg_is_bps"] /= max(slot["n"], 1)
+    # `statistics.median` returns the true mid-point for even-length samples
+    # (the sample below was using `sorted(...)[n // 2]`, which silently
+    # biased toward the upper of the two middle values). `statistics.stdev`
+    # uses the sample formula (1 / (n - 1)), matching the n > 1 guard.
+    import statistics as _stats
+    mean_bps = sum(is_bps) / n
     return {
         "status": "ok",
         "orders": analyses, "n": n,
@@ -171,9 +177,9 @@ def analyze_orders(
         "equations": equations,
         "summary": {
             "n_filled": n,
-            "mean_is_bps": sum(is_bps) / n,
-            "median_is_bps": sorted(is_bps)[n // 2],
-            "stdev_is_bps": math.sqrt(sum((x - sum(is_bps)/n) ** 2 for x in is_bps) / n) if n > 1 else 0,
+            "mean_is_bps": mean_bps,
+            "median_is_bps": _stats.median(is_bps),
+            "stdev_is_bps": _stats.stdev(is_bps) if n > 1 else 0,
             "total_is_notional": sum(is_notional),
             "mean_is_per_share": sum(is_per_share) / n,
             "by_symbol": list(by_symbol.values()),

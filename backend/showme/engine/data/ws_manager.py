@@ -96,7 +96,7 @@ class WSManager:
         try:
             await asyncio.gather(*self._tasks, return_exceptions=True)
         except Exception as e:
-            logger.error(f"WSManager run error: {e}")
+            logger.error("WSManager run error: %s", e)
 
     async def stop(self) -> None:
         self._stop.set()
@@ -114,7 +114,7 @@ class WSManager:
                     max_size=2**24, close_timeout=10,
                 ) as ws:
                     self.health["connected"] += 1
-                    logger.info(f"WS shard #{shard_id} connected ({len(streams)} streams)")
+                    logger.info("WS shard #%s connected (%s streams)", shard_id, len(streams))
                     backoff = 1.0
                     await self._gap_fill_on_reconnect(streams)
                     async for raw in ws:
@@ -182,10 +182,10 @@ class WSManager:
                 try:
                     self.store.write_candle(row)
                 except Exception as e:
-                    logger.debug(f"store write_candle failed: {e}")
+                    logger.debug("store write_candle failed: %s", e)
                 self.last_kline_ms[(sym, tf)] = int(k["t"])
         except Exception as e:
-            logger.debug(f"_handle_kline parse error: {e}")
+            logger.debug("_handle_kline parse error: %s", e)
 
     def _handle_agg_trade(self, data: dict[str, Any]) -> None:
         try:
@@ -199,7 +199,7 @@ class WSManager:
             }
             self.cache.update_agg_trade(trade["symbol"], trade)
         except Exception as e:
-            logger.debug(f"_handle_agg_trade parse error: {e}")
+            logger.debug("_handle_agg_trade parse error: %s", e)
 
     def _handle_mark_prices(self, data: Any) -> None:
         """!markPrice@arr@1s sends a list of dicts, one per symbol."""
@@ -237,7 +237,7 @@ class WSManager:
                 except Exception:
                     pass
         except Exception as e:
-            logger.debug(f"_handle_liquidation parse error: {e}")
+            logger.debug("_handle_liquidation parse error: %s", e)
 
     def _handle_oi(self, data: dict[str, Any]) -> None:
         try:
@@ -292,9 +292,9 @@ class WSManager:
                     self.cache.update_candle(sym, tf, r)
                     self.store.write_candle(r)
                 self.health["gap_fills"] += 1
-                logger.info(f"Gap-filled {len(rows)} candles for {sym}/{tf}")
+                logger.info("Gap-filled %s candles for %s/%s", len(rows), sym, tf)
             except Exception as e:
-                logger.warning(f"Gap-fill failed for {sym}/{tf}: {e}")
+                logger.warning("Gap-fill failed for %s/%s: %s", sym, tf, e)
 
     def get_health(self) -> dict[str, Any]:
         h = dict(self.health)

@@ -9,7 +9,7 @@ Returns upcoming and past auctions across Bills/Notes/Bonds/TIPS/FRN.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
@@ -59,8 +59,8 @@ class TreasuryAuctionsAdapter(BaseDataSource):
 
     async def upcoming(self, *, horizon_days: int = 30,
                         limit: int | None = None) -> list[dict[str, Any]]:
-        cutoff = (datetime.utcnow() + timedelta(days=horizon_days)).date()
-        today = datetime.utcnow().date()
+        cutoff = (datetime.now(timezone.utc) + timedelta(days=horizon_days)).date()
+        today = datetime.now(timezone.utc).date()
         items_raw = await self.fetch(DataRequest(
             kind=DataKind.EVENTS, instrument=None,
             extra={"kind": "announced"}))
@@ -79,8 +79,8 @@ class TreasuryAuctionsAdapter(BaseDataSource):
         return items if limit is None else items[:limit]
 
     async def recent(self, *, days: int = 30, limit: int | None = None) -> list[dict[str, Any]]:
-        cutoff = (datetime.utcnow() - timedelta(days=days)).date()
-        today = datetime.utcnow().date()
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).date()
+        today = datetime.now(timezone.utc).date()
         items_raw = await self.fetch(DataRequest(
             kind=DataKind.EVENTS, instrument=None,
             extra={"kind": "auctioned"}))

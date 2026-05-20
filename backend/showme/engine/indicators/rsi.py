@@ -8,6 +8,8 @@ v2 changes (per ShowMe audit report E.1):
 - RSI 9-EMA cross as additional confirmation
 """
 
+from __future__ import annotations
+
 import pandas as pd
 import numpy as np
 

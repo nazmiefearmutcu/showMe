@@ -5,7 +5,7 @@ Plan §15.1: pandas-ta'nın 100+ indikatör katalogu, çoklu pane.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import numpy as np
@@ -175,7 +175,7 @@ class TECHFunction(BaseFunction):
         macd_signal = int(params.get("macd_signal", 9))
         df = await self.deps.yfinance.fetch(DataRequest(
             kind=DataKind.OHLCV, instrument=instrument,
-            start=datetime.utcnow() - timedelta(days=days),
+            start=datetime.now(timezone.utc) - timedelta(days=days),
             interval=params.get("interval", "1d"),
         ))
         if df.empty:
@@ -206,12 +206,22 @@ class TECHFunction(BaseFunction):
         sma_fast_s = close.rolling(sma_fast).mean()
         sma_slow_s = close.rolling(sma_slow).mean()
         ema = _ema(close, ema_period)
+        # Wire Stochastic, OBV and Ichimoku — the helpers existed since the
+        # initial commit but only the four canonical indicators above used
+        # to be enriched into rows / surfaced via `indicators`, even though
+        # the function description promised them. Without them the panel
+        # silently dropped a third of its advertised surface.
+        stoch_k_period = int(params.get("stoch_k", 14))
+        stoch_d_period = int(params.get("stoch_d", 3))
+        stoch_df = _stoch(df, stoch_k_period, stoch_d_period)
+        obv = _obv(df) if "volume" in df.columns else None
+        ichi = _ichimoku(df)
 
         ohlcv = _ohlcv_rows(df)
         enriched_rows: list[dict[str, Any]] = []
         for base in ohlcv:
             idx = pd.Timestamp(base["date"])
-            enriched_rows.append({
+            row: dict[str, Any] = {
                 **base,
                 "sma_fast": _clean_float(sma_fast_s.get(idx)),
                 "sma_slow": _clean_float(sma_slow_s.get(idx)),
@@ -222,7 +232,16 @@ class TECHFunction(BaseFunction):
                 "macd_hist": _clean_float(macd_df["macd_hist"].get(idx)),
                 "atr": _clean_float(atr.get(idx)),
                 "adx": _clean_float(adx["adx"].get(idx)),
-            })
+                "stoch_k": _clean_float(stoch_df["stoch_k"].get(idx)),
+                "stoch_d": _clean_float(stoch_df["stoch_d"].get(idx)),
+                "tenkan": _clean_float(ichi["tenkan"].get(idx)),
+                "kijun": _clean_float(ichi["kijun"].get(idx)),
+                "senkou_a": _clean_float(ichi["senkou_a"].get(idx)),
+                "senkou_b": _clean_float(ichi["senkou_b"].get(idx)),
+            }
+            if obv is not None:
+                row["obv"] = _clean_float(obv.get(idx))
+            enriched_rows.append(row)
 
         summary = {
             "last_price": float(df["close"].iloc[-1]),
@@ -231,6 +250,11 @@ class TECHFunction(BaseFunction):
             "adx": _clean_float(adx["adx"].iloc[-1]),
             "macd": _clean_float(macd_df["macd"].iloc[-1]),
             "macd_signal": _clean_float(macd_df["macd_signal"].iloc[-1]),
+            "stoch_k": _clean_float(stoch_df["stoch_k"].iloc[-1]),
+            "stoch_d": _clean_float(stoch_df["stoch_d"].iloc[-1]),
+            "obv": _clean_float(obv.iloc[-1]) if obv is not None else None,
+            "tenkan": _clean_float(ichi["tenkan"].iloc[-1]),
+            "kijun": _clean_float(ichi["kijun"].iloc[-1]),
             "samples": len(ohlcv),
         }
         results: dict[str, Any] = {
@@ -245,12 +269,23 @@ class TECHFunction(BaseFunction):
                 "bb_upper": _points(bb["bb_upper"].tail(tail), 4),
                 "bb_mid": _points(bb["bb_mid"].tail(tail), 4),
                 "bb_lower": _points(bb["bb_lower"].tail(tail), 4),
+                "stoch_k": _points(stoch_df["stoch_k"].tail(tail), 4),
+                "stoch_d": _points(stoch_df["stoch_d"].tail(tail), 4),
+                "tenkan": _points(ichi["tenkan"].tail(tail), 4),
+                "kijun": _points(ichi["kijun"].tail(tail), 4),
+                "senkou_a": _points(ichi["senkou_a"].tail(tail), 4),
+                "senkou_b": _points(ichi["senkou_b"].tail(tail), 4),
+                **({"obv": _points(obv.tail(tail), 2)} if obv is not None else {}),
             },
             "indicator_rows": [
                 {"indicator": "RSI", "value": summary["rsi"], "period": rsi_period, "formula": "100 - 100 / (1 + average_gain / average_loss)"},
                 {"indicator": "MACD", "value": summary["macd"], "period": f"{macd_fast}/{macd_slow}/{macd_signal}", "formula": "EMA(fast) - EMA(slow); signal = EMA(MACD)"},
                 {"indicator": "ATR", "value": summary["atr"], "period": atr_period, "formula": "EMA(true range)"},
                 {"indicator": "ADX", "value": summary["adx"], "period": adx_period, "formula": "EMA(DX) from +DI and -DI"},
+                {"indicator": "Stochastic %K", "value": summary["stoch_k"], "period": f"{stoch_k_period}/{stoch_d_period}", "formula": "100 * (close - low_k) / (high_k - low_k); %D = SMA(%K)"},
+                {"indicator": "OBV", "value": summary["obv"], "period": "cumulative", "formula": "sum(sign(close.diff) * volume)"},
+                {"indicator": "Ichimoku tenkan", "value": summary["tenkan"], "period": "9", "formula": "(rolling_max(high,9) + rolling_min(low,9)) / 2"},
+                {"indicator": "Ichimoku kijun", "value": summary["kijun"], "period": "26", "formula": "(rolling_max(high,26) + rolling_min(low,26)) / 2"},
             ],
             "summary": summary,
             "bar_count": min(len(ohlcv), tail),
@@ -268,8 +303,17 @@ class TECHFunction(BaseFunction):
                 "macd_signal": macd_signal,
                 "atr_period": atr_period,
                 "adx_period": adx_period,
+                "stoch_k": stoch_k_period,
+                "stoch_d": stoch_d_period,
             },
-            "methodology": "TECH computes indicators from yfinance OHLCV history. RSI uses Wilder-style exponentially weighted average gains/losses; MACD is EMA(fast) minus EMA(slow) with an EMA signal; ATR is exponentially weighted true range; Bollinger bands are rolling mean +/- standard deviations.",
+            "methodology": (
+                "TECH computes indicators from yfinance OHLCV history. RSI uses Wilder-style exponentially "
+                "weighted average gains/losses; MACD is EMA(fast) minus EMA(slow) with an EMA signal; ATR is "
+                "exponentially weighted true range; Bollinger bands are rolling mean +/- standard deviations; "
+                "Stochastic %K is the close's position inside the K-period high/low range with %D = SMA(%K); "
+                "OBV cumulates signed volume from close-to-close direction; Ichimoku tenkan/kijun are "
+                "9/26-period midpoint averages and senkou_a/_b are projected 26 periods forward."
+            ),
             "field_dictionary": {
                 "ohlcv": "Price candles used for the chart.",
                 "sma_fast": "Fast simple moving average.",
@@ -278,6 +322,13 @@ class TECHFunction(BaseFunction):
                 "macd": "Moving Average Convergence Divergence.",
                 "atr": "Average True Range.",
                 "adx": "Average Directional Index.",
+                "stoch_k": "Stochastic %K (raw oscillator).",
+                "stoch_d": "Stochastic %D (smoothed %K).",
+                "obv": "On-Balance Volume (cumulative signed volume).",
+                "tenkan": "Ichimoku conversion line (9-period midpoint).",
+                "kijun": "Ichimoku base line (26-period midpoint).",
+                "senkou_a": "Ichimoku leading span A, projected forward 26 periods.",
+                "senkou_b": "Ichimoku leading span B, projected forward 26 periods.",
             },
             "status": "ok",
         }

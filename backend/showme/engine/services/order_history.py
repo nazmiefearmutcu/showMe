@@ -9,16 +9,17 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
-from pathlib import Path
 from typing import Any
 
+from showme.app_paths import runtime_path
 
-_DB = Path("runtime/orders.sqlite")
+
+def _db_file():
+    return runtime_path("orders.sqlite")
 
 
 def _db() -> sqlite3.Connection:
-    _DB.parent.mkdir(parents=True, exist_ok=True)
-    con = sqlite3.connect(str(_DB))
+    con = sqlite3.connect(str(_db_file()))
     con.execute("""
         CREATE TABLE IF NOT EXISTS orders (
             id INTEGER PRIMARY KEY AUTOINCREMENT,

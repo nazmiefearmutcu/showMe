@@ -1,4 +1,4 @@
-import { waitForSidecarReady } from "./sidecar";
+import { sidecarFetch } from "./sidecar";
 import { normalizeSymbolInput } from "./symbols";
 
 export async function resolveSymbolInput(symbol: string): Promise<string> {
@@ -6,11 +6,12 @@ export async function resolveSymbolInput(symbol: string): Promise<string> {
   const raw = String(symbol ?? "").trim();
   if (!raw) return fallback;
   try {
-    const baseUrl = await waitForSidecarReady();
+    // Routed through sidecarFetch so the auth header + port-discovery layer
+    // both apply. See ARCH-05 P2.
     const qs = new URLSearchParams({ symbol: raw });
-    const res = await fetch(`${baseUrl}/api/symbol/resolve?${qs}`);
-    if (!res.ok) return fallback;
-    const payload = (await res.json()) as { symbol?: unknown };
+    const payload = await sidecarFetch<{ symbol?: unknown }>(
+      `/api/symbol/resolve?${qs.toString()}`,
+    );
     return normalizeSymbolInput(String(payload.symbol ?? fallback)) || fallback;
   } catch {
     return fallback;

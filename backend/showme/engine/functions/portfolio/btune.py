@@ -7,7 +7,7 @@ Mevcut Backtest framework'unu (sma_crossover gibi) ızgara üzerinde
 from __future__ import annotations
 
 import itertools
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import numpy as np
@@ -35,7 +35,7 @@ GRIDS = {
 
 def _template_history(days: int) -> pd.DataFrame:
     periods = max(240, min(days, 756))
-    index = pd.date_range(end=datetime.utcnow().date(), periods=periods, freq="B")
+    index = pd.date_range(end=datetime.now(timezone.utc).date(), periods=periods, freq="B")
     periods = len(index)
     t = np.arange(periods, dtype=float)
     close = 100 + t * 0.07 + np.sin(t / 10) * 2.0
@@ -69,13 +69,13 @@ class BTUNEFunction(BaseFunction):
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         if instrument is None:
-            raise ValueError("BTUNE requires instrument")
+            raise ValueError("BTUNE requires an instrument symbol")
         strategy = params.get("strategy") or "sma_crossover"
         grid = params.get("grid") or GRIDS.get(strategy)
         if not grid:
             return FunctionResult(code=self.code, instrument=instrument, data={},
                                   warnings=[f"no grid for {strategy}"])
-        sources = ["yfinance"]
+        warnings: list[str] = []
         days = int(params.get("days", 365 * 3))
         if not _truthy(params.get("live_backtest") or params.get("live")):
             return FunctionResult(
@@ -85,20 +85,23 @@ class BTUNEFunction(BaseFunction):
                 sources=["local_backtest_model"],
                 metadata={"days": days, "live": False},
             )
-        else:
-            try:
-                if not self.deps.yfinance:
-                    raise RuntimeError("no yfinance")
-                df = await self.deps.yfinance.fetch(DataRequest(
-                        kind=DataKind.OHLCV, instrument=instrument,
-                        start=datetime.utcnow() - timedelta(days=days),
-                        interval="1d",
-                    ))
-            except Exception:
-                df = pd.DataFrame()
+        sources = ["yfinance"]
+        df: pd.DataFrame = pd.DataFrame()
+        try:
+            if not self.deps.yfinance:
+                raise RuntimeError("no yfinance dependency")
+            df = await self.deps.yfinance.fetch(DataRequest(
+                    kind=DataKind.OHLCV, instrument=instrument,
+                    start=datetime.now(timezone.utc) - timedelta(days=days),
+                    interval="1d",
+                ))
+        except Exception as exc:
+            warnings.append(f"yfinance: {exc or type(exc).__name__}")
         if df.empty:
             df = _template_history(days)
             sources = ["local_backtest_model"]
+            if not warnings:
+                warnings.append("live OHLCV unavailable; using local backtest reference history")
         keys = list(grid.keys())
         combos = list(itertools.product(*[grid[k] for k in keys]))
         # Run backtests in process (cheap)
@@ -124,10 +127,11 @@ class BTUNEFunction(BaseFunction):
             return FunctionResult(code=self.code, instrument=instrument, data={},
                                   warnings=["no successful runs"])
         results.sort(key=lambda x: -x["sharpe"])
+        live_ok = sources == ["yfinance"]
         return FunctionResult(
             code=self.code, instrument=instrument,
             data={
-                "status": "ok",
+                "status": "ok" if live_ok else "computed_fallback",
                 "symbol": instrument.symbol,
                 "strategy": strategy,
                 "best_by_sharpe": results[0],
@@ -144,6 +148,7 @@ class BTUNEFunction(BaseFunction):
                     "best_sharpe": results[0]["sharpe"],
                     "best_return": max(results, key=lambda x: x["total_return"])["total_return"],
                     "best_calmar": max(results, key=lambda x: x["calmar"])["calmar"],
+                    "source_mode": "live_yfinance" if live_ok else "local_backtest_model",
                 },
                 "methodology": "Hyperparameter sweep: build each strategy configuration, run the same daily-OHLCV backtest, then rank all configurations by Sharpe, total return, and Calmar.",
                 "field_dictionary": {
@@ -155,6 +160,8 @@ class BTUNEFunction(BaseFunction):
                 },
             },
             sources=sources,
+            warnings=warnings,
+            metadata={"days": days, "live": live_ok},
         )
 
 

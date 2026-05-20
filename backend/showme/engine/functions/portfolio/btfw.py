@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import numpy as np
@@ -18,7 +18,7 @@ from showme.engine.services.backtest_framework import (
 
 def _template_history(days: int) -> pd.DataFrame:
     periods = max(240, min(days, 756))
-    index = pd.date_range(end=datetime.utcnow().date(), periods=periods, freq="B")
+    index = pd.date_range(end=datetime.now(timezone.utc).date(), periods=periods, freq="B")
     periods = len(index)
     t = np.arange(periods, dtype=float)
     close = 100 + (t * 0.08) + np.sin(t / 9) * 2.5
@@ -65,7 +65,7 @@ class BTFWFunction(BaseFunction):
             try:
                 df = await self.deps.yfinance.fetch(DataRequest(
                     kind=DataKind.OHLCV, instrument=instrument,
-                    start=datetime.utcnow() - timedelta(days=days),
+                    start=datetime.now(timezone.utc) - timedelta(days=days),
                     interval=params.get("interval", "1d"),
                 ))
             except Exception:

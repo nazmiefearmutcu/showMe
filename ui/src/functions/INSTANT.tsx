@@ -1,5 +1,18 @@
-import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
-import { Empty, Pane, PaneBody, PaneFooter, PaneHeader, Pill, Skeleton } from "@/design-system";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import {
+  Empty,
+  LogStream,
+  Pane,
+  PaneBody,
+  PaneFooter,
+  PaneHeader,
+  Pill,
+  Skeleton,
+  StatCard,
+  StatusDivider,
+  StatusSection,
+  type LogEntry,
+} from "@/design-system";
 import {
   fetchInstantEvents,
   fetchInstantStatus,
@@ -8,7 +21,10 @@ import {
   type InstantSourceHealth,
   type InstantStatus,
 } from "@/lib/instant";
+import { fetchXInstantEvents } from "@/lib/xai";
 import { toast } from "@/lib/toast";
+import { useXInjectStore } from "@/lib/xinject";
+import { readTimezone as readTz } from "@/lib/timezone";
 import type { FunctionPaneProps } from "./registry-types";
 
 type LoadState = "idle" | "loading" | "ok" | "error";
@@ -23,6 +39,7 @@ const KNOWN_SPEEDUPS: Array<{ name: string; impact: string }> = [
 
 export function INSTANTPane({ code }: FunctionPaneProps) {
   const [events, setEvents] = useState<InstantEvent[]>([]);
+  const [xEvents, setXEvents] = useState<InstantEvent[]>([]);
   const [status, setStatus] = useState<InstantStatus | null>(null);
   const [state, setState] = useState<LoadState>("idle");
   const [error, setError] = useState<string | null>(null);
@@ -30,12 +47,31 @@ export function INSTANTPane({ code }: FunctionPaneProps) {
   const [audioThreshold, setAudioThreshold] = useState(72);
   const [filterThreshold, setFilterThreshold] = useState(0);
   const [tick, setTick] = useState(0);
-  const [spoken, setSpoken] = useState<Set<string>>(() => new Set());
+  // PERF-03 P1: spoken-key set lives in a ref so the audio effect doesn't
+  // depend on (and re-trigger from) its own setState. Bounded to prevent
+  // unbounded growth during long trading sessions.
+  const spokenRef = useRef<Set<string>>(new Set());
+  const SPOKEN_MAX = 500;
   const [categoryFilter, setCategoryFilter] = useState<string>("all");
   const [regionFilter, setRegionFilter] = useState<string>("all");
   const [sourceFilter, setSourceFilter] = useState<string>("all");
   const [expandedSource, setExpandedSource] = useState<string | null>(null);
   const [backfillBusy, setBackfillBusy] = useState(false);
+  const [xQueryDraft, setXQueryDraft] = useState<string>("");
+  const [xQuery, setXQuery] = useState<string>("");
+  const [xLoading, setXLoading] = useState(false);
+  const [xWarning, setXWarning] = useState<string | null>(null);
+
+  // Consume any pending XSEN→INSTANT injection on mount. XSEN's "→ INSTANT"
+  // button stages the active query in `useXInjectStore`; we apply it here so
+  // the X-merge query input lights up immediately. See FUNC-02 / UI-INT-09.
+  useEffect(() => {
+    const pending = useXInjectStore.getState().consumeInjection();
+    if (!pending) return;
+    setXQueryDraft(pending.symbol);
+    setXQuery(pending.symbol);
+    toast.info("INSTANT merge", `Injected "${pending.symbol}" from XSEN`);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -63,27 +99,81 @@ export function INSTANTPane({ code }: FunctionPaneProps) {
     return () => window.clearInterval(id);
   }, []);
 
+  // X sentiment merge: when the user pins a symbol/topic, fetch INSTANT-shaped
+  // events from /api/x/instant_events and refresh on the same cadence as the
+  // SQLite feed below. Failures are surfaced as a warning chip, not a toast.
+  useEffect(() => {
+    if (!xQuery) {
+      setXEvents([]);
+      setXWarning(null);
+      return;
+    }
+    let cancelled = false;
+    setXLoading(true);
+    fetchXInstantEvents(xQuery, { limit: 60 })
+      .then((response) => {
+        if (cancelled) return;
+        setXEvents(response.events ?? []);
+        setXWarning(response.warning ?? response.error ?? null);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setXEvents([]);
+        setXWarning(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        if (!cancelled) setXLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [xQuery, tick]);
+
   useEffect(() => {
     if (!audio || !("speechSynthesis" in window)) return;
-    const next = new Set(spoken);
+    const seen = spokenRef.current;
     for (const event of events) {
       const score = Number(event.priority_score ?? 0);
       const key = event.dedupe_key ?? event.link ?? event.title ?? "";
-      if (!key || next.has(key) || score < audioThreshold) continue;
-      next.add(key);
+      if (!key || seen.has(key) || score < audioThreshold) continue;
+      seen.add(key);
+      // Bound the set so a multi-hour session can't leak.
+      if (seen.size > SPOKEN_MAX) {
+        const it = seen.values();
+        const first = it.next().value;
+        if (typeof first === "string") seen.delete(first);
+      }
       const utterance = new SpeechSynthesisUtterance(
         `${event.priority_label ?? "update"}. ${event.source_name ?? "instant"}. Score ${score}. ${event.title ?? ""}. ${event.generated_summary ?? ""}`,
       );
       utterance.rate = 1.02;
       window.speechSynthesis.speak(utterance);
     }
-    if (next.size !== spoken.size) setSpoken(next);
-  }, [audio, events, spoken, audioThreshold]);
+    // PERF-03 P1: cancel any queued utterances on unmount or audio toggle off
+    // so navigating away does not leave the OS-level queue talking.
+    return () => {
+      if ("speechSynthesis" in window) {
+        try {
+          window.speechSynthesis.cancel();
+        } catch {
+          // ignore
+        }
+      }
+    };
+  }, [audio, events, audioThreshold]);
 
-  const sortedAll = useMemo(
-    () => [...events].sort((a, b) => dateValue(b.fetched_at) - dateValue(a.fetched_at)),
-    [events],
-  );
+  const sortedAll = useMemo(() => {
+    const merged = [...events, ...xEvents];
+    const seen = new Set<string>();
+    const dedup: InstantEvent[] = [];
+    for (const event of merged) {
+      const key = event.dedupe_key || event.link || event.title || "";
+      if (key && seen.has(key)) continue;
+      if (key) seen.add(key);
+      dedup.push(event);
+    }
+    return dedup.sort((a, b) => dateValue(b.fetched_at) - dateValue(a.fetched_at));
+  }, [events, xEvents]);
 
   const categories = useMemo(() => uniqueValues(sortedAll, (e) => e.source_category), [sortedAll]);
   const regions = useMemo(() => uniqueValues(sortedAll, (e) => e.source_region), [sortedAll]);
@@ -116,6 +206,24 @@ export function INSTANTPane({ code }: FunctionPaneProps) {
   const ok = Boolean(status?.ok);
   const newestAt = metrics?.newest_fetched_at ?? null;
   const stale = computeStale(newestAt);
+  const streamState: "live" | "stale" | "unavailable" = transport === "unavailable"
+    ? "unavailable"
+    : stale ? "stale" : "live";
+  const streamTone = streamState === "live" ? "positive" : streamState === "stale" ? "warn" : "negative";
+
+  // Tail log: convert most recent events to LogEntry for the right-rail tail
+  const recentTail = useMemo<LogEntry[]>(() => {
+    return sorted.slice(0, 30).map((event) => {
+      const score = Number(event.priority_score ?? 0);
+      const level: LogEntry["level"] = score >= 75 ? "warn" : score >= 58 ? "info" : "debug";
+      return {
+        ts: event.fetched_at ?? event.published_at ?? new Date().toISOString(),
+        level,
+        source: event.source_name ?? event.source_category ?? "instant",
+        message: `[${score.toFixed(0)}] ${event.title ?? "(untitled)"}`,
+      };
+    }).reverse();
+  }, [sorted]);
 
   const triggerBackfill = () => {
     setBackfillBusy(true);
@@ -150,7 +258,8 @@ export function INSTANTPane({ code }: FunctionPaneProps) {
   };
 
   return (
-    <div style={{ padding: 18, height: "100%", minHeight: 0, boxSizing: "border-box" }}>
+    <div className="u-pane-host--bb">
+      <h2 className="u-sr-only">{code} — Instant squawk line</h2>
       <Pane>
         <PaneHeader
           code={code}
@@ -158,12 +267,13 @@ export function INSTANTPane({ code }: FunctionPaneProps) {
           subtitle={`${transport} · secondary data line · showing ${sorted.length} of ${sortedAll.length} events`}
           trailing={
             <div style={toolbar}>
-              {stale ? (
-                <Pill tone="warn" withDot={false}>
-                  stale · {stale.label}
+              <Pill tone={streamTone} variant="soft" withDot>
+                {streamState}
+              </Pill>
+              {newestAt ? (
+                <Pill tone={stale ? "warn" : "positive"} variant="soft" withDot={false}>
+                  {stale ? `${stale.label}` : `fresh · ${timeAgo(newestAt)}`}
                 </Pill>
-              ) : newestAt ? (
-                <Pill tone="positive" withDot={false}>fresh · {timeAgo(newestAt)}</Pill>
               ) : null}
               <label style={toggleLabel}>
                 <input
@@ -177,7 +287,7 @@ export function INSTANTPane({ code }: FunctionPaneProps) {
                 />
                 Audio
                 {audio ? (
-                  <span style={{ color: "var(--text-mute)" }}>&ge;{audioThreshold}</span>
+                  <span className="u-text-mute btn btn--ghost fn-help-grid fn-help-grid__hint fn-help-grid__hint-mute">&ge;{audioThreshold}</span>
                 ) : null}
               </label>
               {audio ? (
@@ -195,7 +305,7 @@ export function INSTANTPane({ code }: FunctionPaneProps) {
               ) : null}
               <button
                 type="button"
-                className="btn btn--ghost"
+                className="btn btn--ghost u-btn-mini"
                 onClick={() => setTick((value) => value + 1)}
                 disabled={state === "loading"}
               >
@@ -203,7 +313,7 @@ export function INSTANTPane({ code }: FunctionPaneProps) {
               </button>
               <button
                 type="button"
-                className="btn"
+                className="btn btn--ghost u-btn-mini"
                 onClick={triggerBackfill}
                 disabled={state === "loading" || backfillBusy}
               >
@@ -212,22 +322,47 @@ export function INSTANTPane({ code }: FunctionPaneProps) {
             </div>
           }
           help={
-            <div style={{ display: "grid", gap: 8 }}>
-              <strong style={{ color: "var(--accent)", fontFamily: "JetBrains Mono, monospace" }}>
-                INSTANT · secondary market-moving news line
-              </strong>
-              <span style={{ color: "var(--text-secondary)" }}>
+            <div className="fn-help-grid">
+              <strong>INSTANT · secondary market-moving news line</strong>
+              <span className="fn-help-grid__hint">
                 Reads the auxiliary instant service through /api/instant/*. Falls back to the local
                 SQLite store when the HTTP service is offline. It does not replace NI, CN, ECO, or
                 other primary showMe news functions.
               </span>
-              <span style={{ color: "var(--text-mute)" }}>
+              <span className="fn-help-grid__hint-mute">
                 Score thresholds split: a viewer-side filter (which events appear) and a separate
                 audio threshold (which trigger speech synthesis when Audio is on).
               </span>
             </div>
           }
         />
+        {/* KPI ribbon */}
+        <section style={kpiRibbon}>
+          <StatCard
+            label="Events shown"
+            value={`${sorted.length} / ${sortedAll.length}`}
+            caption={`refresh · ${REFRESH_MS / 1000}s`}
+            tone="neutral"
+          />
+          <StatCard
+            label="Breaking ≥75"
+            value={String(breakingShown)}
+            caption={`watch ${watchShown}`}
+            tone={breakingShown > 0 ? "negative" : "neutral"}
+          />
+          <StatCard
+            label="Avg latency"
+            value={formatLatency(metrics?.avg_latency_seconds)}
+            caption={transport}
+            tone="neutral"
+          />
+          <StatCard
+            label="Sources OK"
+            value={`${sourceHealth.filter((s) => s.ok).length} / ${sourceHealth.length || "—"}`}
+            caption={ok ? "service ok" : "degraded"}
+            tone={ok ? "positive" : "negative"}
+          />
+        </section>
         <FilterStrip
           minScore={filterThreshold}
           onMinScore={setFilterThreshold}
@@ -247,6 +382,19 @@ export function INSTANTPane({ code }: FunctionPaneProps) {
             setCategoryFilter("all");
             setRegionFilter("all");
             setSourceFilter("all");
+          }}
+        />
+        <XInjectStrip
+          draft={xQueryDraft}
+          onDraft={setXQueryDraft}
+          active={xQuery}
+          loading={xLoading}
+          mergedCount={xEvents.length}
+          warning={xWarning}
+          onApply={() => setXQuery(xQueryDraft.trim())}
+          onClear={() => {
+            setXQueryDraft("");
+            setXQuery("");
           }}
         />
         <PaneBody style={{ padding: 0, overflow: "hidden" }}>
@@ -271,20 +419,13 @@ export function INSTANTPane({ code }: FunctionPaneProps) {
             </section>
             <aside style={sideColumn}>
               <Panel title="Line State">
-                <div style={kvRow}>
-                  <span>mode</span>
-                  <Pill tone="accent" withDot={false}>secondary</Pill>
-                </div>
-                <div style={kvRow}>
-                  <span>transport</span>
-                  <Pill tone={transportTone(transport, ok)} withDot={false}>
-                    {transport}
-                  </Pill>
-                </div>
-                <div style={kvRow}>
-                  <span>newest fetch</span>
-                  <strong style={kvValue}>{newestAt ? timeAgo(newestAt) : "n/a"}</strong>
-                </div>
+                <StatusStrip
+                  items={[
+                    { label: "mode", value: "secondary", tone: "accent" },
+                    { label: "transport", value: transport, tone: transportTone(transport, ok) },
+                    { label: "newest", value: newestAt ? timeAgo(newestAt) : "n/a", tone: stale ? "warn" : "neutral" },
+                  ]}
+                />
                 {status?.warning ? <p style={warningText}>{status.warning}</p> : null}
               </Panel>
               <Panel title="Counters">
@@ -296,6 +437,9 @@ export function INSTANTPane({ code }: FunctionPaneProps) {
                   emphasize={sorted.length !== sortedAll.length}
                 />
                 <Metric label="avg latency" value={formatLatency(metrics?.avg_latency_seconds)} />
+              </Panel>
+              <Panel title="Live tail">
+                <LogStream entries={recentTail} maxHeight={188} follow monoFontSize={10} />
               </Panel>
               <Panel title="Flow Speed">
                 <div style={chipGrid}>
@@ -313,7 +457,7 @@ export function INSTANTPane({ code }: FunctionPaneProps) {
                 ) : null}
               </Panel>
               <Panel title={`Source Health · ${sourceHealth.length}`}>
-                <div style={{ display: "grid", gap: 6 }}>
+                <div className="u-grid-gap-6">
                   {sourceHealth.length === 0 ? (
                     <span style={mutedText}>No source rows reported.</span>
                   ) : (
@@ -341,6 +485,23 @@ export function INSTANTPane({ code }: FunctionPaneProps) {
           <span>audio · {audio ? `≥${audioThreshold}` : "off"}</span>
         </PaneFooter>
       </Pane>
+    </div>
+  );
+}
+
+function StatusStrip({
+  items,
+}: {
+  items: Array<{ label: string; value: string; tone: "neutral" | "positive" | "negative" | "accent" | "warn" | "muted" }>;
+}) {
+  return (
+    <div style={statusStrip}>
+      {items.map((item, index) => (
+        <span key={item.label} className="u-inline-flex u-items-center">
+          <StatusSection label={item.label} value={item.value} tone={item.tone} withDot />
+          {index < items.length - 1 ? <StatusDivider /> : null}
+        </span>
+      ))}
     </div>
   );
 }
@@ -388,9 +549,9 @@ function FilterStrip({
           step={5}
           value={minScore}
           onChange={(event) => onMinScore(Number(event.target.value))}
-          style={{ width: 120 }}
+          className="instant-range"
         />
-        <strong style={{ ...filterCount, minWidth: 26 }}>{minScore || "off"}</strong>
+        <strong className="instant-filter-count">{minScore || "off"}</strong>
       </div>
       <FilterChips
         label="category"
@@ -415,18 +576,84 @@ function FilterStrip({
         truncate
       />
       <div style={filterGroup}>
-        <Pill tone="warn" withDot={false}>
+        <Pill tone="warn" variant="soft" withDot={false}>
           breaking · {breakingShown}
         </Pill>
-        <Pill tone="accent" withDot={false}>
+        <Pill tone="accent" variant="soft" withDot={false}>
           watch · {watchShown}
         </Pill>
         {filtersActive ? (
-          <button type="button" className="btn btn--ghost" onClick={onClear} style={{ height: 22, padding: "0 8px", fontSize: 10 }}>
+          <button type="button" className="btn btn--ghost instant-btn-mini-8" onClick={onClear}>
             Clear
           </button>
         ) : null}
       </div>
+    </div>
+  );
+}
+
+function XInjectStrip({
+  draft,
+  onDraft,
+  active,
+  loading,
+  mergedCount,
+  warning,
+  onApply,
+  onClear,
+}: {
+  draft: string;
+  onDraft: (value: string) => void;
+  active: string;
+  loading: boolean;
+  mergedCount: number;
+  warning: string | null;
+  onApply: () => void;
+  onClear: () => void;
+}) {
+  return (
+    <div style={xInjectStrip}>
+      <span style={xInjectLabel}>X sentiment merge</span>
+      <input
+        type="text"
+        value={draft}
+        spellCheck={false}
+        placeholder="symbol or query (e.g. AAPL, $TSLA, fed)"
+        onChange={(e) => onDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") onApply();
+        }}
+        style={xInjectInput}
+      />
+      <button
+        type="button"
+        onClick={onApply}
+        disabled={loading || !draft.trim()}
+        className="btn btn--primary instant-btn-mini-10"
+      >
+        {loading ? "Pulling…" : active === draft.trim() && active ? "Refresh" : "Merge"}
+      </button>
+      {active ? (
+        <>
+          <Pill tone="accent" variant="soft" withDot={false}>
+            X · {active} · {mergedCount}
+          </Pill>
+          <button
+            type="button"
+            onClick={onClear}
+            className="btn btn--ghost instant-btn-mini-10"
+          >
+            Stop
+          </button>
+        </>
+      ) : null}
+      {warning ? (
+        <span title={warning} className="u-inline-flex">
+          <Pill tone="warn" variant="soft" withDot={false}>
+            warn
+          </Pill>
+        </span>
+      ) : null}
     </div>
   );
 }
@@ -482,8 +709,8 @@ function ChipButton({
       onClick={onClick}
       style={{
         ...chipButton,
-        background: active ? "var(--accent)" : "var(--bg-elev-2)",
-        color: active ? "#0a0d12" : "var(--text-secondary)",
+        background: active ? "var(--accent)" : "var(--surface-2)",
+        color: active ? "var(--accent-on)" : "var(--text-secondary)",
         borderColor: active ? "var(--accent)" : "var(--border-subtle)",
       }}
     >
@@ -503,14 +730,14 @@ function EventList({ events }: { events: InstantEvent[] }) {
             style={eventRowStyle(score)}
           >
             <div style={scoreBoxStyle(score)}>
-              <strong style={{ fontSize: 16, lineHeight: 1 }}>{score.toFixed(0)}</strong>
-              <span style={{ fontSize: 9, opacity: 0.85, textTransform: "uppercase" }}>
+              <strong className="instant-score-num">{score.toFixed(0)}</strong>
+              <span className="instant-score-label">
                 {event.priority_label ?? "low"}
               </span>
             </div>
-            <div style={{ minWidth: 0 }}>
+            <div className="u-min-w-0">
               <div style={titleLine}>
-                <Pill tone={priorityTone(score)} withDot={false}>
+                <Pill tone={priorityTone(score)} variant="soft" withDot={false}>
                   {(event.source_name ?? "instant").length > 22
                     ? `${(event.source_name ?? "").slice(0, 20)}…`
                     : event.source_name ?? "instant"}
@@ -581,11 +808,11 @@ function SourceHealthRow({
   return (
     <div style={sourceRowOuter}>
       <button type="button" onClick={onToggle} style={sourceRowButton} aria-expanded={expanded}>
-        <div style={{ minWidth: 0, flex: 1, textAlign: "left" }}>
+        <div className="instant-source-row-text">
           <strong style={sourceName}>{source.source_name ?? source.source_id}</strong>
           <span style={sourceMeta}>{collapsed}</span>
         </div>
-        <Pill tone={tone} withDot={false}>{label}</Pill>
+        <Pill tone={tone} variant="soft" withDot={false}>{label}</Pill>
       </button>
       {expanded ? (
         <div style={sourceDetail}>
@@ -610,7 +837,7 @@ function SourceHealthRow({
 
 function Loading() {
   return (
-    <div style={{ padding: 14, display: "grid", gap: 8 }}>
+    <div className="instant-loading">
       <Skeleton height={28} width="50%" />
       <Skeleton height={90} />
       <Skeleton height={90} />
@@ -640,7 +867,7 @@ function Metric({
   return (
     <div style={kvRow}>
       <span>{label}</span>
-      <strong style={emphasize ? { ...kvValue, color: "var(--accent)" } : kvValue}>{value}</strong>
+      <strong style={kvValue} className={emphasize ? "u-text-accent" : undefined}>{value}</strong>
     </div>
   );
 }
@@ -655,12 +882,22 @@ function formatDate(value?: string | null): string {
   if (!value) return "n/a";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "n/a";
-  return new Intl.DateTimeFormat(undefined, {
-    month: "short",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(date);
+  try {
+    return new Intl.DateTimeFormat("en-GB", {
+      month: "short",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      timeZone: readTz(),
+    }).format(date);
+  } catch {
+    return new Intl.DateTimeFormat(undefined, {
+      month: "short",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    }).format(date);
+  }
 }
 
 function formatLatency(seconds?: number | null): string {
@@ -714,9 +951,9 @@ function transportTone(transport: string, ok: boolean): "positive" | "warn" | "n
 function eventRowStyle(score: number): CSSProperties {
   const accent =
     score >= 75
-      ? "rgba(255,122,0,0.06)"
+      ? "var(--warn-soft)"
       : score >= 58
-        ? "rgba(43,201,255,0.045)"
+        ? "var(--accent-soft)"
         : "transparent";
   const borderLeft =
     score >= 75
@@ -740,12 +977,12 @@ function eventRowStyle(score: number): CSSProperties {
 function scoreBoxStyle(score: number): CSSProperties {
   const tint =
     score >= 75
-      ? "rgba(255,122,0,0.18)"
+      ? "color-mix(in srgb, var(--warn) 18%, transparent)"
       : score >= 58
-        ? "rgba(43,201,255,0.16)"
+        ? "color-mix(in srgb, var(--accent) 16%, transparent)"
         : score >= 40
-          ? "rgba(255,255,255,0.06)"
-          : "var(--bg-elev-2)";
+          ? "color-mix(in srgb, var(--text-primary) 6%, transparent)"
+          : "var(--surface-2)";
   const accent =
     score >= 75
       ? "var(--warn)"
@@ -791,6 +1028,15 @@ const rangeLabel: CSSProperties = {
   color: "var(--text-secondary)",
 };
 
+const kpiRibbon: CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
+  gap: 8,
+  padding: "10px 14px",
+  borderBottom: "1px solid var(--border-subtle)",
+  background: "color-mix(in srgb, var(--surface) 80%, transparent)",
+};
+
 const filterStrip: CSSProperties = {
   display: "flex",
   flexWrap: "wrap",
@@ -798,7 +1044,7 @@ const filterStrip: CSSProperties = {
   gap: 14,
   padding: "8px 14px",
   borderBottom: "1px solid var(--border-subtle)",
-  background: "var(--bg-elev-2)",
+  background: "var(--surface-2)",
 };
 
 const filterGroup: CSSProperties = {
@@ -816,12 +1062,6 @@ const filterLabel: CSSProperties = {
   letterSpacing: "0.08em",
 };
 
-const filterCount: CSSProperties = {
-  fontFamily: "JetBrains Mono, monospace",
-  fontSize: 11,
-  color: "var(--text-secondary)",
-  display: "inline-block",
-};
 
 const chipButton: CSSProperties = {
   height: 22,
@@ -853,7 +1093,7 @@ const sideColumn: CSSProperties = {
   minWidth: 0,
   minHeight: 0,
   overflow: "auto",
-  background: "rgba(0,0,0,0.14)",
+  background: "color-mix(in srgb, var(--bg) 70%, transparent)",
 };
 
 const eventList: CSSProperties = {
@@ -898,7 +1138,7 @@ const metaCell: CSSProperties = {
 };
 
 const metaCellMute: CSSProperties = {
-  color: "rgba(255,255,255,0.18)",
+  color: "var(--border-strong)",
 };
 
 const metaLink: CSSProperties = {
@@ -917,7 +1157,7 @@ const keywordRow: CSSProperties = {
 const keywordChip: CSSProperties = {
   padding: "2px 7px",
   borderRadius: 9,
-  background: "rgba(43,201,255,0.10)",
+  background: "var(--accent-soft)",
   color: "var(--accent)",
   fontFamily: "JetBrains Mono, monospace",
   fontSize: 9,
@@ -936,6 +1176,18 @@ const panelTitle: CSSProperties = {
   fontSize: 10,
   fontWeight: 800,
   textTransform: "uppercase",
+  letterSpacing: "0.08em",
+};
+
+const statusStrip: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  height: 22,
+  padding: "0 4px",
+  background: "var(--surface-2)",
+  border: "1px solid var(--border-subtle)",
+  borderRadius: "var(--radius-sm)",
+  flexWrap: "wrap",
 };
 
 const kvRow: CSSProperties = {
@@ -985,7 +1237,7 @@ const chip: CSSProperties = {
   padding: "3px 8px",
   border: "1px solid var(--border-subtle)",
   borderRadius: 9,
-  background: "var(--bg-elev-2)",
+  background: "var(--surface-2)",
   color: "var(--text-secondary)",
   fontFamily: "JetBrains Mono, monospace",
   fontSize: 10,
@@ -996,7 +1248,7 @@ const chip: CSSProperties = {
 const sourceRowOuter: CSSProperties = {
   border: "1px solid var(--border-subtle)",
   borderRadius: "var(--radius-md)",
-  background: "var(--bg-elev-2)",
+  background: "var(--surface-2)",
 };
 
 const sourceRowButton: CSSProperties = {
@@ -1042,4 +1294,37 @@ const mutedNote: CSSProperties = {
   color: "var(--text-mute)",
   fontSize: 10,
   lineHeight: 1.4,
+};
+
+const xInjectStrip: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 8,
+  padding: "6px 14px 8px",
+  borderBottom: "1px solid var(--border-subtle)",
+  background: "var(--accent-soft)",
+  flexWrap: "wrap",
+};
+
+const xInjectLabel: CSSProperties = {
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: 9,
+  color: "var(--accent)",
+  textTransform: "uppercase",
+  letterSpacing: "0.08em",
+};
+
+const xInjectInput: CSSProperties = {
+  height: 22,
+  minWidth: 220,
+  padding: "0 8px",
+  background: "var(--surface-1)",
+  border: "1px solid var(--border-subtle)",
+  borderRadius: "var(--radius-md)",
+  color: "var(--text-primary)",
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: 11,
+  outline: "none",
+  flex: "1 1 240px",
+  maxWidth: 320,
 };

@@ -1,14 +1,22 @@
 # ShowMe Engine Independence
 
+> Last updated: 2026-05-11 (Round 2C, post-Round-34 monorepo refactor).
+
 ## Principle
 
-* ShowMe owns its function engine under `engine/`; production builds do not
-  depend on any sibling checkout.
+* ShowMe owns its function engine under `backend/showme/engine/`;
+  production builds do not depend on any sibling checkout.
 * Features that originated elsewhere are exposed as normal ShowMe functions or
   dedicated ShowMe panes, with the same symbol contract as every other
   function.
-* Runtime imports must resolve from `engine/src` in source builds or the
-  PyInstaller extraction directory in packaged builds.
+* Runtime imports resolve through the standard Python import system —
+  the engine is a regular `showme.engine` subpackage, no `sys.path`
+  injection. (Pre-Round-34 the engine lived at `engine/src` and was
+  prepended to `sys.path` by the sidecar; that mode is retired and the
+  history table below is **historical**, not current.)
+* PyInstaller `--collect-submodules('showme')` bundles the entire
+  subpackage tree into the shipped binary; `backend/config/` is added
+  via `--add-data` in `backend/showme-backend.spec`.
 
 ## Function-by-function migration table
 
@@ -66,6 +74,7 @@ in as we ship.
 
 ## Compatibility Contract
 
-Every function listed by `/api/function-index` must execute through
-`/api/fn/{code}` for crypto, equity, FX, and commodity representative symbols.
-Generated compatibility reports live under `artifacts/function-audit/`.
+Every function listed by `/api/function-index` (live: 141 functions, baseline
+≥138) must execute through `/api/fn/{code}` for crypto, equity, FX,
+commodity, bond and option representative symbols. Generated compatibility
+reports live under `artifacts/showme-function-audit/<utc-stamp>/`.

@@ -38,12 +38,19 @@ class CRPRFunction(BaseFunction):
             {"agency": "Moody's", "rating": rating.get("moodys"), "outlook": rating.get("outlook"), "watch": rating.get("watch"), "rating_date": _as_of(), "rationale": "Public/default sovereign profile; replace with issuer-specific feed when configured."},
             {"agency": "Fitch", "rating": rating.get("fitch"), "outlook": rating.get("outlook"), "watch": rating.get("watch"), "rating_date": _as_of(), "rationale": "Public/default sovereign profile; replace with issuer-specific feed when configured."},
         ]
+        user_supplied_rating = bool(params.get("rating"))
         return FunctionResult(
             code=self.code,
             instrument=instrument,
             data={
+                "status": "user_input" if user_supplied_rating else "reference_baseline",
                 "rows": rows,
-                "summary": {"issuer": issuer, "implied_bucket": params.get("bucket", "high_grade"), "agencies": len(rows)},
+                "summary": {
+                    "issuer": issuer,
+                    "implied_bucket": params.get("bucket", "high_grade"),
+                    "agencies": len(rows),
+                    "source_mode": "user_input" if user_supplied_rating else "manual_or_public_defaults",
+                },
                 "implied_bucket": params.get("bucket", "high_grade"),
                 "scale": ["AAA", "AA", "A", "BBB", "BB", "B", "CCC"],
                 "methodology": "CRPR displays agency rating records for the selected issuer/security. The bundled fallback is a public/default profile, not a live paid ratings feed; the source and rationale are shown in each row.",
@@ -57,6 +64,9 @@ class CRPRFunction(BaseFunction):
                 },
             },
             sources=["manual_or_public_defaults"],
+            warnings=[
+                "CRPR is a reference profile; connect an issuer-specific ratings feed for live coverage."
+            ] if not user_supplied_rating else [],
         )
 
 
@@ -68,7 +78,17 @@ class DDISFunction(BaseFunction):
     category = "bond"
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
-        issuer = str(params.get("issuer") or _bond_symbol(instrument, params, "AAPL")).upper()
+        # Resolve issuer from explicit param > instrument symbol > generic
+        # placeholder. Falling back to "AAPL" branded sovereign instruments
+        # like US10Y with a corporate-shape debt ladder (pre-2026-05-17 bug).
+        explicit_issuer = params.get("issuer")
+        instrument_symbol = getattr(instrument, "symbol", None)
+        issuer = str(
+            explicit_issuer
+            or instrument_symbol
+            or "UNSPECIFIED_ISSUER"
+        ).strip().upper() or "UNSPECIFIED_ISSUER"
+        user_provided_rows = params.get("maturities") is not None
         rows = params.get("maturities") or [
             {"bucket": "0-1Y", "tenor_years": 0.5, "amount_usd_bn": 3.2, "currency": "USD", "pct": 12.0},
             {"bucket": "1-3Y", "tenor_years": 2.0, "amount_usd_bn": 8.6, "currency": "USD", "pct": 32.2},
@@ -78,16 +98,22 @@ class DDISFunction(BaseFunction):
         for row in rows:
             if "amount" in row and "amount_usd_bn" not in row:
                 row["amount_usd_bn"] = row.pop("amount")
+            if "amount_usd_bn" not in row:
+                row["amount_usd_bn"] = 0.0
+        total = round(sum(float(r.get("amount_usd_bn") or 0) for r in rows), 4)
+        source_mode = "user_input" if user_provided_rows else "illustrative_model"
+        status = "ok" if user_provided_rows else "illustrative"
         return FunctionResult(
             code=self.code,
             instrument=instrument,
             data={
+                "status": status,
                 "rows": rows,
                 "summary": {
                     "issuer": issuer,
-                    "total_debt_usd_bn": round(sum(float(r["amount_usd_bn"]) for r in rows), 4),
+                    "total_debt_usd_bn": total,
                     "currency": "USD",
-                    "source_mode": "user_input_or_model",
+                    "source_mode": source_mode,
                 },
                 "methodology": "DDIS buckets debt principal by remaining maturity. Amounts are shown in USD billions; when a filing/debt schedule is not connected the rows are an explicit model/input schedule rather than live issuer debt.",
                 "field_dictionary": {
@@ -180,12 +206,6 @@ class ALLQFunction(BaseFunction):
         )
 
 
-@FunctionRegistry.register
-class GC3DFunction(BaseFunction):
-    code = "GC3D"
-    name = "Yield Curve 3D (curve × time)"
-    category = "bond"
-
-    async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
-        return FunctionResult(code=self.code, instrument=None, data={},
-                              warnings=["Plotly 3D surface UI Phase 4"])
+# GC3D is canonically registered via showme.engine.functions.bond.gc3d (GC3DFunctionLive).
+# The legacy stub here was deleted to avoid the duplicate-code drift flagged in
+# ARCH-10/PY-LINT-08.

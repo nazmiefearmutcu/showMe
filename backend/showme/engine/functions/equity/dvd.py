@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from showme.engine.core.base_data_source import DataKind, DataRequest
@@ -102,7 +102,7 @@ def _template_events(instrument: Instrument) -> dict[str, Any]:
     symbol = instrument.symbol
     asset_class = instrument.asset_class.value
     is_equity_like = asset_class in {"EQUITY", "ETF"}
-    today = datetime.utcnow().date().isoformat()
+    today = datetime.now(timezone.utc).date().isoformat()
     if is_equity_like:
         dividends = [
             {"date": today, "amount": 0.24, "currency": "USD", "frequency": "quarterly", "status": "modelled_latest"},

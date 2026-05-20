@@ -107,10 +107,19 @@ class MigrationSummary:
 # ── Helpers ──────────────────────────────────────────────────────────────
 
 def _connect(db_path: Path) -> sqlite3.Connection:
+    """Open or create the portfolio DB with WAL + secure file mode.
+
+    Per ARCH-09 P2: opens through the central ``open_sqlite`` helper so we
+    get WAL + busy_timeout, then chmods the on-disk file to 0o600 since it
+    holds personal trading state.
+    """
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_path))
+    from .persistence_helpers import open_sqlite, secure_chmod
+    conn = open_sqlite(db_path)
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
+    if db_path.exists():
+        secure_chmod(db_path)
     return conn
 
 
@@ -280,7 +289,15 @@ def import_state(
 
 
 def default_target() -> Path:
-    return Path.home() / "Library/Application Support/showMe/data/portfolio.db"
+    """Resolve portfolio.db via ``app_paths.app_home()`` so Tauri's
+    bundle-id-driven data root (``app.showme.terminal/``) and the sidecar
+    agree on a single location. Honors ``SHOWME_HOME`` when present.
+    """
+    from .app_paths import app_home
+
+    target = app_home() / "data" / "portfolio.db"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    return target
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

@@ -14,6 +14,7 @@
     "format": "prettier -w \"src/**/*.{ts,tsx,css}\""
   },
   "dependencies": {
+    "@tanstack/react-virtual": "^3.13.24",
     "@tauri-apps/api": "^2.1.0",
     "@tauri-apps/plugin-deep-link": "^2",
     "@tauri-apps/plugin-dialog": "^2",
@@ -22,12 +23,17 @@
     "@tauri-apps/plugin-os": "^2",
     "@tauri-apps/plugin-process": "^2",
     "@tauri-apps/plugin-store": "^2",
+    "focus-trap": "^8.2.0",
     "lightweight-charts": "^4.2.0",
+    "re-resizable": "^6.11.2",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "zustand": "^5.0.1"
   },
   "devDependencies": {
+    "@testing-library/dom": "^10.4.1",
+    "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/react": "^16.0.1",
     "@types/node": "^22.9.0",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
@@ -38,14 +44,13 @@
     "eslint": "^9.14.0",
     "eslint-plugin-react-hooks": "^5.0.0",
     "eslint-plugin-react-refresh": "^0.4.14",
+    "jsdom": "^25.0.1",
     "postcss": "^8.4.49",
     "prettier": "^3.3.3",
     "tailwindcss": "^3.4.14",
     "typescript": "^5.6.3",
     "vite": "^5.4.10",
-    "vitest": "^2.1.4",
-    "@testing-library/react": "^16.0.1",
-    "@testing-library/jest-dom": "^6.6.3",
-    "jsdom": "^25.0.1"
+    "vite-plugin-csp-guard": "^2.2.0",
+    "vitest": "^2.1.4"
   }
 }

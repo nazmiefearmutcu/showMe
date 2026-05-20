@@ -9,6 +9,8 @@ Strategy:
   STRONG_SELL : price > VWAP + 2σ AND high volume (>multiplier × avg)
 """
 
+from __future__ import annotations
+
 import pandas as pd
 import numpy as np
 

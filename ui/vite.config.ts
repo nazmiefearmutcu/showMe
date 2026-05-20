@@ -1,6 +1,7 @@
 /// <reference types="vitest" />
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import csp from "vite-plugin-csp-guard";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -31,7 +32,27 @@ function manualChunks(id: string): string | undefined {
 }
 
 export default defineConfig({
-  plugins: [react()],
+  // Round-4A CSP wire-up — the csp plugin emits a per-build nonce, injects it
+  // into `<style>` blocks, and ships a Content-Security-Policy meta tag. The
+  // Tauri sibling reads the meta tag at startup so the runtime policy stays
+  // in sync with what the build was hashed against. See ui/CSP.md.
+  plugins: [
+    react(),
+    csp({
+      algorithm: "sha256",
+      dev: {
+        run: false,
+      },
+      policy: {
+        "default-src": ["'self'"],
+        "img-src": ["'self'", "data:", "blob:"],
+        "style-src": ["'self'"],
+        "script-src": ["'self'"],
+        "connect-src": ["'self'", "ws:", "wss:", "http://localhost:*", "http://127.0.0.1:*"],
+        "font-src": ["'self'", "data:"],
+      },
+    }),
+  ],
   clearScreen: false,
   resolve: {
     alias: {

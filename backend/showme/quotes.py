@@ -4,12 +4,20 @@ This module deliberately avoids ShowMe function execution. WATCH needs a small,
 reliable last-price service; routing it through DES couples it to slower
 company-description paths and leaves equities blank when DES does not expose
 quote fields.
+
+Per PERF-05 P1: a small process-local TTL cache (5 s for crypto, 15 s for
+equities) is shared by every concurrent caller of ``/api/quote/{symbol}`` so
+N panes asking for the same symbol fan out to one upstream provider call
+instead of N. Use :func:`quote_cache_get` / :func:`quote_cache_set` from the
+HTTP layer to participate in the cache.
 """
 from __future__ import annotations
 
 import asyncio
 import csv
 import os
+import threading
+import time
 from datetime import datetime, timezone
 from io import StringIO
 from typing import Any
@@ -44,6 +52,56 @@ COINGECKO_IDS = {
 
 class QuoteFetchError(RuntimeError):
     """Raised when every quote provider fails for a symbol."""
+
+
+# ── PERF-05 P1: small process-local TTL cache ───────────────────────────────
+_QUOTE_CACHE_TTL_CRYPTO_S = 5.0
+_QUOTE_CACHE_TTL_EQUITY_S = 15.0
+_QUOTE_CACHE_MAX_ENTRIES = 1024
+_quote_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+_quote_cache_lock = threading.Lock()
+
+
+def _cache_ttl_for(symbol: str) -> float:
+    return _QUOTE_CACHE_TTL_CRYPTO_S if _is_crypto_symbol(symbol) else _QUOTE_CACHE_TTL_EQUITY_S
+
+
+def quote_cache_get(symbol: str) -> dict[str, Any] | None:
+    """Return a cached snapshot for ``symbol`` if still within TTL, else ``None``."""
+    key = (symbol or "").strip().upper()
+    if not key:
+        return None
+    now = time.monotonic()
+    with _quote_cache_lock:
+        entry = _quote_cache.get(key)
+        if entry is None:
+            return None
+        expires_at, payload = entry
+        if expires_at < now:
+            _quote_cache.pop(key, None)
+            return None
+        return payload
+
+
+def quote_cache_set(symbol: str, payload: dict[str, Any]) -> None:
+    """Store ``payload`` keyed on ``symbol`` with the per-asset-class TTL."""
+    key = (symbol or "").strip().upper()
+    if not key:
+        return
+    expires_at = time.monotonic() + _cache_ttl_for(key)
+    with _quote_cache_lock:
+        if len(_quote_cache) >= _QUOTE_CACHE_MAX_ENTRIES:
+            # Drop the oldest entry to keep the cache bounded; cheaper than
+            # a full LRU and good enough at this size.
+            oldest_key = min(_quote_cache, key=lambda k: _quote_cache[k][0])
+            _quote_cache.pop(oldest_key, None)
+        _quote_cache[key] = (expires_at, payload)
+
+
+def quote_cache_clear() -> None:
+    """Drop every cached snapshot. Used by tests + the /api/health reset."""
+    with _quote_cache_lock:
+        _quote_cache.clear()
 
 
 async def fetch_quote_snapshot(symbol: str) -> dict[str, Any]:
@@ -180,9 +238,24 @@ def _fetch_binance_futures_quote(symbol: str) -> dict[str, Any]:
     )
 
 
-def _fetch_cryptocompare_quote(symbol: str) -> dict[str, Any]:
+def _fetch_cryptocompare_quote(
+    symbol: str,
+    *,
+    allow_currency_remap: bool = False,
+) -> dict[str, Any]:
+    """Fetch a CryptoCompare quote.
+
+    Per FUNC-01 P0: do NOT silently remap a USDT quote to USD — they are
+    different markets and USDT depegs. CryptoCompare exposes USDT pairs
+    directly via ``tsym=USDT`` for major bases. If it returns no result
+    for the asked tsym we raise so the orchestrator rotates to the next
+    provider instead of secretly serving USD pricing under a USDT label.
+
+    ``allow_currency_remap`` is an explicit opt-in for legacy callers that
+    deliberately want the old USDT→USD swap (none today).
+    """
     base, quote = split_crypto_symbol(symbol)
-    quote_cc = "USD" if quote == "USDT" else quote
+    quote_cc = "USD" if (allow_currency_remap and quote == "USDT") else quote
     response = requests.get(
         "https://min-api.cryptocompare.com/data/pricemultifull",
         params={"fsyms": base, "tsyms": quote_cc},
@@ -193,6 +266,10 @@ def _fetch_cryptocompare_quote(symbol: str) -> dict[str, Any]:
     payload = response.json() or {}
     raw = (((payload.get("RAW") or {}).get(base) or {}).get(quote_cc) or {})
     if not raw:
+        if quote == "USDT" and not allow_currency_remap:
+            raise QuoteFetchError(
+                "CryptoCompare has no USDT pair for this base"
+            )
         raise QuoteFetchError(f"CryptoCompare returned no RAW quote for {symbol}")
     last = number(raw.get("PRICE"))
     prev = number(raw.get("OPEN24HOUR"))

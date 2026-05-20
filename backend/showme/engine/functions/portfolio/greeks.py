@@ -18,12 +18,26 @@ class GREEKSFunction(BaseFunction):
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         positions = params.get("positions") or []
+        if not isinstance(positions, list):
+            return FunctionResult(
+                code=self.code,
+                instrument=None,
+                data={
+                    "status": "input_error",
+                    "reason": f"GREEKS requires positions as a list; received {type(positions).__name__}.",
+                    "next_actions": [
+                        "Pass positions as a JSON array of objects with qty, type, spot, strike, expiry, vol, rate.",
+                    ],
+                    "rows": [],
+                },
+                warnings=[f"positions must be a list, got {type(positions).__name__}"],
+            )
         if not positions:
             return FunctionResult(code=self.code, instrument=None,
                                   data={"delta": 0, "gamma": 0, "vega": 0, "theta": 0,
                                         "rho": 0, "positions": 0,
                                         "rows": [],
-                                        "status": "ready_no_option_positions",
+                                        "status": "input_required",
                                         "reason": "No option positions were supplied or found in the local option book.",
                                         "next_actions": [
                                             "Pass positions with qty, type, spot, strike, expiry, vol, and rate.",
@@ -35,8 +49,19 @@ class GREEKSFunction(BaseFunction):
         try:
             agg = greeks_svc.aggregate_book(positions)
         except Exception as e:
-            return FunctionResult(code=self.code, instrument=None, data={},
-                                  warnings=[f"aggregate: {e}"])
+            return FunctionResult(
+                code=self.code,
+                instrument=None,
+                data={
+                    "status": "calc_error",
+                    "reason": f"Greeks aggregation failed: {e}",
+                    "rows": [],
+                    "next_actions": [
+                        "Verify each position has numeric qty, strike, expiry, vol, rate, and spot.",
+                    ],
+                },
+                warnings=[f"aggregate: {e}"],
+            )
         rows = _rows_from_positions(positions)
         data = {
             **agg,

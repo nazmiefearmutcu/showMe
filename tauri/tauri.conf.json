@@ -26,22 +26,27 @@
         "hiddenTitle": true,
         "transparent": true,
         "windowEffects": {
-          "effects": ["sidebar", "underWindowBackground"],
+          "effects": [
+            "sidebar",
+            "underWindowBackground"
+          ],
           "state": "active"
         },
-        "trafficLightPosition": { "x": 14, "y": 18 },
         "shadow": true,
         "acceptFirstMouse": false,
         "tabbingIdentifier": "showme.terminal"
       }
     ],
     "security": {
-      "csp": "default-src 'self' ipc: https://ipc.localhost; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ipc: http://127.0.0.1:* ws://127.0.0.1:*"
+      "csp": "default-src 'self' ipc: https://ipc.localhost; img-src 'self' data: blob:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; style-src-elem 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ipc: http://127.0.0.1:* ws://127.0.0.1:*; object-src 'none'; frame-src 'none'; worker-src 'self' blob:; base-uri 'self'; form-action 'none'"
     }
   },
   "bundle": {
     "active": true,
-    "targets": ["app", "dmg"],
+    "targets": [
+      "app",
+      "dmg"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -49,7 +54,7 @@
       "icons/icon.icns"
     ],
     "category": "public.app-category.finance",
-    "shortDescription": "Trader cockpit — native macOS",
+    "shortDescription": "Trader cockpit \u2014 native macOS",
     "longDescription": "showMe is a native macOS Apple Silicon trader cockpit powered by a bundled 138+ function market engine in a Tauri shell with native menus, tray, notifications, biometric auth, and multi-window state.",
     "macOS": {
       "minimumSystemVersion": "12.0",
@@ -60,23 +65,28 @@
       "entitlements": "entitlements.plist",
       "hardenedRuntime": true
     },
-    "externalBin": ["binaries/showme-backend"],
-    "resources": [],
+    "externalBin": [],
+    "resources": [
+      "binaries/showme-backend/**/*"
+    ],
     "fileAssociations": []
   },
   "plugins": {
     "deep-link": {
       "desktop": {
-        "schemes": ["showme"]
+        "schemes": [
+          "showme"
+        ]
       }
     },
     "updater": {
+      "_comment_pubkey": "Round 4C — real minisign keypair generated via `tauri signer generate`. Private half lives at packaging/keys/showme-updater.key (gitignored). CI must inject TAURI_SIGNING_PRIVATE_KEY + TAURI_SIGNING_PRIVATE_KEY_PASSWORD to sign release artifacts.",
       "active": true,
       "endpoints": [
         "https://github.com/showme-app/showme/releases/latest/download/latest.json"
       ],
       "dialog": true,
-      "pubkey": "PLACEHOLDER_REPLACE_WITH_TAURI_GENERATED_KEY",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDk4MjREQjMxQzlGQjMxNkUKUldSdU1mdkpNZHNrbUw3VlRwMGZ4bE9lNi9qdC8zR1V1bzMzVjE0TkJkdFBka1g3YUtJa1dJalcK",
       "windows": {
         "installMode": "passive"
       }

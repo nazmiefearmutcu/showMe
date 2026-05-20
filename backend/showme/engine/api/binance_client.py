@@ -56,7 +56,7 @@ class BinanceClient:
                 logger.info("Connected to Binance LIVE")
 
         self._initialized = True
-        logger.info(f"BinanceClient initialized | mode={self.mode} | market={self.market_type}")
+        logger.info("BinanceClient initialized | mode=%s | market=%s", self.mode, self.market_type)
 
     @property
     def client(self) -> Client:
@@ -96,7 +96,7 @@ class BinanceClient:
                 exceptions=(BinanceAPIException, BinanceRequestException, Exception),
             )
         except Exception as e:
-            logger.error(f"Failed to fetch klines for {symbol}: {e}")
+            logger.error("Failed to fetch klines for %s: %s", symbol, e)
             return []
 
     def get_ticker_price(self, symbol: str) -> Optional[float]:
@@ -108,7 +108,7 @@ class BinanceClient:
                 ticker = self.client.get_symbol_ticker(symbol=symbol)
             return float(ticker["price"])
         except Exception as e:
-            logger.error(f"Failed to get ticker price for {symbol}: {e}")
+            logger.error("Failed to get ticker price for %s: %s", symbol, e)
             return None
 
     def get_all_prices(self) -> dict[str, float]:
@@ -133,7 +133,7 @@ class BinanceClient:
                         continue
             return result
         except Exception as e:
-            logger.error(f"Failed to bulk-fetch prices: {e}")
+            logger.error("Failed to bulk-fetch prices: %s", e)
             return {}
 
     def get_account_balance(self, asset: str = "USDT") -> float:
@@ -145,7 +145,7 @@ class BinanceClient:
                     return float(balance["free"])
             return 0.0
         except Exception as e:
-            logger.error(f"Failed to get account balance: {e}")
+            logger.error("Failed to get account balance: %s", e)
             return 0.0
 
     def get_symbol_info(self, symbol: str) -> Optional[dict]:
@@ -159,7 +159,7 @@ class BinanceClient:
                 return None
             return self.client.get_symbol_info(symbol)
         except Exception as e:
-            logger.error(f"Failed to get symbol info for {symbol}: {e}")
+            logger.error("Failed to get symbol info for %s: %s", symbol, e)
             return None
 
     def place_market_buy(self, symbol: str, quantity: float) -> Optional[dict]:
@@ -172,13 +172,13 @@ class BinanceClient:
                 symbol=symbol,
                 quantity=quantity,
             )
-            logger.info(f"MARKET BUY executed | {symbol} | qty={quantity} | order_id={order['orderId']}")
+            logger.info("MARKET BUY executed | %s | qty=%s | order_id=%s", symbol, quantity, order['orderId'])
             return order
         except BinanceAPIException as e:
-            logger.error(f"Binance API error on market buy {symbol}: {e}")
+            logger.error("Binance API error on market buy %s: %s", symbol, e)
             return None
         except Exception as e:
-            logger.error(f"Unexpected error on market buy {symbol}: {e}")
+            logger.error("Unexpected error on market buy %s: %s", symbol, e)
             return None
 
     def place_market_sell(self, symbol: str, quantity: float) -> Optional[dict]:
@@ -191,13 +191,13 @@ class BinanceClient:
                 symbol=symbol,
                 quantity=quantity,
             )
-            logger.info(f"MARKET SELL executed | {symbol} | qty={quantity} | order_id={order['orderId']}")
+            logger.info("MARKET SELL executed | %s | qty=%s | order_id=%s", symbol, quantity, order['orderId'])
             return order
         except BinanceAPIException as e:
-            logger.error(f"Binance API error on market sell {symbol}: {e}")
+            logger.error("Binance API error on market sell %s: %s", symbol, e)
             return None
         except Exception as e:
-            logger.error(f"Unexpected error on market sell {symbol}: {e}")
+            logger.error("Unexpected error on market sell %s: %s", symbol, e)
             return None
 
     def place_limit_buy(self, symbol: str, quantity: float, price: float) -> Optional[dict]:
@@ -210,10 +210,10 @@ class BinanceClient:
                 quantity=quantity,
                 price=str(price),
             )
-            logger.info(f"LIMIT BUY placed | {symbol} | qty={quantity} | price={price}")
+            logger.info("LIMIT BUY placed | %s | qty=%s | price=%s", symbol, quantity, price)
             return order
         except Exception as e:
-            logger.error(f"Error placing limit buy {symbol}: {e}")
+            logger.error("Error placing limit buy %s: %s", symbol, e)
             return None
 
     def place_limit_sell(self, symbol: str, quantity: float, price: float) -> Optional[dict]:
@@ -226,10 +226,10 @@ class BinanceClient:
                 quantity=quantity,
                 price=str(price),
             )
-            logger.info(f"LIMIT SELL placed | {symbol} | qty={quantity} | price={price}")
+            logger.info("LIMIT SELL placed | %s | qty=%s | price=%s", symbol, quantity, price)
             return order
         except Exception as e:
-            logger.error(f"Error placing limit sell {symbol}: {e}")
+            logger.error("Error placing limit sell %s: %s", symbol, e)
             return None
 
     def cancel_order(self, symbol: str, order_id: int) -> Optional[dict]:
@@ -238,10 +238,10 @@ class BinanceClient:
             return None
         try:
             result = self.client.cancel_order(symbol=symbol, orderId=order_id)
-            logger.info(f"Order cancelled | {symbol} | order_id={order_id}")
+            logger.info("Order cancelled | %s | order_id=%s", symbol, order_id)
             return result
         except Exception as e:
-            logger.error(f"Error cancelling order {order_id} for {symbol}: {e}")
+            logger.error("Error cancelling order %s for %s: %s", order_id, symbol, e)
             return None
 
     def get_futures_symbols(self, quote_asset: str = "USDT") -> list[str]:
@@ -256,10 +256,10 @@ class BinanceClient:
                     and s.get("contractType") == "PERPETUAL"
                 ):
                     symbols.append(s["symbol"])
-            logger.info(f"Fetched {len(symbols)} futures symbols for {quote_asset}")
+            logger.info("Fetched %s futures symbols for %s", len(symbols), quote_asset)
             return sorted(symbols)
         except Exception as e:
-            logger.error(f"Failed to fetch futures symbols: {e}")
+            logger.error("Failed to fetch futures symbols: %s", e)
             return []
 
     def get_order_status(self, symbol: str, order_id: int) -> Optional[dict]:
@@ -267,7 +267,7 @@ class BinanceClient:
         try:
             return self.client.get_order(symbol=symbol, orderId=order_id)
         except Exception as e:
-            logger.error(f"Error getting order status {order_id}: {e}")
+            logger.error("Error getting order status %s: %s", order_id, e)
             return None
 
     def get_funding_rate(self, symbol: str, limit: int = 200) -> list[dict]:
@@ -286,7 +286,7 @@ class BinanceClient:
                 exceptions=(BinanceAPIException, BinanceRequestException, Exception),
             ) or []
         except Exception as e:
-            logger.warning(f"Funding rate fetch failed for {symbol}: {e}")
+            logger.warning("Funding rate fetch failed for %s: %s", symbol, e)
             return []
 
     def get_open_interest_hist(
@@ -309,5 +309,5 @@ class BinanceClient:
                 exceptions=(BinanceAPIException, BinanceRequestException, Exception),
             ) or []
         except Exception as e:
-            logger.warning(f"Open interest fetch failed for {symbol}: {e}")
+            logger.warning("Open interest fetch failed for %s: %s", symbol, e)
             return []

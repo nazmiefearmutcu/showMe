@@ -76,3 +76,8 @@ logs/
 
 # ── Docs scratch ────────────────────────────────────────────────────────────
 docs/round_notes/screenshots/
+packaging/keys/
+packaging/keys/*.key
+
+# ── ML model weights (too large for git — fetched at build time) ────────────
+x_scraper_ai/model/

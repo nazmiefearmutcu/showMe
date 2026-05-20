@@ -15,6 +15,15 @@ from showme.engine.core.base_function import BaseFunction, FunctionRegistry, Fun
 from showme.engine.core.instrument import Instrument
 
 
+def _truthy(value: Any) -> bool:
+    """Treat ``"false"``/``"0"``/``""`` strings as False — matches EVTS/FA/FLY/FTS."""
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
 _DEFAULT_SYMBOLS = [
     "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT",
     "DOGEUSDT", "AVAXUSDT", "LINKUSDT", "TRXUSDT", "DOTUSDT",
@@ -97,7 +106,7 @@ class FRHFunction(BaseFunction):
         symbols = [str(s).upper() for s in symbols]
         limit = max(1, min(int(params.get("limit", len(symbols)) or len(symbols)), 100))
         symbols = symbols[:limit]
-        if not (params.get("live_funding") or params.get("live")):
+        if not (_truthy(params.get("live_funding")) or _truthy(params.get("live"))):
             rows = _funding_template(symbols)
             return FunctionResult(
                 code=self.code,
