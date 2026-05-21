@@ -39,11 +39,10 @@ function Initials({ name }: { name: string }) {
 }
 
 function CredentialRow({
-  rec, onDelete, onTest, onEscalate,
+  rec, onDelete, onEscalate,
 }: {
   rec: CredentialRecord;
   onDelete: (id: string) => void;
-  onTest: (id: string) => void;
   onEscalate: (id: string, label: string) => void;
 }) {
   const [confirm, setConfirm] = useState("");
@@ -67,7 +66,6 @@ function CredentialRow({
         const r = await useExchangeStore.getState().testCredential(rec.id);
         setTesting(r.ok ? "ok" : "err");
         setTestMsg(r.ok ? "OK" : (r.error ?? "fail"));
-        onTest(rec.id);
       }}>
         Test
       </button>
@@ -121,7 +119,6 @@ function ExchangeForm({ entry }: { entry: CatalogEntry }) {
           key={rec.id}
           rec={rec}
           onDelete={(id) => useExchangeStore.getState().deleteCredential(id)}
-          onTest={(id) => useExchangeStore.getState().testCredential(id)}
           onEscalate={(id, lbl) => useExchangeStore.getState().upgradeToTrade(id, lbl)}
         />
       ))}
@@ -287,7 +284,7 @@ export function CONNPane() {
       </div>
       <div style={{ overflowY: "auto" }}>
         {selected ? (
-          <ExchangeForm entry={selected} />
+          <ExchangeForm key={selected.id} entry={selected} />
         ) : (
           <div style={{ color: "var(--fg-2)" }}>
             Soldan bir borsa seç.
