@@ -29,6 +29,7 @@ LOG = logging.getLogger("showme.brokers.factory")
 _REGISTRY: dict[str, Callable[[], BaseBroker]] = {}
 _DYNAMIC: dict[str, str] = {}  # credential_id → broker name (for unregister)
 _LIVE: dict[str, BaseBroker] = {}  # name → most-recently-instantiated broker; populated by get_broker
+_INVALIDATION_HOOKS: list[Callable[[str], None]] = []  # called with credential_id from unregister_credential
 
 _CATALOG: Catalog = Catalog()  # patched at startup; tests override
 _ccxt_module = None  # injectable for tests
@@ -124,6 +125,11 @@ def unregister_credential(credential_id: str) -> bool:
         return False
     _REGISTRY.pop(name, None)
     _LIVE.pop(name, None)
+    for hook in _INVALIDATION_HOOKS:
+        try:
+            hook(credential_id)
+        except Exception as exc:  # noqa: BLE001
+            LOG.debug("invalidation hook %r failed for %s: %s", hook, credential_id, exc)
     LOG.info("unregistered broker: %s", name)
     return True
 
