@@ -16,8 +16,8 @@ def _fake_ccxt_module() -> SimpleNamespace:
     is a constructable factory returning a mock exchange instance."""
 
     class _Exchange:
-        def __init__(self, **kwargs):
-            self.opts = kwargs
+        def __init__(self, config=None, **_kw):
+            self.opts = dict(config or {})
             self.fetch_balance = AsyncMock(return_value={
                 "info": {"raw": True},
                 "free": {"USDT": 100.0},
@@ -131,3 +131,22 @@ async def test_close_position_blocked_on_read_only() -> None:
     )
     with pytest.raises(NotSupported):
         await broker.close_position("BTC/USDT")
+
+
+def test_real_ccxt_construction_no_network() -> None:
+    """Regression: CcxtBroker must construct against the real ccxt package
+    without raising. Catches the 'ccxt.async_support not auto-loaded' class
+    of defect at unit-test time so it can't ship.
+
+    Constructing does not hit the network — ccxt only does that on first
+    fetch_markets() call. We assert .name + the underlying exchange's
+    name attribute as a smoke."""
+    broker = CcxtBroker(
+        exchange_id="binance",
+        credentials={"api_key": "k", "api_secret": "s"},
+        permissions=("read",),
+    )
+    assert broker.name == "ccxt:binance"
+    # ccxt exchange instances expose .id; verifies we wired the right
+    # underlying exchange.
+    assert getattr(broker._ex, "id", None) == "binance"
