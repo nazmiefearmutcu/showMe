@@ -10,8 +10,9 @@ def test_ccxt_imports() -> None:
     import ccxt  # noqa: F401
     import ccxt.async_support  # noqa: F401
     assert hasattr(ccxt, "exchanges")
-    # We don't pin a specific count; just assert the registry is populated.
-    assert len(ccxt.exchanges) > 50
+    # Assert the foundation-critical exchanges are present rather than a
+    # loose count floor — these are the venues sub-system A targets first.
+    assert {"binance", "coinbase", "kraken"}.issubset(set(ccxt.exchanges))
 
 
 def test_keyring_imports() -> None:
