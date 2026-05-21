@@ -48,6 +48,7 @@ def register_routes(app: FastAPI, *, deps: AppDeps) -> None:
         instant,
         mis,
         portfolio,
+        portfolio_aggregate,
         proxy,
         quote,
         scanner,
@@ -64,6 +65,7 @@ def register_routes(app: FastAPI, *, deps: AppDeps) -> None:
     scanner.register(app, deps)
     mis.register(app, deps)
     portfolio.register(app, deps)
+    portfolio_aggregate.register(app, deps)
     broker.register(app, deps)
     exchange.register(app, deps)
     instant.register(app, deps)
