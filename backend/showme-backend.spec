@@ -83,19 +83,6 @@ hiddenimports = [
 datas += collect_data_files("yfinance")
 datas += collect_data_files("transformers", include_py_files=False)
 datas += collect_data_files("tokenizers")
-
-# ccxt ships JSON market data + JS adapter files inside the wheel that
-# PyInstaller's heuristic misses. Pull them in explicitly so the --onedir
-# build doesn't crash at first ccxt call.
-import ccxt as _ccxt_for_spec  # noqa: E402
-
-datas.append(
-    (
-        str(Path(_ccxt_for_spec.__file__).resolve().parent / "static_dependencies"),
-        "ccxt/static_dependencies",
-    )
-)
-del _ccxt_for_spec
 hiddenimports += collect_submodules("showme")
 hiddenimports += collect_submodules("yfinance")
 hiddenimports += collect_submodules("lxml")
@@ -104,6 +91,25 @@ hiddenimports += collect_submodules("lxml")
 # breaks at runtime even when the head model is RoBERTa-only.
 hiddenimports += collect_submodules("transformers")
 hiddenimports += collect_submodules("tokenizers")
+# ccxt ships 386 vendored Python crypto libs (ecdsa, ethereum, msgpack, ...)
+# under `ccxt/static_dependencies/` that are imported at runtime via
+# `from ccxt.static_dependencies import X`. collect_submodules registers
+# them as importable Python in the frozen PYZ; the datas.append below is
+# belt-and-braces in case ccxt adds non-Python resources in a future
+# release.
+hiddenimports += collect_submodules("ccxt")
+
+import importlib.util as _ilu  # noqa: E402
+
+_ccxt_spec = _ilu.find_spec("ccxt")
+if _ccxt_spec is not None and _ccxt_spec.origin:
+    datas.append(
+        (
+            str(Path(_ccxt_spec.origin).resolve().parent / "static_dependencies"),
+            "ccxt/static_dependencies",
+        )
+    )
+del _ilu, _ccxt_spec
 
 
 a = Analysis(
