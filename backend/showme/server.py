@@ -994,6 +994,17 @@ def build_app(engine_root: Path | None) -> FastAPI:
     _install_middlewares(app)
 
     register_routes(app, deps=deps)
+
+    # Sub-system A boot replay: rehydrate broker registry from the
+    # CredentialStore so /api/broker/* works after a restart.
+    try:
+        from showme.brokers import CredentialStore, replay_stored_credentials
+        replay_stored_credentials(CredentialStore.fresh())
+    except Exception as exc:  # noqa: BLE001 — non-fatal; log + continue
+        import logging as _logging
+        _logging.getLogger("showme.server").warning(
+            "credential replay skipped: %s", exc,
+        )
     return app
 
 
