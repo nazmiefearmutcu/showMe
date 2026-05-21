@@ -46,7 +46,7 @@ def _entry(ex_id: str) -> dict:
     requires = sorted(k for k, v in inst.requiredCredentials.items() if v)
     optional: list[str] = []
     asset_classes = []
-    if inst.has.get("spot") or inst.has.get("fetchBalance"):
+    if inst.has.get("spot"):
         asset_classes.append("spot")
     if inst.has.get("future") or inst.has.get("swap"):
         asset_classes.append("futures")
