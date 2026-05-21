@@ -79,7 +79,9 @@ class CcxtBroker(BaseBroker):
         ccxt_module: Any | None = None,
     ) -> None:
         if ccxt_module is None:
+            import ccxt.async_support as _async  # ensures the submodule is loaded
             import ccxt as ccxt_module  # noqa: PLW2901 — intentional rebind
+            del _async  # we only needed the side effect
         try:
             factory = getattr(ccxt_module.async_support, exchange_id)
         except AttributeError as exc:
@@ -92,12 +94,7 @@ class CcxtBroker(BaseBroker):
             kwargs["secret"] = credentials["api_secret"]
         if "passphrase" in credentials:
             kwargs["password"] = credentials["passphrase"]
-        # Real ccxt exchanges accept a positional dict; the test mock uses **kwargs.
-        # Try positional first (production path), fall back to kwargs spread (test path).
-        try:
-            self._ex = factory(kwargs)
-        except TypeError:
-            self._ex = factory(**kwargs)
+        self._ex = factory(kwargs)
         self._exchange_id = exchange_id
         self._permissions = tuple(permissions)
         self.name = f"ccxt:{exchange_id}"
