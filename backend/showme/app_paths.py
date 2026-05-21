@@ -66,9 +66,21 @@ def cache_path(name: str) -> Path:
     return _ensure(app_home() / "cache" / name)
 
 
+def credentials_path() -> Path:
+    """Canonical path for the (non-secret) credential index.
+
+    Secrets live in the OS keychain; this file holds the listable
+    metadata (id, exchange_id, account_label, permissions, created_at)
+    so we can render the Connect-Exchange UI without unlocking the
+    keychain on every load.
+    """
+    return _ensure(state_path("credentials.json"))
+
+
 __all__ = [
     "app_home",
     "runtime_path",
     "state_path",
     "cache_path",
+    "credentials_path",
 ]
