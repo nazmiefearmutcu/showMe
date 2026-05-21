@@ -503,10 +503,14 @@ export function SCANPane({ code }: FunctionPaneProps) {
             <Card>
               <CardHeader
                 trailing={
-                  <span className="u-inline-flex u-gap-6 u-items-center btn btn--ghost u-btn-mini btn--accent">
+                  // Wrapper was a <span> styled as a single button while
+                  // containing two real buttons that inherited nothing —
+                  // visually one ghost+accent control, semantically two.
+                  // Promote each child to its own visible btn class.
+                  <span className="u-inline-flex u-gap-6 u-items-center">
                     <button
                       type="button"
-                      
+                      className="btn btn--ghost u-btn-mini"
                       onClick={() => {
                         setIntent(SAMPLE_INTENTS[0]);
                         setUniverse("");
@@ -514,16 +518,22 @@ export function SCANPane({ code }: FunctionPaneProps) {
                         setPhaseD(true);
                         setSortKey("score");
                       }}
-                      
+                      title="Reset intent, universe, phases, sort"
                     >
                       Reset
                     </button>
                     <button
                       type="button"
-                      
+                      className="btn btn--accent u-btn-mini"
                       onClick={run}
                       disabled={running || !intent.trim()}
-                      
+                      title={
+                        !intent.trim()
+                          ? "Enter intent text first"
+                          : running
+                            ? "Scan in flight"
+                            : "Run scan with current filters"
+                      }
                     >
                       Apply
                     </button>
@@ -722,6 +732,7 @@ export function SCANPane({ code }: FunctionPaneProps) {
                     row={sortedRows.find((r) => r.symbol === openSymbol)}
                     onClose={() => setOpenSymbol(null)}
                     onJumpDES={jumpToDES}
+                    phaseC={phaseC}
                     hint={
                       sortedRows.length > 1
                         ? "← / → between rows · double-click row → DES · ⌘↵ Open DES · esc close"
@@ -818,11 +829,18 @@ function Drawer({
   onClose,
   onJumpDES,
   hint,
+  phaseC,
 }: {
   row?: ScanRow;
   onClose: () => void;
   onJumpDES: (sym: string) => void;
   hint?: string;
+  // Phase C toggle state in the parent's filter rail. The drawer needs
+  // this to tell apart "user disabled Phase C" from "Phase C ran but
+  // produced no fine-scan output for this symbol" — the prior message
+  // collapsed both cases into "enable the toggle and re-run", which
+  // is misleading when the toggle is already enabled.
+  phaseC: boolean;
 }) {
   if (!row) return null;
   const fine = row.fine;
@@ -944,9 +962,20 @@ function Drawer({
                 )}
                 <ContribTable rows={fine.contributions ?? []} />
               </>
-            ) : (
+            ) : phaseC ? (
+              // Phase C was enabled in this scan but the backend returned
+              // no fine-scan payload for this symbol. Don't claim the
+              // user disabled it — that would tell them to re-run the
+              // exact run they're already looking at.
               <div className="u-text-11 u-text-mute">
-                Phase C disabled · enable the toggle and re-run.
+                Phase C ran but produced no fine-scan output for this symbol.
+              </div>
+            ) : (
+              // The toggle lives in the filter rail above the results,
+              // not inside this drawer. Spell out where it is.
+              <div className="u-text-11 u-text-mute">
+                Phase C is disabled. Toggle <strong>C · fine</strong> in
+                the filter rail above and re-run the scan.
               </div>
             )}
           </div>

@@ -65,6 +65,10 @@ async function refreshHealth(): Promise<boolean> {
 function routeToTarget(route: Route): { code: string; symbol?: string } | null {
   switch (route.kind) {
     case "welcome":
+      // S10 dashboard-restore: HOME is safely native (`Workspace.tsx`
+      // renders `<Welcome />` for HOME — never the design-export
+      // cockpit), so the welcome route can once again focus a HOME
+      // leaf. This is the dashboard surface the user expects at `#/`.
       return { code: "HOME" };
     case "preferences":
     case "settings":
