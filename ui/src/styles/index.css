@@ -44,8 +44,17 @@
 
 /* Brief variant — used by ThemeTransitionOverlay during preset/density
    swaps. Shorter expand+leave so the overlay only covers the layout
-   reflow (≈250-300ms) without prolonging the perceived switch. */
+   reflow (≈250-300ms) without prolonging the perceived switch.
+
+   Recovery S01: brief overlay never blocks input. Its purpose is purely
+   visual (hide the reflow flash), so taps/clicks always reach the
+   workspace underneath. If the overlay ever gets stuck — even for a
+   single frame — the user can still interact, instead of the entire
+   app feeling untouchable. The boot-intro variant (without `--brief`)
+   keeps `pointer-events: auto` because it intentionally blocks input
+   until the dashboard is ready. */
 .showme-intro--brief {
+  pointer-events: none;
   transition: opacity 140ms ease;
 }
 .showme-intro--brief.showme-intro--expanding {

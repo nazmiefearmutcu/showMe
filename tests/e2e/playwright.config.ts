@@ -61,9 +61,26 @@ export default defineConfig({
   ],
   webServer: process.env.PLAYWRIGHT_E2E_MODE === "smoke"
     ? {
-        command: "npm --workspace ui run preview -- --strictPort --port " + previewPort,
+        // S06 — chain `build:ui` into the smoke webServer so the suite always
+        // exercises a fresh dist, not whatever stale artifacts happened to be
+        // sitting in `ui/dist` from a previous run. CI also runs build:ui
+        // explicitly (belt-and-suspenders), but this guarantees the local
+        // `npm run test:e2e:smoke` flow is hermetic too. Opt out with
+        // `SHOWME_E2E_SKIP_BUILD=1` if you're iterating on a spec and the
+        // dist is already fresh.
+        // `--host 127.0.0.1` is load-bearing: vite preview's default
+        // listens on `localhost`, which resolves to ::1 on modern macOS;
+        // Playwright probes the literal IPv4 URL below, so without the
+        // explicit host the webServer health check times out at 180s
+        // even though the server is live on the IPv6 socket.
+        command:
+          process.env.SHOWME_E2E_SKIP_BUILD === "1"
+            ? `npm --workspace ui run preview -- --strictPort --host 127.0.0.1 --port ${previewPort}`
+            : `npm run build:ui && npm --workspace ui run preview -- --strictPort --host 127.0.0.1 --port ${previewPort}`,
         url: `http://127.0.0.1:${previewPort}`,
-        timeout: 60_000,
+        // Larger timeout: a cold UI build can take 30-45s on macOS runners
+        // before the preview server starts listening.
+        timeout: 180_000,
         reuseExistingServer: !isCi,
         cwd: "../..",
       }

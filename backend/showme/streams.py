@@ -24,6 +24,7 @@ import logging
 import os
 import time
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Literal
 from collections.abc import AsyncIterator, Awaitable, Callable
 
@@ -32,6 +33,13 @@ import requests
 from showme.crypto_aliases import is_crypto_symbol as _is_crypto_symbol
 
 LOG = logging.getLogger("showme.streams")
+
+# S07: default threshold beyond which a "live" channel is reclassified as
+# "stale" by ``StreamHub.stats``. Operators can override per-hub.
+_DEFAULT_STALE_THRESHOLD_S = 15.0
+_DEFAULT_QUEUE_MAXSIZE = 128
+
+ChannelStatus = Literal["idle", "live", "stale", "reconnecting", "error"]
 
 
 # ── Value object ──────────────────────────────────────────────────────────
@@ -446,11 +454,27 @@ def first_number(candidates: list[dict[str, Any]], keys: list[str]) -> float | N
 
 @dataclass
 class _Channel:
+    """Per-symbol fan-out bookkeeping with S07 observability counters.
+
+    The hub mutates every field from inside its single asyncio event loop
+    (``_pump`` task + request handlers all run on the same loop), so we
+    intentionally avoid extra locking — best-effort telemetry only.
+    """
+
     symbol: str
     source: Source
     queues: list[asyncio.Queue[Tick]] = field(default_factory=list)
     task: asyncio.Task | None = None
     last_tick: Tick | None = None
+    # S07 — observability counters.
+    status: ChannelStatus = "idle"
+    last_tick_received_at: float | None = None
+    reconnect_count: int = 0
+    error_count: int = 0
+    dropped_tick_count: int = 0
+    last_error: str | None = None
+    created_at: float = field(default_factory=time.time)
+    updated_at: float = field(default_factory=time.time)
 
 
 class StreamHub:
@@ -471,23 +495,97 @@ class StreamHub:
         *,
         crypto_factory: SourceFactory | None = None,
         polling_factory: SourceFactory | None = None,
+        stale_threshold_s: float = _DEFAULT_STALE_THRESHOLD_S,
+        queue_maxsize: int = _DEFAULT_QUEUE_MAXSIZE,
+        now: Callable[[], float] | None = None,
     ) -> None:
         self._channels: dict[str, _Channel] = {}
         self._lock = asyncio.Lock()
         self._crypto_factory = crypto_factory or (lambda s: BinanceRestSource(s))
         self._polling_factory = polling_factory
+        self._stale_threshold_s = max(0.0, float(stale_threshold_s))
+        self._queue_maxsize = max(1, int(queue_maxsize))
+        # Injectable clock so stale-classification tests are deterministic.
+        self._now = now if now is not None else time.time
+        self._closed: bool = False
+
+    @property
+    def stale_threshold_s(self) -> float:
+        return self._stale_threshold_s
 
     def stats(self) -> dict[str, Any]:
+        """Return an observable snapshot of every active channel.
+
+        S07 — Stable envelope:
+
+            { ok, generated_at, stale_threshold_ms, totals, channels }
+
+        ``totals`` aggregates counts that matter to dashboards / alerts.
+        Each channel exposes age + counters so a UI can render
+        live/stale/reconnecting state without guessing.
+        """
+        now = self._now()
+        threshold = self._stale_threshold_s
+        totals = {
+            "channel_count": 0,
+            "subscriber_count": 0,
+            "live_count": 0,
+            "stale_count": 0,
+            "reconnecting_count": 0,
+            "error_count": 0,
+            "dropped_tick_count": 0,
+        }
+        channels_out: list[dict[str, Any]] = []
+        for channel in self._channels.values():
+            effective_status: ChannelStatus = channel.status
+            last_received = channel.last_tick_received_at
+            last_age_ms: float | None = None
+            if last_received is not None:
+                last_age_ms = max(0.0, (now - last_received) * 1000.0)
+                # Promote a "live" channel to "stale" once it sits past the
+                # configured threshold; reconnecting/error stay as-is so
+                # downstream alerts don't silently get reclassified.
+                if (
+                    effective_status == "live"
+                    and threshold > 0
+                    and (now - last_received) > threshold
+                ):
+                    effective_status = "stale"
+            queue_depths = [q.qsize() for q in channel.queues]
+            channel_payload = {
+                "symbol": channel.symbol,
+                "subscribers": len(channel.queues),
+                "status": effective_status,
+                "last_price": channel.last_tick.price if channel.last_tick else None,
+                "source": channel.last_tick.source if channel.last_tick else None,
+                "last_tick_ts": channel.last_tick.ts if channel.last_tick else None,
+                "last_tick_age_ms": last_age_ms,
+                "reconnect_count": channel.reconnect_count,
+                "error_count": channel.error_count,
+                "dropped_tick_count": channel.dropped_tick_count,
+                "queue_depths": queue_depths,
+                "last_error": channel.last_error,
+                "created_at": channel.created_at,
+                "updated_at": channel.updated_at,
+            }
+            channels_out.append(channel_payload)
+            totals["channel_count"] += 1
+            totals["subscriber_count"] += len(channel.queues)
+            totals["dropped_tick_count"] += channel.dropped_tick_count
+            if effective_status == "live":
+                totals["live_count"] += 1
+            elif effective_status == "stale":
+                totals["stale_count"] += 1
+            elif effective_status == "reconnecting":
+                totals["reconnecting_count"] += 1
+            elif effective_status == "error":
+                totals["error_count"] += 1
         return {
-            "channels": [
-                {
-                    "symbol": c.symbol,
-                    "subscribers": len(c.queues),
-                    "last_price": c.last_tick.price if c.last_tick else None,
-                    "source": c.last_tick.source if c.last_tick else None,
-                }
-                for c in self._channels.values()
-            ],
+            "ok": True,
+            "generated_at": datetime.fromtimestamp(now, tz=timezone.utc).isoformat(),
+            "stale_threshold_ms": int(threshold * 1000),
+            "totals": totals,
+            "channels": channels_out,
         }
 
     def _build_source(self, symbol: str) -> Source:
@@ -503,13 +601,15 @@ class StreamHub:
     async def subscribe(self, symbol: str) -> "Subscription":
         sym = symbol.upper()
         async with self._lock:
+            if self._closed:
+                raise RuntimeError("stream hub is closed")
             channel = self._channels.get(sym)
             if channel is None:
                 source = self._build_source(sym)
                 channel = _Channel(symbol=sym, source=source)
                 channel.task = asyncio.create_task(self._pump(channel))
                 self._channels[sym] = channel
-            queue: asyncio.Queue[Tick] = asyncio.Queue(maxsize=128)
+            queue: asyncio.Queue[Tick] = asyncio.Queue(maxsize=self._queue_maxsize)
             channel.queues.append(queue)
             if channel.last_tick is not None:
                 # Replay last value so new subscribers get an immediate paint.
@@ -521,6 +621,10 @@ class StreamHub:
         # loop with exponential backoff so a transient upstream drop does not
         # silently freeze the channel forever. The first successful tick after
         # a (re)connect resets the backoff window.
+        #
+        # S07: every transition through this loop now updates ``channel.status``
+        # and the named counters so ``stats()`` can paint live/stale/error
+        # state without inferring it from heuristics.
         backoff = 1.0
         max_backoff = 60.0
         try:
@@ -531,20 +635,28 @@ class StreamHub:
                         got_tick = True
                         backoff = 1.0
                         channel.last_tick = tick
+                        channel.last_tick_received_at = self._now()
+                        channel.updated_at = channel.last_tick_received_at
+                        channel.status = "live"
                         for q in list(channel.queues):
                             if q.full():
                                 # Drop oldest — backpressure. Subscriber is too slow.
                                 try:
                                     q.get_nowait()
+                                    channel.dropped_tick_count += 1
                                 except asyncio.QueueEmpty:
                                     pass
                             try:
                                 q.put_nowait(tick)
                             except asyncio.QueueFull:
-                                pass
+                                channel.dropped_tick_count += 1
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:  # noqa: BLE001
+                    channel.error_count += 1
+                    channel.last_error = str(exc) or exc.__class__.__name__
+                    channel.status = "reconnecting"
+                    channel.updated_at = self._now()
                     LOG.warning(
                         "source for %s raised (reconnect in %.1fs): %s",
                         channel.symbol, backoff, exc,
@@ -555,6 +667,8 @@ class StreamHub:
                 # Sleep with exponential backoff, then rebuild the source via
                 # the same factory and try again.
                 if not got_tick:
+                    channel.status = "reconnecting"
+                    channel.updated_at = self._now()
                     LOG.debug(
                         "source for %s ended without a tick; reconnect in %.1fs",
                         channel.symbol, backoff,
@@ -564,6 +678,7 @@ class StreamHub:
                 except asyncio.CancelledError:
                     raise
                 backoff = min(backoff * 2, max_backoff)
+                channel.reconnect_count += 1
                 # Rebuild via the hub's factory chain so we get a fresh socket.
                 try:
                     channel.source.stop()
@@ -601,6 +716,43 @@ class StreamHub:
                         # at warning level so cleanup oddities are visible.
                         LOG.warning("stream cleanup task for %s raised: %s", symbol, exc)
                 self._channels.pop(symbol, None)
+
+    async def aclose(self) -> None:
+        """Tear down every active channel. Safe to call multiple times.
+
+        S07: the FastAPI lifespan shutdown already looks for ``close`` /
+        ``aclose`` (see ``server._shutdown_cleanup``). Without this method the
+        sidecar would leak running pump tasks + Binance websockets every time
+        it stopped. Idempotent + lock-protected so concurrent shutdown paths
+        don't double-cancel a task mid-cancellation.
+        """
+        async with self._lock:
+            if self._closed and not self._channels:
+                return
+            self._closed = True
+            channels = list(self._channels.values())
+            self._channels.clear()
+        for channel in channels:
+            try:
+                channel.source.stop()
+            except Exception:  # noqa: BLE001
+                pass
+            task = channel.task
+            if task and not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                except Exception as exc:  # noqa: BLE001
+                    LOG.warning(
+                        "aclose: pump task for %s raised during shutdown: %s",
+                        channel.symbol, exc,
+                    )
+
+    async def close(self) -> None:
+        """Async alias for callers that probe for ``close`` first (server lifespan)."""
+        await self.aclose()
 
 
 @dataclass

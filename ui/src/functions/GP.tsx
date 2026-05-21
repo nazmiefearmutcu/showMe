@@ -9,6 +9,7 @@
  *   - footer with OHLC value list + provider + cache
  */
 import {
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -24,6 +25,8 @@ import {
   type Time,
   createChart,
 } from "lightweight-charts";
+import { useLiveQuote } from "@/lib/market-data";
+import type { TransportState } from "@/lib/market-data";
 import {
   DeltaChip,
   Empty,
@@ -201,9 +204,33 @@ export function GPPane({ code, symbol }: FunctionPaneProps) {
     };
   }, [ohlc]);
 
-  const newsItems = useMemo(() => buildMockNews(symbol), [symbol]);
+  // GP-specific news is not wired into the backend yet. Until the news plug
+  // lands we surface an honest empty state instead of fabricating headlines.
+  // See S03-R: no mock news is allowed in the chart pane.
+  const newsItems: { headline: string; ts: string; url?: string }[] = [];
+  const newsState: "empty" | "loading" | "ok" = "empty";
   const provider = data?.sources?.[0] ?? "pending";
   const cached = !!(data as { cached?: boolean } | undefined)?.cached;
+
+  // S03-R: live tick overlay so the chart's current bar advances without a
+  // full refetch and the pane can show a real transport state. The historical
+  // bars still come from `useFunction` (which also carries indicators); the
+  // live quote channel just feeds the last bar incrementally.
+  const liveQuote = useLiveQuote(effectiveSymbol, { enabled: !!effectiveSymbol });
+  const transportState: TransportState = liveQuote.transportState;
+  const isStale =
+    !!liveQuote.snapshot &&
+    typeof liveQuote.freshnessMs === "number" &&
+    liveQuote.stale;
+  const isRefreshing = state === "ok" && (liveQuote.refreshing ?? false);
+  const isOffline =
+    transportState === "offline" || transportState === "error";
+  const isReconnecting =
+    transportState === "reconnecting" ||
+    transportState === "connecting" ||
+    transportState === "stale";
+  const snapshotOnly = state === "ok" && ohlc.length === 0 && !!liveQuote.snapshot;
+  const liveTickPrice = liveQuote.lastTick?.price ?? null;
 
   return (
     <div className="u-pane-host">
@@ -240,23 +267,94 @@ export function GPPane({ code, symbol }: FunctionPaneProps) {
               <Pill tone="muted" variant="soft" withDot={false}>
                 {interval.toUpperCase()}
               </Pill>
-              {state === "ok" && (
-                <Pill tone="positive" variant="soft">
-                  RT SESSION
-                </Pill>
+              {state === "ok" && transportState === "live" && (
+                <span data-testid="gp-transport-pill" data-state="live">
+                  <Pill tone="positive" variant="soft">RT LIVE</Pill>
+                </span>
+              )}
+              {state === "ok" && isReconnecting && (
+                <span data-testid="gp-transport-pill" data-state={transportState}>
+                  <Pill tone="warn" variant="soft">
+                    {transportState === "stale" ? "STALE" : "RECONNECTING"}
+                  </Pill>
+                </span>
+              )}
+              {state === "ok" && isOffline && (
+                <span data-testid="gp-transport-pill" data-state="offline">
+                  <Pill tone="negative" variant="soft">OFFLINE</Pill>
+                </span>
+              )}
+              {snapshotOnly && (
+                <span data-testid="gp-snapshot-only">
+                  <Pill tone="warn" variant="soft">SNAPSHOT ONLY</Pill>
+                </span>
+              )}
+              {isStale && !isOffline && (
+                <span data-testid="gp-stale">
+                  <Pill tone="warn" variant="soft">STALE</Pill>
+                </span>
+              )}
+              {isRefreshing && (
+                <span data-testid="gp-refreshing">
+                  <Pill tone="accent" variant="soft">REFRESHING</Pill>
+                </span>
               )}
             </div>
             <div className="u-flex u-items-center u-gap-14">
-              {lastClose != null && <span style={lastPriceStyle}>{fmtNum(lastClose)}</span>}
-              {changePct != null && (
-                <DeltaChip value={changePct} format="percent" fractionDigits={2} />
-              )}
-              {change != null && (
-                <span style={changeAbsStyle}>
-                  {change >= 0 ? "+" : ""}
-                  {change.toFixed(2)}
-                </span>
-              )}
+              {/*
+               * S12 GP truth: when the live transport is actually open
+               * (`transportState === "live"`) and a tick has landed,
+               * show that tick — not the candle-frozen `lastClose`. The
+               * chart series is already ticking via `series.update`; the
+               * header must mirror it or the surface lies. We keep the
+               * historical `lastClose` as a fallback so the header
+               * doesn't blank between refreshes when the channel hasn't
+               * delivered a first tick yet.
+               */}
+              {(() => {
+                const displayPrice =
+                  transportState === "live" && liveTickPrice != null
+                    ? liveTickPrice
+                    : lastClose;
+                const displayChange =
+                  transportState === "live" &&
+                  liveTickPrice != null &&
+                  prevClose != null
+                    ? liveTickPrice - prevClose
+                    : change;
+                const displayChangePct =
+                  transportState === "live" &&
+                  liveTickPrice != null &&
+                  prevClose
+                    ? ((liveTickPrice - prevClose) / prevClose) * 100
+                    : changePct;
+                return (
+                  <>
+                    {displayPrice != null && (
+                      <span
+                        style={lastPriceStyle}
+                        data-testid="gp-display-price"
+                        data-live={transportState === "live" && liveTickPrice != null ? "1" : "0"}
+                      >
+                        {fmtNum(displayPrice)}
+                      </span>
+                    )}
+                    {displayChangePct != null && (
+                      <DeltaChip
+                        value={displayChangePct}
+                        format="percent"
+                        fractionDigits={2}
+                      />
+                    )}
+                    {displayChange != null && (
+                      <span style={changeAbsStyle}>
+                        {displayChange >= 0 ? "+" : ""}
+                        {displayChange.toFixed(2)}
+                      </span>
+                    )}
+                  </>
+                );
+              })()}
               {last && (
                 <div style={ohlcMiniStyle}>
                   <span>
@@ -340,10 +438,25 @@ export function GPPane({ code, symbol }: FunctionPaneProps) {
               ))}
             </div>
           )}
-          <button type="button" style={toolbarButtonStyle} title="Compare symbol">
+          <button
+            type="button"
+            style={disabledToolbarButtonStyle}
+            disabled
+            aria-disabled="true"
+            title="Compare overlay is not wired yet"
+            data-testid="gp-compare-button"
+          >
             Compare +
           </button>
-          <button type="button" style={toolbarIconButtonStyle} title="Export">
+          <button
+            type="button"
+            style={disabledToolbarIconButtonStyle}
+            disabled
+            aria-disabled="true"
+            title="Chart export is not wired yet"
+            data-testid="gp-export-button"
+            aria-label="Export chart (disabled)"
+          >
             ⇪
           </button>
         </div>
@@ -387,6 +500,11 @@ export function GPPane({ code, symbol }: FunctionPaneProps) {
                     interval={interval}
                     chartStyle={chartStyle}
                     onCrosshair={setCrosshair}
+                    liveTick={
+                      liveTickPrice != null && liveQuote.lastTickAt != null
+                        ? { price: liveTickPrice, ts: liveQuote.lastTickAt }
+                        : null
+                    }
                   />
                   {crosshair.price != null && (
                     <div style={crosshairBoxStyle}>
@@ -418,6 +536,7 @@ export function GPPane({ code, symbol }: FunctionPaneProps) {
                 stats={stats}
                 computed={computed}
                 news={newsItems}
+                newsState={newsState}
                 symbol={symbol ?? ""}
               />
             </div>
@@ -494,11 +613,13 @@ function RightRail({
   stats,
   computed,
   news,
+  newsState,
   symbol,
 }: {
   stats: { high: number; low: number; n: number } | null;
   computed: ReturnType<typeof computeIndicators>;
-  news: { headline: string; ts: string }[];
+  news: { headline: string; ts: string; url?: string }[];
+  newsState: "empty" | "loading" | "ok";
   symbol: string;
 }) {
   const support = stats ? stats.low + (stats.high - stats.low) * 0.236 : null;
@@ -547,13 +668,34 @@ function RightRail({
         />
       </RailSection>
       <RailSection title={`News · ${symbol}`}>
-        <div className="u-grid-gap-8">
-          {news.map((item, idx) => (
-            <div key={idx} style={newsItemStyle}>
-              <span style={newsHeadlineStyle}>{item.headline}</span>
-              <span style={newsTimestampStyle}>{item.ts}</span>
+        <div className="u-grid-gap-8" data-testid="gp-news">
+          {newsState === "ok" && news.length > 0 ? (
+            news.map((item, idx) => (
+              <div key={idx} style={newsItemStyle}>
+                {item.url ? (
+                  <a
+                    href={item.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    style={newsHeadlineStyle}
+                  >
+                    {item.headline}
+                  </a>
+                ) : (
+                  <span style={newsHeadlineStyle}>{item.headline}</span>
+                )}
+                <span style={newsTimestampStyle}>{item.ts}</span>
+              </div>
+            ))
+          ) : (
+            <div data-testid="gp-news-empty" style={newsEmptyStyle}>
+              <div style={newsEmptyTitleStyle}>News not wired</div>
+              <div style={newsEmptyBodyStyle}>
+                Per-symbol GP headlines aren't connected to a live source yet.
+                Use NEWS or TOP for verified headlines.
+              </div>
             </div>
-          ))}
+          )}
         </div>
       </RailSection>
     </aside>
@@ -637,13 +779,19 @@ function IndicatorRow({
   );
 }
 
-function ChartView({
+type MainSeries =
+  | ISeriesApi<"Candlestick">
+  | ISeriesApi<"Line">
+  | ISeriesApi<"Area">;
+
+export function ChartView({
   chartId: _chartId,
   candles,
   indicators,
   interval,
   chartStyle,
   onCrosshair,
+  liveTick,
 }: {
   chartId: string;
   candles: OHLCRow[];
@@ -651,26 +799,65 @@ function ChartView({
   interval: string;
   chartStyle: ChartStyle;
   onCrosshair: (state: CrosshairState) => void;
+  liveTick?: { price: number; ts: number } | null;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
+  const mainSeriesRef = useRef<MainSeries | null>(null);
+  const volSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
+  const indicatorSeriesRef = useRef<Map<string, ISeriesApi<"Line">>>(new Map());
+  // Cached last historical bar so live ticks can be merged with real OHLC
+  // values instead of fabricating an open/high/low.
+  const lastBarRef = useRef<{
+    time: Time;
+    open: number;
+    high: number;
+    low: number;
+    close: number;
+    volume: number;
+  } | null>(null);
+  const candlesRef = useRef<OHLCRow[]>(candles);
+  // Stable refs for the changeable bits so the chart-mount effect can stay
+  // dep-free. Without this, every parent re-render would tear down the chart
+  // (and the user's scroll/zoom state with it).
+  const onCrosshairRef = useRef(onCrosshair);
+  useEffect(() => {
+    onCrosshairRef.current = onCrosshair;
+  }, [onCrosshair]);
   const palette = useChartPalette();
-  const indicatorColors = [palette.accent, palette.positive, palette.warn, palette.negative];
+  // Palette objects are minted fresh on every theme tick, so we hold the
+  // latest in a ref and feed the mount effect via that ref (stable identity).
+  // Palette CHANGES are applied via a dedicated effect below as
+  // `applyOptions()` updates — no remount.
+  const paletteRef = useRef(palette);
+  useEffect(() => {
+    paletteRef.current = palette;
+  }, [palette]);
+  const indicatorColors = useMemo(
+    () => [palette.accent, palette.positive, palette.warn, palette.negative],
+    [palette],
+  );
 
+  // ── Mount-only chart instance ──────────────────────────────────────────
+  // Re-runs only when chartStyle changes (different main-series type) or
+  // when the symbol/interval changes externally — palette is read via ref
+  // so theme switches don't tear the chart down. Candles refresh does NOT
+  // rebuild; the dedicated effects below `series.setData` / `series.update`.
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
+    const p = paletteRef.current;
     const size = measureChartElement(el, 460);
     const chart = createChart(el, {
       layout: {
         background: { color: "transparent" },
-        textColor: palette.text,
+        textColor: p.text,
         fontFamily: "JetBrains Mono, SF Mono, monospace",
         fontSize: 11,
       },
       grid: {
-        vertLines: { color: palette.grid },
-        horzLines: { color: palette.grid },
+        vertLines: { color: p.grid },
+        horzLines: { color: p.grid },
       },
       timeScale: {
         rightOffset: 8,
@@ -678,113 +865,52 @@ function ChartView({
         minBarSpacing: 0.3,
         timeVisible: interval !== "1d" && interval !== "1w",
         secondsVisible: interval === "1m",
-        borderColor: palette.border,
+        borderColor: p.border,
       },
-      rightPriceScale: { borderColor: palette.border },
+      rightPriceScale: { borderColor: p.border },
       crosshair: { mode: 1 },
       width: size.width,
       height: size.height,
     });
 
-    let mainSeries:
-      | ISeriesApi<"Candlestick">
-      | ISeriesApi<"Line">
-      | ISeriesApi<"Area">
-      | null = null;
+    let mainSeries: MainSeries;
     if (chartStyle === "candle") {
-      const candleSeries: ISeriesApi<"Candlestick"> = chart.addCandlestickSeries({
-        upColor: palette.positive,
-        downColor: palette.negative,
-        borderUpColor: palette.positive,
-        borderDownColor: palette.negative,
-        wickUpColor: palette.positive,
-        wickDownColor: palette.negative,
+      mainSeries = chart.addCandlestickSeries({
+        upColor: p.positive,
+        downColor: p.negative,
+        borderUpColor: p.positive,
+        borderDownColor: p.negative,
+        wickUpColor: p.positive,
+        wickDownColor: p.negative,
       });
-      candleSeries.setData(
-        candles.map<CandlestickData>((c) => ({
-          time: timeOf(c),
-          open: Number(c.open),
-          high: Number(c.high),
-          low: Number(c.low),
-          close: Number(c.close),
-        })),
-      );
-      mainSeries = candleSeries;
     } else if (chartStyle === "line") {
-      const line = chart.addLineSeries({
-        color: palette.accent,
+      mainSeries = chart.addLineSeries({
+        color: p.accent,
         lineWidth: 2,
         priceLineVisible: false,
       });
-      line.setData(
-        candles.map<LineData>((c) => ({
-          time: timeOf(c),
-          value: Number(c.close),
-        })),
-      );
-      mainSeries = line;
     } else {
-      const area = chart.addAreaSeries({
-        lineColor: palette.accent,
-        topColor: alpha(palette.accent, 0.32),
-        bottomColor: alpha(palette.accent, 0.02),
+      mainSeries = chart.addAreaSeries({
+        lineColor: p.accent,
+        topColor: alpha(p.accent, 0.32),
+        bottomColor: alpha(p.accent, 0.02),
         lineWidth: 2,
       });
-      area.setData(
-        candles.map<LineData>((c) => ({
-          time: timeOf(c),
-          value: Number(c.close),
-        })),
-      );
-      mainSeries = area;
     }
 
     const volSeries: ISeriesApi<"Histogram"> = chart.addHistogramSeries({
       priceScaleId: "volume",
-      color: palette.volNeutral,
+      color: p.volNeutral,
       priceFormat: { type: "volume" },
     });
     chart.priceScale("volume").applyOptions({
       scaleMargins: { top: 0.78, bottom: 0 },
     });
 
-    volSeries.setData(
-      candles.map<HistogramData>((c) => ({
-        time: timeOf(c),
-        value: Number(c.volume ?? 0),
-        color:
-          Number(c.close) >= Number(c.open) ? palette.volPos : palette.volNeg,
-      })),
-    );
-
-    if (indicators) {
-      Object.entries(indicators).forEach(([key, points], idx) => {
-        if (!Array.isArray(points) || points.length === 0) return;
-        const series = chart.addLineSeries({
-          color: indicatorColors[idx % indicatorColors.length],
-          lineWidth: 1,
-          priceLineVisible: false,
-          lastValueVisible: false,
-        });
-        series.setData(
-          points
-            .filter((p) => Number.isFinite(p.value))
-            .map<LineData>((p) => ({
-              time:
-                typeof p.time === "number"
-                  ? (p.time as Time)
-                  : (String(p.time).slice(0, 10) as Time),
-              value: p.value,
-            })),
-        );
-        (series as unknown as { __label?: string }).__label = key;
-      });
-    }
-
-    // Crosshair → readout box.
     chart.subscribeCrosshairMove((param) => {
+      const cb = onCrosshairRef.current;
       if (!param.time || !param.seriesData.size) {
-        onCrosshair({
+        cb({
           price: null,
           open: null,
           high: null,
@@ -795,8 +921,9 @@ function ChartView({
         });
         return;
       }
+      const main = mainSeriesRef.current;
       const seriesValues =
-        (mainSeries && (param.seriesData.get(mainSeries) as
+        (main && (param.seriesData.get(main) as
           | { close?: number; open?: number; high?: number; low?: number; value?: number }
           | undefined)) ||
         (Array.from(param.seriesData.values())[0] as
@@ -807,9 +934,10 @@ function ChartView({
         typeof t === "number"
           ? new Date(t * 1000).toISOString().slice(0, 16).replace("T", " ")
           : String(t);
-      const idx = candles.findIndex((c) => timeOf(c) === param.time);
-      const row = idx >= 0 ? candles[idx] : null;
-      onCrosshair({
+      const currentCandles = candlesRef.current;
+      const idx = currentCandles.findIndex((c) => timeOf(c) === param.time);
+      const row = idx >= 0 ? currentCandles[idx] : null;
+      cb({
         price: seriesValues?.close ?? seriesValues?.value ?? null,
         open: seriesValues?.open ?? row?.open ?? null,
         high: seriesValues?.high ?? row?.high ?? null,
@@ -821,7 +949,9 @@ function ChartView({
     });
 
     chartRef.current = chart;
-    focusLatestBars(chart, candles.length, size.width);
+    mainSeriesRef.current = mainSeries;
+    volSeriesRef.current = volSeries;
+    indicatorSeriesRef.current = new Map();
 
     const ro = new ResizeObserver(() => {
       resizeChartToElement(chart, el, 460);
@@ -832,8 +962,218 @@ function ChartView({
       ro.disconnect();
       chart.remove();
       chartRef.current = null;
+      mainSeriesRef.current = null;
+      volSeriesRef.current = null;
+      indicatorSeriesRef.current = new Map();
+      lastBarRef.current = null;
     };
-  }, [candles, indicators, interval, chartStyle, onCrosshair, palette]);
+    // Intentionally only chartStyle. `interval` is consumed once at chart
+    // creation (timeScale formatting); a runtime interval change goes through
+    // a separate effect below. `palette` and `onCrosshair` are read via refs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chartStyle]);
+
+  // ── Interval → timeScale options (no rebuild) ────────────────────────
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart) return;
+    chart.applyOptions({
+      timeScale: {
+        timeVisible: interval !== "1d" && interval !== "1w",
+        secondsVisible: interval === "1m",
+      },
+    });
+  }, [interval]);
+
+  // ── Palette → applyOptions (no rebuild) ──────────────────────────────
+  useEffect(() => {
+    const chart = chartRef.current;
+    const main = mainSeriesRef.current;
+    const vol = volSeriesRef.current;
+    if (!chart) return;
+    chart.applyOptions({
+      layout: { textColor: palette.text },
+      grid: {
+        vertLines: { color: palette.grid },
+        horzLines: { color: palette.grid },
+      },
+      timeScale: { borderColor: palette.border },
+      rightPriceScale: { borderColor: palette.border },
+    });
+    if (main) {
+      if (chartStyle === "candle") {
+        (main as ISeriesApi<"Candlestick">).applyOptions({
+          upColor: palette.positive,
+          downColor: palette.negative,
+          borderUpColor: palette.positive,
+          borderDownColor: palette.negative,
+          wickUpColor: palette.positive,
+          wickDownColor: palette.negative,
+        });
+      } else if (chartStyle === "line") {
+        (main as ISeriesApi<"Line">).applyOptions({ color: palette.accent });
+      } else {
+        (main as ISeriesApi<"Area">).applyOptions({
+          lineColor: palette.accent,
+          topColor: alpha(palette.accent, 0.32),
+          bottomColor: alpha(palette.accent, 0.02),
+        });
+      }
+    }
+    if (vol) vol.applyOptions({ color: palette.volNeutral });
+  }, [palette, chartStyle]);
+
+  // ── Historical seed ───────────────────────────────────────────────────
+  // Refresh = setData on existing series. The chart instance, viewport, and
+  // the user's scroll/zoom state are preserved. Palette is read via ref —
+  // we don't want a theme switch to count as a "candles changed" trigger
+  // here (the palette-applyOptions effect below recolors via applyOptions).
+  useEffect(() => {
+    candlesRef.current = candles;
+    const chart = chartRef.current;
+    const main = mainSeriesRef.current;
+    const vol = volSeriesRef.current;
+    if (!chart || !main || !vol) return;
+    const p = paletteRef.current;
+    if (chartStyle === "candle") {
+      (main as ISeriesApi<"Candlestick">).setData(
+        candles.map<CandlestickData>((c) => ({
+          time: timeOf(c),
+          open: Number(c.open),
+          high: Number(c.high),
+          low: Number(c.low),
+          close: Number(c.close),
+        })),
+      );
+    } else {
+      (main as ISeriesApi<"Line"> | ISeriesApi<"Area">).setData(
+        candles.map<LineData>((c) => ({
+          time: timeOf(c),
+          value: Number(c.close),
+        })),
+      );
+    }
+
+    vol.setData(
+      candles.map<HistogramData>((c) => ({
+        time: timeOf(c),
+        value: Number(c.volume ?? 0),
+        color: Number(c.close) >= Number(c.open) ? p.volPos : p.volNeg,
+      })),
+    );
+
+    // Cache the last bar so live ticks can be merged with real O/H/L.
+    if (candles.length > 0) {
+      const last = candles[candles.length - 1];
+      lastBarRef.current = {
+        time: timeOf(last),
+        open: Number(last.open),
+        high: Number(last.high),
+        low: Number(last.low),
+        close: Number(last.close),
+        volume: Number(last.volume ?? 0),
+      };
+    } else {
+      lastBarRef.current = null;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [candles, chartStyle]);
+
+  // ── Indicator overlays ────────────────────────────────────────────────
+  // Indicators come from the analytical payload. We re-use existing line
+  // series when keys match, so a refresh with the same indicator names
+  // never recreates the overlays.
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart) return;
+    const map = indicatorSeriesRef.current;
+    const incoming = indicators ?? {};
+    const wantedKeys = new Set(Object.keys(incoming));
+    for (const [key, series] of Array.from(map.entries())) {
+      if (!wantedKeys.has(key)) {
+        chart.removeSeries(series);
+        map.delete(key);
+      }
+    }
+    Object.entries(incoming).forEach(([key, points], idx) => {
+      if (!Array.isArray(points) || points.length === 0) return;
+      let series = map.get(key);
+      if (!series) {
+        series = chart.addLineSeries({
+          color: indicatorColors[idx % indicatorColors.length],
+          lineWidth: 1,
+          priceLineVisible: false,
+          lastValueVisible: false,
+        });
+        (series as unknown as { __label?: string }).__label = key;
+        map.set(key, series);
+      } else {
+        series.applyOptions({
+          color: indicatorColors[idx % indicatorColors.length],
+        });
+      }
+      series.setData(
+        points
+          .filter((p) => Number.isFinite(p.value))
+          .map<LineData>((p) => ({
+            time:
+              typeof p.time === "number"
+                ? (p.time as Time)
+                : (String(p.time).slice(0, 10) as Time),
+            value: p.value,
+          })),
+      );
+    });
+  }, [indicators, indicatorColors]);
+
+  // Auto-focus latest bars on first seed only — afterwards we leave the
+  // user's scroll/zoom alone.
+  const hasFocusedRef = useRef(false);
+  useEffect(() => {
+    if (hasFocusedRef.current) return;
+    const chart = chartRef.current;
+    const el = containerRef.current;
+    if (!chart || !el || candles.length === 0) return;
+    focusLatestBars(chart, candles.length, el.clientWidth || 460);
+    hasFocusedRef.current = true;
+  }, [candles.length]);
+
+  // ── Live tick → incremental current-bar update ────────────────────────
+  useEffect(() => {
+    if (!liveTick) return;
+    const main = mainSeriesRef.current;
+    const last = lastBarRef.current;
+    if (!main || !last) return;
+    const price = Number(liveTick.price);
+    if (!Number.isFinite(price)) return;
+    const merged = {
+      time: last.time,
+      open: last.open,
+      high: Math.max(last.high, price),
+      low: Math.min(last.low, price),
+      close: price,
+    };
+    if (chartStyle === "candle") {
+      (main as ISeriesApi<"Candlestick">).update(merged as CandlestickData);
+    } else {
+      (main as ISeriesApi<"Line"> | ISeriesApi<"Area">).update({
+        time: last.time,
+        value: price,
+      } as LineData);
+    }
+    lastBarRef.current = { ...last, high: merged.high, low: merged.low, close: price };
+  }, [liveTick, chartStyle]);
+
+  const fitContent = useCallback(() => {
+    chartRef.current?.timeScale().fitContent();
+  }, []);
+  const focusLast = useCallback(() => {
+    const chart = chartRef.current;
+    const el = containerRef.current;
+    if (chart && el) {
+      focusLatestBars(chart, candlesRef.current.length, el.clientWidth || 460);
+    }
+  }, []);
 
   if (candles.length === 0) {
     return <Empty title="No price data" body="Function returned no candles." />;
@@ -849,24 +1189,22 @@ function ChartView({
           <button
             type="button"
             className="btn btn--ghost"
-            onClick={() => chartRef.current?.timeScale().fitContent()}
+            onClick={fitContent}
+            data-testid="gp-fit-button"
           >
             Fit
           </button>
           <button
             type="button"
             className="btn btn--ghost"
-            onClick={() => {
-              const el = containerRef.current;
-              if (chartRef.current && el)
-                focusLatestBars(chartRef.current, candles.length, el.clientWidth);
-            }}
+            onClick={focusLast}
+            data-testid="gp-last-button"
           >
             Last
           </button>
         </div>
       </div>
-      <div ref={containerRef} style={chartHostStyle} />
+      <div ref={containerRef} style={chartHostStyle} data-testid="gp-chart-host" />
     </>
   );
 }
@@ -1012,15 +1350,9 @@ function computeIndicators(closes: number[]) {
   };
 }
 
-function buildMockNews(symbol?: string): { headline: string; ts: string }[] {
-  if (!symbol) return [];
-  const base = symbol.toUpperCase();
-  return [
-    { headline: `${base} momentum builds as MA cross fires`, ts: "8 min" },
-    { headline: `Technical traders eye ${base} breakout level`, ts: "29 min" },
-    { headline: `${base} closes in on key Fib retracement`, ts: "1 h" },
-  ];
-}
+// S03-R: `buildMockNews` was removed. GP must never fabricate per-symbol
+// headlines; show an honest "not wired" empty state instead until a real
+// news source is plugged in. See RightRail (`newsState === 'empty'`).
 
 // ----- styles -----
 
@@ -1134,6 +1466,38 @@ const toolbarIconButtonStyle: CSSProperties = {
   width: 28,
   padding: 0,
   fontSize: 13,
+};
+
+const disabledToolbarButtonStyle: CSSProperties = {
+  ...toolbarButtonStyle,
+  opacity: 0.45,
+  cursor: "not-allowed",
+};
+
+const disabledToolbarIconButtonStyle: CSSProperties = {
+  ...toolbarIconButtonStyle,
+  opacity: 0.45,
+  cursor: "not-allowed",
+};
+
+const newsEmptyStyle: CSSProperties = {
+  padding: "8px 0 2px",
+  display: "grid",
+  gap: 4,
+};
+
+const newsEmptyTitleStyle: CSSProperties = {
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: 10,
+  color: "var(--text-secondary)",
+  letterSpacing: "0.06em",
+  textTransform: "uppercase",
+};
+
+const newsEmptyBodyStyle: CSSProperties = {
+  fontSize: 11,
+  color: "var(--text-mute)",
+  lineHeight: 1.4,
 };
 
 const legendRowStyle: CSSProperties = {
