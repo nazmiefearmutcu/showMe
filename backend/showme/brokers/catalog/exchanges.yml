@@ -5,7 +5,6 @@
   display_name: AftermathFinance
   aliases: []
   asset_classes:
-  - spot
   - futures
   regions:
   - global
@@ -44,7 +43,6 @@
   display_name: Apex
   aliases: []
   asset_classes:
-  - spot
   - futures
   regions:
   - global
@@ -209,7 +207,6 @@
   display_name: Binance COIN-M
   aliases: []
   asset_classes:
-  - spot
   - futures
   regions:
   - global
@@ -248,7 +245,6 @@
   display_name: Binance USDⓈ-M
   aliases: []
   asset_classes:
-  - spot
   - futures
   regions:
   - global
@@ -621,7 +617,6 @@
   display_name: BloFin
   aliases: []
   asset_classes:
-  - spot
   - futures
   regions:
   - global
@@ -740,7 +735,6 @@
   display_name: BYDFi
   aliases: []
   asset_classes:
-  - spot
   - futures
   regions:
   - global
@@ -1142,7 +1136,6 @@
   display_name: dYdX
   aliases: []
   asset_classes:
-  - spot
   - futures
   regions:
   - global
@@ -1284,7 +1277,6 @@
   display_name: GRVT
   aliases: []
   asset_classes:
-  - spot
   - futures
   regions:
   - global
@@ -1322,7 +1314,6 @@
   display_name: Hibachi
   aliases: []
   asset_classes:
-  - spot
   - futures
   regions:
   - global
@@ -1503,7 +1494,6 @@
   display_name: Kraken Futures
   aliases: []
   asset_classes:
-  - spot
   - futures
   regions:
   - global
@@ -1545,7 +1535,6 @@
   display_name: KuCoin Futures
   aliases: []
   asset_classes:
-  - spot
   - futures
   regions:
   - global
@@ -1604,7 +1593,6 @@
   display_name: Lighter
   aliases: []
   asset_classes:
-  - spot
   - futures
   regions:
   - global
@@ -1682,7 +1670,6 @@
   display_name: Mode Trade
   aliases: []
   asset_classes:
-  - spot
   - futures
   regions:
   - global
@@ -1864,7 +1851,6 @@
   display_name: Pacifica
   aliases: []
   asset_classes:
-  - spot
   - futures
   regions:
   - global
@@ -1883,7 +1869,6 @@
   display_name: Paradex
   aliases: []
   asset_classes:
-  - spot
   - futures
   regions:
   - global
@@ -2103,7 +2088,6 @@
   display_name: WOOFI PRO
   aliases: []
   asset_classes:
-  - spot
   - futures
   regions:
   - global
