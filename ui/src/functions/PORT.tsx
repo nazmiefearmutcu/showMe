@@ -29,6 +29,8 @@ import { navigate } from "@/lib/router";
 import { sidecarFetch } from "@/lib/sidecar";
 import { confirmAction } from "@/lib/confirm";
 import { formatCurrency } from "@/lib/format";
+import { usePortfolioStore, type PortfolioGroup } from "@/lib/portfolio-store";
+import { useExchangeStore } from "@/lib/exchange-store";
 import { FunctionControlGroup, LoadStatePill, RefreshButton } from "./function-controls";
 import type { FunctionPaneProps } from "./registry-types";
 
@@ -99,7 +101,147 @@ function makeTrend(seed: number, n = 16): number[] {
   return out;
 }
 
+function AggregateHeader() {
+  const totals = usePortfolioStore((s) => s.totals);
+  const lastFetched = usePortfolioStore((s) => s.lastFetchedAt);
+  const load = usePortfolioStore((s) => s.loadPortfolio);
+  const groups = usePortfolioStore((s) => s.groups);
+  const errors = groups.filter((g) => g.error).length;
+  return (
+    <div style={{ display: "flex", gap: 24, alignItems: "center", padding: "8px 16px",
+                  borderBottom: "1px solid var(--border-1)" }}>
+      <div>
+        <div style={{ fontSize: 10, color: "var(--fg-2)" }}>Toplam (USD stable eq.)</div>
+        <div style={{ fontSize: 22, fontWeight: 600 }}>
+          ${(totals.stable_usd_equivalent ?? 0).toLocaleString()}
+        </div>
+      </div>
+      <div>
+        <div style={{ fontSize: 10, color: "var(--fg-2)" }}>Bağlantı</div>
+        <div>{groups.length}</div>
+      </div>
+      {errors > 0 && (
+        <div style={{ color: "var(--accent-err)" }}>Hata: {errors}</div>
+      )}
+      <div style={{ marginLeft: "auto", fontSize: 11, color: "var(--fg-2)" }}>
+        {lastFetched ? `Son: ${new Date(lastFetched).toLocaleTimeString()}` : ""}
+      </div>
+      <button onClick={() => load()}>Yenile</button>
+    </div>
+  );
+}
+
+function SourceFilter() {
+  const credentials = useExchangeStore((s) => s.credentials);
+  const selected = usePortfolioStore((s) => s.selectedCredentialIds);
+  const setSel = usePortfolioStore((s) => s.setSelectedCredentialIds);
+  if (credentials.length === 0) return null;
+  const isAll = selected === null;
+  const toggle = (id: string) => () => {
+    if (isAll) {
+      setSel([id]);
+    } else {
+      const cur = new Set(selected);
+      if (cur.has(id)) cur.delete(id); else cur.add(id);
+      setSel(cur.size === credentials.length || cur.size === 0 ? null : Array.from(cur));
+    }
+  };
+  return (
+    <div style={{ display: "flex", flexWrap: "wrap", gap: 4, padding: "6px 16px" }}>
+      <button onClick={() => setSel(null)} aria-pressed={isAll}
+              style={{ opacity: isAll ? 1 : 0.55 }}>Hepsi</button>
+      {credentials.map((c) => {
+        const active = isAll || selected?.includes(c.id);
+        return (
+          <button key={c.id} onClick={toggle(c.id)} aria-pressed={!!active}
+                  style={{ opacity: active ? 1 : 0.55, fontSize: 11 }}>
+            {c.exchange_id}:{c.account_label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function CredentialGroup({ g }: { g: PortfolioGroup }) {
+  if (g.error) {
+    return (
+      <div style={{ padding: 12, borderBottom: "1px solid var(--border-1)" }}>
+        <strong>{g.exchange_id}:{g.account_label}</strong>
+        <div style={{ color: "var(--accent-err)" }}>{g.error}</div>
+      </div>
+    );
+  }
+  return (
+    <div style={{ padding: 12, borderBottom: "1px solid var(--border-1)" }}>
+      <div style={{ display: "flex", gap: 16 }}>
+        <strong>{g.exchange_id}:{g.account_label}</strong>
+        {g.account && (
+          <span>
+            {g.account.equity.toFixed(2)} {g.account.currency}
+            <span style={{ color: "var(--fg-2)" }}> ({g.account.cash.toFixed(2)} cash)</span>
+          </span>
+        )}
+      </div>
+      {g.positions.length > 0 && (
+        <table style={{ width: "100%", marginTop: 6, fontSize: 12 }}>
+          <thead>
+            <tr style={{ color: "var(--fg-2)" }}>
+              <th align="left">Symbol</th><th align="right">Qty</th>
+              <th align="right">Entry</th><th align="right">Mark</th>
+              <th align="right">PnL</th>
+            </tr>
+          </thead>
+          <tbody>
+            {g.positions.map((p, i) => (
+              <tr key={`${p.symbol}-${i}`}>
+                <td>{p.symbol}</td>
+                <td align="right">{p.quantity}</td>
+                <td align="right">{p.entry_price ?? "-"}</td>
+                <td align="right">{p.current_price ?? "-"}</td>
+                <td align="right" style={{
+                  color: (p.unrealized_pnl ?? 0) >= 0 ? "var(--accent-ok)" : "var(--accent-err)",
+                }}>
+                  {(p.unrealized_pnl ?? 0).toFixed(2)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
 export function PORTPane({ code }: FunctionPaneProps) {
+  const portfolioGroups = usePortfolioStore((s) => s.groups);
+  const credentialsCount = useExchangeStore((s) => s.credentials.length);
+  const loadPortfolio = usePortfolioStore((s) => s.loadPortfolio);
+  const loadCredentials = useExchangeStore((s) => s.loadCredentials);
+
+  useEffect(() => {
+    loadCredentials();
+    loadPortfolio();
+    const t = setInterval(() => loadPortfolio(), 30_000);
+    return () => clearInterval(t);
+  }, [loadPortfolio, loadCredentials]);
+
+  const hasAnyCredential = credentialsCount > 0;
+  const aggregateSection = !hasAnyCredential ? (
+    <div style={{ padding: 24, color: "var(--fg-2)" }}>
+      Bağlı borsa yok. <strong>Connect Exchange</strong> üzerinden bir bağlantı ekle
+      (/CONN), portföyün burada görünsün.
+    </div>
+  ) : (
+    <>
+      <AggregateHeader />
+      <SourceFilter />
+      {portfolioGroups.map((g) => (
+        <CredentialGroup key={g.credential_id} g={g} />
+      ))}
+    </>
+  );
+
   const { state, data, error, refetch } = useFunction<PortData>({ code });
   const positions = useMemo(() => data?.data?.positions ?? [], [data?.data?.positions]);
   const totals = data?.data?.totals;
@@ -279,6 +421,7 @@ export function PORTPane({ code }: FunctionPaneProps) {
 
   return (
     <div className="showme-port showme-port-motion port-pane-host">
+      {aggregateSection}
       <h2 className="u-sr-only">{code} — Portfolio</h2>
       <Pane>
         <PaneHeader
