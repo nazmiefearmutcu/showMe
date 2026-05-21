@@ -36,6 +36,18 @@ REGION_HINTS = {
     "bitmex": ["global"], "phemex": ["global"], "poloniex": ["us"],
 }
 
+CREDENTIAL_KEY_MAP = {
+    "apiKey": "api_key",
+    "secret": "api_secret",
+    "password": "passphrase",
+    "uid": "uid",
+    "login": "login",
+    "twofa": "twofa",
+    "privateKey": "private_key",
+    "walletAddress": "wallet_address",
+    "token": "token",
+}
+
 
 def _entry(ex_id: str) -> dict:
     try:
@@ -43,7 +55,10 @@ def _entry(ex_id: str) -> dict:
     except AttributeError:
         return {}
     inst = cls({"enableRateLimit": True})
-    requires = sorted(k for k, v in inst.requiredCredentials.items() if v)
+    requires = sorted(
+        CREDENTIAL_KEY_MAP.get(k, k)
+        for k, v in inst.requiredCredentials.items() if v
+    )
     optional: list[str] = []
     asset_classes = []
     if inst.has.get("spot"):
