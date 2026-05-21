@@ -639,6 +639,13 @@ function SidebarShortcutGroup({
                 if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey)
                   return;
                 e.preventDefault();
+                // S10 dashboard-restore: Overview navigates to the
+                // welcome route (`#/`), which `RouteSync` resolves to a
+                // HOME leaf that `Workspace.tsx` renders via the native
+                // `<Welcome />` dashboard. Markets Overview is a
+                // separate preset reachable through the preset menu /
+                // command palette — never auto-loaded from the
+                // dashboard click.
                 navigate(item.path);
               }}
             >

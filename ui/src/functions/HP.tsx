@@ -21,6 +21,7 @@ import {
   type CandlestickData,
   type HistogramData,
   type IChartApi,
+  type ISeriesApi,
   type LineData,
   type Time,
   createChart,
@@ -45,6 +46,7 @@ import {
 } from "@/lib/chart-layout";
 import { useFunction } from "@/lib/useFunction";
 import { defaultSymbolForFunction } from "@/lib/symbols";
+import { useLiveQuote, type TransportState } from "@/lib/market-data";
 import { SymbolBar } from "@/shell/SymbolBar";
 import { buildCsv, type HPRow } from "./HP.csv";
 import {
@@ -225,6 +227,32 @@ export function HPPane({ code, symbol }: FunctionPaneProps) {
   });
 
   const rows = useMemo(() => decorate(normalizeRows(data?.data)), [data]);
+  // S12 HP live-data wiring: until S12 the SymbolHeaderStrip's "RT
+  // SESSION" pill only meant the *historical* fetch returned ok, and
+  // the `liveTick` prop on PriceChart was unused — so HP's chart never
+  // ticked between refreshes. We now subscribe to the canonical live
+  // quote channel (`useLiveQuote`) so the chart current bar advances
+  // via `series.update()` and the header pills report honest transport
+  // state (RT LIVE / RECONNECTING / STALE / SNAPSHOT ONLY / OFFLINE).
+  const liveQuote = useLiveQuote(effectiveSymbol, {
+    enabled: !!effectiveSymbol,
+  });
+  const transportState: TransportState = liveQuote.transportState;
+  const isLiveTransport = transportState === "live";
+  const isReconnectingTransport =
+    transportState === "reconnecting" ||
+    transportState === "connecting" ||
+    transportState === "stale";
+  const isOfflineTransport =
+    transportState === "offline" || transportState === "error";
+  const isStaleQuote =
+    !!liveQuote.snapshot &&
+    typeof liveQuote.freshnessMs === "number" &&
+    liveQuote.stale;
+  const snapshotOnlyTransport =
+    state === "ok" && rows.length === 0 && !!liveQuote.snapshot;
+  const liveTickPrice = liveQuote.lastTick?.price ?? null;
+  const liveTickAt = liveQuote.lastTickAt ?? null;
   // Theme-aware compare overlay palette — replaces the prior dark-mode
   // hex literal so Papyrus / Matrix / custom slots track correctly.
   const compareChartPalette = useChartPalette();
@@ -320,7 +348,10 @@ export function HPPane({ code, symbol }: FunctionPaneProps) {
       .filter((v): v is number => v != null);
   }, [rows]);
 
-  const newsItems = useMemo(() => buildMockNews(effectiveSymbol), [effectiveSymbol]);
+  // 2026-05-20 S03-H: HP backend payload is OHLCV-only. Until a real news
+  // source is wired through (provider + cache + i18n), the NEWS rail panel
+  // shows an honest "not wired" empty state instead of fabricated headlines.
+  // The previously inlined fake-headline helper was deleted in this patch.
 
   const provider = data?.sources?.[0] ?? "pending";
   const cached = !!(data as { cached?: boolean } | undefined)?.cached;
@@ -374,12 +405,34 @@ export function HPPane({ code, symbol }: FunctionPaneProps) {
           symbol={effectiveSymbol}
           name={(data?.data as { longName?: string; shortName?: string } | undefined)?.longName}
           exchange={(data?.data as { exchange?: string } | undefined)?.exchange}
-          last={lastClose}
-          change={dayChange}
-          changePct={dayChangePct}
+          /*
+           * S12 HP truth: prefer the live tick price when the transport
+           * is actually live (`isLiveTransport`), otherwise fall back to
+           * the most-recent historical close so the header doesn't go
+           * blank between refreshes. Same rule for change/changePct —
+           * recompute against the historical previous close so the chip
+           * reflects the freshest available bar instead of staying
+           * locked to the candle-frozen value.
+           */
+          last={isLiveTransport && liveTickPrice != null ? liveTickPrice : lastClose}
+          change={
+            isLiveTransport && liveTickPrice != null && prevClose != null
+              ? liveTickPrice - prevClose
+              : dayChange
+          }
+          changePct={
+            isLiveTransport && liveTickPrice != null && prevClose
+              ? ((liveTickPrice - prevClose) / prevClose) * 100
+              : dayChangePct
+          }
           ohlc={latest}
           spark={sparkValues}
           state={state}
+          transportState={transportState}
+          isReconnecting={isReconnectingTransport}
+          isOffline={isOfflineTransport}
+          isStale={isStaleQuote}
+          snapshotOnly={snapshotOnlyTransport}
         />
 
         {/* Toolbar row */}
@@ -442,10 +495,14 @@ export function HPPane({ code, symbol }: FunctionPaneProps) {
               chartStyle={chartStyle}
               activeIndicators={activeIndicators}
               stats={stats}
-              news={newsItems}
               symbol={effectiveSymbol ?? ""}
               comparedSeries={comparedSeries}
               chartApiRef={chartApiRef}
+              liveTick={
+                liveTickPrice != null && liveTickAt != null
+                  ? { price: liveTickPrice, ts: liveTickAt }
+                  : null
+              }
             />
           )}
         </PaneBody>
@@ -504,6 +561,11 @@ function SymbolHeaderStrip({
   ohlc,
   spark,
   state,
+  transportState,
+  isReconnecting,
+  isOffline,
+  isStale,
+  snapshotOnly,
 }: {
   symbol?: string;
   name?: string;
@@ -514,8 +576,22 @@ function SymbolHeaderStrip({
   ohlc?: HPRow;
   spark: number[];
   state: string;
+  /**
+   * S12 HP truth: the strip only shows live-session wording when the
+   * canonical `useLiveQuote` transport reports it. The historical
+   * `useFunction` `state === "ok"` is NOT the same as a live channel
+   * being open and ticking. Without these props HP fell back to the
+   * misleading "real-time session" badge any time the historical fetch
+   * succeeded — including when the WebSocket bridge was offline.
+   */
+  transportState: TransportState;
+  isReconnecting: boolean;
+  isOffline: boolean;
+  isStale: boolean;
+  snapshotOnly: boolean;
 }) {
   if (!symbol) return null;
+  const isLive = transportState === "live";
   return (
     <div style={symbolStripStyle}>
       <div className="u-flex u-items-center u-gap-12 u-min-w-0">
@@ -530,10 +606,32 @@ function SymbolHeaderStrip({
             {exchange}
           </Pill>
         )}
-        {state === "ok" && (
-          <Pill tone="positive" variant="soft">
-            RT SESSION
-          </Pill>
+        {state === "ok" && isLive && (
+          <span data-testid="hp-transport-pill" data-state="live">
+            <Pill tone="positive" variant="soft">RT LIVE</Pill>
+          </span>
+        )}
+        {state === "ok" && isReconnecting && !isLive && (
+          <span data-testid="hp-transport-pill" data-state={transportState}>
+            <Pill tone="warn" variant="soft">
+              {transportState === "stale" ? "STALE" : "RECONNECTING"}
+            </Pill>
+          </span>
+        )}
+        {state === "ok" && isOffline && (
+          <span data-testid="hp-transport-pill" data-state="offline">
+            <Pill tone="negative" variant="soft">OFFLINE</Pill>
+          </span>
+        )}
+        {snapshotOnly && (
+          <span data-testid="hp-snapshot-only">
+            <Pill tone="warn" variant="soft">SNAPSHOT ONLY</Pill>
+          </span>
+        )}
+        {isStale && !isOffline && (
+          <span data-testid="hp-stale">
+            <Pill tone="warn" variant="soft">STALE</Pill>
+          </span>
         )}
       </div>
       <div className="u-flex u-items-center u-gap-14">
@@ -906,10 +1004,10 @@ function ChartLayout({
   chartStyle,
   activeIndicators,
   stats,
-  news,
   symbol,
   comparedSeries,
   chartApiRef,
+  liveTick,
 }: {
   chartId: string;
   rows: Array<HPRow & { _change?: number; _changePct?: number }>;
@@ -917,10 +1015,10 @@ function ChartLayout({
   chartStyle: ChartStyle;
   activeIndicators: string[];
   stats: { high: number; low: number; totalPct: number | null; n: number; last: number; first: number } | null;
-  news: { headline: string; ts: string }[];
   symbol: string;
   comparedSeries: ComparedSeries[];
   chartApiRef: MutableRefObject<IChartApi | null>;
+  liveTick: HPLiveTick | null;
 }) {
   const [crosshair, setCrosshair] = useState<CrosshairState>({
     price: null,
@@ -952,11 +1050,12 @@ function ChartLayout({
             onCrosshair={setCrosshair}
             comparedSeries={comparedSeries}
             chartApiRef={chartApiRef}
+            liveTick={liveTick}
           />
           <CrosshairReadout state={crosshair} />
         </ResizableChartFrame>
       </div>
-      <RightRail stats={stats} rows={rows} news={news} symbol={symbol} />
+      <RightRail stats={stats} rows={rows} symbol={symbol} />
     </div>
   );
 }
@@ -988,12 +1087,10 @@ function CrosshairReadout({ state }: { state: CrosshairState }) {
 function RightRail({
   stats,
   rows,
-  news,
   symbol,
 }: {
   stats: { high: number; low: number; totalPct: number | null; n: number; last: number; first: number } | null;
   rows: Array<HPRow & { _change?: number; _changePct?: number }>;
-  news: { headline: string; ts: string }[];
   symbol: string;
 }) {
   const closes = useMemo(
@@ -1050,13 +1147,18 @@ function RightRail({
         />
       </RailSection>
       <RailSection title={`News · ${symbol}`}>
-        <div className="u-grid-gap-8">
-          {news.map((item, idx) => (
-            <div key={idx} style={newsItemStyle}>
-              <span style={newsHeadlineStyle}>{item.headline}</span>
-              <span style={newsTimestampStyle}>{item.ts}</span>
-            </div>
-          ))}
+        {/* S03-H: news feed not yet wired to a real provider.
+            We show an honest empty/not-wired state instead of
+            fabricating template headlines. */}
+        <div
+          data-testid="hp-news-empty"
+          style={newsEmptyStyle}
+        >
+          <span style={newsEmptyTitleStyle}>News feed not wired</span>
+          <span style={newsEmptyBodyStyle}>
+            HP does not yet pipe a real news provider for this symbol.
+            This panel will populate once a verified source is connected.
+          </span>
         </div>
       </RailSection>
     </aside>
@@ -1140,7 +1242,43 @@ function IndicatorRow({
   );
 }
 
-function PriceChart({
+/**
+ * Live tick payload — when supplied, HP updates the current (last) bar via
+ * `series.update()` instead of pushing a full new candle through `setData`.
+ * This preserves the chart instance, the user's scroll/zoom, and lightweight-
+ * charts' incremental rendering. HP's backend does not currently ship a live
+ * tick stream; the prop exists so a future WebSocket bridge (or test harness)
+ * can drive the live bar without re-mounting the chart.
+ */
+export interface HPLiveTick {
+  price: number;
+  ts?: number;
+}
+
+/**
+ * Mount-only price chart.
+ *
+ * S03-H regression target: HP previously called `createChart()` + `chart.remove()`
+ * on every data refresh because the entire body of the lifecycle effect was
+ * pinned to `chartRows`. That wiped scroll position, zoom, and any in-flight
+ * lightweight-charts subscriptions on every fresh poll. The new layout:
+ *
+ *   1. Mount effect — creates the chart, primary series, volume series, and
+ *      crosshair subscription exactly ONCE for a given combination of
+ *      [chartStyle, compareMode, interval, palette]. Changing chartStyle (the
+ *      only legitimate trigger for a different series shape) is the one path
+ *      that intentionally rebuilds.
+ *   2. Data refresh effect — runs on `chartRows` / `comparedSeries` changes
+ *      and calls `setData()` on the existing series refs. No instance churn.
+ *   3. Indicator effect — runs on `activeIndicators` changes and add/removes
+ *      individual indicator series while keeping the chart alive.
+ *   4. Live tick effect — runs on `liveTick` and calls `series.update()` on
+ *      the current bar.
+ *   5. Crosshair callback — captured through a ref so a fresh callback
+ *      identity (a brand-new `onCrosshair` from the parent on every render)
+ *      does NOT rebuild the chart.
+ */
+export function PriceChart({
   chartId: _chartId,
   rows,
   interval,
@@ -1149,6 +1287,7 @@ function PriceChart({
   onCrosshair,
   comparedSeries,
   chartApiRef,
+  liveTick = null,
 }: {
   chartId: string;
   rows: Array<HPRow & { _change?: number; _changePct?: number }>;
@@ -1158,10 +1297,51 @@ function PriceChart({
   onCrosshair: (state: CrosshairState) => void;
   comparedSeries: ComparedSeries[];
   chartApiRef: MutableRefObject<IChartApi | null>;
+  liveTick?: HPLiveTick | null;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
+  // Strongly-typed series refs survive across data refreshes so we can call
+  // `setData` / `update` without ever recreating the chart instance.
+  const mainSeriesRef = useRef<
+    | ISeriesApi<"Candlestick">
+    | ISeriesApi<"Line">
+    | ISeriesApi<"Area">
+    | null
+  >(null);
+  const volumeSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
+  const indicatorSeriesRef = useRef<Map<string, ISeriesApi<"Line">>>(new Map());
+  const compareSeriesRef = useRef<Map<string, ISeriesApi<"Line">>>(new Map());
+  // Pin the latest crosshair callback so the mount effect doesn't have to
+  // depend on its identity. Callers (e.g. ChartLayout) usually pass a new
+  // closure each render — that must not rebuild the chart.
+  const onCrosshairRef = useRef(onCrosshair);
+  onCrosshairRef.current = onCrosshair;
+
   const palette = useChartPalette();
+  // S03-H: `useChartPalette` returns a fresh object on every render because
+  // its underlying store fires an immediate `subscribe → setState(read())`
+  // dance on mount. Depending the mount effect on `palette` directly would
+  // therefore tear down and recreate the chart on the very first commit
+  // (and again on every parent re-render). `paletteKey` reduces the palette
+  // to a value-stable string so the mount effect only fires when the user
+  // actually swaps theme presets.
+  const paletteKey = useMemo(
+    () =>
+      [
+        palette.text,
+        palette.grid,
+        palette.border,
+        palette.positive,
+        palette.negative,
+        palette.accent,
+        palette.warn,
+        palette.volNeutral,
+        palette.volPos,
+        palette.volNeg,
+      ].join("|"),
+    [palette],
+  );
   const chartRows = useMemo(
     () =>
       [...rows]
@@ -1179,11 +1359,22 @@ function PriceChart({
         ),
     [rows],
   );
-  const compareMode = comparedSeries.some((s) => s.rows.length > 0);
+  const compareMode = useMemo(
+    () => comparedSeries.some((s) => s.rows.length > 0),
+    [comparedSeries],
+  );
 
+  // ── 1. Mount effect ───────────────────────────────────────────────────
+  // Creates the chart + primary/volume series. Rebuilds ONLY on the inputs
+  // that genuinely require a fresh series shape:
+  //   - chartStyle: candle ↔ line ↔ area swap the series type entirely
+  //   - compareMode: the % rebase overlay shares one Y-axis, not two
+  //   - interval: drives `timeVisible` / `secondsVisible` options
+  //   - palette: theme switch repaints every series at construction time
+  // Crucially, `chartRows` is NOT in this dep list anymore (the S03-H bug).
   useEffect(() => {
     const el = hostRef.current;
-    if (!el || chartRows.length < 2) return;
+    if (!el) return;
     const size = measureChartElement(el);
     const chart = createChart(el, {
       layout: {
@@ -1211,82 +1402,42 @@ function PriceChart({
     });
 
     if (compareMode) {
-      // Rebased % overlay mode: primary becomes a line, peers each get a line,
-      // all sharing the same Y-axis showing % change from each series' first bar.
-      const primaryLine = chart.addLineSeries({
+      mainSeriesRef.current = chart.addLineSeries({
         color: palette.accent,
         lineWidth: 2,
         priceLineVisible: false,
-        priceFormat: { type: "custom", formatter: (v: number) => `${v.toFixed(2)}%`, minMove: 0.01 },
+        priceFormat: {
+          type: "custom",
+          formatter: (v: number) => `${v.toFixed(2)}%`,
+          minMove: 0.01,
+        },
       });
-      primaryLine.setData(rebaseToPct(chartRows));
-
-      comparedSeries.forEach((s) => {
-        if (!s.rows.length) return;
-        const sorted = [...s.rows]
-          .filter((r) => r.close != null || r.adj_close != null || r.adjClose != null)
-          .sort(
-            (a, b) =>
-              new Date(a.date ?? a.ts ?? "").getTime() -
-              new Date(b.date ?? b.ts ?? "").getTime(),
-          );
-        if (sorted.length < 2) return;
-        const peerLine = chart.addLineSeries({
-          color: s.color,
-          lineWidth: 2,
-          priceLineVisible: false,
-          lastValueVisible: true,
-          title: s.symbol,
-        });
-        peerLine.setData(rebaseToPct(sorted));
+    } else if (chartStyle === "candle") {
+      mainSeriesRef.current = chart.addCandlestickSeries({
+        upColor: palette.positive,
+        downColor: palette.negative,
+        borderUpColor: palette.positive,
+        borderDownColor: palette.negative,
+        wickUpColor: palette.positive,
+        wickDownColor: palette.negative,
+      });
+    } else if (chartStyle === "line") {
+      mainSeriesRef.current = chart.addLineSeries({
+        color: palette.accent,
+        lineWidth: 2,
+        priceLineVisible: false,
       });
     } else {
-      if (chartStyle === "candle") {
-        const candles = chart.addCandlestickSeries({
-          upColor: palette.positive,
-          downColor: palette.negative,
-          borderUpColor: palette.positive,
-          borderDownColor: palette.negative,
-          wickUpColor: palette.positive,
-          wickDownColor: palette.negative,
-        });
-        candles.setData(
-          chartRows.map<CandlestickData>((row) => ({
-            time: chartTime(row.date ?? row.ts),
-            open: Number(row.open),
-            high: Number(row.high),
-            low: Number(row.low),
-            close: Number(row.close),
-          })),
-        );
-      } else if (chartStyle === "line") {
-        const line = chart.addLineSeries({
-          color: palette.accent,
-          lineWidth: 2,
-          priceLineVisible: false,
-        });
-        line.setData(
-          chartRows.map<LineData>((row) => ({
-            time: chartTime(row.date ?? row.ts),
-            value: Number(row.close),
-          })),
-        );
-      } else {
-        const area = chart.addAreaSeries({
-          lineColor: palette.accent,
-          topColor: alpha(palette.accent, 0.32),
-          bottomColor: alpha(palette.accent, 0.02),
-          lineWidth: 2,
-        });
-        area.setData(
-          chartRows.map<LineData>((row) => ({
-            time: chartTime(row.date ?? row.ts),
-            value: Number(row.close),
-          })),
-        );
-      }
+      mainSeriesRef.current = chart.addAreaSeries({
+        lineColor: palette.accent,
+        topColor: alpha(palette.accent, 0.32),
+        bottomColor: alpha(palette.accent, 0.02),
+        lineWidth: 2,
+      });
+    }
 
-      const volume = chart.addHistogramSeries({
+    if (!compareMode) {
+      volumeSeriesRef.current = chart.addHistogramSeries({
         priceScaleId: "volume",
         color: palette.volNeutral,
         priceFormat: { type: "volume" },
@@ -1294,48 +1445,12 @@ function PriceChart({
       chart.priceScale("volume").applyOptions({
         scaleMargins: { top: 0.78, bottom: 0 },
       });
-      volume.setData(
-        chartRows.map<HistogramData>((row) => ({
-          time: chartTime(row.date ?? row.ts),
-          value: Number(row.volume ?? 0),
-          color:
-            Number(row.close) >= Number(row.open) ? palette.volPos : palette.volNeg,
-        })),
-      );
-
-      // Optional MA overlays driven by active indicator chips.
-      const closes = chartRows.map((r) => Number(r.close));
-      const indicatorColors = [palette.accent, palette.positive, palette.warn, palette.negative];
-      activeIndicators.forEach((name, idx) => {
-        const m = name.match(/(SMA|EMA)\((\d+)\)/);
-        if (!m) return;
-        const period = Number(m[2]);
-        const series = chart.addLineSeries({
-          color: indicatorColors[idx % indicatorColors.length],
-          lineWidth: 1,
-          priceLineVisible: false,
-          lastValueVisible: false,
-        });
-        const values = m[1] === "SMA" ? sma(closes, period) : ema(closes, period);
-        series.setData(
-          values
-            .map((v, i) =>
-              v == null
-                ? null
-                : ({
-                    time: chartTime(chartRows[i].date ?? chartRows[i].ts),
-                    value: v,
-                  } as LineData),
-            )
-            .filter((p): p is LineData => p !== null),
-        );
-      });
     }
 
-    // Crosshair → readout box.
     chart.subscribeCrosshairMove((param) => {
+      const cb = onCrosshairRef.current;
       if (!param.time || !param.seriesData.size) {
-        onCrosshair({
+        cb({
           price: null,
           open: null,
           high: null,
@@ -1347,18 +1462,28 @@ function PriceChart({
         return;
       }
       const seriesValues = Array.from(param.seriesData.values())[0] as
-        | { close?: number; open?: number; high?: number; low?: number; value?: number }
+        | {
+            close?: number;
+            open?: number;
+            high?: number;
+            low?: number;
+            value?: number;
+          }
         | undefined;
       const t = param.time;
       const tStr =
         typeof t === "number"
           ? new Date(t * 1000).toISOString().slice(0, 16).replace("T", " ")
           : String(t);
-      const idx = chartRows.findIndex(
+      // chartRows is read via a ref so the closure doesn't grow stale —
+      // the crosshair callback always sees the latest data even though
+      // the subscription was created at mount.
+      const latest = chartRowsRef.current;
+      const idx = latest.findIndex(
         (r) => chartTime(r.date ?? r.ts) === param.time,
       );
-      const row = idx >= 0 ? chartRows[idx] : null;
-      onCrosshair({
+      const row = idx >= 0 ? latest[idx] : null;
+      cb({
         price: seriesValues?.close ?? seriesValues?.value ?? null,
         open: seriesValues?.open ?? row?.open ?? null,
         high: seriesValues?.high ?? row?.high ?? null,
@@ -1371,7 +1496,6 @@ function PriceChart({
 
     chartRef.current = chart;
     chartApiRef.current = chart;
-    focusLatestBars(chart, chartRows.length, size.width);
     const ro = new ResizeObserver(() => {
       resizeChartToElement(chart, el);
     });
@@ -1381,8 +1505,206 @@ function PriceChart({
       chart.remove();
       chartRef.current = null;
       chartApiRef.current = null;
+      mainSeriesRef.current = null;
+      volumeSeriesRef.current = null;
+      indicatorSeriesRef.current.clear();
+      compareSeriesRef.current.clear();
     };
-  }, [chartRows, interval, chartStyle, activeIndicators, onCrosshair, compareMode, comparedSeries, chartApiRef, palette]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- paletteKey is a
+    // value-stable proxy for `palette`; depending on the object identity would
+    // remount the chart on every render (see paletteKey comment above).
+  }, [chartStyle, compareMode, interval, paletteKey, chartApiRef]);
+
+  // Keep a ref to the most recent chartRows so the crosshair closure created
+  // at mount time can read fresh data without rebuilding the subscription.
+  const chartRowsRef = useRef(chartRows);
+  chartRowsRef.current = chartRows;
+
+  // ── 2. Data refresh effect ────────────────────────────────────────────
+  // Updates main + volume + compare series via `setData()` on the existing
+  // chart. This is the path that runs on every normal poll/refetch.
+  useEffect(() => {
+    const chart = chartRef.current;
+    const mainSeries = mainSeriesRef.current;
+    if (!chart || !mainSeries || chartRows.length < 2) return;
+
+    if (compareMode) {
+      (mainSeries as ISeriesApi<"Line">).setData(rebaseToPct(chartRows));
+      const wanted = new Set<string>();
+      comparedSeries.forEach((s) => {
+        if (!s.rows.length) return;
+        const sorted = [...s.rows]
+          .filter(
+            (r) =>
+              r.close != null || r.adj_close != null || r.adjClose != null,
+          )
+          .sort(
+            (a, b) =>
+              new Date(a.date ?? a.ts ?? "").getTime() -
+              new Date(b.date ?? b.ts ?? "").getTime(),
+          );
+        if (sorted.length < 2) return;
+        wanted.add(s.symbol);
+        let peerLine = compareSeriesRef.current.get(s.symbol);
+        if (!peerLine) {
+          peerLine = chart.addLineSeries({
+            color: s.color,
+            lineWidth: 2,
+            priceLineVisible: false,
+            lastValueVisible: true,
+            title: s.symbol,
+          });
+          compareSeriesRef.current.set(s.symbol, peerLine);
+        } else {
+          peerLine.applyOptions({ color: s.color });
+        }
+        peerLine.setData(rebaseToPct(sorted));
+      });
+      // Drop compare series that are no longer requested without touching
+      // the chart instance.
+      compareSeriesRef.current.forEach((series, sym) => {
+        if (!wanted.has(sym)) {
+          chart.removeSeries(series);
+          compareSeriesRef.current.delete(sym);
+        }
+      });
+    } else {
+      if (chartStyle === "candle") {
+        (mainSeries as ISeriesApi<"Candlestick">).setData(
+          chartRows.map<CandlestickData>((row) => ({
+            time: chartTime(row.date ?? row.ts),
+            open: Number(row.open),
+            high: Number(row.high),
+            low: Number(row.low),
+            close: Number(row.close),
+          })),
+        );
+      } else {
+        (mainSeries as ISeriesApi<"Line" | "Area">).setData(
+          chartRows.map<LineData>((row) => ({
+            time: chartTime(row.date ?? row.ts),
+            value: Number(row.close),
+          })),
+        );
+      }
+      volumeSeriesRef.current?.setData(
+        chartRows.map<HistogramData>((row) => ({
+          time: chartTime(row.date ?? row.ts),
+          value: Number(row.volume ?? 0),
+          color:
+            Number(row.close) >= Number(row.open)
+              ? palette.volPos
+              : palette.volNeg,
+        })),
+      );
+    }
+    // NOTE: viewport framing intentionally lives in the dedicated first-seed
+    // effect below. Calling `focusLatestBars` here on every refresh wiped the
+    // user's wheel/pinch zoom on every periodic poll (S13 regression).
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- see paletteKey
+  }, [chartRows, comparedSeries, compareMode, chartStyle, paletteKey]);
+
+  // ── 2b. First-seed viewport focus ─────────────────────────────────────
+  // S13 fix: frame the latest bars exactly ONCE for a given chart instance,
+  // so the user's manual scroll/zoom survives every subsequent data poll.
+  // Reset on chart rebuild (chartStyle swap creates a new instance) by
+  // pairing the guard ref with the same key set the mount effect uses.
+  const hasFocusedRef = useRef(false);
+  useEffect(() => {
+    hasFocusedRef.current = false;
+  }, [chartStyle, compareMode, interval, paletteKey]);
+  useEffect(() => {
+    if (hasFocusedRef.current) return;
+    const chart = chartRef.current;
+    const el = hostRef.current;
+    if (!chart || !el || chartRows.length < 2) return;
+    focusLatestBars(chart, chartRows.length, el.clientWidth);
+    hasFocusedRef.current = true;
+  }, [chartRows.length, chartStyle, compareMode, interval, paletteKey]);
+
+  // ── 3. Indicator effect ───────────────────────────────────────────────
+  // Adds / removes / refreshes the SMA·EMA overlay series without
+  // recreating the chart. Compare mode hides indicators.
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart || compareMode || chartRows.length < 2) return;
+    const closes = chartRows.map((r) => Number(r.close));
+    const indicatorColors = [
+      palette.accent,
+      palette.positive,
+      palette.warn,
+      palette.negative,
+    ];
+    const wanted = new Set<string>();
+    activeIndicators.forEach((name, idx) => {
+      const m = name.match(/(SMA|EMA)\((\d+)\)/);
+      if (!m) return;
+      wanted.add(name);
+      let series = indicatorSeriesRef.current.get(name);
+      if (!series) {
+        series = chart.addLineSeries({
+          color: indicatorColors[idx % indicatorColors.length],
+          lineWidth: 1,
+          priceLineVisible: false,
+          lastValueVisible: false,
+        });
+        indicatorSeriesRef.current.set(name, series);
+      } else {
+        series.applyOptions({
+          color: indicatorColors[idx % indicatorColors.length],
+        });
+      }
+      const period = Number(m[2]);
+      const values = m[1] === "SMA" ? sma(closes, period) : ema(closes, period);
+      series.setData(
+        values
+          .map((v, i) =>
+            v == null
+              ? null
+              : ({
+                  time: chartTime(chartRows[i].date ?? chartRows[i].ts),
+                  value: v,
+                } as LineData),
+          )
+          .filter((p): p is LineData => p !== null),
+      );
+    });
+    indicatorSeriesRef.current.forEach((series, name) => {
+      if (!wanted.has(name)) {
+        chart.removeSeries(series);
+        indicatorSeriesRef.current.delete(name);
+      }
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- see paletteKey
+  }, [activeIndicators, chartRows, compareMode, paletteKey]);
+
+  // ── 4. Live tick effect ───────────────────────────────────────────────
+  // Updates the current (last) bar via `series.update()` so live ticks
+  // never cause a remount or full setData replay. Skipped in compare mode
+  // (% rebase doesn't translate to a single-bar tick) and for empty data.
+  useEffect(() => {
+    if (!liveTick) return;
+    if (compareMode) return;
+    const mainSeries = mainSeriesRef.current;
+    if (!mainSeries || chartRows.length < 1) return;
+    const lastRow = chartRows[chartRows.length - 1];
+    const lastTime = chartTime(lastRow.date ?? lastRow.ts);
+    const price = liveTick.price;
+    if (chartStyle === "candle") {
+      (mainSeries as ISeriesApi<"Candlestick">).update({
+        time: lastTime,
+        open: Number(lastRow.open),
+        high: Math.max(Number(lastRow.high), price),
+        low: Math.min(Number(lastRow.low), price),
+        close: price,
+      });
+    } else {
+      (mainSeries as ISeriesApi<"Line" | "Area">).update({
+        time: lastTime,
+        value: price,
+      });
+    }
+  }, [liveTick, chartStyle, compareMode, chartRows]);
 
   if (chartRows.length < 2) return null;
   return (
@@ -1610,15 +1932,9 @@ function computeIndicators(closes: number[]) {
   };
 }
 
-function buildMockNews(symbol?: string): { headline: string; ts: string }[] {
-  if (!symbol) return [];
-  const base = symbol.toUpperCase();
-  return [
-    { headline: `${base} prints fresh session high on volume spike`, ts: "12 min" },
-    { headline: `Sector rotation lifts ${base} ahead of macro print`, ts: "47 min" },
-    { headline: `${base} options skew turns bullish into expiry`, ts: "1 h" },
-  ];
-}
+// Fabricated-news helper removed in S03-H — HP no longer manufactures
+// headlines. See the "News feed not wired" empty state inside `RightRail`
+// and the guard tests in HP.test.tsx for the contract this patch enforces.
 
 // ----- styles -----
 
@@ -2039,23 +2355,22 @@ const indicatorRowStyle: CSSProperties = {
   gap: 8,
 };
 
-const newsItemStyle: CSSProperties = {
+const newsEmptyStyle: CSSProperties = {
   display: "grid",
-  gap: 2,
-  padding: "6px 0",
-  borderBottom: "1px solid var(--border-row)",
+  gap: 6,
+  padding: "10px 2px",
 };
 
-const newsHeadlineStyle: CSSProperties = {
-  fontSize: 11,
-  color: "var(--text-primary)",
-  lineHeight: 1.35,
-};
-
-const newsTimestampStyle: CSSProperties = {
+const newsEmptyTitleStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 9,
-  color: "var(--text-mute)",
-  letterSpacing: "0.06em",
+  fontSize: 10,
+  letterSpacing: "0.08em",
   textTransform: "uppercase",
+  color: "var(--text-mute)",
+};
+
+const newsEmptyBodyStyle: CSSProperties = {
+  fontSize: 11,
+  color: "var(--text-secondary)",
+  lineHeight: 1.4,
 };

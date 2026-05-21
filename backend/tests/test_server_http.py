@@ -118,7 +118,12 @@ def test_quote_symbol_rejects_invalid_chars(client: TestClient) -> None:
 
 def test_quote_symbol_route_well_formed(client: TestClient, monkeypatch) -> None:
     async def fake_fetch(_symbol: str) -> dict[str, Any]:
-        return {"symbol": "BTCUSDT", "last": 12345.67, "asset_class": "crypto"}
+        return {
+            "symbol": "BTCUSDT",
+            "last": 12345.67,
+            "asset_class": "crypto",
+            "source": "binance",
+        }
 
     from showme import quotes
     quotes.quote_cache_clear()
@@ -128,10 +133,113 @@ def test_quote_symbol_route_well_formed(client: TestClient, monkeypatch) -> None
     body = resp.json()
     assert body["ok"] is True
     assert body["data"]["last"] == 12345.67
-    # Second call must hit the cache (same payload).
+    # S07 envelope: fresh fetch carries the metadata flags.
+    assert body["cache_hit"] is False
+    assert body["data_state"] == "ok"
+    assert body["transport_state"] == "snapshot"
+    assert body["source_kind"] == "binance"
+    assert body["degraded"] is False
+    assert body["synthetic"] is False
+    # Second call must hit the cache. The inner ``data`` payload must be
+    # byte-identical (the cache must NOT mutate cached data) but the
+    # top-level metadata must flip ``cache_hit`` to True.
     resp2 = client.get("/api/quote/BTCUSDT")
     assert resp2.status_code == 200
-    assert resp2.json() == body
+    body2 = resp2.json()
+    assert body2["ok"] is True
+    assert body2["data"] == body["data"]
+    assert body2["cache_hit"] is True
+    assert body2["data_state"] == "ok"
+    assert body2["freshness_ms"] is not None and body2["freshness_ms"] >= 0
+    quotes.quote_cache_clear()
+
+
+# ── /api/stream/stats (S07 envelope) ─────────────────────────────────────
+
+
+def test_stream_stats_envelope_shape(client: TestClient) -> None:
+    """Even with zero subscribers, the route must return the S07 envelope.
+
+    The lazy hub provider materializes a real ``StreamHub`` on first hit,
+    so ``hub_present`` should be True and ``channels`` empty.
+    """
+    resp = client.get("/api/stream/stats")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["hub_present"] is True
+    assert isinstance(body["generated_at"], str) and body["generated_at"]
+    assert isinstance(body["stale_threshold_ms"], int)
+    assert body["channels"] == []
+    expected_totals = {
+        "channel_count",
+        "subscriber_count",
+        "live_count",
+        "stale_count",
+        "reconnecting_count",
+        "error_count",
+        "dropped_tick_count",
+    }
+    assert set(body["totals"]) == expected_totals
+    for value in body["totals"].values():
+        assert value == 0
+
+
+def test_stream_stats_envelope_when_provider_absent() -> None:
+    """If ``deps.get_stream_hub`` is None, the route returns the honest
+    ``hub_present:false`` envelope rather than the old empty shape."""
+    from showme.server_routes import AppDeps, websocket
+    from fastapi import FastAPI
+
+    app = FastAPI()
+    deps = AppDeps(get_stream_hub=None)
+    websocket.register(app, deps)
+    with TestClient(app) as fresh_client:
+        resp = fresh_client.get("/api/stream/stats")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["hub_present"] is False
+        assert body["channels"] == []
+        assert body["totals"]["channel_count"] == 0
+
+
+# ── /api/quote provider-failure metadata (S07) ───────────────────────────
+
+
+def test_quote_route_returns_unavailable_envelope_on_provider_error(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    """Provider failures must be explicit (``data_state=unavailable``,
+    ``transport_state=offline``) instead of looking like a live snapshot."""
+    from showme import quotes
+
+    async def boom(_symbol: str) -> dict[str, Any]:
+        raise quotes.QuoteFetchError("simulated provider outage")
+
+    quotes.quote_cache_clear()
+    monkeypatch.setattr(quotes, "fetch_quote_snapshot", boom)
+    resp = client.get("/api/quote/AAPL")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is False
+    assert body["data"] is None
+    assert "simulated provider outage" in body["error"]
+    assert body["cache_hit"] is False
+    assert body["data_state"] == "unavailable"
+    assert body["transport_state"] == "offline"
+    assert body["freshness_ms"] is None
+    assert body["source_kind"] is None
+    assert body["degraded"] is True
+    assert body["synthetic"] is False
+    # A repeat call hits the cached failure — cache_hit flips, data shape stays.
+    resp2 = client.get("/api/quote/AAPL")
+    body2 = resp2.json()
+    assert body2["ok"] is False
+    assert body2["cache_hit"] is True
+    assert body2["data_state"] == "unavailable"
+    assert body2["transport_state"] == "offline"
     quotes.quote_cache_clear()
 
 

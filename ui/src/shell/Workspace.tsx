@@ -22,6 +22,12 @@ import {
   DesignExportRenderer,
   hasDesignExportComponent,
 } from "@/design-export/showme-design-export";
+import {
+  CRITICAL_CODES,
+  isCriticalCode,
+  resolvePaneRenderer,
+  type PaneResolveAdapters,
+} from "@/lib/pane-completeness";
 import { PaneChrome } from "./PaneChrome";
 import { PaneErrorBoundary } from "./PaneErrorBoundary";
 
@@ -77,11 +83,17 @@ function Leaf({ node }: { node: LeafNode }) {
   // the outer PaneChrome to avoid a doubled toolbar/statusbar. When the
   // native pane wins (current default for the 10 in-scope codes) the
   // outer PaneChrome still renders so SymbolBar / RefreshButton work.
+  //
+  // S05: critical codes (GP, HP, DES, WATCH, SCAN, PORT, TOP, NI, CN, MIS)
+  // are *never* design-leaves even if the native renderer is missing —
+  // they must show PaneChrome around the `<CriticalMissingPane>` guard
+  // so the trader still has the toolbar surface and code header.
   const hasNative = resolvePane(node.code) !== null;
   const hasTpl = hasTemplate(node.code);
+  const isCritical = isCriticalCode(node.code);
   const isDesignLeaf =
     node.code === "PREF" ||
-    (!hasNative && !hasTpl && hasDesignExportComponent(node.code));
+    (!isCritical && !hasNative && !hasTpl && hasDesignExportComponent(node.code));
   return (
     <div
       onMouseDownCapture={() => setFocused(node.id)}
@@ -113,33 +125,56 @@ function PaneContent({
 }) {
   let body: React.ReactNode;
   if (code === "HOME") {
-    body = hasDesignExportComponent(code) ? (
-      <DesignExportRenderer code={code} symbol={symbol} variant="pro" />
-    ) : (
-      <Welcome />
-    );
+    // S09 chart-blocker: HOME is the welcome surface and must NEVER fall
+    // through to the design-export cockpit (PrChart with synthetic
+    // SM_DATA.helpers.bigSpark, hardcoded SPX labels, fake SIDECAR :8421
+    // status). The real "Overview" path now loads the markets-overview
+    // preset (DES + GP + WEI + TOP); the HOME leaf renders <Welcome /> as
+    // a safety net so any leftover HOME-coded leaf still shows a clean
+    // surface with real sidecar data instead of the static cockpit.
+    body = <Welcome />;
   } else if (code === "PREF") {
     body = <Preferences />;
   } else {
-    // Resolution precedence — native pane wins so that bespoke, live-data
-    // panes (HP, GP, BTMM, DES, EQS, FA, ASK, BIO, MIS, NI/CN, …) take
-    // priority over the Claude Design export's static Pro mockups. The
-    // design export is kept as a token-styled fallback for catalog codes
-    // that don't have a native pane yet, and as a last resort we fall
-    // back to FunctionStub (the generic `/api/fn/{code}` surface).
+    // S05 — critical codes (GP, HP, DES, WATCH, SCAN, PORT, TOP, NI, CN,
+    // MIS) MUST render the bespoke native pane. If a native renderer is
+    // unavailable we show the explicit `<CriticalMissingPane>` guard —
+    // never the template, design-export, or stub fallback. The trader
+    // relies on those panes for real positions and live market data;
+    // a degraded surface that pretends to work is more dangerous than a
+    // visible "this is missing" notice.
+    //
+    // For non-critical codes the precedence stays: native > template >
+    // design-export > stub. The design export is a token-styled fallback
+    // for catalog codes that don't have a native pane yet; FunctionStub
+    // is the last-resort generic `/api/fn/{code}` surface.
+    const choice = resolvePaneRenderer(code);
     const Native = resolvePane(code);
-    if (Native) {
-      body = <Native code={code} symbol={symbol} />;
-    } else if (hasTemplate(code)) {
-      // Design-template-backed renderer (Claude Design Basic variant ported
-      // into a token-driven layout). Preferred over the static Pro design
-      // export and FunctionStub whenever a matching template exists in
-      // ui/src/templates/mock-data.ts.
-      body = <TemplateRenderer code={code} symbol={symbol} />;
-    } else if (hasDesignExportComponent(code)) {
-      body = <DesignExportRenderer code={code} symbol={symbol} variant="pro" />;
-    } else {
-      body = <FunctionStub leafId={leafId} code={code} symbol={symbol} />;
+    switch (choice) {
+      case "native":
+        // `Native` cannot be null here because `resolvePaneRenderer`
+        // returned "native", but TypeScript can't see across the
+        // module boundary — the fallthrough into `CriticalMissingPane`
+        // keeps the type narrowing honest.
+        body = Native ? (
+          <Native code={code} symbol={symbol} />
+        ) : (
+          <CriticalMissingPane code={code} />
+        );
+        break;
+      case "critical-missing":
+        body = <CriticalMissingPane code={code} />;
+        break;
+      case "template":
+        body = <TemplateRenderer code={code} symbol={symbol} />;
+        break;
+      case "design-export":
+        body = <DesignExportRenderer code={code} symbol={symbol} variant="pro" />;
+        break;
+      case "stub":
+      default:
+        body = <FunctionStub leafId={leafId} code={code} symbol={symbol} />;
+        break;
     }
   }
   return (
@@ -149,18 +184,83 @@ function PaneContent({
   );
 }
 
-export type PaneRendererChoice = "native" | "template" | "design-export" | "stub";
+/**
+ * Explicit failure pane for a critical code whose native renderer is
+ * missing from the registry. Static, dependency-free, on-purpose ugly —
+ * the trader must notice immediately that something is wrong instead of
+ * being shown a plausible-looking design mockup or a raw JSON stub.
+ */
+function CriticalMissingPane({ code }: { code: string }) {
+  return (
+    <section
+      role="alert"
+      aria-live="assertive"
+      style={{
+        padding: "16px 18px",
+        margin: 12,
+        border: "1px solid var(--negative)",
+        background: "color-mix(in srgb, var(--negative) 8%, var(--surface-2))",
+        borderRadius: "var(--radius-md)",
+        color: "var(--text-primary)",
+        fontFamily: "JetBrains Mono, monospace",
+        display: "grid",
+        gap: 8,
+      }}
+    >
+      <strong style={{ fontSize: 13, letterSpacing: "0.04em", color: "var(--negative)" }}>
+        Critical pane unavailable — {code.toUpperCase()}
+      </strong>
+      <span style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.5 }}>
+        This pane is on the S05 critical list (GP, HP, DES, WATCH, SCAN,
+        PORT, TOP, NI, CN, MIS) and its native React component is not
+        registered. ShowMe will not silently fall back to a template, a
+        design-export mockup, or the generic stub for these codes because
+        they back real positions and live market data.
+      </span>
+      <span style={{ fontSize: 11, color: "var(--text-mute)" }}>
+        Fix: register the native pane in
+        <code style={{ marginLeft: 6, fontFamily: "JetBrains Mono, monospace" }}>
+          ui/src/functions/registry.tsx
+        </code>{" "}
+        and rebuild.
+      </span>
+    </section>
+  );
+}
 
 /**
- * Public regression hook for pane resolution. The actual render path above
- * intentionally keeps the same order: native > template > design-export > stub.
+ * Public renderer-choice type. Mirrors the union in
+ * `@/lib/pane-completeness` — kept re-exported here so existing imports
+ * (`import { choosePaneRenderer } from './Workspace'`) continue to work.
  */
-export function choosePaneRenderer(code: string): PaneRendererChoice {
-  if (resolvePane(code)) return "native";
-  if (hasTemplate(code)) return "template";
-  if (hasDesignExportComponent(code)) return "design-export";
-  return "stub";
+export type PaneRendererChoice =
+  | "native"
+  | "template"
+  | "design-export"
+  | "stub"
+  | "critical-missing";
+
+/**
+ * Public regression hook for pane resolution. Critical codes resolve to
+ * "native" when the bespoke pane is present, "critical-missing" when it
+ * is not — never to template / design / stub. Non-critical codes follow
+ * native > template > design-export > stub.
+ *
+ * The optional `adapters` argument lets tests inject stubbed has-native
+ * / has-template / has-design-export checks to exercise the
+ * "critical-missing" branch without removing modules from the registry.
+ */
+export function choosePaneRenderer(
+  code: string,
+  adapters?: PaneResolveAdapters,
+): PaneRendererChoice {
+  return resolvePaneRenderer(code, adapters);
 }
+
+// Re-export the critical-code list so `import { CRITICAL_CODES } from
+// '@/shell/Workspace'` keeps working from older callsites; the canonical
+// source remains `@/lib/pane-completeness`.
+export { CRITICAL_CODES };
 
 function Split({ node }: { node: SplitNode }) {
   const setSplitSizes = useWorkspace((s) => s.setSplitSizes);

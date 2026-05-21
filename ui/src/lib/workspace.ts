@@ -87,6 +87,13 @@ interface WorkspaceState {
   setSplitSizes: (splitId: string, sizes: number[]) => void;
 }
 
+// S10 dashboard-restore: cold boot lands on the single HOME leaf, which
+// `Workspace.tsx` renders via the native `<Welcome />` dashboard. The
+// S09 design-export cockpit (`PrChart` / `SITUATION BRIEFING` /
+// `SIDECAR :8421`) is permanently neutered by the HOME branch — HOME is
+// safe and native again, so it's the right cold-boot surface. Markets
+// Overview stays as an explicit preset (`loadBuiltinPreset("markets-
+// overview")`), not the default behavior.
 const root = leaf("HOME");
 
 export const useWorkspace = create<WorkspaceState>((set, get) => ({
