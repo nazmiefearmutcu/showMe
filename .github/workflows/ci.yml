@@ -106,9 +106,18 @@ jobs:
           npx --yes playwright install --with-deps chromium
       - name: Validate playwright config
         run: npx playwright list --config tests/e2e/playwright.config.ts
+      # S06 — explicit build step so the smoke project NEVER serves a
+      # stale `ui/dist`. The webServer block in playwright.config.ts
+      # also chains this build, but a dedicated step surfaces UI build
+      # failures in the CI log before Playwright even spins up — much
+      # cheaper to triage. SHOWME_E2E_SKIP_BUILD avoids the duplicate
+      # rebuild inside webServer.
+      - name: Build UI bundle
+        run: npm run build:ui
       - name: Run Playwright smoke
         env:
           # The smoke spec stubs all sidecar HTTP and runs against a
           # static `vite preview` so the suite is hermetic in CI.
           PLAYWRIGHT_E2E_MODE: smoke
+          SHOWME_E2E_SKIP_BUILD: "1"
         run: npx playwright test --config tests/e2e/playwright.config.ts --project=smoke

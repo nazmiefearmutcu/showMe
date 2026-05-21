@@ -256,11 +256,29 @@ export function TOPPane({ code }: FunctionPaneProps) {
               <Pill tone="accent" variant="soft" withDot={false}>
                 MATCHED {articles.length} / {limit}
               </Pill>
-              <Pill tone="positive" variant="soft" withDot>
-                LIVE · 60s
-              </Pill>
+              {/*
+                Header live-state pill. The previous version pinned
+                "LIVE · 60s" regardless of fetch state — it stayed green
+                while the feed was failing, loading on a cold pane, or
+                returning an empty payload. Now the tone, dot, and label
+                track `useFunction` state plus a non-empty payload check.
+                Poll cadence is still surfaced because the user uses it
+                to predict the next refresh.
+              */}
+              <FeedStatePill
+                state={state}
+                hasArticles={articles.length > 0}
+                intervalSec={REFRESH_MS / 1000}
+              />
+              {/*
+                Sort indicator. There is only one sort mode for the news
+                tape (newest first); the prior `↓` arrow read as a
+                clickable sort toggle and would mislead the user into
+                tapping a static pill. Dropped the arrow and reworded
+                so the pill is unambiguously a passive label.
+              */}
               <Pill tone="muted" variant="soft" withDot={false}>
-                BY RECENT ↓
+                RECENT FIRST
               </Pill>
               <NewsLimitControl value={limit} onChange={setLimit} disabled={state === "loading"} />
               <SegmentedControl
@@ -607,6 +625,71 @@ function NewsRow({
         )}
       </div>
     </div>
+  );
+}
+
+/**
+ * Honest LIVE / SNAPSHOT / EMPTY / OFFLINE / LOADING pill for the TOP
+ * header. Encodes the four observable conditions of the `/api/fn/TOP`
+ * cycle so the user can't be tricked into thinking a stalled or
+ * offline feed is still streaming.
+ *
+ *   state === "error"                     → OFFLINE   (red, no dot)
+ *   state === "loading" && cold pane      → LOADING   (warn, no dot)
+ *   state === "ok" && articles.length=0   → EMPTY · 60s  (warn)
+ *   state === "loading" && have articles  → SNAPSHOT · refreshing
+ *                                                       (warn, dot)
+ *   state === "ok" && articles.length>0   → LIVE · 60s   (green, dot)
+ */
+function FeedStatePill({
+  state,
+  hasArticles,
+  intervalSec,
+}: {
+  state: "idle" | "loading" | "ok" | "error";
+  hasArticles: boolean;
+  intervalSec: number;
+}) {
+  if (state === "error") {
+    return (
+      <Pill tone="negative" variant="soft" withDot={false}>
+        OFFLINE
+      </Pill>
+    );
+  }
+  if (state === "loading" && !hasArticles) {
+    return (
+      <Pill tone="warn" variant="soft" withDot={false}>
+        LOADING
+      </Pill>
+    );
+  }
+  if (state === "loading" && hasArticles) {
+    return (
+      <Pill tone="warn" variant="soft" withDot>
+        SNAPSHOT · refreshing
+      </Pill>
+    );
+  }
+  if (state === "ok" && !hasArticles) {
+    return (
+      <Pill tone="warn" variant="soft" withDot={false}>
+        EMPTY · {intervalSec}s
+      </Pill>
+    );
+  }
+  if (state === "ok") {
+    return (
+      <Pill tone="positive" variant="soft" withDot>
+        LIVE · {intervalSec}s
+      </Pill>
+    );
+  }
+  // state === "idle" cold start, before the first fetch resolves.
+  return (
+    <Pill tone="muted" variant="soft" withDot={false}>
+      IDLE
+    </Pill>
   );
 }
 

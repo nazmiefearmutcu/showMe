@@ -3,8 +3,14 @@
  *
  * Each row is a dense quote line: symbol (accent link), tag, last (tabular),
  * delta chip, sparkline, age, stream pill, source, remove. Top KPI strip
- * surfaces #symbols / median Δ% / advancers / decliners. Sidecar `/api/quote`
- * polls every 30s; the WS stream overlays sub-second ticks.
+ * surfaces #symbols / median Δ% / advancers / decliners.
+ *
+ * S02 — quote+stream lifecycle now lives in `lib/market-data`. WATCH no longer
+ * owns bespoke polling, WebSocket subscription, or per-symbol state shapes.
+ * It consumes `useLiveQuotes(symbols)`, which preserves last-good snapshots
+ * across refreshes, exposes `connecting / live / stale / reconnecting /
+ * offline / error` transport states, and tears sockets/timers down cleanly on
+ * symbol change. Sparkline fetch stays local — S03 owns the chart contract.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
@@ -28,8 +34,7 @@ import {
   saveWatchlist,
   type WatchlistRow,
 } from "@/lib/watchlist";
-import { fetchQuote, type QuoteSnapshot } from "@/lib/quotes";
-import { subscribeQuote, type StreamStatus } from "@/lib/stream";
+import { useLiveQuotes, type TransportState } from "@/lib/market-data";
 import { sidecarFetch } from "@/lib/sidecar";
 import { inferAssetClassName } from "@/lib/symbols";
 import { useAppStore } from "@/lib/store";
@@ -44,16 +49,6 @@ import {
 } from "@/lib/timezone";
 import { FunctionControlGroup, LoadStatePill, RefreshButton } from "./function-controls";
 import type { FunctionPaneProps } from "./registry-types";
-
-interface PriceSnapshot {
-  symbol: string;
-  last: number | null;
-  prev: number | null;
-  change_pct: number | null;
-  fetched_at: number;
-  source?: string;
-  error?: string;
-}
 
 interface SparkPoint {
   time: string;
@@ -81,28 +76,43 @@ const WATCH_SYMBOL_OPTIONS = [
 
 export function WATCHPane({ code }: FunctionPaneProps) {
   const [rows, setRows] = useState<WatchlistRow[]>([]);
-  const [prices, setPrices] = useState<Record<string, PriceSnapshot>>({});
   const [sparks, setSparks] = useState<Record<string, SparkPoint[]>>({});
-  const [streamStatus, setStreamStatus] = useState<Record<string, StreamStatus>>({});
   const [draft, setDraft] = useState("");
   const [lastRemoved, setLastRemoved] = useState<WatchlistRow | null>(null);
-  const [busy, setBusy] = useState(false);
   const setFocusedTarget = useWorkspace((s) => s.setFocusedTarget);
   const sidecarStatus = useAppStore((s) => s.sidecarStatus);
   const sidecarReady = !isInTauri() || sidecarStatus === "healthy";
-  const suggestions = useMemo(
-    () => Array.from(new Set([...rows.map((r) => r.symbol), ...WATCH_SYMBOL_OPTIONS])).slice(0, 24),
-    [rows],
+
+  const watchedSymbols = useMemo(() => rows.map((r) => r.symbol), [rows]);
+  const quotes = useLiveQuotes(watchedSymbols, {
+    enabled: sidecarReady,
+    pollMs: REFRESH_MS,
+  });
+
+  const refetch = useCallback(() => {
+    const first = Object.values(quotes)[0];
+    first?.refetch();
+  }, [quotes]);
+
+  const busy = useMemo(
+    () => Object.values(quotes).some((v) => v.loading || v.refreshing),
+    [quotes],
   );
   const quoteErrorCount = useMemo(
-    () => rows.filter((row) => Boolean(prices[row.symbol]?.error)).length,
-    [prices, rows],
+    () => Object.values(quotes).filter((v) => Boolean(v.error) && v.price == null).length,
+    [quotes],
   );
   const liveStreamCount = useMemo(
     () =>
-      rows.filter((row) => streamStatus[row.symbol] === "live" && !prices[row.symbol]?.error)
-        .length,
-    [prices, rows, streamStatus],
+      Object.values(quotes).filter(
+        (v) => v.transportState === "live" && !v.error,
+      ).length,
+    [quotes],
+  );
+
+  const suggestions = useMemo(
+    () => Array.from(new Set([...rows.map((r) => r.symbol), ...WATCH_SYMBOL_OPTIONS])).slice(0, 24),
+    [rows],
   );
 
   const summary = useMemo(() => {
@@ -111,7 +121,7 @@ export function WATCHPane({ code }: FunctionPaneProps) {
     let decliners = 0;
     let unchanged = 0;
     for (const r of rows) {
-      const c = prices[r.symbol]?.change_pct;
+      const c = quotes[r.symbol]?.changePct;
       if (c == null || !Number.isFinite(c)) continue;
       changes.push(c);
       if (c > 0) advancers += 1;
@@ -132,36 +142,19 @@ export function WATCHPane({ code }: FunctionPaneProps) {
       unchanged,
       sampled: changes.length,
     };
-  }, [prices, rows]);
+  }, [quotes, rows]);
 
   useEffect(() => {
     loadWatchlist().then(setRows);
   }, []);
 
-  const refreshPrices = useCallback(async () => {
+  // Sparkline fetch — small historical preview, intentionally separate from
+  // the live quote layer. S03 will fold this into the chart-series contract.
+  useEffect(() => {
     if (rows.length === 0 || !sidecarReady) return;
-    setBusy(true);
-    try {
-      const snapshots = await Promise.all(
-        rows.map(async (r) => {
-          try {
-            const quote = await fetchQuote(r.symbol);
-            return [r.symbol, quoteToPriceSnapshot(quote)] as const;
-          } catch (err) {
-            return [r.symbol, errorSnapshot(r.symbol, err)] as const;
-          }
-        }),
-      );
-      setPrices((prev) => {
-        const next: Record<string, PriceSnapshot> = { ...prev };
-        for (const [symbol, snap] of snapshots) {
-          if (snap.error && next[symbol]?.last != null) continue;
-          next[symbol] =
-            snap.last == null && next[symbol]?.last != null ? next[symbol] : snap;
-        }
-        return next;
-      });
-      const sparkResults = await Promise.all(
+    let cancelled = false;
+    void (async () => {
+      const results = await Promise.all(
         rows.map(async (r) => {
           try {
             return [r.symbol, await fetchSparkline(r.symbol)] as const;
@@ -170,47 +163,17 @@ export function WATCHPane({ code }: FunctionPaneProps) {
           }
         }),
       );
+      if (cancelled) return;
       setSparks((prev) => {
         const next: Record<string, SparkPoint[]> = { ...prev };
-        for (const [symbol, points] of sparkResults) {
+        for (const [symbol, points] of results) {
           if (points.length >= 2) next[symbol] = points;
         }
         return next;
       });
-    } finally {
-      setBusy(false);
-    }
-  }, [rows, sidecarReady]);
-
-  useEffect(() => {
-    refreshPrices();
-    const id = setInterval(refreshPrices, REFRESH_MS);
-    return () => clearInterval(id);
-  }, [refreshPrices]);
-
-  useEffect(() => {
-    if (rows.length === 0 || !sidecarReady) return;
-    const handles = rows.map((r) =>
-      subscribeQuote(r.symbol, {
-        onTick: (tick) => {
-          setPrices((prev) => ({
-            ...prev,
-            [r.symbol]: {
-              symbol: r.symbol,
-              last: tick.price,
-              prev: prev[r.symbol]?.prev ?? null,
-              change_pct: tick.change_pct ?? prev[r.symbol]?.change_pct ?? null,
-              fetched_at: Date.now(),
-              source: tick.source,
-            },
-          }));
-        },
-        onStatus: (status) =>
-          setStreamStatus((s) => ({ ...s, [r.symbol]: status })),
-      }),
-    );
+    })();
     return () => {
-      for (const h of handles) h.close();
+      cancelled = true;
     };
   }, [rows, sidecarReady]);
 
@@ -226,11 +189,6 @@ export function WATCHPane({ code }: FunctionPaneProps) {
     const row = rows.find((r) => r.symbol === sym) ?? { symbol: sym };
     setRows(await removeSymbol(sym));
     setLastRemoved(row);
-    setPrices((p) => {
-      const { [sym]: _gone, ...rest } = p;
-      void _gone;
-      return rest;
-    });
     setSparks((p) => {
       const { [sym]: _gone, ...rest } = p;
       void _gone;
@@ -290,21 +248,21 @@ export function WATCHPane({ code }: FunctionPaneProps) {
         numeric: true,
         width: 110,
         render: (r) => {
-          const p = prices[r.symbol];
-          if (!p) return <span className="u-text-mute">—</span>;
-          if (p.error)
+          const view = quotes[r.symbol];
+          if (!view) return <span className="u-text-mute">—</span>;
+          if (view.error && view.price == null)
             return <span className="u-text-negative">err</span>;
-          const tone = (p.change_pct ?? 0) >= 0 ? "positive" : "negative";
-          return p.last != null ? (
+          if (view.price == null)
+            return <span className="u-text-mute">{formatMissing}</span>;
+          const tone = (view.changePct ?? 0) >= 0 ? "positive" : "negative";
+          return (
             <span
-              key={`${r.symbol}-last-${p.fetched_at}-${p.last}`}
+              key={`${r.symbol}-last-${view.fetchedAt ?? 0}-${view.price}`}
               className={liveCellClass(tone)}
             >
               {/* Adaptive precision: keeps sub-dollar prices readable. */}
-              {formatPrice(p.last)}
+              {formatPrice(view.price)}
             </span>
-          ) : (
-            <span className="u-text-mute">{formatMissing}</span>
           );
         },
       },
@@ -314,12 +272,12 @@ export function WATCHPane({ code }: FunctionPaneProps) {
         numeric: true,
         width: 96,
         render: (r) => {
-          const c = prices[r.symbol]?.change_pct;
+          const c = quotes[r.symbol]?.changePct;
           if (c == null || !Number.isFinite(c))
             return <span className="u-text-mute">—</span>;
           return (
             <span
-              key={`${r.symbol}-change-${prices[r.symbol]?.fetched_at ?? 0}-${c}`}
+              key={`${r.symbol}-change-${quotes[r.symbol]?.fetchedAt ?? 0}-${c}`}
             >
               <DeltaChip value={c} format="percent" fractionDigits={2} />
             </span>
@@ -334,7 +292,7 @@ export function WATCHPane({ code }: FunctionPaneProps) {
           const points = sparks[r.symbol] ?? [];
           if (points.length < 2)
             return <span className="u-text-mute">—</span>;
-          const c = prices[r.symbol]?.change_pct ?? 0;
+          const c = quotes[r.symbol]?.changePct ?? 0;
           const tone: "positive" | "negative" | "neutral" =
             c > 0 ? "positive" : c < 0 ? "negative" : "neutral";
           return (
@@ -354,33 +312,31 @@ export function WATCHPane({ code }: FunctionPaneProps) {
         header: "Updated",
         width: 80,
         render: (r) => {
-          const p = prices[r.symbol];
-          if (!p) return <span className="u-text-mute">—</span>;
+          const view = quotes[r.symbol];
+          if (!view) return <span className="u-text-mute">—</span>;
+          if (view.fetchedAt == null)
+            return <span className="u-text-mute">—</span>;
           return (
-            <span className="u-mono-xs u-text-secondary">{formatAge(p.fetched_at)}</span>
+            <span className="u-mono-xs u-text-secondary">
+              {formatFreshness(view.freshnessMs)}
+              {view.stale ? " · stale" : ""}
+            </span>
           );
         },
       },
       {
         key: "stream",
         header: "Stream",
-        width: 84,
+        width: 92,
         render: (r) => {
-          const status = prices[r.symbol]?.error
-            ? "error"
-            : streamStatus[r.symbol] ?? "connecting";
-          const tone =
-            status === "live"
-              ? "positive"
-              : status === "offline"
-                ? "muted"
-                : status === "error"
-                  ? "negative"
-                  : "warn";
+          const view = quotes[r.symbol];
+          const state: TransportState | "error" =
+            view?.error && view.price == null ? "error" : (view?.transportState ?? "idle");
+          const { tone, label, withDot } = streamPillStyling(state);
           return (
-            <span className={`showme-watch__stream showme-watch__stream--${status}`}>
-              <Pill tone={tone} variant="soft" withDot={status === "live"}>
-                {status}
+            <span className={`showme-watch__stream showme-watch__stream--${state}`}>
+              <Pill tone={tone} variant="soft" withDot={withDot}>
+                {label}
               </Pill>
             </span>
           );
@@ -391,16 +347,25 @@ export function WATCHPane({ code }: FunctionPaneProps) {
         header: "Source",
         width: 96,
         render: (r) => {
-          const p = prices[r.symbol];
-          if (p?.error) {
+          const view = quotes[r.symbol];
+          if (!view) {
+            return <span className="u-text-mute u-text-11">—</span>;
+          }
+          if (view.error && view.price == null) {
             return (
-              <span title={p.error} className="u-text-negative u-text-11">
+              <span title={view.error} className="u-text-negative u-text-11">
                 quote err
               </span>
             );
           }
           return (
-            <span className="u-text-secondary u-text-11">{p?.source ?? "—"}</span>
+            <span
+              className="u-text-secondary u-text-11"
+              title={view.sourceKind === "tick" ? "live tick overlay" : "snapshot fetch"}
+            >
+              {view.source ?? "—"}
+              {view.sourceKind === "tick" ? " · live" : ""}
+            </span>
           );
         },
       },
@@ -420,7 +385,7 @@ export function WATCHPane({ code }: FunctionPaneProps) {
         ),
       },
     ],
-    [prices, sparks, streamStatus, setFocusedTarget, onRemove],
+    [quotes, sparks, setFocusedTarget, onRemove],
   );
 
   const utcNow = formatTzTime(new Date()) + " " + tzOffset(readTzId(), new Date());
@@ -432,6 +397,10 @@ export function WATCHPane({ code }: FunctionPaneProps) {
         : summary.median < 0
           ? "negative"
           : "neutral";
+
+  const hasAnyData = rows.length > 0 && Object.values(quotes).some(
+    (v) => v.snapshot != null || v.lastTick != null,
+  );
 
   return (
     <div className="showme-watch showme-watch-motion port-pane-host">
@@ -448,7 +417,7 @@ export function WATCHPane({ code }: FunctionPaneProps) {
                 Add symbols such as AAPL or BTCUSDT, refresh live quotes, open a symbol by clicking it, and remove rows with the x button.
               </span>
               <span className="fn-help-grid__hint-mute">
-                Prices come from the quote endpoint. Provider failures are shown as err instead of template prices.
+                Prices come from the canonical market-data layer (snapshot + tick overlay). Provider failures are shown as err instead of template prices.
               </span>
             </div>
           }
@@ -467,7 +436,7 @@ export function WATCHPane({ code }: FunctionPaneProps) {
               <LoadStatePill state={busy ? "loading" : rows.length ? "ok" : "idle"} />
               <RefreshButton
                 loading={busy}
-                onClick={() => refreshPrices()}
+                onClick={refetch}
                 disabled={rows.length === 0}
                 title="Refresh watchlist prices"
               />
@@ -545,7 +514,7 @@ export function WATCHPane({ code }: FunctionPaneProps) {
 
           {rows.length === 0 ? (
             <Empty title="Empty watchlist" body="Add a symbol above to start." />
-          ) : Object.keys(prices).length === 0 ? (
+          ) : !hasAnyData ? (
             <Skeleton height={120} />
           ) : (
             <DataGrid
@@ -553,15 +522,18 @@ export function WATCHPane({ code }: FunctionPaneProps) {
               columns={cols}
               rows={rows}
               rowKey={(r) => r.symbol}
-              rowClassName={(r, idx) =>
-                [
+              rowClassName={(r, idx) => {
+                const view = quotes[r.symbol];
+                const hasError = Boolean(view?.error) && view?.price == null;
+                const live = view?.transportState === "live";
+                return [
                   "showme-motion-grid__row",
                   "showme-row-reveal",
                   `showme-motion-grid__row--${Math.min(idx, 10)}`,
-                  prices[r.symbol]?.error ? "showme-motion-grid__row--error" : "",
-                  streamStatus[r.symbol] === "live" ? "showme-motion-grid__row--live" : "",
-                ].filter(Boolean).join(" ")
-              }
+                  hasError ? "showme-motion-grid__row--error" : "",
+                  live ? "showme-motion-grid__row--live" : "",
+                ].filter(Boolean).join(" ");
+              }}
               density="compact"
             />
           )}
@@ -580,26 +552,36 @@ export function WATCHPane({ code }: FunctionPaneProps) {
   );
 }
 
-function errorSnapshot(symbol: string, err: unknown): PriceSnapshot {
-  return {
-    symbol,
-    last: null,
-    prev: null,
-    change_pct: null,
-    fetched_at: Date.now(),
-    error: err instanceof Error ? err.message : String(err),
-  };
+function formatFreshness(ms: number | null): string {
+  if (ms == null) return "—";
+  if (ms < 1500) return "now";
+  if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
+  if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m`;
+  return `${Math.round(ms / 3_600_000)}h`;
 }
 
-function quoteToPriceSnapshot(quote: QuoteSnapshot): PriceSnapshot {
-  return {
-    symbol: quote.symbol,
-    last: quote.last,
-    prev: quote.previous_close ?? null,
-    change_pct: quote.change_pct ?? null,
-    fetched_at: Date.parse(quote.fetched_at) || Date.now(),
-    source: quote.source,
-  };
+function streamPillStyling(state: TransportState | "error"): {
+  tone: "positive" | "negative" | "muted" | "warn" | "accent";
+  label: string;
+  withDot: boolean;
+} {
+  switch (state) {
+    case "live":
+      return { tone: "positive", label: "live", withDot: true };
+    case "stale":
+      return { tone: "warn", label: "stale", withDot: false };
+    case "reconnecting":
+      return { tone: "warn", label: "retry", withDot: false };
+    case "connecting":
+      return { tone: "warn", label: "connecting", withDot: false };
+    case "offline":
+      return { tone: "muted", label: "offline", withDot: false };
+    case "error":
+      return { tone: "negative", label: "error", withDot: false };
+    case "idle":
+    default:
+      return { tone: "muted", label: "idle", withDot: false };
+  }
 }
 
 async function fetchSparkline(symbol: string): Promise<SparkPoint[]> {
@@ -645,12 +627,4 @@ function liveCellClass(tone: "positive" | "negative", compact = false): string {
     `showme-live-value--${tone}`,
     `showme-live-cell--${tone === "positive" ? "up" : "down"}`,
   ].filter(Boolean).join(" ");
-}
-
-function formatAge(ts: number): string {
-  const diff = Date.now() - ts;
-  if (diff < 1500) return "now";
-  if (diff < 60_000) return `${Math.round(diff / 1000)}s`;
-  if (diff < 3_600_000) return `${Math.round(diff / 60_000)}m`;
-  return `${Math.round(diff / 3_600_000)}h`;
 }

@@ -21,6 +21,7 @@
     "audit:npm": "npm audit --omit=dev --audit-level=high",
     "test:e2e": "npx playwright test --config tests/e2e/playwright.config.ts",
     "test:e2e:smoke": "PLAYWRIGHT_E2E_MODE=smoke npx playwright test --config tests/e2e/playwright.config.ts --project=smoke",
+    "test:e2e:smoke:fast": "SHOWME_E2E_SKIP_BUILD=1 PLAYWRIGHT_E2E_MODE=smoke npx playwright test --config tests/e2e/playwright.config.ts --project=smoke",
     "test:e2e:audit": "npx playwright test --config tests/e2e/playwright.config.ts --project=audit",
     "test:e2e:list": "npx playwright list --config tests/e2e/playwright.config.ts",
     "test:backend": "cd backend && uv run pytest",

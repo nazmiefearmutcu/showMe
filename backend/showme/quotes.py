@@ -58,7 +58,9 @@ class QuoteFetchError(RuntimeError):
 _QUOTE_CACHE_TTL_CRYPTO_S = 5.0
 _QUOTE_CACHE_TTL_EQUITY_S = 15.0
 _QUOTE_CACHE_MAX_ENTRIES = 1024
-_quote_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+# (set_at_monotonic, expires_at_monotonic, payload) — S07 added set_at so the
+# route can derive freshness without a second clock source.
+_quote_cache: dict[str, tuple[float, float, dict[str, Any]]] = {}
 _quote_cache_lock = threading.Lock()
 
 
@@ -68,6 +70,18 @@ def _cache_ttl_for(symbol: str) -> float:
 
 def quote_cache_get(symbol: str) -> dict[str, Any] | None:
     """Return a cached snapshot for ``symbol`` if still within TTL, else ``None``."""
+    entry = quote_cache_get_entry(symbol)
+    return entry[2] if entry is not None else None
+
+
+def quote_cache_get_entry(
+    symbol: str,
+) -> tuple[float, float, dict[str, Any]] | None:
+    """S07 — return the full ``(set_at, expires_at, payload)`` cache entry.
+
+    Used by ``/api/quote/{symbol}`` to compute ``freshness_ms`` without a
+    second source of truth. Returns ``None`` if absent or expired.
+    """
     key = (symbol or "").strip().upper()
     if not key:
         return None
@@ -76,11 +90,11 @@ def quote_cache_get(symbol: str) -> dict[str, Any] | None:
         entry = _quote_cache.get(key)
         if entry is None:
             return None
-        expires_at, payload = entry
+        set_at, expires_at, payload = entry
         if expires_at < now:
             _quote_cache.pop(key, None)
             return None
-        return payload
+        return set_at, expires_at, payload
 
 
 def quote_cache_set(symbol: str, payload: dict[str, Any]) -> None:
@@ -88,14 +102,29 @@ def quote_cache_set(symbol: str, payload: dict[str, Any]) -> None:
     key = (symbol or "").strip().upper()
     if not key:
         return
-    expires_at = time.monotonic() + _cache_ttl_for(key)
+    now = time.monotonic()
+    expires_at = now + _cache_ttl_for(key)
     with _quote_cache_lock:
         if len(_quote_cache) >= _QUOTE_CACHE_MAX_ENTRIES:
             # Drop the oldest entry to keep the cache bounded; cheaper than
             # a full LRU and good enough at this size.
             oldest_key = min(_quote_cache, key=lambda k: _quote_cache[k][0])
             _quote_cache.pop(oldest_key, None)
-        _quote_cache[key] = (expires_at, payload)
+        _quote_cache[key] = (now, expires_at, payload)
+
+
+def quote_cache_freshness_ms(symbol: str) -> float | None:
+    """S07 — milliseconds since ``quote_cache_set`` stored ``symbol``.
+
+    Returns ``None`` if the entry is missing/expired. The route augments the
+    cached payload with this value so the UI can show how old a snapshot is
+    without re-fetching.
+    """
+    entry = quote_cache_get_entry(symbol)
+    if entry is None:
+        return None
+    set_at, _expires_at, _payload = entry
+    return max(0.0, (time.monotonic() - set_at) * 1000.0)
 
 
 def quote_cache_clear() -> None:
@@ -518,5 +547,10 @@ __all__ = [
     "fallback_quote_snapshot",
     "fetch_quote_snapshot",
     "is_crypto_symbol",
+    "quote_cache_clear",
+    "quote_cache_freshness_ms",
+    "quote_cache_get",
+    "quote_cache_get_entry",
+    "quote_cache_set",
     "split_crypto_symbol",
 ]
