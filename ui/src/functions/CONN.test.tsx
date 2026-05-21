@@ -89,4 +89,36 @@ describe("CONN pane", () => {
     expect(call.secrets).toEqual({ api_key: "k", api_secret: "s" });
     expect(call.permissions).toEqual(["read"]);
   });
+
+  it("Test button calls testCredential exactly once per click", async () => {
+    useExchangeStore.setState({
+      catalog: useExchangeStore.getState().catalog,
+      credentials: [{
+        id: "abc", exchange_id: "binance", account_label: "main",
+        permissions: ["read"], created_at: "2026-05-21T10:00:00Z",
+      }],
+    });
+    const testSpy = vi.spyOn(useExchangeStore.getState(), "testCredential")
+      .mockResolvedValue({ ok: true });
+    render(<CONNPane />);
+    fireEvent.click(screen.getByText("Binance"));
+    fireEvent.click(screen.getByRole("button", { name: /^test$/i }));
+    await waitFor(() => expect(testSpy).toHaveBeenCalledTimes(1));
+    expect(testSpy).toHaveBeenCalledWith("abc");
+  });
+
+  it("switching exchange clears the form (no state leak)", () => {
+    render(<CONNPane />);
+    // Pick Binance, type into account_label
+    fireEvent.click(screen.getByText("Binance"));
+    const labelInput1 = screen.getByLabelText(/account label/i) as HTMLInputElement;
+    fireEvent.change(labelInput1, { target: { value: "binance-account" } });
+    expect(labelInput1.value).toBe("binance-account");
+
+    // Switch to OKX
+    fireEvent.click(screen.getByText("OKX"));
+    const labelInput2 = screen.getByLabelText(/account label/i) as HTMLInputElement;
+    // New form should start empty, not carry over "binance-account"
+    expect(labelInput2.value).toBe("");
+  });
 });
