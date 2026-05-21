@@ -4,22 +4,14 @@
  * - `catalog` lists available exchanges from `/api/exchange/catalog`.
  * - `credentials` lists saved connections (no secrets, server-side).
  * - Form input (api_key etc.) is kept in component-local state ONLY.
+ *
+ * All HTTP goes through `sidecarFetch` so the sidecar port + X-ShowMe-Token
+ * are attached automatically. `sidecarFetch` throws on non-OK responses; each
+ * action below translates that into a boolean / envelope shape suitable for
+ * the CONN pane.
  */
 import { create } from "zustand";
-
-const TOKEN_HEADER = "X-ShowMe-Token";
-
-function authHeaders(extra: Record<string, string> = {}): Record<string, string> {
-  // SHOWME_AUTH_TOKEN is injected at sidecar handshake time, exposed
-  // via `window.__SHOWME_TOKEN__` (existing pattern — see lib/sidecar.ts).
-  const tok =
-    typeof window !== "undefined"
-      ? ((window as unknown as { __SHOWME_TOKEN__?: string }).__SHOWME_TOKEN__ ?? "")
-      : "";
-  const h: Record<string, string> = { "Content-Type": "application/json", ...extra };
-  if (tok) h[TOKEN_HEADER] = tok;
-  return h;
-}
+import { sidecarFetch } from "./sidecar";
 
 export interface CatalogEntry {
   id: string;
@@ -87,9 +79,7 @@ export const useExchangeStore = create<ExchangeStoreShape>((set, get) => ({
   loadCatalog: async () => {
     set({ catalogLoading: true, error: null });
     try {
-      const r = await fetch("/api/exchange/catalog", { headers: authHeaders() });
-      if (!r.ok) throw new Error(`catalog failed: ${r.status}`);
-      const body = (await r.json()) as CatalogEntry[];
+      const body = await sidecarFetch<CatalogEntry[]>("/api/exchange/catalog");
       set({ catalog: body, catalogLoading: false });
     } catch (e) {
       set({ catalogLoading: false, error: e instanceof Error ? e.message : String(e) });
@@ -99,9 +89,7 @@ export const useExchangeStore = create<ExchangeStoreShape>((set, get) => ({
   loadCredentials: async () => {
     set({ credentialsLoading: true, error: null });
     try {
-      const r = await fetch("/api/exchange/credentials", { headers: authHeaders() });
-      if (!r.ok) throw new Error(`credentials failed: ${r.status}`);
-      const body = (await r.json()) as { records: CredentialRecord[] };
+      const body = await sidecarFetch<{ records: CredentialRecord[] }>("/api/exchange/credentials");
       set({ credentials: body.records, credentialsLoading: false });
     } catch (e) {
       set({ credentialsLoading: false, error: e instanceof Error ? e.message : String(e) });
@@ -109,17 +97,13 @@ export const useExchangeStore = create<ExchangeStoreShape>((set, get) => ({
   },
 
   saveCredential: async (payload) => {
+    set({ error: null });
     try {
-      const r = await fetch("/api/exchange/credentials", {
+      await sidecarFetch<CredentialRecord>("/api/exchange/credentials", {
         method: "POST",
-        headers: authHeaders(),
         body: JSON.stringify(payload),
+        headers: { "Content-Type": "application/json" },
       });
-      if (!r.ok) {
-        const body = (await r.json().catch(() => ({ detail: r.statusText }))) as { detail?: string };
-        set({ error: body.detail ?? `save failed: ${r.status}` });
-        return false;
-      }
       await get().loadCredentials();
       return true;
     } catch (e) {
@@ -129,35 +113,51 @@ export const useExchangeStore = create<ExchangeStoreShape>((set, get) => ({
   },
 
   deleteCredential: async (credentialId) => {
-    const r = await fetch(`/api/exchange/credentials/${credentialId}`, {
-      method: "DELETE",
-      headers: authHeaders(),
-    });
-    if (!r.ok) return false;
-    await get().loadCredentials();
-    return true;
+    set({ error: null });
+    try {
+      await sidecarFetch<{ ok: boolean }>(
+        `/api/exchange/credentials/${credentialId}`,
+        { method: "DELETE" },
+      );
+      await get().loadCredentials();
+      return true;
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+      return false;
+    }
   },
 
   testCredential: async (credentialId) => {
-    const r = await fetch(`/api/exchange/credentials/${credentialId}/test`, {
-      method: "POST",
-      headers: authHeaders(),
-    });
-    return (await r.json()) as { ok: boolean; account?: unknown; error?: string };
+    try {
+      return await sidecarFetch<{ ok: boolean; account?: unknown; error?: string }>(
+        `/api/exchange/credentials/${credentialId}/test`,
+        { method: "POST" },
+      );
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
   },
 
   upgradeToTrade: async (credentialId, accountLabel) => {
-    const r = await fetch(`/api/exchange/credentials/${credentialId}`, {
-      method: "PATCH",
-      headers: authHeaders(),
-      body: JSON.stringify({
-        permissions: ["read", "trade"],
-        confirm_account_label: accountLabel,
-      }),
-    });
-    if (!r.ok) return false;
-    await get().loadCredentials();
-    return true;
+    set({ error: null });
+    try {
+      await sidecarFetch<CredentialRecord>(
+        `/api/exchange/credentials/${credentialId}`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({
+            permissions: ["read", "trade"],
+            confirm_account_label: accountLabel,
+          }),
+          headers: { "Content-Type": "application/json" },
+        },
+      );
+      await get().loadCredentials();
+      return true;
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+      return false;
+    }
   },
 
   setSelectedExchange: (id) => set({ selectedExchangeId: id }),
