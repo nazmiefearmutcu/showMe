@@ -39,6 +39,17 @@ PROJECT_ROOT = HERE.parent
 datas = [
     (str(HERE / "config"), "config"),
     (str(HERE / "showme" / "engine"), "showme/engine"),
+    # Sub-system A (multi-exchange portfolio foundation):
+    # the catalog YAML is loaded at runtime via
+    # ``Path(__file__).parent / "catalog" / "exchanges.yml"`` inside
+    # ``showme.brokers.factory._default_catalog_path()``. PyInstaller bakes
+    # Python source into the PYZ archive but raw data files must be added
+    # to ``datas`` explicitly so they remain on disk next to the (extracted)
+    # ``showme/brokers/catalog/`` directory.
+    (
+        str(HERE / "showme" / "brokers" / "catalog" / "exchanges.yml"),
+        "showme/brokers/catalog",
+    ),
 ]
 
 # X Sentiment AI model — embedded so the .app boots offline.
