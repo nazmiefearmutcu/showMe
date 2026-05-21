@@ -63,6 +63,7 @@ const WBPane = lazy(() => import("./WB").then((m) => ({ default: m.WBPane })));
 const WETRPane = lazy(() => import("./WETR").then((m) => ({ default: m.WETRPane })));
 const WHALPane = lazy(() => import("./WHAL").then((m) => ({ default: m.WHALPane })));
 const WIRPPane = lazy(() => import("./WIRP").then((m) => ({ default: m.WIRPPane })));
+const CONNPane = lazy(() => import("./CONN").then((m) => ({ default: m.CONNPane })));
 
 const PANES: Record<string, PaneComponent> = {
   AGENT: AGENTPane,
@@ -89,6 +90,7 @@ const PANES: Record<string, PaneComponent> = {
   BTMM: BTMMPane,
   BIO: BIOPane,
   GEX: GEXPane,
+  CONN: CONNPane,
   CORR: CORRPane,
   INSTANT: INSTANTPane,
   XSEN: XSENPane,
@@ -130,6 +132,13 @@ const NATIVE_FUNCTION_ENTRIES: FunctionEntry[] = [
     name: "Company News",
     category: "news",
     description: "Live company and market news stream with symbol relevance controls.",
+  },
+  {
+    code: "CONN",
+    name: "Connect Exchange",
+    category: "portfolio",
+    description:
+      "Multi-exchange connect/test/manage UI. Search the catalog, add read-only or read+trade credentials, escalate via re-typed-label confirmation.",
   },
   {
     code: "WATCH",

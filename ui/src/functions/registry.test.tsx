@@ -58,20 +58,22 @@ describe("function pane registry", () => {
   });
 });
 
-describe("147-function merged catalog invariant", () => {
+describe("148-function merged catalog invariant", () => {
   // The static index ships 141 codes from the backend catalog; the native
-  // registry contributes 6 codes not in the static index (AGENT, ASK,
-  // INSTANT, MIS, WATCH, XSEN — CN overlaps and is dedup'd). Total 147.
+  // registry contributes 7 codes not in the static index (AGENT, ASK,
+  // CONN, INSTANT, MIS, WATCH, XSEN — CN overlaps and is dedup'd). Total 148.
   // This is the contract the sidebar, command palette, and FunctionStub
-  // fallback all depend on.
-  const NATIVE_ONLY = ["AGENT", "ASK", "INSTANT", "MIS", "WATCH", "XSEN"];
+  // fallback all depend on. CONN was added in T9 of the multi-exchange
+  // portfolio foundation; it's a native pane (Connect Exchange) with no
+  // backend-side stub fallback.
+  const NATIVE_ONLY = ["AGENT", "ASK", "CONN", "INSTANT", "MIS", "WATCH", "XSEN"];
 
   it("static index is exactly 141 entries", () => {
     expect(STATIC_FUNCTION_INDEX).toHaveLength(141);
   });
 
-  it("merged catalog is exactly 147 entries", () => {
-    expect(mergeNativeFunctionIndex(STATIC_FUNCTION_INDEX)).toHaveLength(147);
+  it("merged catalog is exactly 148 entries", () => {
+    expect(mergeNativeFunctionIndex(STATIC_FUNCTION_INDEX)).toHaveLength(148);
   });
 
   it("every native-only entry is appended after merge", () => {
