@@ -108,6 +108,17 @@ const TOOL_ITEMS: SidebarShortcut[] = [
   },
 ];
 
+const CONNECTIONS_ITEMS: SidebarShortcut[] = [
+  {
+    code: "CONN",
+    label: "Connect Exchange",
+    meta: "CON",
+    href: "#/fn/CONN",
+    path: "/fn/CONN",
+    ariaLabel: "Open exchange connect pane",
+  },
+];
+
 const QUICK_ITEMS: SidebarShortcut[] = [
   {
     code: "OMON",
@@ -286,6 +297,10 @@ function SidebarPanel({
   );
   const visibleQuickItems = useMemo(
     () => filterShortcutItems(QUICK_ITEMS, pinnedIds, hiddenSourceId),
+    [hiddenSourceId, pinnedIds],
+  );
+  const visibleConnectionsItems = useMemo(
+    () => filterShortcutItems(CONNECTIONS_ITEMS, pinnedIds, hiddenSourceId),
     [hiddenSourceId, pinnedIds],
   );
   const visibleGrouped = useMemo(
@@ -473,6 +488,14 @@ function SidebarPanel({
             title="Tools"
             count={visibleToolItems.length}
             items={visibleToolItems}
+            activePath={activePath}
+            onMousePinDragStart={beginMousePinDrag}
+            shouldSuppressClick={shouldSuppressClick}
+          />
+          <SidebarShortcutGroup
+            title="Connections"
+            count={visibleConnectionsItems.length}
+            items={visibleConnectionsItems}
             activePath={activePath}
             onMousePinDragStart={beginMousePinDrag}
             shouldSuppressClick={shouldSuppressClick}
