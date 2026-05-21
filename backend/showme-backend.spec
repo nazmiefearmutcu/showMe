@@ -73,10 +73,29 @@ hiddenimports = [
     "torch._C",
     "regex",
     "sentencepiece",
+    # Sub-system A (multi-exchange portfolio foundation):
+    "ccxt.async_support",
+    "ccxt.base.exchange",
+    "keyring.backends.macOS",
+    "keyring.backends.fail",
+    "keyring.backends.null",
 ]
 datas += collect_data_files("yfinance")
 datas += collect_data_files("transformers", include_py_files=False)
 datas += collect_data_files("tokenizers")
+
+# ccxt ships JSON market data + JS adapter files inside the wheel that
+# PyInstaller's heuristic misses. Pull them in explicitly so the --onedir
+# build doesn't crash at first ccxt call.
+import ccxt as _ccxt_for_spec  # noqa: E402
+
+datas.append(
+    (
+        str(Path(_ccxt_for_spec.__file__).resolve().parent / "static_dependencies"),
+        "ccxt/static_dependencies",
+    )
+)
+del _ccxt_for_spec
 hiddenimports += collect_submodules("showme")
 hiddenimports += collect_submodules("yfinance")
 hiddenimports += collect_submodules("lxml")

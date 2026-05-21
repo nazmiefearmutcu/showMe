@@ -25,6 +25,8 @@ dependencies = [
     "transformers>=4.48,<5",
     "tokenizers>=0.20",
     "safetensors>=0.4",
+    "ccxt>=4.4.0",
+    "keyring>=25.0",
 ]
 
 [project.optional-dependencies]
