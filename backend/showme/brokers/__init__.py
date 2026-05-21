@@ -1,15 +1,9 @@
 """showMe broker adapters.
 
-Round 27 introduces the cross-vendor broker abstraction:
-
-* ``BaseBroker``  — ABC every adapter implements.
-* ``PaperBroker`` — in-memory paper account so the scanner pipeline can
-  spin up without external credentials.
-* ``AlpacaPaperBroker`` — first real adapter (paper-trading endpoint).
-
-Use ``get_broker(name)`` to obtain the configured broker without
-hard-coding a class. Future adapters (IBKR, Binance, Coinbase
-Advanced) drop in via the same registry.
+Sub-system A: the abstraction now backs ~120 crypto exchanges (via
+``CcxtBroker``) plus the original ``PaperBroker`` and ``AlpacaPaperBroker``.
+Per-credential broker instances are registered at boot from the
+``CredentialStore``.
 """
 from .base import (
     BaseBroker,
@@ -22,26 +16,52 @@ from .base import (
     Position,
     TimeInForce,
 )
-from .factory import get_broker, list_brokers, register_broker
+from .catalog.loader import Catalog, CatalogEntry, CatalogError, load_catalog
+from .credential_store import (
+    CredentialError,
+    CredentialRecord,
+    CredentialStore,
+    UnknownCredential,
+)
+from .factory import (
+    close_all_brokers,
+    get_broker,
+    list_brokers,
+    register_broker,
+    register_credential,
+    replay_stored_credentials,
+    unregister_credential,
+)
 from .paper import PaperBroker
 
-# Alpaca import is best-effort so missing optional deps (httpx) don't
-# explode at module-import time. The factory module already handles the
-# registration breadcrumb log; this re-export only widens the public API.
 try:
     from .alpaca import AlpacaPaperBroker  # noqa: F401
-except Exception:  # pragma: no cover — optional dep absent in some envs
+except Exception:  # pragma: no cover
     import logging as _logging
     _logging.getLogger("showme.brokers").debug(
         "AlpacaPaperBroker re-export skipped (optional dep missing)"
     )
     AlpacaPaperBroker = None  # type: ignore[misc,assignment]
 
+try:
+    from .ccxt_broker import CcxtBroker  # noqa: F401
+except Exception:  # pragma: no cover
+    import logging as _logging
+    _logging.getLogger("showme.brokers").debug("CcxtBroker import skipped")
+    CcxtBroker = None  # type: ignore[misc,assignment]
+
 
 __all__ = [
     "AlpacaPaperBroker",
     "BaseBroker",
     "BrokerError",
+    "Catalog",
+    "CatalogEntry",
+    "CatalogError",
+    "CcxtBroker",
+    "CredentialError",
+    "CredentialRecord",
+    "CredentialStore",
     "NotSupported",
     "Order",
     "OrderSide",
@@ -50,7 +70,13 @@ __all__ = [
     "PaperBroker",
     "Position",
     "TimeInForce",
+    "UnknownCredential",
+    "close_all_brokers",
     "get_broker",
     "list_brokers",
+    "load_catalog",
     "register_broker",
+    "register_credential",
+    "replay_stored_credentials",
+    "unregister_credential",
 ]
