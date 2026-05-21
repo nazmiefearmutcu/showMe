@@ -35,3 +35,22 @@ def test_add_does_not_log_secrets(
     blob = "\n".join(r.getMessage() for r in caplog.records)
     assert "AKIAxxx_must_not_appear" not in blob
     assert "secret_must_not_appear" not in blob
+
+
+def test_scrub_redacts_all_credential_field_names() -> None:
+    """All credential field names that may appear in catalog/exchanges.yml
+    plus the common OAuth-style tokens must be redacted."""
+    blob = {
+        "api_key": "x", "api_secret": "x", "passphrase": "x", "secret": "x",
+        "private_key": "x", "wallet_address": "x", "uid": "x",
+        "token": "x", "access_token": "x", "twofa": "x", "login": "x",
+        "exchange_id": "binance",  # control — must NOT be redacted
+    }
+    out = _scrub(blob)
+    for k in [
+        "api_key", "api_secret", "passphrase", "secret",
+        "private_key", "wallet_address", "uid", "token", "access_token",
+        "twofa", "login",
+    ]:
+        assert out[k] == "<redacted>", f"missed: {k}"
+    assert out["exchange_id"] == "binance"
