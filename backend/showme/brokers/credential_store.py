@@ -129,12 +129,21 @@ def _now_iso() -> str:
     return datetime.now(tz=timezone.utc).isoformat()
 
 
+_REDACT_KEYS = frozenset({
+    "api_key", "api_secret", "passphrase", "secret",
+    "private_key", "wallet_address", "uid", "token", "access_token",
+    "twofa", "login",
+})
+
+
 def _scrub(blob: dict[str, Any]) -> dict[str, Any]:
-    """Return a copy of ``blob`` with any api_key/api_secret/passphrase
-    keys replaced by ``"<redacted>"`` so it's safe to log."""
+    """Return a copy of ``blob`` with any secret-bearing keys replaced
+    by ``"<redacted>"`` so it's safe to log. Covers the full set of
+    credential field names that may appear in `catalog/exchanges.yml`
+    plus a few common OAuth-style tokens."""
     redacted = {**blob}
     for k in list(redacted.keys()):
-        if k in {"api_key", "api_secret", "passphrase", "secret"}:
+        if k in _REDACT_KEYS:
             redacted[k] = "<redacted>"
     return redacted
 
@@ -151,7 +160,13 @@ class CredentialStore:
     @classmethod
     def fresh(cls) -> "CredentialStore":
         from showme.app_paths import credentials_path
-        backend_name = (os.environ.get("SHOWME_CREDENTIAL_BACKEND") or "keyring").lower()
+        raw = os.environ.get("SHOWME_CREDENTIAL_BACKEND") or ""
+        backend_name = raw.strip().lower() or "keyring"
+        if backend_name not in {"memory", "keyring"}:
+            LOG.warning(
+                "unknown SHOWME_CREDENTIAL_BACKEND %r; defaulting to keyring", raw,
+            )
+            backend_name = "keyring"
         index_path = credentials_path()
         if backend_name == "memory":
             mem_sidecar = index_path.with_suffix(".memvault.json")
