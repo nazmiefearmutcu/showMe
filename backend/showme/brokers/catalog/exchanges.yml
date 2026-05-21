@@ -11,8 +11,8 @@
   adapter: ccxt
   ccxt_id: aftermath
   requires:
-  - privateKey
-  - walletAddress
+  - private_key
+  - wallet_address
   optional: []
   capabilities:
     fetch_balance: true
@@ -30,8 +30,8 @@
   adapter: ccxt
   ccxt_id: alpaca
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -49,9 +49,9 @@
   adapter: ccxt
   ccxt_id: apex
   requires:
-  - apiKey
-  - password
-  - secret
+  - api_key
+  - api_secret
+  - passphrase
   optional: []
   capabilities:
     fetch_balance: true
@@ -70,8 +70,8 @@
   adapter: ccxt
   ccxt_id: arkham
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -91,8 +91,8 @@
   adapter: ccxt
   ccxt_id: ascendex
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -110,8 +110,8 @@
   adapter: ccxt
   ccxt_id: aster
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -131,8 +131,8 @@
   adapter: ccxt
   ccxt_id: backpack
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -152,8 +152,8 @@
   adapter: ccxt
   ccxt_id: bequant
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -172,8 +172,8 @@
   adapter: ccxt
   ccxt_id: bigone
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -194,8 +194,8 @@
   adapter: ccxt
   ccxt_id: binance
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -213,8 +213,8 @@
   adapter: ccxt
   ccxt_id: binancecoinm
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -232,8 +232,8 @@
   adapter: ccxt
   ccxt_id: binanceus
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -251,8 +251,8 @@
   adapter: ccxt
   ccxt_id: binanceusdm
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -271,8 +271,8 @@
   adapter: ccxt
   ccxt_id: bingx
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -290,8 +290,8 @@
   adapter: ccxt
   ccxt_id: bit2c
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -309,8 +309,8 @@
   adapter: ccxt
   ccxt_id: bitbank
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -328,8 +328,8 @@
   adapter: ccxt
   ccxt_id: bitbns
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -349,8 +349,8 @@
   adapter: ccxt
   ccxt_id: bitfinex
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -368,8 +368,8 @@
   adapter: ccxt
   ccxt_id: bitflyer
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -389,9 +389,9 @@
   adapter: ccxt
   ccxt_id: bitget
   requires:
-  - apiKey
-  - password
-  - secret
+  - api_key
+  - api_secret
+  - passphrase
   optional: []
   capabilities:
     fetch_balance: true
@@ -409,8 +409,8 @@
   adapter: ccxt
   ccxt_id: bithumb
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -430,8 +430,8 @@
   adapter: ccxt
   ccxt_id: bitmart
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   - uid
   optional: []
   capabilities:
@@ -451,8 +451,8 @@
   adapter: ccxt
   ccxt_id: bitmex
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -470,8 +470,8 @@
   adapter: ccxt
   ccxt_id: bitopro
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -490,8 +490,8 @@
   adapter: ccxt
   ccxt_id: bitrue
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -509,8 +509,8 @@
   adapter: ccxt
   ccxt_id: bitso
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -529,8 +529,8 @@
   adapter: ccxt
   ccxt_id: bitstamp
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -548,8 +548,8 @@
   adapter: ccxt
   ccxt_id: bitteam
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -567,8 +567,8 @@
   adapter: ccxt
   ccxt_id: bittrade
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -586,8 +586,8 @@
   adapter: ccxt
   ccxt_id: bitvavo
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -605,7 +605,7 @@
   adapter: ccxt
   ccxt_id: blockchaincom
   requires:
-  - secret
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -623,9 +623,9 @@
   adapter: ccxt
   ccxt_id: blofin
   requires:
-  - apiKey
-  - password
-  - secret
+  - api_key
+  - api_secret
+  - passphrase
   optional: []
   capabilities:
     fetch_balance: true
@@ -643,8 +643,8 @@
   adapter: ccxt
   ccxt_id: btcbox
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -662,8 +662,8 @@
   adapter: ccxt
   ccxt_id: btcmarkets
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -681,8 +681,8 @@
   adapter: ccxt
   ccxt_id: btcturk
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -700,8 +700,8 @@
   adapter: ccxt
   ccxt_id: bullish
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -722,8 +722,8 @@
   adapter: ccxt
   ccxt_id: bybit
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -741,8 +741,8 @@
   adapter: ccxt
   ccxt_id: bydfi
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -760,8 +760,8 @@
   adapter: ccxt
   ccxt_id: cex
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -780,8 +780,8 @@
   adapter: ccxt
   ccxt_id: coinbase
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -799,8 +799,8 @@
   adapter: ccxt
   ccxt_id: coinbaseadvanced
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -818,9 +818,9 @@
   adapter: ccxt
   ccxt_id: coinbaseexchange
   requires:
-  - apiKey
-  - password
-  - secret
+  - api_key
+  - api_secret
+  - passphrase
   optional: []
   capabilities:
     fetch_balance: true
@@ -840,9 +840,9 @@
   adapter: ccxt
   ccxt_id: coinbaseinternational
   requires:
-  - apiKey
-  - password
-  - secret
+  - api_key
+  - api_secret
+  - passphrase
   optional: []
   capabilities:
     fetch_balance: true
@@ -860,8 +860,8 @@
   adapter: ccxt
   ccxt_id: coincheck
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -881,8 +881,8 @@
   adapter: ccxt
   ccxt_id: coinex
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -900,8 +900,8 @@
   adapter: ccxt
   ccxt_id: coinmate
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   - uid
   optional: []
   capabilities:
@@ -940,8 +940,8 @@
   adapter: ccxt
   ccxt_id: coinone
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -959,8 +959,8 @@
   adapter: ccxt
   ccxt_id: coinsph
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -978,8 +978,8 @@
   adapter: ccxt
   ccxt_id: coinspot
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -1000,8 +1000,8 @@
   adapter: ccxt
   ccxt_id: cryptocom
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -1019,7 +1019,7 @@
   adapter: ccxt
   ccxt_id: cryptomus
   requires:
-  - secret
+  - api_secret
   - uid
   optional: []
   capabilities:
@@ -1040,9 +1040,9 @@
   adapter: ccxt
   ccxt_id: deepcoin
   requires:
-  - apiKey
-  - password
-  - secret
+  - api_key
+  - api_secret
+  - passphrase
   optional: []
   capabilities:
     fetch_balance: true
@@ -1062,8 +1062,8 @@
   adapter: ccxt
   ccxt_id: delta
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -1083,8 +1083,8 @@
   adapter: ccxt
   ccxt_id: deribit
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -1102,8 +1102,8 @@
   adapter: ccxt
   ccxt_id: derive
   requires:
-  - privateKey
-  - walletAddress
+  - private_key
+  - wallet_address
   optional: []
   capabilities:
     fetch_balance: true
@@ -1123,8 +1123,8 @@
   adapter: ccxt
   ccxt_id: digifinex
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -1160,8 +1160,8 @@
   adapter: ccxt
   ccxt_id: exmo
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -1181,8 +1181,8 @@
   adapter: ccxt
   ccxt_id: fmfwio
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -1200,8 +1200,8 @@
   adapter: ccxt
   ccxt_id: foxbit
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -1222,8 +1222,8 @@
   adapter: ccxt
   ccxt_id: gate
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -1244,8 +1244,8 @@
   adapter: ccxt
   ccxt_id: gateio
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -1264,8 +1264,8 @@
   adapter: ccxt
   ccxt_id: gemini
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -1283,7 +1283,7 @@
   adapter: ccxt
   ccxt_id: grvt
   requires:
-  - privateKey
+  - private_key
   optional: []
   capabilities:
     fetch_balance: true
@@ -1301,8 +1301,8 @@
   adapter: ccxt
   ccxt_id: hashkey
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -1321,8 +1321,8 @@
   ccxt_id: hibachi
   requires:
   - accountId
-  - apiKey
-  - privateKey
+  - api_key
+  - private_key
   optional: []
   capabilities:
     fetch_balance: true
@@ -1342,8 +1342,8 @@
   adapter: ccxt
   ccxt_id: hitbtc
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -1361,8 +1361,8 @@
   adapter: ccxt
   ccxt_id: hollaex
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -1382,8 +1382,8 @@
   adapter: ccxt
   ccxt_id: htx
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -1403,8 +1403,8 @@
   adapter: ccxt
   ccxt_id: huobi
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -1423,8 +1423,8 @@
   adapter: ccxt
   ccxt_id: hyperliquid
   requires:
-  - privateKey
-  - walletAddress
+  - private_key
+  - wallet_address
   optional: []
   capabilities:
     fetch_balance: true
@@ -1442,8 +1442,8 @@
   adapter: ccxt
   ccxt_id: independentreserve
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -1461,8 +1461,8 @@
   adapter: ccxt
   ccxt_id: indodax
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -1481,8 +1481,8 @@
   adapter: ccxt
   ccxt_id: kraken
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -1500,8 +1500,8 @@
   adapter: ccxt
   ccxt_id: krakenfutures
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -1521,9 +1521,9 @@
   adapter: ccxt
   ccxt_id: kucoin
   requires:
-  - apiKey
-  - password
-  - secret
+  - api_key
+  - api_secret
+  - passphrase
   optional: []
   capabilities:
     fetch_balance: true
@@ -1541,9 +1541,9 @@
   adapter: ccxt
   ccxt_id: kucoinfutures
   requires:
-  - apiKey
-  - password
-  - secret
+  - api_key
+  - api_secret
+  - passphrase
   optional: []
   capabilities:
     fetch_balance: true
@@ -1561,8 +1561,8 @@
   adapter: ccxt
   ccxt_id: latoken
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -1580,8 +1580,8 @@
   adapter: ccxt
   ccxt_id: lbank
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -1599,7 +1599,7 @@
   adapter: ccxt
   ccxt_id: lighter
   requires:
-  - privateKey
+  - private_key
   optional: []
   capabilities:
     fetch_balance: true
@@ -1617,8 +1617,8 @@
   adapter: ccxt
   ccxt_id: luno
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -1636,8 +1636,8 @@
   adapter: ccxt
   ccxt_id: mercado
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -1657,8 +1657,8 @@
   adapter: ccxt
   ccxt_id: mexc
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -1677,8 +1677,8 @@
   ccxt_id: modetrade
   requires:
   - accountId
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -1696,9 +1696,9 @@
   adapter: ccxt
   ccxt_id: myokx
   requires:
-  - apiKey
-  - password
-  - secret
+  - api_key
+  - api_secret
+  - passphrase
   optional: []
   capabilities:
     fetch_balance: true
@@ -1716,10 +1716,10 @@
   adapter: ccxt
   ccxt_id: ndax
   requires:
-  - apiKey
+  - api_key
+  - api_secret
   - login
-  - password
-  - secret
+  - passphrase
   - uid
   optional: []
   capabilities:
@@ -1738,8 +1738,8 @@
   adapter: ccxt
   ccxt_id: novadax
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -1760,9 +1760,9 @@
   adapter: ccxt
   ccxt_id: okx
   requires:
-  - apiKey
-  - password
-  - secret
+  - api_key
+  - api_secret
+  - passphrase
   optional: []
   capabilities:
     fetch_balance: true
@@ -1780,9 +1780,9 @@
   adapter: ccxt
   ccxt_id: okxus
   requires:
-  - apiKey
-  - password
-  - secret
+  - api_key
+  - api_secret
+  - passphrase
   optional: []
   capabilities:
     fetch_balance: true
@@ -1800,7 +1800,7 @@
   adapter: ccxt
   ccxt_id: onetrading
   requires:
-  - apiKey
+  - api_key
   optional: []
   capabilities:
     fetch_balance: true
@@ -1819,8 +1819,8 @@
   adapter: ccxt
   ccxt_id: oxfun
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -1838,8 +1838,8 @@
   adapter: ccxt
   ccxt_id: p2b
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -1857,7 +1857,7 @@
   adapter: ccxt
   ccxt_id: pacifica
   requires:
-  - privateKey
+  - private_key
   optional: []
   capabilities:
     fetch_balance: true
@@ -1875,8 +1875,8 @@
   adapter: ccxt
   ccxt_id: paradex
   requires:
-  - privateKey
-  - walletAddress
+  - private_key
+  - wallet_address
   optional: []
   capabilities:
     fetch_balance: true
@@ -1894,8 +1894,8 @@
   adapter: ccxt
   ccxt_id: paymium
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -1914,8 +1914,8 @@
   adapter: ccxt
   ccxt_id: phemex
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -1934,8 +1934,8 @@
   adapter: ccxt
   ccxt_id: poloniex
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -1954,8 +1954,8 @@
   adapter: ccxt
   ccxt_id: tokocrypto
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -1974,8 +1974,8 @@
   adapter: ccxt
   ccxt_id: toobit
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -1993,8 +1993,8 @@
   adapter: ccxt
   ccxt_id: upbit
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -2012,8 +2012,8 @@
   adapter: ccxt
   ccxt_id: wavesexchange
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -2032,9 +2032,9 @@
   adapter: ccxt
   ccxt_id: weex
   requires:
-  - apiKey
-  - password
-  - secret
+  - api_key
+  - api_secret
+  - passphrase
   optional: []
   capabilities:
     fetch_balance: true
@@ -2054,8 +2054,8 @@
   adapter: ccxt
   ccxt_id: whitebit
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -2075,8 +2075,8 @@
   adapter: ccxt
   ccxt_id: woo
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -2095,8 +2095,8 @@
   ccxt_id: woofipro
   requires:
   - accountId
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -2116,8 +2116,8 @@
   adapter: ccxt
   ccxt_id: xt
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -2135,8 +2135,8 @@
   adapter: ccxt
   ccxt_id: yobit
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -2154,8 +2154,8 @@
   adapter: ccxt
   ccxt_id: zaif
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -2174,8 +2174,8 @@
   adapter: ccxt
   ccxt_id: zebpay
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
@@ -2193,8 +2193,8 @@
   adapter: ccxt
   ccxt_id: zonda
   requires:
-  - apiKey
-  - secret
+  - api_key
+  - api_secret
   optional: []
   capabilities:
     fetch_balance: true
