@@ -26,6 +26,23 @@ YAML = """
 """
 
 
+@pytest.fixture(autouse=True)
+def _isolate_factory_registry(monkeypatch: pytest.MonkeyPatch):
+    """Snapshot and restore the factory's mutable module state between
+    tests so a leaked dynamic broker can't bleed into the next test (or
+    the rest of the suite via warning leaks)."""
+    snap_reg = dict(factory_mod._REGISTRY)
+    snap_dyn = dict(factory_mod._DYNAMIC)
+    snap_live = dict(factory_mod._LIVE)
+    yield
+    factory_mod._REGISTRY.clear()
+    factory_mod._REGISTRY.update(snap_reg)
+    factory_mod._DYNAMIC.clear()
+    factory_mod._DYNAMIC.update(snap_dyn)
+    factory_mod._LIVE.clear()
+    factory_mod._LIVE.update(snap_live)
+
+
 @pytest.fixture
 def env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     monkeypatch.setenv("SHOWME_CREDENTIAL_BACKEND", "memory")

@@ -28,6 +28,7 @@ if TYPE_CHECKING:  # pragma: no cover
 LOG = logging.getLogger("showme.brokers.factory")
 _REGISTRY: dict[str, Callable[[], BaseBroker]] = {}
 _DYNAMIC: dict[str, str] = {}  # credential_id → broker name (for unregister)
+_LIVE: dict[str, BaseBroker] = {}  # name → most-recently-instantiated broker; populated by get_broker
 
 _CATALOG: Catalog = Catalog()  # patched at startup; tests override
 _ccxt_module = None  # injectable for tests
@@ -67,7 +68,9 @@ def get_broker(name: str | None = None) -> BaseBroker:
     factory = _REGISTRY.get(target)
     if not factory:
         raise KeyError(f"unknown broker: {target}. registered: {list_brokers()}")
-    return factory()
+    broker = factory()
+    _LIVE[target] = broker
+    return broker
 
 
 # ── Dynamic credential registration ──────────────────────────────────────
@@ -88,7 +91,7 @@ def register_credential(record: "CredentialRecord", secrets: dict[str, str]) -> 
 
         def _factory(
             _eid: str = entry.ccxt_id or entry.id,
-            _secrets: dict[str, str] = secrets,
+            _secrets: dict[str, str] = dict(secrets),
             _perms: tuple[str, ...] = perms,
         ) -> BaseBroker:
             return CcxtBroker(
@@ -100,10 +103,11 @@ def register_credential(record: "CredentialRecord", secrets: dict[str, str]) -> 
     elif entry.adapter == "alpaca":
         from .alpaca import AlpacaPaperBroker
 
-        def _factory(_secrets: dict[str, str] = secrets) -> BaseBroker:  # type: ignore[misc]
+        def _factory() -> BaseBroker:
             # Live Alpaca shares the paper adapter's class — adapter
             # constructor picks base URL from env. Future: dedicated
-            # AlpacaLiveBroker; for now we keep the wiring trivial.
+            # AlpacaLiveBroker that accepts the saved `secrets`; for now
+            # we keep the wiring trivial and the secrets argument unused.
             return AlpacaPaperBroker()
     else:
         raise KeyError(f"unsupported adapter '{entry.adapter}' in catalog entry {record.exchange_id}")
@@ -119,6 +123,7 @@ def unregister_credential(credential_id: str) -> bool:
     if name is None:
         return False
     _REGISTRY.pop(name, None)
+    _LIVE.pop(name, None)
     LOG.info("unregistered broker: %s", name)
     return True
 
@@ -136,26 +141,21 @@ def replay_stored_credentials(store: "CredentialStore") -> int:
     return count
 
 
-def close_all_brokers() -> None:
-    """Hook for sidecar lifespan shutdown; closes ccxt sessions etc.
-
-    Kept as a no-op-friendly best-effort sweep so the lifespan handler
-    can always call it.
+async def close_all_brokers() -> None:
+    """Hook for sidecar lifespan shutdown. Awaits ``aclose()`` on every
+    broker that's actually been instantiated this process. Best-effort;
+    per-broker exceptions are logged and swallowed so one bad close
+    can't take down the whole shutdown.
     """
-    import asyncio
-    for name, builder in list(_REGISTRY.items()):
-        try:
-            broker = builder()
-        except Exception:  # noqa: BLE001
-            continue
+    for name, broker in list(_LIVE.items()):
         close = getattr(broker, "aclose", None)
         if close is None:
             continue
         try:
-            asyncio.get_event_loop().run_until_complete(close())
-        except RuntimeError:
-            # No running loop / loop closed — skip.
-            pass
+            await close()
+        except Exception as exc:  # noqa: BLE001
+            LOG.debug("aclose(%s) ignored: %s", name, exc)
+    _LIVE.clear()
 
 
 # ── Built-in registrations ───────────────────────────────────────────────
