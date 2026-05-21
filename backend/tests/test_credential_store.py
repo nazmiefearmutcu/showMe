@@ -114,3 +114,29 @@ def test_metadata_persists_to_credentials_json(
     assert listed[0].id == rec.id
     got, secrets = store2.get(rec.id)
     assert secrets == {"api_key": "k", "api_secret": "s"}
+
+
+def test_unknown_backend_env_falls_back_to_keyring_with_warning(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setenv("SHOWME_CREDENTIAL_BACKEND", "memoryy")  # typo
+    monkeypatch.setenv("SHOWME_HOME", str(tmp_path))
+    import logging
+    caplog.set_level(logging.WARNING, logger="showme.brokers.credential_store")
+    # We don't actually want to construct a real keychain backend in CI;
+    # just verify the fallback decision + warning log line. Patch
+    # _KeyringBackend to a stub so the test doesn't depend on the host
+    # keyring.
+    import showme.brokers.credential_store as cs
+
+    class _StubKeyring:
+        def __init__(self): pass
+        def put(self, k, v): pass
+        def get(self, k): return None
+        def delete(self, k): return False
+
+    monkeypatch.setattr(cs, "_KeyringBackend", _StubKeyring)
+    store = cs.CredentialStore.fresh()
+    assert isinstance(store._backend, _StubKeyring)  # type: ignore[attr-defined]
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert any("memoryy" in r.getMessage() for r in warnings)
