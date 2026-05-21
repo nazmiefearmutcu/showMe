@@ -25,7 +25,6 @@ class CredentialCreate(BaseModel):
 
 class CredentialPatch(BaseModel):
     permissions: list[str] | None = None
-    account_label: str | None = Field(default=None, min_length=1, max_length=64)
     confirm_account_label: str | None = None
 
 
