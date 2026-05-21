@@ -166,3 +166,23 @@ def test_patch_permissions_requires_re_typed_label(client: TestClient) -> None:
     })
     assert good.status_code == 200
     assert good.json()["permissions"] == ["read", "trade"]
+
+
+def test_patch_ignores_legacy_account_label_field(client: TestClient) -> None:
+    """The CredentialPatch shape no longer accepts account_label; sending
+    one is silently ignored. The stored label is unchanged."""
+    r = client.post("/api/exchange/credentials", json={
+        "exchange_id": "binance", "account_label": "original-label",
+        "secrets": {"api_key": "k", "api_secret": "s"},
+        "permissions": ["read"], "skip_test": True,
+    })
+    rid = r.json()["id"]
+    patched = client.patch(f"/api/exchange/credentials/{rid}", json={
+        "account_label": "renamed",  # unknown field — Pydantic ignores
+        "permissions": ["read"],
+    })
+    assert patched.status_code == 200
+    # Label is unchanged:
+    listed = client.get("/api/exchange/credentials").json()
+    rec = next(r for r in listed["records"] if r["id"] == rid)
+    assert rec["account_label"] == "original-label"

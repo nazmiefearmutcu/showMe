@@ -1001,10 +1001,7 @@ def build_app(engine_root: Path | None) -> FastAPI:
         from showme.brokers import CredentialStore, replay_stored_credentials
         replay_stored_credentials(CredentialStore.fresh())
     except Exception as exc:  # noqa: BLE001 — non-fatal; log + continue
-        import logging as _logging
-        _logging.getLogger("showme.server").warning(
-            "credential replay skipped: %s", exc,
-        )
+        LOG.warning("credential replay skipped: %s", exc)
     return app
 
 
