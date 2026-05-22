@@ -1,0 +1,466 @@
+# showMe indicator depot — Sub-system F.
+# Hand-curated metadata. Computation lives in E (deferred).
+# Confidence is 1-10 (UI tier-colored: 9-10 green, 7-8 light-green, 5-6 yellow, 3-4 orange, 1-2 red).
+
+- id: rsi
+  display_name: RSI (Relative Strength Index)
+  family: momentum
+  short_description: "Bir varlığın aşırı alım/satım bölgelerini momentum açısından ölçer."
+  long_description: |
+    Wilder (1978) tarafından geliştirildi. Fiyatın belirli bir period içindeki kazanç ve
+    kayıp ortalamalarını 0-100 ölçeğine yansıtır. Geleneksel olarak 70 üzeri aşırı alım,
+    30 altı aşırı satım. Güçlü trend dönemlerinde yanıltıcı.
+  formula: "RSI = 100 - 100 / (1 + RS), RS = avg_gain / avg_loss"
+  parameters:
+    - name: period
+      type: int
+      default: 14
+      min: 2
+      max: 100
+      effect: "Düşürmek (örn 7) sinyali hızlandırır — yanlış sinyaller artar. Yükseltmek (28) yumuşatır."
+    - name: overbought
+      type: float
+      default: 70
+      min: 50
+      max: 95
+      effect: "Yüksek (80+) daha az ama daha güvenilir aşırı alım uyarısı."
+    - name: oversold
+      type: float
+      default: 30
+      min: 5
+      max: 50
+      effect: "Düşük (20-) daha az ama daha güvenilir aşırı satım uyarısı."
+  confidence: 9
+  confidence_rationale: "Range piyasada çok güvenilir; güçlü trendde yanıltıcı olabilir."
+  suggested_strategy:
+    name: "RSI mean-revert"
+    summary: "RSI 30 altına düşünce long, 70 üstüne çıkınca close. 200-SMA üstü trend filtresi."
+    rules:
+      - "Entry: RSI < oversold AND price > 200-SMA"
+      - "Exit: RSI > overbought OR stop_loss = entry - 2*ATR"
+      - "Sizing: 1% account risk per trade"
+  references:
+    - "Wilder, J. W. (1978). New Concepts in Technical Trading Systems."
+
+- id: macd
+  display_name: MACD (Moving Average Convergence Divergence)
+  family: momentum
+  short_description: "Hızlı ve yavaş EMA farkından momentum + trend okuma."
+  long_description: |
+    Gerald Appel (1970'ler). EMA(fast) - EMA(slow) çizgisi + onun EMA(signal) sinyal çizgisi.
+    Histogram = MACD - Signal. Sinyal çizgisi crossover'ları + histogram divergence en yaygın
+    kullanılan iki yorumdur.
+  formula: "MACD = EMA(close, 12) - EMA(close, 26); Signal = EMA(MACD, 9); Hist = MACD - Signal"
+  parameters:
+    - name: fast_period
+      type: int
+      default: 12
+      min: 2
+      max: 50
+      effect: "Düşürmek sinyali öne çeker — daha çok whipsaw."
+    - name: slow_period
+      type: int
+      default: 26
+      min: 5
+      max: 100
+      effect: "Yükseltmek yumuşatır, geç sinyal — trend takibine uygun."
+    - name: signal_period
+      type: int
+      default: 9
+      min: 2
+      max: 30
+      effect: "Düşük değer histogramı dalgalandırır — false crossover artar."
+  confidence: 9
+  confidence_rationale: "Trend + momentum bilgisini tek grafikte birleştirir; ranging piyasada whipsaw."
+  suggested_strategy:
+    name: "MACD signal-cross"
+    summary: "MACD yukarı kesince long, aşağı kesince close. Higher-TF EMA200 trend filtresi şart."
+    rules:
+      - "Entry: MACD crosses above Signal AND price > 200-EMA"
+      - "Exit: MACD crosses below Signal"
+      - "Sizing: 1% risk"
+  references:
+    - "Appel, G. (2005). Technical Analysis: Power Tools for Active Investors."
+
+- id: ema
+  display_name: EMA (Exponential Moving Average)
+  family: trend
+  short_description: "Üstel ağırlıklı hareketli ortalama. Son veriye daha çok ağırlık verir."
+  long_description: |
+    SMA'nın yavaş tepkisini hızlandırmak için son fiyatlara üstel ağırlık verir.
+    Smoothing factor α = 2/(period+1). Trend yönü + S/R seviyesi olarak çok kullanılır.
+  formula: "EMA_t = α * close_t + (1-α) * EMA_{t-1}, α = 2/(period+1)"
+  parameters:
+    - name: period
+      type: int
+      default: 20
+      min: 2
+      max: 500
+      effect: "Kısa (10-20) hızlı trend; uzun (50-200) yavaş ana trend."
+  confidence: 8
+  confidence_rationale: "Trend yönü + dinamik S/R için sağlam; ranging piyasada tek başına yetersiz."
+  suggested_strategy:
+    name: "EMA crossover"
+    summary: "Kısa EMA uzun EMA'yı yukarı kesince long, aşağı kesince close."
+    rules:
+      - "Entry: EMA(20) crosses above EMA(50)"
+      - "Exit: EMA(20) crosses below EMA(50)"
+  references:
+    - "Hunter, J. S. (1986). The Exponentially Weighted Moving Average."
+
+- id: sma
+  display_name: SMA (Simple Moving Average)
+  family: trend
+  short_description: "Basit aritmetik hareketli ortalama. Klasik trend göstergesi."
+  long_description: |
+    Period kadar son kapanışın aritmetik ortalaması. EMA'dan daha yavaş tepki, daha pürüzsüz
+    çizgi. 50 ve 200 SMA "golden cross" / "death cross" uzun vadeli rejim göstergeleridir.
+  formula: "SMA_t = (close_t + close_{t-1} + ... + close_{t-period+1}) / period"
+  parameters:
+    - name: period
+      type: int
+      default: 20
+      min: 2
+      max: 500
+      effect: "Uzun period daha yumuşak ana trend; kısa period gürültü."
+  confidence: 7
+  confidence_rationale: "EMA'dan biraz daha geç tepki. Golden cross gibi rejim sinyallerinde sağlam."
+  suggested_strategy:
+    name: "Golden cross"
+    summary: "SMA(50) SMA(200)'ü yukarı kesince long. Death cross'ta close."
+    rules:
+      - "Entry: SMA(50) crosses above SMA(200)"
+      - "Exit: SMA(50) crosses below SMA(200)"
+  references:
+    - "Murphy, J. (1999). Technical Analysis of the Financial Markets."
+
+- id: bollinger_bands
+  display_name: Bollinger Bands
+  family: volatility
+  short_description: "SMA ± k·σ ile volatilite bandları; range trade + breakout için."
+  long_description: |
+    John Bollinger (1980'ler). Orta bant SMA, üst/alt bantlar SMA ± k·std(period).
+    Volatilite genişledikçe bantlar açılır, daraldıkça squeeze oluşur — squeeze sonrası
+    breakout çok kullanılan setup.
+  formula: "Mid = SMA(close, n); Upper = Mid + k*std; Lower = Mid - k*std"
+  parameters:
+    - name: period
+      type: int
+      default: 20
+      min: 5
+      max: 100
+      effect: "Period yumuşatır."
+    - name: std_dev
+      type: float
+      default: 2.0
+      min: 1.0
+      max: 4.0
+      effect: "k=1 bantlar dar (sık temas); k=2 standart; k=3 nadir."
+  confidence: 8
+  confidence_rationale: "Volatility regime + range/breakout için çok güvenilir; tek başına directional değil."
+  suggested_strategy:
+    name: "BB squeeze breakout"
+    summary: "Bant genişliği 6-bar düşükse squeeze; breakout yönünde tetikle."
+    rules:
+      - "Setup: (Upper - Lower) at 6-bar low"
+      - "Entry: close > Upper (long) OR close < Lower (short)"
+      - "Exit: cross back to Mid"
+  references:
+    - "Bollinger, J. (2001). Bollinger on Bollinger Bands."
+
+- id: stochastic
+  display_name: Stochastic Oscillator
+  family: momentum
+  short_description: "Kapanışın N-bar range içindeki konumunu 0-100 ölçeğine yansıtır."
+  long_description: |
+    George Lane (1950'ler). %K = (close - lowest_low) / (highest_high - lowest_low) * 100,
+    %D = SMA(%K, smooth). 80/20 aşırı alım/satım eşikleri. RSI'a benzer fakat range-bound
+    yapısı daha sıkı.
+  formula: "%K = (close - LL) / (HH - LL) * 100; %D = SMA(%K, d_period)"
+  parameters:
+    - name: k_period
+      type: int
+      default: 14
+      min: 5
+      max: 50
+      effect: "Düşük period hassaslaştırır."
+    - name: d_period
+      type: int
+      default: 3
+      min: 1
+      max: 20
+      effect: "Yüksek d %K'yi yumuşatır."
+    - name: smooth
+      type: int
+      default: 3
+      min: 1
+      max: 10
+      effect: "Slow stochastic için."
+  confidence: 7
+  confidence_rationale: "Range piyasada güvenilir; uzun trend dönemlerinde sürekli aşırı alımda kalır."
+  suggested_strategy:
+    name: "Stoch range-reverse"
+    summary: "%K %D'yi 20 altında yukarı kesince long, 80 üzerinde aşağı kesince close."
+    rules:
+      - "Entry: %K crosses %D AND %K < 20"
+      - "Exit: %K crosses %D AND %K > 80"
+  references:
+    - "Lane, G. C. (1984). Lane's Stochastics."
+
+- id: atr
+  display_name: ATR (Average True Range)
+  family: volatility
+  short_description: "Ortalama true range — volatilite ölçer, position sizing için vazgeçilmez."
+  long_description: |
+    Wilder (1978). True Range = max(H-L, |H-prev_close|, |L-prev_close|). ATR = EMA(TR, period).
+    Yön bilgisi yok — sadece büyüklük. Stop-loss mesafesi (2*ATR) + position sizing için kullanılır.
+  formula: "TR = max(H-L, |H-C_prev|, |L-C_prev|); ATR = EMA(TR, period)"
+  parameters:
+    - name: period
+      type: int
+      default: 14
+      min: 2
+      max: 100
+      effect: "Uzun period daha stabil ATR — günlük volatility regime için."
+  confidence: 9
+  confidence_rationale: "Yön sinyali olmadığı için tek başına trade vermez ama risk yönetiminde altın standart."
+  suggested_strategy:
+    name: "ATR-based stops"
+    summary: "Tüm entry'lere stop = entry ± 2*ATR(14) uygula."
+    rules:
+      - "Stop loss: 2 * ATR"
+      - "Position size: (account * 0.01) / (2 * ATR)"
+  references:
+    - "Wilder, J. W. (1978). New Concepts in Technical Trading Systems."
+
+- id: adx
+  display_name: ADX (Average Directional Index)
+  family: trend
+  short_description: "Trend GÜCÜ ölçer (yön değil). 25+ güçlü trend, 20- trend yok."
+  long_description: |
+    Wilder (1978). +DI ve -DI yönsel hareketleri ölçer; DX = |+DI - -DI| / (+DI + -DI). ADX = EMA(DX).
+    Yön bilgisi +DI/-DI'da; ADX sadece güç. Trend takip stratejileri için zorunlu filtre.
+  formula: "ADX = EMA(DX, period); DX = |+DI - -DI| / (+DI + -DI) * 100"
+  parameters:
+    - name: period
+      type: int
+      default: 14
+      min: 5
+      max: 50
+      effect: "Period güç ortalamasını yumuşatır."
+  confidence: 8
+  confidence_rationale: "Trend strength filtresi olarak çok değerli; ADX<20 setup'larda trade YAPMA."
+  suggested_strategy:
+    name: "Trend-filter"
+    summary: "Trend takip stratejilerinde sadece ADX > 25 olduğunda entry al."
+    rules:
+      - "Filter: ADX > 25 AND +DI > -DI for longs"
+      - "Filter: ADX > 25 AND -DI > +DI for shorts"
+  references:
+    - "Wilder, J. W. (1978). New Concepts in Technical Trading Systems."
+
+- id: cci
+  display_name: CCI (Commodity Channel Index)
+  family: momentum
+  short_description: "Typical price'ın SMA'sından sapmayı +/-100 bandında ölçer."
+  long_description: |
+    Donald Lambert (1980). TP = (H+L+C)/3. CCI = (TP - SMA(TP)) / (0.015 * MeanDeviation).
+    +100 üstü güç, -100 altı zayıflık. Hisse, forex, emtia hepsinde kullanılır.
+  formula: "CCI = (TP - SMA(TP, n)) / (0.015 * mean_dev)"
+  parameters:
+    - name: period
+      type: int
+      default: 20
+      min: 5
+      max: 100
+      effect: "Period sinyali yumuşatır."
+  confidence: 6
+  confidence_rationale: "Faydalı ama RSI/Stoch'a çok benzer — eklemeli sinyal değeri sınırlı."
+  suggested_strategy:
+    name: "CCI cross"
+    summary: "CCI 0'ı yukarı kesince long, 0'ı aşağı kesince close."
+    rules:
+      - "Entry: CCI crosses above 0"
+      - "Exit: CCI crosses below 0"
+  references:
+    - "Lambert, D. R. (1980). Commodity Channel Index."
+
+- id: obv
+  display_name: OBV (On-Balance Volume)
+  family: volume
+  short_description: "Fiyat hareketine göre kümülatif volume akışı; divergence sinyalleri için."
+  long_description: |
+    Joe Granville (1963). Kapanış arttığında o günün volume'unu OBV'ye ekle, düştüğünde çıkar.
+    Fiyat-OBV divergence (fiyat tepe yaparken OBV yapmıyor → zayıflık) klasik sinyal.
+  formula: "OBV_t = OBV_{t-1} ± volume_t (close > prev_close ise +, küçükse -)"
+  parameters: []
+  confidence: 6
+  confidence_rationale: "Divergence sinyalleri zaman zaman güçlü ama tek başına geç sinyal verir."
+  suggested_strategy:
+    name: "OBV divergence"
+    summary: "Fiyat yeni tepe yapıyor ama OBV yapmıyorsa close pozisyon."
+    rules:
+      - "Signal: bearish divergence between price and OBV → exit longs"
+  references:
+    - "Granville, J. (1963). New Key to Stock Market Profits."
+
+- id: williams_r
+  display_name: Williams %R
+  family: momentum
+  short_description: "Stochastic'in negatif tarafı: -100..0 arası, -20 OB / -80 OS."
+  long_description: |
+    Larry Williams (1973). %R = (HH - close) / (HH - LL) * -100. Stochastic %K ile pratik
+    olarak aynı bilgiyi verir, sadece ölçek farklı. -20 aşırı alım, -80 aşırı satım.
+  formula: "%R = (HH - close) / (HH - LL) * -100"
+  parameters:
+    - name: period
+      type: int
+      default: 14
+      min: 5
+      max: 50
+      effect: "Kısa period hassas."
+  confidence: 6
+  confidence_rationale: "Stochastic'le çok örtüşür — ikisinden biri yeterli."
+  suggested_strategy:
+    name: "Williams %R reverse"
+    summary: "%R -80 altından yukarı dönünce long, -20 üstünden aşağı dönünce close."
+    rules:
+      - "Entry: %R crosses above -80"
+      - "Exit: %R crosses below -20"
+  references:
+    - "Williams, L. (1973). How I Made a Million."
+
+- id: vwap
+  display_name: VWAP (Volume Weighted Average Price)
+  family: volume
+  short_description: "Volume-ağırlıklı ortalama fiyat; intraday referans seviyesi."
+  long_description: |
+    Institutional benchmark. (Σ price*volume) / Σ volume — gün başından itibaren kümülatif.
+    Fiyat VWAP üzerinde → alıcılar baskın (bullish), VWAP altında → satıcılar baskın.
+    Day-trading'de en güvenilir ortalama.
+  formula: "VWAP = Σ(typical_price * volume) / Σ(volume)"
+  parameters:
+    - name: session_reset
+      type: bool
+      default: true
+      effect: "true: her gün sıfırla (intraday). false: anchored VWAP — özel başlangıç noktasından."
+  confidence: 9
+  confidence_rationale: "Institutional flow proxy; intraday'de gerçek pivot. Çok güvenilir."
+  suggested_strategy:
+    name: "VWAP pullback"
+    summary: "Trend yönünde VWAP'a pullback'te long ekle."
+    rules:
+      - "Setup: price > VWAP AND uptrend"
+      - "Entry: pullback to VWAP + 2-bar bullish reversal"
+      - "Exit: cross below VWAP"
+  references:
+    - "Berkowitz, S. A., Logue, D. E., Noser, E. A. Jr. (1988). The total cost of transactions on the NYSE."
+
+- id: ichimoku
+  display_name: Ichimoku Cloud
+  family: trend
+  short_description: "Bir bakışta trend/momentum/destek-direnç sistemi (5 çizgi)."
+  long_description: |
+    Goichi Hosoda (1930'lar Japonya, 1969 yayınlandı). 5 bileşen: Tenkan (9), Kijun (26),
+    Senkou Span A (Tenkan+Kijun ortalama, 26 ileri), Senkou Span B (52, 26 ileri), Chikou (26 geri).
+    "Cloud" = Span A ile Span B arası — kalın bulut + fiyat üstünde → güçlü trend.
+  formula: "Tenkan=avg(H9,L9)/2; Kijun=avg(H26,L26)/2; SpanA=(Tenkan+Kijun)/2 shifted +26; SpanB=avg(H52,L52)/2 shifted +26"
+  parameters:
+    - name: tenkan_period
+      type: int
+      default: 9
+      min: 5
+      max: 30
+      effect: "Kısa MA-benzeri çizgi."
+    - name: kijun_period
+      type: int
+      default: 26
+      min: 10
+      max: 60
+      effect: "Trend ana çizgisi."
+    - name: senkou_b_period
+      type: int
+      default: 52
+      min: 26
+      max: 120
+      effect: "Cloud'un uzun bacağı."
+  confidence: 7
+  confidence_rationale: "Çok bilgi ama yorumlaması zor; 1H+ TF'lerde sağlam."
+  suggested_strategy:
+    name: "Ichimoku cloud break"
+    summary: "Fiyat cloud üstünde + Tenkan>Kijun + Chikou>26-bar-önce-fiyat → long."
+    rules:
+      - "Entry: close > cloud AND Tenkan > Kijun AND Chikou > close[26 ago]"
+      - "Exit: close < Kijun"
+  references:
+    - "Hosoda, G. (1969). Ichimoku Kinko Hyo."
+
+- id: parabolic_sar
+  display_name: Parabolic SAR
+  family: trend
+  short_description: "Trailing stop ve trend reversal noktaları — trend takibinde kullanılır."
+  long_description: |
+    Wilder (1978). Stop-And-Reverse: trend yönünde fiyatı takip eden noktalar; fiyat noktaları
+    keserse trend tersine döner. Çok güçlü trendlerde mükemmel; ranging piyasada whipsaw makinası.
+  formula: "SAR_{t+1} = SAR_t + AF * (EP - SAR_t); AF artar 0.02 → 0.20"
+  parameters:
+    - name: af_start
+      type: float
+      default: 0.02
+      min: 0.01
+      max: 0.1
+      effect: "Düşük başlangıç → daha geniş trailing stop."
+    - name: af_step
+      type: float
+      default: 0.02
+      min: 0.01
+      max: 0.1
+      effect: "Step yükseltmek noktaları fiyata yaklaştırır."
+    - name: af_max
+      type: float
+      default: 0.20
+      min: 0.1
+      max: 0.5
+      effect: "Maksimum AF — trend olgunlaştığında stop daralır."
+  confidence: 6
+  confidence_rationale: "Güçlü trendlerde harika trailing stop; sideways'te whipsaw."
+  suggested_strategy:
+    name: "PSAR trail"
+    summary: "Trend yönünde entry sonrası SAR'i trailing stop olarak kullan."
+    rules:
+      - "Use: stop_loss = SAR while in trade"
+      - "Exit: when price crosses SAR"
+  references:
+    - "Wilder, J. W. (1978). New Concepts in Technical Trading Systems."
+
+- id: kdj
+  display_name: KDJ
+  family: momentum
+  short_description: "Stochastic'in Çin uyarlaması — K, D, J üç çizgi."
+  long_description: |
+    Stochastic'in geliştirilmiş formu. K ve D stochastic'le aynı; J = 3*K - 2*D ekstra çizgi.
+    J'nin aşırı uçları (>100, <0) erken sinyal verir. Crypto piyasada popüler.
+  formula: "K = SMA(stoch_K, m); D = SMA(K, m); J = 3*K - 2*D"
+  parameters:
+    - name: period
+      type: int
+      default: 9
+      min: 3
+      max: 30
+      effect: "Düşük period hassas."
+    - name: m
+      type: int
+      default: 3
+      min: 1
+      max: 10
+      effect: "Smoothing."
+  confidence: 5
+  confidence_rationale: "Stochastic'in benzeri; J çizgisi erken-uyarı için faydalı ama gürültülü."
+  suggested_strategy:
+    name: "KDJ J-extreme"
+    summary: "J > 100'den dönünce close, J < 0'dan dönünce long."
+    rules:
+      - "Entry: J crosses above 0 from below"
+      - "Exit: J crosses below 100 from above"
+  references:
+    - "Chinese technical analysis literature."
