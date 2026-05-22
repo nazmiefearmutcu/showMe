@@ -54,6 +54,7 @@ def register_routes(app: FastAPI, *, deps: AppDeps) -> None:
         quote,
         scanner,
         state,
+        strategies,
         veryfinder,
         watchlists,
         websocket,
@@ -75,6 +76,7 @@ def register_routes(app: FastAPI, *, deps: AppDeps) -> None:
     agent.register(app, deps)
     ask.register(app, deps)
     state.register(app, deps)
+    strategies.register(app, deps)
     watchlists.register(app, deps)
     veryfinder.register(app, deps)
     websocket.register(app, deps)
