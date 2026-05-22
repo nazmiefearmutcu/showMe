@@ -72,4 +72,50 @@ describe("PORT aggregate header", () => {
     render(<PORTPane code="PORT" />);
     expect(screen.getByText(/rate limit/i)).toBeInTheDocument();
   });
+
+  it("renders Close buttons on positions only when permissions include trade", () => {
+    useExchangeStore.setState({
+      catalog: [],
+      credentials: [{ id: "abc", exchange_id: "binance", account_label: "main",
+                      permissions: ["read", "trade"], created_at: "now" }],
+      selectedExchangeId: null, catalogLoading: false, credentialsLoading: false, error: null,
+    });
+    usePortfolioStore.setState({
+      groups: [{
+        credential_id: "abc", exchange_id: "binance", account_label: "main",
+        permissions: ["read", "trade"],
+        account: { cash: 1, equity: 1, buying_power: 1, currency: "USDT" },
+        positions: [{ symbol: "BTC/USDT", side: "buy", quantity: 0.5,
+                      entry_price: 60000, current_price: 61000, unrealized_pnl: 500 }],
+        orders: [], error: null,
+      }],
+      totals: {}, lastFetchedAt: null, loading: false, error: null,
+      selectedCredentialIds: null, includeOrders: false,
+    });
+    render(<PORTPane code="PORT" />);
+    expect(screen.getAllByRole("button", { name: /^close$/i }).length).toBeGreaterThan(0);
+  });
+
+  it("does NOT render Close buttons for read-only credentials", () => {
+    useExchangeStore.setState({
+      catalog: [],
+      credentials: [{ id: "abc", exchange_id: "binance", account_label: "main",
+                      permissions: ["read"], created_at: "now" }],
+      selectedExchangeId: null, catalogLoading: false, credentialsLoading: false, error: null,
+    });
+    usePortfolioStore.setState({
+      groups: [{
+        credential_id: "abc", exchange_id: "binance", account_label: "main",
+        permissions: ["read"],
+        account: { cash: 1, equity: 1, buying_power: 1, currency: "USDT" },
+        positions: [{ symbol: "BTC/USDT", side: "buy", quantity: 0.5,
+                      entry_price: 60000, current_price: 61000, unrealized_pnl: 500 }],
+        orders: [], error: null,
+      }],
+      totals: {}, lastFetchedAt: null, loading: false, error: null,
+      selectedCredentialIds: null, includeOrders: false,
+    });
+    render(<PORTPane code="PORT" />);
+    expect(screen.queryByRole("button", { name: /^close$/i })).toBeNull();
+  });
 });
