@@ -31,6 +31,8 @@ import { confirmAction } from "@/lib/confirm";
 import { formatCurrency } from "@/lib/format";
 import { usePortfolioStore, type PortfolioGroup } from "@/lib/portfolio-store";
 import { useExchangeStore } from "@/lib/exchange-store";
+import { useTradingStore } from "@/lib/trading-store";
+import { OrderTicket } from "./OrderTicket";
 import { FunctionControlGroup, LoadStatePill, RefreshButton } from "./function-controls";
 import type { FunctionPaneProps } from "./registry-types";
 
@@ -190,6 +192,7 @@ function CredentialGroup({ g }: { g: PortfolioGroup }) {
               <th align="left">Symbol</th><th align="right">Qty</th>
               <th align="right">Entry</th><th align="right">Mark</th>
               <th align="right">PnL</th>
+              <th></th>
             </tr>
           </thead>
           <tbody>
@@ -204,10 +207,68 @@ function CredentialGroup({ g }: { g: PortfolioGroup }) {
                 }}>
                   {(p.unrealized_pnl ?? 0).toFixed(2)}
                 </td>
+                <td align="right">
+                  {g.permissions.includes("trade") && (
+                    <button
+                      onClick={() => useTradingStore.getState().closePosition(
+                        `${g.exchange_id}:${g.credential_id}`,
+                        p.symbol,
+                        (p.side as "buy" | "sell"),
+                        p.quantity,
+                        g.account_label,
+                      )}
+                    >
+                      Close
+                    </button>
+                  )}
+                </td>
               </tr>
             ))}
           </tbody>
         </table>
+      )}
+      {g.orders.length > 0 && (
+        <details style={{ marginTop: 8 }}>
+          <summary>Açık emirler ({g.orders.length})</summary>
+          <table style={{ width: "100%", fontSize: 12, marginTop: 4 }}>
+            <thead>
+              <tr style={{ color: "var(--fg-2)" }}>
+                <th align="left">Symbol</th><th>Side</th><th align="right">Qty</th>
+                <th align="right">Type</th><th align="right">Status</th><th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {(g.orders as Array<Record<string, unknown>>).map((o, i) => (
+                <tr key={String(o.id ?? i)}>
+                  <td>{String(o.symbol ?? "-")}</td>
+                  <td>{String(o.side ?? "-")}</td>
+                  <td align="right">{String(o.quantity ?? "-")}</td>
+                  <td align="right">{String(o.order_type ?? "-")}</td>
+                  <td align="right">{String(o.status ?? "-")}</td>
+                  <td align="right">
+                    {g.permissions.includes("trade") && (
+                      <button
+                        onClick={() => useTradingStore.getState().cancelOrder(
+                          `${g.exchange_id}:${g.credential_id}`,
+                          String(o.id ?? ""),
+                        )}
+                      >
+                        Cancel
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </details>
+      )}
+      {g.permissions.includes("trade") && (
+        <OrderTicket
+          credentialId={g.credential_id}
+          brokerName={`${g.exchange_id}:${g.credential_id}`}
+          accountLabel={g.account_label}
+        />
       )}
     </div>
   );
