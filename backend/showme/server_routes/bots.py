@@ -52,6 +52,35 @@ def register(app: FastAPI, deps: AppDeps) -> None:
         saved = _store().save(rec)
         return saved.model_dump()
 
+    @router.get("/api/bots/feed")
+    async def bots_feed(limit: int = 50) -> dict[str, Any]:
+        """Aggregate latest signals across all bots, newest first."""
+        from datetime import datetime, timezone
+        store = _store()
+        all_signals: list[dict[str, Any]] = []
+        for meta in store.list():
+            try:
+                rec = store.get(meta.id)
+            except Exception:  # noqa: BLE001
+                continue
+            for entry in rec.signal_log:
+                d = entry.model_dump()
+                d["bot_id"] = rec.id
+                d["bot_symbol"] = rec.symbol
+                d["bot_strategy_id"] = rec.strategy_id
+                d["bot_exchange_id"] = rec.exchange_id
+                d["bot_mode"] = rec.mode
+                all_signals.append(d)
+        all_signals.sort(
+            key=lambda s: s.get("timestamp") or s.get("bar_time") or "",
+            reverse=True,
+        )
+        capped = max(0, min(limit, 500))
+        return {
+            "generated_at": datetime.now(tz=timezone.utc).isoformat(),
+            "signals": all_signals[:capped],
+        }
+
     @router.get("/api/bots/{bot_id}")
     async def get_bot(bot_id: str) -> dict[str, Any]:
         from showme.bots.store import UnknownBot
