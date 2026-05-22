@@ -45,6 +45,7 @@ def register_routes(app: FastAPI, *, deps: AppDeps) -> None:
         exchange,
         function_index,
         health,
+        indicators,
         instant,
         mis,
         portfolio,
@@ -60,6 +61,7 @@ def register_routes(app: FastAPI, *, deps: AppDeps) -> None:
     )
 
     health.register(app, deps)
+    indicators.register(app, deps)
     function_index.register(app, deps)
     quote.register(app, deps)
     scanner.register(app, deps)
