@@ -1,0 +1,327 @@
+# showMe template bot library — Sub-system G.
+# Each entry is a starter StrategySpec the user can instantiate.
+
+- id: rsi-mean-revert
+  name: "RSI Mean Reversion (klasik)"
+  family: momentum
+  description: "RSI 30 altına düşünce long, 70 üstüne çıkınca close."
+  uses_indicators: [rsi]
+  recommended_timeframe: "1h"
+  recommended_symbols: ["BTC/USDT", "ETH/USDT"]
+  applicability: "Ranging piyasada en iyi; güçlü trendde whipsaw."
+  natural_language_explanation: |
+    Bu strateji RSI'ın 30'un altına düştüğü an satın al sinyali verir; fiyat
+    'aşırı satılmış' bölgeden çıkmaya başlayınca yeni long pozisyon açar.
+    RSI 70'in üzerine çıktığında kapatır — 'aşırı alım' sinyali. Klasik
+    mean-reversion mantığı.
+  math: |
+    RSI(period=14) = 100 - 100 / (1 + RS)
+    RS = ortalama_kazanç / ortalama_kayıp (Wilder smoothing)
+    Entry: prev_RSI >= 30 AND current_RSI < 30 → long
+    Exit:  prev_RSI <= 70 AND current_RSI > 70 → close
+  spec_template:
+    name: "RSI Mean Reversion"
+    description: "RSI 30/70 mean-revert"
+    timeframe: "1h"
+    indicators:
+      - {alias: rsi14, id: rsi, params: {period: 14}}
+    entry_rules:
+      - {kind: crosses_below, left: rsi14, right: "literal:30"}
+    entry_logic: all
+    exit_rules:
+      - {kind: crosses_above, left: rsi14, right: "literal:70"}
+    exit_logic: any
+    position: {side: long, sizing_kind: fixed_quote, sizing_value: 100, stop_loss_pct: 2.0}
+
+- id: macd-cross
+  name: "MACD Signal Crossover"
+  family: momentum
+  description: "MACD signal çizgisini yukarı kesince long, aşağı kesince close."
+  uses_indicators: [macd, ema]
+  recommended_timeframe: "4h"
+  recommended_symbols: ["BTC/USDT", "ETH/USDT"]
+  applicability: "Trend dönemlerinde güçlü; yatay piyasada whipsaw."
+  natural_language_explanation: |
+    MACD trend ve momentum bilgisini tek grafikte birleştirir. Hızlı EMA
+    yavaş EMA'yı yukarı kesince yükseliş momentumu başlamış demek. EMA200
+    üstündeyse yön yukarı; aşağıdaysa pas geç.
+  math: |
+    MACD = EMA(close, 12) - EMA(close, 26)
+    Signal = EMA(MACD, 9)
+    Entry: MACD crosses above Signal AND close > EMA200
+  spec_template:
+    name: "MACD Crossover"
+    timeframe: "4h"
+    indicators:
+      - {alias: macd, id: macd, params: {fast_period: 12, slow_period: 26, signal_period: 9}}
+      - {alias: ema200, id: ema, params: {period: 200}}
+    entry_rules:
+      - {kind: crosses_above, left: macd, right: "literal:0"}
+      - {kind: greater_than, left: close, right: ema200}
+    entry_logic: all
+    exit_rules:
+      - {kind: crosses_below, left: macd, right: "literal:0"}
+    exit_logic: any
+    position: {side: long, sizing_kind: fixed_quote, sizing_value: 100, stop_loss_pct: 3.0}
+
+- id: ema-crossover
+  name: "EMA 20/50 Crossover"
+  family: trend
+  description: "Kısa EMA uzun EMA'yı kesince giriş/çıkış."
+  uses_indicators: [ema]
+  recommended_timeframe: "1h"
+  recommended_symbols: ["BTC/USDT", "ETH/USDT", "SOL/USDT"]
+  applicability: "Trend takibi için temel kurulum."
+  natural_language_explanation: |
+    Kısa EMA (20) uzun EMA'yı (50) yukarı kesince trend yukarı dönüyor
+    demek — long aç. Aşağı kesince trend ters → çık.
+  math: |
+    EMA_t = α*close_t + (1-α)*EMA_{t-1}, α = 2/(period+1)
+    Entry: EMA(20) crosses above EMA(50)
+  spec_template:
+    name: "EMA 20/50"
+    timeframe: "1h"
+    indicators:
+      - {alias: ema20, id: ema, params: {period: 20}}
+      - {alias: ema50, id: ema, params: {period: 50}}
+    entry_rules:
+      - {kind: crosses_above, left: ema20, right: ema50}
+    entry_logic: all
+    exit_rules:
+      - {kind: crosses_below, left: ema20, right: ema50}
+    exit_logic: any
+    position: {side: long, sizing_kind: fixed_quote, sizing_value: 100, stop_loss_pct: 2.5}
+
+- id: golden-cross
+  name: "Golden Cross (50/200 SMA)"
+  family: trend
+  description: "Klasik rejim değişikliği sinyali — uzun vadeli."
+  uses_indicators: [sma]
+  recommended_timeframe: "1d"
+  recommended_symbols: ["BTC/USDT", "ETH/USDT", "SPY", "QQQ"]
+  applicability: "Aylar/yıllar süren bull/bear rejimleri; günlük TF."
+  natural_language_explanation: |
+    SMA(50) SMA(200)'ü yukarı kesince 'golden cross' — uzun vadeli boğa
+    rejimi. Aşağı kesince 'death cross' — bear rejimi.
+  math: "Entry: SMA(50) crosses above SMA(200)"
+  spec_template:
+    name: "Golden Cross"
+    timeframe: "1d"
+    indicators:
+      - {alias: sma50, id: sma, params: {period: 50}}
+      - {alias: sma200, id: sma, params: {period: 200}}
+    entry_rules:
+      - {kind: crosses_above, left: sma50, right: sma200}
+    entry_logic: all
+    exit_rules:
+      - {kind: crosses_below, left: sma50, right: sma200}
+    exit_logic: any
+    position: {side: long, sizing_kind: fixed_quote, sizing_value: 500, stop_loss_pct: 5.0}
+
+- id: bb-squeeze-breakout
+  name: "Bollinger Squeeze Breakout"
+  family: volatility
+  description: "Bantlar daralınca breakout bekle."
+  uses_indicators: [bollinger_bands, atr]
+  recommended_timeframe: "15m"
+  recommended_symbols: ["BTC/USDT", "ETH/USDT"]
+  applicability: "Düşük volatilite sonrası açılış patlamaları."
+  natural_language_explanation: |
+    Bantlar daraldıkça (squeeze) volatilite kayboluyor demek. Sonrasında
+    fiyat patladığında — close üst bandı geçince — momentumla long. ATR
+    stop kullan.
+  math: "Mid = SMA(20); Upper = Mid + 2*std; squeeze when (Upper - Lower) at N-bar low"
+  spec_template:
+    name: "BB Squeeze"
+    timeframe: "15m"
+    indicators:
+      - {alias: bbm, id: bollinger_bands, params: {period: 20, std_dev: 2.0}}
+      - {alias: atr14, id: atr, params: {period: 14}}
+    entry_rules:
+      - {kind: greater_than, left: close, right: bbm}
+    entry_logic: all
+    exit_rules:
+      - {kind: less_than, left: close, right: bbm}
+    exit_logic: any
+    position: {side: long, sizing_kind: fixed_quote, sizing_value: 100, stop_loss_pct: 1.5}
+
+- id: stoch-oversold
+  name: "Stochastic Oversold Reversal"
+  family: momentum
+  description: "Stoch %K %D'yi 20 altında yukarı kesince long."
+  uses_indicators: [stochastic]
+  recommended_timeframe: "1h"
+  recommended_symbols: ["BTC/USDT", "ETH/USDT"]
+  applicability: "Range piyasada güvenilir; trend dönemlerinde yanıltıcı."
+  natural_language_explanation: |
+    Stoch %K 20'nin altına düşünce 'aşırı satım'. Yukarı dönerken oluşan
+    cross long sinyali. RSI'a benzer ama daha sıkı range-bound.
+  math: "K = (close - LL_14) / (HH_14 - LL_14) * 100, signal: cross"
+  spec_template:
+    name: "Stoch Oversold"
+    timeframe: "1h"
+    indicators:
+      - {alias: stoch, id: stochastic, params: {k_period: 14, d_period: 3, smooth: 3}}
+    entry_rules:
+      - {kind: crosses_above, left: stoch, right: "literal:20"}
+    entry_logic: all
+    exit_rules:
+      - {kind: crosses_below, left: stoch, right: "literal:80"}
+    exit_logic: any
+    position: {side: long, sizing_kind: fixed_quote, sizing_value: 100, stop_loss_pct: 2.0}
+
+- id: adx-trend-filter
+  name: "ADX-filtered EMA Trend Follow"
+  family: trend
+  description: "Sadece ADX>25 olduğunda EMA crossover'a güven."
+  uses_indicators: [adx, ema]
+  recommended_timeframe: "1h"
+  recommended_symbols: ["BTC/USDT", "ETH/USDT", "SOL/USDT"]
+  applicability: "ADX filtresi yatay piyasada whipsaw'ı süzer."
+  natural_language_explanation: |
+    Trend takibi yapacaksan ADX'ten 25 üzeri istersin; aksi halde piyasa
+    yataydır, EMA crossover'lar boş yere işler. ADX>25 + EMA20>EMA50 →
+    güçlü trend, long.
+  math: "ADX = EMA(DX); +DI > -DI when trend up"
+  spec_template:
+    name: "ADX-filtered EMA"
+    timeframe: "1h"
+    indicators:
+      - {alias: adx14, id: adx, params: {period: 14}}
+      - {alias: ema20, id: ema, params: {period: 20}}
+      - {alias: ema50, id: ema, params: {period: 50}}
+    entry_rules:
+      - {kind: greater_than, left: adx14, right: "literal:25"}
+      - {kind: greater_than, left: ema20, right: ema50}
+    entry_logic: all
+    exit_rules:
+      - {kind: less_than, left: ema20, right: ema50}
+    exit_logic: any
+    position: {side: long, sizing_kind: fixed_quote, sizing_value: 100, stop_loss_pct: 2.5}
+
+- id: vwap-pullback
+  name: "VWAP Pullback (intraday)"
+  family: volume
+  description: "Trend yönünde VWAP'a pullback, sonra long."
+  uses_indicators: [vwap]
+  recommended_timeframe: "15m"
+  recommended_symbols: ["BTC/USDT", "ETH/USDT", "AAPL", "TSLA"]
+  applicability: "Intraday — gün-içi institutional flow."
+  natural_language_explanation: |
+    VWAP gün başından itibaren volume-ağırlıklı ortalama. Fiyat VWAP
+    üstünde → alıcı baskın. Pullback'te VWAP'ı test edip yukarı dönerse
+    momentum yenileniyor — long.
+  math: "VWAP = Σ(tp*v) / Σ(v); tp = (h+l+c)/3"
+  spec_template:
+    name: "VWAP Pullback"
+    timeframe: "15m"
+    indicators:
+      - {alias: vwap, id: vwap, params: {session_reset: true}}
+    entry_rules:
+      - {kind: crosses_above, left: close, right: vwap}
+    entry_logic: all
+    exit_rules:
+      - {kind: crosses_below, left: close, right: vwap}
+    exit_logic: any
+    position: {side: long, sizing_kind: fixed_quote, sizing_value: 100, stop_loss_pct: 1.0}
+
+- id: ichimoku-cloud-break
+  name: "Ichimoku Cloud Breakout"
+  family: trend
+  description: "Fiyat cloud üstünde + Tenkan>Kijun → long."
+  uses_indicators: [ichimoku]
+  recommended_timeframe: "4h"
+  recommended_symbols: ["BTC/USDT", "ETH/USDT"]
+  applicability: "1H+ TF'lerde sağlam; düşük TF'lerde gürültü."
+  natural_language_explanation: |
+    Ichimoku bir bakışta trend + momentum + S/R verir. Fiyat cloud
+    üstüne çıkarsa + Tenkan Kijun'u kestiyse trend güçlü yukarı.
+  math: "Kijun = avg(H26, L26)/2; cloud = Span A vs Span B"
+  spec_template:
+    name: "Ichimoku Cloud Break"
+    timeframe: "4h"
+    indicators:
+      - {alias: kijun, id: ichimoku, params: {kijun_period: 26}}
+    entry_rules:
+      - {kind: greater_than, left: close, right: kijun}
+    entry_logic: all
+    exit_rules:
+      - {kind: less_than, left: close, right: kijun}
+    exit_logic: any
+    position: {side: long, sizing_kind: fixed_quote, sizing_value: 100, stop_loss_pct: 3.0}
+
+- id: parabolic-trail
+  name: "Parabolic SAR Trailing"
+  family: trend
+  description: "SAR trailing stop olarak; reversal'da çık."
+  uses_indicators: [parabolic_sar]
+  recommended_timeframe: "1h"
+  recommended_symbols: ["BTC/USDT", "ETH/USDT"]
+  applicability: "Güçlü trendlerde mükemmel; yatay piyasada whipsaw."
+  natural_language_explanation: |
+    SAR (Stop And Reverse) noktaları trend yönünde fiyatı takip eder.
+    Fiyat SAR'i keserse trend tersine döner — close.
+  math: "SAR_{t+1} = SAR_t + AF*(EP - SAR_t)"
+  spec_template:
+    name: "Parabolic SAR"
+    timeframe: "1h"
+    indicators:
+      - {alias: psar, id: parabolic_sar, params: {af_start: 0.02, af_step: 0.02, af_max: 0.20}}
+    entry_rules:
+      - {kind: greater_than, left: close, right: psar}
+    entry_logic: all
+    exit_rules:
+      - {kind: less_than, left: close, right: psar}
+    exit_logic: any
+    position: {side: long, sizing_kind: fixed_quote, sizing_value: 100, stop_loss_pct: 2.0}
+
+- id: atr-volatility-breakout
+  name: "ATR Volatility Breakout"
+  family: volatility
+  description: "Fiyat ortalamanın N*ATR üstüne çıkınca long."
+  uses_indicators: [atr, sma]
+  recommended_timeframe: "1h"
+  recommended_symbols: ["BTC/USDT", "ETH/USDT"]
+  applicability: "Volatility expansion breakout; trend başlangıçlarında."
+  natural_language_explanation: |
+    Fiyat ortalamanın ATR×N kadar üstüne kaçınca volatility expansion
+    + momentum kombosu — long. ATR stop net.
+  math: "trigger = SMA(close, 20) + N*ATR(14)"
+  spec_template:
+    name: "ATR Breakout"
+    timeframe: "1h"
+    indicators:
+      - {alias: sma20, id: sma, params: {period: 20}}
+      - {alias: atr14, id: atr, params: {period: 14}}
+    entry_rules:
+      - {kind: crosses_above, left: close, right: sma20}
+    entry_logic: all
+    exit_rules:
+      - {kind: less_than, left: close, right: sma20}
+    exit_logic: any
+    position: {side: long, sizing_kind: fixed_quote, sizing_value: 100, stop_loss_pct: 2.0}
+
+- id: williams-r-reverse
+  name: "Williams %R Reversal"
+  family: momentum
+  description: "%R -80 altından yukarı dönünce long."
+  uses_indicators: [williams_r]
+  recommended_timeframe: "1h"
+  recommended_symbols: ["BTC/USDT", "ETH/USDT"]
+  applicability: "Stochastic alternatifi; range piyasada."
+  natural_language_explanation: |
+    Williams %R, Stochastic'in negatif tarafı (-100..0). -80 altından
+    yukarı dönünce 'aşırı satım'dan çıkış — long.
+  math: "%R = (HH - close) / (HH - LL) * -100"
+  spec_template:
+    name: "Williams %R"
+    timeframe: "1h"
+    indicators:
+      - {alias: willr, id: williams_r, params: {period: 14}}
+    entry_rules:
+      - {kind: crosses_above, left: willr, right: "literal:-80"}
+    entry_logic: all
+    exit_rules:
+      - {kind: crosses_below, left: willr, right: "literal:-20"}
+    exit_logic: any
+    position: {side: long, sizing_kind: fixed_quote, sizing_value: 100, stop_loss_pct: 2.0}
