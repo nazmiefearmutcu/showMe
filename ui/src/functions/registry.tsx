@@ -66,6 +66,7 @@ const WIRPPane = lazy(() => import("./WIRP").then((m) => ({ default: m.WIRPPane 
 const CONNPane = lazy(() => import("./CONN").then((m) => ({ default: m.CONNPane })));
 const INDXPane = lazy(() => import("./INDX").then((m) => ({ default: m.INDXPane })));
 const STRAPane = lazy(() => import("./STRA").then((m) => ({ default: m.STRAPane })));
+const BOTPane = lazy(() => import("./BOT").then((m) => ({ default: m.BOTPane })));
 
 const PANES: Record<string, PaneComponent> = {
   AGENT: AGENTPane,
@@ -91,6 +92,7 @@ const PANES: Record<string, PaneComponent> = {
   GLCO: GLCOPane,
   BTMM: BTMMPane,
   BIO: BIOPane,
+  BOT: BOTPane,
   GEX: GEXPane,
   CONN: CONNPane,
   CORR: CORRPane,
@@ -130,6 +132,13 @@ const NATIVE_FUNCTION_ENTRIES: FunctionEntry[] = [
     name: "Ask",
     category: "screen",
     description: "Interactive research assistant pane backed by ShowMe functions.",
+  },
+  {
+    code: "BOT",
+    name: "Bot Manager",
+    category: "screen",
+    description:
+      "Sub-system D user surface: list saved bots with status pills (OFF/SHADOW/LIVE), edit strategy+credential+symbol+timeframe+tick, switch shadow/live mode, enable/disable with re-typed-label confirmation, and view the signal log.",
   },
   {
     code: "CN",

@@ -108,6 +108,14 @@ const TOOL_ITEMS: SidebarShortcut[] = [
     ariaLabel: "Open strategy editor",
   },
   {
+    code: "BOT",
+    label: "Bot Manager",
+    meta: "BOT",
+    href: "#/fn/BOT",
+    path: "/fn/BOT",
+    ariaLabel: "Open bot manager",
+  },
+  {
     code: "INSTANT",
     label: "Trade Ticket",
     meta: "TRD",
