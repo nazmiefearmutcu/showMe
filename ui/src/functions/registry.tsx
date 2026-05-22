@@ -67,6 +67,7 @@ const CONNPane = lazy(() => import("./CONN").then((m) => ({ default: m.CONNPane 
 const INDXPane = lazy(() => import("./INDX").then((m) => ({ default: m.INDXPane })));
 const STRAPane = lazy(() => import("./STRA").then((m) => ({ default: m.STRAPane })));
 const BOTPane = lazy(() => import("./BOT").then((m) => ({ default: m.BOTPane })));
+const TMPLPane = lazy(() => import("./TMPL").then((m) => ({ default: m.TMPLPane })));
 
 const PANES: Record<string, PaneComponent> = {
   AGENT: AGENTPane,
@@ -102,6 +103,7 @@ const PANES: Record<string, PaneComponent> = {
   MAP: MarketHeatmapPane,
   SECT: MarketHeatmapPane,
   STRA: STRAPane,
+  TMPL: TMPLPane,
   DPF: DPFPane,
   DVD: DVDPane,
   ECFC: ECFCPane,
@@ -185,6 +187,13 @@ const NATIVE_FUNCTION_ENTRIES: FunctionEntry[] = [
     category: "screen",
     description:
       "Sub-system E user surface: list saved strategies, edit indicators, entry/exit rules, timeframe, and position sizing. Save via /api/strategies, run server-side preview against synthetic bars.",
+  },
+  {
+    code: "TMPL",
+    name: "Strategy Templates",
+    category: "screen",
+    description:
+      "Sub-system G user surface: browse the curated bot template library (RSI mean-revert, EMA crossover, etc.) with natural-language explanation, math, and applicability notes. One click instantiates a new strategy via /api/templates/{id}/instantiate.",
   },
   {
     code: "XSEN",
