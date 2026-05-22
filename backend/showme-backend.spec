@@ -50,6 +50,15 @@ datas = [
         str(HERE / "showme" / "brokers" / "catalog" / "exchanges.yml"),
         "showme/brokers/catalog",
     ),
+    # Sub-system F (indicator depot):
+    # Same pattern as exchanges.yml above — ``IndicatorCatalog.load`` reads
+    # ``Path(__file__).parent / "catalog" / "indicators.yml"`` at runtime.
+    # PyInstaller bakes Python source into the PYZ but raw YAML must be
+    # added to ``datas`` explicitly.
+    (
+        str(HERE / "showme" / "indicators" / "catalog" / "indicators.yml"),
+        "showme/indicators/catalog",
+    ),
 ]
 
 # X Sentiment AI model — embedded so the .app boots offline.
