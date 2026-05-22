@@ -65,6 +65,7 @@ const WHALPane = lazy(() => import("./WHAL").then((m) => ({ default: m.WHALPane 
 const WIRPPane = lazy(() => import("./WIRP").then((m) => ({ default: m.WIRPPane })));
 const CONNPane = lazy(() => import("./CONN").then((m) => ({ default: m.CONNPane })));
 const INDXPane = lazy(() => import("./INDX").then((m) => ({ default: m.INDXPane })));
+const STRAPane = lazy(() => import("./STRA").then((m) => ({ default: m.STRAPane })));
 
 const PANES: Record<string, PaneComponent> = {
   AGENT: AGENTPane,
@@ -98,6 +99,7 @@ const PANES: Record<string, PaneComponent> = {
   XSEN: XSENPane,
   MAP: MarketHeatmapPane,
   SECT: MarketHeatmapPane,
+  STRA: STRAPane,
   DPF: DPFPane,
   DVD: DVDPane,
   ECFC: ECFCPane,
@@ -167,6 +169,13 @@ const NATIVE_FUNCTION_ENTRIES: FunctionEntry[] = [
     name: "Instant Squawk Line",
     category: "news",
     description: "Secondary LiveSquawk-style official-source news, calendar, latency, and audio line.",
+  },
+  {
+    code: "STRA",
+    name: "Strategy Editor",
+    category: "screen",
+    description:
+      "Sub-system E user surface: list saved strategies, edit indicators, entry/exit rules, timeframe, and position sizing. Save via /api/strategies, run server-side preview against synthetic bars.",
   },
   {
     code: "XSEN",
