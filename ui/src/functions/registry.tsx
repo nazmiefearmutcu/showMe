@@ -67,6 +67,7 @@ const CONNPane = lazy(() => import("./CONN").then((m) => ({ default: m.CONNPane 
 const INDXPane = lazy(() => import("./INDX").then((m) => ({ default: m.INDXPane })));
 const STRAPane = lazy(() => import("./STRA").then((m) => ({ default: m.STRAPane })));
 const BOTPane = lazy(() => import("./BOT").then((m) => ({ default: m.BOTPane })));
+const BOTSPane = lazy(() => import("./BOTS").then((m) => ({ default: m.BOTSPane })));
 const TMPLPane = lazy(() => import("./TMPL").then((m) => ({ default: m.TMPLPane })));
 
 const PANES: Record<string, PaneComponent> = {
@@ -94,6 +95,7 @@ const PANES: Record<string, PaneComponent> = {
   BTMM: BTMMPane,
   BIO: BIOPane,
   BOT: BOTPane,
+  BOTS: BOTSPane,
   GEX: GEXPane,
   CONN: CONNPane,
   CORR: CORRPane,
@@ -141,6 +143,13 @@ const NATIVE_FUNCTION_ENTRIES: FunctionEntry[] = [
     category: "screen",
     description:
       "Sub-system D user surface: list saved bots with status pills (OFF/SHADOW/LIVE), edit strategy+credential+symbol+timeframe+tick, switch shadow/live mode, enable/disable with re-typed-label confirmation, and view the signal log.",
+  },
+  {
+    code: "BOTS",
+    name: "Bot Supervision",
+    category: "screen",
+    description:
+      "Sub-system H supervisor: aggregate KPI strip (total/enabled/live/signals today), per-bot table with mode pill and last-signal column, and unified signal feed across every saved bot. Auto-refreshes every 10s.",
   },
   {
     code: "CN",
