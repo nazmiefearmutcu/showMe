@@ -68,6 +68,7 @@ const INDXPane = lazy(() => import("./INDX").then((m) => ({ default: m.INDXPane 
 const STRAPane = lazy(() => import("./STRA").then((m) => ({ default: m.STRAPane })));
 const BOTPane = lazy(() => import("./BOT").then((m) => ({ default: m.BOTPane })));
 const BOTSPane = lazy(() => import("./BOTS").then((m) => ({ default: m.BOTSPane })));
+const PERFPane = lazy(() => import("./PERF").then((m) => ({ default: m.PERFPane })));
 const TMPLPane = lazy(() => import("./TMPL").then((m) => ({ default: m.TMPLPane })));
 
 const PANES: Record<string, PaneComponent> = {
@@ -88,6 +89,7 @@ const PANES: Record<string, PaneComponent> = {
   NI: NIPane,
   CN: NIPane,             // CN alias — ShowMe ships either NI or CN.
   MOST: MOSTPane,
+  PERF: PERFPane,
   WEI: WEIPane,
   HP: HPPane,
   WCRS: WCRSPane,
@@ -189,6 +191,13 @@ const NATIVE_FUNCTION_ENTRIES: FunctionEntry[] = [
     name: "Instant Squawk Line",
     category: "news",
     description: "Secondary LiveSquawk-style official-source news, calendar, latency, and audio line.",
+  },
+  {
+    code: "PERF",
+    name: "Performance",
+    category: "screen",
+    description:
+      "Sub-system I: cumulative bot performance leaderboard (total PnL desc) + per-bot detail with metrics, trade list, and equity curve. Pure-aggregation from each bot's signal_log; auto-refreshes every 15s.",
   },
   {
     code: "STRA",
