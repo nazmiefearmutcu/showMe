@@ -64,6 +64,7 @@ const WETRPane = lazy(() => import("./WETR").then((m) => ({ default: m.WETRPane 
 const WHALPane = lazy(() => import("./WHAL").then((m) => ({ default: m.WHALPane })));
 const WIRPPane = lazy(() => import("./WIRP").then((m) => ({ default: m.WIRPPane })));
 const CONNPane = lazy(() => import("./CONN").then((m) => ({ default: m.CONNPane })));
+const INDXPane = lazy(() => import("./INDX").then((m) => ({ default: m.INDXPane })));
 
 const PANES: Record<string, PaneComponent> = {
   AGENT: AGENTPane,
@@ -92,6 +93,7 @@ const PANES: Record<string, PaneComponent> = {
   GEX: GEXPane,
   CONN: CONNPane,
   CORR: CORRPane,
+  INDX: INDXPane,
   INSTANT: INSTANTPane,
   XSEN: XSENPane,
   MAP: MarketHeatmapPane,
@@ -152,6 +154,13 @@ const NATIVE_FUNCTION_ENTRIES: FunctionEntry[] = [
     category: "screen",
     description:
       "23 indikatörlü konsensüs ile tüm piyasalarda (kripto, hisse, ETF, FX, emtia, tahvil) yüksek skorlu sembol taraması. Sonuçlardan + butonu ile WATCH listesine ekleme. Her piyasa için ayrı kalibrasyon sekmesi.",
+  },
+  {
+    code: "INDX",
+    name: "Indicator Index",
+    category: "screen",
+    description:
+      "Searchable indicator depot: family-filtered grid with confidence chips and a detail view showing description, parameter table, formula, rationale, and suggested strategy. Backed by /api/indicators/catalog.",
   },
   {
     code: "INSTANT",
