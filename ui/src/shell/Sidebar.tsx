@@ -132,6 +132,14 @@ const TOOL_ITEMS: SidebarShortcut[] = [
     ariaLabel: "Open bot supervision",
   },
   {
+    code: "PERF",
+    label: "Performance",
+    meta: "PRF",
+    href: "#/fn/PERF",
+    path: "/fn/PERF",
+    ariaLabel: "Open bot performance leaderboard",
+  },
+  {
     code: "INSTANT",
     label: "Trade Ticket",
     meta: "TRD",

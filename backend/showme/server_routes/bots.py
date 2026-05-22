@@ -81,6 +81,66 @@ def register(app: FastAPI, deps: AppDeps) -> None:
             "signals": all_signals[:capped],
         }
 
+    @router.get("/api/bots/performance")
+    async def bots_performance_leaderboard() -> dict[str, Any]:
+        from showme.bots.performance import compute_trades, compute_metrics
+        from showme.strategies.store import StrategyStore, UnknownStrategy
+        store = _store()
+        sstore = StrategyStore.fresh()
+        records = []
+        for meta in store.list():
+            try:
+                rec = store.get(meta.id)
+            except Exception:  # noqa: BLE001
+                continue
+            sizing = 100.0
+            try:
+                spec = sstore.get(rec.strategy_id)
+                sizing = float(spec.position.sizing_value or 100.0)
+            except UnknownStrategy:
+                pass
+            trades = compute_trades(rec.signal_log, sizing_value=sizing)
+            metrics = compute_metrics(trades)
+            records.append({
+                "bot_id": rec.id,
+                "symbol": rec.symbol,
+                "strategy_id": rec.strategy_id,
+                "mode": rec.mode,
+                "enabled": rec.enabled,
+                **metrics,
+            })
+        # Sort by total_pnl desc (best first), then by trade_count desc for stable tie-break.
+        records.sort(key=lambda r: (-r["total_pnl"], -r["trade_count"]))
+        return {"records": records}
+
+    @router.get("/api/bots/{bot_id}/performance")
+    async def bot_performance_detail(bot_id: str) -> dict[str, Any]:
+        from showme.bots.performance import (
+            compute_trades, compute_metrics, compute_equity_curve,
+        )
+        from showme.bots.store import UnknownBot
+        from showme.strategies.store import StrategyStore, UnknownStrategy
+        store = _store()
+        try:
+            rec = store.get(bot_id)
+        except UnknownBot:
+            raise HTTPException(404, detail=f"unknown bot: {bot_id}")
+        sizing = 100.0
+        try:
+            spec = StrategyStore.fresh().get(rec.strategy_id)
+            sizing = float(spec.position.sizing_value or 100.0)
+        except UnknownStrategy:
+            pass
+        trades = compute_trades(rec.signal_log, sizing_value=sizing)
+        return {
+            "bot_id": bot_id,
+            "symbol": rec.symbol,
+            "strategy_id": rec.strategy_id,
+            "metrics": compute_metrics(trades),
+            "trades": [t.to_dict() for t in trades],
+            "equity_curve": compute_equity_curve(trades, starting_equity=10_000),
+        }
+
     @router.get("/api/bots/{bot_id}")
     async def get_bot(bot_id: str) -> dict[str, Any]:
         from showme.bots.store import UnknownBot
