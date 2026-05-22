@@ -100,6 +100,14 @@ const TOOL_ITEMS: SidebarShortcut[] = [
     ariaLabel: "Open indicator depot",
   },
   {
+    code: "STRA",
+    label: "Strategy Editor",
+    meta: "STR",
+    href: "#/fn/STRA",
+    path: "/fn/STRA",
+    ariaLabel: "Open strategy editor",
+  },
+  {
     code: "INSTANT",
     label: "Trade Ticket",
     meta: "TRD",
