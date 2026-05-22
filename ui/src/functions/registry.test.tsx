@@ -58,24 +58,24 @@ describe("function pane registry", () => {
   });
 });
 
-describe("150-function merged catalog invariant", () => {
+describe("151-function merged catalog invariant", () => {
   // The static index ships 141 codes from the backend catalog; the native
-  // registry contributes 9 codes not in the static index (AGENT, ASK,
-  // CONN, INDX, INSTANT, MIS, STRA, WATCH, XSEN — CN overlaps and is
-  // dedup'd). Total 150. This is the contract the sidebar, command
+  // registry contributes 10 codes not in the static index (AGENT, ASK,
+  // BOT, CONN, INDX, INSTANT, MIS, STRA, WATCH, XSEN — CN overlaps and is
+  // dedup'd). Total 151. This is the contract the sidebar, command
   // palette, and FunctionStub fallback all depend on. CONN was added in
   // T9 of the multi-exchange portfolio foundation; INDX was added in F4
   // of the indicator-depot sub-system; STRA was added in E5 of the
-  // strategy sub-system. All are native panes with no backend-side stub
-  // fallback.
-  const NATIVE_ONLY = ["AGENT", "ASK", "CONN", "INDX", "INSTANT", "MIS", "STRA", "WATCH", "XSEN"];
+  // strategy sub-system; BOT was added in D5 of the bot sub-system. All
+  // are native panes with no backend-side stub fallback.
+  const NATIVE_ONLY = ["AGENT", "ASK", "BOT", "CONN", "INDX", "INSTANT", "MIS", "STRA", "WATCH", "XSEN"];
 
   it("static index is exactly 141 entries", () => {
     expect(STATIC_FUNCTION_INDEX).toHaveLength(141);
   });
 
-  it("merged catalog is exactly 150 entries", () => {
-    expect(mergeNativeFunctionIndex(STATIC_FUNCTION_INDEX)).toHaveLength(150);
+  it("merged catalog is exactly 151 entries", () => {
+    expect(mergeNativeFunctionIndex(STATIC_FUNCTION_INDEX)).toHaveLength(151);
   });
 
   it("every native-only entry is appended after merge", () => {
