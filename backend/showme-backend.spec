@@ -59,6 +59,15 @@ datas = [
         str(HERE / "showme" / "indicators" / "catalog" / "indicators.yml"),
         "showme/indicators/catalog",
     ),
+    # Sub-system G (template bot library):
+    # Same pattern as indicators.yml above — ``TemplateCatalog.load`` reads
+    # ``Path(__file__).parent / "catalog" / "templates.yml"`` at runtime.
+    # PyInstaller bakes Python source into the PYZ but raw YAML must be
+    # added to ``datas`` explicitly.
+    (
+        str(HERE / "showme" / "templates" / "catalog" / "templates.yml"),
+        "showme/templates/catalog",
+    ),
 ]
 
 # X Sentiment AI model — embedded so the .app boots offline.
