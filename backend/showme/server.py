@@ -977,12 +977,27 @@ def build_app(engine_root: Path | None) -> FastAPI:
                     LOG.warning("function factory warmup failed: %r", exc)
 
             asyncio.create_task(_warm())
+        # Sub-system D: spawn one asyncio.Task per enabled bot. Replay
+        # happens here (inside the running loop) so the bots can actually
+        # schedule themselves — build_app() runs synchronously and has no
+        # loop available for asyncio.create_task().
+        try:
+            from showme.bots.lifespan import startup as bot_startup
+            await bot_startup()
+        except Exception as exc:  # noqa: BLE001 — non-fatal; log + continue
+            LOG.warning("bot runner startup skipped: %s", exc)
         try:
             yield
         finally:
-            # Shutdown: close any live hub, flush helpers, close broker
-            # connections. Each wrapped so a single failure can't poison
-            # the rest of the cleanup chain.
+            # Shutdown: cancel bot tasks first so they stop touching the
+            # broker registry, then close any live hub, flush helpers,
+            # close broker connections. Each wrapped so a single failure
+            # can't poison the rest of the cleanup chain.
+            try:
+                from showme.bots.lifespan import shutdown as bot_shutdown
+                await bot_shutdown()
+            except Exception:  # noqa: BLE001
+                LOG.exception("bot runner shutdown failed")
             await _shutdown_cleanup(get_stream_hub)
 
     app = FastAPI(
