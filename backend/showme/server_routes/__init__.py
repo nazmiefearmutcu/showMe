@@ -41,6 +41,7 @@ def register_routes(app: FastAPI, *, deps: AppDeps) -> None:
     from . import (
         agent,
         ask,
+        bots,
         broker,
         exchange,
         function_index,
@@ -75,6 +76,7 @@ def register_routes(app: FastAPI, *, deps: AppDeps) -> None:
     xai.register(app, deps)
     agent.register(app, deps)
     ask.register(app, deps)
+    bots.register(app, deps)
     state.register(app, deps)
     strategies.register(app, deps)
     watchlists.register(app, deps)
