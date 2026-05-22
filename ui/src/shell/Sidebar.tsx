@@ -92,6 +92,14 @@ const RECENT_ITEMS: SidebarShortcut[] = [
 const TOOL_ITEMS: SidebarShortcut[] = [
   { code: "ALRT", label: "Alerts", meta: "ALR", href: "#/fn/ALRT", path: "/fn/ALRT" },
   {
+    code: "INDX",
+    label: "Indicator Index",
+    meta: "IDX",
+    href: "#/fn/INDX",
+    path: "/fn/INDX",
+    ariaLabel: "Open indicator depot",
+  },
+  {
     code: "INSTANT",
     label: "Trade Ticket",
     meta: "TRD",
