@@ -140,6 +140,14 @@ const TOOL_ITEMS: SidebarShortcut[] = [
     ariaLabel: "Open bot performance leaderboard",
   },
   {
+    code: "BDA",
+    label: "Bot Dev Assistant",
+    meta: "BDA",
+    href: "#/fn/BDA",
+    path: "/fn/BDA",
+    ariaLabel: "Open bot dev assistant",
+  },
+  {
     code: "INSTANT",
     label: "Trade Ticket",
     meta: "TRD",

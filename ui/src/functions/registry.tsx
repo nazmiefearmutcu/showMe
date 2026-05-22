@@ -38,6 +38,7 @@ const HPPane = lazy(() => import("./HP").then((m) => ({ default: m.HPPane })));
 const WCRSPane = lazy(() => import("./WCRS").then((m) => ({ default: m.WCRSPane })));
 const GLCOPane = lazy(() => import("./GLCO").then((m) => ({ default: m.GLCOPane })));
 const AGENTPane = lazy(() => import("./AGENT").then((m) => ({ default: m.AGENTPane })));
+const BDAPane = lazy(() => import("./BDA").then((m) => ({ default: m.BDAPane })));
 const BTMMPane = lazy(() => import("./BTMM").then((m) => ({ default: m.BTMMPane })));
 const BIOPane = lazy(() => import("./BIO").then((m) => ({ default: m.BIOPane })));
 const GEXPane = lazy(() => import("./GEX").then((m) => ({ default: m.GEXPane })));
@@ -94,6 +95,7 @@ const PANES: Record<string, PaneComponent> = {
   HP: HPPane,
   WCRS: WCRSPane,
   GLCO: GLCOPane,
+  BDA: BDAPane,
   BTMM: BTMMPane,
   BIO: BIOPane,
   BOT: BOTPane,
@@ -138,6 +140,13 @@ const NATIVE_FUNCTION_ENTRIES: FunctionEntry[] = [
     name: "Ask",
     category: "screen",
     description: "Interactive research assistant pane backed by ShowMe functions.",
+  },
+  {
+    code: "BDA",
+    name: "Bot Dev Assistant",
+    category: "screen",
+    description:
+      "Sub-system J: rule-based NL → strategy spec parser + saved-strategy explainer. Type a request like \"RSI 30 altında, 70 üstünde, BTC/USDT 1h\" and get a draft StrategySpec (optionally persisted); below, pick any saved strategy for a TR-dili rule-based explanation.",
   },
   {
     code: "BOT",
