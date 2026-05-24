@@ -81,7 +81,9 @@ export function PaneChrome({ leafId, code, symbol, linkGroup }: PaneChromeProps)
     const startX = event.clientX;
     const startY = event.clientY;
     let moved = false;
+    let cancelled = false;
     const onMouseMove = (moveEvent: globalThis.MouseEvent) => {
+      if (cancelled) return;
       if (Math.hypot(moveEvent.clientX - startX, moveEvent.clientY - startY) > 8) {
         moved = true;
       }
@@ -95,20 +97,33 @@ export function PaneChrome({ leafId, code, symbol, linkGroup }: PaneChromeProps)
     const cleanup = () => {
       window.removeEventListener("mousemove", onMouseMove);
       window.removeEventListener("mouseup", onMouseUp);
+      window.removeEventListener("keydown", onKeyDown);
       setDragPreview(null);
       dragCleanupRef.current = null;
     };
     const onMouseUp = (upEvent: globalThis.MouseEvent) => {
       cleanup();
-      if (!moved) return;
+      if (cancelled || !moved) return;
       if (isPointInsidePinnedDropZone(upEvent.clientX, upEvent.clientY)) {
         pinItem(pinTarget);
+      }
+    };
+    // HIGH #15 (UI-Shell-Bundle UB) — Escape during drag cancels the
+    // pin/drop intent and tears down listeners immediately. Without
+    // this, accidentally starting a drag (mouse-down + minor jitter)
+    // and trying to back out by hitting Esc left the ghost preview
+    // hanging on screen until the next mouse-up.
+    const onKeyDown = (keyEvent: KeyboardEvent) => {
+      if (keyEvent.key === "Escape") {
+        cancelled = true;
+        cleanup();
       }
     };
     window.addEventListener("mousemove", onMouseMove);
     // Note: no `{ once: true }` here — we own the removeEventListener call
     // inside `cleanup`, which is symmetric with the unmount safety net.
     window.addEventListener("mouseup", onMouseUp);
+    window.addEventListener("keydown", onKeyDown);
     dragCleanupRef.current = cleanup;
   };
 

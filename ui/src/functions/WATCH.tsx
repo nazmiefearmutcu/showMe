@@ -202,12 +202,24 @@ export function WATCHPane({ code }: FunctionPaneProps) {
     };
   }, [rows, sidecarReady]);
 
+  // Round 24 HIGH 10 — local in-flight guard on the composer. Enter-spam
+  // (or a hardware double-click) used to fire two addSymbol calls before
+  // the first completed; the underlying storage layer (lib/watchlist.ts)
+  // already serializes the write, but the UI state would briefly show two
+  // pending rows which broke the row-key invariant in DataGrid.
+  const [addingSymbol, setAddingSymbol] = useState(false);
   const onAdd = async () => {
+    if (addingSymbol) return;
     const sym = draft.trim().toUpperCase();
     if (!sym) return;
-    setRows(await addSymbol(sym));
-    setDraft("");
-    setLastRemoved(null);
+    setAddingSymbol(true);
+    try {
+      setRows(await addSymbol(sym));
+      setDraft("");
+      setLastRemoved(null);
+    } finally {
+      setAddingSymbol(false);
+    }
   };
 
   const onRemove = useCallback(async (sym: string) => {
@@ -556,7 +568,11 @@ export function WATCHPane({ code }: FunctionPaneProps) {
           <form
             className="showme-watch__composer watch-composer"
             onSubmit={(e) => {
+              // Round 24 HIGH 10 — Enter-from-input fires this submit.
+              // Inline guard short-circuits before onAdd() so the local
+              // `addingSymbol` flag doesn't have to win a React race.
               e.preventDefault();
+              if (addingSymbol) return;
               onAdd();
             }}
           >
@@ -566,14 +582,19 @@ export function WATCHPane({ code }: FunctionPaneProps) {
               placeholder="add symbol — AAPL, BTCUSDT…"
               list="watch-symbol-options"
               className="watch-composer__input"
+              disabled={addingSymbol}
             />
             <datalist id="watch-symbol-options">
               {suggestions.map((item) => (
                 <option key={item} value={item} />
               ))}
             </datalist>
-            <button type="submit" className="btn btn--accent u-btn-26">
-              Add
+            <button
+              type="submit"
+              className="btn btn--accent u-btn-26"
+              disabled={addingSymbol || !draft.trim()}
+            >
+              {addingSymbol ? "..." : "Add"}
             </button>
           </form>
           {lastRemoved ? (

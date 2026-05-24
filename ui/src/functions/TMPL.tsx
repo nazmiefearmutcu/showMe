@@ -7,6 +7,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useTemplateStore } from "@/lib/template-store";
 import { useFocusTrap } from "@/lib/a11y";
+import { ConfirmDialog } from "@/design-system";
 
 export function TMPLPane() {
   const entries = useTemplateStore((s) => s.entries);
@@ -21,12 +22,28 @@ export function TMPLPane() {
   const [symbolOverride, setSymbolOverride] = useState("");
   const [creating, setCreating] = useState(false);
   const [createdId, setCreatedId] = useState<string | null>(null);
+  // Round 24 HIGH 12 — once an instantiate attempt fails we keep `creating`
+  // true (and the button disabled) until the user explicitly clicks Retry.
+  // The old flow set `creating=false` on every catch, so a double-click
+  // pattern of (success→error) or (error→error) bypassed the guard.
+  const [instantiateError, setInstantiateError] = useState<string | null>(null);
+  // Round 24 HIGH 11 — track which override fields the user has touched
+  // so backdrop-click warns "you'll lose your overrides" iff any field
+  // diverges from the template defaults.
+  const [overridesDirty, setOverridesDirty] = useState(false);
   // H-UI-5 — auto-dismiss timer for the success state.
   const [autoDismissAt, setAutoDismissAt] = useState<number | null>(null);
+  // Round 24 HIGH — secondary unsaved-warning confirm dialog within the
+  // modal. Lives outside `useModal` because both can be visible at once
+  // (the warning sits on top of the template modal).
+  const [pendingClose, setPendingClose] = useState(false);
   // A11Y: trap Tab inside the open modal, restore focus to the trigger
   // (the "Bu template'i kullan" button) on close. Reuses the shared
   // `useFocusTrap` primitive that ShortcutsHelp + Palette already use.
   const modalRef = useRef<HTMLDivElement>(null);
+  // Round 24 CRITICAL 4 — read store-level guard so a double-click
+  // Oluştur can't queue two POSTs even if the local React state lags.
+  const instantiatingInFlight = useTemplateStore((s) => s.instantiating);
 
   useEffect(() => { if (entries.length === 0) loadCatalog(); }, [entries.length, loadCatalog]);
 
@@ -34,19 +51,48 @@ export function TMPLPane() {
     setUseModal(null);
     setCreatedId(null);
     setAutoDismissAt(null);
+    setInstantiateError(null);
+    setOverridesDirty(false);
+    setPendingClose(false);
+  };
+
+  /**
+   * Round 24 HIGH 11 — guarded close. If the user has typed overrides AND
+   * we haven't yet created the strategy, ask before discarding. Skip the
+   * warning when:
+   *   - `creating=true` → fall through to the success-or-fail path, never
+   *     close mid-flight.
+   *   - `createdId` is set → the success indicator is showing and the user
+   *     just wants to dismiss.
+   *   - No fields are dirty (default name + default symbol).
+   */
+  const requestClose = () => {
+    if (creating || instantiatingInFlight) return;
+    if (createdId) {
+      closeModal();
+      return;
+    }
+    if (overridesDirty) {
+      setPendingClose(true);
+      return;
+    }
+    closeModal();
   };
 
   // MEDIUM — Escape key dismiss when modal is open and not creating.
+  // Round 24 — route through requestClose() so the unsaved-warning
+  // confirmation fires for dirty overrides.
   useEffect(() => {
     if (!useModal) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !creating) {
-        closeModal();
+      if (e.key === "Escape" && !creating && !instantiatingInFlight) {
+        requestClose();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [useModal, creating]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [useModal, creating, instantiatingInFlight, overridesDirty, createdId]);
 
   // A11Y — trap Tab focus inside modal while open.
   useFocusTrap(modalRef, useModal !== null);
@@ -116,6 +162,8 @@ export function TMPLPane() {
               setSymbolOverride(selected.recommended_symbols[0] ?? "");
               setCreatedId(null);
               setAutoDismissAt(null);
+              setInstantiateError(null);
+              setOverridesDirty(false);
             }}>Bu template'i kullan</button>
             {error && <div style={{ color: "var(--accent-err)" }}>{error}</div>}
           </div>
@@ -125,10 +173,12 @@ export function TMPLPane() {
           <div role="dialog" aria-modal="true"
                data-testid="tmpl-modal-backdrop"
                onClick={(e) => {
-                 // MEDIUM — click backdrop to dismiss; don't fire when
-                 // clicking inside the modal body.
-                 if (e.target === e.currentTarget && !creating) {
-                   closeModal();
+                 // Round 24 HIGH 11 — route backdrop click through
+                 // requestClose() so the unsaved-warning fires when the
+                 // user has typed overrides; clicks inside the body are
+                 // still ignored via target===currentTarget.
+                 if (e.target === e.currentTarget) {
+                   requestClose();
                  }
                }}
                style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)",
@@ -142,12 +192,18 @@ export function TMPLPane() {
               <h3 style={{ marginTop: 0 }}>Strateji oluştur</h3>
               <label>
                 Ad
-                <input value={nameOverride} onChange={(e) => setNameOverride(e.target.value)} />
+                <input
+                  value={nameOverride}
+                  onChange={(e) => { setNameOverride(e.target.value); setOverridesDirty(true); }}
+                />
               </label>
               <br />
               <label>
                 Sembol (opsiyonel)
-                <input value={symbolOverride} onChange={(e) => setSymbolOverride(e.target.value)} />
+                <input
+                  value={symbolOverride}
+                  onChange={(e) => { setSymbolOverride(e.target.value); setOverridesDirty(true); }}
+                />
               </label>
               {creating && (
                 <div data-testid="tmpl-creating-indicator"
@@ -161,18 +217,45 @@ export function TMPLPane() {
                   Oluşturuldu (id: {createdId.slice(0, 8)}). STRA paneline gidip düzenleyebilirsin.
                 </div>
               )}
+              {instantiateError && !creating && (
+                <div data-testid="tmpl-error-indicator"
+                     style={{ color: "var(--accent-err)", marginTop: 8 }}>
+                  Hata: {instantiateError}
+                </div>
+              )}
               <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 8 }}>
+                {instantiateError && !creating && (
+                  <button
+                    data-testid="tmpl-retry-button"
+                    onClick={() => setInstantiateError(null)}
+                    style={{ marginRight: "auto" }}>
+                    Yeniden dene
+                  </button>
+                )}
                 <button
                   data-testid="tmpl-kapat-button"
-                  disabled={creating}
-                  onClick={closeModal}>
+                  disabled={creating || instantiatingInFlight}
+                  onClick={requestClose}>
                   Kapat
                 </button>
                 <button
                   data-testid="tmpl-olustur-button"
-                  disabled={creating || !nameOverride || createdId !== null}
+                  disabled={
+                    // Round 24 CRITICAL 4 + HIGH 12 — disable while creating
+                    // OR while store-level instantiating is true OR while we
+                    // are in an unresolved error state (user must hit Retry
+                    // explicitly to clear `instantiateError` before retrying).
+                    creating ||
+                    instantiatingInFlight ||
+                    !nameOverride ||
+                    createdId !== null ||
+                    instantiateError !== null
+                  }
                   onClick={async () => {
+                    // Local + store short-circuit — three layers deep.
+                    if (creating || instantiatingInFlight) return;
                     setCreating(true);
+                    setInstantiateError(null);
                     const r = await instantiate(useModal, nameOverride, symbolOverride || undefined);
                     setCreating(false);
                     if (r) {
@@ -180,12 +263,28 @@ export function TMPLPane() {
                       // Cross-store invalidation already done in template-store.
                       setCreatedId(r.strategy.id);
                       setAutoDismissAt(Date.now() + 1500);
+                    } else {
+                      // Round 24 HIGH 12 — failure leaves the button locked
+                      // until the user clicks Retry; otherwise a frustrated
+                      // double-tap would race a recovered backend into two
+                      // strategies on the second success.
+                      setInstantiateError(error ?? "instantiate_failed");
                     }
                   }}>
                   {creating ? "..." : "Oluştur"}
                 </button>
               </div>
             </div>
+            {/* Round 24 HIGH 11 — unsaved-overrides secondary confirm. */}
+            <ConfirmDialog
+              open={pendingClose}
+              title="Değişiklikler kaybolacak"
+              body="Yaptığın override'lar (ad / sembol) kaybolacak. Yine de kapatılsın mı?"
+              confirmLabel="Kapat"
+              destructive
+              onConfirm={closeModal}
+              onCancel={() => setPendingClose(false)}
+            />
           </div>
         )}
       </div>

@@ -4,7 +4,7 @@
  * Left: list of saved strategies + New. Right: form with indicators,
  * entry/exit rules, timeframe, position sizing + Save + Preview.
  */
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import {
   useStrategyStore,
   type IndicatorRef, type Rule, type StrategySpec,
@@ -16,8 +16,14 @@ import {
   TIMEFRAMES,
   validateOperand,
 } from "@/lib/validators";
+import { ConfirmDialog } from "@/design-system";
 
 const PRICE_FIELDS = ["close", "open", "high", "low", "volume"];
+
+/** Round 24 — typed shape for the pending-confirm intent. */
+type PendingConfirm =
+  | { kind: "dirty-switch"; target: string | "new" }
+  | { kind: "delete"; id: string };
 
 export function STRAPane() {
   const list = useStrategyStore((s) => s.strategies);
@@ -26,6 +32,10 @@ export function STRAPane() {
   const lastPreview = useStrategyStore((s) => s.lastPreview);
   const error = useStrategyStore((s) => s.error);
   const removing = useStrategyStore((s) => s.removing);
+  // Round 24 CRITICAL — Save guard. `saving` short-circuits double-click.
+  const saving = useStrategyStore((s) => s.saving);
+  // Round 24 HIGH — Preview guard.
+  const previewing = useStrategyStore((s) => s.previewing);
   const loadList = useStrategyStore((s) => s.loadList);
   const openNew = useStrategyStore((s) => s.openNew);
   const openExisting = useStrategyStore((s) => s.openExisting);
@@ -33,6 +43,12 @@ export function STRAPane() {
   const save = useStrategyStore((s) => s.save);
   const remove = useStrategyStore((s) => s.remove);
   const preview = useStrategyStore((s) => s.preview);
+
+  // Round 24 CRITICAL 14 — replace window.confirm with ConfirmDialog so
+  // delete + dirty-switch are non-blocking, Esc/backdrop-aware, and the
+  // 2nd rapid click can't queue another modal. `pendingConfirm` carries
+  // the intent so the user only sees one modal at a time.
+  const [pendingConfirm, setPendingConfirm] = useState<PendingConfirm | null>(null);
 
   const catalogEntries = useIndicatorStore((s) => s.entries);
   const loadCatalog = useIndicatorStore((s) => s.loadCatalog);
@@ -51,13 +67,12 @@ export function STRAPane() {
   // H-UI-3 — unknown timeframe persisted in saved spec.
   const timeframeUnknown = Boolean(draft && !isKnownTimeframe(draft.timeframe));
 
-  // H-UI-10 — dirty switch guard.
+  // H-UI-10 — dirty switch guard. Round 24 — non-blocking ConfirmDialog
+  // replaces window.confirm so the user can Esc out and tabbing still works.
   const handleSidebarClick = (id: string) => {
     if (dirty) {
-      const ok = window.confirm(
-        "Kaydetmediğin değişiklikler kaybolacak. Devam mı?",
-      );
-      if (!ok) return;
+      setPendingConfirm({ kind: "dirty-switch", target: id });
+      return;
     }
     openExisting(id);
   };
@@ -69,10 +84,8 @@ export function STRAPane() {
                     overflowY: "auto" }}>
         <button onClick={() => {
           if (dirty) {
-            const ok = window.confirm(
-              "Kaydetmediğin değişiklikler kaybolacak. Devam mı?",
-            );
-            if (!ok) return;
+            setPendingConfirm({ kind: "dirty-switch", target: "new" });
+            return;
           }
           openNew();
         }} style={{ width: "100%", marginBottom: 8 }}>
@@ -211,23 +224,40 @@ export function STRAPane() {
             />
 
             <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-              <button onClick={() => save()} disabled={!dirty || aliasDupIndices.size > 0 || timeframeUnknown}>
-                Kaydet
+              <button
+                data-testid="stra-save-button"
+                onClick={() => {
+                  // Round 24 CRITICAL 2 — local short-circuit; store-level
+                  // `if (get().saving) return null` is the canonical seal.
+                  if (saving) return;
+                  void save();
+                }}
+                disabled={
+                  saving || !dirty || aliasDupIndices.size > 0 || timeframeUnknown
+                }>
+                {saving ? "Kaydediliyor..." : "Kaydet"}
               </button>
               {(() => {
-                const previewDisabled = !draft.id || dirty;
+                // Round 24 HIGH 13 — disable Preview while one is in flight.
+                const previewDisabled = !draft.id || dirty || previewing;
                 const previewTitle = previewDisabled
                   ? !draft.id
                     ? "Preview için önce stratejiyi kaydet."
-                    : "Kaydedilmemiş değişiklikler var — önce Kaydet."
+                    : dirty
+                      ? "Kaydedilmemiş değişiklikler var — önce Kaydet."
+                      : "Preview zaten çalışıyor…"
                   : undefined;
                 return (
                   <span title={previewTitle}>
                     <button
-                      onClick={() => preview(draft.id!)}
+                      onClick={() => {
+                        // Round 24 HIGH — local short-circuit + store guard.
+                        if (previewing || !draft.id || dirty) return;
+                        void preview(draft.id);
+                      }}
                       disabled={previewDisabled}
                       data-testid="stra-preview-button">
-                      Preview
+                      {previewing ? "Yükleniyor…" : "Preview"}
                     </button>
                   </span>
                 );
@@ -243,12 +273,11 @@ export function STRAPane() {
                   data-testid="stra-sil-button"
                   disabled={removing}
                   onClick={() => {
-                    // B-C1 — destructive confirm before DELETE; bots referencing
-                    // this strategy will be affected.
-                    if (!window.confirm("Stratejiyi silmek istediğinden emin misin? Bu stratejiye bağlı bot'lar etkilenebilir.")) {
-                      return;
-                    }
-                    remove(draft.id!);
+                    // Round 24 CRITICAL 14 — replace blocking window.confirm
+                    // with ConfirmDialog; store-level `removing` short-circuits
+                    // the 2nd rapid click.
+                    if (removing) return;
+                    setPendingConfirm({ kind: "delete", id: draft.id! });
                   }}
                   style={{ marginLeft: "auto", color: "var(--accent-err)" }}>
                   {removing ? "Siliniyor..." : "Sil"}
@@ -279,6 +308,35 @@ export function STRAPane() {
           </div>
         )}
       </div>
+
+      {/* Round 24 CRITICAL 14 + dirty-switch — non-blocking confirm dialog.
+          One <ConfirmDialog> for both intents; the body text + handler
+          branch off pendingConfirm.kind. */}
+      <ConfirmDialog
+        open={pendingConfirm !== null}
+        title={pendingConfirm?.kind === "delete"
+          ? "Stratejiyi sil"
+          : "Kaydedilmemiş değişiklikler"}
+        body={pendingConfirm?.kind === "delete"
+          ? "Stratejiyi silmek istediğinden emin misin? Bu stratejiye bağlı bot'lar etkilenebilir."
+          : "Kaydetmediğin değişiklikler kaybolacak. Devam mı?"}
+        confirmLabel={pendingConfirm?.kind === "delete" ? "Sil" : "Devam et"}
+        destructive={pendingConfirm?.kind === "delete"}
+        busy={removing}
+        onConfirm={() => {
+          if (!pendingConfirm) return;
+          if (pendingConfirm.kind === "delete") {
+            // Store-level `removing` guard ensures the underlying remove()
+            // is single-flight even if React renders this onConfirm twice.
+            void remove(pendingConfirm.id);
+          } else if (pendingConfirm.kind === "dirty-switch") {
+            if (pendingConfirm.target === "new") openNew();
+            else openExisting(pendingConfirm.target);
+          }
+          setPendingConfirm(null);
+        }}
+        onCancel={() => setPendingConfirm(null)}
+      />
     </div>
   );
 }

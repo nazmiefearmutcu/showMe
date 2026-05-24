@@ -16,6 +16,7 @@
  *   BUG #11 — KPI refresh button moved next to the table heading and
  *             relabeled "Tümünü yenile".
  */
+import { useMemo } from "react";
 import {
   useBotsSupervisionStore,
   type FeedSignal,
@@ -123,11 +124,16 @@ function BotTable() {
   if (bots.length === 0) {
     return <div style={{ padding: 16, color: "var(--fg-2)" }}>Henüz bot yok.</div>;
   }
-  // Index feed by bot_id for quick lookup of latest:
-  const byBot: Record<string, FeedSignal[]> = {};
-  for (const s of feed) {
-    (byBot[s.bot_id] ||= []).push(s);
-  }
+  // UA-HIGH-19: memoize byBot so the per-row map() loop doesn't rebuild this
+  // index on every render unrelated to the feed (e.g. parent KPI strip
+  // ticking the polling clock).
+  const byBot = useMemo(() => {
+    const acc: Record<string, FeedSignal[]> = {};
+    for (const s of feed) {
+      (acc[s.bot_id] ||= []).push(s);
+    }
+    return acc;
+  }, [feed]);
   return (
     <table style={{ width: "100%", fontSize: 12, marginTop: 8 }}>
       <thead>

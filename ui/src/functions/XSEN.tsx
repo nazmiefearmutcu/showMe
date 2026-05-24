@@ -34,6 +34,7 @@ import { normalizeSymbolInput } from "@/lib/symbols";
 import { useWorkspace } from "@/lib/workspace";
 import { navigate } from "@/lib/router";
 import { useXInjectStore } from "@/lib/xinject";
+import { maxOf } from "@/lib/maxOf";
 import type { FunctionPaneProps } from "./registry-types";
 
 type LoadState = "idle" | "loading" | "ok" | "error";
@@ -109,12 +110,17 @@ export function XSENPane({ code, symbol }: FunctionPaneProps) {
     let cancelled = false;
     setState("loading");
     setError(null);
-    analyzeXTopic({
-      query,
-      limit,
-      since: sinceToDate(since),
-      lang,
-    })
+    // UA-HIGH-09: thread signal so rapid Run-button clicks abort the
+    // server-side scrape + classify pipeline instead of stacking N requests.
+    analyzeXTopic(
+      {
+        query,
+        limit,
+        since: sinceToDate(since),
+        lang,
+      },
+      controller.signal,
+    )
       .then((response) => {
         if (cancelled || controller.signal.aborted) return;
         setData(response);
@@ -155,10 +161,22 @@ export function XSENPane({ code, symbol }: FunctionPaneProps) {
   // previous `health.scraper.nitter_mirrors_active.length` access threw
   // TypeError and tore down the whole pane. All reads here are now
   // optional-chained.
+  // UA-HIGH-22: replaced the `as Record<string, unknown>` cast with a typed
+  // accessor — the previous version lied about the value type at every site
+  // (truthy-check on `unknown` happens to work but typechecks would have
+  // missed any rename of these fields).
+  type ScraperBackends = {
+    brave_syndication?: boolean;
+    ddg_syndication?: boolean;
+    bing_syndication?: boolean;
+    jina_proxy?: boolean;
+    guest_token?: boolean;
+    [key: string]: unknown;
+  };
   const scrapeSource = useMemo(() => {
     if (!health) return "checking";
     if (health?.ok === false) return "model offline";
-    const backends = (health?.scraper?.backends ?? {}) as Record<string, unknown>;
+    const backends: ScraperBackends = health?.scraper?.backends ?? {};
     const parts: string[] = [];
     if (backends.brave_syndication) parts.push("brave");
     else if (backends.ddg_syndication) parts.push("ddg");
@@ -601,7 +619,8 @@ function DistributionCard({
   toneFor: (label: string) => "positive" | "negative" | "warn" | "neutral" | "accent";
 }) {
   const entries = Object.entries(pct).sort((a, b) => b[1] - a[1]);
-  const max = Math.max(...entries.map(([, v]) => v), 1);
+  // UA-HIGH-12: stack-safe.
+  const max = Math.max(maxOf(entries.map(([, v]) => v)), 1);
   return (
     <Card>
       <CardHeader trailing={`${entries.length}`}>{title}</CardHeader>

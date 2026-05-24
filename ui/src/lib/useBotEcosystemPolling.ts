@@ -17,17 +17,20 @@
 import { useEffect } from "react";
 import { useBotsSupervisionStore } from "./bots-supervision-store";
 import { usePerformanceStore } from "./performance-store";
+import { useVisibilityTick } from "./useVisibilityTick";
 
 export const BOT_ECOSYSTEM_POLL_MS = 10_000;
 
 export function useBotEcosystemPolling(intervalMs: number = BOT_ECOSYSTEM_POLL_MS): void {
+  // CRITICAL FIX (audit S4): replace raw setInterval with useVisibilityTick.
+  // The bot ecosystem was firing two requests every 10s × every mounted
+  // pane (BOTS + PERF + BotEcosystemPaneTabs) regardless of tab visibility.
+  // Three open panes on a backgrounded tab = 18 req/10s for nothing.
+  // useVisibilityTick already implements the pause-on-hidden contract; reuse it
+  // instead of duplicating timer code.
+  const tick = useVisibilityTick(intervalMs);
   useEffect(() => {
-    const tick = () => {
-      void useBotsSupervisionStore.getState().loadAll();
-      void usePerformanceStore.getState().loadLeaderboard();
-    };
-    tick();
-    const id = setInterval(tick, intervalMs);
-    return () => clearInterval(id);
-  }, [intervalMs]);
+    void useBotsSupervisionStore.getState().loadAll();
+    void usePerformanceStore.getState().loadLeaderboard();
+  }, [tick]);
 }

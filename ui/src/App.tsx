@@ -45,17 +45,59 @@ async function refreshFunctionIndex() {
 
 const BACKEND_INDEX_READY_THRESHOLD = 20;
 
-// QA-2026-05-23 cmd+k de-dupe: when the App-level keydown fires the
-// palette toggle, the Tauri menu accelerator emits `palette:toggle` in the
-// same tick. We swallow that one event so the palette doesn't flip twice
-// and close itself. The 50 ms window is comfortably above the Tauri
-// menu→webview emit latency and well below any plausible user re-press.
-let suppressPaletteEventUntil = 0;
-function suppressNextPaletteEvent() {
-  suppressPaletteEventUntil = Date.now() + 50;
+// HIGH #6 (UI-Shell-Bundle UB) cmd+K race — replace the 50 ms timestamp
+// window with a structural lock keyed on the *post-toggle* paletteOpen
+// value. Tauri menu accelerator can still emit `palette:toggle` 100 ms
+// after the keyboard shortcut on a slow machine; the old window quietly
+// double-flipped the palette closed in that case. The new lock:
+//
+//   1. Keyboard handler reads the post-toggle paletteOpen and stamps
+//      `expectedNext` plus a generation id.
+//   2. The `palette:toggle` Tauri listener checks: if the current store
+//      value already matches `expectedNext` AND we haven't bumped the
+//      generation past the one we recorded, swallow the event.
+//   3. Any genuine subsequent press bumps the generation, so the
+//      structural lock self-clears without a wall-clock window.
+let paletteSyncGen = 0;
+let paletteExpectedAfterShortcut: boolean | null = null;
+let paletteShortcutGen = 0;
+
+function recordPaletteShortcutFire(nextOpen: boolean): void {
+  paletteSyncGen += 1;
+  paletteShortcutGen = paletteSyncGen;
+  paletteExpectedAfterShortcut = nextOpen;
 }
-function paletteEventSuppressed(): boolean {
-  return Date.now() < suppressPaletteEventUntil;
+
+function shouldSuppressPaletteEvent(currentOpen: boolean): boolean {
+  if (paletteExpectedAfterShortcut === null) return false;
+  if (paletteSyncGen !== paletteShortcutGen) return false;
+  if (currentOpen !== paletteExpectedAfterShortcut) return false;
+  // Consume the lock on a successful suppression so a genuine re-press
+  // immediately after isn't accidentally eaten.
+  paletteExpectedAfterShortcut = null;
+  return true;
+}
+
+// HIGH #5 (UI-Shell-Bundle UB) — single source of truth for "the user is
+// typing in an editable surface". `cmd+W` / `cmd+B` / `cmd+K` used to
+// fire even when the focus was inside an `<input>` inside the palette,
+// a strategy editor textbox, or a contenteditable rich-text island
+// (XSEN search, BDA prompt). Reaches the activeElement first because
+// `e.target` may be the wrapping form, not the editable child.
+//
+// Exported for regression testing — see App.shortcuts-input-guard.test.tsx.
+export function isEditableTarget(e: KeyboardEvent): boolean {
+  const candidates: (Element | null | undefined)[] = [
+    e.target as Element | null,
+    typeof document !== "undefined" ? document.activeElement : null,
+  ];
+  for (const node of candidates) {
+    if (!node || !(node instanceof Element)) continue;
+    if (node.closest('input,textarea,select,[contenteditable="true"],[contenteditable=""]')) {
+      return true;
+    }
+  }
+  return false;
 }
 
 async function refreshHealth(): Promise<boolean> {
@@ -97,6 +139,25 @@ function routeToTarget(route: Route): { code: string; symbol?: string } | null {
   }
 }
 
+// HIGH #7 (UI-Shell-Bundle UB) — `recordRecentCode` dedupe.
+//
+// ReactStrictMode double-invokes effects in dev so the same hashchange
+// fires `recordRecentCode("DES")` twice within ~1 ms. The palette stack
+// would then count DES twice and push something genuinely older off the
+// end. Guard with a (timestamp, code) tuple — anything within 100 ms of
+// the previous fire for the same code is treated as the dev double-tap
+// and dropped.
+let lastRecordedCode: string | null = null;
+let lastRecordedAt = 0;
+
+function recordRouteRecentCode(code: string): void {
+  const now = Date.now();
+  if (lastRecordedCode === code && now - lastRecordedAt < 100) return;
+  lastRecordedCode = code;
+  lastRecordedAt = now;
+  recordRecentCode(code);
+}
+
 function RouteSync() {
   const route = useRoute();
   const setFocusedTarget = useWorkspace((s) => s.setFocusedTarget);
@@ -105,12 +166,11 @@ function RouteSync() {
     if (target) {
       setFocusedTarget(target.code, target.symbol);
       // QA-2026-05-23: record every navigated function code so the
-      // sidebar "Recent" group reflects the user's real history (was
-      // 9 hard-coded fakes — GEX, BTMM, WEI, OMON, EQS — that never
-      // changed). Skip the synthetic HOME / PREF codes; users don't
-      // think of those as functions.
+      // sidebar "Recent" group reflects the user's real history.
+      // HIGH #7: dedupe via timestamp guard above so React's
+      // double-invoke in StrictMode doesn't fake-pad the stack.
       if (target.code && target.code !== "HOME" && target.code !== "PREF") {
-        recordRecentCode(target.code);
+        recordRouteRecentCode(target.code);
       }
     }
   }, [route, setFocusedTarget]);
@@ -191,6 +251,12 @@ export default function App() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey)) return;
+      // HIGH #5: never intercept these shortcuts while the user is
+      // typing into a text input / textarea / contenteditable. cmd+W in
+      // an OrderTicket textbox previously closed the user's pane mid-
+      // edit; cmd+B inside the strategy editor toggled the sidebar
+      // away from the workspace they were watching.
+      if (isEditableTarget(e)) return;
       const key = e.key.toLowerCase();
       if (e.key === "\\") {
         e.preventDefault();
@@ -199,12 +265,13 @@ export default function App() {
         e.preventDefault();
         useAppStore.getState().toggleSidebar();
       } else if (key === "k") {
-        // Cmd+K = ONLY the palette. Tauri menu accel emits
-        // `palette:toggle` too — we de-dupe at the listener (see boot
-        // effect below) by suppressing the next event for ~50 ms after
-        // a keyboard fire.
+        // HIGH #6: structural lock keyed on the post-toggle paletteOpen
+        // value (see `recordPaletteShortcutFire` above). Removes the
+        // 50 ms timing window that intermittently double-flipped the
+        // palette on slow machines.
         e.preventDefault();
-        suppressNextPaletteEvent();
+        const willOpen = !useAppStore.getState().paletteOpen;
+        recordPaletteShortcutFire(willOpen);
         togglePalette();
       } else if (key === "j") {
         e.preventDefault();
@@ -298,7 +365,12 @@ export default function App() {
       unsubscribe.push(offReload);
 
       const offPalette = await listen("palette:toggle", () => {
-        if (paletteEventSuppressed()) return;
+        // HIGH #6: the keyboard handler may have just fired the toggle
+        // and recorded the post-toggle expected value. If the Tauri
+        // menu accelerator follows up in the same logical action,
+        // swallow it so the palette doesn't bounce closed.
+        const isOpen = useAppStore.getState().paletteOpen;
+        if (shouldSuppressPaletteEvent(isOpen)) return;
         togglePalette();
       });
       unsubscribe.push(offPalette);

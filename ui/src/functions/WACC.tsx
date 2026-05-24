@@ -27,6 +27,7 @@ import {
 } from "@/design-system";
 import { useFunction } from "@/lib/useFunction";
 import { defaultSymbolForFunction } from "@/lib/symbols";
+import { maxOf, minOf } from "@/lib/maxOf";
 import {
   FunctionControlGroup,
   LoadStatePill,
@@ -258,8 +259,10 @@ function SensitivitySurface({ cells, baseWacc }: { cells: WACCSurfaceCell[]; bas
   if (!cells.length || baseWacc == null) return null;
   const valid = cells.filter((c) => typeof c.wacc === "number");
   if (!valid.length) return null;
-  const minWacc = Math.min(...valid.map((c) => c.wacc ?? 0));
-  const maxWacc = Math.max(...valid.map((c) => c.wacc ?? 0));
+  // UA-HIGH-12: stack-safe.
+  const waccs = valid.map((c) => c.wacc ?? 0);
+  const minWacc = minOf(waccs);
+  const maxWacc = maxOf(waccs);
   const range = Math.max(0.0001, maxWacc - minWacc);
   return (
     <section style={surfaceWrap} aria-label="WACC sensitivity surface">

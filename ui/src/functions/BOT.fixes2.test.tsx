@@ -241,6 +241,9 @@ describe("BOT pane fixes2", () => {
   });
 
   // ─── H-UI-10 ─────────────────────────────────────────────────────────
+  // Round 24 — window.confirm replaced with the non-blocking ConfirmDialog
+  // component. The dialog renders into the same document; we assert by
+  // finding the dialog body + clicking Cancel/Confirm.
   it("dirty_switch_prompts_confirm", () => {
     useBotStore.setState({
       draft: { ...PERSISTED_DRAFT } as never,
@@ -248,14 +251,16 @@ describe("BOT pane fixes2", () => {
     });
     const openSpy = vi.fn(async () => {});
     useBotStore.setState({ openExisting: openSpy as never });
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
     render(<BOTPane />);
     // Find the second bot's row and click it.
     const allButtons = screen.getAllByRole("button");
     const ethRow = allButtons.find((b) => b.textContent?.includes("ETH/USDT"));
     expect(ethRow).toBeDefined();
     fireEvent.click(ethRow!);
-    expect(confirmSpy).toHaveBeenCalled();
+    // ConfirmDialog should be open.
+    expect(screen.getByTestId("confirm-dialog-body")).toBeInTheDocument();
+    // Click Cancel — openExisting must NOT have fired.
+    fireEvent.click(screen.getByTestId("confirm-dialog-cancel"));
     expect(openSpy).not.toHaveBeenCalled();
   });
 
@@ -266,11 +271,11 @@ describe("BOT pane fixes2", () => {
     });
     const openSpy = vi.fn(async () => {});
     useBotStore.setState({ openExisting: openSpy as never });
-    vi.spyOn(window, "confirm").mockReturnValue(true);
     render(<BOTPane />);
     const allButtons = screen.getAllByRole("button");
     const ethRow = allButtons.find((b) => b.textContent?.includes("ETH/USDT"));
     fireEvent.click(ethRow!);
+    fireEvent.click(screen.getByTestId("confirm-dialog-confirm"));
     expect(openSpy).toHaveBeenCalledWith("b2");
   });
 });

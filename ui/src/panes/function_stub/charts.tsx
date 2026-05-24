@@ -142,8 +142,13 @@ function LightweightSeriesChart({ chartId, series }: { chartId: string; series: 
     ro.observe(el);
 
     return () => {
-      ro.disconnect();
-      chart.remove();
+      // UA-HIGH-08: ResizeObserver callbacks can fire on the next microtask
+      // after the chart has already been removed (rapid mount/unmount on
+      // pane swaps). `chart.remove()` throws "Object is disposed" if the
+      // underlying canvas has already been torn down by lightweight-charts'
+      // internal teardown path. Guard both calls.
+      try { ro.disconnect(); } catch { /* observer already gone */ }
+      try { chart.remove(); } catch { /* chart already disposed */ }
       chartRef.current = null;
       seriesRef.current = null;
       volSeriesRef.current = null;

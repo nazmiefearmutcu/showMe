@@ -15,8 +15,17 @@ const KEY = "showme.palette.recents.v2";
 const LEGACY_KEYS = ["showme.palette.recents.v1"];
 const MAX = 5;
 
+// HIGH #13 (UI-Shell-Bundle UB) — module-scoped flag so the v1→v2
+// migration shells out at most once per realm. The route-change effect
+// in Sidebar.tsx invokes `listRecentCodes` on every navigation; without
+// this guard each call re-probed two legacy keys + parsed v2 a second
+// time, which showed up on a fast typer holding ⌘1..⌘9 in a flame graph.
+let __legacyMigrated = false;
+
 function migrateLegacyIfNeeded(): void {
   if (typeof window === "undefined") return;
+  if (__legacyMigrated) return;
+  __legacyMigrated = true;
   try {
     if (window.localStorage.getItem(KEY)) return;
     for (const legacyKey of LEGACY_KEYS) {
@@ -75,6 +84,7 @@ export function recordRecentCode(code: string): void {
 }
 
 export function __resetForTests(): void {
+  __legacyMigrated = false;
   if (typeof window === "undefined") return;
   window.localStorage.removeItem(KEY);
   for (const legacyKey of LEGACY_KEYS) {

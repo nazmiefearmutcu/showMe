@@ -60,8 +60,12 @@ export function useFunction<T = unknown>({
   const sidecarPort = useAppStore((s) => s.sidecarPort);
   const waitingForSidecar = enabled && isInTauri() && sidecarPort == null;
 
-  // Stringify params for stable dep — small objects, fine.
-  const paramsKey = JSON.stringify(params ?? {});
+  // HIGH FIX (audit S11): JSON.stringify({a,b}) ≠ JSON.stringify({b,a}) which
+  // caused the effect dep to flip every time a parent re-rendered with a new
+  // object literal whose keys happened to enumerate in a different order
+  // (e.g. spread + override). The "same" call would refetch on every render.
+  // stableStringify sorts top-level keys so the fingerprint is order-invariant.
+  const paramsKey = _stableStringify(params ?? {});
 
   // Tracks the (code|symbol|paramsKey) of the last fetch so we can tell a
   // refresh (same key, data already on screen) from an initial / key-changing
@@ -131,4 +135,17 @@ export function useFunction<T = unknown>({
   }, [code, symbol, paramsKey, enabled, tick, waitingForSidecar, sidecarPort]);
 
   return { state, data, error, refetch: () => setTick((t) => t + 1) };
+}
+
+/**
+ * Top-level stable stringify. Sorts top-level keys so {a:1, b:2} and {b:2, a:1}
+ * produce the same string. Nested values are passed through `JSON.stringify`
+ * unchanged — pane params are flat by contract so deep ordering isn't an
+ * issue, and recursing would risk hashing live React refs or symbols.
+ */
+function _stableStringify(obj: Record<string, unknown>): string {
+  const keys = Object.keys(obj).sort();
+  const result: Record<string, unknown> = {};
+  for (const k of keys) result[k] = obj[k];
+  return JSON.stringify(result);
 }

@@ -47,6 +47,7 @@ import {
 } from "@/lib/chart-layout";
 import { useFunction } from "@/lib/useFunction";
 import { defaultSymbolForFunction } from "@/lib/symbols";
+import { maxOf, minOf } from "@/lib/maxOf";
 import { SymbolBar } from "@/shell/SymbolBar";
 import {
   FunctionControlGroup,
@@ -198,9 +199,10 @@ export function GPPane({ code, symbol }: FunctionPaneProps) {
     if (!ohlc.length) return null;
     const highs = ohlc.map((c) => Number(c.high));
     const lows = ohlc.map((c) => Number(c.low));
+    // UA-CRITICAL-01: stack-safe; OHLC arrays cross ~100k on intraday history.
     return {
-      high: Math.max(...highs),
-      low: Math.min(...lows),
+      high: maxOf(highs),
+      low: minOf(lows),
       n: ohlc.length,
     };
   }, [ohlc]);

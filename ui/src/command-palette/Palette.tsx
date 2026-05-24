@@ -42,7 +42,28 @@ export function CommandPalette() {
   const [cursor, setCursor] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
-  const recents = useMemo(() => listRecentCodes(), [open]);
+  // HIGH #11 (UI-Shell-Bundle UB) — the legacy `useMemo(..., [open])` re-
+  // read localStorage every time the palette opened. Replace with a
+  // useState seeded from localStorage once + a `storage` event listener
+  // for cross-tab updates. We still refresh the snapshot when the
+  // palette opens so a navigation that happened while the palette was
+  // closed shows up immediately.
+  const [recents, setRecents] = useState<string[]>(() => listRecentCodes());
+  useEffect(() => {
+    if (open) setRecents(listRecentCodes());
+  }, [open]);
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key && e.key.startsWith("showme.palette.recents.")) {
+        setRecents(listRecentCodes());
+      }
+    };
+    if (typeof window !== "undefined") {
+      window.addEventListener("storage", onStorage);
+      return () => window.removeEventListener("storage", onStorage);
+    }
+    return undefined;
+  }, []);
 
   const all: PaletteEntry[] = useMemo(
     () => [
