@@ -108,12 +108,25 @@ hiddenimports = [
     "keyring.backends.macOS",
     "keyring.backends.fail",
     "keyring.backends.null",
+    # SEC-11: yfinance 1.3+ switched HTTP backend to curl_cffi which
+    # captures DEFAULT_CACERT at module import. PyInstaller may not pull
+    # curl_cffi / certifi via transitive collection on every build host;
+    # be explicit so the bundle always ships them.
+    "curl_cffi",
+    "curl_cffi.requests",
+    "certifi",
 ]
 datas += collect_data_files("yfinance")
 datas += collect_data_files("transformers", include_py_files=False)
 datas += collect_data_files("tokenizers")
+# SEC-11: explicit certifi + curl_cffi data bundling — do not rely on
+# transitive yfinance collection (yfinance may drop the dep declaration
+# order in a future release and silently break the cacert chain).
+datas += collect_data_files("certifi")
+datas += collect_data_files("curl_cffi")
 hiddenimports += collect_submodules("showme")
 hiddenimports += collect_submodules("yfinance")
+hiddenimports += collect_submodules("curl_cffi")
 hiddenimports += collect_submodules("lxml")
 # Pull every transformers model family — AutoModel/AutoTokenizer touch the
 # auto registry which imports each model package on lookup. Trimming this

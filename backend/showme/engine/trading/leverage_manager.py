@@ -8,6 +8,8 @@ Reference scale (from BTC):
   - Minimum leverage = 2x (no leverageless futures trading)
 """
 
+import time
+from collections import OrderedDict
 from typing import Any, Optional
 
 from showme.engine.utils.logger import get_logger
@@ -19,6 +21,13 @@ SCALE_RATIO = 0.80
 MIN_LEVERAGE = 2
 DEFAULT_MAX_LEVERAGE = 20  # Fallback if exchange info unavailable
 
+# C7 fix: max-leverage cache used to grow without bound and never expire,
+# so a long-running bot session would (1) accumulate entries for every
+# symbol it ever traded, (2) keep stale values forever even after Binance
+# revised the bracket. Add a TTL + LRU cap.
+_CACHE_TTL_S = 300.0
+_CACHE_MAX_ENTRIES = 50
+
 
 class LeverageManager:
     """Calculates dynamic leverage based on confidence score and exchange limits."""
@@ -26,19 +35,32 @@ class LeverageManager:
     def __init__(self, config: dict[str, Any], binance_client: Any = None) -> None:
         self.config = config
         self.binance_client = binance_client
-        self._max_leverage_cache: dict[str, int] = {}
+        # OrderedDict so we can evict LRU when capacity is exceeded.
+        # Value layout: ``(max_leverage, expires_at_epoch)``.
+        self._max_leverage_cache: "OrderedDict[str, tuple[int, float]]" = OrderedDict()
         leverage_config = config.get("leverage", {})
         self.scale_ratio = leverage_config.get("scale_ratio", SCALE_RATIO)
         self.min_leverage = leverage_config.get("min_leverage", MIN_LEVERAGE)
         self.enabled = leverage_config.get("enabled", True)
+        self._cache_ttl_s = float(leverage_config.get("cache_ttl_s", _CACHE_TTL_S))
+        self._cache_max_entries = int(leverage_config.get("cache_max_entries", _CACHE_MAX_ENTRIES))
 
     def get_max_leverage(self, symbol: str) -> int:
         """Get the maximum leverage allowed for a symbol on Binance Futures.
 
-        Uses cache to avoid repeated API calls.
+        Uses a bounded TTL cache to avoid repeated API calls while still
+        letting bracket updates from Binance propagate in a reasonable window.
         """
-        if symbol in self._max_leverage_cache:
-            return self._max_leverage_cache[symbol]
+        now = time.time()
+        cached = self._max_leverage_cache.get(symbol)
+        if cached is not None:
+            value, expires_at = cached
+            if expires_at > now:
+                # Refresh LRU recency on hit.
+                self._max_leverage_cache.move_to_end(symbol)
+                return value
+            # Expired — fall through and re-fetch.
+            self._max_leverage_cache.pop(symbol, None)
 
         max_lev = DEFAULT_MAX_LEVERAGE
 
@@ -61,9 +83,15 @@ class LeverageManager:
         else:
             max_lev = self._get_known_max_leverage(symbol)
 
-        self._max_leverage_cache[symbol] = max_lev
+        self._cache_put(symbol, max_lev, now)
         logger.info(f"Max leverage for {symbol}: {max_lev}x")
         return max_lev
+
+    def _cache_put(self, symbol: str, value: int, now: float) -> None:
+        self._max_leverage_cache[symbol] = (value, now + self._cache_ttl_s)
+        self._max_leverage_cache.move_to_end(symbol)
+        while len(self._max_leverage_cache) > self._cache_max_entries:
+            self._max_leverage_cache.popitem(last=False)
 
     def _fetch_leverage_brackets(self, symbol: str) -> Optional[int]:
         """Fetch leverage brackets from Binance Futures API."""

@@ -64,3 +64,15 @@ export const useAppStore = create<AppStateShape>((set) => ({
       return { sidebarVisible };
     }),
 }));
+
+// Bundle D / MULTITAB-02. Cross-tab sidebar visibility sync. Toggling the
+// sidebar in another tab (or another window) used to leave this tab's
+// zustand store out-of-date until the next mount. The `storage` event only
+// fires for *cross-tab* writes, so a same-tab `toggleSidebar()` won't
+// double-trigger.
+if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+  window.addEventListener("storage", (event) => {
+    if (event.key !== SIDEBAR_VISIBLE_KEY) return;
+    useAppStore.setState({ sidebarVisible: readSidebarVisible() });
+  });
+}

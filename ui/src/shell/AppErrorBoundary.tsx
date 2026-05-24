@@ -88,6 +88,10 @@ export class AppErrorBoundary extends Component<Props, State> {
     const { error, componentStack } = this.state;
     if (!error) return this.props.children;
 
+    // Bundle D / THEME-01. Hard-coded hex used to pin this surface to the
+    // legacy dark palette even when the user picked the iced/papyrus/amber
+    // theme. Route through design-system tokens so the boundary inherits
+    // whatever theme the body sits on. Fallbacks live in tokens.css.
     return (
       <div
         role="alert"
@@ -95,8 +99,8 @@ export class AppErrorBoundary extends Component<Props, State> {
         style={{
           position: "fixed",
           inset: 0,
-          background: "#0d1015",
-          color: "#f0f2f5",
+          background: "var(--bg-1)",
+          color: "var(--fg-1)",
           display: "grid",
           placeItems: "center",
           padding: 24,
@@ -107,18 +111,18 @@ export class AppErrorBoundary extends Component<Props, State> {
       >
         <div style={{ maxWidth: 640, width: "100%", display: "grid", gap: 16 }}>
           <div style={{ display: "grid", gap: 4 }}>
-            <strong style={{ fontSize: 20, color: "#ff5874" }}>
+            <strong style={{ fontSize: 20, color: "var(--accent-err)" }}>
               Something went wrong
             </strong>
-            <span style={{ fontSize: 13, color: "rgba(240,242,245,0.65)" }}>
+            <span style={{ fontSize: 13, color: "var(--fg-2)" }}>
               showMe hit an unrecoverable render error. Your data is safe — the
               Python sidecar keeps running in the background.
             </span>
           </div>
           <div
             style={{
-              background: "rgba(255,255,255,0.04)",
-              border: "1px solid rgba(255,255,255,0.08)",
+              background: "var(--surface-1)",
+              border: "1px solid var(--border-1)",
               borderRadius: 8,
               padding: 12,
               fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
@@ -140,8 +144,8 @@ export class AppErrorBoundary extends Component<Props, State> {
               onClick={this.handleReload}
               style={{
                 appearance: "none",
-                background: "#7c7aff",
-                color: "#0d1015",
+                background: "var(--accent)",
+                color: "var(--bg-1)",
                 border: "0",
                 borderRadius: 6,
                 padding: "8px 14px",
@@ -159,8 +163,8 @@ export class AppErrorBoundary extends Component<Props, State> {
               style={{
                 appearance: "none",
                 background: "transparent",
-                color: "#f0f2f5",
-                border: "1px solid rgba(255,255,255,0.16)",
+                color: "var(--fg-1)",
+                border: "1px solid var(--border-1)",
                 borderRadius: 6,
                 padding: "8px 14px",
                 fontSize: 13,

@@ -454,44 +454,57 @@ class BTMMFunction(BaseFunction):
 def _load_bis_rows(timeout: float, force_refresh: bool = False) -> list[dict[str, Any]]:
     global _CACHE_AT, _CACHE_ROWS
     now = time.time()
+
+    # C6 fix: previously the module-level ``_CACHE_LOCK`` was held for the
+    # entire critical section — including the multi-second httpx download.
+    # That serialised every concurrent BTMM request behind a single network
+    # fetch and blocked unrelated reads of an already-fresh cache. The new
+    # shape is fast-path under lock, slow-path (disk + network) lock-free,
+    # then re-acquire to publish the result.
     with _CACHE_LOCK:
         if not force_refresh and _CACHE_ROWS and now - _CACHE_AT < CACHE_TTL_SECONDS:
             return [dict(row) for row in _CACHE_ROWS]
 
-        payload = _read_disk_cache(max_age_seconds=CACHE_TTL_SECONDS if not force_refresh else None)
-        if payload is not None and not force_refresh:
-            rows = _parse_bis_zip(payload)
-            _CACHE_ROWS = rows
-            _CACHE_AT = _disk_cache_mtime() or now
-            return [dict(row) for row in rows]
-
-        import httpx
-
-        from_network = True
-        try:
-            with httpx.Client(timeout=timeout, follow_redirects=True) as client:
-                response = client.get(
-                    BIS_CBPOL_URL,
-                    headers={
-                        "Accept": "application/zip,application/octet-stream,*/*",
-                        "User-Agent": "showMe/1.0 policy-rate-monitor",
-                    },
-                )
-                response.raise_for_status()
-                payload = response.content
-        except Exception:
-            payload = _read_disk_cache(max_age_seconds=None)
-            if payload is None:
-                raise
-            from_network = False
+    # Try disk cache (lock-free — read_bytes is atomic on POSIX for our size).
+    payload = _read_disk_cache(max_age_seconds=CACHE_TTL_SECONDS if not force_refresh else None)
+    if payload is not None and not force_refresh:
         rows = _parse_bis_zip(payload)
-        if not rows:
-            raise RuntimeError("BIS CBPOL returned no policy-rate rows")
-        if from_network:
-            _write_disk_cache(payload)
-        _CACHE_ROWS = rows
-        _CACHE_AT = now if from_network else (_disk_cache_mtime() or now)
+        publish_at = _disk_cache_mtime() or now
+        with _CACHE_LOCK:
+            _CACHE_ROWS = rows
+            _CACHE_AT = publish_at
         return [dict(row) for row in rows]
+
+    import httpx
+
+    from_network = True
+    try:
+        with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+            response = client.get(
+                BIS_CBPOL_URL,
+                headers={
+                    "Accept": "application/zip,application/octet-stream,*/*",
+                    "User-Agent": "showMe/1.0 policy-rate-monitor",
+                },
+            )
+            response.raise_for_status()
+            payload = response.content
+    except Exception:
+        payload = _read_disk_cache(max_age_seconds=None)
+        if payload is None:
+            raise
+        from_network = False
+
+    rows = _parse_bis_zip(payload)
+    if not rows:
+        raise RuntimeError("BIS CBPOL returned no policy-rate rows")
+    if from_network:
+        _write_disk_cache(payload)
+    publish_at = now if from_network else (_disk_cache_mtime() or now)
+    with _CACHE_LOCK:
+        _CACHE_ROWS = rows
+        _CACHE_AT = publish_at
+    return [dict(row) for row in rows]
 
 
 def _parse_bis_zip(payload: bytes) -> list[dict[str, Any]]:

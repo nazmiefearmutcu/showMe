@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import logging
+import threading
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -66,16 +67,26 @@ _SCAN_PROGRESS: dict[str, Any] = {
     "current_market": "",     # market of most recently completed symbol
 }
 
+# C12 fix: every read AND every write of ``_SCAN_PROGRESS`` now serialises
+# on this lock. Previously ``_progress_update`` mutated the dict without
+# the per-scan ``progress_lock``, so an interleaved progress-poll could
+# observe a snapshot mid-update (e.g. ``in_flight`` already decremented
+# but ``completed`` not yet bumped). Threading.RLock so a single update
+# can re-enter from the same thread if needed.
+_PROGRESS_LOCK = threading.RLock()
+
 
 def _progress_update(**fields: Any) -> None:
     """Atomically overlay fields onto the global progress snapshot."""
-    _SCAN_PROGRESS.update(fields)
+    with _PROGRESS_LOCK:
+        _SCAN_PROGRESS.update(fields)
 
 
 def get_scan_progress() -> dict[str, Any]:
     """Return a shallow copy of the current progress snapshot — what the
     ``GET /api/mis/scan/progress`` endpoint serves."""
-    snap = dict(_SCAN_PROGRESS)
+    with _PROGRESS_LOCK:
+        snap = dict(_SCAN_PROGRESS)
     total = snap.get("total") or 0
     done = snap.get("completed") or 0
     snap["percent"] = round(100.0 * done / total, 2) if total else 0.0
@@ -1563,24 +1574,30 @@ async def run_mis_scan(req: MisScanRequest, deps: Any) -> MisScanResult:
     async def _one_with_progress(symbol: str, market: str) -> None:
         # Bump in_flight on entry, completed on exit. We don't lock around
         # the inner `_one` call because the scan is per-task anyway; the
-        # lock just prevents two coroutines stomping on the same counter
-        # bump (asyncio is cooperative but ``+=`` reads-then-writes).
+        # asyncio lock prevents two coroutines stomping on the same counter
+        # bump (asyncio is cooperative but ``+=`` reads-then-writes), and
+        # ``_PROGRESS_LOCK`` (C12) makes the same write atomic with respect
+        # to ``get_scan_progress`` reads coming from the route layer.
         async with progress_lock:
-            _SCAN_PROGRESS["in_flight"] = (_SCAN_PROGRESS.get("in_flight") or 0) + 1
+            with _PROGRESS_LOCK:
+                _SCAN_PROGRESS["in_flight"] = (_SCAN_PROGRESS.get("in_flight") or 0) + 1
         try:
             await _one(symbol, market)
             async with progress_lock:
-                _SCAN_PROGRESS["completed"] = (_SCAN_PROGRESS.get("completed") or 0) + 1
-                _SCAN_PROGRESS["current_symbol"] = symbol
-                _SCAN_PROGRESS["current_market"] = market
+                with _PROGRESS_LOCK:
+                    _SCAN_PROGRESS["completed"] = (_SCAN_PROGRESS.get("completed") or 0) + 1
+                    _SCAN_PROGRESS["current_symbol"] = symbol
+                    _SCAN_PROGRESS["current_market"] = market
         except Exception:  # noqa: BLE001 — count and re-raise to gather
             async with progress_lock:
-                _SCAN_PROGRESS["skipped"] = (_SCAN_PROGRESS.get("skipped") or 0) + 1
-                _SCAN_PROGRESS["completed"] = (_SCAN_PROGRESS.get("completed") or 0) + 1
+                with _PROGRESS_LOCK:
+                    _SCAN_PROGRESS["skipped"] = (_SCAN_PROGRESS.get("skipped") or 0) + 1
+                    _SCAN_PROGRESS["completed"] = (_SCAN_PROGRESS.get("completed") or 0) + 1
             raise
         finally:
             async with progress_lock:
-                _SCAN_PROGRESS["in_flight"] = max(0, (_SCAN_PROGRESS.get("in_flight") or 0) - 1)
+                with _PROGRESS_LOCK:
+                    _SCAN_PROGRESS["in_flight"] = max(0, (_SCAN_PROGRESS.get("in_flight") or 0) - 1)
 
     for market in selected:
         for symbol in universes_by_market[market]:

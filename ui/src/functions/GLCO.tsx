@@ -5,7 +5,7 @@
  * / agriculture / softs. KPI ribbon for sector heroes, mover bars,
  * sparkline column, hover-lift rows, methodology footer.
  */
-import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import { useMemo, type CSSProperties } from "react";
 import {
   DataGrid,
   type DataGridColumn,
@@ -24,6 +24,7 @@ import {
   Tabs,
 } from "@/design-system";
 import { useFunction } from "@/lib/useFunction";
+import { useVisibilityTick } from "@/lib/useVisibilityTick";
 import { useWorkspace } from "@/lib/workspace";
 import { navigate } from "@/lib/router";
 import {
@@ -74,13 +75,9 @@ export function GLCOPane({ code }: FunctionPaneProps) {
     SECTOR_IDS,
     "all",
   );
-  const [tick, setTick] = useState(0);
+  // Bundle D / PERF-04. Visibility-aware poll.
+  const tick = useVisibilityTick(REFRESH_MS);
   const setFocusedTarget = useWorkspace((s) => s.setFocusedTarget);
-
-  useEffect(() => {
-    const id = setInterval(() => setTick((t) => t + 1), REFRESH_MS);
-    return () => clearInterval(id);
-  }, []);
 
   const { state, data, error, refetch } = useFunction<unknown>({
     code,

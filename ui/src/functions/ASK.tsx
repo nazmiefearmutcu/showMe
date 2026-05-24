@@ -31,6 +31,7 @@ import {
   type AskHighlight,
   type AskResponse,
 } from "@/lib/ask";
+import { useAbortableFetch } from "@/lib/useAbortableFetch";
 import { useWorkspace } from "@/lib/workspace";
 import { navigate } from "@/lib/router";
 import type { FunctionPaneProps } from "./registry-types";
@@ -64,6 +65,9 @@ export function ASKPane({ code }: FunctionPaneProps) {
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const setFocusedTarget = useWorkspace((s) => s.setFocusedTarget);
   const threadRef = useRef<HTMLDivElement>(null);
+  // Bundle D / ABORT-01. Aborts the in-flight `ask()` if the user navigates
+  // away or fires another query before the previous one resolves.
+  const askFetch = useAbortableFetch();
 
   // Auto-scroll to bottom when thread grows
   useEffect(() => {
@@ -85,7 +89,8 @@ export function ASKPane({ code }: FunctionPaneProps) {
     setDraft("");
     setRunning(true);
     try {
-      const r = await ask(q);
+      const r = await askFetch.run((signal) => ask(q, signal));
+      if (!askFetch.isMounted()) return;
       const agentTurn: ChatTurn = {
         id: `a-${Date.now()}`,
         role: "agent",
@@ -98,6 +103,10 @@ export function ASKPane({ code }: FunctionPaneProps) {
       const incr = Math.min(0.05, 0.005 + elapsed * 0.000_05);
       setCostSpentUsd((prev) => Math.min(COST_CAP_USD, prev + incr));
     } catch (err) {
+      if (!askFetch.isMounted()) return;
+      // Don't surface AbortError as a chat-bubble error — the user already
+      // saw the unmount or fired another query.
+      if (err instanceof DOMException && err.name === "AbortError") return;
       const message = err instanceof Error ? err.message : String(err);
       setThread((prev) => [
         ...prev,
@@ -109,7 +118,7 @@ export function ASKPane({ code }: FunctionPaneProps) {
         },
       ]);
     } finally {
-      setRunning(false);
+      if (askFetch.isMounted()) setRunning(false);
     }
   };
 

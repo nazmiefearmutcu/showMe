@@ -86,12 +86,13 @@ export interface AskResponse {
   warnings: string[];
 }
 
-export async function ask(query: string): Promise<AskResponse> {
+export async function ask(query: string, signal?: AbortSignal): Promise<AskResponse> {
   // Routed through sidecarFetch so the auth token + port-discovery layer
   // both apply. See ARCH-05 P2 in the quality audit.
   return sidecarFetch<AskResponse>("/api/ask", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ query }),
+    signal,
   });
 }

@@ -16,6 +16,7 @@ import {
 } from "@/design-system";
 import { SymbolBar } from "@/shell/SymbolBar";
 import { useFunction } from "@/lib/useFunction";
+import { useVisibilityTick } from "@/lib/useVisibilityTick";
 import { listRecentSymbols } from "@/lib/symbols";
 import {
   fetchVeryfinderQuery,
@@ -169,13 +170,25 @@ export function ANRPane({ code, symbol }: FunctionPaneProps) {
     runVeryfinderFetch({ manual, refresh: manual });
   }, [runVeryfinderFetch, veryfinderTick]);
 
+  // Bundle D / PERF-04. Both the live and background poll loops now lean on
+  // `useVisibilityTick` so background tabs stop pulling Veryfinder data.
+  // We still gate on `veryfinderEnabled` + `effectiveSymbol` inside the
+  // effects; the tick value is the only thing driving the time axis.
+  const veryfinderLiveTick = useVisibilityTick(VERYFINDER_LIVE_REFRESH_MS);
+  const veryfinderBackgroundTick = useVisibilityTick(VERYFINDER_BACKGROUND_REFRESH_MS);
+  const liveTickFirstRef = useRef(true);
+  const bgTickFirstRef = useRef(true);
   useEffect(() => {
     if (!veryfinderEnabled || !effectiveSymbol) return;
-    const timer = window.setInterval(() => {
-      runVeryfinderFetch({ refresh: true, background: true });
-    }, VERYFINDER_LIVE_REFRESH_MS);
-    return () => window.clearInterval(timer);
-  }, [effectiveSymbol, runVeryfinderFetch, veryfinderEnabled]);
+    // Skip the initial tick value (0) — the first fetch is already issued by
+    // the runVeryfinderFetch effect on mount / symbol change. We only want
+    // *subsequent* ticks to trigger the live refresh.
+    if (liveTickFirstRef.current) {
+      liveTickFirstRef.current = false;
+      return;
+    }
+    runVeryfinderFetch({ refresh: true, background: true });
+  }, [effectiveSymbol, runVeryfinderFetch, veryfinderEnabled, veryfinderLiveTick]);
 
   useEffect(() => {
     if (!veryfinderEnabled) return;
@@ -203,13 +216,15 @@ export function ANRPane({ code, symbol }: FunctionPaneProps) {
         }, index * 300);
       });
     };
-    const warmup = window.setTimeout(refreshBackgroundSymbols, 500);
-    const timer = window.setInterval(refreshBackgroundSymbols, VERYFINDER_BACKGROUND_REFRESH_MS);
-    return () => {
-      window.clearTimeout(warmup);
-      window.clearInterval(timer);
-    };
-  }, [effectiveSymbol, veryfinderEnabled, veryfinderSource]);
+    // First tick (0) acts as the warmup — fire after 500ms; subsequent ticks
+    // are the real visibility-aware interval.
+    if (bgTickFirstRef.current) {
+      bgTickFirstRef.current = false;
+      const warmup = window.setTimeout(refreshBackgroundSymbols, 500);
+      return () => window.clearTimeout(warmup);
+    }
+    refreshBackgroundSymbols();
+  }, [effectiveSymbol, veryfinderEnabled, veryfinderSource, veryfinderBackgroundTick]);
 
   const runVeryfinderTweetSearch = () => {
     const next = clampTweetSample(veryfinderMinTweetsInput);

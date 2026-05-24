@@ -126,7 +126,18 @@ export function subscribeQuote(symbol: string, opts: StreamOpts): StreamHandle {
   };
 
   connect();
-  opts.signal?.addEventListener("abort", stop);
+  // Bundle D / LEAK-01. Track the abort listener so the cleanup returned to
+  // the caller can detach it. Without `removeEventListener` we held a strong
+  // reference to `stop` (and its closure over `socket`, `reconnectTimer`,
+  // `opts.onTick`/`opts.onStatus`) for the entire lifetime of the AbortSignal
+  // — i.e. the whole page on persistent signals.
+  const signal = opts.signal;
+  signal?.addEventListener("abort", stop);
 
-  return { close: stop };
+  const close = () => {
+    stop();
+    signal?.removeEventListener("abort", stop);
+  };
+
+  return { close };
 }

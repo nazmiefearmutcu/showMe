@@ -75,49 +75,74 @@ export async function saveAlerts(rows: AlertRow[]): Promise<void> {
   writeLocal(bundle);
 }
 
+/**
+ * Bundle D / TOCTOU-02. Module-level serializer mirrors `watchlist.ts`.
+ * Concurrent `addAlert()` / `toggleAlert()` / `recordFire()` calls used to
+ * load the same baseline, append, save — last writer wins. Funnel every
+ * mutator through one promise chain so reads happen *after* the previous
+ * write has been published.
+ */
+let _writeQueue: Promise<unknown> = Promise.resolve();
+
+function enqueue<T>(task: () => Promise<T>): Promise<T> {
+  const next = _writeQueue.then(task, task);
+  _writeQueue = next.catch(() => undefined);
+  return next;
+}
+
 export async function addAlert(input: Omit<AlertRow, "id" | "created_at" | "fired_count" | "active">): Promise<AlertRow> {
-  const row: AlertRow = {
-    ...input,
-    id: `a-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
-    created_at: new Date().toISOString(),
-    fired_count: 0,
-    active: true,
-  };
-  const rows = await loadAlerts();
-  await saveAlerts([row, ...rows]);
-  return row;
+  return enqueue(async () => {
+    const row: AlertRow = {
+      ...input,
+      id: `a-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+      created_at: new Date().toISOString(),
+      fired_count: 0,
+      active: true,
+    };
+    const rows = await loadAlerts();
+    await saveAlerts([row, ...rows]);
+    return row;
+  });
 }
 
 export async function deleteAlert(id: string): Promise<AlertRow[]> {
-  const rows = await loadAlerts();
-  const next = rows.filter((r) => r.id !== id);
-  if (next.length !== rows.length) await saveAlerts(next);
-  return next;
+  return enqueue(async () => {
+    const rows = await loadAlerts();
+    const next = rows.filter((r) => r.id !== id);
+    if (next.length !== rows.length) await saveAlerts(next);
+    return next;
+  });
 }
 
 export async function toggleAlert(id: string, active: boolean): Promise<AlertRow[]> {
-  const rows = await loadAlerts();
-  const next = rows.map((r) => (r.id === id ? { ...r, active } : r));
-  await saveAlerts(next);
-  return next;
+  return enqueue(async () => {
+    const rows = await loadAlerts();
+    const next = rows.map((r) => (r.id === id ? { ...r, active } : r));
+    await saveAlerts(next);
+    return next;
+  });
 }
 
 export async function recordFire(id: string): Promise<AlertRow[]> {
-  const rows = await loadAlerts();
-  const next = rows.map((r) =>
-    r.id === id
-      ? {
-          ...r,
-          fired_count: r.fired_count + 1,
-          last_fired_at: new Date().toISOString(),
-        }
-      : r,
-  );
-  await saveAlerts(next);
-  return next;
+  return enqueue(async () => {
+    const rows = await loadAlerts();
+    const next = rows.map((r) =>
+      r.id === id
+        ? {
+            ...r,
+            fired_count: r.fired_count + 1,
+            last_fired_at: new Date().toISOString(),
+          }
+        : r,
+    );
+    await saveAlerts(next);
+    return next;
+  });
 }
 
 export async function clearAlerts(): Promise<void> {
-  await saveAlerts([]);
-  if (typeof localStorage !== "undefined") localStorage.removeItem(KEY);
+  return enqueue(async () => {
+    await saveAlerts([]);
+    if (typeof localStorage !== "undefined") localStorage.removeItem(KEY);
+  });
 }

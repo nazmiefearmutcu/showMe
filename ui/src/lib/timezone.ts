@@ -152,6 +152,20 @@ export function subscribeTimezone(fn: Listener): () => void {
   };
 }
 
+/**
+ * Bundle D / MULTITAB-01. Cross-tab sync: when another browser tab writes a
+ * new timezone, the `storage` event fires here and we rebroadcast through
+ * the in-process listener set so every `useTimezone()`/`useTimezoneMode()`
+ * subscriber repaints. Same-tab writes still go through `notify()` directly
+ * — `storage` only fires for cross-tab changes.
+ */
+if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+  window.addEventListener("storage", (event) => {
+    if (event.key !== STORAGE_KEY) return;
+    notify();
+  });
+}
+
 export function useTimezone(): string {
   return useSyncExternalStore(
     (n) => subscribeTimezone(() => n()),

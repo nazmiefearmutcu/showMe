@@ -157,8 +157,14 @@ class RSIIndicator(BaseIndicator):
         """Inline Wilder ADX/+DI/-DI computation. Returns (adx, +di, -di) at last bar."""
         plus_dm = high.diff()
         minus_dm = -low.diff()
-        plus_dm = plus_dm.where((plus_dm > minus_dm) & (plus_dm > 0), 0.0)
-        minus_dm = minus_dm.where((minus_dm > plus_dm) & (minus_dm > 0), 0.0)
+        # C5 fix: previously line A mutated ``plus_dm`` BEFORE line B read
+        # it back to mask ``minus_dm`` — so the +DM-vs-DM dominance test on
+        # the minus side was always being run against an already-zeroed
+        # plus_dm. Snapshot the originals first, then mask in parallel.
+        orig_plus_dm = plus_dm.copy()
+        orig_minus_dm = minus_dm.copy()
+        plus_dm = plus_dm.where((orig_plus_dm > orig_minus_dm) & (orig_plus_dm > 0), 0.0)
+        minus_dm = minus_dm.where((orig_minus_dm > orig_plus_dm) & (orig_minus_dm > 0), 0.0)
 
         tr1 = high - low
         tr2 = (high - close.shift(1)).abs()

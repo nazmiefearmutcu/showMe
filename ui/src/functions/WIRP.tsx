@@ -8,7 +8,7 @@
  * configured` warning — the pane exposes that warning prominently so the
  * user never confuses it with a live FedWatch feed.
  */
-import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import { useMemo, type CSSProperties } from "react";
 import {
   DataGrid,
   type DataGridColumn,
@@ -25,6 +25,7 @@ import {
   Tabs,
 } from "@/design-system";
 import { useFunction } from "@/lib/useFunction";
+import { useVisibilityTick } from "@/lib/useVisibilityTick";
 import {
   FunctionControlGroup,
   LoadStatePill,
@@ -74,12 +75,8 @@ export function WIRPPane({ code }: FunctionPaneProps) {
     BANK_IDS,
     "FED",
   );
-  const [tick, setTick] = useState(0);
-
-  useEffect(() => {
-    const id = setInterval(() => setTick((t) => t + 1), REFRESH_MS);
-    return () => clearInterval(id);
-  }, []);
+  // Bundle D / PERF-04. Visibility-aware poll.
+  const tick = useVisibilityTick(REFRESH_MS);
 
   const { state, data, error, refetch } = useFunction<unknown>({
     code,

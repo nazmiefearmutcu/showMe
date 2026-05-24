@@ -23,6 +23,7 @@ import { runFunction, FunctionCallError } from "@/lib/functions";
 import { defaultSymbolForFunction } from "@/lib/symbols";
 import { useAppStore } from "@/lib/store";
 import { isInTauri } from "@/lib/tauri";
+import { useVisibilityTick } from "@/lib/useVisibilityTick";
 import { relativeTimeLabel, sortNewsNewestFirst } from "@/lib/time";
 import { SymbolBar } from "@/shell/SymbolBar";
 import { useWorkspace } from "@/lib/workspace";
@@ -101,7 +102,15 @@ export function NIPane({ code, symbol }: FunctionPaneProps) {
     NEWS_LIMITS,
     50,
   );
-  const [tick, setTick] = useState(0);
+  // Bundle D / PERF-04. Manual tick (buttons) blended with the
+  // visibility-aware auto-tick so background tabs no longer keep polling
+  // every 90s.
+  const [manualTick, setManualTick] = useState(0);
+  const visTick = useVisibilityTick(REFRESH_MS);
+  const tick = manualTick + visTick;
+  const setTick = (next: ((prev: number) => number) | number) => {
+    setManualTick((prev) => (typeof next === "function" ? next(prev) : next));
+  };
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const setFocusedTarget = useWorkspace((s) => s.setFocusedTarget);
   const sidecarPort = useAppStore((s) => s.sidecarPort);
@@ -248,10 +257,8 @@ export function NIPane({ code, symbol }: FunctionPaneProps) {
     };
   }, [articles, topicMode, topicText, effectiveSymbol, waitingForSidecar, sidecarPort]);
 
-  useEffect(() => {
-    const id = setInterval(() => setTick((t) => t + 1), REFRESH_MS);
-    return () => clearInterval(id);
-  }, []);
+  // Auto-refresh interval lives in `useVisibilityTick(REFRESH_MS)` above —
+  // it pauses on hidden tabs and resumes on focus. No local setInterval.
 
   const veryfinderTweetTarget = useMemo(
     () =>

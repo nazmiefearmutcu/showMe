@@ -689,16 +689,31 @@ async def _quote_row(
     )
     if quote is None or quote.last is None:
         return None
-    change_pct = ((quote.last or 0) / (quote.close_prev or 1) - 1) * 100 if quote.close_prev else None
-    change = (quote.last - quote.close_prev) if quote.close_prev is not None else None
+    # B7: ``or 0`` / ``or 1`` short-circuits were turning a missing prev close
+    # into a fake -100% drop. None ⇒ drop the field; only compute when we
+    # actually have a non-zero baseline so the row stays honest.
+    last = quote.last
+    prev = quote.close_prev
+    if prev is None or prev == 0 or last is None:
+        change_pct = None
+        change = None
+    else:
+        change = float(last) - float(prev)
+        change_pct = (float(last) / float(prev) - 1.0) * 100.0
     high = quote.high_24h
     low = quote.low_24h
-    range_pct = ((high or 0) - (low or 0)) / (quote.last or 1) * 100 if high is not None and low is not None else None
-    dollar_volume = float(quote.last * quote.volume_24h) if quote.volume_24h is not None else None
+    if high is None or low is None or last is None or last == 0:
+        range_pct = None
+    else:
+        range_pct = (float(high) - float(low)) / float(last) * 100.0
+    if last is None or quote.volume_24h is None:
+        dollar_volume = None
+    else:
+        dollar_volume = float(last) * float(quote.volume_24h)
     return {
         "symbol": symbol,
-        "last": quote.last,
-        "prev_close": quote.close_prev,
+        "last": last,
+        "prev_close": prev,
         "change": change,
         "volume": quote.volume_24h,
         "dollar_volume": dollar_volume,
@@ -709,13 +724,33 @@ async def _quote_row(
     }
 
 
+_KNOWN_INDEX_SYMBOLS = frozenset({"SPX", "NDX", "RUT", "DJI", "VIX"})
+_KNOWN_ETF_SYMBOLS = frozenset({"SPY", "QQQ", "IWM", "DIA", "EFA", "EEM", "GLD", "TLT"})
+
+
 def _asset_for_screen_symbol(symbol: str) -> AssetClass:
     s = symbol.upper()
-    if s.startswith("^"):
+    # B7: bare ``SPX`` / ``NDX`` etc. don't carry a ``^`` prefix on every
+    # provider so they were silently being misclassified as EQUITY. Promote
+    # the whitelist BEFORE the equity fallthrough.
+    if s in _KNOWN_INDEX_SYMBOLS or s.startswith("^"):
         return AssetClass.INDEX
+    if s in _KNOWN_ETF_SYMBOLS:
+        return AssetClass.ETF
     if s.endswith("=X"):
         return AssetClass.FX
-    if s.endswith("USDT") or s.endswith("USDC") or s.endswith("USD") and len(s) > 3:
+    # B7: original expression was
+    #   s.endswith("USDT") or s.endswith("USDC") or s.endswith("USD") and len(s) > 3
+    # which binds as
+    #   USDT-or-USDC OR (USD AND len>3)
+    # so e.g. "USDT" (len 4, ends in USDT) matched, but "USD" (len 3) didn't —
+    # the length guard never blocked USDC/USDT. Parenthesize so the length
+    # guard applies cleanly to plain-USD-suffix symbols.
+    if (
+        s.endswith("USDT")
+        or s.endswith("USDC")
+        or (s.endswith("USD") and len(s) > 3)
+    ):
         return AssetClass.CRYPTO
     if "=" in s:
         return AssetClass.COMMODITY
