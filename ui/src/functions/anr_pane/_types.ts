@@ -113,4 +113,64 @@ export const ANR_SCREEN_OPTIONS = [
 
 export const VERYFINDER_LIVE_REFRESH_MS = 30_000;
 export const VERYFINDER_BACKGROUND_REFRESH_MS = 60_000;
-export const BACKGROUND_VERYFINDER_REFRESHED_AT = new Map<string, number>();
+
+/**
+ * REL-04 P8 — LRU cap on the background-refresh dedupe map.
+ *
+ * Without this, every distinct `symbol:sample:source` key that ever
+ * scrolls through `listRecentSymbols()` accumulates forever — in a
+ * long-running session with hundreds of watched symbols that's a real
+ * memory leak. Cap to 256 entries and evict the oldest insertion when
+ * full. 256 is comfortably above the typical recent-symbol window
+ * (≤ 100) so the dedupe stays effective during normal use.
+ */
+export const BACKGROUND_VERYFINDER_REFRESH_CAP = 256;
+
+class LRUTimestampMap {
+  private readonly inner = new Map<string, number>();
+  private readonly cap: number;
+
+  constructor(cap: number) {
+    this.cap = cap;
+  }
+
+  get size(): number {
+    return this.inner.size;
+  }
+
+  get(key: string): number | undefined {
+    return this.inner.get(key);
+  }
+
+  set(key: string, value: number): this {
+    // Refresh insertion order so the most-recently-touched key survives
+    // an eviction pass.
+    if (this.inner.has(key)) {
+      this.inner.delete(key);
+    } else if (this.inner.size >= this.cap) {
+      // Map iteration preserves insertion order — delete the oldest.
+      const oldest = this.inner.keys().next().value;
+      if (oldest !== undefined) {
+        this.inner.delete(oldest);
+      }
+    }
+    this.inner.set(key, value);
+    return this;
+  }
+
+  delete(key: string): boolean {
+    return this.inner.delete(key);
+  }
+
+  clear(): void {
+    this.inner.clear();
+  }
+
+  has(key: string): boolean {
+    return this.inner.has(key);
+  }
+}
+
+export const BACKGROUND_VERYFINDER_REFRESHED_AT: LRUTimestampMap = new LRUTimestampMap(
+  BACKGROUND_VERYFINDER_REFRESH_CAP,
+);

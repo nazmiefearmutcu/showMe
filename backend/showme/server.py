@@ -977,6 +977,48 @@ def build_app(engine_root: Path | None) -> FastAPI:
                     LOG.warning("function factory warmup failed: %r", exc)
 
             asyncio.create_task(_warm())
+
+            # QA-fix: prime the function-index cache off-thread so the first
+            # /api/function-index call doesn't block on engine warmup (Welcome
+            # gauge "Loading…" hang). Non-fatal — handler will rebuild if this
+            # task fails.
+            async def _warm_function_index() -> None:
+                try:
+                    await asyncio.wait_for(
+                        asyncio.to_thread(_load_function_index),
+                        timeout=90,
+                    )
+                    boot_state["function_index_warmed"] = True
+                    boot_state.pop("function_index_warm_error", None)
+                except Exception as exc:  # noqa: BLE001
+                    boot_state["function_index_warmed"] = False
+                    boot_state["function_index_warm_error"] = str(exc) or type(exc).__name__
+                    LOG.warning("function-index warmup failed: %r", exc)
+
+            asyncio.create_task(_warm_function_index())
+
+        # QA-fix: prime XAnalyzer.instance() so the first /api/x/health or
+        # /api/x/symbol_chip call doesn't pay the ~2s RoBERTa cold-start cost
+        # on the request thread (XSEN cold-start hang). The instance method
+        # just returns a singleton; no model is loaded until analyze_topic
+        # runs, but priming the singleton lets the worker thread page in
+        # adjacent imports (transformers, torch) eagerly.
+        async def _warm_x_analyzer() -> None:
+            try:
+                from showme.x_analysis import XAnalyzer
+
+                await asyncio.wait_for(
+                    asyncio.to_thread(XAnalyzer.instance),
+                    timeout=60,
+                )
+                boot_state["x_analyzer_warmed"] = True
+                boot_state.pop("x_analyzer_warm_error", None)
+            except Exception as exc:  # noqa: BLE001
+                boot_state["x_analyzer_warmed"] = False
+                boot_state["x_analyzer_warm_error"] = str(exc) or type(exc).__name__
+                LOG.warning("x_analyzer warmup failed: %r", exc)
+
+        asyncio.create_task(_warm_x_analyzer())
         # Sub-system D: spawn one asyncio.Task per enabled bot. Replay
         # happens here (inside the running loop) so the bots can actually
         # schedule themselves — build_app() runs synchronously and has no
@@ -1009,6 +1051,7 @@ def build_app(engine_root: Path | None) -> FastAPI:
     _install_middlewares(app)
 
     register_routes(app, deps=deps)
+    _install_openapi_security_schemes(app)
 
     # Sub-system A boot replay: rehydrate broker registry from the
     # CredentialStore so /api/broker/* works after a restart.
@@ -1019,6 +1062,71 @@ def build_app(engine_root: Path | None) -> FastAPI:
         LOG.warning("credential replay skipped: %s", exc)
     return app
 
+
+
+def _install_openapi_security_schemes(app: FastAPI) -> None:
+    """Declare ``X-ShowMe-Token`` as a global apiKey security scheme.
+
+    QA-fix: the generated ``/openapi.json`` previously reported
+    ``securitySchemes: null`` even though every ``/api/*`` route is
+    token-gated when ``SHOWME_AUTH_TOKEN`` is set. We now override
+    ``FastAPI.openapi`` to:
+
+    * Add a ``ShowMeToken`` apiKey-in-header scheme to
+      ``components.securitySchemes``.
+    * Apply that scheme as the default ``security`` requirement for every
+      route EXCEPT the liveness probes (``/api/health``, ``/healthz``,
+      ``/api/x/health``) and the docs/openapi endpoints themselves.
+
+    The function caches the result on ``app.openapi_schema`` per FastAPI's
+    convention so the cost only hits the first call.
+    """
+    from fastapi.openapi.utils import get_openapi
+
+    exempt_paths = {
+        "/api/health",
+        "/api/x/health",
+        "/healthz",
+        "/docs",
+        "/redoc",
+        "/openapi.json",
+    }
+
+    def custom_openapi() -> dict[str, Any]:
+        if app.openapi_schema:
+            return app.openapi_schema
+        schema = get_openapi(
+            title=app.title,
+            version=app.version,
+            description=app.description,
+            routes=app.routes,
+        )
+        components = schema.setdefault("components", {})
+        components["securitySchemes"] = {
+            "ShowMeToken": {
+                "type": "apiKey",
+                "in": "header",
+                "name": "X-ShowMe-Token",
+                "description": (
+                    "Local sidecar auth token. Set via the SHOWME_AUTH_TOKEN env "
+                    "var; the Tauri shell injects it as X-ShowMe-Token. Required "
+                    "for every /api/* route except the exempt liveness probes."
+                ),
+            }
+        }
+        # Apply default security globally; per-path opt-out for exempt routes.
+        schema["security"] = [{"ShowMeToken": []}]
+        for path, item in schema.get("paths", {}).items():
+            if path in exempt_paths:
+                for method_name, op in item.items():
+                    if isinstance(op, dict) and method_name in {
+                        "get", "post", "put", "patch", "delete", "options", "head"
+                    }:
+                        op["security"] = []
+        app.openapi_schema = schema
+        return schema
+
+    app.openapi = custom_openapi  # type: ignore[assignment]
 
 
 def function_warning_payload(code: str, params: dict[str, Any], exc: Exception) -> dict[str, Any]:
@@ -1033,50 +1141,167 @@ def _truthy_value(value: Any) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
-def sanitize_function_payload(code: str, params: dict[str, Any], payload: Any) -> Any:
+_REFERENCE_SOURCE_MARKERS = ("reference",)
+_MODEL_SOURCE_MARKERS = ("_model",)
+_OTHER_SYNTHETIC_MARKERS = (
+    "template",
+    "sample",
+    "placeholder",
+    "synthetic",
+    "continuity",
+    "_baseline",
+    "_defaults",
+    "auction_model",
+    "auction_fallback",
+    "tax_loss_model",
+    "total_return_model",
+    "briefing_model",
+    "deterministic_tldr",
+)
+
+
+def _classify_source_state(source: Any) -> str:
+    """Return one of: ``live``, ``synthetic``, ``reference``, ``model``.
+
+    Used by ``enforce_live_or_label_synthetic`` so downstream UI can pill
+    each row with its honest data state instead of being silently wiped.
+    Order matters: ``reference`` is checked before ``model`` (so
+    ``reference_*_model`` is treated as reference, the higher-fidelity
+    label), and explicit synthetic markers win over a generic ``_model``
+    suffix only for the strings already enumerated above.
+    """
+    text = str(source or "").lower().strip()
+    if not text or text == "no_live_source":
+        return "live" if not text else "synthetic"
+    if any(marker in text for marker in _REFERENCE_SOURCE_MARKERS):
+        return "reference"
+    if any(marker in text for marker in _OTHER_SYNTHETIC_MARKERS):
+        return "synthetic"
+    if any(marker in text for marker in _MODEL_SOURCE_MARKERS):
+        return "model"
+    return "live"
+
+
+def _summarize_source_states(sources: list[Any]) -> dict[str, int]:
+    summary: dict[str, int] = {"live": 0, "synthetic": 0, "reference": 0, "model": 0}
+    for source in sources:
+        state = _classify_source_state(source)
+        # Sources marked ``no_live_source`` with empty text return "live"
+        # by accident; the explicit check above redirects truly-empty to
+        # "live", but treat the literal sentinel as a non-counter.
+        if str(source or "").strip().lower() == "no_live_source":
+            continue
+        summary[state] = summary.get(state, 0) + 1
+    return summary
+
+
+def enforce_live_or_label_synthetic(
+    code: str, params: dict[str, Any], payload: Any
+) -> Any:
+    """Refactored sanitizer (was ``sanitize_function_payload``).
+
+    Bug-fix 2026-05-24: the legacy implementation *dropped* every row
+    whose only source matched ``reference_*`` / ``*_model`` / template
+    markers, wiping WIRP / ECO / ECFC / GMM / CPF / OVDV / WCRS / PSC /
+    every bond pane / BTMM warnings even when the engine had computed
+    valid deterministic rows. The user-facing impact was a permanent
+    ``provider_unavailable`` envelope with an empty Retry loop.
+
+    New behavior:
+
+    * Real provider failures (``metadata.exception_type``) still fall
+      through to the existing ``fallback_function_payload`` envelope —
+      these are honest broken-pipe cases, not deterministic computed
+      data.
+    * Otherwise rows are **kept**. Each source is classified into one of
+      ``live`` / ``synthetic`` / ``reference`` / ``model`` and a single
+      ``data_state`` label is stamped on the payload (worst-case wins:
+      ``reference`` > ``model`` > ``synthetic`` > ``live``).
+    * The ``warnings`` array is left intact — BTMM's ``live`` pill reads
+      it to decide whether to flip to ``warn``.
+    * A new top-level ``sanitizer_summary`` field reports counts so the
+      UI can render an accurate per-pane pill.
+    """
     if not isinstance(payload, dict):
         return payload
-    warnings = payload.get("warnings") if isinstance(payload.get("warnings"), list) else []
+
     metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
-    exception_type = metadata.get("exception_type")
+    warnings = payload.get("warnings") if isinstance(payload.get("warnings"), list) else []
     sources = payload.get("sources") if isinstance(payload.get("sources"), list) else []
+
+    exception_type = metadata.get("exception_type")
     if exception_type:
         reason = str(exception_type)
         if warnings:
             reason = f"{reason}: {' | '.join(str(w) for w in warnings)}"
-        return fallback_function_payload(code, params, reason, str(exception_type or "provider_unavailable"))
-    synthetic_sources = [str(source) for source in sources if _is_synthetic_source(source)]
+        return fallback_function_payload(
+            code, params, reason, str(exception_type or "provider_unavailable")
+        )
+
+    # Classify sources and build a summary. The metadata "mode" / synthetic
+    # flag still informs the dominant data_state but no longer wipes data.
+    summary = _summarize_source_states(sources)
     metadata_mode = str(metadata.get("mode") or metadata.get("compatibility_mode") or "")
-    metadata_synthetic = _is_synthetic_source(metadata_mode) or bool(metadata.get("synthetic"))
+    metadata_synthetic = bool(metadata.get("synthetic")) or (
+        bool(metadata_mode) and _classify_source_state(metadata_mode) != "live"
+    )
+
+    # Dominant data_state: reference > model > synthetic > live.
+    if summary["reference"] > 0:
+        data_state = "reference"
+    elif summary["model"] > 0:
+        data_state = "model"
+    elif summary["synthetic"] > 0 or metadata_synthetic:
+        data_state = "synthetic"
+    else:
+        data_state = "live"
+
+    is_synthetic_like = data_state != "live"
+
+    # Preserve warnings — BTMM and any other pane that reads warnings to
+    # render a live/warn pill depends on them being there. We DO copy
+    # warnings into provider_errors for the diagnostics drawer, but we no
+    # longer clear payload["warnings"].
     if warnings:
         provider_errors = list(metadata.get("provider_errors") or [])
         provider_errors.extend(str(w) for w in warnings)
-        payload["metadata"] = {**metadata, "provider_errors": provider_errors}
-        payload["warnings"] = []
-        metadata = payload["metadata"]
-    if synthetic_sources or metadata_synthetic:
+        metadata = {**metadata, "provider_errors": provider_errors}
+        payload["metadata"] = metadata
+        # NB: payload["warnings"] intentionally kept intact.
+
+    if is_synthetic_like:
         provider_errors = list(metadata.get("provider_errors") or [])
-        if synthetic_sources:
+        # Label the synthetic sources in provider_errors so the Raw
+        # drawer still surfaces them — but do NOT wipe the data.
+        labeled_sources = [str(s) for s in sources if _classify_source_state(s) != "live"]
+        if labeled_sources:
             provider_errors.append(
-                "Synthetic/template source returned; hidden as non-live data: "
-                + ", ".join(synthetic_sources[:6])
+                f"Non-live source labeled as data_state={data_state}: "
+                + ", ".join(labeled_sources[:6])
             )
-        payload["metadata"] = {
+        metadata = {
             **metadata,
-            "degraded": True,
-            "synthetic": True,
-            "original_sources": sources,
+            "degraded": data_state in {"synthetic", "model"},
+            "synthetic": data_state == "synthetic" or metadata_synthetic,
+            "data_state": data_state,
+            "original_sources": list(sources),
             "provider_errors": provider_errors,
         }
-        if not _has_live_source(sources) and not bool(params.get("allow_synthetic")):
-            payload["data"] = unavailable_function_data(
-                code,
-                params,
-                reason="No live provider returned data; template/sample output was suppressed.",
-                status="provider_unavailable",
-            )
-            payload["sources"] = ["no_live_source"]
+        payload["metadata"] = metadata
+
+    # Always stamp top-level data_state + sanitizer_summary so the UI can
+    # render the correct pill without scanning sources itself.
+    payload["data_state"] = data_state
+    payload["sanitizer_summary"] = summary
+
     return normalize_function_contract(code, params, payload)
+
+
+# Deprecated: legacy name kept for backwards compatibility with import sites
+# under ``server_routes/`` and the existing test suite. New callers should
+# use ``enforce_live_or_label_synthetic``.
+def sanitize_function_payload(code: str, params: dict[str, Any], payload: Any) -> Any:
+    return enforce_live_or_label_synthetic(code, params, payload)
 
 
 def _payload_empty(value: Any) -> bool:

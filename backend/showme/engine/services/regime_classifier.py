@@ -78,7 +78,13 @@ def _curve_label(spread_2s10s_bp: float | None) -> tuple[str, float | None]:
     return "NORMAL", spread_2s10s_bp
 
 
-def composite(trend: str, vol: str, dd: str, curve: str) -> str:
+def composite(trend: str, vol: str, dd: str, curve: str) -> str | None:
+    # Bug #22 fix: when vol/drawdown/curve are all UNKNOWN we used to fall
+    # through to "Range-bound" and fabricate a regime. Return None instead
+    # so callers can render "insufficient inputs" honestly.
+    unknown_inputs = {vol, dd, curve}
+    if unknown_inputs == {"UNKNOWN"}:
+        return None
     if trend == "BEAR" and dd == "CRISIS":
         return "Crisis"
     if trend == "BEAR" and dd == "DRAWDOWN":
@@ -98,6 +104,14 @@ def composite(trend: str, vol: str, dd: str, curve: str) -> str:
     return "Range-bound"
 
 
+def _confidence(trend: str, vol: str, dd: str, curve: str) -> float:
+    # 1.0 = all 4 inputs resolved; 0.25 per known input. UNKNOWN trend is
+    # impossible by construction (we always have close), so the practical
+    # floor is 0.25 (trend only).
+    known = sum(1 for label in (trend, vol, dd, curve) if label != "UNKNOWN")
+    return round(known / 4.0, 4)
+
+
 def classify(close: np.ndarray, *, spread_2s10s_bp: float | None = None) -> dict[str, Any]:
     close = np.asarray(close, dtype=float)
     rets = np.diff(close) / close[:-1] if len(close) > 1 else np.array([])
@@ -105,12 +119,17 @@ def classify(close: np.ndarray, *, spread_2s10s_bp: float | None = None) -> dict
     vol, vol_pct = _vol_label(rets)
     dd, dd_pct = _drawdown_label(close)
     curve, spread = _curve_label(spread_2s10s_bp)
+    regime = composite(trend, vol, dd, curve)
+    confidence = _confidence(trend, vol, dd, curve)
+    data_state = "insufficient_inputs" if regime is None else "ok"
     return {
         "trend": trend, "ma50_vs_200_pct": ma_spread,
         "vol": vol, "realized_vol_pct": vol_pct,
         "drawdown": dd, "drawdown_pct": dd_pct,
         "curve": curve, "curve_2s10s_bp": spread,
-        "regime": composite(trend, vol, dd, curve),
+        "regime": regime,
+        "confidence": confidence,
+        "data_state": data_state,
     }
 
 

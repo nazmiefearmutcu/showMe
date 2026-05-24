@@ -68,6 +68,8 @@ interface BTMMPayload {
   region?: string;
   rows: BTMMRow[];
   summary?: BTMMSummary;
+  as_of?: string;
+  stale_seconds?: number | null;
 }
 
 const COUNTRIES = [
@@ -226,7 +228,13 @@ export function BTMMPane({ code }: FunctionPaneProps) {
   const summary = payload.summary;
   const largestMove = summary?.largest_last_move;
   const chartRow = rows[0] ?? rawRows[0];
+  // Wall-clock when the UI last polled (sticky to `data` so it doesn't
+  // tick every render). Replaces the old single stamp.
   const utcStamp = useMemo(() => new Date().toISOString().slice(11, 16), [data]);
+  // Bug #24 fix: surface the BIS data freshness as its own stamp. Previously
+  // the header pill said `HH:MM UTC` from `new Date()` which made a 24-day
+  // old fallback look freshly polled. We now display both.
+  const dataAsOf = payload.as_of ?? null;
   const isLive = state === "ok" && (data?.warnings?.length ?? 0) === 0;
 
   return (
@@ -242,12 +250,25 @@ export function BTMMPane({ code }: FunctionPaneProps) {
               <Pill tone="muted" variant="soft" withDot={false}>
                 {rows.length} cb
               </Pill>
-              <Pill tone="accent" variant="soft" withDot={false}>
-                {utcStamp} UTC
-              </Pill>
-              <Pill tone={isLive ? "positive" : "warn"} variant="soft">
-                {isLive ? "live" : "warn"}
-              </Pill>
+              <span data-testid="btmm-poll-stamp">
+                <Pill tone="muted" variant="soft" withDot={false}>
+                  Last poll {utcStamp} UTC
+                </Pill>
+              </span>
+              <span data-testid="btmm-data-stamp">
+                <Pill
+                  tone={dataAsOf ? "accent" : "muted"}
+                  variant="soft"
+                  withDot={false}
+                >
+                  Data as of {dataAsOf ?? "—"}
+                </Pill>
+              </span>
+              <span data-testid="btmm-live-pill">
+                <Pill tone={isLive ? "positive" : "warn"} variant="soft">
+                  {isLive ? "live" : "warn"}
+                </Pill>
+              </span>
               <LoadStatePill state={state} />
               <RefreshButton
                 loading={state === "loading"}
@@ -585,6 +606,12 @@ function normalizePayload(payload: BTMMPayload | unknown): BTMMPayload {
         obj.summary && typeof obj.summary === "object"
           ? (obj.summary as BTMMSummary)
           : undefined,
+      // Bug #24 fix: thread the data-freshness envelope through so the
+      // header can render "Data as of <as_of>" instead of fabricating a
+      // wall-clock stamp.
+      as_of: typeof obj.as_of === "string" ? obj.as_of : undefined,
+      stale_seconds:
+        typeof obj.stale_seconds === "number" ? obj.stale_seconds : null,
     };
   }
   return { rows: [] };

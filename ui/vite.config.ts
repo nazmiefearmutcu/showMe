@@ -84,5 +84,34 @@ export default defineConfig({
     globals: true,
     setupFiles: ["./src/test/setup.ts"],
     include: ["src/**/*.{test,spec}.{ts,tsx}"],
+    // Agent J 2026-05-23: coverage tooling. `enabled` defaults to false
+    // so the bare `npm run test` flow stays fast. CI invokes
+    // `npm run test:coverage` which sets `--coverage` and flips this on.
+    coverage: {
+      provider: "v8",
+      enabled: false,
+      reporter: ["text", "html", "lcov"],
+      reportsDirectory: "./coverage",
+      include: ["src/**/*.{ts,tsx}"],
+      exclude: [
+        "src/**/*.{test,spec}.{ts,tsx}",
+        "src/**/*.d.ts",
+        "src/test/**",
+        "src/main.tsx",
+        "src/vite-env.d.ts",
+      ],
+      // Agent J 2026-05-23: thresholds calibrated to the *current* tree
+      // (38 of 53 native panes have no vitest, so global line coverage
+      // sits in the high 20s). Gates start at -5% from observed to fail
+      // on regressions while still letting today's tree pass. Raise as
+      // pane smoke coverage lands.
+      // Observed at landing: lines 29.47% / functions 45.99% / branches 75.06% / statements 29.47%.
+      thresholds: {
+        lines: 25,
+        functions: 40,
+        branches: 60,
+        statements: 25,
+      },
+    },
   },
 });

@@ -111,11 +111,26 @@ export function GenericResult({
     result.code?.toUpperCase() === "BRIEF" && isRecord(result.data)
       ? firstString(result.data, ["markdown"])
       : null;
+  // QA-2026-05-23 polish — detect backend-flagged degraded / fallback /
+  // no-live-source payloads. The backend already emits
+  // `metadata.degraded` / `metadata.fallback` on several endpoints
+  // (DES yfinance fallback, BLAK collapsed posterior, BMTX walk-forward
+  // cached, …) and `sources === ["no_live_source"]` when every provider
+  // refused. Surfacing these tells the trader the rows below are stale
+  // or synthetic instead of pretending they're live data.
+  const isDegraded =
+    result.metadata?.degraded === true || result.metadata?.fallback === true;
+  const sourcesArr = result.sources ?? [];
+  const isNoLiveSource =
+    sourcesArr.length > 0 &&
+    sourcesArr.every((s) => s === "no_live_source");
   return (
     <div className="showme-stub-payload u-grid-gap-12" data-testid="function-payload">
       {payloadStatus.state !== "live" ? (
         <StatusPanel status={payloadStatus} onRetry={onRetry} />
       ) : null}
+
+      {isDegraded ? <DegradedChip /> : null}
 
       <ResultMetaLine result={result} summary={summary} />
 
@@ -131,7 +146,24 @@ export function GenericResult({
         <MethodologyPanel methodology={methodology} fields={fieldDictionary} />
       ) : null}
 
-      {shouldRenderArticleList ? (
+      {isNoLiveSource && displayRows.length === 0 && !hasScalarResult ? (
+        // QA-2026-05-23 — explicit "no live source" empty state. The
+        // backend signalled `sources: ["no_live_source"]` to mean every
+        // provider was unreachable or refused; rendering the generic
+        // "No usable rows" message hid the real cause. Surface a
+        // dedicated empty state with a Retry hook so the user can
+        // re-poke the backend once connectivity is restored.
+        <Empty
+          title="No live source available"
+          body="The function reached the sidecar but every upstream provider declined. Retry in a few seconds or check the source strip below."
+          icon="!"
+          action={
+            <button type="button" className="btn btn--ghost" onClick={onRetry}>
+              Retry
+            </button>
+          }
+        />
+      ) : shouldRenderArticleList ? (
         <NewsList rows={articleRows} />
       ) : displayRows.length > 0 && !suppressOhlcRowsTable ? (
         <DataGrid
@@ -184,6 +216,41 @@ export function GenericResult({
 
 function isArticleRow(row: RecordRow): boolean {
   return Boolean(firstString(row, ["headline", "title"]) && firstString(row, ["source", "url", "link"]));
+}
+
+/**
+ * QA-2026-05-23 — subtle "DATA DEGRADED" chip rendered above the Detail
+ * rows whenever the backend payload carries `metadata.degraded === true`
+ * or `metadata.fallback === true`. Distinct from the StatusPanel (which
+ * surfaces full `payloadStatus.state !== "live"` reasons) because the
+ * backend can return `status: "ok"` AND `metadata.degraded: true` at
+ * the same time (e.g. DES yfinance fallback after CoinGecko refused).
+ */
+export function DegradedChip() {
+  return (
+    <div
+      className="showme-stub-degraded-chip"
+      data-testid="function-degraded-chip"
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 6,
+        alignSelf: "flex-start",
+        padding: "2px 8px",
+        borderRadius: "var(--radius-sm, 4px)",
+        border: "1px solid var(--warn, #c98a2b)",
+        background: "color-mix(in srgb, var(--warn, #c98a2b) 10%, transparent)",
+        color: "var(--warn, #c98a2b)",
+        fontSize: 10,
+        fontFamily: "JetBrains Mono, monospace",
+        letterSpacing: "0.06em",
+        textTransform: "uppercase",
+      }}
+    >
+      <span aria-hidden="true">!</span>
+      <span>Data degraded · fallback payload</span>
+    </div>
+  );
 }
 
 export function BriefPanel({ markdown }: { markdown: string }) {

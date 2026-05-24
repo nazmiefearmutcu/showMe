@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 
 export type PrimitiveControlValue = string | number;
-export type LoadState = "idle" | "loading" | "ok" | "error";
+export type LoadState = "idle" | "loading" | "ok" | "error" | "refreshing" | "timeout";
 
 export const NEWS_LIMITS = [10, 25, 50, 100] as const;
 export const ROW_LIMITS = [25, 50, 100, 200] as const;

@@ -1,20 +1,31 @@
-"""Pure-aggregation PnL computation from bot signal_log.
+"""Pure-aggregation PnL computation from bot signal_log / closed_trades_log.
 
-Sub-system I. No new storage — derives Trade objects + metrics from
-the existing signal_log on each BotRecord.
+Sub-system I. Derives Trade objects + metrics from either the legacy
+``signal_log`` (debug-only, FIFO-capped) or the canonical
+``closed_trades_log`` (C4 fix, no cap) on each BotRecord.
 
-V1 limitations:
-* Long-only PnL math (shorts deferred)
-* No commission / slippage modelling
-* No mark-to-market on open positions — only closed trades
-* sizing_value (from strategy spec) used as trade qty
+V1.1 changes:
+* Side-aware PnL math via ``strategies.sizing.compute_pnl`` — long + short.
+* ``compute_trades`` accepts a ``sizing_kind`` arg and computes qty via
+  ``strategies.sizing.resolve_quantity`` so ``fixed_base`` no longer reports
+  ``(exit-entry)*sizing/entry`` (which was off by 60000× for 2 BTC trades).
+* ``compute_trades_from_closed`` reads the new ``closed_trades_log``
+  directly so long-running bots whose ``signal_log`` overflowed still
+  produce accurate aggregates.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, asdict
 from typing import Any, Iterable
 
-from showme.bots.record import SignalEntry
+from showme.bots.record import ClosedTrade, SignalEntry
+from showme.strategies.sizing import (
+    Side,
+    SizingKind,
+    compute_pnl,
+    compute_pnl_pct,
+    resolve_quantity,
+)
 
 
 @dataclass(frozen=True)
@@ -34,12 +45,27 @@ class Trade:
 def compute_trades(
     signal_log: Iterable[SignalEntry],
     sizing_value: float = 100.0,
+    *,
+    sizing_kind: SizingKind = "fixed_quote",
+    side: Side = "long",
+    equity: float = 10_000.0,
 ) -> list[Trade]:
     """Walk a bot's signal_log and pair entries with subsequent exits (FIFO).
 
     Skips entries with action == "skipped" (those didn't actually fire).
     Open positions (entry without matching exit) are NOT emitted — we
-    only count closed round-trips for v1.
+    only count closed round-trips.
+
+    H-SUP-3 fix: ``sizing_kind`` selects the qty formula via the shared
+    sizing module. The legacy default (``fixed_quote``) reproduces the
+    previous behaviour exactly: ``qty = sizing_value / entry_price`` so
+    ``pnl = (exit - entry) * sizing_value / entry``. Other ``sizing_kind``
+    values now produce the *correct* qty for that strategy.
+
+    Defensive: invalid sizing inputs (e.g. ``sizing_value <= 0`` or
+    ``risk_pct`` > 100) cause the pair to be silently skipped rather than
+    fail the whole route. The runner-side guard in ``_dispatch_*`` is the
+    real safety net.
     """
     open_entries: list[SignalEntry] = []
     trades: list[Trade] = []
@@ -52,19 +78,66 @@ def compute_trades(
             entry = open_entries.pop(0)
             if entry.price <= 0:
                 continue
-            # Long-only PnL.
-            pnl = (s.price - entry.price) * sizing_value / entry.price
-            pnl_pct = (s.price - entry.price) / entry.price * 100
+            try:
+                qty = resolve_quantity(
+                    sizing_kind=sizing_kind,
+                    sizing_value=sizing_value,
+                    price=entry.price,
+                    equity=equity,
+                )
+            except ValueError:
+                # Skip a pair whose sizing inputs don't validate; the
+                # runner-side guard should already have rejected this bot.
+                continue
+            pnl = compute_pnl(
+                entry_price=entry.price,
+                exit_price=s.price,
+                side=side,
+                entry_qty=qty,
+            )
+            pnl_pct = compute_pnl_pct(
+                entry_price=entry.price,
+                exit_price=s.price,
+                side=side,
+            )
             trades.append(Trade(
                 entry_time=entry.bar_time or entry.timestamp or "",
                 exit_time=s.bar_time or s.timestamp or "",
                 entry_price=entry.price,
                 exit_price=s.price,
-                qty=sizing_value,
+                qty=qty,
                 pnl=pnl,
                 pnl_pct=pnl_pct,
             ))
     return trades
+
+
+def compute_trades_from_closed(
+    closed: Iterable[ClosedTrade],
+) -> list[Trade]:
+    """C4 fix: build Trade aggregates from the append-only closed-trades log.
+
+    Use this in preference to ``compute_trades`` for any bot that has been
+    running long enough for ``signal_log`` to overflow its 100-entry cap.
+    The closed-trades log preserves every round-trip the runner has paired.
+    """
+    out: list[Trade] = []
+    for ct in closed:
+        pnl_pct = compute_pnl_pct(
+            entry_price=ct.entry_price,
+            exit_price=ct.exit_price,
+            side=ct.side,
+        )
+        out.append(Trade(
+            entry_time=ct.entry_timestamp,
+            exit_time=ct.exit_timestamp,
+            entry_price=ct.entry_price,
+            exit_price=ct.exit_price,
+            qty=ct.qty,
+            pnl=ct.pnl,
+            pnl_pct=pnl_pct,
+        ))
+    return out
 
 
 def compute_metrics(trades: list[Trade]) -> dict[str, Any]:

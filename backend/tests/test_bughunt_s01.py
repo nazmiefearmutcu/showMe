@@ -73,10 +73,11 @@ def test_synthetic_markers_do_not_false_positive_live_sources() -> None:
         assert not server._is_synthetic_source(source), source
 
 
-def test_sanitize_suppresses_trace_proxy_model_source() -> None:
-    """End-to-end: an ALLQ-shaped payload with ``trace_proxy_model`` source
-    is now collapsed to ``provider_unavailable`` instead of shipping fake
-    dealer quotes as OK.
+def test_sanitize_labels_trace_proxy_model_source_as_model() -> None:
+    """Refactored 2026-05-24: ALLQ rows from ``trace_proxy_model`` are
+    no longer wiped. They flow through tagged ``data_state == "model"``
+    so the bond pane can show the row with an honest MODEL pill instead
+    of a useless ``provider_unavailable`` envelope.
     """
     payload = server.sanitize_function_payload(
         "ALLQ",
@@ -90,14 +91,23 @@ def test_sanitize_suppresses_trace_proxy_model_source() -> None:
             "warnings": [],
         },
     )
-    assert payload["sources"] == ["no_live_source"]
-    assert payload["data"]["status"] == "provider_unavailable"
-    assert payload["data"]["rows"] == []
+    # Row is kept; status is NOT collapsed.
+    assert payload["data"]["status"] != "provider_unavailable"
+    assert payload["data"]["rows"] == [
+        {"dealer": "Composite A", "bid": 99.0, "ask": 99.5}
+    ]
+    # Source preserved, data_state pill stamped.
+    assert payload["sources"] == ["trace_proxy_model"]
+    assert payload["data_state"] == "model"
+    assert payload["sanitizer_summary"]["model"] == 1
 
 
-def test_sanitize_still_passes_template_payload() -> None:
-    """Existing pin (test_sanitize_suppresses_template_payloads) must keep
-    working — the ``template`` marker stays in the markers tuple."""
+def test_sanitize_still_labels_template_payload_as_synthetic() -> None:
+    """Existing pin (test_sanitize_suppresses_template_payloads) was
+    updated 2026-05-24 to reflect the new contract: ``template`` rows
+    pass through with ``data_state == "synthetic"`` and a populated
+    ``sanitizer_summary``.
+    """
     payload = server.sanitize_function_payload(
         "BETA",
         {"symbol": "AAPL", "asset_class": "EQUITY"},
@@ -110,9 +120,11 @@ def test_sanitize_still_passes_template_payload() -> None:
             "warnings": [],
         },
     )
-    assert payload["sources"] == ["no_live_source"]
+    assert payload["sources"] == ["fundamentals_template"]
     assert payload["metadata"]["synthetic"] is True
-    assert payload["data"]["status"] == "provider_unavailable"
+    assert payload["data_state"] == "synthetic"
+    assert payload["sanitizer_summary"]["synthetic"] == 1
+    assert payload["data"]["status"] != "provider_unavailable"
 
 
 # ── ANR ─────────────────────────────────────────────────────────────────────

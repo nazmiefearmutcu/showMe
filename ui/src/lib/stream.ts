@@ -5,8 +5,14 @@
  * normalized ticks to a callback. Auto-reconnects on transient errors
  * with exponential backoff (capped at 5 s) and emits status changes
  * so callers can render a "live / reconnecting / offline" pill.
+ *
+ * QA-2026-05-23: when ticks have flowed at least once (`everLive`) and the
+ * socket subsequently disconnects, surface a single throttled toast so the
+ * user knows live data is paused. Throttled at 30 s per process to avoid
+ * spam during noisy reconnect storms.
  */
 import { sidecarWsUrl } from "./sidecar";
+import { toast } from "./toast";
 
 export interface Tick {
   symbol: string;
@@ -32,6 +38,24 @@ export interface StreamOpts {
 }
 
 const MAX_BACKOFF_MS = 5_000;
+const DISCONNECT_TOAST_THROTTLE_MS = 30_000;
+
+let lastDisconnectToastAt = 0;
+
+/** Test seam — clear the cross-process throttle so each test starts fresh. */
+export function __resetStreamDisconnectToastForTests(): void {
+  lastDisconnectToastAt = 0;
+}
+
+function maybeEmitDisconnectToast(): void {
+  const now = Date.now();
+  if (now - lastDisconnectToastAt < DISCONNECT_TOAST_THROTTLE_MS) return;
+  lastDisconnectToastAt = now;
+  toast.warn(
+    "Live data disconnected — retrying",
+    "The quote stream dropped. We're attempting to reconnect.",
+  );
+}
 
 export function subscribeQuote(symbol: string, opts: StreamOpts): StreamHandle {
   const target = symbol.trim().toUpperCase();
@@ -46,6 +70,7 @@ export function subscribeQuote(symbol: string, opts: StreamOpts): StreamHandle {
   // PERF-03 P1: track the reconnect timer so close() can cancel it instead
   // of letting orphaned timers fire and pin React closures.
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  let everLive = false; // QA-2026-05-23: only toast after a successful connect.
 
   const stop = () => {
     closed = true;
@@ -63,6 +88,7 @@ export function subscribeQuote(symbol: string, opts: StreamOpts): StreamHandle {
     socket = new WebSocket(url);
     socket.onopen = () => {
       attempt = 0;
+      everLive = true;
       opts.onStatus?.("live");
     };
     socket.onmessage = (ev) => {
@@ -87,6 +113,9 @@ export function subscribeQuote(symbol: string, opts: StreamOpts): StreamHandle {
       socket = null;
       if (closed) return;
       opts.onStatus?.("offline");
+      // Only toast when we've actually had live data; failing-to-connect on
+      // boot is reported as a different UI signal (the runtime pill).
+      if (everLive) maybeEmitDisconnectToast();
       const wait = Math.min(MAX_BACKOFF_MS, 250 * 2 ** attempt);
       attempt += 1;
       reconnectTimer = setTimeout(() => {

@@ -33,10 +33,10 @@ _BACKEND_DIR = _HERE.parents[1]
 if str(_BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(_BACKEND_DIR))
 
-import pytest
+import pytest  # noqa: E402
 
-from showme.engine.functions.macro import eco as eco_mod
-from showme.engine.functions.equity import eqs as eqs_mod
+from showme.engine.functions.macro import eco as eco_mod  # noqa: E402
+from showme.engine.functions.equity import eqs as eqs_mod  # noqa: E402
 
 
 # ── B4 — ECO country alias folding ────────────────────────────────────────

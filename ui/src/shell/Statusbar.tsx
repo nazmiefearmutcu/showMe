@@ -3,6 +3,7 @@ import { useAppStore } from "@/lib/store";
 import { StatusSection, StatusDivider } from "@/design-system";
 import { PRESET_LABELS, readState, THEME_CHANGE_EVENT, type ThemeState } from "@/lib/theme";
 import { formatTime, timezoneOffsetLabel, useTimezone } from "@/lib/timezone";
+import { describeNyseMarketState, getNyseMarketState } from "@/lib/market-state";
 
 export function Statusbar() {
   const status = useAppStore((s) => s.sidecarStatus);
@@ -34,12 +35,10 @@ export function Statusbar() {
   const tone =
     status === "healthy" ? "positive" : status === "crashed" ? "negative" : "warn";
 
-  // Heuristic market session — UTC hours 13-21 ≈ NYSE, otherwise pre/after.
-  const utcHour = now.getUTCHours();
-  const marketState =
-    utcHour >= 13 && utcHour < 20 ? "open" : utcHour >= 20 && utcHour < 22 ? "after" : "pre-open";
-  const marketTone =
-    marketState === "open" ? "positive" : marketState === "after" ? "warn" : "muted";
+  // Canonical NYSE state machine (lib/market-state). Replaces the heuristic
+  // "UTC hours 13-21 ≈ NYSE" rule that lit MARKET / open on Saturday.
+  const nyseState = getNyseMarketState(now);
+  const marketDisplay = describeNyseMarketState(nyseState);
 
   return (
     // A11Y-05 P1: drop the footer-wide role="status" so the 1Hz clock no
@@ -69,8 +68,17 @@ export function Statusbar() {
         <StatusDivider />
         <StatusSection label="fn" value={total} />
       </span>
-      <span className="u-inline-flex u-items-center u-h-full statusbar__market">
-        <StatusSection label="market" value={marketState} tone={marketTone} withDot />
+      <span
+        className="u-inline-flex u-items-center u-h-full statusbar__market"
+        data-testid="market-state"
+        data-market-state={nyseState}
+      >
+        <StatusSection
+          label="market"
+          value={marketDisplay.label}
+          tone={marketDisplay.tone}
+          withDot={marketDisplay.withDot}
+        />
       </span>
       <span className="u-inline-flex u-items-center u-h-full">
         <StatusSection
@@ -95,8 +103,14 @@ export function Statusbar() {
   );
 }
 
-function shortenPath(path: string): string {
-  const home = "/Users/nazmi/";
-  if (path.startsWith(home)) return `~/${path.slice(home.length)}`;
+/**
+ * Replace any `/Users/<account>/` prefix with `~/` so the bar never leaks a
+ * developer's macOS short-name into screenshots, demos, or screen-share
+ * sessions. Prior implementation hard-coded `/Users/nazmi/`, which silently
+ * no-op'd on every other machine and exposed Nazmi's home folder.
+ */
+export function shortenPath(path: string): string {
+  const match = path.match(/^\/Users\/[^/]+\//);
+  if (match) return `~/${path.slice(match[0].length)}`;
   return path;
 }

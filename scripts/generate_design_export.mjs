@@ -217,9 +217,7 @@ export function DesignExportRenderer({ code, variant = "pro" }: { code: string; 
   );
 }
 
-export function SettingsDesignExportRenderer({ section, onPreset, onSection }: { section: string; onPreset?: (preset: Preset) => void; onSection?: (section: string) => void }) {
-  const Component = DESIGN_SETTINGS[section.toUpperCase()];
-  if (!Component) return null;
+export function SettingsDesignExportRenderer({ section, onPreset, onSection, chromeOnly = false }: { section: string; onPreset?: (preset: Preset) => void; onSection?: (section: string) => void; chromeOnly?: boolean }) {
   const handleClick = React.useCallback((event: React.MouseEvent<HTMLDivElement>) => {
     const nextSection = settingsSectionFromNav(event.target);
     if (nextSection && onSection) {
@@ -230,6 +228,19 @@ export function SettingsDesignExportRenderer({ section, onPreset, onSection }: {
     const preset = themePresetFromCard(event.target);
     if (preset) onPreset(preset);
   }, [onPreset, onSection, section]);
+
+  const Component = DESIGN_SETTINGS[section.toUpperCase()];
+  if (!Component) return null;
+  if (chromeOnly) {
+    const Sidebar = DESIGN_WINDOW.SetSidebar as React.ComponentType<{ active: string }>;
+    return (
+      <div className="design-export" data-design-code={section.toUpperCase()} data-design-variant="settings-chrome" onClick={handleClick}>
+        <div className="sm-root sm-set sm-set--chrome-only" data-theme={currentExportTheme()}>
+          <Sidebar active={section.toLowerCase()} />
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="design-export" data-design-code={section.toUpperCase()} data-design-variant="settings" onClick={handleClick}>
       <Component theme={currentExportTheme()} />

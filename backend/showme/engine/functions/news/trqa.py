@@ -170,26 +170,74 @@ def _coerce_questions(value: Any, query: Any = None) -> list[str]:
 
 
 def _extractive_answer(text: str, question: str) -> dict[str, Any]:
+    """Pick the best evidence sentence for a question via cheap heuristics.
+
+    BugHunt 2026-05-24: previous version returned `0.35 + 0.12 * best_score`
+    for every answer, which floors out at 0.35 even when ``best_score == 0``
+    (no terms matched and no domain keywords landed) and yielded the
+    notorious "0.59" constant whenever exactly two signals fired. That
+    masquerades a fake number as a model probability.
+
+    New rule:
+      * If we have no real signal (best_score == 0 AND no terms in question)
+        we return ``confidence: None`` — be honest, not falsely precise.
+      * Otherwise compute confidence from real evidence:
+        normalised term-match ratio, domain-keyword hits, evidence length.
+    """
     sentences = _sentences(text)
     terms = _question_terms(question)
     if not sentences:
-        return {"a": "Transcript text was empty after parsing.", "evidence": "", "confidence": 0.0}
-    scored = []
+        return {"a": "Transcript text was empty after parsing.", "evidence": "", "confidence": None}
+    domain_tokens = ("guidance", "outlook", "expect", "risk", "headwind", "revenue", "eps", "margin")
+    scored: list[tuple[int, int, int, str]] = []
     for sentence in sentences:
         low = sentence.lower()
-        score = sum(1 for term in terms if term in low)
-        if any(token in low for token in ("guidance", "outlook", "expect", "risk", "headwind", "revenue", "eps", "margin")):
-            score += 1
-        scored.append((score, sentence))
-    scored.sort(key=lambda item: (item[0], len(item[1])), reverse=True)
-    best_score, best = scored[0]
-    if best_score <= 0:
-        best = sentences[0]
+        term_hits = sum(1 for term in terms if term in low)
+        domain_hits = sum(1 for token in domain_tokens if token in low)
+        scored.append((term_hits + (1 if domain_hits else 0), term_hits, domain_hits, sentence))
+    scored.sort(key=lambda item: (item[0], item[1], len(item[3])), reverse=True)
+    best = scored[0]
+    best_total, best_terms, best_domain, best_sentence = best
+    if best_total <= 0:
+        best_sentence = sentences[0]
+    confidence = _extractive_confidence(
+        term_hits=best_terms,
+        domain_hits=best_domain,
+        question_terms=len(terms),
+        evidence_chars=len(best_sentence or ""),
+    )
     return {
-        "a": best,
-        "evidence": best,
-        "confidence": round(min(0.95, 0.35 + 0.12 * max(best_score, 0)), 2),
+        "a": best_sentence,
+        "evidence": best_sentence,
+        "confidence": confidence,
     }
+
+
+def _extractive_confidence(
+    *,
+    term_hits: int,
+    domain_hits: int,
+    question_terms: int,
+    evidence_chars: int,
+) -> float | None:
+    """Real-signal confidence in [0, 1] or None when no real signal exists."""
+    if term_hits <= 0 and domain_hits <= 0:
+        # No question terms matched and no domain hint — refuse to lie.
+        return None
+    if question_terms <= 0 and domain_hits <= 0:
+        return None
+    term_ratio = (term_hits / question_terms) if question_terms > 0 else 0.0
+    score = 0.0
+    if term_hits > 0:
+        score += 0.45 * min(term_ratio, 1.0)
+    if domain_hits > 0:
+        score += 0.20 * min(domain_hits / 3.0, 1.0)
+    # Evidence-length bonus tapers between 30 and 240 chars.
+    if evidence_chars >= 30:
+        score += 0.10 * min((evidence_chars - 30) / 210.0, 1.0)
+    if score <= 0.0:
+        return None
+    return round(min(0.95, score), 2)
 
 
 def _answer_is_empty(value: str) -> bool:

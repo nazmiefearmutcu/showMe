@@ -35,11 +35,26 @@ class VeryfinderBatchRequest(BaseModel):
 
 
 class OrderRequest(BaseModel):
-    """Validated body for POST /api/broker/orders."""
+    """Validated body for POST /api/broker/orders.
+
+    SEC-09 — A02-2026-05-24: ``confirmation_token`` is REQUIRED for every
+    submit. The route compares it server-side against the broker's
+    account label (or the broker name for ``paper``) so a stray
+    ``curl`` cannot drop an order even with a valid auth token. This
+    mirrors the typed-account-label gate the UI's ``OrderTicket.tsx``
+    confirmation modal already enforces — it just makes the contract
+    binding at the route layer as well (defense in depth).
+    """
 
     model_config = ConfigDict(extra="ignore")
 
-    broker: str | None = Field(default=None, max_length=32)
+    # Dynamic credential brokers register as
+    # ``{exchange_id}:{credential_id}`` (exchange ~16 chars, UUID-style
+    # credential id 32 chars). The old ``max_length=32`` rejected every
+    # such name with HTTP 422 before the route even ran — silently
+    # forcing the caller back to the default ``paper`` broker. Widen to
+    # 96 to fit the longest catalog entry id + credential id pair.
+    broker: str | None = Field(default=None, max_length=96)
     symbol: str = Field(..., min_length=1, max_length=32)
     side: str = Field(default="buy", max_length=8)
     quantity: float = Field(..., gt=0, le=1e9)
@@ -49,6 +64,18 @@ class OrderRequest(BaseModel):
     stop_price: float | None = Field(default=None, ge=0, le=1e12)
     notes: str = Field(default="", max_length=512)
     leverage: float | None = Field(default=None, ge=0, le=125)
+    # Required typed-confirmation. Backwards-compat alias
+    # ``confirm_account_label`` accepted so callers that already use the
+    # bots-route field name keep working (see bots.py:349/426).
+    confirmation_token: str | None = Field(default=None, max_length=64)
+    confirm_account_label: str | None = Field(default=None, max_length=64)
+
+    def resolved_confirmation(self) -> str:
+        """Return whichever confirmation field the caller supplied
+        (``confirmation_token`` wins) with whitespace trimmed.
+        Empty string when neither was provided."""
+        token = self.confirmation_token or self.confirm_account_label or ""
+        return token.strip()
 
 
 class AskBody(BaseModel):
@@ -65,6 +92,16 @@ class XAnalyzeBody(BaseModel):
     posts: list[dict[str, Any]] = Field(default_factory=list, max_length=2048)
     symbol: str | None = Field(default=None, max_length=32)
     topic: str | None = Field(default=None, max_length=200)
+    # Legacy: older UI builds (and `ui/src/lib/xai.ts:analyzeXTopic`) send
+    # ``{"query": "..."}`` instead of {symbol|topic}. Without this field the
+    # ConfigDict(extra="ignore") setting silently swallowed it and every call
+    # raised HTTP 400 "query or symbol is required". The handler in
+    # ``server_routes/xai.py`` promotes ``query`` → ``symbol``/``topic`` so
+    # both old and new clients work. See SHOWME_BUGHUNT 2026-05-24 Bug #10b.
+    query: str | None = Field(default=None, max_length=200)
+    limit: int | None = Field(default=None, ge=1, le=500)
+    since: str | None = Field(default=None, max_length=32)
+    until: str | None = Field(default=None, max_length=32)
     lang: str | None = Field(default=None, max_length=8)
 
 

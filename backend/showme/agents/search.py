@@ -164,7 +164,10 @@ async def _function(plan: Plan, deps: Any, *, code: str,
         return {"kind": "function", "code": code, "warnings": [str(exc)]}
     try:
         payload = res.to_dict()
-    except Exception:
+    except Exception:  # noqa: BLE001
+        # QA-fix: surface the conversion failure so silent fallback to a
+        # data-only dict is visible in the rotating log.
+        LOG.exception("function %s result.to_dict() failed", code)
         payload = {"data": getattr(res, "data", None)}
     payload = _jsonify(payload)
     evidence = _function_evidence(code, payload)
@@ -243,15 +246,18 @@ def _jsonify(value: Any) -> Any:
             except TypeError:
                 converted = to_dict()  # Series, plain mapping
             return _jsonify(converted)
-        except Exception:
+        except Exception:  # noqa: BLE001
+            # QA-fix: structured-conversion failure observable at debug
+            # level. Falling back to str() keeps the response serializable.
+            LOG.debug("_jsonify pandas conversion failed for %r", type(value), exc_info=True)
             return str(value)
     # numpy scalar
     item = getattr(value, "item", None)
     if callable(item):
         try:
             return _jsonify(item())
-        except Exception:
-            pass
+        except Exception:  # noqa: BLE001
+            LOG.debug("_jsonify numpy item() failed for %r", type(value), exc_info=True)
     # datetime-like
     iso = getattr(value, "isoformat", None)
     if callable(iso):

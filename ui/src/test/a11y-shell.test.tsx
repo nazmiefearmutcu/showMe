@@ -2,8 +2,11 @@
  * A11Y-05 / A11Y-08 Round-4A tests.
  *
  * Validate:
- *  - Welcome pane exposes the h1 (visually hidden, anchors the document
- *    outline) + ≥4 h2 / h3 landmarks for screen-reader navigation.
+ *  - Welcome pane outline is anchored by the h1 (visually hidden) + ≥4
+ *    h3 sub-headings. Faz 5 / audit Section 4.3: the eyebrow h2
+ *    "MARKETS ARE QUIET. CONVICTION IS NOT." was deliberately removed
+ *    by the user. The test now pins h2-count == 0 so a regression that
+ *    re-adds the headline trips this gate.
  *  - Sidebar function rows are real `<a href="#/fn/CODE">` links so
  *    middle-click, drag-to-tab, and assistive tech land them in nav-mode.
  *  - The CSP utility class layer is present (smoke check) so the Tauri
@@ -69,11 +72,17 @@ vi.mock("@/lib/useFunction", () => ({
   useFunction: () => ({ state: "idle", data: null, error: null, refetch: () => {} }),
 }));
 
-describe("Welcome heading hierarchy (A11Y-05)", () => {
-  it("renders the pane h2 landmark and at least four h3 sub-headings", () => {
-    const { getAllByRole } = render(<Welcome />);
-    const h2s = getAllByRole("heading", { level: 2 });
-    expect(h2s.length).toBeGreaterThanOrEqual(1);
+describe("Welcome heading hierarchy (no h2 by design)", () => {
+  it("renders zero h2 landmarks and at least four h3 sub-headings", () => {
+    // Faz 5 / audit Section 4.3 — the user explicitly removed the
+    // "MARKETS ARE QUIET. CONVICTION IS NOT." eyebrow h2 from
+    // Welcome.tsx. The h1 (visually hidden) anchors the document
+    // outline; sub-sections use h3. Pinning h2-count == 0 keeps any
+    // future "let me re-add a hero h2" regression visible at the
+    // test layer.
+    const { queryAllByRole, getAllByRole } = render(<Welcome />);
+    const h2s = queryAllByRole("heading", { level: 2 });
+    expect(h2s.length).toBe(0);
     const h3s = getAllByRole("heading", { level: 3 });
     // Portfolio board + Command deck + Function inventory + Exposure +
     // Workspace presets = 5 visible h3 sub-headings (and an sr-only KPI
@@ -138,8 +147,14 @@ describe("Sidebar nav links (A11Y-08)", () => {
     expect(getByRole("heading", { name: /Pinned\s*5/i })).toBeTruthy();
     expect(getAllByRole("link", { name: /Gamma Exposure GEX/i })).toHaveLength(1);
     expect(queryByRole("link", { name: /GEX Gamma Exposure/i })).toBeNull();
-    expect(getByRole("heading", { name: /Recent\s*4/i })).toBeTruthy();
-    expect(getByRole("heading", { name: /Quick Functions\s*5/i })).toBeTruthy();
+    // QA-2026-05-23: Recent is now sourced from palette-recents.ts.
+    // It starts empty on first boot; pinning an entry from the index
+    // does NOT change Recent (the two stacks are independent).
+    expect(getByRole("heading", { name: /Recent\s*0/i })).toBeTruthy();
+    // Quick Functions used to hold OMON as a stub — removed in
+    // QA-2026-05-23. The set is now { GEX, FA, DES, BTMM, MOST } = 5,
+    // and pinning GEX drops it to 4 here.
+    expect(getByRole("heading", { name: /Quick Functions\s*4/i })).toBeTruthy();
   });
 });
 

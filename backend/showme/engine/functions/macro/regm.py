@@ -106,15 +106,21 @@ class REGMFunction(BaseFunction):
         current = rgm.classify(close, spread_2s10s_bp=spread_bp)
         if action == "current":
             history = _regime_history(close, spread_bp, df)
+            insufficient = current.get("data_state") == "insufficient_inputs"
+            regime_display = current.get("regime") or (
+                "Cannot classify — no inputs available" if insufficient else "—"
+            )
             return FunctionResult(
                 code=self.code, instrument=instrument,
                 data={
                     "symbol": sym,
                     "current": current,
+                    "data_state": current.get("data_state", "ok"),
+                    "confidence": current.get("confidence", 0.0),
                     "rows": _component_rows(sym, current, sources),
                     "history": history,
                     "cards": [
-                        {"label": "Regime", "value": current.get("regime")},
+                        {"label": "Regime", "value": regime_display},
                         {"label": "Trend", "value": current.get("trend")},
                         {"label": "Vol", "value": current.get("vol")},
                         {"label": "Curve", "value": current.get("curve")},

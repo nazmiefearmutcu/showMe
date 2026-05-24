@@ -81,6 +81,9 @@ cd backend && python3 -m pip install -e ".[dev]" && cd ..
 
 # 3 — run dev (Tauri spawns sidecar + UI together)
 npm run tauri:dev
+
+# 4 — (optional but recommended) install pre-commit hooks
+pip install pre-commit && pre-commit install
 ```
 
 Without the Rust toolchain you can still inspect the UI in browser-mode:

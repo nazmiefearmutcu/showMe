@@ -2,7 +2,9 @@
 
 Reuses XSEN's bundled RoBERTa for classification. No new model download.
 """
-import hashlib, logging, time
+import hashlib
+import logging
+import time
 from typing import Any
 
 LOG = logging.getLogger("showme.integrations.hf")

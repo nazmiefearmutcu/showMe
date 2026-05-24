@@ -62,7 +62,6 @@ def test_fetch_binance_24h_ticker_raises_on_spot_failure(monkeypatch) -> None:
     failed, which yielded futures pricing under a spot ``Tick.symbol``. Callers
     that want futures must opt in via ``fetch_binance_futures_24h_ticker``.
     """
-    from showme.streams import fetch_binance_futures_24h_ticker
 
     class FakeResponse:
         def __init__(self, payload: dict) -> None:

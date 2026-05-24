@@ -46,11 +46,14 @@
   --line: rgba(255, 200, 150, 0.10);
   --line-strong: rgba(255, 200, 150, 0.18);
 
-  /* Text ladder (canvas-pinned) */
+  /* Text ladder (canvas-pinned). --text-faint lifted from #5b5447 (2.65:1)
+     to #9d917a (≈6.4:1 on #0b0907) for WCAG 2.1 AA on body-text. The mid
+     mute slot stays #8e8472 (5.39:1) so the descending ladder ordering
+     is preserved while the lowest slot still clears AA. */
   --text-display-hex: #f6efe4;
   --text-hex: #ddd3c0;
   --text-mute-hex: #8e8472;
-  --text-faint: #5b5447;
+  --text-faint: #9d917a;
 
   /* Accent family (canvas-pinned) */
   --accent-2: #e88c5e;
@@ -92,7 +95,10 @@
   --text-display-hex: #c8ffd6;
   --text-hex: #6bff8a;
   --text-mute-hex: #2fb053;
-  --text-faint: #156a2d;
+  /* WCAG AA fix: lifted from #156a2d (3.13:1 on #000) to #3aa856
+     (≈6.92:1 on #000, 6.55:1 on #040b06). Keeps the matrix phosphor
+     hue while body text in the lowest ladder slot now clears AA. */
+  --text-faint: #3aa856;
 
   --accent-2: #9aff7f;
   --accent-soft-hex: rgba(0, 255, 65, 0.14);

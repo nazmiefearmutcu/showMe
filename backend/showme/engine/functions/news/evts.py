@@ -148,19 +148,58 @@ def _frame_rows(value: Any, symbol: str, event_name: str) -> list[dict[str, Any]
 
 
 def _date_value(value: Any) -> str | None:
+    """Return an ISO 8601 string for any date-like value.
+
+    BugHunt 2026-05-24: yfinance often hands back calendar values as
+    single-element lists like ``[datetime.date(2026, 7, 30)]``. The previous
+    implementation fell through to ``str(value)`` and emitted the literal
+    Python repr ``"[datetime.date(2026, 7, 30)]"`` into the UI. We now unwrap
+    one-element list/tuple/set/Series values and ISO-format each candidate
+    before stringifying.
+    """
     if value is None:
         return None
+    if isinstance(value, (list, tuple, set)):
+        for item in value:
+            if item is None:
+                continue
+            converted = _date_value(item)
+            if converted:
+                return converted
+        return None
+    if hasattr(value, "tolist"):
+        try:
+            unwrapped = value.tolist()
+        except Exception:
+            unwrapped = None
+        if isinstance(unwrapped, list):
+            return _date_value(unwrapped)
     if hasattr(value, "isoformat"):
         try:
             return value.isoformat()
         except Exception:
             pass
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
     text = str(value).strip()
     return text or None
 
 
 def _scalar_value(value: Any) -> Any:
-    if isinstance(value, (dict, list, tuple, set)):
+    if isinstance(value, (list, tuple, set)):
+        # BugHunt 2026-05-24: yfinance calendar values are wrapped in
+        # single-element lists. Returning them raw made the UI render the
+        # literal Python repr instead of a usable scalar/date. Try to ISO
+        # the inner date(s) if any; otherwise return the list of normalised
+        # scalars so downstream JSON encoding stays safe.
+        converted = [_scalar_value(item) for item in value]
+        if len(converted) == 1:
+            return converted[0]
+        return converted
+    if isinstance(value, dict):
         return value
     if hasattr(value, "item"):
         try:
@@ -169,8 +208,11 @@ def _scalar_value(value: Any) -> Any:
             pass
     if hasattr(value, "isoformat"):
         return _date_value(value)
-    if pd.isna(value):
-        return None
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
     return value
 
 

@@ -19,9 +19,18 @@ class READFunction(BaseFunction):
     category = "news"
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
-        watchlist: list[str] = params.get("watchlist") or ["AAPL", "MSFT", "BTCUSDT"]
-        if isinstance(watchlist, str):
-            watchlist = [s.strip() for s in watchlist.split(",") if s.strip()]
+        # BugHunt 2026-05-24: READ used to accept only the legacy `watchlist=`
+        # parameter; callers passing the standard `symbols=AAPL,MSFT` query
+        # string had their list silently dropped and got the hardcoded
+        # ["AAPL","MSFT","BTCUSDT"] default. Treat both as equivalent — if
+        # `symbols=` is provided it wins, otherwise we honour `watchlist=`,
+        # otherwise the default. Both string ("a,b,c") and list inputs are
+        # accepted.
+        watchlist = _parse_symbol_list(
+            params.get("symbols") if params.get("symbols") is not None else params.get("watchlist")
+        )
+        if not watchlist:
+            watchlist = ["AAPL", "MSFT", "BTCUSDT"]
         max_age_days = _int_param(params.get("max_age_days", params.get("days", 14)), default=14, min_value=1, max_value=365)
         cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
         if not _truthy(params.get("live_news") or params.get("live")):
@@ -99,6 +108,23 @@ def _truthy(value: Any) -> bool:
     if value is None:
         return False
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _parse_symbol_list(value: Any) -> list[str]:
+    """Normalize symbol list payload from string CSV or iterable into upper-case list."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [s.strip().upper() for s in value.split(",") if s.strip()]
+    if isinstance(value, (list, tuple, set)):
+        out: list[str] = []
+        for item in value:
+            text = str(item or "").strip().upper()
+            if text:
+                out.append(text)
+        return out
+    text = str(value).strip().upper()
+    return [text] if text else []
 
 
 def _int_param(value: Any, *, default: int, min_value: int, max_value: int) -> int:

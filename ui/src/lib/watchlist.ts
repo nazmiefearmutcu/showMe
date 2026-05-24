@@ -9,6 +9,7 @@
  * shape.
  */
 import { invoke, isInTauri } from "./tauri";
+import { safeReadLocal } from "./safe-storage";
 
 const KEY = "showme.watchlist";
 
@@ -23,16 +24,11 @@ interface Bundle {
 }
 
 function readLocal(): Bundle {
-  if (typeof localStorage === "undefined") return { rows: [] };
-  try {
-    const raw = localStorage.getItem(KEY);
-    if (!raw) return { rows: [] };
-    const p = JSON.parse(raw);
-    if (Array.isArray(p?.rows)) return p as Bundle;
-  } catch {
-    /* fall through */
-  }
-  return { rows: [] };
+  return safeReadLocal<Bundle>(KEY, { rows: [] }, {
+    label: "Watchlist",
+    validate: (v): v is Bundle =>
+      Boolean(v && typeof v === "object" && Array.isArray((v as { rows?: unknown }).rows)),
+  });
 }
 
 function writeLocal(bundle: Bundle): void {

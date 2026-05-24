@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 from showme.engine.agents.code import CodeAgent
@@ -15,6 +16,8 @@ from showme.engine.agents.search import SearchAgent
 from showme.engine.agents.summarizer import SummarizerAgent
 from showme.engine.agents.viz import VizAgent
 from showme.engine.core.base_agent import AgentResult, AgentTask
+
+LOG = logging.getLogger("showme.engine.agents.orchestrator")
 
 
 class Orchestrator:
@@ -69,6 +72,13 @@ class Orchestrator:
             end = text.rfind("]")
             if start >= 0 and end > start:
                 return json.loads(text[start : end + 1])
-        except Exception:
+        except Exception:  # noqa: BLE001
+            # QA-fix: log parse failures so the orchestrator no longer
+            # silently falls through to summariser when the planner returns
+            # malformed JSON.
+            LOG.warning(
+                "planner output unparseable; falling back to summariser-only path",
+                exc_info=True,
+            )
             return []
         return []

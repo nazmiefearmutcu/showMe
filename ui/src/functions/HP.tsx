@@ -47,6 +47,7 @@ import {
 import { useFunction } from "@/lib/useFunction";
 import { defaultSymbolForFunction } from "@/lib/symbols";
 import { useLiveQuote, type TransportState } from "@/lib/market-data";
+import { useEscape, useFocusTrap } from "@/lib/a11y";
 import { SymbolBar } from "@/shell/SymbolBar";
 import { buildCsv, type HPRow } from "./HP.csv";
 import {
@@ -57,6 +58,7 @@ import {
 import { usePersistentOption } from "./function-control-state";
 import type { FunctionPaneProps } from "./registry-types";
 import { alpha, useChartPalette, type ChartPalette } from "@/lib/chart-palette";
+import { formatPrice } from "@/lib/format";
 
 const RANGES = [
   { id: "1M", label: "1M", days: 30 },
@@ -755,12 +757,25 @@ function ChartToolbar({
           onChange={(id) => onDepthChange(id as DepthId)}
         />
       </div>
-      <div className="u-position-relative">
+      <div
+        className="u-position-relative"
+        onKeyDown={(e) => {
+          // A11Y: Esc closes the indicators dropdown (QA report noted this
+          // was previously click-outside only). Stop-propagation so the
+          // pane's parent keydown handlers don't double-fire.
+          if (e.key === "Escape" && indicatorOpen) {
+            e.stopPropagation();
+            onIndicatorOpen(false);
+          }
+        }}
+      >
         <button
           type="button"
           onClick={() => onIndicatorOpen(!indicatorOpen)}
           style={toolbarButtonStyle}
           title="Indicators"
+          aria-haspopup="menu"
+          aria-expanded={indicatorOpen}
         >
           Indicators
           <span className="hp-ind-count">
@@ -768,7 +783,12 @@ function ChartToolbar({
           </span>
         </button>
         {indicatorOpen && (
-          <div style={indicatorMenuStyle}>
+          <div
+            style={indicatorMenuStyle}
+            role="menu"
+            aria-label="Indicators"
+            data-testid="hp-indicators-menu"
+          >
             {INDICATOR_PRESETS.map((name) => {
               const active = activeIndicators.includes(name);
               return (
@@ -833,6 +853,7 @@ function ComparePopup({
 }) {
   const [draft, setDraft] = useState("");
   const containerRef = useRef<HTMLDivElement>(null);
+  const popupRef = useRef<HTMLDivElement>(null);
   const full = comparedSymbols.length >= MAX_COMPARE;
   // Session 16 BugHunt: compare chip dots / borders must follow the
   // active chart palette. The popup is a sibling of HPPane so it cannot
@@ -852,6 +873,11 @@ function ComparePopup({
     document.addEventListener("mousedown", onDocClick);
     return () => document.removeEventListener("mousedown", onDocClick);
   }, [open, onOpen]);
+
+  // A11Y: Esc closes the dialog + Tab is trapped inside while open.
+  // The compare popup was missing Esc per the QA report.
+  useEscape(open, () => onOpen(false));
+  useFocusTrap(popupRef, open);
 
   const submit = () => {
     if (!draft.trim() || full) return;
@@ -873,7 +899,14 @@ function ComparePopup({
         Compare {comparedSymbols.length > 0 ? `(${comparedSymbols.length})` : "+"}
       </button>
       {open && (
-        <div style={comparePopupStyle} role="dialog" aria-label="Compare symbols">
+        <div
+          ref={popupRef}
+          style={comparePopupStyle}
+          role="dialog"
+          aria-label="Compare symbols"
+          aria-modal="false"
+          data-testid="hp-compare-popup"
+        >
           <div style={comparePopupHeaderStyle}>
             <span>COMPARE OVERLAY</span>
             <span style={comparePopupHintStyle}>
@@ -1732,7 +1765,12 @@ export function PriceChart({
           </button>
         </div>
       </div>
-      <div ref={hostRef} style={chartHostStyle} />
+      <div
+        ref={hostRef}
+        style={chartHostStyle}
+        role="img"
+        aria-label={`Price chart, ${interval} interval, ${chartRows.length} bars`}
+      />
     </>
   );
 }
@@ -1778,11 +1816,9 @@ function decorate(
 }
 
 function fmtNum(v: number | undefined | null): string {
-  if (v == null || !Number.isFinite(v)) return "—";
-  return v.toLocaleString(undefined, {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 4,
-  });
+  // Adaptive precision — sub-cent assets (PENGU $0.000620) keep digits
+  // instead of collapsing to "0.0006" with maxFractionDigits:4.
+  return formatPrice(v);
 }
 
 function fmtVolume(v: number | undefined | null): string {

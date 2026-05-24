@@ -22,6 +22,7 @@ import {
 } from "@/design-system";
 import { useFunction } from "@/lib/useFunction";
 import { defaultSymbolForFunction } from "@/lib/symbols";
+import { useLiveQuote, type TransportState } from "@/lib/market-data";
 import { SymbolBar } from "@/shell/SymbolBar";
 import {
   FunctionControlGroup,
@@ -30,6 +31,7 @@ import {
 } from "./function-controls";
 import { XSenChip } from "./XSenChip";
 import type { FunctionPaneProps } from "./registry-types";
+import { formatCurrency, formatMissing } from "@/lib/format";
 
 interface DESData {
   status?: string;
@@ -92,17 +94,13 @@ const isCryptoProfile = (data?: DESData) =>
 
 const fmtNum = (n?: number | null) =>
   n == null || !Number.isFinite(n)
-    ? "—"
+    ? formatMissing
     : Number(n).toLocaleString(undefined, { maximumFractionDigits: 2 });
 
-const fmtMcap = (n?: number | null) => {
-  if (n == null || !Number.isFinite(n)) return "—";
-  const a = Math.abs(n);
-  if (a >= 1e12) return `$${(n / 1e12).toFixed(2)}T`;
-  if (a >= 1e9) return `$${(n / 1e9).toFixed(2)}B`;
-  if (a >= 1e6) return `$${(n / 1e6).toFixed(2)}M`;
-  return `$${fmtNum(n)}`;
-};
+// Delegates to `formatCurrency` so negative market caps render as "-$1.50T"
+// (sign-first) instead of the local rolled-own "$-1.50T".
+const fmtMcap = (n?: number | null) =>
+  formatCurrency(n, { compact: true, fractionDigits: 2 });
 
 const fmtPct = (n?: number | null) => {
   if (n == null || !Number.isFinite(n)) return "—";
@@ -169,7 +167,17 @@ export function DESPane({ code, symbol }: FunctionPaneProps) {
     profile?.regularMarketChangePercent ??
     (last != null && prev ? ((last - prev) / prev) * 100 : null);
   const change = last != null && prev != null ? last - prev : null;
-  const hasLive = last != null && payloadStatus === "ok";
+  // S12 alignment (HP/GP already migrated): the prior `hasLive` flag was
+  // derived from `payloadStatus === "ok"`, which is the same misleading
+  // "real-time session" wording HP shipped before S12. Replace with the
+  // canonical `useLiveQuote` transport state so the pill reports honest
+  // RT LIVE / RECONNECTING / STALE / SNAPSHOT ONLY / OFFLINE.
+  const liveQuote = useLiveQuote(effectiveSymbol, {
+    enabled: !!effectiveSymbol,
+  });
+  const transportState: TransportState = liveQuote.transportState;
+  const snapshotOnly =
+    payloadStatus === "ok" && last != null && transportState === "idle";
 
   const body = !effectiveSymbol ? (
     <Empty
@@ -264,11 +272,7 @@ export function DESPane({ code, symbol }: FunctionPaneProps) {
                   {profile.sector}
                 </Pill>
               )}
-              {hasLive && (
-                <Pill tone="positive" variant="soft">
-                  RT SESSION
-                </Pill>
-              )}
+              <TransportPill state={transportState} snapshotOnly={snapshotOnly} />
             </div>
             <div className="u-flex u-items-center u-gap-14">
               {last != null && (
@@ -313,6 +317,60 @@ export function DESPane({ code, symbol }: FunctionPaneProps) {
       </Pane>
     </div>
   );
+}
+
+/**
+ * S12-aligned transport pill. Reports honest live-channel state instead
+ * of the misleading legacy badge DES carried before this fix:
+ *   - RT LIVE        — WebSocket open + ticking
+ *   - RECONNECTING   — WS dropped, retrying
+ *   - STALE          — last tick older than the channel's freshness budget
+ *   - SNAPSHOT ONLY  — historical payload available, no live channel
+ *   - OFFLINE        — no transport at all (default-symbol cold path)
+ */
+function TransportPill({
+  state,
+  snapshotOnly,
+}: {
+  state: TransportState;
+  snapshotOnly: boolean;
+}) {
+  if (state === "live") {
+    return (
+      <span data-testid="des-transport-pill" data-state="live">
+        <Pill tone="positive" variant="soft">RT LIVE</Pill>
+      </span>
+    );
+  }
+  if (state === "stale") {
+    return (
+      <span data-testid="des-transport-pill" data-state="stale">
+        <Pill tone="warn" variant="soft">STALE</Pill>
+      </span>
+    );
+  }
+  if (state === "reconnecting" || state === "connecting") {
+    return (
+      <span data-testid="des-transport-pill" data-state={state}>
+        <Pill tone="warn" variant="soft">RECONNECTING</Pill>
+      </span>
+    );
+  }
+  if (state === "offline" || state === "error") {
+    return (
+      <span data-testid="des-transport-pill" data-state="offline">
+        <Pill tone="negative" variant="soft">OFFLINE</Pill>
+      </span>
+    );
+  }
+  if (snapshotOnly) {
+    return (
+      <span data-testid="des-transport-pill" data-state="snapshot">
+        <Pill tone="warn" variant="soft">SNAPSHOT ONLY</Pill>
+      </span>
+    );
+  }
+  return null;
 }
 
 function DESView({ data }: { data?: DESData }) {

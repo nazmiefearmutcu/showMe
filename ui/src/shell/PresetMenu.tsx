@@ -6,6 +6,7 @@
 import { useEffect, useRef, useState } from "react";
 import { listPresets, loadPreset, savePreset, deletePreset } from "@/lib/presets";
 import { toast } from "@/lib/toast";
+import { useEscape, useFocusTrap } from "@/lib/a11y";
 
 import type { PresetSummary } from "@/lib/presets";
 
@@ -14,6 +15,7 @@ export function PresetMenu() {
   const [name, setName] = useState("");
   const [presets, setPresets] = useState<PresetSummary[]>([]);
   const ref = useRef<HTMLDivElement>(null);
+  const popupRef = useRef<HTMLDivElement>(null);
 
   const refresh = () => {
     listPresets().then(setPresets).catch(() => setPresets([]));
@@ -33,6 +35,10 @@ export function PresetMenu() {
     window.addEventListener("mousedown", onClick);
     return () => window.removeEventListener("mousedown", onClick);
   }, [open]);
+
+  // A11Y — Esc closes the dropdown; Tab is trapped inside while open.
+  useEscape(open, () => setOpen(false));
+  useFocusTrap(popupRef, open);
 
   const onSave = async () => {
     const trimmed = name.trim();
@@ -58,7 +64,13 @@ export function PresetMenu() {
         ⌘ Layout
       </button>
       {open && (
-        <div className="preset-menu">
+        <div
+          ref={popupRef}
+          className="preset-menu"
+          role="dialog"
+          aria-label="Layout presets"
+          data-testid="preset-menu-popup"
+        >
           <div className="preset-menu__head">
             <input
               value={name}

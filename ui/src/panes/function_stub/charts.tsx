@@ -4,12 +4,15 @@ import {
   type CandlestickData,
   type HistogramData,
   type LineData,
+  type IChartApi,
+  type ISeriesApi,
 } from "lightweight-charts";
 import {
   measureChartElement,
   resizeChartToElement,
 } from "@/lib/chart-layout";
 import { alpha, useChartPalette } from "@/lib/chart-palette";
+import { getCandlePriceFormat } from "@/lib/format-helpers";
 import { ResizableChartFrame } from "@/design-system";
 import {
   chartAxis,
@@ -56,7 +59,14 @@ function LightweightSeriesChart({ chartId, series }: { chartId: string; series: 
   const last = series.points.at(-1)?.y ?? 0;
   const delta = last - first;
   const intradayTime = series.points.some((point) => typeof point.time === "number");
+  const paletteKey = Object.values(palette).join("|");
 
+  const chartRef = useRef<IChartApi | null>(null);
+  const seriesRef = useRef<ISeriesApi<"Candlestick" | "Line"> | null>(null);
+  const volSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
+  const firstSeedFocusedRef = useRef(false);
+
+  // 1. Rebuild effect: when series.kind or palette changes, recreate the chart and series structures.
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -85,16 +95,70 @@ function LightweightSeriesChart({ chartId, series }: { chartId: string; series: 
       height: size.height,
     });
 
+    chartRef.current = chart;
+    firstSeedFocusedRef.current = false; // Reset framing for new chart instance
+
     if (series.kind === "ohlc") {
-      const candleSeries = chart.addCandlestickSeries({
+      // Derive precision from the last close so sub-cent assets keep digits
+      // on the price axis (PENGU $0.000620 → precision 8) instead of
+      // collapsing to "0.00" with lightweight-charts' default precision 2.
+      const candle = chart.addCandlestickSeries({
         upColor: palette.positive,
         downColor: palette.negative,
         borderUpColor: palette.positive,
         borderDownColor: palette.negative,
         wickUpColor: palette.positive,
         wickDownColor: palette.negative,
+        priceFormat: getCandlePriceFormat(last),
       });
-      candleSeries.setData(
+      seriesRef.current = candle;
+
+      const vol = chart.addHistogramSeries({
+        priceScaleId: "volume",
+        color: palette.volNeutral,
+        priceFormat: { type: "volume" },
+      });
+      volSeriesRef.current = vol;
+
+      chart.priceScale("volume").applyOptions({
+        scaleMargins: { top: 0.78, bottom: 0 },
+      });
+    } else {
+      const line = chart.addLineSeries({
+        color: delta >= 0 ? palette.positive : palette.negative,
+        lineWidth: 2,
+        priceLineVisible: false,
+        priceFormat: getCandlePriceFormat(last),
+      });
+      seriesRef.current = line;
+      volSeriesRef.current = null;
+    }
+
+    const ro = new ResizeObserver(() => {
+      resizeChartToElement(chart, el, 460);
+    });
+    ro.observe(el);
+
+    return () => {
+      ro.disconnect();
+      chart.remove();
+      chartRef.current = null;
+      seriesRef.current = null;
+      volSeriesRef.current = null;
+    };
+  }, [series.kind, paletteKey]);
+
+  // 2. Data effect: when points, delta, or series.kind changes, update the series data.
+  useEffect(() => {
+    const chart = chartRef.current;
+    const sRef = seriesRef.current;
+    if (!chart || !sRef) return;
+
+    if (series.kind === "ohlc") {
+      // Refresh priceFormat in case last close magnitude crossed a precision
+      // threshold (e.g. user pivots symbol mid-instance from BTC to PENGU).
+      sRef.applyOptions({ priceFormat: getCandlePriceFormat(last) });
+      sRef.setData(
         series.points
           .filter(hasOhlcPoint)
           .map<CandlestickData>((point) => ({
@@ -105,6 +169,7 @@ function LightweightSeriesChart({ chartId, series }: { chartId: string; series: 
             close: point.close,
           })),
       );
+
       const volume = series.points
         .filter(hasVolumePoint)
         .map<HistogramData>((point) => ({
@@ -115,24 +180,11 @@ function LightweightSeriesChart({ chartId, series }: { chartId: string; series: 
               ? alpha(palette.positive, 0.35)
               : alpha(palette.negative, 0.35),
         }));
-      if (volume.length > 0) {
-        const volSeries = chart.addHistogramSeries({
-          priceScaleId: "volume",
-          color: palette.volNeutral,
-          priceFormat: { type: "volume" },
-        });
-        chart.priceScale("volume").applyOptions({
-          scaleMargins: { top: 0.78, bottom: 0 },
-        });
-        volSeries.setData(volume);
+      if (volSeriesRef.current) {
+        volSeriesRef.current.setData(volume);
       }
     } else {
-      const line = chart.addLineSeries({
-        color: delta >= 0 ? palette.positive : palette.negative,
-        lineWidth: 2,
-        priceLineVisible: false,
-      });
-      line.setData(
+      sRef.setData(
         series.points
           .filter(hasTimePoint)
           .map<LineData>((point) => ({
@@ -140,18 +192,31 @@ function LightweightSeriesChart({ chartId, series }: { chartId: string; series: 
             value: point.y,
           })),
       );
+      sRef.applyOptions({
+        color: delta >= 0 ? palette.positive : palette.negative,
+        priceFormat: getCandlePriceFormat(last),
+      });
     }
 
-    focusLatestBars(chart, series.points.length, size.width);
-    const ro = new ResizeObserver(() => {
-      resizeChartToElement(chart, el, 460);
+    // Framing: only run focusLatestBars for the first data seed on this chart instance
+    if (!firstSeedFocusedRef.current && series.points.length > 0) {
+      firstSeedFocusedRef.current = true;
+      const el = containerRef.current;
+      const width = el ? measureChartElement(el, 460).width : 460;
+      focusLatestBars(chart, series.points.length, width);
+    }
+  }, [series.points, delta, series.kind, paletteKey]);
+
+  // 3. Option effect: when intradayTime changes, toggle timeScale.timeVisible.
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart) return;
+    chart.applyOptions({
+      timeScale: {
+        timeVisible: intradayTime,
+      },
     });
-    ro.observe(el);
-    return () => {
-      ro.disconnect();
-      chart.remove();
-    };
-  }, [series, delta, intradayTime, palette]);
+  }, [intradayTime]);
 
   return (
     <ResizableChartFrame
@@ -165,11 +230,16 @@ function LightweightSeriesChart({ chartId, series }: { chartId: string; series: 
       ariaLabel="Resize chart"
     >
       <ChartTitle series={series} last={last} min={min} max={max} delta={delta} />
-      <div ref={containerRef} style={lightweightChartHost} />
+      <div
+        ref={containerRef}
+        style={lightweightChartHost}
+        role="img"
+        aria-label={`${series.kind} chart for ${series.yKey ?? "series"}, ${series.points.length} points`}
+      />
       <div style={chartAxis}>
-        <span>{series.points[0]?.xLabel ?? "-"}</span>
+        <span>{series.points[0]?.xLabel ?? "—"}</span>
         <span>{series.xKey ? `${series.xKey} / ${series.yKey}` : series.yKey}</span>
-        <span>{series.points.at(-1)?.xLabel ?? "-"}</span>
+        <span>{series.points.at(-1)?.xLabel ?? "—"}</span>
       </div>
     </ResizableChartFrame>
   );
@@ -231,9 +301,9 @@ function BarChart({ chartId, series }: { chartId: string; series: ChartSeries })
         })}
       </svg>
       <div style={chartAxis}>
-        <span>{series.points[0]?.xLabel ?? "-"}</span>
+        <span>{series.points[0]?.xLabel ?? "—"}</span>
         <span>{series.labelKey ? `${series.labelKey} / ${series.yKey}` : series.yKey}</span>
-        <span>{series.points.at(-1)?.xLabel ?? "-"}</span>
+        <span>{series.points.at(-1)?.xLabel ?? "—"}</span>
       </div>
     </ResizableChartFrame>
   );
@@ -309,9 +379,9 @@ function CurveChart({ chartId, series }: { chartId: string; series: ChartSeries 
         ))}
       </svg>
       <div style={chartAxis}>
-        <span>{points[0]?.xLabel ?? "-"}</span>
+        <span>{points[0]?.xLabel ?? "—"}</span>
         <span>{series.xKey ? `${series.xKey} / ${series.yKey}` : series.yKey}</span>
-        <span>{points.at(-1)?.xLabel ?? "-"}</span>
+        <span>{points.at(-1)?.xLabel ?? "—"}</span>
       </div>
     </ResizableChartFrame>
   );
@@ -355,9 +425,9 @@ function HeatmapChart({ chartId, series }: { chartId: string; series: ChartSerie
         })}
       </div>
       <div style={chartAxis}>
-        <span>{series.points[0]?.xLabel ?? "-"}</span>
+        <span>{series.points[0]?.xLabel ?? "—"}</span>
         <span>{series.labelKey ? `${series.labelKey} / ${series.yKey}` : series.yKey}</span>
-        <span>{series.points.at(-1)?.xLabel ?? "-"}</span>
+        <span>{series.points.at(-1)?.xLabel ?? "—"}</span>
       </div>
     </ResizableChartFrame>
   );

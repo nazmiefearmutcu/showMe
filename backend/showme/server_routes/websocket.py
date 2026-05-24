@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import os
 from datetime import datetime, timezone
 from typing import Any
 
@@ -79,12 +80,25 @@ def register(app: FastAPI, deps: AppDeps) -> None:
         ):
             await websocket.close(code=4400)
             return
+        # QA-fix: Origin header is now MANDATORY for the /ws/quote stream.
+        # Previously a missing header was treated as "non-browser client" and
+        # passed through, which let any local process bypass the CORS-style
+        # allowlist. Browser/Tauri clients always send Origin; legitimate
+        # internal test code can set SHOWME_WS_REQUIRE_ORIGIN=0 to opt out.
         origin = websocket.headers.get("origin")
-        # Allow non-browser clients (no Origin header) so the Tauri sidecar
-        # tester / pytest WS client still work; reject any explicitly-set
-        # Origin that is not on the allowlist.
+        require_origin = os.environ.get(
+            "SHOWME_WS_REQUIRE_ORIGIN", "1"
+        ).strip().lower() not in {"0", "false", "no", "off"}
+        if require_origin and not origin:
+            LOG.warning("ws_quote %s rejected: missing Origin header", symbol)
+            # 1008 = policy violation (RFC 6455). Tests assert this code.
+            await websocket.close(code=1008)
+            return
         if origin is not None and origin not in deps.ws_allowed_origins:
-            await websocket.close(code=4403)
+            LOG.warning(
+                "ws_quote %s rejected: Origin %r not in allowlist", symbol, origin
+            )
+            await websocket.close(code=1008)
             return
         await websocket.accept()
         hub = deps.get_stream_hub() if deps.get_stream_hub else None

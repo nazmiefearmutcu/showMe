@@ -1,4 +1,9 @@
-"""Performance routes tests."""
+"""Performance routes tests.
+
+Faz 5 — Stale test alignment. Original tests pinned placeholder
+``strategy_id="s1"`` / ``credential_id="c1"`` that no longer pass S5
+FK validation. Now we seed a real strategy + credential per fixture.
+"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -9,22 +14,67 @@ from fastapi.testclient import TestClient
 from showme.server import build_app
 
 
+_STRATEGY_BODY = {
+    "name": "RSI mean revert (test fixture)",
+    "indicators": [{"alias": "rsi14", "id": "rsi", "params": {"period": 14}}],
+    "entry_rules": [{"kind": "crosses_below", "left": "rsi14", "right": "literal:30"}],
+    "exit_rules": [{"kind": "crosses_above", "left": "rsi14", "right": "literal:70"}],
+    "exit_logic": "any",
+}
+
+
 @pytest.fixture
 def client(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("SHOWME_HOME", str(tmp_path))
     monkeypatch.setenv("SHOWME_AUTH_TOKEN", "test-token")
     monkeypatch.setenv("SHOWME_CREDENTIAL_BACKEND", "memory")
+    # Reset factory module state.
+    from showme.brokers import factory as factory_mod
+    factory_mod._DYNAMIC.clear()
+    factory_mod._LIVE.clear()
+    for name in list(factory_mod._REGISTRY.keys()):
+        if ":" in name:
+            factory_mod._REGISTRY.pop(name, None)
     import showme.bots.lifespan as lifespan
     lifespan._RUNNER = None
     app = build_app(engine_root=None)
     return TestClient(app, headers={"X-ShowMe-Token": "test-token"})
 
 
-def _create_bot(client, symbol="BTC/USDT"):
+def _seed_strategy(client) -> str:
+    r = client.post("/api/strategies", json=_STRATEGY_BODY)
+    assert r.status_code == 200, r.text
+    return r.json()["id"]
+
+
+def _seed_credential() -> str:
+    from showme.brokers import CredentialStore
+    store = CredentialStore.fresh()
+    rec = store.add(
+        exchange_id="binance",
+        account_label="main",
+        secrets={"apiKey": "k", "secret": "s"},
+        permissions=("read", "trade"),
+    )
+    return rec.id
+
+
+@pytest.fixture
+def seeded(client):
+    """Shared FK fixture for bot creation in this module."""
+    return {
+        "strategy_id": _seed_strategy(client),
+        "credential_id": _seed_credential(),
+        "exchange_id": "binance",
+    }
+
+
+def _create_bot(client, seeded, symbol="BTC/USDT"):
     r = client.post("/api/bots", json={
-        "strategy_id": "s1", "credential_id": "c1", "exchange_id": "binance",
+        **seeded,
         "symbol": symbol, "timeframe": "1h", "tick_interval_seconds": 60,
     })
+    assert r.status_code == 200, r.text
     return r.json()["id"]
 
 
@@ -47,9 +97,9 @@ def test_leaderboard_empty(client):
     assert r.json()["records"] == []
 
 
-def test_leaderboard_with_two_bots(client):
-    a = _create_bot(client, "BTC/USDT")
-    b = _create_bot(client, "ETH/USDT")
+def test_leaderboard_with_two_bots(client, seeded):
+    a = _create_bot(client, seeded, "BTC/USDT")
+    b = _create_bot(client, seeded, "ETH/USDT")
     _push_signals(a, [
         ("entry", 100.0, "2026-05-22T10:00:00Z"),
         ("exit", 110.0, "2026-05-22T11:00:00Z"),
@@ -68,8 +118,8 @@ def test_leaderboard_with_two_bots(client):
     assert body["records"][1]["total_pnl"] < 0
 
 
-def test_bot_performance_detail(client):
-    bid = _create_bot(client)
+def test_bot_performance_detail(client, seeded):
+    bid = _create_bot(client, seeded)
     _push_signals(bid, [
         ("entry", 100.0, "t1"),
         ("exit", 110.0, "t2"),

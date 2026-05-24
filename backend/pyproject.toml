@@ -33,6 +33,7 @@ dependencies = [
 dev = [
     "pytest>=8",
     "pytest-asyncio>=0.24",
+    "pytest-cov>=5",
     "ruff>=0.7",
     "pyinstaller>=6.11",
 ]
@@ -45,9 +46,48 @@ build-backend = "setuptools.build_meta"
 include = ["showme*"]
 
 [tool.ruff]
+# Agent J 2026-05-23: engine/ is no longer wholesale ruff-exempt.
+# Engine has ~410 .py files (TBV3 ports) that previously bypassed lint
+# entirely. We bring it into scope but disable the noisiest rules in
+# `[tool.ruff.lint.per-file-ignores]` below so adopting it stays a
+# zero-pain operation. Specific rule curation can happen later.
 line-length = 100
 target-version = "py311"
-extend-exclude = ["showme/engine"]
+
+[tool.ruff.lint.per-file-ignores]
+# Engine is mass-ported numerical code from TBV3; we keep import order
+# and unused-import warnings off there to avoid a mass-rewrite. The
+# real `select`/`ignore` policy lives at the project default.
+"showme/engine/**" = ["E501", "E701", "E702", "E731", "E741", "F401", "F403", "F405", "F811", "F841", "E402"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# Agent J 2026-05-23: coverage tooling installed.
+# Coverage gate enforced by CI (see .github/workflows/ci.yml); we keep
+# `--cov-fail-under` off the default `addopts` so local pytest invocations
+# don't fail on individual subsystem runs. CI applies the threshold.
+addopts = "--cov=showme --cov-report=term-missing --cov-report=xml --cov-config=pyproject.toml"
+
+[tool.coverage.run]
+source = ["showme"]
+branch = true
+omit = [
+    "*/tests/*",
+    "*/__init__.py",
+    "showme/server_routes/__init__.py",
+    "*/engine/*",
+    "*/conftest.py",
+    "showme/__main__.py",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+    "@overload",
+    "\\.\\.\\.",
+]
+show_missing = true
+skip_covered = false

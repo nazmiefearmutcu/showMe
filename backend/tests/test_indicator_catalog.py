@@ -7,7 +7,7 @@ import pytest
 
 from showme.indicators.catalog.loader import (
     IndicatorCatalog, IndicatorCatalogError, IndicatorEntry,
-    IndicatorParam, load_indicator_catalog,
+    load_indicator_catalog,
 )
 
 YAML = """
@@ -54,21 +54,24 @@ def test_load_parses(tmp_path: Path):
 
 
 def test_by_id_missing_raises(tmp_path: Path):
-    f = tmp_path / "ind.yml"; f.write_text(YAML)
+    f = tmp_path / "ind.yml"
+    f.write_text(YAML)
     cat = load_indicator_catalog(f)
     with pytest.raises(KeyError):
         cat.by_id("missing")
 
 
 def test_search_by_family(tmp_path: Path):
-    f = tmp_path / "ind.yml"; f.write_text(YAML)
+    f = tmp_path / "ind.yml"
+    f.write_text(YAML)
     cat = load_indicator_catalog(f)
     hits = cat.search("momentum")
     assert {e.id for e in hits} == {"rsi", "macd"}
 
 
 def test_filter_by_family(tmp_path: Path):
-    f = tmp_path / "ind.yml"; f.write_text(YAML)
+    f = tmp_path / "ind.yml"
+    f.write_text(YAML)
     cat = load_indicator_catalog(f)
     hits = cat.filter(family="momentum")
     assert {e.id for e in hits} == {"rsi", "macd"}
