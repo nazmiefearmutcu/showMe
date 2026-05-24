@@ -28,12 +28,18 @@ import numpy as np
 
 
 def _trend_label(close: np.ndarray) -> tuple[str, float]:
+    """50d vs 200d MA spread → BULL / BEAR / SIDEWAYS / UNKNOWN.
+
+    Audit Q3 #5: the legacy MA200 was literally `close.mean()` because of a
+    `close[-min(len(close), len(close)):]` slice. Real long-run trend was
+    never measured. We now require a real 200-bar window; with fewer bars we
+    return UNKNOWN so the composite/confidence helpers can flag insufficient
+    history honestly.
+    """
     if len(close) < 200:
-        ma50 = close[-min(50, len(close)):].mean()
-        ma200 = close[-min(len(close), len(close)):].mean()
-    else:
-        ma50 = close[-50:].mean()
-        ma200 = close[-200:].mean()
+        return "UNKNOWN", 0.0
+    ma50 = float(close[-50:].mean())
+    ma200 = float(close[-200:].mean())
     spread = (ma50 / ma200 - 1.0) * 100 if ma200 else 0.0
     if spread > 1.0:
         return "BULL", spread
@@ -82,7 +88,10 @@ def composite(trend: str, vol: str, dd: str, curve: str) -> str | None:
     # Bug #22 fix: when vol/drawdown/curve are all UNKNOWN we used to fall
     # through to "Range-bound" and fabricate a regime. Return None instead
     # so callers can render "insufficient inputs" honestly.
+    # Audit Q3 #5: trend can now be UNKNOWN too (<200 bars of history).
     unknown_inputs = {vol, dd, curve}
+    if trend == "UNKNOWN":
+        return None
     if unknown_inputs == {"UNKNOWN"}:
         return None
     if trend == "BEAR" and dd == "CRISIS":
@@ -121,7 +130,18 @@ def classify(close: np.ndarray, *, spread_2s10s_bp: float | None = None) -> dict
     curve, spread = _curve_label(spread_2s10s_bp)
     regime = composite(trend, vol, dd, curve)
     confidence = _confidence(trend, vol, dd, curve)
-    data_state = "insufficient_inputs" if regime is None else "ok"
+    # Audit Q3 #5: surface the WHY when trend is UNKNOWN so the UI can pill
+    # "insufficient_history" specifically (different from "insufficient_inputs"
+    # which means we never got vol/dd/curve resolved).
+    if trend == "UNKNOWN":
+        data_state = "insufficient_history"
+        rationale = "insufficient_history"
+    elif regime is None:
+        data_state = "insufficient_inputs"
+        rationale = "insufficient_inputs"
+    else:
+        data_state = "ok"
+        rationale = "ok"
     return {
         "trend": trend, "ma50_vs_200_pct": ma_spread,
         "vol": vol, "realized_vol_pct": vol_pct,
@@ -129,6 +149,7 @@ def classify(close: np.ndarray, *, spread_2s10s_bp: float | None = None) -> dict
         "curve": curve, "curve_2s10s_bp": spread,
         "regime": regime,
         "confidence": confidence,
+        "confidence_rationale": rationale,
         "data_state": data_state,
     }
 

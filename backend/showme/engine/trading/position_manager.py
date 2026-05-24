@@ -73,13 +73,20 @@ class PositionManager:
             )
             effective_tp_pct = min_tp_pct
 
-        # Calculate liquidation price
+        # Calculate liquidation price.
+        # Q4 audit H15 fix: the previous formula ``(1-1/lev)/(1-maint_rate)``
+        # for long was non-standard. Binance's documented formula (isolated
+        # margin, single position, no other assets):
+        #   long:  liq = entry * (1 - 1/lev + maint_rate)
+        #   short: liq = entry * (1 + 1/lev - maint_rate)
+        # This gives a more conservative (closer-to-entry) liquidation than
+        # the legacy formula, matching the exchange's published reference.
         liquidation_price = None
         if leverage > 1:
             if side == PositionSide.LONG:
-                liquidation_price = entry_price * (1 - 1 / leverage) / (1 - maint_rate)
+                liquidation_price = entry_price * (1 - 1 / leverage + maint_rate)
             else:  # SHORT
-                liquidation_price = entry_price * (1 + 1 / leverage) / (1 + maint_rate)
+                liquidation_price = entry_price * (1 + 1 / leverage - maint_rate)
             liquidation_price = round(liquidation_price, 8)
 
         # Calculate raw SL/TP
@@ -149,11 +156,16 @@ class PositionManager:
         # can render it even when the export-time ticker fetch is empty.
         position.current_price = current_price
 
-        # Update unrealized PnL
+        # Update unrealized PnL.
+        # Q4 audit H16 fix: subtract cumulative funding when the legacy
+        # ``Position`` has tracked any (futures positions). Spot positions
+        # leave funding=0 so this is a no-op.
+        funding = float(getattr(position, "cumulative_funding_pnl", 0.0) or 0.0)
         if position.side == PositionSide.LONG:
-            position.unrealized_pnl = (current_price - position.entry_price) * position.quantity
+            gross = (current_price - position.entry_price) * position.quantity
         else:
-            position.unrealized_pnl = (position.entry_price - current_price) * position.quantity
+            gross = (position.entry_price - current_price) * position.quantity
+        position.unrealized_pnl = gross - funding
 
         # Check liquidation (emergency exit before exchange liquidates)
         if position.liquidation_price is not None:

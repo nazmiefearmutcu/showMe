@@ -60,13 +60,19 @@ class LiquidationPressureIndicator(BaseIndicator):
                 Signal.NEUTRAL, f"No liquidations in last {window_min}m"
             )
 
-        # Compute notional per side
-        # In Binance forceOrder, side='BUY' means a SHORT position was liquidated (forced buy-back)
-        # side='SELL' means a LONG was liquidated (forced sell)
-        # So:
-        #   BUY (short liquidations) → short squeeze pressure → bearish exhaustion → BUY signal
-        #   SELL (long liquidations) → long capitulation → bullish reversal → BUY signal
-        # We compute pure imbalance: big BUY-side liqs (shorts trapped) vs big SELL-side (longs trapped)
+        # Compute notional per side.
+        # In Binance forceOrder, side='BUY' means a SHORT position was
+        # liquidated (forced buy-back). side='SELL' means a LONG was
+        # liquidated (forced sell). The contrarian / mean-reversion read:
+        #   * Heavy SHORT_LIQ (BUY-side forceOrders) → short squeeze →
+        #     bears trapped → contrarian BUY (exhaustion top of a squeeze
+        #     is itself a buy for early-but-correct contrarians; we treat
+        #     short-squeezes as bullish capitulation per the v1 docstring).
+        #   * Heavy LONG_LIQ (SELL-side forceOrders) → long capitulation →
+        #     contrarian BUY.
+        # Both dominant patterns therefore emit BUY signals; the asymmetry
+        # was a Q1 audit finding (HIGH 11) where the bottom branch sent
+        # SELL despite the docstring saying BUY. Fixed below.
         try:
             liqs = liqs.copy()
             liqs["notional"] = liqs["price"].astype(float) * liqs["quantity"].astype(float)
@@ -100,7 +106,10 @@ class LiquidationPressureIndicator(BaseIndicator):
             "window_min": window_min,
         }
 
-        # Capitulation patterns
+        # Capitulation patterns — both directions are contrarian BUY
+        # signals per the indicator's stated mean-reversion premise
+        # (Q1 HIGH 11 fix: SHORT_LIQ dominant used to emit SELL, which
+        # contradicted the docstring "short squeeze → BUY contrarian").
         if dominant == "LONG_LIQ":
             # Heavy long liquidations → potential bottom (contrarian BUY)
             if ratio >= strong_imbalance:
@@ -115,17 +124,17 @@ class LiquidationPressureIndicator(BaseIndicator):
                     f"Long liquidation pressure ({ratio:.1f}× imbalance)",
                     raw,
                 )
-        else:  # SHORT_LIQ dominant
+        else:  # SHORT_LIQ dominant — bears trapped, contrarian BUY
             if ratio >= strong_imbalance:
                 return self._make_result(
-                    Signal.STRONG_SELL,
-                    f"Heavy short squeeze ({ratio:.1f}× imbalance, {short_liq:.0f} USDT)",
+                    Signal.STRONG_BUY,
+                    f"Heavy short squeeze, bears trapped ({ratio:.1f}× imbalance, {short_liq:.0f} USDT)",
                     raw,
                 )
             if ratio >= weak_imbalance:
                 return self._make_result(
-                    Signal.SELL,
-                    f"Short liquidation pressure ({ratio:.1f}× imbalance)",
+                    Signal.BUY,
+                    f"Short liquidation pressure, contrarian long ({ratio:.1f}× imbalance)",
                     raw,
                 )
 

@@ -314,7 +314,13 @@ class ExecutionEngine:
         return {"executed": False, "action": action.value, "reason": "Unhandled action"}
 
     def _adjust_quantity(self, quantity: float, symbol_info: Optional[dict]) -> float:
-        """Adjust quantity to meet exchange lot size requirements."""
+        """Adjust quantity to meet exchange lot size requirements.
+
+        Q4 audit H22 fix: the previous implementation rounded the floor-result
+        with banker's rounding which (a) could push qty back to non-step-size
+        values and (b) risked half-even bias on borderline lots. We now use
+        pure floor-by-step-size: ``floor(qty / step) * step``.
+        """
         if not symbol_info:
             return round(quantity, 6)
 
@@ -325,10 +331,19 @@ class ExecutionEngine:
 
         if quantity < min_qty:
             return 0.0
+        if step_size <= 0:
+            return max(quantity, 0.0)
 
-        # Round down to step size
-        precision = len(str(step_size).rstrip("0").split(".")[-1]) if "." in str(step_size) else 0
-        adjusted = round(quantity - (quantity % step_size), precision)
+        # Q4 audit H22: pure floor-by-step. No second round() — the step
+        # itself defines the precision.
+        steps = int(quantity / step_size)
+        adjusted = steps * step_size
+        # Avoid float drift like 0.30000000000000004 by re-applying the
+        # step's natural decimal precision when present.
+        step_str = f"{step_size:.10f}".rstrip("0")
+        if "." in step_str:
+            precision = len(step_str.split(".")[-1])
+            adjusted = round(adjusted, precision)
         return max(adjusted, 0.0)
 
     def _get_avg_fill_price(self, order_result: dict) -> float:

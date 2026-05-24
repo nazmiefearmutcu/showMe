@@ -141,7 +141,9 @@ class LeverageManager:
         }
         return known.get(symbol, DEFAULT_MAX_LEVERAGE)
 
-    def calculate_leverage(self, symbol: str, confidence: int) -> int:
+    def calculate_leverage(
+        self, symbol: str, confidence: int, sl_distance_pct: float | None = None,
+    ) -> int:
         """Calculate dynamic leverage based on confidence and symbol max leverage.
 
         Formula:
@@ -149,15 +151,20 @@ class LeverageManager:
           leverage = max_usable * (confidence / 100)
           leverage = clamp(min_leverage, max_exchange_leverage)
 
+        Q4 audit H14 fix: when ``sl_distance_pct`` is provided (e.g. 0.025 ==
+        2.5%), the leverage is additionally clamped so that the liquidation
+        price stays at least 2× the stop distance away from entry. Without
+        this clamp, a 100× leverage paired with a 2.5% SL means the SL is
+        25× past liquidation — the position liquidates before the stop fires.
+
+        Heuristic: liquidation_distance ≈ 1/leverage, so we require
+        ``1/leverage >= 2 × sl_distance_pct`` ⇒ ``leverage <= 0.5/sl_distance_pct``.
+        We additionally factor a small safety buffer (0.8 instead of 1.0)
+        to leave room for maintenance margin.
+
         Example (BTC, 125x max, scale_ratio=0.80):
           confidence=100% -> 125 * 0.80 * 1.00 = 100x
-          confidence=90%  -> 125 * 0.80 * 0.90 = 90x
-          confidence=50%  -> 125 * 0.80 * 0.50 = 50x
-          confidence=30%  -> 125 * 0.80 * 0.30 = 30x
-
-        Example (altcoin, 50x max):
-          confidence=100% -> 50 * 0.80 * 1.00 = 40x
-          confidence=50%  -> 50 * 0.80 * 0.50 = 20x
+          confidence=100%, sl=2.5% -> min(100, 0.8/0.025) = min(100, 32) = 32x
         """
         if not self.enabled:
             return 1
@@ -165,6 +172,16 @@ class LeverageManager:
         max_exchange = self.get_max_leverage(symbol)
         max_usable = max_exchange * self.scale_ratio
         raw_leverage = max_usable * (confidence / 100.0)
+
+        # Q4 audit H14: SL-distance-aware leverage cap.
+        if sl_distance_pct is not None and sl_distance_pct > 0:
+            sl_cap = 0.8 / float(sl_distance_pct)
+            if sl_cap < raw_leverage:
+                logger.info(
+                    f"Leverage capped by SL distance: sl={sl_distance_pct:.4%} "
+                    f"⇒ max={sl_cap:.2f}x (was {raw_leverage:.2f}x)"
+                )
+                raw_leverage = sl_cap
 
         # Clamp between min and max
         leverage = int(max(self.min_leverage, min(round(raw_leverage), max_exchange)))

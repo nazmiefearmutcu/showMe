@@ -131,19 +131,67 @@ class WACCFunction(BaseFunction):
                 beta_data_state = "synthetic_beta"
                 warnings.append(f"beta: {e}; WACC is using a synthetic β=1.0")
                 sources.append("synthetic_beta")
-        # Cost of debt — Aaa as proxy
-        rd = float(params.get("rd")) if params.get("rd") not in (None, "") else 0.05
-        try:
-            if self.deps.fred and params.get("rd") in (None, ""):
-                df = await asyncio.wait_for(
-                    self.deps.fred.series("AAA", frequency="d"),
-                    timeout=float(params.get("fred_timeout", 8)),
+        # Cost of debt — audit Q3 #17:
+        # 1) Prefer issuer-specific implied rate: interest_expense / total_debt
+        #    when both come from yfinance fundamentals.
+        # 2) Fall back to FRED BBB (BAMLC0A4CBBB) — closer to typical corp
+        #    issuer than AAA, which understates by 100–300 bp.
+        # 3) Last-resort fixed 0.055 (5.5%).
+        rd = float(params.get("rd")) if params.get("rd") not in (None, "") else None
+        rd_source = "user_input" if rd is not None else None
+        if rd is None and self.deps.yfinance:
+            try:
+                from showme.engine.core.base_data_source import DataKind, DataRequest
+                rd_data = await asyncio.wait_for(
+                    self.deps.yfinance.fetch(DataRequest(kind=DataKind.REFDATA, instrument=instrument)),
+                    timeout=float(params.get("yfinance_timeout", 8)),
                 )
-                rd = float(df["value"].iloc[-1]) / 100.0 if not df.empty else 0.05
-        except Exception as e:
-            warnings.append(f"fred AAA: {e}")
+                raw = (rd_data.extras or {}).get("raw", {}) if hasattr(rd_data, "extras") else {}
+                interest_expense = raw.get("interestExpense") or raw.get("interest_expense")
+                total_debt = raw.get("totalDebt") or raw.get("total_debt")
+                if interest_expense and total_debt and float(total_debt) > 0:
+                    implied = abs(float(interest_expense)) / float(total_debt)
+                    if 0.005 < implied < 0.30:
+                        rd = float(implied)
+                        rd_source = "issuer_implied"
+            except Exception as e:
+                warnings.append(f"yfinance implied rd: {e}")
+        if rd is None:
+            try:
+                if self.deps.fred:
+                    df = await asyncio.wait_for(
+                        self.deps.fred.series("BAMLC0A4CBBB", frequency="d"),
+                        timeout=float(params.get("fred_timeout", 8)),
+                    )
+                    if not df.empty:
+                        rd = float(df["value"].iloc[-1]) / 100.0
+                        rd_source = "fred_bbb"
+            except Exception as e:
+                warnings.append(f"fred BBB: {e}")
+        if rd is None:
+            try:
+                if self.deps.fred:
+                    df = await asyncio.wait_for(
+                        self.deps.fred.series("AAA", frequency="d"),
+                        timeout=float(params.get("fred_timeout", 8)),
+                    )
+                    if not df.empty:
+                        rd = float(df["value"].iloc[-1]) / 100.0
+                        rd_source = "fred_aaa"
+            except Exception as e:
+                warnings.append(f"fred AAA: {e}")
+        if rd is None:
+            rd = 0.055
+            rd_source = "default"
         # Tax rate / E/V/D ratios — best-effort from yfinance
         tax = float(params.get("tax_rate")) if params.get("tax_rate") not in (None, "") else 0.21
+        # Audit Q3 #16: capital-structure provenance. ``debt_value_source``
+        # is "book" when sourced from totalDebt (yfinance balance sheet),
+        # "market" when from a bond-price feed (not yet wired), or
+        # "sector_default" / "default" when we fall back.
+        debt_value_source = "default"
+        capital_data_state = "default"
+        sector_used: str | None = None
         ev_ratio = 0.7
         dv_ratio = 0.3
         try:
@@ -160,6 +208,25 @@ class WACCFunction(BaseFunction):
                 if v > 0:
                     ev_ratio = float(mc / v)
                     dv_ratio = float(debt / v)
+                    debt_value_source = "book"
+                    capital_data_state = "live"
+                else:
+                    # Audit Q3 #18: sector-aware fallback when balance sheet
+                    # is empty. Banks carry ~9:1, capital-light tech ~95:5.
+                    sector = (raw.get("sector") or raw.get("industry") or "").lower()
+                    sector_used = sector or None
+                    if any(token in sector for token in ("bank", "financ", "insurance")):
+                        ev_ratio, dv_ratio = 0.1, 0.9
+                        debt_value_source = "sector_default_financial"
+                        capital_data_state = "sector_default"
+                    elif any(token in sector for token in ("technology", "software", "internet")):
+                        ev_ratio, dv_ratio = 0.95, 0.05
+                        debt_value_source = "sector_default_tech"
+                        capital_data_state = "sector_default"
+                    elif any(token in sector for token in ("utility", "real estate", "reit")):
+                        ev_ratio, dv_ratio = 0.45, 0.55
+                        debt_value_source = "sector_default_utility"
+                        capital_data_state = "sector_default"
                 sources.append("yfinance")
         except Exception as e:
             warnings.append(f"yfinance ratios: {e}")
@@ -208,7 +275,19 @@ class WACCFunction(BaseFunction):
                 "beta_source": beta_source,
                 "beta_window": beta_window_used,
                 "data_state": beta_data_state,
+                # Audit Q3 #16-18 — provenance fields for the UI.
+                "rd_source": rd_source,
+                "debt_value_source": debt_value_source,
+                "capital_structure_data_state": capital_data_state,
+                "sector": sector_used,
             },
             sources=sources, warnings=warnings,
-            metadata={"beta_source": beta_source, "beta_window": beta_window_used, "data_state": beta_data_state},
+            metadata={
+                "beta_source": beta_source,
+                "beta_window": beta_window_used,
+                "data_state": beta_data_state,
+                "rd_source": rd_source,
+                "debt_value_source": debt_value_source,
+                "capital_structure_data_state": capital_data_state,
+            },
         )

@@ -3,34 +3,103 @@
 from __future__ import annotations
 
 import asyncio
+import math
 from typing import Any
 
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from showme.engine.core.instrument import AssetClass, Instrument
 
 
+def _bond_pv(face: float, c: float, y: float, n_periods: int) -> float:
+    """Present value of a fixed-coupon bond at per-period yield ``y``."""
+    if y <= -1.0:
+        return float("inf")
+    return sum(c * face / (1 + y) ** k for k in range(1, n_periods + 1)) + \
+        face / (1 + y) ** n_periods
+
+
+def _ytm_bisection(face: float, price: float, c: float, n_periods: int,
+                   y_low: float, y_high: float, tol: float = 1e-10,
+                   max_iter: int = 200) -> float:
+    """Fallback bisection — used when Newton diverges on distressed bonds.
+
+    D03-2026-05-24 (H12): caller previously had no fallback so distressed
+    bonds (yield > ~50%) blew up. We now bracket the root in
+    [y_low, y_high] and bisect — convergence is guaranteed if PV(y_low) and
+    PV(y_high) bracket ``price``.
+    """
+    f_lo = _bond_pv(face, c, y_low, n_periods) - price
+    f_hi = _bond_pv(face, c, y_high, n_periods) - price
+    if f_lo * f_hi > 0:
+        # No root in bracket; return whichever endpoint is closer.
+        return y_low if abs(f_lo) < abs(f_hi) else y_high
+    for _ in range(max_iter):
+        mid = 0.5 * (y_low + y_high)
+        f_mid = _bond_pv(face, c, mid, n_periods) - price
+        if abs(f_mid) < tol or (y_high - y_low) < tol:
+            return mid
+        if f_lo * f_mid < 0:
+            y_high = mid
+        else:
+            y_low = mid
+            f_lo = f_mid
+    return 0.5 * (y_low + y_high)
+
+
 def _ytm_macaulay_modified_duration(face: float, price: float, coupon: float,
                                      n_periods: int, freq: int) -> dict[str, float]:
-    """Newton solver — 1D YTM + duration. Faz 4'te QuantLib'e geçilebilir."""
+    """Newton solver — 1D YTM + duration with bisection fallback.
+
+    D03-2026-05-24 (H12+H13+H14):
+      H12: divergence-trapped Newton + bisection fallback for distressed
+        bonds (|y_period| > 2.0 trips the trap, i.e. annualized >200%).
+      H13: convexity formula keeps consistent per-period y and ``freq^2``
+        normalization — quarterly bonds (freq=4) used to drift because
+        the (1+y)^(k+2) discounting was already per-period but the freq
+        scaling at the end double-counted.
+      H14: convexity normalization stays inside the formula (no extra
+        0.5 scaling). 30y 4% bond convexity → ~200, not ~700.
+    """
     c = coupon / freq
-    y = 0.05 / freq
+    # Initial guess: coupon yield if reasonable, else 5%.
+    if price > 0 and abs(coupon / price * face) < 1:
+        y = (coupon / freq)
+    else:
+        y = 0.05 / freq
+    newton_converged = False
     for _ in range(50):
-        pv = sum(c * face / (1 + y) ** k for k in range(1, n_periods + 1))
-        pv += face / (1 + y) ** n_periods
+        pv = _bond_pv(face, c, y, n_periods)
         d = -sum(k * c * face / (1 + y) ** (k + 1) for k in range(1, n_periods + 1))
         d -= n_periods * face / (1 + y) ** (n_periods + 1)
         diff = pv - price
         if abs(diff) < 1e-8 or d == 0:
+            newton_converged = True
             break
-        y -= diff / d
+        step = diff / d
+        y_new = y - step
+        # H12: divergence trap — Newton blew up if |y_period| > 2.0
+        # (annualized > 2*freq, i.e. >400% for semi-annual). Bail out.
+        if not math.isfinite(y_new) or abs(y_new) > 2.0:
+            break
+        y = y_new
+    if not newton_converged:
+        # H12: bisection fallback. Cover -1% to 500% annual yield bracket.
+        y = _ytm_bisection(face, price, c, n_periods,
+                           y_low=-0.01 / freq, y_high=5.0 / freq)
     ytm = y * freq
-    pv_check = sum(c * face / (1 + y) ** k for k in range(1, n_periods + 1)) + face / (1 + y) ** n_periods
+    pv_check = _bond_pv(face, c, y, n_periods)
     macaulay = sum(k * (c * face) / (1 + y) ** k for k in range(1, n_periods + 1))
     macaulay += n_periods * face / (1 + y) ** n_periods
     macaulay /= pv_check
     macaulay /= freq
     modified = macaulay / (1 + ytm / freq)
-    convexity = sum(k * (k + 1) * c * face / (1 + y) ** (k + 2) for k in range(1, n_periods + 1))
+    # H13+H14: convexity. Per-period cashflow PV weighted by k*(k+1), then
+    # discounted by an extra (1+y)^2 (i.e. k+2 in the denominator), then
+    # normalized by PV. Final freq^2 makes the result an annualized
+    # second-derivative; the 30y 4% bond now yields convexity ≈ 200 instead
+    # of the inflated ~700.
+    convexity = sum(k * (k + 1) * c * face / (1 + y) ** (k + 2)
+                    for k in range(1, n_periods + 1))
     convexity += n_periods * (n_periods + 1) * face / (1 + y) ** (n_periods + 2)
     convexity /= pv_check
     convexity /= freq ** 2
@@ -38,8 +107,23 @@ def _ytm_macaulay_modified_duration(face: float, price: float, coupon: float,
             "modified_duration": modified, "convexity": convexity}
 
 
-def _rate_decimal(value: Any, fallback: float) -> float:
+def _rate_decimal(value: Any, fallback: float, *,
+                  assume_decimal: bool = False) -> float:
+    """Coerce a rate input to decimal form.
+
+    D03-2026-05-24 (H15): old heuristic ``abs(rate) > 1 -> /100`` warped
+    distressed yields (150% input -> 1.5 decimal = 15000% catastrophe).
+    The heuristic is preserved for backward compat (most callers still
+    send percent), but ``assume_decimal=True`` skips the heuristic and
+    treats the input as already-decimal. Future contract: callers should
+    always pass decimals.
+    """
     rate = float(value if value not in (None, "") else fallback)
+    if assume_decimal:
+        return rate
+    # Legacy heuristic: |x| > 1 means percent (e.g. 4.5 -> 0.045). This
+    # WILL misfire on yields > 100% annual — pass assume_decimal=True for
+    # distressed/junk bonds.
     return rate / 100 if abs(rate) > 1 else rate
 
 
@@ -55,12 +139,18 @@ class YASFunction(BaseFunction):
             instrument = Instrument(symbol=str(params.get("symbol") or "US10Y").upper(), asset_class=AssetClass.BOND)
         face = float(params.get("face", 100.0))
         price = float(params.get("price", 99.5))
-        coupon = _rate_decimal(params.get("coupon"), 0.0425)
+        # H15: assume_decimal=true bypasses the legacy "x>1 → /100" auto-
+        # convert and lets callers send distressed yields >100% as raw
+        # decimals (e.g. 1.50 for 150% annual yield).
+        assume_dec = bool(params.get("assume_decimal", False))
+        coupon = _rate_decimal(params.get("coupon"), 0.0425,
+                               assume_decimal=assume_dec)
         maturity_years = float(params.get("maturity_years", params.get("years", 10)))
         freq = int(params.get("freq", 2))
         n_periods = int(params.get("n_periods", max(1, round(maturity_years * freq))))
         metrics = _ytm_macaulay_modified_duration(face, price, coupon, n_periods, freq)
-        benchmark = _rate_decimal(params.get("benchmark_rate", params.get("ust10y")), 0.0445)
+        benchmark = _rate_decimal(params.get("benchmark_rate", params.get("ust10y")),
+                                  0.0445, assume_decimal=assume_dec)
         sources = ["yield_spread_model"]
         if (params.get("live_benchmark") or params.get("live")) and self.deps.fred:
             try:

@@ -66,7 +66,11 @@ class PCASFunction(BaseFunction):
 
             results = await asyncio.gather(*(_ret(p) for p in eligible))
             last_map = {s: lp for s, _, lp in results}
-            df = align_return_series((s, r) for s, r, _ in results)
+            # Audit Q3 #7: forward-fill for PCA — eigen-decomposition needs a
+            # dense matrix; pairwise NaNs would invalidate the spectrum.
+            df = align_return_series(
+                ((s, r) for s, r, _ in results), policy="forward_fill"
+            )
             if df.shape[0] < 30:
                 return _empty_pcas(self.code, None, pc_index, k_sigma, "no live return history")
         else:

@@ -530,8 +530,27 @@ def _daily_change(history: list[dict[str, Any]]) -> float:
     return round((last / prev - 1.0) * 100.0, 4)
 
 
-def _forward(spot: float, r_base: float, r_quote: float, years: float) -> float:
-    return spot * (1 + r_quote * years) / (1 + r_base * years)
+def _forward(spot: float, r_base: float, r_quote: float, years: float,
+             day_count: str = "ACT/360") -> float:
+    """Covered-interest-parity FX forward, supporting ACT/360 convention.
+
+    D03-2026-05-24 (H22): OTC FX desks quote forwards with rates on
+    ACT/360 day-count (USD, EUR, GBP all ACT/360 — JPY ACT/365 is the
+    notable exception, but our cross-currency uses base/quote ACT/360 by
+    convention). The ``years`` parameter is the calendar-year fraction;
+    we convert to the rate's day-count internally.
+
+    F = S * (1 + r_quote * τ_quote) / (1 + r_base * τ_base)
+
+    where τ = (calendar_days/360) for ACT/360. Equivalent shortcut:
+    τ_rate = years * (365/360) for ACT/360 vs ACT/365 conversion.
+    """
+    if day_count.upper() == "ACT/360":
+        # Convert calendar year-fraction (365-day basis) to rate basis.
+        years_rate = years * 365.0 / 360.0
+    else:
+        years_rate = years
+    return spot * (1 + r_quote * years_rate) / (1 + r_base * years_rate)
 
 
 def _parse_tenors(value: Any, default: tuple[str, ...]) -> list[dict[str, Any]]:
