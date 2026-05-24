@@ -42,7 +42,8 @@ async def test_returns_hits_on_success():
 
 @pytest.mark.asyncio
 async def test_returns_empty_on_non_200():
-    resp = MagicMock(); resp.status_code = 403
+    resp = MagicMock()
+    resp.status_code = 403
     async_client = MagicMock()
     async_client.get = AsyncMock(return_value=resp)
     async_client.__aenter__ = AsyncMock(return_value=async_client)
@@ -67,7 +68,9 @@ async def test_returns_empty_on_exception():
 async def test_cache_hit_skips_network():
     body = {"items": [{"repository": {"full_name": "a/b"}, "path": "x",
                        "html_url": "u", "score": 1, "text_matches": []}]}
-    resp = MagicMock(); resp.status_code = 200; resp.json = MagicMock(return_value=body)
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.json = MagicMock(return_value=body)
     async_client = MagicMock()
     async_client.get = AsyncMock(return_value=resp)
     async_client.__aenter__ = AsyncMock(return_value=async_client)

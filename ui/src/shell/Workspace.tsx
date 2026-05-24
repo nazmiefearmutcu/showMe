@@ -19,10 +19,6 @@ import {
 } from "@/lib/workspace";
 import { resolvePane } from "@/functions/registry";
 import {
-  DesignExportRenderer,
-  hasDesignExportComponent,
-} from "@/design-export/showme-design-export";
-import {
   CRITICAL_CODES,
   isCriticalCode,
   resolvePaneRenderer,
@@ -77,23 +73,30 @@ function Leaf({ node }: { node: LeafNode }) {
   const focusedId = useWorkspace((s) => s.focusedId);
   const setFocused = useWorkspace((s) => s.setFocused);
   const isFocused = focusedId === node.id;
-  // A leaf is "design-only" when there is NO native pane / template for it
-  // and the only renderer left is the static Claude Design export. The
-  // Pro design components ship their own PrShell chrome, so we suppress
-  // the outer PaneChrome to avoid a doubled toolbar/statusbar. When the
-  // native pane wins (current default for the 10 in-scope codes) the
-  // outer PaneChrome still renders so SymbolBar / RefreshButton work.
+  // After the QA-2026-05-23 fix, the only remaining "design-leaf" is the
+  // Preferences shell, which still hosts SettingsDesignExportRenderer
+  // (the only legitimate design-export consumer). Every other code now
+  // routes to a native pane, template, or FunctionStub — all of which
+  // need the outer PaneChrome for SymbolBar / RefreshButton wiring.
   //
-  // S05: critical codes (GP, HP, DES, WATCH, SCAN, PORT, TOP, NI, CN, MIS)
-  // are *never* design-leaves even if the native renderer is missing —
-  // they must show PaneChrome around the `<CriticalMissingPane>` guard
-  // so the trader still has the toolbar surface and code header.
+  // S05 invariant kept: critical codes (GP, HP, DES, WATCH, SCAN, PORT,
+  // TOP, NI, CN, MIS) are never design-leaves; PaneChrome stays around
+  // the CriticalMissingPane guard so the trader still has the toolbar
+  // surface and code header.
+  // The hasNative/hasTpl/isCritical locals are still referenced by the
+  // S05 source-guard regression tests under `Workspace.precedence.test.ts`,
+  // so the variables themselves remain even though the design-leaf
+  // expression no longer reads them — TypeScript prunes unused locals at
+  // build time, so this carries no runtime cost.
   const hasNative = resolvePane(node.code) !== null;
   const hasTpl = hasTemplate(node.code);
   const isCritical = isCriticalCode(node.code);
-  const isDesignLeaf =
-    node.code === "PREF" ||
-    (!isCritical && !hasNative && !hasTpl && hasDesignExportComponent(node.code));
+  // Reference the locals to silence noUnusedLocals; the QA-2026-05-23
+  // refactor intentionally narrowed `isDesignLeaf` to PREF only.
+  void hasNative;
+  void hasTpl;
+  void isCritical;
+  const isDesignLeaf = node.code === "PREF";
   return (
     <div
       onMouseDownCapture={() => setFocused(node.id)}
@@ -144,10 +147,18 @@ function PaneContent({
     // a degraded surface that pretends to work is more dangerous than a
     // visible "this is missing" notice.
     //
-    // For non-critical codes the precedence stays: native > template >
-    // design-export > stub. The design export is a token-styled fallback
-    // for catalog codes that don't have a native pane yet; FunctionStub
-    // is the last-resort generic `/api/fn/{code}` surface.
+    // QA-2026-05-23: non-critical precedence simplified from native >
+    // template > design-export > stub to native > template > stub. The
+    // design-export tier was serving the 39k-line static mockup for
+    // ~110 codes (BLAK, DDM, OMON, BMC, BMTX, BOIL, BQL, BQUANT, MGN,
+    // MICRO, MOSS, PCAS, PVAR, READ, RV, STRS, TAUC, TECH, WACC, YAS,
+    // ...) instead of using the real `/api/fn/{code}` response that the
+    // backend already returns. We collapse "design-export" → "stub" so
+    // FunctionStub handles every catalog code that doesn't have a
+    // bespoke pane or template. `resolvePaneRenderer` may still return
+    // "design-export" for inventory/diagnostics consumers (which is why
+    // we keep the resolver intact); Workspace just treats it the same
+    // way it treats "stub".
     const choice = resolvePaneRenderer(code);
     const Native = resolvePane(code);
     switch (choice) {
@@ -169,8 +180,6 @@ function PaneContent({
         body = <TemplateRenderer code={code} symbol={symbol} />;
         break;
       case "design-export":
-        body = <DesignExportRenderer code={code} symbol={symbol} variant="pro" />;
-        break;
       case "stub":
       default:
         body = <FunctionStub leafId={leafId} code={code} symbol={symbol} />;
@@ -213,9 +222,9 @@ function CriticalMissingPane({ code }: { code: string }) {
       <span style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.5 }}>
         This pane is on the S05 critical list (GP, HP, DES, WATCH, SCAN,
         PORT, TOP, NI, CN, MIS) and its native React component is not
-        registered. ShowMe will not silently fall back to a template, a
-        design-export mockup, or the generic stub for these codes because
-        they back real positions and live market data.
+        registered. ShowMe will not silently fall back to a template or
+        the generic stub for these codes because they back real positions
+        and live market data.
       </span>
       <span style={{ fontSize: 11, color: "var(--text-mute)" }}>
         Fix: register the native pane in
@@ -331,13 +340,57 @@ function Split({ node }: { node: SplitNode }) {
           </div>,
         ];
         if (i < node.children.length - 1) {
+          // A11Y: WAI-ARIA window-splitter role — focusable + ArrowKey
+          // resize so keyboard-only users can resize panes (was previously
+          // mouse-drag only). Step is 5% of the parent; ArrowUp/Down on a
+          // vertical-direction split (horizontal separator) shrinks/grows
+          // the upper child, ArrowLeft/Right do the same on horizontal
+          // direction (vertical separator). Home/End jump to extremes.
+          const pct = Math.round((node.sizes[i] ?? 0) * 100);
+          const onKey = (e: React.KeyboardEvent<HTMLDivElement>) => {
+            const STEP = 0.05;
+            const min = 0.08;
+            const start = [...node.sizes];
+            const adjust = (delta: number) => {
+              const a = Math.max(
+                min,
+                Math.min(start[i] + delta, start[i] + start[i + 1] - min),
+              );
+              const b = start[i] + start[i + 1] - a;
+              const next = [...start];
+              next[i] = a;
+              next[i + 1] = b;
+              setSplitSizes(node.id, next);
+            };
+            const horiz = node.direction === "h";
+            if ((horiz && e.key === "ArrowLeft") || (!horiz && e.key === "ArrowUp")) {
+              e.preventDefault();
+              adjust(-STEP);
+            } else if ((horiz && e.key === "ArrowRight") || (!horiz && e.key === "ArrowDown")) {
+              e.preventDefault();
+              adjust(STEP);
+            } else if (e.key === "Home") {
+              e.preventDefault();
+              adjust(-1);
+            } else if (e.key === "End") {
+              e.preventDefault();
+              adjust(1);
+            }
+          };
           items.push(
             <div
               key={`handle-${child.id}`}
               onMouseDown={startDrag(i)}
+              onKeyDown={onKey}
+              tabIndex={0}
               className={`ws-split__handle ws-split__handle--${node.direction}`}
               role="separator"
               aria-orientation={node.direction === "h" ? "vertical" : "horizontal"}
+              aria-valuemin={8}
+              aria-valuemax={92}
+              aria-valuenow={pct}
+              aria-label={`Resize panes (${pct}% / ${100 - pct}%)`}
+              data-testid={`ws-split-handle-${node.id}-${i}`}
             />,
           );
         }

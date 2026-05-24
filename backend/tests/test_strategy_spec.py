@@ -1,11 +1,10 @@
 """StrategySpec pydantic validation tests."""
 from __future__ import annotations
 
-import json
 import pytest
 
 from showme.strategies.spec import (
-    AssetFilter, IndicatorRef, Position, Rule, StrategySpec,
+    IndicatorRef, Rule, StrategySpec,
 )
 
 

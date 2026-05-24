@@ -84,14 +84,14 @@ export function CommandPalette() {
   }, [query]);
 
   useEffect(() => {
+    // QA-2026-05-23: only handle Escape here. Cmd/Ctrl+K is now bound at
+    // the App level so there is a single source of truth, eliminating the
+    // collision where the menu-accel `palette:toggle` event and this
+    // keydown handler both fired and double-toggled the palette.
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape" && open) {
         e.preventDefault();
         togglePalette(false);
-      }
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
-        e.preventDefault();
-        togglePalette();
       }
     };
     window.addEventListener("keydown", onKey);
@@ -212,7 +212,7 @@ export function CommandPalette() {
           <span>
             <span className="kbd">↑↓</span> {t("shell.palette.navigate")} ·{" "}
             <span className="kbd">↵</span> {t("shell.palette.open")} ·{" "}
-            <span className="kbd">⌘N</span> jump
+            <span className="kbd">⌘1-9</span> jump
           </span>
           <span>
             <span className="kbd">esc</span> {t("shell.palette.close")}

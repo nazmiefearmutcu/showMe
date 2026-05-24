@@ -12,6 +12,7 @@
  * backend without touching call sites.
  */
 import { invoke, isInTauri } from "./tauri";
+import { safeReadLocal } from "./safe-storage";
 import {
   loadWorkspace,
   serializeWorkspace,
@@ -44,16 +45,15 @@ const usingTauri = (): boolean => isInTauri();
 // ── Browser fallback ─────────────────────────────────────────────────────
 
 function readLS(): Bundle {
-  if (typeof localStorage === "undefined") return { presets: [] };
-  try {
-    const raw = localStorage.getItem(KEY);
-    if (!raw) return { presets: [] };
-    const parsed = JSON.parse(raw);
-    if (!parsed || !Array.isArray(parsed.presets)) return { presets: [] };
-    return parsed as Bundle;
-  } catch {
-    return { presets: [] };
-  }
+  return safeReadLocal<Bundle>(KEY, { presets: [] }, {
+    label: "Layout presets",
+    validate: (v): v is Bundle =>
+      Boolean(
+        v &&
+          typeof v === "object" &&
+          Array.isArray((v as { presets?: unknown }).presets),
+      ),
+  });
 }
 
 function writeLS(bundle: Bundle): void {

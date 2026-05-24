@@ -1,7 +1,13 @@
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CONNPane } from "./CONN";
+import { CONNPane, handleCredentialDelete } from "./CONN";
 import { useExchangeStore } from "@/lib/exchange-store";
+// confirmAction is imported at module init by CONN; stub it so the spec can
+// drive the user's accept/decline branch deterministically.
+vi.mock("@/lib/confirm", () => ({
+  confirmAction: vi.fn(async () => true),
+}));
+import { confirmAction } from "@/lib/confirm";
 
 const ORIGINAL_FETCH = global.fetch;
 
@@ -105,6 +111,54 @@ describe("CONN pane", () => {
     fireEvent.click(screen.getByRole("button", { name: /^test$/i }));
     await waitFor(() => expect(testSpy).toHaveBeenCalledTimes(1));
     expect(testSpy).toHaveBeenCalledWith("abc");
+  });
+
+  // ─── C9 (FIX_CONTRACT) — delete confirm with bot count ────────────────
+  it("test_credential_delete_shows_dependent_bot_warning", async () => {
+    const dependents = vi
+      .spyOn(useExchangeStore.getState(), "dependentBots")
+      .mockResolvedValue({ credential_id: "abc", bot_count: 3, bot_ids: ["b1", "b2", "b3"] });
+    const del = vi
+      .spyOn(useExchangeStore.getState(), "deleteCredential")
+      .mockResolvedValue(true);
+
+    const ok = await handleCredentialDelete("abc", "main");
+
+    expect(dependents).toHaveBeenCalledWith("abc");
+    expect(confirmAction).toHaveBeenCalledTimes(1);
+    const args = (confirmAction as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(args.title).toMatch(/3 bot/);
+    expect(args.body).toMatch(/3 bota bağlı/);
+    expect(args.destructive).toBe(true);
+    // User accepted → cascade-disable via force=true.
+    expect(del).toHaveBeenCalledWith("abc", { force: true });
+    expect(ok).toBe(true);
+  });
+
+  it("delete with zero dependents does NOT force=true", async () => {
+    vi.spyOn(useExchangeStore.getState(), "dependentBots")
+      .mockResolvedValue({ credential_id: "abc", bot_count: 0, bot_ids: [] });
+    const del = vi
+      .spyOn(useExchangeStore.getState(), "deleteCredential")
+      .mockResolvedValue(true);
+
+    await handleCredentialDelete("abc", "main");
+
+    expect(del).toHaveBeenCalledWith("abc", { force: false });
+  });
+
+  it("declining the confirm aborts the delete", async () => {
+    (confirmAction as ReturnType<typeof vi.fn>).mockResolvedValueOnce(false);
+    vi.spyOn(useExchangeStore.getState(), "dependentBots")
+      .mockResolvedValue({ credential_id: "abc", bot_count: 2, bot_ids: [] });
+    const del = vi
+      .spyOn(useExchangeStore.getState(), "deleteCredential")
+      .mockResolvedValue(true);
+
+    const ok = await handleCredentialDelete("abc", "main");
+
+    expect(ok).toBe(false);
+    expect(del).not.toHaveBeenCalled();
   });
 
   it("switching exchange clears the form (no state leak)", () => {

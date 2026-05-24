@@ -47,6 +47,9 @@ cocoa = "0.26"
 core-foundation = "0.10"
 security-framework = "3"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]

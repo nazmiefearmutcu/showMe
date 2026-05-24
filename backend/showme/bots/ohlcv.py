@@ -6,7 +6,6 @@ and a datetime index. Non-ccxt brokers (Alpaca etc.) are NOT supported in v1.
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 import pandas as pd
 
@@ -20,6 +19,29 @@ class BotRunnerError(RuntimeError):
 
 
 def _is_ccxt(broker: BaseBroker) -> bool:
+    """Detect ccxt-backed brokers without relying on a name prefix.
+
+    S3 fix: the original ``broker.name.startswith("ccxt:")`` happens to
+    match the production ``CcxtBroker.name`` ("ccxt:{exchange_id}") but
+    fails for any future adapter that conforms structurally without the
+    prefix. We instead probe the structural contract that downstream code
+    actually uses: a private ``_ex`` attribute exposing ``fetch_ohlcv``.
+    ``isinstance(broker, CcxtBroker)`` is preferred when the import is
+    available; otherwise we fall back to ``_ex`` / ``fetch_ohlcv`` duck
+    typing so tests can still register ``MagicMock``-backed fakes.
+    """
+    try:
+        from showme.brokers.ccxt_broker import CcxtBroker as _CcxtBroker
+    except Exception:  # pragma: no cover — optional dep
+        _CcxtBroker = None  # type: ignore[assignment]
+    if _CcxtBroker is not None and isinstance(broker, _CcxtBroker):
+        return True
+    ex = getattr(broker, "_ex", None)
+    if ex is not None and hasattr(ex, "fetch_ohlcv"):
+        return True
+    # Legacy fallback: keep the prefix check so existing tests that mint
+    # brokers via ``factory_mod._REGISTRY`` with ``name = "ccxt:..."`` keep
+    # working (see ``tests/test_bot_runner.py::_register_fake_broker``).
     return getattr(broker, "name", "").startswith("ccxt:")
 
 

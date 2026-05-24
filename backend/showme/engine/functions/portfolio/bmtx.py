@@ -24,10 +24,17 @@ class BMTXFunction(BaseFunction):
     description = "Run multiple strategies across a symbol universe in parallel."
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
+        # Fix A7-C3: GET ?symbols=AAPL,MSFT,NVDA arrives as a string and used
+        # to iterate character-by-character into ["A","P","S"]. Mirror the
+        # guard BLAK/RPAR already implement.
         symbols = params.get("symbols") or [
             "SPY", "QQQ", "IWM", "AAPL", "MSFT", "TSLA", "NVDA", "AMZN",
         ]
+        if isinstance(symbols, str):
+            symbols = [s.strip() for s in symbols.split(",") if s.strip()]
         strategies = params.get("strategies") or list(STRATEGY_REGISTRY.keys())
+        if isinstance(strategies, str):
+            strategies = [s.strip() for s in strategies.split(",") if s.strip()]
         days = int(params.get("days", 365 * 3))
         fee_bps = float(params.get("fee_bps", 5.0))
         sources = ["yfinance"]

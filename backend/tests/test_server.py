@@ -405,7 +405,12 @@ def test_function_warning_payload_keeps_function_shape() -> None:
     assert payload["data"]["rows"] == []
 
 
-def test_sanitize_suppresses_template_payloads() -> None:
+def test_sanitize_labels_template_payloads_as_synthetic() -> None:
+    """Refactored 2026-05-24: the sanitizer no longer wipes template
+    rows. It labels them ``data_state == "synthetic"`` and lets the row
+    through so the UI can pill accurately instead of showing a useless
+    ``provider_unavailable`` envelope.
+    """
     payload = server.sanitize_function_payload(
         "BETA",
         {"symbol": "AAPL", "asset_class": "EQUITY"},
@@ -419,10 +424,16 @@ def test_sanitize_suppresses_template_payloads() -> None:
         },
     )
 
-    assert payload["sources"] == ["no_live_source"]
+    # Row is kept; status is NOT collapsed to provider_unavailable.
+    assert payload["data"]["status"] != "provider_unavailable"
+    assert payload["data"]["rows"] == [{"close": 100.0}]
+    # Source string is preserved (no longer rewritten to no_live_source).
+    assert payload["sources"] == ["fundamentals_template"]
+    # data_state pill + sanitizer_summary expose the synthetic nature.
+    assert payload["data_state"] == "synthetic"
+    assert payload["sanitizer_summary"]["synthetic"] == 1
     assert payload["metadata"]["synthetic"] is True
-    assert payload["data"]["status"] == "provider_unavailable"
-    assert payload["data"]["rows"] == []
+    assert payload["metadata"]["data_state"] == "synthetic"
 
 
 def test_sanitize_lots_empty_state_is_not_ok() -> None:
@@ -526,6 +537,10 @@ def test_sanitize_fa_without_ratios_becomes_calc_error() -> None:
 
 
 def test_portfolio_close_position_suppresses_legacy_reimport(monkeypatch, tmp_path: Path) -> None:
+    # bughunt 2026-05-24: legacy mirror is now opt-in. Set the flag so the
+    # closed-symbol dedup is actually exercised (otherwise the import returns
+    # 0 because the gate is closed, not because the dedup fired).
+    monkeypatch.setenv("SHOWME_IMPORT_LEGACY_TBV3", "1")
     monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[2] / "engine"))
     from showme.engine.core.instrument import Instrument
     from showme.engine.portfolio.state import PortfolioPosition, PortfolioState

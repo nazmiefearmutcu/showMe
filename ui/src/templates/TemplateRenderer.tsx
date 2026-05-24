@@ -15,7 +15,7 @@
  */
 import "./templates.css";
 import { useMemo } from "react";
-import { Pane, PaneBody, PaneHeader, Pill } from "@/design-system";
+import { Pane, PaneBody, PaneHeader, Pill, Skeleton, SkeletonRow } from "@/design-system";
 import { useFunction } from "@/lib/useFunction";
 import {
   TplCard,
@@ -55,6 +55,15 @@ export function TemplateRenderer({ code, symbol }: TemplateRendererProps) {
     enabled: tpl != null,
   });
 
+  // BugHunt 2026-05-24: when the sidecar hasn't returned `ok` yet and the
+  // template hasn't explicitly opted in via `allowMockDuringLoad: true`, we
+  // render a skeleton placeholder instead of the mock. This prevents the
+  // 5-second "live data" illusion where a numeric-pricing template (OMON,
+  // OSA, OVME, AIM, …) would show hard-coded strikes/prices next to the
+  // user-selected ticker.
+  const shouldHideMockBody =
+    tpl != null && state !== "ok" && tpl.allowMockDuringLoad !== true;
+
   const merged = useMemo<MockTemplate | null>(() => {
     if (!tpl) return null;
     if (state !== "ok" || !data?.data) return tpl;
@@ -75,9 +84,15 @@ export function TemplateRenderer({ code, symbol }: TemplateRendererProps) {
       />
       <PaneBody>
         <div className="tpl-pane">
-          <Hero tpl={merged} />
-          <Body tpl={merged} />
-          {merged.narrative && <Narrative text={merged.narrative} />}
+          {shouldHideMockBody ? (
+            <TemplateSkeleton tpl={merged} />
+          ) : (
+            <>
+              <Hero tpl={merged} />
+              <Body tpl={merged} />
+              {merged.narrative && <Narrative text={merged.narrative} />}
+            </>
+          )}
         </div>
       </PaneBody>
     </Pane>
@@ -86,6 +101,162 @@ export function TemplateRenderer({ code, symbol }: TemplateRendererProps) {
 
 export function hasTemplate(code: string): boolean {
   return getMockTemplate(code) !== null;
+}
+
+/* ── Loading skeleton (BugHunt 2026-05-24) ───────────────────────── */
+
+/**
+ * Shape-faithful skeleton that mirrors the template's body pattern so the
+ * pane doesn't reflow when live data arrives. The skeleton is intentionally
+ * featureless (no numbers, no shapes that look like prices) so users can't
+ * misread it as a live quote.
+ */
+function TemplateSkeleton({ tpl }: { tpl: MockTemplate }) {
+  const kpiCount = Math.min(tpl.kpis?.length ?? 4, 6) || 4;
+  const tableCount = Math.min(tpl.tableRows?.length ?? 4, 6) || 4;
+  const feedCount = Math.min(tpl.feed?.length ?? 4, 5) || 4;
+  const colCount = tpl.tableCols?.length ?? 4;
+
+  return (
+    <div className="tpl-pattern" aria-busy="true" aria-live="polite">
+      {(tpl.chips?.length ?? 0) > 0 && (
+        <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+          {Array.from({ length: Math.min(tpl.chips!.length, 6) }).map((_, i) => (
+            <Skeleton key={i} width={72} height={22} radius={11} />
+          ))}
+        </div>
+      )}
+      {(tpl.kpis?.length ?? 0) > 0 && (
+        <div className="tpl-kpi-grid" style={{ marginBottom: 12 }}>
+          {Array.from({ length: kpiCount }).map((_, i) => (
+            <div
+              key={i}
+              style={{
+                padding: 12,
+                display: "flex",
+                flexDirection: "column",
+                gap: 6,
+                border: "1px solid var(--border-subtle)",
+                borderRadius: "var(--radius-md)",
+              }}
+            >
+              <Skeleton width={68} height={10} />
+              <Skeleton width={92} height={20} />
+            </div>
+          ))}
+        </div>
+      )}
+      {(tpl.tableRows?.length ?? 0) > 0 && (
+        <div
+          style={{
+            padding: 12,
+            border: "1px solid var(--border-subtle)",
+            borderRadius: "var(--radius-md)",
+            marginBottom: 12,
+          }}
+        >
+          <Skeleton width={120} height={12} />
+          <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 6 }}>
+            {Array.from({ length: tableCount }).map((_, i) => (
+              <SkeletonRow key={i} columns={colCount || 4} />
+            ))}
+          </div>
+        </div>
+      )}
+      {(tpl.feed?.length ?? 0) > 0 && (
+        <div
+          style={{
+            padding: 12,
+            border: "1px solid var(--border-subtle)",
+            borderRadius: "var(--radius-md)",
+            marginBottom: 12,
+          }}
+        >
+          {Array.from({ length: feedCount }).map((_, i) => (
+            <div
+              key={i}
+              style={{ display: "flex", flexDirection: "column", gap: 6, padding: "8px 0" }}
+            >
+              <Skeleton width="60%" height={12} />
+              <Skeleton width="92%" height={10} />
+            </div>
+          ))}
+        </div>
+      )}
+      {(tpl.formRows?.length ?? 0) > 0 && (
+        <div
+          style={{
+            padding: 12,
+            border: "1px solid var(--border-subtle)",
+            borderRadius: "var(--radius-md)",
+            marginBottom: 12,
+          }}
+        >
+          {Array.from({ length: Math.min(tpl.formRows!.length, 6) }).map((_, i) => (
+            <div
+              key={i}
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                gap: 12,
+                padding: "6px 0",
+              }}
+            >
+              <Skeleton width={120} height={11} />
+              <Skeleton width={84} height={11} />
+            </div>
+          ))}
+        </div>
+      )}
+      {(tpl.kvs?.length ?? 0) > 0 && (
+        <div
+          style={{
+            padding: 12,
+            border: "1px solid var(--border-subtle)",
+            borderRadius: "var(--radius-md)",
+            marginBottom: 12,
+          }}
+        >
+          {Array.from({ length: Math.min(tpl.kvs!.length, 6) }).map((_, i) => (
+            <div
+              key={i}
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                gap: 12,
+                padding: "5px 0",
+              }}
+            >
+              <Skeleton width={108} height={10} />
+              <Skeleton width={140} height={10} />
+            </div>
+          ))}
+        </div>
+      )}
+      {(tpl.heatCells?.length ?? 0) > 0 && (
+        <div
+          className="tpl-heat-grid"
+          style={{
+            border: "1px solid var(--border-subtle)",
+            borderRadius: "var(--radius-md)",
+            padding: 12,
+            marginBottom: 12,
+          }}
+        >
+          {Array.from({ length: Math.min(tpl.heatCells!.length, 12) }).map((_, i) => (
+            <Skeleton key={i} width={56} height={32} />
+          ))}
+        </div>
+      )}
+      {!tpl.kpis && !tpl.tableRows && !tpl.feed && !tpl.formRows && !tpl.kvs && !tpl.heatCells && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <Skeleton width="50%" height={14} />
+          <Skeleton width="86%" height={10} />
+          <Skeleton width="74%" height={10} />
+        </div>
+      )}
+    </div>
+  );
 }
 
 /* ── Hero (KPI grid + optional chips) ───────────────────────────── */
@@ -222,7 +393,7 @@ function Narrative({ text }: { text: string }) {
 /* ── Live-data overlay ──────────────────────────────────────────── */
 
 function renderLiveBadge(
-  state: "idle" | "loading" | "ok" | "error",
+  state: "idle" | "loading" | "ok" | "error" | "refreshing",
   data: { elapsed_ms?: number | null; sources?: string[] | null } | undefined,
   error: Error | undefined,
 ): React.ReactNode {
@@ -230,6 +401,15 @@ function renderLiveBadge(
     return (
       <Pill tone="muted" variant="soft" withDot>
         LOADING
+      </Pill>
+    );
+  }
+  if (state === "refreshing") {
+    // The hook keeps prior `data` on screen during a refresh; surface a
+    // subtle pill so users know we're polling without flashing a skeleton.
+    return (
+      <Pill tone="muted" variant="soft" withDot>
+        REFRESHING
       </Pill>
     );
   }
@@ -423,10 +603,86 @@ function toTableRow(row: Record<string, unknown>, hint: string[] | undefined): T
   return out;
 }
 
+/**
+ * BugHunt 2026-05-24: option-chain shorthand whitelist. Greek symbols
+ * (Δ/Γ/Θ/ν/ρ/Λ/Φ) and short Latin keys (`IV`, `OI`, `Vol`, …) used to be
+ * normalized to "" or collapse together (`IV` ↔ `Iv`, `Vol` clashing with
+ * other 3-letter labels), causing live data to land in the wrong column
+ * or to be dropped entirely. Anchoring the matcher in a whitelist keeps
+ * each short identifier distinct and makes column matching deterministic.
+ *
+ * Both the template column name and the live key are mapped through the
+ * same set of aliases. Keys are case-insensitive but the mapping is
+ * symbol/letter aware (Greek letters preserved).
+ */
+const COLUMN_ALIASES: Record<string, string> = {
+  // Greek letters → stable canonical ids (lowercase ASCII names).
+  "Δ": "delta",
+  delta: "delta",
+  "Γ": "gamma",
+  gamma: "gamma",
+  "Θ": "theta",
+  theta: "theta",
+  "ν": "vega",
+  vega: "vega",
+  "ρ": "rho",
+  rho: "rho",
+  "Λ": "lambda",
+  lambda: "lambda",
+  // Short Latin column labels — keep `iv` vs `volume` vs `oi` distinct.
+  iv: "iv",
+  "implied vol": "iv",
+  "impliedvol": "iv",
+  oi: "open_interest",
+  "open interest": "open_interest",
+  "openinterest": "open_interest",
+  "openint": "open_interest",
+  vol: "volume",
+  volume: "volume",
+  // Misc shorthand commonly seen on tickets.
+  px: "price",
+  price: "price",
+  qty: "qty",
+  size: "size",
+};
+
+/**
+ * Normalize a column / key name to a stable canonical identifier.
+ *
+ * Behaviour:
+ *  - Greek letter glyphs (Δ, Γ, Θ, ν, ρ, Λ) are mapped to their lowercase
+ *    English names (`delta`, `gamma`, …) so a template col named "Δ" and a
+ *    backend field named "delta" both collapse to the same key.
+ *  - Short Latin shorthand (`IV`, `OI`, `Vol`, `Px`, `Qty`, `Size`) is
+ *    mapped through `COLUMN_ALIASES` so `IV` never collides with `Iv`
+ *    and `Vol` never overlaps with `Volume` or anything else.
+ *  - Everything else is lower-cased and stripped of non-alphanumerics so
+ *    "Last close" matches "lastClose" / "LAST_CLOSE".
+ */
+export function normalizeColumnKey(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) return "";
+  // Whole-glyph match first (Greek letters / unicode glyphs).
+  if (COLUMN_ALIASES[trimmed]) return COLUMN_ALIASES[trimmed];
+  const lower = trimmed.toLowerCase();
+  if (COLUMN_ALIASES[lower]) return COLUMN_ALIASES[lower];
+  // Strip whitespace+punctuation but keep Unicode letters so non-ASCII
+  // characters survive (Greek letters, accented column names).
+  // Use \p{L} + \p{N} when available; fall back to ASCII-only otherwise.
+  let collapsed: string;
+  try {
+    collapsed = lower.replace(/[^\p{L}\p{N}]/gu, "");
+  } catch {
+    collapsed = lower.replace(/[^a-z0-9]/g, "");
+  }
+  return COLUMN_ALIASES[collapsed] ?? collapsed;
+}
+
 function findKeyMatching(row: Record<string, unknown>, col: string): string | null {
-  const normalized = col.toLowerCase().replace(/[^a-z0-9]/g, "");
+  const normalized = normalizeColumnKey(col);
+  if (!normalized) return null;
   for (const k of Object.keys(row)) {
-    if (k.toLowerCase().replace(/[^a-z0-9]/g, "") === normalized) return k;
+    if (normalizeColumnKey(k) === normalized) return k;
   }
   return null;
 }

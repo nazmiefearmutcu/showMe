@@ -4,6 +4,7 @@
 import { create } from "zustand";
 import { sidecarFetch } from "./sidecar";
 import type { StrategySpec } from "./strategy-store";
+import { useStrategyStore } from "./strategy-store";
 
 export interface TemplateEntry {
   id: string;
@@ -69,6 +70,13 @@ export const useTemplateStore = create<TemplateStoreShape>((set, get) => ({
           }),
         },
       );
+      // C9 cross-store invalidation — instantiate persists a new strategy
+      // server-side, so refresh STRA/BOT dropdowns immediately.
+      try {
+        await useStrategyStore.getState().loadList();
+      } catch {
+        // best-effort; strategy-store surfaces its own error.
+      }
       return result;
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String(e) });

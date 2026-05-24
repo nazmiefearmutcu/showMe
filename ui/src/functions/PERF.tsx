@@ -1,14 +1,22 @@
 /**
  * PERF — Cumulative performance pane. Sub-system I.
  *
- * Top: total PnL across all bots + best/worst pills.
+ * Top: 4-pill KPI strip — Lider / En karli / Geride kalan / En zararli — each
+ * tracks its own semantic so the user can read "top by PnL ranking" vs
+ * "worst loser" without one masking the other (H-SUP-1 fix).
+ *
  * Middle: sortable leaderboard table.
  * Right (when bot selected): equity curve <svg> (no external chart lib).
+ *
+ * Polling is driven by `useBotEcosystemPolling` so this pane and BOTS stay
+ * frame-aligned (BUG #10 fix).  The legacy 15s setInterval was removed.
  */
-import { useEffect } from "react";
 import {
   usePerformanceStore,
+  type LeaderboardEntry,
 } from "@/lib/performance-store";
+import { useBotEcosystemPolling } from "@/lib/useBotEcosystemPolling";
+import { formatPrice } from "@/lib/format";
 
 function _color(n: number): string {
   if (n > 0) return "var(--accent-ok)";
@@ -55,6 +63,40 @@ function EquityCurve({ points, width = 480, height = 160 }: {
   );
 }
 
+function BotPill({
+  label,
+  entry,
+  tone,
+  signPrefix,
+  testId,
+}: {
+  label: string;
+  entry: LeaderboardEntry | undefined;
+  tone: "ok" | "err" | "mute";
+  signPrefix?: "+" | "";
+  testId: string;
+}) {
+  if (!entry) return null;
+  const color =
+    tone === "ok" ? "var(--accent-ok)"
+    : tone === "err" ? "var(--accent-err)"
+    : "var(--fg-2)";
+  const prefix = signPrefix ?? (entry.total_pnl > 0 ? "+" : "");
+  return (
+    <div data-testid={testId}>
+      <div style={{ fontSize: 10, color: "var(--fg-2)" }}>{label}</div>
+      <div style={{ color }}>
+        {entry.symbol}: {prefix}{entry.total_pnl.toFixed(2)}
+      </div>
+    </div>
+  );
+}
+
+/** Hardcoded simulated starting equity for shadow-mode equity curves.  See
+ *  H-SUP-3 / BUG #7 — surfaced as a visible badge instead of being hidden in
+ *  the backend so users don't mistake it for their real account balance. */
+const SIMULATED_STARTING_EQUITY_USD = 10_000;
+
 export function PERFPane() {
   const leaderboard = usePerformanceStore((s) => s.leaderboard);
   const selected = usePerformanceStore((s) => s.selected);
@@ -63,15 +105,25 @@ export function PERFPane() {
   const clearSelected = usePerformanceStore((s) => s.clearSelected);
   const error = usePerformanceStore((s) => s.error);
 
-  useEffect(() => {
-    loadLeaderboard();
-    const t = setInterval(() => loadLeaderboard(), 15_000);
-    return () => clearInterval(t);
-  }, [loadLeaderboard]);
+  // BUG #10 — single-source polling across BOTS+PERF.  Replaces the legacy
+  // 15s setInterval that desync'd with BOTS' 10s polling.
+  useBotEcosystemPolling();
 
   const totalPnL = leaderboard.reduce((acc, e) => acc + e.total_pnl, 0);
-  const best = leaderboard[0]; // already sorted desc by total_pnl
-  const worst = leaderboard[leaderboard.length - 1];
+
+  // H-SUP-1 — four distinct semantics so a tüm-pozitif portfolio still
+  // shows "Geride kalan" (the worst-ranked bot, even if positive) and a
+  // tüm-negatif portfolio still shows "Lider" (the top-ranked bot, even
+  // if negative).  When mixed, all four pills appear independently.
+  //
+  // The leaderboard is sorted by (-total_pnl, -trade_count) so [0] is the
+  // ranking leader and [length-1] is the ranking laggard regardless of sign.
+  const topPerformer = leaderboard[0];                                          // her zaman göster
+  const bottomPerformer =
+    leaderboard.length > 1 ? leaderboard[leaderboard.length - 1] : undefined;   // her zaman göster (if >1 bot)
+  const positiveBest = leaderboard.find((b) => b.total_pnl > 0);                // gerçek "En karli" (only if exists)
+  const negativeWorst =
+    [...leaderboard].reverse().find((b) => b.total_pnl < 0);                    // gerçek "En zararli" (only if exists)
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
@@ -79,18 +131,43 @@ export function PERFPane() {
                     borderBottom: "1px solid var(--border-1)" }}>
         <KPI label="Toplam PnL" value={totalPnL} />
         <KPI label="Bot sayısı" value={leaderboard.length} fmt={(v) => v.toFixed(0)} />
-        {best && best.total_pnl > 0 && (
-          <div>
-            <div style={{ fontSize: 10, color: "var(--fg-2)" }}>En iyi</div>
-            <div style={{ color: "var(--accent-ok)" }}>{best.symbol}: +{best.total_pnl.toFixed(2)}</div>
-          </div>
-        )}
-        {worst && worst.total_pnl < 0 && (
-          <div>
-            <div style={{ fontSize: 10, color: "var(--fg-2)" }}>En kötü</div>
-            <div style={{ color: "var(--accent-err)" }}>{worst.symbol}: {worst.total_pnl.toFixed(2)}</div>
-          </div>
-        )}
+        <BotPill
+          label="Lider"
+          entry={topPerformer}
+          tone={topPerformer && topPerformer.total_pnl >= 0 ? "ok" : "err"}
+          testId="perf-kpi-lider"
+        />
+        <BotPill
+          label="En karli"
+          entry={positiveBest}
+          tone="ok"
+          signPrefix="+"
+          testId="perf-kpi-en-karli"
+        />
+        <BotPill
+          label="Geride kalan"
+          entry={bottomPerformer}
+          tone={bottomPerformer && bottomPerformer.total_pnl >= 0 ? "mute" : "err"}
+          testId="perf-kpi-geride-kalan"
+        />
+        <BotPill
+          label="En zararli"
+          entry={negativeWorst}
+          tone="err"
+          testId="perf-kpi-en-zararli"
+        />
+        {/* BUG #7 — make the hardcoded $10k simulated starting equity visible. */}
+        <span
+          data-testid="perf-sim-equity-badge"
+          title="Gerçek hesap equity'si için PORT paneline bak. Bu rakam yalnızca shadow-mode equity eğrisi için simüle edilir."
+          style={{
+            fontSize: 10, fontWeight: 600, color: "var(--fg-2)",
+            border: "1px solid var(--border-1)", borderRadius: 4,
+            padding: "2px 6px",
+          }}
+        >
+          Simule: ${SIMULATED_STARTING_EQUITY_USD.toLocaleString()} baslangic
+        </span>
         <button style={{ marginLeft: "auto" }} onClick={() => loadLeaderboard()}>Yenile</button>
       </div>
 
@@ -167,9 +244,9 @@ export function PERFPane() {
                 {selected.trades.slice(-50).reverse().map((t, i) => (
                   <tr key={i}>
                     <td>{t.entry_time.slice(0, 16)}</td>
-                    <td align="right">{t.entry_price.toFixed(2)}</td>
+                    <td align="right">{formatPrice(t.entry_price)}</td>
                     <td>{t.exit_time.slice(0, 16)}</td>
-                    <td align="right">{t.exit_price.toFixed(2)}</td>
+                    <td align="right">{formatPrice(t.exit_price)}</td>
                     <td align="right" style={{ color: _color(t.pnl) }}>
                       {t.pnl.toFixed(2)}
                     </td>

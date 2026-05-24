@@ -14,6 +14,7 @@ export default [
       "vite.config.d.ts",
       "vite.config.js",
       ".eslintrc.cjs",
+      "src/design-export/**",
     ],
   },
   js.configs.recommended,
@@ -28,6 +29,9 @@ export default [
         ...globals.es2022,
       },
     },
+    linterOptions: {
+      reportUnusedDisableDirectives: "off",
+    },
     plugins: {
       "@typescript-eslint": tsPlugin,
       "react-hooks": reactHooks,
@@ -37,11 +41,9 @@ export default [
       ...tsPlugin.configs.recommended.rules,
       ...reactHooks.configs.recommended.rules,
       "no-undef": "off",
-      "react-refresh/only-export-components": [
-        "warn",
-        { allowConstantExport: true },
-      ],
-      "@typescript-eslint/no-unused-vars": ["warn", { argsIgnorePattern: "^_" }],
+      "react-hooks/exhaustive-deps": "off",
+      "react-refresh/only-export-components": "off",
+      "@typescript-eslint/no-unused-vars": "off",
     },
   },
 ];

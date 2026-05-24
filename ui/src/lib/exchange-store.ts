@@ -12,6 +12,24 @@
  */
 import { create } from "zustand";
 import { sidecarFetch } from "./sidecar";
+import { useBotsSupervisionStore } from "./bots-supervision-store";
+
+/**
+ * Shape returned by `GET /api/exchange/credentials/{id}/dependents` (Agent 2).
+ * The endpoint may not be deployed yet — `dependentBots()` below has a
+ * defensive fallback to compute the count client-side from `/api/bots`.
+ *
+ * `bots_unknown` set to true (QA-2026-05-23 fix) when BOTH the dedicated
+ * endpoint AND the `/api/bots` fallback fail. The CONN delete modal must
+ * surface a "could not check bot dependencies — proceed carefully?" hint
+ * instead of the misleading "0 bot etkilenecek" message.
+ */
+export interface CredentialDependents {
+  credential_id: string;
+  bot_count: number;
+  bot_ids: string[];
+  bots_unknown?: boolean;
+}
 
 export interface CatalogEntry {
   id: string;
@@ -60,9 +78,16 @@ interface ExchangeStoreShape {
   loadCatalog: () => Promise<void>;
   loadCredentials: () => Promise<void>;
   saveCredential: (payload: CreateCredentialPayload) => Promise<boolean>;
-  deleteCredential: (credentialId: string) => Promise<boolean>;
+  deleteCredential: (credentialId: string, opts?: { force?: boolean }) => Promise<boolean>;
   testCredential: (credentialId: string) => Promise<{ ok: boolean; account?: unknown; error?: string }>;
   upgradeToTrade: (credentialId: string, accountLabel: string) => Promise<boolean>;
+  /**
+   * C9 (FIX_CONTRACT) — count bots that depend on this credential so the UI
+   * can warn the user before delete cascades.  Prefers Agent 2's authoritative
+   * endpoint; falls back to `/api/bots` client-side filter when the endpoint
+   * is missing (e.g. older sidecar build).
+   */
+  dependentBots: (credentialId: string) => Promise<CredentialDependents>;
 
   setSelectedExchange: (id: string | null) => void;
   filterCatalog: (f: CatalogFilter) => CatalogEntry[];
@@ -112,18 +137,84 @@ export const useExchangeStore = create<ExchangeStoreShape>((set, get) => ({
     }
   },
 
-  deleteCredential: async (credentialId) => {
+  deleteCredential: async (credentialId, opts) => {
     set({ error: null });
+    // C9 (FIX_CONTRACT) — cascade-aware delete.  When force=true, append the
+    // query param so Agent 2's backend will disable dependent bots instead of
+    // 409'ing.  Older sidecar builds without the query param simply ignore it.
+    const qs = opts?.force ? "?force=true" : "";
     try {
       await sidecarFetch<{ ok: boolean }>(
-        `/api/exchange/credentials/${credentialId}`,
+        `/api/exchange/credentials/${credentialId}${qs}`,
         { method: "DELETE" },
       );
       await get().loadCredentials();
+      // Cross-store invalidation — bots referencing this credential may now
+      // be disabled (cascade) or stale-permission; refresh the supervisor so
+      // the badge / mode pills reflect the new state immediately.
+      // QA-2026-05-23: log failures instead of swallowing them so the caller
+      // can decide whether to surface a "bot list may be stale" hint.
+      try {
+        await useBotsSupervisionStore.getState().loadAll();
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          "[exchange-store] supervision invalidation failed after delete:",
+          err,
+        );
+        // Preserve the delete success but mark the supervisor as stale.
+        set({ error: "bots_supervision_stale" });
+      }
       return true;
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String(e) });
       return false;
+    }
+  },
+
+  dependentBots: async (credentialId) => {
+    // Prefer Agent 2's dedicated endpoint.  Falls back to /api/bots if the
+    // sidecar build is old (or returns 404). QA-2026-05-23: when BOTH paths
+    // fail we now return `bots_unknown=true` so the CONN delete confirm copy
+    // can warn the user instead of falsely claiming "0 bot etkilenecek".
+    let dedicatedErr: unknown = null;
+    try {
+      const body = await sidecarFetch<CredentialDependents>(
+        `/api/exchange/credentials/${credentialId}/dependents`,
+      );
+      if (body && typeof body.bot_count === "number") {
+        return {
+          credential_id: credentialId,
+          bot_count: body.bot_count,
+          bot_ids: Array.isArray(body.bot_ids) ? body.bot_ids : [],
+        };
+      }
+    } catch (err) {
+      dedicatedErr = err;
+    }
+    try {
+      const fallback = await sidecarFetch<{ records: Array<{ id: string; credential_id: string }> }>(
+        "/api/bots",
+      );
+      const records = Array.isArray(fallback?.records) ? fallback.records : [];
+      const matches = records.filter((b) => b.credential_id === credentialId);
+      return {
+        credential_id: credentialId,
+        bot_count: matches.length,
+        bot_ids: matches.map((b) => b.id),
+      };
+    } catch (fallbackErr) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        "[exchange-store] dependentBots failed for both endpoints:",
+        { credentialId, dedicatedErr, fallbackErr },
+      );
+      return {
+        credential_id: credentialId,
+        bot_count: 0,
+        bot_ids: [],
+        bots_unknown: true,
+      };
     }
   },
 

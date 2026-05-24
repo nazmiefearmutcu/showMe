@@ -646,7 +646,7 @@ function FeedStatePill({
   hasArticles,
   intervalSec,
 }: {
-  state: "idle" | "loading" | "ok" | "error";
+  state: "idle" | "loading" | "ok" | "error" | "refreshing";
   hasArticles: boolean;
   intervalSec: number;
 }) {
@@ -657,14 +657,14 @@ function FeedStatePill({
       </Pill>
     );
   }
-  if (state === "loading" && !hasArticles) {
+  if ((state === "loading" || state === "refreshing") && !hasArticles) {
     return (
       <Pill tone="warn" variant="soft" withDot={false}>
         LOADING
       </Pill>
     );
   }
-  if (state === "loading" && hasArticles) {
+  if ((state === "loading" || state === "refreshing") && hasArticles) {
     return (
       <Pill tone="warn" variant="soft" withDot>
         SNAPSHOT · refreshing

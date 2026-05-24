@@ -7,11 +7,14 @@ EMSXFunction +1 satır eklemekle entegrasyon tamamlanır.
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import time
 from typing import Any
 
 from showme.app_paths import runtime_path
+
+LOG = logging.getLogger("showme.engine.services.order_history")
 
 
 def _db_file():
@@ -72,8 +75,17 @@ def list_orders(*, broker: str | None = None,
     out: list[dict[str, Any]] = []
     for r in rows:
         d = dict(zip(cols, r))
-        try: d["metadata"] = json.loads(d["metadata"] or "{}")
-        except Exception: pass
+        try:
+            d["metadata"] = json.loads(d["metadata"] or "{}")
+        except Exception as exc:  # noqa: BLE001
+            # QA-fix: log corrupt metadata so silent parse failures are
+            # visible. Keep the row in the result with the raw text so the
+            # UI still gets an audit trail.
+            LOG.warning(
+                "order_history: metadata json decode failed for order_id=%s: %s",
+                d.get("order_id"),
+                exc,
+            )
         out.append(d)
     con.close()
     return out

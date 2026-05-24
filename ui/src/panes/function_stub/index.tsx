@@ -8,7 +8,11 @@ import {
   PaneHeader,
   Skeleton,
 } from "@/design-system";
-import { runFunction, type FunctionCallResult } from "@/lib/functions";
+import {
+  FunctionCallError,
+  runFunction,
+  type FunctionCallResult,
+} from "@/lib/functions";
 import { useAppStore } from "@/lib/store";
 import {
   assetClassForFunctionSymbol,
@@ -240,6 +244,7 @@ export function FunctionStub({
   const internalSymbolSync = useRef<string | null>(null);
   const activeRequest = useRef<AbortController | null>(null);
   const controlsReady = useRef(false);
+  const lastFingerprintRef = useRef<string>("");
 
   const load = async (
     signal?: AbortSignal,
@@ -255,9 +260,30 @@ export function FunctionStub({
     const runAssetClass = symbolFirst
       ? assetClassForFunctionSymbol(normalizedSymbol, assetClasses)
       : undefined;
-    setState("loading");
-    setError(null);
-    setResult(null);
+
+    const params = {
+      ...defaultRuntimeParams(upperCode),
+      ...(paramsOverride ?? controlParams),
+      ...(parseParams(paramsText) ?? {}),
+    };
+
+    const fingerprint = JSON.stringify({
+      code: upperCode,
+      symbol: normalizedSymbol,
+      params,
+    });
+
+    const isRefresh = fingerprint === lastFingerprintRef.current && result !== null;
+
+    if (isRefresh) {
+      setState("refreshing");
+    } else {
+      setState("loading");
+      setError(null);
+      setResult(null);
+    }
+
+    lastFingerprintRef.current = fingerprint;
     if (symbolFirst) {
       setInputSymbol(normalizedSymbol);
       if (leafId && normalizedSymbol) {
@@ -266,11 +292,6 @@ export function FunctionStub({
       }
     }
     try {
-      const params = {
-        ...defaultRuntimeParams(upperCode),
-        ...(paramsOverride ?? controlParams),
-        ...(parseParams(paramsText) ?? {}),
-      };
       const res = await runFunction<unknown>(upperCode, {
         symbol: symbolFirst ? normalizedSymbol || undefined : undefined,
         asset_class: runAssetClass,
@@ -282,9 +303,30 @@ export function FunctionStub({
       setResult(res);
       setState("ok");
     } catch (err) {
-      if (signal?.aborted) return;
+      // QA-2026-05-23 — abort cleanup. Rapid symbol switches (typing in
+      // the symbol box, clicking through quick-symbol chips, or the
+      // upstream `upperCode/symbol` effect re-firing) cancel the inflight
+      // request via `activeRequest.current?.abort()`. Without resetting
+      // state here, the previous `setState("loading")` + the rewritten
+      // `lastFingerprintRef` linger and the next render shows a ghost
+      // spinner until the new request resolves. Reset both so the next
+      // `load` starts from a clean idle slate.
+      if (signal?.aborted) {
+        setState("idle");
+        lastFingerprintRef.current = "";
+        return;
+      }
+      // QA-2026-05-23 — timeout surface. `runFunction` throws a
+      // FunctionCallError with body === "timeout" when its internal
+      // AbortController fires the 35s timer (default — see
+      // functionTimeoutMs above). Surface a dedicated "timeout" state
+      // so the result section can render the Turkish "Veri alınamadı"
+      // empty state + Retry button instead of an opaque error message.
+      const isTimeout =
+        err instanceof FunctionCallError &&
+        (err.body === "timeout" || err.message.includes("timed out"));
       setError(err instanceof Error ? err.message : String(err));
-      setState("error");
+      setState(isTimeout ? "timeout" : "error");
     }
   };
 
@@ -664,7 +706,27 @@ export function FunctionStub({
                 <Skeleton height={16} width="70%" />
                 <Skeleton height={16} width="54%" />
               </div>
-            ) : state === "error" ? (
+            ) : state === "timeout" && !result ? (
+              <Empty
+                title="Veri alınamadı — yeniden dene"
+                body={
+                  error
+                    ? `${error} · 35 saniye içinde yanıt alınamadı.`
+                    : "Sidecar 35 saniye içinde yanıt vermedi. Bağlantınızı veya backend durumunu kontrol edin."
+                }
+                icon="!"
+                action={
+                  <button
+                    type="button"
+                    className="btn btn--accent"
+                    data-testid="function-stub-timeout"
+                    onClick={() => runLatest()}
+                  >
+                    Yeniden dene
+                  </button>
+                }
+              />
+            ) : state === "error" && !result ? (
               <Empty
                 title="Function failed"
                 body={error ?? "Unknown sidecar error"}

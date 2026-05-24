@@ -74,21 +74,63 @@ class WACCFunction(BaseFunction):
         except Exception as e:
             warnings.append(f"fred: {e}")
             rf = 0.04
-        # Beta
-        beta = float(params.get("beta")) if params.get("beta") not in (None, "") else 1.0
-        if params.get("beta") in (None, ""):
+        # Beta — Bug #17: never silently fall back to 1.0 without labelling.
+        #
+        # The WACC pane reported β=1.0 for AAPL while the dedicated BETA
+        # pane reported β=1.20 (5Y window). Two adapters, two truths in one
+        # cockpit. Fix: always share the BetaFunction adapter, prefer the
+        # longest window the user asked for (defaults to 5Y, then 2Y, then
+        # 1Y) and, if we *do* fall through to 1.0, mark the response with
+        # ``data_state: "synthetic_beta"`` so the UI can pill it.
+        beta_source: str = "user_input"
+        beta_window_used: str | None = None
+        beta_data_state: str = "live"
+        if params.get("beta") not in (None, ""):
+            beta = float(params.get("beta"))
+            sources.append("user_input")
+        else:
+            # Anything other than a successful BetaFunction window lands us
+            # in synthetic territory — flip the source label up front so the
+            # exception/empty branches don't need to remember to.
+            beta_source = "synthetic_beta"
+            beta = 1.0
             try:
                 beta_fn = BetaFunction(self.deps)
+                # Request 5Y/2Y/1Y so the BetaFunction returns whichever
+                # window has enough history; prefer the long window when it
+                # came back populated (matches what the BETA pane displays).
                 beta_res = await asyncio.wait_for(
-                    beta_fn.execute(instrument, windows=["2Y"]),
+                    beta_fn.execute(instrument, windows=["5Y", "2Y", "1Y"]),
                     timeout=float(params.get("beta_timeout", 8)),
                 )
-                beta = float(((beta_res.data or {}).get("betas", {}) or {}).get("2Y", {}).get("beta") or 1.0)
-                sources.append("yfinance")
+                betas = ((beta_res.data or {}).get("betas") or {})
+                resolved: float | None = None
+                for window in ("5Y", "2Y", "1Y"):
+                    entry = betas.get(window) if isinstance(betas, dict) else None
+                    if isinstance(entry, dict):
+                        candidate = entry.get("beta")
+                        if isinstance(candidate, (int, float)) and float(candidate) == float(candidate):
+                            resolved = float(candidate)
+                            beta_window_used = window
+                            break
+                if resolved is not None:
+                    beta = resolved
+                    beta_source = f"beta_{beta_window_used.lower()}" if beta_window_used else "beta"
+                    sources.append("beta")
+                else:
+                    # BetaFunction returned but had no usable window (e.g. it
+                    # took the deterministic _beta_baseline path because
+                    # yfinance failed). Surface that honestly.
+                    beta_data_state = "synthetic_beta"
+                    warnings.append(
+                        "beta unavailable: BetaFunction returned no live window; "
+                        "WACC is using a synthetic β=1.0"
+                    )
+                    sources.append("synthetic_beta")
             except Exception as e:
-                warnings.append(f"beta: {e}")
-        else:
-            sources.append("user_input")
+                beta_data_state = "synthetic_beta"
+                warnings.append(f"beta: {e}; WACC is using a synthetic β=1.0")
+                sources.append("synthetic_beta")
         # Cost of debt — Aaa as proxy
         rd = float(params.get("rd")) if params.get("rd") not in (None, "") else 0.05
         try:
@@ -159,7 +201,14 @@ class WACCFunction(BaseFunction):
                     "rd": "Pre-tax cost of debt proxy.",
                     "equity_weight": "Equity share of capital structure.",
                     "debt_weight": "Debt share of capital structure.",
+                    "beta_source": "Source of β used in CAPM (user_input, beta_5y, beta_2y, beta_1y, or synthetic_beta).",
+                    "beta_window": "Trailing window used by BetaFunction when β was sourced from it.",
+                    "data_state": "live when β was sourced from a real BetaFunction window; synthetic_beta when WACC fell back to β=1.0.",
                 },
+                "beta_source": beta_source,
+                "beta_window": beta_window_used,
+                "data_state": beta_data_state,
             },
             sources=sources, warnings=warnings,
+            metadata={"beta_source": beta_source, "beta_window": beta_window_used, "data_state": beta_data_state},
         )

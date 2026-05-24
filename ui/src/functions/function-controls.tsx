@@ -139,9 +139,12 @@ export function LoadStatePill({
   const normalized = status?.trim().toLowerCase();
   const label = state === "ok" && normalized && normalized !== "ok" ? normalized : state;
   const tone =
-    state === "loading"
+    state === "loading" || state === "refreshing"
       ? "warn"
-      : state === "error" || normalized === "input_error" || normalized === "calc_error"
+      : state === "error" ||
+          state === "timeout" ||
+          normalized === "input_error" ||
+          normalized === "calc_error"
         ? "negative"
         : normalized === "empty" ||
             normalized === "provider_unavailable" ||
@@ -151,7 +154,7 @@ export function LoadStatePill({
       ? "positive"
           : "muted";
   return (
-    <Pill tone={tone} withDot={state === "loading" || tone === "positive"}>
+    <Pill tone={tone} withDot={state === "loading" || state === "refreshing" || tone === "positive"}>
       {label}
     </Pill>
   );

@@ -14,7 +14,6 @@ checks). The richer per-payload contracts already live in their own
 
 from __future__ import annotations
 
-import asyncio
 import os
 import sys
 from pathlib import Path
@@ -426,8 +425,9 @@ def test_auth_middleware_blocks_when_token_missing(client: TestClient, monkeypat
 
 def test_ws_quote_rejects_disallowed_origin(client: TestClient) -> None:
     with pytest.raises(Exception):
-        # Origin not on the allowlist → server closes with 4403 before
-        # accept; TestClient surfaces this as an exception/disconnect.
+        # Origin not on the allowlist → server closes with 1008 (policy
+        # violation) before accept; TestClient surfaces this as an
+        # exception/disconnect.
         with client.websocket_connect(
             "/ws/quote/BTCUSDT",
             headers={"origin": "http://evil.example"},
@@ -441,16 +441,34 @@ def test_ws_quote_rejects_invalid_symbol(client: TestClient) -> None:
             pass
 
 
-def test_ws_quote_handshakes_without_origin(client: TestClient) -> None:
-    # No Origin header → allowed (covers non-browser callers + tests).
-    ctx = client.websocket_connect("/ws/quote/BTCUSDT")
-    try:
-        with ctx as ws:  # noqa: F841 — handshake is the assertion
+def test_ws_quote_rejects_missing_origin(client: TestClient) -> None:
+    # QA-fix: Origin is now mandatory by default. The opt-out path lives
+    # below for non-browser callers (sidecar self-tester / pytest WS).
+    with pytest.raises(Exception):
+        with client.websocket_connect("/ws/quote/BTCUSDT"):
             pass
-    except Exception:
-        # It's acceptable for the test transport to immediately disconnect
-        # because no real upstream tick arrives during the test window.
-        pass
+
+
+def test_ws_quote_handshakes_without_origin_when_opt_out(
+    tmp_path_factory: pytest.TempPathFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Opt-out path: setting SHOWME_WS_REQUIRE_ORIGIN=0 restores the
+    # non-browser handshake (used by the sidecar self-tester / pytest WS
+    # client). New app instance so the env var is picked up.
+    monkeypatch.setenv("SHOWME_WS_REQUIRE_ORIGIN", "0")
+    home = tmp_path_factory.mktemp("ws-optout-home")
+    monkeypatch.setenv("SHOWME_HOME", str(home))
+    app = server.build_app(engine_root=None)
+    with TestClient(app) as c:
+        ctx = c.websocket_connect("/ws/quote/BTCUSDT")
+        try:
+            with ctx as ws:  # noqa: F841 — handshake is the assertion
+                pass
+        except Exception:
+            # Acceptable: the test transport can disconnect immediately
+            # because no real upstream tick arrives during the test window.
+            pass
 
 
 # ── Lifespan migration (R4B) — TestClient ``with:`` block exercises both

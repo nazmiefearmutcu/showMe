@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from typing import Any
 
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from showme.engine.core.instrument import Instrument
+
+LOG = logging.getLogger("showme.engine.functions.crvf")
 
 
 def _curve_model() -> dict[str, float]:
@@ -98,13 +101,20 @@ class CRVFFunction(BaseFunction):
                 curve = await self.deps.fred.yield_curve()
                 curve = {k: v for k, v in curve.items() if v is not None and v == v}
             except Exception as e:
-                warnings.append(f"fred: {e or type(e).__name__}")
+                # QA-fix: log + propagate reason so the warning is never an
+                # empty "fred: " label.
+                reason = str(e) or e.__class__.__name__
+                LOG.warning("CRVF live curve fetch failed: %s", reason)
+                warnings.append(f"fred: {reason}")
         elif country != "US":
             warnings.append(
                 f"live curve for {country} is not wired; using computed_model fallback"
             )
+            LOG.info("CRVF non-US country %s: provider_unavailable", country)
         elif not self.deps.fred:
             warnings.append("fred adapter unavailable; using computed_model fallback")
+            # QA-fix: log so operators know the FRED adapter is the missing piece.
+            LOG.warning("CRVF: FRED adapter unavailable (likely FRED_API_KEY unset)")
         source_mode = "fred" if curve and not warnings else "computed_model"
         if not curve:
             curve = _curve_model()

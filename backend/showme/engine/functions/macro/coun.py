@@ -168,9 +168,18 @@ def _indicator_from_ecst(country: str, series_id: str, payload: Any, sources: li
 
 
 def _country_rows(country: str, profile: dict[str, Any], policy_row: dict[str, Any] | None, indicators: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    rows = list(profile.get("rows") or [])
+    # Bug #23 fix: previously this concatenated the reference-profile rows
+    # (which always include a static "Policy rate") with a BTMM-sourced
+    # "Policy rate" row inserted at position 0 AND with ECST indicator
+    # rows. The UI then rendered three "Policy rate" entries with three
+    # different values (3.625% live, 5.25% reference, 4.3% 10Y proxy mis-
+    # parsed as policy). Solution: deduplicate by ``(section, metric)``,
+    # keeping the row with the most recent ``as_of`` timestamp and
+    # preferring rows that carry an ``as_of`` at all over reference rows
+    # that don't.
+    candidates: list[dict[str, Any]] = []
     if policy_row:
-        rows.insert(0, {
+        candidates.append({
             "section": "rates",
             "metric": "Policy rate",
             "value": policy_row.get("policy_rate"),
@@ -179,7 +188,48 @@ def _country_rows(country: str, profile: dict[str, Any], policy_row: dict[str, A
             "country": country,
             "source_mode": policy_row.get("source") or "BTMM",
         })
-    return rows + indicators
+    candidates.extend(profile.get("rows") or [])
+    candidates.extend(indicators)
+    return _deduplicate_country_rows(candidates)
+
+
+def _deduplicate_country_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Drop duplicate (section, metric) pairs, keeping the freshest row.
+
+    "Freshest" = the row with the latest ``as_of`` ISO date; rows without
+    an ``as_of`` are treated as oldest (reference fallback only wins when
+    no live row exists). First seen wins on ties so the BTMM-inserted row
+    keeps its leading slot.
+    """
+    best: dict[tuple[str, str], int] = {}
+    out: list[dict[str, Any]] = []
+    out_index = 0
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        key = (str(row.get("section") or ""), str(row.get("metric") or ""))
+        if not key[1]:
+            # Rows with no metric label can't collide — let them pass through.
+            out.append(row)
+            out_index += 1
+            continue
+        if key not in best:
+            best[key] = out_index
+            out.append(row)
+            out_index += 1
+            continue
+        existing_idx = best[key]
+        if _row_freshness(row) > _row_freshness(out[existing_idx]):
+            out[existing_idx] = row
+    return out
+
+
+def _row_freshness(row: dict[str, Any]) -> str:
+    """Sortable freshness key — empty string for rows with no ``as_of``."""
+    as_of = row.get("as_of")
+    if not as_of:
+        return ""
+    return str(as_of)
 
 
 def _country_cards(country: str, profile: dict[str, Any], policy_row: dict[str, Any] | None, indicators: list[dict[str, Any]]) -> list[dict[str, Any]]:

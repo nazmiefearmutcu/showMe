@@ -143,6 +143,11 @@ pub fn run() {
         // Default builder shipped Info to both stdout and the bundle log file
         // with no rotation cap; on a long-running cockpit that is unbounded
         // disk growth.
+        //
+        // REL-04 P3 — KeepAll left 50+ rotated log files on disk after a
+        // few weeks of normal use (10 MiB each → 500+ MiB just in logs).
+        // Cap to the last 5 rotations so total log disk usage stays under
+        // ~60 MiB (10 MiB live + 5 × 10 MiB rotated).
         .plugin(
             tauri_plugin_log::Builder::default()
                 .targets([
@@ -155,7 +160,7 @@ pub fn run() {
                     log::LevelFilter::Info
                 })
                 .max_file_size(10 * 1024 * 1024) // 10 MiB
-                .rotation_strategy(RotationStrategy::KeepAll)
+                .rotation_strategy(RotationStrategy::KeepSome(5))
                 .build(),
         )
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())

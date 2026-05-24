@@ -44,9 +44,24 @@ class NIFunction(BaseFunction):
         results: list = []
         warnings: list[str] = []
         live = _truthy(params.get("live_news") or params.get("live"))
+        # BugHunt 2026-05-24: NI used to forward `params.get("limit", 50)` raw
+        # into DataRequest(limit=...) and TOPFunction(limit=...). When the UI
+        # serialised query strings as text (`?limit=50`), the downstream RSS
+        # adapter executed `articles[: request.limit]` and crashed with
+        # `TypeError: slice indices must be integers or None`. The error
+        # bubbled into NI's `provider_errors` field and topic-mode silently
+        # returned no rows. Coerce once at the top so every downstream call
+        # sees a real int.
+        limit = _coerce_int(params.get("limit"), default=50, min_value=1, max_value=500)
+        threshold = _coerce_float(params.get("threshold"), default=70.0, min_value=0.0, max_value=100.0)
         if live and self.deps.rss:
             try:
-                timeout = float(params.get("news_timeout", params.get("timeout", 5)))
+                timeout = _coerce_float(
+                    params.get("news_timeout", params.get("timeout", 5)),
+                    default=5.0,
+                    min_value=0.5,
+                    max_value=30.0,
+                )
                 extra = {
                     "query": query,
                     "terms": symbol_terms(symbol, query) if symbol else _query_terms(query),
@@ -60,9 +75,9 @@ class NIFunction(BaseFunction):
                 }
                 results = await asyncio.wait_for(
                     self.deps.rss.fetch(DataRequest(
-                        kind=DataKind.NEWS, extra=extra, limit=params.get("limit", 50),
+                        kind=DataKind.NEWS, extra=extra, limit=limit,
                     )),
-                    timeout=float(params.get("news_timeout", params.get("timeout", 5))),
+                    timeout=timeout,
                 )
                 if results:
                     sources.append("rss")
@@ -70,11 +85,17 @@ class NIFunction(BaseFunction):
                 warnings.append(f"rss: {exc}")
         if not results and live and self.deps.gdelt and _truthy(params.get("include_gdelt") or params.get("deep")):
             try:
+                gdelt_timeout = _coerce_float(
+                    params.get("timeout", 8),
+                    default=8.0,
+                    min_value=0.5,
+                    max_value=30.0,
+                )
                 results = await asyncio.wait_for(
                     self.deps.gdelt.fetch(DataRequest(
-                        kind=DataKind.NEWS, extra={"query": query}, limit=params.get("limit", 50),
+                        kind=DataKind.NEWS, extra={"query": query}, limit=limit,
                     )),
-                    timeout=float(params.get("timeout", 8)),
+                    timeout=gdelt_timeout,
                 )
                 sources.append("gdelt")
             except Exception as exc:  # noqa: BLE001
@@ -83,6 +104,12 @@ class NIFunction(BaseFunction):
             try:
                 from showme.engine.functions.news.top import TOPFunction
 
+                outer_timeout = _coerce_float(
+                    params.get("news_timeout", params.get("timeout", 5)),
+                    default=5.0,
+                    min_value=0.5,
+                    max_value=30.0,
+                ) + 1.0
                 top = await asyncio.wait_for(
                     TOPFunction(self.deps).execute(
                         instrument,
@@ -90,11 +117,11 @@ class NIFunction(BaseFunction):
                         asset_class=asset_class,
                         query=query,
                         topic=topic,
-                        limit=params.get("limit", 50),
+                        limit=limit,
                         __explicit_symbol=bool(symbol),
                         news_timeout=params.get("news_timeout", params.get("timeout", 5)),
                     ),
-                    timeout=float(params.get("news_timeout", params.get("timeout", 5))) + 1,
+                    timeout=outer_timeout,
                 )
                 if top.data:
                     # TOPFunction now returns dict {items, alerts, status} per
@@ -106,14 +133,13 @@ class NIFunction(BaseFunction):
                     sources.extend(top.sources or [])
             except Exception as exc:  # noqa: BLE001
                 warnings.append(f"top: {exc}")
-        threshold = float(params.get("threshold", 70) or 70)
         ranked = enrich_articles(
             results,
             symbol=symbol,
             query=query,
             asset_class=asset_class,
             threshold=threshold,
-            limit=int(params.get("limit", 50) or 50),
+            limit=limit,
         )
         alerts = critical_articles(ranked, threshold=threshold)
         # Per FUNC-10 P1: wrap list payload as ``{items: ...}`` so the shared
@@ -143,6 +169,37 @@ def _truthy(value: Any) -> bool:
     if value is None:
         return False
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _coerce_int(value: Any, *, default: int, min_value: int, max_value: int) -> int:
+    """Coerce ``value`` to a clamped int. Falls back to ``default`` on any error.
+
+    BugHunt 2026-05-24: NI used to forward query-string limits verbatim to
+    DataRequest, which crashed the RSS adapter with
+    ``TypeError: slice indices must be integers or None`` when the caller
+    passed ``limit="50"``. This helper guarantees we never hand a non-int
+    downstream.
+    """
+    if value is None or value == "":
+        return max(min_value, min(default, max_value))
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        try:
+            parsed = int(float(value))
+        except (TypeError, ValueError):
+            parsed = default
+    return max(min_value, min(parsed, max_value))
+
+
+def _coerce_float(value: Any, *, default: float, min_value: float, max_value: float) -> float:
+    if value is None or value == "":
+        return max(min_value, min(default, max_value))
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(min_value, min(parsed, max_value))
 
 
 def _query_terms(query: str) -> list[str]:

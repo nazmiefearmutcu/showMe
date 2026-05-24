@@ -16,7 +16,12 @@ from showme.engine.portfolio.state import PortfolioState  # noqa: E402
 from showme.engine.functions.portfolio.port import PORTFunction  # noqa: E402
 
 
-def test_import_legacy_crypto_carries_current_price_and_updates_existing(tmp_path: Path) -> None:
+def test_import_legacy_crypto_carries_current_price_and_updates_existing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # bughunt 2026-05-24: legacy mirror is now opt-in. Explicit opt-in
+    # preserves the original contract this test pins.
+    monkeypatch.setenv("SHOWME_IMPORT_LEGACY_TBV3", "1")
     state_path = tmp_path / "state.json"
     portfolio_path = tmp_path / "portfolio.json"
     state_path.write_text(json.dumps({
@@ -54,7 +59,11 @@ def test_import_legacy_crypto_carries_current_price_and_updates_existing(tmp_pat
     assert portfolio.positions[0].instrument.metadata["current_price"] == 0.01231
 
 
-def test_port_uses_legacy_current_price_for_crypto_positions(tmp_path: Path) -> None:
+def test_port_uses_legacy_current_price_for_crypto_positions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # bughunt 2026-05-24: legacy mirror is now opt-in.
+    monkeypatch.setenv("SHOWME_IMPORT_LEGACY_TBV3", "1")
     state_path = tmp_path / "state.json"
     portfolio_path = tmp_path / "portfolio.json"
     state_path.write_text(json.dumps({

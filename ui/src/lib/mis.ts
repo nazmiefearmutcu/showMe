@@ -231,12 +231,22 @@ export const MIS_MARKET_LABELS: Record<MisMarket, string> = {
 /** Static fallback TF list per market — used only on the very first paint
  * before /api/mis/markets responds. The authoritative list comes from
  * ``MisMarketSummary.default_tfs`` and the active subset from
- * ``MisMarketSummary.active_tfs``. */
+ * ``MisMarketSummary.active_tfs``.
+ *
+ * QA-2026-05-24 (#19): `1wk` and `1mo` removed from EQUITY/ETF/FX/COMMODITY/
+ * BOND. The backend ships no ZAK weights for those TFs, so requesting them
+ * hung the scan indefinitely. Add them back here only after weights land in
+ * `backend/showme/mis.py` `_ZAK` and `_TF_WHITELIST_BY_MARKET`. */
 export const MIS_FALLBACK_TFS: Record<MisMarket, string[]> = {
   CRYPTO: ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d"],
-  EQUITY: ["1h", "1d", "1wk", "1mo"],
-  ETF: ["1h", "1d", "1wk", "1mo"],
-  FX: ["1h", "4h", "1d", "1wk"],
-  COMMODITY: ["1h", "1d", "1wk", "1mo"],
-  BOND: ["1d", "1wk", "1mo"],
+  EQUITY: ["1h", "1d"],
+  ETF: ["1h", "1d"],
+  FX: ["1h", "4h", "1d"],
+  COMMODITY: ["1h", "1d"],
+  BOND: ["1d"],
 };
+
+/** Alias for callers that prefer the more literal name. Same object — both
+ * symbols stay in sync. Tests should assert against this OR the legacy
+ * MIS_FALLBACK_TFS export. */
+export const MIS_TFS_BY_MARKET = MIS_FALLBACK_TFS;

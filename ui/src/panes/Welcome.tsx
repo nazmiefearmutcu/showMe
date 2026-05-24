@@ -2,15 +2,33 @@ import { useEffect, useMemo, useState } from "react";
 import { Pill, Skeleton, Sparkline } from "@/design-system";
 import { listNativeCodes } from "@/functions/registry";
 import { navigate } from "@/lib/router";
+import { useSentimentStore } from "@/lib/sentiment-store";
 import type { FunctionEntry } from "@/lib/sidecar";
 import { useAppStore } from "@/lib/store";
 import { useFunction } from "@/lib/useFunction";
+import { useLiveQuotes, type QuoteView } from "@/lib/market-data";
+import { formatPrice } from "@/lib/format";
+import { loadWatchlist, type WatchlistRow } from "@/lib/watchlist";
+import {
+  describeNyseMarketState,
+  getNyseMarketState,
+} from "@/lib/market-state";
 import {
   formatDateStamp,
   formatNewsTimestamp,
   formatTime,
   useTimezone,
 } from "@/lib/timezone";
+
+const SENTIMENT_FALLBACK_SYMBOLS = ["AAPL", "MSFT", "GOOG", "BTC/USDT", "ETH/USDT"];
+const SENTIMENT_REFRESH_MS = 60_000;
+/**
+ * Hard ceiling on how long we keep the sentiment gauge in `Loading…` before
+ * surfacing an "unavailable" UI with a Retry button. The backend hanger fix
+ * is Agent A's scope; here we just make sure the UI never stays stuck.
+ */
+const SENTIMENT_LOAD_TIMEOUT_MS = 30_000;
+
 
 interface PortfolioPosition {
   symbol: string;
@@ -32,23 +50,34 @@ interface PortfolioData {
 
 interface MarketTile {
   symbol: string;
+  /** Live quote symbol for the sidecar (may differ from display symbol). */
+  quoteSymbol?: string;
   label: string;
   value: string;
   change: number;
   detail: string;
+  /** When true, render the tile with a "DEMO" pill — no quote endpoint. */
+  demo?: boolean;
 }
 
 interface WatchRow {
   symbol: string;
   name: string;
   sector: string;
+  /** Bid price as displayed; "—" when no live quote is available. */
   bid: string;
+  /** Ask price as displayed; "—" when no live quote is available. */
   ask: string;
   last: string;
   change: number;
+  /** Optional trend series — empty array means "no history; render placeholder". */
   trend: number[];
   volume: string;
-  cap: string;
+  /**
+   * Notional one-day change in dollars (change_pct × last × proxy notional).
+   * Replaces the QA-flagged "negative market cap" column. "—" when missing.
+   */
+  notional: string;
 }
 
 interface NewsItem {
@@ -64,182 +93,117 @@ interface BriefItem {
   text: string;
 }
 
-const MARKET_STRIP: MarketTile[] = [
+/**
+ * KPI strip seed values. Tiles whose `quoteSymbol` resolves at `/api/quote/`
+ * get overlaid with live data; everything else stays a clearly-flagged demo.
+ * The seeds for live tiles are still placeholders — they only show until the
+ * first network response replaces them and `demo` flips to false at runtime.
+ *
+ * Canonical quote symbols (validated against backend/showme/quotes.py +
+ * server_routes/quote.py — regex `^[A-Za-z0-9._:=\-^]+$`, NO slash allowed):
+ *   - Yahoo cash indices: `^GSPC`, `^NDX`, `^TNX` (10Y yield ÷10), `^VIX`.
+ *   - Yahoo FX: `DX-Y.NYB` (dollar index), `EURUSD=X`.
+ *   - Yahoo futures: `CL=F` (WTI), `GC=F` (gold).
+ *   - Binance crypto: `BTCUSDT` — slash form returns 404 (route regex
+ *     rejects '/'; canonical_route_symbol assumes pre-cleaned input).
+ */
+export const MARKET_STRIP_SEED: MarketTile[] = [
   {
     symbol: "SPX",
+    quoteSymbol: "^GSPC",
     label: "S&P 500",
-    value: "5,214.51",
-    change: 0.42,
+    value: "—",
+    change: 0,
     detail: "cash index",
+    demo: true,
   },
   {
     symbol: "NDX",
+    quoteSymbol: "^NDX",
     label: "Nasdaq 100",
-    value: "18,804",
-    change: 0.73,
+    value: "—",
+    change: 0,
     detail: "mega-cap bid",
+    demo: true,
   },
   {
     symbol: "BTC",
+    quoteSymbol: "BTCUSDT",
     label: "Bitcoin",
-    value: "69,633",
-    change: -0.92,
+    value: "—",
+    change: 0,
     detail: "crypto beta",
-  },
-  { symbol: "US10Y", label: "10Y yield", value: "4.2833", change: 0.02, detail: "rates" },
-  { symbol: "DXY", label: "Dollar", value: "105.58", change: -0.08, detail: "fx" },
-  { symbol: "VIX", label: "Volatility", value: "13.43", change: -0.46, detail: "risk" },
-  { symbol: "WTI", label: "Crude", value: "77.80", change: 0.34, detail: "energy" },
-  { symbol: "XAU", label: "Gold", value: "2,409.07", change: 0.21, detail: "metal" },
-  { symbol: "EURUSD", label: "Euro", value: "1.0832", change: -0.06, detail: "fx" },
-];
-
-const DEFAULT_WATCHLIST: WatchRow[] = [
-  {
-    symbol: "AAPL",
-    name: "Apple Inc.",
-    sector: "Tech",
-    bid: "224.16",
-    ask: "224.19",
-    last: "224.94",
-    change: 1.42,
-    trend: makeTrend(3),
-    volume: "53.4M",
-    cap: "3.45T",
+    demo: true,
   },
   {
-    symbol: "NVDA",
-    name: "NVIDIA Corp.",
-    sector: "Semi",
-    bid: "938.38",
-    ask: "938.44",
-    last: "934.92",
-    change: 2.61,
-    trend: makeTrend(6),
-    volume: "42.1M",
-    cap: "2.31T",
+    symbol: "US10Y",
+    quoteSymbol: "^TNX",
+    label: "10Y yield",
+    value: "—",
+    change: 0,
+    detail: "rates",
+    demo: true,
   },
   {
-    symbol: "MSFT",
-    name: "Microsoft",
-    sector: "Tech",
-    bid: "432.04",
-    ask: "432.09",
-    last: "433.76",
-    change: 0.84,
-    trend: makeTrend(9),
-    volume: "21.6M",
-    cap: "3.21T",
+    symbol: "DXY",
+    quoteSymbol: "DX-Y.NYB",
+    label: "Dollar",
+    value: "—",
+    change: 0,
+    detail: "fx",
+    demo: true,
   },
   {
-    symbol: "TSLA",
-    name: "Tesla Inc.",
-    sector: "Auto",
-    bid: "182.36",
-    ask: "182.42",
-    last: "179.04",
-    change: -1.84,
-    trend: makeTrend(16),
-    volume: "92.4M",
-    cap: "581B",
+    symbol: "VIX",
+    quoteSymbol: "^VIX",
+    label: "Volatility",
+    value: "—",
+    change: 0,
+    detail: "risk",
+    demo: true,
   },
   {
-    symbol: "META",
-    name: "Meta Platforms",
-    sector: "Tech",
-    bid: "472.14",
-    ask: "472.22",
-    last: "473.13",
-    change: 1.05,
-    trend: makeTrend(22),
-    volume: "14.2M",
-    cap: "1.20T",
+    symbol: "WTI",
+    quoteSymbol: "CL=F",
+    label: "Crude",
+    value: "—",
+    change: 0,
+    detail: "energy",
+    demo: true,
   },
   {
-    symbol: "GOOG",
-    name: "Alphabet Inc.",
-    sector: "Tech",
-    bid: "168.08",
-    ask: "168.13",
-    last: "166.12",
-    change: -0.36,
-    trend: makeTrend(28),
-    volume: "18.8M",
-    cap: "2.08T",
-  },
-  {
-    symbol: "AMZN",
-    name: "Amazon.com",
-    sector: "Retail",
-    bid: "184.60",
-    ask: "184.65",
-    last: "187.41",
-    change: -0.21,
-    trend: makeTrend(34),
-    volume: "32.4M",
-    cap: "1.92T",
-  },
-  {
-    symbol: "BRK.B",
-    name: "Berkshire B",
-    sector: "Finance",
-    bid: "414.16",
-    ask: "414.24",
-    last: "401.15",
-    change: 0.12,
-    trend: makeTrend(40),
-    volume: "3.4M",
-    cap: "896B",
-  },
-  {
-    symbol: "JPM",
-    name: "JPMorgan Chase",
-    sector: "Finance",
-    bid: "202.36",
-    ask: "202.43",
-    last: "195.99",
-    change: 0.62,
-    trend: makeTrend(46),
-    volume: "9.1M",
-    cap: "583B",
-  },
-  {
-    symbol: "BTC",
-    name: "Bitcoin",
-    sector: "Crypto",
-    bid: "68,338",
-    ask: "68,344",
-    last: "69,633",
-    change: -0.92,
-    trend: makeTrend(55),
-    volume: "24.1B",
-    cap: "1.34T",
-  },
-  {
-    symbol: "ETH",
-    name: "Ethereum",
-    sector: "Crypto",
-    bid: "3,273.50",
-    ask: "3,274.50",
-    last: "3,278.65",
-    change: 1.12,
-    trend: makeTrend(61),
-    volume: "12.4B",
-    cap: "393B",
+    symbol: "XAU",
+    quoteSymbol: "GC=F",
+    label: "Gold",
+    value: "—",
+    change: 0,
+    detail: "metal",
+    demo: true,
   },
   {
     symbol: "EURUSD",
-    name: "EUR / USD",
-    sector: "FX",
-    bid: "1.0819",
-    ask: "1.0821",
-    last: "1.0832",
-    change: -0.08,
-    trend: makeTrend(67),
-    volume: "128B",
-    cap: "-",
+    quoteSymbol: "EURUSD=X",
+    label: "Euro",
+    value: "—",
+    change: 0,
+    detail: "fx",
+    demo: true,
   },
 ];
+
+/** Symbols on the KPI strip whose live snapshot we should fan out for. */
+const MARKET_STRIP_QUOTE_SYMBOLS = MARKET_STRIP_SEED.filter(
+  (t) => !!t.quoteSymbol,
+).map((t) => t.quoteSymbol as string);
+
+/**
+ * No hardcoded watchlist fallback. If the user hasn't saved any symbols and
+ * the portfolio is empty, the panel renders the "Add symbols" CTA below.
+ * Previous mock collisions (DOGEUSDT $86,617 etc.) caused the Preferences
+ * theme-preview to leak fake AAPL price ($224.18) into the dashboard while
+ * `/api/quote/AAPL` returned the real $308.82.
+ */
+const DEFAULT_WATCHLIST: WatchRow[] = [];
 
 const BRIEF_ITEMS: BriefItem[] = [
   {
@@ -331,16 +295,41 @@ const QUICK_CODES = [
   "WATCH",
   "SCAN",
 ];
-const MOVERS = [
-  { symbol: "NVDA", price: "938.44", change: 2.61 },
-  { symbol: "AMD", price: "168.42", change: 2.18 },
-  { symbol: "COIN", price: "218.60", change: 1.94 },
-  { symbol: "AAPL", price: "224.18", change: 1.42 },
-  { symbol: "TSLA", price: "182.40", change: -1.84 },
-  { symbol: "BTC", price: "68,340", change: -0.92 },
-  { symbol: "INTC", price: "31.20", change: -0.74 },
-  { symbol: "AMZN", price: "184.62", change: -0.21 },
+/**
+ * Demo-only movers shown when the `/api/fn/MOST` endpoint isn't registered
+ * yet or returns nothing. Every row is rendered with a per-row DEMO pill so
+ * users can't confuse the placeholder with live tape.
+ */
+const DEMO_MOVERS: { symbol: string; price: string; change: number; demo: true }[] = [
+  { symbol: "NVDA", price: "—", change: 0, demo: true },
+  { symbol: "AMD", price: "—", change: 0, demo: true },
+  { symbol: "COIN", price: "—", change: 0, demo: true },
+  { symbol: "AAPL", price: "—", change: 0, demo: true },
+  { symbol: "TSLA", price: "—", change: 0, demo: true },
+  { symbol: "BTC", price: "—", change: 0, demo: true },
+  { symbol: "INTC", price: "—", change: 0, demo: true },
+  { symbol: "AMZN", price: "—", change: 0, demo: true },
 ];
+
+interface MoverRowData {
+  symbol: string;
+  price: string;
+  change: number;
+  demo?: boolean;
+}
+
+/** MOST endpoint payload shape (mirrors `functions/MOST.tsx::MostRow`). */
+interface MostMoverRow {
+  symbol?: string;
+  ticker?: string;
+  last?: number;
+  price?: number;
+  change_pct?: number;
+  changePercent?: number;
+}
+interface MostMoverPayload {
+  rows?: MostMoverRow[];
+}
 
 export function Welcome() {
   const status = useAppStore((s) => s.sidecarStatus);
@@ -366,14 +355,137 @@ export function Welcome() {
         .slice(0, 5),
     [portfolio.data?.data?.by_asset_class],
   );
-  const dynamicWatchRows = useMemo(() => buildPortfolioWatchRows(positions), [positions]);
-  const watchRows = dynamicWatchRows.length ? dynamicWatchRows : DEFAULT_WATCHLIST;
+  // User watchlist persisted via Tauri filesystem / localStorage.
+  const [savedWatchlist, setSavedWatchlist] = useState<WatchlistRow[]>([]);
+  const [watchlistHydrated, setWatchlistHydrated] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    void loadWatchlist().then((rows) => {
+      if (cancelled) return;
+      setSavedWatchlist(rows);
+      setWatchlistHydrated(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const savedWatchSymbols = useMemo(
+    () => savedWatchlist.map((r) => r.symbol).filter(Boolean),
+    [savedWatchlist],
+  );
+
+  // Live quote fan-out for the watchlist + KPI strip in one batch. Empty array
+  // is a hard short-circuit inside `useLiveQuotesInternal`, so when the user
+  // has no saved symbols we don't fire network requests.
+  const liveQuoteSymbols = useMemo(() => {
+    // Resolve portfolio symbols once we know they exist; otherwise saved set.
+    const baseSymbols = positions.length
+      ? positions.slice(0, 12).map((p) => p.symbol).filter(Boolean)
+      : savedWatchSymbols;
+    return [...baseSymbols, ...MARKET_STRIP_QUOTE_SYMBOLS];
+  }, [positions, savedWatchSymbols]);
+
+  const liveQuotes = useLiveQuotes(liveQuoteSymbols, {
+    enabled: status === "healthy" && liveQuoteSymbols.length > 0,
+  });
+
+  // Watchlist rows: portfolio wins if attached, else saved symbols rendered
+  // live, else an empty list (UI shows the "Add symbols" CTA).
+  const portfolioWatchRows = useMemo(
+    () => buildPortfolioWatchRows(positions, liveQuotes),
+    [positions, liveQuotes],
+  );
+  const savedWatchRows = useMemo(
+    () => buildSavedWatchRows(savedWatchlist, liveQuotes),
+    [savedWatchlist, liveQuotes],
+  );
+  const watchRows = portfolioWatchRows.length
+    ? portfolioWatchRows
+    : savedWatchRows.length
+      ? savedWatchRows
+      : DEFAULT_WATCHLIST;
+  const watchEmpty = watchRows.length === 0 && watchlistHydrated && positions.length === 0;
+
+  // KPI strip: overlay live data where we have a quoteSymbol.
+  const marketTiles = useMemo(
+    () => buildMarketTiles(MARKET_STRIP_SEED, liveQuotes),
+    [liveQuotes],
+  );
+
+  // Movers: prefer `/api/fn/MOST` if the function is registered.
+  const moversAvailable = functionByCode.has("MOST");
+  const moversFn = useFunction<MostMoverPayload>({
+    code: "MOST",
+    params: { limit: 24 },
+    enabled: status === "healthy" && moversAvailable,
+  });
+  const liveMovers = useMemo(
+    () => buildMovers(moversFn.data?.data),
+    [moversFn.data],
+  );
+  const moversRows: MoverRowData[] = liveMovers.length ? liveMovers : DEMO_MOVERS;
+  const moversAreDemo = liveMovers.length === 0;
+
   const tz = useTimezone();
   const [now, setNow] = useState(() => new Date());
   useEffect(() => {
     const id = window.setInterval(() => setNow(new Date()), 60_000);
     return () => window.clearInterval(id);
   }, []);
+
+  // Faz 5: sentiment panel — fan-out /api/x/symbol_chip for watchlist symbols
+  // (or a default mega-cap deck when the watchlist is empty) and aggregate
+  // the score into the gauge.
+  const sentimentScore = useSentimentStore((s) => s.score);
+  const sentimentLabel = useSentimentStore((s) => s.label);
+  const sentimentLoading = useSentimentStore((s) => s.loading);
+  const sentimentError = useSentimentStore((s) => s.error);
+  const sentimentUpdated = useSentimentStore((s) => s.lastUpdated);
+  const sentimentMentions = useSentimentStore((s) => s.mentions);
+  const refreshSentiment = useSentimentStore((s) => s.refresh);
+  // Stabilise the symbol list so the refresh effect only refires when the
+  // watchlist composition actually changes, not on every render.
+  const sentimentSymbols = useMemo(() => {
+    const fromWatch = watchRows.map((r) => r.symbol).slice(0, 12);
+    return fromWatch.length ? fromWatch : SENTIMENT_FALLBACK_SYMBOLS;
+  }, [watchRows]);
+  const sentimentSymbolsKey = sentimentSymbols.join("|");
+  useEffect(() => {
+    if (status !== "healthy") return;
+    refreshSentiment(sentimentSymbols);
+    const id = window.setInterval(
+      () => refreshSentiment(sentimentSymbols),
+      SENTIMENT_REFRESH_MS,
+    );
+    return () => window.clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status, sentimentSymbolsKey, refreshSentiment]);
+
+  // Sentiment loading-watchdog: if the store stays `loading=true` past
+  // SENTIMENT_LOAD_TIMEOUT_MS without ever resolving (`lastUpdated` still
+  // null), surface a synthetic error so the gauge transitions out of the
+  // infinite "Loading…0%" trap that prompted the QA report. Agent A is
+  // fixing the backend hang; this is the UI-side belt.
+  useEffect(() => {
+    if (!sentimentLoading || sentimentUpdated) return;
+    const id = window.setTimeout(() => {
+      // Pull a fresh snapshot before clobbering — another refresh may have
+      // resolved between scheduling and firing.
+      const snap = useSentimentStore.getState();
+      if (snap.loading && snap.lastUpdated == null) {
+        useSentimentStore.setState({
+          loading: false,
+          error: "Sentiment unavailable (timeout)",
+        });
+      }
+    }, SENTIMENT_LOAD_TIMEOUT_MS);
+    return () => window.clearTimeout(id);
+  }, [sentimentLoading, sentimentUpdated]);
+
+  const sentimentRetry = () => {
+    refreshSentiment(sentimentSymbols);
+  };
   const session = marketSession(now);
   const dateStamp = formatDateStamp(now, tz);
   const localTime = formatTime(now, { tz });
@@ -381,15 +493,12 @@ export function Welcome() {
   const totalMarketValue = money(totals?.market_value);
 
   return (
-    <main className="terminal-home showme-home" aria-labelledby="terminal-home-heading">
+    <main className="terminal-home showme-home">
       <section className="terminal-home__masthead showme-home__section showme-home__section--0">
         <div className="terminal-home__headline-wrap">
           <p className="terminal-home__eyebrow">
             OVERVIEW / {dateStamp} / {localTime} {tzLabel.toUpperCase()} / {session.toUpperCase()}
           </p>
-          <h2 id="terminal-home-heading" className="terminal-home__headline">
-            MARKETS ARE QUIET. <span>CONVICTION IS NOT.</span>
-          </h2>
         </div>
         <div className="terminal-home__runtime">
           <Pill tone={status === "healthy" ? "positive" : "warn"} variant="soft">
@@ -415,11 +524,13 @@ export function Welcome() {
         <h3 id="terminal-market-strip-heading" className="u-sr-only">
           Market strip
         </h3>
-        {MARKET_STRIP.map((tile) => (
+        {marketTiles.map((tile) => (
           <button
             key={tile.symbol}
             type="button"
             className="terminal-market-tile"
+            data-testid={`kpi-tile-${tile.symbol}`}
+            data-demo={tile.demo ? "1" : "0"}
             onClick={() => navigate(`/symbol/${tile.symbol}/DES`)}
           >
             <span className="terminal-market-tile__top">
@@ -430,6 +541,15 @@ export function Welcome() {
             <span className={toneClass("terminal-change", tile.change)}>
               {formatPct(tile.change)}
             </span>
+            {tile.demo && (
+              <span
+                className="terminal-market-tile__demo"
+                data-testid={`kpi-tile-${tile.symbol}-demo`}
+                title="No live quote endpoint — showing demo placeholder"
+              >
+                DEMO
+              </span>
+            )}
           </button>
         ))}
       </section>
@@ -439,6 +559,31 @@ export function Welcome() {
           <div className="terminal-panel__header">
             <h3>Today's brief - AI narrative</h3>
             <span>Portfolio {totalMarketValue}</span>
+          </div>
+          {/* Prominent demo banner sits at the top of the card so users don't
+              mistake the placeholder narrative for live editorial. */}
+          <div
+            className="terminal-brief-demo-banner"
+            data-testid="brief-demo-banner"
+            role="status"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              padding: "8px 12px",
+              borderBottom: "1px solid var(--color-border-strong, #2a2a2a)",
+              background: "var(--color-bg-warn-soft, rgba(255, 200, 0, 0.06))",
+              fontSize: 12,
+              letterSpacing: 0.4,
+            }}
+          >
+            <Pill tone="warn" variant="soft" withDot={false}>
+              Demo data
+            </Pill>
+            <span>
+              Today's brief shows placeholder narrative. The BRIEF/TOP endpoint
+              is not yet wired — copy below is illustrative only.
+            </span>
           </div>
           <p className="terminal-brief-copy">
             Three weeks of cooling inflation prints left a still-resilient labor market, and
@@ -458,34 +603,127 @@ export function Welcome() {
         </div>
 
         <div className="terminal-panel terminal-panel--sentiment">
-          <div className="terminal-gauge" aria-label="Sentiment cautiously bullish">
+          <div
+            className="terminal-gauge"
+            aria-label={
+              sentimentError && !sentimentUpdated
+                ? "Sentiment unavailable"
+                : `Sentiment ${sentimentLabel.toLowerCase()}`
+            }
+            data-testid="sentiment-gauge"
+            data-score={sentimentScore.toFixed(3)}
+          >
             <span className="terminal-gauge__arc" />
-            <span className="terminal-gauge__needle" />
+            <span
+              className="terminal-gauge__needle"
+              data-testid="sentiment-needle"
+              style={{
+                transform: `rotate(${sentimentNeedleAngle(sentimentScore)}deg)`,
+              }}
+            />
           </div>
           <div>
-            <span className="terminal-panel__meta">SENTIMENT / 24H</span>
-            <strong>Cautiously Bullish</strong>
-            <span className="terminal-change terminal-change--positive">+32%</span>
+            <span className="terminal-panel__meta">
+              {sentimentEyebrow({
+                loading: sentimentLoading,
+                error: sentimentError,
+                lastUpdated: sentimentUpdated,
+                mentions: sentimentMentions,
+              })}
+            </span>
+            {sentimentError && !sentimentUpdated ? (
+              <>
+                {/* Error-with-retry replaces the infinite Loading… trap. */}
+                <strong data-testid="sentiment-label">Sentiment unavailable</strong>
+                <span
+                  className="terminal-change terminal-change--neutral"
+                  data-testid="sentiment-change"
+                >
+                  —
+                </span>
+                <button
+                  type="button"
+                  data-testid="sentiment-retry"
+                  onClick={sentimentRetry}
+                  style={{
+                    marginTop: 8,
+                    padding: "4px 10px",
+                    fontSize: 11,
+                    letterSpacing: 0.4,
+                    background: "transparent",
+                    border: "1px solid var(--color-border, #3a3a3a)",
+                    color: "var(--color-fg-primary, #e6e6e6)",
+                    borderRadius: 3,
+                    cursor: "pointer",
+                  }}
+                >
+                  Retry
+                </button>
+              </>
+            ) : (
+              <>
+                <strong data-testid="sentiment-label">
+                  {sentimentUpdated || !sentimentLoading ? sentimentLabel : "Loading…"}
+                </strong>
+                {sentimentUpdated || sentimentLoading ? (
+                  <span
+                    className={toneClass("terminal-change", sentimentScore)}
+                    data-testid="sentiment-change"
+                  >
+                    {formatSentimentPct(sentimentScore)}
+                  </span>
+                ) : (
+                  <span
+                    className="terminal-change terminal-change--neutral"
+                    data-testid="sentiment-change"
+                  >
+                    —
+                  </span>
+                )}
+              </>
+            )}
           </div>
         </div>
 
         <div className="terminal-panel terminal-panel--movers">
           <div className="terminal-panel__header">
             <h3>Today's movers</h3>
-            <span>S&P 500</span>
+            <span data-testid="movers-demo-banner">
+              {moversAreDemo ? (
+                <>
+                  <Pill tone="warn" variant="soft" withDot={false}>
+                    Demo data
+                  </Pill>{" "}
+                  MOST endpoint unavailable
+                </>
+              ) : (
+                <>
+                  <Pill tone="positive" variant="soft" withDot={false}>
+                    Live
+                  </Pill>{" "}
+                  {moversRows.length} symbols
+                </>
+              )}
+            </span>
           </div>
           <div className="terminal-movers-grid">
             <div>
               <span className="terminal-panel__meta">Gainers</span>
-              {MOVERS.filter((m) => m.change > 0).map((mover) => (
-                <MoverRow key={mover.symbol} mover={mover} />
+              {moversRows.filter((m) => m.change > 0).map((mover) => (
+                <MoverRow key={`g-${mover.symbol}`} mover={mover} />
               ))}
+              {moversRows.filter((m) => m.change > 0).length === 0 && moversAreDemo && (
+                <DemoMoverRows kind="gainer" />
+              )}
             </div>
             <div>
               <span className="terminal-panel__meta">Losers</span>
-              {MOVERS.filter((m) => m.change < 0).map((mover) => (
-                <MoverRow key={mover.symbol} mover={mover} />
+              {moversRows.filter((m) => m.change < 0).map((mover) => (
+                <MoverRow key={`l-${mover.symbol}`} mover={mover} />
               ))}
+              {moversRows.filter((m) => m.change < 0).length === 0 && moversAreDemo && (
+                <DemoMoverRows kind="loser" />
+              )}
             </div>
           </div>
         </div>
@@ -494,8 +732,11 @@ export function Welcome() {
           <div className="terminal-panel__header">
             <h3>Watchlist</h3>
             <span>
-              {watchRows.length} symbols /{" "}
-              {positions.length ? "live portfolio" : "sample deck"}
+              {watchRows.length
+                ? `${watchRows.length} symbols / ${
+                    positions.length ? "live portfolio" : "saved deck"
+                  }`
+                : "no symbols"}
             </span>
           </div>
           {portfolio.state === "loading" ? (
@@ -504,54 +745,101 @@ export function Welcome() {
               <Skeleton height={22} />
               <Skeleton height={22} />
             </div>
-          ) : (
-            <div className="terminal-watchlist" role="table" aria-label="Watchlist">
-              <div
-                className="terminal-watchlist__row terminal-watchlist__row--head"
-                role="row"
+          ) : watchEmpty ? (
+            <div
+              className="terminal-empty"
+              data-testid="watchlist-empty-state"
+              style={{ padding: 16 }}
+            >
+              <strong>No watchlist symbols yet</strong>
+              <span style={{ display: "block", marginBottom: 8, opacity: 0.7 }}>
+                Save symbols in WATCH to see live quotes on the dashboard.
+              </span>
+              <button
+                type="button"
+                className="terminal-action terminal-action--solid"
+                data-testid="watchlist-empty-cta"
+                onClick={() => navigate("/fn/WATCH")}
               >
-                <span role="columnheader">Symbol</span>
-                <span role="columnheader">Sector</span>
-                <span role="columnheader">Bid</span>
-                <span role="columnheader">Ask</span>
-                <span role="columnheader">Last</span>
-                <span role="columnheader">Chg</span>
-                <span role="columnheader">Trend</span>
-                <span role="columnheader">Vol</span>
-                <span role="columnheader">Mkt cap</span>
-              </div>
-              {watchRows.map((row) => (
-                <button
-                  key={row.symbol}
-                  type="button"
-                  className="terminal-watchlist__row"
+                Add symbols to watchlist
+              </button>
+            </div>
+          ) : (
+            <div
+              className="terminal-watchlist"
+              role="grid"
+              aria-label="Watchlist"
+              aria-rowcount={watchRows.length + 1}
+            >
+              <div role="rowgroup">
+                <div
+                  className="terminal-watchlist__row terminal-watchlist__row--head"
                   role="row"
-                  onClick={() => navigate(`/symbol/${row.symbol}/DES`)}
                 >
-                  <span className="terminal-watchlist__symbol" role="cell">
-                    <strong>{row.symbol}</strong>
-                    <small>{row.name}</small>
-                  </span>
-                  <span role="cell">{row.sector}</span>
-                  <span role="cell">{row.bid}</span>
-                  <span role="cell">{row.ask}</span>
-                  <span role="cell">{row.last}</span>
-                  <span role="cell" className={toneClass("terminal-change", row.change)}>
-                    {formatPct(row.change)}
-                  </span>
-                  <span role="cell" className="terminal-watchlist__spark">
-                    <Sparkline
-                      values={row.trend}
-                      width={78}
-                      height={24}
-                      tone={row.change >= 0 ? "positive" : "negative"}
-                      ariaLabel={`${row.symbol} trend`}
-                    />
-                  </span>
-                  <span role="cell">{row.volume}</span>
-                  <span role="cell">{row.cap}</span>
-                </button>
-              ))}
+                  <span role="columnheader">Symbol</span>
+                  <span role="columnheader">Sector</span>
+                  <span role="columnheader">Bid</span>
+                  <span role="columnheader">Ask</span>
+                  <span role="columnheader">Last</span>
+                  <span role="columnheader">Chg</span>
+                  <span role="columnheader">Trend</span>
+                  <span role="columnheader">Vol</span>
+                  <span role="columnheader">1D Notional</span>
+                </div>
+              </div>
+              <div role="rowgroup">
+                {watchRows.map((row) => (
+                  <button
+                    key={row.symbol}
+                    type="button"
+                    className="terminal-watchlist__row"
+                    role="row"
+                    onClick={() => navigate(`/symbol/${row.symbol}/DES`)}
+                  >
+                    <span className="terminal-watchlist__symbol" role="gridcell">
+                      <strong>{row.symbol}</strong>
+                      <small>{row.name}</small>
+                    </span>
+                    <span role="gridcell">{row.sector}</span>
+                    <span role="gridcell">{row.bid}</span>
+                    <span role="gridcell">{row.ask}</span>
+                    <span role="gridcell">{row.last}</span>
+                    <span
+                      role="gridcell"
+                      className={toneClass("terminal-change", row.change)}
+                    >
+                      {formatPct(row.change)}
+                    </span>
+                    <span role="gridcell" className="terminal-watchlist__spark">
+                      {row.trend.length > 0 ? (
+                        <Sparkline
+                          values={row.trend}
+                          width={78}
+                          height={24}
+                          tone={row.change >= 0 ? "positive" : "negative"}
+                          ariaLabel={`${row.symbol} trend`}
+                        />
+                      ) : (
+                        <span
+                          className="terminal-watchlist__spark-empty"
+                          data-testid={`spark-empty-${row.symbol}`}
+                          aria-label="Trend data unavailable"
+                          style={{
+                            display: "inline-block",
+                            width: 78,
+                            height: 24,
+                            borderTop: "1px dashed currentColor",
+                            opacity: 0.35,
+                            verticalAlign: "middle",
+                          }}
+                        />
+                      )}
+                    </span>
+                    <span role="gridcell">{row.volume}</span>
+                    <span role="gridcell">{row.notional}</span>
+                  </button>
+                ))}
+              </div>
             </div>
           )}
         </div>
@@ -615,11 +903,13 @@ export function Welcome() {
   );
 }
 
-function MoverRow({ mover }: { mover: { symbol: string; price: string; change: number } }) {
+function MoverRow({ mover }: { mover: MoverRowData }) {
   return (
     <button
       type="button"
       className="terminal-mover-row"
+      data-testid={`mover-row-${mover.symbol}`}
+      data-demo={mover.demo ? "1" : "0"}
       onClick={() => navigate(`/symbol/${mover.symbol}/DES`)}
     >
       <strong>{mover.symbol}</strong>
@@ -627,7 +917,43 @@ function MoverRow({ mover }: { mover: { symbol: string; price: string; change: n
       <span className={toneClass("terminal-change", mover.change)}>
         {formatPct(mover.change)}
       </span>
+      {mover.demo && (
+        <span
+          className="terminal-mover-row__demo"
+          data-testid={`mover-demo-${mover.symbol}`}
+          title="MOST endpoint not registered — demo placeholder"
+          style={{
+            fontSize: 9,
+            letterSpacing: 0.6,
+            opacity: 0.7,
+            marginLeft: 6,
+          }}
+        >
+          DEMO
+        </span>
+      )}
     </button>
+  );
+}
+
+/**
+ * Renders the demo gainers/losers slot when MOST isn't registered. Splits the
+ * DEMO_MOVERS array so users see both sides of the panel even though every
+ * entry's `change` is 0 by construction.
+ */
+function DemoMoverRows({ kind }: { kind: "gainer" | "loser" }) {
+  const slice = kind === "gainer"
+    ? DEMO_MOVERS.slice(0, 4)
+    : DEMO_MOVERS.slice(4);
+  return (
+    <>
+      {slice.map((m) => (
+        <MoverRow
+          key={`demo-${kind}-${m.symbol}`}
+          mover={{ ...m, change: kind === "gainer" ? 0.01 : -0.01 }}
+        />
+      ))}
+    </>
   );
 }
 
@@ -656,28 +982,149 @@ function ExposureLine({
   );
 }
 
-function buildPortfolioWatchRows(positions: PortfolioPosition[]): WatchRow[] {
+/**
+ * Build watchlist rows for an attached portfolio. Per-symbol live quote
+ * (from {@link useLiveQuotes}) supplies bid/ask + last; we no longer
+ * fabricate bid as `market_value` or ask as `market_value + |pnl|*0.03`.
+ * The trailing column is **1D notional change** (`change_pct × last`),
+ * sign-correct, replacing the QA-flagged "negative market cap" column.
+ */
+export function buildPortfolioWatchRows(
+  positions: PortfolioPosition[],
+  liveQuotes: Record<string, QuoteView> = {},
+): WatchRow[] {
   return [...positions]
     .sort((a, b) => (b.market_value ?? 0) - (a.market_value ?? 0))
     .slice(0, 12)
-    .map((position, index) => {
+    .map((position) => {
       const pnl = position.unrealized_pnl ?? 0;
       const mv = Math.max(1, position.market_value ?? 0);
       const change = mv > 0 ? (pnl / mv) * 100 : 0;
-      const last = position.market_value ? money(position.market_value) : "-";
+      const quote = liveQuotes[position.symbol.toUpperCase()];
+      const livePrice = quote?.price ?? null;
+      const liveBid = quote?.lastTick?.bid ?? quote?.snapshot?.bid ?? null;
+      const liveAsk = quote?.lastTick?.ask ?? quote?.snapshot?.ask ?? null;
+      const liveChangePct = quote?.changePct ?? null;
+      // Live trumps portfolio-derived last; portfolio-derived stays as last-good.
+      const lastNumeric = livePrice ?? (position.market_value ?? null);
+      const last = lastNumeric != null ? formatPrice(lastNumeric) : "—";
+      const effectiveChange = liveChangePct != null ? liveChangePct : change;
+      const notionalValue =
+        livePrice != null && liveChangePct != null
+          ? (liveChangePct / 100) * livePrice
+          : null;
       return {
         symbol: position.symbol,
         name: position.asset_class ?? "Portfolio position",
         sector: position.asset_class ?? "Asset",
-        bid: money(position.market_value),
-        ask: money((position.market_value ?? 0) + Math.abs(pnl) * 0.03),
+        bid: liveBid != null ? formatPrice(liveBid) : "—",
+        ask: liveAsk != null ? formatPrice(liveAsk) : "—",
         last,
-        change,
-        trend: makeTrend(index * 7 + 5),
-        volume: position.weight_pct != null ? `${position.weight_pct.toFixed(1)}% wt` : "-",
-        cap: signedMoney(position.unrealized_pnl),
+        change: effectiveChange,
+        trend: [],
+        volume:
+          position.weight_pct != null ? `${position.weight_pct.toFixed(1)}% wt` : "—",
+        notional: notionalValue != null ? signedMoney(notionalValue) : "—",
       };
     });
+}
+
+/**
+ * Build watchlist rows from a saved-symbol list when no portfolio is
+ * attached. Quote-only path — `bid`/`ask` come from the live snapshot,
+ * never fabricated. `trend` stays empty until a tick history hook ships.
+ */
+export function buildSavedWatchRows(
+  saved: WatchlistRow[],
+  liveQuotes: Record<string, QuoteView> = {},
+): WatchRow[] {
+  return saved.slice(0, 12).map((row) => {
+    const quote = liveQuotes[row.symbol.toUpperCase()];
+    const price = quote?.price ?? null;
+    const changePct = quote?.changePct ?? 0;
+    const bid = quote?.lastTick?.bid ?? quote?.snapshot?.bid ?? null;
+    const ask = quote?.lastTick?.ask ?? quote?.snapshot?.ask ?? null;
+    const notionalValue =
+      price != null && quote?.changePct != null
+        ? (quote.changePct / 100) * price
+        : null;
+    return {
+      symbol: row.symbol,
+      name: row.label ?? row.symbol,
+      sector: quote?.snapshot?.asset_class ?? "—",
+      bid: bid != null ? formatPrice(bid) : "—",
+      ask: ask != null ? formatPrice(ask) : "—",
+      last: price != null ? formatPrice(price) : "—",
+      change: changePct,
+      trend: [],
+      volume: quote?.snapshot?.volume != null ? compactVolume(quote.snapshot.volume) : "—",
+      notional: notionalValue != null ? signedMoney(notionalValue) : "—",
+    };
+  });
+}
+
+/**
+ * Overlay live quotes onto the KPI strip seed. Tiles whose `quoteSymbol`
+ * resolves to a finite live price drop the DEMO flag; everything else stays
+ * a clearly-flagged placeholder.
+ */
+export function buildMarketTiles(
+  seed: MarketTile[],
+  liveQuotes: Record<string, QuoteView> = {},
+): MarketTile[] {
+  return seed.map((tile) => {
+    if (!tile.quoteSymbol) return tile;
+    const q = liveQuotes[tile.quoteSymbol.toUpperCase()];
+    if (!q || q.price == null) return tile;
+    return {
+      ...tile,
+      value: formatPrice(q.price),
+      change: q.changePct ?? 0,
+      demo: false,
+    };
+  });
+}
+
+/** Format a numeric volume into "1.2B" / "230.4M" style without inventing data. */
+function compactVolume(v: number): string {
+  if (!Number.isFinite(v)) return "—";
+  const abs = Math.abs(v);
+  if (abs >= 1e12) return `${(abs / 1e12).toFixed(2)}T`;
+  if (abs >= 1e9) return `${(abs / 1e9).toFixed(2)}B`;
+  if (abs >= 1e6) return `${(abs / 1e6).toFixed(2)}M`;
+  if (abs >= 1e3) return `${(abs / 1e3).toFixed(1)}K`;
+  return abs.toFixed(0);
+}
+
+/**
+ * Pull the top gainers + top losers from a `/api/fn/MOST` payload. Returns
+ * an empty array if the payload is missing, malformed, or contains no rows
+ * with finite percent changes.
+ */
+export function buildMovers(payload: MostMoverPayload | undefined | null): MoverRowData[] {
+  if (!payload || !Array.isArray(payload.rows)) return [];
+  const candidates = payload.rows
+    .map((row) => {
+      const symbol = row.symbol ?? row.ticker ?? "";
+      const price = row.last ?? row.price ?? null;
+      const change = row.change_pct ?? row.changePercent ?? null;
+      if (!symbol || price == null || change == null) return null;
+      if (!Number.isFinite(price) || !Number.isFinite(change)) return null;
+      return {
+        symbol,
+        price: formatPrice(price),
+        change,
+      } as MoverRowData;
+    })
+    .filter((r): r is MoverRowData => !!r);
+  // Top 4 gainers + top 4 losers, sorted by magnitude.
+  const sortedAsc = [...candidates].sort((a, b) => a.change - b.change);
+  const losers = sortedAsc.filter((r) => r.change < 0).slice(0, 4);
+  const gainers = [...candidates]
+    .filter((r) => r.change > 0)
+    .sort((a, b) => b.change - a.change)
+    .slice(0, 4);
+  return [...gainers, ...losers];
 }
 
 function fallbackEntry(code: string): FunctionEntry {
@@ -706,15 +1153,15 @@ function shortName(fn: FunctionEntry): string {
   return `${fn.name.slice(0, 20)}...`;
 }
 
-function makeTrend(seed: number, n = 18): number[] {
-  const values: number[] = [];
-  let value = 48 + (seed % 11);
-  for (let i = 0; i < n; i += 1) {
-    value += Math.sin((i + seed) * 0.62) * 4.4 + Math.cos((seed + i) * 0.23) * 1.7;
-    values.push(Number(Math.max(18, Math.min(86, value)).toFixed(2)));
-  }
-  return values;
-}
+/**
+ * Trend sparkline helper removed (QA report flagged the sin/cos generator
+ * as fabricating fake history). Watchlist rows now ship `trend: []`; the
+ * UI renders a dashed placeholder with `aria-label="Trend data unavailable"`
+ * instead of synthetic data.
+ *
+ * If/when a tick-history hook lands (`useTickHistory(symbol)`), wire it into
+ * the row builders and the JSX <Sparkline /> branch will activate again.
+ */
 
 function toneClass(base: string, value: number): string {
   if (value > 0) return `${base} ${base}--positive`;
@@ -725,6 +1172,37 @@ function toneClass(base: string, value: number): string {
 function formatPct(value: number): string {
   const prefix = value > 0 ? "+" : "";
   return `${prefix}${value.toFixed(2)}%`;
+}
+
+// Sentiment helpers — exported for unit tests in Welcome.sentiment.test.tsx.
+export function sentimentNeedleAngle(score: number): number {
+  // Map `[-1, +1]` → `[-90deg, +90deg]`. score=0 lands at 0deg (straight up).
+  const clamped = Math.max(-1, Math.min(1, score));
+  return -90 + ((clamped + 1) / 2) * 180;
+}
+
+export function formatSentimentPct(score: number): string {
+  const pct = Math.round(score * 100);
+  const prefix = pct > 0 ? "+" : "";
+  return `${prefix}${pct}%`;
+}
+
+function sentimentEyebrow({
+  loading,
+  error,
+  lastUpdated,
+  mentions,
+}: {
+  loading: boolean;
+  error: string | null;
+  lastUpdated: Date | null;
+  mentions: number;
+}): string {
+  if (loading && !lastUpdated) return "SENTIMENT / loading…";
+  if (error && !lastUpdated) return "SENTIMENT / unavailable";
+  if (!lastUpdated) return "SENTIMENT / 24H";
+  const suffix = mentions > 0 ? ` / ${mentions.toLocaleString()} mentions` : "";
+  return `SENTIMENT / 24H${suffix}`;
 }
 
 function money(value?: number | null): string {
@@ -742,11 +1220,14 @@ function signedMoney(value?: number | null): string {
   return `${value >= 0 ? "+" : "-"}${money(Math.abs(value))}`;
 }
 
+/**
+ * Eyebrow session label is the canonical NYSE state machine
+ * (`lib/market-state.ts`). Replaces the heuristic UTC-hour rule that lit
+ * `OPEN` on Saturday 14:00 UTC even though the cash session was closed.
+ * We re-use the Statusbar display copy so both surfaces never disagree.
+ */
 function marketSession(date: Date): string {
-  const utcHour = date.getUTCHours();
-  if (utcHour >= 13 && utcHour < 20) return "open";
-  if (utcHour >= 20 && utcHour < 22) return "after-hours";
-  return "pre-open";
+  return describeNyseMarketState(getNyseMarketState(date)).label;
 }
 
 // formatDateStamp moved to lib/timezone.ts so the masthead, statusbar,

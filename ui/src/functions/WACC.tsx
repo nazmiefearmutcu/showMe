@@ -26,6 +26,7 @@ import {
   StatusSection,
 } from "@/design-system";
 import { useFunction } from "@/lib/useFunction";
+import { defaultSymbolForFunction } from "@/lib/symbols";
 import {
   FunctionControlGroup,
   LoadStatePill,
@@ -61,10 +62,16 @@ interface WACCPayload {
   surface?: WACCSurfaceCell[];
   methodology?: string;
   field_dictionary?: Record<string, string>;
+  beta_source?: string;
+  beta_window?: string | null;
+  data_state?: string;
 }
 
 export function WACCPane({ code, symbol }: FunctionPaneProps) {
-  const resolvedSymbol = symbol || "AAPL";
+  // Bug #17 fix: do not hardcode "AAPL". Use the asset-class-aware default
+  // so the recent-symbols history + WACC's EQUITY fallback decide the
+  // symbol, mirroring every other equity pane.
+  const resolvedSymbol = symbol || defaultSymbolForFunction(code, ["EQUITY"]);
 
   const { state, data, error, refetch } = useFunction<unknown>({
     code,
@@ -93,7 +100,9 @@ export function WACCPane({ code, symbol }: FunctionPaneProps) {
   const utcStamp = useMemo(() => new Date().toISOString().slice(11, 16), [data]);
   const warnings = Array.isArray(data?.warnings) ? data?.warnings : [];
   const sources = Array.isArray(data?.sources) ? data?.sources : [];
-  const fellBack = warnings.some((w) => /fred|damodaran|yfinance/i.test(String(w)));
+  const fellBack = warnings.some((w) => /fred|damodaran|yfinance|beta/i.test(String(w)));
+  const syntheticBeta = payload.data_state === "synthetic_beta"
+    || sources.some((s) => String(s).toLowerCase() === "synthetic_beta");
 
   const cols = useMemo<DataGridColumn<WACCRow>[]>(
     () => [
@@ -145,6 +154,17 @@ export function WACCPane({ code, symbol }: FunctionPaneProps) {
                 {sources.length || 0} src
               </Pill>
               <Pill tone="accent" variant="soft" withDot={false}>{utcStamp} UTC</Pill>
+              {syntheticBeta ? (
+                <span data-testid="wacc-beta-pill" data-beta-state="synthetic">
+                  <Pill tone="warn" variant="soft">synthetic β</Pill>
+                </span>
+              ) : payload.beta_source && payload.beta_source !== "user_input" ? (
+                <span data-testid="wacc-beta-pill" data-beta-state="live">
+                  <Pill tone="positive" variant="soft">
+                    β {String(payload.beta_window ?? "").toLowerCase() || "live"}
+                  </Pill>
+                </span>
+              ) : null}
               <Pill tone={fellBack ? "warn" : "positive"} variant="soft">
                 {fellBack ? "fallback active" : "live"}
               </Pill>

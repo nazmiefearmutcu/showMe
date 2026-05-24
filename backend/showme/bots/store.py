@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,6 +16,19 @@ from typing import Iterator
 from .record import BotRecord
 
 LOG = logging.getLogger("showme.bots.store")
+
+
+# Faz 2 / S7 — Path-traversal hardening. We accept only ids that are
+# alphanumeric, underscore, or hyphen, capped at 64 chars. uuid4().hex
+# (the default factory in BotRecord) is 32 hex chars so this is generous
+# while still rejecting "../escape" or "..%2Fetc%2Fpasswd"-style URLs.
+_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+def _validate_id(bot_id: str) -> str:
+    if not isinstance(bot_id, str) or not _ID_RE.fullmatch(bot_id):
+        raise ValueError("invalid id")
+    return bot_id
 
 
 class UnknownBot(KeyError):
@@ -54,18 +69,27 @@ class BotStore:
         return cls(app_home() / "bots")
 
     def _path(self, bot_id: str) -> Path:
+        # Faz 2 / S7 — validate before composing the on-disk path.
+        _validate_id(bot_id)
         return self._dir / f"{bot_id}.json"
 
     def _iter_files(self) -> Iterator[Path]:
         if not self._dir.exists():
             return iter(())
-        return self._dir.glob("*.json")
+        # Skip half-written ``*.json.tmp`` files left by an aborted save.
+        return (p for p in self._dir.glob("*.json") if not p.name.endswith(".tmp"))
 
     def list(self) -> list[BotMeta]:
         out: list[BotMeta] = []
         for f in self._iter_files():
             try:
-                d = json.loads(f.read_text())
+                raw = f.read_text()
+                if not raw.strip():
+                    # Faz 2 / S6 — defensive: skip a 0-byte file with a
+                    # WARNING instead of silently dropping the record.
+                    LOG.warning("skip empty bot file %s (possible crashed write)", f.name)
+                    continue
+                d = json.loads(raw)
             except Exception as exc:  # noqa: BLE001
                 LOG.warning("skip corrupt %s: %s", f.name, exc)
                 continue
@@ -103,7 +127,17 @@ class BotStore:
                 rec = rec.model_copy(update={"updated_at": now})
         else:
             rec = rec.model_copy(update={"created_at": now, "updated_at": now})
-        p.write_text(rec.to_json())
+        # Faz 2 / S6 — atomic write: tmp file + fsync + os.replace. A
+        # mid-write SIGKILL now leaves either the previous version intact
+        # OR a *.tmp sibling that ``_iter_files`` skips; never a 0-byte
+        # corruption masquerading as a live record.
+        tmp = p.with_suffix(p.suffix + ".tmp")
+        data = rec.to_json()
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, p)
         return rec
 
     def delete(self, bot_id: str) -> bool:

@@ -2,12 +2,12 @@
 /**
  * scripts/verify_routing_coverage.mjs
  *
- * Asserts the 147/147 routing-coverage invariant for the ShowMe terminal:
+ * Asserts the 155/155 routing-coverage invariant for the ShowMe terminal:
  *   - UI catalog (STATIC_FUNCTION_INDEX) is 141 entries.
- *   - Native registry (NATIVE_FUNCTION_ENTRIES) contributes 6 codes not in
- *     the static index (AGENT, ASK, INSTANT, MIS, WATCH, XSEN — CN
- *     overlaps and is dedup'd).
- *   - mergeNativeFunctionIndex(STATIC_FUNCTION_INDEX) yields 147.
+ *   - Native registry (NATIVE_FUNCTION_ENTRIES) contributes 14 codes not in
+ *     the static index (AGENT, ASK, BDA, BOT, BOTS, CONN, INDX, INSTANT, MIS,
+ *     PERF, STRA, TMPL, WATCH, XSEN — CN overlaps and is dedup'd).
+ *   - mergeNativeFunctionIndex(STATIC_FUNCTION_INDEX) yields 155.
  *   - When SHOWME_SIDECAR_URL is set, GET /api/function-index returns the
  *     same set of codes minus the native-only exceptions.
  *
@@ -54,8 +54,16 @@ const mergedArr = [...merged].sort();
 const NATIVE_ENDPOINT_EXCEPTIONS = new Set([
   "AGENT",
   "ASK",
+  "BDA",
+  "BOT",
+  "BOTS",
+  "CONN",
+  "INDX",
   "INSTANT",
   "MIS",
+  "PERF",
+  "STRA",
+  "TMPL",
   "WATCH",
   "XSEN",
 ]);
@@ -66,9 +74,9 @@ if (staticCodes.length !== 141) {
     `STATIC_FUNCTION_INDEX has ${staticCodes.length} entries, expected 141`,
   );
 }
-if (mergedArr.length !== 147) {
+if (mergedArr.length !== 155) {
   errors.push(
-    `merged catalog has ${mergedArr.length} entries, expected 147`,
+    `merged catalog has ${mergedArr.length} entries, expected 155`,
   );
 }
 for (const c of NATIVE_ENDPOINT_EXCEPTIONS) {

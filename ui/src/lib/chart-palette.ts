@@ -89,6 +89,16 @@ function flushNotify(): void {
   for (const fn of listeners) fn(palette);
 }
 
+function cancelPendingCoalesce(): void {
+  if (coalesceHandle == null) return;
+  if (typeof cancelAnimationFrame === "function") {
+    cancelAnimationFrame(coalesceHandle);
+  } else if (typeof window !== "undefined" && typeof window.clearTimeout === "function") {
+    window.clearTimeout(coalesceHandle);
+  }
+  coalesceHandle = null;
+}
+
 function ensureObserver(): void {
   if (observer || typeof document === "undefined") return;
   // PERF: a single preset/density change mutates up to 3 watched
@@ -108,6 +118,20 @@ function ensureObserver(): void {
   });
 }
 
+function tearDownObserver(): void {
+  // REL-04 P9 — when the last subscriber unsubscribes we must disconnect
+  // the MutationObserver and cancel any in-flight coalesced rAF id;
+  // otherwise the observer keeps a reference to the closure (and the
+  // `listeners` Set) for the whole page lifetime even though nothing
+  // listens. With React StrictMode mounting/unmounting twice this
+  // mattered, plus the test runner needs a clean teardown.
+  if (observer) {
+    observer.disconnect();
+    observer = null;
+  }
+  cancelPendingCoalesce();
+}
+
 /**
  * Subscribe to palette changes. The listener is invoked once immediately
  * and again on every `<html data-preset>` / `<html style="">` mutation.
@@ -119,7 +143,15 @@ export function subscribeChartPalette(fn: Listener): () => void {
   fn(readChartPalette());
   return () => {
     listeners.delete(fn);
+    if (listeners.size === 0) {
+      tearDownObserver();
+    }
   };
+}
+
+/** Test hook — returns whether the observer is currently attached. */
+export function __isChartPaletteObserverActive(): boolean {
+  return observer !== null;
 }
 
 import { useEffect, useState } from "react";

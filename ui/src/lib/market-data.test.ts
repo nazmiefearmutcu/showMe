@@ -13,8 +13,10 @@ import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   __internal,
+  __resetMultiplexForTests,
   normalizeSymbol,
   normalizeTick,
+  subscribeQuoteMultiplexed,
   subscribeQuoteStream,
   useLiveQuote,
   useLiveQuotes,
@@ -87,6 +89,7 @@ function makeFakeSubscriber() {
 
 afterEach(() => {
   vi.useRealTimers();
+  __resetMultiplexForTests();
 });
 
 describe("normalizers", () => {
@@ -573,5 +576,140 @@ describe("useLiveQuotes batch hook", () => {
     expect(result.current.AAPL.snapshot).not.toBeNull();
     expect((result.current.AAPL.snapshot?.last ?? 0)).toBeGreaterThan(firstPrice ?? 0);
     expect(result.current.AAPL.refreshing).toBe(false);
+  });
+});
+
+// ---------- multiplex contract tests ----------
+
+describe("subscribeQuoteMultiplexed", () => {
+  it("opens exactly one upstream subscription for N hooks on the same symbol", () => {
+    const { subscriber } = makeFakeSubscriber();
+    const a = subscribeQuoteMultiplexed("BTCUSDT", {
+      onTick: () => undefined,
+      onTransportState: () => undefined,
+      subscriber,
+    });
+    const b = subscribeQuoteMultiplexed("BTCUSDT", {
+      onTick: () => undefined,
+      onTransportState: () => undefined,
+      subscriber,
+    });
+    const c = subscribeQuoteMultiplexed("BTCUSDT", {
+      onTick: () => undefined,
+      onTransportState: () => undefined,
+      subscriber,
+    });
+    expect(subscriber).toHaveBeenCalledTimes(1);
+    a.close();
+    b.close();
+    c.close();
+  });
+
+  it("fans out a tick to every listener", () => {
+    const { subscriber, handles } = makeFakeSubscriber();
+    const tickA = vi.fn();
+    const tickB = vi.fn();
+    subscribeQuoteMultiplexed("AAPL", {
+      onTick: tickA,
+      onTransportState: () => undefined,
+      subscriber,
+    });
+    subscribeQuoteMultiplexed("AAPL", {
+      onTick: tickB,
+      onTransportState: () => undefined,
+      subscriber,
+    });
+    handles[0].emitTick({ price: 200 });
+    expect(tickA).toHaveBeenCalled();
+    expect(tickB).toHaveBeenCalled();
+    expect(tickA.mock.calls[0][0].price).toBe(200);
+    expect(tickB.mock.calls[0][0].price).toBe(200);
+  });
+
+  it("late joiners receive the last transport state on attach", () => {
+    const { subscriber, handles } = makeFakeSubscriber();
+    subscribeQuoteMultiplexed("AAPL", {
+      onTick: () => undefined,
+      onTransportState: () => undefined,
+      subscriber,
+    });
+    handles[0].emitStatus("live");
+    const transport = vi.fn();
+    subscribeQuoteMultiplexed("AAPL", {
+      onTick: () => undefined,
+      onTransportState: transport,
+      subscriber,
+    });
+    expect(transport).toHaveBeenCalledWith("live");
+  });
+
+  it("closes the upstream socket only after the last listener unsubscribes", () => {
+    const { subscriber, handles } = makeFakeSubscriber();
+    const a = subscribeQuoteMultiplexed("AAPL", {
+      onTick: () => undefined,
+      onTransportState: () => undefined,
+      subscriber,
+    });
+    const b = subscribeQuoteMultiplexed("AAPL", {
+      onTick: () => undefined,
+      onTransportState: () => undefined,
+      subscriber,
+    });
+    a.close();
+    expect(handles[0].closed).toBe(false);
+    b.close();
+    expect(handles[0].closed).toBe(true);
+  });
+
+  it("rejects empty symbols without opening a socket", () => {
+    const { subscriber } = makeFakeSubscriber();
+    const onTransport = vi.fn();
+    const h = subscribeQuoteMultiplexed("  ", {
+      onTick: () => undefined,
+      onTransportState: onTransport,
+      subscriber,
+    });
+    expect(subscriber).not.toHaveBeenCalled();
+    expect(onTransport).toHaveBeenCalledWith("error", "empty symbol");
+    h.close();
+  });
+});
+
+describe("useLiveQuotes multiplex integration", () => {
+  it("4 hooks subscribing to the same symbol open ONE upstream socket", async () => {
+    const fetcher = vi.fn(async (sym: string) => ({
+      symbol: sym,
+      asset_class: "EQUITY",
+      last: 200,
+      price: 200,
+      previous_close: 199,
+      change_pct: 0.5,
+      volume: 0,
+      bid: null,
+      ask: null,
+      source: "fake",
+      provider_symbol: sym,
+      currency: "USD",
+      fetched_at: new Date().toISOString(),
+    }));
+    const { subscriber } = makeFakeSubscriber();
+    renderHook(() =>
+      useLiveQuotes(["BTCUSDT"], { pollMs: null, fetcher, subscriber }),
+    );
+    renderHook(() =>
+      useLiveQuotes(["BTCUSDT"], { pollMs: null, fetcher, subscriber }),
+    );
+    renderHook(() =>
+      useLiveQuotes(["BTCUSDT"], { pollMs: null, fetcher, subscriber }),
+    );
+    renderHook(() =>
+      useLiveQuotes(["BTCUSDT"], { pollMs: null, fetcher, subscriber }),
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+    // Four hook instances all want BTCUSDT — only one underlying WebSocket
+    // subscription should be opened.
+    expect(subscriber).toHaveBeenCalledTimes(1);
   });
 });

@@ -2,7 +2,7 @@ import type { Time } from "lightweight-charts";
 import type { DataGridColumn } from "@/design-system";
 import type { FunctionCallResult } from "@/lib/functions";
 
-export type LoadState = "idle" | "loading" | "ok" | "error";
+export type LoadState = "idle" | "loading" | "ok" | "error" | "refreshing" | "timeout";
 export type RecordRow = Record<string, unknown>;
 export type QueryParam = "query" | "topic" | "bbox" | "symbols" | "watchlist" | "universe";
 export type TicketSide = "BUY" | "SELL";

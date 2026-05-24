@@ -27,6 +27,7 @@ import { normalizeSymbolInput } from "./lib/symbols";
 import { mergeNativeFunctionIndex } from "./functions/registry";
 import { STATIC_FUNCTION_INDEX } from "./functions/static-index";
 import { restoreWorkspace, startWorkspaceAutosave } from "./lib/workspace-persist";
+import { recordRecentCode } from "./lib/palette-recents";
 
 function staticFunctionIndex() {
   return mergeNativeFunctionIndex(STATIC_FUNCTION_INDEX);
@@ -43,6 +44,19 @@ async function refreshFunctionIndex() {
 }
 
 const BACKEND_INDEX_READY_THRESHOLD = 20;
+
+// QA-2026-05-23 cmd+k de-dupe: when the App-level keydown fires the
+// palette toggle, the Tauri menu accelerator emits `palette:toggle` in the
+// same tick. We swallow that one event so the palette doesn't flip twice
+// and close itself. The 50 ms window is comfortably above the Tauri
+// menu→webview emit latency and well below any plausible user re-press.
+let suppressPaletteEventUntil = 0;
+function suppressNextPaletteEvent() {
+  suppressPaletteEventUntil = Date.now() + 50;
+}
+function paletteEventSuppressed(): boolean {
+  return Date.now() < suppressPaletteEventUntil;
+}
 
 async function refreshHealth(): Promise<boolean> {
   try {
@@ -88,7 +102,17 @@ function RouteSync() {
   const setFocusedTarget = useWorkspace((s) => s.setFocusedTarget);
   useEffect(() => {
     const target = routeToTarget(route);
-    if (target) setFocusedTarget(target.code, target.symbol);
+    if (target) {
+      setFocusedTarget(target.code, target.symbol);
+      // QA-2026-05-23: record every navigated function code so the
+      // sidebar "Recent" group reflects the user's real history (was
+      // 9 hard-coded fakes — GEX, BTMM, WEI, OMON, EQS — that never
+      // changed). Skip the synthetic HOME / PREF codes; users don't
+      // think of those as functions.
+      if (target.code && target.code !== "HOME" && target.code !== "PREF") {
+        recordRecentCode(target.code);
+      }
+    }
   }, [route, setFocusedTarget]);
   if (route.kind === "not-found") {
     return (
@@ -156,17 +180,36 @@ export default function App() {
     return () => dispose?.();
   }, []);
 
-  // Keyboard shortcuts: ⌘\ split-h, ⌘⇧\ split-v, ⌘W close pane.
+  // Keyboard shortcuts (single source of truth — QA-2026-05-23):
+  //   ⌘K        open command palette  (was racing with Palette.tsx's own
+  //                                    keydown + Tauri menu accel → fixed)
+  //   ⌘B        toggle sidebar
+  //   ⌘J        open AGENT pane
+  //   ⌘\        split horizontal
+  //   ⌘⇧\       split vertical
+  //   ⌘W        close pane
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey)) return;
+      const key = e.key.toLowerCase();
       if (e.key === "\\") {
         e.preventDefault();
         splitFocused(e.shiftKey ? "v" : "h");
-      } else if (e.key.toLowerCase() === "b") {
+      } else if (key === "b") {
         e.preventDefault();
         useAppStore.getState().toggleSidebar();
-      } else if (e.key.toLowerCase() === "w") {
+      } else if (key === "k") {
+        // Cmd+K = ONLY the palette. Tauri menu accel emits
+        // `palette:toggle` too — we de-dupe at the listener (see boot
+        // effect below) by suppressing the next event for ~50 ms after
+        // a keyboard fire.
+        e.preventDefault();
+        suppressNextPaletteEvent();
+        togglePalette();
+      } else if (key === "j") {
+        e.preventDefault();
+        navigate("/fn/AGENT");
+      } else if (key === "w") {
         // Allow native close-window when no split exists.
         const tree = useWorkspace.getState().tree;
         if (tree.kind !== "leaf") {
@@ -177,7 +220,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [splitFocused, closeFocused]);
+  }, [splitFocused, closeFocused, togglePalette]);
 
   useEffect(() => {
     let unmount = false;
@@ -254,7 +297,10 @@ export default function App() {
       });
       unsubscribe.push(offReload);
 
-      const offPalette = await listen("palette:toggle", () => togglePalette());
+      const offPalette = await listen("palette:toggle", () => {
+        if (paletteEventSuppressed()) return;
+        togglePalette();
+      });
       unsubscribe.push(offPalette);
 
       const offNav = await listen<string>("nav:open", (e) => {
@@ -288,7 +334,14 @@ export default function App() {
         <Titlebar />
         <div className={`workspace ${sidebarVisible ? "" : "workspace--sidebar-hidden"}`}>
           <Sidebar />
-          <RouteSync />
+          {/* A11Y landmark: wrap the routed surface in a <main> so screen
+              readers can jump straight to it. Preferences/Welcome/AGENT
+              already paint their own inner <main>; that's fine — the
+              outer landmark just ensures *something* exists for the route
+              the user lands on. */}
+          <main id="main" className="workspace__main">
+            <RouteSync />
+          </main>
         </div>
         <Statusbar />
         <CommandPalette />

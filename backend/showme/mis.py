@@ -1269,6 +1269,9 @@ def _last_change_pct(df) -> tuple[float | None, float | None]:
             return last, None
         return last, (last / prev - 1.0) * 100.0
     except Exception:  # noqa: BLE001
+        # QA-fix: log so a malformed close column does not silently zero out
+        # the scan row's % change.
+        LOG.debug("_last_change_pct: close column unreadable", exc_info=True)
         return None, None
 
 

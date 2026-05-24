@@ -110,4 +110,47 @@ describe("design tokens", () => {
   it("pegs root font-size to 14px so rem-based tokens scale predictably (A11Y-07)", () => {
     expect(css).toMatch(/html\s*\{[\s\S]*?font-size:\s*14px/);
   });
+
+  /* ────────────────────────────────────────────────────────────────────
+   * Agent F a11y close-out — WCAG 2.1 AA contrast on the lowest text
+   * ladder slot (--text-faint). The QA report flagged Matrix at 3.16:1
+   * and Midnight at 2.65:1; both lifted to ≥4.5 on their slot bg.
+   * ──────────────────────────────────────────────────────────────────── */
+  it("matrix --text-faint hits WCAG AA on the matrix slot background", () => {
+    const parts = css.split('[data-preset="matrix"]');
+    const slotBlock = parts[1] ?? "";
+    // Match the lifted value, NOT the regressed #156a2d (3.13:1).
+    expect(slotBlock).toMatch(/--text-faint:\s*#3aa856/);
+    expect(slotBlock).not.toMatch(/--text-faint:\s*#156a2d/);
+    // The numeric guard: parse the hex and compute contrast vs --bg=#000.
+    const contrast = computeContrastFromCss("#3aa856", "#000000");
+    expect(contrast).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it("midnight --text-faint hits WCAG AA on the midnight slot background", () => {
+    const parts = css.split(':root,\n[data-preset="midnight"]');
+    const slotBlock = parts[1] ?? css;
+    expect(slotBlock).toMatch(/--text-faint:\s*#9d917a/);
+    expect(slotBlock).not.toMatch(/--text-faint:\s*#5b5447/);
+    const contrast = computeContrastFromCss("#9d917a", "#0b0907");
+    expect(contrast).toBeGreaterThanOrEqual(4.5);
+  });
 });
+
+// Bare-bones WCAG 2.1 relative-luminance contrast — copied from
+// `@/lib/a11y.ts` so the test file stays self-contained (and so we
+// catch a regression where lib/a11y is broken).
+function computeContrastFromCss(a: string, b: string): number {
+  const lum = (hex: string) => {
+    const m = hex.replace(/^#/, "");
+    const r = parseInt(m.slice(0, 2), 16) / 255;
+    const g = parseInt(m.slice(2, 4), 16) / 255;
+    const bl = parseInt(m.slice(4, 6), 16) / 255;
+    const t = (c: number) =>
+      c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+    return 0.2126 * t(r) + 0.7152 * t(g) + 0.0722 * t(bl);
+  };
+  const la = lum(a);
+  const lb = lum(b);
+  return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
+}
