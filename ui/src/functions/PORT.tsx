@@ -46,13 +46,39 @@ interface Position {
   symbol: string;
   asset_class?: string;
   quantity?: number;
-  avg_cost?: number;
-  last?: number;
+  avg_cost?: number | null;
+  // UA-HIGH-10: some backend exchange adapters emit `entry_price` /
+  // `current_price` instead of `avg_cost` / `last`. Keep both names in the
+  // type and use the helpers below at the call sites. `null` is permitted
+  // because PortfolioPosition (the upstream aggregator shape) declares
+  // these fields as nullable.
+  entry_price?: number | null;
+  last?: number | null;
+  current_price?: number | null;
   market_value?: number;
   unrealized_pnl?: number;
   weight?: number;
   currency?: string;
   [key: string]: unknown;
+}
+
+// UA-HIGH-10: tolerant accessors for cross-broker payload drift. Narrow
+// parameter shape so they work for both the strict `Position` declared in
+// this file AND the upstream `PortfolioPosition` (which declares nullable
+// number fields) without a cast at every call site.
+type PriceFields = {
+  entry_price?: number | null;
+  avg_cost?: number | null;
+  current_price?: number | null;
+  last?: number | null;
+};
+function positionEntryPrice(p: PriceFields): number | undefined {
+  const v = p.entry_price ?? p.avg_cost;
+  return typeof v === "number" && Number.isFinite(v) ? v : undefined;
+}
+function positionCurrentPrice(p: PriceFields): number | undefined {
+  const v = p.current_price ?? p.last;
+  return typeof v === "number" && Number.isFinite(v) ? v : undefined;
 }
 
 interface CloseRecord {
@@ -296,19 +322,21 @@ function CredentialGroup({ g }: { g: PortfolioGroup }) {
             </tr>
           </thead>
           <tbody>
-            {g.positions.map((p, i) => (
-              <tr key={`${p.symbol}-${i}`}>
+            {g.positions.map((p, i) => {
+              // UA-HIGH-10 + UA-HIGH-26: tolerant field accessors AND a
+              // group-scoped unique key (multiple credentials can hold the
+              // same symbol — `${symbol}-${i}` collides at the React level).
+              const entry = positionEntryPrice(p);
+              const current = positionCurrentPrice(p);
+              return (
+              <tr key={`${g.credential_id ?? "g"}-${p.symbol}-${i}`}>
                 <td>{p.symbol}</td>
                 <td align="right">{p.quantity}</td>
                 <td align="right">
-                  {p.entry_price != null && Number.isFinite(p.entry_price)
-                    ? formatPrice(p.entry_price)
-                    : formatMissing}
+                  {entry != null ? formatPrice(entry) : formatMissing}
                 </td>
                 <td align="right">
-                  {p.current_price != null && Number.isFinite(p.current_price)
-                    ? formatPrice(p.current_price)
-                    : formatMissing}
+                  {current != null ? formatPrice(current) : formatMissing}
                 </td>
                 <td align="right" style={{
                   color: (p.unrealized_pnl ?? 0) >= 0 ? "var(--accent-ok)" : "var(--accent-err)",
@@ -338,7 +366,8 @@ function CredentialGroup({ g }: { g: PortfolioGroup }) {
                   )}
                 </td>
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
       )}

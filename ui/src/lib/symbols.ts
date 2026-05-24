@@ -4,7 +4,7 @@
  * Used by the SymbolBar to suggest recently-viewed tickers across pane
  * switches. Stored under `showme.recent-symbols` as a JSON array of {sym, ts}.
  */
-import { safeReadLocal } from "./safe-storage";
+import { safeReadLocal, safeWriteLocal } from "./safe-storage";
 
 const KEY = "showme.recent-symbols";
 const MAX = 12;
@@ -184,8 +184,9 @@ function load(): Entry[] {
 }
 
 function save(entries: Entry[]): void {
-  if (typeof localStorage === "undefined") return;
-  localStorage.setItem(KEY, JSON.stringify(entries.slice(0, MAX)));
+  // HIGH FIX (audit S14): swallowed QuotaExceeded silently before; now
+  // route via safeWriteLocal so the user gets a single toast on storage full.
+  safeWriteLocal(KEY, entries.slice(0, MAX), { label: "Recent symbols" });
 }
 
 export function listRecentSymbols(): string[] {

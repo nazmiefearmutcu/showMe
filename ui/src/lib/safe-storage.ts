@@ -102,10 +102,111 @@ export function safeReadLocal<T>(
   return parsed as T;
 }
 
+// ---------- safeWriteLocal ----------
+
+const QUOTA_TOAST_THROTTLE_MS = 30_000;
+const recentlyQuotaToasted = new Map<string, number>();
+
+export interface SafeWriteResult {
+  ok: boolean;
+  /** Set when the write failed; "quota" | "unavailable" | "serialize" | "unknown". */
+  reason?: "quota" | "unavailable" | "serialize" | "unknown";
+  error?: unknown;
+}
+
+export interface SafeWriteOptions {
+  /** Pretty-name used in the toast title, e.g. "Watchlist". */
+  label?: string;
+  /** Suppress side effects (toast) for diagnostic tests. */
+  silent?: boolean;
+}
+
+/**
+ * Quota-safe localStorage.setItem wrapper.
+ *
+ * Audit HIGH (S14): watchlist.ts / alerts.ts / symbols.ts each had their own
+ * `try { localStorage.setItem(...) } catch {}` block that swallowed
+ * QuotaExceededError silently — a user with a packed browser profile would
+ * see "pin saved" toasts that, on next reload, had nothing in storage.
+ * Centralising the write here lets every caller render a single, accurate
+ * "Storage full" toast so the user knows their preference lives in memory
+ * only until they free space.
+ *
+ * Accepts either a pre-serialized string OR any value (will JSON.stringify).
+ * Returns a result envelope; callers can branch on `ok`/`reason`.
+ */
+export function safeWriteLocal(
+  key: string,
+  value: unknown,
+  options: SafeWriteOptions = {},
+): SafeWriteResult {
+  if (typeof localStorage === "undefined") {
+    return { ok: false, reason: "unavailable" };
+  }
+  let serialized: string;
+  try {
+    serialized = typeof value === "string" ? value : JSON.stringify(value);
+  } catch (err) {
+    if (!options.silent) {
+      console.warn(`[safe-storage] serialize failed for ${key}`, err);
+    }
+    return { ok: false, reason: "serialize", error: err };
+  }
+  try {
+    localStorage.setItem(key, serialized);
+    return { ok: true };
+  } catch (err) {
+    // QuotaExceededError varies across browsers: Chromium throws DOMException
+    // with name "QuotaExceededError" (code 22 / 1014). Firefox uses
+    // NS_ERROR_DOM_QUOTA_REACHED. Be liberal — anything named *Quota* is a
+    // bucket-full signal; everything else is reported as "unknown".
+    const isQuota = _isQuotaError(err);
+    if (!options.silent) {
+      console.warn(`[safe-storage] write failed for ${key}`, err);
+      if (isQuota) {
+        _emitQuotaToast(key, options.label);
+      }
+    }
+    return {
+      ok: false,
+      reason: isQuota ? "quota" : "unknown",
+      error: err,
+    };
+  }
+}
+
+function _isQuotaError(err: unknown): boolean {
+  if (!err) return false;
+  if (err instanceof Error) {
+    if (err.name === "QuotaExceededError") return true;
+    if (err.name === "NS_ERROR_DOM_QUOTA_REACHED") return true;
+    if (/quota/i.test(err.message)) return true;
+  }
+  // DOMException has numeric `code`
+  if (typeof err === "object" && err !== null && "code" in err) {
+    const code = (err as { code: unknown }).code;
+    if (code === 22 || code === 1014) return true;
+  }
+  return false;
+}
+
+function _emitQuotaToast(key: string, label?: string): void {
+  const now = Date.now();
+  const previous = recentlyQuotaToasted.get(key) ?? 0;
+  if (now - previous < QUOTA_TOAST_THROTTLE_MS) return;
+  recentlyQuotaToasted.set(key, now);
+  const pretty = label ?? prettifyKey(key);
+  toast.error(
+    "Storage full",
+    `${pretty} was saved in memory only — free browser storage to persist.`,
+  );
+}
+
 /**
  * Test helper — clears the per-key toast throttle so successive unit tests
  * don't see a previous test's last-emit timestamp.
  */
 export function __resetSafeStorageThrottleForTests(): void {
   recentlyToasted.clear();
+  recentlyQuotaToasted.clear();
 }

@@ -35,7 +35,7 @@ import {
   usePersistentOption,
 } from "@/functions/function-control-state";
 import type { FunctionEntry } from "@/lib/sidecar";
-import { setLocale, type Locale } from "@/i18n";
+import { locale as getCurrentLocale, setLocale, type Locale } from "@/i18n";
 import {
   STUB_RANGES,
   STUB_RANGE_IDS,
@@ -147,6 +147,11 @@ export function FunctionStub({
     [upperCode, entry?.category],
   );
   const [queryText, setQueryText] = useState(() => defaultQueryForFunction(upperCode, entry?.category));
+  // UA-CRITICAL-05: distinguishes "user typed in the query box" vs "still on
+  // the default placeholder". Symbol-only changes must not blow away a query
+  // the user just typed.
+  const userQueryEditedRef = useRef(false);
+  const lastUpperCodeRef = useRef(upperCode);
   const [transcriptText, setTranscriptText] = useState("");
   const [ticketSide, setTicketSide] = useState<TicketSide>("BUY");
   const [ticketQuantity, setTicketQuantity] = useState("1");
@@ -261,9 +266,17 @@ export function FunctionStub({
       ? assetClassForFunctionSymbol(normalizedSymbol, assetClasses)
       : undefined;
 
+    // UA-CRITICAL-04: order matters. defaults < paramsOverride (seed defaults
+    // from a symbol-switch reset) < controlParams (user has been editing
+    // controls *after* mount) < paramsText (free-form JSON override box).
+    // Previous code used `paramsOverride ?? controlParams` which silently
+    // discarded all user edits the moment the upstream symbol-change effect
+    // re-ran with a fresh `initialControlParams`.
+    const userEditedControls = controlsReady.current;
     const params = {
       ...defaultRuntimeParams(upperCode),
-      ...(paramsOverride ?? controlParams),
+      ...(paramsOverride ?? {}),
+      ...(userEditedControls || paramsOverride == null ? controlParams : {}),
       ...(parseParams(paramsText) ?? {}),
     };
 
@@ -312,7 +325,12 @@ export function FunctionStub({
       // spinner until the new request resolves. Reset both so the next
       // `load` starts from a clean idle slate.
       if (signal?.aborted) {
-        setState("idle");
+        // UA-HIGH-24: don't flash "idle" — that wipes whatever was on screen
+        // before the abort and shows the empty state for ~1 frame before the
+        // next load takes over. If we still have a prior result, transition
+        // to "refreshing" (the pre-existing payload stays visible); only
+        // fall back to "idle" when nothing was rendered.
+        setState(result !== null ? "refreshing" : "idle");
         lastFingerprintRef.current = "";
         return;
       }
@@ -368,7 +386,15 @@ export function FunctionStub({
           }
         : {}),
     };
-    setQueryText(initialQuery);
+    // UA-CRITICAL-05: only reset the query when the *function code* itself
+    // changed (pane swap). On a pure symbol switch — same code, new ticker —
+    // preserve whatever the user typed in the search/query box.
+    const codeChanged = lastUpperCodeRef.current !== upperCode;
+    if (codeChanged || !userQueryEditedRef.current) {
+      setQueryText(initialQuery);
+      if (codeChanged) userQueryEditedRef.current = false;
+    }
+    lastUpperCodeRef.current = upperCode;
     void load(ac.signal, runSymbol, initialControlParams).finally(() => {
       if (activeRequest.current === ac) activeRequest.current = null;
     });
@@ -430,7 +456,10 @@ export function FunctionStub({
     const supported = new Set<Locale>([
       "en", "tr", "de", "fr", "es", "it", "ja", "zh", "ko", "ar", "pt", "ru",
     ]);
-    if (next && supported.has(next as Locale)) {
+    // UA-HIGH-13: previously called setLocale unconditionally → it dispatches
+    // LOCALE_CHANGE_EVENT → catalog refresh → result identity changes →
+    // effect re-fires forever. Bail early if the locale already matches.
+    if (next && supported.has(next as Locale) && next !== getCurrentLocale()) {
       setLocale(next as Locale);
     }
   }, [upperCode, state, result]);
@@ -577,7 +606,12 @@ export function FunctionStub({
                         : "Query")
                   }
                   value={queryText}
-                  onChange={(e) => setQueryText(e.target.value)}
+                  onChange={(e) => {
+                    // UA-CRITICAL-05: any typed character flips the "edited"
+                    // flag so the symbol-switch effect stops clobbering it.
+                    userQueryEditedRef.current = true;
+                    setQueryText(e.target.value);
+                  }}
                   placeholder={defaultQueryForFunction(upperCode, entry?.category)}
                   hint={controlProfile.queryHint ?? `${controlProfile.queryParam} sent to backend on Run.`}
                   onKeyDown={(e) => {

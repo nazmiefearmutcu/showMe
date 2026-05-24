@@ -178,11 +178,15 @@ describe("QA-2026-05-23 - FunctionStub abort cleanup", () => {
       path.resolve(__dirname, "index.tsx"),
       "utf8",
     );
-    // The fix sets state back to "idle" AND clears
+    // The fix sets state back out of "loading" AND clears
     // `lastFingerprintRef.current = ""` before returning. Both must
     // appear inside the same catch path before the early return.
+    //
+    // UA-HIGH-24: the post-abort state is now either "idle" (no prior
+    // result) or "refreshing" (preserve the previous payload while the new
+    // request resolves) — the regex accepts both.
     expect(indexSrc).toMatch(
-      /if\s*\(\s*signal\?\.aborted\s*\)\s*\{[\s\S]{0,300}setState\(\s*"idle"\s*\)[\s\S]{0,200}lastFingerprintRef\.current\s*=\s*""[\s\S]{0,200}return/,
+      /if\s*\(\s*signal\?\.aborted\s*\)\s*\{[\s\S]{0,400}setState\([^)]*"(?:idle|refreshing)"[^)]*\)[\s\S]{0,200}lastFingerprintRef\.current\s*=\s*""[\s\S]{0,200}return/,
     );
   });
 });

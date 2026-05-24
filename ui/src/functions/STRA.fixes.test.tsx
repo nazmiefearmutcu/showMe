@@ -39,22 +39,24 @@ afterEach(() => {
 });
 
 describe("STRA pane fixes", () => {
-  it("sil_confirms — Sil aborts when window.confirm returns false", () => {
+  // Round 24 CRITICAL 14 — window.confirm replaced with ConfirmDialog so
+  // the tests now assert via the in-document dialog body.
+  it("sil_confirms — Sil aborts when ConfirmDialog Cancel pressed", () => {
     const removeSpy = vi.fn(async () => true);
     useStrategyStore.setState({ remove: removeSpy });
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
     render(<STRAPane />);
     fireEvent.click(screen.getByTestId("stra-sil-button"));
-    expect(confirmSpy).toHaveBeenCalledOnce();
+    expect(screen.getByTestId("confirm-dialog-body")).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("confirm-dialog-cancel"));
     expect(removeSpy).not.toHaveBeenCalled();
   });
 
-  it("sil_confirms_yes — Sil fires remove on confirm true", () => {
+  it("sil_confirms_yes — Sil fires remove on ConfirmDialog Confirm", () => {
     const removeSpy = vi.fn(async () => true);
     useStrategyStore.setState({ remove: removeSpy });
-    vi.spyOn(window, "confirm").mockReturnValue(true);
     render(<STRAPane />);
     fireEvent.click(screen.getByTestId("stra-sil-button"));
+    fireEvent.click(screen.getByTestId("confirm-dialog-confirm"));
     expect(removeSpy).toHaveBeenCalledWith("abc");
   });
 });

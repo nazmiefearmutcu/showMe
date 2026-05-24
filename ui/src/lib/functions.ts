@@ -40,13 +40,88 @@ export interface RunFunctionOptions {
 }
 
 const DEFAULT_FUNCTION_TIMEOUT_MS = 50_000;
-const FETCH_RETRY_DELAYS_MS = [250, 1_000];
+// HIGH FIX (audit S10): retries had no jitter, so when 9+ panes hit a cold
+// sidecar simultaneously each one fired the same 0→250ms→1000ms sequence in
+// lockstep and produced 27 concurrent fetches on the second retry burst.
+// Adding random spread per attempt staggers the burst.
+const FETCH_RETRY_BASE_DELAYS_MS = [250, 1_000];
+
+function _jitteredDelay(attempt: number): number {
+  const base = FETCH_RETRY_BASE_DELAYS_MS[attempt] ?? 1_500;
+  // Spread up to ±50% so identical callers desync after the first retry.
+  return base + Math.floor(Math.random() * base);
+}
+
+/**
+ * Module-level in-flight dedupe. Two panes mounting at the same instant with
+ * identical (code, symbol, asset_class, params) used to fire two GETs in
+ * parallel; we now share the underlying Promise. Aborted callers don't kill
+ * the shared request — they just stop observing it (their own AbortSignal
+ * detaches via the abort listener).
+ */
+const _inflightFunctions = new Map<string, Promise<unknown>>();
+
+function _inflightKey(
+  code: string,
+  symbol: string | undefined,
+  asset_class: string | undefined,
+  params: Record<string, unknown>,
+): string {
+  // Stable JSON: sort top-level keys so {a,b} and {b,a} produce the same key.
+  const sortedKeys = Object.keys(params).sort();
+  const stable: Record<string, unknown> = {};
+  for (const k of sortedKeys) stable[k] = params[k];
+  return [
+    code.toUpperCase(),
+    symbol ?? "",
+    asset_class ?? "",
+    JSON.stringify(stable),
+  ].join("|");
+}
 
 /**
  * GET when there are only primitive params, POST otherwise (handles arrays /
  * nested objects). The sidecar accepts either.
  */
 export async function runFunction<TData = unknown>(
+  code: string,
+  opts: RunFunctionOptions = {},
+): Promise<FunctionCallResult<TData>> {
+  // HIGH FIX (audit S10): cold-boot dedupe. If an identical call is already
+  // in flight, observe its promise instead of opening a parallel fetch. We
+  // do this BEFORE the retry/abort plumbing because dedupe targets identical
+  // user intent regardless of distinct AbortSignals.
+  const dedupeKey = _inflightKey(
+    code,
+    opts.symbol,
+    opts.asset_class,
+    opts.params ?? {},
+  );
+  const existing = _inflightFunctions.get(dedupeKey);
+  if (existing) {
+    return existing as Promise<FunctionCallResult<TData>>;
+  }
+  const promise = _runFunctionUnshared<TData>(code, opts);
+  _inflightFunctions.set(dedupeKey, promise);
+  // Detach the cleanup from the outer promise — observe rejection so the
+  // dedupe-bookkeeping branch doesn't surface as an unhandled rejection on
+  // top of the legitimate one already returned to the caller.
+  promise.then(
+    () => {
+      if (_inflightFunctions.get(dedupeKey) === promise) {
+        _inflightFunctions.delete(dedupeKey);
+      }
+    },
+    () => {
+      if (_inflightFunctions.get(dedupeKey) === promise) {
+        _inflightFunctions.delete(dedupeKey);
+      }
+    },
+  );
+  return promise;
+}
+
+async function _runFunctionUnshared<TData = unknown>(
   code: string,
   opts: RunFunctionOptions = {},
 ): Promise<FunctionCallResult<TData>> {
@@ -102,7 +177,7 @@ export async function runFunction<TData = unknown>(
 
   let res: Response | undefined;
   try {
-    for (let attempt = 0; attempt <= FETCH_RETRY_DELAYS_MS.length; attempt += 1) {
+    for (let attempt = 0; attempt <= FETCH_RETRY_BASE_DELAYS_MS.length; attempt += 1) {
       try {
         res = await fetchOnce();
         break;
@@ -117,10 +192,10 @@ export async function runFunction<TData = unknown>(
         if (isAbortError(err) || ac.signal.aborted || opts.signal?.aborted) {
           throw err;
         }
-        if (attempt >= FETCH_RETRY_DELAYS_MS.length) {
+        if (attempt >= FETCH_RETRY_BASE_DELAYS_MS.length) {
           throw err;
         }
-        await wait(FETCH_RETRY_DELAYS_MS[attempt]);
+        await wait(_jitteredDelay(attempt));
       }
     }
   } catch (err) {

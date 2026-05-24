@@ -178,17 +178,26 @@ export function ANRPane({ code, symbol }: FunctionPaneProps) {
   const veryfinderBackgroundTick = useVisibilityTick(VERYFINDER_BACKGROUND_REFRESH_MS);
   const liveTickFirstRef = useRef(true);
   const bgTickFirstRef = useRef(true);
+  // UA-HIGH-15: depending on `runVeryfinderFetch` caused this effect to
+  // re-fire whenever the callback identity changed (e.g. user edits
+  // minTweets / source), stacking a second background fetch on top of the
+  // manual one. The callback is stable in behavior; we only want this effect
+  // to react to actual tick changes. We capture the latest callback in a
+  // ref so the body always calls the most recent version without putting
+  // it in the deps array.
+  const runVeryfinderFetchRef = useRef(runVeryfinderFetch);
+  useEffect(() => {
+    runVeryfinderFetchRef.current = runVeryfinderFetch;
+  }, [runVeryfinderFetch]);
   useEffect(() => {
     if (!veryfinderEnabled || !effectiveSymbol) return;
-    // Skip the initial tick value (0) — the first fetch is already issued by
-    // the runVeryfinderFetch effect on mount / symbol change. We only want
-    // *subsequent* ticks to trigger the live refresh.
     if (liveTickFirstRef.current) {
       liveTickFirstRef.current = false;
       return;
     }
-    runVeryfinderFetch({ refresh: true, background: true });
-  }, [effectiveSymbol, runVeryfinderFetch, veryfinderEnabled, veryfinderLiveTick]);
+    runVeryfinderFetchRef.current({ refresh: true, background: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- ref-captured
+  }, [effectiveSymbol, veryfinderEnabled, veryfinderLiveTick]);
 
   useEffect(() => {
     if (!veryfinderEnabled) return;

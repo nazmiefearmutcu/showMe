@@ -271,53 +271,197 @@ export function choosePaneRenderer(
 // source remains `@/lib/pane-completeness`.
 export { CRITICAL_CODES };
 
+/**
+ * CRITICAL #1 (UI-Shell-Bundle UB) — minimum size per child during
+ * drag/keyboard resize. Centralised so the keyboard handler below shares
+ * the exact same floor as the mouse handler.
+ */
+const MIN_PANE_FRACTION = 0.08;
+
+/**
+ * CRITICAL #1 — resize-by-delta that survives 3+ siblings.
+ *
+ * The legacy code paired `start[idx]` with `start[idx+1]` and used the
+ * `start[idx] + start[idx+1] - min` clamp. That math only ever balances
+ * with the immediate right neighbour, which silently corrupts a row of 3+
+ * panes: any size left over after the clamp gets discarded because every
+ * sibling after `idx+1` is overwritten by the in-place `next[idx+1] = b`
+ * pattern below. With 3 children the third pane's width "ghost-shifts"
+ * during drag; with 4+ the bottom row can briefly snap to zero before the
+ * normaliser resurrects it.
+ *
+ * The new helper:
+ *   - moves only `idx` (and rebalances mass into `idx+1..end` proportionally
+ *     to their pre-drag size, so panes 3..N keep their visual weight),
+ *   - clamps `idx` against `MIN_PANE_FRACTION` and against the total mass
+ *     downstream (`totalSize - min*(children-idx-1)` per the spec),
+ *   - preserves every sibling after `idx+1` instead of forcing the legacy
+ *     two-pane assumption.
+ *
+ * Returns a fresh sizes array (no mutation of `start`). The caller is
+ * responsible for calling `setSplitSizes` with the result.
+ */
+export function applySplitDragDelta(
+  start: number[],
+  idx: number,
+  delta: number,
+): number[] {
+  const n = start.length;
+  if (n < 2 || idx < 0 || idx >= n - 1) return [...start];
+  const min = MIN_PANE_FRACTION;
+  // Mass that must stay reserved for every pane after `idx` (idx+1 and
+  // everything to its right). For n=2 that's exactly one min; for n=3
+  // it's two; etc.
+  const downstreamFloor = min * (n - idx - 1);
+  // Upper bound on `idx` — total minus the combined downstream floor.
+  // Matches the spec `min(start[idx]+delta, totalSize - min*(children-idx-1))`.
+  const totalSize = start.reduce((s, v) => s + v, 0); // sums to ~1.0 in practice
+  const max = totalSize - downstreamFloor;
+  const a = Math.max(min, Math.min(start[idx] + delta, max));
+  // Mass freed up by moving `idx`. Distribute proportionally to the
+  // pre-drag share of panes `idx+1..n-1`, preserving their relative
+  // weights. Because `a` was clamped to honour `downstreamFloor`, the
+  // remaining mass is always >= min*(n-idx-1) — every downstream pane
+  // can sit above the MIN floor with proportional weight.
+  const remaining = totalSize - a;
+  const downstreamStart = start.slice(idx + 1);
+  const downstreamSum = downstreamStart.reduce((s, v) => s + v, 0);
+  const next = [...start];
+  next[idx] = a;
+  if (downstreamSum <= 0) {
+    // Degenerate zero-mass siblings (test fixture / corrupted state) —
+    // split the remaining mass equally with no Math.max leak.
+    const per = remaining / downstreamStart.length;
+    for (let i = idx + 1; i < n; i += 1) next[i] = per;
+  } else {
+    // Proportional first pass. Then enforce the MIN floor in a second
+    // pass that reclaims excess from above-floor panes so the row still
+    // sums to `remaining` (a naive `Math.max(min, ...)` would over-
+    // allocate when the proportional share fell below MIN).
+    for (let i = idx + 1; i < n; i += 1) {
+      const share = start[i] / downstreamSum;
+      next[i] = remaining * share;
+    }
+    // Reconciliation: any pane below MIN steals from the largest pane
+    // above MIN until every downstream pane is >= MIN. Bounded number
+    // of iterations since `remaining >= min*(n-idx-1)` is invariant.
+    const isBelow = (i: number) => next[i] < min - 1e-12;
+    let guard = n * 2;
+    while (guard-- > 0) {
+      let belowIdx = -1;
+      let donor = -1;
+      let donorVal = -Infinity;
+      for (let i = idx + 1; i < n; i += 1) {
+        if (belowIdx < 0 && isBelow(i)) belowIdx = i;
+        if (next[i] > donorVal) {
+          donorVal = next[i];
+          donor = i;
+        }
+      }
+      if (belowIdx < 0 || donor < 0 || donor === belowIdx) break;
+      const deficit = min - next[belowIdx];
+      next[belowIdx] = min;
+      next[donor] -= deficit;
+    }
+  }
+  return next;
+}
+
 function Split({ node }: { node: SplitNode }) {
   const setSplitSizes = useWorkspace((s) => s.setSplitSizes);
   const containerRef = useRef<HTMLDivElement>(null);
-  const draggingIdx = useRef<number | null>(null);
-  const startSizes = useRef<number[] | null>(null);
-  const startCoord = useRef<number>(0);
-  const containerSize = useRef<number>(0);
+  /**
+   * CRITICAL #2 (UI-Shell-Bundle UB) — drag session ref.
+   *
+   * The mousemove listener used to read `node.direction` and call
+   * `setSplitSizes(node.id, …)` directly. If a sibling pane closed mid-
+   * drag, React unmounted this `<Split>` and remounted a fresh one for
+   * the new tree, leaving the old listener with a *stale* node.sizes /
+   * node.id closure attached to `window`. The new listener wouldn't
+   * trigger because the dependency array (`[node.direction, node.id,
+   * setSplitSizes]`) was satisfied, and the old listener wrote the wrong
+   * sizes (or wrote to a node that no longer existed).
+   *
+   * The fix folds every dragable value into a single ref. The listener
+   * reads from `session.current`; the cleanup tears down the listener
+   * pair unconditionally. Each `<Split>` instance owns exactly one
+   * listener pair for its lifetime, regardless of sibling churn.
+   */
+  type DragSession = {
+    idx: number;
+    startSizes: number[];
+    startCoord: number;
+    containerSize: number;
+    direction: SplitNode["direction"];
+    nodeId: string;
+  } | null;
+  const session = useRef<DragSession>(null);
+
+  // Keep a stable ref to `setSplitSizes` (zustand selector returns the
+  // same function reference each render in practice, but we don't want
+  // to rely on that — and we want the effect below to mount exactly once
+  // per `<Split>` instance lifetime).
+  const setSplitSizesRef = useRef(setSplitSizes);
+  setSplitSizesRef.current = setSplitSizes;
 
   useEffect(() => {
     const onMove = (e: MouseEvent) => {
-      const idx = draggingIdx.current;
-      if (idx == null) return;
-      const start = startSizes.current;
-      const total = containerSize.current;
-      if (!start || !total) return;
+      const s = session.current;
+      if (!s) return;
       const delta =
-        ((node.direction === "h" ? e.clientX : e.clientY) - startCoord.current) /
-        total;
-      const next = [...start];
-      const min = 0.08;
-      const a = Math.max(min, Math.min(start[idx] + delta, start[idx] + start[idx + 1] - min));
-      const b = start[idx] + start[idx + 1] - a;
-      next[idx] = a;
-      next[idx + 1] = b;
-      setSplitSizes(node.id, next);
+        ((s.direction === "h" ? e.clientX : e.clientY) - s.startCoord) / s.containerSize;
+      const next = applySplitDragDelta(s.startSizes, s.idx, delta);
+      setSplitSizesRef.current(s.nodeId, next);
     };
     const onUp = () => {
-      draggingIdx.current = null;
-      startSizes.current = null;
+      session.current = null;
+    };
+    const onKey = (e: KeyboardEvent) => {
+      // Escape during drag cancels the session without writing anything
+      // back — the on-screen sizes snap back to the last `setSplitSizes`
+      // call. Reduces the "I clicked the wrong handle" frustration.
+      if (e.key === "Escape" && session.current) {
+        session.current = null;
+      }
     };
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
+    window.addEventListener("keydown", onKey);
     return () => {
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
+      window.removeEventListener("keydown", onKey);
+      // If unmount fires mid-drag (sibling closed → tree restructured)
+      // wipe the session ref too, so a stray late-firing event from a
+      // browser quirk can't write to the now-gone node id.
+      session.current = null;
     };
-  }, [node.direction, node.id, setSplitSizes]);
+  }, []); // mount-once: read from refs, never from props.
+
+  // CRITICAL #2 — when React reuses this <Split> instance for a new
+  // node id (sibling collapse rebuilds the tree but keeps the same
+  // component slot), the active drag session is still keyed on the
+  // *old* id and would write back to a now-missing split. Detect the
+  // id swap and wipe the session so the next mousemove early-returns.
+  useEffect(() => {
+    if (session.current && session.current.nodeId !== node.id) {
+      session.current = null;
+    }
+  }, [node.id]);
 
   const startDrag = (idx: number) => (e: React.MouseEvent) => {
     e.preventDefault();
     const el = containerRef.current;
     if (!el) return;
     const rect = el.getBoundingClientRect();
-    containerSize.current = node.direction === "h" ? rect.width : rect.height;
-    startSizes.current = [...node.sizes];
-    startCoord.current = node.direction === "h" ? e.clientX : e.clientY;
-    draggingIdx.current = idx;
+    session.current = {
+      idx,
+      startSizes: [...node.sizes],
+      startCoord: node.direction === "h" ? e.clientX : e.clientY,
+      containerSize: node.direction === "h" ? rect.width : rect.height,
+      direction: node.direction,
+      nodeId: node.id,
+    };
   };
 
   const trackTemplate = node.sizes
@@ -349,18 +493,11 @@ function Split({ node }: { node: SplitNode }) {
           const pct = Math.round((node.sizes[i] ?? 0) * 100);
           const onKey = (e: React.KeyboardEvent<HTMLDivElement>) => {
             const STEP = 0.05;
-            const min = 0.08;
             const start = [...node.sizes];
             const adjust = (delta: number) => {
-              const a = Math.max(
-                min,
-                Math.min(start[i] + delta, start[i] + start[i + 1] - min),
-              );
-              const b = start[i] + start[i + 1] - a;
-              const next = [...start];
-              next[i] = a;
-              next[i + 1] = b;
-              setSplitSizes(node.id, next);
+              // CRITICAL #1: share the 3+ pane resize math with mouse-drag
+              // so keyboard resizing also preserves siblings past idx+1.
+              setSplitSizes(node.id, applySplitDragDelta(start, i, delta));
             };
             const horiz = node.direction === "h";
             if ((horiz && e.key === "ArrowLeft") || (!horiz && e.key === "ArrowUp")) {

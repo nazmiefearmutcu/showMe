@@ -17,6 +17,7 @@ import {
 } from "@/lib/performance-store";
 import { useBotEcosystemPolling } from "@/lib/useBotEcosystemPolling";
 import { formatPrice } from "@/lib/format";
+import { maxOf, minOf } from "@/lib/maxOf";
 
 function _color(n: number): string {
   if (n > 0) return "var(--accent-ok)";
@@ -44,8 +45,9 @@ function EquityCurve({ points, width = 480, height = 160 }: {
     return <div style={{ color: "var(--fg-2)" }}>Yeterli trade verisi yok.</div>;
   }
   const equities = points.map((p) => p.equity);
-  const min = Math.min(...equities);
-  const max = Math.max(...equities);
+  // UA-HIGH-12: stack-safe.
+  const min = minOf(equities);
+  const max = maxOf(equities);
   const range = max - min || 1;
   const stepX = width / (points.length - 1);
   const pathD = points.map((p, i) => {

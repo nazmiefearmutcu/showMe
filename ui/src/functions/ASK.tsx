@@ -77,6 +77,11 @@ export function ASKPane({ code }: FunctionPaneProps) {
   }, [thread.length, running]);
 
   const run = async () => {
+    // Round 24 MEDIUM 19 — Enter+Enter stale-closure used to spawn two
+    // ChatTurns because the second Enter handler captured `running=false`
+    // from the closure that fired right before setRunning(true) flushed.
+    // Reading the React state inside run() short-circuits cleanly.
+    if (running) return;
     const q = draft.trim();
     if (!q) return;
     const userTurn: ChatTurn = {

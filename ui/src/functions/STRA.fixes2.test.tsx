@@ -148,6 +148,7 @@ describe("STRA pane fixes2", () => {
   });
 
   // ─── H-UI-10 dirty switch ────────────────────────────────────────────
+  // Round 24 — window.confirm replaced with ConfirmDialog.
   it("dirty_switch_prompts_confirm", () => {
     useStrategyStore.setState({
       strategies: [
@@ -160,12 +161,12 @@ describe("STRA pane fixes2", () => {
     });
     const openSpy = vi.fn(async () => {});
     useStrategyStore.setState({ openExisting: openSpy as never });
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
     render(<STRAPane />);
     const allButtons = screen.getAllByRole("button");
     const other = allButtons.find((b) => b.textContent?.includes("Other"));
     fireEvent.click(other!);
-    expect(confirmSpy).toHaveBeenCalled();
+    expect(screen.getByTestId("confirm-dialog-body")).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("confirm-dialog-cancel"));
     expect(openSpy).not.toHaveBeenCalled();
   });
 });

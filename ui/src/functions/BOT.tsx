@@ -18,6 +18,7 @@ import {
   TIMEFRAMES,
   validateSymbol,
 } from "@/lib/validators";
+import { ConfirmDialog } from "@/design-system";
 
 function StatusPill({ rec }: { rec: { mode: string; enabled: boolean } }) {
   const live = rec.mode === "live";
@@ -107,6 +108,10 @@ export function BOTPane() {
   // C-UI-4 — capture originalMode whenever a draft identity changes OR
   // when the saved mode shifts (e.g. successful shadow→live save). The
   // ref guards us from over-triggering on plain mode-toggle keystrokes.
+  // UA-CRITICAL-03: previously deps array was missing → the effect ran on
+  // every render (typing in any input triggered the identity check). Only
+  // the draft identity + persisted tick/symbol/mode are read, so deps narrow
+  // to those four fields.
   useEffect(() => {
     const did = draft?.id ?? null;
     if (did !== lastDraftIdRef.current) {
@@ -124,7 +129,7 @@ export function BOTPane() {
         setOriginalMode(null);
       }
     }
-  });
+  }, [draft?.id, draft?.tick_interval_seconds, draft?.symbol, draft?.mode]);
 
   // When the persisted draft mode shifts AND the draft is not dirty, the
   // backend has acknowledged the new mode (post-save) — re-capture so a
@@ -170,14 +175,17 @@ export function BOTPane() {
     !dirty || saving || missingStrategy || missingCredential || missingSymbol ||
     timeframeUnknown;
 
+  // Round 24 — replace blocking window.confirm with ConfirmDialog.
+  // `dirtySwitchTarget = "new" | botId | null` carries the intent across
+  // the async confirm. Only one modal at a time.
+  const [dirtySwitchTarget, setDirtySwitchTarget] = useState<string | "new" | null>(null);
+
   // H-UI-10 — protect a dirty draft when the user clicks another bot in
   // the rail.
   const handleSidebarClick = (id: string) => {
     if (dirty) {
-      const ok = window.confirm(
-        "Kaydetmediğin değişiklikler kaybolacak. Devam mı?",
-      );
-      if (!ok) return;
+      setDirtySwitchTarget(id);
+      return;
     }
     openExisting(id);
   };
@@ -213,10 +221,8 @@ export function BOTPane() {
       <div style={{ borderRight: "1px solid var(--border-1)", padding: 8, overflowY: "auto" }}>
         <button onClick={() => {
           if (dirty) {
-            const ok = window.confirm(
-              "Kaydetmediğin değişiklikler kaybolacak. Devam mı?",
-            );
-            if (!ok) return;
+            setDirtySwitchTarget("new");
+            return;
           }
           openNew();
         }} style={{ width: "100%", marginBottom: 8 }}>
@@ -483,6 +489,21 @@ export function BOTPane() {
           </div>
         )}
       </div>
+
+      {/* Round 24 — non-blocking dirty-switch confirm. Single dialog because
+          only one switch can be pending at a time. */}
+      <ConfirmDialog
+        open={dirtySwitchTarget !== null}
+        title="Kaydedilmemiş değişiklikler"
+        body="Kaydetmediğin değişiklikler kaybolacak. Devam mı?"
+        confirmLabel="Devam et"
+        onConfirm={() => {
+          if (dirtySwitchTarget === "new") openNew();
+          else if (dirtySwitchTarget) openExisting(dirtySwitchTarget);
+          setDirtySwitchTarget(null);
+        }}
+        onCancel={() => setDirtySwitchTarget(null)}
+      />
     </div>
   );
 }

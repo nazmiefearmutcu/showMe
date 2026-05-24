@@ -118,7 +118,28 @@ export function Titlebar() {
   const [themeState, setThemeState] = useState<ThemeState>(() => readState());
 
   useEffect(() => {
-    const syncTheme = () => setThemeState(readState());
+    // HIGH #14 (UI-Shell-Bundle UB) — three listeners (focus, storage,
+    // THEME_CHANGE_EVENT) used to all funnel into `setThemeState` which
+    // re-rendered the entire titlebar even when the underlying theme
+    // hadn't changed at all (focus-back from another window is the worst
+    // offender — it fires on every alt-tab). Dedupe by remembering the
+    // last applied (preset, mode) tuple and bailing if it matches.
+    let lastKey: string | null = null;
+    const syncTheme = () => {
+      const next = readState();
+      // Theme key combines preset + density + custom hex slots so a
+      // genuine in-place edit still re-renders. The focus-back / cross-
+      // tab storage events that don't change *any* of these are dropped
+      // before reaching `setThemeState`.
+      const key = JSON.stringify({
+        p: next.preset,
+        d: next.density,
+        c: next.custom,
+      });
+      if (key === lastKey) return;
+      lastKey = key;
+      setThemeState(next);
+    };
     syncTheme();
     window.addEventListener(THEME_CHANGE_EVENT, syncTheme);
     window.addEventListener("storage", syncTheme);

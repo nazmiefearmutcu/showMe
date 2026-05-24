@@ -37,3 +37,5 @@ export { TopbarSegment } from "./TopbarSegment";
 export { OrbitMark } from "./OrbitMark";
 export { ResizableChartFrame } from "./ResizableChartFrame";
 export type { ChartFrameSize, ResizableChartFrameProps } from "./ResizableChartFrame";
+export { ConfirmDialog } from "./ConfirmDialog";
+export type { ConfirmDialogProps } from "./ConfirmDialog";

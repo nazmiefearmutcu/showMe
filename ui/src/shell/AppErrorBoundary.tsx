@@ -20,6 +20,7 @@
  * source of the crash.
  */
 import { Component, type ErrorInfo, type ReactNode } from "react";
+import { useAppStore } from "@/lib/store";
 
 interface Props {
   children: ReactNode;
@@ -28,6 +29,25 @@ interface Props {
 interface State {
   error: Error | null;
   componentStack: string | null;
+}
+
+/**
+ * HIGH #12 (UI-Shell-Bundle UB) — palette zombie state on boundary catch.
+ *
+ * If the palette was open when a render error occurred, the boundary
+ * tore the React tree down but left `useAppStore.paletteOpen = true`.
+ * After Reload the new tree mounted with the palette already "open" but
+ * with no input focus, no recents query, and an Escape that did
+ * nothing — a zombie modal blocking interaction. Reset the open flag
+ * (and clear any stale workspace-level transient toggles) before
+ * rendering the fallback or reloading.
+ */
+function resetTransientShellFlags(): void {
+  try {
+    useAppStore.getState().togglePalette(false);
+  } catch (err) {
+    console.warn("AppErrorBoundary: failed to clear paletteOpen", err);
+  }
 }
 
 async function openLogsFolder(): Promise<void> {
@@ -57,6 +77,9 @@ export class AppErrorBoundary extends Component<Props, State> {
     this.setState({ componentStack: info.componentStack ?? null });
     // Always console.error so the dev tools surface the full stack.
     console.error("[showMe] AppErrorBoundary caught render error", error, info);
+    // HIGH #12: kill any open-modal flags so the fallback surface isn't
+    // rendered "behind" a transparent zombie palette overlay.
+    resetTransientShellFlags();
     try {
       window.localStorage?.setItem(
         "showme.last_app_error",
@@ -73,6 +96,11 @@ export class AppErrorBoundary extends Component<Props, State> {
   }
 
   private handleReload = (): void => {
+    // HIGH #12: reset palette open state pre-reload too. In JSDOM /
+    // sandbox environments `reload()` is a no-op, and we still want
+    // the in-memory zombie modal flag cleared so any host-driven UI
+    // (e.g. retry button) interacts cleanly with downstream tests.
+    resetTransientShellFlags();
     try {
       window.location.reload();
     } catch {

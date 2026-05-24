@@ -163,9 +163,16 @@ export function DESPane({ code, symbol }: FunctionPaneProps) {
   const last =
     profile?.regularMarketPrice ?? profile?.currentPrice ?? profile?.price ?? null;
   const prev = profile?.previousClose ?? null;
+  // UA-HIGH-27: previously `last != null && prev` accepted prev<0 (impossible
+  // for a price) AND used JS truthiness so `prev === 0` got the null branch
+  // but `prev === -0.0001` (impossible but cheap to guard) sailed through.
+  // Tighten to "prev is a finite positive number" so we never return
+  // ±Infinity / NaN for a corrupt payload.
   const changePct =
     profile?.regularMarketChangePercent ??
-    (last != null && prev ? ((last - prev) / prev) * 100 : null);
+    (last != null && typeof prev === "number" && Number.isFinite(prev) && prev > 0
+      ? ((last - prev) / prev) * 100
+      : null);
   const change = last != null && prev != null ? last - prev : null;
   // S12 alignment (HP/GP already migrated): the prior `hasLive` flag was
   // derived from `payloadStatus === "ok"`, which is the same misleading

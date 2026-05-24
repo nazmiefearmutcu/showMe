@@ -14,9 +14,73 @@ import {
   type WorkspaceNode,
 } from "./workspace";
 import { invoke, isInTauri } from "./tauri";
+import { toast } from "./toast";
 
 const KEY = "showme.workspace";
 const DEBOUNCE_MS = 400;
+
+/**
+ * CRITICAL #4 (UI-Shell-Bundle UB) — strict schema validator for the
+ * persisted workspace tree.
+ *
+ * The legacy `readPersisted` did `JSON.parse(text) as SerializedWorkspace`
+ * with no shape check. Any garbage that happened to parse as JSON (e.g.
+ * a half-written file from a power loss, a downgraded schema from an
+ * older build, a manual edit) would be handed to `loadWorkspace`, which
+ * called `remapIds` and then recursed into `.children` — throwing inside
+ * React's render cycle and painting a blank screen until the user
+ * cleared the persistence file by hand.
+ *
+ * This validator enforces the bare-minimum invariants the renderer
+ * requires:
+ *   - Every node has a non-empty string `id`.
+ *   - Every node's `kind` is exactly `"leaf"` or `"split"`.
+ *   - Leaves have a non-empty `code` (string).
+ *   - Splits have `direction ∈ {"h","v"}`, `children` is a non-empty
+ *     array, `sizes` is an array of the same length whose entries are
+ *     finite non-negative numbers.
+ *   - Recursion bottoms out cleanly (no cycles, depth-capped to 32).
+ *
+ * On *any* validation failure the persisted state is dropped, the user
+ * is notified via a non-blocking warn toast, and `restoreWorkspace`
+ * falls back to the in-memory default (single HOME leaf) so the app
+ * always boots into a usable surface.
+ *
+ * Exported for the `workspace-persist.schema-validate.test.ts` suite.
+ */
+export function isValidWorkspaceNode(node: unknown, depth = 0): node is WorkspaceNode {
+  if (depth > 32) return false; // cycle / pathological depth guard
+  if (!node || typeof node !== "object") return false;
+  const n = node as Record<string, unknown>;
+  if (typeof n.id !== "string" || n.id.length === 0) return false;
+  if (n.kind === "leaf") {
+    return typeof n.code === "string" && n.code.length > 0;
+  }
+  if (n.kind === "split") {
+    if (n.direction !== "h" && n.direction !== "v") return false;
+    if (!Array.isArray(n.children) || n.children.length === 0) return false;
+    if (!Array.isArray(n.sizes) || n.sizes.length !== n.children.length) return false;
+    for (const s of n.sizes) {
+      if (typeof s !== "number" || !Number.isFinite(s) || s < 0) return false;
+    }
+    for (const c of n.children) {
+      if (!isValidWorkspaceNode(c, depth + 1)) return false;
+    }
+    return true;
+  }
+  return false;
+}
+
+export function isValidPersistedWorkspace(
+  state: unknown,
+): state is SerializedWorkspace {
+  if (!state || typeof state !== "object") return false;
+  const s = state as Record<string, unknown>;
+  if (typeof s.focusedId !== "string") return false;
+  if (typeof s.savedAt !== "string") return false;
+  if (!s.tree) return false;
+  return isValidWorkspaceNode(s.tree);
+}
 
 /**
  * Cutoff for the S11 poisoned-workspace migration. Any persisted state
@@ -162,7 +226,22 @@ async function readPersisted(): Promise<SerializedWorkspace | null> {
   if (isInTauri()) {
     try {
       const raw = await invoke<SerializedWorkspace | null>("load_workspace", { label });
-      if (raw) return raw;
+      if (raw && isValidPersistedWorkspace(raw)) return raw;
+      if (raw) {
+        // Tauri command returned something that didn't pass shape check.
+        console.warn(
+          "load_workspace returned malformed workspace; falling back to default",
+        );
+        try {
+          toast.warn(
+            "Workspace reset",
+            "Stored workspace was invalid and has been reset to default.",
+          );
+        } catch {
+          /* toast may not be initialised yet during boot */
+        }
+        return null;
+      }
     } catch {
       /* fall through */
     }
@@ -173,7 +252,22 @@ async function readPersisted(): Promise<SerializedWorkspace | null> {
     const text =
       localStorage.getItem(lsKey(label)) ?? localStorage.getItem(KEY);
     if (!text) return null;
-    return JSON.parse(text) as SerializedWorkspace;
+    const parsed: unknown = JSON.parse(text);
+    if (!isValidPersistedWorkspace(parsed)) {
+      console.warn(
+        "Persisted workspace failed schema validation; resetting to default",
+      );
+      try {
+        toast.warn(
+          "Workspace reset",
+          "Stored workspace was invalid and has been reset to default.",
+        );
+      } catch {
+        /* toast may not be initialised yet during boot */
+      }
+      return null;
+    }
+    return parsed;
   } catch {
     return null;
   }
@@ -195,23 +289,45 @@ async function waitForShellReady(timeoutMs = 1500): Promise<void> {
     return;
   }
   if (!listenFn) return;
+  // HIGH FIX (audit S12): the previous implementation could leak the
+  // `shell:ready` listener when StrictMode double-mounted: the timeout
+  // would fire (`done=true`), `resolve()` runs, and the `.then((unlisten))`
+  // would call `unlisten` — BUT only if `done` was already true at that
+  // moment. If the listen subscription resolved after the timeout AND the
+  // event fired in between, the listener callback would run after we'd
+  // already moved on, leaking its closure over the resolve fn. We now
+  // unconditionally track the `unlisten` and always call it in the cleanup,
+  // and guard the listener callback against double-finish.
+  let unlistenFn: (() => void) | null = null;
   await new Promise<void>((resolve) => {
     let done = false;
     const finish = () => {
-      if (!done) {
-        done = true;
-        resolve();
+      if (done) return;
+      done = true;
+      // Always try to detach — covers both "timer fired first" and "event
+      // fired first" paths so we never leak the subscription closure.
+      if (unlistenFn) {
+        try { unlistenFn(); } catch { /* ignore detach errors */ }
+        unlistenFn = null;
       }
+      resolve();
     };
     const timer = setTimeout(finish, timeoutMs);
     listenFn!("shell:ready", () => {
       clearTimeout(timer);
       finish();
-    }).then((unlisten) => {
-      // If the event already fired before we subscribed, the timeout
-      // closes the gap; otherwise this resolves on the next tick.
-      if (done) unlisten();
-    });
+    })
+      .then((unlisten) => {
+        unlistenFn = unlisten;
+        // If the event already fired before listen resolved, detach now.
+        if (done) {
+          try { unlisten(); } catch { /* ignore */ }
+          unlistenFn = null;
+        }
+      })
+      .catch(() => {
+        // listen() failed entirely — fall through to the timeout path.
+      });
   });
 }
 

@@ -333,8 +333,16 @@ export function SCANPane({ code }: FunctionPaneProps) {
       ),
     [sortedRows],
   );
+  // UA-HIGH-12 / UA-HIGH-18: stack-safe; sortedRows can be 3000+ on full-universe scan.
   const maxScore = useMemo(
-    () => Math.max(...sortedRows.map((r) => Math.abs(r.score ?? 0)), 0),
+    () => {
+      let m = 0;
+      for (const r of sortedRows) {
+        const v = Math.abs(r.score ?? 0);
+        if (v > m) m = v;
+      }
+      return m;
+    },
     [sortedRows],
   );
   const universeSize = useMemo(() => {
@@ -387,6 +395,10 @@ export function SCANPane({ code }: FunctionPaneProps) {
   }, []);
 
   const run = async () => {
+    // Round 24 MEDIUM — early-exit on rapid re-trigger. ⌘Enter from
+    // composer + Run button click within one tick used to fire two
+    // scans simultaneously.
+    if (running) return;
     setRunning(true);
     setError(null);
     setResult(null);

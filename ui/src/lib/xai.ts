@@ -111,18 +111,25 @@ export async function fetchXHealth(): Promise<XHealth> {
   return sidecarFetch<XHealth>("/api/x/health");
 }
 
-export async function analyzeXTopic(body: {
-  query?: string;
-  symbol?: string;
-  limit?: number;
-  since?: string;
-  until?: string;
-  lang?: string;
-}): Promise<XAnalysisResponse> {
+export async function analyzeXTopic(
+  body: {
+    query?: string;
+    symbol?: string;
+    limit?: number;
+    since?: string;
+    until?: string;
+    lang?: string;
+  },
+  signal?: AbortSignal,
+): Promise<XAnalysisResponse> {
+  // UA-HIGH-09: thread AbortSignal through so XSEN's symbol/query switch
+  // actually cancels the in-flight RoBERTa analyze call. The previous code
+  // only flipped a `cancelled` flag and let the request burn server CPU.
   return sidecarFetch<XAnalysisResponse>("/api/x/analyze", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+    signal,
   });
 }
 
