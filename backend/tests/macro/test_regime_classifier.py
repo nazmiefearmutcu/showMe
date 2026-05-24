@@ -24,19 +24,24 @@ from showme.engine.services import regime_classifier as rgm  # noqa: E402
 
 
 def test_classify_short_series_returns_null_regime() -> None:
-    """1 close → no returns → vol UNKNOWN, dd UNKNOWN (len<2), curve UNKNOWN."""
+    """1 close → trend UNKNOWN (<200 bars), vol UNKNOWN, dd UNKNOWN, curve UNKNOWN.
+
+    Audit Q3 #5: with <200 bars we now report `insufficient_history` since
+    trend is unresolvable; older code mislabeled this `insufficient_inputs`.
+    """
     out = rgm.classify(np.asarray([100.0]))
+    assert out["trend"] == "UNKNOWN"
     assert out["vol"] == "UNKNOWN"
     assert out["drawdown"] == "UNKNOWN"
     assert out["curve"] == "UNKNOWN"
     assert out["regime"] is None
-    assert out["data_state"] == "insufficient_inputs"
-    # 1/4 inputs (trend) resolved → confidence 0.25.
-    assert out["confidence"] == pytest.approx(0.25)
+    assert out["data_state"] == "insufficient_history"
+    # 0/4 inputs resolved → confidence 0.0.
+    assert out["confidence"] == pytest.approx(0.0)
 
 
 def test_classify_full_series_returns_real_regime() -> None:
-    """A 300d series with no FRED spread → vol/dd known, curve UNKNOWN."""
+    """A 300d series with no FRED spread → trend/vol/dd known, curve UNKNOWN."""
     rng = np.random.default_rng(7)
     rets = rng.normal(0.0005, 0.01, size=300)
     close = 100 * np.exp(np.cumsum(rets))
@@ -54,6 +59,11 @@ def test_classify_with_curve_input_hits_full_confidence() -> None:
     out = rgm.classify(close, spread_2s10s_bp=42.0)
     assert out["curve"] == "FLAT"
     assert out["confidence"] == pytest.approx(1.0)
+
+
+def test_composite_returns_none_when_trend_unknown() -> None:
+    """Audit Q3 #5: trend UNKNOWN (insufficient MA200 history) → no regime."""
+    assert rgm.composite("UNKNOWN", "NORMAL", "NORMAL", "NORMAL") is None
 
 
 def test_composite_returns_none_when_all_secondary_unknown() -> None:

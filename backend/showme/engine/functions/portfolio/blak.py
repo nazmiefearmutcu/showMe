@@ -109,7 +109,10 @@ class BLAKFunction(BaseFunction):
                 return sym, pd.Series(dtype=float), float(mcap_lookup.get(sym) or 0.0)
         if live and self.deps.yfinance:
             results = await asyncio.gather(*(_ret(s) for s in symbols))
-            df = align_return_series((s, r) for s, r, _ in results)
+            # Audit Q3 #7: pairwise covariance for mixed universes.
+            df = align_return_series(
+                ((s, r) for s, r, _ in results), policy="pairwise"
+            )
         else:
             results = [(s, pd.Series(dtype=float), 1.0) for s in symbols]
             df = pd.DataFrame()
@@ -133,22 +136,49 @@ class BLAKFunction(BaseFunction):
             mcap_data_state = "approximate"
         w_mkt = mcaps / mcaps.sum()
         pi = implied_returns(cov, w_mkt, delta=delta)
-        # Build P / Q from views: list of {"long":[...], "short":[...], "expected":0.05}
+        # Build P / Q from views.
+        # Audit Q3 #23 — `view_type` explicit:
+        #   * "spread"   (default): legacy behaviour, row sums to 0
+        #                (relative view, "long X over short Y").
+        #   * "absolute": each long/short asset gets ITS OWN row; row sum
+        #                is +1 (long) or -1 (short). Use for "I expect X
+        #                to return 5%" (not "X minus Y").
+        # Each view dict accepts a `view_type` override; without it we use
+        # the global `params.get("view_type")` or fall back to "spread"
+        # for backward compatibility.
+        global_view_type = (params.get("view_type") or "spread").lower()
         P_rows: list[list[float]] = []
         Q: list[float] = []
         for v in views:
-            row = [0.0] * len(cols)
-            longs = v.get("long", [])
-            shorts = v.get("short", [])
-            for s in longs:
-                if s in cols:
-                    row[cols.index(s)] = 1.0 / max(len(longs), 1)
-            for s in shorts:
-                if s in cols:
-                    row[cols.index(s)] = -1.0 / max(len(shorts), 1)
-            if any(x != 0 for x in row):
-                P_rows.append(row)
-                Q.append(float(v.get("expected", 0.05)))
+            vt = (v.get("view_type") or global_view_type).lower()
+            longs = v.get("long", []) or []
+            shorts = v.get("short", []) or []
+            expected = float(v.get("expected", 0.05))
+            if vt == "absolute":
+                # One row per asset.
+                for s in longs:
+                    if s in cols:
+                        row = [0.0] * len(cols)
+                        row[cols.index(s)] = 1.0
+                        P_rows.append(row)
+                        Q.append(expected)
+                for s in shorts:
+                    if s in cols:
+                        row = [0.0] * len(cols)
+                        row[cols.index(s)] = -1.0
+                        P_rows.append(row)
+                        Q.append(expected)
+            else:
+                row = [0.0] * len(cols)
+                for s in longs:
+                    if s in cols:
+                        row[cols.index(s)] = 1.0 / max(len(longs), 1)
+                for s in shorts:
+                    if s in cols:
+                        row[cols.index(s)] = -1.0 / max(len(shorts), 1)
+                if any(x != 0 for x in row):
+                    P_rows.append(row)
+                    Q.append(expected)
         P = np.asarray(P_rows) if P_rows else None
         Qv = np.asarray(Q) if Q else None
         pi_bl, sigma_bl = posterior(cov, w_mkt, P, Qv, delta=delta, tau=tau)

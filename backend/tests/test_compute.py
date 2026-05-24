@@ -30,7 +30,12 @@ def test_compute_dispatches_each_indicator(df):
         "ichimoku", "parabolic_sar", "kdj",
     ]]
     out = compute(df, refs)
-    assert set(out.keys()) == {r.alias for r in refs}
+    # Q1 fix: primary aliases must all be present, but multi-output
+    # indicators (stochastic %D, ichimoku Tenkan/SpanA/SpanB/Chikou,
+    # KDJ D/J) now register extra ``{alias}_{component}`` keys.
+    # Backward compat: every requested alias must exist; extras OK.
+    primary_aliases = {r.alias for r in refs}
+    assert primary_aliases.issubset(out.keys())
     for alias, series in out.items():
         assert isinstance(series, pd.Series)
         assert len(series) == len(df)

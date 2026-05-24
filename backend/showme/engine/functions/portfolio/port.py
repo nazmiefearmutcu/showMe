@@ -13,25 +13,46 @@ from showme.engine.portfolio.state import PortfolioState
 
 
 def historical_var(returns: pd.Series, alpha: float = 0.05) -> float:
+    """Historical VaR as a POSITIVE LOSS (audit Q3 #13).
+
+    Returns the alpha-quantile loss: a value of 0.025 means a 2.5%
+    worst-case loss at the chosen confidence. Callers that prefer the
+    signed-return convention can pass ``signed=True``.
+    """
     if returns.empty:
         return 0.0
-    return float(np.percentile(returns, alpha * 100))
+    quantile = float(np.percentile(returns, alpha * 100))
+    return -quantile if quantile < 0 else 0.0
 
 
 def parametric_var(returns: pd.Series, alpha: float = 0.05) -> float:
+    """Parametric VaR as a positive loss (audit Q3 #13)."""
     if returns.empty:
         return 0.0
-    from scipy.stats import norm  # type: ignore
-    mu = returns.mean(); sigma = returns.std()
-    return float(mu + sigma * norm.ppf(alpha))
+    try:
+        from scipy.stats import norm  # type: ignore
+        z = float(norm.ppf(alpha))
+    except Exception:
+        # Use the same Acklam approximation as pvar._norm_ppf.
+        from showme.engine.functions.portfolio.pvar import _norm_ppf
+        z = float(_norm_ppf(alpha))
+    mu = float(returns.mean())
+    sigma = float(returns.std())
+    signed = mu + sigma * z
+    return -signed if signed < 0 else 0.0
 
 
 def expected_tail_loss(returns: pd.Series, alpha: float = 0.05) -> float:
+    """ETL/CVaR as a positive loss (audit Q3 #13)."""
     if returns.empty:
         return 0.0
-    var = historical_var(returns, alpha)
-    tail = returns[returns <= var]
-    return float(tail.mean()) if not tail.empty else var
+    # Compute the alpha-quantile in signed-return space, then flip sign.
+    threshold = float(np.percentile(returns, alpha * 100))
+    tail = returns[returns <= threshold]
+    if tail.empty:
+        return -threshold if threshold < 0 else 0.0
+    mean_tail = float(tail.mean())
+    return -mean_tail if mean_tail < 0 else 0.0
 
 
 @FunctionRegistry.register

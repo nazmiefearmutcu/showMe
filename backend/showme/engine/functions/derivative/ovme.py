@@ -9,6 +9,12 @@ from showme.engine.core.base_function import BaseFunction, FunctionRegistry, Fun
 from showme.engine.core.instrument import AssetClass, Instrument
 
 
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _bs_price(S: float, K: float, T: float, r: float, sigma: float, q: float, is_call: bool) -> dict[str, float]:
     """Black-Scholes-Merton with continuous dividend yield q.
 
@@ -26,8 +32,24 @@ def _bs_price(S: float, K: float, T: float, r: float, sigma: float, q: float, is
             "error": f"invalid_inputs: S and K must be > 0 (got S={S}, K={K})",
         }
     if T <= 0 or sigma <= 0:
+        # D03-2026-05-24: explicit intrinsic delta cases. Old code returned
+        # 0 for ITM puts (S<K) because the conditional only matched calls.
         intrinsic = max((S - K), 0.0) if is_call else max((K - S), 0.0)
-        return {"price": intrinsic, "delta": 1.0 if is_call and S > K else 0.0,
+        if is_call:
+            if S > K:
+                delta = 1.0
+            elif S < K:
+                delta = 0.0
+            else:
+                delta = 0.5
+        else:
+            if S < K:
+                delta = -1.0
+            elif S > K:
+                delta = 0.0
+            else:
+                delta = -0.5
+        return {"price": intrinsic, "delta": delta,
                 "gamma": 0.0, "theta": 0.0, "vega": 0.0, "rho": 0.0}
     d1 = (math.log(S / K) + (r - q + 0.5 * sigma * sigma) * T) / (sigma * math.sqrt(T))
     d2 = d1 - sigma * math.sqrt(T)
@@ -48,11 +70,24 @@ def _bs_price(S: float, K: float, T: float, r: float, sigma: float, q: float, is
         rho = -K * T * math.exp(-r * T) * n_cdf(-d2) / 100
     gamma = math.exp(-q * T) * n_pdf(d1) / (S * sigma * math.sqrt(T))
     vega = S * math.exp(-q * T) * n_pdf(d1) * math.sqrt(T) / 100
-    theta = (
-        -S * sigma * math.exp(-q * T) * n_pdf(d1) / (2 * math.sqrt(T))
-        - r * K * math.exp(-r * T) * (n_cdf(d2) if is_call else n_cdf(-d2)) * (1 if is_call else -1)
-        + q * S * math.exp(-q * T) * (n_cdf(d1) if is_call else n_cdf(-d1)) * (1 if is_call else -1)
-    ) / 365
+    # D03-2026-05-24: theta call vs put now split into explicit branches.
+    # Previous (1 if is_call else -1) multiplier on the q-term gave the
+    # correct answer for the q=0 case by accident but the formula structure
+    # was fragile. Hull eq 17.4: call theta has +q*S*e^(-qT)*N(d1); put
+    # has -q*S*e^(-qT)*N(-d1).
+    common = -S * sigma * math.exp(-q * T) * n_pdf(d1) / (2 * math.sqrt(T))
+    if is_call:
+        theta = (
+            common
+            - r * K * math.exp(-r * T) * n_cdf(d2)
+            + q * S * math.exp(-q * T) * n_cdf(d1)
+        ) / 365
+    else:
+        theta = (
+            common
+            + r * K * math.exp(-r * T) * n_cdf(-d2)
+            - q * S * math.exp(-q * T) * n_cdf(-d1)
+        ) / 365
     return {"price": price, "delta": delta, "gamma": gamma,
             "theta": theta, "vega": vega, "rho": rho,
             "d1": d1, "d2": d2}
@@ -70,8 +105,32 @@ class OVMEFunction(BaseFunction):
         K = float(params.get("strike", 100))
         T = float(params.get("years_to_expiry", 0.25))
         sigma = float(params.get("vol", 0.25))
+        # D03-2026-05-24 (H11): r used to be hardcoded 0.045; optional FRED
+        # hook lets callers pass `live_rate=true` to pull DGS1 instead.
         r = float(params.get("rate", 0.045))
         q = float(params.get("div_yield", 0.0))
+        sources_list = ["black_scholes_formula"]
+        if _truthy(params.get("live_rate")) and getattr(self.deps, "fred", None) is not None:
+            try:
+                df = await self.deps.fred.series("DGS1", frequency="d")
+                live_r = float(df["value"].iloc[-1]) / 100 if not df.empty else None
+                if live_r is not None and math.isfinite(live_r):
+                    r = live_r
+                    if "fred" not in sources_list:
+                        sources_list.append("fred")
+            except Exception:
+                pass
+        # D03-2026-05-24 (C4): Garman-Kohlhagen FX option mapping. For FX,
+        # q = foreign currency rate, r = domestic; the BS formula then
+        # accepts the same shape.
+        option_kind = (params.get("option_type") or params.get("opt_type") or "equity").lower()
+        if option_kind in {"fx", "currency"}:
+            r_dom = params.get("r_domestic")
+            r_for = params.get("r_foreign")
+            if r_dom is not None:
+                r = float(r_dom)
+            if r_for is not None:
+                q = float(r_for)
         opt_type = (params.get("type") or "CALL").upper()
         is_call = opt_type == "CALL"
         model = (params.get("model") or "bs").lower()

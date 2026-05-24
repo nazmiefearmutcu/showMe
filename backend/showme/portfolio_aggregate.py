@@ -35,6 +35,24 @@ _CACHE: dict[tuple[str, str], tuple[float, Any]] = {}
 _STABLE_TO_USD = {"USDT": 1.0, "USDC": 1.0, "DAI": 1.0, "BUSD": 1.0, "TUSD": 1.0,
                   "USD": 1.0}
 
+# Audit Q3 — stablecoin depeg detector. Each non-USD stable is checked
+# against its live spot via the active FX/CoinGecko adapter; if the spot
+# deviates from 1.0 by more than `STABLE_DEPEG_THRESHOLD`, the symbol is
+# added to `totals.stable_depeg_alert`.
+STABLE_DEPEG_THRESHOLD = 0.02
+_STABLE_DEPEG_CHECK_SYMBOLS = ("USDT", "USDC", "DAI", "BUSD", "TUSD")
+
+# yfinance tickers for depeg lookups (CoinGecko paths used implicitly via
+# the same fetcher hook). These are independent of `_YFINANCE_USD_TICKERS`
+# because we want the CRYPTO market price, not the fiat conversion.
+_STABLE_SPOT_TICKERS: dict[str, str] = {
+    "USDT": "USDT-USD",
+    "USDC": "USDC-USD",
+    "DAI": "DAI-USD",
+    "BUSD": "BUSD-USD",
+    "TUSD": "TUSD-USD",
+}
+
 _FX_RATE_LOCK = threading.Lock()
 _FX_RATE_CACHE: dict[str, tuple[float, float]] = {}
 
@@ -206,6 +224,76 @@ async def _resolve_usd_rate(currency: str) -> float | None:
     return None
 
 
+async def _stablecoin_spot(symbol: str) -> float | None:
+    """Return USD spot for a stablecoin via yfinance (or override hook).
+
+    The detector treats anything within `STABLE_DEPEG_THRESHOLD` of 1.0 as
+    pegged; otherwise it surfaces an alert. Falls back to None on any
+    failure so a flaky provider doesn't fabricate a depeg.
+    """
+    if _FX_RATE_FETCHER is not None:
+        try:
+            value = await _FX_RATE_FETCHER(symbol.upper())
+            if value is None or value <= 0:
+                return None
+            return float(value)
+        except Exception as exc:  # noqa: BLE001
+            LOG.warning("depeg override fetcher failed for %s: %s", symbol, exc)
+            return None
+    ticker = _STABLE_SPOT_TICKERS.get(symbol.upper())
+    if not ticker:
+        return None
+    try:
+        import yfinance as yf  # type: ignore
+    except Exception:
+        return None
+
+    def _blocking_fetch() -> float | None:
+        try:
+            data = yf.Ticker(ticker).history(period="1d", interval="1d")
+            if data is None or data.empty:
+                return None
+            last = float(data["Close"].iloc[-1])
+            return last if last > 0 else None
+        except Exception:
+            return None
+
+    try:
+        last = await asyncio.wait_for(asyncio.to_thread(_blocking_fetch), timeout=4.0)
+    except (asyncio.TimeoutError, Exception):
+        return None
+    return last
+
+
+async def detect_stablecoin_depegs(
+    symbols: list[str],
+    *,
+    threshold: float = STABLE_DEPEG_THRESHOLD,
+) -> list[dict[str, Any]]:
+    """Probe each stable in `symbols` and flag any with |spot − 1| > threshold.
+
+    Returns a list of `{symbol, spot, deviation_pct}` records (empty on
+    healthy peg / no resolvable spot).
+    """
+    if not symbols:
+        return []
+    unique = sorted({s.upper() for s in symbols if s})
+    coros = [_stablecoin_spot(s) for s in unique]
+    results = await asyncio.gather(*coros, return_exceptions=True)
+    alerts: list[dict[str, Any]] = []
+    for sym, res in zip(unique, results):
+        if isinstance(res, Exception) or res is None:
+            continue
+        deviation = abs(float(res) - 1.0)
+        if deviation > threshold:
+            alerts.append({
+                "symbol": sym,
+                "spot": round(float(res), 6),
+                "deviation_pct": round(deviation * 100, 4),
+            })
+    return alerts
+
+
 async def _compute_totals(groups: list[dict[str, Any]]) -> dict[str, Any]:
     """Aggregate per-currency equity plus a single USD-equivalent rollup."""
     eq_by_ccy: dict[str, float] = {}
@@ -233,12 +321,22 @@ async def _compute_totals(groups: list[dict[str, Any]]) -> dict[str, Any]:
                 continue
             fx_rates[ccy] = float(rate)
             usd_total += eq_by_ccy[ccy] * float(rate)
+    # Audit Q3 — stablecoin depeg detector. Run for every stable currency
+    # that actually carries a non-zero balance in the aggregate.
+    stable_candidates = [
+        ccy for ccy in eq_by_ccy
+        if ccy.upper() in _STABLE_DEPEG_CHECK_SYMBOLS
+        and abs(eq_by_ccy.get(ccy, 0.0)) > 0
+    ]
+    stable_alerts = await detect_stablecoin_depegs(stable_candidates)
     return {
         "equity_by_currency": eq_by_ccy,
         "stable_usd_equivalent": round(usd_total, 2),
         "usd_equivalent": round(usd_total, 2),
         "unconverted_currencies": sorted(set(unconverted)),
         "fx_rates": {k: round(v, 8) for k, v in sorted(fx_rates.items())},
+        "stable_depeg_alert": [a["symbol"] for a in stable_alerts],
+        "stable_depeg_detail": stable_alerts,
     }
 
 

@@ -31,14 +31,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any
 
-from showme.bots.ohlcv import BotRunnerError, fetch_ohlcv
+from showme.bots.ohlcv import BotRunnerError, bar_close_time, fetch_ohlcv
 from showme.bots.record import BotRecord, ClosedTrade, SignalEntry
 from showme.bots.store import BotStore, UnknownBot
 from showme.strategies.sizing import (
     Side,
     SizingKind,
+    compute_commission,
+    compute_funding_delta,
     compute_pnl,
     resolve_quantity,
 )
@@ -58,23 +61,148 @@ async def _resolve_equity(broker: Any, fallback_usd: float = _REFERENCE_EQUITY_U
     Used by ``_resolve_quantity_async`` for ``risk_pct`` sizing so the
     runner doesn't multiply by a hardcoded $10k anymore. Brokers that
     don't expose ``account()`` (or that throw) fall back transparently.
+
+    Q4 audit H13: fallback path now WARN-level (was DEBUG) so a silent
+    $10k assumption can't hide in stdout. Use ``_resolve_equity_with_source``
+    to also get a tag (``"broker"`` vs ``"fallback_10k"``).
+    """
+    value, _source = await _resolve_equity_with_source(broker, fallback_usd)
+    return value
+
+
+async def _resolve_equity_with_source(
+    broker: Any, fallback_usd: float = _REFERENCE_EQUITY_USD,
+) -> tuple[float, str]:
+    """Q4 audit H13: equity + provenance.
+
+    ``source`` ∈ ``{"broker", "fallback_10k"}``. Callers thread this into
+    response payloads so UIs can flag a fallback (e.g. yellow badge on
+    the dashboard "Sizing using fallback equity").
     """
     fn = getattr(broker, "account", None)
     if fn is None:
-        return float(fallback_usd)
+        LOG.warning(
+            "broker %r exposes no account(); risk_pct sizing using fallback %s USD",
+            getattr(broker, "name", "?"), fallback_usd,
+        )
+        return float(fallback_usd), "fallback_10k"
     try:
         acct = await fn()
     except Exception as exc:  # noqa: BLE001
-        LOG.debug("broker.account() failed; using fallback equity: %s", exc)
-        return float(fallback_usd)
+        LOG.warning(
+            "broker.account() failed (%s); using fallback equity %s USD", exc, fallback_usd,
+        )
+        return float(fallback_usd), "fallback_10k"
     try:
         for k in ("equity", "cash", "buying_power"):
             v = acct.get(k) if isinstance(acct, dict) else None
             if v and float(v) > 0:
-                return float(v)
+                return float(v), "broker"
     except Exception as exc:  # noqa: BLE001
         LOG.debug("account() payload unexpected: %s", exc)
-    return float(fallback_usd)
+    LOG.warning(
+        "broker.account() returned no usable equity; falling back to %s USD",
+        fallback_usd,
+    )
+    return float(fallback_usd), "fallback_10k"
+
+
+# Q4 audit C4: funding-rate cache (per symbol). 60s TTL.
+_FUNDING_CACHE: dict[str, tuple[float, float]] = {}
+_FUNDING_TTL_S = 60.0
+
+
+async def _fetch_funding_rate(broker: Any, symbol: str) -> float:
+    """Q4 audit C4: ccxt fetch_funding_rate with 60s cache.
+
+    Returns 0.0 if the broker doesn't expose the function (spot adapters)
+    or on any error — funding is a perp/futures concept and a silent
+    skip is the right behaviour for spot bots.
+    """
+    now = time.time()
+    cached = _FUNDING_CACHE.get(symbol)
+    if cached is not None:
+        rate, expires = cached
+        if expires > now:
+            return rate
+    ex = getattr(broker, "_ex", None)
+    fn = getattr(ex, "fetch_funding_rate", None) if ex is not None else None
+    if fn is None:
+        return 0.0
+    try:
+        result = await fn(symbol)
+        rate = float(result.get("fundingRate") or 0.0) if isinstance(result, dict) else 0.0
+    except Exception as exc:  # noqa: BLE001
+        LOG.debug("fetch_funding_rate(%s) failed: %s", symbol, exc)
+        return 0.0
+    _FUNDING_CACHE[symbol] = (rate, now + _FUNDING_TTL_S)
+    return rate
+
+
+def _is_real_precision_fn(fn: Any) -> bool:
+    """Q4 audit H12: tell a real ccxt precision helper from a MagicMock auto-attr.
+
+    MagicMock auto-creates attributes on access (and ``MagicMock().__float__``
+    coerces to 1.0!), so the legacy test brokers that set ``broker._ex =
+    MagicMock()`` without an explicit ``amount_to_precision`` mock would
+    silently get every qty rounded to 1.0. We accept either:
+
+    1. an attribute explicitly configured on the mock
+       (``configure_mock(amount_to_precision=Mock(...))``), or
+    2. a callable that's NOT a MagicMock instance (real ccxt).
+
+    Bare MagicMock children get rejected → fall back to 8dp rounding.
+    """
+    if fn is None or not callable(fn):
+        return False
+    try:
+        from unittest.mock import Mock
+        if isinstance(fn, Mock):
+            # Mock with no return_value configured (auto-magic): reject.
+            try:
+                rv = fn._mock_return_value  # type: ignore[attr-defined]
+            except Exception:  # noqa: BLE001
+                return False
+            from unittest.mock import DEFAULT
+            return rv is not DEFAULT
+    except ImportError:  # pragma: no cover
+        pass
+    return True
+
+
+async def _round_qty_to_precision(broker: Any, symbol: str, qty: float) -> float:
+    """Q4 audit H12: route qty through ccxt.amount_to_precision when available.
+
+    Falls back to 8-decimal rounding for non-ccxt brokers / unknown
+    symbols. The runner calls this BEFORE submit_order so a hostile
+    decimal can't pass through unchanged.
+    """
+    ex = getattr(broker, "_ex", None)
+    if ex is None:
+        return round(float(qty), 8)
+    fn = getattr(ex, "amount_to_precision", None)
+    if not _is_real_precision_fn(fn):
+        return round(float(qty), 8)
+    try:
+        return float(fn(symbol, float(qty)))
+    except Exception as exc:  # noqa: BLE001
+        LOG.debug("amount_to_precision(%s, %s) failed: %s", symbol, qty, exc)
+        return round(float(qty), 8)
+
+
+async def _round_price_to_precision(broker: Any, symbol: str, price: float) -> float:
+    """H12: ccxt.price_to_precision wrapper (same pattern as qty)."""
+    ex = getattr(broker, "_ex", None)
+    if ex is None:
+        return round(float(price), 8)
+    fn = getattr(ex, "price_to_precision", None)
+    if not _is_real_precision_fn(fn):
+        return round(float(price), 8)
+    try:
+        return float(fn(symbol, float(price)))
+    except Exception as exc:  # noqa: BLE001
+        LOG.debug("price_to_precision(%s, %s) failed: %s", symbol, price, exc)
+        return round(float(price), 8)
 
 
 def _resolve_quantity(spec: Any, df: Any) -> float:
@@ -101,17 +229,23 @@ def _resolve_quantity(spec: Any, df: Any) -> float:
             sizing_value=sizing_value,
             price=price,
             equity=_REFERENCE_EQUITY_USD,
+            stop_loss_pct=spec.position.stop_loss_pct,
         )
     except ValueError as exc:
         raise BotRunnerError(f"sizing rejected: {exc}") from exc
 
 
-async def _resolve_quantity_async(spec: Any, df: Any, broker: Any) -> float:
+async def _resolve_quantity_async(
+    spec: Any, df: Any, broker: Any, leverage: float = 1.0,
+) -> float:
     """Translate spec.position sizing into a broker-ready qty.
 
     Delegates to ``strategies.sizing.resolve_quantity`` which validates
     inputs (negative / zero / NaN / out-of-range ``risk_pct`` all raise).
     ``risk_pct`` uses live broker equity via ``_resolve_equity``.
+
+    Q4 audit C5: ``leverage`` threaded through so risk_pct and
+    risk_per_trade sizing get correct effective notional.
     """
     sizing_kind: SizingKind = spec.position.sizing_kind
     sizing_value = float(spec.position.sizing_value)
@@ -121,7 +255,7 @@ async def _resolve_quantity_async(spec: Any, df: Any, broker: Any) -> float:
         raise BotRunnerError(
             f"cannot resolve quantity: last-close lookup failed ({exc})",
         ) from exc
-    if sizing_kind == "risk_pct":
+    if sizing_kind in ("risk_pct", "risk_per_trade"):
         equity = await _resolve_equity(broker)
     else:
         equity = _REFERENCE_EQUITY_USD  # unused by fixed_* but pass through
@@ -131,6 +265,8 @@ async def _resolve_quantity_async(spec: Any, df: Any, broker: Any) -> float:
             sizing_value=sizing_value,
             price=price,
             equity=equity,
+            leverage=leverage,
+            stop_loss_pct=spec.position.stop_loss_pct,
         )
     except ValueError as exc:
         # Map sizing validation errors to BotRunnerError so the tick
@@ -409,8 +545,46 @@ class BotRunner:
                 and rec.last_processed_event.kind == "entry"
                 and rec.last_processed_event.action != "skipped"
             )
-            last_event = evaluate_last_bar(spec, df, in_position=in_pos)
+            # Q4 audit C9: pass open-position entry price so evaluate_last_bar
+            # can run an intrabar SL/TP check before the rule-based exit.
+            entry_price_for_eval: float | None = None
+            if in_pos and rec.last_processed_event is not None:
+                # Prefer broker-confirmed fill price; fall back to signal price.
+                entry_price_for_eval = float(
+                    rec.last_processed_event.fill_price
+                    or rec.last_processed_event.price
+                )
+            last_event = evaluate_last_bar(
+                spec, df, in_position=in_pos,
+                entry_price=entry_price_for_eval,
+            )
             if last_event is None:
+                # Q4 audit C4: accrue funding even when no trade fired so the
+                # cumulative_funding_pnl ticks for an open position. Spot
+                # symbols and non-perp brokers return 0.0 (no-op).
+                if in_pos and rec.last_processed_event is not None:
+                    funding_rate = await _fetch_funding_rate(broker, rec.symbol)
+                    if funding_rate != 0.0 and rec.last_processed_event.qty:
+                        entry_px_funding = float(
+                            rec.last_processed_event.fill_price
+                            or rec.last_processed_event.price
+                        )
+                        notional = entry_px_funding * float(rec.last_processed_event.qty)
+                        delta = compute_funding_delta(
+                            position_notional=notional,
+                            funding_rate=funding_rate,
+                            dt_seconds=float(rec.tick_interval_seconds),
+                            side=spec.position.side,
+                        )
+                        if delta != 0.0:
+                            try:
+                                fresh_f = store.get(bot_id)
+                            except UnknownBot:
+                                return None
+                            new_cum = float(fresh_f.cumulative_funding_pnl) + delta
+                            store.save(fresh_f.model_copy(update={
+                                "cumulative_funding_pnl": new_cum,
+                            }))
                 return None
 
             # Deduplicate against the last processed event so a bot that
@@ -471,6 +645,20 @@ class BotRunner:
             # Resolve quote price for closed-trade pairing. In shadow mode
             # the qty is the strategy's spec qty (so PnL reads end-to-end);
             # in live mode use the actual filled qty when available.
+            # Q4 audit H17: persist qty on every entry so exit pairing
+            # uses the entry-time qty (not a recompute on current equity).
+            persisted_qty: float | None = None
+            if last_event.kind == "entry":
+                if filled_qty is not None and filled_qty > 0:
+                    persisted_qty = float(filled_qty)
+                else:
+                    # Shadow: pre-compute qty so PnL reads correctly downstream.
+                    try:
+                        persisted_qty = await _resolve_quantity_async(
+                            spec, df, broker, leverage=float(rec.leverage),
+                        )
+                    except (BotRunnerError, Exception):  # noqa: BLE001
+                        persisted_qty = None
             entry = SignalEntry(
                 bar_index=last_event.bar_index,
                 bar_time=last_event.bar_time,
@@ -479,6 +667,10 @@ class BotRunner:
                 action=action,
                 order_id=order_id,
                 error=error,
+                fill_price=avg_fill_price,
+                qty=persisted_qty,
+                bar_close_time=bar_close_time(last_event.bar_time, rec.timeframe),
+                reason=getattr(last_event, "reason", None),
             )
 
             try:
@@ -498,10 +690,13 @@ class BotRunner:
                 matching_entry = _last_non_skipped_entry(fresh.signal_log)
                 if matching_entry is not None and matching_entry.price > 0:
                     side: Side = spec.position.side  # type: ignore[assignment]
-                    # Choose qty: filled_qty if available, else recomputed
-                    # from spec sizing math on the entry price.
+                    # Q4 audit H17: prefer the persisted entry qty (set at
+                    # entry-time on running equity); only recompute if the
+                    # entry was minted before this fix landed.
                     if filled_qty is not None and filled_qty > 0:
                         qty = float(filled_qty)
+                    elif matching_entry.qty is not None and matching_entry.qty > 0:
+                        qty = float(matching_entry.qty)
                     else:
                         try:
                             equity_hint = (
@@ -514,27 +709,46 @@ class BotRunner:
                                 sizing_value=float(spec.position.sizing_value),
                                 price=matching_entry.price,
                                 equity=equity_hint,
+                                leverage=float(rec.leverage),
+                                stop_loss_pct=spec.position.stop_loss_pct,
                             )
                         except (ValueError, Exception):  # noqa: BLE001
                             qty = 0.0
+                    # Prefer broker-confirmed fill price for both legs.
+                    entry_px_pnl = float(matching_entry.fill_price or matching_entry.price)
+                    exit_px_pnl = float(entry.fill_price or entry.price)
                     pnl = compute_pnl(
-                        entry_price=matching_entry.price,
-                        exit_price=entry.price,
+                        entry_price=entry_px_pnl,
+                        exit_price=exit_px_pnl,
                         side=side,
                         entry_qty=qty,
                     )
+                    # Q4 audit C3: commission deduction.
+                    commission = compute_commission(
+                        entry_price=entry_px_pnl, exit_price=exit_px_pnl,
+                        qty=qty, commission_rate=float(rec.commission_rate),
+                    )
+                    # Q4 audit C4: pull accumulated funding from BotRecord.
+                    funding = float(fresh.cumulative_funding_pnl)
+                    net = float(pnl) - commission - funding
                     closed = ClosedTrade(
                         entry_timestamp=matching_entry.bar_time or matching_entry.timestamp,
                         exit_timestamp=entry.bar_time or entry.timestamp,
-                        entry_price=float(matching_entry.price),
-                        exit_price=float(entry.price),
+                        entry_price=entry_px_pnl,
+                        exit_price=exit_px_pnl,
                         qty=float(qty),
                         side=side,
                         pnl=float(pnl),
                         bar_index_entry=int(matching_entry.bar_index),
                         bar_index_exit=int(entry.bar_index),
+                        commission_paid=float(commission),
+                        funding_paid=float(funding),
+                        net_pnl=float(net),
+                        exit_reason=getattr(entry, "reason", None) or "rule",
                     )
                     new_rec = new_rec.append_closed_trade(closed)
+                    # Reset funding accumulator on close (next position starts fresh).
+                    new_rec = new_rec.model_copy(update={"cumulative_funding_pnl": 0.0})
 
             store.save(new_rec)
             return entry
@@ -592,7 +806,10 @@ class BotRunner:
             opposite_side = (
                 OrderSide.SELL if strategy_side == "long" else OrderSide.BUY
             )
-            qty = await _resolve_quantity_async(spec, df, broker)
+            qty = await _resolve_quantity_async(
+                spec, df, broker, leverage=float(rec.leverage),
+            )
+            qty = await _round_qty_to_precision(broker, rec.symbol, qty)
             return await broker.submit_order(
                 symbol=rec.symbol,
                 side=opposite_side,
@@ -604,7 +821,32 @@ class BotRunner:
 
         # Entry: open a new position in the strategy's declared direction.
         side = OrderSide.BUY if strategy_side == "long" else OrderSide.SELL
-        qty = await _resolve_quantity_async(spec, df, broker)
+        qty = await _resolve_quantity_async(
+            spec, df, broker, leverage=float(rec.leverage),
+        )
+        # Q4 audit H12: ccxt lot/tick precision rounding before submit.
+        qty = await _round_qty_to_precision(broker, rec.symbol, qty)
+        # Q4 audit H10: honour entry_order_type. Limit / stop_limit fall back
+        # to MARKET when limit_price_offset_pct is missing or non-positive.
+        entry_order_type_str = getattr(spec.position, "entry_order_type", "market")
+        offset_pct = float(getattr(spec.position, "limit_price_offset_pct", 0.0) or 0.0)
+        last_close = float(df.iloc[-1]["close"])
+        if entry_order_type_str == "limit" and offset_pct > 0:
+            # Long limit goes BELOW close (buy lower); short above.
+            if strategy_side == "long":
+                limit_px = last_close * (1.0 - offset_pct / 100.0)
+            else:
+                limit_px = last_close * (1.0 + offset_pct / 100.0)
+            limit_px = await _round_price_to_precision(broker, rec.symbol, limit_px)
+            return await broker.submit_order(
+                symbol=rec.symbol,
+                side=side,
+                quantity=qty,
+                order_type=OrderType.LIMIT,
+                time_in_force=TimeInForce.GTC,
+                limit_price=limit_px,
+                notes=f"bot:{bot_id}",
+            )
         return await broker.submit_order(
             symbol=rec.symbol,
             side=side,

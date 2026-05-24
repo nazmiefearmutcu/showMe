@@ -54,11 +54,25 @@ class SignalEntry(BaseModel):
     bar_index: int
     bar_time: str
     kind: Literal["entry", "exit"]
-    price: float
+    price: float                       # signal price (last close at evaluate time)
     action: Literal["placed", "shadow", "skipped"]
     order_id: str | None = None
     error: str | None = None
     timestamp: str = Field(default_factory=_now_iso)
+    # Q4 audit C2 fix: thread broker-confirmed fill price so pairing PnL
+    # can compute against the *actual* execution price (not the signal
+    # bar close which doesn't reflect slippage / partial fills).
+    fill_price: float | None = None
+    # Q4 audit H17 fix: persist the qty computed at entry-time. Exit
+    # pairing reads this so a strategy whose equity drifted between
+    # entry and exit doesn't silently re-size the round-trip.
+    qty: float | None = None
+    # Q4 audit H11 fix: bar's close-time (OHLCV ts is OPEN-time). Surfaces
+    # in PERF / UI so users know whether the "entry at 09:00" applies to
+    # the bar that opened at 09:00 (closed at 10:00) or vice versa.
+    bar_close_time: str | None = None
+    # Q4 audit C9 fix: SL/TP intrabar hit reason ("sl_hit" / "tp_hit").
+    reason: str | None = None
 
 
 class ClosedTrade(BaseModel):
@@ -69,6 +83,12 @@ class ClosedTrade(BaseModel):
     this list has no cap and is the canonical source of truth for PnL /
     PERF leaderboards. Pairing happens inside the runner so this list is
     immune to ``signal_log`` FIFO drops over long-running bots.
+
+    Q4 audit additions (all optional for backward compat):
+    * ``commission_paid`` — round-trip fees deducted from gross PnL.
+    * ``funding_paid`` — cumulative funding rate cost (perps only).
+    * ``net_pnl`` — gross - commission - funding (preferred reporting field).
+    * ``exit_reason`` — "exit_rule" | "sl_hit" | "tp_hit" | "manual".
     """
     entry_timestamp: str
     exit_timestamp: str
@@ -76,9 +96,13 @@ class ClosedTrade(BaseModel):
     exit_price: float
     qty: float
     side: Literal["long", "short"] = "long"
-    pnl: float
+    pnl: float                              # gross PnL (legacy field, no fees)
     bar_index_entry: int
     bar_index_exit: int
+    commission_paid: float = 0.0
+    funding_paid: float = 0.0
+    net_pnl: float | None = None
+    exit_reason: str | None = None
 
 
 class BotRecord(BaseModel):
@@ -96,6 +120,17 @@ class BotRecord(BaseModel):
     # C4 fix: separate append-only closed-trades list (no cap). Existing
     # bot files on disk that pre-date this field get an empty default.
     closed_trades_log: list[ClosedTrade] = Field(default_factory=list)
+    # Q4 audit C3 fix: per-bot commission rate override. Defaults to 8bp
+    # (Binance taker). Strategy UI can override on creation; aggregator
+    # / PERF route uses this when reporting net_pnl.
+    commission_rate: float = Field(default=0.0008, ge=0.0, le=0.05)
+    # Q4 audit C5 fix: per-bot leverage. Live runners apply this to risk_pct
+    # sizing (notional = equity * pct * leverage). Defaults to 1× spot.
+    leverage: float = Field(default=1.0, ge=1.0, le=125.0)
+    # Q4 audit C4 fix: running funding-rate accrual (perp / futures only).
+    # Updated each tick by ``runner._accrue_funding``; deducted from PnL
+    # at close-time.
+    cumulative_funding_pnl: float = 0.0
     created_at: str = Field(default_factory=_now_iso)
     updated_at: str = Field(default_factory=_now_iso)
 

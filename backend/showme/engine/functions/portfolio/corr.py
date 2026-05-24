@@ -722,10 +722,14 @@ def _market_coverage(
 
 
 def _return_series_summary(symbols: list[str], frame: pd.DataFrame, frequency: str) -> list[dict[str, Any]]:
-    factor = _annualization_factor(frequency)
     rows: list[dict[str, Any]] = []
     for symbol in symbols:
         values = pd.to_numeric(frame.get(symbol), errors="coerce").dropna() if symbol in frame else pd.Series(dtype=float)
+        # Audit Q3 #22 — annualization factor must reflect the *realized*
+        # observation count, not the nominal calendar count. A weekly
+        # series with holiday gaps has <52 obs/yr; using sqrt(52) inflates
+        # ann vol. We compute factor as sqrt(obs/yr) from the actual span.
+        factor = _realized_annualization_factor(values, frequency)
         rows.append(
             {
                 "symbol": symbol,
@@ -733,7 +737,8 @@ def _return_series_summary(symbols: list[str], frame: pd.DataFrame, frequency: s
                 "observations": int(values.shape[0]),
                 "mean_return": _round_or_none(float(values.mean())) if not values.empty else None,
                 "volatility": _round_or_none(float(values.std())) if values.shape[0] > 1 else None,
-                "annualized_volatility": _round_or_none(float(values.std() * factor)) if values.shape[0] > 1 else None,
+                "annualized_volatility": _round_or_none(float(values.std() * factor)) if values.shape[0] > 1 and factor is not None else None,
+                "annualization_factor": _round_or_none(factor) if factor is not None else None,
                 "min_return": _round_or_none(float(values.min())) if not values.empty else None,
                 "max_return": _round_or_none(float(values.max())) if not values.empty else None,
                 "first_return_date": values.index.min().date().isoformat() if not values.empty else None,
@@ -741,6 +746,28 @@ def _return_series_summary(symbols: list[str], frame: pd.DataFrame, frequency: s
             }
         )
     return rows
+
+
+def _realized_annualization_factor(values: pd.Series, frequency: str) -> float | None:
+    """Annualization factor based on the *realized* observation density.
+
+    Falls back to the nominal sqrt(252/52/12) when the series is too thin
+    or the index is not datetime-like.
+    """
+    if values is None or values.empty or values.shape[0] < 2:
+        return _annualization_factor(frequency)
+    try:
+        idx = pd.to_datetime(values.index)
+        span_days = max((idx.max() - idx.min()).days, 1)
+    except Exception:
+        return _annualization_factor(frequency)
+    span_years = span_days / 365.25
+    if span_years <= 0:
+        return _annualization_factor(frequency)
+    obs_per_year = values.shape[0] / span_years
+    if obs_per_year <= 0:
+        return _annualization_factor(frequency)
+    return math.sqrt(obs_per_year)
 
 
 def _impactor_matrix(frame: pd.DataFrame, symbols: list[str]) -> list[dict[str, Any]]:

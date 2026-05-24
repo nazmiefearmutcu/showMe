@@ -56,10 +56,21 @@ class Rule(BaseModel):
 
 class Position(BaseModel):
     side: Literal["long", "short"] = "long"
-    sizing_kind: Literal["fixed_quote", "fixed_base", "risk_pct"] = "fixed_quote"
+    # Q4 audit C5 fix: ``risk_per_trade`` enables Van Tharp R-multiple sizing
+    # (notional = equity * risk_pct / stop_loss_pct). Requires ``stop_loss_pct``
+    # to be set on this position; ``evaluate_quantity`` raises otherwise.
+    sizing_kind: Literal[
+        "fixed_quote", "fixed_base", "risk_pct", "risk_per_trade",
+    ] = "fixed_quote"
     sizing_value: float = 100.0
     stop_loss_pct: float | None = None
     take_profit_pct: float | None = None
+    # Q4 audit H10 fix: entry order type. Live runner consults this so a
+    # strategy can opt out of MARKET+IOC. Limit orders default to spec's
+    # ``limit_price_offset_pct`` away from the signal close (in the
+    # protective direction for the side).
+    entry_order_type: Literal["market", "limit", "stop_limit"] = "market"
+    limit_price_offset_pct: float = 0.0  # for limit / stop_limit entries
 
 
 class StrategySpec(BaseModel):

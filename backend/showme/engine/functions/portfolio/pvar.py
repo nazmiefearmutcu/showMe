@@ -12,10 +12,58 @@ Output: ranked positions by absolute risk contribution.
 from __future__ import annotations
 
 import asyncio
+import math
 from typing import Any
 
 import numpy as np
 import pandas as pd
+
+
+def _norm_ppf(p: float) -> float:
+    """Inverse standard-normal CDF (Acklam 2003 rational approximation).
+
+    Used so PVAR can take an arbitrary `confidence` in (0,1) without
+    needing scipy. Audit Q3 #11 — the legacy hardcoded `1.96 / 1.645 /
+    2.326` returned the wrong z for any confidence not in {0.95, 0.99}.
+    Max relative error of this approximation is ~1.15e-9 across [1e-15, 1-1e-15].
+    """
+    try:
+        from scipy.stats import norm  # type: ignore
+        return float(norm.ppf(p))
+    except Exception:
+        pass
+    if not (0.0 < p < 1.0):
+        if p <= 0.0:
+            return float("-inf")
+        return float("inf")
+    a = (-3.969683028665376e1, 2.209460984245205e2, -2.759285104469687e2,
+         1.383577518672690e2, -3.066479806614716e1, 2.506628277459239e0)
+    b = (-5.447609879822406e1, 1.615858368580409e2, -1.556989798598866e2,
+         6.680131188771972e1, -1.328068155288572e1)
+    c = (-7.784894002430293e-3, -3.223964580411365e-1, -2.400758277161838e0,
+         -2.549732539343734e0, 4.374664141464968e0, 2.938163982698783e0)
+    d = (7.784695709041462e-3, 3.224671290700398e-1, 2.445134137142996e0,
+         3.754408661907416e0)
+    plow = 0.02425
+    phigh = 1.0 - plow
+    if p < plow:
+        q = math.sqrt(-2.0 * math.log(p))
+        return (
+            (((((c[0]*q + c[1])*q + c[2])*q + c[3])*q + c[4])*q + c[5])
+            / ((((d[0]*q + d[1])*q + d[2])*q + d[3])*q + 1.0)
+        )
+    if p <= phigh:
+        q = p - 0.5
+        r = q * q
+        return (
+            (((((a[0]*r + a[1])*r + a[2])*r + a[3])*r + a[4])*r + a[5]) * q
+            / (((((b[0]*r + b[1])*r + b[2])*r + b[3])*r + b[4])*r + 1.0)
+        )
+    q = math.sqrt(-2.0 * math.log(1.0 - p))
+    return -(
+        (((((c[0]*q + c[1])*q + c[2])*q + c[3])*q + c[4])*q + c[5])
+        / ((((d[0]*q + d[1])*q + d[2])*q + d[3])*q + 1.0)
+    )
 
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from showme.engine.core.instrument import Instrument
@@ -69,7 +117,10 @@ class PVARFunction(BaseFunction):
                 except Exception:
                     return p.instrument.symbol, pd.Series(dtype=float), None
             rs = await asyncio.gather(*(_ret(p) for p in eligible))
-            rets_df = align_return_series((s, r) for s, r, _ in rs)
+            # Audit Q3 #7: pairwise covariance for mixed universes.
+            rets_df = align_return_series(
+                ((s, r) for s, r, _ in rs), policy="pairwise"
+            )
             last_map = {s: px for s, _, px in rs if px is not None}
             if rets_df.empty:
                 return _empty_pvar(self.code, confidence, params, instrument, "no live return history")
@@ -83,14 +134,21 @@ class PVARFunction(BaseFunction):
         total = sum(abs(notional_map.get(s, 0.0)) for s in rets_df.columns) or 1.0
         weights = {s: notional_map.get(s, 0.0) / total for s in rets_df.columns}
         w_vec = np.array([weights[s] for s in rets_df.columns])
-        cov = np.atleast_2d(rets_df.cov().values * 252)
-        port_var = float(w_vec @ cov @ w_vec)
-        port_vol = float(np.sqrt(max(port_var, 1e-12)))
-        # Parametric daily VaR (negative number)
-        # Inverse normal at confidence (95% → 1.645)
-        z = 1.645 if abs(confidence - 0.95) < 1e-3 else 2.326 if abs(confidence - 0.99) < 1e-3 else 1.96
-        # Daily-equivalent parametric VaR
-        var_pct = -z * port_vol / np.sqrt(252)
+        # Audit Q3 #12 — operate on daily covariance directly. Annualizing
+        # then de-annualizing for VaR is a wash that obscures the formula.
+        cov_daily = np.atleast_2d(rets_df.cov().values)
+        # Replace NaN cov entries (pairwise overlap edge cases) with 0 so
+        # the quadratic form stays finite.
+        if not np.isfinite(cov_daily).all():
+            cov_daily = np.nan_to_num(cov_daily, nan=0.0, posinf=0.0, neginf=0.0)
+        cov = cov_daily * 252  # kept for annualized rows below
+        port_var_daily = float(w_vec @ cov_daily @ w_vec)
+        port_vol_daily = float(np.sqrt(max(port_var_daily, 1e-12)))
+        port_vol = port_vol_daily * float(np.sqrt(252))  # annualized for display
+        # Audit Q3 #11 — proper inverse-normal at the requested confidence.
+        z = float(_norm_ppf(confidence))
+        # One-day parametric VaR as a return (negative = loss).
+        var_pct = -z * port_vol_daily
         cov_w = cov @ w_vec
         rows = []
         for i, sym in enumerate(rets_df.columns):

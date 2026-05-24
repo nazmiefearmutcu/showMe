@@ -115,9 +115,11 @@ class BetaFunction(BaseFunction):
                 metadata={"provider_errors": [f"yfinance benchmark: {bench_df}"]},
             )
 
-        target_ret = _daily_returns(target_df)
-        bench_ret = _daily_returns(bench_df)
-        joined = pd.concat([target_ret, bench_ret], axis=1, keys=["t", "b"]).dropna()
+        # Audit Q3 #20 — intersect on TRADING DAYS *before* pct_change so a
+        # crypto Sat-Sun bar doesn't produce a 3-day BTC return aligned to a
+        # 1-day SPY return on the following Monday. We pass the close-price
+        # frames through `_intersected_returns()` which aligns then computes.
+        joined = _intersected_returns(target_df, bench_df)
         if len(joined) < 30:
             return FunctionResult(
                 code=self.code,
@@ -133,8 +135,11 @@ class BetaFunction(BaseFunction):
             df = joined.tail(n_days)
             if len(df) < 30:
                 continue
-            cov = np.cov(df["t"], df["b"])[0, 1]
-            var = np.var(df["b"])
+            # Audit Q3 #19 — matched ddof. np.cov defaults to ddof=1 while
+            # np.var defaults to ddof=0; the ratio inherited a hidden
+            # n/(n-1) bias. Pin both to ddof=1 (sample statistics).
+            cov = np.cov(df["t"], df["b"], ddof=1)[0, 1]
+            var = np.var(df["b"], ddof=1)
             beta = cov / var if var else float("nan")
             corr = float(df.corr().iloc[0, 1])
             row = {"window": w, "window_days": n_days, "beta": float(beta), "correlation": corr,
@@ -167,8 +172,8 @@ class BetaFunction(BaseFunction):
         )
 
 
-def _daily_returns(df: pd.DataFrame) -> pd.Series:
-    """Normalize provider timestamps before joining target and benchmark."""
+def _normalize_close(df: pd.DataFrame) -> pd.Series:
+    """Date-aligned close series; one bar per calendar date (last bar wins)."""
     if df is None or df.empty or "close" not in df.columns:
         return pd.Series(dtype=float)
     close = df["close"].copy()
@@ -183,7 +188,33 @@ def _daily_returns(df: pd.DataFrame) -> pd.Series:
     close.index = pd.Index(idx).normalize()
     close = close[~close.index.isna()]
     close = close[~close.index.duplicated(keep="last")]
-    return close.sort_index().pct_change().dropna()
+    return close.sort_index().astype(float)
+
+
+def _daily_returns(df: pd.DataFrame) -> pd.Series:
+    """Legacy helper retained for callers that only need one series."""
+    return _normalize_close(df).pct_change().dropna()
+
+
+def _intersected_returns(target_df: pd.DataFrame, bench_df: pd.DataFrame) -> pd.DataFrame:
+    """Audit Q3 #20 — align CLOSE prices on shared trading days, *then*
+    pct_change. Prevents weekend BTC drift from being attributed to SPY.
+
+    Returns a 2-col frame (`t`, `b`) of close-to-close daily returns on
+    rows where both series have a price.
+    """
+    t_close = _normalize_close(target_df)
+    b_close = _normalize_close(bench_df)
+    if t_close.empty or b_close.empty:
+        return pd.DataFrame(columns=["t", "b"])
+    common_idx = t_close.index.intersection(b_close.index)
+    if len(common_idx) < 2:
+        return pd.DataFrame(columns=["t", "b"])
+    aligned = pd.DataFrame({
+        "t": t_close.reindex(common_idx),
+        "b": b_close.reindex(common_idx),
+    }).sort_index()
+    return aligned.pct_change().dropna()
 
 
 def _parse_windows(raw: Any) -> list[str]:
@@ -205,10 +236,11 @@ def _rolling_beta_history(joined: pd.DataFrame, window: int) -> list[dict[str, A
         if idx % 5 and idx != len(joined):
             continue
         df = joined.iloc[idx - window:idx]
-        var = float(np.var(df["b"]))
+        # Audit Q3 #19 — matched ddof for rolling beta too.
+        var = float(np.var(df["b"], ddof=1))
         if not var:
             continue
-        beta = float(np.cov(df["t"], df["b"])[0, 1] / var)
+        beta = float(np.cov(df["t"], df["b"], ddof=1)[0, 1] / var)
         rows.append({
             "date": date_label(df.index[-1]),
             "beta": beta,
