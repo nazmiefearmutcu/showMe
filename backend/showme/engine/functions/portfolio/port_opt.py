@@ -58,7 +58,9 @@ class PortOptFunction(BaseFunction):
                 return s, pd.Series(dtype=float)
         if live and self.deps.yfinance:
             results = await asyncio.gather(*(_ret(s) for s in symbols))
-            rets = align_return_series(results)
+            # Audit Q3 #7: pairwise for mean-variance optimization too —
+            # mixed equity+crypto universes were losing 70% of rows.
+            rets = align_return_series(results, policy="pairwise")
         else:
             rets = pd.DataFrame()
         if rets.empty or len(rets.columns) < 2:

@@ -128,6 +128,15 @@ class BTUNEFunction(BaseFunction):
                                   warnings=["no successful runs"])
         results.sort(key=lambda x: -x["sharpe"])
         live_ok = sources == ["yfinance"]
+        # Audit Q3 #10: backtest_framework returns calmar=None when the
+        # equity history is too short (<0.25 years). Filter those out
+        # before picking a Calmar "best"; None is not orderable against
+        # floats.
+        calmar_results = [r for r in results if r.get("calmar") is not None]
+        best_by_calmar = (
+            max(calmar_results, key=lambda x: x["calmar"]) if calmar_results else None
+        )
+        best_calmar_value = best_by_calmar["calmar"] if best_by_calmar else None
         return FunctionResult(
             code=self.code, instrument=instrument,
             data={
@@ -136,7 +145,7 @@ class BTUNEFunction(BaseFunction):
                 "strategy": strategy,
                 "best_by_sharpe": results[0],
                 "best_by_return": max(results, key=lambda x: x["total_return"]),
-                "best_by_calmar": max(results, key=lambda x: x["calmar"]),
+                "best_by_calmar": best_by_calmar,
                 "rows": results,
                 "surface": results,
                 "all_results": results,
@@ -147,7 +156,7 @@ class BTUNEFunction(BaseFunction):
                     "combos_tested": len(results),
                     "best_sharpe": results[0]["sharpe"],
                     "best_return": max(results, key=lambda x: x["total_return"])["total_return"],
-                    "best_calmar": max(results, key=lambda x: x["calmar"])["calmar"],
+                    "best_calmar": best_calmar_value,
                     "source_mode": "live_yfinance" if live_ok else "local_backtest_model",
                 },
                 "methodology": "Hyperparameter sweep: build each strategy configuration, run the same daily-OHLCV backtest, then rank all configurations by Sharpe, total return, and Calmar.",

@@ -170,8 +170,14 @@ class BollingerBandsIndicator(BaseIndicator):
     def _compute_adx(high: pd.Series, low: pd.Series, close: pd.Series, period: int) -> float:
         plus_dm = high.diff()
         minus_dm = -low.diff()
-        plus_dm = plus_dm.where((plus_dm > minus_dm) & (plus_dm > 0), 0.0)
-        minus_dm = minus_dm.where((minus_dm > plus_dm) & (minus_dm > 0), 0.0)
+        # C5 fix (same as rsi.py): the +DM mask used to mutate ``plus_dm``
+        # BEFORE the -DM mask read it back to compare dominance, so the
+        # -DM dominance test always ran against an already-zeroed plus_dm.
+        # Snapshot the originals first, then mask both sides in parallel.
+        orig_plus_dm = plus_dm.copy()
+        orig_minus_dm = minus_dm.copy()
+        plus_dm = plus_dm.where((orig_plus_dm > orig_minus_dm) & (orig_plus_dm > 0), 0.0)
+        minus_dm = minus_dm.where((orig_minus_dm > orig_plus_dm) & (orig_minus_dm > 0), 0.0)
         tr = pd.concat(
             [high - low, (high - close.shift(1)).abs(), (low - close.shift(1)).abs()],
             axis=1,

@@ -154,7 +154,21 @@ class TRAFunction(BaseFunction):
                 cashflows.append((d.to_pydatetime(), float(amt)))
         cashflows.append((close.index[-1].to_pydatetime(), float(close.iloc[-1])))
         irr = _irr(cashflows)
-        cagr = (close.iloc[-1] / close.iloc[0]) ** (1 / years) - 1 if years > 0 else None
+        # Audit Q3 #6: CAGR exponent must use the ACTUAL elapsed years
+        # between first and last observation, not the requested window. When
+        # yfinance returns 2y of history because the ticker is younger than
+        # the request, using `years=5` understates CAGR by ~40%.
+        try:
+            actual_years = max(
+                (close.index[-1] - close.index[0]).days / 365.25, 1e-6
+            )
+        except Exception:
+            actual_years = float(years)
+        cagr = (
+            (close.iloc[-1] / close.iloc[0]) ** (1 / actual_years) - 1
+            if actual_years > 0 and close.iloc[0] > 0
+            else None
+        )
         return FunctionResult(
             code=self.code, instrument=instrument,
             data={
@@ -265,7 +279,8 @@ class MARSFunction(BaseFunction):
                 return pd.Series(dtype=float)
 
         rs = await asyncio.gather(*(_ret_with_timeout(s) for s in proxies.values())) if self.deps.yfinance else []
-        factors = align_return_series(zip(proxies.keys(), rs))
+        # Audit Q3 #7: pairwise covariance for factor regression universe.
+        factors = align_return_series(zip(proxies.keys(), rs), policy="pairwise")
         if factors.empty:
             from showme.engine.functions.portfolio.rpar import _template_returns
             factors = _template_returns(list(proxies.keys()), days)
@@ -277,7 +292,9 @@ class MARSFunction(BaseFunction):
         if not symbols:
             symbols = ["SPY", "TLT", "GLD"]
         rets = await asyncio.gather(*(_ret_with_timeout(str(s)) for s in symbols))
-        port_ret = align_return_series(zip((str(s) for s in symbols), rets))
+        port_ret = align_return_series(
+            zip((str(s) for s in symbols), rets), policy="pairwise"
+        )
         if port_ret.empty:
             from showme.engine.functions.portfolio.rpar import _template_returns
             port_ret = _template_returns([str(s) for s in symbols], days)
@@ -325,9 +342,24 @@ def _mars_result(
     resid = y - Xc @ beta
     ss_tot = float(((y - y.mean()) ** 2).sum())
     r2 = float(1 - (resid ** 2).sum() / ss_tot) if ss_tot else 0.0
-    ann_vol = float(port_series.std() * np.sqrt(252))
-    var_95 = float(np.percentile(port_series, 5))
-    etl_95 = float(port_series[port_series <= var_95].mean()) if (port_series <= var_95).any() else var_95
+    # Audit Q3 #15 — guard annualized volatility against <30-sample noise.
+    if len(port_series) < 30:
+        ann_vol = None
+    else:
+        ann_vol = float(port_series.std() * np.sqrt(252))
+    # Audit Q3 #14 — VaR/ETL as POSITIVE LOSSES so the UI shows them as
+    # losses without re-interpreting the sign.
+    raw_quantile = float(np.percentile(port_series, 5))
+    port_var_95 = -raw_quantile if raw_quantile < 0 else 0.0
+    tail_returns = port_series[port_series <= raw_quantile]
+    if tail_returns.empty:
+        port_etl_95 = port_var_95
+    else:
+        mean_tail = float(tail_returns.mean())
+        port_etl_95 = -mean_tail if mean_tail < 0 else 0.0
+    # Retain historical *signed* fields for backward compatibility.
+    var_95 = raw_quantile
+    etl_95 = float(tail_returns.mean()) if not tail_returns.empty else raw_quantile
     return FunctionResult(
         code=code,
         instrument=instrument,
@@ -348,11 +380,18 @@ def _mars_result(
             "annualized_volatility": ann_vol,
             "var_95_daily": var_95,
             "etl_95_daily": etl_95,
+            # Audit Q3 #14 + #15: positive-loss fields, prefer these in UI.
+            "var_95_daily_loss": port_var_95,
+            "etl_95_daily_loss": port_etl_95,
+            "annualized_volatility_data_state": (
+                "ok" if ann_vol is not None else "insufficient_samples"
+            ),
             "samples": int(len(joined)),
             "summary": {
                 "r_squared": r2,
                 "annualized_volatility": ann_vol,
                 "var_95_daily": var_95,
+                "var_95_daily_loss": port_var_95,
                 "samples": int(len(joined)),
             },
             "methodology": (

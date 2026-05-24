@@ -96,7 +96,10 @@ class RPARFunction(BaseFunction):
                 return sym, pd.Series(dtype=float)
         if live and self.deps.yfinance:
             rs = await asyncio.gather(*(_ret(s) for s in symbols))
-            df = align_return_series(rs)
+            # Audit Q3 #7: pairwise policy keeps crypto+equity covariance
+            # honest. Legacy intersection-only dropna threw away 70%+ of
+            # rows for mixed universes and tilted weights to crypto.
+            df = align_return_series(rs, policy="pairwise")
         else:
             df = pd.DataFrame()
         fallback_used = False

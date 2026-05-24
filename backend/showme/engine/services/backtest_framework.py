@@ -40,7 +40,8 @@ class Backtest:
     def __init__(self, bars: pd.DataFrame, strategy: StrategyFn,
                  *, initial_cash: float = 10_000.0,
                  fee_bps: float = 5.0, allow_short: bool = True,
-                 warmup: int = 30) -> None:
+                 warmup: int = 30, risk_free: float = 0.0,
+                 mar: float = 0.0) -> None:
         if "close" not in bars.columns:
             raise ValueError("bars must have a 'close' column")
         self.bars = bars.copy()
@@ -49,6 +50,11 @@ class Backtest:
         self.fee = fee_bps / 10_000
         self.allow_short = allow_short
         self.warmup = warmup
+        # Audit Q3 #9 — explicit risk-free + MAR knobs (default 0 preserves
+        # legacy behaviour). Sharpe uses `risk_free` (per-period subtracted
+        # from mean return), Sortino uses `mar` as the downside threshold.
+        self.risk_free = float(risk_free)
+        self.mar = float(mar)
 
     def run(self) -> BacktestResult:
         bars = self.bars.reset_index(drop=False)
@@ -76,7 +82,14 @@ class Backtest:
                 if not self.allow_short:
                     target = max(0, target)
                 if target != pos:
-                    notional = cash * (1.0 if pos == 0 else 1.0)
+                    # Audit Q3 #8 — fee notional must reflect the actual
+                    # market value being turned over, not raw cash. When
+                    # `pos==0` we're opening (notional = full cash); when
+                    # `pos!=0` we're flipping/closing, so use |pos| * price
+                    # equivalent which equals `cash` only at flat. For
+                    # mark-to-market correctness, use the position value
+                    # (cash already reflects MV via the per-bar P&L update).
+                    notional = cash * max(abs(pos), 1.0) if pos != 0 else cash
                     fee_amt = abs(target - pos) * notional * self.fee
                     cash -= fee_amt
                     trades.append({
@@ -90,36 +103,69 @@ class Backtest:
         idx = bars.iloc[:len(equity), 0]
         eq = pd.Series(equity, index=pd.Index(idx, name=bars.columns[0]))
         ps = pd.Series(positions, index=eq.index)
-        metrics = self._metrics(eq, trades)
+        metrics = self._metrics(eq, trades, risk_free=self.risk_free, mar=self.mar)
         return BacktestResult(equity_curve=eq, positions=ps, trades=trades,
                               metrics=metrics, final_equity=float(eq.iloc[-1]))
 
     @staticmethod
-    def _metrics(equity: pd.Series, trades: list[dict[str, Any]]) -> dict[str, float]:
+    def _metrics(
+        equity: pd.Series,
+        trades: list[dict[str, Any]],
+        *,
+        risk_free: float = 0.0,
+        mar: float = 0.0,
+    ) -> dict[str, float]:
         ret = equity.pct_change().dropna()
         total_return = float(equity.iloc[-1] / equity.iloc[0] - 1)
         n = max(len(equity), 1)
         ann_factor = math.sqrt(252)
-        sharpe = float(ret.mean() / (ret.std() + 1e-12)) * ann_factor if not ret.empty else 0.0
+        # Audit Q3 #9 — Sharpe: subtract per-period rf from mean before
+        # annualizing. `risk_free` is annualized → divide by 252.
+        rf_per_period = risk_free / 252.0
+        if not ret.empty and ret.std() > 0:
+            sharpe = float((ret.mean() - rf_per_period) / ret.std()) * ann_factor
+        else:
+            sharpe = 0.0
         # Max drawdown
         peak = equity.cummax()
         dd = (equity / peak - 1)
         max_dd = float(dd.min())
-        # Sortino
-        downside = ret[ret < 0]
-        sortino = float(ret.mean() / (downside.std() + 1e-12)) * ann_factor if not downside.empty else 0.0
-        # Calmar
+        # Audit Q3 #9 — Sortino: numerator is (mean − MAR), denominator is
+        # sqrt(mean(min(r−MAR, 0)²)) i.e. downside deviation, not std of
+        # negatives. Annualized by sqrt(252).
+        if not ret.empty:
+            excess = ret - mar
+            downside_sq = np.minimum(excess, 0.0) ** 2
+            downside_dev = float(np.sqrt(downside_sq.mean()))
+            if downside_dev > 0:
+                sortino = float((ret.mean() - mar) / downside_dev) * ann_factor
+            else:
+                sortino = 0.0
+        else:
+            sortino = 0.0
+        # Audit Q3 #10 — Calmar: require at least ~3 months of equity
+        # observations. A 1-day backtest produces CAGR in millions.
         years = n / 252
-        cagr = float((equity.iloc[-1] / equity.iloc[0]) ** (1 / max(years, 1e-3)) - 1) if equity.iloc[0] > 0 else 0
-        calmar = (cagr / abs(max_dd)) if max_dd != 0 else 0
+        if years < 0.25 or equity.iloc[0] <= 0:
+            cagr = None
+            calmar = None
+        else:
+            cagr_val = float((equity.iloc[-1] / equity.iloc[0]) ** (1 / years) - 1)
+            cagr = cagr_val
+            calmar = (cagr_val / abs(max_dd)) if max_dd != 0 else None
         wins = sum(1 for t in trades if t.get("from", 0) != 0)  # crude trade count
         return {
-            "total_return": total_return, "cagr": cagr,
-            "sharpe": sharpe, "sortino": sortino, "calmar": calmar,
+            "total_return": total_return,
+            "cagr": cagr,
+            "sharpe": sharpe,
+            "sortino": sortino,
+            "calmar": calmar,
             "max_drawdown": max_dd,
             "trades": len(trades),
             "win_rate_proxy": float(wins) / max(len(trades), 1),
             "samples": int(n),
+            "risk_free": float(risk_free),
+            "mar": float(mar),
         }
 
 

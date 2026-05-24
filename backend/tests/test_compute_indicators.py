@@ -125,8 +125,11 @@ def test_h14_negative_tolerance_collapses_to_false():
 def test_h16_bollinger_upper_lower_match_sma_plus_minus_std(df):
     """Upper band = SMA + num_std * std; lower band = SMA - num_std * std.
 
-    The std uses ddof=0 (population) which matches the most common
-    Bollinger Band convention."""
+    Q1 CRITICAL fix: std uses ``ddof=1`` (sample std) to match
+    Bollinger (1980) and the engine ``bollinger.py`` path. The old
+    ``ddof=0`` made compute/engine return different values for every
+    bar — dual-path divergence that silently broke rules referencing
+    BBU/BBL from either side."""
     period = 20
     num_std = 2.0
     out = compute(df, [
@@ -138,7 +141,7 @@ def test_h16_bollinger_upper_lower_match_sma_plus_minus_std(df):
                      params={"period": period, "num_std": num_std}),
     ])
     sma = df["close"].rolling(period).mean()
-    std = df["close"].rolling(period).std(ddof=0)
+    std = df["close"].rolling(period).std(ddof=1)
     expected_upper = sma + num_std * std
     expected_lower = sma - num_std * std
     # Drop the NaN warm-up rows from both sides for comparison.

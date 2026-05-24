@@ -265,12 +265,34 @@ class OSAFunction(BaseFunction):
         q = float(params.get("div_yield", 0.0))
         initial_premiums: list[dict[str, Any]] = []
         net_debit = 0.0
+        # D03-2026-05-24 (H19): per-leg vol resolution — if a leg quotes a
+        # market price, solve the IV implied by that market price instead of
+        # the 0.25 placeholder. Real SPX/NDX skew is 10-15 vol pts wide so
+        # the placeholder gave systematically wrong premiums.
         for idx, leg in enumerate(legs, start=1):
             strike = float(leg["strike"])
             expiry = float(leg.get("expiry") or leg.get("years_to_expiry") or 0.25)
-            vol = float(leg.get("vol") or 0.25)
             opt_type = str(leg.get("type") or "CALL").upper()
             qty = float(leg.get("qty") or 0)
+            vol = leg.get("vol")
+            iv_source = "input"
+            market = leg.get("market_price")
+            if market is not None and (vol is None or vol == 0):
+                try:
+                    from showme.engine.services.iv_solver import implied_vol
+                    iv_res = implied_vol(
+                        market_price=float(market), S=S, K=strike, T=expiry,
+                        r=r, q=q, is_call=opt_type == "CALL",
+                    )
+                    if iv_res.get("converged"):
+                        vol = iv_res["iv"]
+                        iv_source = f"solved_{iv_res['method']}"
+                except Exception:
+                    pass
+            if vol is None:
+                vol = 0.25
+                iv_source = "default_0.25"
+            vol = float(vol)
             premium = _bs_price(S, strike, expiry, r, vol, q, opt_type == "CALL")["price"]
             net_debit += qty * premium
             initial_premiums.append({
@@ -280,11 +302,29 @@ class OSAFunction(BaseFunction):
                 "strike": strike,
                 "expiry_years": expiry,
                 "vol": vol,
+                "iv_source": iv_source,
                 "premium": premium,
                 "initial_value": qty * premium,
             })
-        spots = [S * (0.5 + i * 0.01) for i in range(101)]
+        # H17: derive grid from strike range, not 50-150% of spot. Low-priced
+        # underlyings (e.g. S=20) with wing strikes outside that range used
+        # to fall off the chart.
+        strike_list = [float(leg["strike"]) for leg in legs] or [S]
+        max_strike = max(strike_list + [S])
+        min_strike = min(strike_list + [S])
+        spot_low = min(min_strike * 0.5, S * 0.5)
+        spot_high = max(max_strike * 1.2, S * 1.5)
+        # 101 evenly-spaced grid points.
+        n_grid = 101
+        step = (spot_high - spot_low) / (n_grid - 1) if n_grid > 1 else 0.0
+        spots = [spot_low + i * step for i in range(n_grid)]
         pnl_curve: list[dict] = []
+        # H18: PV-discount the initial debit so it lives in the same time-
+        # basis as the expiration payoff. Otherwise we double-count the
+        # carrying cost — expiry_payoff is at T, net_debit is at t=0.
+        max_T = max((float(leg.get("expiry") or leg.get("years_to_expiry") or 0.25)
+                     for leg in legs), default=0.25)
+        pv_debit = net_debit * math.exp(-r * max_T)
         for s in spots:
             expiry_payoff = 0.0
             for leg in legs:
@@ -295,9 +335,10 @@ class OSAFunction(BaseFunction):
                 expiry_payoff += qty * payoff
             pnl_curve.append({
                 "spot": s,
-                "pnl": expiry_payoff - net_debit,
+                "pnl": expiry_payoff - pv_debit,
                 "payoff": expiry_payoff,
                 "net_debit": net_debit,
+                "pv_debit": pv_debit,
             })
         pnls = [row["pnl"] for row in pnl_curve]
         return FunctionResult(code=self.code, instrument=instrument,
@@ -321,7 +362,7 @@ class OSAFunction(BaseFunction):
                                           if (prev <= 0 <= cur) or (prev >= 0 >= cur)
                                       ),
                                   },
-                                  "methodology": "Expiration P&L = sum(qty * intrinsic payoff at spot) - initial option premium; premiums use Black-Scholes-Merton.",
+                                  "methodology": "Expiration P&L = sum(qty * intrinsic payoff at spot) - pv_debit; pv_debit = net_debit * exp(-r * max_T) so payoff and cost share the same time basis. Premiums use Black-Scholes-Merton with per-leg IV (solved from market_price if supplied, else input vol, else default 0.25).",
                                   "field_dictionary": {
                                       "net_debit": "Positive value means the strategy costs premium up front; negative means a credit.",
                                       "curve.pnl": "Estimated expiration profit/loss at each underlying spot.",
