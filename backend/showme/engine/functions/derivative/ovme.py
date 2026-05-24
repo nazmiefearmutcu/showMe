@@ -10,7 +10,21 @@ from showme.engine.core.instrument import AssetClass, Instrument
 
 
 def _bs_price(S: float, K: float, T: float, r: float, sigma: float, q: float, is_call: bool) -> dict[str, float]:
-    """Black-Scholes-Merton with continuous dividend yield q."""
+    """Black-Scholes-Merton with continuous dividend yield q.
+
+    C2 fix: previously ``math.log(S / K)`` would raise ``ValueError: math
+    domain error`` when ``S <= 0`` or ``K <= 0`` (negative/zero prices). The
+    pre-flight guard now covers all four invalid-input cases by emitting a
+    NaN-filled result with an ``error`` marker so the caller can surface a
+    structured warning instead of crashing the route.
+    """
+    nan = float("nan")
+    if S <= 0 or K <= 0:
+        return {
+            "price": nan, "delta": nan, "gamma": nan, "theta": nan,
+            "vega": nan, "rho": nan, "d1": nan, "d2": nan,
+            "error": f"invalid_inputs: S and K must be > 0 (got S={S}, K={K})",
+        }
     if T <= 0 or sigma <= 0:
         intrinsic = max((S - K), 0.0) if is_call else max((K - S), 0.0)
         return {"price": intrinsic, "delta": 1.0 if is_call and S > K else 0.0,
@@ -62,18 +76,23 @@ class OVMEFunction(BaseFunction):
         is_call = opt_type == "CALL"
         model = (params.get("model") or "bs").lower()
         result = _bs_price(S, K, T, r, sigma, q, is_call)
+        # C2 fix: if S/K invalid, _bs_price now returns an ``error`` marker
+        # and NaN sensitivities. Skip the curve generation in that case so
+        # the caller still gets a structured envelope with the error.
+        input_error = result.get("error") if isinstance(result, dict) else None
         sensitivity: list[dict[str, float]] = []
-        for step in range(51):
-            s = S * (0.75 + step * 0.01)
-            priced = _bs_price(s, K, T, r, sigma, q, is_call)
-            intrinsic = max(s - K, 0.0) if is_call else max(K - s, 0.0)
-            sensitivity.append({
-                "spot": s,
-                "price": priced["price"],
-                "intrinsic": intrinsic,
-                "time_value": priced["price"] - intrinsic,
-                "delta": priced["delta"],
-            })
+        if not input_error:
+            for step in range(51):
+                s = S * (0.75 + step * 0.01)
+                priced = _bs_price(s, K, T, r, sigma, q, is_call)
+                intrinsic = max(s - K, 0.0) if is_call else max(K - s, 0.0)
+                sensitivity.append({
+                    "spot": s,
+                    "price": priced["price"],
+                    "intrinsic": intrinsic,
+                    "time_value": priced["price"] - intrinsic,
+                    "delta": priced["delta"],
+                })
         rows = [
             {"metric": "price", "value": result["price"], "unit": "currency/share"},
             {"metric": "delta", "value": result["delta"], "unit": "price delta per 1 underlying unit"},
@@ -84,7 +103,7 @@ class OVMEFunction(BaseFunction):
             {"metric": "d1", "value": result.get("d1"), "unit": "standard deviations"},
             {"metric": "d2", "value": result.get("d2"), "unit": "standard deviations"},
         ]
-        if model == "heston":
+        if model == "heston" and not input_error:
             try:
                 from showme.engine.functions.derivative.heston import HestonParams, heston_mc
                 hp = HestonParams(
@@ -103,7 +122,7 @@ class OVMEFunction(BaseFunction):
             except Exception as e:
                 result["heston_error"] = str(e)
         payload = {
-            "status": "ok",
+            "status": "error" if input_error else "ok",
             **result,
             "spot": S,
             "strike": K,
@@ -138,8 +157,12 @@ class OVMEFunction(BaseFunction):
                 "curve.price": "Option value across a spot sensitivity range.",
             },
         }
+        warnings_list: list[str] = []
+        if input_error:
+            warnings_list.append(input_error)
         return FunctionResult(
             code=self.code, instrument=instrument,
             data=payload,
             sources=["black_scholes_formula" if model != "heston" else "black_scholes_formula", "heston_formula"] if model == "heston" else ["black_scholes_formula"],
+            warnings=warnings_list,
         )

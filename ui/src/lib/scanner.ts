@@ -77,16 +77,17 @@ export interface ScanRequest {
   fine_top_k?: number;
 }
 
-export async function listUniverses(): Promise<UniverseSummary[]> {
+export async function listUniverses(signal?: AbortSignal): Promise<UniverseSummary[]> {
   // Routed through sidecarFetch so the auth header + port-discovery layer
   // both apply. See ARCH-05 P2.
-  return sidecarFetch<UniverseSummary[]>("/api/scanner/universes");
+  return sidecarFetch<UniverseSummary[]>("/api/scanner/universes", { signal });
 }
 
-export async function runScan(req: ScanRequest): Promise<ScanResult> {
+export async function runScan(req: ScanRequest, signal?: AbortSignal): Promise<ScanResult> {
   return sidecarFetch<ScanResult>("/api/scanner/run", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(req),
+    signal,
   });
 }

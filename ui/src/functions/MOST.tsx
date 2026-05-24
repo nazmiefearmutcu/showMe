@@ -208,16 +208,25 @@ export function MOSTPane({ code }: FunctionPaneProps) {
         width: 110,
         render: (r) => {
           const sym = r.symbol ?? r.ticker ?? "";
+          // Bundle D / A11Y-01. Same fix as EQS — single click + Enter/Space
+          // navigate to DES so keyboard users can reach the detail surface.
+          const goDES = () => {
+            if (!sym) return;
+            setFocusedTarget("DES", sym);
+            navigate(`/symbol/${sym}/DES`);
+          };
           return (
             <button
               type="button"
-              onDoubleClick={() => {
-                if (!sym) return;
-                setFocusedTarget("DES", sym);
-                navigate(`/symbol/${sym}/DES`);
+              onClick={goDES}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  goDES();
+                }
               }}
               className="scan-symbol"
-              title="Double-click → DES"
+              title="Open DES"
             >
               {sym || "—"}
             </button>

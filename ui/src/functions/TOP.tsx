@@ -32,6 +32,7 @@ import {
   StatCard,
 } from "@/design-system";
 import { useFunction } from "@/lib/useFunction";
+import { useVisibilityTick } from "@/lib/useVisibilityTick";
 import { useWorkspace } from "@/lib/workspace";
 import { navigate } from "@/lib/router";
 import { relativeTimeLabel, sortNewsNewestFirst } from "@/lib/time";
@@ -125,7 +126,16 @@ function median(values: number[]): number | null {
 }
 
 export function TOPPane({ code }: FunctionPaneProps) {
-  const [tick, setTick] = useState(0);
+  // Bundle D / PERF-04. Tick nonce blends a manual counter (Refresh/Run
+  // buttons + filter changes) with `useVisibilityTick`'s background-paused
+  // auto-tick. `setTick(t => t + 1)` continues to work because we expose the
+  // manual setter; both inputs feed the composed `tick` used by useFunction.
+  const [manualTick, setManualTick] = useState(0);
+  const visTick = useVisibilityTick(REFRESH_MS);
+  const tick = manualTick + visTick;
+  const setTick = (next: ((prev: number) => number) | number) => {
+    setManualTick((prev) => (typeof next === "function" ? next(prev) : next));
+  };
   const [query, setQuery] = useState("market");
   const [veryfinderMap, setVeryfinderMap] = useState<Record<string, VeryfinderOverlay>>({});
   const [veryfinderState, setVeryfinderState] = useState<"idle" | "loading" | "ok" | "error">("idle");
@@ -146,10 +156,8 @@ export function TOPPane({ code }: FunctionPaneProps) {
   });
   const setFocusedTarget = useWorkspace((s) => s.setFocusedTarget);
 
-  useEffect(() => {
-    const id = setInterval(() => setTick((t) => t + 1), REFRESH_MS);
-    return () => clearInterval(id);
-  }, []);
+  // Auto-refresh interval lives in `useVisibilityTick(REFRESH_MS)` above —
+  // it pauses on hidden tabs and resumes on focus. No local setInterval.
 
   const articles = useMemo(
     () => sortNewsNewestFirst(normalizeArticles(data?.data), articleTimestamp).slice(0, limit),

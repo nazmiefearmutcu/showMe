@@ -6,6 +6,7 @@ provider injected via ``AppDeps.get_stream_hub``.
 from __future__ import annotations
 
 import contextlib
+import hmac
 import logging
 import os
 from datetime import datetime, timezone
@@ -16,6 +17,31 @@ from fastapi import APIRouter, FastAPI, WebSocket, WebSocketDisconnect
 from . import AppDeps
 
 LOG = logging.getLogger("showme.server.websocket")
+
+
+def _extract_ws_token(websocket: WebSocket) -> str | None:
+    """SEC-13: pull the bearer token from any of the WS-compatible channels.
+
+    Browser ``new WebSocket(url)`` API can't set arbitrary HTTP headers,
+    so we accept the token via three transports (any one wins):
+    1. ``?token=...`` query parameter (most common, easy from JS)
+    2. ``X-ShowMe-Token`` header (Tauri shell can inject this)
+    3. ``Sec-WebSocket-Protocol: showme.token.<value>`` subprotocol token
+       (RFC 6455 standard; survives URL-stripping proxies)
+    """
+    qs_token = websocket.query_params.get("token")
+    if qs_token:
+        return qs_token
+    hdr_token = websocket.headers.get("x-showme-token") or websocket.headers.get(
+        "X-ShowMe-Token"
+    )
+    if hdr_token:
+        return hdr_token
+    protos = websocket.headers.get("sec-websocket-protocol", "")
+    for proto in (p.strip() for p in protos.split(",")):
+        if proto.startswith("showme.token."):
+            return proto[len("showme.token.") :]
+    return None
 
 
 def _empty_stream_stats_envelope() -> dict[str, Any]:
@@ -100,6 +126,29 @@ def register(app: FastAPI, deps: AppDeps) -> None:
             )
             await websocket.close(code=1008)
             return
+        # SEC-13: AUTH gate. The HTTP auth_token_middleware only matches
+        # /api/* paths, so /ws/quote was previously unauthenticated — any
+        # local process could tap the live tick stream by knowing the port.
+        # When SHOWME_AUTH_TOKEN is set we require a matching token via
+        # query param, X-ShowMe-Token header, or Sec-WebSocket-Protocol
+        # ``showme.token.<value>`` subprotocol. Browsers can only use the
+        # query/subprotocol forms because the WebSocket constructor has no
+        # custom-header API. Set SHOWME_WS_REQUIRE_TOKEN=0 to opt out in
+        # internal test setups.
+        expected_token = os.environ.get("SHOWME_AUTH_TOKEN")
+        require_token = os.environ.get(
+            "SHOWME_WS_REQUIRE_TOKEN", "1"
+        ).strip().lower() not in {"0", "false", "no", "off"}
+        if expected_token and require_token:
+            provided = _extract_ws_token(websocket) or ""
+            if not hmac.compare_digest(provided, expected_token):
+                LOG.warning(
+                    "ws_quote %s rejected: missing or invalid token", symbol
+                )
+                # 4401 = app-specific "unauthorized" (close codes 4000-4999
+                # are reserved for application use per RFC 6455 §7.4.2).
+                await websocket.close(code=4401)
+                return
         await websocket.accept()
         hub = deps.get_stream_hub() if deps.get_stream_hub else None
         if hub is None:

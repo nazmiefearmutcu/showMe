@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import numpy as np
 import pandas as pd
 
-from showme.engine.core.base_data_source import DataKind, DataRequest
+from showme.engine.core.base_data_source import DataKind, DataRequest, DataSourceError
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from showme.engine.core.instrument import AssetClass, Instrument
 from showme.engine.functions.portfolio.return_series import align_return_series, close_to_daily_returns
@@ -18,6 +19,8 @@ from showme.engine.services.black_litterman import (
     implied_returns,
     posterior,
 )
+
+LOG = logging.getLogger("showme.blak")
 
 
 def _template_returns(symbols: list[str], days: int) -> pd.DataFrame:
@@ -51,7 +54,12 @@ class BLAKFunction(BaseFunction):
         market_caps = params.get("market_caps") or {}  # symbol → mcap
         views = params.get("views") or []
         live = _truthy(params.get("live_returns") or params.get("live"))
-        sources = ["yfinance"] if live else ["computed_return_model"]
+        # B4: Do NOT pre-claim ``yfinance`` as the source. We only know what
+        # was actually used after the live fetch decides whether it has
+        # enough rows to skip the synthetic fallback.
+        sources: list[str] = []
+        live_fetch_errors: list[str] = []
+        live_fetch_ok_symbols: list[str] = []
         # Fix A7-C6 / Bug #13: dollar-volume was being used as a market-cap
         # proxy which made BTC dominate at ~99.99% and ETH collapse to ~0%.
         # Pull real market cap (circulating supply × price) up-front.
@@ -64,6 +72,9 @@ class BLAKFunction(BaseFunction):
         )
 
         async def _ret(sym: str) -> tuple[str, pd.Series, float]:
+            # B4: narrow the catch to expected provider failures so genuine
+            # bugs (NameError, type errors, etc.) surface at the call site
+            # instead of being papered over with an empty series.
             try:
                 inst = Instrument(symbol=sym, asset_class=AssetClass.EQUITY)
                 if self.deps.symbol_registry:
@@ -80,8 +91,21 @@ class BLAKFunction(BaseFunction):
                 )
                 rets = close_to_daily_returns(df)
                 mcap = float(mcap_lookup.get(sym) or 0.0)
+                if rets is not None and not rets.empty:
+                    live_fetch_ok_symbols.append(sym)
                 return sym, rets, mcap
-            except Exception:
+            except asyncio.CancelledError:
+                raise
+            except (asyncio.TimeoutError, DataSourceError) as exc:
+                LOG.warning("BLAK live fetch failed for %s: %s", sym, exc)
+                live_fetch_errors.append(f"{sym}: {type(exc).__name__}: {exc}")
+                return sym, pd.Series(dtype=float), float(mcap_lookup.get(sym) or 0.0)
+            except Exception as exc:  # noqa: BLE001
+                # Last-resort catch for unexpected provider quirks (httpx
+                # transport errors, yfinance JSONDecode, etc). Still surface
+                # the message so the response is honest about what failed.
+                LOG.warning("BLAK live fetch unexpected error for %s: %s", sym, exc)
+                live_fetch_errors.append(f"{sym}: {type(exc).__name__}: {exc}")
                 return sym, pd.Series(dtype=float), float(mcap_lookup.get(sym) or 0.0)
         if live and self.deps.yfinance:
             results = await asyncio.gather(*(_ret(s) for s in symbols))
@@ -89,12 +113,18 @@ class BLAKFunction(BaseFunction):
         else:
             results = [(s, pd.Series(dtype=float), 1.0) for s in symbols]
             df = pd.DataFrame()
+        used_synthetic = False
         if df.shape[0] < 10:
             df = _template_returns(symbols, days)
             # Keep the resolved mcap lookup; we still want real weights even
             # when the return series falls back to the deterministic template.
             results = [(s, pd.Series(dtype=float), float(mcap_lookup.get(s, 0.0))) for s in symbols]
-            sources = ["computed_return_model"]
+            used_synthetic = True
+            # B4: be honest about the source. Only flag synthetic when we
+            # actually fell back; partial-success live runs keep yfinance.
+            sources = ["synthetic_fallback"]
+        else:
+            sources = ["yfinance"] if live else ["computed_return_model"]
         cov = df.cov().values * 252
         cols = list(df.columns)
         mcaps = np.array([next((m for s, _, m in results if s == c), 0.0) for c in cols])
@@ -143,6 +173,15 @@ class BLAKFunction(BaseFunction):
             warnings.append(
                 "market_weight set to equal-weight prior; real market cap unavailable"
             )
+        if used_synthetic and live:
+            warnings.append(
+                "live return fetch produced fewer than 10 aligned rows; "
+                "synthetic deterministic returns used"
+            )
+        if live and live_fetch_errors:
+            warnings.append(
+                f"{len(live_fetch_errors)} live fetch error(s); see live_fetch_errors for details"
+            )
         return FunctionResult(
             code=self.code, instrument=None,
             data={
@@ -154,6 +193,14 @@ class BLAKFunction(BaseFunction):
                 "posterior_returns": dict(zip(cols, pi_bl.tolist())),
                 "implied_optimal_weights": dict(zip(cols, w_opt.tolist())),
                 "market_cap_data_state": mcap_data_state,
+                # B4 surfaced fields so the UI can flag the synthetic fallback.
+                "live_fetch_errors": list(live_fetch_errors),
+                "live_fetch_ok_symbols": sorted(set(live_fetch_ok_symbols)),
+                "return_data_state": (
+                    "synthetic_fallback" if used_synthetic
+                    else ("live" if live else "computed")
+                ),
+                "partial_live": bool(live and live_fetch_ok_symbols and used_synthetic),
                 "delta": delta, "tau": tau,
                 "n_views": len(P_rows),
                 "samples": int(df.shape[0]),

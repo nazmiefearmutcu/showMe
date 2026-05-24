@@ -69,25 +69,49 @@ export async function saveWatchlist(rows: WatchlistRow[]): Promise<void> {
   writeLocal(bundle);
 }
 
-export async function addSymbol(symbol: string, label?: string): Promise<WatchlistRow[]> {
-  const sym = symbol.trim().toUpperCase();
-  if (!sym) return loadWatchlist();
-  const rows = await loadWatchlist();
-  if (rows.some((r) => r.symbol === sym)) return rows;
-  const next = [...rows, { symbol: sym, label, added_at: new Date().toISOString() }];
-  await saveWatchlist(next);
+/**
+ * Bundle D / TOCTOU-01. Module-level serializer for read-modify-write paths.
+ *
+ * `addSymbol("AAPL")` and `addSymbol("MSFT")` fired concurrently used to
+ * both `loadWatchlist()` against the *same* baseline, both append, both
+ * `saveWatchlist()` — second write clobbers the first. Funnelling every
+ * mutator through this queue means the second one waits for the first to
+ * publish before re-reading the freshest rows. Order matches call order.
+ */
+let _writeQueue: Promise<unknown> = Promise.resolve();
+
+function enqueue<T>(task: () => Promise<T>): Promise<T> {
+  const next = _writeQueue.then(task, task);
+  // Keep the queue chain alive even if a task throws; never block future writes.
+  _writeQueue = next.catch(() => undefined);
   return next;
+}
+
+export async function addSymbol(symbol: string, label?: string): Promise<WatchlistRow[]> {
+  return enqueue(async () => {
+    const sym = symbol.trim().toUpperCase();
+    if (!sym) return loadWatchlist();
+    const rows = await loadWatchlist();
+    if (rows.some((r) => r.symbol === sym)) return rows;
+    const next = [...rows, { symbol: sym, label, added_at: new Date().toISOString() }];
+    await saveWatchlist(next);
+    return next;
+  });
 }
 
 export async function removeSymbol(symbol: string): Promise<WatchlistRow[]> {
-  const sym = symbol.trim().toUpperCase();
-  const rows = await loadWatchlist();
-  const next = rows.filter((r) => r.symbol !== sym);
-  if (next.length !== rows.length) await saveWatchlist(next);
-  return next;
+  return enqueue(async () => {
+    const sym = symbol.trim().toUpperCase();
+    const rows = await loadWatchlist();
+    const next = rows.filter((r) => r.symbol !== sym);
+    if (next.length !== rows.length) await saveWatchlist(next);
+    return next;
+  });
 }
 
 export async function clearWatchlist(): Promise<void> {
-  await saveWatchlist([]);
-  if (typeof localStorage !== "undefined") localStorage.removeItem(KEY);
+  return enqueue(async () => {
+    await saveWatchlist([]);
+    if (typeof localStorage !== "undefined") localStorage.removeItem(KEY);
+  });
 }

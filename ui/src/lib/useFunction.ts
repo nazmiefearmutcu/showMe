@@ -68,6 +68,18 @@ export function useFunction<T = unknown>({
   // load. Persists across `tick`-only re-runs so `refetch()` is treated as a
   // refresh too.
   const previousFetchKey = useRef<string>("");
+  // Bundle D / STALE-01. The refetch effect previously closed over the
+  // `data` from the *render that scheduled it*, not the latest one. If two
+  // refetches landed back-to-back (e.g. `refetch()` clicked while a poll
+  // tick scheduled another fetch on the same microtask) the second effect
+  // saw `data === undefined` even after the first one had populated state,
+  // and mis-classified the call as `"loading"` (full skeleton flash) instead
+  // of `"refreshing"`. Mirroring `data` into a ref keeps the latest value
+  // visible inside the effect without re-triggering it.
+  const dataRef = useRef<FunctionCallResult<T> | undefined>(undefined);
+  useEffect(() => {
+    dataRef.current = data;
+  }, [data]);
 
   useEffect(() => {
     if (!enabled) {
@@ -85,7 +97,7 @@ export function useFunction<T = unknown>({
     }
     const ac = new AbortController();
     const fetchKey = `${code}|${symbol ?? ""}|${paramsKey}`;
-    const isRefresh = fetchKey === previousFetchKey.current && data !== undefined;
+    const isRefresh = fetchKey === previousFetchKey.current && dataRef.current !== undefined;
     if (isRefresh) {
       setState("refreshing");
       // Keep `data` + previous `error` visible. Don't clear either.

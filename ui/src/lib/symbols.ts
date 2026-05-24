@@ -330,16 +330,53 @@ export function pushRecentSymbol(symbol: string): void {
   const now = Date.now();
   const filtered = load().filter((e) => normalizeSymbolInput(e.sym) !== sym);
   save([{ sym, ts: now }, ...filtered]);
+  notifyRecentSymbolsChanged();
 }
 
 export function removeRecentSymbol(symbol: string): void {
   const sym = normalizeSymbolInput(symbol);
   if (!sym) return;
   save(load().filter((e) => normalizeSymbolInput(e.sym) !== sym));
+  notifyRecentSymbolsChanged();
 }
 
 export function clearRecentSymbols(): void {
   if (typeof localStorage !== "undefined") localStorage.removeItem(KEY);
+  notifyRecentSymbolsChanged();
+}
+
+/**
+ * Bundle D / MULTITAB-03. Lightweight subscribe API so SymbolBar (and any
+ * future consumer) can refresh `listRecentSymbols()` when another tab
+ * pushes a new ticker. Same-tab `pushRecentSymbol` / `removeRecentSymbol`
+ * notify synchronously; the cross-tab `storage` listener feeds the same
+ * pipe.
+ */
+type SymbolListener = () => void;
+const _symbolListeners = new Set<SymbolListener>();
+
+function notifyRecentSymbolsChanged(): void {
+  _symbolListeners.forEach((fn) => {
+    try {
+      fn();
+    } catch {
+      // never let one bad listener break peers
+    }
+  });
+}
+
+export function subscribeRecentSymbols(fn: SymbolListener): () => void {
+  _symbolListeners.add(fn);
+  return () => {
+    _symbolListeners.delete(fn);
+  };
+}
+
+if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+  window.addEventListener("storage", (event) => {
+    if (event.key !== KEY) return;
+    notifyRecentSymbolsChanged();
+  });
 }
 
 function preferredAssetClass(codeOrCategory: string | undefined, supported: string[]): string {

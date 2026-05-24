@@ -267,17 +267,31 @@ _NITTER = _NitterPool()
 class _SearchEngineThrottle:
     """Per-engine min-interval throttle + small in-process cache.
 
-    Brave / DDG block aggressive scraping. Holding a 4-second floor between
-    requests to the same engine and caching identical queries for 60 seconds
-    keeps the chip from getting rate-limited during normal UI use.
+    SEC-12 hardening:
+    * ``max_sleep`` caps each ``wait_slot`` call so a single chip request
+      cannot consume the route's 30s timeout sleeping for the throttle —
+      if the wait would exceed the cap, the caller is told to fall through
+      (``wait_slot`` returns ``False``) instead of blocking.
+    * ``ban(engine, seconds)`` lets the caller (typically on HTTP 429)
+      tell the throttle to short-circuit future requests for that engine.
+      The ban has a 60s floor so even a missing ``Retry-After`` gives the
+      remote some breathing room. ``is_banned`` is queried before any
+      ``wait_slot`` to avoid pointless sleeps.
     """
 
-    def __init__(self, min_interval: float = 30.0, cache_ttl: float = 1800.0) -> None:
+    def __init__(
+        self,
+        min_interval: float = 30.0,
+        cache_ttl: float = 1800.0,
+        max_sleep: float = 4.0,
+    ) -> None:
         self._lock = threading.Lock()
         self._min_interval = min_interval
         self._cache_ttl = cache_ttl
+        self._max_sleep = max_sleep
         self._last_call: dict[str, float] = {}
         self._cache: dict[tuple[str, str], tuple[float, list[str]]] = {}
+        self._ban_until: dict[str, float] = {}
 
     def cached(self, engine: str, query: str) -> list[str] | None:
         key = (engine, query)
@@ -291,17 +305,52 @@ class _SearchEngineThrottle:
         with self._lock:
             self._cache[(engine, query)] = (_now(), list(ids))
 
-    def wait_slot(self, engine: str) -> None:
+    def is_banned(self, engine: str) -> bool:
+        with self._lock:
+            return self._ban_until.get(engine, 0.0) > _now()
+
+    def ban(self, engine: str, seconds: float) -> None:
+        """Mark ``engine`` as rate-limited for at least ``seconds``.
+
+        60s floor so a missing ``Retry-After`` header still gives the
+        remote some breathing room.
+        """
+        with self._lock:
+            self._ban_until[engine] = _now() + max(seconds, 60.0)
+
+    def wait_slot(self, engine: str) -> bool:
+        """Honor the min-interval floor; cap the sleep at ``max_sleep``.
+
+        Returns ``True`` if the slot was acquired (sleep ≤ max_sleep),
+        ``False`` if the requested wait would have exceeded the cap — in
+        which case the caller should fall through to the next backend
+        instead of paying the full timeout.
+        """
         with self._lock:
             now = _now()
             last = self._last_call.get(engine, 0.0)
             wait = self._min_interval - (now - last)
-            if wait > 0:
-                time.sleep(min(wait, self._min_interval))
-            self._last_call[engine] = _now()
+            sleep_for = min(max(wait, 0.0), self._max_sleep)
+            # Bump _last_call now so concurrent callers see the slot taken
+            # even though we release the lock during ``time.sleep``.
+            self._last_call[engine] = _now() + sleep_for
+        if sleep_for > 0:
+            time.sleep(sleep_for)
+        return wait <= self._max_sleep
 
 
 _SEARCH_THROTTLE = _SearchEngineThrottle()
+
+
+def _parse_retry_after(value: str | None, default: float = 300.0) -> float:
+    """Parse a Retry-After header (RFC 7231) into seconds; 5min default floor."""
+    if not value:
+        return default
+    try:
+        return max(float(value), 60.0)
+    except ValueError:
+        # Could be an HTTP-date — too rare to support; fall back to default.
+        return default
 
 
 def _syndication_token(tweet_id: str) -> str:
@@ -433,7 +482,12 @@ class SpontaneousXScraper:
         cached = _SEARCH_THROTTLE.cached("brave", site_query)
         if cached is not None:
             return self._hydrate_via_syndication(cached[: max(limit, 1)])
-        _SEARCH_THROTTLE.wait_slot("brave")
+        if _SEARCH_THROTTLE.is_banned("brave"):
+            raise RuntimeError("brave banned (429 cooldown active)")
+        if not _SEARCH_THROTTLE.wait_slot("brave"):
+            # Throttle wanted to sleep > max_sleep; fall through rather than
+            # eat the route's timeout budget.
+            raise RuntimeError("brave throttle skipped (fallthrough)")
         url = (
             "https://search.brave.com/search?q="
             + quote_plus(site_query)
@@ -447,6 +501,10 @@ class SpontaneousXScraper:
                 "Accept": "text/html,application/xhtml+xml",
             },
         )
+        if response.status_code == 429:
+            cooldown = _parse_retry_after(response.headers.get("Retry-After"))
+            _SEARCH_THROTTLE.ban("brave", cooldown)
+            raise RuntimeError(f"brave http 429 (banned {cooldown:.0f}s)")
         if response.status_code >= 400:
             raise RuntimeError(f"brave http {response.status_code}")
         ids = self._tweet_ids_from_html(response.text)
@@ -461,7 +519,10 @@ class SpontaneousXScraper:
         cached = _SEARCH_THROTTLE.cached("ddg", ddg_query)
         if cached is not None:
             return self._hydrate_via_syndication(cached[: max(limit, 1)])
-        _SEARCH_THROTTLE.wait_slot("ddg")
+        if _SEARCH_THROTTLE.is_banned("ddg"):
+            raise RuntimeError("ddg banned (429 cooldown active)")
+        if not _SEARCH_THROTTLE.wait_slot("ddg"):
+            raise RuntimeError("ddg throttle skipped (fallthrough)")
         url = "https://html.duckduckgo.com/html/"
         response = self._client.post(
             url,
@@ -471,6 +532,10 @@ class SpontaneousXScraper:
                 "Accept-Language": "en-US,en;q=0.9",
             },
         )
+        if response.status_code == 429:
+            cooldown = _parse_retry_after(response.headers.get("Retry-After"))
+            _SEARCH_THROTTLE.ban("ddg", cooldown)
+            raise RuntimeError(f"ddg http 429 (banned {cooldown:.0f}s)")
         if response.status_code >= 400:
             raise RuntimeError(f"ddg http {response.status_code}")
         ids = self._tweet_ids_from_html(response.text)
@@ -485,7 +550,10 @@ class SpontaneousXScraper:
         cached = _SEARCH_THROTTLE.cached("bing", bing_query)
         if cached is not None:
             return self._hydrate_via_syndication(cached[: max(limit, 1)])
-        _SEARCH_THROTTLE.wait_slot("bing")
+        if _SEARCH_THROTTLE.is_banned("bing"):
+            raise RuntimeError("bing banned (429 cooldown active)")
+        if not _SEARCH_THROTTLE.wait_slot("bing"):
+            raise RuntimeError("bing throttle skipped (fallthrough)")
         url = f"https://www.bing.com/search?q={quote_plus(bing_query)}&count=30"
         response = self._client.get(
             url,
@@ -494,6 +562,10 @@ class SpontaneousXScraper:
                 "Accept-Language": "en-US,en;q=0.9",
             },
         )
+        if response.status_code == 429:
+            cooldown = _parse_retry_after(response.headers.get("Retry-After"))
+            _SEARCH_THROTTLE.ban("bing", cooldown)
+            raise RuntimeError(f"bing http 429 (banned {cooldown:.0f}s)")
         if response.status_code >= 400:
             raise RuntimeError(f"bing http {response.status_code}")
         ids = self._tweet_ids_from_html(response.text)

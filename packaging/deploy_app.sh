@@ -67,6 +67,22 @@ rm -rf "$TARGET"
 /usr/bin/ditto "$SOURCE" "$TARGET"
 cleanup_legacy_backups
 
+# SEC-15: TCC usage descriptions are not first-class in Tauri 2 — inject
+# them into the deployed bundle so the sidecar's data adapters can read
+# user-domain folders without a silent TCC hang on first launch (Catchem
+# pattern — see ARCHITECTURE notes in inject_info_plist.sh).
+if [[ -x "$ROOT/packaging/inject_info_plist.sh" ]]; then
+  bash "$ROOT/packaging/inject_info_plist.sh" "$TARGET" || \
+    echo "WARNING: inject_info_plist failed (continuing)" >&2
+fi
+
+# SEC-16: minisign updater key must not be world-readable. Hard-cap at 600
+# so a compromised browser/npm-postinstall process can't lift it and sign
+# malicious updates. Gitignored already; this enforces it on disk too.
+if [[ -f "$ROOT/packaging/keys/showme-updater.key" ]]; then
+  /bin/chmod 600 "$ROOT/packaging/keys/showme-updater.key" || true
+fi
+
 # REL-04 P12 — post-install verification. We allow this to fail without
 # aborting the deploy (otherwise a local ad-hoc sign would block every
 # `npm run deploy:app` invocation) but report the status loudly so a
