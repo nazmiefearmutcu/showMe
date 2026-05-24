@@ -59,6 +59,23 @@ export const useSentimentStore = create<SentimentStoreShape>((set, get) => ({
   _inflight: null,
 
   refresh: async (symbols: string[]) => {
+    // CRITICAL FIX (audit S6): when called with an empty watchlist (cold
+    // boot / user cleared every pin), we used to flip loading=true → false
+    // every 60s for nothing, which made the gauge skeleton blink. Bail
+    // EARLY without touching `loading` so the panel stays at its current
+    // visual state (neutral baseline).
+    if (!Array.isArray(symbols) || symbols.length === 0) {
+      // Make sure we don't leak an in-flight controller from a previous
+      // non-empty call either — abort + clear so the next refresh sees a
+      // clean slate.
+      const prevEmpty = get()._inflight;
+      if (prevEmpty) {
+        prevEmpty.abort();
+        set({ _inflight: null });
+      }
+      return;
+    }
+
     // Cancel any in-flight refresh so concurrent calls don't clobber state in
     // arbitrary order. Last caller wins.
     const prev = get()._inflight;
@@ -111,7 +128,10 @@ export const useSentimentStore = create<SentimentStoreShape>((set, get) => ({
       });
     } catch (e) {
       // AbortError = a newer refresh raced us; not a user-visible error.
+      // We still need to clear `_inflight` so the next refresh has a clean
+      // slate (audit M-tier item: AbortError leak).
       if (controller.signal.aborted || (e as Error)?.name === "AbortError") {
+        if (get()._inflight === controller) set({ _inflight: null });
         return;
       }
       set({

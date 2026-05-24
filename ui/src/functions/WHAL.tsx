@@ -9,7 +9,7 @@
  *   - The "this is a public proxy, not a wallet-label transfer feed"
  *     caveat so the user never mistakes proxy rows for a paid feed.
  */
-import { useMemo, type CSSProperties } from "react";
+import { useEffect, useMemo, type CSSProperties } from "react";
 import {
   DataGrid,
   type DataGridColumn,
@@ -116,6 +116,11 @@ export function WHALPane({ code, symbol }: FunctionPaneProps) {
   const resolvedSymbol = symbol || SAMPLES[market];
   const threshold = Number(thresholdK) * 1000;
 
+  // UA-HIGH-16: previously `tick` was inside the `params` object — `useFunction`
+  // serializes params into the cache key, so every tick produced a fresh key,
+  // wiped the cached payload, and re-flashed the skeleton on every refresh.
+  // Drop tick from params (it's not a backend-visible argument anyway) and
+  // drive re-fetch via the refetch effect below.
   const { state, data, error, refetch } = useFunction<unknown>({
     code,
     symbol: resolvedSymbol,
@@ -125,9 +130,13 @@ export function WHALPane({ code, symbol }: FunctionPaneProps) {
       threshold_usd: threshold,
       limit: 25,
       lookback_hours: 24,
-      tick,
     },
   });
+  useEffect(() => {
+    if (tick === 0) return; // initial mount handled by useFunction's own load
+    refetch();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- tick is the trigger
+  }, [tick]);
 
   const payload = useMemo<WHALPayload>(
     () =>

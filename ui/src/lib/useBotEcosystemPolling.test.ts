@@ -5,7 +5,7 @@
  * loadAll` AND `usePerformanceStore.loadLeaderboard` on the same interval,
  * fires once immediately on mount, and clears the interval on unmount.
  */
-import { renderHook } from "@testing-library/react";
+import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useBotEcosystemPolling, BOT_ECOSYSTEM_POLL_MS } from "./useBotEcosystemPolling";
 import { useBotsSupervisionStore } from "./bots-supervision-store";
@@ -46,11 +46,17 @@ describe("useBotEcosystemPolling", () => {
     expect(supSpy).toHaveBeenCalledTimes(1);
     expect(perfSpy).toHaveBeenCalledTimes(1);
 
-    vi.advanceTimersByTime(5_000);
+    // S4 fix: polling now goes through useVisibilityTick which uses
+    // setState; we need `act` to flush React's re-render → effect chain.
+    act(() => {
+      vi.advanceTimersByTime(5_000);
+    });
     expect(supSpy).toHaveBeenCalledTimes(2);
     expect(perfSpy).toHaveBeenCalledTimes(2);
 
-    vi.advanceTimersByTime(5_000);
+    act(() => {
+      vi.advanceTimersByTime(5_000);
+    });
     expect(supSpy).toHaveBeenCalledTimes(3);
     expect(perfSpy).toHaveBeenCalledTimes(3);
   });
@@ -73,7 +79,9 @@ describe("useBotEcosystemPolling", () => {
     renderHook(() => useBotEcosystemPolling());
     // 1× on mount, advance by default interval → exactly 2× total.
     expect(supSpy).toHaveBeenCalledTimes(1);
-    vi.advanceTimersByTime(BOT_ECOSYSTEM_POLL_MS);
+    act(() => {
+      vi.advanceTimersByTime(BOT_ECOSYSTEM_POLL_MS);
+    });
     expect(supSpy).toHaveBeenCalledTimes(2);
   });
 });

@@ -29,6 +29,15 @@ interface TemplateStoreShape {
   entries: TemplateEntry[];
   selectedId: string | null;
   loading: boolean;
+  /**
+   * Round 24 CRITICAL — concurrent-instantiate guard. The TMPL modal's
+   * "Oluştur" button has `disabled={creating}` but a hardware double-click
+   * still fired two POST /api/templates/{id}/instantiate before React
+   * paint. Each call persists a new strategy → duplicates in STRA/BOT
+   * dropdowns. This flag is the canonical seal; the modal-side `creating`
+   * is decorative.
+   */
+  instantiating: boolean;
   error: string | null;
 
   loadCatalog: () => Promise<void>;
@@ -41,6 +50,7 @@ export const useTemplateStore = create<TemplateStoreShape>((set, get) => ({
   entries: [],
   selectedId: null,
   loading: false,
+  instantiating: false,
   error: null,
 
   loadCatalog: async () => {
@@ -58,6 +68,9 @@ export const useTemplateStore = create<TemplateStoreShape>((set, get) => ({
   byId: (id) => get().entries.find((e) => e.id === id),
 
   instantiate: async (id, name, symbol) => {
+    // Round 24 CRITICAL — see `instantiating` field docstring.
+    if (get().instantiating) return null;
+    set({ instantiating: true });
     try {
       const result = await sidecarFetch<InstantiateResult>(
         `/api/templates/${id}/instantiate`,
@@ -81,6 +94,8 @@ export const useTemplateStore = create<TemplateStoreShape>((set, get) => ({
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String(e) });
       return null;
+    } finally {
+      set({ instantiating: false });
     }
   },
 }));

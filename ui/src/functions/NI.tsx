@@ -289,20 +289,24 @@ export function NIPane({ code, symbol }: FunctionPaneProps) {
     return count > 0 ? sum / count : null;
   }, [veryfinderMap]);
 
-  // Impact distribution for KPI ribbon
+  // Impact distribution for KPI ribbon.
+  //
+  // UA-HIGH-07: previously each filter callback called `list.indexOf(a)` —
+  // O(n) per item → O(n²) overall. On a 500-article feed that's 250k passes
+  // *per render*. Single forEach pass + accumulator drops it to O(n).
   const impactStats = useMemo(() => {
     const list = articles ?? [];
-    const bull = list.filter((a) => {
-      const k = articleKey(a, list.indexOf(a));
+    let bull = 0;
+    let bear = 0;
+    let high = 0;
+    list.forEach((a, i) => {
+      const k = articleKey(a, i);
       const o = veryfinderMap[k];
-      return o?.ok && Number(o.social_score ?? 0) > 12;
-    }).length;
-    const bear = list.filter((a) => {
-      const k = articleKey(a, list.indexOf(a));
-      const o = veryfinderMap[k];
-      return o?.ok && Number(o.social_score ?? 0) < -12;
-    }).length;
-    const high = list.filter((a) => Number(a.importance_score ?? 0) >= 70).length;
+      const score = Number(o?.social_score ?? 0);
+      if (o?.ok && score > 12) bull += 1;
+      if (o?.ok && score < -12) bear += 1;
+      if (Number(a.importance_score ?? 0) >= 70) high += 1;
+    });
     return { bull, bear, high };
   }, [articles, veryfinderMap]);
 

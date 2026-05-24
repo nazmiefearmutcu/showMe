@@ -24,6 +24,7 @@ import {
   StatusSection,
 } from "@/design-system";
 import { useFunction } from "@/lib/useFunction";
+import { maxOf, minOf } from "@/lib/maxOf";
 import {
   FunctionControlGroup,
   LoadStatePill,
@@ -447,8 +448,9 @@ function PolicyRateHistory({ row }: { row?: BTMMRow }) {
   );
   if (points.length < 2) return null;
   const values = points.map((point) => Number(point.policy_rate));
-  const min = Math.min(...values);
-  const max = Math.max(...values);
+  // UA-HIGH-12: stack-safe.
+  const min = minOf(values);
+  const max = maxOf(values);
   const span = max - min || 1;
   const width = 720;
   const height = 132;

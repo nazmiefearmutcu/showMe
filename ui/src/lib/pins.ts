@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from "react";
 import type { FunctionEntry } from "./sidecar";
 import { normalizeSymbolInput } from "./symbols";
-import { safeReadLocal } from "./safe-storage";
+import { safeReadLocal, safeWriteLocal } from "./safe-storage";
 
 export type PinnedItemKind = "function" | "symbol" | "workspace";
 
@@ -154,27 +154,47 @@ function writePinnedItems(items: PinnedItem[]): void {
     .filter((item): item is PinnedItem => Boolean(item))
     .slice(0, MAX_PINNED);
   cache = normalized;
-  if (typeof localStorage !== "undefined") {
-    localStorage.setItem(KEY, JSON.stringify(normalized));
-  }
+  // HIGH FIX (audit S14): route through safeWriteLocal so QuotaExceededError
+  // emits a single toast instead of silently failing. The in-memory cache
+  // stays updated even if persistence fails so the active session keeps
+  // showing the user's pins.
+  safeWriteLocal(KEY, normalized, { label: "Pinned items" });
   emitPinnedChange();
+}
+
+// HIGH FIX (audit S9): the previous implementation added one window-level
+// `storage` listener per subscriber — 24 mounted panes meant 24 listeners
+// each parsing every storage event, each calling its captured `listener()`
+// callback even though the cache invalidation only needs to happen once.
+// Single module-level listener + fan-out via the existing `listeners` set.
+let _storageListenerInstalled = false;
+function _onStorageEvent(event: StorageEvent): void {
+  if (event.key !== KEY) return;
+  cache = null;
+  for (const listener of listeners) listener();
+}
+
+function _ensureStorageListener(): void {
+  if (_storageListenerInstalled) return;
+  if (typeof window === "undefined") return;
+  window.addEventListener("storage", _onStorageEvent);
+  _storageListenerInstalled = true;
+}
+
+function _maybeRemoveStorageListener(): void {
+  if (!_storageListenerInstalled) return;
+  if (listeners.size > 0) return;
+  if (typeof window === "undefined") return;
+  window.removeEventListener("storage", _onStorageEvent);
+  _storageListenerInstalled = false;
 }
 
 function subscribePinned(listener: () => void): () => void {
   listeners.add(listener);
-  const onStorage = (event: StorageEvent) => {
-    if (event.key !== KEY) return;
-    cache = null;
-    listener();
-  };
-  if (typeof window !== "undefined") {
-    window.addEventListener("storage", onStorage);
-  }
+  _ensureStorageListener();
   return () => {
     listeners.delete(listener);
-    if (typeof window !== "undefined") {
-      window.removeEventListener("storage", onStorage);
-    }
+    _maybeRemoveStorageListener();
   };
 }
 

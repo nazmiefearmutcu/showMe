@@ -206,9 +206,73 @@ export async function sidecarFetch<T>(path: string, init?: RequestInit): Promise
     headers.set("X-ShowMe-Token", token);
   }
   const res = await fetch(url, { ...init, headers });
-  if (!res.ok) throw new Error(`${path}: ${res.status} ${res.statusText}`);
+  if (!res.ok) {
+    // CRITICAL FIX (audit S2): preserve FastAPI's `detail` field instead of
+    // discarding the response body. Form panes (OrderTicket / BOT / STRA /
+    // CONN / ALRT / TMPL) read `(err as SidecarError).detail` to render
+    // human-readable 422 validation errors instead of the meaningless
+    // "422 Unprocessable Entity". The body may be plain JSON `{detail: ...}`,
+    // a list of validation errors, or a raw string — handle all three.
+    let detail: unknown = "";
+    let detailText = "";
+    try {
+      const text = await res.text();
+      if (text) {
+        try {
+          const parsed = JSON.parse(text);
+          detail =
+            parsed && typeof parsed === "object" && "detail" in parsed
+              ? (parsed as { detail: unknown }).detail
+              : parsed;
+          // Stringify structured details for the Error message text. Pydantic
+          // typically returns `[{loc, msg, type}, ...]`; flatten to msg list.
+          if (Array.isArray(detail)) {
+            detailText = detail
+              .map((item) => {
+                if (item && typeof item === "object" && "msg" in item) {
+                  return String((item as { msg: unknown }).msg ?? "");
+                }
+                return typeof item === "string" ? item : JSON.stringify(item);
+              })
+              .filter(Boolean)
+              .join("; ");
+          } else if (typeof detail === "string") {
+            detailText = detail;
+          } else if (detail != null) {
+            detailText = JSON.stringify(detail);
+          }
+        } catch {
+          // Non-JSON body — surface as-is.
+          detail = text;
+          detailText = text;
+        }
+      }
+    } catch {
+      // network read failed — fall through with empty detail
+    }
+    const message = `${path}: ${res.status} ${res.statusText}${detailText ? " — " + detailText : ""}`;
+    const err = new Error(message) as Error & { status?: number; detail?: unknown; path?: string };
+    err.status = res.status;
+    err.detail = detail;
+    err.path = path;
+    throw err;
+  }
   useAppStore.getState().setSidecarStatus("healthy");
   return (await res.json()) as T;
+}
+
+/** Type-safe getter for the structured error metadata `sidecarFetch` attaches. */
+export interface SidecarError extends Error {
+  status?: number;
+  detail?: unknown;
+  path?: string;
+}
+
+export function isSidecarError(err: unknown): err is SidecarError {
+  return (
+    err instanceof Error &&
+    ("status" in err || "detail" in err || "path" in err)
+  );
 }
 
 export interface SidecarHealth {

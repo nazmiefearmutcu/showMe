@@ -102,6 +102,15 @@ interface StrategyStoreShape {
   loading: boolean;
   /** H-UI-2 + LOW asimetri — flip during delete so UI can disable Sil. */
   removing: boolean;
+  /**
+   * Round 24 CRITICAL — flip during POST/PUT so the UI can disable Kaydet AND
+   * the store can early-exit a concurrent `save()` call. Without this guard a
+   * native double-click on Kaydet produced two POST /api/strategies → two
+   * strategy rows with the same name + skewed timestamps.
+   */
+  saving: boolean;
+  /** Round 24 — flip during POST /preview so STRA can disable Preview button. */
+  previewing: boolean;
   error: string | null;
   lastPreview: PreviewResult | null;
   /** Track AbortController for the in-flight openExisting (H-UI-11). */
@@ -123,6 +132,8 @@ export const useStrategyStore = create<StrategyStoreShape>((set, get) => ({
   dirty: false,
   loading: false,
   removing: false,
+  saving: false,
+  previewing: false,
   error: null,
   lastPreview: null,
   _openController: null,
@@ -181,9 +192,15 @@ export const useStrategyStore = create<StrategyStoreShape>((set, get) => ({
   },
 
   save: async () => {
+    // Round 24 CRITICAL — concurrent-save guard. Native double-click on
+    // Kaydet used to fire two POST /api/strategies before the button's
+    // `disabled={saving}` re-rendered, producing duplicate strategy rows.
+    // The early-exit here is the only line that's race-free; the UI
+    // disable is decorative.
+    if (get().saving) return null;
     const cur = get().draft;
     if (!cur) return null;
-    set({ loading: true, error: null });
+    set({ saving: true, loading: true, error: null });
     try {
       if (get().draftIsNew || !cur.id) {
         const saved = await sidecarFetch<StrategySpec>("/api/strategies", {
@@ -191,7 +208,7 @@ export const useStrategyStore = create<StrategyStoreShape>((set, get) => ({
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(cur),
         });
-        set({ draft: saved, draftIsNew: false, dirty: false, loading: false });
+        set({ draft: saved, draftIsNew: false, dirty: false, loading: false, saving: false });
         await get().loadList();
         return saved;
       } else {
@@ -200,17 +217,20 @@ export const useStrategyStore = create<StrategyStoreShape>((set, get) => ({
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(cur),
         });
-        set({ draft: saved, dirty: false, loading: false });
+        set({ draft: saved, dirty: false, loading: false, saving: false });
         await get().loadList();
         return saved;
       }
     } catch (e) {
-      set({ loading: false, error: e instanceof Error ? e.message : String(e) });
+      set({ loading: false, saving: false, error: e instanceof Error ? e.message : String(e) });
       return null;
     }
   },
 
   remove: async (id) => {
+    // Round 24 HIGH — already-removing guard. The 2nd rapid Sil click would
+    // otherwise queue another window.confirm + DELETE pair.
+    if (get().removing) return false;
     // C9 cascade delete — query Agent 2's dependents endpoint first; if it
     // is not yet deployed, fall back to the legacy single-DELETE path
     // (still safer than the old silent behavior because the user has
@@ -256,14 +276,20 @@ export const useStrategyStore = create<StrategyStoreShape>((set, get) => ({
   },
 
   preview: async (id) => {
+    // Round 24 HIGH — preview is an expensive backend call (full bar
+    // history + indicator compute). A double-click cost two engine runs
+    // and made the UI spinner stick. Early-exit when one is already
+    // running; the second click is idempotent.
+    if (get().previewing) return null;
+    set({ previewing: true });
     try {
       const result = await sidecarFetch<PreviewResult>(
         `/api/strategies/${id}/preview`, { method: "POST" },
       );
-      set({ lastPreview: result });
+      set({ lastPreview: result, previewing: false });
       return result;
     } catch (e) {
-      set({ error: e instanceof Error ? e.message : String(e) });
+      set({ error: e instanceof Error ? e.message : String(e), previewing: false });
       return null;
     }
   },

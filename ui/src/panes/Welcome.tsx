@@ -6,6 +6,7 @@ import { useSentimentStore } from "@/lib/sentiment-store";
 import type { FunctionEntry } from "@/lib/sidecar";
 import { useAppStore } from "@/lib/store";
 import { useFunction } from "@/lib/useFunction";
+import { useVisibilityTick } from "@/lib/useVisibilityTick";
 import { useLiveQuotes, type QuoteView } from "@/lib/market-data";
 import { formatPrice } from "@/lib/format";
 import { loadWatchlist, type WatchlistRow } from "@/lib/watchlist";
@@ -378,13 +379,23 @@ export function Welcome() {
   // Live quote fan-out for the watchlist + KPI strip in one batch. Empty array
   // is a hard short-circuit inside `useLiveQuotesInternal`, so when the user
   // has no saved symbols we don't fire network requests.
-  const liveQuoteSymbols = useMemo(() => {
-    // Resolve portfolio symbols once we know they exist; otherwise saved set.
+  //
+  // UA-CRITICAL-06: `positions` identity is replaced on every snapshot poll
+  // (~5s). That used to invalidate `liveQuoteSymbols`, which invalidated the
+  // `useLiveQuotes` arg, which tore down + reopened every WS channel — a
+  // textbook reconnect storm. Fix: derive a stable string key (sorted symbols
+  // joined), then memoize the actual array on that key alone.
+  const liveQuoteKey = useMemo(() => {
     const baseSymbols = positions.length
       ? positions.slice(0, 12).map((p) => p.symbol).filter(Boolean)
       : savedWatchSymbols;
-    return [...baseSymbols, ...MARKET_STRIP_QUOTE_SYMBOLS];
+    const merged = [...baseSymbols, ...MARKET_STRIP_QUOTE_SYMBOLS];
+    return Array.from(new Set(merged)).sort().join(",");
   }, [positions, savedWatchSymbols]);
+  const liveQuoteSymbols = useMemo(
+    () => (liveQuoteKey ? liveQuoteKey.split(",") : []),
+    [liveQuoteKey],
+  );
 
   const liveQuotes = useLiveQuotes(liveQuoteSymbols, {
     enabled: status === "healthy" && liveQuoteSymbols.length > 0,
@@ -1234,9 +1245,16 @@ function marketSession(date: Date): string {
 // and newsflow all share one wall clock anchored at the user's tz.
 
 function NewsflowPanel({ ready, tz }: { ready: boolean; tz: string }) {
+  // UA-HIGH-25: previously `enabled: ready` was a one-shot — when the sidecar
+  // restarted (warm-up bumps the auth token / connection epoch), the
+  // newsflow stayed pinned to the pre-restart payload until the user
+  // navigated away and back. Inject an `epochKey` derived from
+  // visibility-tick into params so the fetch identity rotates and the
+  // useFunction cache key invalidates on tab refocus + every 5min anyway.
+  const epochKey = useVisibilityTick(5 * 60 * 1000);
   const top = useFunction<TopResponse>({
     code: "TOP",
-    params: { query: "market", limit: 24, days: 7 },
+    params: { query: "market", limit: 24, days: 7, _epoch: epochKey },
     enabled: ready,
   });
   const items: TopArticle[] = useMemo(() => {

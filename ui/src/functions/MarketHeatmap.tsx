@@ -17,6 +17,7 @@ import {
 } from "@/design-system";
 import { useFunction } from "@/lib/useFunction";
 import { formatMissing, formatPrice } from "@/lib/format";
+import { maxAbsOf } from "@/lib/maxOf";
 import {
   FunctionControlGroup,
   LoadStatePill,
@@ -342,7 +343,8 @@ function SectorHeatGrid({
   rows: HeatmapRow[];
   isSector: boolean;
 }) {
-  const maxAbs = Math.max(...rows.map((row) => Math.abs(numericChange(row))), 1);
+  // UA-HIGH-12: stack-safe.
+  const maxAbs = maxAbsOf(rows.map(numericChange), 1);
   return (
     <section style={heatGridStyle} aria-label="ETF performance heatmap">
       {rows.map((row, idx) => {
