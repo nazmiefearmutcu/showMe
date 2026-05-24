@@ -1,9 +1,7 @@
 """evaluate() rule + state-machine tests."""
 from __future__ import annotations
 
-import numpy as np
 import pandas as pd
-import pytest
 
 from showme.strategies.evaluate import evaluate
 from showme.strategies.spec import IndicatorRef, Rule, StrategySpec

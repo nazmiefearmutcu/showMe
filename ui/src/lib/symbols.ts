@@ -4,6 +4,8 @@
  * Used by the SymbolBar to suggest recently-viewed tickers across pane
  * switches. Stored under `showme.recent-symbols` as a JSON array of {sym, ts}.
  */
+import { safeReadLocal } from "./safe-storage";
+
 const KEY = "showme.recent-symbols";
 const MAX = 12;
 export const FALLBACK_SYMBOL = "AAPL";
@@ -172,17 +174,13 @@ interface Entry {
 }
 
 function load(): Entry[] {
-  if (typeof localStorage === "undefined") return [];
-  try {
-    const raw = localStorage.getItem(KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed)
-      ? parsed.filter((e) => typeof e?.sym === "string").slice(0, MAX)
-      : [];
-  } catch {
-    return [];
-  }
+  const parsed = safeReadLocal<unknown[]>(KEY, [], {
+    label: "Recent symbols",
+    validate: (v): v is unknown[] => Array.isArray(v),
+  });
+  return parsed
+    .filter((e): e is Entry => Boolean(e && typeof (e as { sym?: unknown }).sym === "string"))
+    .slice(0, MAX);
 }
 
 function save(entries: Entry[]): void {

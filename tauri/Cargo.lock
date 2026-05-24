@@ -4152,6 +4152,7 @@ dependencies = [
  "block2",
  "cocoa",
  "core-foundation",
+ "libc",
  "log",
  "objc2",
  "objc2-app-kit",

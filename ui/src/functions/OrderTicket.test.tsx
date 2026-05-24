@@ -60,8 +60,8 @@ describe("OrderTicket", () => {
                    quantity: 0.01, order_type: "market", time_in_force: "gtc",
                    limit_price: null, stop_price: null, notes: "" },
       },
-      ticket: { credentialId: "abc", brokerName: "binance:abc", symbol: "BTC/USDT",
-                side: "buy", orderType: "market", quantity: 0.01,
+      ticket: { credentialId: "abc", brokerName: "binance:abc", accountLabel: "main",
+                symbol: "BTC/USDT", side: "buy", orderType: "market", quantity: 0.01,
                 limitPrice: null, stopPrice: null, tif: "gtc", notes: "" },
     });
     render(<OrderTicket {...BASE_PROPS} />);

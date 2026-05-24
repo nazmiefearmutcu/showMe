@@ -715,7 +715,10 @@ def _route_function_params(code: str, params: dict[str, Any]) -> dict[str, Any]:
     if code.upper() == "SAT" and defaults.get("days") and not (merged.get("date_from") or merged.get("date_to")):
         try:
             horizon = max(1, min(int(defaults.get("days") or 7), 365))
-        except Exception:
+        except Exception as exc:  # noqa: BLE001
+            # QA-fix: log so a bad caller-supplied ``days`` falls back to 7
+            # observably rather than silently.
+            LOG.debug("SAT horizon coerce failed: %s; defaulting to 7", exc)
             horizon = 7
         today = datetime.now(timezone.utc).date()
         defaults["date_from"] = (today - timedelta(days=horizon)).isoformat()

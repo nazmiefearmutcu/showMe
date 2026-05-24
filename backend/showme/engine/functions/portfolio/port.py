@@ -52,6 +52,7 @@ class PORTFunction(BaseFunction):
                     instrument=None,
                     data={
                         "status": "ready_no_positions",
+                        "connected_exchanges": 0,
                         "positions": [],
                         "totals": {
                             "market_value": 0.0,

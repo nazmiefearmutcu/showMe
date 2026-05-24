@@ -110,8 +110,7 @@
   adapter: ccxt
   ccxt_id: aster
   requires:
-  - api_key
-  - api_secret
+  - private_key
   optional: []
   capabilities:
     fetch_balance: true
@@ -145,8 +144,6 @@
   aliases: []
   asset_classes:
   - spot
-  - futures
-  - margin
   regions:
   - global
   adapter: ccxt
@@ -2180,25 +2177,6 @@
   capabilities:
     fetch_balance: true
     fetch_positions: true
-    fetch_open_orders: true
-    create_order: true
-    cancel_order: true
-- id: zonda
-  display_name: Zonda
-  aliases: []
-  asset_classes:
-  - spot
-  regions:
-  - global
-  adapter: ccxt
-  ccxt_id: zonda
-  requires:
-  - api_key
-  - api_secret
-  optional: []
-  capabilities:
-    fetch_balance: true
-    fetch_positions: false
     fetch_open_orders: true
     create_order: true
     cancel_order: true

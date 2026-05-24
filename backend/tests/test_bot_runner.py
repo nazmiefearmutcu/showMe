@@ -1,14 +1,13 @@
 """BotRunner tick + lifecycle tests with mocked broker + evaluator."""
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pandas as pd
 import pytest
 
-from showme.bots.record import BotRecord, SignalEntry
+from showme.bots.record import BotRecord
 from showme.bots.runner import BotRunner
 from showme.bots.store import BotStore
 
@@ -20,9 +19,12 @@ def _isolate_factory():
     snap_dyn = dict(factory_mod._DYNAMIC)
     snap_live = dict(factory_mod._LIVE)
     yield
-    factory_mod._REGISTRY.clear(); factory_mod._REGISTRY.update(snap_reg)
-    factory_mod._DYNAMIC.clear(); factory_mod._DYNAMIC.update(snap_dyn)
-    factory_mod._LIVE.clear(); factory_mod._LIVE.update(snap_live)
+    factory_mod._REGISTRY.clear()
+    factory_mod._REGISTRY.update(snap_reg)
+    factory_mod._DYNAMIC.clear()
+    factory_mod._DYNAMIC.update(snap_dyn)
+    factory_mod._LIVE.clear()
+    factory_mod._LIVE.update(snap_live)
 
 
 @pytest.fixture

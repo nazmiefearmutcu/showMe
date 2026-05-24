@@ -5,10 +5,11 @@
  * primitive). Round 16 promotes this into a draggable handle for relocating
  * a pane inside the tree.
  */
-import { useMemo, useState, type MouseEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { useWorkspace } from "@/lib/workspace";
 import { useAppStore } from "@/lib/store";
 import { t } from "@/i18n";
+import { useFocusTrap } from "@/lib/a11y";
 import {
   makePinnedItemForPane,
   pinItem,
@@ -47,6 +48,12 @@ export function PaneChrome({ leafId, code, symbol, linkGroup }: PaneChromeProps)
   const [picker, setPicker] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [dragPreview, setDragPreview] = useState<PaneDragPreview | null>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  // A11Y: trap Tab inside the dropdown so screen-reader / keyboard users
+  // can't escape into the underlying chrome. Escape handler already wired
+  // on the parent action wrapper; this complements it. Restores focus to
+  // the trigger on close.
+  useFocusTrap(menuRef, menuOpen);
   const pinTarget = useMemo(
     () => makePinnedItemForPane(code, symbol, idx),
     [code, idx, symbol],
@@ -56,8 +63,21 @@ export function PaneChrome({ leafId, code, symbol, linkGroup }: PaneChromeProps)
     action();
     setMenuOpen(false);
   };
+  // REL-04 P11 — track any in-flight drag listeners so an unmount mid-drag
+  // can detach them. Without this, dragging a pane chrome while another
+  // pane closes (which removes this PaneChrome from the tree) used to
+  // strand both `mousemove` and `mouseup` listeners on `window` forever.
+  const dragCleanupRef = useRef<(() => void) | null>(null);
+  useEffect(() => {
+    return () => {
+      dragCleanupRef.current?.();
+      dragCleanupRef.current = null;
+    };
+  }, []);
   const beginPanePinDrag = (event: MouseEvent<HTMLElement>) => {
     if (event.button !== 0 || isInteractiveTarget(event.target)) return;
+    // Tear down any prior drag listeners before installing a new pair.
+    dragCleanupRef.current?.();
     const startX = event.clientX;
     const startY = event.clientY;
     let moved = false;
@@ -72,17 +92,24 @@ export function PaneChrome({ leafId, code, symbol, linkGroup }: PaneChromeProps)
         overPinned: isPointInsidePinnedDropZone(moveEvent.clientX, moveEvent.clientY),
       });
     };
-    const onMouseUp = (upEvent: globalThis.MouseEvent) => {
+    const cleanup = () => {
       window.removeEventListener("mousemove", onMouseMove);
       window.removeEventListener("mouseup", onMouseUp);
       setDragPreview(null);
+      dragCleanupRef.current = null;
+    };
+    const onMouseUp = (upEvent: globalThis.MouseEvent) => {
+      cleanup();
       if (!moved) return;
       if (isPointInsidePinnedDropZone(upEvent.clientX, upEvent.clientY)) {
         pinItem(pinTarget);
       }
     };
     window.addEventListener("mousemove", onMouseMove);
-    window.addEventListener("mouseup", onMouseUp, { once: true });
+    // Note: no `{ once: true }` here — we own the removeEventListener call
+    // inside `cleanup`, which is symmetric with the unmount safety net.
+    window.addEventListener("mouseup", onMouseUp);
+    dragCleanupRef.current = cleanup;
   };
 
   return (
@@ -133,7 +160,13 @@ export function PaneChrome({ leafId, code, symbol, linkGroup }: PaneChromeProps)
           <span aria-hidden>...</span>
         </button>
         {menuOpen && (
-          <div className="pane-chrome__menu" role="menu" aria-label="Pane actions">
+          <div
+            ref={menuRef}
+            className="pane-chrome__menu"
+            role="menu"
+            aria-label="Pane actions"
+            data-testid="pane-chrome-menu"
+          >
             <button
               type="button"
               role="menuitem"

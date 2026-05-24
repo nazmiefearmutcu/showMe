@@ -94,10 +94,16 @@ def test_frh_live_false_string_keeps_template_path() -> None:
     result = asyncio.run(fn.execute(symbols="BTCUSDT", live="false"))
     # Non-live path returns the deterministic template, label = funding_rate_model
     assert "funding_rate_model" in (result.sources or [])
-    # And that label is suppressed by sanitize_function_payload (P0-1):
+    # 2026-05-24: sanitizer now labels (not suppresses). The
+    # ``funding_rate_model`` source ends in ``_model`` so the row stays
+    # in place with ``data_state == "model"`` and the metadata records
+    # the same; the legacy ``synthetic`` flag is reserved for true
+    # template/sample/placeholder strings now.
     payload = {"data": result.data, "sources": result.sources, "metadata": {}}
     sanitized = server.sanitize_function_payload("FRH", {}, payload)
-    assert sanitized.get("metadata", {}).get("synthetic") is True
+    assert sanitized.get("data_state") == "model"
+    assert sanitized.get("sanitizer_summary", {}).get("model", 0) >= 1
+    assert sanitized.get("metadata", {}).get("degraded") is True
 
 
 @pytest.mark.parametrize("val", ["0", "false", "False", "", "no", "off"])

@@ -59,24 +59,32 @@ class WIRPFunction(BaseFunction):
 
 
 def _probability_rows(central_bank: str) -> list[dict[str, Any]]:
+    # Verified against Fed calendar 2026-05-24
+    # FED: https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm
+    # Meetings span two days; we use the decision-day (second day).
+    # ECB: governing-council monetary-policy meetings 2026.
+    # BOE: MPC schedule 2026 (decision Thursdays).
     templates = {
         "FED": [
-            ("2026-06-10", 0.18, 0.72, 0.10),
+            ("2026-06-17", 0.18, 0.72, 0.10),
             ("2026-07-29", 0.28, 0.62, 0.10),
             ("2026-09-16", 0.36, 0.55, 0.09),
-            ("2026-11-04", 0.42, 0.50, 0.08),
+            ("2026-10-28", 0.42, 0.50, 0.08),
+            ("2026-12-09", 0.45, 0.48, 0.07),
         ],
         "ECB": [
-            ("2026-06-11", 0.22, 0.68, 0.10),
+            ("2026-06-04", 0.22, 0.68, 0.10),
             ("2026-07-23", 0.30, 0.61, 0.09),
             ("2026-09-10", 0.34, 0.58, 0.08),
             ("2026-10-29", 0.38, 0.55, 0.07),
+            ("2026-12-17", 0.40, 0.53, 0.07),
         ],
         "BOE": [
             ("2026-06-18", 0.20, 0.70, 0.10),
             ("2026-08-06", 0.31, 0.60, 0.09),
             ("2026-09-17", 0.35, 0.57, 0.08),
             ("2026-11-05", 0.40, 0.53, 0.07),
+            ("2026-12-17", 0.42, 0.51, 0.07),
         ],
     }
     rows = []

@@ -11,12 +11,21 @@ import {
   type CredentialRecord,
   useExchangeStore,
 } from "@/lib/exchange-store";
+import { confirmAction } from "@/lib/confirm";
 
 const ASSET_CLASSES = ["spot", "futures", "swap", "margin", "options", "equity", "fx"] as const;
 const REGIONS = ["global", "us", "eu", "asia"] as const;
 
-function Initials({ name }: { name: string }) {
-  const tag = name.replace(/[^A-Za-zĞÜŞİÖÇğüşıöç]/g, "").slice(0, 2).toUpperCase();
+function Initials({ name, fallbackId }: { name: string; fallbackId?: string }) {
+  // QA-2026-05-24 (A12): when a name collides on its 2-letter prefix (e.g.
+  // Coinbase / Coinbase Advanced / Coinbase Pro all "CO"), the caller can
+  // pass `fallbackId` so we render a 3-letter tag derived from the exchange
+  // id instead, breaking the visual collision.
+  const baseTag = name.replace(/[^A-Za-zĞÜŞİÖÇğüşıöç]/g, "").slice(0, 2).toUpperCase();
+  const expandedTag = fallbackId
+    ? fallbackId.replace(/[^A-Za-z0-9]/g, "").slice(0, 3).toUpperCase()
+    : baseTag;
+  const tag = fallbackId ? expandedTag : baseTag;
   return (
     <span
       style={{
@@ -29,13 +38,52 @@ function Initials({ name }: { name: string }) {
         background: "var(--surface-2)",
         color: "var(--fg-2)",
         fontWeight: 600,
-        fontSize: 12,
+        fontSize: tag.length > 2 ? 10 : 12,
         flex: "0 0 auto",
       }}
     >
       {tag || "??"}
     </span>
   );
+}
+
+/**
+ * Compute the set of catalog ids whose initials (2-letter prefix) collide
+ * with another row. Those rows render with a 3-letter id-derived tag and a
+ * suffix on the display name so two `Coinbase Advanced` entries don't
+ * appear visually identical.
+ */
+export function collidingInitials(entries: CatalogEntry[]): Set<string> {
+  const buckets = new Map<string, string[]>();
+  for (const e of entries) {
+    const key = e.display_name
+      .replace(/[^A-Za-zĞÜŞİÖÇğüşıöç]/g, "")
+      .slice(0, 2)
+      .toUpperCase();
+    const list = buckets.get(key) ?? [];
+    list.push(e.id);
+    buckets.set(key, list);
+  }
+  const out = new Set<string>();
+  buckets.forEach((ids) => {
+    if (ids.length > 1) ids.forEach((id) => out.add(id));
+  });
+  return out;
+}
+
+/**
+ * Compute the set of display_names that appear on more than one catalog
+ * entry. Those rows render with " (exchange-id)" suffix so the user can
+ * tell them apart.
+ */
+export function collidingDisplayNames(entries: CatalogEntry[]): Set<string> {
+  const counts = new Map<string, number>();
+  for (const e of entries) counts.set(e.display_name, (counts.get(e.display_name) ?? 0) + 1);
+  const out = new Set<string>();
+  counts.forEach((n, name) => {
+    if (n > 1) out.add(name);
+  });
+  return out;
 }
 
 function CredentialRow({
@@ -48,10 +96,15 @@ function CredentialRow({
   const [confirm, setConfirm] = useState("");
   const [testing, setTesting] = useState<"idle" | "ok" | "err">("idle");
   const [testMsg, setTestMsg] = useState<string | null>(null);
+  // QA-2026-05-24 (A12): if a prior delete-click ran the dependents lookup
+  // and BOTH endpoints failed, the row remembers it so the next click
+  // happens against a visible "uncategorized bots" warning instead of
+  // surprising the user mid-modal.
+  const [botsUnknown, setBotsUnknown] = useState(false);
   const canTrade = rec.permissions.includes("trade");
   return (
     <div style={{
-      display: "grid", gridTemplateColumns: "1fr auto auto auto",
+      display: "grid", gridTemplateColumns: "1fr auto auto auto auto",
       gap: 8, alignItems: "center", padding: "6px 0",
       borderBottom: "1px solid var(--border-1)",
     }}>
@@ -87,7 +140,39 @@ function CredentialRow({
           </button>
         </form>
       )}
-      <button onClick={() => onDelete(rec.id)}>Sil</button>
+      {botsUnknown && (
+        <span
+          data-testid={`conn-bots-unknown-${rec.id}`}
+          title="Bot bağımlılıkları doğrulanamadı — silmeden önce kontrol et."
+          style={{
+            fontSize: 11,
+            color: "var(--accent-warn)",
+            background: "color-mix(in srgb, var(--accent-warn) 12%, transparent)",
+            border: "1px solid var(--accent-warn)",
+            borderRadius: 4,
+            padding: "2px 6px",
+            whiteSpace: "nowrap",
+          }}
+        >
+          May affect uncategorized bots — verify before disconnecting
+        </span>
+      )}
+      <button
+        onClick={async () => {
+          // Pre-flight the dependents check so the row can warn ahead of the
+          // confirm modal. This is best-effort — onDelete still runs the
+          // canonical handleCredentialDelete().
+          try {
+            const deps = await useExchangeStore.getState().dependentBots(rec.id);
+            setBotsUnknown(deps.bots_unknown === true);
+          } catch {
+            setBotsUnknown(true);
+          }
+          onDelete(rec.id);
+        }}
+      >
+        Sil
+      </button>
       {testMsg && (
         <div style={{ gridColumn: "1 / -1", color: testing === "ok" ? "var(--accent-ok)" : "var(--accent-err)" }}>
           {testMsg}
@@ -95,6 +180,58 @@ function CredentialRow({
       )}
     </div>
   );
+}
+
+/**
+ * C9 (FIX_CONTRACT) — cascade-aware delete handler.  Resolves the dependent
+ * bot count via Agent 2's `/api/exchange/credentials/{id}/dependents` (with a
+ * client-side fallback when the endpoint is missing), shows the user a
+ * confirm dialog with the bot count, and forwards `force=true` to the DELETE
+ * route so the backend cascade-disables the dependents instead of 409'ing.
+ *
+ * QA-2026-05-24 (A12): when `bots_unknown === true` (both endpoints failed
+ * the lookup), the confirm dialog now warns the user instead of silently
+ * pretending zero bots are affected — and the delete uses `force=true`
+ * defensively so any uncategorized bot dependents are disabled rather than
+ * leaving an orphan bot pointing at a missing credential.
+ *
+ * Exported only for test purposes (`CONN.test.tsx::test_credential_delete_...`).
+ */
+export async function handleCredentialDelete(
+  credentialId: string,
+  accountLabel: string,
+): Promise<boolean> {
+  const dependents = await useExchangeStore.getState().dependentBots(credentialId);
+  const botCount = dependents.bot_count;
+  const unknown = dependents.bots_unknown === true;
+  let title: string;
+  let body: string;
+  if (unknown) {
+    title = "Bot bağımlılıkları doğrulanamadı";
+    body =
+      `"${accountLabel}" bağlantısının kaç bota bağlı olduğu sunucu tarafından ` +
+      `doğrulanamadı (her iki uç nokta da başarısız). Silme işlemi muhtemelen ` +
+      `kategorize edilmemiş botları etkileyecek — devam edilsin mi?`;
+  } else if (botCount > 0) {
+    title = `${botCount} bot etkilenecek`;
+    body =
+      `Bu credential ${botCount} bota bağlı. Silme işlemi bu botları otomatik olarak ` +
+      `devre dışı bırakacak. Devam edilsin mi?`;
+  } else {
+    title = "Bağlantıyı sil";
+    body = `"${accountLabel}" bağlantısı silinsin mi?`;
+  }
+  const ok = await confirmAction({
+    title,
+    body,
+    primary: "Sil",
+    destructive: true,
+  });
+  if (!ok) return false;
+  return useExchangeStore.getState().deleteCredential(credentialId, {
+    // Force when (a) we know bots are attached, or (b) we couldn't verify.
+    force: botCount > 0 || unknown,
+  });
 }
 
 function ExchangeForm({ entry }: { entry: CatalogEntry }) {
@@ -118,7 +255,9 @@ function ExchangeForm({ entry }: { entry: CatalogEntry }) {
         <CredentialRow
           key={rec.id}
           rec={rec}
-          onDelete={(id) => useExchangeStore.getState().deleteCredential(id)}
+          onDelete={(id) => {
+            void handleCredentialDelete(id, rec.account_label);
+          }}
           onEscalate={(id, lbl) => useExchangeStore.getState().upgradeToTrade(id, lbl)}
         />
       ))}
@@ -199,6 +338,37 @@ export function CONNPane() {
     [query, assetClasses, regions, filterCatalog, catalog],
   );
 
+  // QA-2026-05-24 (A12): hide filter buttons that match zero rows in the
+  // current catalog (e.g. `fx`, `swap`, `asia` had no entries) — they
+  // produced dead clicks that wiped the list. A button is kept visible if
+  // the user has already pressed it (so they can toggle back off) regardless
+  // of count.
+  const assetClassCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const e of catalog) {
+      for (const cls of e.asset_classes) {
+        counts.set(cls, (counts.get(cls) ?? 0) + 1);
+      }
+    }
+    return counts;
+  }, [catalog]);
+  const regionCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const e of catalog) {
+      for (const r of e.regions) counts.set(r, (counts.get(r) ?? 0) + 1);
+    }
+    return counts;
+  }, [catalog]);
+  const visibleAssetClasses = ASSET_CLASSES.filter(
+    (a) => (assetClassCounts.get(a) ?? 0) > 0 || assetClasses.includes(a),
+  );
+  const visibleRegions = REGIONS.filter(
+    (r) => (regionCounts.get(r) ?? 0) > 0 || regions.includes(r),
+  );
+
+  const collidingNames = useMemo(() => collidingDisplayNames(catalog), [catalog]);
+  const collidingInitialsIds = useMemo(() => collidingInitials(catalog), [catalog]);
+
   const credCount = (exId: string) =>
     credentials.filter((c) => c.exchange_id === exId).length;
 
@@ -218,7 +388,7 @@ export function CONNPane() {
           aria-label="Borsa ara"
         />
         <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
-          {ASSET_CLASSES.map((a) => (
+          {visibleAssetClasses.map((a) => (
             <button
               key={a}
               onClick={toggle(assetClasses, setAssetClasses, a)}
@@ -233,7 +403,7 @@ export function CONNPane() {
           ))}
         </div>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
-          {REGIONS.map((r) => (
+          {visibleRegions.map((r) => (
             <button
               key={r}
               onClick={toggle(regions, setRegions, r)}
@@ -248,33 +418,41 @@ export function CONNPane() {
           ))}
         </div>
         <div style={{ overflowY: "auto", flex: 1, minHeight: 0 }}>
-          {filtered.map((e) => (
-            <button
-              key={e.id}
-              onClick={() => setSelected(e.id)}
-              style={{
-                display: "grid", gridTemplateColumns: "auto 1fr auto",
-                gap: 8, alignItems: "center", padding: "6px 8px",
-                width: "100%", textAlign: "left",
-                background: selectedId === e.id ? "var(--surface-2)" : "transparent",
-                border: "none", borderBottom: "1px solid var(--border-1)",
-                cursor: "pointer",
-              }}
-            >
-              <Initials name={e.display_name} />
-              <div>
-                <div>{e.display_name}</div>
-                <div style={{ fontSize: 10, color: "var(--fg-2)" }}>
-                  {e.asset_classes.join(" · ")}
+          {filtered.map((e) => {
+            const nameClash = collidingNames.has(e.display_name);
+            const initialsClash = collidingInitialsIds.has(e.id);
+            const labelSuffix = nameClash ? ` (${e.id})` : "";
+            return (
+              <button
+                key={e.id}
+                onClick={() => setSelected(e.id)}
+                style={{
+                  display: "grid", gridTemplateColumns: "auto 1fr auto",
+                  gap: 8, alignItems: "center", padding: "6px 8px",
+                  width: "100%", textAlign: "left",
+                  background: selectedId === e.id ? "var(--surface-2)" : "transparent",
+                  border: "none", borderBottom: "1px solid var(--border-1)",
+                  cursor: "pointer",
+                }}
+              >
+                <Initials
+                  name={e.display_name}
+                  fallbackId={initialsClash ? e.id : undefined}
+                />
+                <div>
+                  <div>{e.display_name}{labelSuffix}</div>
+                  <div style={{ fontSize: 10, color: "var(--fg-2)" }}>
+                    {e.asset_classes.join(" · ")}
+                  </div>
                 </div>
-              </div>
-              {credCount(e.id) > 0 && (
-                <span style={{ fontSize: 11, color: "var(--accent-ok)" }}>
-                  Bağlı: {credCount(e.id)}
-                </span>
-              )}
-            </button>
-          ))}
+                {credCount(e.id) > 0 && (
+                  <span style={{ fontSize: 11, color: "var(--accent-ok)" }}>
+                    Bağlı: {credCount(e.id)}
+                  </span>
+                )}
+              </button>
+            );
+          })}
           {filtered.length === 0 && (
             <div style={{ padding: 12, color: "var(--fg-2)" }}>
               Eşleşen borsa yok.

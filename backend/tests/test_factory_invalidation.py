@@ -1,7 +1,6 @@
 """Factory invalidation hooks — fire when a credential is unregistered."""
 from __future__ import annotations
 
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -33,9 +32,12 @@ def _isolate_factory(monkeypatch, tmp_path):
     snap_live = dict(factory_mod._LIVE)
     snap_hooks = list(factory_mod._INVALIDATION_HOOKS)
     yield
-    factory_mod._REGISTRY.clear(); factory_mod._REGISTRY.update(snap_reg)
-    factory_mod._DYNAMIC.clear(); factory_mod._DYNAMIC.update(snap_dyn)
-    factory_mod._LIVE.clear(); factory_mod._LIVE.update(snap_live)
+    factory_mod._REGISTRY.clear()
+    factory_mod._REGISTRY.update(snap_reg)
+    factory_mod._DYNAMIC.clear()
+    factory_mod._DYNAMIC.update(snap_dyn)
+    factory_mod._LIVE.clear()
+    factory_mod._LIVE.update(snap_live)
     factory_mod._INVALIDATION_HOOKS[:] = snap_hooks
 
 

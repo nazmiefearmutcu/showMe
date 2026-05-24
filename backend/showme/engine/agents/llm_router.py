@@ -12,12 +12,15 @@ Logs every call to ``runtime/llm_calls.jsonl``.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from showme.app_paths import runtime_path
+
+LOG = logging.getLogger("showme.engine.agents.llm_router")
 
 
 def _log_path():
@@ -65,20 +68,59 @@ class LLMRouter:
         self.openai_key = os.environ.get("OPENAI_API_KEY")
 
     def _load_today_spend(self) -> float:
+        """Sum today's per-call USD cost from the JSONL ledger.
+
+        QA-fix (LLM budget bypass): previously the bare ``except Exception:
+        return 0.0`` outer + ``except Exception: continue`` per-line meant a
+        single corrupt line silently zeroed-out the daily spend, defeating the
+        ``LLM_DAILY_BUDGET_USD`` cap entirely. Now:
+
+        * Per-line parse failures are logged at WARNING with the line index
+          so they surface in the rotating log.
+        * Any unrecoverable read failure (IOError, permission denied, …) is
+          treated as **fail-closed**: we publish a defensive sentinel equal
+          to the daily budget so the next ``complete()`` call short-circuits
+          with ``error="budget-exceeded"`` rather than potentially burning
+          unlimited tokens.
+        * The ``_load_error`` attribute is set so callers and tests can
+          assert the fail-closed path was taken.
+        """
+        self._load_error: str | None = None
         if not _log_path().exists():
             return 0.0
         today = datetime.now(timezone.utc).date().isoformat()
         total = 0.0
         try:
-            for line in _log_path().read_text().splitlines():
+            text = _log_path().read_text()
+        except Exception as exc:  # noqa: BLE001
+            LOG.exception("LLM ledger read failed; failing closed on budget")
+            self._load_error = f"ledger_read_failed: {exc.__class__.__name__}: {exc}"
+            # Fail-closed: pretend we already hit the budget so no LLM call
+            # goes out until an operator investigates.
+            return float(os.environ.get("LLM_DAILY_BUDGET_USD", "5"))
+        bad_lines = 0
+        for idx, line in enumerate(text.splitlines(), start=1):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                entry = json.loads(stripped)
+            except Exception as exc:  # noqa: BLE001
+                bad_lines += 1
+                LOG.warning(
+                    "LLM ledger line %d unparseable, skipped: %s", idx, exc
+                )
+                continue
+            if entry.get("date") == today:
                 try:
-                    entry = json.loads(line)
-                except Exception:
-                    continue
-                if entry.get("date") == today:
                     total += float(entry.get("cost_usd", 0))
-        except Exception:
-            return 0.0
+                except (TypeError, ValueError) as exc:
+                    bad_lines += 1
+                    LOG.warning(
+                        "LLM ledger line %d cost_usd not numeric: %s", idx, exc
+                    )
+        if bad_lines:
+            self._load_error = f"{bad_lines} unparseable ledger line(s)"
         return total
 
     def pick_model(self, req: LLMRequest) -> str:

@@ -12,7 +12,8 @@ export function BDAPane() {
   const text = useAssistantStore((s) => s.text);
   const result = useAssistantStore((s) => s.result);
   const explanation = useAssistantStore((s) => s.explanation);
-  const loading = useAssistantStore((s) => s.loading);
+  const loadingGenerate = useAssistantStore((s) => s.loadingGenerate);
+  const loadingExplain = useAssistantStore((s) => s.loadingExplain);
   const error = useAssistantStore((s) => s.error);
   const setText = useAssistantStore((s) => s.setText);
   const generate = useAssistantStore((s) => s.generate);
@@ -41,10 +42,16 @@ export function BDAPane() {
                   placeholder="Strateji isteğini buraya yaz…"
                   aria-label="Strategy request" />
         <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-          <button onClick={() => generate(false)} disabled={!text.trim() || loading}>
-            {loading ? "..." : "Strateji öner"}
+          {/* H-UI-7 — only disable the generate buttons while generate
+              is in-flight, not when explain is running. */}
+          <button onClick={() => generate(false)}
+                  data-testid="bda-generate-button"
+                  disabled={!text.trim() || loadingGenerate}>
+            {loadingGenerate ? "..." : "Strateji öner"}
           </button>
-          <button onClick={() => generate(true)} disabled={!text.trim() || loading}
+          <button onClick={() => generate(true)}
+                  data-testid="bda-generate-save-button"
+                  disabled={!text.trim() || loadingGenerate}
                   style={{ background: "var(--accent-ok)", color: "white" }}>
             Strateji öner + kaydet
           </button>
@@ -57,7 +64,8 @@ export function BDAPane() {
               {result.notes.map((n, i) => <li key={i}>{n}</li>)}
             </ul>
             {result.saved_id && (
-              <div style={{ color: "var(--accent-ok)" }}>
+              <div data-testid="bda-saved-indicator"
+                   style={{ color: "var(--accent-ok)" }}>
                 Kaydedildi: {result.saved_id.slice(0, 8)} (STRA panelinde düzenleyebilirsin)
               </div>
             )}
@@ -85,8 +93,9 @@ export function BDAPane() {
             {strategies.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
           </select>
           <button onClick={() => selectedStrategy && explainStrategy(selectedStrategy)}
-                  disabled={!selectedStrategy || loading}>
-            Açıkla
+                  data-testid="bda-explain-button"
+                  disabled={!selectedStrategy || loadingExplain}>
+            {loadingExplain ? "..." : "Açıkla"}
           </button>
         </div>
         {explanation && (

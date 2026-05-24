@@ -88,14 +88,24 @@ const _BLANK_SPEC = (): Omit<StrategySpec, "id" | "created_at" | "updated_at"> =
   position: { side: "long", sizing_kind: "fixed_quote", sizing_value: 100 },
 });
 
+/** Shape returned by GET /api/strategies/{id}/dependents (Agent 2). */
+export interface StrategyDependents {
+  bot_count: number;
+  bot_ids: string[];
+}
+
 interface StrategyStoreShape {
   strategies: StrategyMeta[];
   draft: Partial<StrategySpec> | null;
   draftIsNew: boolean;
   dirty: boolean;
   loading: boolean;
+  /** H-UI-2 + LOW asimetri — flip during delete so UI can disable Sil. */
+  removing: boolean;
   error: string | null;
   lastPreview: PreviewResult | null;
+  /** Track AbortController for the in-flight openExisting (H-UI-11). */
+  _openController?: AbortController | null;
 
   loadList: () => Promise<void>;
   openNew: () => void;
@@ -112,8 +122,10 @@ export const useStrategyStore = create<StrategyStoreShape>((set, get) => ({
   draftIsNew: false,
   dirty: false,
   loading: false,
+  removing: false,
   error: null,
   lastPreview: null,
+  _openController: null,
 
   loadList: async () => {
     set({ loading: true, error: null });
@@ -128,12 +140,37 @@ export const useStrategyStore = create<StrategyStoreShape>((set, get) => ({
   openNew: () => set({ draft: _BLANK_SPEC(), draftIsNew: true, dirty: false, lastPreview: null }),
 
   openExisting: async (id) => {
-    set({ loading: true, error: null });
+    // H-UI-11 — abort any prior in-flight request so we don't get a
+    // last-response-wins race when the user rapidly clicks between
+    // strategies in the left rail.
+    const prev = get()._openController;
+    if (prev) {
+      try { prev.abort(); } catch { /* noop */ }
+    }
+    const controller = new AbortController();
+    set({ loading: true, error: null, _openController: controller });
     try {
-      const spec = await sidecarFetch<StrategySpec>(`/api/strategies/${id}`);
-      set({ draft: spec, draftIsNew: false, dirty: false, loading: false, lastPreview: null });
+      const spec = await sidecarFetch<StrategySpec>(
+        `/api/strategies/${id}`,
+        { signal: controller.signal },
+      );
+      // Only commit if THIS request was not aborted by a successor.
+      if (controller.signal.aborted) return;
+      set({
+        draft: spec,
+        draftIsNew: false,
+        dirty: false,
+        loading: false,
+        lastPreview: null,
+        _openController: null,
+      });
     } catch (e) {
-      set({ loading: false, error: e instanceof Error ? e.message : String(e) });
+      if (controller.signal.aborted) return;
+      set({
+        loading: false,
+        error: e instanceof Error ? e.message : String(e),
+        _openController: null,
+      });
     }
   },
 
@@ -174,16 +211,46 @@ export const useStrategyStore = create<StrategyStoreShape>((set, get) => ({
   },
 
   remove: async (id) => {
+    // C9 cascade delete — query Agent 2's dependents endpoint first; if it
+    // is not yet deployed, fall back to the legacy single-DELETE path
+    // (still safer than the old silent behavior because the user has
+    // already confirmed the destructive intent at the pane level).
+    set({ removing: true, error: null });
+    let deps: StrategyDependents = { bot_count: 0, bot_ids: [] };
     try {
-      await sidecarFetch(`/api/strategies/${id}`, { method: "DELETE" });
+      deps = await sidecarFetch<StrategyDependents>(
+        `/api/strategies/${id}/dependents`,
+      );
+    } catch {
+      // Endpoint not yet deployed — proceed with legacy DELETE.
+    }
+    if (deps.bot_count > 0) {
+      const ok = window.confirm(
+        `Bu stratejiye ${deps.bot_count} bot bağlı. ` +
+        `Bot'lar otomatik devre dışı bırakılacak. Devam mı?`,
+      );
+      if (!ok) {
+        set({ removing: false });
+        return false;
+      }
+    }
+    const url = deps.bot_count > 0
+      ? `/api/strategies/${id}?force=true`
+      : `/api/strategies/${id}`;
+    try {
+      await sidecarFetch(url, { method: "DELETE" });
       const draft = get().draft;
       if (draft && draft.id === id) {
         set({ draft: null, draftIsNew: false, dirty: false });
       }
       await get().loadList();
+      set({ removing: false });
       return true;
     } catch (e) {
-      set({ error: e instanceof Error ? e.message : String(e) });
+      set({
+        removing: false,
+        error: e instanceof Error ? e.message : String(e),
+      });
       return false;
     }
   },

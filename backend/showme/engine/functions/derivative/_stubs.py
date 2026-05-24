@@ -72,6 +72,52 @@ def _truthy(value: Any) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on", "y", "t"}
 
 
+async def _resolve_ivol_spot(
+    deps: Any, instrument: Instrument, params: dict[str, Any],
+) -> tuple[float, str]:
+    """Pull the live underlying price for IVOL.
+
+    Returns ``(spot, data_state)`` where ``data_state`` is one of
+    ``"live_quote"`` (yfinance QUOTE adapter returned a finite value),
+    ``"user_override"`` (caller passed ``spot`` in params),
+    ``"synthetic_anchor"`` (no usable signal — fell back to 100).
+
+    Mirrors the OMON ``_resolve_spot`` pattern so the two derivative
+    functions stay in lock-step. Kept local to avoid an import-cycle
+    with ``omon.py`` (which imports helpers from this module).
+    """
+    if "spot" in params and params.get("spot") is not None:
+        try:
+            value = float(params["spot"])
+            if value > 0 and math.isfinite(value):
+                return value, "user_override"
+        except (TypeError, ValueError):
+            pass
+    yfinance = getattr(deps, "yfinance", None)
+    if yfinance is None:
+        return 100.0, "synthetic_anchor"
+    from showme.engine.core.base_data_source import DataKind, DataRequest
+    timeout = max(1.0, min(float(params.get("yfinance_timeout", 3)), 4.0))
+    try:
+        quote = await asyncio.wait_for(
+            yfinance.fetch(DataRequest(
+                kind=DataKind.QUOTE, instrument=instrument,
+                extra={"timeout": timeout},
+            )),
+            timeout=timeout + 0.5,
+        )
+    except Exception:
+        return 100.0, "synthetic_anchor"
+    last = getattr(quote, "last", None)
+    try:
+        value = float(last) if last is not None else 0.0
+    except (TypeError, ValueError):
+        return 100.0, "synthetic_anchor"
+    if value > 0 and math.isfinite(value):
+        return value, "live_quote"
+    return 100.0, "synthetic_anchor"
+
+
 def _surface_template(spot: float) -> dict[str, Any]:
     expiries = ["30d", "60d", "90d"]
     strikes = [round(spot * m, 2) for m in (0.8, 0.9, 1.0, 1.1, 1.2)]
@@ -380,21 +426,35 @@ class IVOLFunction(BaseFunction):
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         if instrument is None:
             raise ValueError("IVOL requires a symbol")
-        spot = float(params.get("spot", 100))
+        # A02-2026-05-24: previously every non-live branch returned
+        # ``spot=100`` even when SPY traded at $525, which threw every
+        # strike on the surface into bizarro-moneyness territory and
+        # made the UI vol-surface anchor a lie. We now try to fill it
+        # from the live quote adapter first; only fall back to 100 (and
+        # label it ``synthetic_anchor``) when the quote is unavailable.
+        spot, spot_state = await _resolve_ivol_spot(self.deps, instrument, params)
         if not _truthy(params.get("live_options") or params.get("live")):
             synthetic = _surface_template(spot)
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
-                data=synthetic,
+                data={**synthetic, "spot": spot, "data_state": spot_state},
                 sources=["black_scholes_reference_formula"],
-                metadata={"live": False, "calls": len(synthetic["calls_grid"]), "puts": len(synthetic["puts_grid"])},
+                metadata={"live": False,
+                          "calls": len(synthetic["calls_grid"]),
+                          "puts": len(synthetic["puts_grid"]),
+                          "spot_source": spot_state},
             )
         if not self.deps.yfinance:
             synthetic = _surface_template(spot)
-            return FunctionResult(code=self.code, instrument=instrument, data=synthetic,
+            return FunctionResult(code=self.code, instrument=instrument,
+                                  data={**synthetic, "spot": spot, "data_state": spot_state},
                                   sources=["black_scholes_reference_formula"],
-                                  metadata={"live": False, "calls": len(synthetic["calls_grid"]), "puts": len(synthetic["puts_grid"]), "provider_errors": ["yfinance adapter unavailable"]})
+                                  metadata={"live": False,
+                                            "calls": len(synthetic["calls_grid"]),
+                                            "puts": len(synthetic["puts_grid"]),
+                                            "spot_source": spot_state,
+                                            "provider_errors": ["yfinance adapter unavailable"]})
         from showme.engine.core.base_data_source import DataKind, DataRequest
         timeout = max(1.0, min(float(params.get("yfinance_timeout", 4)), 6.0))
         spot_explicit = "spot" in params and params.get("spot") is not None

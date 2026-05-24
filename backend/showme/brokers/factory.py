@@ -31,6 +31,28 @@ _DYNAMIC: dict[str, str] = {}  # credential_id → broker name (for unregister)
 _LIVE: dict[str, BaseBroker] = {}  # name → most-recently-instantiated broker; populated by get_broker
 _INVALIDATION_HOOKS: list[Callable[[str], None]] = []  # called with credential_id from unregister_credential
 
+
+def register_invalidation_hook(hook: Callable[[str], None]) -> None:
+    """Register a callable invoked on every ``unregister_credential``.
+
+    The callable receives the deleted credential id. Hooks are best-effort:
+    individual failures are logged and swallowed so a misbehaving hook
+    can't break the credential DELETE path.
+
+    Idempotent: re-registering the same callable is a no-op so tests and
+    sidecar dev-reloads don't accumulate duplicates.
+    """
+    if hook not in _INVALIDATION_HOOKS:
+        _INVALIDATION_HOOKS.append(hook)
+
+
+def unregister_invalidation_hook(hook: Callable[[str], None]) -> None:
+    """Remove a hook previously added via ``register_invalidation_hook``."""
+    try:
+        _INVALIDATION_HOOKS.remove(hook)
+    except ValueError:
+        pass
+
 _CATALOG: Catalog = Catalog()  # patched at startup; tests override
 _ccxt_module = None  # injectable for tests
 
@@ -50,8 +72,15 @@ def _ensure_catalog() -> None:
 
 
 def register_broker(name: str, factory: Callable[[], BaseBroker]) -> None:
-    """Register ``factory`` under ``name`` so :func:`get_broker` can look it up."""
+    """Register ``factory`` under ``name`` so :func:`get_broker` can look it up.
+
+    C-RUNTIME-3 / C6 follow-up: also evict any previously-cached broker
+    instance for ``name`` so the next ``get_broker(name)`` rebuilds against
+    the new factory. This matters when credentials are rotated in place
+    (re-register with new secrets) or when tests swap a fixture.
+    """
     _REGISTRY[name] = factory
+    _LIVE.pop(name, None)
 
 
 def list_brokers() -> list[str]:
@@ -64,11 +93,21 @@ def get_broker(name: str | None = None) -> BaseBroker:
 
     ``name`` defaults to ``$SHOWME_BROKER`` and finally to ``"paper"``.
     Raises ``KeyError`` if the requested broker is not registered.
+
+    C-RUNTIME-3 / C6 fix: previously every call built a brand-new broker
+    (e.g. ``CcxtBroker`` opening a fresh ``aiohttp`` connector) and the
+    previous instance was left dangling without an ``aclose()``. The cache
+    in ``_LIVE`` now serves as a per-process pool — the first call builds,
+    every subsequent call returns the same instance. ``unregister_credential``
+    and ``close_all_brokers`` are the only paths that evict entries.
     """
     target = (name or os.environ.get("SHOWME_BROKER") or "paper").strip()
     factory = _REGISTRY.get(target)
     if not factory:
         raise KeyError(f"unknown broker: {target}. registered: {list_brokers()}")
+    cached = _LIVE.get(target)
+    if cached is not None:
+        return cached
     broker = factory()
     _LIVE[target] = broker
     return broker

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useAppStore } from "@/lib/store";
 import { invoke } from "@/lib/tauri";
-import { navigate } from "@/lib/router";
+import { navigate, useRoute } from "@/lib/router";
 import {
   PRESET_LABELS,
   THEME_CHANGE_EVENT,
@@ -10,22 +10,93 @@ import {
   type ThemeState,
 } from "@/lib/theme";
 import { useWorkspace } from "@/lib/workspace";
+import { loadBuiltinPreset } from "@/lib/builtinPresets";
 import { OrbitMark, Pill, TopbarSegment } from "@/design-system";
 import { t } from "@/i18n";
 import { PresetMenu } from "./PresetMenu";
 import { toast } from "@/lib/toast";
 
-const MARKET_NAV = [
-  { label: "Overview", path: "/" },
-  { label: "Watchlist", path: "/fn/WATCH" },
-  { label: "Portfolio", path: "/fn/PORT" },
-  { label: "AAPL", path: "/symbol/AAPL/DES" },
-  { label: "Markets", path: "/fn/WEI" },
-  { label: "News", path: "/fn/NI" },
-  { label: "Functions", path: "/fn/SCAN" },
+/**
+ * QA-2026-05-23: top-nav links are no longer visual decoration. Each
+ * dispatches a real navigation so the user gets the surface the label
+ * promises.
+ *   • Overview  → welcome dashboard (`/`)
+ *   • Watchlist → WATCH pane
+ *   • Portfolio → PORT pane
+ *   • AAPL      → DES pane scoped to AAPL (preserves symbol-bound route)
+ *   • Markets   → Markets Overview preset (DES + GP + WEI + TOP grid)
+ *   • News      → TOP news pane
+ *   • Functions → open the command palette
+ *
+ * `kind` discriminates between simple route nav, preset load, and palette
+ * open so we can attach `aria-current="page"` only when relevant.
+ */
+type MarketNavKind = "route" | "preset" | "palette";
+interface MarketNavLink {
+  label: string;
+  kind: MarketNavKind;
+  /** Hash route (kind === "route"). */
+  path?: string;
+  /** Built-in preset id (kind === "preset"). */
+  preset?: string;
+  /** Codes that should highlight this nav as active. */
+  activeCodes?: string[];
+  /** Path prefix to match for "route" kind active state. */
+  activePath?: string;
+}
+const MARKET_NAV: MarketNavLink[] = [
+  { label: "Overview", kind: "route", path: "/", activePath: "/" },
+  {
+    label: "Watchlist",
+    kind: "route",
+    path: "/fn/WATCH",
+    activeCodes: ["WATCH"],
+  },
+  {
+    label: "Portfolio",
+    kind: "route",
+    path: "/fn/PORT",
+    activeCodes: ["PORT"],
+  },
+  {
+    label: "AAPL",
+    kind: "route",
+    path: "/symbol/AAPL/DES",
+    activePath: "/symbol/AAPL/DES",
+  },
+  {
+    label: "Markets",
+    kind: "preset",
+    preset: "markets-overview",
+    activeCodes: ["MAP", "WEI"],
+  },
+  { label: "News", kind: "route", path: "/fn/NI", activeCodes: ["NI", "TOP", "CN"] },
+  { label: "Functions", kind: "palette" },
 ];
 
 const QUICK_CODES = ["OMON", "GEX", "FA", "BTMM"];
+
+function isMarketNavActive(
+  item: MarketNavLink,
+  route: ReturnType<typeof useRoute>,
+  activeCode: string,
+): boolean {
+  if (item.activeCodes && item.activeCodes.includes(activeCode.toUpperCase())) {
+    return true;
+  }
+  if (item.activePath) {
+    if (item.activePath === "/" && route.kind === "welcome") return true;
+    if (
+      item.activePath.startsWith("/symbol/") &&
+      route.kind === "function" &&
+      route.symbol &&
+      `/symbol/${route.symbol}/${route.code}` === item.activePath
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
 
 export function Titlebar() {
   const status = useAppStore((s) => s.sidecarStatus);
@@ -41,6 +112,9 @@ export function Titlebar() {
   const closeFocused = useWorkspace((s) => s.closeFocused);
   const tree = useWorkspace((s) => s.tree);
   const isOnlyLeaf = tree.kind === "leaf";
+  const route = useRoute();
+  const activeCode =
+    route.kind === "function" ? route.code : route.kind === "welcome" ? "HOME" : "PREF";
   const [themeState, setThemeState] = useState<ThemeState>(() => readState());
 
   useEffect(() => {
@@ -100,16 +174,35 @@ export function Titlebar() {
 
       <TopbarSegment caption="ShowMe 0.01" withDivider>
         <nav className="interactive titlebar__market-nav" aria-label="Market workspaces">
-          {MARKET_NAV.map((item) => (
-            <button
-              key={item.label}
-              type="button"
-              className="titlebar__market-nav-btn"
-              onClick={() => navigate(item.path)}
-            >
-              {item.label}
-            </button>
-          ))}
+          {MARKET_NAV.map((item) => {
+            const isActive = isMarketNavActive(item, route, activeCode);
+            const handleClick = () => {
+              switch (item.kind) {
+                case "route":
+                  if (item.path) navigate(item.path);
+                  break;
+                case "preset":
+                  if (item.preset && !loadBuiltinPreset(item.preset)) {
+                    toast.error(`Preset '${item.preset}' not available`);
+                  }
+                  break;
+                case "palette":
+                  togglePalette(true);
+                  break;
+              }
+            };
+            return (
+              <button
+                key={item.label}
+                type="button"
+                className={`titlebar__market-nav-btn${isActive ? " titlebar__market-nav-btn--active" : ""}`}
+                aria-current={isActive ? "page" : undefined}
+                onClick={handleClick}
+              >
+                {item.label}
+              </button>
+            );
+          })}
         </nav>
       </TopbarSegment>
 
@@ -238,7 +331,7 @@ export function Titlebar() {
           type="button"
           className="btn btn--ghost interactive"
           onClick={newWindow}
-          title="New window (⌘N)"
+          title={t("shell.titlebar.new_window")}
           aria-label={t("shell.titlebar.new_window")}
         >
           New

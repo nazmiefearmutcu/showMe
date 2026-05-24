@@ -4,8 +4,27 @@
  * Re-fetches when `code`, `symbol`, or any param value changes. Returns a
  * tagged-union state so callers can render skeletons / errors / data without
  * a third dependency.
+ *
+ * 2026-05-24 — flicker fix. The hook used to call `setData(undefined)` +
+ * force `state: "loading"` on every refetch (e.g. the 30s WEI/MOST/PORT/HP
+ * auto-poll or a manual `refetch()`), which made charts flash an empty
+ * skeleton each cycle. The fix mirrors `panes/function_stub/index.tsx:276`:
+ *
+ *   - Track the previous fetch key (`code|symbol|paramsKey`) in a ref.
+ *   - If the next fetch reuses that key AND we already have `data`, this is
+ *     a *refresh*: keep `data` on screen, set state to `"refreshing"`, and
+ *     only swap it once the new payload lands (or roll back to `"error"`
+ *     on failure — `data` still stays visible so users see stale + the
+ *     error pill instead of a hard wipe).
+ *   - When the key actually changes (symbol switch, interval change), keep
+ *     the old behaviour: clear data + flip to `"loading"`.
+ *
+ * Contract is additive: existing consumers that only branch on
+ * `"loading" | "ok" | "error"` keep working; new consumers can opt in to
+ * `"refreshing"` for a subtle "updating…" indicator without re-rendering
+ * the skeleton.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   runFunction,
   type FunctionCallResult,
@@ -22,7 +41,7 @@ interface Args {
 }
 
 export interface UseFunctionResult<T = unknown> {
-  state: "idle" | "loading" | "ok" | "error";
+  state: "idle" | "loading" | "ok" | "error" | "refreshing";
   data?: FunctionCallResult<T>;
   error?: FunctionCallError | Error;
   refetch: () => void;
@@ -44,6 +63,12 @@ export function useFunction<T = unknown>({
   // Stringify params for stable dep — small objects, fine.
   const paramsKey = JSON.stringify(params ?? {});
 
+  // Tracks the (code|symbol|paramsKey) of the last fetch so we can tell a
+  // refresh (same key, data already on screen) from an initial / key-changing
+  // load. Persists across `tick`-only re-runs so `refetch()` is treated as a
+  // refresh too.
+  const previousFetchKey = useRef<string>("");
+
   useEffect(() => {
     if (!enabled) {
       setState("idle");
@@ -53,12 +78,23 @@ export function useFunction<T = unknown>({
       setState("loading");
       setError(undefined);
       setData(undefined);
+      // Sidecar boot is a fresh start — clear the fingerprint so the first
+      // real fetch is treated as initial-load (not a refresh).
+      previousFetchKey.current = "";
       return;
     }
     const ac = new AbortController();
-    setState("loading");
-    setError(undefined);
-    setData(undefined);
+    const fetchKey = `${code}|${symbol ?? ""}|${paramsKey}`;
+    const isRefresh = fetchKey === previousFetchKey.current && data !== undefined;
+    if (isRefresh) {
+      setState("refreshing");
+      // Keep `data` + previous `error` visible. Don't clear either.
+    } else {
+      setState("loading");
+      setError(undefined);
+      setData(undefined);
+    }
+    previousFetchKey.current = fetchKey;
     runFunction<T>(code, {
       symbol,
       params,
@@ -66,11 +102,16 @@ export function useFunction<T = unknown>({
     })
       .then((res) => {
         setData(res);
+        setError(undefined);
         setState("ok");
       })
       .catch((err: Error) => {
         if (ac.signal.aborted) return;
         setError(err);
+        // On error during a refresh we deliberately *keep* the previous
+        // `data` on screen so the UI shows stale + an error pill rather
+        // than wiping the chart. `data` was never cleared in the refresh
+        // branch above, so just flipping state is enough.
         setState("error");
       });
     return () => ac.abort();

@@ -56,6 +56,13 @@ interface SparkPoint {
 }
 
 const REFRESH_MS = 30_000;
+/**
+ * Beyond this freshness threshold the row shows a STALE badge + Refresh
+ * button instead of an ever-growing "10m · stale" / "1h · stale" string.
+ * Pre-QA the duration grew without bound; the user is asked to refresh once
+ * we've crossed the cliff.
+ */
+const STALE_CAP_MS = 5 * 60_000;
 const WATCH_SYMBOL_OPTIONS = [
   "AAPL",
   "MSFT",
@@ -105,7 +112,10 @@ export function WATCHPane({ code }: FunctionPaneProps) {
   const liveStreamCount = useMemo(
     () =>
       Object.values(quotes).filter(
-        (v) => v.transportState === "live" && !v.error,
+        // QA-2026-05-24 (A12): align header/footer counters with the per-row
+        // pill rule — only count rows with both a live transport AND a price
+        // payload. Otherwise KPI says "LIVE · 1" while every row reads idle.
+        (v) => v.transportState === "live" && !v.error && v.price != null,
       ).length,
     [quotes],
   );
@@ -120,27 +130,42 @@ export function WATCHPane({ code }: FunctionPaneProps) {
     let advancers = 0;
     let decliners = 0;
     let unchanged = 0;
+    let completed = 0;
     for (const r of rows) {
-      const c = quotes[r.symbol]?.changePct;
+      const view = quotes[r.symbol];
+      // QA-2026-05-23: median was computed mid-flight, so the UI flashed
+      // "MEDIAN Δ% -3.28% (1 SAMPLED)" before the other 6 fetches resolved.
+      // Treat a row as completed only once its first fetch has settled.
+      const settled = Boolean(view && !view.loading && (view.snapshot || view.lastTick || view.error));
+      if (settled) completed += 1;
+      if (!view) continue;
+      const c = view.changePct;
       if (c == null || !Number.isFinite(c)) continue;
       changes.push(c);
       if (c > 0) advancers += 1;
       else if (c < 0) decliners += 1;
       else unchanged += 1;
     }
+    const total = rows.length;
+    const allCompleted = total > 0 && completed === total;
     const sorted = [...changes].sort((a, b) => a - b);
     const median =
-      sorted.length === 0
+      !allCompleted
         ? null
-        : sorted.length % 2 === 1
-          ? sorted[Math.floor(sorted.length / 2)]
-          : (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2;
+        : sorted.length === 0
+          ? null
+          : sorted.length % 2 === 1
+            ? sorted[Math.floor(sorted.length / 2)]
+            : (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2;
     return {
       median,
       advancers,
       decliners,
       unchanged,
       sampled: changes.length,
+      completed,
+      total,
+      allCompleted,
     };
   }, [quotes, rows]);
 
@@ -310,15 +335,41 @@ export function WATCHPane({ code }: FunctionPaneProps) {
       {
         key: "fetched_at",
         header: "Updated",
-        width: 80,
+        width: 110,
         render: (r) => {
           const view = quotes[r.symbol];
           if (!view) return <span className="u-text-mute">—</span>;
           if (view.fetchedAt == null)
             return <span className="u-text-mute">—</span>;
+          // QA-2026-05-23: cap the "Xm · stale" stamp at 5 minutes. Past that
+          // we stop counting up forever and present a STALE chip + a per-row
+          // Refresh affordance instead.
+          const freshness = view.freshnessMs ?? 0;
+          if (freshness >= STALE_CAP_MS) {
+            return (
+              <span
+                className="showme-watch__stale-cap"
+                data-testid={`watch-row-stale-${r.symbol}`}
+              >
+                <Pill tone="warn" variant="soft" withDot={false}>
+                  STALE
+                </Pill>
+                <button
+                  type="button"
+                  className="btn btn--ghost watch-row-refresh"
+                  onClick={() => view.refetch()}
+                  data-testid={`watch-row-refresh-${r.symbol}`}
+                  title={`Refresh ${r.symbol}`}
+                  aria-label={`Refresh ${r.symbol}`}
+                >
+                  ↻
+                </button>
+              </span>
+            );
+          }
           return (
             <span className="u-mono-xs u-text-secondary">
-              {formatFreshness(view.freshnessMs)}
+              {formatFreshness(freshness)}
               {view.stale ? " · stale" : ""}
             </span>
           );
@@ -330,8 +381,26 @@ export function WATCHPane({ code }: FunctionPaneProps) {
         width: 92,
         render: (r) => {
           const view = quotes[r.symbol];
-          const state: TransportState | "error" =
-            view?.error && view.price == null ? "error" : (view?.transportState ?? "idle");
+          // QA-2026-05-24 (A12): pill was painting "live" for rows whose
+          // socket reported `live` but had no price payload yet — the header
+          // KPI said "LIVE · 1", footer "ws · 1/7", but every row glowed
+          // green. A row is only truly live when transport reports `live`
+          // AND we have a price tick to back it up. Otherwise fall through
+          // to "snapshot" (snapshot fetch landed) or "idle" (nothing yet).
+          let state: TransportState | "error" | "snapshot";
+          if (view?.error && view.price == null) {
+            state = "error";
+          } else if (view?.transportState === "live" && view.price != null) {
+            state = "live";
+          } else if (view?.price != null) {
+            state = "snapshot";
+          } else if (view?.transportState === "live") {
+            // Transport says live but no price yet — demote to "connecting"
+            // so the row stops glowing green ahead of real data.
+            state = "connecting";
+          } else {
+            state = view?.transportState ?? "idle";
+          }
           const { tone, label, withDot } = streamPillStyling(state);
           return (
             <span className={`showme-watch__stream showme-watch__stream--${state}`}>
@@ -456,9 +525,17 @@ export function WATCHPane({ code }: FunctionPaneProps) {
               />
               <StatCard
                 label="Median Δ%"
-                value={formatPercent(summary.median, { signed: true })}
-                caption={`${summary.sampled} sampled`}
-                tone={medianTone}
+                value={
+                  summary.allCompleted
+                    ? formatPercent(summary.median, { signed: true })
+                    : "—"
+                }
+                caption={
+                  summary.allCompleted
+                    ? `${summary.sampled} sampled`
+                    : `computing · ${summary.completed}/${summary.total}`
+                }
+                tone={summary.allCompleted ? medianTone : "neutral"}
               />
               <StatCard
                 label="Advancers"
@@ -525,7 +602,9 @@ export function WATCHPane({ code }: FunctionPaneProps) {
               rowClassName={(r, idx) => {
                 const view = quotes[r.symbol];
                 const hasError = Boolean(view?.error) && view?.price == null;
-                const live = view?.transportState === "live";
+                // QA-2026-05-24 (A12): "live" row class also requires price
+                // data — keeps row-glow in lockstep with the pill.
+                const live = view?.transportState === "live" && view?.price != null;
                 return [
                   "showme-motion-grid__row",
                   "showme-row-reveal",
@@ -560,7 +639,7 @@ function formatFreshness(ms: number | null): string {
   return `${Math.round(ms / 3_600_000)}h`;
 }
 
-function streamPillStyling(state: TransportState | "error"): {
+function streamPillStyling(state: TransportState | "error" | "snapshot"): {
   tone: "positive" | "negative" | "muted" | "warn" | "accent";
   label: string;
   withDot: boolean;
@@ -568,6 +647,9 @@ function streamPillStyling(state: TransportState | "error"): {
   switch (state) {
     case "live":
       return { tone: "positive", label: "live", withDot: true };
+    case "snapshot":
+      // Snapshot fetched but no live tick yet — neutral, not green.
+      return { tone: "muted", label: "snapshot", withDot: false };
     case "stale":
       return { tone: "warn", label: "stale", withDot: false };
     case "reconnecting":

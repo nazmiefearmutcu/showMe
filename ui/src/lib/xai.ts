@@ -4,16 +4,20 @@ import type { InstantEvent } from "./instant";
 export interface XHealth {
   ok: boolean;
   model_loaded: boolean;
-  model_dir: string | null;
-  load_error: string | null;
-  scraper: {
-    backends: {
-      guest_token: boolean;
-      nitter_pool_size: number;
-      jina_proxy: boolean;
+  // The fields below may be missing when the model load times out or the
+  // bundle is not on disk — the backend returns the bare {ok, model_loaded}
+  // shape in that case. UI must optional-chain every access. See Bug #10e.
+  model_dir?: string | null;
+  load_error?: string | null;
+  error?: string;
+  scraper?: {
+    backends?: Record<string, unknown> & {
+      guest_token?: boolean;
+      nitter_pool_size?: number;
+      jina_proxy?: boolean;
     };
-    guest_token_present: boolean;
-    nitter_mirrors_active: string[];
+    guest_token_present?: boolean;
+    nitter_mirrors_active?: string[];
   };
 }
 
@@ -61,7 +65,9 @@ export interface XAnalysisResponse {
   device?: string;
   model_dir?: string | null;
   summary_tr?: string;
-  mood?: "bullish" | "bearish" | "mixed";
+  // `mood` may include "insufficient_data" when the scraper returned fewer
+  // than `MIN_POSTS_FOR_VERDICT` real posts. See backend Bug #6.
+  mood?: "bullish" | "bearish" | "mixed" | "insufficient_data";
   scores?: XScores;
   distributions?: XDistributions;
   dominant?: XDominant;
@@ -70,6 +76,12 @@ export interface XAnalysisResponse {
   warning?: string;
   error?: string;
   ok?: boolean;
+  // Set to "insufficient_data" when the scraper returned too few posts to
+  // produce a confident verdict. UI uses this to render a "not enough data"
+  // empty-state instead of a misleading "bullish" gauge.
+  verdict?: "insufficient_data" | string;
+  posts_seen?: number;
+  min_posts_for_verdict?: number;
 }
 
 export interface XSymbolChip {

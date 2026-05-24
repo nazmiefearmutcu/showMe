@@ -75,6 +75,19 @@ export interface MockTemplate {
   eyebrow?: string;
   /** Optional callout / "narrative" paragraph at the bottom. */
   narrative?: string;
+  /**
+   * Whether the mock content is safe to display while the sidecar load is
+   * still pending (i.e. before `state === "ok"`).
+   *
+   * When `false` (the safe default), `TemplateRenderer` renders a skeleton
+   * placeholder during loading instead of the mock, so users never confuse
+   * hard-coded mock prices/strikes/values with live data for the current
+   * ticker. Templates that have *no* numeric pricing or per-symbol values
+   * (pure UI catalogues, education modules, language pickers, generic
+   * chip-only panes) may explicitly opt in by setting `true` if their mock
+   * content is intrinsically harmless to show alongside a symbol.
+   */
+  allowMockDuringLoad?: boolean;
 }
 
 /* ── Helpers ──────────────────────────────────────────────────────── */
@@ -183,6 +196,7 @@ const TPL: Record<string, MockTemplate> = {
   ACCT: {
     title: "Multi-Account Aggregation",
     sub: "Per-account position roll-up + cross-account exposure totals.",
+    allowMockDuringLoad: false,
     kpis: [
       { label: "Accounts", value: "5" },
       { label: "Total NAV", value: "$1.84M", tone: "pos" },
@@ -201,6 +215,7 @@ const TPL: Record<string, MockTemplate> = {
   AIM: {
     title: "Order Management",
     sub: "Working orders across brokers — fills, cancels, partials.",
+    allowMockDuringLoad: false,
     kpis: [
       { label: "Working", value: "12" },
       { label: "Filled · today", value: "38", tone: "pos" },
@@ -219,6 +234,7 @@ const TPL: Record<string, MockTemplate> = {
   ALLQ: {
     title: "Dealer Quotes (TRACE)",
     sub: "Live dealer-quote stack for the selected CUSIP / ISIN.",
+    allowMockDuringLoad: false,
     kpis: [
       { label: "Bid stack", value: "8 dealers" },
       { label: "Best bid", value: "99.842" },
@@ -271,6 +287,7 @@ const TPL: Record<string, MockTemplate> = {
   BBGT: {
     title: "Multi-Asset Trade Ticket",
     sub: "Equities · futures · FX · options · crypto from a single ticket.",
+    allowMockDuringLoad: false,
     formRows: [
       { label: "Symbol", value: "NVDA" },
       { label: "Asset class", value: "EQUITY" },
@@ -286,6 +303,7 @@ const TPL: Record<string, MockTemplate> = {
   BETA: {
     title: "CAPM Beta",
     sub: "β = cov(r_i, r_m) / var(r_m); rolling windows + multi-benchmark.",
+    allowMockDuringLoad: false,
     kpis: [
       { label: "β (SPX, 12M)", value: "1.42", tone: "pos" },
       { label: "β (SPX, 36M)", value: "1.18", sub: "long-run" },
@@ -304,6 +322,7 @@ const TPL: Record<string, MockTemplate> = {
   BGAS: {
     title: "Natural Gas Spot",
     sub: "Henry Hub spot, regional differentials, weather sensitivity.",
+    allowMockDuringLoad: false,
     kpis: [
       { label: "Henry Hub", value: "$2.84", tone: "pos", sub: "+1.2% day" },
       { label: "5d range", value: "$2.71–$2.92" },
@@ -314,6 +333,7 @@ const TPL: Record<string, MockTemplate> = {
   BLAK: {
     title: "Black-Litterman",
     sub: "Posterior expected returns combining market prior + views.",
+    allowMockDuringLoad: false,
     kpis: [
       { label: "Views", value: "4" },
       { label: "Risk aversion δ", value: "2.5" },
@@ -349,6 +369,7 @@ const TPL: Record<string, MockTemplate> = {
   BMTX: {
     title: "Backtest Matrix",
     sub: "Run multiple strategies across a symbol universe in parallel.",
+    allowMockDuringLoad: false,
     kpis: [
       { label: "Strategies", value: "8" },
       { label: "Symbols", value: "120" },
@@ -367,6 +388,7 @@ const TPL: Record<string, MockTemplate> = {
   BOIL: {
     title: "Oil Spot",
     sub: "WTI · Brent · Dubai spreads + curve back/contango state.",
+    allowMockDuringLoad: false,
     kpis: [
       { label: "WTI", value: "$78.42", tone: "pos", sub: "+0.4%" },
       { label: "Brent", value: "$82.18", tone: "pos", sub: "+0.3%" },
@@ -408,6 +430,7 @@ const TPL: Record<string, MockTemplate> = {
   BTFW: {
     title: "Walk-Forward Backtest",
     sub: "Train · test split with rolling re-estimation; equity / Sharpe / DD.",
+    allowMockDuringLoad: false,
     kpis: [
       { label: "Sharpe", value: "1.84", tone: "pos" },
       { label: "CAGR", value: "+24.2%", tone: "pos" },
@@ -418,6 +441,7 @@ const TPL: Record<string, MockTemplate> = {
   BTUNE: {
     title: "Backtest Auto-Tuner",
     sub: "Hyperparameter sweep — rank by Sharpe / total return / Calmar.",
+    allowMockDuringLoad: false,
     kpis: [
       { label: "Combinations", value: "384" },
       { label: "Best Sharpe", value: "2.41", tone: "pos" },
@@ -466,6 +490,7 @@ const TPL: Record<string, MockTemplate> = {
   COUN: {
     title: "Country Guide",
     sub: "Economy · politics · fiscal · external — single page per country.",
+    allowMockDuringLoad: false,
     chips: [
       { id: "usa", label: "USA" },
       { id: "deu", label: "Germany" },
@@ -483,6 +508,7 @@ const TPL: Record<string, MockTemplate> = {
   CPF: {
     title: "Commodity Price Forecasts",
     sub: "World Bank Pink Sheet projections + private forecaster consensus.",
+    allowMockDuringLoad: false,
     tableCols: ["Commodity", "Spot", "Q+1", "Q+2", "Y+1"],
     tableRows: [
       { Commodity: "Crude oil", Spot: "$78.4", "Q+1": "$80.0", "Q+2": "$82.5", "Y+1": "$84.0" },
@@ -505,6 +531,7 @@ const TPL: Record<string, MockTemplate> = {
   CRVF: {
     title: "Yield Curve",
     sub: "FRED-sourced UST curve — spot + 12M ago + slope analytics.",
+    allowMockDuringLoad: false,
     kpis: [
       { label: "2Y", value: "4.62%" },
       { label: "10Y", value: "4.42%" },
@@ -536,6 +563,7 @@ const TPL: Record<string, MockTemplate> = {
   DARK: {
     title: "Dark Pool Volume",
     sub: "FINRA ATS weekly off-exchange volume by venue.",
+    allowMockDuringLoad: false,
     tableCols: ["Venue", "Shares", "% of total", "Trend"],
     tableRows: [
       { Venue: "IEXG", Shares: "42.1M", "% of total": "18%", Trend: "↑ 2.4%" },
@@ -548,6 +576,7 @@ const TPL: Record<string, MockTemplate> = {
   DCF: {
     title: "Discounted Cash Flow",
     sub: "Two-stage DCF — explicit forecast + terminal value.",
+    allowMockDuringLoad: false,
     formRows: [
       { label: "WACC", value: "8.4%" },
       { label: "Terminal growth", value: "2.5%" },
@@ -560,6 +589,7 @@ const TPL: Record<string, MockTemplate> = {
   DCFS: {
     title: "DCF Sensitivity",
     sub: "WACC × terminal-growth grid + ±20% tornado.",
+    allowMockDuringLoad: false,
     kpis: [
       { label: "Base PV", value: "$246.18" },
       { label: "Bear (-20%)", value: "$197.84", tone: "neg" },
@@ -570,6 +600,7 @@ const TPL: Record<string, MockTemplate> = {
   DDIS: {
     title: "Debt Distribution by Maturity",
     sub: "Issuer debt stack — bucketed by years to maturity.",
+    allowMockDuringLoad: false,
     tableCols: ["Bucket", "Face value", "Avg coupon", "Weight"],
     tableRows: [
       { Bucket: "0-1Y", "Face value": "$1.2B", "Avg coupon": "4.6%", Weight: "8%" },
@@ -582,6 +613,7 @@ const TPL: Record<string, MockTemplate> = {
   DDM: {
     title: "Dividend Discount Model",
     sub: "Gordon Growth — implied price = D₁ / (r − g).",
+    allowMockDuringLoad: false,
     formRows: [
       { label: "D₀ (TTM)", value: "$2.40" },
       { label: "Growth g", value: "5.0%" },
@@ -593,6 +625,7 @@ const TPL: Record<string, MockTemplate> = {
   DEBT: {
     title: "Sovereign Debt Exposure",
     sub: "Government debt holdings stack — domestic vs foreign holders.",
+    allowMockDuringLoad: false,
     tableCols: ["Country", "Debt / GDP", "Foreign held", "10Y yield", "Rating"],
     tableRows: [
       { Country: "USA", "Debt / GDP": "121%", "Foreign held": "24%", "10Y yield": "4.42%", Rating: "AA+" },
@@ -614,6 +647,7 @@ const TPL: Record<string, MockTemplate> = {
   DPF: {
     title: "Dark Pool / ATS Volume",
     sub: "FINRA off-exchange (ATS) volume + dark-pool % of total.",
+    allowMockDuringLoad: false,
     kpis: [
       { label: "Dark %", value: "42.4%" },
       { label: "ATS share", value: "61.2%" },
@@ -624,6 +658,7 @@ const TPL: Record<string, MockTemplate> = {
   DVD: {
     title: "Dividends & Splits",
     sub: "Cash dividends + stock splits history; forward yield projection.",
+    allowMockDuringLoad: false,
     tableCols: ["Date", "Type", "Amount", "Yield", "Split"],
     tableRows: [
       { Date: "2026-Q2", Type: "Cash", Amount: "$0.62", Yield: "0.42%", Split: "—" },
@@ -636,6 +671,7 @@ const TPL: Record<string, MockTemplate> = {
   ECFC: {
     title: "Economic Forecasts",
     sub: "OECD / IMF / private consensus — GDP · CPI · unemployment.",
+    allowMockDuringLoad: false,
     tableCols: ["Region", "GDP 2026", "CPI 2026", "Unemploy", "Source"],
     tableRows: [
       { Region: "USA", "GDP 2026": "+2.4%", "CPI 2026": "2.6%", Unemploy: "4.1%", Source: "OECD" },
@@ -658,6 +694,7 @@ const TPL: Record<string, MockTemplate> = {
   EE: {
     title: "Earnings & Estimates",
     sub: "Actual vs consensus + revision velocity + surprise %.",
+    allowMockDuringLoad: false,
     kpis: [
       { label: "Next print", value: "2026-04-22", sub: "AMC" },
       { label: "Consensus EPS", value: "$1.42" },
@@ -668,6 +705,7 @@ const TPL: Record<string, MockTemplate> = {
   EMSX: {
     title: "Execution Management",
     sub: "Multi-broker routing, child slicing, VWAP / TWAP / IS.",
+    allowMockDuringLoad: false,
     kpis: [
       { label: "Working", value: "8" },
       { label: "Algos active", value: "VWAP · IS" },
@@ -678,6 +716,7 @@ const TPL: Record<string, MockTemplate> = {
   EREV: {
     title: "Earnings Revisions",
     sub: "Analyst bucket changes month-over-month + revision velocity.",
+    allowMockDuringLoad: false,
     kpis: [
       { label: "Strong Buy", value: "12" },
       { label: "Buy", value: "18" },
@@ -688,6 +727,7 @@ const TPL: Record<string, MockTemplate> = {
   ESG: {
     title: "ESG Scores",
     sub: "MSCI · Sustainalytics · ISS — three-pillar breakdown.",
+    allowMockDuringLoad: false,
     kpis: [
       { label: "E", value: "78", tone: "pos" },
       { label: "S", value: "64" },
@@ -707,6 +747,7 @@ const TPL: Record<string, MockTemplate> = {
   EXEC: {
     title: "Execution Monitor",
     sub: "Live VWAP / TWAP slice-by-slice fill quality + pace.",
+    allowMockDuringLoad: false,
     kpis: [
       { label: "Working", value: "5" },
       { label: "VWAP track", value: "-0.4 bps", tone: "pos" },
@@ -735,6 +776,7 @@ const TPL: Record<string, MockTemplate> = {
   FORM4: {
     title: "Insider Transactions",
     sub: "Recent SEC Form 4 filings — insider buys / sells / awards.",
+    allowMockDuringLoad: false,
     tableCols: ["Date", "Insider", "Side", "Shares", "Price", "Δ Position"],
     tableRows: [
       { Date: "2026-05-12", Insider: "Huang J. (CEO)", Side: "SELL", Shares: "120,000", Price: "$1,432", "Δ Position": "-1.8%" },
@@ -745,6 +787,7 @@ const TPL: Record<string, MockTemplate> = {
   FRD: {
     title: "FX Forward Rates",
     sub: "Covered interest parity — spot + forward points.",
+    allowMockDuringLoad: false,
     tableCols: ["Pair", "Spot", "1M fwd", "3M fwd", "6M fwd", "1Y fwd"],
     tableRows: [
       { Pair: "EURUSD", Spot: 1.0842, "1M fwd": 1.0852, "3M fwd": 1.0876, "6M fwd": 1.0908, "1Y fwd": 1.0962 },
@@ -755,6 +798,7 @@ const TPL: Record<string, MockTemplate> = {
   FRH: {
     title: "Funding Rate Heatmap",
     sub: "Binance · Bybit · OKX — top 25 perp pairs, 8h funding.",
+    allowMockDuringLoad: false,
     heatCells: [
       { label: "BTC", value: "+0.012%", intensity: 0.5, tone: "pos" },
       { label: "ETH", value: "+0.018%", intensity: 0.6, tone: "pos" },
@@ -769,6 +813,7 @@ const TPL: Record<string, MockTemplate> = {
   FSRC: {
     title: "Fund Screener",
     sub: "ETF + mutual fund + closed-end discovery.",
+    allowMockDuringLoad: false,
     kpis: [
       { label: "Universe", value: "3,184" },
       { label: "Matched", value: "42", tone: "pos" },
@@ -779,6 +824,7 @@ const TPL: Record<string, MockTemplate> = {
   FTS: {
     title: "SEC Full-Text Search",
     sub: "EDGAR — text + form type + date range + insider name.",
+    allowMockDuringLoad: false,
     kpis: [
       { label: "Results", value: "182" },
       { label: "10-K hits", value: "42" },
@@ -789,6 +835,7 @@ const TPL: Record<string, MockTemplate> = {
   FXFC: {
     title: "FX Forecasts",
     sub: "Forward carry + vol bands → 1M / 3M / 12M direction.",
+    allowMockDuringLoad: false,
     tableCols: ["Pair", "Spot", "3M target", "12M target", "Bias"],
     tableRows: [
       { Pair: "EURUSD", Spot: 1.0842, "3M target": 1.10, "12M target": 1.12, Bias: "Bullish USD?" },
@@ -799,6 +846,7 @@ const TPL: Record<string, MockTemplate> = {
   FXGO: {
     title: "FX Trading",
     sub: "Spot + forward execution — multi-bank RFQ.",
+    allowMockDuringLoad: false,
     formRows: [
       { label: "Pair", value: "EURUSD" },
       { label: "Side", value: "BUY EUR" },
@@ -812,6 +860,7 @@ const TPL: Record<string, MockTemplate> = {
   FXH: {
     title: "FX Hedge",
     sub: "Foreign-currency exposure — forward overlay calculator.",
+    allowMockDuringLoad: false,
     formRows: [
       { label: "Exposure", value: "€8,400,000" },
       { label: "Spot", value: "1.0842" },
@@ -832,6 +881,7 @@ const TPL: Record<string, MockTemplate> = {
   GC3D: {
     title: "Yield Curve 3D",
     sub: "Curve × time → 3D surface (live FRED).",
+    allowMockDuringLoad: false,
     kpis: [
       { label: "Slope 10-2", value: "-0.20%", tone: "neg" },
       { label: "Slope 30-5", value: "+0.18%", tone: "pos" },
@@ -842,6 +892,7 @@ const TPL: Record<string, MockTemplate> = {
   GEX: {
     title: "Gamma Exposure",
     sub: "Per-strike dealer gamma exposure + flip + walls.",
+    allowMockDuringLoad: false,
     kpis: [
       { label: "Net GEX", value: "+$8.4B", tone: "pos" },
       { label: "Flip strike", value: "5,180" },
@@ -879,6 +930,7 @@ const TPL: Record<string, MockTemplate> = {
   GREEKS: {
     title: "Portfolio Greeks",
     sub: "Δ / Γ / ν / Θ / ρ totals across the option book.",
+    allowMockDuringLoad: false,
     kpis: [
       { label: "Δ", value: "+1,840" },
       { label: "Γ", value: "+182" },
@@ -889,6 +941,7 @@ const TPL: Record<string, MockTemplate> = {
   HDS: {
     title: "Holders",
     sub: "13F-derived institutional ownership stack.",
+    allowMockDuringLoad: false,
     tableCols: ["Holder", "Shares", "% out", "Δ qtr", "Value"],
     tableRows: [
       { Holder: "Vanguard", Shares: "82.4M", "% out": "8.2%", "Δ qtr": "+1.2M", Value: "$118.0B" },
@@ -901,6 +954,7 @@ const TPL: Record<string, MockTemplate> = {
   HFS: {
     title: "Holder Search",
     sub: "13F reverse lookup — funds holding the issuer / CUSIP.",
+    allowMockDuringLoad: false,
     kpis: [
       { label: "Holders found", value: "284" },
       { label: "Total shares", value: "642M" },
@@ -911,6 +965,7 @@ const TPL: Record<string, MockTemplate> = {
   HVT: {
     title: "Historical Volatility Trends",
     sub: "20d / 50d / 100d realised vol bands — percentile rank.",
+    allowMockDuringLoad: false,
     kpis: [
       { label: "HV 20d", value: "32.4%" },
       { label: "HV 50d", value: "28.6%" },
@@ -943,6 +998,7 @@ const TPL: Record<string, MockTemplate> = {
   IVOL: {
     title: "Implied Vol Surface",
     sub: "Strike × tenor → IV surface, percentile per-expiry.",
+    allowMockDuringLoad: false,
     kpis: [
       { label: "ATM 1M", value: "22.4%" },
       { label: "ATM 3M", value: "24.8%" },
@@ -976,6 +1032,7 @@ const TPL: Record<string, MockTemplate> = {
   LOTS: {
     title: "Tax Lots",
     sub: "Open / list / sell — FIFO · LIFO · HIFO · specific ID.",
+    allowMockDuringLoad: false,
     tableCols: ["Lot ID", "Open date", "Qty", "Cost", "Mkt", "Unrealized", "Method"],
     tableRows: [
       { "Lot ID": "L-4218", "Open date": "2024-03-12", Qty: 100, Cost: 484.2, Mkt: 1432.18, Unrealized: "+$94,798", Method: "HIFO" },
@@ -986,6 +1043,7 @@ const TPL: Record<string, MockTemplate> = {
   MARS: {
     title: "Multi-Asset Risk",
     sub: "Fama-French 5-factor regression on returns.",
+    allowMockDuringLoad: false,
     tableCols: ["Factor", "Beta", "T-stat", "Contribution"],
     tableRows: [
       { Factor: "MKT", Beta: 1.42, "T-stat": 18.4, Contribution: "+8.4%" },
@@ -1006,6 +1064,7 @@ const TPL: Record<string, MockTemplate> = {
   MGN: {
     title: "Cross-Account Margin",
     sub: "Margin requirements + buying power per account.",
+    allowMockDuringLoad: false,
     kpis: [
       { label: "Margin used", value: "$182,400" },
       { label: "Buying power", value: "$842,180", tone: "pos" },
@@ -1016,6 +1075,7 @@ const TPL: Record<string, MockTemplate> = {
   MICRO: {
     title: "Market Microstructure",
     sub: "Order-book depth, imbalance, spread, Kyle's λ proxy.",
+    allowMockDuringLoad: false,
     kpis: [
       { label: "Top-of-book", value: "0.4 / 0.6" },
       { label: "Imbalance", value: "+42%", tone: "pos" },
@@ -1026,6 +1086,7 @@ const TPL: Record<string, MockTemplate> = {
   MLSIG: {
     title: "ML Signal Classifier",
     sub: "Train classifier on technical features → next-N-day direction.",
+    allowMockDuringLoad: false,
     kpis: [
       { label: "Model", value: "GBM" },
       { label: "Features", value: "32" },
@@ -1036,6 +1097,7 @@ const TPL: Record<string, MockTemplate> = {
   MOSS: {
     title: "Most Volatile",
     sub: "Realised vol leaderboard across watchlist / universe.",
+    allowMockDuringLoad: false,
     tableCols: ["Symbol", "HV 20d", "HV 50d", "Δ", "Px"],
     tableRows: [
       { Symbol: "TSLA", "HV 20d": "62%", "HV 50d": "48%", "Δ": "+14pp", Px: 248 },
@@ -1052,6 +1114,7 @@ const TPL: Record<string, MockTemplate> = {
   NGAS: {
     title: "Natural Gas",
     sub: "Henry Hub spot + futures curve + storage flow.",
+    allowMockDuringLoad: false,
     kpis: [
       { label: "Spot", value: "$2.84", tone: "pos" },
       { label: "Front month", value: "$2.92" },
@@ -1073,6 +1136,7 @@ const TPL: Record<string, MockTemplate> = {
   OMON: {
     title: "Option Monitor",
     sub: "Full option chain — IV, Greeks, volume, OI per strike.",
+    allowMockDuringLoad: false,
     tableCols: ["Strike", "IV", "Δ", "Γ", "Vol", "OI"],
     tableRows: [
       { Strike: 1400, IV: "28.4%", "Δ": 0.62, "Γ": 0.018, Vol: "12K", OI: "84K" },
@@ -1084,6 +1148,7 @@ const TPL: Record<string, MockTemplate> = {
   ONCH: {
     title: "On-Chain Metrics",
     sub: "BTC · ETH · L2 — fees, hash rate, active addresses, gas.",
+    allowMockDuringLoad: false,
     kpis: [
       { label: "BTC Hash", value: "682 EH/s", tone: "pos" },
       { label: "ETH Gas", value: "18 gwei" },
@@ -1094,6 +1159,7 @@ const TPL: Record<string, MockTemplate> = {
   OSA: {
     title: "Option Strategy Analysis",
     sub: "Multi-leg P&L + Greeks at expiry, IV scenarios.",
+    allowMockDuringLoad: false,
     formRows: [
       { label: "Strategy", value: "Iron Condor 1430/1450/1500/1520" },
       { label: "Max profit", value: "+$1,420", tone: "pos" },
@@ -1105,6 +1171,7 @@ const TPL: Record<string, MockTemplate> = {
   OVDV: {
     title: "FX Option Volatility Surface",
     sub: "FX option IV surface — strike × tenor.",
+    allowMockDuringLoad: false,
     kpis: [
       { label: "ATM 1M", value: "8.2%" },
       { label: "ATM 3M", value: "8.8%" },
@@ -1115,6 +1182,7 @@ const TPL: Record<string, MockTemplate> = {
   OVME: {
     title: "Option Valuation",
     sub: "Black-Scholes — value + Greeks + breakeven.",
+    allowMockDuringLoad: false,
     formRows: [
       { label: "Underlying", value: "$1,432" },
       { label: "Strike", value: "$1,450" },
@@ -1127,6 +1195,7 @@ const TPL: Record<string, MockTemplate> = {
   PCAS: {
     title: "PCA Factor Stress",
     sub: "Apply k-σ shock along principal components.",
+    allowMockDuringLoad: false,
     kpis: [
       { label: "Components", value: "5" },
       { label: "Cumul. var", value: "94%" },
@@ -1146,6 +1215,7 @@ const TPL: Record<string, MockTemplate> = {
   PFA: {
     title: "Performance Attribution (Brinson)",
     sub: "Brinson-Hood-Beebower — allocation + selection + interaction.",
+    allowMockDuringLoad: false,
     tableCols: ["Sector", "Alloc bp", "Select bp", "Interact bp", "Total bp"],
     tableRows: [
       { Sector: "Technology", "Alloc bp": "+12", "Select bp": "+24", "Interact bp": "+3", "Total bp": "+39" },
@@ -1175,6 +1245,7 @@ const TPL: Record<string, MockTemplate> = {
   PORT_OPT: {
     title: "Portfolio Optimizer",
     sub: "Markowitz min-vol / max-Sharpe / risk-parity / efficient frontier.",
+    allowMockDuringLoad: false,
     kpis: [
       { label: "Best Sharpe", value: "1.84", tone: "pos" },
       { label: "Min vol", value: "11.2%" },
@@ -1193,6 +1264,7 @@ const TPL: Record<string, MockTemplate> = {
   PORT_WHATIF: {
     title: "Portfolio What-If",
     sub: "Add hypothetical trades — recompute risk + return totals.",
+    allowMockDuringLoad: false,
     formRows: [
       { label: "Hypothetical buy", value: "100 NVDA @ market" },
       { label: "New NAV", value: "$1,847,200", tone: "pos" },
@@ -1204,6 +1276,7 @@ const TPL: Record<string, MockTemplate> = {
   PSC: {
     title: "Position Sizing Calculator",
     sub: "R-multiples + Kelly fraction — risk-based sizing.",
+    allowMockDuringLoad: false,
     formRows: [
       { label: "Account", value: "$642,150" },
       { label: "Risk per trade", value: "1.0%" },
@@ -1216,6 +1289,7 @@ const TPL: Record<string, MockTemplate> = {
   PVAR: {
     title: "Position-level VaR / MCR",
     sub: "Per-symbol marginal contribution to portfolio risk.",
+    allowMockDuringLoad: false,
     tableCols: ["Symbol", "Weight", "MCR", "% of risk"],
     tableRows: [
       { Symbol: "NVDA", Weight: "22%", MCR: "$8,420", "% of risk": "34%" },
@@ -1232,6 +1306,7 @@ const TPL: Record<string, MockTemplate> = {
   REBA: {
     title: "Portfolio Rebalancer",
     sub: "Compute orders to bring current portfolio to target weights.",
+    allowMockDuringLoad: false,
     tableCols: ["Symbol", "Current", "Target", "Order"],
     tableRows: [
       { Symbol: "NVDA", Current: "22%", Target: "18%", Order: "SELL 4%" },
@@ -1243,6 +1318,7 @@ const TPL: Record<string, MockTemplate> = {
   REGM: {
     title: "Market Regime",
     sub: "Trend + vol + DD + curve → regime class; optional clustering.",
+    allowMockDuringLoad: false,
     kpis: [
       { label: "Regime", value: "Goldilocks", tone: "pos" },
       { label: "Trend", value: "Up · 2σ" },
@@ -1253,6 +1329,7 @@ const TPL: Record<string, MockTemplate> = {
   RPAR: {
     title: "Risk Parity (ERC)",
     sub: "Equal-risk-contribution weights for given universe.",
+    allowMockDuringLoad: false,
     tableCols: ["Asset", "Volatility", "Correlation", "Weight"],
     tableRows: [
       { Asset: "Stocks", Volatility: "18%", Correlation: "—", Weight: "24%" },
@@ -1264,6 +1341,7 @@ const TPL: Record<string, MockTemplate> = {
   RV: {
     title: "Relative Valuation",
     sub: "Peer set — P/E, EV/EBITDA, P/B, P/S vs sector.",
+    allowMockDuringLoad: false,
     tableCols: ["Peer", "P/E", "EV/EBITDA", "P/B", "P/S"],
     tableRows: [
       { Peer: "NVDA", "P/E": 62, "EV/EBITDA": 48, "P/B": 24, "P/S": 32 },
@@ -1295,6 +1373,7 @@ const TPL: Record<string, MockTemplate> = {
   SOSC: {
     title: "Social Sentiment",
     sub: "StockTwits + Reddit aggregator — bullish/bearish, mentions, velocity.",
+    allowMockDuringLoad: false,
     kpis: [
       { label: "Bullish %", value: "62%", tone: "pos" },
       { label: "Bearish %", value: "24%", tone: "neg" },
@@ -1316,6 +1395,7 @@ const TPL: Record<string, MockTemplate> = {
   SRCH: {
     title: "Bond Screener",
     sub: "Filter by issuer / coupon / maturity / rating / YTM.",
+    allowMockDuringLoad: false,
     kpis: [
       { label: "Universe", value: "12,840" },
       { label: "Matched", value: "82" },
@@ -1326,6 +1406,7 @@ const TPL: Record<string, MockTemplate> = {
   SRSK: {
     title: "Sovereign Risk",
     sub: "CDS-implied PD + macro overlay → sovereign risk score.",
+    allowMockDuringLoad: false,
     tableCols: ["Country", "5Y CDS", "Implied PD", "Rating"],
     tableRows: [
       { Country: "USA", "5Y CDS": "32 bps", "Implied PD": "0.5%", Rating: "AA+" },
@@ -1337,6 +1418,7 @@ const TPL: Record<string, MockTemplate> = {
   STRS: {
     title: "Portfolio Stress Test",
     sub: "Historical + custom shock scenarios applied to portfolio.",
+    allowMockDuringLoad: false,
     tableCols: ["Scenario", "Equity Δ", "Rates Δ", "FX Δ", "P&L"],
     tableRows: [
       { Scenario: "GFC '08", "Equity Δ": "-50%", "Rates Δ": "-200bp", "FX Δ": "Flight to USD", "P&L": "-$420K" },
@@ -1357,6 +1439,7 @@ const TPL: Record<string, MockTemplate> = {
   TCA: {
     title: "Trade Cost Analysis",
     sub: "Implementation shortfall, slippage, opportunity cost across fills.",
+    allowMockDuringLoad: false,
     kpis: [
       { label: "Avg slippage", value: "1.2 bps" },
       { label: "IS shortfall", value: "0.8 bps" },
@@ -1392,6 +1475,7 @@ const TPL: Record<string, MockTemplate> = {
   TLH: {
     title: "Tax-Loss Harvesting",
     sub: "Loss lots, tax savings estimate, wash-sale-safe swaps.",
+    allowMockDuringLoad: false,
     tableCols: ["Symbol", "Loss lot", "Loss", "Est. tax saved", "Swap"],
     tableRows: [
       { Symbol: "ARKK", "Loss lot": "L-2218", Loss: "-$8,400", "Est. tax saved": "$2,100", Swap: "VGT" },
@@ -1402,6 +1486,7 @@ const TPL: Record<string, MockTemplate> = {
   TRA: {
     title: "Total Return Analysis",
     sub: "TWR + IRR + price + dividends — total return decomposition.",
+    allowMockDuringLoad: false,
     kpis: [
       { label: "TWR YTD", value: "+18.4%", tone: "pos" },
       { label: "IRR YTD", value: "+19.2%", tone: "pos" },
@@ -1420,6 +1505,7 @@ const TPL: Record<string, MockTemplate> = {
   TRDH: {
     title: "Trading Hours",
     sub: "Per-exchange session status + next open / close (UTC).",
+    allowMockDuringLoad: false,
     tableCols: ["Exchange", "Status", "Open", "Close"],
     tableRows: [
       { Exchange: "NYSE", Status: "OPEN", Open: "13:30", Close: "20:00" },
@@ -1431,6 +1517,7 @@ const TPL: Record<string, MockTemplate> = {
   TRQA: {
     title: "Transcript Q&A",
     sub: "Run a list of questions against a transcript / audio.",
+    allowMockDuringLoad: false,
     kpis: [
       { label: "Questions", value: "12" },
       { label: "Answered", value: "10", tone: "pos" },
@@ -1441,6 +1528,7 @@ const TPL: Record<string, MockTemplate> = {
   TSAR: {
     title: "Transcript Search",
     sub: "Search across stored transcripts (SQLite FTS5).",
+    allowMockDuringLoad: false,
     kpis: [
       { label: "Stored", value: "8,420 calls" },
       { label: "Matched", value: "42" },
@@ -1451,6 +1539,7 @@ const TPL: Record<string, MockTemplate> = {
   TSOX: {
     title: "Treasury Order Entry",
     sub: "Treasury / bond order ticket — CUSIP, par, settlement.",
+    allowMockDuringLoad: false,
     formRows: [
       { label: "CUSIP", value: "912828ZK4" },
       { label: "Side", value: "BUY" },
@@ -1464,6 +1553,7 @@ const TPL: Record<string, MockTemplate> = {
   WACC: {
     title: "Weighted Average Cost of Capital",
     sub: "Cost of equity + cost of debt + tax shield.",
+    allowMockDuringLoad: false,
     formRows: [
       { label: "Risk-free (10Y)", value: "4.42%" },
       { label: "Beta", value: "1.42" },
@@ -1477,11 +1567,13 @@ const TPL: Record<string, MockTemplate> = {
   WB: {
     title: "World Bonds",
     sub: "Sovereign 10Y yield heatmap, day-change tinted.",
+    allowMockDuringLoad: false,
     heatCells: HEAT_WORLD,
   },
   WETR: {
     title: "Weather Trends",
     sub: "Commodity-relevant region weather trends.",
+    allowMockDuringLoad: false,
     kpis: [
       { label: "PADD-3 temp", value: "92°F" },
       { label: "Cooling DD", value: "+4" },
@@ -1501,6 +1593,7 @@ const TPL: Record<string, MockTemplate> = {
   WIRP: {
     title: "World Interest Rate Probability",
     sub: "CME FedWatch-style policy-path probabilities.",
+    allowMockDuringLoad: false,
     tableCols: ["FOMC", "−25bp", "Hold", "+25bp"],
     tableRows: [
       { FOMC: "Jun '26", "−25bp": "42%", Hold: "56%", "+25bp": "2%" },
@@ -1512,6 +1605,7 @@ const TPL: Record<string, MockTemplate> = {
   YAS: {
     title: "Yield & Spread Analytics",
     sub: "Bond YTM + modified duration + convexity + spread vs benchmark with ±100bp sensitivity curve.",
+    allowMockDuringLoad: false,
     eyebrow: "BOND ANALYTICS · UST10Y reference",
     kpis: [
       { label: "YTM", value: "4.42%", tone: "neutral", sub: "Newton solver, 2/yr coupon" },

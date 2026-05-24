@@ -292,6 +292,175 @@ export function subscribeQuoteStream(
   };
 }
 
+// ---------- module-level WebSocket multiplex ----------
+
+interface MultiplexListener {
+  onTick: (tick: NormalizedTick) => void;
+  onTransportState: (state: TransportState, info?: string) => void;
+}
+
+interface MultiplexEntry {
+  symbol: string;
+  upstream: StreamHandle;
+  listeners: Set<MultiplexListener>;
+  lastTransportState: TransportState;
+  lastTick: NormalizedTick | null;
+}
+
+/**
+ * Subscriber identity → symbol → shared entry. Production code uses the
+ * default `subscribeQuote` reference so a single underlying WebSocket per
+ * symbol is shared across every pane in the workspace. Tests that inject a
+ * custom subscriber get their own bucket — keeping unit isolation intact.
+ */
+const multiplexBuckets = new WeakMap<
+  typeof subscribeQuote,
+  Map<string, MultiplexEntry>
+>();
+
+/**
+ * Reset every multiplex entry. Tests should call this between cases to avoid
+ * leaking upstream handles into the next test.
+ */
+export function __resetMultiplexForTests(): void {
+  // WeakMap cannot be iterated; just drop the reference so GC reclaims it.
+  // Existing live entries will close on their last unsubscribe.
+  for (const subscriber of __knownSubscribers) {
+    const bucket = multiplexBuckets.get(subscriber);
+    if (!bucket) continue;
+    for (const entry of bucket.values()) {
+      entry.upstream.close();
+      entry.listeners.clear();
+    }
+    bucket.clear();
+  }
+  __knownSubscribers.clear();
+}
+
+const __knownSubscribers = new Set<typeof subscribeQuote>();
+
+function bucketFor(subscriber: typeof subscribeQuote): Map<string, MultiplexEntry> {
+  let bucket = multiplexBuckets.get(subscriber);
+  if (!bucket) {
+    bucket = new Map<string, MultiplexEntry>();
+    multiplexBuckets.set(subscriber, bucket);
+    __knownSubscribers.add(subscriber);
+  }
+  return bucket;
+}
+
+interface MultiplexedSubscribeOpts {
+  onTick: (tick: NormalizedTick) => void;
+  onTransportState: (state: TransportState, info?: string) => void;
+  staleTickMs?: number;
+  subscriber?: typeof subscribeQuote;
+}
+
+/**
+ * Share a single underlying WebSocket per (subscriber, symbol). Each caller
+ * gets its own handle; the upstream stays open until the last listener
+ * unsubscribes. The shared entry replays the most-recent transport state and
+ * tick to late joiners so a freshly-mounted pane doesn't sit on "idle".
+ *
+ * Pre-QA each (hookInstance, symbol) pair opened its own WebSocket; 4 WATCH
+ * panes × 7 symbols meant 28 sockets fighting over the same data. After this
+ * change every hook funnels through the multiplexer and the upstream socket
+ * count collapses to one per symbol.
+ */
+export function subscribeQuoteMultiplexed(
+  symbol: string,
+  opts: MultiplexedSubscribeOpts,
+): StreamHandle {
+  const target = normalizeSymbol(symbol);
+  if (!target) {
+    opts.onTransportState("error", "empty symbol");
+    return { close: () => undefined };
+  }
+  const subscriber = opts.subscriber ?? subscribeQuote;
+  const bucket = bucketFor(subscriber);
+  let entry = bucket.get(target);
+  if (!entry) {
+    const newEntry: MultiplexEntry = {
+      symbol: target,
+      upstream: { close: () => undefined },
+      listeners: new Set(),
+      lastTransportState: "idle",
+      lastTick: null,
+    };
+    bucket.set(target, newEntry);
+    // Open the shared upstream subscription. This is the only place where
+    // `subscribeQuoteStream` (and thereby the underlying WebSocket) is
+    // exercised — all other callers attach to the existing entry.
+    newEntry.upstream = subscribeQuoteStream(target, {
+      staleTickMs: opts.staleTickMs,
+      subscriber,
+      onTick: (tick) => {
+        newEntry.lastTick = tick;
+        for (const listener of newEntry.listeners) {
+          try {
+            listener.onTick(tick);
+          } catch (err) {
+            // A listener throwing should never kill the multiplex fan-out.
+            console.warn("[market-data] multiplex listener tick threw", err);
+          }
+        }
+      },
+      onTransportState: (state, info) => {
+        newEntry.lastTransportState = state;
+        for (const listener of newEntry.listeners) {
+          try {
+            listener.onTransportState(state, info);
+          } catch (err) {
+            console.warn(
+              "[market-data] multiplex listener transport threw",
+              err,
+            );
+          }
+        }
+      },
+    });
+    entry = newEntry;
+  }
+
+  const listener: MultiplexListener = {
+    onTick: opts.onTick,
+    onTransportState: opts.onTransportState,
+  };
+  entry.listeners.add(listener);
+
+  // Replay the most recent state so the joiner can paint immediately. The
+  // upstream pushes future events as they arrive.
+  if (entry.lastTransportState !== "idle") {
+    try {
+      listener.onTransportState(entry.lastTransportState);
+    } catch {
+      /* listener throwing on replay is non-fatal */
+    }
+  }
+  if (entry.lastTick) {
+    try {
+      listener.onTick(entry.lastTick);
+    } catch {
+      /* listener throwing on replay is non-fatal */
+    }
+  }
+
+  let closed = false;
+  return {
+    close: () => {
+      if (closed) return;
+      closed = true;
+      const live = bucket.get(target);
+      if (!live) return;
+      live.listeners.delete(listener);
+      if (live.listeners.size === 0) {
+        live.upstream.close();
+        bucket.delete(target);
+      }
+    },
+  };
+}
+
 // ---------- internal per-symbol state ----------
 
 interface SymbolState {
@@ -595,7 +764,10 @@ function useLiveQuotesInternal(
     const handles: StreamHandle[] = [];
     if (autoSubscribe) {
       for (const sym of normalized) {
-        const h = subscribeQuoteStream(
+        // Multiplex through the module-level entry so N panes subscribing to
+        // the same symbol share one underlying WebSocket. Per-hook closures
+        // still receive every tick / transport-state event.
+        const h = subscribeQuoteMultiplexed(
           sym,
           {
             staleTickMs,
@@ -942,7 +1114,10 @@ export function useChartSeries(
 
     let handle: StreamHandle | null = null;
     if (autoSubscribe) {
-      handle = subscribeQuoteStream(sym, {
+      // Charts share the same per-symbol upstream as the WATCH grid via the
+      // multiplexer — no second WebSocket for a chart pane already showing a
+      // live quote in a sibling panel.
+      handle = subscribeQuoteMultiplexed(sym, {
         subscriber: subscriberRef.current,
         onTick: (tick) => {
           if (cancelled) return;

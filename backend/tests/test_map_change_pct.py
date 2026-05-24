@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from showme.engine.core.base_data_source import DataKind, DataRequest
+from showme.engine.core.base_data_source import DataRequest
 from showme.engine.core.base_function import FunctionDeps
 from showme.engine.functions.screen.wmap import MAPFunction
 
@@ -24,8 +24,8 @@ class _StubYF:
         last, prev = self._quotes.get(sym, (None, None))
 
         class _Q:
-            def __init__(self, l: float | None, p: float | None) -> None:
-                self.last = l
+            def __init__(self, last_val: float | None, p: float | None) -> None:
+                self.last = last_val
                 self.close_prev = p
 
         return _Q(last, prev)

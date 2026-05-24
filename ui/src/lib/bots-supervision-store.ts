@@ -4,7 +4,27 @@
  */
 import { create } from "zustand";
 import { sidecarFetch } from "./sidecar";
-import type { BotMeta, SignalEntry } from "./bot-store";
+import type { BotMeta as BaseBotMeta, SignalEntry } from "./bot-store";
+
+/**
+ * Supervisor view of a bot.  Extends the base `BotMeta` with optional fields
+ * Agent 2 may attach to `/api/bots` records:
+ *
+ *   - `signal_count`: total entries in `signal_log` (NOT capped by the feed
+ *     limit; fixes H-SUP-2 where the table column summed the limited feed).
+ *   - `permission_revoked`: true if the broker now rejects the credential's
+ *     `trade` scope — emit a red badge so the user knows the bot is stale
+ *     (UI half of H-SUP-4; backend cascade-disable still does the real fix).
+ *
+ * Both are optional — if the backend hasn't shipped them yet the supervisor
+ * gracefully falls back to feed-derived counts and shows no badge.
+ */
+export interface SupervisedBot extends BaseBotMeta {
+  signal_count?: number;
+  permission_revoked?: boolean;
+}
+
+export type BotMeta = SupervisedBot;
 
 export interface FeedSignal extends SignalEntry {
   bot_id: string;
@@ -23,7 +43,7 @@ export interface AggregateStats {
 
 interface SupervisionStoreShape {
   stats: AggregateStats;
-  bots: BotMeta[];
+  bots: SupervisedBot[];
   feed: FeedSignal[];
   generatedAt: string | null;
   loading: boolean;
@@ -32,13 +52,25 @@ interface SupervisionStoreShape {
   loadAll: (limit?: number) => Promise<void>;
 }
 
-function _computeStats(bots: BotMeta[], feed: FeedSignal[]): AggregateStats {
-  const today = new Date().toISOString().slice(0, 10);
+// H-7 — `signals_today` previously sliced the UTC ISO string, which mis-bucketed
+// signals around midnight in non-UTC zones (Istanbul UTC+3 was off-by-one daily).
+// Compare in local TZ instead: convert each signal's timestamp to the user's
+// local calendar date via `toLocaleDateString('en-CA')` (YYYY-MM-DD).
+function _localDateOf(ts: string | undefined | null): string | null {
+  if (!ts) return null;
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return null;
+  // 'en-CA' formats as YYYY-MM-DD; toLocaleDateString uses the host's local TZ.
+  return d.toLocaleDateString("en-CA");
+}
+
+function _computeStats(bots: SupervisedBot[], feed: FeedSignal[]): AggregateStats {
+  const today = new Date().toLocaleDateString("en-CA");
   return {
     total: bots.length,
     enabled: bots.filter((b) => b.enabled).length,
     live: bots.filter((b) => b.enabled && b.mode === "live").length,
-    signals_today: feed.filter((s) => (s.timestamp ?? "").slice(0, 10) === today).length,
+    signals_today: feed.filter((s) => _localDateOf(s.timestamp) === today).length,
   };
 }
 
@@ -54,14 +86,18 @@ export const useBotsSupervisionStore = create<SupervisionStoreShape>((set) => ({
     set({ loading: true, error: null });
     try {
       const [botsBody, feedBody] = await Promise.all([
-        sidecarFetch<{ records: BotMeta[] }>("/api/bots"),
+        sidecarFetch<{ records: SupervisedBot[] }>("/api/bots"),
         sidecarFetch<{ generated_at: string; signals: FeedSignal[] }>(`/api/bots/feed?limit=${limit}`),
       ]);
+      // H-5 — defend against null/undefined arrays in the response body.
+      // Without this, `.filter` downstream throws and `loading` never clears.
+      const records: SupervisedBot[] = Array.isArray(botsBody?.records) ? botsBody.records : [];
+      const signals: FeedSignal[] = Array.isArray(feedBody?.signals) ? feedBody.signals : [];
       set({
-        bots: botsBody.records,
-        feed: feedBody.signals,
-        generatedAt: feedBody.generated_at,
-        stats: _computeStats(botsBody.records, feedBody.signals),
+        bots: records,
+        feed: signals,
+        generatedAt: feedBody?.generated_at ?? null,
+        stats: _computeStats(records, signals),
         loading: false,
       });
     } catch (e) {

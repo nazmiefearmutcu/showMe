@@ -137,12 +137,37 @@ def _media_row(feed: Any, entry: Any) -> dict[str, Any]:
 
 
 def _matches_query(row: dict[str, Any], query: str) -> bool:
+    """Return True when the row matches the user's query.
+
+    BugHunt 2026-05-24: the previous implementation short-circuited TRUE for
+    any query containing one of {market, markets, market news, audio, video,
+    podcast}. That meant "Apple Podcasts MSFT review" matched a generic Planet
+    Money episode about macro markets because the word "podcast" was in the
+    query — wrong by intent.
+
+    New rule: only an empty/whitespace query returns every row. Otherwise we
+    extract meaningful terms (≥3 chars, alphanumeric, excluding broad-noise
+    stop words like ``podcast``/``audio``/``video``/``market``) and require
+    each surviving term to appear in the row text. If every term is a stop
+    word, fall back to substring match against the cleaned query so terse
+    one-word queries still work.
+    """
     q = (query or "").strip().lower()
-    if q in {"", "market", "markets", "market news", "audio", "video", "podcast"}:
+    if not q:
         return True
     haystack = " ".join(str(row.get(key) or "") for key in ("feed", "title", "summary")).lower()
-    terms = [term for term in re.findall(r"[a-z0-9]+", q) if len(term) > 2]
-    return all(term in haystack for term in terms[:4]) if terms else True
+    stop = {"podcast", "podcasts", "audio", "video", "media", "market", "markets", "news", "the", "and"}
+    raw_terms = [term for term in re.findall(r"[a-z0-9]+", q) if len(term) > 2]
+    terms = [term for term in raw_terms if term not in stop]
+    if not terms:
+        # Every meaningful token was a generic media/market noun.
+        # Require at least one literal token to land in the haystack so
+        # we never return a row that simply happens to be a podcast.
+        for term in raw_terms:
+            if term in haystack:
+                return True
+        return False
+    return all(term in haystack for term in terms[:4])
 
 
 def _dedupe(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:

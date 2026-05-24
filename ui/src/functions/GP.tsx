@@ -56,6 +56,7 @@ import {
 import { usePersistentOption } from "./function-control-state";
 import type { FunctionPaneProps } from "./registry-types";
 import { alpha, useChartPalette } from "@/lib/chart-palette";
+import { formatPrice } from "@/lib/format";
 
 interface OHLCRow {
   date?: string;
@@ -1247,11 +1248,9 @@ function focusLatestBars(chart: IChartApi, count: number, width: number): void {
 }
 
 function fmtNum(v: number | undefined | null): string {
-  if (v == null || !Number.isFinite(v)) return "—";
-  return v.toLocaleString(undefined, {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 4,
-  });
+  // Adaptive precision — sub-cent assets (PENGU $0.000620) keep digits
+  // instead of collapsing to "0.0006" with maxFractionDigits:4.
+  return formatPrice(v);
 }
 
 function fmtVolume(v: number | undefined | null): string {

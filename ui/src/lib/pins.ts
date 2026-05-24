@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from "react";
 import type { FunctionEntry } from "./sidecar";
 import { normalizeSymbolInput } from "./symbols";
+import { safeReadLocal } from "./safe-storage";
 
 export type PinnedItemKind = "function" | "symbol" | "workspace";
 
@@ -117,24 +118,25 @@ export function readPinnedDragData(dataTransfer: DataTransfer): PinnedItem | nul
 
 function loadPinnedItems(): PinnedItem[] {
   if (typeof localStorage === "undefined") return cloneDefaults();
-  try {
-    const raw = localStorage.getItem(KEY);
-    if (!raw) return cloneDefaults();
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return cloneDefaults();
-    const seen = new Set<string>();
-    const out: PinnedItem[] = [];
-    for (const value of parsed) {
-      const item = normalizeItem(value);
-      if (!item || seen.has(item.id)) continue;
-      seen.add(item.id);
-      out.push(item);
-      if (out.length >= MAX_PINNED) break;
-    }
-    return out;
-  } catch {
-    return cloneDefaults();
+  const parsed = safeReadLocal<unknown[]>(KEY, [], {
+    label: "Pins",
+    validate: (v): v is unknown[] => Array.isArray(v),
+  });
+  if (parsed.length === 0) {
+    // Missing or just-cleared corrupt blob — fall back to the seed list. The
+    // safeReadLocal corruption-toast already fired if the blob was bad.
+    return localStorage.getItem(KEY) ? [] : cloneDefaults();
   }
+  const seen = new Set<string>();
+  const out: PinnedItem[] = [];
+  for (const value of parsed) {
+    const item = normalizeItem(value);
+    if (!item || seen.has(item.id)) continue;
+    seen.add(item.id);
+    out.push(item);
+    if (out.length >= MAX_PINNED) break;
+  }
+  return out;
 }
 
 function readPinnedItems(): PinnedItem[] {

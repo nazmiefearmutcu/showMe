@@ -45,6 +45,7 @@ import {
   usePersistentOption,
 } from "./function-control-state";
 import type { FunctionPaneProps } from "./registry-types";
+import sp500Data from "@/data/sp500.json";
 
 const SAMPLES = [
   'sector = "Technology" AND marketCap > 50000000000',
@@ -588,9 +589,25 @@ function normalizeRows(payload: unknown): Array<Record<string, unknown>> {
   return Array.isArray(rows) ? rows.filter(isRecord) : [];
 }
 
-function parseUniverse(value: string): string[] | null {
+/**
+ * Static SP500 constituents lookup table. Wikipedia/S&P-derived snapshot
+ * shipped in `ui/src/data/sp500.json`. When the user asks for the
+ * `SP500` universe the screener now sends all ~500 tickers instead of
+ * returning `null` (which fell through to a 5-stock hardcoded sample
+ * — Bug #18). Source line + last-snapshot date live in the JSON.
+ */
+export const NAMED_UNIVERSES: Record<string, string[]> = {
+  SP500: (sp500Data as { constituents: string[] }).constituents,
+};
+
+export function parseUniverse(value: string): string[] | null {
   const trimmed = value.trim();
-  if (!trimmed || trimmed.toUpperCase() === "SP500") return null;
+  if (!trimmed) return null;
+  // Named universes first (only "SP500" today; add NDX/DJIA/etc. by
+  // dropping more JSON files into `ui/src/data/` and registering here).
+  const named = NAMED_UNIVERSES[trimmed.toUpperCase()];
+  if (named && named.length > 0) return [...named];
+  // Otherwise parse a free-form ticker list (comma- or whitespace-delimited).
   const symbols = trimmed
     .split(/[\s,]+/)
     .map((item) => item.trim().toUpperCase())
