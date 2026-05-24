@@ -10,7 +10,7 @@ import {
   type Preset,
   type ThemeState,
 } from "@/lib/theme";
-import { locale, setLocale, type Locale } from "@/i18n";
+import { locale, setLocale, t, type Locale } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { useAppStore } from "@/lib/store";
 import { fetchSidecarInfo } from "@/lib/sidecar";
@@ -65,11 +65,16 @@ export function Preferences({ section }: { section?: string }) {
   const applyLocale = (next: Locale) => {
     setLocale(next);
     setLocState(next);
-    toast.info(`Language → ${LOCALE_LABELS[next]}`);
+    toast.info(t("language.changed", { locale: LOCALE_LABELS[next] }));
   };
   const applyPreset = (next: Preset) => {
     setLocalThemeState(setPreset(next));
-    toast.info(`Theme: ${PRESET_LABELS[next]}`);
+    // Per-preset display name via i18n keys (theme.midnight, theme.matrix…).
+    // Falls back to PRESET_LABELS if the i18n key isn't shipped yet.
+    const themeKey = `theme.${next}`;
+    const themeName = t(themeKey);
+    const display = themeName === themeKey ? PRESET_LABELS[next] : themeName;
+    toast.info(t("theme.changed", { theme: display }));
   };
   const applyCustom = (slot: keyof CustomColors, hex: string) => {
     const updated = setCustom({ [slot]: hex });

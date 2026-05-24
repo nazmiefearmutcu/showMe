@@ -60,7 +60,7 @@ export function AppearanceSection({
             </Pill>
           }
         >
-          Theme presets
+          {t("preferences.appearance.theme_presets")}
         </CardHeader>
         <CardBody>
           <div className="prefs-preset-grid">
@@ -84,8 +84,8 @@ export function AppearanceSection({
               surface={state.preset === "custom" ? state.custom.surface : "var(--surface)"}
               accent={state.preset === "custom" ? state.custom.accent : "var(--accent)"}
               active={state.preset === "custom"}
-              label="Custom"
-              caption="Pick your own 3 colors below"
+              label={t("preferences.appearance.custom_label")}
+              caption={t("preferences.appearance.custom_caption")}
               onClick={() => onPreset("custom")}
             />
           </div>
@@ -99,32 +99,29 @@ export function AppearanceSection({
               type="button"
               onClick={() => onPreset("midnight")}
               className="btn btn--ghost prefs-reset-btn"
+              title={t("preferences.appearance.reset_to_default")}
             >
-              Reset to Midnight
+              {t("preferences.appearance.reset_to_default")}
             </button>
           }
         >
-          Custom colors
+          {t("preferences.appearance.custom_colors")}
         </CardHeader>
         <CardBody>
-          <p className="prefs-lede">
-            Three slots. Background is the deepest layer; Surface drives panels and
-            cards; Accent is interactive (CTAs, focus, links). Positive / negative
-            P&L colors stay fixed across themes so trade direction always reads.
-          </p>
+          <p className="prefs-lede">{t("preferences.appearance.lede")}</p>
           <div className="prefs-color-grid">
             <ColorSlot
-              label="Background"
+              label={t("preferences.appearance.background")}
               hex={colors.bg}
               onChange={(v) => onCustom("bg", v)}
             />
             <ColorSlot
-              label="Surface"
+              label={t("preferences.appearance.surface")}
               hex={colors.surface}
               onChange={(v) => onCustom("surface", v)}
             />
             <ColorSlot
-              label="Accent"
+              label={t("preferences.appearance.accent")}
               hex={colors.accent}
               onChange={(v) => onCustom("accent", v)}
             />
@@ -154,7 +151,7 @@ export function AppearanceSection({
       </Card>
 
       <Card>
-        <CardHeader>Density</CardHeader>
+        <CardHeader>{t("preferences.appearance.density")}</CardHeader>
         <CardBody>
           <div className="u-flex u-gap-6">
             {(["compact", "comfortable"] as Density[]).map((d) => (
@@ -164,7 +161,7 @@ export function AppearanceSection({
                 onClick={() => onDensity(d)}
                 className={`prefs-density-btn${d === density ? " prefs-density-btn--active" : ""}`}
               >
-                <span>{d}</span>
+                <span>{t(`preferences.appearance.density_${d}`)}</span>
                 <span
                   aria-hidden
                   className={`prefs-density-stripe prefs-density-stripe--${d}`}
@@ -176,7 +173,7 @@ export function AppearanceSection({
       </Card>
 
       <Card>
-        <CardHeader>Language</CardHeader>
+        <CardHeader>{t("preferences.appearance.language")}</CardHeader>
         <CardBody>
           <div className="prefs-locale-grid">
             {listLocales().map((l) => (
@@ -270,18 +267,29 @@ function ColorPreviewStrip({
     ["--mock-accent" as string]: accent,
     ["--mock-text-base" as string]: textBase,
   };
+  // Preview-only mock; never reaches production.
+  // Neutral, clearly-fake numbers so this strip never leaks real-looking
+  // figures into Preferences screenshots, the way the prior DOGEUSDT
+  // $86,617 / $590,397 placeholders did. The labels intentionally read
+  // "Example asset" so demo state cannot be mistaken for portfolio truth.
   return (
-    <div className="prefs-mock" style={rootStyle}>
+    <div className="prefs-mock" style={rootStyle} data-preview="mock">
       <div className="prefs-mock__row">
-        <MockKpi label="MARKET VALUE" value="$590,397" tone="neutral" />
-        <MockKpi label="P&L" value="-$704" tone="negative" />
-        <MockKpi label="POSITIONS" value="51" tone="positive" />
+        <MockKpi label={t("fn.welcome.market_value")} value="$10,000" tone="neutral" />
+        <MockKpi label={t("fn.welcome.pnl")} value="+$100" tone="positive" />
+        <MockKpi label={t("fn.welcome.positions")} value="2" tone="neutral" />
       </div>
       <div className="prefs-mock__table">
-        <span className="prefs-mock__cell">DOGEUSDT</span>
-        <span className="prefs-mock__cell prefs-mock__cell--mute">$86,617</span>
-        <span className="prefs-mock__cell prefs-mock__cell--negative">-$211</span>
-        <span className="prefs-mock__cell prefs-mock__cell--accent">14.7%</span>
+        <span className="prefs-mock__cell">EXAMPLE ASSET-1</span>
+        <span className="prefs-mock__cell prefs-mock__cell--mute">$1,000</span>
+        <span className="prefs-mock__cell prefs-mock__cell--negative">-$10</span>
+        <span className="prefs-mock__cell prefs-mock__cell--accent">5.0%</span>
+      </div>
+      <div className="prefs-mock__table">
+        <span className="prefs-mock__cell">EXAMPLE ASSET-2</span>
+        <span className="prefs-mock__cell prefs-mock__cell--mute">$2,500</span>
+        <span className="prefs-mock__cell prefs-mock__cell--accent">+$50</span>
+        <span className="prefs-mock__cell prefs-mock__cell--accent">2.0%</span>
       </div>
     </div>
   );

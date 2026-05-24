@@ -59,8 +59,16 @@ class TRANFunction(BaseFunction):
                 sources.append("whisper")
             except Exception as e:
                 warnings.append(f"whisper local: {e}")
-        allow_synthetic = _truthy(params.get("allow_synthetic"))
-        if not items and not whisper_result and not allow_synthetic:
+        # BugHunt 2026-05-24: previously TRAN happily emitted a hardcoded
+        # "Prepared remarks template" while attributing the data to
+        # `sources=["seekingalpha"]` whenever `allow_synthetic=true` was set.
+        # That looked like a real provider response to downstream callers.
+        # We now ignore the legacy `allow_synthetic` switch and only emit the
+        # template behind an explicit `include_synthetic=true` query, with
+        # honest sourcing/data_state metadata so consumers cannot mistake the
+        # placeholder for real Seeking Alpha content.
+        include_synthetic = _truthy(params.get("include_synthetic"))
+        if not items and not whisper_result and not include_synthetic:
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
@@ -71,23 +79,49 @@ class TRANFunction(BaseFunction):
                     "whisper": None,
                     "next_actions": [
                         "Enable a transcript provider or pass audio_url/audio_path.",
-                        "Use allow_synthetic=true only when you explicitly want template data.",
+                        "Pass include_synthetic=true to opt into the placeholder template (clearly labelled).",
                     ],
                 },
                 sources=sources,
                 metadata={
                     "provider_errors": warnings or ["transcript providers returned no usable rows"],
                     "live": live,
+                    "data_state": "provider_unavailable",
+                },
+            )
+        if not items and not whisper_result and include_synthetic:
+            # Explicitly synthetic — disclose it via sources and data_state so
+            # callers do not mistake the placeholder for a real transcript.
+            template = _template_transcripts(instrument)
+            return FunctionResult(
+                code=self.code,
+                instrument=instrument,
+                data={
+                    "status": "synthetic",
+                    "transcripts": template,
+                    "whisper": whisper_result,
+                    "reason": (
+                        f"Returning synthetic placeholder for {instrument.symbol} because "
+                        "include_synthetic=true was set and no provider returned a real transcript."
+                    ),
+                },
+                sources=["showme_synthetic_template"],
+                metadata={
+                    "provider_errors": warnings,
+                    "live": live,
+                    "data_state": "synthetic",
+                    "synthetic": True,
                 },
             )
         return FunctionResult(
             code=self.code, instrument=instrument,
             data={
-                "transcripts": items or _template_transcripts(instrument),
+                "transcripts": items,
                 "whisper": whisper_result,
+                "status": "ok",
             },
             sources=sources or ["transcript_template"],
-            metadata={"provider_errors": warnings, "live": live},
+            metadata={"provider_errors": warnings, "live": live, "data_state": "ok"},
         )
 
 

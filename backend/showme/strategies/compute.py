@@ -28,8 +28,17 @@ def _compute_rsi(df: pd.DataFrame, params: dict[str, Any]) -> pd.Series:
     loss = -delta.where(delta < 0, 0.0)
     avg_gain = gain.ewm(com=period - 1, adjust=False).mean()
     avg_loss = loss.ewm(com=period - 1, adjust=False).mean()
+    # Tier 3 fix: a textbook RSI with zero average loss (extended rally) is
+    # 100 by definition, not NaN. The old ``avg_loss.replace(0, NaN)`` made
+    # ``rsi > 70`` rules silently return False during the strongest trends.
+    # We branch row-by-row: if avg_loss == 0 and avg_gain > 0 → RSI = 100;
+    # if both are 0 (flat) → RSI = 50; otherwise the standard formula.
     rs = avg_gain / avg_loss.replace(0, np.nan)
     rsi = 100 - 100 / (1 + rs)
+    no_loss = (avg_loss == 0) & (avg_gain > 0)
+    flat = (avg_loss == 0) & (avg_gain == 0)
+    rsi = rsi.where(~no_loss, 100.0)
+    rsi = rsi.where(~flat, 50.0)
     return rsi.rename("rsi")
 
 
@@ -51,9 +60,61 @@ def _compute_macd(df: pd.DataFrame, params: dict[str, Any]) -> pd.Series:
     return (ema_fast - ema_slow).rename("macd")
 
 
+def _compute_macd_signal(df: pd.DataFrame, params: dict[str, Any]) -> pd.Series:
+    """H-17 fix: MACD signal line = EMA(``signal_period``) of MACD line."""
+    signal_period = int(_param(params, "signal_period", 9))
+    macd = _compute_macd(df, params)
+    return macd.ewm(span=signal_period, adjust=False).mean().rename("macd_signal")
+
+
+def _compute_macd_hist(df: pd.DataFrame, params: dict[str, Any]) -> pd.Series:
+    """H-17 fix: MACD histogram = MACD line - MACD signal line."""
+    macd = _compute_macd(df, params)
+    signal = _compute_macd_signal(df, params)
+    return (macd - signal).rename("macd_hist")
+
+
 def _compute_bollinger_bands(df: pd.DataFrame, params: dict[str, Any]) -> pd.Series:
+    """Bollinger middle line (SMA). For upper/lower bands, register the
+    indicator under id ``bollinger_upper`` / ``bollinger_lower``."""
     period = int(_param(params, "period", 20))
     return df["close"].rolling(period).mean().rename("bbm")
+
+
+def _bb_num_std(params: dict[str, Any]) -> float:
+    """C-API-2 fix: accept ``num_std`` *or* ``std_dev`` aliases.
+
+    The shipped template catalog (``templates.yml::bb-squeeze-breakout``)
+    uses ``std_dev`` but the compute engine historically only read
+    ``num_std``, so a user-customised ``std_dev: 3.0`` was silently
+    discarded and BBM stayed at the 2σ default. Templates and rule
+    builders sometimes use one name, sometimes the other; both work now.
+    Explicit ``num_std`` wins if both are set (more specific).
+    """
+    if "num_std" in params:
+        return float(_param(params, "num_std", 2.0))
+    if "std_dev" in params:
+        return float(_param(params, "std_dev", 2.0))
+    return 2.0
+
+
+def _compute_bollinger_upper(df: pd.DataFrame, params: dict[str, Any]) -> pd.Series:
+    """H-16 fix: upper Bollinger band = SMA + num_std * rolling std."""
+    period = int(_param(params, "period", 20))
+    num_std = _bb_num_std(params)
+    sma = df["close"].rolling(period).mean()
+    # ddof=0 matches the most common BB convention (population std).
+    std = df["close"].rolling(period).std(ddof=0)
+    return (sma + num_std * std).rename("bbu")
+
+
+def _compute_bollinger_lower(df: pd.DataFrame, params: dict[str, Any]) -> pd.Series:
+    """H-16 fix: lower Bollinger band = SMA - num_std * rolling std."""
+    period = int(_param(params, "period", 20))
+    num_std = _bb_num_std(params)
+    sma = df["close"].rolling(period).mean()
+    std = df["close"].rolling(period).std(ddof=0)
+    return (sma - num_std * std).rename("bbl")
 
 
 def _compute_stochastic(df: pd.DataFrame, params: dict[str, Any]) -> pd.Series:
@@ -76,7 +137,7 @@ def _compute_atr(df: pd.DataFrame, params: dict[str, Any]) -> pd.Series:
 
 def _compute_adx(df: pd.DataFrame, params: dict[str, Any]) -> pd.Series:
     period = int(_param(params, "period", 14))
-    high, low, close = df["high"], df["low"], df["close"]
+    high, low, _close = df["high"], df["low"], df["close"]
     up = high.diff()
     dn = -low.diff()
     plus_dm = pd.Series(np.where((up > dn) & (up > 0), up, 0.0), index=df.index)
@@ -97,7 +158,20 @@ def _compute_cci(df: pd.DataFrame, params: dict[str, Any]) -> pd.Series:
 
 
 def _compute_obv(df: pd.DataFrame, _params: dict[str, Any]) -> pd.Series:
-    direction = np.sign(df["close"].diff()).fillna(0)
+    """On-Balance Volume.
+
+    Tier 3 fix: textbook OBV seeds at the first bar's volume (the first
+    bar has no prior close so direction is undefined — convention is to
+    take the volume as-is). The old ``.fillna(0)`` discarded that first
+    bar's contribution, which left every OBV-based rule comparing against
+    a value that was systematically lower than every charting library's
+    output for the same window.
+    """
+    diff = df["close"].diff()
+    direction = np.sign(diff)
+    # First bar: no prior close → seed direction as +1 so volume[0] flows
+    # into the cumulative sum; this matches TradingView / TA-Lib output.
+    direction = direction.where(~direction.isna(), 1.0)
     return (df["volume"] * direction).cumsum().rename("obv")
 
 
@@ -121,6 +195,17 @@ def _compute_ichimoku(df: pd.DataFrame, params: dict[str, Any]) -> pd.Series:
 
 
 def _compute_parabolic_sar(df: pd.DataFrame, params: dict[str, Any]) -> pd.Series:
+    """Parabolic SAR (Wilder).
+
+    H-18 fix: the textbook PSAR cap rule needs ``low[i-1]`` AND ``low[i-2]``
+    (or ``high[i-1]`` AND ``high[i-2]`` in downtrend). For i==1 those
+    look-backs don't exist; the original implementation silently substituted
+    ``low[i-1]`` for the missing ``low[i-2]`` which deviates from the
+    standard and contaminates the next ~30 bars. We now seed the first two
+    bars explicitly: bar 0 starts the uptrend at its low, bar 1 is computed
+    from bar 0 only (no cap — there's no i-2 reference yet), and from bar 2
+    onward the standard two-bar cap applies.
+    """
     af_start = float(_param(params, "af_start", 0.02))
     af_step = float(_param(params, "af_step", 0.02))
     af_max = float(_param(params, "af_max", 0.20))
@@ -132,6 +217,9 @@ def _compute_parabolic_sar(df: pd.DataFrame, params: dict[str, Any]) -> pd.Serie
     if n < 2:
         return pd.Series(sar, index=df.index, name="psar")
 
+    # H-18 fix: explicit initialization. Assume initial uptrend; SAR seeded
+    # at first bar's low, EP at first bar's high. The first iteration step
+    # uses only the single-bar cap (low[i-1]) since no i-2 exists yet.
     up = True
     af = af_start
     ep = high[0]
@@ -141,7 +229,11 @@ def _compute_parabolic_sar(df: pd.DataFrame, params: dict[str, Any]) -> pd.Serie
         prev_sar = sar[i - 1]
         new_sar = prev_sar + af * (ep - prev_sar)
         if up:
-            new_sar = min(new_sar, low[i - 1], low[i - 2] if i >= 2 else low[i - 1])
+            # H-18: only apply two-bar cap once we actually have two prior bars.
+            if i >= 2:
+                new_sar = min(new_sar, low[i - 1], low[i - 2])
+            else:
+                new_sar = min(new_sar, low[i - 1])
             if low[i] < new_sar:
                 up = False
                 new_sar = ep
@@ -152,7 +244,10 @@ def _compute_parabolic_sar(df: pd.DataFrame, params: dict[str, Any]) -> pd.Serie
                     ep = high[i]
                     af = min(af + af_step, af_max)
         else:
-            new_sar = max(new_sar, high[i - 1], high[i - 2] if i >= 2 else high[i - 1])
+            if i >= 2:
+                new_sar = max(new_sar, high[i - 1], high[i - 2])
+            else:
+                new_sar = max(new_sar, high[i - 1])
             if high[i] > new_sar:
                 up = True
                 new_sar = ep
@@ -178,9 +273,20 @@ def _compute_kdj(df: pd.DataFrame, params: dict[str, Any]) -> pd.Series:
 _FUNCTIONS: dict[str, Callable[[pd.DataFrame, dict[str, Any]], pd.Series]] = {
     "rsi": _compute_rsi,
     "macd": _compute_macd,
+    # H-17 fix: separate ids for MACD signal line and histogram so rules
+    # can reference them via distinct indicator aliases. Templates that
+    # depend on a histogram crossing zero (bb-squeeze-breakout variants)
+    # are now expressible.
+    "macd_signal": _compute_macd_signal,
+    "macd_hist": _compute_macd_hist,
     "ema": _compute_ema,
     "sma": _compute_sma,
     "bollinger_bands": _compute_bollinger_bands,
+    # H-16 fix: register upper and lower Bollinger bands as separate ids.
+    # The bb-squeeze-breakout template can now reference price crossing
+    # ``bollinger_upper`` / ``bollinger_lower`` for entries/exits.
+    "bollinger_upper": _compute_bollinger_upper,
+    "bollinger_lower": _compute_bollinger_lower,
     "stochastic": _compute_stochastic,
     "atr": _compute_atr,
     "adx": _compute_adx,

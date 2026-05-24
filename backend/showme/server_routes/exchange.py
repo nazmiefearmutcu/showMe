@@ -7,12 +7,45 @@ state across the lifespan.
 """
 from __future__ import annotations
 
+import logging
 from typing import Any
 
-from fastapi import APIRouter, FastAPI, HTTPException
+from fastapi import APIRouter, FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from . import AppDeps
+
+LOG = logging.getLogger("showme.server_routes.exchange")
+
+
+def _bot_refs_for_credential(credential_id: str) -> list[Any]:
+    """Return BotMeta entries that reference ``credential_id`` (used by cascade)."""
+    from showme.bots.store import BotStore
+    return [m for m in BotStore.fresh().list() if m.credential_id == credential_id]
+
+
+async def _cascade_disable_bots(bot_ids: list[str]) -> list[dict[str, str]]:
+    """Best-effort cascade-disable for each bot id. C-INT-1 / FIX_CONTRACT.md C3.
+
+    Identical contract to the strategies-route helper, kept here so route
+    modules don't form an import cycle.
+    """
+    from showme.bots.lifespan import get_runner
+    from showme.bots.store import BotStore
+    results: list[dict[str, str]] = []
+    runner = get_runner()
+    store = BotStore.fresh()
+    for bid in bot_ids:
+        try:
+            await runner.disable(bid, store)
+            locks = getattr(runner, "_locks", None)
+            if isinstance(locks, dict):
+                locks.pop(bid, None)
+            results.append({"bot_id": bid, "status": "disabled"})
+        except Exception as exc:  # noqa: BLE001
+            LOG.warning("cascade disable failed for bot %s: %s", bid, exc)
+            results.append({"bot_id": bid, "status": "error", "error": str(exc)})
+    return results
 
 
 class CredentialCreate(BaseModel):
@@ -81,14 +114,66 @@ def register(app: FastAPI, deps: AppDeps) -> None:
 
         return rec.to_dict()
 
+    @router.get("/api/exchange/credentials/{credential_id}/dependents")
+    async def credential_dependents(credential_id: str) -> dict[str, Any]:
+        """List bots that reference ``credential_id``.
+
+        Used by the CONN UI (FIX_CONTRACT.md C9) so the delete-credential
+        confirmation can warn that live bots will be cascade-disabled.
+        """
+        refs = _bot_refs_for_credential(credential_id)
+        return {
+            "credential_id": credential_id,
+            "bot_count": len(refs),
+            "bot_ids": [m.id for m in refs],
+            "bots": [
+                {
+                    "id": m.id, "symbol": m.symbol, "mode": m.mode,
+                    "enabled": m.enabled,
+                }
+                for m in refs
+            ],
+        }
+
     @router.delete("/api/exchange/credentials/{credential_id}")
-    async def delete_credential(credential_id: str) -> dict[str, Any]:
+    async def delete_credential(
+        credential_id: str,
+        force: bool = Query(False),
+    ) -> dict[str, Any]:
+        """Delete a credential. C-INT-1 / FIX_CONTRACT.md C3.
+
+        Without ``force=true``: refuses with 409 when any bot still
+        references the credential. With ``force=true``: cascade-disables
+        the referencing bots (asyncio task cancelled, ``enabled=False``
+        persisted) BEFORE removing the credential from the vault and
+        unregistering the broker. This prevents the C-INT-1 zombie-task
+        scenario from the audit.
+        """
         from showme.brokers import CredentialStore, factory as factory_mod
         store = CredentialStore.fresh()
+        # FK check BEFORE delete so a stale 404 doesn't leak references.
+        refs = _bot_refs_for_credential(credential_id)
+        if refs and not force:
+            raise HTTPException(
+                409,
+                detail={
+                    "error": "credential_has_bots",
+                    "bot_count": len(refs),
+                    "bot_ids": [m.id for m in refs[:10]],
+                    "hint": "Use ?force=true to cascade-disable referencing bots.",
+                },
+            )
+        cascade_results: list[dict[str, str]] = []
+        if refs and force:
+            cascade_results = await _cascade_disable_bots([m.id for m in refs])
         if not store.delete(credential_id):
             raise HTTPException(404, detail="credential not found")
         factory_mod.unregister_credential(credential_id)
-        return {"ok": True}
+        return {
+            "ok": True,
+            "cascade": cascade_results,
+            "bots_affected": len(cascade_results),
+        }
 
     @router.patch("/api/exchange/credentials/{credential_id}")
     async def patch_credential(credential_id: str, payload: CredentialPatch) -> dict[str, Any]:

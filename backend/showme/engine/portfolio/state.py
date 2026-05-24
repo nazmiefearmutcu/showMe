@@ -155,7 +155,19 @@ class PortfolioState:
         return out
 
     def import_legacy_crypto(self, state_json_path: str | Path = "runtime/state.json") -> int:
-        """Mirror open positions from the legacy bot's state.json (read-only)."""
+        """Mirror open positions from the legacy bot's state.json (read-only).
+
+        Gated behind ``SHOWME_IMPORT_LEGACY_TBV3`` (default OFF). showMe is the
+        multi-exchange cockpit and must remain decoupled from the quarantined
+        TBV3 paper-trading bot whose runtime/state.json otherwise leaks ~51
+        phantom positions into PORT/ACCT/PVAR/STRS. The memory note
+        "showMe exchanges work isolates TBV3" mandates zero structural
+        dependency on TBV3. Set ``SHOWME_IMPORT_LEGACY_TBV3=1`` (or
+        ``true``/``yes``/``on``) to opt back into the legacy mirror when
+        intentionally debugging the import path.
+        """
+        if not _legacy_import_enabled():
+            return 0
         p = _runtime_path(state_json_path)
         if not p.exists():
             return 0
@@ -194,6 +206,19 @@ class PortfolioState:
         if added or updated:
             self.save()
         return added
+
+
+_LEGACY_IMPORT_ENV = "SHOWME_IMPORT_LEGACY_TBV3"
+
+
+def _legacy_import_enabled() -> bool:
+    """Whether the TBV3 legacy state.json mirror is opted in.
+
+    Default OFF. The env var is read on every call so tests can toggle the
+    behaviour with ``monkeypatch.setenv``/``delenv`` without re-importing.
+    """
+    raw = os.environ.get(_LEGACY_IMPORT_ENV, "")
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _default_app_home() -> Path | None:

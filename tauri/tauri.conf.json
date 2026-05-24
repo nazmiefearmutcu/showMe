@@ -83,7 +83,7 @@
       "_comment_pubkey": "Round 4C — real minisign keypair generated via `tauri signer generate`. Private half lives at packaging/keys/showme-updater.key (gitignored). CI must inject TAURI_SIGNING_PRIVATE_KEY + TAURI_SIGNING_PRIVATE_KEY_PASSWORD to sign release artifacts.",
       "active": true,
       "endpoints": [
-        "https://github.com/showme-app/showme/releases/latest/download/latest.json"
+        "https://github.com/nazmiefearmutcu/showMe/releases/latest/download/latest.json"
       ],
       "dialog": true,
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDk4MjREQjMxQzlGQjMxNkUKUldSdU1mdkpNZHNrbUw3VlRwMGZ4bE9lNi9qdC8zR1V1bzMzVjE0TkJkdFBka1g3YUtJa1dJalcK",

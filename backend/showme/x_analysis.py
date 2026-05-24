@@ -39,6 +39,15 @@ DEFAULT_LIMIT = 120
 MAX_LIMIT = 500
 DEFAULT_LANG = "en"
 
+# Below this many real posts the classifier output is statistical noise —
+# 2 neutral tweets shouldn't be enough to declare "bullish" with any
+# confidence. Returning {"verdict": "insufficient_data"} lets the UI render
+# a "not enough data" empty-state rather than a misleading verdict.
+# See SHOWME_BUGHUNT 2026-05-24 Bug #6. Tunable via env for ops/tests.
+MIN_POSTS_FOR_VERDICT = max(
+    1, int(os.environ.get("SHOWME_X_MIN_POSTS_FOR_VERDICT", "5"))
+)
+
 INSTANT_SOURCE_ID = "x_sentiment"
 INSTANT_SOURCE_NAME = "X Social Sentiment"
 INSTANT_SOURCE_CATEGORY = "social"
@@ -288,6 +297,29 @@ class XAnalyzer:
                 "warning": "no posts returned by any scraper backend",
                 "scraper": self._scraper.diagnostics(),
             }
+        # Bug #6 guard: below MIN_POSTS_FOR_VERDICT real posts the
+        # classifier output is noise. Return an explicit insufficient_data
+        # verdict so the UI doesn't declare "bullish" off 2 neutral tweets.
+        if len(posts) < MIN_POSTS_FOR_VERDICT:
+            return {
+                "query": query,
+                "post_count": len(posts),
+                "scrape_seconds": round(scrape_seconds, 2),
+                "verdict": "insufficient_data",
+                "mood": "insufficient_data",
+                "scores": {
+                    "bullish_score_avg": 0.0,
+                    "bullish_score_engagement_weighted": 0.0,
+                    "confidence": 0.0,
+                },
+                "warning": (
+                    f"only {len(posts)} post(s) scraped — need at least "
+                    f"{MIN_POSTS_FOR_VERDICT} for a reliable verdict"
+                ),
+                "posts_seen": len(posts),
+                "min_posts_for_verdict": MIN_POSTS_FOR_VERDICT,
+                "scraper": self._scraper.diagnostics(),
+            }
         analyses = self.classify([post.text for post in posts])
         if not analyses:
             return {
@@ -475,12 +507,15 @@ class XAnalyzer:
     ) -> dict[str, Any]:
         query = self._symbol_query(symbol)
         analysis = self.analyze_topic(query=query, limit=limit, since=since, lang=lang)
-        if analysis.get("post_count", 0) == 0:
+        # Bug #6: insufficient_data shape lacks summary_tr/distributions/etc.,
+        # so handle it the same way as post_count==0 — chip stays non-ok.
+        if analysis.get("post_count", 0) == 0 or analysis.get("verdict") == "insufficient_data":
             return {
                 "symbol": symbol,
                 "ok": False,
-                "post_count": 0,
+                "post_count": analysis.get("post_count", 0),
                 "warning": analysis.get("warning") or "no posts",
+                "verdict": analysis.get("verdict"),
             }
         return {
             "symbol": symbol,
@@ -537,12 +572,15 @@ class XAnalyzer:
         if not query:
             return {"ok": False, "events": [], "warning": "query required"}
         result = self.analyze_topic(query=query, limit=limit, since=since, lang=lang)
-        if result.get("post_count", 0) == 0:
+        # Bug #6: an insufficient_data verdict has no examples / summary so it
+        # cannot produce INSTANT events. Treat the same as zero-post path.
+        if result.get("post_count", 0) == 0 or result.get("verdict") == "insufficient_data":
             return {
                 "ok": False,
                 "events": [],
                 "warning": result.get("warning") or "no posts",
                 "summary_tr": result.get("summary_tr"),
+                "verdict": result.get("verdict"),
             }
 
         events: list[dict[str, Any]] = []

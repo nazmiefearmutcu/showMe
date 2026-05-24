@@ -285,20 +285,63 @@ fn default_engine_path() -> String {
         .unwrap_or_else(|_| "../backend/showme/engine".to_string())
 }
 
+/// Graceful sidecar shutdown — REL-04 P1.
+///
+/// `Child::kill()` on macOS sends SIGKILL, which short-circuits the
+/// Python `atexit` handlers we rely on for:
+///   - DuckDB WAL truncation (otherwise the next boot triggers replay
+///     and we leak ~MB-per-shutdown of orphan WAL).
+///   - Broker websocket close frames (otherwise ccxt's per-session
+///     sockets stay half-open until the exchange-side keepalive kicks
+///     them ~60s later).
+///
+/// Instead we send SIGTERM via `libc::kill` (Rust stable doesn't expose
+/// SIGTERM directly), poll `try_wait` for up to 5 seconds, and only
+/// escalate to SIGKILL if the sidecar still hasn't exited.
 pub fn shutdown(_handle: &AppHandle) {
     let mut guard = CHILD.lock();
     if let Some(mut child) = guard.take() {
-        log::info!("sidecar: requesting graceful shutdown");
-        // SIGTERM via kill() (Rust stable doesn't expose SIGTERM directly).
-        let _ = child.kill();
-        for _ in 0..50 {
-            match child.try_wait() {
-                Ok(Some(_)) => return,
-                Ok(None) => std::thread::sleep(Duration::from_millis(100)),
-                Err(_) => return,
+        let pid = child.id();
+        log::info!("sidecar: requesting graceful shutdown (SIGTERM pid={pid})");
+        // SIGTERM via libc to give Python's atexit a chance to run.
+        #[cfg(unix)]
+        unsafe {
+            // pid is a u32 from Child; cast to i32 (pid_t) for libc::kill.
+            let rc = libc::kill(pid as libc::pid_t, libc::SIGTERM);
+            if rc != 0 {
+                let err = std::io::Error::last_os_error();
+                log::warn!("sidecar: SIGTERM failed (pid={pid}): {err}");
             }
         }
+        // Non-unix fallback (Windows in CI): just use Child::kill which is
+        // a hard terminate. We don't ship Windows builds today but the
+        // type system still has to compile here.
+        #[cfg(not(unix))]
+        {
+            let _ = child.kill();
+        }
+
+        // Poll up to 5 seconds (50 × 100ms) for the sidecar to honor SIGTERM.
+        for _ in 0..50 {
+            match child.try_wait() {
+                Ok(Some(_status)) => {
+                    log::info!("sidecar: exited cleanly after SIGTERM (pid={pid})");
+                    return;
+                }
+                Ok(None) => std::thread::sleep(Duration::from_millis(100)),
+                Err(err) => {
+                    log::warn!("sidecar: try_wait failed (pid={pid}): {err}");
+                    return;
+                }
+            }
+        }
+        // Last resort: SIGKILL.
+        log::warn!(
+            "sidecar: still alive after 5s SIGTERM grace, escalating to SIGKILL (pid={pid})"
+        );
         let _ = child.kill();
+        // Give the OS one more beat to reap so we don't leak a zombie.
+        let _ = child.wait();
     }
 }
 

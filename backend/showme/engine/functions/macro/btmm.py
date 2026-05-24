@@ -393,6 +393,23 @@ class BTMMFunction(BaseFunction):
         filtered = sorted(filtered, key=_sort_key)[:limit]
         summary = _summary(filtered, universe=rows)
 
+        # Bug #24 fix: surface data staleness as a warning so the UI's
+        # "live" pill can flip to "warn" when the BIS cache + freshest row
+        # in scope is more than 24 hours old (e.g. weekend, network outage,
+        # cached fallback). The sanitizer fix in Agent 4's slice keeps
+        # `warnings` instead of erasing them.
+        latest_as_of = _max_as_of(filtered) or _max_as_of(rows)
+        stale_seconds = _seconds_since(latest_as_of) if latest_as_of else None
+        if stale_seconds is not None and stale_seconds > 24 * 3600:
+            warnings.append(
+                f"data_stale_24h: freshest BIS observation {latest_as_of} "
+                f"is {int(stale_seconds // 3600)}h old"
+            )
+
+        # Compute the BTMM "as_of" envelope key — the freshest observation
+        # available in scope. UI uses this for the "Data as of" stamp.
+        as_of_envelope = latest_as_of
+
         return FunctionResult(
             code=self.code,
             instrument=None,
@@ -401,6 +418,8 @@ class BTMMFunction(BaseFunction):
                 "region": region,
                 "rows": filtered,
                 "summary": summary,
+                "as_of": as_of_envelope,
+                "stale_seconds": stale_seconds,
                 "history": _history_for_rows(filtered),
                 "usage": {
                     "country": "Use ALL, US, EU, GB, JP, TR, or a BIS ISO country code.",
@@ -667,15 +686,61 @@ def _summary(rows: list[dict[str, Any]], *, universe: list[dict[str, Any]]) -> d
         "holds": sum(1 for row in rows if row.get("last_move") == "hold"),
     }
     hottest = max(rows, key=lambda row: abs(float(row.get("change_bp") or 0)), default=None)
+
+    # Bug #24 fix: Range min/max ignores rows whose ``as_of`` is older than
+    # 6 months. Previously a stale 2022 Croatian 0.00% observation surfaced
+    # as the "Range min" even though every other CB had moved since. We
+    # keep the full ``rates`` list for the average (count is what matters
+    # there), but compute min/max from the fresh-only slice.
+    today_iso = date.today().isoformat()
+    cutoff_iso = (date.today() - timedelta(days=183)).isoformat()
+    fresh_rates: list[float] = []
+    for row in rows:
+        rate = row.get("policy_rate")
+        if not isinstance(rate, (int, float)):
+            continue
+        as_of = row.get("as_of")
+        if not as_of or str(as_of) < cutoff_iso:
+            continue
+        # Guard against future-dated rows polluting min/max.
+        if str(as_of) > today_iso:
+            continue
+        fresh_rates.append(float(rate))
+    if not fresh_rates and rates:
+        # Edge case: no row passes the freshness gate (e.g. an all-stale
+        # fallback table in unit tests). Falling back to the full set is
+        # still better than surfacing `None`.
+        fresh_rates = rates
+
     return {
         "rows": len(rows),
         "universe": len(universe),
         "average_policy_rate": round(sum(rates) / len(rates), 4) if rates else None,
-        "max_policy_rate": max(rates) if rates else None,
-        "min_policy_rate": min(rates) if rates else None,
+        "max_policy_rate": max(fresh_rates) if fresh_rates else None,
+        "min_policy_rate": min(fresh_rates) if fresh_rates else None,
+        "range_window_days": 183,
         **move_counts,
         "largest_last_move": hottest,
     }
+
+
+def _max_as_of(rows: list[dict[str, Any]]) -> str | None:
+    best: str | None = None
+    for row in rows:
+        as_of = row.get("as_of") if isinstance(row, dict) else None
+        if not as_of:
+            continue
+        if best is None or str(as_of) > best:
+            best = str(as_of)
+    return best
+
+
+def _seconds_since(as_of_iso: str) -> float | None:
+    parsed = _parse_date(as_of_iso)
+    if parsed is None:
+        return None
+    today = date.today()
+    return max(0.0, (today - parsed).total_seconds())
 
 
 def _history_for_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:

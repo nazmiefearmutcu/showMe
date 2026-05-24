@@ -5,7 +5,7 @@ import asyncio
 import logging
 from typing import Any
 
-from fastapi import APIRouter, FastAPI
+from fastapi import APIRouter, FastAPI, HTTPException
 
 from . import AppDeps
 from ._models import VeryfinderBatchRequest
@@ -81,6 +81,26 @@ def register(app: FastAPI, deps: AppDeps) -> None:
     async def veryfinder_batch(payload: VeryfinderBatchRequest) -> dict[str, Any]:
         from showme import veryfinder_bridge
 
+        # Bug #7: previously this endpoint returned {"ok": True, "items": [...]}
+        # even when the Veryfinder runtime was missing (every overlay was a
+        # "no_data" stub). The UI then fired a green "Veryfinder inference
+        # ready" toast every 60s. Honor the health check up front: if the
+        # runtime is unavailable, reply HTTP 503 so `sidecarFetch` rejects and
+        # the success toast in NI.tsx / TOP.tsx never runs.
+        # See SHOWME_BUGHUNT 2026-05-24 Bug #7.
+        if veryfinder_bridge.veryfinder_root() is None:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "ok": False,
+                    "reason": "veryfinder_runtime_unavailable",
+                    "message": (
+                        "Veryfinder runtime was not found in the showMe "
+                        "integration cache. Batch inference is unavailable."
+                    ),
+                    "meaning": veryfinder_bridge.overlay_meaning(),
+                },
+            )
         try:
             return await asyncio.to_thread(
                 veryfinder_bridge.analyze_batch,
@@ -92,6 +112,8 @@ def register(app: FastAPI, deps: AppDeps) -> None:
                 engine=payload.engine,
                 limit=payload.limit,
             )
+        except HTTPException:
+            raise
         except Exception as exc:  # noqa: BLE001
             LOG.warning("veryfinder batch failed: %s", exc)
             return {

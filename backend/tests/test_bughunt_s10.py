@@ -124,7 +124,6 @@ class TestNseLiveFalsePath:
 
     @pytest.mark.asyncio
     async def test_live_false_returns_empty_data_with_synthetic_source(self):
-        from showme.engine.core.base_function import BaseFunction
         from showme.engine.functions.news.nse import NSEFunction
 
         class _StubDeps:

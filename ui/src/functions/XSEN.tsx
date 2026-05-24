@@ -149,15 +149,22 @@ export function XSENPane({ code, symbol }: FunctionPaneProps) {
   const examples = data?.examples ?? {};
   const sentimentOrder = useMemo(() => orderSentiments(Object.keys(examples)), [examples]);
 
-  // Active scrape source label (Brave -> Nitter -> Jina order)
+  // Active scrape source label (Brave -> Nitter -> Jina order).
+  // Bug #10e: When the model load times out the backend returns a partial
+  // {ok:false, model_loaded:false} payload with no `scraper` key. The
+  // previous `health.scraper.nitter_mirrors_active.length` access threw
+  // TypeError and tore down the whole pane. All reads here are now
+  // optional-chained.
   const scrapeSource = useMemo(() => {
     if (!health) return "checking";
-    const backends = (health.scraper?.backends ?? {}) as Record<string, unknown>;
+    if (health?.ok === false) return "model offline";
+    const backends = (health?.scraper?.backends ?? {}) as Record<string, unknown>;
     const parts: string[] = [];
     if (backends.brave_syndication) parts.push("brave");
     else if (backends.ddg_syndication) parts.push("ddg");
     else if (backends.bing_syndication) parts.push("bing");
-    if (health.scraper.nitter_mirrors_active.length > 0) parts.push(`nitter×${health.scraper.nitter_mirrors_active.length}`);
+    const mirrorCount = health?.scraper?.nitter_mirrors_active?.length ?? 0;
+    if (mirrorCount > 0) parts.push(`nitter×${mirrorCount}`);
     if (backends.jina_proxy) parts.push("jina");
     return parts.length ? parts.join("→") : "no backends";
   }, [health]);
@@ -307,7 +314,46 @@ export function XSENPane({ code, symbol }: FunctionPaneProps) {
         </div>
 
         <PaneBody className="xsen-pane-body">
-          {state === "idle" && !data ? (
+          {/*
+            Bug #10e: when /api/x/health returns {ok:false} because the
+            RoBERTa load timed out, render an explicit "model offline"
+            empty-state rather than letting the user press Run and watch
+            it spin/fail. The state==="idle" guard keeps the message off
+            screen while data is on screen.
+          */}
+          {health?.ok === false && state === "idle" && !data ? (
+            <Empty
+              title="Sentiment model offline"
+              body={
+                <div className="xsen-empty-body">
+                  <p className="xsen-empty-body__hint">
+                    The X sentiment classifier did not finish loading. Try again in a minute — the
+                    sidecar retries the load on the next health probe.
+                  </p>
+                  {health?.load_error ? (
+                    <p className="xsen-empty-body__hint xsen-empty-body__hint--mute">
+                      Detail: {health.load_error}
+                    </p>
+                  ) : null}
+                </div>
+              }
+            />
+          ) : data?.verdict === "insufficient_data" ? (
+            <Empty
+              title="Not enough data for a verdict"
+              body={
+                <div className="xsen-empty-body xsen-empty-body--wide">
+                  <p className="xsen-empty-body__hint">
+                    {data.warning ??
+                      `Only ${data.post_count ?? 0} post(s) scraped — need at least 5 for a reliable verdict.`}
+                  </p>
+                  <p className="xsen-empty-body__hint">
+                    Try a more popular ticker or wait a minute for the scraper rate budget to refill.
+                  </p>
+                </div>
+              }
+            />
+          ) : state === "idle" && !data ? (
             <Empty
               title="Ready to scan X"
               body={
@@ -773,6 +819,9 @@ function EngageTile({
 }
 
 function XSENHelp({ health }: { health: XHealth | null }) {
+  // Bug #10e: scraper key may be missing when the model load times out;
+  // optional-chain every access to avoid the TypeError that took down the
+  // whole pane.
   return (
     <div className="fn-help-grid">
       <strong>XSEN · X Sentiment AI</strong>
@@ -782,9 +831,9 @@ function XSENHelp({ health }: { health: XHealth | null }) {
         then Jina reader proxy. The model lives inside the .app bundle.
       </span>
       <span className="fn-help-grid__hint-mute">
-        guest token: {health?.scraper.guest_token_present ? "active" : "off"} · nitter mirrors:
+        guest token: {health?.scraper?.guest_token_present ? "active" : "off"} · nitter mirrors:
         {" "}
-        {health?.scraper.nitter_mirrors_active.length ?? 0}
+        {health?.scraper?.nitter_mirrors_active?.length ?? 0}
       </span>
     </div>
   );

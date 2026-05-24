@@ -15,8 +15,22 @@ def register(app: FastAPI, deps: AppDeps) -> None:
         from showme.strategies.spec import StrategySpec
         from showme.strategies.store import StrategyStore
 
-        text = (payload or {}).get("text") or ""
-        save = bool((payload or {}).get("save", False))
+        # Faz 2 / S10 — explicit type guard. The old
+        # ``(payload or {}).get("text") or ""`` path crashed with a
+        # ``AttributeError: 'int' object has no attribute 'strip'`` on
+        # ``text=42``, which surfaced as a sidecar 500. Now any non-string
+        # ``text`` (int, float, list, dict, bool) is a 400 contract
+        # violation; ``None`` and empty/whitespace strings still surface
+        # the friendlier "text is required" 400.
+        if not isinstance(payload, dict):
+            raise HTTPException(400, detail="payload must be a JSON object")
+        raw = payload.get("text")
+        if raw is None:
+            raise HTTPException(400, detail="text is required")
+        if not isinstance(raw, str):
+            raise HTTPException(400, detail="text must be a string")
+        text = raw
+        save = bool(payload.get("save", False))
         if not text.strip():
             raise HTTPException(400, detail="text is required")
 

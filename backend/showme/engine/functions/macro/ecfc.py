@@ -18,36 +18,32 @@ _INDICATORS: dict[str, tuple[str, str]] = {
 
 
 def _forecast_model(country: str, indicators: list[str]) -> dict[str, Any]:
-    values = {
-        "NGDP_RPCH": [{"year": 2026, "value": 2.0}, {"year": 2027, "value": 2.1}],
-        "PCPIPCH": [{"year": 2026, "value": 2.8}, {"year": 2027, "value": 2.4}],
-        "LUR": [{"year": 2026, "value": 4.1}, {"year": 2027, "value": 4.2}],
-        "GGXCNL_NGDP": [{"year": 2026, "value": -5.8}, {"year": 2027, "value": -5.3}],
-        "GGXWDG_NGDP": [{"year": 2026, "value": 121.0}, {"year": 2027, "value": 120.5}],
-    }
-    rows: list[dict[str, Any]] = []
-    for indicator in indicators:
-        label, unit = _indicator_label(indicator)
-        for item in values.get(indicator, [{"year": 2026, "value": 0.0}]):
-            rows.append({
-                "country": country,
-                "indicator": indicator,
-                "metric": label,
-                "year": item["year"],
-                "forecast_value": item["value"],
-                "unit": unit,
-                "source_mode": "reference_forecast_table",
-            })
+    # Bug #?? fix (Bug #N5 in this slice): every country used to receive
+    # the same hardcoded 2.0% GDP growth / 2.8% inflation / 4.1%
+    # unemployment etc. The cockpit then displayed USA/CHN/BRA/JPN with
+    # identical numbers, which was indistinguishable from a real forecast
+    # table. We refuse to fabricate per-country values when no live IMF
+    # provider is wired: return an explicit provider_unavailable envelope
+    # with an empty `rows` list so the UI renders an Empty state instead
+    # of identical fake forecasts.
     return {
         "country": country,
-        "rows": rows,
-        "series": rows,
-        "cards": _forecast_cards(rows),
+        "rows": [],
+        "series": [],
+        "cards": [],
+        "status": "provider_unavailable",
+        "data_state": "provider_unavailable",
         "methodology": (
-            "ECFC normalizes economic forecasts by country, indicator, year, unit, "
-            "and source mode. IMF/OECD provider output is used when it can be "
-            "parsed into metric-year rows; otherwise a labelled reference forecast table is shown."
+            "ECFC requires a live IMF or OECD economic-outlook adapter. No "
+            "provider is wired in this build, so the function returns an "
+            "explicit provider_unavailable envelope rather than fabricating "
+            "identical 2.0% growth / 2.8% inflation rows for every country."
         ),
+        "next_actions": [
+            "Configure the IMF or OECD economic-outlook data source.",
+            "Re-run ECFC with live_forecast=true once a provider is available.",
+        ],
+        "requested_indicators": indicators,
         "field_dictionary": {
             "indicator": "Provider series code.",
             "metric": "Human-readable macro variable.",
@@ -55,7 +51,7 @@ def _forecast_model(country: str, indicators: list[str]) -> dict[str, Any]:
             "year": "Forecast calendar year.",
             "source_mode": "Provider or reference layer used for the row.",
         },
-        "source_mode": "reference_forecast_table",
+        "source_mode": "provider_unavailable",
     }
 
 
@@ -79,8 +75,17 @@ class ECFCFunction(BaseFunction):
                 code=self.code,
                 instrument=None,
                 data=_forecast_model(country, indicators),
-                sources=["reference_forecast_table"],
-                metadata={"country": country, "indicators": indicators, "mode": "reference_forecast_table"},
+                sources=["no_live_source"],
+                warnings=[
+                    "ECFC has no live IMF/OECD adapter wired; refusing to "
+                    "fabricate identical per-country forecast values"
+                ],
+                metadata={
+                    "country": country,
+                    "indicators": indicators,
+                    "mode": "provider_unavailable",
+                    "data_state": "provider_unavailable",
+                },
             )
         provider_errors: list[str] = []
         sources: list[str] = []
@@ -130,7 +135,7 @@ class ECFCFunction(BaseFunction):
             if data or sources:
                 provider_errors.append("provider payload did not normalize into forecast rows")
             data = _forecast_model(country, indicators)
-            sources = ["reference_forecast_table"]
+            sources = ["no_live_source"]
         else:
             data = {
                 "country": country,

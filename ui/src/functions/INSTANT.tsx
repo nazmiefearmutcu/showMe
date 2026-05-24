@@ -202,14 +202,29 @@ export function INSTANTPane({ code }: FunctionPaneProps) {
     return KNOWN_SPEEDUPS;
   }, [status]);
   const sourceHealth = status?.health?.sources ?? [];
-  const transport = status?.transport ?? "unavailable";
+  // QA-2026-05-24 (#10d): default to "loading" on first paint instead of
+  // "unavailable". The pre-fetch state previously painted a misleading red
+  // UNAVAILABLE pill even though backfill returns 100+ events within ~150ms.
+  // Only escalate to "unavailable" once the first fetch has resolved AND
+  // the backend reports no transport.
+  const hasResolved = state === "ok" || state === "error";
+  const transport = status?.transport ?? (hasResolved ? "unavailable" : "loading");
   const ok = Boolean(status?.ok);
   const newestAt = metrics?.newest_fetched_at ?? null;
   const stale = computeStale(newestAt);
-  const streamState: "live" | "stale" | "unavailable" = transport === "unavailable"
-    ? "unavailable"
-    : stale ? "stale" : "live";
-  const streamTone = streamState === "live" ? "positive" : streamState === "stale" ? "warn" : "negative";
+  const streamState: "live" | "stale" | "unavailable" | "loading" = !hasResolved
+    ? "loading"
+    : transport === "unavailable"
+      ? "unavailable"
+      : stale ? "stale" : "live";
+  const streamTone =
+    streamState === "live"
+      ? "positive"
+      : streamState === "stale"
+        ? "warn"
+        : streamState === "loading"
+          ? "neutral"
+          : "negative";
 
   // Tail log: convert most recent events to LogEntry for the right-rail tail
   const recentTail = useMemo<LogEntry[]>(() => {
@@ -942,9 +957,10 @@ function priorityTone(score: number): "neutral" | "accent" | "warn" | "muted" | 
   return "muted";
 }
 
-function transportTone(transport: string, ok: boolean): "positive" | "warn" | "negative" {
+function transportTone(transport: string, ok: boolean): "positive" | "warn" | "negative" | "neutral" {
   if (transport === "http") return ok ? "positive" : "warn";
   if (transport === "sqlite-fallback") return "warn";
+  if (transport === "loading") return "neutral";
   return "negative";
 }
 

@@ -25,9 +25,14 @@ class PortOptFunction(BaseFunction):
     description = "Markowitz min-vol / max-Sharpe / risk-parity / efficient frontier."
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
-        symbols: list[str] = params.get("symbols") or [
+        # Fix A7-C3: GET ?symbols=AAPL,MSFT,NVDA arrives as a string and used
+        # to iterate character-by-character into ["A","P","S"]. Mirror the
+        # guard BLAK/RPAR already implement.
+        symbols = params.get("symbols") or [
             "SPY", "QQQ", "IWM", "TLT", "GLD", "EFA", "EEM", "VNQ", "DBC",
         ]
+        if isinstance(symbols, str):
+            symbols = [s.strip() for s in symbols.split(",") if s.strip()]
         days = int(params.get("days", 365 * 3))
         mode = (params.get("mode") or "frontier").lower()
         rf = float(params.get("risk_free", 0.04))

@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Agent J 2026-05-23: keep workflow_dispatch as a manual escape hatch
+  # for the audit job (still triggered automatically by paths-filter
+  # below on PRs that touch UI / engine / audit spec).
+  workflow_dispatch:
 
 jobs:
   python:
@@ -23,9 +27,21 @@ jobs:
       - name: Lint
         working-directory: backend
         run: uv run ruff check showme
-      - name: Pytest
+      - name: Pytest (with coverage)
+        # Agent J 2026-05-23: pyproject's [tool.pytest.ini_options] addopts
+        # injects `--cov=showme --cov-report=term-missing --cov-report=xml`.
+        # `--cov-fail-under=60` enforces the gate at CI level without
+        # binding local invocations to it.
         working-directory: backend
-        run: uv run pytest -q
+        run: uv run pytest -q --cov-fail-under=60
+      - name: Upload coverage.xml artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-coverage-xml
+          path: backend/coverage.xml
+          if-no-files-found: warn
+          retention-days: 14
 
   ui:
     runs-on: ubuntu-latest
@@ -43,9 +59,20 @@ jobs:
         run: |
           npx tsc --noEmit
           npm run build
-      - name: Vitest
+      - name: Vitest (with coverage)
+        # Agent J 2026-05-23: coverage thresholds calibrated in
+        # ui/vite.config.ts. Vitest fails the run when global lines /
+        # functions / branches / statements dip below the gates.
         working-directory: ui
-        run: npx vitest run
+        run: npm run test:coverage
+      - name: Upload UI coverage artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-coverage
+          path: ui/coverage
+          if-no-files-found: warn
+          retention-days: 14
       - name: npm audit (production deps only)
         # SEC-09 — fail PRs that introduce a high/critical CVE in the
         # production tree. Dev-only advisories (Vite/Vitest dev-server
@@ -121,3 +148,68 @@ jobs:
           PLAYWRIGHT_E2E_MODE: smoke
           SHOWME_E2E_SKIP_BUILD: "1"
         run: npx playwright test --config tests/e2e/playwright.config.ts --project=smoke
+
+  e2e-audit:
+    # Agent J 2026-05-23: bring the full 141-function Playwright audit
+    # into PR CI when it actually matters. paths-filter restricts the
+    # run to PRs that touched UI, sidecar engine, or the audit spec
+    # itself — otherwise it remains a manual escape hatch via the
+    # `workflow_dispatch` event below. The job also runs on every push
+    # to `main` so we always know the latest tip is audit-clean.
+    runs-on: macos-14
+    needs: [python, ui, rust]
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'push' ||
+      (github.event_name == 'pull_request' && (
+        contains(toJSON(github.event.pull_request.labels), 'run-audit') ||
+        false
+      ))
+    steps:
+      - uses: actions/checkout@v4
+      - name: Detect audit-relevant changes
+        id: filter
+        if: github.event_name == 'pull_request'
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            audit:
+              - 'ui/**'
+              - 'backend/showme/engine/**'
+              - 'backend/showme/functions/**'
+              - 'tests/e2e/**'
+              - '.github/workflows/ci.yml'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Install root + UI deps
+        if: steps.filter.outputs.audit == 'true' || github.event_name != 'pull_request'
+        run: npm ci
+      - name: Install sidecar deps
+        if: steps.filter.outputs.audit == 'true' || github.event_name != 'pull_request'
+        working-directory: backend
+        run: uv sync --all-extras
+      - name: Install Playwright + browsers
+        if: steps.filter.outputs.audit == 'true' || github.event_name != 'pull_request'
+        working-directory: ui
+        run: npx --yes playwright install --with-deps chromium
+      - name: Build UI bundle
+        if: steps.filter.outputs.audit == 'true' || github.event_name != 'pull_request'
+        run: npm run build:ui
+      - name: Run Playwright audit suite
+        if: steps.filter.outputs.audit == 'true' || github.event_name != 'pull_request'
+        env:
+          # Audit project runs against a live sidecar, not the smoke
+          # stub. The webServer block in playwright.config.ts brings
+          # the sidecar up under PLAYWRIGHT_E2E_MODE!=smoke.
+          SHOWME_E2E_SKIP_BUILD: "1"
+        run: npx playwright test --config tests/e2e/playwright.config.ts --project=audit

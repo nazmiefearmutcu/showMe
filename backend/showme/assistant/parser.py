@@ -99,10 +99,14 @@ def parse_request(text: str) -> tuple[dict[str, Any] | None, list[str]]:
     if not symbols:
         for word in ("btc", "eth", "sol", "doge", "bitcoin", "ethereum", "solana"):
             if word in text_low:
-                if word in ("btc", "bitcoin"): symbols.append("BTC/USDT")
-                elif word in ("eth", "ethereum"): symbols.append("ETH/USDT")
-                elif word in ("sol", "solana"): symbols.append("SOL/USDT")
-                elif word == "doge": symbols.append("DOGE/USDT")
+                if word in ("btc", "bitcoin"):
+                    symbols.append("BTC/USDT")
+                elif word in ("eth", "ethereum"):
+                    symbols.append("ETH/USDT")
+                elif word in ("sol", "solana"):
+                    symbols.append("SOL/USDT")
+                elif word == "doge":
+                    symbols.append("DOGE/USDT")
                 break
 
     # Timeframe

@@ -6,6 +6,8 @@ import {
 } from "@/lib/symbols";
 import type { FunctionEntry } from "@/lib/sidecar";
 import { formatTime as fmtTzTime } from "@/lib/timezone";
+import { formatMissing } from "@/lib/format";
+import { formatAdaptive } from "@/lib/format-helpers";
 import {
   METRIC_RECORD_KEYS,
   STABLE_ROW_ID_KEYS,
@@ -392,9 +394,10 @@ export function isMetricValue(value: unknown): boolean {
 }
 
 export function formatValue(value: unknown): string {
-  if (value == null || value === "") return "-";
+  if (value == null || value === "") return formatMissing;
   if (typeof value === "number") {
-    return value.toLocaleString(undefined, { maximumFractionDigits: 6 });
+    // Adaptive precision — sub-cent numbers keep digits, big numbers drop them.
+    return formatAdaptive(value);
   }
   if (typeof value === "boolean") return value ? "yes" : "no";
   if (typeof value === "string") return value;
@@ -424,7 +427,7 @@ export function formatRecordPreview(value: RecordRow): string {
 }
 
 export function formatElapsed(ms: number | null | undefined): string {
-  if (ms == null) return "-";
+  if (ms == null) return formatMissing;
   if (ms < 1000) return `${ms.toFixed(0)} ms`;
   return `${(ms / 1000).toFixed(2)} s`;
 }

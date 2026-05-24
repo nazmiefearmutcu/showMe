@@ -12,6 +12,7 @@ data with a single call.
 
 from __future__ import annotations
 
+import logging
 import os
 from datetime import datetime
 from typing import Any
@@ -23,6 +24,8 @@ from showme.engine.core.base_data_source import (
     BaseDataSource, DataKind, DataRequest, DataSourceError
 )
 from showme.engine.utils.throttle import throttle
+
+LOG = logging.getLogger("showme.engine.data_sources.fred")
 
 
 class FREDAdapter(BaseDataSource):
@@ -57,6 +60,13 @@ class FREDAdapter(BaseDataSource):
     ) -> pd.DataFrame:
         """Return a DataFrame indexed by date with column 'value'."""
         if not self.api_key:
+            # QA-fix: log so the missing-key reason is visible in the
+            # rotating sidecar log instead of only the raised exception.
+            LOG.warning(
+                "FRED_API_KEY missing; series %r unavailable (set the env "
+                "var to enable macro/bond functions like CRVF/ECST)",
+                series_id,
+            )
             raise DataSourceError("FRED_API_KEY not set")
         client = await self._client_()
         params: dict[str, Any] = {

@@ -48,43 +48,50 @@ class TLDRFunction(BaseFunction):
         sources: list[str] = []
         warnings: list[str] = []
 
-        # Quotes (best-effort)
+        # Quotes (best-effort) — BugHunt 2026-05-24:
+        # TLDR previously walked deps.yfinance / deps.ccxt_failover with its
+        # own DataRequest pipeline. That produced answers that disagreed with
+        # /api/quote/<sym>: MSFT showed -0.79% on the quote endpoint but TLDR
+        # reported "No live negative movers" because its provider chain
+        # returned a stale close_prev or fell back to nothing. We now consume
+        # the same fetch_quote_snapshot() helper that /api/quote uses so TLDR
+        # cannot disagree with the headline ticker the user sees in WATCH.
         async def _quote(s: str) -> dict[str, Any]:
             try:
-                from showme.engine.core.base_data_source import DataKind, DataRequest
-                quote_timeout = _remaining(float(params.get("quote_timeout", 3)), floor=0.75)
-                if quote_timeout <= 0:
-                    return {"symbol": s}
-                inst = None
-                if self.deps.symbol_registry:
-                    inst = await asyncio.wait_for(
-                        self.deps.symbol_registry.resolve(s),
-                        timeout=min(quote_timeout, 1.5),
-                    )
-                if not inst:
-                    inst = Instrument(symbol=s, asset_class=AssetClass.EQUITY)
-                src_name = "yfinance"
-                src = self.deps.yfinance
-                if inst.asset_class.value == "CRYPTO" and getattr(self.deps, "ccxt_failover", None):
-                    src_name = "ccxt_failover"
-                    src = self.deps.ccxt_failover
-                if src is None:
-                    return {"symbol": s}
-                q = await asyncio.wait_for(
-                    src.fetch(
-                        DataRequest(
-                            kind=DataKind.QUOTE,
-                            instrument=inst,
-                            extra={"timeout": min(quote_timeout, 3.0)},
-                        )
-                    ),
+                from showme.quotes import QuoteFetchError, fetch_quote_snapshot
+            except Exception:
+                fetch_quote_snapshot = None  # type: ignore[assignment]
+                QuoteFetchError = Exception  # type: ignore[assignment]
+            quote_timeout = _remaining(float(params.get("quote_timeout", 3)), floor=0.75)
+            if quote_timeout <= 0 or fetch_quote_snapshot is None:
+                return {"symbol": s}
+            try:
+                snapshot = await asyncio.wait_for(
+                    fetch_quote_snapshot(s),
                     timeout=min(quote_timeout, 3.5),
                 )
-                last = q.last; prev = q.close_prev
-                chg_pct = ((last or 0) / (prev or 1) - 1) * 100 if prev else None
-                return {"symbol": s, "last": last, "change_pct": chg_pct, "quote_source": src_name}
             except Exception:
                 return {"symbol": s}
+            if not isinstance(snapshot, dict):
+                return {"symbol": s}
+            last = snapshot.get("last") if snapshot.get("last") is not None else snapshot.get("price")
+            chg = snapshot.get("change_pct")
+            if chg is None:
+                chg = snapshot.get("regularMarketChangePercent")
+            if chg is None:
+                prev = snapshot.get("previous_close") or snapshot.get("previousClose")
+                if last is not None and prev not in (None, 0):
+                    try:
+                        chg = (float(last) / float(prev) - 1.0) * 100.0
+                    except Exception:
+                        chg = None
+            src_name = str(snapshot.get("source") or "showme_quote")
+            return {
+                "symbol": s,
+                "last": last,
+                "change_pct": chg,
+                "quote_source": src_name,
+            }
         try:
             quotes = await asyncio.wait_for(
                 asyncio.gather(*(_quote(s) for s in symbols)),

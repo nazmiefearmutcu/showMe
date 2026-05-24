@@ -1,9 +1,6 @@
 """portfolio_aggregate.aggregate() unit tests with fake brokers."""
 from __future__ import annotations
 
-import asyncio
-from dataclasses import dataclass
-from unittest.mock import AsyncMock
 
 import pytest
 
@@ -27,9 +24,12 @@ def _isolate():
             factory_mod._REGISTRY.pop(name, None)
     yield
     pa._CACHE.clear()
-    factory_mod._REGISTRY.clear(); factory_mod._REGISTRY.update(snap_reg)
-    factory_mod._DYNAMIC.clear(); factory_mod._DYNAMIC.update(snap_dyn)
-    factory_mod._LIVE.clear(); factory_mod._LIVE.update(snap_live)
+    factory_mod._REGISTRY.clear()
+    factory_mod._REGISTRY.update(snap_reg)
+    factory_mod._DYNAMIC.clear()
+    factory_mod._DYNAMIC.update(snap_dyn)
+    factory_mod._LIVE.clear()
+    factory_mod._LIVE.update(snap_live)
 
 
 class _FakeBroker:
@@ -50,13 +50,15 @@ class _FakeBroker:
 
     async def account(self):
         self.account_calls += 1
-        if self._fail: raise RuntimeError("boom")
+        if self._fail:
+            raise RuntimeError("boom")
         return {"cash": self._equity, "equity": self._equity,
                 "buying_power": self._equity, "currency": self._currency, "raw": {}}
 
     async def list_positions(self):
         self.position_calls += 1
-        if self._fail: raise RuntimeError("boom")
+        if self._fail:
+            raise RuntimeError("boom")
         return list(self._positions)
 
     async def list_orders(self, *, status="open", limit=100):
@@ -68,6 +70,11 @@ def _register_fake(credential_id: str, broker, exchange_id="binance", label="mai
     name = f"{exchange_id}:{credential_id}"
     factory_mod._REGISTRY[name] = lambda b=broker: b
     factory_mod._DYNAMIC[credential_id] = name
+    # 2026-05-23: align with the new ``register_broker`` behaviour — the
+    # factory's per-name cache (``_LIVE``) is evicted on re-register so a
+    # credential rotation surfaces the new broker. ``_register_fake``
+    # writes ``_REGISTRY`` directly so we must invalidate the cache here.
+    factory_mod._LIVE.pop(name, None)
 
 
 @pytest.mark.asyncio

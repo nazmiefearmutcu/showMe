@@ -41,10 +41,15 @@ class TOPFunction(BaseFunction):
         # left `asyncio.wait_for` using the raw (unclamped) timeout, so a
         # caller passing `news_timeout=10` got per-feed 4s budgets inside
         # a 10s outer wait that no inner feed could ever exhaust.
-        raw_timeout = float(params.get("news_timeout", params.get("timeout", 5)))
-        outer_timeout = max(1.0, min(raw_timeout, 10.0))
-        collection_budget = min(outer_timeout, 4.0)
-        per_feed_budget = min(outer_timeout, 3.5)
+        #
+        # QA-fix: bump the default from 5s -> 10s. The previous 5s default
+        # was hit so often during real RSS fan-out that callers saw "0 rows
+        # in 3s" silent fails. 10s sits comfortably under the 30s FastAPI
+        # request budget while giving the slowest feeds room to land.
+        raw_timeout = float(params.get("news_timeout", params.get("timeout", 10)))
+        outer_timeout = max(1.0, min(raw_timeout, 15.0))
+        collection_budget = min(outer_timeout, 8.0)
+        per_feed_budget = min(outer_timeout, 6.0)
         for src_name in source_order:
             src = getattr(self.deps, src_name, None)
             if src is None:
@@ -73,8 +78,17 @@ class TOPFunction(BaseFunction):
                 if items:
                     sources.append(src_name)
                     results.extend(items)
+            except asyncio.TimeoutError:
+                # QA-fix: surface the timeout reason explicitly so the UI no
+                # longer shows an empty "rss: " warning.
+                warnings.append(
+                    f"{src_name}: timed out after {outer_timeout:.1f}s"
+                )
             except Exception as exc:  # noqa: BLE001
-                warnings.append(f"{src_name}: {exc}")
+                # QA-fix: propagate the exception class name when str(exc) is
+                # empty so the UI never shows a bare "rss: " label.
+                reason = str(exc) or exc.__class__.__name__
+                warnings.append(f"{src_name}: {reason}")
         threshold = float(params.get("threshold", 70) or 70)
         ranked = enrich_articles(
             results,

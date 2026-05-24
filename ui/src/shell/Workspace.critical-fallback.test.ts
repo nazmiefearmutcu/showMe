@@ -137,19 +137,22 @@ describe("S05 · Workspace source guards", () => {
     expect(SOURCE).toMatch(/Critical pane unavailable/);
   });
 
-  it("critical codes do not become design-leaves (chrome stays)", () => {
-    // `isDesignLeaf` strips the outer PaneChrome — if a critical
-    // missing pane became a design-leaf the toolbar would disappear
-    // and the user would have no idea what code was open. The actual
-    // expression is `PREF || (!isCritical && !hasNative && ...)` —
-    // pin the critical gate inside the parenthesised clause.
-    expect(SOURCE).toMatch(/\(!isCritical\s+&&\s+!hasNative\s+&&\s+!hasTpl\s+&&\s+hasDesignExportComponent/);
+  it("only Preferences becomes a design-leaf (every other code keeps chrome)", () => {
+    // QA-2026-05-23: the design-leaf carve-out is now PREF only. Before
+    // the fix, any non-critical, non-native, non-template code with a
+    // hasDesignExportComponent hit also stripped the PaneChrome so the
+    // 39k-line static cockpit owned the entire pane surface. With the
+    // design-export tier collapsed into stub, only the Preferences
+    // shell still hosts its own design-export wrapper.
+    expect(SOURCE).toMatch(/const isDesignLeaf\s*=\s*node\.code\s*===\s*["']PREF["']/);
+    expect(SOURCE).not.toMatch(/hasDesignExportComponent\(/);
   });
 
-  it("preserves the existing native > template > design-export > stub ladder for non-critical codes", () => {
-    // The switch must list all four non-critical branches in order so
-    // a future formatter that reflows the switch can't accidentally
-    // drop one.
+  it("collapses the non-critical ladder to native > template > stub (design-export → stub fallthrough)", () => {
+    // The switch must list the three live branches in order, plus the
+    // legacy `design-export` label as a fallthrough into the stub body
+    // (kept so the resolver inventory can still emit "design-export"
+    // for diagnostics without breaking the Workspace switch).
     const switchIndex = SOURCE.indexOf("const choice = resolvePaneRenderer(code);");
     expect(switchIndex).toBeGreaterThan(-1);
     const tail = SOURCE.slice(switchIndex);
@@ -159,7 +162,11 @@ describe("S05 · Workspace source guards", () => {
     const stubIdx = tail.indexOf(`case "stub":`);
     expect(nativeIdx).toBeGreaterThan(-1);
     expect(tplIdx).toBeGreaterThan(nativeIdx);
+    // design-export still appears as a fallthrough label.
     expect(designIdx).toBeGreaterThan(tplIdx);
     expect(stubIdx).toBeGreaterThan(designIdx);
+    // Crucial: design-export must immediately fall through into stub
+    // (no body), so the FunctionStub render runs for both labels.
+    expect(tail).toMatch(/case\s+"design-export":\s*\n\s*case\s+"stub":/);
   });
 });

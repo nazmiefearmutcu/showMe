@@ -1,4 +1,5 @@
 import {
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -11,6 +12,7 @@ import type { FunctionEntry } from "@/lib/sidecar";
 import { navigate, useRoute } from "@/lib/router";
 import { listNativeCodes } from "@/functions/registry";
 import { t } from "@/i18n";
+import { listRecentCodes } from "@/lib/palette-recents";
 import {
   PIN_DRAG_MIME,
   makePinnedItemForFunctionEntry,
@@ -75,20 +77,13 @@ const WORKSPACE_ITEMS: SidebarShortcut[] = [
   { code: "MIS", label: "Multi Indicator Scan", meta: "MIS", href: "#/fn/MIS", path: "/fn/MIS" },
 ];
 
-const RECENT_ITEMS: SidebarShortcut[] = [
-  { code: "GEX", label: "Gamma Exposure", meta: "GEX", href: "#/fn/GEX", path: "/fn/GEX" },
-  { code: "BTMM", label: "Yield Curve", meta: "BTM", href: "#/fn/BTMM", path: "/fn/BTMM" },
-  { code: "WEI", label: "World Heatmap", meta: "MAP", href: "#/fn/WEI", path: "/fn/WEI" },
-  {
-    code: "OMON",
-    label: "Option Monitor",
-    meta: "OMO",
-    href: "#/fn/OMON",
-    path: "/fn/OMON",
-  },
-  { code: "EQS", label: "Equity Screener", meta: "EQS", href: "#/fn/EQS", path: "/fn/EQS" },
-];
+// QA-2026-05-23: removed the hard-coded RECENT_ITEMS seed (GEX/BTMM/WEI/
+// OMON/EQS). Recent is now sourced from `palette-recents.ts` — starts
+// empty, populated on every navigated function code.
 
+// QA-2026-05-23: TOOL_ITEMS now only references codes that resolve to a
+// native pane in `functions/registry.tsx` PANES. Removed: TLDR (stub —
+// renders FunctionStub fallback).
 const TOOL_ITEMS: SidebarShortcut[] = [
   { code: "ALRT", label: "Alerts", meta: "ALR", href: "#/fn/ALRT", path: "/fn/ALRT" },
   {
@@ -154,7 +149,6 @@ const TOOL_ITEMS: SidebarShortcut[] = [
     href: "#/fn/INSTANT",
     path: "/fn/INSTANT",
   },
-  { code: "TLDR", label: "Daily TL;DR", meta: "TLR", href: "#/fn/TLDR", path: "/fn/TLDR" },
   {
     code: "PREF",
     label: "Settings",
@@ -175,14 +169,9 @@ const CONNECTIONS_ITEMS: SidebarShortcut[] = [
   },
 ];
 
+// QA-2026-05-23: removed OMON (stub) — every entry now resolves to a
+// native pane.
 const QUICK_ITEMS: SidebarShortcut[] = [
-  {
-    code: "OMON",
-    label: "Option Monitor",
-    meta: "OMON",
-    href: "#/fn/OMON",
-    path: "/fn/OMON",
-  },
   { code: "GEX", label: "Gamma Exposure", meta: "GEX", href: "#/fn/GEX", path: "/fn/GEX" },
   { code: "FA", label: "Financial Analysis", meta: "FA", href: "#/fn/FA", path: "/fn/FA" },
   { code: "DES", label: "Description", meta: "DES", href: "#/fn/DES", path: "/fn/DES" },
@@ -195,6 +184,24 @@ const QUICK_ITEMS: SidebarShortcut[] = [
   },
   { code: "MOST", label: "Most Active", meta: "MOST", href: "#/fn/MOST", path: "/fn/MOST" },
 ];
+
+// QA-2026-05-23: helper to build a SidebarShortcut from a recent
+// navigation code. Uses the live functionIndex for the label so DES
+// renders "Description", FA renders "Financial Analysis", etc.
+function buildRecentShortcut(
+  code: string,
+  index: FunctionEntry[],
+): SidebarShortcut {
+  const upper = code.toUpperCase();
+  const entry = index.find((e) => e.code.toUpperCase() === upper);
+  return {
+    code: upper,
+    label: entry?.name ?? upper,
+    meta: upper,
+    href: `#/fn/${upper}`,
+    path: `/fn/${upper}`,
+  };
+}
 
 function groupByCategory(entries: FunctionEntry[]) {
   const map = new Map<string, FunctionEntry[]>();
@@ -221,6 +228,19 @@ export function Sidebar() {
     route.kind === "function" ? route.code : route.kind === "welcome" ? "HOME" : "PREF";
   const activePath = routeToPath(route);
   const nativeCodes = useMemo(() => new Set(listNativeCodes()), []);
+  // QA-2026-05-23: Recent group is sourced from `palette-recents.ts`. We
+  // re-read on each route change because `RouteSync` in App.tsx records a
+  // new code synchronously during the same React commit cycle.
+  const [recentSnapshot, setRecentSnapshot] = useState<string[]>(() =>
+    listRecentCodes(),
+  );
+  useEffect(() => {
+    setRecentSnapshot(listRecentCodes());
+  }, [route]);
+  const recentItems: SidebarShortcut[] = useMemo(
+    () => recentSnapshot.map((code) => buildRecentShortcut(code, index)),
+    [recentSnapshot, index],
+  );
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return index;
@@ -247,6 +267,7 @@ export function Sidebar() {
           activeCode={activeCode}
           activePath={activePath}
           pinnedItems={pinnedItems}
+          recentItems={recentItems}
           onHide={() => {
             setPeekOpen(false);
             toggleSidebar(false);
@@ -280,6 +301,7 @@ export function Sidebar() {
                 activeCode={activeCode}
                 activePath={activePath}
                 pinnedItems={pinnedItems}
+                recentItems={recentItems}
                 onPin={() => {
                   setPeekOpen(false);
                   toggleSidebar(true);
@@ -305,6 +327,11 @@ interface SidebarPanelProps {
   activeCode: string;
   activePath: string;
   pinnedItems: PinnedItem[];
+  /**
+   * QA-2026-05-23: dynamic recent stack from `palette-recents.ts`. Empty
+   * on first boot; filled by `RouteSync` as the user navigates.
+   */
+  recentItems: SidebarShortcut[];
   onHide?: () => void;
   onPin?: () => void;
   onClose?: () => void;
@@ -321,6 +348,7 @@ function SidebarPanel({
   activeCode,
   activePath,
   pinnedItems,
+  recentItems,
   onHide,
   onPin,
   onClose,
@@ -329,6 +357,17 @@ function SidebarPanel({
   const suppressNextClickRef = useRef(false);
   const [dragPreview, setDragPreview] = useState<PinDragPreview | null>(null);
   const shouldSuppressClick = () => suppressNextClickRef.current;
+  // REL-04 P11 — symmetric cleanup ref for the sidebar pin-drag handler.
+  // If the sidebar collapses or the variant flips mid-drag, the handler
+  // that wires window mousemove/mouseup used to leak both listeners
+  // because cleanup only ran inside mouseup.
+  const dragCleanupRef = useRef<(() => void) | null>(null);
+  useEffect(() => {
+    return () => {
+      dragCleanupRef.current?.();
+      dragCleanupRef.current = null;
+    };
+  }, []);
   const pinnedIds = useMemo(
     () => new Set(pinnedItems.map((item) => item.id)),
     [pinnedItems],
@@ -344,8 +383,8 @@ function SidebarPanel({
     [hiddenSourceId, pinnedIds],
   );
   const visibleRecentItems = useMemo(
-    () => filterShortcutItems(RECENT_ITEMS, pinnedIds, hiddenSourceId),
-    [hiddenSourceId, pinnedIds],
+    () => filterShortcutItems(recentItems, pinnedIds, hiddenSourceId),
+    [hiddenSourceId, pinnedIds, recentItems],
   );
   const visibleToolItems = useMemo(
     () => filterShortcutItems(TOOL_ITEMS, pinnedIds, hiddenSourceId),
@@ -394,6 +433,9 @@ function SidebarPanel({
     source: PinDragSource,
   ) => {
     if (event.button !== 0) return;
+    // Tear down any in-flight drag listener pair before installing a new
+    // one so we never accumulate.
+    dragCleanupRef.current?.();
     const startX = event.clientX;
     const startY = event.clientY;
     let moved = false;
@@ -414,15 +456,20 @@ function SidebarPanel({
         ),
       });
     };
-    const onMouseUp = (upEvent: globalThis.MouseEvent) => {
+    const cleanup = () => {
       window.removeEventListener("mousemove", onMouseMove);
       window.removeEventListener("mouseup", onMouseUp);
       setDragPreview(null);
+      dragCleanupRef.current = null;
+    };
+    const onMouseUp = (upEvent: globalThis.MouseEvent) => {
+      cleanup();
       if (!moved) return;
       finishPinDrag(item, source, upEvent.clientX, upEvent.clientY);
     };
     window.addEventListener("mousemove", onMouseMove);
-    window.addEventListener("mouseup", onMouseUp, { once: true });
+    window.addEventListener("mouseup", onMouseUp);
+    dragCleanupRef.current = cleanup;
   };
 
   return (
@@ -539,6 +586,8 @@ function SidebarPanel({
             activePath={activePath}
             onMousePinDragStart={beginMousePinDrag}
             shouldSuppressClick={shouldSuppressClick}
+            testId="sidebar-group-recent"
+            emptyHint="No recent functions — open one to populate."
           />
           <SidebarShortcutGroup
             title="Tools"
@@ -627,6 +676,8 @@ function SidebarShortcutGroup({
   onRemove,
   onMousePinDragStart,
   shouldSuppressClick,
+  testId,
+  emptyHint,
 }: {
   title: string;
   count: number;
@@ -643,6 +694,8 @@ function SidebarShortcutGroup({
     source: PinDragSource,
   ) => void;
   shouldSuppressClick?: () => boolean;
+  testId?: string;
+  emptyHint?: string;
 }) {
   const sectionRef = useRef<HTMLElement | null>(null);
   const [dropActive, setDropActive] = useState(false);
@@ -672,6 +725,7 @@ function SidebarShortcutGroup({
       ref={setSectionRef}
       className={`sidebar-shortcut-group${dropActive || visualDropActive ? " sidebar-shortcut-group--drop-active" : ""}`}
       aria-label={droppable ? `${title} drop zone` : title}
+      data-testid={testId}
       onDragOver={handleDragOver}
       onDragLeave={() => setDropActive(false)}
       onDrop={handleDrop}
@@ -682,6 +736,9 @@ function SidebarShortcutGroup({
       </h3>
       {droppable && items.length === 0 && (
         <div className="sidebar-shortcut-group__drop-hint">Drop here to pin</div>
+      )}
+      {!droppable && items.length === 0 && emptyHint && (
+        <div className="sidebar-shortcut-group__empty-hint">{emptyHint}</div>
       )}
       {items.map((item) => {
         const isActive = activePath === item.path;

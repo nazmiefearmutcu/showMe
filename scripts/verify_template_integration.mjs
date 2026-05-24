@@ -163,31 +163,21 @@ const settingsRequired = [
 const missingSettings = settingsRequired.filter((code) => !generatedSettings.has(code));
 
 const workspaceText = existsSync(WORKSPACE_TSX) ? readFileSync(WORKSPACE_TSX, "utf8") : "";
-// Session 16 BugHunt: Workspace.PaneContent now prefers the bespoke native
-// pane (`resolvePane`) over the static Claude Design export. The design
-// export is preserved as a fallback for catalog codes without a native
-// renderer. The invariant therefore flips: native must be queried BEFORE
-// the design export, and the design-export branch must still be present
-// as a fallback so unmapped catalog codes still get a styled surface.
-//
-// The earliest `hasDesignExportComponent(code)` may belong to the HOME
-// branch (which intentionally keeps a design-only Welcome shell). The
-// invariant we actually care about is the relative order inside the
-// generic `} else {` ladder — `resolvePane(code)` must come before the
-// FIRST `hasDesignExportComponent(code)` that appears AFTER it. We
-// therefore compare `resolvePane(code)` against the design-export
-// reference that follows it, not the global first occurrence.
-const resolvePaneIdx = workspaceText.indexOf("resolvePane(code)");
-const firstDesignExportIdx = workspaceText.indexOf("hasDesignExportComponent(code)");
-const designExportAfterResolve =
-  resolvePaneIdx !== -1
-    ? workspaceText.indexOf("hasDesignExportComponent(code)", resolvePaneIdx)
-    : -1;
+const completenessTs = resolve(ROOT, "ui/src/lib/pane-completeness.ts");
+const completenessText = existsSync(completenessTs) ? readFileSync(completenessTs, "utf8") : "";
+
+// The resolution logic is now encapsulated in `ui/src/lib/pane-completeness.ts`.
+// We assert that the priority order is native > template > design-export.
+const hasNativeIdx = completenessText.indexOf("hasNative(upper)");
+const hasDeIdx = completenessText.indexOf("hasDe(upper)");
 const workspacePrefersNative =
-  resolvePaneIdx !== -1 &&
-  designExportAfterResolve !== -1 &&
-  resolvePaneIdx < designExportAfterResolve;
-const workspaceKeepsDesignFallback = firstDesignExportIdx !== -1;
+  hasNativeIdx !== -1 &&
+  hasDeIdx !== -1 &&
+  hasNativeIdx < hasDeIdx;
+
+const workspaceKeepsDesignFallback =
+  workspaceText.includes("hasDesignExportComponent(node.code)") ||
+  completenessText.includes("hasDesignExportComponent");
 const prefsText = existsSync(PREFS_TSX) ? readFileSync(PREFS_TSX, "utf8") : "";
 // After the Session 16 BugHunt the Preferences pane re-enables the native
 // section components and uses the SettingsDesignExportRenderer only as a

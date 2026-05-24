@@ -14,9 +14,12 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import logging
 import time
 from dataclasses import asdict, dataclass, field
 from typing import Any
+
+LOG = logging.getLogger("showme.agents.orchestrator")
 
 from .planner import Plan, plan_for
 from .search import search as run_search
@@ -146,7 +149,10 @@ def _function_codes() -> set[str]:
     try:
         registry_mod = importlib.import_module("showme.engine.core.base_function")
         return set(registry_mod.FunctionRegistry.codes())
-    except Exception:
+    except Exception:  # noqa: BLE001
+        # QA-fix: log the import failure so silent "no functions"
+        # behavior is observable instead of hidden.
+        LOG.exception("FunctionRegistry import failed; planner gets empty hint set")
         return set()
 
 

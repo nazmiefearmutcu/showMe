@@ -14,9 +14,13 @@ import { modeBtn, type MigrationSummary } from "./_types";
 
 export function MigrationSection() {
   const inTauri = isInTauri();
-  const [enginePath, setEnginePathLocal] = useState(
-    "/Users/nazmi/Desktop/Projeler/proje/showMe/engine",
-  );
+  // Never prefill a real developer path here — the field used to ship the
+  // hardcoded `/Users/nazmi/Desktop/Projeler/proje/showMe/engine` value which
+  // leaked into every demo screenshot and silently no-op'd on other machines.
+  // Default to empty so the placeholder prompt shows; once the engine boots,
+  // the effect below overwrites with the canonical `engineRoot` from the
+  // app store.
+  const [enginePath, setEnginePathLocal] = useState("");
   const [writable, setWritable] = useState(false);
   const [running, setRunning] = useState(false);
   const [last, setLast] = useState<MigrationSummary | null>(null);
@@ -76,7 +80,7 @@ export function MigrationSection() {
             label="ShowMe engine path"
             value={enginePath}
             onChange={(e) => setEnginePathLocal(e.target.value)}
-            placeholder="/path/to/ShowMe"
+            placeholder="~/path/to/legacy/data"
             hint="Defaults to the bundled ShowMe engine"
           />
           <label className="migration-mode-label">

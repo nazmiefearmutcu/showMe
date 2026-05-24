@@ -7,6 +7,7 @@
  * single alert lives in both worlds.
  */
 import { invoke, isInTauri } from "./tauri";
+import { safeReadLocal } from "./safe-storage";
 
 export type AlertDirection = "above" | "below" | "cross_up" | "cross_down";
 
@@ -30,13 +31,11 @@ interface Bundle {
 }
 
 function readLocal(): Bundle {
-  if (typeof localStorage === "undefined") return { rows: [] };
-  try {
-    const raw = localStorage.getItem(KEY);
-    return raw ? (JSON.parse(raw) as Bundle) : { rows: [] };
-  } catch {
-    return { rows: [] };
-  }
+  return safeReadLocal<Bundle>(KEY, { rows: [] }, {
+    label: "Alerts",
+    validate: (v): v is Bundle =>
+      Boolean(v && typeof v === "object" && Array.isArray((v as { rows?: unknown }).rows)),
+  });
 }
 
 function writeLocal(bundle: Bundle): void {

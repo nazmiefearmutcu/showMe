@@ -28,11 +28,16 @@ import { subscribeQuote, type StreamStatus } from "@/lib/stream";
 import { navigate } from "@/lib/router";
 import { sidecarFetch } from "@/lib/sidecar";
 import { confirmAction } from "@/lib/confirm";
-import { formatCurrency } from "@/lib/format";
+import { formatCurrency, formatMissing, formatPrice } from "@/lib/format";
 import { usePortfolioStore, type PortfolioGroup } from "@/lib/portfolio-store";
 import { useExchangeStore } from "@/lib/exchange-store";
-import { useTradingStore } from "@/lib/trading-store";
-import { OrderTicket } from "./OrderTicket";
+import {
+  normalizeSide,
+  useTradingStore,
+  type LastResult,
+} from "@/lib/trading-store";
+import { toast } from "@/lib/toast";
+import { OrderTicket, ConfirmModal as TradingConfirmModal } from "./OrderTicket";
 import { FunctionControlGroup, LoadStatePill, RefreshButton } from "./function-controls";
 import type { FunctionPaneProps } from "./registry-types";
 
@@ -137,6 +142,8 @@ function SourceFilter() {
   const credentials = useExchangeStore((s) => s.credentials);
   const selected = usePortfolioStore((s) => s.selectedCredentialIds);
   const setSel = usePortfolioStore((s) => s.setSelectedCredentialIds);
+  const includeOrders = usePortfolioStore((s) => s.includeOrders);
+  const setIncludeOrders = usePortfolioStore((s) => s.setIncludeOrders);
   if (credentials.length === 0) return null;
   const isAll = selected === null;
   const toggle = (id: string) => () => {
@@ -149,7 +156,10 @@ function SourceFilter() {
     }
   };
   return (
-    <div style={{ display: "flex", flexWrap: "wrap", gap: 4, padding: "6px 16px" }}>
+    <div style={{
+      display: "flex", flexWrap: "wrap", gap: 4, padding: "6px 16px",
+      alignItems: "center",
+    }}>
       <button onClick={() => setSel(null)} aria-pressed={isAll}
               style={{ opacity: isAll ? 1 : 0.55 }}>Hepsi</button>
       {credentials.map((c) => {
@@ -161,7 +171,91 @@ function SourceFilter() {
           </button>
         );
       })}
+      <span style={{ width: 1, height: 14, background: "var(--border-1)", margin: "0 6px" }} />
+      <button
+        onClick={() => setIncludeOrders(!includeOrders)}
+        aria-pressed={includeOrders}
+        data-testid="port-include-orders-toggle"
+        title="Açık emirleri de portföy fetch'ine dahil et"
+        style={{
+          opacity: includeOrders ? 1 : 0.55,
+          fontSize: 11,
+          border: "1px solid var(--border-1)",
+          padding: "2px 8px",
+        }}
+      >
+        {includeOrders ? "Emirler: dahil" : "Emirler: hariç"}
+      </button>
     </div>
+  );
+}
+
+/**
+ * Toast bridge — fires once per new `lastResult` for close/cancel kinds.
+ * The submit kind keeps the inline OrderTicket banner (legacy). PORT renders
+ * its own toast because the original implementation only showed the result
+ * inside OrderTicket, which leaves PORT users staring at a silent button.
+ *
+ * Sentinel ref pattern avoids re-firing on every render: zustand subscribe
+ * gives us the new lastResult identity, and we only fire when the identity
+ * differs from what we already toasted.
+ */
+function useTradingResultToasts() {
+  useEffect(() => {
+    let last: LastResult | null = null;
+    const fire = (r: LastResult | null) => {
+      if (!r || r === last) return;
+      last = r;
+      if (r.kind !== "close" && r.kind !== "cancel") return;
+      if (r.ok) {
+        const title =
+          r.kind === "close"
+            ? `Pozisyon kapatıldı${r.symbol ? `: ${r.symbol}` : ""}`
+            : `Emir iptal edildi${r.symbol ? `: ${r.symbol}` : r.orderId ? ` (${r.orderId})` : ""}`;
+        toast.success(title);
+      } else {
+        const title =
+          r.kind === "close" ? "Pozisyon kapatılamadı" : "Emir iptal edilemedi";
+        toast.error(title, r.error ?? "Bilinmeyen hata");
+      }
+    };
+    // Fire immediately for any pre-existing state, then subscribe.
+    fire(useTradingStore.getState().lastResult);
+    const unsub = useTradingStore.subscribe((s) => {
+      fire(s.lastResult);
+    });
+    return () => unsub();
+  }, []);
+}
+
+/**
+ * BUG #12 — mirror of the backend `_STABLE_TO_USD` allowlist.  Balances in
+ * any currency NOT in this set are excluded from the aggregate USD total;
+ * the UI surfaces this with a "USD'ye dönüştürülmedi" badge so users don't
+ * mistakenly think a EUR/GBP/TRY group is being counted.
+ */
+const STABLE_USD_CURRENCIES = new Set([
+  "USD", "USDT", "USDC", "DAI", "BUSD", "TUSD",
+]);
+
+export function isStableUsd(currency: string | undefined | null): boolean {
+  if (!currency) return false;
+  return STABLE_USD_CURRENCIES.has(currency.toUpperCase());
+}
+
+function NonStableCurrencyBadge({ currency }: { currency: string }) {
+  return (
+    <span
+      data-testid="port-non-stable-badge"
+      title="Bu hesabın bakiyesi toplam USD'ye eklenmedi."
+      style={{
+        fontSize: 10, fontWeight: 600, color: "var(--accent-warn)",
+        border: "1px solid var(--accent-warn)",
+        padding: "1px 6px", borderRadius: 4, marginLeft: 6,
+      }}
+    >
+      {currency} (USD'ye dönüştürülmedi)
+    </span>
   );
 }
 
@@ -174,14 +268,19 @@ function CredentialGroup({ g }: { g: PortfolioGroup }) {
       </div>
     );
   }
+  const ccy = g.account?.currency;
+  const showNonStableBadge = Boolean(
+    ccy && !isStableUsd(ccy) && g.account && g.account.equity !== 0,
+  );
   return (
     <div style={{ padding: 12, borderBottom: "1px solid var(--border-1)" }}>
-      <div style={{ display: "flex", gap: 16 }}>
+      <div style={{ display: "flex", gap: 16, alignItems: "center" }}>
         <strong>{g.exchange_id}:{g.account_label}</strong>
         {g.account && (
           <span>
             {g.account.equity.toFixed(2)} {g.account.currency}
             <span style={{ color: "var(--fg-2)" }}> ({g.account.cash.toFixed(2)} cash)</span>
+            {showNonStableBadge && ccy && <NonStableCurrencyBadge currency={ccy} />}
           </span>
         )}
       </div>
@@ -200,8 +299,16 @@ function CredentialGroup({ g }: { g: PortfolioGroup }) {
               <tr key={`${p.symbol}-${i}`}>
                 <td>{p.symbol}</td>
                 <td align="right">{p.quantity}</td>
-                <td align="right">{p.entry_price ?? "-"}</td>
-                <td align="right">{p.current_price ?? "-"}</td>
+                <td align="right">
+                  {p.entry_price != null && Number.isFinite(p.entry_price)
+                    ? formatPrice(p.entry_price)
+                    : formatMissing}
+                </td>
+                <td align="right">
+                  {p.current_price != null && Number.isFinite(p.current_price)
+                    ? formatPrice(p.current_price)
+                    : formatMissing}
+                </td>
                 <td align="right" style={{
                   color: (p.unrealized_pnl ?? 0) >= 0 ? "var(--accent-ok)" : "var(--accent-err)",
                 }}>
@@ -213,10 +320,17 @@ function CredentialGroup({ g }: { g: PortfolioGroup }) {
                       onClick={() => useTradingStore.getState().closePosition(
                         `${g.exchange_id}:${g.credential_id}`,
                         p.symbol,
-                        (p.side as "buy" | "sell"),
+                        normalizeSide(p.side),
                         p.quantity,
                         g.account_label,
                       )}
+                      data-testid={`port-broker-close-${p.symbol}`}
+                      title="Gerçek brokerda pozisyonu kapatır (irreversible)"
+                      style={{
+                        border: "1px solid var(--accent-err)",
+                        color: "var(--accent-err)",
+                        padding: "2px 8px",
+                      }}
                     >
                       Close
                     </button>
@@ -240,18 +354,22 @@ function CredentialGroup({ g }: { g: PortfolioGroup }) {
             <tbody>
               {(g.orders as Array<Record<string, unknown>>).map((o, i) => (
                 <tr key={String(o.id ?? i)}>
-                  <td>{String(o.symbol ?? "-")}</td>
-                  <td>{String(o.side ?? "-")}</td>
-                  <td align="right">{String(o.quantity ?? "-")}</td>
-                  <td align="right">{String(o.order_type ?? "-")}</td>
-                  <td align="right">{String(o.status ?? "-")}</td>
+                  <td>{String(o.symbol ?? formatMissing)}</td>
+                  <td>{String(o.side ?? formatMissing)}</td>
+                  <td align="right">{String(o.quantity ?? formatMissing)}</td>
+                  <td align="right">{String(o.order_type ?? formatMissing)}</td>
+                  <td align="right">{String(o.status ?? formatMissing)}</td>
                   <td align="right">
                     {g.permissions.includes("trade") && (
                       <button
-                        onClick={() => useTradingStore.getState().cancelOrder(
+                        onClick={() => useTradingStore.getState().requestCancel(
                           `${g.exchange_id}:${g.credential_id}`,
                           String(o.id ?? ""),
+                          g.account_label,
+                          o.symbol != null ? String(o.symbol) : undefined,
                         )}
+                        data-testid={`port-order-cancel-${String(o.id ?? "")}`}
+                        title="Emri iptal eder — onay gerekli"
                       >
                         Cancel
                       </button>
@@ -279,6 +397,11 @@ export function PORTPane({ code }: FunctionPaneProps) {
   const credentialsCount = useExchangeStore((s) => s.credentials.length);
   const loadPortfolio = usePortfolioStore((s) => s.loadPortfolio);
   const loadCredentials = useExchangeStore((s) => s.loadCredentials);
+  const pendingConfirm = useTradingStore((s) => s.pendingConfirm);
+
+  // Surface close/cancel results as toasts — without this hook, PORT's Close
+  // and Cancel buttons fail silently (QA-2026-05-23).
+  useTradingResultToasts();
 
   useEffect(() => {
     loadCredentials();
@@ -480,8 +603,20 @@ export function PORTPane({ code }: FunctionPaneProps) {
       />
     );
 
+  // Cancel + close confirmations come from the credential-group table buttons
+  // (close-position) or the per-order Cancel button. The OrderTicket only
+  // mounts inside trade-permitted credential groups, but the cancel flow can
+  // fire on read+trade credentials that aren't currently showing the ticket
+  // — so the modal needs a host at the PORT level.
+  const orphanedConfirm =
+    pendingConfirm &&
+    (pendingConfirm.kind === "cancel" || pendingConfirm.kind === "close");
+
   return (
     <div className="showme-port showme-port-motion port-pane-host">
+      {orphanedConfirm && (
+        <TradingConfirmModal accountLabel={pendingConfirm.accountLabel} />
+      )}
       {aggregateSection}
       <h2 className="u-sr-only">{code} — Portfolio</h2>
       <Pane>
@@ -716,7 +851,10 @@ function positionColumns({
       header: "Avg cost",
       numeric: true,
       width: 96,
-      render: (p) => (p.avg_cost != null ? `$${p.avg_cost.toFixed(2)}` : "—"),
+      render: (p) =>
+        p.avg_cost != null && Number.isFinite(p.avg_cost)
+          ? `$${formatPrice(p.avg_cost)}`
+          : formatMissing,
     },
     {
       key: "last",
@@ -724,15 +862,15 @@ function positionColumns({
       numeric: true,
       width: 96,
       render: (p) =>
-        p.last != null ? (
+        p.last != null && Number.isFinite(p.last) ? (
           <span
             key={liveMotionKey(p, "last")}
             className={liveCellClass("neutral")}
           >
-            ${p.last.toFixed(2)}
+            ${formatPrice(p.last)}
           </span>
         ) : (
-          "—"
+          formatMissing
         ),
     },
     {
@@ -786,6 +924,7 @@ function positionColumns({
               disabled={busy}
               onClick={() => onPreviewClose(p)}
               title="Preview the local paper close order without changing state"
+              data-testid={`port-paper-preview-${p.symbol}`}
             >
               Preview
             </button>
@@ -794,9 +933,11 @@ function positionColumns({
               className="btn btn--ghost port-action-btn"
               disabled={busy}
               onClick={() => onClosePosition(p)}
-              title="Close this local paper position after confirmation"
+              title="Local paper engine close — writes a legacy skip marker, does NOT touch the live broker"
+              data-testid={`port-paper-close-${p.symbol}`}
             >
-              Close
+              <span aria-hidden style={{ marginRight: 4, opacity: 0.6 }}>◇</span>
+              Close (paper)
             </button>
           </div>
         );
@@ -855,7 +996,14 @@ function ClosePreviewPanel({
       <div className="port-close-panel__kpi-grid">
         <Kpi label="Symbol" value={r.symbol} />
         <Kpi label="Quantity" value={fmtNum(r.quantity)} />
-        <Kpi label="Exit" value={r.exit_price != null ? `$${r.exit_price.toFixed(2)}` : "—"} />
+        <Kpi
+          label="Exit"
+          value={
+            r.exit_price != null && Number.isFinite(r.exit_price)
+              ? `$${formatPrice(r.exit_price)}`
+              : formatMissing
+          }
+        />
         <Kpi label="Notional" value={fmt$(r.market_value)} />
         <Kpi
           label="Realized P&L"

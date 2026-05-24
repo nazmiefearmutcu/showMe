@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,6 +17,17 @@ from typing import Iterator
 from .spec import StrategySpec
 
 LOG = logging.getLogger("showme.strategies.store")
+
+
+# Faz 2 / S7 — Same regex as ``bots/store.py``. Keep these definitions
+# in lockstep; both stores share the URL-segment surface.
+_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+def _validate_id(strategy_id: str) -> str:
+    if not isinstance(strategy_id, str) or not _ID_RE.fullmatch(strategy_id):
+        raise ValueError("invalid id")
+    return strategy_id
 
 
 class UnknownStrategy(KeyError):
@@ -49,18 +62,29 @@ class StrategyStore:
         return cls(app_home() / "strategies")
 
     def _path(self, strategy_id: str) -> Path:
+        # Faz 2 / S7 — validate before composing the on-disk path.
+        _validate_id(strategy_id)
         return self._dir / f"{strategy_id}.json"
 
     def _iter_files(self) -> Iterator[Path]:
         if not self._dir.exists():
             return iter(())
-        return self._dir.glob("*.json")
+        # Skip half-written ``*.json.tmp`` files left by an aborted save.
+        return (p for p in self._dir.glob("*.json") if not p.name.endswith(".tmp"))
 
     def list(self) -> list[StrategyMeta]:
         out: list[StrategyMeta] = []
         for f in self._iter_files():
             try:
-                d = json.loads(f.read_text())
+                raw = f.read_text()
+                if not raw.strip():
+                    # Faz 2 / S6 — defensive: skip a 0-byte file with a
+                    # WARNING instead of silently dropping the record.
+                    LOG.warning(
+                        "skip empty strategy file %s (possible crashed write)", f.name,
+                    )
+                    continue
+                d = json.loads(raw)
             except Exception as exc:  # noqa: BLE001
                 LOG.warning("skip corrupt %s: %s", f.name, exc)
                 continue
@@ -94,7 +118,15 @@ class StrategyStore:
                 spec = spec.model_copy(update={"updated_at": now})
         else:
             spec = spec.model_copy(update={"created_at": now, "updated_at": now})
-        p.write_text(spec.to_json())
+        # Faz 2 / S6 — atomic write: tmp file + fsync + os.replace. Same
+        # rationale as ``BotStore.save``.
+        tmp = p.with_suffix(p.suffix + ".tmp")
+        data = spec.to_json()
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, p)
         return spec
 
     def delete(self, strategy_id: str) -> bool:
