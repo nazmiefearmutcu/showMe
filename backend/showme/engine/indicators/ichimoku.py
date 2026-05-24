@@ -60,9 +60,18 @@ class IchimokuIndicator(BaseIndicator):
         above_cloud = current_close > cloud_top
         below_cloud = current_close < cloud_bottom
 
-        # Tenkan/Kijun cross
-        tk_bullish_cross = prev_tenkan <= prev_kijun and current_tenkan > current_kijun
-        tk_bearish_cross = prev_tenkan >= prev_kijun and current_tenkan < current_kijun
+        # Tenkan/Kijun cross — Q1 HIGH 13 fix: when ``prev_tenkan`` or
+        # ``prev_kijun`` is NaN (the very first valid bar after warm-up
+        # ends), ``NaN <= x`` returns False in pandas, so the first valid
+        # bar could never emit a cross. We require both prev values to be
+        # finite — no spurious "first-bar cross" any more.
+        prev_valid = not pd.isna(prev_tenkan) and not pd.isna(prev_kijun)
+        tk_bullish_cross = (
+            prev_valid and prev_tenkan <= prev_kijun and current_tenkan > current_kijun
+        )
+        tk_bearish_cross = (
+            prev_valid and prev_tenkan >= prev_kijun and current_tenkan < current_kijun
+        )
         tenkan_above_kijun = current_tenkan > current_kijun
 
         signals: list[str] = []

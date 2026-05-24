@@ -32,21 +32,53 @@ class OBVIndicator(BaseIndicator):
         if len(close) < sma_period + 2:
             return self._make_result(Signal.NEUTRAL, "OBV data insufficient")
 
-        # OBV cumulative
-        direction = np.where(close.diff() > 0, 1, np.where(close.diff() < 0, -1, 0))
+        # OBV cumulative.
+        # Q1 HIGH fix: ``close.diff()`` is NaN at i=0 → ``np.where`` returns
+        # 0 → ``volume[0] * 0 = 0`` so the first bar's volume is silently
+        # dropped. The compute path (compute.py:_compute_obv) seeds the
+        # first-bar direction to +1 (TradingView / TA-Lib convention) —
+        # mirror that here so engine/compute agree.
+        diff = close.diff()
+        direction = np.where(
+            diff > 0, 1,
+            np.where(
+                diff < 0, -1,
+                np.where(diff.isna(), 1, 0),  # first-bar: seed +1
+            ),
+        )
         obv_series = pd.Series((volume * direction).cumsum().values, index=df.index)
 
+        # Q1 HIGH fix: a z-score on the cumulative OBV *level* is
+        # mathematically ill-defined — the rolling std of a non-stationary
+        # cumulative sum drifts with the trend. The audit-correct read is
+        # the z-score of OBV *changes* (deltas), which is what TA-Lib /
+        # TradingView's "Volume Z" overlay does. ``ddof=1`` is consistent
+        # with the engine's other Wilder-style helpers (sample std).
+        obv_delta = obv_series.diff()
         obv_sma = obv_series.rolling(window=sma_period).mean()
-        obv_std = obv_series.rolling(window=sma_period).std()
+        obv_delta_std = obv_delta.rolling(window=sma_period).std(ddof=1)
+        # Mean of deltas across the window — for normalising the latest
+        # change against recent activity, not against a moving level.
+        obv_delta_mean = obv_delta.rolling(window=sma_period).mean()
 
         current_obv = float(obv_series.iloc[-1])
         current_obv_sma = float(obv_sma.iloc[-1]) if not pd.isna(obv_sma.iloc[-1]) else None
-        current_obv_std = float(obv_std.iloc[-1]) if not pd.isna(obv_std.iloc[-1]) else None
+        current_obv_delta = float(obv_delta.iloc[-1]) if not pd.isna(obv_delta.iloc[-1]) else None
+        current_delta_std = float(obv_delta_std.iloc[-1]) if not pd.isna(obv_delta_std.iloc[-1]) else None
+        current_delta_mean = float(obv_delta_mean.iloc[-1]) if not pd.isna(obv_delta_mean.iloc[-1]) else None
 
-        if current_obv_sma is None or current_obv_std is None or current_obv_std == 0:
+        if (
+            current_obv_sma is None
+            or current_delta_std is None
+            or current_delta_std == 0
+            or current_obv_delta is None
+            or current_delta_mean is None
+        ):
             return self._make_result(Signal.NEUTRAL, "OBV statistics insufficient")
 
-        obv_z = (current_obv - current_obv_sma) / current_obv_std
+        obv_z = (current_obv_delta - current_delta_mean) / current_delta_std
+        # ``current_obv_std`` kept for slope-norm fallback below.
+        current_obv_std = current_delta_std
 
         # Slope-based divergence detection
         n = min(divergence_lookback, len(close) - 1)

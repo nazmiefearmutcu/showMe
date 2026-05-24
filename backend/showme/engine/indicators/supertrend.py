@@ -53,21 +53,48 @@ class SupertrendIndicator(BaseIndicator):
         st = np.zeros(n)
         trend = np.ones(n, dtype=int)  # +1 UP, -1 DOWN
 
-        # Initialize first valid bar
+        # Q1 HIGH 14 fix: NaN propagation. ``basic_upper[0..atr_period]``
+        # is NaN until Wilder ATR warms up. The old loop used
+        # ``final_upper[i-1]`` (NaN) → comparison False → assigned
+        # ``final_upper[i-1]`` (still NaN) → propagated to ``st[i]`` for
+        # the rest of the series whenever the first valid ATR bar
+        # happened to not satisfy the reset condition. Solution: track
+        # whether the bands have been seeded; on the first non-NaN bar
+        # seed from ``basic_upper[i]`` / ``basic_lower[i]`` directly
+        # instead of carrying forward a NaN.
+        seeded = False
         for i in range(1, n):
-            if pd.isna(atr.iloc[i]):
+            if pd.isna(atr.iloc[i]) or pd.isna(basic_upper.iloc[i]):
                 st[i] = close.iloc[i]
                 trend[i] = trend[i - 1]
                 continue
 
+            if not seeded:
+                # First valid bar — seed bands directly, no carry-forward.
+                final_upper[i] = basic_upper.iloc[i]
+                final_lower[i] = basic_lower.iloc[i]
+                # Establish initial trend from price vs midline; arbitrary
+                # but stable — close[i] >= hl2 → UP.
+                hl2_i = (high.iloc[i] + low.iloc[i]) / 2.0
+                trend[i] = 1 if close.iloc[i] >= hl2_i else -1
+                st[i] = final_lower[i] if trend[i] == 1 else final_upper[i]
+                seeded = True
+                continue
+
             # Final upper
-            if basic_upper.iloc[i] < final_upper[i - 1] or close.iloc[i - 1] > final_upper[i - 1]:
+            if (
+                basic_upper.iloc[i] < final_upper[i - 1]
+                or close.iloc[i - 1] > final_upper[i - 1]
+            ):
                 final_upper[i] = basic_upper.iloc[i]
             else:
                 final_upper[i] = final_upper[i - 1]
 
             # Final lower
-            if basic_lower.iloc[i] > final_lower[i - 1] or close.iloc[i - 1] < final_lower[i - 1]:
+            if (
+                basic_lower.iloc[i] > final_lower[i - 1]
+                or close.iloc[i - 1] < final_lower[i - 1]
+            ):
                 final_lower[i] = basic_lower.iloc[i]
             else:
                 final_lower[i] = final_lower[i - 1]

@@ -11,7 +11,7 @@ from showme.engine.core.instrument import AssetClass, Instrument
 from showme.engine.services.gamma_exposure import chain_gex
 
 
-def _model_gex(symbol: str, spot: float, rate: float) -> dict[str, Any]:
+def _model_gex(symbol: str, spot: float, rate: float, div_yield: float = 0.0) -> dict[str, Any]:
     expiries = ["30d"]
     calls: list[dict[str, Any]] = []
     puts: list[dict[str, Any]] = []
@@ -29,7 +29,7 @@ def _model_gex(symbol: str, spot: float, rate: float) -> dict[str, Any]:
             "impliedVolatility": 0.47,
             "expiry": expiries[0],
         })
-    out = chain_gex(spot=spot, calls=calls, puts=puts, rate=rate)
+    out = chain_gex(spot=spot, calls=calls, puts=puts, rate=rate, div_yield=div_yield)
     out["symbol"] = symbol
     out["expiries"] = expiries
     return _shape_gex_payload(out, symbol=symbol, source_mode="reference")
@@ -104,6 +104,7 @@ class GEXFunction(BaseFunction):
                params.get("symbol") or "SPY").upper()
         spot = float(params.get("spot", 100))
         rate = float(params.get("rate", 0.04))
+        div_yield = float(params.get("div_yield", 0.0))
         spot_inst = instrument or Instrument(symbol=sym, asset_class=AssetClass.EQUITY)
         timeout = max(1.0, min(float(params.get("yfinance_timeout", 2.5)), 3.0))
         live_options = _truthy(params.get("live_options") or params.get("deep"))
@@ -131,12 +132,12 @@ class GEXFunction(BaseFunction):
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
-                data=_model_gex(sym, spot, rate),
+                data=_model_gex(sym, spot, rate, div_yield),
                 sources=["yfinance_quote", "black_scholes_gamma_formula"] if self.deps.yfinance else ["black_scholes_gamma_formula"],
             )
         if not self.deps.yfinance:
             return FunctionResult(code=self.code, instrument=instrument,
-                                  data=_model_gex(sym, spot, rate),
+                                  data=_model_gex(sym, spot, rate, div_yield),
                                   sources=["gamma_exposure_model"])
         # 2. Pull all expiries up to ``max_expiries`` and combine.
         timeout = max(1.0, min(float(params.get("yfinance_timeout", 3)), 4.0))
@@ -209,7 +210,8 @@ class GEXFunction(BaseFunction):
                     "impliedVolatility": 0.50,
                     "expiry": expiries[0],
                 })
-        out = chain_gex(spot=spot, calls=all_calls, puts=all_puts, rate=rate)
+        out = chain_gex(spot=spot, calls=all_calls, puts=all_puts, rate=rate,
+                        div_yield=div_yield)
         out["symbol"] = sym
         out["expiries"] = expiries
         shaped = _shape_gex_payload(

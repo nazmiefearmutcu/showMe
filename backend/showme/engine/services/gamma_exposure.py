@@ -23,11 +23,18 @@ def _norm_pdf(x: float) -> float:
     return math.exp(-0.5 * x * x) / math.sqrt(2 * math.pi)
 
 
-def bs_gamma(spot: float, strike: float, vol: float, T: float, r: float = 0.04) -> float:
+def bs_gamma(spot: float, strike: float, vol: float, T: float, r: float = 0.04,
+             q: float = 0.0) -> float:
+    """Black-Scholes-Merton gamma with continuous dividend yield q.
+
+    D03-2026-05-24 (H7): formula now includes ``-q`` in the drift term and
+    multiplies by ``exp(-qT)``. Old SPX/ETF GEX understated by ~q*T ≈ 1-2%
+    on long-dated strikes because q was treated as 0.
+    """
     if spot <= 0 or strike <= 0 or vol <= 0 or T <= 0:
         return 0.0
-    d1 = (math.log(spot / strike) + (r + 0.5 * vol * vol) * T) / (vol * math.sqrt(T))
-    return _norm_pdf(d1) / (spot * vol * math.sqrt(T))
+    d1 = (math.log(spot / strike) + (r - q + 0.5 * vol * vol) * T) / (vol * math.sqrt(T))
+    return math.exp(-q * T) * _norm_pdf(d1) / (spot * vol * math.sqrt(T))
 
 
 def chain_gex(
@@ -37,25 +44,41 @@ def chain_gex(
     contract_size: int = 100,
     rate: float = 0.04,
     default_vol: float = 0.30,
+    div_yield: float = 0.0,
 ) -> dict[str, Any]:
     """Compute per-strike gamma exposure dollar terms.
 
     Each call/put dict is expected to have ``strike``, ``openInterest`` (or ``oi``),
     ``impliedVolatility`` (or ``iv``), and ``expiry`` (datetime str / "YYYY-MM-DD")
     or ``T`` (years).
+
+    D03-2026-05-24 (H7+H8): ``div_yield`` is now a first-class parameter
+    (SPX ≈ 1.5% — 0DTE bias was material). Intraday expiries now compute
+    fractional days via UTC current time, so 0DTE option gamma is finite
+    and not 0 once the calendar rolls.
     """
     from datetime import datetime, timezone
-    today = datetime.now(timezone.utc).date()
+    now = datetime.now(timezone.utc)
+    today = now.date()
 
     def _T(opt: dict[str, Any]) -> float:
         T = opt.get("T")
         if T is not None:
-            return float(T)
+            return max(float(T), 1e-9)
         exp = opt.get("expiry") or opt.get("expiration") or opt.get("expiration_date")
         if exp:
             try:
                 d = datetime.fromisoformat(str(exp)[:10]).date()
-                return max((d - today).days, 0) / 365.0
+                if d <= today:
+                    # 0DTE / late-day: fractional intraday time-to-expiry.
+                    # Assume listed equity-option expiry is 16:00 UTC-5
+                    # (US close ≈ 21:00 UTC). For non-US instruments the
+                    # caller should pass an explicit ``T``.
+                    expiry_dt = datetime(d.year, d.month, d.day, 21, 0,
+                                         tzinfo=timezone.utc)
+                    seconds = (expiry_dt - now).total_seconds()
+                    return max(seconds / (365 * 86400), 1e-9)
+                return (d - today).days / 365.0
             except Exception:
                 pass
         return 30 / 365.0
@@ -82,7 +105,7 @@ def chain_gex(
         K = float(c.get("strike") or 0)
         if K <= 0:
             continue
-        gamma = bs_gamma(spot, K, _vol(c), _T(c), rate)
+        gamma = bs_gamma(spot, K, _vol(c), _T(c), rate, div_yield)
         # Dealers short calls → negative gamma to dealers; we report dealer-perspective.
         oi = _oi(c)
         gex = -gamma * oi * contract_size * (spot ** 2) * 0.01    # $ per 1% move
@@ -92,7 +115,7 @@ def chain_gex(
         K = float(p.get("strike") or 0)
         if K <= 0:
             continue
-        gamma = bs_gamma(spot, K, _vol(p), _T(p), rate)
+        gamma = bs_gamma(spot, K, _vol(p), _T(p), rate, div_yield)
         # Dealers long puts → positive gamma to dealers.
         oi = _oi(p)
         gex = +gamma * oi * contract_size * (spot ** 2) * 0.01
