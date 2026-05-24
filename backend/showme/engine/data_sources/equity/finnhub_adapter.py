@@ -9,8 +9,13 @@ DATA PIPELINE:
 from __future__ import annotations
 
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
+
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:  # pragma: no cover - py<3.9 fallback
+    ZoneInfo = None  # type: ignore[assignment]
 
 import httpx
 import pandas as pd
@@ -19,6 +24,29 @@ from showme.engine.core.base_data_source import (
     BaseDataSource, DataKind, DataRequest, DataSourceError
 )
 from showme.engine.utils.throttle import throttle
+
+# B5: Finnhub's date filters (/company-news) and intraday candle ranges are
+# anchored to America/New_York exchange time. Internal datetimes always live
+# in UTC; convert at the boundary so naive timestamps don't silently leak the
+# wrong epoch to the wire.
+_NY_TZ = ZoneInfo("America/New_York") if ZoneInfo is not None else timezone.utc
+
+
+def _ensure_utc(dt: datetime) -> datetime:
+    """Treat a naive datetime as ET (Finnhub convention), else preserve tz."""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=_NY_TZ).astimezone(timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _to_ny_date_str(dt: datetime) -> str:
+    """Render a date for Finnhub's ``from``/``to`` filters (NY-local YYYY-MM-DD)."""
+    return _ensure_utc(dt).astimezone(_NY_TZ).strftime("%Y-%m-%d")
+
+
+def _epoch_seconds(dt: datetime) -> int:
+    """Return the UTC epoch seconds for a (possibly naive) datetime."""
+    return int(_ensure_utc(dt).timestamp())
 
 
 class FinnhubAdapter(BaseDataSource):
@@ -71,12 +99,17 @@ class FinnhubAdapter(BaseDataSource):
             )
         if request.kind == DataKind.OHLCV:
             res = (request.interval or "D").upper()
+            # B5: ensure both bounds are tz-aware UTC epochs. Default ``end``
+            # was using ``datetime.now()`` (naive) which would silently shift
+            # by the host machine's offset.
+            start_dt = request.start or datetime(2020, 1, 1, tzinfo=_NY_TZ)
+            end_dt = request.end or datetime.now(tz=timezone.utc)
             r = await self._get(
                 "/stock/candle",
                 symbol=sym, resolution=res,
                 **{
-                    "from": int((request.start or datetime(2020, 1, 1)).timestamp()),
-                    "to": int((request.end or datetime.now()).timestamp()),
+                    "from": _epoch_seconds(start_dt),
+                    "to": _epoch_seconds(end_dt),
                 },
             )
             if r.get("s") != "ok":
@@ -111,9 +144,15 @@ class FinnhubAdapter(BaseDataSource):
                 "dividends": await self._get("/stock/dividend2", symbol=sym),
             }
         if request.kind == DataKind.NEWS:
+            # B5: Finnhub expects NY-local YYYY-MM-DD. Naive datetimes get
+            # localized to ET (the API's native zone) before formatting so
+            # ``datetime.now()`` on a London laptop doesn't bleed into the
+            # query window.
+            start_dt = request.start or datetime(2024, 1, 1, tzinfo=_NY_TZ)
+            end_dt = request.end or datetime.now(tz=timezone.utc)
             return await self._get("/company-news", symbol=sym,
-                                    **{"from": (request.start or datetime(2024, 1, 1)).strftime("%Y-%m-%d"),
-                                       "to": (request.end or datetime.now()).strftime("%Y-%m-%d")})
+                                    **{"from": _to_ny_date_str(start_dt),
+                                       "to": _to_ny_date_str(end_dt)})
         raise DataSourceError(f"unsupported kind {request.kind}")
 
     # ── Hot helpers used by EE/ANR functions ──

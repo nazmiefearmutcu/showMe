@@ -36,6 +36,7 @@ import {
   StatCard,
 } from "@/design-system";
 import { listTrades, type StateTrade } from "@/lib/state";
+import { useVisibilityTick } from "@/lib/useVisibilityTick";
 import { useWorkspace } from "@/lib/workspace";
 import { navigate } from "@/lib/router";
 import { buildTradeCsv } from "./TRAN.csv";
@@ -61,7 +62,15 @@ export function TRANPane({ code, symbol }: FunctionPaneProps) {
     ROW_LIMITS,
     200,
   );
-  const [tick, setTick] = useState(0);
+  // Bundle D / PERF-04. Manual tick (used by the Refresh button) blended
+  // with `useVisibilityTick` so background tabs no longer poll the trades
+  // endpoint every minute.
+  const [manualTick, setManualTick] = useState(0);
+  const visTick = useVisibilityTick(REFRESH_MS);
+  const tick = manualTick + visTick;
+  const setTick = (next: ((prev: number) => number) | number) => {
+    setManualTick((prev) => (typeof next === "function" ? next(prev) : next));
+  };
   const [rows, setRows] = useState<StateTrade[] | null>(null);
   const [total, setTotal] = useState<number>(0);
   const [error, setError] = useState<string | null>(null);
@@ -89,11 +98,6 @@ export function TRANPane({ code, symbol }: FunctionPaneProps) {
       cancelled = true;
     };
   }, [filter, limit, tick]);
-
-  useEffect(() => {
-    const id = setInterval(() => setTick((t) => t + 1), REFRESH_MS);
-    return () => clearInterval(id);
-  }, []);
 
   const cols = useMemo<DataGridColumn<StateTrade>[]>(
     () => [

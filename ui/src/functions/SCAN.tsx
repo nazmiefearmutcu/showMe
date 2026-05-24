@@ -43,6 +43,7 @@ import {
   type ScanRow,
   type UniverseSummary,
 } from "@/lib/scanner";
+import { useAbortableFetch } from "@/lib/useAbortableFetch";
 import { navigate } from "@/lib/router";
 import { useWorkspace } from "@/lib/workspace";
 import {
@@ -302,6 +303,12 @@ export function SCANPane({ code }: FunctionPaneProps) {
   const [openSymbol, setOpenSymbol] = useState<string | null>(null);
   const [sortKey, setSortKey] = useState<SortKey>("score");
   const setFocusedTarget = useWorkspace((s) => s.setFocusedTarget);
+  // Bundle D / ABORT-01. Outer guard so a navigation away mid-scan aborts
+  // the in-flight `runScan()` instead of resolving into a setState-after-
+  // unmount warning. Also auto-cancels a previous run if the user hits Run
+  // again while one is still pending.
+  const scanFetch = useAbortableFetch();
+  const universeFetch = useAbortableFetch();
 
   const sortedRows = useMemo(
     () => (result ? sortRows(result.rows, sortKey) : []),
@@ -368,7 +375,15 @@ export function SCANPane({ code }: FunctionPaneProps) {
   }, [openSymbol, sortedRows]);
 
   useEffect(() => {
-    listUniverses().then(setUniverses).catch(() => setUniverses([]));
+    universeFetch
+      .run((signal) => listUniverses(signal))
+      .then((u) => {
+        if (universeFetch.isMounted()) setUniverses(u);
+      })
+      .catch(() => {
+        if (universeFetch.isMounted()) setUniverses([]);
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const run = async () => {
@@ -380,18 +395,28 @@ export function SCANPane({ code }: FunctionPaneProps) {
       const phases = ["A", "B"];
       if (phaseC) phases.push("C");
       if (phaseD) phases.push("D");
-      const r = await runScan({
-        intent,
-        universe: universe || undefined,
-        top_n: topN,
-        phases,
-        fine_top_k: phaseC ? Math.min(topN, 8) : undefined,
-      });
+      const r = await scanFetch.run((signal) =>
+        runScan(
+          {
+            intent,
+            universe: universe || undefined,
+            top_n: topN,
+            phases,
+            fine_top_k: phaseC ? Math.min(topN, 8) : undefined,
+          },
+          signal,
+        ),
+      );
+      if (!scanFetch.isMounted()) return;
       setResult(r);
     } catch (err) {
+      if (!scanFetch.isMounted()) return;
+      // AbortError is the expected path when the user navigates away or
+      // hits Run again — swallow it so we don't paint a misleading error.
+      if (err instanceof DOMException && err.name === "AbortError") return;
       setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setRunning(false);
+      if (scanFetch.isMounted()) setRunning(false);
     }
   };
 

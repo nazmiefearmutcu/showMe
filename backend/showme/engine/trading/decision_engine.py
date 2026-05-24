@@ -54,15 +54,54 @@ class DecisionEngine:
             )
 
         # If we have a position, update tracking (trailing stop, break-even etc.)
-        # SL/TP warnings only — but signal reversal AUTO-CLOSES.
+        # C1 fix: SL/TP hits now AUTO-CLOSE the position (previously only set
+        # a cosmetic warning which let the position bleed past the configured
+        # stop — i.e. risk management was non-functional). Signal reversal
+        # remains "warning-only" per the 2026-04-29 user directive.
+        #
+        # Per-position warnings are tracked as a list now so subsequent hits
+        # (e.g. SL after TP touch, trailing-stop after break-even) don't
+        # silently overwrite earlier diagnostics.
         if has_position and position:
+            # Ensure ``position.warnings`` list exists (backfill for older
+            # serialised positions reloaded from disk). We keep the legacy
+            # ``position.warning`` scalar in sync with the most-recent entry
+            # for any UI still consuming it.
+            if not hasattr(position, "warnings") or getattr(position, "warnings", None) is None:
+                try:
+                    position.warnings = []  # type: ignore[attr-defined]
+                except Exception:  # noqa: BLE001 — frozen dataclass / readonly proxy
+                    pass
+
+            def _push_warning(reason_str: str) -> None:
+                wl = getattr(position, "warnings", None)
+                if isinstance(wl, list):
+                    if reason_str not in wl:
+                        wl.append(reason_str)
+                position.warning = reason_str  # legacy field kept in sync
+
             exit_reason = self.position_manager.update_position(symbol, current_price)
             if exit_reason:
-                # Don't close for SL/TP — just set warning (permanent, never clears)
-                position.warning = exit_reason
+                # C1 fix: SL/TP/trailing hit → generate an EXIT decision so
+                # the execution engine actually closes the position.
+                _push_warning(exit_reason)
+                close_action = (
+                    TradeAction.CLOSE_LONG
+                    if position.side == PositionSide.LONG
+                    else TradeAction.CLOSE_SHORT
+                )
                 logger.warning(
-                    f"Position {symbol} hit {exit_reason} — NOT auto-closing. "
-                    f"Manual close required."
+                    f"Position {symbol} hit {exit_reason} — auto-closing "
+                    f"({close_action.value}) at {current_price}"
+                )
+                return self._make_decision(
+                    close_action,
+                    position.quantity,
+                    symbol,
+                    current_price,
+                    f"Auto-close: {exit_reason}",
+                    consensus,
+                    leverage=position.leverage,
                 )
 
             # Track current signal/confidence on the position
@@ -78,21 +117,21 @@ class DecisionEngine:
             elif position.side == PositionSide.SHORT and final_signal in (Signal.BUY, Signal.STRONG_BUY):
                 signal_reversed = True
             if signal_reversed:
-                position.warning = (
-                    position.warning
-                    or f"signal_reversed:{final_signal.value}"
-                )
+                _push_warning(f"signal_reversed:{final_signal.value}")
                 logger.info(
-                    f"⚠ Signal reversal on {symbol} ({position.side.value} → {final_signal.value} "
-                    f"conf={confidence}%) — auto-close DISABLED, holding"
+                    f"Signal reversal on {symbol} ({position.side.value} -> {final_signal.value} "
+                    f"conf={confidence}%) - auto-close DISABLED, holding"
                 )
 
             # Hold current position
             reason = f"Holding {position.side.value} position | signal={final_signal.value} conf={confidence}%"
             if signal_reversed:
-                reason += " | ⚠ reversal (auto-close off)"
-            if position.warning:
-                reason += f" | ⚠ {position.warning}"
+                reason += " | reversal (auto-close off)"
+            warnings_list = getattr(position, "warnings", None) or []
+            if warnings_list:
+                reason += f" | warnings={','.join(warnings_list)}"
+            elif position.warning:
+                reason += f" | warning={position.warning}"
             return self._make_decision(
                 TradeAction.HOLD, 0, symbol, current_price,
                 reason,

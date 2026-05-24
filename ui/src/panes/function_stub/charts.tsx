@@ -53,8 +53,10 @@ function LightweightSeriesChart({ chartId, series }: { chartId: string; series: 
   const containerRef = useRef<HTMLDivElement>(null);
   const palette = useChartPalette();
   const values = series.points.map((point) => point.y);
-  const min = Math.min(...values);
-  const max = Math.max(...values);
+  // Bundle D / OVERFLOW-01. `Math.max(...arr)` blows the call-stack on any
+  // arr.length > ~100k. The fallback `reduce` is O(n) with constant stack.
+  const min = values.reduce((a, b) => (b < a ? b : a), Infinity);
+  const max = values.reduce((a, b) => (b > a ? b : a), -Infinity);
   const first = series.points[0]?.y ?? 0;
   const last = series.points.at(-1)?.y ?? 0;
   const delta = last - first;
@@ -252,7 +254,10 @@ function BarChart({ chartId, series }: { chartId: string; series: ChartSeries })
   const padY = 26;
   const points = series.points.slice(0, 30);
   const values = points.map((point) => point.y);
-  const maxAbs = Math.max(...values.map((value) => Math.abs(value)), 1);
+  // Bundle D / OVERFLOW-01. Stack-safe reduce in place of Math.max(...).
+  const maxAbs = values
+    .map((value) => Math.abs(value))
+    .reduce((a, b) => (b > a ? b : a), 1);
   const barGap = 6;
   const plotWidth = width - padX * 2;
   const barWidth = Math.max(5, (plotWidth - barGap * (points.length - 1)) / points.length);
@@ -260,8 +265,9 @@ function BarChart({ chartId, series }: { chartId: string; series: ChartSeries })
   const first = series.points[0]?.y ?? 0;
   const last = series.points.at(-1)?.y ?? 0;
   const delta = last - first;
-  const min = Math.min(...values);
-  const max = Math.max(...values);
+  // Bundle D / OVERFLOW-01. Stack-safe reductions.
+  const min = values.reduce((a, b) => (b < a ? b : a), Infinity);
+  const max = values.reduce((a, b) => (b > a ? b : a), -Infinity);
   return (
     <ResizableChartFrame
       storageId={`${chartId}.${series.kind}`}
@@ -317,13 +323,14 @@ function CurveChart({ chartId, series }: { chartId: string; series: ChartSeries 
   const points = series.points.filter((point) => typeof point.x === "number");
   const values = points.map((point) => point.y);
   const xValues = points.map((point) => Number(point.x));
-  const min = Math.min(...values);
-  const max = Math.max(...values);
+  // Bundle D / OVERFLOW-01. Stack-safe reductions.
+  const min = values.reduce((a, b) => (b < a ? b : a), Infinity);
+  const max = values.reduce((a, b) => (b > a ? b : a), -Infinity);
   const first = points[0]?.y ?? 0;
   const last = points.at(-1)?.y ?? 0;
   const delta = last - first;
-  const minX = Math.min(...xValues);
-  const maxX = Math.max(...xValues);
+  const minX = xValues.reduce((a, b) => (b < a ? b : a), Infinity);
+  const maxX = xValues.reduce((a, b) => (b > a ? b : a), -Infinity);
   const spanX = Math.max(maxX - minX, 1);
   const spanY = Math.max(max - min, 1e-9);
   const toX = (value: number) => padX + ((value - minX) / spanX) * (width - padX * 2);
@@ -390,12 +397,15 @@ function CurveChart({ chartId, series }: { chartId: string; series: ChartSeries 
 function HeatmapChart({ chartId, series }: { chartId: string; series: ChartSeries }) {
   const palette = useChartPalette();
   const values = series.points.map((point) => point.y);
-  const min = Math.min(...values);
-  const max = Math.max(...values);
+  // Bundle D / OVERFLOW-01. Stack-safe reductions.
+  const min = values.reduce((a, b) => (b < a ? b : a), Infinity);
+  const max = values.reduce((a, b) => (b > a ? b : a), -Infinity);
   const first = series.points[0]?.y ?? 0;
   const last = series.points.at(-1)?.y ?? 0;
   const delta = last - first;
-  const maxAbs = Math.max(...values.map((value) => Math.abs(value)), 1);
+  const maxAbs = values
+    .map((value) => Math.abs(value))
+    .reduce((a, b) => (b > a ? b : a), 1);
   return (
     <ResizableChartFrame
       storageId={`${chartId}.${series.kind}`}

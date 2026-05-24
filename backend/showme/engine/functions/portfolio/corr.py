@@ -8,12 +8,20 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import math
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import numpy as np
 import pandas as pd
+
+LOG = logging.getLogger("showme.corr")
+
+# B6: when a single symbol's series is dominated by NaN (illiquid name, bad
+# adapter mapping, etc.) it poisons every correlation involving it. Drop the
+# offender BEFORE the matrix is built so downstream cells stay finite.
+NAN_DROP_THRESHOLD = 0.30
 
 from showme.engine.core.base_data_source import DataKind, DataRequest
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
@@ -217,8 +225,25 @@ class CORRFunction(BaseFunction):
                 for symbol in symbols
             }
 
+        # B6: scrub NaN-dominant columns AFTER all fallbacks have populated
+        # the frame so the matrix downstream stays finite. Surface the drop
+        # in coverage_status + payload so the UI is honest about it.
+        frame, dropped_symbols = _drop_nan_heavy_columns(frame)
+        for symbol in dropped_symbols:
+            previous = coverage_status.get(symbol, {})
+            coverage_status[symbol] = {
+                "status": "dropped_nan_heavy",
+                "source": previous.get("source") or "live_provider",
+                "provider_symbol": previous.get("provider_symbol") or _provider_symbol(symbol),
+                "message": (
+                    f"Series had more than {int(NAN_DROP_THRESHOLD * 100)}% NaN rows; "
+                    "removed from correlation matrix."
+                ),
+            }
+        active_symbols = [s for s in symbols if s not in dropped_symbols]
+
         data = _correlation_payload(
-            symbols=symbols,
+            symbols=active_symbols if active_symbols else symbols,
             days=days,
             price_series=price_series,
             frame=frame,
@@ -229,11 +254,20 @@ class CORRFunction(BaseFunction):
             sources=sources,
             coverage_status=coverage_status,
         )
+        # B6: surface the dropped list both on the payload and as a warning
+        # so the UI can render a chip.
+        data["dropped_symbols"] = list(dropped_symbols)
         warnings = [
             item["message"]
             for item in data.get("impactor", {}).get("bug_analysis", [])
             if item.get("severity") in {"warning", "critical"}
         ][:8]
+        if dropped_symbols:
+            warnings.insert(
+                0,
+                f"Dropped {len(dropped_symbols)} NaN-heavy symbol(s): "
+                f"{', '.join(dropped_symbols)}",
+            )
         return FunctionResult(
             code=self.code,
             instrument=instrument,
@@ -276,6 +310,8 @@ class CORRFunction(BaseFunction):
                     if source_name == "yfinance" and self.deps.symbol_registry:
                         try:
                             inst = await self.deps.symbol_registry.resolve(request_symbol)
+                        except asyncio.CancelledError:
+                            raise
                         except Exception:
                             inst = None
                     if inst is None:
@@ -305,6 +341,9 @@ class CORRFunction(BaseFunction):
                         }
                     )
                     return symbol, series, status
+                except asyncio.CancelledError:
+                    # B6: never swallow cancellation; let the caller unwind.
+                    raise
                 except Exception as exc:  # noqa: BLE001
                     last_error = f"{source_name}: {exc}"
                     status.update(
@@ -833,6 +872,30 @@ def _heatmap_rows(symbols: list[str], pearson: dict[str, dict[str, float | None]
     return rows
 
 
+def _drop_nan_heavy_columns(
+    frame: pd.DataFrame, threshold: float = NAN_DROP_THRESHOLD
+) -> tuple[pd.DataFrame, list[str]]:
+    """Drop columns whose NaN ratio exceeds ``threshold``.
+
+    Returns the cleaned frame and the list of dropped symbols so callers can
+    surface them in the response payload instead of silently propagating NaN
+    correlations downstream.
+    """
+    if frame.empty:
+        return frame, []
+    nan_ratio = frame.isna().mean(axis=0)
+    keep = nan_ratio[nan_ratio <= threshold].index.tolist()
+    drop = [str(col) for col in frame.columns if col not in keep]
+    if drop:
+        LOG.warning(
+            "CORR dropped %d NaN-heavy column(s) above %.0f%% threshold: %s",
+            len(drop),
+            threshold * 100,
+            drop,
+        )
+    return frame.loc[:, keep], drop
+
+
 def _build_return_frame(
     price_series: list[dict[str, Any]],
     frequency: str,
@@ -860,8 +923,13 @@ def _build_return_frame(
         prices = prices.resample("ME").last()
     if missing_policy == "forward_fill":
         prices = prices.ffill()
+    # B6: guard the log transform against zero prices. ``prices > 0`` was
+    # already enforced for the leading series above, but post-resample /
+    # post-ffill rows can still contain leading NaN. Clip non-positive
+    # values to NaN BEFORE the log so we don't emit -inf into the frame.
     if return_method == "log":
-        returns = np.log(prices / prices.shift(1))
+        safe = prices.where(prices > 0)
+        returns = np.log(safe / safe.shift(1))
     else:
         returns = prices.pct_change()
     returns = returns.replace([np.inf, -np.inf], np.nan)

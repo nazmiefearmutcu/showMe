@@ -5,7 +5,7 @@
  * key emerging market currencies. KPI ribbon for top movers, heatmap
  * via the same DS heat tokens, hover-lift rows, methodology rail.
  */
-import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import { useMemo, type CSSProperties } from "react";
 import {
   DataGrid,
   type DataGridColumn,
@@ -25,6 +25,7 @@ import {
   Tabs,
 } from "@/design-system";
 import { useFunction } from "@/lib/useFunction";
+import { useVisibilityTick } from "@/lib/useVisibilityTick";
 import { formatSignedDelta } from "@/lib/format";
 import {
   FunctionControlGroup,
@@ -74,12 +75,8 @@ export function WCRSPane({ code }: FunctionPaneProps) {
     BASE_IDS,
     "USD",
   );
-  const [tick, setTick] = useState(0);
-
-  useEffect(() => {
-    const id = setInterval(() => setTick((t) => t + 1), REFRESH_MS);
-    return () => clearInterval(id);
-  }, []);
+  // Bundle D / PERF-04. Visibility-aware poll.
+  const tick = useVisibilityTick(REFRESH_MS);
 
   const { state, data, error, refetch } = useFunction<unknown>({
     code,

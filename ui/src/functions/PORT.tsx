@@ -24,6 +24,7 @@ import {
   StatCard,
 } from "@/design-system";
 import { useFunction } from "@/lib/useFunction";
+import { useVisibilityTick } from "@/lib/useVisibilityTick";
 import { subscribeQuote, type StreamStatus } from "@/lib/stream";
 import { navigate } from "@/lib/router";
 import { sidecarFetch } from "@/lib/sidecar";
@@ -403,12 +404,14 @@ export function PORTPane({ code }: FunctionPaneProps) {
   // and Cancel buttons fail silently (QA-2026-05-23).
   useTradingResultToasts();
 
+  // Bundle D / PERF-04. Pause the 30s aggregate-portfolio poll while the tab
+  // is hidden. The browser was hammering the sidecar even when the user was
+  // off in another desktop space; resume on visibilitychange.
+  const portfolioTick = useVisibilityTick(30_000);
   useEffect(() => {
     loadCredentials();
     loadPortfolio();
-    const t = setInterval(() => loadPortfolio(), 30_000);
-    return () => clearInterval(t);
-  }, [loadPortfolio, loadCredentials]);
+  }, [loadPortfolio, loadCredentials, portfolioTick]);
 
   const hasAnyCredential = credentialsCount > 0;
   const aggregateSection = !hasAnyCredential ? (
@@ -436,23 +439,39 @@ export function PORTPane({ code }: FunctionPaneProps) {
   const [closeError, setCloseError] = useState<string | null>(null);
   const [busySymbol, setBusySymbol] = useState<string | null>(null);
 
+  // Bundle D / SOCKET-01. The previous effect listed `positions` directly,
+  // so every poll cycle (new array identity from `useFunction`) tore down
+  // every WebSocket and reopened the lot — a reconnect storm that hammered
+  // the sidecar each minute even when no actual symbol set had changed.
+  // Derive a stable signature from the *unique sorted symbol set* and key
+  // the subscribe effect off that; identity changes on the parent array no
+  // longer matter, only set membership does.
+  const symbolsKey = useMemo(
+    () => {
+      const seen = new Set<string>();
+      for (const p of positions) {
+        if (p.symbol) seen.add(p.symbol);
+      }
+      return Array.from(seen).sort().join(",");
+    },
+    [positions],
+  );
+
   useEffect(() => {
-    if (positions.length === 0) return;
-    const handles = positions
-      .map((p) => p.symbol)
-      .filter((s, idx, all) => !!s && all.indexOf(s) === idx)
-      .map((sym) =>
-        subscribeQuote(sym, {
-          onTick: (tick) =>
-            setLive((m) => ({ ...m, [sym]: { price: tick.price, ts: tick.ts * 1000 } })),
-          onStatus: (status) =>
-            setStreamStatus((s) => ({ ...s, [sym]: status })),
-        }),
-      );
+    if (!symbolsKey) return;
+    const symbols = symbolsKey.split(",").filter(Boolean);
+    const handles = symbols.map((sym) =>
+      subscribeQuote(sym, {
+        onTick: (tick) =>
+          setLive((m) => ({ ...m, [sym]: { price: tick.price, ts: tick.ts * 1000 } })),
+        onStatus: (status) =>
+          setStreamStatus((s) => ({ ...s, [sym]: status })),
+      }),
+    );
     return () => {
       for (const h of handles) h.close();
     };
-  }, [positions]);
+  }, [symbolsKey]);
 
   const enriched = useMemo<Position[]>(() => {
     const overlaid = positions.map((p) => {
