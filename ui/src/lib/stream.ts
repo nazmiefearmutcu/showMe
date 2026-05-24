@@ -71,6 +71,15 @@ export function subscribeQuote(symbol: string, opts: StreamOpts): StreamHandle {
   // of letting orphaned timers fire and pin React closures.
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   let everLive = false; // QA-2026-05-23: only toast after a successful connect.
+  // HIGH FIX (audit S8): when the tab is hidden, the OS occasionally throttles
+  // WebSocket I/O which led to a reconnect storm — every 250ms..5s the browser
+  // would spawn a new socket because the old one's onclose fired on the next
+  // foreground frame. We defer reconnect attempts until visibility returns,
+  // and force the in-flight socket closed so we don't multi-stack.
+  let visibilityListener: (() => void) | null = null;
+
+  const isHidden = () =>
+    typeof document !== "undefined" && document.visibilityState === "hidden";
 
   const stop = () => {
     closed = true;
@@ -78,11 +87,53 @@ export function subscribeQuote(symbol: string, opts: StreamOpts): StreamHandle {
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
     }
+    if (visibilityListener && typeof document !== "undefined") {
+      document.removeEventListener("visibilitychange", visibilityListener);
+      visibilityListener = null;
+    }
     socket?.close();
+  };
+
+  const scheduleReconnect = () => {
+    if (closed) return;
+    const wait = Math.min(MAX_BACKOFF_MS, 250 * 2 ** attempt);
+    attempt += 1;
+    if (isHidden()) {
+      // Wait until the tab returns to the foreground — register a one-shot
+      // visibilitychange listener that fires connect() once on resume.
+      if (visibilityListener) return; // already armed
+      opts.onStatus?.("offline", "paused (tab hidden)");
+      visibilityListener = () => {
+        if (closed) return;
+        if (!isHidden()) {
+          if (visibilityListener && typeof document !== "undefined") {
+            document.removeEventListener("visibilitychange", visibilityListener);
+            visibilityListener = null;
+          }
+          // Reset backoff a touch so the resume attempt fires fast.
+          attempt = Math.max(0, attempt - 1);
+          connect();
+        }
+      };
+      if (typeof document !== "undefined") {
+        document.addEventListener("visibilitychange", visibilityListener);
+      }
+      return;
+    }
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      connect();
+    }, wait);
   };
 
   const connect = () => {
     if (closed) return;
+    if (isHidden()) {
+      // Don't even open a new socket while hidden — schedule via the
+      // visibility listener instead.
+      scheduleReconnect();
+      return;
+    }
     opts.onStatus?.(attempt === 0 ? "connecting" : "connecting", `attempt ${attempt + 1}`);
     const url = `${sidecarWsUrl()}/ws/quote/${encodeURIComponent(target)}`;
     socket = new WebSocket(url);
@@ -116,12 +167,7 @@ export function subscribeQuote(symbol: string, opts: StreamOpts): StreamHandle {
       // Only toast when we've actually had live data; failing-to-connect on
       // boot is reported as a different UI signal (the runtime pill).
       if (everLive) maybeEmitDisconnectToast();
-      const wait = Math.min(MAX_BACKOFF_MS, 250 * 2 ** attempt);
-      attempt += 1;
-      reconnectTimer = setTimeout(() => {
-        reconnectTimer = null;
-        connect();
-      }, wait);
+      scheduleReconnect();
     };
   };
 

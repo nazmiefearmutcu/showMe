@@ -214,7 +214,13 @@ export function OrderTicket({ credentialId, brokerName, accountLabel }: Props) {
               setQtyRaw(raw);
               const { value, error } = parseNumericInput(raw);
               setQtyErr(error || (value !== null && value <= 0));
-              setField("quantity", value ?? 0);
+              // UA-HIGH-21: never persist a non-positive quantity to the store.
+              // qtyValid is the submit-gate; the store should reflect the last
+              // *valid* quantity so a momentary "0" while editing doesn't get
+              // accidentally serialized to a queued order.
+              if (value !== null && value > 0) {
+                setField("quantity", value);
+              }
             }}
             data-testid="order-ticket-quantity-input"
             aria-invalid={qtyErr || undefined}
@@ -331,6 +337,22 @@ function ConfirmModal({ accountLabel }: { accountLabel: string }) {
   const confirm = useTradingStore((s) => s.confirm);
   const dismiss = useTradingStore((s) => s.dismissConfirm);
   const [typed, setTyped] = useState("");
+
+  // Round 24 HIGH — modal a11y. Esc cancels (unless submitting, in which
+  // case the in-flight POST has to complete first), backdrop click also
+  // cancels via the outer div's onClick (target===currentTarget check).
+  useEffect(() => {
+    if (!pending) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !submitting) {
+        e.preventDefault();
+        dismiss();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [pending, submitting, dismiss]);
+
   if (!pending) return null;
 
   const verb = pending.kind === "close" ? "kapatma" :
@@ -342,14 +364,26 @@ function ConfirmModal({ accountLabel }: { accountLabel: string }) {
 
   return (
     <div role="dialog" aria-modal="true"
+         data-testid="confirm-modal-backdrop"
+         onClick={(e) => {
+           // Round 24 HIGH — backdrop click dismisses; ignore bubbled
+           // clicks from inside the modal body. Short-circuit when
+           // submitting because the in-flight POST can't be aborted from
+           // here and closing the modal mid-flight is a UX surprise.
+           if (e.target === e.currentTarget && !submitting) dismiss();
+         }}
          style={{
            position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)",
            display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000,
          }}>
-      <div style={{
-        background: "var(--surface-1)", padding: 16, minWidth: 360,
-        border: "1px solid var(--border-1)",
-      }}>
+      <div
+        onClick={(e) => e.stopPropagation()}
+        data-testid="confirm-modal-body"
+        style={{
+          background: "var(--surface-1)", padding: 16, minWidth: 360,
+          border: "1px solid var(--border-1)",
+        }}
+      >
         <h3 style={{ marginTop: 0 }}>Onay gerekli — {verb}</h3>
         <div style={{ marginBottom: 8, fontSize: 12, color: "var(--fg-2)" }}>
           {expected ? (
@@ -365,7 +399,7 @@ function ConfirmModal({ accountLabel }: { accountLabel: string }) {
         </div>
         <input value={typed} onChange={(e) => setTyped(e.target.value)}
                placeholder={expected}
-               disabled={!expected}
+               disabled={!expected || submitting}
                autoFocus
                data-testid="confirm-modal-typed-input"
                style={{ width: "100%", marginBottom: 8 }} />
@@ -374,8 +408,22 @@ function ConfirmModal({ accountLabel }: { accountLabel: string }) {
 {JSON.stringify(pending.payload, null, 2)}
         </pre>
         <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 8 }}>
-          <button onClick={dismiss} data-testid="confirm-modal-cancel-btn">İptal</button>
-          <button onClick={() => confirm(typed)}
+          <button onClick={dismiss} disabled={submitting}
+                  data-testid="confirm-modal-cancel-btn">İptal</button>
+          <button onClick={() => {
+                    // Round 24 CRITICAL (REAL MONEY) — local short-circuit
+                    // is the cheapest layer: hardware double-clicks fire
+                    // onClick twice within ~50ms; the second event races
+                    // React's `disabled` re-render. Combined with the
+                    // store-level `if (get().submitting) return` in
+                    // trading-store.confirm() this is now three-deep:
+                    //   (1) inline `if (submitting) return` here,
+                    //   (2) `disabled={submitting}` on the button,
+                    //   (3) store-level guard in confirm() itself,
+                    //   (4) backend dedupe via `Idempotency-Key` header.
+                    if (submitting || !okLabel) return;
+                    confirm(typed);
+                  }}
                   disabled={!okLabel || submitting}
                   data-testid="confirm-modal-confirm-btn"
                   style={{ background: okLabel ? "var(--accent-err)" : undefined,

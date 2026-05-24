@@ -59,7 +59,13 @@ export function INSTANTPane({ code }: FunctionPaneProps) {
   // PERF-03 P1: spoken-key set lives in a ref so the audio effect doesn't
   // depend on (and re-trigger from) its own setState. Bounded to prevent
   // unbounded growth during long trading sessions.
-  const spokenRef = useRef<Set<string>>(new Set());
+  //
+  // UA-HIGH-14: switched from Set to Map<key, ts> for proper LRU eviction.
+  // The previous Set fell back to Set iteration order (insertion order) and
+  // evicted oldest first regardless of recency — which let a recently-seen
+  // headline get evicted while older never-spoken keys lingered, replaying
+  // the headline a second time. Now we evict the key with the lowest ts.
+  const spokenRef = useRef<Map<string, number>>(new Map());
   const SPOKEN_MAX = 500;
   const [categoryFilter, setCategoryFilter] = useState<string>("all");
   const [regionFilter, setRegionFilter] = useState<string>("all");
@@ -158,15 +164,26 @@ export function INSTANTPane({ code }: FunctionPaneProps) {
   useEffect(() => {
     if (!audio || !("speechSynthesis" in window)) return;
     const seen = spokenRef.current;
+    const now = Date.now();
     for (const event of audioEventsRef.current) {
       const score = Number(event.priority_score ?? 0);
       const key = event.dedupe_key ?? event.link ?? event.title ?? "";
       if (!key || seen.has(key) || score < audioThresholdRef.current) continue;
-      seen.add(key);
+      seen.set(key, now);
       if (seen.size > SPOKEN_MAX) {
-        const it = seen.values();
-        const first = it.next().value;
-        if (typeof first === "string") seen.delete(first);
+        // UA-HIGH-14: evict the key with the oldest timestamp, not the
+        // oldest *insertion* (Map preserves insertion order so they happen
+        // to coincide today, but we keep this explicit in case a future
+        // refresh updates ts on re-mention).
+        let oldestKey: string | null = null;
+        let oldestTs = Infinity;
+        for (const [k, ts] of seen.entries()) {
+          if (ts < oldestTs) {
+            oldestTs = ts;
+            oldestKey = k;
+          }
+        }
+        if (oldestKey) seen.delete(oldestKey);
       }
       const utterance = new SpeechSynthesisUtterance(
         `${event.priority_label ?? "update"}. ${event.source_name ?? "instant"}. Score ${score}. ${event.title ?? ""}. ${event.generated_summary ?? ""}`,

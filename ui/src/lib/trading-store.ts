@@ -12,10 +12,43 @@
  *     legacy DELETE happens only inside `confirm()` after re-type passes.
  *   - `lastResult.kind` lets the UI route toasts to the right place
  *     ("submit" → OrderTicket, "close"/"cancel" → PORT).
+ *
+ * Round 24 CRITICAL fix — double-fire guard (REAL MONEY):
+ *   - `confirm()` short-circuits when `submitting === true`. A native double
+ *     click on the "Gönder" button used to dispatch two POSTs before React
+ *     had a chance to re-render `disabled={submitting}`. Without this
+ *     store-level gate, every confirm window opened the door to a duplicate
+ *     order — which on a live broker means two real positions.
+ *   - Every POST payload now carries `idempotency_key = crypto.randomUUID()`
+ *     so the backend (broker.submit_order / sidecar) can drop the second
+ *     request even if it races past the UI gate. The key is generated once
+ *     in `requestSubmit()` / `closePosition()` / `requestCancel()` and
+ *     stamped into `pendingConfirm.payload` so the modal preview reflects
+ *     the exact bytes we'll send.
+ *
+ * Backend contract (must be honoured by sidecar — see DOCS_NEW comment in
+ * server_routes/broker.py / bots/runner.py):
+ *   - Accept `idempotency_key` as a JSON field OR an `Idempotency-Key`
+ *     HTTP header. Dedupe window ≥ 60 s. UI sends both forms below so the
+ *     server can pick whichever it prefers.
  */
 import { create } from "zustand";
 import { sidecarFetch } from "./sidecar";
 import { usePortfolioStore } from "./portfolio-store";
+
+/**
+ * Generate a UUID for idempotency_key. Uses `crypto.randomUUID()` when
+ * available (modern browsers + Tauri); falls back to a Math.random+Date
+ * hex when not (very old Vitest env without crypto.subtle).
+ */
+function _newIdempotencyKey(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  // Fallback — not cryptographically strong but uniqueness is the only
+  // requirement here (dedupe key, not a secret).
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}-${Math.random().toString(36).slice(2, 10)}`;
+}
 
 export type OrderSide = "buy" | "sell";
 export type OrderType = "market" | "limit" | "stop" | "stop_limit";
@@ -141,15 +174,23 @@ export const useTradingStore = create<TradingStoreShape>((set, get) => ({
   requestSubmit: (accountLabel = "") => {
     const t = get().ticket;
     if (!t) return;
+    // Round 24 CRITICAL — never overwrite an in-flight pendingConfirm. A
+    // rapid Run/Continue click after the form re-enabled (e.g. error
+    // bounce-back) used to recycle the modal under a second request — the
+    // first POST was still in-flight, so this protects us from racing the
+    // confirm dialog itself.
+    if (get().submitting) return;
     // Prefer the caller-provided label; fall back to whatever was wired in at
     // openTicket time. The confirm() guard rejects empty values either way.
     const resolved = accountLabel || t.accountLabel || "";
+    const body = _ticketToBody(t);
+    body.idempotency_key = _newIdempotencyKey();
     set({
       pendingConfirm: {
         kind: "submit",
         brokerName: t.brokerName,
         accountLabel: resolved,
-        payload: _ticketToBody(t),
+        payload: body,
       },
     });
   },
@@ -180,6 +221,7 @@ export const useTradingStore = create<TradingStoreShape>((set, get) => ({
   },
 
   requestCancel: (brokerName, orderId, accountLabel, symbol) => {
+    if (get().submitting) return;
     set({
       pendingConfirm: {
         kind: "cancel",
@@ -187,13 +229,19 @@ export const useTradingStore = create<TradingStoreShape>((set, get) => ({
         accountLabel,
         orderId,
         symbol,
-        payload: { broker: brokerName, order_id: orderId, symbol },
+        payload: {
+          broker: brokerName,
+          order_id: orderId,
+          symbol,
+          idempotency_key: _newIdempotencyKey(),
+        },
       },
       lastResult: null,
     });
   },
 
   closePosition: (brokerName, symbol, currentSide, quantity, accountLabel = "") => {
+    if (get().submitting) return;
     const opposite: OrderSide = currentSide === "buy" ? "sell" : "buy";
     set({
       pendingConfirm: {
@@ -211,6 +259,7 @@ export const useTradingStore = create<TradingStoreShape>((set, get) => ({
           limit_price: null,
           stop_price: null,
           notes: "close_position",
+          idempotency_key: _newIdempotencyKey(),
         },
       },
       lastResult: null,
@@ -218,6 +267,17 @@ export const useTradingStore = create<TradingStoreShape>((set, get) => ({
   },
 
   confirm: async (typedLabel) => {
+    // Round 24 CRITICAL (REAL MONEY) — the OrderTicket confirm modal's
+    // "Gönder" button has `disabled={submitting}` BUT React batches state
+    // before the next paint, so a hardware double-click (≤ ~50 ms) fired
+    // two onClick events before `submitting` flipped true. The result: two
+    // POST /api/broker/orders → two real positions on a live broker.
+    //
+    // This store-level early-exit is the canonical seal. Combined with
+    // `idempotency_key` in the payload (backend dedupe defence-in-depth)
+    // and the modal's disabled-button, we're three layers deep — none of
+    // which can be bypassed by a stale ref or React batching.
+    if (get().submitting) return;
     const pc = get().pendingConfirm;
     if (!pc) return;
     // GUARD #1 — empty accountLabel must NEVER be silently allowed. This is
@@ -241,11 +301,22 @@ export const useTradingStore = create<TradingStoreShape>((set, get) => ({
       return;
     }
     set({ submitting: true });
+    // Idempotency key lives inside pc.payload (so the modal preview shows
+    // exactly what we'll send); also lifted into an HTTP header so the
+    // backend can dedupe without parsing the JSON body — whichever is
+    // cheaper for the sidecar to inspect.
+    const idemKey =
+      typeof pc.payload?.idempotency_key === "string"
+        ? (pc.payload.idempotency_key as string)
+        : undefined;
     try {
       if (pc.kind === "cancel" && pc.orderId) {
         await sidecarFetch(
           `/api/broker/orders/${encodeURIComponent(pc.orderId)}?name=${encodeURIComponent(pc.brokerName)}`,
-          { method: "DELETE" },
+          {
+            method: "DELETE",
+            headers: idemKey ? { "Idempotency-Key": idemKey } : undefined,
+          },
         );
         set({
           submitting: false,
@@ -260,11 +331,13 @@ export const useTradingStore = create<TradingStoreShape>((set, get) => ({
       // credential's account_label. We use the typed label that just passed
       // GUARD #2 above — same string the user typed, same string the backend
       // expects.
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (idemKey) headers["Idempotency-Key"] = idemKey;
       const resp = await sidecarFetch<{ broker: string; order: { id: string; status: string } }>(
         "/api/broker/orders",
         {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers,
           body: JSON.stringify({ ...pc.payload, confirmation_token: typedLabel }),
         },
       );

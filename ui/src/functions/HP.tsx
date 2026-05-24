@@ -48,6 +48,7 @@ import { useFunction } from "@/lib/useFunction";
 import { defaultSymbolForFunction } from "@/lib/symbols";
 import { useLiveQuote, type TransportState } from "@/lib/market-data";
 import { useEscape, useFocusTrap } from "@/lib/a11y";
+import { maxOf, minOf } from "@/lib/maxOf";
 import { SymbolBar } from "@/shell/SymbolBar";
 import { buildCsv, type HPRow } from "./HP.csv";
 import {
@@ -325,8 +326,9 @@ export function HPPane({ code, symbol }: FunctionPaneProps) {
       .map((r) => r.close ?? r.adj_close ?? r.adjClose)
       .filter((v): v is number => v != null);
     if (!closes.length) return null;
-    const high = Math.max(...closes);
-    const low = Math.min(...closes);
+    // UA-CRITICAL-01: stack-safe; closes can be 10k+ rows on intraday history.
+    const high = maxOf(closes);
+    const low = minOf(closes);
     const first = closes[closes.length - 1];
     const last = closes[0];
     const totalPct = first ? ((last - first) / first) * 100 : null;

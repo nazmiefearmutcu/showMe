@@ -502,9 +502,14 @@ function withSnapshot(state: SymbolState, snap: QuoteSnapshot): SymbolState {
 
 function withSnapshotError(state: SymbolState, err: unknown): SymbolState {
   const message = err instanceof Error ? err.message : String(err ?? "snapshot error");
+  // CRITICAL FIX (audit S2): `state.snapshot ? false : false` was a copy-paste
+  // bug — both branches set `loading=false`, masking the very-first-fetch error
+  // because the row never flipped out of the "loading…" placeholder. Loading
+  // is true ONLY when we have NEITHER a previous snapshot NOR a live tick AND
+  // the error itself is what surfaces (so retry CTAs can render).
   return {
     ...state,
-    loading: state.snapshot ? false : false,
+    loading: state.snapshot == null && state.lastTick == null,
     refreshing: false,
     // Keep prior snapshot intact — that's the whole point of last-good.
     error: message,

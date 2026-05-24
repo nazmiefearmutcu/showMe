@@ -37,8 +37,40 @@ export interface SplitNode {
 
 export type WorkspaceNode = LeafNode | SplitNode;
 
-let _id = 0;
-const nextId = () => `n${++_id}-${Math.random().toString(36).slice(2, 6)}`;
+/**
+ * CRITICAL #3 (UI-Shell-Bundle UB) — node-id generator.
+ *
+ * The old implementation paired a module-scoped `_id` counter with a 4-char
+ * random suffix. That breaks down across multi-window Tauri shells because
+ * the counter only protects within a single JS realm — two webviews can
+ * (and did) hand out `n1-abcd` simultaneously, then collide when one
+ * workspace is serialized into the other's persistence file. The 4-char
+ * suffix is also a 1-in-1.6M collision risk per realm given the small
+ * working set sizes (≤30 leaves).
+ *
+ * Switching to a 16-char crypto-random suffix gives ~2^80 of entropy per
+ * id and removes the counter dependency entirely. In jsdom (vitest) and
+ * older webviews where `crypto.randomUUID` is missing we fall back to
+ * `crypto.getRandomValues` + base36 — same entropy budget. Last-resort
+ * `Math.random` keeps the function pure on truly broken environments.
+ */
+function nextId(): string {
+  const g = typeof globalThis === "undefined" ? undefined : (globalThis as { crypto?: Crypto });
+  const c = g?.crypto;
+  if (c && typeof c.randomUUID === "function") {
+    return `n-${c.randomUUID().replace(/-/g, "").slice(0, 16)}`;
+  }
+  if (c && typeof c.getRandomValues === "function") {
+    const buf = new Uint8Array(10);
+    c.getRandomValues(buf);
+    let out = "";
+    for (let i = 0; i < buf.length; i += 1) out += buf[i].toString(36).padStart(2, "0");
+    return `n-${out.slice(0, 16)}`;
+  }
+  // Defensive last-resort — keep entropy high enough to avoid the 4-char
+  // birthday problem from the legacy generator.
+  return `n-${Math.random().toString(36).slice(2, 10)}${Math.random().toString(36).slice(2, 10)}`;
+}
 
 export function leaf(code: string, symbol?: string): LeafNode {
   return { id: nextId(), kind: "leaf", code: code.toUpperCase(), symbol };
@@ -64,6 +96,34 @@ export function normalize(sizes: number[]): number[] {
   const sum = sizes.reduce((s, v) => s + Math.max(v, 0), 0);
   if (sum <= 0) return sizes.map(() => 1 / sizes.length);
   return sizes.map((v) => Math.max(v, 0) / sum);
+}
+
+// HIGH #9 (UI-Shell-Bundle UB) — `resetTo` subscribers.
+//
+// When the workspace tree is wholesale replaced (preset switch, S11
+// migration self-heal, programmatic reset) any in-flight pane fetches
+// and lingering AbortControllers used to outlive the unmount and write
+// back into stores belonging to leaves that no longer existed. The
+// public `onWorkspaceReset` hook lets feature modules (sidecar request
+// queue, pin store, link-group registry) register a cleanup callback
+// that fires *before* the tree is swapped. Synchronous to keep React's
+// commit cycle untangled.
+type ResetSubscriber = () => void;
+const resetSubscribers = new Set<ResetSubscriber>();
+
+export function onWorkspaceReset(fn: ResetSubscriber): () => void {
+  resetSubscribers.add(fn);
+  return () => resetSubscribers.delete(fn);
+}
+
+function runResetSubscribers(): void {
+  for (const fn of resetSubscribers) {
+    try {
+      fn();
+    } catch (err) {
+      console.warn("onWorkspaceReset subscriber threw", err);
+    }
+  }
 }
 
 interface WorkspaceState {
@@ -146,6 +206,15 @@ export const useWorkspace = create<WorkspaceState>((set, get) => ({
     return true;
   },
   resetTo: (code, symbol) => {
+    // HIGH #9: notify subscribers that the previous tree is being
+    // discarded. The hook lets in-flight pane fetches abort and lets
+    // pinned/link bindings drop references to leaf ids that are about
+    // to disappear. Errors in subscribers must not block the reset.
+    try {
+      runResetSubscribers();
+    } catch (err) {
+      console.warn("workspace.resetTo subscriber threw", err);
+    }
     const root = leaf(code, symbol);
     set({ tree: root, focusedId: root.id });
   },
@@ -212,17 +281,34 @@ function updateLeaf(
 }
 
 /**
- * Walk every leaf in `node` and rebind its symbol when it belongs to
- * `group` (and isn't the originator).
+ * HIGH #10 (UI-Shell-Bundle UB) — cycle-safe link-group broadcast.
+ *
+ * The legacy version was a pure tree walk that assumed `node` is a real
+ * tree. In practice a defensive `visited` set is still cheap and rules
+ * out a category of bugs where a malformed persisted tree (or a future
+ * graph-style structure) would otherwise recurse forever. We also cap
+ * the number of leaves we touch per single broadcast to `MAX_BROADCAST_
+ * LEAVES`, so a single setFocusedTarget can never spend more than that
+ * many writes on linked siblings even if the tree balloons.
  */
+const MAX_BROADCAST_LEAVES = 20;
+
 export function broadcastSymbolToGroup(
   node: WorkspaceNode,
   group: string,
   symbol: string,
   originId: string,
+  visited?: Set<string>,
+  counter?: { count: number },
 ): WorkspaceNode {
+  const seen = visited ?? new Set<string>();
+  const ctr = counter ?? { count: 0 };
+  if (seen.has(node.id)) return node; // already walked — bail (cycle)
+  seen.add(node.id);
   if (node.kind === "leaf") {
     if (node.id !== originId && node.linkGroup === group) {
+      if (ctr.count >= MAX_BROADCAST_LEAVES) return node;
+      ctr.count += 1;
       return { ...node, symbol: normalizeSymbolInput(symbol) || undefined };
     }
     return node;
@@ -230,7 +316,7 @@ export function broadcastSymbolToGroup(
   return {
     ...node,
     children: node.children.map((c) =>
-      broadcastSymbolToGroup(c, group, symbol, originId),
+      broadcastSymbolToGroup(c, group, symbol, originId, seen, ctr),
     ),
   };
 }
@@ -297,6 +383,14 @@ export function serializeWorkspace(): SerializedWorkspace {
 
 export function loadWorkspace(state: SerializedWorkspace): void {
   if (!state || !state.tree) return;
+  // HIGH #9 — preset switch / poison self-heal goes through this code
+  // path; run the same reset subscribers so the previous tree's pane
+  // requests, link-group bindings, and pinned ids can be cleaned.
+  try {
+    runResetSubscribers();
+  } catch (err) {
+    console.warn("loadWorkspace reset subscribers threw", err);
+  }
   // Rebuild ids so we don't collide with the live tree.
   const tree = remapIds(state.tree);
   // After remap, focusedId is stale — fall back to first leaf.

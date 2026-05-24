@@ -32,6 +32,7 @@ import {
 } from "@/design-system";
 import { useFunction } from "@/lib/useFunction";
 import { useWorkspace } from "@/lib/workspace";
+import { maxOf } from "@/lib/maxOf";
 import { navigate } from "@/lib/router";
 import {
   FunctionControlGroup,
@@ -182,12 +183,13 @@ export function MOSTPane({ code }: FunctionPaneProps) {
     () => rows.reduce((acc, r) => acc + (Number(r.volume ?? 0) || 0), 0),
     [rows],
   );
+  // UA-HIGH-12: stack-safe.
   const maxVolume = useMemo(
-    () => Math.max(...rows.map((r) => Number(r.volume ?? 0)), 0),
+    () => Math.max(0, maxOf(rows.map((r) => Number(r.volume ?? 0)))),
     [rows],
   );
   const maxDollarVolume = useMemo(
-    () => Math.max(...rows.map((r) => Number(r.dollar_volume ?? estimateDollar(r))), 0),
+    () => Math.max(0, maxOf(rows.map((r) => Number(r.dollar_volume ?? estimateDollar(r))))),
     [rows],
   );
 

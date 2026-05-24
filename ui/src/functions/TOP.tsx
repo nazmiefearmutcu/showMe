@@ -188,6 +188,14 @@ export function TOPPane({ code }: FunctionPaneProps) {
     return set.size;
   }, [articles]);
 
+  // UA-HIGH-17: previously deps were `[articles, query, state]` — every 60s
+  // poll handed back a fresh `articles` array identity, so the Veryfinder
+  // batch fetch restarted from scratch even when nothing changed. We hash
+  // articles into a stable string key (titles + URLs) and depend on that.
+  const articlesKeyForVeryfinder = useMemo(
+    () => articles.map((a, i) => `${articleKey(a, i)}|${a.title ?? ""}`).join("§"),
+    [articles],
+  );
   useEffect(() => {
     if (state !== "ok" || !articles.length) {
       setVeryfinderMap({});
@@ -239,7 +247,8 @@ export function TOPPane({ code }: FunctionPaneProps) {
     return () => {
       cancelled = true;
     };
-  }, [articles, query, state]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- stable key
+  }, [articlesKeyForVeryfinder, query, state]);
 
   const activeFilters: Array<{ id: string; label: string; onRemove?: () => void }> = [
     { id: "q", label: `QUERY · ${query.toUpperCase()}` },

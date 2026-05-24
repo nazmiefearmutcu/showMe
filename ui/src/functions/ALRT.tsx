@@ -24,6 +24,8 @@ import {
 import {
   addAlert,
   deleteAlert,
+  isAddingAlert,
+  isAlertToggling,
   loadAlerts,
   recordFire,
   toggleAlert,
@@ -31,6 +33,7 @@ import {
   type AlertRow,
 } from "@/lib/alerts";
 import { confirmAction } from "@/lib/confirm";
+import { parseDecimalSafe } from "@/lib/validators";
 import { invoke, isInTauri } from "@/lib/tauri";
 import { toast } from "@/lib/toast";
 import { fetchQuote, type QuoteSnapshot } from "@/lib/quotes";
@@ -54,6 +57,22 @@ export function ALRTPane({ code }: FunctionPaneProps) {
   const [quote, setQuote] = useState<QuoteSnapshot | null>(null);
   const [quoteError, setQuoteError] = useState<string | null>(null);
   const [quoteLoading, setQuoteLoading] = useState(false);
+  // Round 24 HIGH 8 — threshold validation tracks the parsed shape so
+  // we can show a TR-language error instead of silently coercing "1e500"
+  // to Infinity and writing a bogus row.
+  const thresholdParsed = parseDecimalSafe(threshold);
+  const thresholdInvalid =
+    threshold.trim() !== "" &&
+    (!thresholdParsed.ok || thresholdParsed.value === 0);
+  // Round 24 HIGH 10 — local in-flight flag so the Add button can disable
+  // even during the (very brief) gap between click + the alerts store
+  // setting `_addingAlert=true`. The store-level isAddingAlert() is the
+  // canonical seal but a re-render is needed to pick it up.
+  const [adding, setAdding] = useState(false);
+  // Round 24 HIGH 9 — re-render trigger for per-row toggle pills. We
+  // can't subscribe to the global Set from React directly without zustand,
+  // but the toggle handler awaits, then we setRows — so the pill state
+  // update naturally rides along with the row reload.
 
   useEffect(() => {
     loadAlerts().then(setRows);
@@ -65,21 +84,44 @@ export function ALRTPane({ code }: FunctionPaneProps) {
   };
 
   const onAdd = async () => {
+    // Round 24 HIGH 10 — local + store guards. Prevents Enter-spam from
+    // queuing duplicate addAlert calls before the store flag flips.
+    if (adding || isAddingAlert()) return;
     const sym = symbol.trim().toUpperCase();
-    const t = Number(threshold);
-    if (!sym || !Number.isFinite(t)) return;
-    await addAlert({
-      symbol: sym,
-      field,
-      direction,
-      threshold: t,
-      note: note.trim() || undefined,
-    });
-    setSymbol("");
-    setThreshold("");
-    setNote("");
-    setRows(await loadAlerts());
-    toast.success("Alert added", `${sym} ${direction} ${t}`);
+    // Round 24 HIGH 8 — parseDecimalSafe rejects "1e500" / "Infinity" /
+    // "" instead of silently coercing to a non-finite number.
+    const parsed = parseDecimalSafe(threshold);
+    if (!sym) {
+      toast.error("Sembol gerekli");
+      return;
+    }
+    if (!parsed.ok) {
+      toast.error(
+        parsed.reason === "empty"
+          ? "Threshold gerekli"
+          : parsed.reason === "not_finite"
+            ? "Threshold sonlu bir sayı olmalı (Infinity reddedildi)"
+            : "Threshold geçerli bir sayı değil",
+      );
+      return;
+    }
+    setAdding(true);
+    try {
+      await addAlert({
+        symbol: sym,
+        field,
+        direction,
+        threshold: parsed.value,
+        note: note.trim() || undefined,
+      });
+      setSymbol("");
+      setThreshold("");
+      setNote("");
+      setRows(await loadAlerts());
+      toast.success("Alert added", `${sym} ${direction} ${parsed.value}`);
+    } finally {
+      setAdding(false);
+    }
   };
 
   const onCheckQuote = async () => {
@@ -104,6 +146,10 @@ export function ALRTPane({ code }: FunctionPaneProps) {
       : null;
 
   const onToggle = async (id: string, active: boolean) => {
+    // Round 24 HIGH 9 — store-level `isAlertToggling()` is the canonical
+    // race guard; this re-checks for cheap short-circuit + lets the row
+    // pill render its busy state on the next setRows.
+    if (isAlertToggling(id)) return;
     setRows(await toggleAlert(id, active));
   };
 
@@ -145,17 +191,24 @@ export function ALRTPane({ code }: FunctionPaneProps) {
         key: "active",
         header: "On",
         width: 50,
-        render: (r) => (
-          <button
-            type="button"
-            onClick={() => onToggle(r.id, !r.active)}
-            className="btn btn--ghost u-btn-mini watch-remove-btn"
-            
-            title={r.active ? "Disable" : "Enable"}
-          >
-            {r.active ? "●" : "○"}
-          </button>
-        ),
+        render: (r) => {
+          // Round 24 HIGH 9 — local toggling check guards the rapid
+          // double-tap. The store-level Set is what protects the storage
+          // write; this is just the UI affordance.
+          const busy = isAlertToggling(r.id);
+          return (
+            <button
+              type="button"
+              data-testid={`alrt-toggle-${r.id}`}
+              onClick={() => onToggle(r.id, !r.active)}
+              disabled={busy}
+              className="btn btn--ghost u-btn-mini watch-remove-btn"
+              title={busy ? "..." : r.active ? "Disable" : "Enable"}
+            >
+              {busy ? "…" : r.active ? "●" : "○"}
+            </button>
+          );
+        },
       },
       {
         key: "symbol",
@@ -327,8 +380,21 @@ export function ALRTPane({ code }: FunctionPaneProps) {
               value={threshold}
               onChange={(e) => setThreshold(e.target.value)}
               placeholder="e.g. 200"
+              aria-invalid={thresholdInvalid || undefined}
             />
           </FieldRow>
+          {thresholdInvalid && (
+            <div
+              data-testid="alrt-threshold-error"
+              style={{ color: "var(--accent-err)", fontSize: 11, marginTop: 4 }}
+            >
+              {thresholdParsed.ok
+                ? "Threshold 0 olamaz."
+                : thresholdParsed.reason === "not_finite"
+                  ? "Sonlu bir sayı gir (Infinity reddedildi)."
+                  : "Geçerli bir sayı gir."}
+            </div>
+          )}
           <div style={previewStyle}>
             <span>
               quote ·{" "}
@@ -354,11 +420,20 @@ export function ALRTPane({ code }: FunctionPaneProps) {
             <div className="alrt-add-row">
               <button
                 type="button"
+                data-testid="alrt-add-btn"
                 className="btn btn--accent u-btn-28"
                 onClick={onAdd}
-                disabled={!symbol.trim() || !threshold}
+                disabled={
+                  // Round 24 HIGH 10 — disable on validity + in-flight.
+                  // Local `adding` is the React-render flag; isAddingAlert()
+                  // is the canonical store seal that survives across mounts.
+                  adding ||
+                  !symbol.trim() ||
+                  !threshold ||
+                  thresholdInvalid
+                }
               >
-                Add alert
+                {adding ? "..." : "Add alert"}
               </button>
             </div>
           </FieldRow>

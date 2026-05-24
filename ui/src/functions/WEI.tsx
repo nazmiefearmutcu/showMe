@@ -26,6 +26,7 @@ import {
 import { useFunction } from "@/lib/useFunction";
 import { useVisibilityTick } from "@/lib/useVisibilityTick";
 import { useWorkspace } from "@/lib/workspace";
+import { maxAbsOf } from "@/lib/maxOf";
 import { navigate } from "@/lib/router";
 import {
   FunctionControlGroup,
@@ -504,7 +505,8 @@ function IndexPerformanceStrip({ rows }: { rows: WEIRow[] }) {
     }))
     .slice(0, 16);
   if (!points.length) return null;
-  const maxAbs = Math.max(...points.map((point) => Math.abs(point.change)), 1);
+  // UA-HIGH-12: stack-safe.
+  const maxAbs = maxAbsOf(points.map((p) => p.change), 1);
   return (
     <section style={indexStrip} aria-label="World index performance strip">
       {points.map((point) => {

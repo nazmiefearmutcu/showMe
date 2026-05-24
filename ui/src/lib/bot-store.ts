@@ -76,6 +76,14 @@ interface BotStoreShape {
   disable: (id: string) => Promise<BotRecord | null>;
 }
 
+// HIGH FIX (audit S7): loadList cascade had no AbortController, so a burst of
+// saves/removes that each chained `await loadList()` would race — the last
+// write usually won but the order was not deterministic, so the user could
+// briefly see an "old row count" right after a delete. Single-flight guard:
+// abort old request, queue at most one trailing reload.
+let _loadListCtl: AbortController | null = null;
+let _loadListPending = false;
+
 export const useBotStore = create<BotStoreShape>((set, get) => ({
   bots: [],
   draft: null,
@@ -88,12 +96,29 @@ export const useBotStore = create<BotStoreShape>((set, get) => ({
   _openController: null,
 
   loadList: async () => {
+    if (_loadListCtl) {
+      _loadListCtl.abort();
+      _loadListPending = true;
+    }
+    const ctl = new AbortController();
+    _loadListCtl = ctl;
     set({ loading: true, error: null });
     try {
-      const body = await sidecarFetch<{ records: BotMeta[] }>("/api/bots");
+      const body = await sidecarFetch<{ records: BotMeta[] }>("/api/bots", {
+        signal: ctl.signal,
+      });
+      if (ctl.signal.aborted) return;
       set({ bots: body.records, loading: false });
     } catch (e) {
+      if (ctl.signal.aborted) return;
+      if (e instanceof Error && e.name === "AbortError") return;
       set({ loading: false, error: e instanceof Error ? e.message : String(e) });
+    } finally {
+      if (_loadListCtl === ctl) _loadListCtl = null;
+      if (_loadListPending && _loadListCtl == null) {
+        _loadListPending = false;
+        void get().loadList();
+      }
     }
   },
 

@@ -9,7 +9,7 @@
  * shape.
  */
 import { invoke, isInTauri } from "./tauri";
-import { safeReadLocal } from "./safe-storage";
+import { safeReadLocal, safeWriteLocal } from "./safe-storage";
 
 const KEY = "showme.watchlist";
 
@@ -32,8 +32,10 @@ function readLocal(): Bundle {
 }
 
 function writeLocal(bundle: Bundle): void {
-  if (typeof localStorage === "undefined") return;
-  localStorage.setItem(KEY, JSON.stringify(bundle));
+  // HIGH FIX (audit S14): channel the localStorage write through
+  // safeWriteLocal so a QuotaExceededError surfaces a single, accurate
+  // toast instead of silently dropping the row.
+  safeWriteLocal(KEY, bundle, { label: "Watchlist" });
 }
 
 async function readTauri(): Promise<Bundle | null> {

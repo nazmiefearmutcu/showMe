@@ -224,13 +224,32 @@ export function Sidebar() {
   const [query, setQuery] = useState("");
   const [peekOpen, setPeekOpen] = useState(false);
   const route = useRoute();
+  // MEDIUM (UI-Shell-Bundle UB): a not-found route used to inherit the
+  // catch-all `"PREF"` branch and falsely highlight the Settings entry
+  // in the sidebar. Map not-found to an empty string so nothing matches
+  // `activeCode`; the user sees no fake "current page" indicator while
+  // App.tsx renders the not-found Empty surface.
   const activeCode =
-    route.kind === "function" ? route.code : route.kind === "welcome" ? "HOME" : "PREF";
+    route.kind === "function"
+      ? route.code
+      : route.kind === "welcome"
+        ? "HOME"
+        : route.kind === "preferences" || route.kind === "settings"
+          ? "PREF"
+          : "";
   const activePath = routeToPath(route);
   const nativeCodes = useMemo(() => new Set(listNativeCodes()), []);
   // QA-2026-05-23: Recent group is sourced from `palette-recents.ts`. We
   // re-read on each route change because `RouteSync` in App.tsx records a
   // new code synchronously during the same React commit cycle.
+  //
+  // HIGH #13 (UI-Shell-Bundle UB): `listRecentCodes` runs the
+  // localStorage v1→v2 migration on every call (cheap, but it shells out
+  // through `safeReadLocal` JSON.parse twice per invocation). The
+  // route-change effect was burning that work on every navigation. Now
+  // we seed once via `useState`, ride a single migration on mount, and
+  // refresh the snapshot from the v2 key directly afterwards (no
+  // legacy-key probing on the hot path).
   const [recentSnapshot, setRecentSnapshot] = useState<string[]>(() =>
     listRecentCodes(),
   );

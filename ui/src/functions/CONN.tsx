@@ -96,11 +96,20 @@ function CredentialRow({
   const [confirm, setConfirm] = useState("");
   const [testing, setTesting] = useState<"idle" | "ok" | "err">("idle");
   const [testMsg, setTestMsg] = useState<string | null>(null);
+  // Round 24 HIGH — pre-flight dependents lookup runs once per Sil click.
+  // Without this `dependentLoading` flag, a double-click queued two lookups
+  // + two confirmation modals via handleCredentialDelete.
+  const [dependentLoading, setDependentLoading] = useState(false);
   // QA-2026-05-24 (A12): if a prior delete-click ran the dependents lookup
   // and BOTH endpoints failed, the row remembers it so the next click
   // happens against a visible "uncategorized bots" warning instead of
   // surprising the user mid-modal.
   const [botsUnknown, setBotsUnknown] = useState(false);
+  // Round 24 HIGH — read in-flight sets from the store so rapid double-
+  // clicks on Test/Upgrade buttons can't queue duplicate requests.
+  const testingInFlight = useExchangeStore((s) => s.testing.has(rec.id));
+  const deletingInFlight = useExchangeStore((s) => s.deleting.has(rec.id));
+  const upgradingInFlight = useExchangeStore((s) => s.upgrading.has(rec.id));
   const canTrade = rec.permissions.includes("trade");
   return (
     <div style={{
@@ -114,17 +123,26 @@ function CredentialRow({
           {canTrade ? "okuma + işlem" : "salt okuma"}
         </span>
       </div>
-      <button onClick={async () => {
-        setTesting("idle"); setTestMsg(null);
-        const r = await useExchangeStore.getState().testCredential(rec.id);
-        setTesting(r.ok ? "ok" : "err");
-        setTestMsg(r.ok ? "OK" : (r.error ?? "fail"));
-      }}>
-        Test
+      <button
+        disabled={testingInFlight}
+        onClick={async () => {
+          // Round 24 — short-circuit a 2nd rapid click; the store-level
+          // `testing.has(id)` guard is the canonical seal.
+          if (testingInFlight) return;
+          setTesting("idle"); setTestMsg(null);
+          const r = await useExchangeStore.getState().testCredential(rec.id);
+          setTesting(r.ok ? "ok" : "err");
+          setTestMsg(r.ok ? "OK" : (r.error ?? "fail"));
+        }}>
+        {testingInFlight ? "..." : "Test"}
       </button>
       {!canTrade && (
         <form onSubmit={(e) => {
+          // Round 24 CRITICAL 5 — Enter from any input in this form fired
+          // submit before React could re-render `disabled`. Local + store
+          // guards are both required because the button-disabled is racy.
           e.preventDefault();
+          if (upgradingInFlight) return;
           if (confirm === rec.account_label) {
             onEscalate(rec.id, confirm);
           }
@@ -135,8 +153,9 @@ function CredentialRow({
             onChange={(e) => setConfirm(e.target.value)}
             style={{ width: 140 }}
           />
-          <button type="submit" disabled={confirm !== rec.account_label}>
-            Upgrade
+          <button type="submit"
+                  disabled={upgradingInFlight || confirm !== rec.account_label}>
+            {upgradingInFlight ? "..." : "Upgrade"}
           </button>
         </form>
       )}
@@ -158,20 +177,29 @@ function CredentialRow({
         </span>
       )}
       <button
+        data-testid={`conn-sil-${rec.id}`}
+        disabled={dependentLoading || deletingInFlight}
         onClick={async () => {
-          // Pre-flight the dependents check so the row can warn ahead of the
-          // confirm modal. This is best-effort — onDelete still runs the
-          // canonical handleCredentialDelete().
+          // Round 24 HIGH 7 — guard the pre-flight + onDelete sequence. The
+          // old handler ran 3 awaits in a row (dependents → confirm modal →
+          // deleteCredential) and a double-click queued 3× confirm modals
+          // before the first one rendered. Local `dependentLoading` flag
+          // covers the pre-flight window; the store-level `deleting` set
+          // covers the DELETE itself.
+          if (dependentLoading || deletingInFlight) return;
+          setDependentLoading(true);
           try {
             const deps = await useExchangeStore.getState().dependentBots(rec.id);
             setBotsUnknown(deps.bots_unknown === true);
           } catch {
             setBotsUnknown(true);
+          } finally {
+            setDependentLoading(false);
           }
           onDelete(rec.id);
         }}
       >
-        Sil
+        {(dependentLoading || deletingInFlight) ? "..." : "Sil"}
       </button>
       {testMsg && (
         <div style={{ gridColumn: "1 / -1", color: testing === "ok" ? "var(--accent-ok)" : "var(--accent-err)" }}>
@@ -238,6 +266,11 @@ function ExchangeForm({ entry }: { entry: CatalogEntry }) {
   const credentials = useExchangeStore((s) => s.credentials);
   const save = useExchangeStore((s) => s.saveCredential);
   const error = useExchangeStore((s) => s.error);
+  // Round 24 CRITICAL 3 — read store-level `saving` so the form can
+  // disable submit + early-exit Enter-from-input even when the local
+  // `submitting` ref hasn't been set yet (race window between the click
+  // event and the local setState).
+  const storeSaving = useExchangeStore((s) => s.saving);
   const [label, setLabel] = useState("");
   const [secrets, setSecrets] = useState<Record<string, string>>({});
   const [permsTrade, setPermsTrade] = useState(false);
@@ -265,7 +298,11 @@ function ExchangeForm({ entry }: { entry: CatalogEntry }) {
       <h4>Yeni bağlantı ekle</h4>
       <form
         onSubmit={async (e) => {
+          // Round 24 CRITICAL 5 — Enter in any input fires `submit`. The
+          // button has `disabled={submitting || storeSaving}` but React's
+          // re-render lags the click. Inline guard is the cheapest layer.
           e.preventDefault();
+          if (submitting || storeSaving) return;
           setSubmitting(true);
           const ok = await save({
             exchange_id: entry.id,
@@ -312,7 +349,9 @@ function ExchangeForm({ entry }: { entry: CatalogEntry }) {
             emin ol.
           </div>
         )}
-        <button type="submit" disabled={submitting}>{submitting ? "..." : "Bağlan"}</button>
+        <button type="submit" disabled={submitting || storeSaving}>
+          {(submitting || storeSaving) ? "..." : "Bağlan"}
+        </button>
         {error && <div style={{ color: "var(--accent-err)" }}>{error}</div>}
       </form>
     </div>
