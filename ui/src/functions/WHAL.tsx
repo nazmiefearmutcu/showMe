@@ -9,7 +9,7 @@
  *   - The "this is a public proxy, not a wallet-label transfer feed"
  *     caveat so the user never mistakes proxy rows for a paid feed.
  */
-import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import { useMemo, type CSSProperties } from "react";
 import {
   DataGrid,
   type DataGridColumn,
@@ -26,6 +26,7 @@ import {
   Tabs,
 } from "@/design-system";
 import { useFunction } from "@/lib/useFunction";
+import { useVisibilityTick } from "@/lib/useVisibilityTick";
 import {
   FunctionControlGroup,
   LoadStatePill,
@@ -109,12 +110,8 @@ export function WHALPane({ code, symbol }: FunctionPaneProps) {
     ["100", "500", "1000", "5000", "10000"],
     "1000",
   );
-  const [tick, setTick] = useState(0);
-
-  useEffect(() => {
-    const id = setInterval(() => setTick((t) => t + 1), REFRESH_MS);
-    return () => clearInterval(id);
-  }, []);
+  // Bundle D / PERF-04. Visibility-aware poll.
+  const tick = useVisibilityTick(REFRESH_MS);
 
   const resolvedSymbol = symbol || SAMPLES[market];
   const threshold = Number(thresholdK) * 1000;

@@ -139,43 +139,66 @@ def _resolve_command(kind: str, args: dict[str, Any]) -> list[str]:
 
 
 async def run_job(name: str) -> dict[str, Any]:
+    # C4 fix: every sqlite + file-descriptor acquisition is wrapped in a
+    # try/finally (or ``with`` for the log file) so a crash or mid-execution
+    # exception cannot leak DB connections, the log FD, or the row in the
+    # ``runs`` table.
     con = _db()
-    row = con.execute("SELECT kind, args FROM jobs WHERE name = ?", [name]).fetchone()
-    if row is None:
+    try:
+        row = con.execute("SELECT kind, args FROM jobs WHERE name = ?", [name]).fetchone()
+        if row is None:
+            return {"error": f"unknown job {name}"}
+        kind, args_json = row[0], json.loads(row[1] or "{}")
+        cmd = _resolve_command(kind, args_json)
+        if not cmd:
+            return {"error": f"no command for kind {kind}"}
+        log_dir = _log_dir()
+        log_path = log_dir / f"{name}-{int(time.time())}.log"
+        started = int(time.time())
+        cur = con.execute(
+            "INSERT INTO runs(job_name, started_at, log_path) VALUES (?,?,?)",
+            [name, started, str(log_path)],
+        )
+        run_id = cur.lastrowid
+        con.commit()
+    finally:
         con.close()
-        return {"error": f"unknown job {name}"}
-    kind, args_json = row[0], json.loads(row[1] or "{}")
-    cmd = _resolve_command(kind, args_json)
-    if not cmd:
-        con.close()
-        return {"error": f"no command for kind {kind}"}
-    log_dir = _log_dir()
-    log_path = log_dir / f"{name}-{int(time.time())}.log"
-    started = int(time.time())
-    cur = con.execute(
-        "INSERT INTO runs(job_name, started_at, log_path) VALUES (?,?,?)",
-        [name, started, str(log_path)],
-    )
-    run_id = cur.lastrowid
-    con.commit(); con.close()
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=open(log_path, "wb"),
-        stderr=asyncio.subprocess.STDOUT,
-    )
-    rc = await proc.wait()
+
+    rc: int = -1
+    # Context-manage the log file so a crashed worker cannot leak the FD.
+    try:
+        with open(log_path, "wb") as log_fh:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=log_fh,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+            rc = await proc.wait()
+    except Exception as exc:  # noqa: BLE001
+        rc = -1
+        try:
+            with open(log_path, "ab") as fail_fh:
+                fail_fh.write(
+                    f"\n[job_runner] child process failed: {exc}\n".encode("utf-8")
+                )
+        except OSError:
+            pass
+
     ended = int(time.time())
     con = _db()
-    con.execute(
-        "UPDATE runs SET ended_at = ?, exit_code = ? WHERE id = ?",
-        [ended, rc, run_id],
-    )
-    status = "ok" if rc == 0 else f"failed:{rc}"
-    con.execute(
-        "UPDATE jobs SET last_run_ts = ?, last_status = ? WHERE name = ?",
-        [ended, status, name],
-    )
-    con.commit(); con.close()
+    try:
+        con.execute(
+            "UPDATE runs SET ended_at = ?, exit_code = ? WHERE id = ?",
+            [ended, rc, run_id],
+        )
+        status = "ok" if rc == 0 else f"failed:{rc}"
+        con.execute(
+            "UPDATE jobs SET last_run_ts = ?, last_status = ? WHERE name = ?",
+            [ended, status, name],
+        )
+        con.commit()
+    finally:
+        con.close()
     return {"job": name, "run_id": run_id, "exit_code": rc,
              "log_path": str(log_path),
              "duration_s": ended - started}

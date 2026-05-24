@@ -11,6 +11,34 @@ Boot strategy:
 """
 from __future__ import annotations
 
+
+def _pin_bundled_cacert() -> None:
+    """SEC-11: pin certifi's cacert.pem before any HTTP backend loads.
+
+    PyInstaller bundles relocate libssl/libcrypto; ``ssl.get_default_verify_paths``
+    returns the COMPILED-IN OpenSSL path, which is the BUILD host's path —
+    not present on the user's machine. ``curl_cffi`` captures ``DEFAULT_CACERT``
+    at module import, so we MUST export the env var BEFORE any
+    ``from curl_cffi import requests`` happens (yfinance 1.3+, screener,
+    holders, history, ...).
+
+    Idempotent: only sets env vars if they are not already set, so users
+    can override via their environment for testing.
+    """
+    import os as _os
+    try:
+        import certifi as _certifi  # type: ignore[import-not-found]
+    except ImportError:
+        return
+    bundle = _certifi.where()
+    if bundle and _os.path.isfile(bundle):
+        _os.environ.setdefault("SSL_CERT_FILE", bundle)
+        _os.environ.setdefault("CURL_CA_BUNDLE", bundle)
+        _os.environ.setdefault("REQUESTS_CA_BUNDLE", bundle)
+
+
+_pin_bundled_cacert()
+
 import argparse
 import asyncio
 import contextlib
@@ -302,6 +330,11 @@ class _ShowMeFunctionWorker:
 _FUNCTION_WORKER: _ShowMeFunctionWorker | None = None
 _FUNCTION_INDEX_CACHE: list[FunctionIndexEntry] | None = None
 _FUNCTION_INDEX_LOCK = threading.Lock()
+# PERF-09: build lock held across the (slow) 112-module registration walk so
+# a second arrival blocks on the in-flight build instead of redoing it.
+# Python's import lock would serialize both walks anyway; without this we
+# pay 2x wall-clock when the warmup thread races the first request.
+_FUNCTION_INDEX_BUILD_LOCK = threading.Lock()
 
 
 def _function_worker() -> _ShowMeFunctionWorker:
@@ -836,7 +869,14 @@ def _install_middlewares(app: FastAPI) -> None:
                 request.headers.get("X-ShowMe-Token")
                 or request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
             )
-            if provided != expected:
+            # SEC-14: constant-time comparison. Plain ``!=`` leaks token
+            # bytes through measurable latency (the sidecar listens on
+            # 127.0.0.1 but co-resident processes can still observe sub-
+            # microsecond timing). hmac.compare_digest pads both operands
+            # to the same length and compares byte-by-byte without short-
+            # circuiting.
+            import hmac as _hmac
+            if not _hmac.compare_digest(provided or "", expected):
                 return JSONResponse(
                     status_code=401,
                     content={"detail": "missing or invalid X-ShowMe-Token"},
@@ -959,6 +999,14 @@ def build_app(engine_root: Path | None) -> FastAPI:
     }
     get_stream_hub = _make_stream_hub_provider()
     deps = AppDeps(boot_state=boot_state, get_stream_hub=get_stream_hub)
+
+    # PERF-09: kick off the function-index build BEFORE uvicorn accepts
+    # requests. The lifespan-scheduled task (a few hundred ms later) would
+    # race the first request and pay the 56s walk twice; this thread starts
+    # immediately and the per-route caller blocks on _FUNCTION_INDEX_BUILD_LOCK
+    # instead of re-walking.
+    if boot_state["engine_attached"]:
+        _kickoff_function_index_warmup()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -1441,10 +1489,28 @@ def json_safe(value: Any) -> Any:
 
 
 def _load_function_index() -> list[FunctionIndexEntry]:
+    """Return the cached function index, building it on first call.
+
+    PERF-09: holds _FUNCTION_INDEX_BUILD_LOCK across the heavy registration
+    walk so concurrent first-callers (e.g. lifespan warmup vs the first
+    /api/function-index request) pay the ~56s cost once, not twice.
+    """
     global _FUNCTION_INDEX_CACHE
     with _FUNCTION_INDEX_LOCK:
         if _FUNCTION_INDEX_CACHE is not None:
             return list(_FUNCTION_INDEX_CACHE)
+    with _FUNCTION_INDEX_BUILD_LOCK:
+        # Double-check after acquiring the build lock — a sibling thread may
+        # have populated the cache while we were waiting for the lock.
+        with _FUNCTION_INDEX_LOCK:
+            if _FUNCTION_INDEX_CACHE is not None:
+                return list(_FUNCTION_INDEX_CACHE)
+        return _build_function_index_locked()
+
+
+def _build_function_index_locked() -> list[FunctionIndexEntry]:
+    """Inner build path — assumes _FUNCTION_INDEX_BUILD_LOCK is held."""
+    global _FUNCTION_INDEX_CACHE
     factory = _safe_import("showme.engine.services.function_factory")
     registry_mod = _safe_import("showme.engine.core.base_function")
     if factory is None or registry_mod is None:
@@ -1516,6 +1582,29 @@ def _load_function_index() -> list[FunctionIndexEntry]:
     with _FUNCTION_INDEX_LOCK:
         _FUNCTION_INDEX_CACHE = list(out)
     return out
+
+
+def _kickoff_function_index_warmup() -> None:
+    """PERF-09: warm the function index on a daemon thread.
+
+    Called from build_app() so registration starts BEFORE uvicorn accepts
+    requests — typically ~30s earlier than the lifespan-scheduled task.
+    Idempotent: if the cache is already populated or a build is in flight,
+    this returns quickly. The first /api/function-index request blocks on
+    _FUNCTION_INDEX_BUILD_LOCK only if it arrives before this thread
+    finishes, but it does NOT re-walk 112 modules.
+    """
+    def _run() -> None:
+        try:
+            _load_function_index()
+        except Exception as exc:  # noqa: BLE001
+            LOG.warning("function-index warmup thread failed: %r", exc)
+
+    threading.Thread(
+        target=_run,
+        name="showme-function-index-warmup",
+        daemon=True,
+    ).start()
 
 
 def _pick_port(requested: int) -> int:

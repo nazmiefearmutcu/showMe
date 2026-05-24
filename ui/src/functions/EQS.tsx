@@ -235,12 +235,23 @@ export function EQSPane({ code }: FunctionPaneProps) {
       render: (r) => {
         const v = r[key];
         if (key === "symbol" || key === "ticker") {
+          // Bundle D / A11Y-01. Double-click hid the affordance from keyboard
+          // users and from anyone scanning with a tap interface (touchpad).
+          // Single-click navigates; Enter/Space mirrors so the cell is fully
+          // keyboard-operable. Title hint updated to match the new behaviour.
+          const goDES = () => navigate(`/symbol/${String(v)}/DES`);
           return (
             <button
               type="button"
-              onDoubleClick={() => navigate(`/symbol/${String(v)}/DES`)}
+              onClick={goDES}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  goDES();
+                }
+              }}
               className="scan-symbol"
-              title="Double-click → DES"
+              title="Open DES"
             >
               {String(v)}
             </button>

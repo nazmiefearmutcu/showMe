@@ -25,6 +25,7 @@ import { fetchXInstantEvents } from "@/lib/xai";
 import { toast } from "@/lib/toast";
 import { useXInjectStore } from "@/lib/xinject";
 import { readTimezone as readTz } from "@/lib/timezone";
+import { useVisibilityTick } from "@/lib/useVisibilityTick";
 import type { FunctionPaneProps } from "./registry-types";
 
 type LoadState = "idle" | "loading" | "ok" | "error";
@@ -46,7 +47,15 @@ export function INSTANTPane({ code }: FunctionPaneProps) {
   const [audio, setAudio] = useState(false);
   const [audioThreshold, setAudioThreshold] = useState(72);
   const [filterThreshold, setFilterThreshold] = useState(0);
-  const [tick, setTick] = useState(0);
+  const [manualTick, setManualTick] = useState(0);
+  // Bundle D / PERF-04. Background tabs paused the refresh interval; resume
+  // when the tab returns. Combine with a manual nonce so Refresh + Backfill
+  // buttons still bump the effect when the tab is foregrounded.
+  const visTick = useVisibilityTick(REFRESH_MS);
+  const tick = manualTick + visTick;
+  const setTick = (next: ((prev: number) => number) | number) => {
+    setManualTick((prev) => (typeof next === "function" ? next(prev) : next));
+  };
   // PERF-03 P1: spoken-key set lives in a ref so the audio effect doesn't
   // depend on (and re-trigger from) its own setState. Bounded to prevent
   // unbounded growth during long trading sessions.
@@ -94,10 +103,8 @@ export function INSTANTPane({ code }: FunctionPaneProps) {
     };
   }, [tick]);
 
-  useEffect(() => {
-    const id = window.setInterval(() => setTick((value) => value + 1), REFRESH_MS);
-    return () => window.clearInterval(id);
-  }, []);
+  // Auto-refresh interval lives in `useVisibilityTick(REFRESH_MS)` above —
+  // it pauses on hidden tabs and resumes on focus. No local setInterval.
 
   // X sentiment merge: when the user pins a symbol/topic, fetch INSTANT-shaped
   // events from /api/x/instant_events and refresh on the same cadence as the
@@ -129,15 +136,33 @@ export function INSTANTPane({ code }: FunctionPaneProps) {
     };
   }, [xQuery, tick]);
 
+  // Bundle D / AUDIO-01. Original effect listed `events` in its deps so every
+  // 30-second poll cycle re-ran the cleanup, which called
+  // `window.speechSynthesis.cancel()` — wiping any utterance that was still
+  // queued or speaking from a previous event batch. We split the loop and
+  // the cleanup: the speak loop runs whenever inputs change (without
+  // cancelling), and a separate one-shot effect cancels only on unmount or
+  // when audio is toggled off.
+  //
+  // Use a ref to hold the latest events/threshold so the speak effect can
+  // see fresh data without depending on those values.
+  const audioEventsRef = useRef(events);
+  const audioThresholdRef = useRef(audioThreshold);
+  useEffect(() => {
+    audioEventsRef.current = events;
+  }, [events]);
+  useEffect(() => {
+    audioThresholdRef.current = audioThreshold;
+  }, [audioThreshold]);
+
   useEffect(() => {
     if (!audio || !("speechSynthesis" in window)) return;
     const seen = spokenRef.current;
-    for (const event of events) {
+    for (const event of audioEventsRef.current) {
       const score = Number(event.priority_score ?? 0);
       const key = event.dedupe_key ?? event.link ?? event.title ?? "";
-      if (!key || seen.has(key) || score < audioThreshold) continue;
+      if (!key || seen.has(key) || score < audioThresholdRef.current) continue;
       seen.add(key);
-      // Bound the set so a multi-hour session can't leak.
       if (seen.size > SPOKEN_MAX) {
         const it = seen.values();
         const first = it.next().value;
@@ -149,8 +174,23 @@ export function INSTANTPane({ code }: FunctionPaneProps) {
       utterance.rate = 1.02;
       window.speechSynthesis.speak(utterance);
     }
-    // PERF-03 P1: cancel any queued utterances on unmount or audio toggle off
-    // so navigating away does not leave the OS-level queue talking.
+    // No-op cleanup on input/tick change so queued utterances keep going.
+  }, [audio, tick]);
+
+  // Single cancel point: only on unmount or when audio is explicitly toggled
+  // off. Triggering this from the speak effect was the source of cut-off
+  // headlines whenever a new event landed.
+  useEffect(() => {
+    if (audio) return;
+    if ("speechSynthesis" in window) {
+      try {
+        window.speechSynthesis.cancel();
+      } catch {
+        // ignore
+      }
+    }
+  }, [audio]);
+  useEffect(() => {
     return () => {
       if ("speechSynthesis" in window) {
         try {
@@ -160,7 +200,7 @@ export function INSTANTPane({ code }: FunctionPaneProps) {
         }
       }
     };
-  }, [audio, events, audioThreshold]);
+  }, []);
 
   const sortedAll = useMemo(() => {
     const merged = [...events, ...xEvents];

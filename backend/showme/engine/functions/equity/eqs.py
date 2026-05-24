@@ -219,8 +219,24 @@ class EQSFunction(BaseFunction):
         try:
             filtered = filter_dataframe(df, query)
         except Exception as e:
-            return FunctionResult(code=self.code, instrument=None, data=df,
-                                  warnings=[f"DSL parse error: {e}"])
+            # C3 fix: previously returned raw DataFrame as ``data`` which
+            # broke every UI consumer (they expect the dict envelope). Now
+            # we return the same shape the success path emits, just with
+            # zero rows and a structured error marker.
+            return FunctionResult(
+                code=self.code,
+                instrument=None,
+                data={
+                    "rows": [],
+                    "status": "dsl_parse_error",
+                    "error": str(e),
+                    "data": None,
+                    "query": query,
+                    "matched": 0,
+                    "scanned": int(len(df)),
+                },
+                warnings=[f"DSL parse error: {e}"],
+            )
         if filtered.empty:
             filtered = df.head(3)
         # S05 BUGHUNT B6: surface the actual universe label + size so the UI
