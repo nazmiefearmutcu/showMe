@@ -5,7 +5,13 @@ and a unified Python backend that ships the **141-function** market engine
 (live snapshot of `/api/function-index`; baseline ≥138) as a regular
 `showme.engine` subpackage.
 
-> Last updated: 2026-05-11. Function/indicator/pane counts are the live
+> **2026-05-25 rebuild:** Fallback-driven → contract-first. 143 manifest
+> seeds registered, production-fakery scrubbed to 0 (strict-zero gate ON),
+> FinBERT + Whisper large-v3 + CME FedWatch wired, every panel header now
+> surfaces a `📜 M` manifest dot + data-mode pill + sources + warnings.
+> Full before/after + commit map: **[REBUILD_2026_05_25.md](REBUILD_2026_05_25.md)**.
+
+> Last updated: 2026-05-25. Function/indicator/pane counts are the live
 > values; if they drift, run `npm run audit:functions` and update.
 
 ## Layout
