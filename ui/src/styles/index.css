@@ -2414,6 +2414,76 @@
   letter-spacing: 0.06em;
   text-transform: uppercase;
 }
+/* Rebuild 2026-05-25 contract surface — INLINE pills that sit inside the
+   existing 26px PaneChrome row. No second band, no border-bottom accent,
+   no empty floating badge when pane body is loading. */
+.pane-chrome__contract-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 8px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.04em;
+}
+.pane-chrome__manifest-dot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+  font-weight: 700;
+  font-size: 9px;
+  line-height: 1;
+  cursor: help;
+}
+.pane-chrome__mode {
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 8px;
+  line-height: 1.5;
+  border: 1px solid currentColor;
+  cursor: help;
+}
+.pane-chrome__mode--positive {
+  color: var(--positive);
+  background: color-mix(in srgb, var(--positive) 12%, transparent);
+}
+.pane-chrome__mode--negative {
+  color: var(--negative);
+  background: color-mix(in srgb, var(--negative) 12%, transparent);
+}
+.pane-chrome__mode--neutral {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+.pane-chrome__mode--warn {
+  color: var(--warn, #f6c350);
+  background: color-mix(in srgb, var(--warn, #f6c350) 12%, transparent);
+}
+.pane-chrome__mode--muted {
+  color: var(--text-mute);
+  background: var(--bg-elev-2);
+}
+.pane-chrome__sources {
+  color: var(--text-mute);
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pane-chrome__warnings {
+  color: var(--warn, #f6c350);
+  cursor: help;
+  font-weight: 700;
+}
 .pane-chrome__btn-row {
   margin-left: auto;
   display: flex;
