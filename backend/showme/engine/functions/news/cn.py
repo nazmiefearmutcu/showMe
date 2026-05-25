@@ -17,6 +17,7 @@ from showme.engine.core.base_data_source import DataKind, DataRequest
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from showme.engine.core.instrument import AssetClass, Instrument
 from showme.engine.services.news_intelligence import critical_articles, enrich_articles, symbol_terms
+from showme.finbert_analyzer import stamp_items as _finbert_stamp_items
 
 try:
     from showme.crypto_aliases import (
@@ -128,6 +129,12 @@ class CNFunction(BaseFunction):
             )
             data = _provider_unavailable_rows(instrument, limit, reason)
             sources = sources or ["no_live_source"]
+        # FinBERT sentiment pass — stamp on real rows; provider_unavailable
+        # placeholders carry no title/summary so stamp_items neutral-stamps
+        # them harmlessly.
+        _, finbert_warning = await _finbert_stamp_items(data)
+        if finbert_warning:
+            warnings.append(finbert_warning)
         alerts = critical_articles(data, threshold=float(params.get("threshold", 70) or 70))
         return FunctionResult(
             code=self.code,
@@ -138,6 +145,7 @@ class CNFunction(BaseFunction):
                 "provider_errors": warnings,
                 "critical_count": len(alerts),
                 "top_importance_score": max([float(a.get("importance_score") or 0) for a in data], default=0.0),
+                "sentiment_model": "finbert" if finbert_warning is None else "neutral_fallback",
             },
         )
 
@@ -236,6 +244,10 @@ class CNFunction(BaseFunction):
             )
             data = _provider_unavailable_rows(instrument, limit, reason)
             sources = sources or ["no_live_source"]
+        # FinBERT sentiment pass — same as the equity path above.
+        _, finbert_warning = await _finbert_stamp_items(data)
+        if finbert_warning:
+            warnings.append(finbert_warning)
         alerts = critical_articles(data, threshold=float(params.get("threshold", 70) or 70))
 
         return FunctionResult(
@@ -250,6 +262,7 @@ class CNFunction(BaseFunction):
                 "provider_errors": warnings,
                 "critical_count": len(alerts),
                 "top_importance_score": max([float(a.get("importance_score") or 0) for a in data], default=0.0),
+                "sentiment_model": "finbert" if finbert_warning is None else "neutral_fallback",
             },
         )
 

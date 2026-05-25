@@ -19,11 +19,12 @@ describe("Workspace pane-renderer resolution order", () => {
     expect(choosePaneRenderer("top")).toBe("native");
   });
 
-  it("uses TemplateRenderer for S13 codes without a bespoke pane", () => {
-    // STRS / TAUC / TCA / TECH / TLDR / TLH / TRA / TRDH / TRAN all
-    // have template entries in mock-data.ts and no bespoke pane in
-    // registry.PANES — they should land on the template tier so the
-    // live overlay can fetch real data.
+  it("collapses non-native S13 codes to stub (ManifestPane fallback)", () => {
+    // 2026-05-24 rebuild: template tier is no longer in the production
+    // resolver. Every non-bespoke non-critical code now falls through to
+    // "stub", which Workspace.tsx maps to <ManifestPane>. ManifestPane
+    // loads the function manifest (143 registered across Wave 1 + Wave 2)
+    // and renders the contract-driven shell.
     for (const code of [
       "STRS",
       "TAUC",
@@ -35,11 +36,11 @@ describe("Workspace pane-renderer resolution order", () => {
       "TRAN",
       "TRDH",
     ]) {
-      expect(choosePaneRenderer(code)).toBe("template");
+      expect(choosePaneRenderer(code)).toBe("stub");
     }
   });
 
-  it("falls through to FunctionStub for unknown codes", () => {
+  it("falls through to stub (ManifestPane) for unknown codes", () => {
     expect(choosePaneRenderer("ZZZZZZ")).toBe("stub");
   });
 });

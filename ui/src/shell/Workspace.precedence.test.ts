@@ -72,10 +72,15 @@ describe("Workspace.PaneContent precedence (S16 / S05 / QA-2026-05-23)", () => {
     );
   });
 
-  it("falls back to FunctionStub when nothing else matches", () => {
-    expect(source).toContain("FunctionStub");
-    // `default` and `case "stub"` share the FunctionStub body.
-    expect(source).toMatch(/default:[\s\S]{0,200}<FunctionStub/);
+  it("falls back to ManifestPane when nothing else matches", () => {
+    // 2026-05-24 rebuild: production-fakery removal — FunctionStub +
+    // TemplateRenderer dropped from Workspace.tsx. Every non-native
+    // non-critical code now collapses to <ManifestPane>, which loads
+    // the function manifest and renders the contract-driven shell.
+    expect(source).toContain("ManifestPane");
+    // The default-case block may contain a long explanatory comment
+    // before the JSX, so the window is generous.
+    expect(source).toMatch(/default:[\s\S]{0,1200}<ManifestPane/);
   });
 
   it("only Preferences remains a design-leaf — every other code keeps PaneChrome", () => {

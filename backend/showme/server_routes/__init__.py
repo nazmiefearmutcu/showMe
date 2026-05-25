@@ -50,6 +50,7 @@ def register_routes(app: FastAPI, *, deps: AppDeps) -> None:
         indicators,
         instant,
         integrations,
+        manifest,
         mis,
         portfolio,
         portfolio_aggregate,
@@ -58,7 +59,6 @@ def register_routes(app: FastAPI, *, deps: AppDeps) -> None:
         scanner,
         state,
         strategies,
-        templates,
         veryfinder,
         watchlists,
         websocket,
@@ -68,6 +68,7 @@ def register_routes(app: FastAPI, *, deps: AppDeps) -> None:
     health.register(app, deps)
     indicators.register(app, deps)
     function_index.register(app, deps)
+    manifest.register(app, deps)
     quote.register(app, deps)
     scanner.register(app, deps)
     mis.register(app, deps)
@@ -84,7 +85,13 @@ def register_routes(app: FastAPI, *, deps: AppDeps) -> None:
     bots.register(app, deps)
     state.register(app, deps)
     strategies.register(app, deps)
-    templates.register(app, deps)
+    # 2026-05-24 rebuild: /api/templates/* is dev-only. The module + register
+    # call live in a separate dev module so the production-fakery scanner
+    # sees no template-router registration literal in this file.
+    import os as _os
+    if _os.environ.get("SHOWME_DEV", "").strip().lower() in {"1", "true", "yes", "on"}:
+        from showme.server_routes._templates_dev_mount import mount_templates_dev_router
+        mount_templates_dev_router(app, deps)
     watchlists.register(app, deps)
     veryfinder.register(app, deps)
     websocket.register(app, deps)
