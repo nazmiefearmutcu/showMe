@@ -4,6 +4,7 @@
  * Outside Tauri (vite preview / browser dev) we fall back to localhost:8765
  * so designers can still wire components to a hand-started ShowMe instance.
  */
+import { recordPaneContract } from "./pane-contract-store";
 import { useAppStore } from "./store";
 import { invoke, isInTauri, listen } from "./tauri";
 
@@ -258,7 +259,13 @@ export async function sidecarFetch<T>(path: string, init?: RequestInit): Promise
     throw err;
   }
   useAppStore.getState().setSidecarStatus("healthy");
-  return (await res.json()) as T;
+  const payload = (await res.json()) as T;
+  try {
+    _stampFnContract(path, payload as unknown);
+  } catch {
+    /* contract recording must never break a sidecar call */
+  }
+  return payload;
 }
 
 /** Type-safe getter for the structured error metadata `sidecarFetch` attaches. */
@@ -336,4 +343,61 @@ export interface StreamStats {
 
 export async function fetchStreamStats(): Promise<StreamStats> {
   return sidecarFetch<StreamStats>("/api/stream/stats");
+}
+
+// 2026-05-25 rebuild: when sidecarFetch hits /api/fn/{code}, stamp the
+// manifest contract envelope into the pane-contract-store. This lights
+// up the PaneChrome strip for bespoke panes (WATCH/PORT/MIS/etc.) that
+// fetch directly via sidecarFetch instead of runFunction.
+function _stampFnContract(path: string, payload: unknown): void {
+  const m = /^\/api\/fn\/([A-Za-z][A-Za-z0-9_]*)/.exec(path);
+  if (!m) return;
+  const code = m[1].toUpperCase();
+  if (!payload || typeof payload !== "object") return;
+  const r = payload as Record<string, unknown>;
+  const data = (r.data ?? {}) as Record<string, unknown>;
+  const metadata = (r.metadata ?? data.metadata ?? {}) as Record<string, unknown>;
+  const _str = (v: unknown): string | undefined =>
+    typeof v === "string" && v.length > 0 ? v : undefined;
+  const _num = (v: unknown): number | undefined =>
+    typeof v === "number" && Number.isFinite(v) ? v : undefined;
+  const _list = (v: unknown): string[] =>
+    !Array.isArray(v)
+      ? []
+      : v.filter((x): x is string => typeof x === "string" && x.length > 0);
+  const sources = _list(r.sources ?? data.sources ?? metadata.sources);
+  const warnings = _list(r.warnings ?? data.warnings ?? metadata.warnings);
+  const nextActions = _list(data.next_actions ?? metadata.next_actions);
+  const ds = r.data_state ?? data.data_state ?? metadata.data_state;
+  const legacyMap: Record<string, string> = {
+    live: "live_exchange",
+    reference: "delayed_reference",
+    model: "modeled",
+    synthetic: "modeled",
+  };
+  const legacyMode =
+    typeof ds === "string" && ds in legacyMap
+      ? legacyMap[ds]
+      : metadata.degraded === true
+        ? "provider_unavailable"
+        : undefined;
+  const dataMode =
+    _str(data.data_mode) ||
+    _str(r.data_mode) ||
+    _str(metadata.data_mode) ||
+    legacyMode;
+  const asOf = _str(data.as_of) || _str(r.as_of) || _str(r.fetched_at);
+  const latency =
+    _num(r.elapsed_ms) ?? _num(r.latency_ms) ?? _num(data.latency_ms);
+  const symbolMatch = /[?&]symbol=([^&]+)/.exec(path);
+  const symbol = symbolMatch ? decodeURIComponent(symbolMatch[1]) : undefined;
+  recordPaneContract(code, symbol, {
+    dataMode,
+    asOf,
+    sources: sources.length ? sources : undefined,
+    warnings: warnings.length ? warnings : undefined,
+    nextActions: nextActions.length ? nextActions : undefined,
+    latencyMs: latency,
+    receivedAt: Date.now(),
+  });
 }

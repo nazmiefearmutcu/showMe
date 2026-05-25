@@ -30,6 +30,7 @@ import {
   type FunctionCallResult,
   type FunctionCallError,
 } from "./functions";
+import { recordPaneContract } from "./pane-contract-store";
 import { useAppStore } from "./store";
 import { isInTauri } from "./tauri";
 
@@ -120,6 +121,12 @@ export function useFunction<T = unknown>({
         setData(res);
         setError(undefined);
         setState("ok");
+        // 2026-05-25 rebuild contract: surface manifest-declared envelope
+        // fields (data_mode / as_of / sources / latency / warnings /
+        // next_actions) into the pane-contract-store so PaneChrome can
+        // render the same mode-pill + sources + warnings + next-actions
+        // strip on every pane — bespoke or ManifestPane.
+        _recordContractFromResult(code, symbol, res);
       })
       .catch((err: Error) => {
         if (ac.signal.aborted) return;
@@ -148,4 +155,75 @@ function _stableStringify(obj: Record<string, unknown>): string {
   const result: Record<string, unknown> = {};
   for (const k of keys) result[k] = obj[k];
   return JSON.stringify(result);
+}
+
+/**
+ * Extract the rebuild contract envelope fields from any /api/fn/{code}
+ * response and stamp them into the pane-contract-store. Tolerates legacy
+ * payloads that don't expose data_mode/as_of yet — we look at common
+ * legacy aliases (data_state, fetched_at, metadata.degraded) so even
+ * existing bespoke panes report something useful in the new strip.
+ */
+function _recordContractFromResult<T>(
+  code: string,
+  symbol: string | undefined,
+  res: FunctionCallResult<T>,
+): void {
+  if (!res || typeof res !== "object") return;
+  const r = res as unknown as Record<string, unknown>;
+  const data = (r.data ?? {}) as Record<string, unknown>;
+  const metadata = (r.metadata ?? data.metadata ?? {}) as Record<string, unknown>;
+  const sources = _toStringArray(r.sources ?? data.sources ?? metadata.sources);
+  const warnings = _toStringArray(r.warnings ?? data.warnings ?? metadata.warnings);
+  const nextActionsRaw = (data.next_actions ?? metadata.next_actions) as unknown;
+  const nextActions = _toStringArray(nextActionsRaw);
+  const dataMode =
+    (typeof data.data_mode === "string" && data.data_mode) ||
+    (typeof r.data_mode === "string" && r.data_mode) ||
+    (typeof metadata.data_mode === "string" && metadata.data_mode) ||
+    _legacyDataState(r, data, metadata) ||
+    undefined;
+  const asOf =
+    (typeof data.as_of === "string" && data.as_of) ||
+    (typeof r.as_of === "string" && r.as_of) ||
+    (typeof r.fetched_at === "string" && r.fetched_at) ||
+    undefined;
+  const latencyMsRaw = r.elapsed_ms ?? r.latency_ms ?? data.latency_ms;
+  const latencyMs = typeof latencyMsRaw === "number" ? latencyMsRaw : undefined;
+  recordPaneContract(code, symbol, {
+    dataMode,
+    asOf,
+    sources: sources.length > 0 ? sources : undefined,
+    warnings: warnings.length > 0 ? warnings : undefined,
+    nextActions: nextActions.length > 0 ? nextActions : undefined,
+    latencyMs,
+    receivedAt: Date.now(),
+  });
+}
+
+function _toStringArray(v: unknown): string[] {
+  if (!Array.isArray(v)) return [];
+  return v.filter((item): item is string => typeof item === "string" && item.length > 0);
+}
+
+function _legacyDataState(
+  r: Record<string, unknown>,
+  data: Record<string, unknown>,
+  metadata: Record<string, unknown>,
+): string | undefined {
+  // The pre-rebuild contract used `data_state` ∈ {live, synthetic, reference, model}
+  // and a `metadata.degraded` boolean. Map those to honest DataMode values so
+  // legacy payloads still light up the rebuild strip.
+  const ds = (r.data_state ?? data.data_state ?? metadata.data_state) as unknown;
+  if (typeof ds === "string") {
+    const map: Record<string, string> = {
+      live: "live_exchange",
+      reference: "delayed_reference",
+      model: "modeled",
+      synthetic: "modeled",
+    };
+    if (ds in map) return map[ds];
+  }
+  if (metadata.degraded === true) return "provider_unavailable";
+  return undefined;
 }
