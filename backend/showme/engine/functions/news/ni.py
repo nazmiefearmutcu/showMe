@@ -9,6 +9,7 @@ from showme.engine.core.base_data_source import DataKind, DataRequest
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from showme.engine.core.instrument import Instrument
 from showme.engine.services.news_intelligence import critical_articles, enrich_articles, symbol_terms
+from showme.finbert_analyzer import stamp_items as _finbert_stamp_items
 
 _TOPIC_QUERIES = {
     "BANKS": "bank OR banking OR JPMorgan OR Citi OR Goldman",
@@ -141,6 +142,13 @@ class NIFunction(BaseFunction):
             threshold=threshold,
             limit=limit,
         )
+        # FinBERT sentiment pass — see TOPFunction for the rationale. When
+        # NI falls through to TOP (third branch above), TOP has already
+        # stamped sentiment, and stamp_items leaves those rows alone
+        # because they already carry sentiment + sentiment_score.
+        _, finbert_warning = await _finbert_stamp_items(ranked)
+        if finbert_warning:
+            warnings.append(finbert_warning)
         alerts = critical_articles(ranked, threshold=threshold)
         # Per FUNC-10 P1: wrap list payload as ``{items: ...}`` so the shared
         # contract envelope works (was a bare list which silently bypassed
@@ -159,6 +167,7 @@ class NIFunction(BaseFunction):
                 "provider_errors": warnings,
                 "critical_count": len(alerts),
                 "top_importance_score": max([float(a.get("importance_score") or 0) for a in ranked], default=0.0),
+                "sentiment_model": "finbert" if finbert_warning is None else "neutral_fallback",
             },
         )
 

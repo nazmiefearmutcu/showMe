@@ -2,13 +2,24 @@
  * Workspace renderer — recursive split tree with drag-resize handles.
  *
  * Single source of multi-pane layout. Each leaf renders the focused
- * pane via `resolvePane`; the registry's `FunctionStub` handles codes
- * we haven't ported natively.
+ * pane via `resolvePane`; codes without a bespoke pane fall through to
+ * `<ManifestPane code={code} />` which renders the contract-driven shell
+ * (header, controls, sources, methodology) backed by `/api/fn/{code}`
+ * with the function manifest as the source of truth.
  *
  * ROUND-2B (PERF-02): every pane (including the three "always-loaded"
- * panes Welcome / Preferences / FunctionStub) is lazy-loaded so the
+ * panes Welcome / Preferences / ManifestPane) is lazy-loaded so the
  * entry chunk only ships the shell + design system. A small Suspense
  * fallback paints a token-coloured shimmer while the chunk arrives.
+ *
+ * 2026-05-24 — production-fakery removal: the legacy FunctionStub +
+ * TemplateRenderer lazy imports were dropped from the production path
+ * and the non-critical switch now ends in a single `<ManifestPane>`
+ * fallback. The fakery modules still exist in the tree for dev
+ * inspection and live test coverage, but no production-path file
+ * imports them any more. The contract-driven ManifestPane handles its
+ * own "manifest not registered" state internally, so the previous
+ * native > template > stub ladder collapses to native > manifest.
  */
 import { lazy, Suspense, useEffect, useRef } from "react";
 import {
@@ -24,6 +35,7 @@ import {
   resolvePaneRenderer,
   type PaneResolveAdapters,
 } from "@/lib/pane-completeness";
+import { fetchManifests } from "@/manifest/registry";
 import { PaneChrome } from "./PaneChrome";
 import { PaneErrorBoundary } from "./PaneErrorBoundary";
 
@@ -31,18 +43,9 @@ const Welcome = lazy(() => import("@/panes/Welcome").then((m) => ({ default: m.W
 const Preferences = lazy(() =>
   import("@/panes/Preferences").then((m) => ({ default: m.Preferences })),
 );
-const FunctionStub = lazy(() =>
-  import("@/panes/FunctionStub").then((m) => ({ default: m.FunctionStub })),
+const ManifestPane = lazy(() =>
+  import("@/manifest/ManifestPane").then((m) => ({ default: m.ManifestPane })),
 );
-const TemplateRenderer = lazy(() =>
-  import("@/templates/TemplateRenderer").then((m) => ({
-    default: m.TemplateRenderer,
-  })),
-);
-// Synchronously imported predicate — checking it must not lazy-load the
-// template module on cold paint. The module is small, but importing
-// asynchronously here would force a 2-tick render and a flash of stub.
-import { hasTemplate } from "@/templates/TemplateRenderer";
 
 function PaneFallback() {
   return (
@@ -61,6 +64,17 @@ const HANDLE_PX = 4;
 
 export function Workspace() {
   const tree = useWorkspace((s) => s.tree);
+  // Populate the manifest registry once at mount so the contract-driven
+  // ManifestPane fallback resolves manifests synchronously on first
+  // render instead of flashing its own "Loading manifest…" placeholder
+  // for every cold pane. ManifestPane also calls fetchManifests() in its
+  // own effect; the duplicate call is cheap (the loader is idempotent
+  // against the registry) and keeps the contract local-to-component.
+  useEffect(() => {
+    void fetchManifests().catch(() => {
+      // Surfaced via the registry's error state; consumed by ManifestPane.
+    });
+  }, []);
   return <Node node={tree} />;
 }
 
@@ -83,18 +97,11 @@ function Leaf({ node }: { node: LeafNode }) {
   // TOP, NI, CN, MIS) are never design-leaves; PaneChrome stays around
   // the CriticalMissingPane guard so the trader still has the toolbar
   // surface and code header.
-  // The hasNative/hasTpl/isCritical locals are still referenced by the
-  // S05 source-guard regression tests under `Workspace.precedence.test.ts`,
-  // so the variables themselves remain even though the design-leaf
-  // expression no longer reads them — TypeScript prunes unused locals at
-  // build time, so this carries no runtime cost.
+  // Post 2026-05-24 fakery removal: `hasTemplate` was deleted along with
+  // the TemplateRenderer import; the design-leaf decision is now PREF-only.
   const hasNative = resolvePane(node.code) !== null;
-  const hasTpl = hasTemplate(node.code);
   const isCritical = isCriticalCode(node.code);
-  // Reference the locals to silence noUnusedLocals; the QA-2026-05-23
-  // refactor intentionally narrowed `isDesignLeaf` to PREF only.
   void hasNative;
-  void hasTpl;
   void isCritical;
   const isDesignLeaf = node.code === "PREF";
   return (
@@ -118,7 +125,7 @@ function Leaf({ node }: { node: LeafNode }) {
 }
 
 function PaneContent({
-  leafId,
+  leafId: _leafId,
   code,
   symbol,
 }: {
@@ -177,12 +184,17 @@ function PaneContent({
         body = <CriticalMissingPane code={code} />;
         break;
       case "template":
-        body = <TemplateRenderer code={code} symbol={symbol} />;
-        break;
       case "design-export":
       case "stub":
       default:
-        body = <FunctionStub leafId={leafId} code={code} symbol={symbol} />;
+        // Production-fakery removal: every non-native pane now flows
+        // through ManifestPane. If a manifest is registered for `code`,
+        // the contract-driven shell renders header + controls + sources
+        // + warnings + next-actions; otherwise ManifestPane shows its
+        // own explicit "manifest not registered" state. Either way the
+        // user sees honest information instead of a JSON dump or a
+        // synthetic mock template.
+        body = <ManifestPane code={code} initialInputs={symbol ? { symbol } : undefined} />;
         break;
     }
   }

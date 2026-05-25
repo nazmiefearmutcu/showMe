@@ -53,15 +53,86 @@ class TSARFunction(BaseFunction):
                     sources=["transcripts_archive"],
                     metadata={"provider_errors": ["missing ingest symbol"]},
                 )
+            ingest_warnings: list[str] = []
+            ingest_sources: list[str] = ["transcripts_archive"]
+            content = params.get("content") or ""
+            # If no transcript text was supplied but the caller pointed us
+            # at audio, run Whisper large-v3 (via the legacy service entry,
+            # which itself prefers the singleton) before persisting.
+            if not content and (params.get("audio_url") or params.get("audio_path")):
+                try:
+                    from showme.whisper_analyzer import WhisperAnalyzer  # noqa: PLC0415
+                    if not WhisperAnalyzer.is_available() and WhisperAnalyzer.load_error() is None:
+                        ingest_warnings.append(
+                            "whisper: large-v3 not yet warmed, retry in ~30s"
+                        )
+                except Exception:  # noqa: BLE001 - singleton optional
+                    pass
+                if params.get("audio_url"):
+                    try:
+                        from showme.engine.services.transcription import transcribe_url
+                        w = await asyncio.wait_for(
+                            transcribe_url(
+                                params["audio_url"],
+                                language=params.get("language"),
+                                model_name=params.get("model", "base"),
+                            ),
+                            timeout=float(params.get("transcribe_timeout", 30)),
+                        )
+                        content = w.get("text") or ""
+                        if content:
+                            ingest_sources.append("whisper")
+                    except Exception as exc:  # noqa: BLE001
+                        ingest_warnings.append(f"transcribe_url: {exc}")
+                if not content and params.get("audio_path"):
+                    try:
+                        from showme.engine.services.transcription import transcribe
+                        w = await asyncio.wait_for(
+                            transcribe(
+                                params["audio_path"],
+                                language=params.get("language"),
+                                model_name=params.get("model", "base"),
+                            ),
+                            timeout=float(params.get("transcribe_timeout", 30)),
+                        )
+                        content = w.get("text") or ""
+                        if content:
+                            ingest_sources.append("whisper")
+                    except Exception as exc:  # noqa: BLE001
+                        ingest_warnings.append(f"transcribe: {exc}")
+            # Optionally stamp FinBert sentiment when the caller didn't
+            # supply one and we have transcript text to analyse. We pick
+            # the first 512 chars (FinBert's headline window) — full
+            # earnings calls are too long for one inference pass but the
+            # prepared-remarks intro carries the headline tone.
+            sentiment = params.get("sentiment")
+            if sentiment is None and content:
+                try:
+                    from showme.finbert_analyzer import FinBertAnalyzer  # noqa: PLC0415
+                    analyzer = await asyncio.to_thread(FinBertAnalyzer.instance)
+                    result = await analyzer.label(content[:512])
+                    sentiment = float(result.get("score_signed") or 0.0)
+                    ingest_sources.append("finbert")
+                except Exception as exc:  # noqa: BLE001 - non-fatal
+                    ingest_warnings.append(f"finbert: {exc.__class__.__name__}")
             tid = archive.upsert(
                 symbol=str(symbol_param), company=params.get("company"),
                 quarter=params.get("quarter"), fiscal_year=params.get("fiscal_year"),
                 event_date=params.get("event_date"), source=params.get("source"),
-                url=params.get("url"), content=params.get("content", ""),
-                summary=params.get("summary"), sentiment=params.get("sentiment"),
+                url=params.get("url"), content=content,
+                summary=params.get("summary"), sentiment=sentiment,
             )
-            return FunctionResult(code=self.code, instrument=None,
-                                  data={"id": tid, "ingested": True})
+            return FunctionResult(
+                code=self.code, instrument=None,
+                data={
+                    "id": tid,
+                    "ingested": True,
+                    "chars": len(content),
+                    "sentiment": sentiment,
+                },
+                sources=ingest_sources,
+                metadata={"provider_errors": ingest_warnings} if ingest_warnings else {},
+            )
         if action == "get":
             row_id = _safe_int(params.get("id"))
             if row_id is None:

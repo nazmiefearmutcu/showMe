@@ -1,0 +1,32 @@
+{
+  "_comment": "Reference shape for tests/_fakery_baseline.json. The real file is gitignored and generated on first run of tests/test_production_fakery_banned.py. The schema: violation entries are grouped by absolute file path; each entry lists the matching line number and the labelled pattern. Counts are per-pattern totals across the tree. Each new PR may only DECREASE the totals — when a baseline is shrunk in a PR, regenerate by deleting the real baseline and rerunning the test.",
+  "generated_at_utc": "2026-05-24T00:00:00Z",
+  "root": "/path/to/showMe",
+  "totals_by_pattern": {
+    "ts_import_FunctionStub": 0,
+    "ts_dynamic_import_FunctionStub": 0,
+    "ts_import_TemplateRenderer": 0,
+    "ts_dynamic_import_TemplateRenderer": 0,
+    "ts_import_design_export": 0,
+    "ts_dynamic_import_design_export": 0,
+    "ts_import_templates_dir": 0,
+    "ts_dynamic_import_templates_dir": 0,
+    "ts_jsx_FunctionStub": 0,
+    "ts_jsx_TemplateRenderer": 0,
+    "py_template_registration": 0
+  },
+  "violations": {
+    "/path/to/showMe/ui/src/shell/Workspace.tsx": [
+      {"line": 34, "pattern": "ts_import_FunctionStub"},
+      {"line": 37, "pattern": "ts_import_TemplateRenderer"},
+      {"line": 180, "pattern": "ts_jsx_TemplateRenderer"},
+      {"line": 185, "pattern": "ts_jsx_FunctionStub"}
+    ],
+    "/path/to/showMe/ui/src/panes/preferences_pane/index.tsx": [
+      {"line": 19, "pattern": "ts_import_design_export"}
+    ],
+    "/path/to/showMe/backend/showme/server_routes/__init__.py": [
+      {"line": 89, "pattern": "py_template_registration"}
+    ]
+  }
+}

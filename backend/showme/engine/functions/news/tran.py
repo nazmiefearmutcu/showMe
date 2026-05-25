@@ -35,9 +35,24 @@ class TRANFunction(BaseFunction):
                 sources.append("seekingalpha")
             except Exception as e:
                 warnings.append(f"seekingalpha: {e}")
-        # Optional Whisper transcription
+        # Optional Whisper transcription. Tier 0 is the bundled
+        # ``openai/whisper-large-v3`` singleton (see whisper_analyzer.py);
+        # the legacy tiered service is consulted automatically if it isn't
+        # warmed yet. When the caller asked for Whisper but the singleton
+        # hasn't finished loading we still attempt the legacy tiers, but
+        # add an explicit warning so the UI can hint the user to retry in
+        # ~30s once large-v3 is ready (load failure is permanent for the
+        # process; warm-pending is transient).
         whisper_result = None
         audio_url = params.get("audio_url")
+        audio_path = params.get("audio_path")
+        if audio_url or audio_path:
+            try:
+                from showme.whisper_analyzer import WhisperAnalyzer  # noqa: PLC0415
+                if not WhisperAnalyzer.is_available() and WhisperAnalyzer.load_error() is None:
+                    warnings.append("whisper: large-v3 not yet warmed, retry in ~30s")
+            except Exception:  # noqa: BLE001 - singleton optional
+                pass
         if audio_url:
             try:
                 from showme.engine.services.transcription import transcribe_url
@@ -48,7 +63,6 @@ class TRANFunction(BaseFunction):
                 sources.append("whisper")
             except Exception as e:
                 warnings.append(f"whisper: {e}")
-        audio_path = params.get("audio_path")
         if audio_path and not whisper_result:
             try:
                 from showme.engine.services.transcription import transcribe

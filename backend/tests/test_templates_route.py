@@ -13,6 +13,11 @@ from showme.server import build_app
 def client(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("SHOWME_HOME", str(tmp_path))
     monkeypatch.setenv("SHOWME_AUTH_TOKEN", "test-token")
+    # 2026-05-24 rebuild: /api/templates/* is dev-only — the production
+    # gate at backend/showme/server_routes/__init__.py only mounts the
+    # router when SHOWME_DEV is truthy. Force it on for this test suite
+    # so the dev-only route is reachable.
+    monkeypatch.setenv("SHOWME_DEV", "1")
     # Reset singleton
     import showme.server_routes.templates as tmod
     tmod._CATALOG = None

@@ -71,14 +71,19 @@ describe("paneInventory", () => {
     expect(codes).toEqual(sorted);
   });
 
-  it("covers every DESIGN_PRO_CODES entry", () => {
+  it.skip("covers every DESIGN_PRO_CODES entry (retired by 2026-05-24 rebuild)", () => {
+    // The design-export tree is no longer imported by production paths;
+    // DESIGN_PRO_CODES is now an empty stub. The catalog inventory is
+    // built from native + critical codes only. Re-enable this test if
+    // the design-export tier is reintroduced as a dev tool.
     const known = new Set(inventory.map((entry) => entry.code));
     for (const code of DESIGN_PRO_CODES) {
       expect(known.has(code.toUpperCase())).toBe(true);
     }
   });
 
-  it("covers every DESIGN_BASIC_CODES entry", () => {
+  it.skip("covers every DESIGN_BASIC_CODES entry (retired by 2026-05-24 rebuild)", () => {
+    // Same as above — design-export tier retired by the rebuild.
     const known = new Set(inventory.map((entry) => entry.code));
     for (const code of DESIGN_BASIC_CODES) {
       expect(known.has(code.toUpperCase())).toBe(true);
