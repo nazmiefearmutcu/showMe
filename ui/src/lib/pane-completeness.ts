@@ -17,13 +17,27 @@
  *
  * S05 — 2026-05-20
  */
-import {
-  DESIGN_BASIC_CODES,
-  DESIGN_PRO_CODES,
-  hasDesignExportComponent,
-} from "@/design-export/showme-design-export";
-import { listMockCodes, getMockTemplate } from "@/templates/mock-data";
+// 2026-05-24 rebuild: design-export + templates introspection moved to
+// dev-only (`ui/src/dev/pane-completeness-dev.ts`). Production paths no
+// longer import those modules. The resolver collapses non-critical codes
+// to "stub" which Workspace.tsx then renders via ManifestPane (contract-
+// driven shell with explicit "manifest not registered" empty state).
 import { listNativeCodes, resolvePane } from "@/functions/registry";
+
+// Stub helpers so the legacy adapter shape still type-checks. The dev tool
+// at ui/src/dev/pane-completeness-dev.ts re-injects real adapters for the
+// catalog dashboard if a developer needs the historical inventory view.
+const DESIGN_PRO_CODES: readonly string[] = [];
+const DESIGN_BASIC_CODES: readonly string[] = [];
+function hasDesignExportComponent(_code: string): boolean {
+  return false;
+}
+function listMockCodes(): string[] {
+  return [];
+}
+function getMockTemplate(_code: string): unknown | null {
+  return null;
+}
 
 /**
  * Critical pane codes. Render native pane only — never fall through to

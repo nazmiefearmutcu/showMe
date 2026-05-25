@@ -16,7 +16,7 @@ import { useAppStore } from "@/lib/store";
 import { fetchSidecarInfo } from "@/lib/sidecar";
 import { PRESET_LABELS } from "@/lib/theme";
 import { navigate, useRoute } from "@/lib/router";
-import { SettingsDesignExportRenderer } from "@/design-export/showme-design-export";
+import { PreferencesChrome } from "./PreferencesChrome";
 import { LOCALE_LABELS, SECTIONS, type SectionId } from "./_types";
 import { AppearanceSection } from "./appearance";
 import { SecretsSection } from "./secrets";
@@ -85,15 +85,14 @@ export function Preferences({ section }: { section?: string }) {
     setDensityState(next);
   };
 
-  // Keep the Claude Design settings shell for navigation only. Rendering its
-  // full Appearance mock alongside the native controls creates two competing
-  // theme UIs; the native section below is the single source of truth.
+  // Native PreferencesChrome (extracted 2026-05-24 fakery removal) replaces
+  // SettingsDesignExportRenderer chromeOnly. The native section below is the
+  // single source of truth for theme/data/streams/etc controls.
   return (
     <main className="prefs-main prefs-main--native-settings prefs-main--design-preview" aria-label="Preferences">
-      <SettingsDesignExportRenderer
+      <PreferencesChrome
         section={active}
-        chromeOnly
-        onSection={(next) => updateActive(next as SectionId)}
+        onSection={(next) => updateActive(next)}
       />
 
       <div

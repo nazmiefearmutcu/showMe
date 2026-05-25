@@ -10,6 +10,7 @@ from showme.engine.core.base_data_source import DataKind, DataRequest
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from showme.engine.core.instrument import Instrument
 from showme.engine.services.news_intelligence import article_timestamp, critical_articles, enrich_articles, symbol_terms
+from showme.finbert_analyzer import stamp_items as _finbert_stamp_items
 
 
 @FunctionRegistry.register
@@ -100,6 +101,13 @@ class TOPFunction(BaseFunction):
         )
         ranked = [article for article in ranked if _within_age_window(article, max_age_days)]
         ranked = ranked[:limit]
+        # FinBERT sentiment pass — stamps `sentiment` + `sentiment_score` on
+        # every item so the UI shows finance-domain labels instead of the
+        # bare keyword fallback. Non-fatal: if the model can't load, items
+        # get neutral and a warning lands in `provider_errors`.
+        _, finbert_warning = await _finbert_stamp_items(ranked)
+        if finbert_warning:
+            warnings.append(finbert_warning)
         alerts = critical_articles(ranked, threshold=threshold)
         # Per FUNC-10 P1: wrap the list payload as ``{items: ranked, ...}`` so
         # function_contracts._extract_rows can pick it up and the contract
@@ -120,10 +128,12 @@ class TOPFunction(BaseFunction):
                 "critical_count": len(alerts),
                 "top_importance_score": max([float(a.get("importance_score") or 0) for a in ranked], default=0.0),
                 "method": "deterministic_impact_score_v2",
+                "sentiment_model": "finbert" if finbert_warning is None else "neutral_fallback",
                 "methodology": (
                     "Ranks live RSS/GDELT headlines by query relevance, market catalyst keywords, "
                     "source quality, and freshness. Headlines outside freshness_max_days are filtered. "
-                    "Each card exposes importance_reasons."
+                    "Each card exposes importance_reasons. FinBERT (ProsusAI/finbert) labels "
+                    "sentiment per row."
                 ),
             },
         )

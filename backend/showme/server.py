@@ -967,6 +967,27 @@ async def _shutdown_cleanup(stream_hub_provider: Callable[[], Any]) -> None:
                     await result
     except Exception:  # noqa: BLE001
         LOG.exception("broker connection shutdown failed")
+    # 4) Close shared httpx.AsyncClient owned by the provider adapter layer
+    #    so dangling connectors don't leak on shutdown.
+    try:
+        providers_mod = _safe_import("showme.providers")
+        if providers_mod is not None:
+            aclose_shared = getattr(providers_mod, "aclose_shared", None)
+            if aclose_shared is not None:
+                result = aclose_shared()
+                if asyncio.iscoroutine(result):
+                    await result
+    except Exception:  # noqa: BLE001
+        LOG.exception("provider httpx shutdown failed")
+    # 5) Close the analytical DuckDB pool so the file lock releases cleanly.
+    try:
+        analytical_mod = _safe_import("showme.analytical")
+        if analytical_mod is not None:
+            close_fn = getattr(analytical_mod, "close", None)
+            if close_fn is not None:
+                close_fn()
+    except Exception:  # noqa: BLE001
+        LOG.exception("analytical pool shutdown failed")
 
 
 def build_app(engine_root: Path | None) -> FastAPI:
@@ -989,6 +1010,15 @@ def build_app(engine_root: Path | None) -> FastAPI:
     single ``register_routes`` call wires the family routers onto the app.
     """
     from showme.server_routes import AppDeps, register_routes
+
+    # Register every provider adapter (SEC EDGAR, FRED, TreasuryDirect, OpenFIGI,
+    # Binance, yfinance, GDELT, RSS) with the global adapter REGISTRY. Adapter
+    # constructors are network-free so this is safe to call before lifespan
+    # startup. Importing the module triggers register_all_adapters() once.
+    try:
+        from showme.providers import seed_register  # noqa: F401
+    except Exception as exc:  # noqa: BLE001 — non-fatal; log + continue
+        LOG.warning("provider adapter registration skipped: %s", exc)
 
     # Per R4B: deps (boot_state, stream_hub provider) must be constructed
     # BEFORE FastAPI(lifespan=...) so the lifespan closure captures the
@@ -1067,6 +1097,65 @@ def build_app(engine_root: Path | None) -> FastAPI:
                 LOG.warning("x_analyzer warmup failed: %r", exc)
 
         asyncio.create_task(_warm_x_analyzer())
+
+        # FinBERT warmup — mirror the XAnalyzer pattern. The first call
+        # cold-loads ProsusAI/finbert (~300 MB, ~3s on M-series), which
+        # would otherwise block the first /api/fn/TOP request thread. We
+        # detach it (no `await`) so the rest of lifespan keeps moving, and
+        # we treat any failure as non-fatal — the news handlers degrade to
+        # neutral-stamped sentiment if FinBERT can't load.
+        async def _warm_finbert() -> None:
+            try:
+                from showme.finbert_analyzer import FinBertAnalyzer
+
+                await asyncio.wait_for(
+                    asyncio.to_thread(FinBertAnalyzer.instance),
+                    timeout=90,
+                )
+                boot_state["finbert_warmed"] = True
+                boot_state.pop("finbert_warm_error", None)
+            except Exception as exc:  # noqa: BLE001
+                boot_state["finbert_warmed"] = False
+                boot_state["finbert_warm_error"] = str(exc) or type(exc).__name__
+                LOG.warning("finbert warmup failed (handlers will stamp neutral): %r", exc)
+
+        asyncio.create_task(_warm_finbert())
+
+        # Whisper large-v3 warmup — mirrors the FinBERT pattern. Cold load
+        # is heavy (~3 GB weights, multi-minute first download outside the
+        # .app bundle). Fire-and-forget so the rest of lifespan keeps
+        # moving; TRAN/TRQA/TSAR check ``WhisperAnalyzer.is_available()``
+        # before relying on the singleton and surface a "warming, retry
+        # in 30s" warning until this task completes. Load failures are
+        # latched permanently in the singleton — the legacy transcription
+        # service tiers continue to work in that case.
+        async def _warm_whisper() -> None:
+            try:
+                from showme.whisper_analyzer import WhisperAnalyzer
+
+                # The instance() call is the actual load; wrapping in
+                # to_thread keeps the event loop free during the
+                # transformers init + first weight materialisation.
+                analyzer = await asyncio.wait_for(
+                    asyncio.to_thread(WhisperAnalyzer.instance),
+                    timeout=600,  # large-v3 first-download budget
+                )
+                if analyzer is None:
+                    err = WhisperAnalyzer.load_error() or "unknown"
+                    boot_state["whisper_warmed"] = False
+                    boot_state["whisper_warm_error"] = err
+                    LOG.warning("whisper warmup did not produce a singleton "
+                                "(load_failed latch is on): %s", err)
+                else:
+                    boot_state["whisper_warmed"] = True
+                    boot_state.pop("whisper_warm_error", None)
+            except Exception as exc:  # noqa: BLE001
+                boot_state["whisper_warmed"] = False
+                boot_state["whisper_warm_error"] = str(exc) or type(exc).__name__
+                LOG.warning("whisper warmup failed (TRAN/TRQA/TSAR will fall "
+                            "back to the legacy tiered service): %r", exc)
+
+        asyncio.create_task(_warm_whisper())
         # Sub-system D: spawn one asyncio.Task per enabled bot. Replay
         # happens here (inside the running loop) so the bots can actually
         # schedule themselves — build_app() runs synchronously and has no
