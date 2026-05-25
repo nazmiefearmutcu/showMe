@@ -49,6 +49,9 @@ def client(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("SHOWME_HOME", str(tmp_path))
     monkeypatch.setenv("SHOWME_AUTH_TOKEN", "test-token")
     monkeypatch.setenv("SHOWME_CREDENTIAL_BACKEND", "memory")
+    # 2026-05-24 rebuild: /api/templates/* is dev-only — this test suite
+    # touches the template route in 3 cases, so force the gate on.
+    monkeypatch.setenv("SHOWME_DEV", "1")
     # Reset factory state — tests below register their own credential.
     from showme.brokers import factory as factory_mod
     factory_mod._DYNAMIC.clear()

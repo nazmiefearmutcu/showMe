@@ -43,6 +43,17 @@ class TRQAFunction(BaseFunction):
         # input" reason when the real cause was a transcription error. Track
         # the failures so they surface in `provider_errors`.
         transcribe_errors: list[str] = []
+        # If the caller asked us to transcribe (audio_url / audio_path) and
+        # the bundled large-v3 singleton isn't warmed yet, surface a
+        # transient warning so the UI can suggest a retry. Load failures
+        # are permanent — only "still warming" is transient.
+        if not text and (params.get("audio_url") or params.get("audio_path")):
+            try:
+                from showme.whisper_analyzer import WhisperAnalyzer  # noqa: PLC0415
+                if not WhisperAnalyzer.is_available() and WhisperAnalyzer.load_error() is None:
+                    transcribe_errors.append("whisper: large-v3 not yet warmed, retry in ~30s")
+            except Exception:  # noqa: BLE001 - singleton optional
+                pass
         # Whisper-transcribe if needed
         if not text and params.get("audio_url"):
             try:

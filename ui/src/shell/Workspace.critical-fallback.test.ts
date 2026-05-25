@@ -88,10 +88,11 @@ describe("S05 · critical codes cannot fall through to template/design/stub", ()
 });
 
 describe("S05 · non-critical codes keep the precedence ladder", () => {
-  it("non-critical code with template only resolves to template", () => {
-    // STRS is a known template-only code from S13 — pin it as the
-    // canonical "template-only still template" smoke.
-    expect(choosePaneRenderer("STRS")).toBe("template");
+  it("non-critical code without a bespoke pane resolves to stub (ManifestPane fallback)", () => {
+    // 2026-05-24 rebuild: template / design-export resolvers were stubbed
+    // out of production paths; the resolver now collapses any non-native
+    // non-critical code to "stub", which Workspace.tsx maps to ManifestPane.
+    expect(choosePaneRenderer("STRS")).toBe("stub");
   });
 
   it("non-critical code with a fully empty resolver falls through to stub", () => {
