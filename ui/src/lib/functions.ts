@@ -4,6 +4,7 @@
  * Round 14 keeps this HTTP-based; Round 18 will swap the underlying
  * transport for a proper Tauri command without touching the call sites.
  */
+import { recordPaneContract } from "./pane-contract-store";
 import { loadSidecarAuthToken, waitForSidecarReady } from "./sidecar";
 import { useAppStore } from "./store";
 
@@ -226,7 +227,79 @@ async function _runFunctionUnshared<TData = unknown>(
     payload.elapsed_ms = Math.max(0, Date.now() - requestStartedAt);
   }
   useAppStore.getState().setSidecarStatus("healthy");
+  // 2026-05-25 rebuild: stamp the manifest contract envelope into the
+  // pane-contract-store for EVERY /api/fn/{code} response — not just the
+  // ones routed through useFunction. Bespoke panes (WATCH, PORT, MIS,
+  // etc.) that ship their own fetch wrappers still trigger the strip.
+  try {
+    _stampContract(code, opts.symbol, payload);
+  } catch {
+    /* never let the contract recorder crash a function call */
+  }
   return payload;
+}
+
+function _stampContract<T>(
+  code: string,
+  symbol: string | undefined,
+  res: FunctionCallResult<T>,
+): void {
+  if (!res || typeof res !== "object") return;
+  const r = res as unknown as Record<string, unknown>;
+  const data = (r.data ?? {}) as Record<string, unknown>;
+  const metadata = (r.metadata ?? data.metadata ?? {}) as Record<string, unknown>;
+  const sources = _stringList(r.sources ?? data.sources ?? metadata.sources);
+  const warnings = _stringList(r.warnings ?? data.warnings ?? metadata.warnings);
+  const nextActions = _stringList(data.next_actions ?? metadata.next_actions);
+  const dataMode =
+    _str(data.data_mode) ||
+    _str(r.data_mode) ||
+    _str(metadata.data_mode) ||
+    _legacyDataState(r, data, metadata);
+  const asOf =
+    _str(data.as_of) ||
+    _str(r.as_of) ||
+    _str(r.fetched_at);
+  const latency =
+    _num(r.elapsed_ms) ?? _num(r.latency_ms) ?? _num(data.latency_ms);
+  recordPaneContract(code, symbol, {
+    dataMode,
+    asOf,
+    sources: sources.length ? sources : undefined,
+    warnings: warnings.length ? warnings : undefined,
+    nextActions: nextActions.length ? nextActions : undefined,
+    latencyMs: latency,
+    receivedAt: Date.now(),
+  });
+}
+
+function _str(v: unknown): string | undefined {
+  return typeof v === "string" && v.length > 0 ? v : undefined;
+}
+function _num(v: unknown): number | undefined {
+  return typeof v === "number" && Number.isFinite(v) ? v : undefined;
+}
+function _stringList(v: unknown): string[] {
+  if (!Array.isArray(v)) return [];
+  return v.filter((x): x is string => typeof x === "string" && x.length > 0);
+}
+function _legacyDataState(
+  r: Record<string, unknown>,
+  data: Record<string, unknown>,
+  metadata: Record<string, unknown>,
+): string | undefined {
+  const ds = r.data_state ?? data.data_state ?? metadata.data_state;
+  if (typeof ds === "string") {
+    const map: Record<string, string> = {
+      live: "live_exchange",
+      reference: "delayed_reference",
+      model: "modeled",
+      synthetic: "modeled",
+    };
+    if (ds in map) return map[ds];
+  }
+  if (metadata.degraded === true) return "provider_unavailable";
+  return undefined;
 }
 
 function wait(ms: number): Promise<void> {
