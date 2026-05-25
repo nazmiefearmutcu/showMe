@@ -10,6 +10,8 @@ import { useWorkspace } from "@/lib/workspace";
 import { useAppStore } from "@/lib/store";
 import { t } from "@/i18n";
 import { useFocusTrap } from "@/lib/a11y";
+import { usePaneContract } from "@/lib/pane-contract-store";
+import { fetchManifests, useManifest } from "@/manifest/registry";
 import {
   makePinnedItemForPane,
   pinItem,
@@ -267,6 +269,7 @@ export function PaneChrome({ leafId, code, symbol, linkGroup }: PaneChromeProps)
           onDismiss={() => setPicker(false)}
         />
       )}
+      <ContractInline code={code} symbol={symbol} />
       {dragPreview && (
         <div
           className={`pin-drag-ghost${dragPreview.overPinned ? " pin-drag-ghost--over-pin" : ""}`}
@@ -281,6 +284,113 @@ export function PaneChrome({ leafId, code, symbol, linkGroup }: PaneChromeProps)
     </header>
   );
 }
+
+const MODE_TONE: Record<string, string> = {
+  live_official: "positive",
+  live_exchange: "positive",
+  delayed_reference: "neutral",
+  modeled: "warn",
+  cached_snapshot: "neutral",
+  provider_unavailable: "negative",
+  not_configured: "muted",
+};
+
+const MODE_LABEL: Record<string, string> = {
+  live_official: "LIVE · OFFICIAL",
+  live_exchange: "LIVE · EXCHANGE",
+  delayed_reference: "DELAYED",
+  modeled: "MODELED",
+  cached_snapshot: "CACHED",
+  provider_unavailable: "PROVIDER DOWN",
+  not_configured: "NOT CONFIGURED",
+};
+
+/**
+ * ContractInline — compact inline contract surface that sits INSIDE the
+ * existing PaneChrome header row (not as a separate band) so an empty
+ * pane body never leaves the badge floating in dead space. Three signals:
+ *
+ *   • mode pill (data_mode) — only renders when useFunction or
+ *     sidecarFetch has landed a snapshot for this leaf
+ *   • src tag — first provider name when available
+ *   • man dot — tiny manifest indicator, hover shows category + primary
+ *     + N inputs from the FunctionManifest registry
+ *
+ * Designed to add ~120px of horizontal real estate to PaneChrome rather
+ * than introducing a new visual row.
+ */
+function ContractInline({ code, symbol }: { code: string; symbol?: string }) {
+  const snap = usePaneContract(code, symbol);
+  const manifest = useManifest(code);
+
+  // Trigger a one-shot manifest fetch the first time PaneChrome mounts;
+  // the registry deduplicates further calls.
+  useEffect(() => {
+    if (!manifest) void fetchManifests().catch(() => undefined);
+  }, [manifest]);
+
+  if (!snap && !manifest) return null;
+  const mode = snap?.dataMode;
+  const tone = (mode && MODE_TONE[mode]) || "muted";
+  const modeLabel = mode ? MODE_LABEL[mode] || mode.toUpperCase() : null;
+  const firstSource = snap?.sources?.[0];
+  const sourceMore = (snap?.sources?.length ?? 0) - 1;
+  const warningCount = snap?.warnings?.length ?? 0;
+  const manifestTitle = manifest
+    ? `Manifest: ${manifest.category} · primary ${manifest.provider_chain.primary} · ${manifest.inputs.length} inputs`
+    : undefined;
+  const snapshotTitle = snap
+    ? `Data mode: ${mode ?? "—"}\nSources: ${snap.sources?.join(", ") ?? "—"}\nAs of: ${snap.asOf ?? "—"}\nLatency: ${snap.latencyMs ?? "—"} ms\nWarnings: ${snap.warnings?.length ?? 0}\nNext actions: ${snap.nextActions?.join(", ") ?? "—"}`
+    : undefined;
+  return (
+    <span
+      className="pane-chrome__contract-inline"
+      data-testid="pane-chrome-contract"
+      data-data-mode={mode ?? ""}
+      role="status"
+      aria-label="Pane manifest and data mode"
+    >
+      {manifest && (
+        <span
+          className="pane-chrome__manifest-dot"
+          title={manifestTitle}
+          data-testid="pane-chrome-manifest"
+          aria-label={manifestTitle}
+        >
+          M
+        </span>
+      )}
+      {modeLabel && (
+        <span
+          className={`pane-chrome__mode pane-chrome__mode--${tone}`}
+          title={snapshotTitle}
+          data-testid="pane-chrome-mode"
+        >
+          {modeLabel}
+        </span>
+      )}
+      {firstSource && (
+        <span
+          className="pane-chrome__sources"
+          title={snapshotTitle}
+          data-testid="pane-chrome-sources"
+        >
+          {firstSource}{sourceMore > 0 ? `+${sourceMore}` : ""}
+        </span>
+      )}
+      {warningCount > 0 && (
+        <span
+          className="pane-chrome__warnings"
+          title={snap?.warnings?.join("\n")}
+          data-testid="pane-chrome-warnings"
+        >
+          ⚠{warningCount}
+        </span>
+      )}
+    </span>
+  );
+}
+
 
 function isInteractiveTarget(target: EventTarget | null): boolean {
   return (
