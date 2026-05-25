@@ -95,6 +95,19 @@ hiddenimports = [
     "transformers.models.roberta",
     "transformers.models.roberta.modeling_roberta",
     "transformers.models.roberta.tokenization_roberta_fast",
+    # FinBERT (ProsusAI/finbert) is BERT-based — explicit import keeps the
+    # bundle honest even if a future PyInstaller drops collect_submodules
+    # coverage for the bert family.
+    "transformers.models.bert",
+    "transformers.models.bert.modeling_bert",
+    "transformers.models.bert.tokenization_bert_fast",
+    # Whisper large-v3 singleton (showme.whisper_analyzer) — explicit so
+    # the frozen bundle ships the ASR head + feature extractor + tokenizer
+    # even when collect_submodules("transformers") misses something on a
+    # given build host (PyInstaller's auto-detection is best-effort).
+    "transformers.models.whisper",
+    "transformers.models.whisper.feature_extraction_whisper",
+    "transformers.models.whisper.tokenization_whisper",
     "tokenizers",
     "safetensors",
     "safetensors.torch",
@@ -115,6 +128,18 @@ hiddenimports = [
     "curl_cffi",
     "curl_cffi.requests",
     "certifi",
+    # Rebuild 2026-05-24: new manifest contract + provider adapter layer +
+    # local analytical core (DuckDB + Polars). Add explicit hidden imports
+    # so PyInstaller bundles them even if collect_submodules("showme")
+    # misses transitive deps in the frozen extraction.
+    "duckdb",
+    "polars",
+    "polars.dependencies",
+    "pyarrow",
+    "pyarrow.lib",
+    "pyarrow.parquet",
+    "httpx",
+    "httpx._transports.default",
 ]
 datas += collect_data_files("yfinance")
 datas += collect_data_files("transformers", include_py_files=False)
