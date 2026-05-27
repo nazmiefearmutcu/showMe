@@ -1,0 +1,28 @@
+cff-version: 1.2.0
+title: "ShowMe — open-source macOS market cockpit"
+message: "If you use this software, please cite it using the metadata below."
+type: software
+authors:
+  - alias: nazmiefearmutcu
+    given-names: Aylin
+    website: https://github.com/nazmiefearmutcu
+repository-code: https://github.com/nazmiefearmutcu/showMe
+url: https://github.com/nazmiefearmutcu/showMe
+license: MIT
+keywords:
+  - macos
+  - tauri
+  - python
+  - react
+  - market-data
+  - technical-indicators
+  - consensus-scan
+  - multi-timeframe
+  - ccxt
+abstract: >-
+  ShowMe is a native macOS market cockpit. Tauri shell (Rust, signed
+  updater) wraps a Python sidecar (FastAPI) that ships a 141-function
+  market engine, including a 12-timeframe consensus scan over 3 370
+  symbols (crypto + equity + ETF + FX + commodity + bond) with 23
+  per-market-calibrated technical indicators. React + TypeScript UI.
+  Read-only by default; trading is explicit per-credential opt-in.
