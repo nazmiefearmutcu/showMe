@@ -1,5 +1,11 @@
 # showMe
 
+[![License: MIT](https://img.shields.io/github/license/nazmiefearmutcu/showMe?color=blue)](LICENSE)
+[![Stars](https://img.shields.io/github/stars/nazmiefearmutcu/showMe?style=flat&logo=github)](https://github.com/nazmiefearmutcu/showMe/stargazers)
+[![Tauri](https://img.shields.io/badge/shell-Tauri%202-24c8db?logo=tauri&logoColor=white)](https://tauri.app/)
+[![Python](https://img.shields.io/badge/sidecar-Python%203.11%2B-3776ab?logo=python&logoColor=white)](https://python.org)
+[![Platform](https://img.shields.io/badge/platform-macOS%20ARM64-lightgrey?logo=apple&logoColor=white)](#)
+
 Native macOS (ARM64) market cockpit. A thin Tauri shell, a React/Vite UI,
 and a unified Python backend that ships the **141-function** market engine
 (live snapshot of `/api/function-index`; baseline ≥138) as a regular
