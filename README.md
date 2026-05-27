@@ -5,6 +5,19 @@ and a unified Python backend that ships the **141-function** market engine
 (live snapshot of `/api/function-index`; baseline ≥138) as a regular
 `showme.engine` subpackage.
 
+## Preview
+
+| Cockpit | Function library |
+| --- | --- |
+| ![Welcome dashboard with KPI strip, Bullish gauge, daily brief, sidebar of functions](docs/screenshots/01-cockpit.png) | ![⌘K command palette listing the 141-function library by code and name](docs/screenshots/02-function-palette.png) |
+
+| Single-symbol research | Multi-Indicator Scan |
+| --- | --- |
+| ![SPX equity research pane with brief / quality / fundamentals tabs](docs/screenshots/03-symbol-equity-view.png) | ![MIS pane: 12-timeframe consensus scan with Crypto/Equity/ETF/FX/Index/Future market filters](docs/screenshots/04-mis-scan.png) |
+
+Native macOS .app (Tauri + signed updater). Boot from `/Applications/showMe.app` after a `npm run build:native`.
+
+
 > **2026-05-25 rebuild:** Fallback-driven → contract-first. 143 manifest
 > seeds registered, production-fakery scrubbed to 0 (strict-zero gate ON),
 > FinBERT + Whisper large-v3 + CME FedWatch wired, every panel header now
