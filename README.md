@@ -6,10 +6,9 @@
 [![Python](https://img.shields.io/badge/sidecar-Python%203.11%2B-3776ab?logo=python&logoColor=white)](https://python.org)
 [![Platform](https://img.shields.io/badge/platform-macOS%20ARM64-lightgrey?logo=apple&logoColor=white)](#)
 
-Native macOS (ARM64) market cockpit. A thin Tauri shell, a React/Vite UI,
-and a unified Python backend that ships the **141-function** market engine
-(live snapshot of `/api/function-index`; baseline ≥138) as a regular
-`showme.engine` subpackage.
+**Trading terminal for macOS. Scans 3 370 symbols across 12 timeframes simultaneously to surface what's moving together — and gives you the rest of the analyst workflow (charts, sentiment, paper trading, strategy editor) on top.** Free + source-available, runs entirely on your own machine, no subscription, no broker lock-in.
+
+Under the hood: a thin Tauri shell (Rust, signed updater), a React/Vite UI, and a unified Python backend that ships the **141-function** market engine (live snapshot of `/api/function-index`; baseline ≥138) as a regular `showme.engine` subpackage.
 
 ## Preview
 
