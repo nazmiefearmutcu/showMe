@@ -34,6 +34,44 @@ Native macOS .app (Tauri + signed updater). Boot from `/Applications/showMe.app`
 > Last updated: 2026-05-25. Function/indicator/pane counts are the live
 > values; if they drift, run `npm run audit:functions` and update.
 
+## Architecture (at a glance)
+
+```mermaid
+flowchart LR
+    subgraph shell["Native shell"]
+      tauri["Tauri 2 / Rust<br/>lifecycle · tray · menubar<br/>signed updater"]
+    end
+
+    subgraph ui["UI process"]
+      react["React + Vite + Tailwind<br/>zustand store<br/>30 function components"]
+      ds["Design system<br/>command palette<br/>i18n (en / tr)"]
+    end
+
+    subgraph backend["Sidecar"]
+      fastapi["FastAPI<br/>/api/health, /function-index<br/>/fn/* contracts"]
+      engine["showme.engine<br/>141-function market engine<br/>23 indicators · 12 TFs"]
+      manifest["Manifest seeds<br/>strict-zero gate<br/>data-mode pills"]
+      brokers["Brokers<br/>paper · alpaca · factory"]
+      ml["ML adapters<br/>FinBERT · X-sentiment<br/>(opt-in)"]
+    end
+
+    user(["User"]) -->|click / search| react
+    react -->|IPC bridge| tauri
+    tauri -->|spawn + HTTP| fastapi
+    fastapi --> engine
+    fastapi --> manifest
+    fastapi --> brokers
+    fastapi -.opt-in.-> ml
+    react -->|fetch JSON| fastapi
+
+    classDef shellNode fill:#dc572115,stroke:#dc5721,color:#dc5721
+    classDef uiNode fill:#61dbfb15,stroke:#61dbfb,color:#61dbfb
+    classDef beNode fill:#1f6bff15,stroke:#1f6bff,color:#1f6bff
+    class tauri shellNode
+    class react,ds uiNode
+    class fastapi,engine,manifest,brokers,ml beNode
+```
+
 ## Layout
 
 ```
