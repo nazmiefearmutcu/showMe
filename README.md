@@ -5,8 +5,11 @@
 [![Tauri](https://img.shields.io/badge/shell-Tauri%202-24c8db?logo=tauri&logoColor=white)](https://tauri.app/)
 [![Python](https://img.shields.io/badge/sidecar-Python%203.11%2B-3776ab?logo=python&logoColor=white)](https://python.org)
 [![Platform](https://img.shields.io/badge/platform-macOS%20ARM64-lightgrey?logo=apple&logoColor=white)](#)
+[![Backend](https://img.shields.io/badge/backend-pytest-success)](#maintainer-quickstart)
+[![UI](https://img.shields.io/badge/ui-vitest-success)](#maintainer-quickstart)
+[![Native](https://img.shields.io/badge/native-tauri%20smoke-blue)](#maintainer-quickstart)
 
-**Trading terminal for macOS. Scans 3 370 symbols across 12 timeframes simultaneously to surface what's moving together — and gives you the rest of the analyst workflow (charts, sentiment, paper trading, strategy editor) on top.** Free + source-available, runs entirely on your own machine, no subscription, no broker lock-in.
+**Trading terminal for macOS. Scans 3 370 symbols across 12 timeframes simultaneously to surface what's moving together — and gives you the rest of the analyst workflow (charts, sentiment, paper trading, strategy editor) on top.** MIT-licensed open source, runs entirely on your own machine, no subscription, no broker lock-in.
 
 Under the hood: a thin Tauri shell (Rust, signed updater), a React/Vite UI, and a unified Python backend that ships the **141-function** market engine (live snapshot of `/api/function-index`; baseline ≥138) as a regular `showme.engine` subpackage.
 
@@ -144,6 +147,16 @@ npm run tauri:dev
 
 # 4 — (optional but recommended) install pre-commit hooks
 pip install pre-commit && pre-commit install
+```
+
+## Maintainer quickstart
+
+```bash
+npm install
+npm run test:backend          # backend pytest suite
+npm --workspace ui test       # UI unit tests
+npm run test:e2e:smoke:fast   # fast Playwright smoke path
+npm run tauri:build           # native bundle smoke before release
 ```
 
 Without the Rust toolchain you can still inspect the UI in browser-mode:

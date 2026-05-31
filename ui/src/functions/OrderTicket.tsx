@@ -122,12 +122,14 @@ export function OrderTicket({ credentialId, brokerName, accountLabel }: Props) {
 
   if (!isMyTicket) {
     return (
-      <div style={{ padding: "8px 0" }}>
+      <div className="order-ticket-closed">
         <button
+          type="button"
+          className="btn btn--accent order-ticket-open"
           onClick={() => open(credentialId, brokerName, accountLabel)}
           data-testid="order-ticket-trade-btn"
         >
-          Trade…
+          Trade
         </button>
       </div>
     );
@@ -155,15 +157,15 @@ export function OrderTicket({ credentialId, brokerName, accountLabel }: Props) {
   const formValid = symbolValid && qtyValid && limitValid && stopValid && !submitting;
 
   return (
-    <div style={{ padding: 8, border: "1px solid var(--border-1)", marginTop: 8 }}>
-      <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6 }}>
+    <div className="order-ticket">
+      <div className="order-ticket__head">
         <strong>Yeni emir — {brokerName}</strong>
-        <button onClick={close} style={{ marginLeft: "auto" }} aria-label="Kapat">×</button>
+        <button type="button" onClick={close} className="btn btn--ghost order-ticket__close" aria-label="Kapat">×</button>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
-        <label>
-          Symbol
+      <div className="order-ticket__grid">
+        <label className="order-ticket__field">
+          <span>Symbol</span>
           <input
             value={t.symbol}
             onChange={(e) => {
@@ -181,28 +183,28 @@ export function OrderTicket({ credentialId, brokerName, accountLabel }: Props) {
           {symbolErr && (
             <div
               data-testid="order-ticket-symbol-err"
-              style={{ color: "var(--accent-err)", fontSize: 11 }}
+              className="order-ticket__error"
             >
               {symbolHint}
             </div>
           )}
         </label>
-        <label>
-          Side
+        <label className="order-ticket__field">
+          <span>Side</span>
           <select value={t.side} onChange={(e) => setField("side", e.target.value as OrderSide)}>
             <option value="buy">Buy</option>
             <option value="sell">Sell</option>
           </select>
         </label>
-        <label>
-          Type
+        <label className="order-ticket__field">
+          <span>Type</span>
           <select value={t.orderType}
                   onChange={(e) => setField("orderType", e.target.value as OrderType)}>
             {ORDER_TYPES.map((o) => <option key={o} value={o}>{o}</option>)}
           </select>
         </label>
-        <label>
-          Quantity
+        <label className="order-ticket__field">
+          <span>Quantity</span>
           <input
             type="number"
             step="any"
@@ -228,15 +230,15 @@ export function OrderTicket({ credentialId, brokerName, accountLabel }: Props) {
           {qtyErr && (
             <div
               data-testid="order-ticket-quantity-err"
-              style={{ color: "var(--accent-err)", fontSize: 11 }}
+              className="order-ticket__error"
             >
               Geçerli pozitif sayı girin.
             </div>
           )}
         </label>
         {showLimit && (
-          <label>
-            Limit price
+          <label className="order-ticket__field">
+            <span>Limit price</span>
             <input
               type="number"
               step="any"
@@ -256,7 +258,7 @@ export function OrderTicket({ credentialId, brokerName, accountLabel }: Props) {
             {limitErr && (
               <div
                 data-testid="order-ticket-limit-err"
-                style={{ color: "var(--accent-err)", fontSize: 11 }}
+                className="order-ticket__error"
               >
                 Limit fiyatı pozitif olmalı.
               </div>
@@ -264,8 +266,8 @@ export function OrderTicket({ credentialId, brokerName, accountLabel }: Props) {
           </label>
         )}
         {showStop && (
-          <label>
-            Stop price
+          <label className="order-ticket__field">
+            <span>Stop price</span>
             <input
               type="number"
               step="any"
@@ -285,27 +287,28 @@ export function OrderTicket({ credentialId, brokerName, accountLabel }: Props) {
             {stopErr && (
               <div
                 data-testid="order-ticket-stop-err"
-                style={{ color: "var(--accent-err)", fontSize: 11 }}
+                className="order-ticket__error"
               >
                 Stop fiyatı pozitif olmalı.
               </div>
             )}
           </label>
         )}
-        <label>
-          TIF
+        <label className="order-ticket__field">
+          <span>TIF</span>
           <select value={t.tif} onChange={(e) => setField("tif", e.target.value as TimeInForce)}>
             {TIFS.map((v) => <option key={v} value={v}>{v.toUpperCase()}</option>)}
           </select>
         </label>
-        <label>
-          Notes
+        <label className="order-ticket__field order-ticket__field--wide">
+          <span>Notes</span>
           <input value={t.notes} onChange={(e) => setField("notes", e.target.value)} maxLength={64} />
         </label>
       </div>
 
       <button
-        style={{ marginTop: 8 }}
+        type="button"
+        className="btn btn--accent order-ticket__continue"
         onClick={() => request(accountLabel || t.accountLabel)}
         disabled={!formValid}
         data-testid="order-ticket-continue-btn"
@@ -316,8 +319,8 @@ export function OrderTicket({ credentialId, brokerName, accountLabel }: Props) {
       {lastResult && lastResult.kind === "submit" && (
         <div
           data-testid="order-ticket-last-result"
-          style={{ marginTop: 6,
-                   color: lastResult.ok ? "var(--accent-ok)" : "var(--accent-err)" }}>
+          className={`order-ticket__result${lastResult.ok ? " order-ticket__result--ok" : " order-ticket__result--err"}`}
+        >
           {lastResult.ok
             ? `Emir gönderildi (id ${lastResult.orderId ?? "?"})`
             : `Hata: ${lastResult.error ?? "bilinmiyor"}`}
@@ -365,34 +368,28 @@ function ConfirmModal({ accountLabel }: { accountLabel: string }) {
   return (
     <div role="dialog" aria-modal="true"
          data-testid="confirm-modal-backdrop"
+         className="order-confirm-backdrop"
          onClick={(e) => {
            // Round 24 HIGH — backdrop click dismisses; ignore bubbled
            // clicks from inside the modal body. Short-circuit when
            // submitting because the in-flight POST can't be aborted from
            // here and closing the modal mid-flight is a UX surprise.
            if (e.target === e.currentTarget && !submitting) dismiss();
-         }}
-         style={{
-           position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)",
-           display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000,
          }}>
       <div
         onClick={(e) => e.stopPropagation()}
         data-testid="confirm-modal-body"
-        style={{
-          background: "var(--surface-1)", padding: 16, minWidth: 360,
-          border: "1px solid var(--border-1)",
-        }}
+        className="order-confirm"
       >
-        <h3 style={{ marginTop: 0 }}>Onay gerekli — {verb}</h3>
-        <div style={{ marginBottom: 8, fontSize: 12, color: "var(--fg-2)" }}>
+        <h3>Onay gerekli — {verb}</h3>
+        <div className="order-confirm__copy">
           {expected ? (
             <>
               Gerçek hesapta {verb} işlemi yapılacak.
               Devam etmek için bağlantının <strong>account_label</strong>'ını yaz: <code>{expected}</code>
             </>
           ) : (
-            <span style={{ color: "var(--accent-err)" }}>
+            <span className="order-ticket__error">
               Aktif hesap seçilmedi (account_label boş). İşlem reddedilecek.
             </span>
           )}
@@ -402,15 +399,14 @@ function ConfirmModal({ accountLabel }: { accountLabel: string }) {
                disabled={!expected || submitting}
                autoFocus
                data-testid="confirm-modal-typed-input"
-               style={{ width: "100%", marginBottom: 8 }} />
-        <pre style={{ background: "var(--surface-2)", padding: 8, fontSize: 11,
-                      maxHeight: 120, overflow: "auto" }}>
+               className="order-confirm__input" />
+        <pre className="order-confirm__payload">
 {JSON.stringify(pending.payload, null, 2)}
         </pre>
-        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 8 }}>
-          <button onClick={dismiss} disabled={submitting}
+        <div className="order-confirm__actions">
+          <button type="button" className="btn btn--ghost" onClick={dismiss} disabled={submitting}
                   data-testid="confirm-modal-cancel-btn">İptal</button>
-          <button onClick={() => {
+          <button type="button" className="btn btn--accent order-confirm__danger" onClick={() => {
                     // Round 24 CRITICAL (REAL MONEY) — local short-circuit
                     // is the cheapest layer: hardware double-clicks fire
                     // onClick twice within ~50ms; the second event races
@@ -425,9 +421,7 @@ function ConfirmModal({ accountLabel }: { accountLabel: string }) {
                     confirm(typed);
                   }}
                   disabled={!okLabel || submitting}
-                  data-testid="confirm-modal-confirm-btn"
-                  style={{ background: okLabel ? "var(--accent-err)" : undefined,
-                           color: okLabel ? "white" : undefined }}>
+                  data-testid="confirm-modal-confirm-btn">
             {submitting ? "…" : "Gönder"}
           </button>
         </div>

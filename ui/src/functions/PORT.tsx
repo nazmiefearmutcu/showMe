@@ -5,11 +5,8 @@
  * position table with DeltaChip P&L pills, accent symbol links, weight
  * progress fills, and ghost action buttons. All colors token-driven.
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
-  Card,
-  CardBody,
-  CardHeader,
   ChangeText,
   DataGrid,
   type DataGridColumn,
@@ -21,7 +18,6 @@ import {
   PaneHeader,
   Pill,
   Skeleton,
-  StatCard,
 } from "@/design-system";
 import { useFunction } from "@/lib/useFunction";
 import { useVisibilityTick } from "@/lib/useVisibilityTick";
@@ -29,7 +25,13 @@ import { subscribeQuote, type StreamStatus } from "@/lib/stream";
 import { navigate } from "@/lib/router";
 import { sidecarFetch } from "@/lib/sidecar";
 import { confirmAction } from "@/lib/confirm";
-import { formatCurrency, formatMissing, formatPrice } from "@/lib/format";
+import {
+  formatCurrency,
+  formatMissing,
+  formatNumber,
+  formatPercent,
+  formatPrice,
+} from "@/lib/format";
 import { usePortfolioStore, type PortfolioGroup } from "@/lib/portfolio-store";
 import { useExchangeStore } from "@/lib/exchange-store";
 import {
@@ -135,32 +137,116 @@ function makeTrend(seed: number, n = 16): number[] {
   return out;
 }
 
-function AggregateHeader() {
+function PortfolioExchangeDeck({ hasAnyCredential }: { hasAnyCredential: boolean }) {
+  const groups = usePortfolioStore((s) => s.groups);
+  const loading = usePortfolioStore((s) => s.loading);
+  const aggregateError = usePortfolioStore((s) => s.error);
+
+  if (!hasAnyCredential) {
+    return <PortfolioOnboarding />;
+  }
+
+  return (
+    <section className="port-exchange-deck" aria-label="Connected exchange portfolio">
+      <PortfolioCommandBar />
+      <SourceFilter />
+      {aggregateError ? (
+        <div className="port-alert port-alert--error">{aggregateError}</div>
+      ) : null}
+      {groups.length === 0 ? (
+        <div className="port-empty-terminal">
+          {loading ? (
+            <>
+              <Skeleton height={20} width="28%" />
+              <Skeleton height={78} />
+            </>
+          ) : (
+            <span>Broker snapshot is empty.</span>
+          )}
+        </div>
+      ) : (
+        <div className="port-accounts-grid">
+          {groups.map((g) => (
+            <CredentialGroup key={g.credential_id} g={g} />
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function PortfolioOnboarding() {
+  return (
+    <section className="port-empty-terminal port-empty-terminal--action">
+      <div className="port-empty-terminal__copy">
+        <strong>Connect Exchange</strong>
+        <span>Bağlı borsa yok. /CONN üzerinden read-only veya trade izinli bağlantı ekle.</span>
+      </div>
+      <button type="button" className="btn btn--accent" onClick={() => navigate("/fn/CONN")}>
+        Open CONN
+      </button>
+    </section>
+  );
+}
+
+function PortfolioCommandBar() {
   const totals = usePortfolioStore((s) => s.totals);
   const lastFetched = usePortfolioStore((s) => s.lastFetchedAt);
   const load = usePortfolioStore((s) => s.loadPortfolio);
+  const loading = usePortfolioStore((s) => s.loading);
   const groups = usePortfolioStore((s) => s.groups);
+  const credentials = useExchangeStore((s) => s.credentials);
   const errors = groups.filter((g) => g.error).length;
+  const accountEquity = groups.reduce((sum, g) => sum + (g.account?.equity ?? 0), 0);
+  const positions = groups.reduce((sum, g) => sum + g.positions.length, 0);
+  const orders = groups.reduce((sum, g) => sum + g.orders.length, 0);
+  const currencies = Object.keys(totals.equity_by_currency ?? {});
+
   return (
-    <div style={{ display: "flex", gap: 24, alignItems: "center", padding: "8px 16px",
-                  borderBottom: "1px solid var(--border-1)" }}>
-      <div>
-        <div style={{ fontSize: 10, color: "var(--fg-2)" }}>Toplam (USD stable eq.)</div>
-        <div style={{ fontSize: 22, fontWeight: 600 }}>
-          ${(totals.stable_usd_equivalent ?? 0).toLocaleString()}
-        </div>
+    <div className="port-command-bar">
+      <div className="port-command-bar__hero">
+        <span className="port-label">Net liquidation</span>
+        <strong>{formatCurrency(totals.stable_usd_equivalent ?? 0, { compact: true })}</strong>
+        <span className="port-subtle">
+          {currencies.length ? currencies.join(" / ") : "USD stable eq."}
+        </span>
       </div>
-      <div>
-        <div style={{ fontSize: 10, color: "var(--fg-2)" }}>Bağlantı</div>
-        <div>{groups.length}</div>
+      <div className="port-command-bar__stats">
+        <AccountStat label="Connections" value={`${groups.length}/${credentials.length}`} />
+        <AccountStat label="Positions" value={formatNumber(positions)} />
+        <AccountStat label="Open orders" value={formatNumber(orders)} />
+        <AccountStat label="Broker equity" value={formatCurrency(accountEquity, { compact: true })} />
+        <AccountStat
+          label="Status"
+          value={errors ? `${errors} error` : loading ? "syncing" : "ready"}
+          tone={errors ? "negative" : loading ? "warn" : "positive"}
+        />
       </div>
-      {errors > 0 && (
-        <div style={{ color: "var(--accent-err)" }}>Hata: {errors}</div>
-      )}
-      <div style={{ marginLeft: "auto", fontSize: 11, color: "var(--fg-2)" }}>
-        {lastFetched ? `Son: ${new Date(lastFetched).toLocaleTimeString()}` : ""}
+      <div className="port-command-bar__actions">
+        <span className="port-subtle">
+          {lastFetched ? `Last ${new Date(lastFetched).toLocaleTimeString()}` : "Not fetched"}
+        </span>
+        <button className="btn btn--ghost port-icon-btn" type="button" onClick={() => load()} disabled={loading} title="Refresh portfolio">
+          {loading ? "..." : "↻"}
+        </button>
       </div>
-      <button onClick={() => load()}>Yenile</button>
+    </div>
+  );
+}
+
+function AccountStat({
+  label,
+  value,
+  tone = "neutral",
+}: {
+  label: string;
+  value: ReactNode;
+  tone?: "neutral" | "positive" | "negative" | "warn";
+}) {
+  return (
+    <div className={`port-account-stat port-account-stat--${tone}`}>
+      <span>{label}</span>
+      <strong>{value}</strong>
     </div>
   );
 }
@@ -183,35 +269,39 @@ function SourceFilter() {
     }
   };
   return (
-    <div style={{
-      display: "flex", flexWrap: "wrap", gap: 4, padding: "6px 16px",
-      alignItems: "center",
-    }}>
-      <button onClick={() => setSel(null)} aria-pressed={isAll}
-              style={{ opacity: isAll ? 1 : 0.55 }}>Hepsi</button>
+    <div className="port-source-filter">
+      <button
+        type="button"
+        onClick={() => setSel(null)}
+        aria-pressed={isAll}
+        className={`port-source-chip${isAll ? " port-source-chip--active" : ""}`}
+      >
+        All
+      </button>
       {credentials.map((c) => {
         const active = isAll || selected?.includes(c.id);
         return (
-          <button key={c.id} onClick={toggle(c.id)} aria-pressed={!!active}
-                  style={{ opacity: active ? 1 : 0.55, fontSize: 11 }}>
+          <button
+            key={c.id}
+            type="button"
+            onClick={toggle(c.id)}
+            aria-pressed={!!active}
+            className={`port-source-chip${active ? " port-source-chip--active" : ""}`}
+          >
             {c.exchange_id}:{c.account_label}
           </button>
         );
       })}
-      <span style={{ width: 1, height: 14, background: "var(--border-1)", margin: "0 6px" }} />
+      <span className="port-source-filter__divider" />
       <button
+        type="button"
         onClick={() => setIncludeOrders(!includeOrders)}
         aria-pressed={includeOrders}
         data-testid="port-include-orders-toggle"
         title="Açık emirleri de portföy fetch'ine dahil et"
-        style={{
-          opacity: includeOrders ? 1 : 0.55,
-          fontSize: 11,
-          border: "1px solid var(--border-1)",
-          padding: "2px 8px",
-        }}
+        className={`port-source-chip${includeOrders ? " port-source-chip--active" : ""}`}
       >
-        {includeOrders ? "Emirler: dahil" : "Emirler: hariç"}
+        {includeOrders ? "Orders included" : "Orders hidden"}
       </button>
     </div>
   );
@@ -275,11 +365,7 @@ function NonStableCurrencyBadge({ currency }: { currency: string }) {
     <span
       data-testid="port-non-stable-badge"
       title="Bu hesabın bakiyesi toplam USD'ye eklenmedi."
-      style={{
-        fontSize: 10, fontWeight: 600, color: "var(--accent-warn)",
-        border: "1px solid var(--accent-warn)",
-        padding: "1px 6px", borderRadius: 4, marginLeft: 6,
-      }}
+      className="port-non-stable-badge"
     >
       {currency} (USD'ye dönüştürülmedi)
     </span>
@@ -289,10 +375,13 @@ function NonStableCurrencyBadge({ currency }: { currency: string }) {
 function CredentialGroup({ g }: { g: PortfolioGroup }) {
   if (g.error) {
     return (
-      <div style={{ padding: 12, borderBottom: "1px solid var(--border-1)" }}>
-        <strong>{g.exchange_id}:{g.account_label}</strong>
-        <div style={{ color: "var(--accent-err)" }}>{g.error}</div>
-      </div>
+      <section className="port-account-card port-account-card--error">
+        <header className="port-account-card__head">
+          <strong>{g.exchange_id}:{g.account_label}</strong>
+          <Pill tone="negative" variant="soft">error</Pill>
+        </header>
+        <div className="port-alert port-alert--error">{g.error}</div>
+      </section>
     );
   }
   const ccy = g.account?.currency;
@@ -300,25 +389,40 @@ function CredentialGroup({ g }: { g: PortfolioGroup }) {
     ccy && !isStableUsd(ccy) && g.account && g.account.equity !== 0,
   );
   return (
-    <div style={{ padding: 12, borderBottom: "1px solid var(--border-1)" }}>
-      <div style={{ display: "flex", gap: 16, alignItems: "center" }}>
-        <strong>{g.exchange_id}:{g.account_label}</strong>
-        {g.account && (
-          <span>
-            {g.account.equity.toFixed(2)} {g.account.currency}
-            <span style={{ color: "var(--fg-2)" }}> ({g.account.cash.toFixed(2)} cash)</span>
-            {showNonStableBadge && ccy && <NonStableCurrencyBadge currency={ccy} />}
-          </span>
-        )}
-      </div>
+    <section className="port-account-card">
+      <header className="port-account-card__head">
+        <div className="port-account-card__identity">
+          <strong>{g.exchange_id}:{g.account_label}</strong>
+          <span>{g.permissions.includes("trade") ? "read + trade" : "read-only"}</span>
+        </div>
+        <div className="port-account-card__pills">
+          <Pill tone={g.permissions.includes("trade") ? "warn" : "muted"} variant="soft" withDot={false}>
+            {g.permissions.includes("trade") ? "trade" : "read"}
+          </Pill>
+          <Pill tone={g.positions.length ? "positive" : "muted"} variant="soft" withDot={g.positions.length > 0}>
+            {g.positions.length} pos
+          </Pill>
+        </div>
+      </header>
+      {g.account && (
+        <div className="port-account-card__metrics">
+          <AccountStat label="Equity" value={`${g.account.equity.toFixed(2)} ${g.account.currency}`} />
+          <AccountStat label="Cash" value={`${g.account.cash.toFixed(2)} ${g.account.currency}`} />
+          <AccountStat label="Buying power" value={`${g.account.buying_power.toFixed(2)} ${g.account.currency}`} />
+          {showNonStableBadge && ccy ? <NonStableCurrencyBadge currency={ccy} /> : null}
+        </div>
+      )}
       {g.positions.length > 0 && (
-        <table style={{ width: "100%", marginTop: 6, fontSize: 12 }}>
+        <table className="port-broker-table">
           <thead>
-            <tr style={{ color: "var(--fg-2)" }}>
-              <th align="left">Symbol</th><th align="right">Qty</th>
-              <th align="right">Entry</th><th align="right">Mark</th>
+            <tr>
+              <th align="left">Symbol</th>
+              <th align="right">Qty</th>
+              <th align="right">Entry</th>
+              <th align="right">Mark</th>
+              <th align="right">Notional</th>
               <th align="right">PnL</th>
-              <th></th>
+              <th align="right">Action</th>
             </tr>
           </thead>
           <tbody>
@@ -328,24 +432,26 @@ function CredentialGroup({ g }: { g: PortfolioGroup }) {
               // same symbol — `${symbol}-${i}` collides at the React level).
               const entry = positionEntryPrice(p);
               const current = positionCurrentPrice(p);
+              const qty = Number(p.quantity) || 0;
+              const notional = qty * (current ?? entry ?? 0);
               return (
               <tr key={`${g.credential_id ?? "g"}-${p.symbol}-${i}`}>
                 <td>{p.symbol}</td>
-                <td align="right">{p.quantity}</td>
+                <td align="right">{fmtNum(p.quantity)}</td>
                 <td align="right">
                   {entry != null ? formatPrice(entry) : formatMissing}
                 </td>
                 <td align="right">
                   {current != null ? formatPrice(current) : formatMissing}
                 </td>
-                <td align="right" style={{
-                  color: (p.unrealized_pnl ?? 0) >= 0 ? "var(--accent-ok)" : "var(--accent-err)",
-                }}>
-                  {(p.unrealized_pnl ?? 0).toFixed(2)}
+                <td align="right">{formatCurrency(notional, { compact: true })}</td>
+                <td align="right">
+                  <DeltaChip value={p.unrealized_pnl ?? 0} format="currency" fractionDigits={2} />
                 </td>
                 <td align="right">
                   {g.permissions.includes("trade") && (
                     <button
+                      type="button"
                       onClick={() => useTradingStore.getState().closePosition(
                         `${g.exchange_id}:${g.credential_id}`,
                         p.symbol,
@@ -355,11 +461,7 @@ function CredentialGroup({ g }: { g: PortfolioGroup }) {
                       )}
                       data-testid={`port-broker-close-${p.symbol}`}
                       title="Gerçek brokerda pozisyonu kapatır (irreversible)"
-                      style={{
-                        border: "1px solid var(--accent-err)",
-                        color: "var(--accent-err)",
-                        padding: "2px 8px",
-                      }}
+                      className="btn btn--ghost port-danger-btn"
                     >
                       Close
                     </button>
@@ -372,11 +474,11 @@ function CredentialGroup({ g }: { g: PortfolioGroup }) {
         </table>
       )}
       {g.orders.length > 0 && (
-        <details style={{ marginTop: 8 }}>
+        <details className="port-orders-panel">
           <summary>Açık emirler ({g.orders.length})</summary>
-          <table style={{ width: "100%", fontSize: 12, marginTop: 4 }}>
+          <table className="port-broker-table">
             <thead>
-              <tr style={{ color: "var(--fg-2)" }}>
+              <tr>
                 <th align="left">Symbol</th><th>Side</th><th align="right">Qty</th>
                 <th align="right">Type</th><th align="right">Status</th><th></th>
               </tr>
@@ -392,6 +494,7 @@ function CredentialGroup({ g }: { g: PortfolioGroup }) {
                   <td align="right">
                     {g.permissions.includes("trade") && (
                       <button
+                        type="button"
                         onClick={() => useTradingStore.getState().requestCancel(
                           `${g.exchange_id}:${g.credential_id}`,
                           String(o.id ?? ""),
@@ -400,6 +503,7 @@ function CredentialGroup({ g }: { g: PortfolioGroup }) {
                         )}
                         data-testid={`port-order-cancel-${String(o.id ?? "")}`}
                         title="Emri iptal eder — onay gerekli"
+                        className="btn btn--ghost port-danger-btn"
                       >
                         Cancel
                       </button>
@@ -412,13 +516,15 @@ function CredentialGroup({ g }: { g: PortfolioGroup }) {
         </details>
       )}
       {g.permissions.includes("trade") && (
-        <OrderTicket
-          credentialId={g.credential_id}
-          brokerName={`${g.exchange_id}:${g.credential_id}`}
-          accountLabel={g.account_label}
-        />
+        <div className="port-ticket-shell">
+          <OrderTicket
+            credentialId={g.credential_id}
+            brokerName={`${g.exchange_id}:${g.credential_id}`}
+            accountLabel={g.account_label}
+          />
+        </div>
       )}
-    </div>
+    </section>
   );
 }
 
@@ -443,20 +549,6 @@ export function PORTPane({ code }: FunctionPaneProps) {
   }, [loadPortfolio, loadCredentials, portfolioTick]);
 
   const hasAnyCredential = credentialsCount > 0;
-  const aggregateSection = !hasAnyCredential ? (
-    <div style={{ padding: 24, color: "var(--fg-2)" }}>
-      Bağlı borsa yok. <strong>Connect Exchange</strong> üzerinden bir bağlantı ekle
-      (/CONN), portföyün burada görünsün.
-    </div>
-  ) : (
-    <>
-      <AggregateHeader />
-      <SourceFilter />
-      {portfolioGroups.map((g) => (
-        <CredentialGroup key={g.credential_id} g={g} />
-      ))}
-    </>
-  );
 
   const { state, data, error, refetch } = useFunction<PortData>({ code });
   const positions = useMemo(() => data?.data?.positions ?? [], [data?.data?.positions]);
@@ -508,7 +600,7 @@ export function PORTPane({ code }: FunctionPaneProps) {
       if (!tick) return p;
       const last = tick.price;
       const qty = Number(p.quantity) || 0;
-      const cost = Number(p.avg_cost) || 0;
+      const cost = positionEntryPrice(p) ?? 0;
       const market_value = qty * last;
       const unrealized_pnl = market_value - qty * cost;
       return {
@@ -532,7 +624,7 @@ export function PORTPane({ code }: FunctionPaneProps) {
     if (Object.keys(live).length === 0) return totals;
     const mv = enriched.reduce((s, p) => s + (Number(p.market_value) || 0), 0);
     const cost = enriched.reduce(
-      (s, p) => s + (Number(p.quantity) || 0) * (Number(p.avg_cost) || 0),
+      (s, p) => s + (Number(p.quantity) || 0) * (positionEntryPrice(p) ?? 0),
       0,
     );
     const snapshotMv = totals?.market_value ?? 0;
@@ -570,7 +662,7 @@ export function PORTPane({ code }: FunctionPaneProps) {
 
   async function closePosition(position: Position) {
     const qty = Number(position.quantity) || 0;
-    const px = Number(position.last ?? position.avg_cost ?? 0);
+    const px = Number(positionCurrentPrice(position) ?? positionEntryPrice(position) ?? 0);
     const confirmed = await confirmAction({
       title: `Close ${position.symbol}`,
       body:
@@ -665,17 +757,19 @@ export function PORTPane({ code }: FunctionPaneProps) {
       {orphanedConfirm && (
         <TradingConfirmModal accountLabel={pendingConfirm.accountLabel} />
       )}
-      {aggregateSection}
       <h2 className="u-sr-only">{code} — Portfolio</h2>
       <Pane>
         <PaneHeader
           code={code}
-          title="Portfolio"
-          subtitle={`${positions.length} position(s) · ${liveProvider}`}
+          title="Portfolio Terminal"
+          subtitle={`${portfolioGroups.length} account(s) · ${positions.length} local position(s) · ${liveProvider}`}
           trailing={
             <FunctionControlGroup>
               <Pill tone="muted" variant="soft" withDot={false}>
-                {positionCount} pos
+                {portfolioGroups.length} acct
+              </Pill>
+              <Pill tone="muted" variant="soft" withDot={false}>
+                {positionCount} local
               </Pill>
               <Pill
                 tone={liveCount > 0 ? "positive" : "muted"}
@@ -689,7 +783,10 @@ export function PORTPane({ code }: FunctionPaneProps) {
             </FunctionControlGroup>
           }
         />
-        <PaneBody>{body}</PaneBody>
+        <PaneBody className="port-pane-body">
+          <PortfolioExchangeDeck hasAnyCredential={hasAnyCredential} />
+          {body}
+        </PaneBody>
         <PaneFooter>
           <span>elapsed · {data?.elapsed_ms?.toFixed(0) ?? "—"} ms</span>
           <span>sources · {data?.sources?.join(", ") || "—"}</span>
@@ -732,86 +829,113 @@ function PORTView({
   const totalMV = totals?.market_value ?? positions.reduce(
     (s, p) => s + (p.market_value ?? 0), 0,
   );
+  const maxPosition = positions.reduce(
+    (best, p) => ((p.weight ?? 0) > (best?.weight ?? -1) ? p : best),
+    null as Position | null,
+  );
+  const topPositions = [...positions]
+    .sort((a, b) => (b.weight ?? 0) - (a.weight ?? 0))
+    .slice(0, 5);
   const cols = useMemo(
     () => positionColumns({ busySymbol, onPreviewClose, onClosePosition }),
     [busySymbol, onPreviewClose, onClosePosition],
   );
   return (
     <div className="showme-port__view showme-card-reveal port-view">
-      <h3 className="u-sr-only">Portfolio KPI ribbon</h3>
-      {/* Top KPI ribbon — Bloomberg-grade 4-stat strip */}
-      <div className="showme-port__kpi-grid port-kpi-grid">
-        <StatCard
-          label="Market value"
-          value={fmt$(totalMV)}
-          caption={`AS OF ${utcNow} UTC`}
-          trend={makeTrend(7)}
-          tone="neutral"
-        />
-        <StatCard
-          label="Cost basis"
-          value={fmt$(totals?.cost_basis)}
-          caption={`AS OF ${utcNow} UTC`}
-          trend={makeTrend(13)}
-          tone="neutral"
-        />
-        <StatCard
-          label="Unrealized P&L"
-          value={<ChangeText value={totals?.unrealized_pnl ?? 0} prefix="$" digits={0} />}
-          caption={`AS OF ${utcNow} UTC`}
-          delta={pnlPct ?? undefined}
-          deltaFormat="percent"
-          trend={makeTrend(21)}
-          tone={pnlTone}
-        />
-        <StatCard
-          label="Cash"
-          value={fmt$(totals?.cash)}
-          caption={`AS OF ${utcNow} UTC`}
-          trend={makeTrend(29)}
-          tone="neutral"
-        />
-      </div>
+      <section className="port-terminal-summary" aria-label="Portfolio summary">
+        <div className="port-terminal-summary__primary">
+          <span className="port-label">Local analytics equity</span>
+          <strong>{fmt$(totalMV)}</strong>
+          <span className={`port-terminal-summary__pnl port-terminal-summary__pnl--${pnlTone}`}>
+            <ChangeText value={totals?.unrealized_pnl ?? 0} prefix="$" digits={0} />
+            {pnlPct != null ? <em>{formatPercent(pnlPct, { signed: true })}</em> : null}
+          </span>
+        </div>
+        <div className="port-terminal-summary__tiles">
+          <PortfolioMetric label="Cost basis" value={fmt$(totals?.cost_basis)} />
+          <PortfolioMetric label="Cash" value={fmt$(totals?.cash)} />
+          <PortfolioMetric label="Positions" value={formatNumber(positions.length)} />
+          <PortfolioMetric
+            label="Largest"
+            value={maxPosition ? `${maxPosition.symbol} ${formatPercent((maxPosition.weight ?? 0) * 100)}` : formatMissing}
+          />
+        </div>
+        <div className="port-terminal-summary__spark" aria-hidden>
+          {makeTrend(21, 28).map((v, i) => (
+            <span key={i} style={{ ["--u-h" as string]: `${18 + v * 0.72}px` }} />
+          ))}
+        </div>
+      </section>
 
-      {/* Asset class progress strip */}
-      <Card className="showme-port__asset-card showme-card-reveal" variant="elev-2">
-        <CardHeader
-          trailing={
-            <Pill tone="accent" variant="soft" withDot={false}>
+      <div className="port-workbench">
+        <section className="port-positions-panel">
+          <header className="port-section-head">
+            <div>
+              <h3>Positions</h3>
+              <span>{positions.length} rows · as of {utcNow} UTC</span>
+            </div>
+            <Pill tone={Object.keys(cardClasses).length > 1 ? "accent" : "muted"} variant="soft" withDot={false}>
               {Object.keys(cardClasses).length} classes
             </Pill>
-          }
-        >
-          <h3 className="welcome-grid__sub-h3">By asset class</h3>
-        </CardHeader>
-        <CardBody>
-          <div className="showme-port__asset-grid port-asset-grid">
-            {Object.entries(cardClasses).map(([cls, mv]) => (
-              <AssetClassCard key={cls} cls={cls} mv={mv} totalMV={totalMV} />
-            ))}
-          </div>
-        </CardBody>
-      </Card>
+          </header>
+          <DataGrid
+            className="showme-port__grid showme-motion-grid port-main-grid"
+            columns={cols}
+            rows={positions}
+            rowKey={(p, idx) => `${p.symbol}-${idx}`}
+            rowClassName={(p, idx) =>
+              [
+                "showme-motion-grid__row",
+                "showme-row-reveal",
+                `showme-motion-grid__row--${Math.min(idx, 10)}`,
+                p._live_ts ? "showme-motion-grid__row--live" : "",
+              ].filter(Boolean).join(" ")
+            }
+            density="compact"
+            ariaLabel="Portfolio positions"
+          />
+        </section>
 
-      {closePreview || closeError ? (
-        <ClosePreviewPanel preview={closePreview} error={closeError} />
-      ) : null}
+        <aside className="port-risk-rail" aria-label="Portfolio risk and allocation">
+          <section className="port-rail-panel">
+            <header className="port-section-head port-section-head--compact">
+              <h3>Allocation</h3>
+            </header>
+            <div className="port-allocation-stack">
+              {Object.entries(cardClasses).map(([cls, mv]) => (
+                <AssetClassCard key={cls} cls={cls} mv={mv} totalMV={totalMV} />
+              ))}
+            </div>
+          </section>
 
-      <DataGrid
-        className="showme-port__grid showme-motion-grid"
-        columns={cols}
-        rows={positions}
-        rowKey={(p) => p.symbol}
-        rowClassName={(p, idx) =>
-          [
-            "showme-motion-grid__row",
-            "showme-row-reveal",
-            `showme-motion-grid__row--${Math.min(idx, 10)}`,
-            p._live_ts ? "showme-motion-grid__row--live" : "",
-          ].filter(Boolean).join(" ")
-        }
-        density="compact"
-      />
+          <section className="port-rail-panel">
+            <header className="port-section-head port-section-head--compact">
+              <h3>Concentration</h3>
+            </header>
+            <div className="port-concentration-list">
+              {topPositions.map((p) => (
+                <div key={p.symbol} className="port-concentration-row">
+                  <span>{p.symbol}</span>
+                  <WeightFill pct={p.weight != null ? p.weight * 100 : null} />
+                </div>
+              ))}
+            </div>
+          </section>
+
+          {closePreview || closeError ? (
+            <ClosePreviewPanel preview={closePreview} error={closeError} />
+          ) : null}
+        </aside>
+      </div>
+    </div>
+  );
+}
+
+function PortfolioMetric({ label, value }: { label: string; value: ReactNode }) {
+  return (
+    <div className="port-metric-tile">
+      <span>{label}</span>
+      <strong>{value}</strong>
     </div>
   );
 }
@@ -896,30 +1020,32 @@ function positionColumns({
     },
     {
       key: "avg_cost",
-      header: "Avg cost",
+      header: "Entry",
       numeric: true,
       width: 96,
       render: (p) =>
-        p.avg_cost != null && Number.isFinite(p.avg_cost)
-          ? `$${formatPrice(p.avg_cost)}`
+        positionEntryPrice(p) != null
+          ? `$${formatPrice(positionEntryPrice(p))}`
           : formatMissing,
     },
     {
       key: "last",
-      header: "Last",
+      header: "Mark",
       numeric: true,
       width: 96,
-      render: (p) =>
-        p.last != null && Number.isFinite(p.last) ? (
+      render: (p) => {
+        const px = positionCurrentPrice(p);
+        return px != null ? (
           <span
             key={liveMotionKey(p, "last")}
             className={liveCellClass("neutral")}
           >
-            ${formatPrice(p.last)}
+            ${formatPrice(px)}
           </span>
         ) : (
           formatMissing
-        ),
+        );
+      },
     },
     {
       key: "market_value",
@@ -1072,7 +1198,7 @@ function Kpi({
   value,
 }: {
   label: string;
-  value: React.ReactNode;
+  value: ReactNode;
 }) {
   return (
     <div className="showme-port__kpi showme-card-reveal u-kpi-surface">
@@ -1116,7 +1242,7 @@ function fmtNum(n?: number) {
 }
 
 async function requestPortfolioClose(position: Position, dryRun: boolean): Promise<CloseResponse> {
-  const exit = Number(position.last ?? position.avg_cost ?? 0);
+  const exit = Number(positionCurrentPrice(position) ?? positionEntryPrice(position) ?? 0);
   // Routed through sidecarFetch so the auth header (X-ShowMe-Token) and the
   // shared port-discovery / health-wait pipeline both apply. See ARCH-05 P2.
   return sidecarFetch<CloseResponse>(

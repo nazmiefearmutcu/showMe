@@ -121,7 +121,7 @@ interface StrategyStoreShape {
   openExisting: (id: string) => Promise<void>;
   setDraftField: <K extends keyof StrategySpec>(k: K, v: StrategySpec[K]) => void;
   save: () => Promise<StrategySpec | null>;
-  remove: (id: string) => Promise<boolean>;
+  remove: (id: string, opts?: { force?: boolean; skipConfirm?: boolean }) => Promise<boolean>;
   preview: (id: string) => Promise<PreviewResult | null>;
 }
 
@@ -227,7 +227,8 @@ export const useStrategyStore = create<StrategyStoreShape>((set, get) => ({
     }
   },
 
-  remove: async (id) => {
+  remove: async (id, opts) => {
+    const { force = false, skipConfirm = false } = opts ?? {};
     // Round 24 HIGH — already-removing guard. The 2nd rapid Sil click would
     // otherwise queue another window.confirm + DELETE pair.
     if (get().removing) return false;
@@ -244,7 +245,7 @@ export const useStrategyStore = create<StrategyStoreShape>((set, get) => ({
     } catch {
       // Endpoint not yet deployed — proceed with legacy DELETE.
     }
-    if (deps.bot_count > 0) {
+    if (!skipConfirm && deps.bot_count > 0) {
       const ok = window.confirm(
         `Bu stratejiye ${deps.bot_count} bot bağlı. ` +
         `Bot'lar otomatik devre dışı bırakılacak. Devam mı?`,
@@ -254,7 +255,8 @@ export const useStrategyStore = create<StrategyStoreShape>((set, get) => ({
         return false;
       }
     }
-    const url = deps.bot_count > 0
+    const effectiveForce = force || deps.bot_count > 0;
+    const url = effectiveForce
       ? `/api/strategies/${id}?force=true`
       : `/api/strategies/${id}`;
     try {

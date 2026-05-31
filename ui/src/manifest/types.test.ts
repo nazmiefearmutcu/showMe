@@ -224,9 +224,18 @@ describe("pickRenderer", () => {
     const picked = pickRenderer(m);
     expect(picked.table).not.toBeNull();
     expect(picked.cards).not.toBeNull();
-    const tableEl = picked.table!({ schema: m.table_schema! });
+    const tableEl = picked.table!({
+      schema: m.table_schema!,
+      payload: { rows: [{ t: new Date("2026-01-01"), label: "x" }] },
+    });
+    expect(tableEl.type).toBe("div");
+    expect((tableEl.props as Record<string, unknown>)["data-renderer-kind"]).toBe("table");
     expect((tableEl.props as Record<string, unknown>)["data-column-count"]).toBe(1);
-    const cardsEl = picked.cards!({ schema: m.card_schema! });
+    const cardsEl = picked.cards!({
+      schema: m.card_schema!,
+      payload: { last: 10, chg: 2.5 },
+    });
+    expect(cardsEl.type).toBe("div");
     expect((cardsEl.props as Record<string, unknown>)["data-slot-count"]).toBe(2);
   });
 });
