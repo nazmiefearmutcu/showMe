@@ -95,6 +95,7 @@ export function BOTPane() {
   // Track the loaded record id separately so we can re-capture originalMode
   // on save success without forgetting it on mode toggles.
   const lastDraftIdRef = useRef<string | null>(null);
+  const [pendingDeleteBotId, setPendingDeleteBotId] = useState<string | null>(null);
 
   useEffect(() => {
     // C-UI-5 — always refresh strategies/credentials on mount so that
@@ -455,21 +456,15 @@ export function BOTPane() {
                   {toggling ? "..." : "Durdur"}
                 </button>
               )}
-              {draft.id && (
-                <button
-                  data-testid="bot-sil-button"
-                  onClick={() => {
-                    // B-C1 — destructive confirm before DELETE.
-                    if (!window.confirm("Botu silmek istediğinden emin misin? Bu işlem geri alınamaz.")) {
-                      return;
-                    }
-                    remove(draft.id!);
-                  }}
-                  disabled={loading}
-                  style={{ marginLeft: "auto", color: "var(--accent-err)" }}>
-                  Sil
-                </button>
-              )}
+            {draft.id && (
+              <button
+                data-testid="bot-sil-button"
+                onClick={() => setPendingDeleteBotId(draft.id!)}
+                disabled={loading || pendingDeleteBotId !== null}
+                style={{ marginLeft: "auto", color: "var(--accent-err)" }}>
+                Sil
+              </button>
+            )}
             </div>
 
             {error && (
@@ -503,6 +498,22 @@ export function BOTPane() {
           setDirtySwitchTarget(null);
         }}
         onCancel={() => setDirtySwitchTarget(null)}
+      />
+
+      <ConfirmDialog
+        open={pendingDeleteBotId !== null}
+        title="Botu sil"
+        body="Botu silmek istediğine emin misin? Bu işlem geri alınamaz."
+        confirmLabel="Sil"
+        destructive
+        busy={loading}
+        onConfirm={() => {
+          if (!pendingDeleteBotId) return;
+          const id = pendingDeleteBotId;
+          setPendingDeleteBotId(null);
+          void remove(id);
+        }}
+        onCancel={() => setPendingDeleteBotId(null)}
       />
     </div>
   );

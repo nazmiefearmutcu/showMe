@@ -28,6 +28,7 @@ import {
   PaneBody,
   PaneFooter,
   PaneHeader,
+  Empty,
   Pill,
 } from "@/design-system";
 import { useFunction } from "@/lib/useFunction";
@@ -175,6 +176,7 @@ export function ManifestPane(props: ManifestPaneProps) {
 
   const controls = deriveControls(manifest, inputs, (next) => setInputs(next));
   const renderer = pickRenderer(manifest);
+  const hasRenderer = (renderer.chart != null && manifest.chart_grammar != null) || (renderer.table != null && manifest.table_schema != null) || (renderer.cards != null && manifest.card_schema != null);
   const isLoading = fnResult.state === "loading";
   const isRefreshing = fnResult.state === "refreshing";
   const hasError = fnResult.state === "error";
@@ -238,11 +240,29 @@ export function ManifestPane(props: ManifestPaneProps) {
               refreshing: isRefreshing,
               error: fnResult.error,
             })
-          : (
-            <div data-testid="manifest-pane-default-renderer" style={{ padding: 12 }}>
-              {renderer.chart && manifest.chart_grammar && <renderer.chart grammar={manifest.chart_grammar} />}
-              {renderer.table && manifest.table_schema && <renderer.table schema={manifest.table_schema} />}
-              {renderer.cards && manifest.card_schema && <renderer.cards schema={manifest.card_schema} />}
+      : (
+            <div
+              data-testid="manifest-pane-default-renderer"
+              style={{ padding: 12, display: "grid", gap: 12 }}
+            >
+              {hasRenderer ? (
+                <>
+                  {renderer.chart && manifest.chart_grammar && (
+                    <renderer.chart grammar={manifest.chart_grammar} payload={payload} />
+                  )}
+                  {renderer.table && manifest.table_schema && (
+                    <renderer.table schema={manifest.table_schema} payload={payload} />
+                  )}
+                  {renderer.cards && manifest.card_schema && (
+                    <renderer.cards schema={manifest.card_schema} payload={payload} />
+                  )}
+                </>
+              ) : (
+                <Empty
+                  title="No structured output"
+                  body={`Function ${code} has no manifest table/chart/card contract.`}
+                />
+              )}
             </div>
           )}
       </PaneBody>

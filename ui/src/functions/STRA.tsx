@@ -268,7 +268,7 @@ export function STRAPane() {
                   {!draft.id ? "(Preview için önce kaydet)" : "(Önce kaydet)"}
                 </span>
               )}
-              {draft.id && (
+            {draft.id && (
                 <button
                   data-testid="stra-sil-button"
                   disabled={removing}
@@ -328,7 +328,9 @@ export function STRAPane() {
           if (pendingConfirm.kind === "delete") {
             // Store-level `removing` guard ensures the underlying remove()
             // is single-flight even if React renders this onConfirm twice.
-            void remove(pendingConfirm.id);
+            // `skipConfirm` avoids a second native confirmation in this
+            // component's ConfirmDialog flow.
+            void remove(pendingConfirm.id, { skipConfirm: true });
           } else if (pendingConfirm.kind === "dirty-switch") {
             if (pendingConfirm.target === "new") openNew();
             else openExisting(pendingConfirm.target);

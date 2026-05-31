@@ -24,6 +24,9 @@ const FAPane = lazy(() => import("./FA").then((m) => ({ default: m.FAPane })));
 const GPPane = lazy(() => import("./GP").then((m) => ({ default: m.GPPane })));
 const EQSPane = lazy(() => import("./EQS").then((m) => ({ default: m.EQSPane })));
 const PORTPane = lazy(() => import("./PORT").then((m) => ({ default: m.PORTPane })));
+const PortfolioAnalyticsPane = lazy(() =>
+  import("./PortfolioAnalytics").then((m) => ({ default: m.PortfolioAnalyticsPane })),
+);
 const SCANPane = lazy(() => import("./SCAN").then((m) => ({ default: m.SCANPane })));
 const MISPane = lazy(() => import("./MIS").then((m) => ({ default: m.MISPane })));
 const ASKPane = lazy(() => import("./ASK").then((m) => ({ default: m.ASKPane })));
@@ -80,6 +83,26 @@ const PANES: Record<string, PaneComponent> = {
   GP: GPPane,
   EQS: EQSPane,
   PORT: PORTPane,
+  ACCT: PortfolioAnalyticsPane,
+  BLAK: PortfolioAnalyticsPane,
+  BMTX: PortfolioAnalyticsPane,
+  BTFW: PortfolioAnalyticsPane,
+  BTUNE: PortfolioAnalyticsPane,
+  LOTS: PortfolioAnalyticsPane,
+  MARS: PortfolioAnalyticsPane,
+  MGN: PortfolioAnalyticsPane,
+  MLSIG: PortfolioAnalyticsPane,
+  PCAS: PortfolioAnalyticsPane,
+  PFA: PortfolioAnalyticsPane,
+  PORT_OPT: PortfolioAnalyticsPane,
+  PORT_WHATIF: PortfolioAnalyticsPane,
+  PSC: PortfolioAnalyticsPane,
+  PVAR: PortfolioAnalyticsPane,
+  REBA: PortfolioAnalyticsPane,
+  RPAR: PortfolioAnalyticsPane,
+  STRS: PortfolioAnalyticsPane,
+  TLH: PortfolioAnalyticsPane,
+  TRA: PortfolioAnalyticsPane,
   SCAN: SCANPane,
   MIS: MISPane,
   ASK: ASKPane,

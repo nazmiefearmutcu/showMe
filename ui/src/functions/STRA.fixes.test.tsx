@@ -57,6 +57,6 @@ describe("STRA pane fixes", () => {
     render(<STRAPane />);
     fireEvent.click(screen.getByTestId("stra-sil-button"));
     fireEvent.click(screen.getByTestId("confirm-dialog-confirm"));
-    expect(removeSpy).toHaveBeenCalledWith("abc");
+    expect(removeSpy).toHaveBeenCalledWith("abc", { skipConfirm: true });
   });
 });

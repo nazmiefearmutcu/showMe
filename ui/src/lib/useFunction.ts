@@ -130,6 +130,10 @@ export function useFunction<T = unknown>({
       })
       .catch((err: Error) => {
         if (ac.signal.aborted) return;
+        if (isAbortLikeError(err)) {
+          window.setTimeout(() => setTick((t) => t + 1), 0);
+          return;
+        }
         setError(err);
         // On error during a refresh we deliberately *keep* the previous
         // `data` on screen so the UI shows stale + an error pill rather
@@ -142,6 +146,11 @@ export function useFunction<T = unknown>({
   }, [code, symbol, paramsKey, enabled, tick, waitingForSidecar, sidecarPort]);
 
   return { state, data, error, refetch: () => setTick((t) => t + 1) };
+}
+
+function isAbortLikeError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  return err.name === "AbortError" || /abort/i.test(err.message);
 }
 
 /**

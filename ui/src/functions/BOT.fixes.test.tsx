@@ -47,7 +47,7 @@ afterEach(() => {
 
 describe("BOT pane fixes", () => {
   // ─── B-C1 ────────────────────────────────────────────────────────────
-  it("sil_confirms — Sil aborts when window.confirm returns false", () => {
+  it("sil_confirms — Sil aborts when ConfirmDialog cancel pressed", () => {
     const removeSpy = vi.fn(async () => true);
     useBotStore.setState({
       remove: removeSpy,
@@ -58,14 +58,14 @@ describe("BOT pane fixes", () => {
         created_at: "", updated_at: "",
       },
     });
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
     render(<BOTPane />);
     fireEvent.click(screen.getByTestId("bot-sil-button"));
-    expect(confirmSpy).toHaveBeenCalledOnce();
+    expect(screen.getByTestId("confirm-dialog-body")).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("confirm-dialog-cancel"));
     expect(removeSpy).not.toHaveBeenCalled();
   });
 
-  it("sil_confirms_yes — Sil fires remove when window.confirm returns true", () => {
+  it("sil_confirms_yes — Sil fires remove on ConfirmDialog confirm", () => {
     const removeSpy = vi.fn(async () => true);
     useBotStore.setState({
       remove: removeSpy,
@@ -76,9 +76,10 @@ describe("BOT pane fixes", () => {
         created_at: "", updated_at: "",
       },
     });
-    vi.spyOn(window, "confirm").mockReturnValue(true);
     render(<BOTPane />);
     fireEvent.click(screen.getByTestId("bot-sil-button"));
+    expect(screen.getByTestId("confirm-dialog-body")).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("confirm-dialog-confirm"));
     expect(removeSpy).toHaveBeenCalledWith("b1");
   });
 
