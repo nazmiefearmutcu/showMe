@@ -1,7 +1,17 @@
-"""DARK — Dark pool / off-exchange ATS volume aggregation."""
+"""DARK — Dark pool / off-exchange ATS volume aggregation.
+
+Live data path uses FINRA's keyless OTC Transparency Weekly Summary API
+(https://api.finra.org/data/group/otcMarket/name/weeklySummary) for per-venue
+(MPID) weekly off-exchange ATS share volume, then joins yfinance weekly total
+volume so the dark-pool % is a REAL ratio (ATS volume / total weekly volume),
+not a hardcoded constant. When FINRA is unreachable the handler returns an
+honest provider_unavailable shape with empty venues + next_actions — it does
+NOT fabricate venue rows.
+"""
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -9,7 +19,34 @@ import pandas as pd
 
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from showme.engine.core.instrument import AssetClass, Instrument
-from showme.engine.functions.equity._common import FIELD_DICTIONARIES, recent_week_rows
+from showme.engine.functions.equity._common import FIELD_DICTIONARIES, finite
+
+# FINRA OTC Transparency — keyless public Query API.
+_FINRA_WEEKLY_URL = (
+    "https://api.finra.org/data/group/otcMarket/name/weeklySummary"
+)
+# ATS (Alternative Trading System) weekly, broken out by symbol.
+_FINRA_ATS_TYPE = "ATS_W_SMBL"
+
+_METHODOLOGY = (
+    "DARK pulls FINRA OTC Transparency weekly ATS aggregates (off-exchange share "
+    "volume + trade count per reporting venue/MPID) and joins them against yfinance "
+    "weekly total volume. dark_pool_pct = ATS weekly volume / total weekly volume "
+    "for the matching week (capped at 100). Venues are ranked by ATS volume inside "
+    "the most-recent reported week so the operator can see who provides the "
+    "off-exchange liquidity. When FINRA is unreachable the handler returns "
+    "status=provider_unavailable with empty venues and next_actions instead of "
+    "synthesising placeholder rows."
+)
+
+_FIELD_DICTIONARY = {
+    "venue": "FINRA reporting MPID / ATS venue identifier for the off-exchange prints.",
+    "ats_share_volume": "Weekly off-exchange ATS share volume reported by the venue.",
+    "ats_trade_count": "Weekly off-exchange ATS trade count reported by the venue.",
+    "dark_pool_pct": "ATS weekly volume divided by total weekly volume (lit + ATS), capped at 100.",
+    "weekStartDate": "FINRA reporting week start date (week the prints settled).",
+    "top_venue_share_pct": "Largest venue's share of aggregate ATS volume in the latest week.",
+}
 
 
 @FunctionRegistry.register
@@ -23,109 +60,319 @@ class DARKFunction(BaseFunction):
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         sym = (instrument.symbol if instrument else
                params.get("symbol") or "AAPL").upper()
-        if not self.deps.finra:
-            return FunctionResult(code=self.code, instrument=instrument,
-                                  data=_fallback_dark(sym),
-                                  sources=["dark_pool_model"])
         try:
-            df = await self.deps.finra.ats_weekly(
-                symbol=sym, limit=int(params.get("limit", 100)))
-        except Exception as e:
-            return FunctionResult(code=self.code, instrument=instrument,
-                                  data=_fallback_dark(sym),
-                                  sources=["dark_pool_model"],
-                                  metadata={"provider_errors": [f"finra: {e}"]})
-        if df is None or len(df) == 0:
-            return FunctionResult(code=self.code, instrument=instrument,
-                                  data=_fallback_dark(sym),
-                                  sources=["dark_pool_model"],
-                                  metadata={"provider_errors": ["no ats weekly data"]})
-        # Aggregate by venue and by week
-        df = df.fillna(0)
-        venues: list[dict[str, Any]] = []
-        weeks: list[dict[str, Any]] = []
-        venue_col = next(
-            (c for c in ("ATSCode", "atsCode", "venue", "mpid") if c in df.columns),
-            None,
+            weeks = int(params.get("weeks", 8))
+        except (TypeError, ValueError):
+            weeks = 8
+        weeks = max(2, min(26, weeks))
+
+        provider_errors: list[str] = []
+
+        # 1) Pull FINRA weekly ATS rows (per-venue per-week).
+        raw_rows: list[dict[str, Any]] = []
+        try:
+            raw_rows = await self._fetch_finra_ats(sym)
+        except Exception as exc:  # network / parse failure only
+            provider_errors.append(f"finra: {exc}")
+
+        if not raw_rows:
+            reason = (
+                "FINRA OTC Transparency weekly ATS endpoint returned no rows for "
+                f"{sym} (symbol may be non-ATS-reported or the FINRA API is down)."
+            )
+            return FunctionResult(
+                code=self.code, instrument=instrument,
+                data=_unavailable(sym, reason, provider_errors),
+                sources=["finra"],
+                warnings=[reason],
+                metadata={"provider_errors": provider_errors},
+            )
+
+        df = pd.DataFrame(raw_rows)
+        # Per-week total weekly volume from yfinance for a real dark-pool %.
+        week_total_volume = await self._weekly_total_volume(sym)
+
+        # 2) Aggregate by venue (across reported weeks) and by week.
+        df["ats_share_volume"] = df["ats_share_volume"].apply(lambda v: finite(v) or 0.0)
+        df["ats_trade_count"] = df["ats_trade_count"].apply(lambda v: finite(v) or 0.0)
+
+        by_week = (
+            df.groupby("weekStartDate")
+            .agg(
+                ats_share_volume=("ats_share_volume", "sum"),
+                ats_trade_count=("ats_trade_count", "sum"),
+                n_venues=("venue", "nunique"),
+            )
+            .reset_index()
+            .sort_values("weekStartDate", ascending=False)
         )
-        if venue_col:
-            grouped = df.groupby(venue_col).agg(
-                total_share_qty=("totalWeeklyShareQuantity", "sum"),
-                total_trade_count=("totalWeeklyTradeCount", "sum"),
-                weeks=("weekStartDate", "nunique"),
-            ).reset_index()
-            if venue_col != "ATSCode":
-                grouped = grouped.rename(columns={venue_col: "ATSCode"})
-            grouped = grouped.sort_values("total_share_qty", ascending=False)
-            venues = grouped.to_dict(orient="records")
-        if "weekStartDate" in df.columns:
-            agg = {
-                "total_share_qty": ("totalWeeklyShareQuantity", "sum"),
-                "total_trade_count": ("totalWeeklyTradeCount", "sum"),
-            }
-            if venue_col:
-                agg["n_venues"] = (venue_col, "nunique")
-            wgrp = df.groupby("weekStartDate").agg(**agg).reset_index()
-            if "n_venues" not in wgrp.columns:
-                wgrp["n_venues"] = 0
-            wgrp = wgrp.sort_values("weekStartDate", ascending=False)
-            weeks = wgrp.to_dict(orient="records")
-        for row in weeks:
-            qty = float(row.get("total_share_qty") or 0)
-            row["estimated_total_volume"] = round(qty / 0.38) if qty else None
-            row["dark_pool_pct"] = 38.0 if qty else None
-            row["source_mode"] = "finra_ats_weekly"
-        # Top venue concentration
-        total = float(df.get("totalWeeklyShareQuantity", pd.Series()).sum() or 0)
-        top_venue_share = (venues[0]["total_share_qty"] / total) if (venues and total) else 0.0
-        stale_reason = _stale_reason(weeks[0].get("weekStartDate") if weeks else None)
-        status = "provider_unavailable" if stale_reason else "ok"
-        if stale_reason:
-            for row in weeks:
-                row["source_mode"] = "finra_ats_weekly_stale"
-                row["data_warning"] = stale_reason
+        week_records: list[dict[str, Any]] = []
+        for rec in by_week.head(weeks).to_dict(orient="records"):
+            wk = str(rec["weekStartDate"])[:10]
+            ats_vol = float(rec["ats_share_volume"] or 0.0)
+            total_vol = week_total_volume.get(wk)
+            dark_pct: float | None = None
+            if total_vol and total_vol > 0:
+                dark_pct = round(min(100.0, ats_vol / total_vol * 100.0), 2)
+            week_records.append({
+                "weekStartDate": wk,
+                "ats_share_volume": round(ats_vol),
+                "ats_trade_count": round(float(rec["ats_trade_count"] or 0.0)),
+                "n_venues": int(rec["n_venues"] or 0),
+                "total_weekly_volume": round(total_vol) if total_vol else None,
+                "dark_pool_pct": dark_pct,
+                "source_mode": "finra_otc_weekly_ats",
+            })
+
+        latest_week = week_records[0]["weekStartDate"] if week_records else None
+
+        # Venue ranking: prefer the latest reported week; that is what the
+        # manifest table_schema/card "Venues" expects.
+        latest_df = df[df["weekStartDate"].astype(str).str[:10] == latest_week] if latest_week else df
+        by_venue = (
+            latest_df.groupby("venue")
+            .agg(
+                ats_share_volume=("ats_share_volume", "sum"),
+                ats_trade_count=("ats_trade_count", "sum"),
+            )
+            .reset_index()
+            .sort_values("ats_share_volume", ascending=False)
+        )
+        latest_total = float(by_venue["ats_share_volume"].sum() or 0.0)
+        latest_week_total_vol = week_total_volume.get(latest_week) if latest_week else None
+        venue_records: list[dict[str, Any]] = []
+        for rec in by_venue.to_dict(orient="records"):
+            vol = float(rec["ats_share_volume"] or 0.0)
+            v_dark_pct: float | None = None
+            if latest_week_total_vol and latest_week_total_vol > 0:
+                v_dark_pct = round(min(100.0, vol / latest_week_total_vol * 100.0), 2)
+            venue_records.append({
+                "venue": str(rec["venue"]),
+                "ats_share_volume": round(vol),
+                "ats_trade_count": round(float(rec["ats_trade_count"] or 0.0)),
+                "share_of_ats_pct": round(vol / latest_total * 100.0, 2) if latest_total else None,
+                "dark_pool_pct": v_dark_pct,
+                "weekStartDate": latest_week,
+                "source_mode": "finra_otc_weekly_ats",
+            })
+
+        # Stale guard: a months-old latest week should not masquerade as current.
+        stale = _stale_reason(latest_week)
+        status = "provider_unavailable" if stale else "ok"
+        warnings: list[str] = []
+        if stale:
+            warnings.append(stale)
+
+        latest_dark_pct = week_records[0]["dark_pool_pct"] if week_records else None
+        top_venue_share = venue_records[0]["share_of_ats_pct"] if venue_records else None
+
+        cards = {
+            "latest_dark_pool_pct": latest_dark_pct,
+            "latest_ats_volume": week_records[0]["ats_share_volume"] if week_records else None,
+            "venue_count": len(venue_records),
+            "data_mode": "delayed_reference" if status == "ok" else "provider_unavailable",
+            "as_of": latest_week,
+        }
+
         return FunctionResult(
             code=self.code, instrument=instrument,
             data={
                 "status": status,
-                "reason": stale_reason,
+                "reason": stale,
                 "symbol": sym,
                 "n_rows": int(len(df)),
-                "total_shares_off_exchange": total,
-                "top_venue_share_pct": top_venue_share * 100,
-                "rows": venues or weeks,
-                "history": weeks,
-                "by_venue": venues,
-                "by_week": weeks,
-                "methodology": "DARK aggregates FINRA ATS weekly rows by venue and week. Dark-pool percent is shown as an estimated ATS share of total volume when consolidated tape volume is unavailable. Stale FINRA snapshots are labelled provider_unavailable instead of being presented as current data.",
+                "total_shares_off_exchange": round(float(df["ats_share_volume"].sum() or 0.0)),
+                "top_venue_share_pct": top_venue_share,
+                "rows": venue_records,
+                "venues": venue_records,
+                "by_venue": venue_records,
+                "by_week": week_records,
+                "history": week_records,
+                "cards": cards,
+                "summary": {
+                    "latest_week": latest_week,
+                    "latest_dark_pool_pct": latest_dark_pct,
+                    "venue_count": len(venue_records),
+                },
+                "methodology": _METHODOLOGY,
                 "field_dictionary": {
                     **FIELD_DICTIONARIES["corporate_actions"],
-                    "dark_pool_pct": "ATS/off-exchange volume divided by estimated total traded volume.",
-                    "top_venue_share_pct": "Largest venue share of aggregate ATS volume.",
+                    **_FIELD_DICTIONARY,
                 },
             },
-            sources=["finra"],
+            sources=["finra", "yfinance"],
+            warnings=warnings,
+            metadata={"provider_errors": provider_errors} if provider_errors else {},
         )
 
+    async def _fetch_finra_ats(self, symbol: str) -> list[dict[str, Any]]:
+        """Fetch keyless FINRA OTC Transparency weekly ATS rows for ``symbol``.
 
-def _fallback_dark(symbol: str) -> dict[str, Any]:
+        Prefers a wired ``self.deps.finra`` adapter if it exposes ``ats_weekly``;
+        otherwise queries the public FINRA Query API directly. Returns a list of
+        normalised dicts (venue, ats_share_volume, ats_trade_count, weekStartDate)
+        or an empty list when nothing is reported.
+        """
+        # Wired adapter path (kept for parity with existing wiring / tests).
+        adapter = getattr(self.deps, "finra", None)
+        if adapter is not None and hasattr(adapter, "ats_weekly"):
+            df = await adapter.ats_weekly(symbol=symbol, limit=200)
+            if df is not None and len(df) > 0:
+                return _normalise_adapter_frame(df)
+
+        # Direct keyless FINRA Query API.
+        from showme.providers._http import get_client
+
+        client = await get_client()
+        payload = {
+            "compareFilters": [
+                {
+                    "fieldName": "summaryTypeCode",
+                    "fieldValue": _FINRA_ATS_TYPE,
+                    "compareType": "EQUAL",
+                },
+                {
+                    "fieldName": "issueSymbolIdentifier",
+                    "fieldValue": symbol,
+                    "compareType": "EQUAL",
+                },
+            ],
+            "limit": 200,
+        }
+        resp = await client.post(
+            _FINRA_WEEKLY_URL,
+            json=payload,
+            headers={"Accept": "application/json"},
+            timeout=20.0,
+        )
+        resp.raise_for_status()
+        body = resp.json()
+        rows = body if isinstance(body, list) else body.get("data") or body.get("rows") or []
+        return _normalise_finra_rows(rows)
+
+    async def _weekly_total_volume(self, symbol: str) -> dict[str, float]:
+        """Return {weekStartDate(Mon iso): total_volume} from yfinance weekly bars.
+
+        Best-effort: any failure yields an empty map so dark_pool_pct is simply
+        omitted rather than fabricated.
+        """
+        try:
+            import yfinance as yf
+
+            hist = await asyncio.to_thread(
+                lambda: yf.Ticker(symbol).history(
+                    period="6mo", interval="1wk", auto_adjust=False
+                )
+            )
+            if hist is None or hist.empty or "Volume" not in hist.columns:
+                return {}
+            out: dict[str, float] = {}
+            for idx, vol in hist["Volume"].items():
+                v = finite(vol)
+                if v is None or v <= 0:
+                    continue
+                try:
+                    d = idx.date() if hasattr(idx, "date") else datetime.fromisoformat(str(idx)[:10]).date()
+                except Exception:
+                    continue
+                # Snap to Monday so it lines up with FINRA week-start dates.
+                monday = d - timedelta(days=d.weekday())
+                out[monday.isoformat()] = float(v)
+            return out
+        except Exception:
+            return {}
+
+
+def _normalise_finra_rows(rows: list[Any]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        venue = (
+            r.get("MPID")
+            or r.get("mpid")
+            or r.get("firmCRDNumber")
+            or r.get("marketParticipantName")
+            or r.get("tierIdentifier")
+            or "ALL_ATS"
+        )
+        week = (
+            r.get("weekStartDate")
+            or r.get("week_start_date")
+            or r.get("lastUpdateDate")
+            or r.get("summaryStartDate")
+        )
+        vol = (
+            r.get("totalWeeklyShareQuantity")
+            or r.get("totalWeeklyShareQty")
+            or r.get("ats_share_volume")
+            or r.get("totalShareQuantity")
+        )
+        trades = (
+            r.get("totalWeeklyTradeCount")
+            or r.get("ats_trade_count")
+            or r.get("totalTradeCount")
+        )
+        if week is None and vol is None:
+            continue
+        out.append({
+            "venue": str(venue),
+            "ats_share_volume": vol,
+            "ats_trade_count": trades,
+            "weekStartDate": str(week)[:10] if week else None,
+        })
+    return [r for r in out if r["weekStartDate"]]
+
+
+def _normalise_adapter_frame(df: Any) -> list[dict[str, Any]]:
+    """Map a wired adapter DataFrame into the normalised row shape."""
+    frame = df.fillna(0)
+    venue_col = next(
+        (c for c in ("MPID", "ATSCode", "atsCode", "venue", "mpid") if c in frame.columns),
+        None,
+    )
+    out: list[dict[str, Any]] = []
+    for rec in frame.to_dict(orient="records"):
+        week = rec.get("weekStartDate") or rec.get("week_start_date")
+        if not week:
+            continue
+        out.append({
+            "venue": str(rec.get(venue_col) if venue_col else "ALL_ATS"),
+            "ats_share_volume": rec.get("totalWeeklyShareQuantity") or rec.get("ats_share_volume"),
+            "ats_trade_count": rec.get("totalWeeklyTradeCount") or rec.get("ats_trade_count"),
+            "weekStartDate": str(week)[:10],
+        })
+    return out
+
+
+def _unavailable(symbol: str, reason: str, provider_errors: list[str]) -> dict[str, Any]:
     return {
         "symbol": symbol,
         "status": "provider_unavailable",
-        "reason": "FINRA ATS weekly endpoint returned no usable rows.",
+        "reason": reason,
         "n_rows": 0,
         "total_shares_off_exchange": 0.0,
-        "top_venue_share_pct": 0.0,
-        "rows": recent_week_rows(symbol, 8, source_mode="labelled_current_shape_model"),
+        "top_venue_share_pct": None,
+        "rows": [],
+        "venues": [],
         "by_venue": [],
-        "by_week": recent_week_rows(symbol, 8, source_mode="labelled_current_shape_model"),
-        "methodology": "FINRA live data is required for venue-level evidence. Current-shape fallback rows are labelled and only preserve expected fields for UI testing.",
-        "field_dictionary": {
-            "weekStartDate": "FINRA reporting week.",
-            "venue": "ATS venue code when available.",
-            "dark_pool_pct": "ATS/off-exchange share estimate.",
+        "by_week": [],
+        "history": [],
+        "cards": {
+            "latest_dark_pool_pct": None,
+            "latest_ats_volume": None,
+            "venue_count": 0,
+            "data_mode": "provider_unavailable",
+            "as_of": None,
         },
-        "next_actions": ["Connect or refresh FINRA ATS feed for venue-level current data."],
+        "summary": {"latest_week": None, "latest_dark_pool_pct": None, "venue_count": 0},
+        "methodology": _METHODOLOGY,
+        "field_dictionary": _FIELD_DICTIONARY,
+        "next_actions": [
+            "Retry once the FINRA OTC Transparency API is reachable.",
+            "Confirm the symbol reports off-exchange ATS volume (not all tickers do).",
+        ],
+        "provider_errors": provider_errors,
     }
 
 
@@ -138,7 +385,7 @@ def _stale_reason(value: Any) -> str | None:
         # Malformed FINRA dates must NOT be treated as "fresh". Surface as a
         # data-quality reason instead so DARK's status flips to
         # provider_unavailable, matching the intent of the methodology line.
-        return f"FINRA latest week {value!r} could not be parsed; treating as stale until reproccessed."
+        return f"FINRA latest week {value!r} could not be parsed; treating as stale until reprocessed."
     if dt < (datetime.now(timezone.utc).date() - timedelta(days=180)):
         return f"FINRA latest week {dt.isoformat()} is stale for a current market cockpit."
     return None

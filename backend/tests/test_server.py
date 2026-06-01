@@ -596,6 +596,16 @@ def test_sanitize_input_required_becomes_input_error() -> None:
 def test_tca_empty_order_history_is_not_ok(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[2] / "engine"))
     monkeypatch.chdir(tmp_path)
+    # order_history resolves its SQLite path via app_paths (SHOWME_HOME), not
+    # cwd, so isolate the runtime store to an empty temp dir — otherwise this
+    # hermetic "no fills" assertion silently depends on the host's real
+    # order_history being empty.
+    monkeypatch.setenv("SHOWME_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        "showme.engine.services.order_history.runtime_path",
+        lambda name: tmp_path / "runtime" / name,
+    )
+    (tmp_path / "runtime").mkdir(parents=True, exist_ok=True)
     from showme.engine.services import tca
 
     out = tca.analyze_orders(limit=50)
@@ -762,6 +772,14 @@ def test_icx_index_query_and_reference_rows(monkeypatch) -> None:
 
 
 def test_sat_missing_provider_is_truthful_preview(monkeypatch) -> None:
+    """de-garbage 2026-06-01: SAT no longer ships a key-gated Sentinel Hub stub
+    that returned ``provider_unavailable`` + a synthetic base64 SVG 'preview'
+    pretending to be imagery. It now uses KEYLESS NASA GIBS tiles + Open-Meteo
+    conditions. The anti-garbage intent is preserved: SAT is truthful, never
+    fabricated. When the keyless providers are reachable it returns real data
+    (a live GIBS ``tile_url`` flagged ``is_satellite=True`` and a REAL Open-Meteo
+    cloud_pct that is numeric-or-null, never invented); on a genuine outage it
+    degrades honestly to ``provider_unavailable`` with NO fake tile."""
     monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[2] / "engine"))
     from showme.engine.functions.misc.sat import SATFunction
 
@@ -770,11 +788,26 @@ def test_sat_missing_provider_is_truthful_preview(monkeypatch) -> None:
         date_from="2026-04-26",
         date_to="2026-05-03",
     ))
+    data = out.data
 
-    assert out.data["status"] == "provider_unavailable"
-    assert out.data["preview"]["data_url"].startswith("data:image/svg+xml;base64,")
-    assert out.data["preview"]["is_satellite"] is False
-    assert out.data["rows"][0]["center_lat"] == 37.775
+    # The AOI centroid must be honest regardless of provider reachability.
+    assert data["status"] in {"ok", "partial", "provider_unavailable"}
+
+    if data["status"] == "provider_unavailable":
+        # Honest outage: no rows, no fabricated tile, no synthetic image.
+        assert data["rows"] == []
+        assert "data:image/svg+xml" not in str(data)
+    else:
+        assert data["rows"][0]["center_lat"] == 37.775
+        # Real, fetchable NASA GIBS tile — never a synthetic SVG data-URL.
+        tile_url = data["tile_url"]
+        assert tile_url.startswith("http")
+        assert "gibs.earthdata.nasa.gov" in tile_url
+        assert "data:image/svg+xml" not in tile_url
+        assert data["true_color_tile"]["is_satellite"] is True
+        # Cloud cover is a REAL Open-Meteo value or honestly null — never faked.
+        cloud_pct = data["cloud_pct"]
+        assert cloud_pct is None or isinstance(cloud_pct, (int, float))
 
 
 def test_sat_days_control_updates_date_window(monkeypatch) -> None:
@@ -879,40 +912,49 @@ def test_av_media_rows_keep_playable_audio_url(monkeypatch) -> None:
     assert _matches_query(row, "market")
 
 
-def test_brief_live_calls_read_with_live_and_returns_articles(monkeypatch) -> None:
+def test_brief_live_composes_from_top_items_and_returns_articles(monkeypatch) -> None:
     monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[2] / "engine"))
     from showme.engine.core.base_function import FunctionResult
-    from showme.engine.functions.news import brief as brief_mod
+    from showme.engine.functions.news import top as top_mod
     from showme.engine.functions.news.brief import BRIEFFunction
 
-    class FakeRead:
+    # 2026-06-01 contract change: BRIEF no longer sources headlines from the
+    # READ reading-list store (which is empty for a fresh user). It composes
+    # from TOP, which ranks live RSS/GDELT headlines under the ``items`` key —
+    # the exact key the old BRIEF ignored. This fake TOP proves BRIEF reads
+    # ``items`` and unescapes article HTML.
+    class FakeTOP:
         def __init__(self, _deps):
             pass
 
         async def execute(self, **kwargs):
             assert kwargs["live"] is True
+            sym = kwargs.get("symbol") or "MACRO"
             return FunctionResult(
-                code="READ",
+                code="TOP",
                 instrument=None,
-                data=[{
-                    "title": "Apple supply-chain story",
-                    "url": "https://example.com/aapl",
-                    "matched_symbol": "AAPL",
+                data={"items": [{
+                    "title": f"{sym} supply-chain story",
+                    "url": f"https://example.com/{sym}",
+                    "matched_symbol": sym,
                     "source": "rss",
                     "summary": "<p>Apple &amp; suppliers raised guidance.</p>",
-                }],
+                }], "status": "ok"},
                 sources=["rss"],
                 metadata={"provider_errors": []},
             )
 
-    monkeypatch.setattr(brief_mod, "READFunction", FakeRead)
+    monkeypatch.setattr(top_mod, "TOPFunction", FakeTOP)
 
     result = asyncio.run(BRIEFFunction().execute(live=True, watchlist=["AAPL"]))
 
     assert result.data["status"] == "ok"
-    assert result.data["article_count"] == 1
-    assert "Apple supply-chain story" in result.data["markdown"]
-    assert result.data["articles"][0]["summary"] == "Apple & suppliers raised guidance."
+    assert result.data["article_count"] >= 1
+    assert "supply-chain story" in result.data["markdown"]
+    assert any(
+        a["summary"] == "Apple & suppliers raised guidance."
+        for a in result.data["articles"]
+    )
 
 
 def test_evts_empty_provider_returns_actionable_status(monkeypatch) -> None:
@@ -942,34 +984,52 @@ def test_evts_empty_provider_returns_actionable_status(monkeypatch) -> None:
 
 
 def test_sosc_provider_failure_does_not_emit_placeholder(monkeypatch) -> None:
+    """De-garbage 2026-06-01: SOSC now reads keyless GDELT tone, so when the
+    network is up the live path legitimately returns real rows. To pin the
+    *contract* ("a provider failure must NOT be papered over with a fabricated
+    placeholder") deterministically — instead of depending on the network
+    actually being down — we force the GDELT leg to raise and assert the
+    honest ``provider_unavailable`` envelope with empty rows."""
     monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[2] / "engine"))
     from showme.engine.core.base_function import FunctionDeps
     from showme.engine.core.instrument import AssetClass, Instrument
+    from showme.engine.functions.news import sosc as sosc_mod
     from showme.engine.functions.news.sosc import SOSCFunction
+
+    async def _boom(*_args, **_kwargs):
+        raise RuntimeError("simulated GDELT outage")
+
+    monkeypatch.setattr(sosc_mod, "_gdelt_articles", _boom)
 
     instrument = Instrument(symbol="AAPL", asset_class=AssetClass.EQUITY)
     result = asyncio.run(SOSCFunction(FunctionDeps()).execute(instrument, live=True))
 
     assert result.data["status"] == "provider_unavailable"
     assert result.data["rows"] == []
+    assert result.data["summary"]["net_sentiment"] is None
+    assert result.data["summary"]["total_mentions"] == 0
+    assert "simulated GDELT outage" in result.data["reason"]
     assert "placeholder" not in str(result.data).lower()
 
 
-def test_sosc_rows_separate_reddit_score_from_sentiment(monkeypatch) -> None:
-    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[2] / "engine"))
-    from showme.engine.functions.news.sosc import _sentiment_rows
+def test_sosc_tone_maps_to_unit_interval() -> None:
+    """De-garbage 2026-06-01: SOSC was rewritten from a StockTwits/Reddit
+    aggregator (the removed ``_sentiment_rows`` helper) to a keyless GDELT
+    news-tone + FinBERT signal. The old per-row reddit_score/sentiment_score
+    separation no longer applies. This pins the new contract's core numeric
+    primitive instead: GDELT tone (roughly [-10, +10]) maps to a bounded
+    [-1, +1] sentiment, and garbage tone values are dropped (None), never
+    fabricated."""
+    from showme.engine.functions.news.sosc import _to_unit_tone
 
-    rows = _sentiment_rows(
-        "AAPL",
-        {"bullish_count": 3, "bearish_count": 1, "message_count": 4},
-        [{"title": "AAPL looks strong", "score": 20981, "url": "https://reddit.com/r/test"}],
-        [{"label": "positive", "score": 0.87}],
-    )
-
-    assert rows[0]["sentiment_score"] == 0.5
-    assert rows[1]["reddit_score"] == 20981
-    assert rows[1]["sentiment_score"] == 0.87
-    assert "score" not in rows[1]
+    assert abs(_to_unit_tone(5.0) - 0.5) < 1e-9
+    assert abs(_to_unit_tone(-5.0) - (-0.5)) < 1e-9
+    # Clamped to the unit interval, never out of band.
+    assert _to_unit_tone(50.0) == 1.0
+    assert _to_unit_tone(-50.0) == -1.0
+    # Non-numeric / NaN tone is dropped honestly, not coerced to a fake 0.
+    assert _to_unit_tone("not-a-number") is None
+    assert _to_unit_tone(None) is None
 
 
 def test_news_alert_stale_headline_cannot_be_critical(monkeypatch) -> None:
@@ -1020,84 +1080,59 @@ def test_news_relevance_does_not_match_symbol_from_feed_name(monkeypatch) -> Non
     assert "weak symbol/query match" in rows[0]["importance_reasons"]
 
 
-def test_read_live_skips_watchlist_cache_placeholders(monkeypatch) -> None:
+def test_read_surfaces_saved_articles_not_placeholders(monkeypatch) -> None:
+    """READ is now a persistent reading list (per its manifest) backed by the
+    saved-articles store — it returns real saved rows, never a synthetic
+    watchlist_cache placeholder."""
     monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[2] / "engine"))
-    from showme.engine.core.base_function import FunctionResult
-    from showme.engine.functions.news import read as read_mod
     from showme.engine.functions.news.read import READFunction
+    from showme.engine.services.reading_list_store import ReadingListStore, SavedArticle
 
-    class FakeCN:
-        def __init__(self, _deps):
-            pass
-
-        async def execute(self, instrument, **kwargs):
-            assert kwargs["live"] is True
-            return FunctionResult(
-                code="CN",
-                instrument=instrument,
-                data=[
-                    {
-                        "title": f"{instrument.symbol} news feed unavailable",
-                        "status": "news_feed_empty",
-                        "source": "showMe",
-                    },
-                    {
-                        "title": f"{instrument.symbol} real headline",
-                        "source": "rss",
-                        "url": "https://example.com/news",
-                        "published_at": datetime.now(timezone.utc).isoformat(),
-                    },
-                ],
-                sources=["rss"],
-                metadata={},
+    store = ReadingListStore()
+    store.clear()
+    try:
+        store.save(
+            SavedArticle(
+                article_id="",
+                url="https://example.com/news",
+                title="AAPL real headline",
+                source="rss",
+                matched_symbol="AAPL",
+                status="unread",
             )
+        )
+        result = asyncio.run(READFunction().execute(watchlist=["AAPL"]))
+        rows = result.data["rows"]
+        assert len(rows) == 1
+        assert rows[0]["title"] == "AAPL real headline"
+        assert rows[0]["matched_symbol"] == "AAPL"
+        assert "watchlist_cache" not in result.sources
+        assert result.sources == ["internal_reading_list"]
+    finally:
+        store.clear()
 
-    monkeypatch.setattr(read_mod, "CNFunction", FakeCN)
 
-    result = asyncio.run(READFunction().execute(live=True, watchlist=["AAPL"]))
-
-    assert len(result.data) == 1
-    assert result.data[0]["title"] == "AAPL real headline"
-    assert result.data[0]["matched_symbol"] == "AAPL"
-    assert "watchlist_cache" not in result.sources
-
-
-def test_read_live_filters_stale_articles_by_days(monkeypatch) -> None:
+def test_read_symbol_filter_scopes_the_queue(monkeypatch) -> None:
+    """The watchlist/symbols filter scopes the saved-articles view to the
+    matching symbol tag."""
     monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[2] / "engine"))
-    from showme.engine.core.base_function import FunctionResult
-    from showme.engine.functions.news import read as read_mod
     from showme.engine.functions.news.read import READFunction
+    from showme.engine.services.reading_list_store import ReadingListStore, SavedArticle
 
-    class FakeCN:
-        def __init__(self, _deps):
-            pass
-
-        async def execute(self, instrument, **kwargs):
-            return FunctionResult(
-                code="CN",
-                instrument=instrument,
-                data=[
-                    {
-                        "title": "fresh headline",
-                        "source": "rss",
-                        "published_at": datetime.now(timezone.utc).isoformat(),
-                    },
-                    {
-                        "title": "old headline",
-                        "source": "rss",
-                        "published_at": (datetime.now(timezone.utc) - timedelta(days=90)).isoformat(),
-                    },
-                ],
-                sources=["rss"],
-                metadata={},
-            )
-
-    monkeypatch.setattr(read_mod, "CNFunction", FakeCN)
-
-    result = asyncio.run(READFunction().execute(live=True, watchlist=["BTCUSDT"], days=30))
-
-    assert [row["title"] for row in result.data] == ["fresh headline"]
-    assert result.metadata["max_age_days"] == 30
+    store = ReadingListStore()
+    store.clear()
+    try:
+        store.save(SavedArticle(article_id="", url="https://example.com/btc",
+                                title="fresh headline", source="rss",
+                                matched_symbol="BTCUSDT", status="unread"))
+        store.save(SavedArticle(article_id="", url="https://example.com/eth",
+                                title="other headline", source="rss",
+                                matched_symbol="ETHUSDT", status="unread"))
+        result = asyncio.run(READFunction().execute(watchlist=["BTCUSDT"]))
+        assert [row["title"] for row in result.data["rows"]] == ["fresh headline"]
+        assert result.metadata["watchlist"] == ["BTCUSDT"]
+    finally:
+        store.clear()
 
 
 def test_tldr_mover_lines_do_not_put_gainers_in_down_bucket(monkeypatch) -> None:

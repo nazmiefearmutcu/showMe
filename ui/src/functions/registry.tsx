@@ -74,6 +74,19 @@ const BOTPane = lazy(() => import("./BOT").then((m) => ({ default: m.BOTPane }))
 const BOTSPane = lazy(() => import("./BOTS").then((m) => ({ default: m.BOTSPane })));
 const PERFPane = lazy(() => import("./PERF").then((m) => ({ default: m.PERFPane })));
 const TMPLPane = lazy(() => import("./TMPL").then((m) => ({ default: m.TMPLPane })));
+// De-garbage 2026-06-01: bespoke panes for nine functions whose backends now
+// return real keyless live data (SEC EDGAR / World Bank / Treasury / yfinance /
+// Binance / CoinGecko / mempool / Polymarket / NASA-GIBS / FINRA). Without these
+// the codes fell through to the generic FunctionStub "text" renderer.
+const CRPRPane = lazy(() => import("./CRPR").then((m) => ({ default: m.CRPRPane })));
+const DEBTPane = lazy(() => import("./DEBT").then((m) => ({ default: m.DEBTPane })));
+const IVOLPane = lazy(() => import("./IVOL").then((m) => ({ default: m.IVOLPane })));
+const OVDVPane = lazy(() => import("./OVDV").then((m) => ({ default: m.OVDVPane })));
+const MICROPane = lazy(() => import("./MICRO").then((m) => ({ default: m.MICROPane })));
+const AIMPane = lazy(() => import("./AIM").then((m) => ({ default: m.AIMPane })));
+const TCAPane = lazy(() => import("./TCA").then((m) => ({ default: m.TCAPane })));
+const SATPane = lazy(() => import("./SAT").then((m) => ({ default: m.SATPane })));
+const POLYPane = lazy(() => import("./POLY").then((m) => ({ default: m.POLYPane })));
 
 const PANES: Record<string, PaneComponent> = {
   AGENT: AGENTPane,
@@ -149,6 +162,16 @@ const PANES: Record<string, PaneComponent> = {
   WETR: WETRPane,
   WHAL: WHALPane,
   WIRP: WIRPPane,
+  // De-garbage 2026-06-01 — nine newly real-data functions get bespoke panes.
+  CRPR: CRPRPane,
+  DEBT: DEBTPane,
+  IVOL: IVOLPane,
+  OVDV: OVDVPane,
+  MICRO: MICROPane,
+  AIM: AIMPane,
+  TCA: TCAPane,
+  SAT: SATPane,
+  POLY: POLYPane,
 };
 
 const NATIVE_FUNCTION_ENTRIES: FunctionEntry[] = [

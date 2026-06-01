@@ -114,16 +114,28 @@ def test_chgs_supports_commodity_and_bond_like_tech():
 # ── CRPR status honesty ──────────────────────────────────────────────
 
 def test_crpr_default_payload_reference_baseline(deps):
+    """de-garbage 2026-06-01: CRPR no longer ships a hardcoded AA+/Aa1 reference
+    table labelled ``reference_baseline``. The default issuer (US Treasury) is a
+    sovereign with no SEC CIK, so CRPR's financial-derived model does not apply
+    and it returns an HONESTLY-LABELLED sovereign reference profile
+    (``source_mode='sovereign_reference'``) with a warning saying the SEC model
+    is not applicable — never a silent fake-data table tagged plain ``ok``."""
     res = _run(CRPRFunction(deps).execute(instrument=None))
-    assert res.data["status"] == "reference_baseline"
-    assert res.data["summary"]["source_mode"] == "manual_or_public_defaults"
-    assert any("reference profile" in w for w in (res.warnings or []))
+    assert res.data["status"] == "ok"
+    assert res.data["summary"]["source_mode"] == "sovereign_reference"
+    # The label must honestly disclose it is a reference / non-model profile.
+    assert any("reference sovereign profile" in w or "not applicable" in w
+               for w in (res.warnings or [])), res.warnings
 
 
 def test_crpr_user_input_overrides_status(deps):
+    """de-garbage 2026-06-01: an operator-supplied ``rating`` block still wins —
+    CRPR echoes it verbatim with ``source_mode='user_input'`` and never lets a
+    SEC-derived or reference value overwrite the override. (Status is the
+    canonical ``ok`` now; honesty is carried by ``source_mode``.)"""
     rating = {"sp": "BB", "moodys": "Ba1", "fitch": "BB", "outlook": "negative", "watch": "review"}
     res = _run(CRPRFunction(deps).execute(rating=rating, issuer="ACME"))
-    assert res.data["status"] == "user_input"
+    assert res.data["status"] == "ok"
     assert res.data["summary"]["source_mode"] == "user_input"
     assert res.data["rows"][0]["rating"] == "BB"
 

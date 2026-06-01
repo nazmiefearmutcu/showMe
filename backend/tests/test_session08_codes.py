@@ -77,27 +77,54 @@ def test_stubs_truthy_handles_false_string() -> None:
 
 
 def test_hvt_non_live_marks_reference_and_live_false() -> None:
+    """de-garbage 2026-06-01: HVT now fetches the realized-vol term structure
+    LIVE from yfinance by default (no opt-in flag). With no yfinance adapter the
+    default path degrades HONESTLY to ``provider_unavailable`` (live=False) and
+    still carries a labelled reference vol-window table so the UI renders. The
+    explicit ``reference=true`` opt-in (tests / air-gapped demos) still yields
+    the canonical ``reference`` shape — never silently substituted as default."""
     from showme.engine.core.instrument import AssetClass, Instrument
     from showme.engine.functions.derivative._stubs import HVTFunction
 
     fn = HVTFunction(_DummyDeps())
     inst = Instrument(symbol="AAPL", asset_class=AssetClass.EQUITY)
+
+    # Default (no live provider) → honest provider_unavailable, never live.
     res = asyncio.run(fn.execute(instrument=inst))
-    assert res.data["status"] == "reference"
+    assert res.data["status"] == "provider_unavailable"
     assert res.metadata is not None and res.metadata.get("live") is False
-    # rows must exist so the UI renders a vol-window table
+    # A labelled reference vol-window table must still render.
     assert isinstance(res.data["rows"], list) and len(res.data["rows"]) >= 1
+    assert res.data["summary"]["source_mode"] == "reference"
+
+    # Explicit opt-in reference template stays the canonical "reference" shape.
+    ref = asyncio.run(fn.execute(instrument=inst, reference=True))
+    assert ref.data["status"] == "reference"
+    assert ref.metadata is not None and ref.metadata.get("live") is False
+    assert isinstance(ref.data["rows"], list) and len(ref.data["rows"]) >= 1
 
 
 def test_ivol_non_live_marks_reference_and_live_false() -> None:
+    """de-garbage 2026-06-01: IVOL now pulls the implied-vol surface LIVE from the
+    yfinance option chain by default. With no adapter the default path degrades
+    HONESTLY to ``provider_unavailable`` (live=False), and the explicit
+    ``reference=true`` opt-in still emits the labelled Black-Scholes reference
+    surface (live=False) — the reference shape is never the silent default."""
     from showme.engine.core.instrument import AssetClass, Instrument
     from showme.engine.functions.derivative._stubs import IVOLFunction
 
     fn = IVOLFunction(_DummyDeps())
     inst = Instrument(symbol="AAPL", asset_class=AssetClass.EQUITY)
+
+    # Default (no live provider) → honest provider_unavailable, never live.
     res = asyncio.run(fn.execute(instrument=inst))
-    assert res.data["status"] == "reference"
+    assert res.data["status"] == "provider_unavailable"
     assert res.metadata is not None and res.metadata.get("live") is False
+
+    # Explicit opt-in reference surface stays the canonical "reference" shape.
+    ref = asyncio.run(fn.execute(instrument=inst, reference=True))
+    assert ref.data["status"] == "reference"
+    assert ref.metadata is not None and ref.metadata.get("live") is False
 
 
 def test_hvt_requires_symbol_with_message() -> None:

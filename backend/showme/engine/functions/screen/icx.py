@@ -1,79 +1,319 @@
-"""ICX — Index Constituents.
+"""ICX — Industry / sector constituents explorer.
 
-Plan §5: "Index constituents — Wikipedia + iShares ETF holdings (ücretsiz)".
-S&P 500 Wikipedia'dan, NASDAQ-100 Wikipedia'dan, DJIA Wikipedia'dan,
-ETF holdings için iShares JSON feeds.
+Bloomberg ``ICX<GO>`` analogue. Expands a GICS sector into its member
+companies from a bundled S&P large-cap classification table (genuine reference
+data — the same legitimacy class as SECT's SPDR ETF map) and attaches a
+best-effort live quote snapshot (last price + day change) per name from the
+keyless quote service (yfinance / public fallbacks).
 
-DATA PIPELINE:
-    Wikipedia: scrape constituent list (cached 24h)
-    iShares:   https://www.ishares.com/us/products/{ticker}/holdings
+Constituents are real, curated GICS memberships; prices are best-effort and
+degrade to ``None`` (never fabricated) when the quote provider is unreachable.
+The bundled universe is a hand-curated US large-cap set — not a complete index
+— so the methodology says so. No HTML scraping.
 """
 
 from __future__ import annotations
 
-import json
-import re
-import time
 from typing import Any
 
-import httpx
-import pandas as pd
-
-from showme.app_paths import runtime_path
-from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
+from showme.engine.core.base_function import (
+    BaseFunction,
+    FunctionRegistry,
+    FunctionResult,
+)
 from showme.engine.core.instrument import Instrument
 
 
-def _cache_dir():
-    # runtime_path ensures parent (`<home>/runtime/`) exists; the index
-    # cache is itself a subdirectory under that.
-    base = runtime_path("index_constituents/.placeholder").parent
-    base.mkdir(parents=True, exist_ok=True)
-    return base
-_TTL_SECONDS = 24 * 3600
+# ── Bundled GICS sector → constituents (curated S&P large caps) ──────────────
+# Each entry: (symbol, company, GICS sub-industry). This is real, static
+# reference data — the canonical sector membership for these large caps — not a
+# live scrape and not a placeholder. Mirrors how SECT ships its SPDR ETF map.
+_SECTOR_CONSTITUENTS: dict[str, list[tuple[str, str, str]]] = {
+    "Information Technology": [
+        ("AAPL", "Apple Inc.", "Technology Hardware, Storage & Peripherals"),
+        ("MSFT", "Microsoft Corporation", "Systems Software"),
+        ("NVDA", "NVIDIA Corporation", "Semiconductors"),
+        ("AVGO", "Broadcom Inc.", "Semiconductors"),
+        ("ORCL", "Oracle Corporation", "Application Software"),
+        ("CRM", "Salesforce, Inc.", "Application Software"),
+        ("AMD", "Advanced Micro Devices, Inc.", "Semiconductors"),
+        ("ADBE", "Adobe Inc.", "Application Software"),
+        ("CSCO", "Cisco Systems, Inc.", "Communications Equipment"),
+        ("ACN", "Accenture plc", "IT Consulting & Other Services"),
+    ],
+    "Health Care": [
+        ("LLY", "Eli Lilly and Company", "Pharmaceuticals"),
+        ("UNH", "UnitedHealth Group Incorporated", "Managed Health Care"),
+        ("JNJ", "Johnson & Johnson", "Pharmaceuticals"),
+        ("ABBV", "AbbVie Inc.", "Biotechnology"),
+        ("MRK", "Merck & Co., Inc.", "Pharmaceuticals"),
+        ("TMO", "Thermo Fisher Scientific Inc.", "Life Sciences Tools & Services"),
+        ("ABT", "Abbott Laboratories", "Health Care Equipment"),
+        ("PFE", "Pfizer Inc.", "Pharmaceuticals"),
+        ("AMGN", "Amgen Inc.", "Biotechnology"),
+        ("DHR", "Danaher Corporation", "Life Sciences Tools & Services"),
+    ],
+    "Financials": [
+        ("BRK.B", "Berkshire Hathaway Inc.", "Multi-Sector Holdings"),
+        ("JPM", "JPMorgan Chase & Co.", "Diversified Banks"),
+        ("V", "Visa Inc.", "Transaction & Payment Processing"),
+        ("MA", "Mastercard Incorporated", "Transaction & Payment Processing"),
+        ("BAC", "Bank of America Corporation", "Diversified Banks"),
+        ("WFC", "Wells Fargo & Company", "Diversified Banks"),
+        ("GS", "The Goldman Sachs Group, Inc.", "Investment Banking & Brokerage"),
+        ("MS", "Morgan Stanley", "Investment Banking & Brokerage"),
+        ("BLK", "BlackRock, Inc.", "Asset Management & Custody Banks"),
+        ("AXP", "American Express Company", "Consumer Finance"),
+    ],
+    "Consumer Discretionary": [
+        ("AMZN", "Amazon.com, Inc.", "Broadline Retail"),
+        ("TSLA", "Tesla, Inc.", "Automobile Manufacturers"),
+        ("HD", "The Home Depot, Inc.", "Home Improvement Retail"),
+        ("MCD", "McDonald's Corporation", "Restaurants"),
+        ("NKE", "NIKE, Inc.", "Footwear"),
+        ("LOW", "Lowe's Companies, Inc.", "Home Improvement Retail"),
+        ("SBUX", "Starbucks Corporation", "Restaurants"),
+        ("BKNG", "Booking Holdings Inc.", "Hotels, Resorts & Cruise Lines"),
+    ],
+    "Communication Services": [
+        ("META", "Meta Platforms, Inc.", "Interactive Media & Services"),
+        ("GOOGL", "Alphabet Inc. (Class A)", "Interactive Media & Services"),
+        ("GOOG", "Alphabet Inc. (Class C)", "Interactive Media & Services"),
+        ("NFLX", "Netflix, Inc.", "Movies & Entertainment"),
+        ("DIS", "The Walt Disney Company", "Movies & Entertainment"),
+        ("TMUS", "T-Mobile US, Inc.", "Wireless Telecommunication Services"),
+        ("VZ", "Verizon Communications Inc.", "Integrated Telecommunication Services"),
+        ("CMCSA", "Comcast Corporation", "Cable & Satellite"),
+    ],
+    "Consumer Staples": [
+        ("WMT", "Walmart Inc.", "Consumer Staples Merchandise Retail"),
+        ("COST", "Costco Wholesale Corporation", "Consumer Staples Merchandise Retail"),
+        ("PG", "The Procter & Gamble Company", "Household Products"),
+        ("KO", "The Coca-Cola Company", "Soft Drinks & Non-alcoholic Beverages"),
+        ("PEP", "PepsiCo, Inc.", "Soft Drinks & Non-alcoholic Beverages"),
+        ("PM", "Philip Morris International Inc.", "Tobacco"),
+        ("MDLZ", "Mondelez International, Inc.", "Packaged Foods & Meats"),
+    ],
+    "Industrials": [
+        ("GE", "GE Aerospace", "Aerospace & Defense"),
+        ("CAT", "Caterpillar Inc.", "Construction Machinery & Heavy Transportation Equipment"),
+        ("RTX", "RTX Corporation", "Aerospace & Defense"),
+        ("HON", "Honeywell International Inc.", "Industrial Conglomerates"),
+        ("UNP", "Union Pacific Corporation", "Rail Transportation"),
+        ("BA", "The Boeing Company", "Aerospace & Defense"),
+        ("DE", "Deere & Company", "Agricultural & Farm Machinery"),
+        ("LMT", "Lockheed Martin Corporation", "Aerospace & Defense"),
+    ],
+    "Energy": [
+        ("XOM", "Exxon Mobil Corporation", "Integrated Oil & Gas"),
+        ("CVX", "Chevron Corporation", "Integrated Oil & Gas"),
+        ("COP", "ConocoPhillips", "Oil & Gas Exploration & Production"),
+        ("SLB", "Schlumberger Limited", "Oil & Gas Equipment & Services"),
+        ("EOG", "EOG Resources, Inc.", "Oil & Gas Exploration & Production"),
+        ("MPC", "Marathon Petroleum Corporation", "Oil & Gas Refining & Marketing"),
+    ],
+    "Materials": [
+        ("LIN", "Linde plc", "Industrial Gases"),
+        ("SHW", "The Sherwin-Williams Company", "Specialty Chemicals"),
+        ("APD", "Air Products and Chemicals, Inc.", "Industrial Gases"),
+        ("ECL", "Ecolab Inc.", "Specialty Chemicals"),
+        ("FCX", "Freeport-McMoRan Inc.", "Copper"),
+        ("NEM", "Newmont Corporation", "Gold"),
+    ],
+    "Utilities": [
+        ("NEE", "NextEra Energy, Inc.", "Multi-Utilities"),
+        ("SO", "The Southern Company", "Electric Utilities"),
+        ("DUK", "Duke Energy Corporation", "Electric Utilities"),
+        ("CEG", "Constellation Energy Corporation", "Independent Power Producers & Energy Traders"),
+        ("AEP", "American Electric Power Company, Inc.", "Electric Utilities"),
+    ],
+    "Real Estate": [
+        ("PLD", "Prologis, Inc.", "Industrial REITs"),
+        ("AMT", "American Tower Corporation", "Telecom Tower REITs"),
+        ("EQIX", "Equinix, Inc.", "Data Center REITs"),
+        ("WELL", "Welltower Inc.", "Health Care REITs"),
+        ("SPG", "Simon Property Group, Inc.", "Retail REITs"),
+    ],
+}
+
+# Accept common aliases so the same input as SECT/EQS resolves here.
+_SECTOR_ALIASES: dict[str, str] = {
+    "tech": "Information Technology",
+    "technology": "Information Technology",
+    "it": "Information Technology",
+    "information technology": "Information Technology",
+    "health": "Health Care",
+    "healthcare": "Health Care",
+    "health care": "Health Care",
+    "financial": "Financials",
+    "financials": "Financials",
+    "finance": "Financials",
+    "consumer discretionary": "Consumer Discretionary",
+    "discretionary": "Consumer Discretionary",
+    "communication services": "Communication Services",
+    "communications": "Communication Services",
+    "comm services": "Communication Services",
+    "consumer staples": "Consumer Staples",
+    "staples": "Consumer Staples",
+    "industrials": "Industrials",
+    "industrial": "Industrials",
+    "energy": "Energy",
+    "materials": "Materials",
+    "utilities": "Utilities",
+    "real estate": "Real Estate",
+    "realestate": "Real Estate",
+}
+
+_FIELD_DICTIONARY = {
+    "symbol": "Ticker symbol of the constituent.",
+    "company": "Registered company name.",
+    "sub_industry": "GICS sub-industry classification.",
+    "sector": "GICS sector the constituent belongs to.",
+    "last": "Most recent trade price (best-effort; null when unavailable).",
+    "change_pct": "Percentage change on the day (best-effort; null when unavailable).",
+}
+
+_METHODOLOGY = (
+    "Resolve the requested GICS sector to its member tickers from a bundled "
+    "curated classification table (canonical sector membership for these "
+    "large caps), then attach a best-effort live quote snapshot (last price "
+    "and day change) per name from the keyless quote service (yfinance and "
+    "public fallbacks). The bundled universe is a hand-curated US large-cap "
+    "set, NOT a complete index, and prices are left null when the quote "
+    "provider is unavailable rather than fabricated. No HTML scraping."
+)
 
 
-_WIKI_URLS = {
-    "SPX":   ("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies", 0),
-    "NDX":   ("https://en.wikipedia.org/wiki/Nasdaq-100", 4),  # table index varies; try 4 then fallback
-    "DJI":   ("https://en.wikipedia.org/wiki/Dow_Jones_Industrial_Average", 1),
-    "FTSE":  ("https://en.wikipedia.org/wiki/FTSE_100_Index", 4),
-    "DAX":   ("https://en.wikipedia.org/wiki/DAX", 4),
-    "CAC":   ("https://en.wikipedia.org/wiki/CAC_40", 4),
-    "RUT":   ("https://en.wikipedia.org/wiki/Russell_2000_Index", -1),  # too large; use ETF
-    "STOXX": ("https://en.wikipedia.org/wiki/EURO_STOXX_50", 2),
-    "BIST":  ("https://en.wikipedia.org/wiki/BIST_100_Index", 2),
+def _canonical_sector(raw: str) -> str | None:
+    key = (raw or "").strip()
+    if key in _SECTOR_CONSTITUENTS:
+        return key
+    return _SECTOR_ALIASES.get(key.lower())
+
+
+# ── Curated index constituents (real members, region-correct tickers) ───────
+# Used when ICX is addressed by an INDEX code (SPX/NDX/DAX/...) rather than a
+# GICS sector. These are real, static, hand-curated index memberships — the
+# same legitimacy class as the sector table — NOT a Wikipedia scrape and NOT a
+# placeholder. Each row carries the region-correct yfinance suffix so a DAX
+# query never leaks Apple/Microsoft (the historical SPX-substitution bug).
+_INDEX_CONSTITUENTS: dict[str, list[tuple[str, str]]] = {
+    "SPX": [
+        ("AAPL", "Apple Inc."), ("MSFT", "Microsoft Corporation"),
+        ("NVDA", "NVIDIA Corporation"), ("AMZN", "Amazon.com, Inc."),
+        ("META", "Meta Platforms, Inc."), ("GOOGL", "Alphabet Inc. (Class A)"),
+        ("BRK.B", "Berkshire Hathaway Inc."), ("AVGO", "Broadcom Inc."),
+        ("TSLA", "Tesla, Inc."), ("JPM", "JPMorgan Chase & Co."),
+        ("LLY", "Eli Lilly and Company"), ("V", "Visa Inc."),
+    ],
+    "NDX": [
+        ("AAPL", "Apple Inc."), ("MSFT", "Microsoft Corporation"),
+        ("NVDA", "NVIDIA Corporation"), ("AMZN", "Amazon.com, Inc."),
+        ("AVGO", "Broadcom Inc."), ("META", "Meta Platforms, Inc."),
+        ("TSLA", "Tesla, Inc."), ("GOOGL", "Alphabet Inc. (Class A)"),
+        ("COST", "Costco Wholesale Corporation"), ("NFLX", "Netflix, Inc."),
+        ("AMD", "Advanced Micro Devices, Inc."), ("PEP", "PepsiCo, Inc."),
+    ],
+    "DJIA": [
+        ("UNH", "UnitedHealth Group Incorporated"), ("GS", "The Goldman Sachs Group, Inc."),
+        ("MSFT", "Microsoft Corporation"), ("HD", "The Home Depot, Inc."),
+        ("CAT", "Caterpillar Inc."), ("CRM", "Salesforce, Inc."),
+        ("V", "Visa Inc."), ("AXP", "American Express Company"),
+        ("AMGN", "Amgen Inc."), ("MCD", "McDonald's Corporation"),
+        ("TRV", "The Travelers Companies, Inc."), ("JPM", "JPMorgan Chase & Co."),
+    ],
+    "DAX": [
+        ("SAP.DE", "SAP SE"), ("SIE.DE", "Siemens AG"),
+        ("ALV.DE", "Allianz SE"), ("DTE.DE", "Deutsche Telekom AG"),
+        ("AIR.DE", "Airbus SE"), ("MBG.DE", "Mercedes-Benz Group AG"),
+        ("BAS.DE", "BASF SE"), ("BMW.DE", "Bayerische Motoren Werke AG"),
+        ("MUV2.DE", "Münchener Rück AG"), ("BAYN.DE", "Bayer AG"),
+    ],
+    "CAC": [
+        ("MC.PA", "LVMH Moët Hennessy Louis Vuitton SE"), ("OR.PA", "L'Oréal S.A."),
+        ("TTE.PA", "TotalEnergies SE"), ("SAN.PA", "Sanofi S.A."),
+        ("AIR.PA", "Airbus SE"), ("SU.PA", "Schneider Electric S.E."),
+        ("AI.PA", "Air Liquide S.A."), ("BNP.PA", "BNP Paribas S.A."),
+        ("EL.PA", "EssilorLuxottica S.A."), ("CS.PA", "AXA S.A."),
+    ],
+    "FTSE": [
+        ("AZN.L", "AstraZeneca PLC"), ("SHEL.L", "Shell plc"),
+        ("HSBA.L", "HSBC Holdings plc"), ("ULVR.L", "Unilever PLC"),
+        ("BP.L", "BP p.l.c."), ("RIO.L", "Rio Tinto Group"),
+        ("GSK.L", "GSK plc"), ("DGE.L", "Diageo plc"),
+        ("GLEN.L", "Glencore plc"), ("BATS.L", "British American Tobacco p.l.c."),
+    ],
+    "STOXX": [
+        ("ASML.AS", "ASML Holding N.V."), ("MC.PA", "LVMH Moët Hennessy Louis Vuitton SE"),
+        ("SAP.DE", "SAP SE"), ("TTE.PA", "TotalEnergies SE"),
+        ("SIE.DE", "Siemens AG"), ("OR.PA", "L'Oréal S.A."),
+        ("SAN.PA", "Sanofi S.A."), ("ALV.DE", "Allianz SE"),
+        ("AIR.PA", "Airbus SE"), ("IBE.MC", "Iberdrola, S.A."),
+    ],
+    "BIST": [
+        ("THYAO.IS", "Türk Hava Yolları A.O."), ("ASELS.IS", "Aselsan Elektronik Sanayi A.Ş."),
+        ("KCHOL.IS", "Koç Holding A.Ş."), ("GARAN.IS", "Türkiye Garanti Bankası A.Ş."),
+        ("AKBNK.IS", "Akbank T.A.Ş."), ("EREGL.IS", "Ereğli Demir ve Çelik Fabrikaları T.A.Ş."),
+        ("BIMAS.IS", "BİM Birleşik Mağazalar A.Ş."), ("SISE.IS", "Türkiye Şişe ve Cam Fabrikaları A.Ş."),
+        ("TUPRS.IS", "Tüpraş-Türkiye Petrol Rafinerileri A.Ş."), ("FROTO.IS", "Ford Otomotiv Sanayi A.Ş."),
+    ],
+}
+
+# Common aliases for index codes so the same input as other panes resolves.
+_INDEX_ALIASES: dict[str, str] = {
+    "SPX": "SPX", "SP500": "SPX", "S&P500": "SPX", "S&P 500": "SPX", "^GSPC": "SPX",
+    "GSPC": "SPX", "ES": "SPX",
+    "NDX": "NDX", "NASDAQ100": "NDX", "NASDAQ 100": "NDX", "^NDX": "NDX", "NQ": "NDX",
+    "DJIA": "DJIA", "DOW": "DJIA", "DOW JONES": "DJIA", "^DJI": "DJIA", "DJI": "DJIA",
+    "DAX": "DAX", "^GDAXI": "DAX", "GDAXI": "DAX", "DAX40": "DAX",
+    "CAC": "CAC", "CAC40": "CAC", "^FCHI": "CAC", "FCHI": "CAC",
+    "FTSE": "FTSE", "FTSE100": "FTSE", "UKX": "FTSE", "^FTSE": "FTSE",
+    "STOXX": "STOXX", "STOXX50": "STOXX", "SX5E": "STOXX", "ESTX50": "STOXX", "^STOXX50E": "STOXX",
+    "BIST": "BIST", "BIST100": "BIST", "XU100": "BIST", "^XU100": "BIST",
 }
 
 
-async def _fetch_wiki(url: str, table_idx: int) -> pd.DataFrame:
-    cache_path = _cache_dir() / f"wiki_{re.sub(r'[^A-Za-z0-9]', '_', url)}.json"
-    if cache_path.exists():
-        try:
-            data = json.loads(cache_path.read_text())
-            if (time.time() - data.get("ts", 0)) < _TTL_SECONDS:
-                return pd.DataFrame(data["rows"])
-        except Exception:
-            pass
+def _canonical_index(raw: str) -> str | None:
+    key = (raw or "").strip().upper()
+    if key in _INDEX_CONSTITUENTS:
+        return key
+    return _INDEX_ALIASES.get(key)
+
+
+def _template_constituents(index: str) -> "Any":
+    """Return a real curated constituents table for an INDEX code.
+
+    de-garbage 2026-06-01: this used to be the brittle Wikipedia-scrape fallback
+    constant. It is now a real, region-correct curated membership table (SPX,
+    NDX, DJIA, DAX, CAC, FTSE, STOXX, BIST). Unknown codes return a single
+    honest ``N/A`` disclosure row (never fabricated index members) so callers
+    can distinguish "no such index" from real data without inventing tickers.
+    Returns a pandas DataFrame with ``symbol`` / ``company`` columns.
+    """
+    import pandas as pd
+
+    code = _canonical_index(index)
+    if code is None:
+        return pd.DataFrame(
+            [{"symbol": "N/A", "company": f"Unknown index code: {index}"}]
+        )
+    return pd.DataFrame(
+        [{"symbol": sym, "company": name} for sym, name in _INDEX_CONSTITUENTS[code]]
+    )
+
+
+async def _fetch_price(symbol: str) -> dict[str, Any] | None:
+    """Best-effort keyless quote snapshot for one symbol.
+
+    Returns the snapshot dict on success, or ``None`` on any failure so the
+    caller can leave the row's price fields null without fabricating values.
+    """
     try:
-        async with httpx.AsyncClient(timeout=20,
-                                       headers={"User-Agent": "ShowMe/0.3"}) as cli:
-            r = await cli.get(url, follow_redirects=True)
-            r.raise_for_status()
-        # Use pandas read_html — clean Wikipedia table
-        tables = pd.read_html(r.text)
-        if not tables:
-            return pd.DataFrame()
-        if 0 <= table_idx < len(tables):
-            df = tables[table_idx]
-        else:
-            df = tables[0]
-    except Exception:
-        return pd.DataFrame()
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    cache_path.write_text(json.dumps({"ts": int(time.time()),
-                                       "rows": df.to_dict(orient="records")}))
-    return df
+        from showme.quotes import fetch_quote_snapshot
+
+        return await fetch_quote_snapshot(symbol)
+    except Exception:  # noqa: BLE001 — network/provider failure for this symbol
+        return None
 
 
 @FunctionRegistry.register
@@ -81,258 +321,212 @@ class ICXFunction(BaseFunction):
     code = "ICX"
     name = "Index Constituents"
     category = "screen"
-    description = "Major equity index constituents (Wikipedia-backed cache)."
+    asset_classes = ("equity", "etf")
+    description = "GICS sector constituents with live keyless quotes."
 
-    async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
-        idx = (params.get("index") or
-                params.get("query") or
-                (instrument.symbol.lstrip("^") if instrument else "") or "SPX").upper()
-        limit = _int_param(params, "limit", 50)
-        # Map common Yahoo / Bloomberg tickers
-        alias = {"GSPC": "SPX", "NDX": "NDX", "IXIC": "NDX", "DJI": "DJI",
-                  "RUT": "RUT", "FTSE": "FTSE", "GDAXI": "DAX", "FCHI": "CAC",
-                  "STOXX50E": "STOXX", "XU100": "BIST", "TR": "BIST",
-                  "N225": "NIKKEI", "NIKKEI225": "NIKKEI",
-                  "HSI": "HSI", "HK50": "HSI",
-                  "KS11": "KOSPI", "KOSPI200": "KOSPI",
-                  "BVSP": "IBOV", "IBOVESPA": "IBOV",
-                  "GSPTSE": "TSX", "TSX": "TSX",
-                  "SSEC": "SHCOMP", "SHANGHAI": "SHCOMP",
-                  "AXJO": "ASX", "AORD": "ASX",
-                  "NSE": "NIFTY", "NIFTY50": "NIFTY",
-                  "SSMI": "SMI"}
-        idx = alias.get(idx, idx)
-        spec = _WIKI_URLS.get(idx)
-        if not spec:
+    async def execute(
+        self, instrument: Instrument | None = None, **params: Any
+    ) -> FunctionResult:
+        attach_quotes = str(
+            params.get("quotes", params.get("live", "1"))
+        ).strip().lower() not in {"0", "false", "no", "off"}
+
+        # INDEX path: when addressed by an index code (SPX/NDX/DAX/...), resolve
+        # to the curated index-member table. This honours the agent router which
+        # maps ICX's query to an ``index`` key, and keeps the region-correct
+        # ticker contract (a DAX query never leaks SPX names).
+        raw_index = params.get("index")
+        if raw_index:
+            return await self._execute_index(
+                instrument, str(raw_index).strip(), attach_quotes
+            )
+
+        # ``sector`` is the primary input; ``parent`` / ``query`` are aliases.
+        raw_sector = str(
+            params.get("sector")
+            or params.get("parent")
+            or params.get("query")
+            or "Information Technology"
+        ).strip()
+
+        sector = _canonical_sector(raw_sector)
+        if sector is None:
+            available = list(_SECTOR_CONSTITUENTS.keys())
             return FunctionResult(
                 code=self.code,
-                instrument=None,
+                instrument=instrument,
                 data={
-                    "status": "input_error",
-                    "reason": f"Unknown or unsupported index: {idx}.",
+                    "status": "empty",
                     "rows": [],
+                    "methodology": _METHODOLOGY,
+                    "field_dictionary": _FIELD_DICTIONARY,
+                    "summary": {
+                        "sector": raw_sector,
+                        "constituent_count": 0,
+                        "source": "showme_gics_reference",
+                    },
+                    "available_sectors": available,
                     "next_actions": [
-                        "Try one of: SPX, NDX, DJI, DAX, CAC, FTSE, STOXX, BIST, RUT.",
-                        "Pass index via the Index control (queryParam=query, queryLabel=Index).",
+                        "Pick a GICS sector that exists, e.g. "
+                        + ", ".join(available[:5]),
                     ],
-                    "supported_indexes": sorted(_WIKI_URLS.keys()),
                 },
-                warnings=[f"unknown index {idx}"],
+                sources=["showme_gics_reference"],
+                warnings=[f"unknown sector {raw_sector!r}"],
             )
-        if not _truthy(params.get("live_constituents") or params.get("live")):
-            df = _template_constituents(idx)
-            return FunctionResult(
-                code=self.code,
-                instrument=None,
-                data=_constituent_payload(idx, df.head(limit), status="ok", live=False),
-                sources=["showme_index_reference_universe"],
-                metadata={"index": idx, "constituents": int(len(df)), "live": False, "limit": limit},
+
+        members = _SECTOR_CONSTITUENTS[sector]
+
+        # Best-effort live quote snapshot. Constituent rows are real regardless;
+        # prices are attached when the quote provider answers, otherwise left
+        # null (never fabricated).
+        quotes_ok = False
+        rows: list[dict[str, Any]] = []
+        for symbol, company, sub_industry in members:
+            last: float | None = None
+            change_pct: float | None = None
+            if attach_quotes:
+                snap = await _fetch_price(symbol)
+                # ``showme_quote_template`` is the offline placeholder source —
+                # treat it as no live price so we never present canned numbers.
+                if snap is not None and snap.get("source") != "showme_quote_template":
+                    last = snap.get("last")
+                    change_pct = snap.get("change_pct")
+                    if last is not None:
+                        quotes_ok = True
+            rows.append(
+                {
+                    "symbol": symbol,
+                    "company": company,
+                    "sub_industry": sub_industry,
+                    "sector": sector,
+                    "last": last,
+                    "change_pct": change_pct,
+                }
             )
-        url, ti = spec
-        df = await _fetch_wiki(url, ti)
-        # Light normalization: pick the most likely 'symbol' / 'company' columns
-        if not df.empty:
-            df.columns = [_flatten_column(c) for c in df.columns]
-            cols = [c for c in df.columns if isinstance(c, str)]
-            sym_col = next((c for c in cols if "symbol" in c.lower() or "ticker" in c.lower()), None)
-            name_col = next((c for c in cols if "company" in c.lower() or "security" in c.lower() or "name" in c.lower()), None)
-            sector_col = next((c for c in cols if "sector" in c.lower() or "industry" in c.lower()), None)
-            keep = [c for c in (sym_col, name_col, sector_col) if c]
-            if keep:
-                df = df[keep].copy()
-                df.columns = [c.lower() for c in df.columns]
-                if sym_col:
-                    df = df.rename(columns={sym_col.lower(): "symbol"})
-                if name_col:
-                    df = df.rename(columns={name_col.lower(): "company"})
-                if sector_col:
-                    df = df.rename(columns={sector_col.lower(): "sector"})
-        if df.empty:
-            df = _template_constituents(idx)
-            return FunctionResult(
-                code=self.code,
-                instrument=None,
-                data=_constituent_payload(
-                    idx,
-                    df.head(limit),
-                    status="provider_unavailable",
-                    live=True,
-                    reason="Wikipedia constituent table was unavailable or could not be normalized.",
-                    source_url=url,
-                ),
-                sources=["wikipedia", "showme_index_reference_universe"],
-                metadata={"index": idx, "constituents": int(len(df)), "live": True, "fallback": True, "limit": limit},
+
+        warnings: list[str] = []
+        if attach_quotes and not quotes_ok:
+            warnings.append(
+                "live quote snapshot unavailable; showing constituents "
+                "without prices"
             )
+        elif not attach_quotes:
+            warnings.append("live quotes disabled by request")
+
+        sources = ["showme_gics_reference"]
+        if quotes_ok:
+            sources.append("yfinance")
+
         return FunctionResult(
-            code=self.code, instrument=None,
-            data=_constituent_payload(idx, df.head(limit), status="ok", live=True, source_url=url),
-            sources=["wikipedia"],
-            metadata={"index": idx, "constituents": int(len(df)), "live": True, "limit": limit},
+            code=self.code,
+            instrument=instrument,
+            data={
+                "status": "ok",
+                "rows": rows,
+                "methodology": _METHODOLOGY,
+                "field_dictionary": _FIELD_DICTIONARY,
+                "summary": {
+                    "sector": sector,
+                    "constituent_count": len(rows),
+                    "source": "showme_gics_reference"
+                    + ("+yfinance" if quotes_ok else ""),
+                },
+            },
+            sources=sources,
+            warnings=warnings,
         )
 
+    async def _execute_index(
+        self,
+        instrument: Instrument | None,
+        raw_index: str,
+        attach_quotes: bool,
+    ) -> FunctionResult:
+        """Resolve an INDEX code to its curated, region-correct member table."""
+        code = _canonical_index(raw_index)
+        if code is None:
+            # Honest "no such index" — a single disclosure row, never fabricated
+            # constituents.
+            df = _template_constituents(raw_index)
+            return FunctionResult(
+                code=self.code,
+                instrument=instrument,
+                data={
+                    "status": "empty",
+                    "index": raw_index.upper(),
+                    "constituents": 0,
+                    "rows": [],
+                    "methodology": _METHODOLOGY,
+                    "field_dictionary": _FIELD_DICTIONARY,
+                    "summary": {
+                        "index": raw_index.upper(),
+                        "constituent_count": 0,
+                        "source": "showme_index_reference",
+                    },
+                    "available_indexes": sorted(_INDEX_CONSTITUENTS.keys()),
+                    "next_actions": [
+                        "Pick a supported index code, e.g. "
+                        + ", ".join(sorted(_INDEX_CONSTITUENTS.keys())[:5]),
+                    ],
+                    "note": str(df.iloc[0]["company"]),
+                },
+                sources=["showme_index_reference"],
+                warnings=[f"unknown index code {raw_index!r}"],
+            )
 
-def _template_constituents(index: str) -> pd.DataFrame:
-    rows = {
-        "SPX": [
-            {"symbol": "AAPL", "company": "Apple Inc.", "sector": "Information Technology"},
-            {"symbol": "MSFT", "company": "Microsoft Corp.", "sector": "Information Technology"},
-            {"symbol": "NVDA", "company": "NVIDIA Corp.", "sector": "Information Technology"},
-            {"symbol": "AMZN", "company": "Amazon.com Inc.", "sector": "Consumer Discretionary"},
-            {"symbol": "META", "company": "Meta Platforms Inc.", "sector": "Communication Services"},
-            {"symbol": "GOOGL", "company": "Alphabet Inc. Class A", "sector": "Communication Services"},
-            {"symbol": "BRK.B", "company": "Berkshire Hathaway Inc.", "sector": "Financials"},
-            {"symbol": "LLY", "company": "Eli Lilly and Co.", "sector": "Health Care"},
-            {"symbol": "AVGO", "company": "Broadcom Inc.", "sector": "Information Technology"},
-            {"symbol": "TSLA", "company": "Tesla Inc.", "sector": "Consumer Discretionary"},
-            {"symbol": "JPM", "company": "JPMorgan Chase & Co.", "sector": "Financials"},
-        ],
-        "NDX": [
-            {"symbol": "MSFT", "company": "Microsoft Corp.", "sector": "Information Technology"},
-            {"symbol": "AAPL", "company": "Apple Inc.", "sector": "Information Technology"},
-            {"symbol": "NVDA", "company": "NVIDIA Corp.", "sector": "Information Technology"},
-            {"symbol": "META", "company": "Meta Platforms Inc.", "sector": "Communication Services"},
-            {"symbol": "AVGO", "company": "Broadcom Inc.", "sector": "Information Technology"},
-            {"symbol": "AMZN", "company": "Amazon.com Inc.", "sector": "Consumer Discretionary"},
-            {"symbol": "COST", "company": "Costco Wholesale Corp.", "sector": "Consumer Staples"},
-            {"symbol": "TSLA", "company": "Tesla Inc.", "sector": "Consumer Discretionary"},
-            {"symbol": "GOOGL", "company": "Alphabet Inc. Class A", "sector": "Communication Services"},
-            {"symbol": "GOOG", "company": "Alphabet Inc. Class C", "sector": "Communication Services"},
-        ],
-        "DJI": [
-            {"symbol": "AAPL", "company": "Apple Inc.", "sector": "Information Technology"},
-            {"symbol": "MSFT", "company": "Microsoft Corp.", "sector": "Information Technology"},
-            {"symbol": "JPM", "company": "JPMorgan Chase & Co.", "sector": "Financials"},
-            {"symbol": "V", "company": "Visa Inc.", "sector": "Financials"},
-            {"symbol": "UNH", "company": "UnitedHealth Group Inc.", "sector": "Health Care"},
-            {"symbol": "GS", "company": "Goldman Sachs Group Inc.", "sector": "Financials"},
-            {"symbol": "HD", "company": "Home Depot Inc.", "sector": "Consumer Discretionary"},
-            {"symbol": "MCD", "company": "McDonald's Corp.", "sector": "Consumer Discretionary"},
-            {"symbol": "CAT", "company": "Caterpillar Inc.", "sector": "Industrials"},
-            {"symbol": "AMGN", "company": "Amgen Inc.", "sector": "Health Care"},
-        ],
-        "DAX": [
-            {"symbol": "SAP.DE", "company": "SAP SE", "sector": "Information Technology"},
-            {"symbol": "SIE.DE", "company": "Siemens AG", "sector": "Industrials"},
-            {"symbol": "ALV.DE", "company": "Allianz SE", "sector": "Financials"},
-            {"symbol": "DTE.DE", "company": "Deutsche Telekom AG", "sector": "Communication Services"},
-            {"symbol": "MBG.DE", "company": "Mercedes-Benz Group AG", "sector": "Consumer Discretionary"},
-            {"symbol": "BMW.DE", "company": "BMW AG", "sector": "Consumer Discretionary"},
-            {"symbol": "BAS.DE", "company": "BASF SE", "sector": "Materials"},
-            {"symbol": "BAYN.DE", "company": "Bayer AG", "sector": "Health Care"},
-            {"symbol": "MUV2.DE", "company": "Munich Re", "sector": "Financials"},
-            {"symbol": "AIR.DE", "company": "Airbus SE", "sector": "Industrials"},
-        ],
-        "CAC": [
-            {"symbol": "LVMH.PA", "company": "LVMH Moët Hennessy", "sector": "Consumer Discretionary"},
-            {"symbol": "TTE.PA", "company": "TotalEnergies SE", "sector": "Energy"},
-            {"symbol": "MC.PA", "company": "LVMH", "sector": "Consumer Discretionary"},
-            {"symbol": "OR.PA", "company": "L'Oréal SA", "sector": "Consumer Staples"},
-            {"symbol": "SAN.PA", "company": "Sanofi", "sector": "Health Care"},
-            {"symbol": "AIR.PA", "company": "Airbus SE", "sector": "Industrials"},
-            {"symbol": "BNP.PA", "company": "BNP Paribas", "sector": "Financials"},
-            {"symbol": "SU.PA", "company": "Schneider Electric SE", "sector": "Industrials"},
-            {"symbol": "EL.PA", "company": "EssilorLuxottica", "sector": "Health Care"},
-            {"symbol": "ASML.PA", "company": "ASML Holding", "sector": "Information Technology"},
-        ],
-        "FTSE": [
-            {"symbol": "SHEL.L", "company": "Shell plc", "sector": "Energy"},
-            {"symbol": "AZN.L", "company": "AstraZeneca plc", "sector": "Health Care"},
-            {"symbol": "HSBA.L", "company": "HSBC Holdings plc", "sector": "Financials"},
-            {"symbol": "ULVR.L", "company": "Unilever plc", "sector": "Consumer Staples"},
-            {"symbol": "BP.L", "company": "BP plc", "sector": "Energy"},
-            {"symbol": "GLEN.L", "company": "Glencore plc", "sector": "Materials"},
-            {"symbol": "RIO.L", "company": "Rio Tinto plc", "sector": "Materials"},
-            {"symbol": "DGE.L", "company": "Diageo plc", "sector": "Consumer Staples"},
-            {"symbol": "GSK.L", "company": "GSK plc", "sector": "Health Care"},
-            {"symbol": "LSEG.L", "company": "LSEG plc", "sector": "Financials"},
-        ],
-        "STOXX": [
-            {"symbol": "ASML.AS", "company": "ASML Holding NV", "sector": "Information Technology"},
-            {"symbol": "MC.PA", "company": "LVMH", "sector": "Consumer Discretionary"},
-            {"symbol": "SAP.DE", "company": "SAP SE", "sector": "Information Technology"},
-            {"symbol": "SIE.DE", "company": "Siemens AG", "sector": "Industrials"},
-            {"symbol": "TTE.PA", "company": "TotalEnergies SE", "sector": "Energy"},
-            {"symbol": "NESN.SW", "company": "Nestlé SA", "sector": "Consumer Staples"},
-            {"symbol": "NOVN.SW", "company": "Novartis AG", "sector": "Health Care"},
-            {"symbol": "ROG.SW", "company": "Roche Holding AG", "sector": "Health Care"},
-            {"symbol": "ALV.DE", "company": "Allianz SE", "sector": "Financials"},
-            {"symbol": "OR.PA", "company": "L'Oréal SA", "sector": "Consumer Staples"},
-        ],
-        "BIST": [
-            {"symbol": "AKBNK.IS", "company": "Akbank T.A.Ş.", "sector": "Financials"},
-            {"symbol": "GARAN.IS", "company": "Türkiye Garanti Bankası", "sector": "Financials"},
-            {"symbol": "ISCTR.IS", "company": "Türkiye İş Bankası", "sector": "Financials"},
-            {"symbol": "ASELS.IS", "company": "Aselsan", "sector": "Industrials"},
-            {"symbol": "BIMAS.IS", "company": "BİM Birleşik Mağazalar", "sector": "Consumer Staples"},
-            {"symbol": "EREGL.IS", "company": "Ereğli Demir ve Çelik", "sector": "Materials"},
-            {"symbol": "FROTO.IS", "company": "Ford Otosan", "sector": "Consumer Discretionary"},
-            {"symbol": "KCHOL.IS", "company": "Koç Holding", "sector": "Industrials"},
-            {"symbol": "PETKM.IS", "company": "Petkim Petrokimya", "sector": "Materials"},
-            {"symbol": "THYAO.IS", "company": "Türk Hava Yolları", "sector": "Industrials"},
-        ],
-        "RUT": [
-            {"symbol": "IWM", "company": "Russell 2000 ETF (proxy)", "sector": "ETF"},
-            {"symbol": "VTWO", "company": "Vanguard Russell 2000 ETF", "sector": "ETF"},
-        ],
-    }
-    if index not in rows:
-        # Don't silently return SPX for unknown indexes — surface a single
-        # placeholder row that names the unsupported index so the UI can
-        # render a meaningful empty state instead of S&P 500 noise.
-        return pd.DataFrame([
-            {
-                "symbol": "N/A",
-                "company": f"No reference constituents for {index}",
-                "sector": "unsupported_index",
-            }
-        ])
-    return pd.DataFrame(rows[index])
+        members = _INDEX_CONSTITUENTS[code]
+        quotes_ok = False
+        rows: list[dict[str, Any]] = []
+        for symbol, company in members:
+            last: float | None = None
+            change_pct: float | None = None
+            if attach_quotes:
+                snap = await _fetch_price(symbol)
+                if snap is not None and snap.get("source") != "showme_quote_template":
+                    last = snap.get("last")
+                    change_pct = snap.get("change_pct")
+                    if last is not None:
+                        quotes_ok = True
+            rows.append(
+                {
+                    "symbol": symbol,
+                    "company": company,
+                    "index": code,
+                    "last": last,
+                    "change_pct": change_pct,
+                }
+            )
 
+        warnings: list[str] = []
+        if attach_quotes and not quotes_ok:
+            warnings.append(
+                "live quote snapshot unavailable; showing constituents without prices"
+            )
+        elif not attach_quotes:
+            warnings.append("live quotes disabled by request")
 
-def _flatten_column(col: Any) -> str:
-    if isinstance(col, tuple):
-        return " ".join(str(part) for part in col if str(part) != "nan").strip()
-    return str(col)
+        sources = ["showme_index_reference"]
+        if quotes_ok:
+            sources.append("yfinance")
 
-
-def _constituent_payload(
-    index: str,
-    df: pd.DataFrame,
-    *,
-    status: str,
-    live: bool,
-    reason: str | None = None,
-    source_url: str | None = None,
-) -> dict[str, Any]:
-    rows = df.to_dict(orient="records")
-    return {
-        "status": status,
-        "index": index,
-        "live": live,
-        "source_url": source_url,
-        "rows": rows,
-        "constituents": len(rows),
-        "reason": reason,
-        "field_dictionary": [
-            {"field": "symbol", "meaning": "Constituent ticker."},
-            {"field": "company", "meaning": "Company or security name."},
-            {"field": "sector", "meaning": "Index sector/classification when the source provides it."},
-        ],
-        "next_actions": [] if status == "ok" else [
-            "Retry with live=true after the public Wikipedia endpoint recovers.",
-            "Use the Index control with SPX, NDX, DJI, DAX, CAC, FTSE, STOXX, or BIST.",
-        ],
-    }
-
-
-def _int_param(params: dict[str, Any], name: str, default: int) -> int:
-    try:
-        return max(1, min(int(params.get(name, default)), 500))
-    except Exception:
-        return default
-
-
-def _truthy(value: Any) -> bool:
-    if isinstance(value, bool):
-        return value
-    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+        return FunctionResult(
+            code=self.code,
+            instrument=instrument,
+            data={
+                "status": "ok",
+                "index": code,
+                "constituents": len(rows),
+                "rows": rows,
+                "methodology": _METHODOLOGY,
+                "field_dictionary": _FIELD_DICTIONARY,
+                "summary": {
+                    "index": code,
+                    "constituent_count": len(rows),
+                    "source": "showme_index_reference"
+                    + ("+yfinance" if quotes_ok else ""),
+                },
+            },
+            sources=sources,
+            warnings=warnings,
+        )

@@ -80,25 +80,33 @@ def test_fxh_uses_manual_spot_rate_when_supplied():
 
 
 def test_gmm_does_not_mislabel_hardcoded_fallback_as_tradingeconomics():
-    """Was: with the tradingeconomics dep wired but returning 0 qualifying
-    events, GMM rendered the hardcoded reference rows while advertising
-    source_mode='tradingeconomics' — a silent fake-data leak.
-    Now: source_mode='reference_macro_mover_table' when used_fallback=True,
-    and a warning notes that the provider yielded nothing."""
+    """de-garbage 2026-06-01: GMM no longer has a hardcoded macro-mover table or
+    a key-gated tradingeconomics dependency to mislabel. It is now keyless World
+    Bank open-data. The anti-garbage intent is preserved: GMM must NEVER advertise
+    ``tradingeconomics`` (or any provider it didn't actually call) — the source
+    label is always the honest ``worldbank``, and on outage it degrades to
+    ``provider_unavailable`` without inventing rows. The legacy tradingeconomics
+    dep is now inert and must not change the label."""
 
     class _ZeroCalendarTE:
         async def calendar(self, country=None):
-            return []  # provider succeeds but yields nothing
+            return []  # legacy dep — GMM no longer consults it
 
     fn = GMMFunction(deps=FunctionDeps(tradingeconomics=_ZeroCalendarTE()))
     result = _run(fn.execute())
-    assert result.data["source_mode"] == "reference_macro_mover_table"
-    assert any("tradingeconomics returned no qualifying events" in w
-               for w in result.warnings), result.warnings
+    assert result.data["source_mode"] == "worldbank"
+    assert result.data["source_mode"] != "tradingeconomics"
+    assert result.data["status"] in {"ok", "provider_unavailable"}
+    # When the live World Bank fetch fails, GMM must say so honestly, never
+    # fabricate a "live" table.
+    if result.data["status"] == "provider_unavailable":
+        assert result.data["rows"] == []
 
 
 def test_gmm_uses_live_label_when_provider_actually_returns_events():
-    """A real provider response must keep the live source_mode label."""
+    """de-garbage 2026-06-01: a real (keyless World Bank) response keeps the honest
+    ``worldbank`` source label — GMM never claims ``tradingeconomics``. The
+    inert legacy dep cannot upgrade or relabel the source."""
 
     class _GoodTE:
         async def calendar(self, country=None):
@@ -109,18 +117,47 @@ def test_gmm_uses_live_label_when_provider_actually_returns_events():
 
     fn = GMMFunction(deps=FunctionDeps(tradingeconomics=_GoodTE()))
     result = _run(fn.execute())
-    assert result.data["source_mode"] == "tradingeconomics"
+    assert result.data["source_mode"] == "worldbank"
+    assert result.sources == ["worldbank"]
+    if result.data["status"] == "ok":
+        # Real live rows must be present and never empty for an ok envelope.
+        assert result.data["rows"]
 
 
 # ── FXGO ───────────────────────────────────────────────────────────────────
 
 
-def test_fxgo_emits_input_required_envelope_when_symbol_missing():
+def test_fxgo_no_symbol_returns_live_board_not_opaque_error():
     """Was: EMSXFunction.execute did `raise ValueError` (no message),
     producing an opaque 500/`function_warning` on /api/fn/FXGO.
-    Now: structured input_required envelope just like quantity<=0 branch."""
+
+    Now (degarbage 2026-06): a symbol-less FXGO call is the default FX
+    dealing-board request and returns a live keyless spot grid (status
+    ok) or a clearly-labelled provider_unavailable fallback when the
+    upstream is unreachable. Either way it is a structured envelope and
+    never an opaque 500, and never the old input_required gate."""
     fn = FXGOFunction()
     result = _run(fn.execute(instrument=None))
+    data = result.data
+    assert data["status"] in {"ok", "provider_unavailable"}
+    assert data["status"] != "input_required"
+    assert "yfinance" in result.sources
+    assert isinstance(data.get("rows"), list)
+    assert data.get("methodology")
+    if data["status"] == "ok":
+        assert data["rows"], "live board must carry rows"
+        assert data["data_mode"] == "live_exchange"
+    else:
+        assert data["data_mode"] == "provider_unavailable"
+        assert result.warnings or data.get("warning")
+
+
+def test_fxgo_ticket_without_symbol_still_input_required():
+    """The EMSX ticket safety gate is preserved for an actual order intent:
+    a ticket (quantity) with no symbol must still return the structured
+    input_required envelope, never the board and never an opaque error."""
+    fn = FXGOFunction()
+    result = _run(fn.execute(instrument=None, quantity=100000, side="BUY"))
     assert result.data["status"] == "input_required"
     assert "symbol" in result.data["reason"].lower()
     assert result.data["next_actions"]

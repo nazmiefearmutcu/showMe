@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -46,6 +47,22 @@ _REFERENCE_SPOTS = {
     "EURGBP": 0.862,
     "EURJPY": 167.1,
     "GBPJPY": 193.7,
+}
+
+# Annualization factor for daily FX log returns (FX trades ~252 sessions/yr).
+_FX_ANNUALIZATION = math.sqrt(252.0)
+# Standard OTC tenors -> approximate trailing trading-day window used to size
+# the realized-vol estimate at each point on the ATM term structure.
+_TENOR_WINDOW_DAYS = {
+    "1W": 5,
+    "2W": 10,
+    "1M": 21,
+    "2M": 42,
+    "3M": 63,
+    "6M": 126,
+    "9M": 189,
+    "1Y": 252,
+    "2Y": 504,
 }
 
 
@@ -316,7 +333,15 @@ class FRDFunction(BaseFunction):
 
 @FunctionRegistry.register
 class OVDVFunction(BaseFunction):
-    """OVDV - FX Option Volatility Surface."""
+    """OVDV - FX Option Volatility Surface.
+
+    The ATM volatility term structure is anchored to LIVE FX realized
+    volatility: for each tenor we compute the annualized standard deviation
+    of daily log returns of the pair (yfinance ``<PAIR>=X`` history) over a
+    trailing window sized to that tenor, instead of a hardcoded vol constant.
+    The 25-delta risk-reversal / butterfly smile is then overlaid as a
+    clearly-labelled model perturbation around the real ATM anchor.
+    """
 
     code = "OVDV"
     name = "FX Option Volatility Surface"
@@ -327,56 +352,130 @@ class OVDVFunction(BaseFunction):
         base, quote, pair = _pair_from(instrument, params)
         tenors = _parse_tenors(params.get("tenors"), default=("1W", "1M", "3M", "6M", "1Y"))
         deltas = ["10P", "25P", "ATM", "25C", "10C"]
-        atm_vol = float(params.get("atm_vol", params.get("vol", 0.085)))
-        rr_25 = float(params.get("risk_reversal_25d", params.get("rr_25d", 0.002)))
-        bf_25 = float(params.get("butterfly_25d", params.get("bf_25d", 0.0015)))
+
+        # --- anchor the ATM curve to live realized vol ------------------
+        atm_curve, vol_source, data_mode, rv_source, rv_warning = await _atm_term_structure(
+            self, pair, tenors, params
+        )
+
+        # Smile inputs: explicit overrides win; otherwise scale 25d RR/BF to
+        # the live ATM so the wings track the real vol level instead of being
+        # fixed constants. RR sign follows the term-structure slope.
+        rr_25_override = params.get("risk_reversal_25d", params.get("rr_25d"))
+        bf_25_override = params.get("butterfly_25d", params.get("bf_25d"))
+
         surface = []
+        series = []
+        prev_atm: float | None = None
+        atm_1m: float | None = None
         for i, tenor in enumerate(tenors):
-            term = atm_vol + i * 0.0015
+            label = tenor["label"]
+            term = atm_curve[i]
+            slope_sign = 1.0
+            if prev_atm is not None:
+                slope_sign = 1.0 if term >= prev_atm else -1.0
+            rr_25 = float(rr_25_override) if rr_25_override not in (None, "") else slope_sign * 0.06 * term
+            bf_25 = float(bf_25_override) if bf_25_override not in (None, "") else 0.015 * term
             for delta in deltas:
-                wing = {"10P": 0.006, "25P": bf_25 - rr_25 / 2, "ATM": 0.0, "25C": bf_25 + rr_25 / 2, "10C": 0.006}.get(delta, 0.0)
+                wing = {
+                    "10P": bf_25 + 0.5 * abs(rr_25) - rr_25 / 2,
+                    "25P": bf_25 - rr_25 / 2,
+                    "ATM": 0.0,
+                    "25C": bf_25 + rr_25 / 2,
+                    "10C": bf_25 + 0.5 * abs(rr_25) + rr_25 / 2,
+                }.get(delta, 0.0)
                 vol = max(0.0001, term + wing)
                 surface.append(
                     {
                         "pair": pair,
-                        "tenor": tenor["label"],
+                        "tenor": label,
                         "tenor_years": round(tenor["years"], 6),
                         "delta": delta,
                         "vol": round(vol * 100, 4),
                         "vol_decimal": round(vol, 6),
-                        "source_mode": "reference_fx_vol_smile_model",
+                        "source_mode": vol_source,
                     }
                 )
+            series.append({"tenor": label, "atm_vol_pct": round(term * 100, 4)})
+            if label.upper() in {"1M", "30D"}:
+                atm_1m = term
+            prev_atm = term
+
+        if atm_1m is None and atm_curve:
+            atm_1m = atm_curve[min(1, len(atm_curve) - 1)]
+
+        # Headline RR/BF (1M-ish) echoed on the card.
+        head_term = atm_1m if atm_1m is not None else (atm_curve[0] if atm_curve else 0.0)
+        head_rr = float(rr_25_override) if rr_25_override not in (None, "") else 0.06 * head_term
+        head_bf = float(bf_25_override) if bf_25_override not in (None, "") else 0.015 * head_term
+
+        as_of = datetime.now(timezone.utc).isoformat()
+        warnings: list[str] = []
+        if rv_warning:
+            warnings.append(rv_warning)
+
         data = {
             "pair": pair,
             "base": base,
             "quote": quote,
+            "as_of": as_of,
+            "data_mode": data_mode,
+            "vol_source": vol_source,
             "surface": surface,
+            "rows": surface,
+            "series": series,
             "tenors": [t["label"] for t in tenors],
             "deltas": deltas,
-            "atm_vol_pct": round(atm_vol * 100, 4),
-            "risk_reversal_25d_pct": round(rr_25 * 100, 4),
-            "butterfly_25d_pct": round(bf_25 * 100, 4),
+            "atm_vol_pct": round(head_term * 100, 4),
+            "atm_1m_vol_pct": round((atm_1m or 0.0) * 100, 4),
+            "risk_reversal_25d_pct": round(head_rr * 100, 4),
+            "butterfly_25d_pct": round(head_bf * 100, 4),
+            "cards": {
+                "pair": pair,
+                "atm_vol_pct": round(head_term * 100, 4),
+                "risk_reversal_25d_pct": round(head_rr * 100, 4),
+                "butterfly_25d_pct": round(head_bf * 100, 4),
+                "vol_source": vol_source,
+                "data_mode": data_mode,
+                "as_of": as_of,
+            },
             "methodology": (
-                "OVDV renders a labelled FX volatility smile/surface model. ATM vol is shifted by tenor; "
-                "25-delta puts/calls use butterfly +/- half risk-reversal; 10-delta wings add extra smile curvature. "
-                "No live OTC FX vol vendor is configured, so source_mode marks the surface as a reference model."
+                "OVDV anchors the ATM volatility term structure to live FX realized "
+                "volatility: each tenor's ATM vol is the annualized standard deviation "
+                "(x sqrt(252)) of daily log returns of the pair from yfinance, measured "
+                "over a trailing window sized to that tenor (1W=5d ... 1Y=252d). The "
+                "25-delta risk-reversal (RR) and butterfly (BF) smile is overlaid as a "
+                "labelled model around the real ATM (RR scaled to ~6% of ATM with sign "
+                "following the term slope, BF ~1.5% of ATM): 25P uses BF - RR/2, 25C uses "
+                "BF + RR/2, 10P/10C add wing curvature. Explicit atm_vol/RR/BF inputs "
+                "override the live anchor. If yfinance history is unavailable the surface "
+                "falls back to a labelled reference vol and vol_source/data_mode say so."
             ),
             "field_dictionary": {
                 "tenor": "Option expiry bucket.",
                 "delta": "FX delta bucket: put wing, ATM, or call wing.",
                 "vol": "Displayed implied volatility in percent.",
                 "vol_decimal": "Same volatility as annual decimal.",
+                "atm_vol_pct": "ATM (1M-anchor) annualized vol from live realized vol, in percent.",
                 "risk_reversal_25d_pct": "25D call vol minus 25D put vol, in percent.",
                 "butterfly_25d_pct": "Average 25D wing premium versus ATM, in percent.",
+                "vol_source": "live_realized_vol (yfinance) or reference_fx_vol_model.",
+                "data_mode": "DELAYED_REFERENCE when anchored to yfinance realized vol; MODELED on fallback.",
             },
+            "next_actions": [
+                "Override atm_vol / risk_reversal_25d / butterfly_25d to quote a desk surface.",
+                "Switch the pair to inspect another currency's realized-vol term structure.",
+            ],
         }
+        sources = ["model:fx_vol_smile"]
+        if rv_source:
+            sources.insert(0, rv_source)
         return FunctionResult(
             code=self.code,
             instrument=instrument or Instrument(symbol=pair, asset_class=AssetClass.FX),
             data=data,
-            sources=["reference_fx_vol_smile_model"],
-            warnings=["live OTC FX volatility vendor is not configured; using labelled reference surface"],
+            sources=_unique(sources),
+            warnings=warnings,
         )
 
 
@@ -447,6 +546,126 @@ async def _resolve_spot(fn: BaseFunction, pair: str, params: dict[str, Any]) -> 
         except Exception:
             pass
     return _template_spot(pair), "reference_fx_spot", "reference_model"
+
+
+async def _atm_term_structure(
+    fn: BaseFunction,
+    pair: str,
+    tenors: list[dict[str, Any]],
+    params: dict[str, Any],
+) -> tuple[list[float], str, str, str | None, str | None]:
+    """Build a per-tenor ATM-vol curve anchored to live FX realized vol.
+
+    Returns ``(atm_curve, vol_source, data_mode, rv_source, warning)`` where
+    ``atm_curve`` is one annualized-vol decimal per requested tenor.
+
+    Order of precedence:
+      1. explicit ``atm_vol`` input (flat curve, user-quoted) — labelled input.
+      2. live realized vol from yfinance daily history (the real anchor).
+      3. labelled reference vol fallback on any network/data failure.
+    """
+    explicit_atm = params.get("atm_vol", params.get("vol"))
+    if explicit_atm not in (None, ""):
+        atm = float(explicit_atm)
+        # honour the historical reference-model term slope so an explicit ATM
+        # still produces a non-flat surface.
+        curve = [max(0.0001, atm + i * 0.0015) for i in range(len(tenors))]
+        return curve, "user_inputs", "MODELED", None, None
+
+    closes = await _close_series(fn, pair, params)
+    returns = _log_returns(closes)
+    if len(returns) >= 4:
+        curve: list[float] = []
+        for tenor in tenors:
+            window = _TENOR_WINDOW_DAYS.get(tenor["label"].upper())
+            if window is None:
+                window = max(5, min(252, int(round(tenor["years"] * 252))))
+            win = returns[-window:] if len(returns) >= window else returns
+            atm = _annualized_vol(win)
+            curve.append(atm if atm and atm > 0 else _reference_atm_vol(pair))
+        return curve, "live_realized_vol", "DELAYED_REFERENCE", "yfinance", None
+
+    # Fallback: no usable history — labelled reference vol with a term slope.
+    ref = _reference_atm_vol(pair)
+    curve = [max(0.0001, ref + i * 0.0015) for i in range(len(tenors))]
+    return (
+        curve,
+        "reference_fx_vol_model",
+        "MODELED",
+        None,
+        "live realized-vol history unavailable; using labelled reference FX vol",
+    )
+
+
+async def _close_series(fn: BaseFunction, pair: str, params: dict[str, Any]) -> list[float]:
+    """Fetch >=1Y of daily closes for ``<PAIR>`` via the yfinance adapter."""
+    if not getattr(fn, "deps", None) or not fn.deps.yfinance:
+        return []
+    days = int(float(params.get("history_days", 400)))
+    start = datetime.now(timezone.utc) - timedelta(days=max(40, days))
+    inst = Instrument(symbol=pair, asset_class=AssetClass.FX)
+    timeout = float(params.get("yfinance_timeout", params.get("timeout", 6)))
+    try:
+        df = await asyncio.wait_for(
+            fn.deps.yfinance.fetch(
+                DataRequest(
+                    kind=DataKind.OHLCV,
+                    instrument=inst,
+                    start=start,
+                    interval="1d",
+                    extra={"timeout": timeout},
+                )
+            ),
+            timeout=timeout + 1,
+        )
+    except Exception:
+        return []
+    if df is None or getattr(df, "empty", True):
+        return []
+    closes: list[float] = []
+    try:
+        col = None
+        for candidate in ("Close", "close", "Adj Close", "adj_close"):
+            if candidate in df.columns:
+                col = candidate
+                break
+        if col is None:
+            return []
+        for value in df[col].tolist():
+            num = _num(value)
+            if num is not None and num > 0:
+                closes.append(num)
+    except Exception:
+        return []
+    return closes
+
+
+def _log_returns(closes: list[float]) -> list[float]:
+    rets: list[float] = []
+    for prev, cur in zip(closes, closes[1:]):
+        if prev > 0 and cur > 0:
+            rets.append(math.log(cur / prev))
+    return rets
+
+
+def _annualized_vol(returns: list[float]) -> float | None:
+    n = len(returns)
+    if n < 2:
+        return None
+    mean = sum(returns) / n
+    var = sum((r - mean) ** 2 for r in returns) / n  # population stdev
+    return math.sqrt(var) * _FX_ANNUALIZATION
+
+
+def _reference_atm_vol(pair: str) -> float:
+    """Labelled fallback ATM vol (decimal) when no live history is available."""
+    base = pair[:3].upper()
+    quote = pair[3:6].upper()
+    if "TRY" in (base, quote):
+        return 0.22
+    if "JPY" in (base, quote):
+        return 0.095
+    return 0.085
 
 
 async def _history_rows(fn: BaseFunction, pair: str, params: dict[str, Any]) -> tuple[list[dict[str, Any]], str | None]:

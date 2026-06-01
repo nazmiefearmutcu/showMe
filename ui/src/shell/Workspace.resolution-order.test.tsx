@@ -23,20 +23,20 @@ describe("Workspace pane-renderer resolution order", () => {
     // 2026-05-24 rebuild: template tier is no longer in the production
     // resolver. Every non-bespoke non-critical code now falls through to
     // "stub", which Workspace.tsx maps to <ManifestPane>. ManifestPane
-    // loads the function manifest (143 registered across Wave 1 + Wave 2)
-    // and renders the contract-driven shell.
-    for (const code of [
-      "STRS",
-      "TAUC",
-      "TCA",
-      "TECH",
-      "TLDR",
-      "TLH",
-      "TRA",
-      "TRAN",
-      "TRDH",
-    ]) {
+    // loads the function manifest and renders the contract-driven shell.
+    // NOTE (de-garbage 2026-06-01): these codes are genuinely paneless —
+    // STRS/TLH/TRA (portfolio-analytics aliases) and TCA (new bespoke
+    // pane) were removed from this list because they DO resolve native.
+    for (const code of ["TAUC", "TECH", "TLDR", "TRAN", "TRDH"]) {
       expect(choosePaneRenderer(code)).toBe("stub");
+    }
+  });
+
+  it("de-garbaged codes with a new bespoke pane resolve to native", () => {
+    // The nine functions whose backends now return real keyless data also
+    // got bespoke panes; they must render natively, not via the stub.
+    for (const code of ["CRPR", "DEBT", "IVOL", "OVDV", "MICRO", "AIM", "TCA", "SAT", "POLY"]) {
+      expect(choosePaneRenderer(code)).toBe("native");
     }
   });
 

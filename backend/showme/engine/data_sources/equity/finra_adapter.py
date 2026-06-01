@@ -62,17 +62,30 @@ class FINRAAdapter(BaseDataSource):
 
         Anonymous endpoint returns JSON with columns: weekStartDate, ATSCode,
         issueSymbolIdentifier, totalWeeklyShareQuantity, totalWeeklyTradeCount, ...
+
+        ``weeklySummary`` groups MANY summary types behind one path. The old
+        request filtered on ``issueSymbolIdentifier`` ONLY (no
+        ``summaryTypeCode``) and passed ``compareFilters`` as a GET query-string
+        param — that combination silently returned a stale/mixed slice that
+        topped out at 2023-11-06 even though FINRA had current weeks. Filtering
+        by the ``ATS_W_SMBL`` (per-symbol weekly ATS) type AND the symbol via
+        the documented POST ``compareFilters`` body returns the freshest rows
+        (verified 2026-06-01: newest week 2026-05-04 for AAPL).
         """
         await self._maybe_auth()
         client = await self._client_()
-        params: dict[str, Any] = {"limit": limit}
+        compare: list[dict[str, Any]] = [
+            {"fieldName": "summaryTypeCode", "fieldValue": "ATS_W_SMBL", "compareType": "EQUAL"},
+        ]
         if symbol:
-            params["compareFilters"] = f'[{{"fieldName":"issueSymbolIdentifier","fieldValue":"{symbol.upper()}","compareType":"EQUAL"}}]'
+            compare.append({"fieldName": "issueSymbolIdentifier",
+                            "fieldValue": symbol.upper(), "compareType": "EQUAL"})
+        body: dict[str, Any] = {"compareFilters": compare, "limit": limit}
         headers = {"Accept": "application/json"}
         if self._token:
             headers["Authorization"] = f"Bearer {self._token}"
         try:
-            r = await client.get(f"{self.BASE}/name/weeklySummary", params=params,
+            r = await client.post(f"{self.BASE}/name/weeklySummary", json=body,
                                   headers=headers)
             if r.status_code == 401:
                 raise DataSourceError("FINRA auth required for this dataset")
@@ -80,9 +93,12 @@ class FINRAAdapter(BaseDataSource):
             data = r.json()
         except httpx.HTTPError as e:
             raise DataSourceError(f"finra: {e}")
-        if not isinstance(data, list):
+        rows = data if isinstance(data, list) else (
+            (data.get("data") or data.get("rows") or []) if isinstance(data, dict) else []
+        )
+        if not isinstance(rows, list):
             return pd.DataFrame()
-        return pd.DataFrame(data)
+        return pd.DataFrame(rows)
 
     async def fetch(self, request: DataRequest) -> Any:
         sym = (request.instrument.symbol if request.instrument else None) or (

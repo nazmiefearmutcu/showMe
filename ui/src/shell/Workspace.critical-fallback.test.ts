@@ -92,7 +92,9 @@ describe("S05 · non-critical codes keep the precedence ladder", () => {
     // 2026-05-24 rebuild: template / design-export resolvers were stubbed
     // out of production paths; the resolver now collapses any non-native
     // non-critical code to "stub", which Workspace.tsx maps to ManifestPane.
-    expect(choosePaneRenderer("STRS")).toBe("stub");
+    // (de-garbage 2026-06-01: STRS resolves native via PortfolioAnalyticsPane,
+    // so TAUC — a genuinely paneless bond code — is used here instead.)
+    expect(choosePaneRenderer("TAUC")).toBe("stub");
   });
 
   it("non-critical code with a fully empty resolver falls through to stub", () => {

@@ -79,11 +79,21 @@ class PVARFunction(BaseFunction):
     description = "Per-symbol marginal contribution to portfolio risk + parametric VaR decomposition."
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
-        days = int(params.get("days", 252))
-        confidence = float(params.get("confidence", 0.95))
+        days = int(params.get("days", params.get("lookback_days", 252)))
+        confidence = float(params.get("confidence", params.get("confidence_level", 0.95)))
+        if not (0.0 < confidence < 1.0):
+            confidence = 0.95
+        horizon_days = _horizon_days(params.get("horizon", "1d"))
+        method = str(params.get("method", "parametric")).strip().lower()
+        if method not in {"parametric", "historical"}:
+            # monte_carlo is not implemented keyless-ly; fall back to the
+            # most honest empirical estimator we can actually compute.
+            method = "historical"
         max_positions = max(1, int(params.get("max_positions", 12)))
         provider_timeout = float(params.get("yfinance_timeout", params.get("quote_timeout", 4)))
-        live = _truthy(params.get("live_risk"))
+        # Live, real-data is now the DEFAULT path. `live_risk=false` only
+        # exists as an explicit offline escape hatch (template returns).
+        live = _truthy(params.get("live_risk", True))
         portfolio = PortfolioState()
         portfolio.import_legacy_crypto()
         if not portfolio.positions:
@@ -98,8 +108,8 @@ class PVARFunction(BaseFunction):
             key=lambda p: abs(float(p.quantity or 0) * float(p.avg_cost or 0)),
             reverse=True,
         )[:max_positions]
-        from showme.engine.functions.portfolio.rpar import _template_returns
 
+        warnings: list[str] = []
         last_map = {}
         if live:
             async def _ret(p):
@@ -123,9 +133,15 @@ class PVARFunction(BaseFunction):
             )
             last_map = {s: px for s, _, px in rs if px is not None}
             if rets_df.empty:
-                return _empty_pvar(self.code, confidence, params, instrument, "no live return history")
+                # Genuine network/data outage — never fabricate numbers.
+                return _empty_pvar(
+                    self.code, confidence, params, instrument,
+                    "no live return history (yfinance returned no data)",
+                )
         else:
+            from showme.engine.functions.portfolio.rpar import _template_returns
             rets_df = _template_returns([p.instrument.symbol for p in eligible], days)
+            warnings.append("live_risk=false: returns are simulated, not market data.")
         # Build current weights from positions × last close
         notional_map = {}
         for p in eligible:
@@ -142,60 +158,208 @@ class PVARFunction(BaseFunction):
         if not np.isfinite(cov_daily).all():
             cov_daily = np.nan_to_num(cov_daily, nan=0.0, posinf=0.0, neginf=0.0)
         cov = cov_daily * 252  # kept for annualized rows below
+        mu_daily = np.nan_to_num(rets_df.mean().values, nan=0.0)
         port_var_daily = float(w_vec @ cov_daily @ w_vec)
         port_vol_daily = float(np.sqrt(max(port_var_daily, 1e-12)))
         port_vol = port_vol_daily * float(np.sqrt(252))  # annualized for display
+        port_mu_daily = float(w_vec @ mu_daily)
+        sqrt_h = float(np.sqrt(max(horizon_days, 1)))
         # Audit Q3 #11 — proper inverse-normal at the requested confidence.
         z = float(_norm_ppf(confidence))
-        # One-day parametric VaR as a return (negative = loss).
-        var_pct = -z * port_vol_daily
-        cov_w = cov @ w_vec
+
+        # --- Parametric (variance-covariance) VaR & ES over the horizon ---
+        # VaR as a positive loss return at the horizon: -μ Δt + z σ √Δt.
+        param_var_pct = float(-port_mu_daily * horizon_days + z * port_vol_daily * sqrt_h)
+        # Gaussian ES = μ - σ φ(z)/(1-α); express as positive loss.
+        phi_z = math.exp(-0.5 * z * z) / math.sqrt(2.0 * math.pi)
+        param_es_pct = float(
+            -port_mu_daily * horizon_days
+            + (phi_z / (1.0 - confidence)) * port_vol_daily * sqrt_h
+        )
+
+        # --- Historical-simulation VaR & ES (empirical tail of the P&L) ---
+        port_returns = (rets_df.fillna(0.0).values @ w_vec)
+        if horizon_days > 1 and len(port_returns) > horizon_days:
+            # Non-overlapping multi-day P&L blocks for the requested horizon.
+            n_blocks = len(port_returns) // horizon_days
+            trimmed = port_returns[: n_blocks * horizon_days]
+            port_returns_h = trimmed.reshape(n_blocks, horizon_days).sum(axis=1)
+        elif horizon_days > 1:
+            port_returns_h = port_returns * horizon_days  # too few rows to block
+        else:
+            port_returns_h = port_returns
+        if len(port_returns_h):
+            losses = -port_returns_h
+            hist_var_pct = float(np.quantile(losses, confidence))
+            tail = losses[losses >= hist_var_pct]
+            hist_es_pct = float(tail.mean()) if tail.size else hist_var_pct
+        else:
+            hist_var_pct = param_var_pct
+            hist_es_pct = param_es_pct
+
+        # Selected method drives the headline VaR/ES; both are always reported.
+        if method == "historical":
+            var_pct = hist_var_pct
+            es_pct = hist_es_pct
+        else:
+            var_pct = param_var_pct
+            es_pct = param_es_pct
+        # ES must dominate VaR (Euler / coherence); guard numeric edge cases.
+        es_pct = max(es_pct, var_pct)
+
+        var_dollar = var_pct * total
+        es_dollar = es_pct * total
+
+        # --- Component VaR decomposition (sums to total VaR by Euler) ---
+        cov_w = cov_daily @ w_vec
         rows = []
         for i, sym in enumerate(rets_df.columns):
-            mcr = float(cov_w[i] / port_vol) if port_vol else 0
-            comp_pct = float((w_vec[i] * mcr) / port_vol) if port_vol else 0
+            # Marginal contribution to daily portfolio vol.
+            mcr_daily = float(cov_w[i] / port_vol_daily) if port_vol_daily else 0.0
+            comp_pct_of_risk = float((w_vec[i] * mcr_daily) / port_vol_daily) if port_vol_daily else 0.0
+            component_var_dollar = float(comp_pct_of_risk * var_dollar)
+            # Marginal VaR per unit weight (horizon-scaled), incremental VaR.
+            marginal_var_dollar = float(z * mcr_daily * sqrt_h * total)
             rows.append({
                 "symbol": sym,
+                "weight": float(w_vec[i] * 100),
                 "weight_pct": float(w_vec[i] * 100),
                 "annualized_vol": float(np.sqrt(cov[i, i])),
-                "marginal_contribution_to_risk": mcr,
-                "component_pct_of_portfolio_risk": comp_pct * 100,
+                "marginal_contribution_to_risk": mcr_daily,
+                "component_pct_of_portfolio_risk": comp_pct_of_risk * 100,
+                "component_var": component_var_dollar,
+                "marginal_var": marginal_var_dollar,
+                "incremental_var": component_var_dollar,
                 "notional_usd": notional_map.get(sym, 0.0),
+                "asset_class": _asset_class_for(eligible, sym),
             })
         rows.sort(key=lambda x: -x["component_pct_of_portfolio_risk"])
+
+        # Loss-distribution histogram for the chart_grammar DISTRIBUTION pane.
+        series = _loss_histogram(port_returns_h * total)
+
+        as_of = _utcnow_iso()
+        cards = {
+            "var": var_dollar,
+            "expected_shortfall": es_dollar,
+            "confidence_level": confidence,
+            "horizon": params.get("horizon", "1d"),
+            "method": method,
+            "data_mode": "delayed_reference" if live else "modeled",
+            "as_of": as_of,
+        }
+
         return FunctionResult(
             code=self.code, instrument=None,
             data={
+                "status": "ok" if live else "modeled",
+                "as_of": as_of,
+                "data_mode": "delayed_reference" if live else "modeled",
+                "method": method,
+                "horizon": params.get("horizon", "1d"),
+                "confidence_level": confidence,
+                "confidence": confidence,
+                # Headline VaR/ES (positive number = loss) in portfolio ccy.
+                "var": var_dollar,
+                "expected_shortfall": es_dollar,
+                "var_pct": var_pct,
+                "expected_shortfall_pct": es_pct,
+                "parametric_var_dollar": param_var_pct * total,
+                "parametric_es_dollar": param_es_pct * total,
+                "historical_var_dollar": hist_var_pct * total,
+                "historical_es_dollar": hist_es_pct * total,
                 "portfolio_total_notional": total,
                 "portfolio_annualized_vol": port_vol,
-                "portfolio_daily_var_pct": var_pct,
-                "portfolio_daily_var_dollar": var_pct * total,
-                "confidence": confidence,
+                # Legacy fields kept so existing UI bindings keep working
+                # (negative = loss convention here, matches prior contract).
+                "portfolio_daily_var_pct": -param_var_pct,
+                "portfolio_daily_var_dollar": -param_var_pct * total,
                 "samples": int(len(rets_df)),
                 "positions_analyzed": int(len(rets_df.columns)),
                 "max_positions": max_positions,
                 "rows": rows,
+                "series": series,
+                "cards": cards,
                 "summary": {
                     "confidence": confidence,
+                    "method": method,
+                    "horizon": params.get("horizon", "1d"),
                     "positions_analyzed": int(len(rets_df.columns)),
-                    "portfolio_daily_var_dollar": var_pct * total,
+                    "var": var_dollar,
+                    "expected_shortfall": es_dollar,
                 },
                 "methodology": (
-                    "Parametric position-level VaR: estimate annualized covariance from daily returns, "
-                    "compute portfolio volatility sqrt(w'Σw), then decompose marginal and component "
-                    "risk contributions by symbol. Daily VaR uses the selected normal z-score."
+                    "Position-level VaR/ES from real daily returns. Parametric (variance-"
+                    "covariance) path estimates daily covariance Σ from yfinance OHLCV, computes "
+                    "portfolio volatility sqrt(w'Σw), and reports VaR = -μΔt + z_α σ √Δt with ES = "
+                    "μΔt + σ √Δt φ(z)/(1-α). Historical-simulation path takes the empirical loss "
+                    "quantile of the realised portfolio P&L (non-overlapping blocks for multi-day "
+                    "horizons) and the conditional tail mean for ES. Component VaR decomposes the "
+                    "total by marginal contribution × weight (Euler-consistent). Both methods are "
+                    "always returned; `method` selects the headline figures."
                 ),
                 "field_dictionary": {
-                    "portfolio_daily_var_pct": "One-day parametric VaR as a return percentage.",
-                    "portfolio_daily_var_dollar": "One-day VaR in portfolio dollars.",
-                    "marginal_contribution_to_risk": "Derivative of portfolio volatility with respect to symbol weight.",
+                    "var": "Loss at the requested confidence and horizon; positive = loss, portfolio ccy.",
+                    "expected_shortfall": "Conditional expected loss beyond VaR (>= VaR).",
+                    "var_pct": "VaR as a fraction of portfolio notional.",
+                    "parametric_var_dollar": "Variance-covariance (Gaussian) VaR in ccy.",
+                    "historical_var_dollar": "Historical-simulation empirical VaR in ccy.",
+                    "component_var": "Per-symbol contribution to total VaR (sums to VaR).",
+                    "marginal_var": "Sensitivity of VaR to the symbol's weight.",
+                    "marginal_contribution_to_risk": "Derivative of portfolio volatility wrt symbol weight.",
                     "component_pct_of_portfolio_risk": "Symbol share of portfolio risk contribution.",
                     "notional_usd": "Position notional used for portfolio weights.",
                 },
             },
             sources=["yfinance"] if live else ["portfolio_state", "risk_model"],
-            metadata={"live_risk": live, "positions_analyzed": int(len(rets_df.columns))},
+            warnings=warnings,
+            metadata={
+                "live_risk": live,
+                "method": method,
+                "horizon_days": horizon_days,
+                "positions_analyzed": int(len(rets_df.columns)),
+            },
         )
+
+
+_HORIZON_MAP = {"1d": 1, "5d": 5, "10d": 10, "20d": 20}
+
+
+def _horizon_days(value: Any) -> int:
+    """Parse a manifest horizon control ('1d'/'5d'/'10d'/'20d') to trading days."""
+    if isinstance(value, (int, float)):
+        return max(1, int(value))
+    key = str(value or "1d").strip().lower()
+    if key in _HORIZON_MAP:
+        return _HORIZON_MAP[key]
+    digits = "".join(ch for ch in key if ch.isdigit())
+    return max(1, int(digits)) if digits else 1
+
+
+def _utcnow_iso() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _asset_class_for(positions, symbol: str) -> str:
+    for p in positions:
+        if p.instrument.symbol == symbol:
+            return p.instrument.asset_class.value
+    return ""
+
+
+def _loss_histogram(pnl_dollars, bins: int = 21) -> list[dict[str, float]]:
+    """Build a simple P&L distribution series for the DISTRIBUTION chart pane."""
+    arr = np.asarray(pnl_dollars, dtype=float)
+    arr = arr[np.isfinite(arr)]
+    if arr.size < 2:
+        return []
+    counts, edges = np.histogram(arr, bins=min(bins, max(5, arr.size)))
+    centers = (edges[:-1] + edges[1:]) / 2.0
+    return [
+        {"pnl": float(c), "density": float(n)}
+        for c, n in zip(centers, counts)
+    ]
 
 
 def _download_returns(symbol: str, days: int, timeout: float) -> tuple[pd.Series, float | None]:
@@ -233,64 +397,6 @@ def _yf_symbol(symbol: str) -> str:
     return sym
 
 
-def _sample_pvar(
-    code: str,
-    confidence: float,
-    params: dict[str, Any],
-    instrument: Instrument | None = None,
-) -> FunctionResult:
-    symbol = instrument.symbol if instrument else params.get("symbol", "BTCUSDT")
-    asset_class = instrument.asset_class.value if instrument else params.get("asset_class", "CRYPTO")
-    return FunctionResult(
-        code=code,
-        instrument=instrument,
-        data={
-            "portfolio_total_notional": 100000.0,
-            "portfolio_annualized_vol": 0.22,
-            "portfolio_daily_var_pct": -0.025,
-            "portfolio_daily_var_dollar": -2500.0,
-            "portfolio_vol": 0.22,
-            "var": -0.025,
-            "component_var": [
-                {"symbol": symbol, "weight": 0.6, "component": -0.016, "asset_class": asset_class},
-                {"symbol": "AAPL", "weight": 0.4, "component": -0.009, "asset_class": "EQUITY"},
-            ],
-            "rows": [
-                {
-                    "symbol": symbol,
-                    "weight_pct": 60.0,
-                    "annualized_vol": 0.28,
-                    "marginal_contribution_to_risk": 0.16,
-                    "component_pct_of_portfolio_risk": 64.0,
-                    "notional_usd": 60000.0,
-                    "asset_class": asset_class,
-                },
-                {
-                    "symbol": "AAPL",
-                    "weight_pct": 40.0,
-                    "annualized_vol": 0.19,
-                    "marginal_contribution_to_risk": 0.09,
-                    "component_pct_of_portfolio_risk": 36.0,
-                    "notional_usd": 40000.0,
-                    "asset_class": "EQUITY",
-                },
-            ],
-            "confidence": confidence,
-            "samples": 252,
-            "methodology": (
-                "Reference parametric VaR decomposition using sample positions; live mode uses saved "
-                "portfolio positions and return covariance."
-            ),
-            "field_dictionary": {
-                "component_pct_of_portfolio_risk": "Symbol share of portfolio risk contribution.",
-                "portfolio_daily_var_dollar": "One-day VaR in portfolio dollars.",
-            },
-        },
-        sources=["portfolio_state"],
-        metadata={"live": False},
-    )
-
-
 def _empty_pvar(
     code: str,
     confidence: float,
@@ -298,29 +404,53 @@ def _empty_pvar(
     instrument: Instrument | None = None,
     reason: str = "empty portfolio",
 ) -> FunctionResult:
+    no_positions = "portfolio" in reason or "positions" in reason
+    status = "empty" if no_positions else "provider_unavailable"
     return FunctionResult(
         code=code,
         instrument=instrument,
         data={
-            "status": "ready_no_positions" if "portfolio" in reason else "provider_unavailable",
+            "status": status,
             "reason": reason,
+            "as_of": _utcnow_iso(),
+            "data_mode": "unavailable",
+            "method": str(params.get("method", "parametric")),
+            "horizon": params.get("horizon", "1d"),
+            "confidence_level": confidence,
+            "confidence": confidence,
+            "var": None,
+            "expected_shortfall": None,
             "portfolio_total_notional": 0.0,
             "portfolio_annualized_vol": None,
             "portfolio_daily_var_pct": None,
             "portfolio_daily_var_dollar": None,
-            "confidence": confidence,
             "rows": [],
-            "next_actions": [
-                "Add real positions through portfolio state.",
-                "Set live=true so the function can fetch return history.",
-            ],
-            "methodology": (
-                "Parametric VaR requires positions and a return covariance matrix. No decomposition is "
-                "shown until portfolio positions and return history are available."
+            "series": [],
+            "cards": {},
+            "next_actions": (
+                ["Add real positions through portfolio state."]
+                if no_positions
+                else [
+                    "Retry once the price provider (yfinance) is reachable.",
+                    "Confirm the portfolio symbols resolve on yfinance.",
+                ]
             ),
+            "methodology": (
+                "VaR/ES requires positions and a real return covariance matrix from yfinance. No "
+                "decomposition is shown until portfolio positions and return history are available."
+            ),
+            "field_dictionary": {
+                "var": "Loss at the requested confidence; positive number = loss.",
+                "expected_shortfall": "Conditional expected loss beyond VaR.",
+            },
         },
-        sources=["portfolio_state"],
-        metadata={"empty": True, "requires_positions": True, "live": _truthy(params.get("live"))},
+        sources=["portfolio_state"] if no_positions else ["yfinance"],
+        warnings=[reason],
+        metadata={
+            "empty": no_positions,
+            "requires_positions": no_positions,
+            "live": _truthy(params.get("live_risk", True)),
+        },
     )
 
 

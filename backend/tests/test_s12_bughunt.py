@@ -106,66 +106,146 @@ def test_sect_no_provider_in_live_mode_reports_provider_unavailable() -> None:
 # ----------------------- SOSC -----------------------
 
 def test_sosc_default_returns_template_with_fallback_metadata_when_no_providers() -> None:
+    """2026-06-01 contract change: SOSC was de-garbaged.
+
+    OLD (removed) contract: with no providers SOSC emitted a static
+    bullish/bearish template (hardcoded 42/18 split) tagged
+    ``metadata.fallback=True`` / ``fallback_reason="no_social_providers_configured"``.
+
+    NEW honest contract: SOSC pulls REAL keyless GDELT news-tone + FinBERT and
+    NEVER fabricates a sentiment split. The result depends on ambient
+    connectivity: with a live GDELT path it returns ``ok``/``empty`` sourced from
+    ``gdelt`` (+ ``finbert`` when headlines are scored); on a genuine GDELT
+    outage it returns the honest ``provider_unavailable`` envelope with
+    ``no_live_source``. Either way the fabricated 42/18 template must never
+    reappear. We assert the honest-degradation shape + the no-garbage invariant
+    rather than pinning a single branch.
+    """
     from showme.engine.core.instrument import AssetClass, Instrument
     from showme.engine.functions.news.sosc import SOSCFunction
 
     out = asyncio.run(SOSCFunction().execute(instrument=Instrument(symbol="AAPL", asset_class=AssetClass.EQUITY)))
-    assert out.metadata.get("live") is False
-    assert out.metadata.get("fallback") is True
-    assert out.metadata.get("fallback_reason") == "no_social_providers_configured"
-    assert out.warnings  # served-template warning is visible
+    status = out.data["status"]
+    assert status in {"ok", "empty", "provider_unavailable"}
+    assert out.data["methodology"]
+    srcs = [s.lower() for s in (out.sources or [])]
+    summary = out.data.get("summary") or {}
+    # Anti-garbage: the removed 42/18 hardcoded template must never come back.
+    assert not (summary.get("bullish_pct") == 42 and summary.get("bearish_pct") == 18)
+    if status in {"ok", "empty"}:
+        # Live GDELT path: tone-sourced (FinBERT joins when headlines exist).
+        assert "gdelt" in srcs
+        assert out.metadata.get("live") is True
+    else:
+        # Genuine outage (e.g. GDELT throttled) — honest, never fabricated.
+        assert "no_live_source" in srcs
+        assert out.metadata.get("live") is False
+        assert out.warnings  # provider-unavailable warning is visible
 
 
-def test_sosc_bull_bear_ratio_is_none_when_message_volume_too_low() -> None:
-    """ratio guard: bullish=1 / bearish=0 must NOT yield 1.0 — too few messages."""
+def test_sosc_never_fabricates_a_sentiment_for_thin_coverage() -> None:
+    """de-garbage 2026-06-01: SOSC was rewritten from a StockTwits/Reddit
+    bull/bear aggregator (the removed ``bull_bear_ratio``/``_sentiment_rows``
+    contract) to a keyless GDELT news-tone + FinBERT signal. The anti-garbage
+    intent is preserved: for a ticker with little/no real coverage SOSC must
+    NOT invent a confident sentiment — it returns an honest empty /
+    provider_unavailable (net_sentiment 0.0 or None, no fabricated rows), and
+    crucially never the old hardcoded 42/18 bull/bear template."""
     from showme.engine.core.base_function import FunctionDeps
     from showme.engine.core.instrument import AssetClass, Instrument
     from showme.engine.functions.news.sosc import SOSCFunction
 
-    class FakeTwits:
-        async def fetch(self, *a, **kw):
-            return {"bullish_count": 1, "bearish_count": 0, "message_count": 1}
-
-    class FakeReddit:
-        async def fetch(self, *a, **kw):
-            return []
-
-    deps = FunctionDeps(stocktwits=FakeTwits(), reddit=FakeReddit())
+    # The old StockTwits/Reddit adapters are ignored by the GDELT rewrite;
+    # passing none proves no fake bull/bear split can be injected.
+    deps = FunctionDeps()
     out = asyncio.run(SOSCFunction(deps).execute(
         instrument=Instrument(symbol="ZZZZ", asset_class=AssetClass.EQUITY),
     ))
-    # Either provider_unavailable (no rows) or live with reliable=False.
-    if out.data.get("status") == "provider_unavailable":
-        return
-    assert out.data["bull_bear_ratio"] is None
-    assert out.data["bull_bear_ratio_reliable"] is False
+    status = str(out.data.get("status", "")).lower()
+    assert status in {"ok", "empty", "provider_unavailable"}
+    # The removed garbage contract must be gone for good.
+    assert "bull_bear_ratio" not in out.data
+    summary = out.data.get("summary") or {}
+    # An obscure ticker yields no real coverage → honest neutral/empty, never
+    # the old fabricated 42-bull/18-bear constant.
+    if status in {"empty", "provider_unavailable"}:
+        assert summary.get("net_sentiment") in (0.0, None)
+        assert not (out.data.get("rows") or [])
 
 
 # ----------------------- SRSK -----------------------
 
+# A keyless World Bank REST reply is ``[meta, [obs, ...]]`` with the latest
+# governance/macro value under ``value``. The SRSK ``worldbank`` adapter seam is
+# called as ``adapter.indicator(iso3, indicator)`` (it tries indicator/series/
+# get/fetch in turn), so the fake exposes ``indicator(iso3, indicator)`` and
+# returns a distinct per-ISO3 value — keeping risk scores non-uniform.
+class _FakeWorldBank:
+    _BY_ISO3 = {"TUR": 90.0, "USA": 35.0, "DEU": 20.0}
+
+    async def indicator(self, iso3, indicator):  # type: ignore[no-untyped-def]
+        value = self._BY_ISO3.get(iso3, 50.0)
+        return [{"page": 1, "total": 1}, [{"value": value, "date": "2024"}]]
+
+
 def test_srsk_no_fred_returns_fallback_with_notes_and_no_uniform_pd() -> None:
-    """When FRED is not configured we still serve rows, but every non-mapped
-    country must carry a `note` instead of pretending the fallback spread is
-    real data."""
+    """2026-06-01 contract change: SRSK was de-garbaged.
+
+    OLD (removed) contract: SRSK was FRED-gated and, without FRED, tagged every
+    row ``sovereign_risk_model`` with a uniform proxy spread.
+
+    NEW honest contract: SRSK is keyless World-Bank-primary; FRED 10Y yields are
+    an OPTIONAL refinement only. Without FRED it serves REAL per-country rows
+    sourced from the World Bank (status ok, ``sources`` includes ``worldbank``,
+    every row ``source_mode=worldbank``). We inject a fake World Bank adapter
+    (the ``worldbank`` dep seam) so the test is deterministic offline, and assert
+    the new honest contract plus the anti-garbage invariant that per-country risk
+    scores are NOT uniform.
+    """
+    from showme.engine.core.base_function import FunctionDeps
     from showme.engine.functions.bond.srsk import SRSKFunction
 
-    out = asyncio.run(SRSKFunction().execute(countries="TR,US,DE"))
-    assert out.data["status"] in {"fallback", "ok"}
+    out = asyncio.run(
+        SRSKFunction(FunctionDeps(worldbank=_FakeWorldBank())).execute(countries="TR,US,DE")
+    )
+    assert out.data["status"] == "ok"
     countries = [row["country"] for row in out.data["rows"]]
     assert countries == ["TR", "US", "DE"]
-    # Without FRED every row uses sovereign_risk_model.
-    assert all(row["source_mode"] == "sovereign_risk_model" for row in out.data["rows"])
+    assert "worldbank" in [s.lower() for s in out.sources]
+    assert all(row["source_mode"] == "worldbank" for row in out.data["rows"])
+    # Anti-garbage: distinct per-country risk scores, never a uniform PD.
+    scores = [r["risk_score"] for r in out.data["rows"]]
+    assert len(set(scores)) > 1, "uniform risk score across countries is the old garbage"
 
 
 def test_srsk_dgs10_missing_returns_provider_unavailable() -> None:
+    """2026-06-01 contract change: SRSK was de-garbaged to keyless
+    World-Bank-primary; FRED 10Y yields are an OPTIONAL refinement only.
+
+    A missing FRED series no longer drives provider_unavailable — a TOTAL World
+    Bank outage does. To exercise that branch deterministically (and offline) we
+    monkeypatch the World Bank fetch seam to raise ``_WBUnavailable`` for every
+    country, so SRSK returns the honest provider_unavailable envelope (empty
+    rows). FRED also fails, proving it is non-essential to the result.
+    """
     from showme.engine.core.base_function import FunctionDeps
+    from showme.engine.functions.bond import srsk as srsk_mod
     from showme.engine.functions.bond.srsk import SRSKFunction
 
     class FakeFred:
         async def series(self, sid: str):  # type: ignore[no-untyped-def]
             raise RuntimeError("fred outage")
 
-    out = asyncio.run(SRSKFunction(FunctionDeps(fred=FakeFred())).execute(countries="TR,DE"))
+    fn = SRSKFunction(FunctionDeps(fred=FakeFred()))
+
+    async def _boom(self, iso3, indicator):  # type: ignore[no-untyped-def]
+        raise srsk_mod._WBUnavailable("world bank unreachable")
+
+    # Patch the per-indicator fetch so the keyless World Bank path is a hard
+    # outage without touching the network.
+    fn._wb_fetch_indicator = _boom.__get__(fn, SRSKFunction)  # type: ignore[method-assign]
+
+    out = asyncio.run(fn.execute(countries="TR,DE"))
     assert out.data["status"] == "provider_unavailable"
     assert out.data["rows"] == []
     assert out.warnings  # surface the provider error
