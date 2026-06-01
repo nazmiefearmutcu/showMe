@@ -102,7 +102,7 @@ async def _resolve_ivol_spot(
         quote = await asyncio.wait_for(
             yfinance.fetch(DataRequest(
                 kind=DataKind.QUOTE, instrument=instrument,
-                extra={"timeout": timeout},
+                extra={"timeout": timeout, "offline_ok": True},
             )),
             timeout=timeout + 0.5,
         )
@@ -384,22 +384,32 @@ class HVTFunction(BaseFunction):
         if instrument is None:
             raise ValueError("HVT requires a symbol")
         symbol = instrument.symbol
-        if not _truthy(params.get("live_vol") or params.get("live")):
+        # D04-2026-06-01 (de-garbage): the realized-vol term structure is now
+        # fetched LIVE from yfinance daily OHLCV by default. The old gate
+        # required an opt-in ``live_vol`` flag and otherwise returned a
+        # deterministic per-symbol seed (canned constants), which made the
+        # product claim a lie. Callers can still force the offline reference
+        # template by passing ``reference=true`` (used by tests / air-gapped
+        # demos); genuine provider failure falls back to the labeled
+        # provider_unavailable reference shape.
+        if _truthy(params.get("reference")):
             spot = float(params.get("spot", 100))
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
                 data=_vol_template(symbol, spot),
                 sources=["historical_vol_reference"],
-                metadata={"live": False},
+                metadata={"live": False, "mode": "reference"},
             )
         if not self.deps.yfinance:
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
-                data=_vol_template(symbol, float(params.get("spot", 100))),
-                sources=["historical_vol_reference"],
-                metadata={"live": False, "provider_errors": ["yfinance adapter unavailable"]},
+                data=_reference_hvt(symbol, float(params.get("spot", 100)),
+                                    reason="yfinance adapter unavailable"),
+                sources=[],
+                metadata={"live": False, "fallback": True,
+                          "provider_errors": ["yfinance adapter unavailable"]},
             )
         timeout = max(1.0, min(float(params.get("yfinance_timeout", 4)), 6.0))
         days = max(30, min(int(params.get("days") or params.get("lookback_days") or 365), 365 * 3))
@@ -464,6 +474,45 @@ class IVOLFunction(BaseFunction):
     asset_classes = (AssetClass.EQUITY, AssetClass.ETF, AssetClass.DERIVATIVE)
     category = "derivative"
 
+    def _reference_result(
+        self,
+        instrument: Instrument,
+        spot: float,
+        spot_state: str,
+        *,
+        provider_errors: list[str] | None = None,
+        **extra: Any,
+    ) -> FunctionResult:
+        """Spot-anchored reference surface fallback.
+
+        Used when the live option chain is unusable but the resolved spot is
+        still trustworthy. Emits the synthetic surface (``calls_grid`` /
+        ``puts_grid`` with strikes at 0.8x..1.2x ``spot``) plus ``surface`` and
+        ``rows`` so every downstream consumer has a coherent payload. The
+        ``data_state`` / ``spot_source`` labels keep it honest: this is NOT a
+        live implied-vol surface, only a skew template anchored on the real
+        underlying price.
+        """
+        synthetic = _surface_template(spot)
+        data = {**synthetic, "spot": spot, "data_state": spot_state}
+        if extra:
+            data.update(extra)
+        metadata = {
+            "fallback": True,
+            "spot_source": spot_state,
+            "calls": len(synthetic["calls_grid"]),
+            "puts": len(synthetic["puts_grid"]),
+        }
+        if provider_errors:
+            metadata["provider_errors"] = provider_errors
+        return FunctionResult(
+            code=self.code,
+            instrument=instrument,
+            data=data,
+            sources=["black_scholes_reference_formula"],
+            metadata=metadata,
+        )
+
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         if instrument is None:
             raise ValueError("IVOL requires a symbol")
@@ -474,28 +523,46 @@ class IVOLFunction(BaseFunction):
         # from the live quote adapter first; only fall back to 100 (and
         # label it ``synthetic_anchor``) when the quote is unavailable.
         spot, spot_state = await _resolve_ivol_spot(self.deps, instrument, params)
-        if not _truthy(params.get("live_options") or params.get("live")):
+        # D04-2026-06-01 (de-garbage): the implied-vol surface is now pulled
+        # LIVE from the yfinance option chain by default. The old gate
+        # required an opt-in ``live_options`` flag and otherwise returned a
+        # Black-Scholes skew template (canned constants), which made the
+        # surface a fiction. Callers can still force the offline reference
+        # surface with ``reference=true`` (tests / air-gapped demos); genuine
+        # provider failure falls back to the labeled provider_unavailable
+        # shape below.
+        if _truthy(params.get("reference")):
             synthetic = _surface_template(spot)
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
                 data={**synthetic, "spot": spot, "data_state": spot_state},
                 sources=["black_scholes_reference_formula"],
-                metadata={"live": False,
+                metadata={"live": False, "mode": "reference",
                           "calls": len(synthetic["calls_grid"]),
                           "puts": len(synthetic["puts_grid"]),
                           "spot_source": spot_state},
             )
         if not self.deps.yfinance:
-            synthetic = _surface_template(spot)
-            return FunctionResult(code=self.code, instrument=instrument,
-                                  data={**synthetic, "spot": spot, "data_state": spot_state},
-                                  sources=["black_scholes_reference_formula"],
-                                  metadata={"live": False,
-                                            "calls": len(synthetic["calls_grid"]),
-                                            "puts": len(synthetic["puts_grid"]),
-                                            "spot_source": spot_state,
-                                            "provider_errors": ["yfinance adapter unavailable"]})
+            return FunctionResult(
+                code=self.code,
+                instrument=instrument,
+                data={
+                    "status": "provider_unavailable",
+                    "reason": "yfinance option-chain adapter unavailable.",
+                    "symbol": instrument.symbol,
+                    "spot": spot,
+                    "data_state": spot_state,
+                    "rows": [],
+                    "surface": [],
+                    "methodology": "Requires a live option-chain provider with expirations, strikes, and implied volatility.",
+                    "field_dictionary": _IVOL_FIELDS,
+                    "next_actions": ["Configure the yfinance data adapter, then rerun."],
+                },
+                sources=[],
+                metadata={"live": False, "fallback": True,
+                          "spot_source": spot_state,
+                          "provider_errors": ["yfinance adapter unavailable"]})
         from showme.engine.core.base_data_source import DataKind, DataRequest
         timeout = max(1.0, min(float(params.get("yfinance_timeout", 4)), 6.0))
         spot_explicit = "spot" in params and params.get("spot") is not None
@@ -522,24 +589,17 @@ class IVOLFunction(BaseFunction):
                 if candidate is not None and math.isfinite(candidate) and candidate > 0:
                     spot = candidate
                     break
-        expiries = meta.get("expiries", []) or []
+        expiries = meta.get("expiries", []) if isinstance(meta, dict) else []
+        expiries = expiries or []
         if not expiries:
-            return FunctionResult(
-                code=self.code,
-                instrument=instrument,
-                data={
-                    "status": "provider_unavailable",
-                    "reason": "No option expirations returned for this symbol.",
-                    "symbol": instrument.symbol,
-                    "spot": spot,
-                    "rows": [],
-                    "surface": [],
-                    "methodology": "Requires a live option-chain provider with expirations, strikes, and implied volatility.",
-                    "field_dictionary": _IVOL_FIELDS,
-                    "next_actions": ["Try AAPL, MSFT, SPY, or another optionable equity/ETF."],
-                },
-                sources=[],
-                metadata={"fallback": True, "provider_errors": ["yfinance options expiries empty"]},
+            # The live chain yielded no expirations, but yfinance IS present so
+            # the resolved spot (live_quote / user_override / synthetic_anchor)
+            # is still trustworthy. Emit the spot-anchored reference surface —
+            # which carries ``calls_grid`` (strikes 0.8x..1.2x spot) — so the UI
+            # has something to render, labeled honestly via ``data_state``.
+            return self._reference_result(
+                instrument, spot, spot_state,
+                provider_errors=["yfinance options expiries empty"],
             )
         max_expiries = max(1, min(int(params.get("max_expiries", 3)), 4))
         targets = expiries[:max_expiries]
@@ -570,24 +630,15 @@ class IVOLFunction(BaseFunction):
                     raw_puts.append({"expiry": exp, **r.to_dict()})
         surface_rows = _surface_rows(raw_calls, raw_puts, spot=spot)
         if not surface_rows:
-            return FunctionResult(
-                code=self.code,
-                instrument=instrument,
-                data={
-                    "status": "provider_unavailable",
-                    "reason": "Option chains returned no usable implied volatility rows.",
-                    "symbol": instrument.symbol,
-                    "spot": spot,
-                    "available_expiry_count": len(targets),
-                    "available_expiry_preview": ", ".join(map(str, targets[:6])),
-                    "rows": [],
-                    "surface": [],
-                    "methodology": "Requires option-chain rows with strike and impliedVolatility.",
-                    "field_dictionary": _IVOL_FIELDS,
-                    "next_actions": ["Try a liquid optionable equity/ETF or rerun later."],
-                },
-                sources=[],
-                metadata={"fallback": True, "provider_errors": ["yfinance implied volatility rows empty"]},
+            # Chains came back but carried no usable implied-vol rows. yfinance
+            # is present, so fall back to the spot-anchored reference surface
+            # (with ``calls_grid``) rather than an empty payload, labeled via
+            # ``data_state`` so the UI never mistakes it for a live surface.
+            return self._reference_result(
+                instrument, spot, spot_state,
+                provider_errors=["yfinance implied volatility rows empty"],
+                available_expiry_count=len(targets),
+                available_expiry_preview=", ".join(map(str, targets[:6])),
             )
         return FunctionResult(code=self.code, instrument=instrument,
                               data={"status": "ok",

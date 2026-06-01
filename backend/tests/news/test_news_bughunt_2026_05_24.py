@@ -139,40 +139,56 @@ def test_tldr_flags_msft_negative_mover_using_canonical_quote_source(monkeypatch
     assert "No live negative movers" not in markdown
 
 
-# ── Bug #3: TRAN — synthetic transcripts must be honestly labelled ─────────
+# ── Bug #3: TRAN — synthetic transcripts must NEVER be emitted ─────────────
+#
+# De-garbage 2026-06-01: TRAN was upgraded from "provider_unavailable / opt-in
+# synthetic template" to a REAL keyless source (user-pasted transcript_text or
+# SEC EDGAR 8-K Exhibit 99.x earnings press release). The synthetic template
+# (and the ``include_synthetic`` / ``allow_synthetic`` toggles + the
+# ``showme_synthetic_template`` source) were removed entirely. These tests now
+# pin the stronger contract: there is NO synthetic path at all, a pasted
+# transcript yields REAL ok rows, and a missing real source degrades honestly.
 
 
-def test_tran_returns_provider_unavailable_when_no_real_transcript() -> None:
-    """Default behaviour: no synthetic placeholder, honest error."""
+def test_tran_real_pasted_transcript_returns_ok_rows() -> None:
+    """A user-pasted transcript is parsed into REAL speaker-attributed rows —
+    never the old hardcoded placeholder template."""
     fn = TRANFunction(deps=FunctionDeps())
     inst = Instrument(symbol="AAPL", asset_class=AssetClass.EQUITY)
-    result = _run(fn.execute(inst, live_transcripts=True))
-    assert result.data["status"] == "provider_unavailable"
-    # The legacy ``sources=["seekingalpha"]`` fake attribution must be gone.
+    transcript = (
+        "Operator -- Conference Coordinator\n\nWelcome to the call.\n\n"
+        "Tim Cook -- Chief Executive Officer\n\n"
+        "Revenue was $94.9 billion, an all-time September-quarter record."
+    )
+    result = _run(fn.execute(inst, transcript_text=transcript))
+    assert result.data["status"] == "ok"
+    assert result.data["data_mode"] == "user_supplied"
+    assert result.data["utterances"], "real rows expected"
+    assert any("94.9" in r["utterance"] for r in result.data["utterances"])
+    # The legacy synthetic source/attribution must be gone for good.
+    assert "showme_synthetic_template" not in result.sources
     assert "seekingalpha" not in result.sources
-    assert "Prepared remarks" not in str(result.data)
+    assert "placeholders are structured for downstream search" not in str(result.data)
 
 
-def test_tran_include_synthetic_labels_template_honestly() -> None:
-    """When the caller explicitly opts in via ``include_synthetic=true``,
-    we surface the template but tag it as synthetic so consumers cannot
-    mistake it for a Seeking Alpha response."""
+def test_tran_no_synthetic_path_remains() -> None:
+    """``include_synthetic`` / ``allow_synthetic`` are dead toggles now — with
+    no real source and no network, TRAN degrades honestly and NEVER returns a
+    synthetic template or the ``showme_synthetic_template`` source."""
     fn = TRANFunction(deps=FunctionDeps())
     inst = Instrument(symbol="AAPL", asset_class=AssetClass.EQUITY)
-    result = _run(fn.execute(inst, include_synthetic=True))
-    assert result.data["status"] == "synthetic"
-    assert result.sources == ["showme_synthetic_template"]
-    assert result.metadata["data_state"] == "synthetic"
-    assert result.metadata["synthetic"] is True
-
-
-def test_tran_legacy_allow_synthetic_no_longer_emits_template() -> None:
-    """The old ``allow_synthetic=true`` toggle must NOT silently bypass
-    the new gate — only ``include_synthetic=true`` opens the door."""
-    fn = TRANFunction(deps=FunctionDeps())
-    inst = Instrument(symbol="AAPL", asset_class=AssetClass.EQUITY)
-    result = _run(fn.execute(inst, allow_synthetic=True))
-    assert result.data["status"] == "provider_unavailable"
+    for kwargs in ({"include_synthetic": True}, {"allow_synthetic": True}, {"live_transcripts": True}):
+        result = _run(fn.execute(inst, **kwargs))
+        # Either a real SEC transcript came back (ok) or it degraded honestly.
+        assert result.data["status"] in {"ok", "empty", "provider_unavailable"}
+        assert "synthetic" not in result.data["status"]
+        assert "showme_synthetic_template" not in result.sources
+        assert result.metadata.get("data_state") != "synthetic"
+        # No canned placeholder text under any toggle.
+        assert "placeholders are structured for downstream search" not in str(result.data)
+        if result.data["status"] in {"empty", "provider_unavailable"}:
+            assert result.data["utterances"] == []
+            assert result.data.get("next_actions")
 
 
 # ── Bug #4: NI — topic mode TypeError on string limit ──────────────────────
@@ -277,16 +293,15 @@ def test_read_parse_symbol_list_none_returns_empty() -> None:
 
 
 def test_read_accepts_symbols_param() -> None:
-    """The actual fix: ``READ`` used to drop ``symbols=`` and fall back to
-    the hardcoded AAPL/MSFT/BTCUSDT default. It must now honour
-    ``symbols=AAPL,MSFT``."""
+    """``READ`` (now a saved-articles reading list per its manifest) must still
+    honour the ``symbols=`` filter the BugHunt fix added — it is threaded into
+    the store query and echoed in ``metadata["watchlist"]`` instead of being
+    dropped for the hardcoded AAPL/MSFT/BTCUSDT default."""
     fn = READFunction(deps=FunctionDeps())
-    # live=False path is deterministic and goes through the same
-    # watchlist-resolution code we are exercising.
     result = _run(fn.execute(symbols="GOOG,NVDA"))
-    titles = [row["title"] for row in result.data]
-    assert any("GOOG" in t for t in titles)
-    assert any("NVDA" in t for t in titles)
+    # New store-backed shape: data is a dict with rows/articles, not a list.
+    assert isinstance(result.data, dict)
+    assert result.data["status"] in {"ok", "empty"}
     assert result.metadata["watchlist"] == ["GOOG", "NVDA"]
 
 

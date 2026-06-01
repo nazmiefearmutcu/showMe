@@ -1,31 +1,67 @@
-"""ECFC — Economic Forecasts."""
+"""ECFC — Economic Forecasts.
+
+Real, keyless economic forecasts sourced from the IMF World Economic
+Outlook (WEO) via the public IMF DataMapper API
+(``https://www.imf.org/external/datamapper/api/v1/{indicator}/{country}``).
+The DataMapper returns the WEO vintage's full historical + forward
+projection series keyed by the same indicator codes the manifest seed
+exposes (NGDP_RPCH, PCPIPCH, LUR, GGXCNL_NGDP, GGXWDG_NGDP, BCA_NGDPD,
+NGDPD), so every (indicator, year) cell is a genuine per-country IMF
+forecast — not a hardcoded constant. No API key is required.
+"""
 
 from __future__ import annotations
 
+import asyncio
+from datetime import datetime, timezone
 from typing import Any
 
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from showme.engine.core.instrument import Instrument
 
+_DATAMAPPER_BASE = "https://www.imf.org/external/datamapper/api/v1"
 
+# IMF WEO indicator code -> (human label, display unit)
 _INDICATORS: dict[str, tuple[str, str]] = {
     "NGDP_RPCH": ("Real GDP growth", "% y/y"),
     "PCPIPCH": ("Inflation", "% y/y"),
     "LUR": ("Unemployment rate", "%"),
     "GGXCNL_NGDP": ("Fiscal balance", "% GDP"),
     "GGXWDG_NGDP": ("Government debt", "% GDP"),
+    "BCA_NGDPD": ("Current account", "% GDP"),
+    "NGDPD": ("GDP", "USD bn"),
+}
+
+_DEFAULT_INDICATORS = ["NGDP_RPCH", "PCPIPCH", "LUR", "GGXCNL_NGDP", "GGXWDG_NGDP"]
+
+# IMF DataMapper keys every series by ISO 3166-1 *alpha-3* (USA, GBR, JPN, ...)
+# plus its own group codes (EURO, WEOWORLD, ...). The manifest/UI often pass
+# the alpha-2 form (US, GB, JP), and ``/{indicator}/US`` 200s with the WHOLE
+# all-country dataset — so a naive ``.get("US")`` silently misses ("USA" is
+# the real key) and the function looked dead. Normalise alpha-2 -> alpha-3 for
+# the major economies; anything already alpha-3 / an IMF group code passes
+# through untouched.
+_ISO2_TO_ISO3: dict[str, str] = {
+    "US": "USA", "GB": "GBR", "UK": "GBR", "JP": "JPN", "DE": "DEU", "FR": "FRA",
+    "IT": "ITA", "ES": "ESP", "CA": "CAN", "AU": "AUS", "CN": "CHN", "IN": "IND",
+    "BR": "BRA", "RU": "RUS", "KR": "KOR", "MX": "MEX", "TR": "TUR", "ID": "IDN",
+    "SA": "SAU", "CH": "CHE", "NL": "NLD", "SE": "SWE", "PL": "POL", "BE": "BEL",
+    "AT": "AUT", "NO": "NOR", "IE": "IRL", "DK": "DNK", "FI": "FIN", "PT": "PRT",
+    "GR": "GRC", "CZ": "CZE", "HU": "HUN", "NZ": "NZL", "ZA": "ZAF", "AR": "ARG",
+    "CL": "CHL", "CO": "COL", "PE": "PER", "TH": "THA", "MY": "MYS", "PH": "PHL",
+    "VN": "VNM", "SG": "SGP", "HK": "HKG", "TW": "TWN", "IL": "ISR", "AE": "ARE",
+    "EG": "EGY", "NG": "NGA", "PK": "PAK", "BD": "BGD", "UA": "UKR", "RO": "ROU",
 }
 
 
-def _forecast_model(country: str, indicators: list[str]) -> dict[str, Any]:
-    # Bug #?? fix (Bug #N5 in this slice): every country used to receive
-    # the same hardcoded 2.0% GDP growth / 2.8% inflation / 4.1%
-    # unemployment etc. The cockpit then displayed USA/CHN/BRA/JPN with
-    # identical numbers, which was indistinguishable from a real forecast
-    # table. We refuse to fabricate per-country values when no live IMF
-    # provider is wired: return an explicit provider_unavailable envelope
-    # with an empty `rows` list so the UI renders an Empty state instead
-    # of identical fake forecasts.
+def _normalize_country(code: str) -> str:
+    """Alpha-2 -> alpha-3 where known; pass IMF group / alpha-3 codes through."""
+    c = (code or "").strip().upper()
+    return _ISO2_TO_ISO3.get(c, c)
+
+
+def _provider_unavailable(country: str, indicators: list[str], reason: str) -> dict[str, Any]:
+    """Honest empty envelope for a genuine network/upstream failure."""
     return {
         "country": country,
         "rows": [],
@@ -33,26 +69,37 @@ def _forecast_model(country: str, indicators: list[str]) -> dict[str, Any]:
         "cards": [],
         "status": "provider_unavailable",
         "data_state": "provider_unavailable",
+        "vintage": "imf_weo",
+        "source_mode": "provider_unavailable",
         "methodology": (
-            "ECFC requires a live IMF or OECD economic-outlook adapter. No "
-            "provider is wired in this build, so the function returns an "
-            "explicit provider_unavailable envelope rather than fabricating "
-            "identical 2.0% growth / 2.8% inflation rows for every country."
+            "ECFC pulls live IMF World Economic Outlook forecasts from the keyless "
+            "IMF DataMapper API. The upstream request failed for this run "
+            f"({reason}), so the function returns an explicit provider_unavailable "
+            "envelope rather than fabricating forecast values."
         ),
         "next_actions": [
-            "Configure the IMF or OECD economic-outlook data source.",
-            "Re-run ECFC with live_forecast=true once a provider is available.",
+            "Retry ECFC — the IMF DataMapper endpoint may be momentarily unreachable.",
+            "Confirm the country code is a valid ISO 3166-1 alpha-3 / IMF group code.",
         ],
         "requested_indicators": indicators,
-        "field_dictionary": {
-            "indicator": "Provider series code.",
-            "metric": "Human-readable macro variable.",
-            "forecast_value": "Forecast value in the displayed unit.",
-            "year": "Forecast calendar year.",
-            "source_mode": "Provider or reference layer used for the row.",
-        },
-        "source_mode": "provider_unavailable",
+        "field_dictionary": _FIELD_DICT,
     }
+
+
+_FIELD_DICT: dict[str, str] = {
+    "country": "ISO 3166-1 alpha-3 (or IMF group) code echoed back.",
+    "indicator": "IMF WEO indicator code.",
+    "metric": "Human-readable macro variable.",
+    "year": "Forecast calendar year (integer).",
+    "forecast_value": "IMF WEO forecast value in the displayed unit.",
+    "unit": "Display unit (% YoY, % of GDP, USD bn, ...).",
+    "vintage": "Forecast vintage label (imf_weo).",
+    "source_mode": "Provider layer used for the row (imf_weo).",
+}
+
+
+def _indicator_label(indicator: str) -> tuple[str, str]:
+    return _INDICATORS.get(indicator, (indicator, "value"))
 
 
 @FunctionRegistry.register
@@ -62,192 +109,186 @@ class ECFCFunction(BaseFunction):
     category = "macro"
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
-        import asyncio
-        country = params.get("country", "USA")
-        # IMF series codes: NGDP_RPCH=GDP%; PCPIPCH=CPI%; LUR=unemp; GGXCNL_NGDP=fiscal balance
-        indicators = params.get("indicators") or [
-            "NGDP_RPCH", "PCPIPCH", "LUR", "GGXCNL_NGDP", "GGXWDG_NGDP",
-        ]
+        country = _normalize_country(str(params.get("country") or "USA"))
+        indicators = params.get("indicators") or list(_DEFAULT_INDICATORS)
         if isinstance(indicators, str):
             indicators = [s.strip() for s in indicators.split(",") if s.strip()]
-        if not (params.get("live_forecast") or params.get("live")):
+        indicators = [str(i).strip() for i in indicators if str(i).strip()]
+        if not indicators:
+            indicators = list(_DEFAULT_INDICATORS)
+        try:
+            years = int(params.get("years") or 5)
+        except (TypeError, ValueError):
+            years = 5
+        years = max(1, min(years, 6))
+        # IMF's Akamai edge is slow to first-byte for the full WEO series
+        # (~120 KB/indicator) and the shared client's own read timeout is 20s,
+        # so a 12s cap was firing as a ReadTimeout before the payload landed.
+        # Give it a realistic ceiling (default 25s, hard-capped at 40s).
+        timeout = max(5.0, min(float(params.get("timeout", 25)), 40.0))
+
+        client = await self._client()
+
+        async def _fetch(ind: str) -> tuple[str, dict[str, Any] | None, str | None]:
+            url = f"{_DATAMAPPER_BASE}/{ind}/{country}"
+            try:
+                # IMF DataMapper sits behind an Akamai WAF that 403s *browser-
+                # like* User-Agents (anything matching Mozilla/5.0..., and even
+                # the shared client's spoofed "...showMe" UA), while it serves a
+                # plain ``curl/...`` UA with a 200 + full JSON. Empirically
+                # verified 2026-06-01: chrome/mozilla/showMe-research all 403,
+                # ``curl/8.4.0`` 200s. Override the UA per-request (httpx request
+                # headers win over client defaults). A minimal mock client may
+                # expose ``get(url)`` without a ``headers`` kwarg — fall back to
+                # the bare call in that case.
+                # Pass ``timeout`` through to httpx too — the shared client's
+                # own 20s read timeout would otherwise fire before our outer
+                # ``wait_for`` ceiling on IMF's slow edge. A minimal mock client
+                # may accept neither kwarg; degrade gracefully.
+                try:
+                    coro = client.get(
+                        url, headers={"User-Agent": "curl/8.4.0"}, timeout=timeout
+                    )
+                except TypeError:
+                    try:
+                        coro = client.get(url, headers={"User-Agent": "curl/8.4.0"})
+                    except TypeError:
+                        coro = client.get(url)
+                resp = await asyncio.wait_for(coro, timeout=timeout + 2)
+                resp.raise_for_status()
+                payload = resp.json()
+            except Exception as exc:  # network / decode / HTTP error
+                return ind, None, f"{ind}: {type(exc).__name__}: {exc}"
+            series = (
+                (payload.get("values") or {})
+                .get(ind, {})
+                .get(country)
+            )
+            if not isinstance(series, dict) or not series:
+                return ind, None, f"{ind}: no series for {country}"
+            return ind, series, None
+
+        results = await asyncio.gather(*(_fetch(i) for i in indicators))
+
+        warnings: list[str] = []
+        current_year = datetime.now(timezone.utc).year
+        # Forecast horizon: from current year forward (the future-estimate table).
+        forecast_years = list(range(current_year, current_year + years))
+
+        rows: list[dict[str, Any]] = []
+        any_series = False
+        for ind, series, err in results:
+            if err:
+                warnings.append(err)
+                continue
+            any_series = True
+            label, unit = _indicator_label(ind)
+            for yr in forecast_years:
+                raw = series.get(str(yr))
+                if raw is None:
+                    continue
+                try:
+                    value = round(float(raw), 6)
+                except (TypeError, ValueError):
+                    continue
+                rows.append({
+                    "country": country,
+                    "indicator": ind,
+                    "metric": label,
+                    "year": yr,
+                    "forecast_value": value,
+                    "unit": unit,
+                    "vintage": "imf_weo",
+                    "source_mode": "imf_weo",
+                })
+
+        if not rows:
+            # No live rows at all -> genuine outage or unknown country.
+            reason = "; ".join(warnings) if warnings else "no forecast rows available"
+            data = _provider_unavailable(country, indicators, reason)
             return FunctionResult(
                 code=self.code,
                 instrument=None,
-                data=_forecast_model(country, indicators),
-                sources=["no_live_source"],
-                warnings=[
-                    "ECFC has no live IMF/OECD adapter wired; refusing to "
-                    "fabricate identical per-country forecast values"
-                ],
+                data=data,
+                sources=["no_live_source"] if not any_series else ["imf"],
+                warnings=warnings or [f"ECFC: {reason}"],
                 metadata={
                     "country": country,
                     "indicators": indicators,
-                    "mode": "provider_unavailable",
                     "data_state": "provider_unavailable",
                 },
             )
-        provider_errors: list[str] = []
-        sources: list[str] = []
-        data: dict[str, Any] = {}
-        timeout = float(params.get("timeout", 8))
-        if self.deps.imf:
-            from showme.engine.core.base_data_source import DataKind, DataRequest
-            async def _fetch(ind):
-                try:
-                    return ind, await asyncio.wait_for(
-                        self.deps.imf.fetch(DataRequest(
-                            kind=DataKind.ECON_SERIES,
-                            symbols=[ind],
-                            extra={"country": country},
-                        )),
-                        timeout=timeout,
-                    )
-                except Exception as e:
-                    provider_errors.append(f"imf.{ind}: {e}")
-                    return ind, None
-            results = await asyncio.gather(*(_fetch(i) for i in indicators))
-            for ind, val in results:
-                if hasattr(val, "to_dict"):
-                    data[ind] = val.to_dict() if hasattr(val, "to_dict") else val
-                elif val is not None:
-                    data[ind] = val
-            if data:
-                sources.append("imf")
-        # OECD economic outlook (when available)
-        if self.deps.oecd:
-            try:
-                from showme.engine.core.base_data_source import DataKind, DataRequest
-                # OECD MEI dataset for Europe-focused: e.g. EO/USA.GDPV.A
-                oecd = await asyncio.wait_for(
-                    self.deps.oecd.fetch(DataRequest(
-                        kind=DataKind.ECON_SERIES,
-                        symbols=[f"EO/{country}.GDPV.A"],
-                    )),
-                    timeout=timeout,
-                )
-                data["oecd_outlook_gdp"] = oecd
-                sources.append("oecd")
-            except Exception as e:
-                provider_errors.append(f"oecd: {e}")
-        rows = _rows_from_provider(country, data)
-        if not rows:
-            if data or sources:
-                provider_errors.append("provider payload did not normalize into forecast rows")
-            data = _forecast_model(country, indicators)
-            sources = ["no_live_source"]
-        else:
-            data = {
+
+        rows.sort(key=lambda r: (str(r["metric"]), int(r["year"])))
+        cards = _forecast_cards(rows)
+        data = {
+            "country": country,
+            "rows": rows,
+            "series": rows,
+            "cards": cards,
+            "status": "ok",
+            "data_state": "live",
+            "vintage": "imf_weo",
+            "source_mode": "imf_weo",
+            "as_of": datetime.now(timezone.utc).isoformat(),
+            "methodology": (
+                "ECFC builds the forecast table from the IMF World Economic Outlook "
+                "via the keyless IMF DataMapper API. For each requested WEO indicator "
+                "code the full per-country projection series is fetched, then the "
+                f"forward horizon ({forecast_years[0]}-{forecast_years[-1]}) is sliced "
+                "out as the forecast rows. Every value is a genuine IMF projection for "
+                "that (country, indicator, year) — no constants are fabricated. Cards "
+                "summarise the nearest-year forecast per indicator."
+            ),
+            "field_dictionary": _FIELD_DICT,
+        }
+        return FunctionResult(
+            code=self.code,
+            instrument=None,
+            data=data,
+            sources=["imf"],
+            warnings=warnings,
+            metadata={
                 "country": country,
-                "rows": rows,
-                "series": rows,
-                "cards": _forecast_cards(rows),
-                "methodology": (
-                    "Forecast rows are normalized from available IMF/OECD payloads. "
-                    "Forecast surprise is not computed here because this view is a future-estimate table."
-                ),
-                "field_dictionary": {
-                    "metric": "Human-readable macro variable.",
-                    "forecast_value": "Forecast value in the displayed unit.",
-                    "year": "Forecast calendar year.",
-                    "source_mode": "Provider or reference layer used for the row.",
-                },
-                "source_mode": "live_provider",
-            }
-        return FunctionResult(code=self.code, instrument=None, data=data,
-                              sources=_unique(sources), warnings=provider_errors,
-                              metadata={
-                                  "country": country,
-                                  "indicators": indicators,
-                                  "provider_errors": provider_errors,
-                              } if provider_errors else {"country": country, "indicators": indicators})
-
-
-def _rows_from_provider(country: str, data: dict[str, Any]) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    for indicator, payload in data.items():
-        label, unit = _indicator_label(indicator)
-        if isinstance(payload, list):
-            iterable = payload
-        elif isinstance(payload, dict):
-            iterable = _records_from_dict(payload)
-        else:
-            iterable = []
-        for item in iterable:
-            if not isinstance(item, dict):
-                continue
-            year = _year_from_record(item)
-            value = _value_from_record(item)
-            if year is None or value is None:
-                continue
-            rows.append({
+                "indicators": indicators,
+                "vintage": "imf_weo",
+                "data_state": "live",
+                "provider_errors": warnings,
+            } if warnings else {
                 "country": country,
-                "indicator": indicator,
-                "metric": label,
-                "year": year,
-                "forecast_value": value,
-                "unit": unit,
-                "source_mode": "imf_oecd",
-            })
-    return sorted(rows, key=lambda row: (str(row.get("metric")), int(row.get("year") or 0)))
+                "indicators": indicators,
+                "vintage": "imf_weo",
+                "data_state": "live",
+            },
+        )
 
+    async def _client(self) -> Any:
+        """Resolve an httpx-like async client (shared keyless pool).
 
-def _records_from_dict(payload: dict[str, Any]) -> list[dict[str, Any]]:
-    if isinstance(payload.get("rows"), list):
-        return payload["rows"]
-    records: list[dict[str, Any]] = []
-    for key, value in payload.items():
-        if isinstance(value, dict):
-            merged = dict(value)
-            merged.setdefault("year", key)
-            records.append(merged)
-        elif isinstance(value, (int, float)):
-            records.append({"year": key, "value": value})
-    return records
+        Resolution order: an explicitly injected ``self._http_client`` (used
+        by tests), then ``self.deps.http`` if a host wired one, then the
+        shared keyless httpx pool.
+        """
+        injected = getattr(self, "_http_client", None)
+        if injected is not None:
+            return injected
+        deps = getattr(self, "deps", None)
+        http = getattr(deps, "http", None) if deps is not None else None
+        if http is not None:
+            return http
+        from showme.providers._http import get_client
 
-
-def _year_from_record(item: dict[str, Any]) -> int | None:
-    for key in ("year", "date", "period", "time"):
-        value = item.get(key)
-        if value is None:
-            continue
-        text = str(value)
-        try:
-            return int(text[:4])
-        except ValueError:
-            continue
-    return None
-
-
-def _value_from_record(item: dict[str, Any]) -> float | None:
-    for key in ("forecast_value", "value", "forecast", "obs_value", "OBS_VALUE"):
-        value = item.get(key)
-        if value is None:
-            continue
-        try:
-            number = float(value)
-        except (TypeError, ValueError):
-            continue
-        return round(number, 6)
-    return None
-
-
-def _indicator_label(indicator: str) -> tuple[str, str]:
-    return _INDICATORS.get(indicator, (indicator, "value"))
+        return await get_client()
 
 
 def _forecast_cards(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Nearest-year forecast value per metric, one card each (max 6)."""
     cards: list[dict[str, Any]] = []
-    for row in rows:
-        if row.get("year") != min((r.get("year") for r in rows if r.get("metric") == row.get("metric")), default=row.get("year")):
+    seen: set[str] = set()
+    for row in sorted(rows, key=lambda r: (str(r.get("metric")), int(r.get("year") or 0))):
+        metric = str(row.get("metric"))
+        if metric in seen:
             continue
-        cards.append({"label": row.get("metric"), "value": row.get("forecast_value")})
+        seen.add(metric)
+        cards.append({"label": metric, "value": row.get("forecast_value")})
     return cards[:6]
-
-
-def _unique(values: list[str]) -> list[str]:
-    out: list[str] = []
-    for value in values:
-        if value and value not in out:
-            out.append(value)
-    return out

@@ -3,7 +3,36 @@ from __future__ import annotations
 import sys
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from showme import veryfinder_bridge
+
+
+@pytest.fixture(autouse=True)
+def _isolate_veryfinder_state(monkeypatch):
+    """Make every test in this file order-independent.
+
+    Two leaks from ``tests/x/test_bughunt_2026_05_24.py`` (when it runs first
+    in the full suite) otherwise break the fixture/source/news-proxy tests:
+
+    1. It populates the process-wide ``veryfinder_bridge._CACHE`` (300s TTL) via
+       ``analyze_symbol``/``analyze_query``; a stale entry then masks the
+       per-test monkeypatched ``public_search_items``.
+    2. Its ``app`` fixture does a bare ``os.environ["SHOWME_HOME"]=<tmp>`` that
+       is never restored, so ``veryfinder_root()`` resolves to a now-deleted
+       junk dir → ``source=unavailable`` / zero fixtures, whereas these tests
+       were written against the default resolution that finds the real local
+       veryfinder install (``source=fixture``, populated overlays).
+
+    We clear ``_CACHE`` and ``delenv("SHOWME_HOME")`` so root resolution returns
+    to its un-leaked default. ``monkeypatch.delenv`` restores whatever value was
+    present afterward, so this never leaks further. Tests that set their own
+    ``veryfinder_root``/``SHOWME_HOME`` still win (applied after this fixture).
+    """
+    veryfinder_bridge._CACHE.clear()
+    monkeypatch.delenv("SHOWME_HOME", raising=False)
+    yield
+    veryfinder_bridge._CACHE.clear()
 
 
 def test_veryfinder_root_prefers_application_support_cache(monkeypatch, tmp_path) -> None:

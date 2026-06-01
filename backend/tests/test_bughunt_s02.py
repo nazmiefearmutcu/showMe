@@ -5,49 +5,62 @@ from __future__ import annotations
 import asyncio
 
 
-def test_brief_live_calls_read_with_live_and_returns_articles(monkeypatch) -> None:
+def test_brief_live_composes_from_top_items_and_returns_articles(monkeypatch) -> None:
     from showme.engine.core.base_function import FunctionResult
-    from showme.engine.functions.news import brief as brief_mod
+    from showme.engine.functions.news import top as top_mod
     from showme.engine.functions.news.brief import BRIEFFunction
 
-    class FakeRead:
+    # 2026-06-01 contract change: BRIEF composes from TOP (live RSS/GDELT
+    # headlines under the ``items`` key), not the READ reading-list store.
+    class FakeTOP:
         def __init__(self, _deps):
             pass
 
         async def execute(self, **kwargs):
             assert kwargs["live"] is True
+            sym = kwargs.get("symbol") or "MACRO"
             return FunctionResult(
-                code="READ",
+                code="TOP",
                 instrument=None,
-                data=[{
-                    "title": "Apple supply-chain story",
-                    "url": "https://example.com/aapl",
-                    "matched_symbol": "AAPL",
+                data={"items": [{
+                    "title": f"{sym} supply-chain story",
+                    "url": f"https://example.com/{sym}",
+                    "matched_symbol": sym,
                     "source": "rss",
                     "summary": "<p>Apple &amp; suppliers raised guidance.</p>",
-                }],
+                }], "status": "ok"},
                 sources=["rss"],
                 metadata={"provider_errors": []},
             )
 
-    monkeypatch.setattr(brief_mod, "READFunction", FakeRead)
+    monkeypatch.setattr(top_mod, "TOPFunction", FakeTOP)
 
     result = asyncio.run(BRIEFFunction().execute(live=True, watchlist=["AAPL"]))
 
     assert result.data["status"] == "ok"
-    assert result.data["article_count"] == 1
-    assert "Apple supply-chain story" in result.data["markdown"]
-    assert result.data["articles"][0]["summary"] == "Apple & suppliers raised guidance."
+    assert result.data["article_count"] >= 1
+    assert "supply-chain story" in result.data["markdown"]
+    assert any(
+        a["summary"] == "Apple & suppliers raised guidance."
+        for a in result.data["articles"]
+    )
 
 
 def test_brief_offline_returns_dict_with_markdown_key() -> None:
+    """2026-06-01 contract change: the de-garbaged BRIEF composes from real live
+    surfaces by default (READ/watchlist/TOP), and the only ``live=false`` path is
+    an honest OPT-OUT that returns ``status="empty"`` with NO fabricated
+    headlines — not the old ``"reference"`` template. The FunctionStub renderer
+    still reads ``markdown`` in every branch, so the contract this test guards is
+    that a ``markdown`` key is always present even offline.
+    """
     from showme.engine.functions.news.brief import BRIEFFunction
 
     result = asyncio.run(BRIEFFunction().execute(live=False, watchlist=["AAPL", "MSFT"]))
 
     assert isinstance(result.data, dict)
     assert isinstance(result.data.get("markdown"), str)
-    assert result.data["status"] == "reference"
+    assert result.data["status"] == "empty"
     assert result.data["article_count"] == 0
     assert result.data["articles"] == []
     assert "AAPL" in result.data["watchlist"]

@@ -129,32 +129,42 @@ def test_wirp_uses_cme_when_available() -> None:
     assert third["hike_25bp"] == pytest.approx(0.80, abs=1e-6)
 
 
-def test_wirp_falls_back_modeled_when_cme_unavailable() -> None:
+def test_wirp_falls_through_to_live_when_cme_unavailable() -> None:
+    # Post de-garbage: when the CME adapter errors, WIRP no longer serves a
+    # canned reference table. It falls through to the live keyless path
+    # (fred + yfinance) or, if the network is also down, honestly reports
+    # provider_unavailable. It must NEVER emit reference_rate_probability_table.
     adapter = _StubCMEAdapter(RuntimeError("network unreachable"))
     result = _execute_with_adapter(adapter, central_bank="FED", meetings=3)
 
-    assert result.data["data_mode"] == "modeled", result.data
-    assert "cme_fedwatch" not in result.sources
-    assert "reference_rate_probability_table" in result.sources
-    assert "reference_rate_probability_table" in result.data["provenance"]["sources"]
+    assert "reference_rate_probability_table" not in result.sources
     # Adapter failure must show up in warnings so the UI can pill it.
     assert any("cme_fedwatch" in w for w in result.warnings), result.warnings
     assert any("network unreachable" in w for w in result.warnings), result.warnings
-    # Existing fallback warning still fires.
-    assert any("not configured" in w for w in result.warnings), result.warnings
-    # Rows come from the reference table.
-    assert result.data["rows"][0]["source_mode"] == "reference_rate_probability_table"
+
+    if result.data["status"] == "ok":
+        assert result.data["data_mode"] == "live_official"
+        assert result.data["source_mode"] == "live_fed_funds_futures"
+        assert "fred" in result.sources and "yfinance" in result.sources
+        for row in result.data["rows"]:
+            assert row["source_mode"] == "live_fed_funds_futures"
+    else:
+        assert result.data["status"] == "provider_unavailable"
+        assert result.data["rows"] == []
 
 
-def test_wirp_falls_back_when_cme_returns_empty_payload() -> None:
+def test_wirp_falls_through_when_cme_returns_empty_payload() -> None:
     """An adapter that responds successfully but yields no usable meetings
-    must still degrade to the reference table with a warning."""
+    must fall through to the live keyless path (or honest unavailable),
+    never the old canned reference table."""
     adapter = _StubCMEAdapter({"meetings": []})
     result = _execute_with_adapter(adapter, central_bank="FED", meetings=3)
 
-    assert result.data["data_mode"] == "modeled"
-    assert "cme_fedwatch" not in result.sources
-    assert any("no usable" in w for w in result.warnings), result.warnings
+    assert "reference_rate_probability_table" not in result.sources
+    assert result.data["source_mode"] != "reference_rate_probability_table"
+    assert result.data["status"] in {"ok", "provider_unavailable"}
+    if result.data["status"] == "provider_unavailable":
+        assert result.data["rows"] == []
 
 
 def test_wirp_probs_still_sum_to_one_with_cme() -> None:
@@ -169,8 +179,8 @@ def test_wirp_probs_still_sum_to_one_with_cme() -> None:
 
 
 def test_wirp_non_fed_bank_skips_cme_adapter() -> None:
-    """CME FedWatch only covers the Fed — ECB/BOE must take the
-    deterministic path without touching the adapter."""
+    """CME FedWatch only covers the Fed — ECB/BOE skip the adapter entirely
+    and are honestly reported as provider_unavailable (no keyless source)."""
 
     class _ShouldNotBeCalled:
         async def probabilities(self) -> dict[str, Any]:  # pragma: no cover
@@ -181,15 +191,20 @@ def test_wirp_non_fed_bank_skips_cme_adapter() -> None:
     fn = WIRPFunction(deps=deps)
     result = asyncio.run(fn.execute(central_bank="ECB", meetings=3))
 
-    assert result.data["data_mode"] == "modeled"
     assert "cme_fedwatch" not in result.sources
-    for row in result.data["rows"]:
-        total = row["cut_25bp"] + row["hold"] + row["hike_25bp"]
-        assert abs(total - 1.0) < 1e-6, row
+    assert result.data["status"] == "provider_unavailable"
+    assert result.data["data_mode"] == "provider_unavailable"
+    assert result.data["rows"] == []
 
 
-def test_wirp_no_adapter_at_all_still_falls_back() -> None:
-    """No adapter wired ➜ deterministic path, no crash."""
+def test_wirp_no_adapter_at_all_uses_live_or_unavailable() -> None:
+    """No adapter wired ➜ live keyless path (fred + yfinance) when the
+    network is up, else honest provider_unavailable. No canned table, no crash."""
     result = asyncio.run(WIRPFunction().execute(central_bank="FED", meetings=3))
-    assert result.data["data_mode"] == "modeled"
-    assert "reference_rate_probability_table" in result.sources
+    assert "reference_rate_probability_table" not in result.sources
+    assert result.data["status"] in {"ok", "provider_unavailable"}
+    if result.data["status"] == "ok":
+        assert result.data["source_mode"] == "live_fed_funds_futures"
+        assert "fred" in result.sources and "yfinance" in result.sources
+    else:
+        assert result.data["rows"] == []
