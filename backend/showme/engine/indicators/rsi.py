@@ -51,6 +51,10 @@ class RSIIndicator(BaseIndicator):
 
         rs = avg_gain / avg_loss.replace(0, np.nan)
         rsi = 100.0 - (100.0 / (1.0 + rs))
+        rsi = rsi.where(
+            ~(avg_loss == 0.0),
+            np.where(avg_gain > 0.0, 100.0, 50.0)
+        )
         current_rsi = rsi.iloc[-1]
 
         if pd.isna(current_rsi):

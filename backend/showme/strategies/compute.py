@@ -76,6 +76,10 @@ def _compute_rsi(df: pd.DataFrame, params: dict[str, Any]) -> pd.Series:
     avg_loss = _wilder_rma(loss, period)
     rs = avg_gain / avg_loss.replace(0, np.nan)
     rsi = 100.0 - (100.0 / (1.0 + rs))
+    rsi = rsi.where(
+        ~(avg_loss == 0.0),
+        np.where(avg_gain > 0.0, 100.0, 50.0)
+    )
     return rsi.rename("rsi")
 
 

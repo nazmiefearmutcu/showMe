@@ -728,3 +728,42 @@ def test_h13_evaluate_event_carries_side():
     # Same kind sequence as a long strategy: entry then exit.
     kinds = [e.kind for e in events]
     assert kinds == ["entry", "exit"]
+
+
+@pytest.mark.asyncio
+async def test_runner_validates_strategy_against_catalog(monkeypatch, tmp_path):
+    """If the strategy has an unknown indicator not present in the catalog,
+    the runner tick loop should skip it and log a validation error."""
+    from showme.strategies.spec import StrategySpec, IndicatorRef, Rule
+    from showme.bots.store import BotStore
+    from showme.bots.record import BotRecord
+    from showme.bots.runner import BotRunner
+
+    spec = StrategySpec(
+        name="tampered_strat",
+        timeframe="1h",
+        indicators=[
+            IndicatorRef(alias="ind_1", id="super_duper_indicator", params={})
+        ],
+        entry_rules=[Rule(kind="greater_than", left="ind_1", right="literal:5")],
+        exit_rules=[Rule(kind="less_than", left="ind_1", right="literal:5")],
+    )
+    from showme.strategies.store import StrategyStore
+    sstore = StrategyStore(tmp_path / "strategies")
+    monkeypatch.setattr("showme.strategies.store.StrategyStore.fresh", lambda: sstore)
+    sstore.save(spec)
+
+    bot_store = BotStore(tmp_path / "bots")
+    bot = bot_store.save(BotRecord(
+        strategy_id=spec.id, credential_id="fake-cred", exchange_id="binance",
+        symbol="BTC/USDT", enabled=True, mode="shadow", timeframe="1h"
+    ))
+
+    _register_fake_broker("fake-cred")
+
+    runner = BotRunner()
+    signal = await runner.tick(bot.id, bot_store)
+    assert signal is not None
+    assert signal.action == "skipped"
+    assert "strategy validation failed" in signal.error
+    assert "super_duper_indicator" in signal.error

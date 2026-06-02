@@ -506,6 +506,30 @@ class BotRunner:
                 store.save(rec.append_signal(entry))
                 return entry
 
+            # Validate the strategy spec indicators against the catalog.
+            # Ensures manual json tampering / indicator catalog drift doesn't
+            # cause silent NaN-bots at runtime.
+            try:
+                from pathlib import Path
+                from showme.indicators.catalog.loader import load_indicator_catalog
+                cat_path = Path(__file__).resolve().parents[1] / "indicators" / "catalog" / "indicators.yml"
+                cat = load_indicator_catalog(cat_path)
+                cat_ids = {e.id for e in cat.entries}
+                spec.validate_against_catalog(cat_ids)
+            except Exception as exc:  # noqa: BLE001
+                LOG.warning("bot %s strategy validation failed: %s", bot_id, exc)
+                entry = SignalEntry(
+                    bar_index=-1, bar_time="", kind="entry",
+                    price=0.0, action="skipped",
+                    error=f"strategy validation failed: {exc}",
+                )
+                try:
+                    fresh = store.get(bot_id)
+                except UnknownBot:
+                    return None
+                store.save(fresh.append_signal(entry))
+                return entry
+
             # H-RT-6 fix: bot vs strategy timeframe drift produces a clean
             # ``skipped`` entry instead of silently fetching the bot's TF
             # against rules that were authored at a different cadence.

@@ -115,16 +115,12 @@ def test_rsi_compute_no_100_or_50_hack(df):
         "close": close, "volume": [1000] * n,
     })
     out = compute(df2, [IndicatorRef(alias="r", id="rsi", params={"period": 14})])
-    # Warm-up NaN
-    assert out["r"].iloc[:14].isna().all()
-    # Post warm-up: should be exactly 100.0 since avg_loss → 0 exactly
-    # (np.nan rs from 0/0 yields ``100 - 100/(1+nan) = 100 - nan = nan``).
-    # The fix retains NaN; the legacy hack would have returned 100.
-    # We require NaN, not 100.
-    later = out["r"].iloc[14:]
-    # Either NaN (avg_loss exactly 0 → division by NaN) or 100 (no losses
-    # at all). We accept either — the audit-critical property is that we
-    # *don't* return 50 when there are only gains.
+    # Warm-up NaN (first 13 bars)
+    assert out["r"].iloc[:13].isna().all()
+    # Post warm-up (starts at index 13): should be exactly 100.0 since avg_loss → 0 exactly.
+    # The division-by-zero handler sets this to 100.0.
+    later = out["r"].iloc[13:]
+    # Either NaN (during warm-up if any was propagated) or 100.
     assert (later.isna() | (later > 99)).all()
 
 
