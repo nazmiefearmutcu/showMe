@@ -174,6 +174,7 @@ def params_for(entry: dict[str, Any], asset: str | None) -> dict[str, Any]:
         "news_timeout": 4,
         "yfinance_timeout": 4,
         "max_positions": 10,
+        "deep_history": False,
     }
     if asset:
         symbol = SYMBOL_BY_ASSET.get(asset, "AAPL")

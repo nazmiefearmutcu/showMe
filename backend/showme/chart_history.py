@@ -157,6 +157,7 @@ async def fetch_longest_history(
     interval: str,
     days: int,
     bars: int,
+    deep_history: bool = True,
 ) -> DeepHistoryResult:
     """Race every viable provider concurrently; return the source whose
     earliest returned bar is oldest.
@@ -175,8 +176,12 @@ async def fetch_longest_history(
     # rather than the user's range slider. This is what lets the chart
     # show AAPL from 1980 even when the user picked the "Max" 25Y pill —
     # the user-visible window is enforced AFTER the winner is chosen.
-    race_days = max(normalized_days, RACE_LOOKBACK_DAYS)
-    fetch_bars = MAX_BARS
+    if deep_history:
+        race_days = max(normalized_days, RACE_LOOKBACK_DAYS)
+        fetch_bars = MAX_BARS
+    else:
+        race_days = normalized_days
+        fetch_bars = user_bars
     asset = str(asset_class or "").upper()
 
     providers: list[tuple[str, Any]] = [
@@ -472,6 +477,16 @@ class OhlcvLongestHistoryWrapper:
         # that omit ``limit`` would silently lose deep history.
         bars = parse_history_bars(limit if limit is not None else MAX_BARS)
 
+        deep = True
+        extra = getattr(request, "extra", None)
+        if isinstance(extra, dict):
+            val = extra.get("deep_history", extra.get("deep"))
+            if val is not None:
+                if isinstance(val, bool):
+                    deep = val
+                else:
+                    deep = str(val).strip().lower() in {"1", "true", "yes", "on"}
+
         try:
             history = await fetch_longest_history(
                 symbol=symbol,
@@ -479,6 +494,7 @@ class OhlcvLongestHistoryWrapper:
                 interval=interval,
                 days=days,
                 bars=bars,
+                deep_history=deep,
             )
         except Exception:
             return await self._inner.fetch(request)

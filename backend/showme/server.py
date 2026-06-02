@@ -508,6 +508,7 @@ async def _execute_price_history_alias(
     warnings: list[str] = []
     rows: list[dict[str, Any]] = []
     source_name = ""
+    deep = _truthy_value(params.get("deep_history", params.get("deep", True)))
     try:
         history = await fetch_longest_history(
             symbol=getattr(instrument, "symbol", ""),
@@ -515,6 +516,7 @@ async def _execute_price_history_alias(
             interval=interval,
             days=days,
             bars=bars,
+            deep_history=deep,
         )
         if history.rows:
             FunctionResult = registry_mod.FunctionResult
