@@ -1,22 +1,10 @@
 /**
- * TRAN — Bloomberg-grade transaction ledger.
+ * TXNS — Bloomberg-grade transaction ledger.
  *
  * Dense ledger table with side pills (BUY/LONG positive, SELL/SHORT
  * accent-tinted), DeltaChip realized P&L, and a top KPI strip
  * (realized total / wins / losses / avg P&L per trade). Reads closed-trade
  * history from Round 22's portfolio.db over `/api/state/trades`.
- *
- * ⚠ S13 BUG HUNT 2026-05-17 — this pane is currently NOT registered in
- * `ui/src/functions/registry.tsx`'s PANES map. The official function
- * code `TRAN` corresponds to "Earnings Call Transcripts" in
- * `ui/src/functions/static-index.ts:773` and is backed by
- * `backend/showme/engine/functions/news/tran.py`, so registering this
- * implementation under TRAN would override the correct earnings surface
- * with an unrelated trade blotter. Leave this file in-tree until a new
- * fn-code is allocated for "Trade Blotter" (e.g. BLTR / TXNS); at that
- * point this component should be renamed and re-wired. Until then the
- * file is intentionally orphaned dead code, kept so the trade-blotter
- * design is recoverable without a git archaeology session.
  */
 import { useEffect, useMemo, useState } from "react";
 import {

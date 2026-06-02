@@ -2,7 +2,7 @@
 
 The Round 22 importer writes positions + trades into a SQLite database
 under ``~/Library/Application Support/showMe/data/portfolio.db``. The
-TRAN native pane and the watchlist/blotter need read-only access to
+TXNS native pane and the watchlist/blotter need read-only access to
 those rows without having to re-import every refresh; this module
 exposes them through three small endpoints:
 
