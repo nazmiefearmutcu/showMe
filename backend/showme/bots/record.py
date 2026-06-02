@@ -5,6 +5,7 @@ and emits/places orders based on E's evaluate() events.
 """
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Literal
@@ -133,6 +134,20 @@ class BotRecord(BaseModel):
     cumulative_funding_pnl: float = 0.0
     created_at: str = Field(default_factory=_now_iso)
     updated_at: str = Field(default_factory=_now_iso)
+
+    @field_validator("symbol")
+    @classmethod
+    def _validate_symbol(cls, v: str) -> str:
+        if not isinstance(v, str):
+            raise ValueError("symbol must be a string")
+        if re.search(r"[\x00-\x1f\x7f-\x9f]", v):
+            raise ValueError("symbol must not contain control characters or newlines")
+        trimmed = v.strip().upper()
+        if not trimmed:
+            raise ValueError("symbol must not be empty or whitespace-only")
+        if not re.match(r"^[A-Z0-9]+(?:/[A-Z0-9]+)?$", trimmed):
+            raise ValueError("symbol must be alphanumeric, optionally separated by a slash (e.g. BTC/USDT or AAPL)")
+        return trimmed
 
     @field_validator("signal_log")
     @classmethod

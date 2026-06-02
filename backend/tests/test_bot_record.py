@@ -78,3 +78,31 @@ def test_auto_derived_tick_interval():
     b4 = BotRecord(strategy_id="s", credential_id="c", exchange_id="e",
                    symbol="X", timeframe="1h", tick_interval_seconds=120)
     assert b4.tick_interval_seconds == 120
+
+
+def test_symbol_validation():
+    # Valid symbols
+    b1 = BotRecord(strategy_id="s", credential_id="c", exchange_id="e", symbol="BTC/USDT")
+    assert b1.symbol == "BTC/USDT"
+
+    b2 = BotRecord(strategy_id="s", credential_id="c", exchange_id="e", symbol="aapl")
+    assert b2.symbol == "AAPL"  # Normalization to uppercase
+
+    b3 = BotRecord(strategy_id="s", credential_id="c", exchange_id="e", symbol="BTCUSDT")
+    assert b3.symbol == "BTCUSDT"
+
+    # Whitespace-only
+    with pytest.raises(ValueError, match="symbol must not be empty or whitespace-only"):
+        BotRecord(strategy_id="s", credential_id="c", exchange_id="e", symbol="   ")
+
+    # Invalid characters/formats
+    with pytest.raises(ValueError, match="symbol must be alphanumeric"):
+        BotRecord(strategy_id="s", credential_id="c", exchange_id="e", symbol="BTC$USDT")
+
+    with pytest.raises(ValueError, match="symbol must be alphanumeric"):
+        BotRecord(strategy_id="s", credential_id="c", exchange_id="e", symbol="BTC/USD/EUR")
+
+    # Control character injection
+    with pytest.raises(ValueError, match="symbol must not contain control characters"):
+        BotRecord(strategy_id="s", credential_id="c", exchange_id="e", symbol="BTC/USDT\n")
+
