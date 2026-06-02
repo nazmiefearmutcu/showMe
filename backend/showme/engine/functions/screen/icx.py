@@ -303,7 +303,7 @@ def _template_constituents(index: str) -> "Any":
     )
 
 
-async def _fetch_price(symbol: str) -> dict[str, Any] | None:
+async def _fetch_price(symbol: str, timeout: float = 2.0) -> dict[str, Any] | None:
     """Best-effort keyless quote snapshot for one symbol.
 
     Returns the snapshot dict on success, or ``None`` on any failure so the
@@ -312,7 +312,7 @@ async def _fetch_price(symbol: str) -> dict[str, Any] | None:
     try:
         from showme.quotes import fetch_quote_snapshot
 
-        return await fetch_quote_snapshot(symbol)
+        return await asyncio.wait_for(fetch_quote_snapshot(symbol), timeout=timeout)
     except Exception:  # noqa: BLE001 — network/provider failure for this symbol
         return None
 
@@ -332,6 +332,9 @@ class ICXFunction(BaseFunction):
             params.get("quotes", params.get("live", "1"))
         ).strip().lower() not in {"0", "false", "no", "off"}
 
+        req_timeout = float(params.get("quote_timeout", params.get("timeout", 2.0)))
+        quote_timeout = max(0.5, min(req_timeout, 4.0))
+
         # INDEX path: when addressed by an index code (SPX/NDX/DAX/...), resolve
         # to the curated index-member table. This honours the agent router which
         # maps ICX's query to an ``index`` key, and keeps the region-correct
@@ -339,7 +342,7 @@ class ICXFunction(BaseFunction):
         raw_index = params.get("index")
         if raw_index:
             return await self._execute_index(
-                instrument, str(raw_index).strip(), attach_quotes
+                instrument, str(raw_index).strip(), attach_quotes, quote_timeout
             )
 
         # ``sector`` is the primary input; ``parent`` / ``query`` are aliases.
@@ -384,7 +387,9 @@ class ICXFunction(BaseFunction):
         quotes_ok = False
         rows: list[dict[str, Any]] = []
         if attach_quotes:
-            snaps = await asyncio.gather(*(_fetch_price(symbol) for symbol, _, _ in members))
+            snaps = await asyncio.gather(*(
+                _fetch_price(symbol, timeout=quote_timeout) for symbol, _, _ in members
+            ))
         else:
             snaps = [None] * len(members)
 
@@ -446,6 +451,7 @@ class ICXFunction(BaseFunction):
         instrument: Instrument | None,
         raw_index: str,
         attach_quotes: bool,
+        quote_timeout: float,
     ) -> FunctionResult:
         """Resolve an INDEX code to its curated, region-correct member table."""
         code = _canonical_index(raw_index)
@@ -483,7 +489,9 @@ class ICXFunction(BaseFunction):
         quotes_ok = False
         rows: list[dict[str, Any]] = []
         if attach_quotes:
-            snaps = await asyncio.gather(*(_fetch_price(symbol) for symbol, _ in members))
+            snaps = await asyncio.gather(*(
+                _fetch_price(symbol, timeout=quote_timeout) for symbol, _ in members
+            ))
         else:
             snaps = [None] * len(members)
 

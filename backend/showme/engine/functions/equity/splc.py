@@ -35,11 +35,13 @@ class SPLCFunction(BaseFunction):
         debt_section: str | None = None
         try:
             if self.deps.sec_edgar:
+                req_timeout = float(params.get("timeout", params.get("sec_timeout", 8.0)))
+                sec_timeout = max(1.0, min(req_timeout - 1.0, 4.0))
                 df = await asyncio.wait_for(
                     self.deps.sec_edgar.fetch(DataRequest(
                         kind=DataKind.EVENTS, instrument=instrument
                     )),
-                    timeout=float(params.get("sec_timeout", 8)),
+                    timeout=sec_timeout,
                 )
                 if isinstance(df, pd.DataFrame) and "form" in df.columns:
                     filings = df[df["form"] == "10-K"].head(3)
@@ -47,7 +49,7 @@ class SPLCFunction(BaseFunction):
                         latest = filings.iloc[0]
                         cik = await asyncio.wait_for(
                             self.deps.sec_edgar.cik_for(instrument.symbol),
-                            timeout=float(params.get("sec_timeout", 8)),
+                            timeout=sec_timeout,
                         )
                         acc = (latest.get("accessionNumber") or "").replace("-", "")
                         doc = latest.get("primaryDocument")
@@ -56,7 +58,7 @@ class SPLCFunction(BaseFunction):
                             try:
                                 import httpx
                                 async with httpx.AsyncClient(
-                                    timeout=20,
+                                    timeout=sec_timeout,
                                     headers={"User-Agent": "ShowMe dev showme@example.com"},
                                     follow_redirects=True,
                                 ) as cli:

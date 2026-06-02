@@ -31,6 +31,7 @@ class TOPFunction(BaseFunction):
             or getattr(getattr(instrument, "asset_class", None), "value", "")
             or ""
         ).upper()
+        stamp_sentiment = str(params.get("stamp_sentiment", "True")).strip().lower() not in {"0", "false", "no", "off"}
         results: list[dict[str, Any]] = []
         sources: list[str] = []
         warnings: list[str] = []
@@ -105,9 +106,13 @@ class TOPFunction(BaseFunction):
         # every item so the UI shows finance-domain labels instead of the
         # bare keyword fallback. Non-fatal: if the model can't load, items
         # get neutral and a warning lands in `provider_errors`.
-        _, finbert_warning = await _finbert_stamp_items(ranked)
-        if finbert_warning:
-            warnings.append(finbert_warning)
+        finbert_warning = None
+        sentiment_model = "skipped"
+        if stamp_sentiment:
+            _, finbert_warning = await _finbert_stamp_items(ranked)
+            if finbert_warning:
+                warnings.append(finbert_warning)
+            sentiment_model = "finbert" if finbert_warning is None else "neutral_fallback"
         alerts = critical_articles(ranked, threshold=threshold)
         # Per FUNC-10 P1: wrap the list payload as ``{items: ranked, ...}`` so
         # function_contracts._extract_rows can pick it up and the contract
@@ -128,7 +133,7 @@ class TOPFunction(BaseFunction):
                 "critical_count": len(alerts),
                 "top_importance_score": max([float(a.get("importance_score") or 0) for a in ranked], default=0.0),
                 "method": "deterministic_impact_score_v2",
-                "sentiment_model": "finbert" if finbert_warning is None else "neutral_fallback",
+                "sentiment_model": sentiment_model,
                 "methodology": (
                     "Ranks live RSS/GDELT headlines by query relevance, market catalyst keywords, "
                     "source quality, and freshness. Headlines outside freshness_max_days are filtered. "

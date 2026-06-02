@@ -85,6 +85,7 @@ class BRIEFFunction(BaseFunction):
         # macro pass plus one symbol-scoped pass per watchlist symbol (capped,
         # concurrent, best-effort), all read from the correct ``items`` key.
         from showme.engine.functions.news.top import TOPFunction  # local: avoid cycle
+        from showme.finbert_analyzer import stamp_items
 
         articles: list[dict[str, Any]] = []
         sources: list[str] = []
@@ -105,11 +106,13 @@ class BRIEFFunction(BaseFunction):
         per_symbol = max(3, min(limit // max(1, len(wl_symbols) + 1), 10))
 
         async def _macro() -> tuple[str, Any]:
-            return "MACRO", await top_fn.execute(live=True, limit=min(limit, 15), timeout=timeout)
+            return "MACRO", await top_fn.execute(
+                live=True, limit=min(limit, 15), timeout=timeout, stamp_sentiment=False,
+            )
 
         async def _sym(sym: str) -> tuple[str, Any]:
             return sym, await top_fn.execute(
-                symbol=sym, query=sym, live=True, limit=per_symbol, timeout=timeout,
+                symbol=sym, query=sym, live=True, limit=per_symbol, timeout=timeout, stamp_sentiment=False,
             )
 
         tasks = [_macro(), *[_sym(s) for s in wl_symbols]]
@@ -141,6 +144,12 @@ class BRIEFFunction(BaseFunction):
         articles.sort(key=lambda a: 0 if a.get("section") == "watchlist" else 1)
 
         articles = articles[:limit]
+        
+        # Stamp sentiment on the final merged list of articles once!
+        _, finbert_warning = await stamp_items(articles)
+        if finbert_warning:
+            warnings.append(finbert_warning)
+
         markdown = _compose_markdown(watchlist, articles)
         status = "ok" if articles else "provider_unavailable"
         if not sources:
