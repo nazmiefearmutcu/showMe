@@ -81,6 +81,26 @@ def test_equals_approximately_requires_tolerance():
         s.validate_against_catalog({"rsi"})
 
 
+def test_equals_approximately_invalid_tolerance():
+    # Tolerance must be positive
+    s1 = StrategySpec(
+        name="t",
+        indicators=[IndicatorRef(alias="r", id="rsi")],
+        entry_rules=[Rule(kind="equals_approximately", left="r", right="literal:50", tolerance=-0.1)],
+    )
+    with pytest.raises(ValueError, match="tolerance must be a finite positive number"):
+        s1.validate_against_catalog({"rsi"})
+
+    # Tolerance must not be NaN
+    s2 = StrategySpec(
+        name="t",
+        indicators=[IndicatorRef(alias="r", id="rsi")],
+        entry_rules=[Rule(kind="equals_approximately", left="r", right="literal:50", tolerance=float("nan"))],
+    )
+    with pytest.raises(ValueError, match="tolerance must be a finite positive number"):
+        s2.validate_against_catalog({"rsi"})
+
+
 def test_position_validation_negative_sizing():
     from showme.strategies.spec import Position
     with pytest.raises(ValueError, match="sizing_value"):

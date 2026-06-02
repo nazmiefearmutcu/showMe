@@ -143,6 +143,10 @@ class StrategySpec(BaseModel):
                     continue
                 elif operand not in aliases:
                     raise ValueError(f"unknown operand: {operand}")
-        if any(r.kind == "equals_approximately" and r.tolerance is None
-               for r in all_rules):
-            raise ValueError("equals_approximately requires tolerance")
+        import math
+        for r in all_rules:
+            if r.kind == "equals_approximately":
+                if r.tolerance is None:
+                    raise ValueError("equals_approximately requires tolerance")
+                if not math.isfinite(r.tolerance) or r.tolerance <= 0:
+                    raise ValueError("tolerance must be a finite positive number")
