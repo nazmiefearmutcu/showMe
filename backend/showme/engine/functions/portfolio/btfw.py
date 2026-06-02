@@ -42,13 +42,39 @@ class BTFWFunction(BaseFunction):
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         if instrument is None:
             raise ValueError("BTFW requires instrument")
-        days = int(params.get("days", 365 * 3))
         strategy_name = params.get("strategy") or "sma_crossover"
+        days = int(params.get("days", 365 * 3))
+        fee_bps = float(params.get("fee_bps", 5.0))
+        allow_short = bool(params.get("allow_short", True))
+        cash = float(params.get("initial_cash", 10_000))
+        try:
+            import asyncio
+            return await asyncio.wait_for(
+                self._execute_inner(instrument, **params),
+                timeout=9.0,
+            )
+        except (asyncio.TimeoutError, TimeoutError) as exc:
+            reason = f"BTFW execution timed out: {exc}"
+            return FunctionResult(
+                code=self.code,
+                instrument=instrument,
+                data=_walk_forward_template(instrument.symbol, strategy_name, cash),
+                sources=["local_backtest_model"],
+                warnings=[reason],
+                metadata={"days": days, "fee_bps": fee_bps, "allow_short": allow_short, "live": False, "provider_errors": [reason]},
+            )
+
+    async def _execute_inner(
+        self,
+        instrument: Instrument,
+        **params: Any,
+    ) -> FunctionResult:
+        strategy_name = params.get("strategy") or "sma_crossover"
+        days = int(params.get("days", 365 * 3))
         fee_bps = float(params.get("fee_bps", 5.0))
         allow_short = bool(params.get("allow_short", True))
         cash = float(params.get("initial_cash", 10_000))
         sources = ["yfinance"]
-
         if strategy_name not in STRATEGY_REGISTRY:
             return FunctionResult(code=self.code, instrument=instrument, data={},
                                   warnings=[f"unknown strategy {strategy_name}",

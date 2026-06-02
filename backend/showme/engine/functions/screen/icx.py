@@ -14,6 +14,7 @@ The bundled universe is a hand-curated US large-cap set — not a complete index
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from showme.engine.core.base_function import (
@@ -382,18 +383,21 @@ class ICXFunction(BaseFunction):
         # null (never fabricated).
         quotes_ok = False
         rows: list[dict[str, Any]] = []
-        for symbol, company, sub_industry in members:
+        if attach_quotes:
+            snaps = await asyncio.gather(*(_fetch_price(symbol) for symbol, _, _ in members))
+        else:
+            snaps = [None] * len(members)
+
+        for (symbol, company, sub_industry), snap in zip(members, snaps):
             last: float | None = None
             change_pct: float | None = None
-            if attach_quotes:
-                snap = await _fetch_price(symbol)
-                # ``showme_quote_template`` is the offline placeholder source —
-                # treat it as no live price so we never present canned numbers.
-                if snap is not None and snap.get("source") != "showme_quote_template":
-                    last = snap.get("last")
-                    change_pct = snap.get("change_pct")
-                    if last is not None:
-                        quotes_ok = True
+            # ``showme_quote_template`` is the offline placeholder source —
+            # treat it as no live price so we never present canned numbers.
+            if snap is not None and snap.get("source") != "showme_quote_template":
+                last = snap.get("last")
+                change_pct = snap.get("change_pct")
+                if last is not None:
+                    quotes_ok = True
             rows.append(
                 {
                     "symbol": symbol,
@@ -478,16 +482,19 @@ class ICXFunction(BaseFunction):
         members = _INDEX_CONSTITUENTS[code]
         quotes_ok = False
         rows: list[dict[str, Any]] = []
-        for symbol, company in members:
+        if attach_quotes:
+            snaps = await asyncio.gather(*(_fetch_price(symbol) for symbol, _ in members))
+        else:
+            snaps = [None] * len(members)
+
+        for (symbol, company), snap in zip(members, snaps):
             last: float | None = None
             change_pct: float | None = None
-            if attach_quotes:
-                snap = await _fetch_price(symbol)
-                if snap is not None and snap.get("source") != "showme_quote_template":
-                    last = snap.get("last")
-                    change_pct = snap.get("change_pct")
-                    if last is not None:
-                        quotes_ok = True
+            if snap is not None and snap.get("source") != "showme_quote_template":
+                last = snap.get("last")
+                change_pct = snap.get("change_pct")
+                if last is not None:
+                    quotes_ok = True
             rows.append(
                 {
                     "symbol": symbol,

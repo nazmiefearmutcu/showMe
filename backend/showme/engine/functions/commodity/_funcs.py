@@ -405,14 +405,18 @@ class BOILFunction(BaseFunction):
         chart_history: list[dict[str, Any]] = []
         provider_errors: list[str] = []
         if live and self.deps.yfinance:
-            for sym in symbols:
-                row, history, errors = await _contract_snapshot(
+            tasks = [
+                _contract_snapshot(
                     self.deps.yfinance,
                     sym,
                     days=days,
                     timeout=timeout,
                     include_history=True,
                 )
+                for sym in symbols
+            ]
+            results = await asyncio.gather(*tasks)
+            for row, history, errors in results:
                 provider_errors.extend(errors)
                 if row:
                     rows.append(row)

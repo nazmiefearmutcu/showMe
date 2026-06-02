@@ -270,10 +270,48 @@ class ANRFunction(BaseFunction):
             "spot": None,
             "yfinance_raw": {},
         }
-        await self._fetch_finnhub(instrument, state)
-        await self._fetch_yfinance(instrument, params, state)
+        fh_state = {"warnings": [], "sources": [], "recs": [], "target": {}}
+        yf_state = {"warnings": [], "sources": [], "recs": [], "target": {}, "spot": None, "yfinance_raw": {}}
+
+        params = dict(params)
+        params.setdefault("yfinance_timeout", 3.0)
+        params.setdefault("yfinance_info_timeout", 2.0)
+        params.setdefault("yfinance_recommendations_timeout", 2.0)
+        params.setdefault("yfinance_actions_timeout", 2.0)
+
+        await asyncio.gather(
+            self._fetch_finnhub(instrument, fh_state),
+            self._fetch_yfinance(instrument, params, yf_state)
+        )
+
+        state["warnings"].extend(fh_state["warnings"])
+        state["warnings"].extend(yf_state["warnings"])
+
+        if fh_state["recs"]:
+            state["recs"] = fh_state["recs"]
+            state["sources"].extend(fh_state["sources"])
+            state["target"] = fh_state["target"]
+        else:
+            if yf_state["recs"]:
+                state["recs"] = yf_state["recs"]
+                state["sources"].extend(yf_state["sources"])
+            if yf_state["target"]:
+                state["target"] = yf_state["target"]
+                if "yfinance_targets" not in state["sources"]:
+                    state["sources"].append("yfinance_targets")
+
+        state["spot"] = yf_state["spot"]
+        state["yfinance_raw"] = yf_state["yfinance_raw"]
+        if "yfinance" in yf_state["sources"] and "yfinance" not in state["sources"]:
+            state["sources"].append("yfinance")
+
         if not state["recs"] and self.deps.yfinance:
+            params.setdefault("yfinance_retry_timeout", 2.0)
+            params.setdefault("yfinance_retry_info_timeout", 1.0)
+            params.setdefault("yfinance_retry_recommendations_timeout", 1.0)
+            params.setdefault("yfinance_retry_actions_timeout", 1.0)
             await self._fetch_yfinance_retry(instrument, params, state)
+
         if state["recs"] and "yfinance_recommendations" in state["sources"]:
             state["warnings"] = [
                 w for w in state["warnings"] if "FINNHUB_API_KEY not set" not in w
@@ -846,43 +884,67 @@ class ANRFunction(BaseFunction):
         )
 
     async def _crypto_quote(self, instrument: Instrument, timeout: float, warnings: list[str]) -> tuple[Any | None, str | None]:
-        for name in ("ccxt_failover", "cryptocompare", "coingecko", "yfinance"):
+        providers = ["ccxt_failover", "cryptocompare", "coingecko", "yfinance"]
+        tasks = []
+        name_to_idx = {}
+        for name in providers:
             src = getattr(self.deps, name, None)
             if not src:
                 continue
-            try:
-                quote = await asyncio.wait_for(
-                    src.fetch(DataRequest(kind=DataKind.QUOTE, instrument=instrument, extra={"timeout": timeout})),
-                    timeout=timeout + 1.0,
-                )
-                if finite(getattr(quote, "last", None)) is not None:
-                    return quote, str(getattr(quote, "source", None) or name)
-            except Exception as exc:
-                warnings.append(f"{name}_quote: {exc}")
+            name_to_idx[name] = len(tasks)
+            tasks.append(asyncio.wait_for(
+                src.fetch(DataRequest(kind=DataKind.QUOTE, instrument=instrument, extra={"timeout": timeout})),
+                timeout=timeout + 1.0,
+            ))
+        if not tasks:
+            return None, None
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for name in providers:
+            if name not in name_to_idx:
+                continue
+            idx = name_to_idx[name]
+            res = results[idx]
+            if isinstance(res, Exception):
+                warnings.append(f"{name}_quote: {res}")
+                continue
+            if res is not None and finite(getattr(res, "last", None)) is not None:
+                return res, str(getattr(res, "source", None) or name)
         return None, None
 
     async def _crypto_ohlcv(self, instrument: Instrument, lookback: int, timeout: float, warnings: list[str]) -> tuple[Any | None, str | None]:
-        for name in ("yfinance", "cryptocompare", "coingecko", "ccxt_failover"):
+        providers = ["yfinance", "cryptocompare", "coingecko", "ccxt_failover"]
+        tasks = []
+        name_to_idx = {}
+        for name in providers:
             src = getattr(self.deps, name, None)
             if not src:
                 continue
-            try:
-                frame = await asyncio.wait_for(
-                    src.fetch(DataRequest(
-                        kind=DataKind.OHLCV,
-                        instrument=instrument,
-                        start=_today() - timedelta(days=lookback + 5),
-                        interval="1d",
-                        limit=lookback,
-                        extra={"timeout": timeout, "days": min(max(lookback, 30), 365), "period": f"{lookback}d"},
-                    )),
-                    timeout=timeout + 3.0,
-                )
-                normalized = _normalize_crypto_frame(frame)
-                if not normalized.empty:
-                    return normalized, name
-            except Exception as exc:
-                warnings.append(f"{name}_ohlcv: {exc}")
+            name_to_idx[name] = len(tasks)
+            tasks.append(asyncio.wait_for(
+                src.fetch(DataRequest(
+                    kind=DataKind.OHLCV,
+                    instrument=instrument,
+                    start=_today() - timedelta(days=lookback + 5),
+                    interval="1d",
+                    limit=lookback,
+                    extra={"timeout": timeout, "days": min(max(lookback, 30), 365), "period": f"{lookback}d"},
+                )),
+                timeout=timeout + 3.0,
+            ))
+        if not tasks:
+            return None, None
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for name in providers:
+            if name not in name_to_idx:
+                continue
+            idx = name_to_idx[name]
+            res = results[idx]
+            if isinstance(res, Exception):
+                warnings.append(f"{name}_ohlcv: {res}")
+                continue
+            normalized = _normalize_crypto_frame(res)
+            if normalized is not None and not normalized.empty:
+                return normalized, name
         return None, None
 
 

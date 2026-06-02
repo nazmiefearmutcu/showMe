@@ -92,7 +92,44 @@ class AVFunction(BaseFunction):
         limit = max(1, min(int(params.get("limit", 25) or 25), 100))
         query = str(params.get("query") or "").strip()
         symbol = self._resolve_symbol(instrument, params)
+        try:
+            import asyncio
+            return await asyncio.wait_for(
+                self._execute_inner(instrument, symbol, query, limit, params),
+                timeout=9.0,
+            )
+        except (asyncio.TimeoutError, TimeoutError) as exc:
+            reason = f"AV execution timed out: {exc}"
+            return FunctionResult(
+                code=self.code,
+                instrument=instrument,
+                data={
+                    "status": "provider_unavailable",
+                    "rows": [],
+                    "items": [],
+                    "query": query,
+                    "symbol": symbol,
+                    "methodology": _METHODOLOGY,
+                    "field_dictionary": _FIELD_DICTIONARY,
+                    "cards": _cards([], data_mode="not_configured"),
+                    "reason": reason,
+                    "next_actions": [
+                        "Retry once the media/filings provider is reachable.",
+                    ],
+                },
+                sources=["sec_edgar" if symbol else "podcast_rss"],
+                metadata={"provider_errors": [reason], "live": True, "data_mode": "not_configured"},
+                warnings=[reason],
+            )
 
+    async def _execute_inner(
+        self,
+        instrument: Instrument | None,
+        symbol: str,
+        query: str,
+        limit: int,
+        params: dict[str, Any],
+    ) -> FunctionResult:
         if symbol:
             return await self._symbol_archive(instrument, symbol, query, limit, params)
         return await self._podcast_archive(query, limit, params)

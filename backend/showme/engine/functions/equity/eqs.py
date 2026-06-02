@@ -92,6 +92,10 @@ def _parse_primary(tokens: list[tuple[str, str]], pos: int) -> tuple[Any, int]:
         if pos < len(tokens) and tokens[pos][0] == "RP":
             pos += 1
         return node, pos
+    if pos + 2 >= len(tokens):
+        raise ValueError(
+            f"Invalid query segment at position {pos}: expected 'field operator value'"
+        )
     field = tokens[pos][1]; pos += 1
     op = tokens[pos][1]; pos += 1
     raw = tokens[pos][1]; pos += 1

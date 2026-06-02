@@ -173,11 +173,29 @@ class TECHFunction(BaseFunction):
         macd_fast = int(params.get("macd_fast", 12))
         macd_slow = int(params.get("macd_slow", 26))
         macd_signal = int(params.get("macd_signal", 9))
-        df = await self.deps.yfinance.fetch(DataRequest(
-            kind=DataKind.OHLCV, instrument=instrument,
-            start=datetime.now(timezone.utc) - timedelta(days=days),
-            interval=params.get("interval", "1d"),
-        ))
+        try:
+            df = await self.deps.yfinance.fetch(DataRequest(
+                kind=DataKind.OHLCV, instrument=instrument,
+                start=datetime.now(timezone.utc) - timedelta(days=days),
+                interval=params.get("interval", "1d"),
+            ))
+        except Exception as exc:
+            return FunctionResult(
+                code=self.code,
+                instrument=instrument,
+                data={
+                    "status": "provider_unavailable",
+                    "rows": [],
+                    "ohlcv": [],
+                    "summary": {"symbol": instrument.symbol, "days": days},
+                    "reason": f"yfinance fetch failed: {exc}",
+                    "next_actions": [
+                        "Try again later or check symbol support.",
+                    ],
+                },
+                warnings=[f"yfinance: {exc}"],
+                sources=["yfinance"],
+            )
         if df.empty:
             return FunctionResult(
                 code=self.code,

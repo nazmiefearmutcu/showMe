@@ -48,6 +48,7 @@ import logging
 import os
 import resource
 import socket
+socket.setdefaulttimeout(9.0)
 import sys
 import threading
 from contextlib import asynccontextmanager
@@ -84,7 +85,7 @@ LOG = logging.getLogger("showme.server")
 # so legacy callers and the PyInstaller bundle can still locate engine config
 # files via SHOWME_ENGINE_ROOT.
 DEFAULT_ENGINE = (Path(__file__).resolve().parent / "engine").resolve()
-FUNCTION_TIMEOUT_SECONDS = float(os.environ.get("SHOWME_FUNCTION_TIMEOUT_SECONDS", "45"))
+FUNCTION_TIMEOUT_SECONDS = float(os.environ.get("SHOWME_FUNCTION_TIMEOUT_SECONDS", "14.0"))
 CRYPTO_SYMBOLS = set(CRYPTO_BASES)
 FX_CURRENCIES = {
     "USD",

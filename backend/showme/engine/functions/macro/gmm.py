@@ -209,7 +209,7 @@ async def _fetch_worldbank_matrix(countries: dict[str, str]) -> list[dict[str, A
         url = f"{_WB_BASE}/country/{country_param}/indicator/{ind_code}"
         resp = await client.get(
             url,
-            params={"format": "json", "per_page": "2000", "mrnev": "1"},
+            params={"format": "json", "per_page": "2000"},
         )
         resp.raise_for_status()
         payload = resp.json()

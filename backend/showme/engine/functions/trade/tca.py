@@ -93,13 +93,47 @@ class TCAFunction(BaseFunction):
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         symbol = params.get("symbol") or (instrument.symbol if instrument else None)
-        broker = params.get("broker")
         benchmark = (params.get("benchmark") or "VWAP").upper()
+        as_of = datetime.now(timezone.utc).isoformat()
+        inner_params = params.copy()
+        inner_params.pop("symbol", None)
+        inner_params.pop("benchmark", None)
+        try:
+            import asyncio
+            return await asyncio.wait_for(
+                self._execute_inner(instrument, symbol, benchmark, as_of, **inner_params),
+                timeout=9.0,
+            )
+        except (asyncio.TimeoutError, TimeoutError) as exc:
+            reason = f"TCA execution timed out: {exc}"
+            return FunctionResult(
+                code=self.code, instrument=instrument,
+                data={
+                    "status": _PROVIDER_UNAVAILABLE,
+                    "as_of": as_of,
+                    "benchmark": benchmark,
+                    "rows": [],
+                    "series": [],
+                    "cards": self._cards(summary={}, benchmark=benchmark,
+                                         as_of=as_of, data_mode="provider_unavailable"),
+                    "summary": {"benchmark": benchmark, "fill_count": 0, "reason": reason},
+                    "methodology": _METHODOLOGY,
+                    "field_dictionary": _FIELD_DICTIONARY,
+                    "next_actions": [
+                        "Retry once the intraday benchmark provider is reachable.",
+                    ],
+                },
+                sources=["bot_fills", "order_history"],
+                warnings=[reason],
+                metadata={"provider_errors": [reason]},
+            )
+
+    async def _execute_inner(self, instrument: Instrument | None, symbol: str | None, benchmark: str, as_of: str, **params: Any) -> FunctionResult:
+        broker = params.get("broker")
         try:
             limit = int(params.get("limit", 200))
         except (TypeError, ValueError):
             limit = 200
-        as_of = datetime.now(timezone.utc).isoformat()
 
         # ---- 1) Load REAL fills (bot ledger first, then manual order_history).
         fills = self._load_fills(symbol=symbol, broker=broker, limit=limit)

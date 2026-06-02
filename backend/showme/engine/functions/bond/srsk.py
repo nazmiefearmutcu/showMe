@@ -120,7 +120,7 @@ class SRSKFunction(BaseFunction):
         on a hard network failure so the caller can decide per-country.
         """
         url = f"{_WB_BASE}/country/{iso3}/indicator/{indicator}"
-        params = {"format": "json", "per_page": "8", "mrnev": "8"}
+        params = {"format": "json", "per_page": "20"}
 
         adapter = getattr(self.deps, "worldbank", None)
         if adapter is not None:
@@ -170,12 +170,22 @@ class SRSKFunction(BaseFunction):
         """
         out: dict[str, Any] = {}
         notes: list[str] = []
-        for key, indicator in _WB_INDICATORS.items():
+        keys_and_indicators = list(_WB_INDICATORS.items())
+
+        async def _fetch_one(key: str, indicator: str):
             try:
                 val, date = await self._wb_fetch_indicator(iso3, indicator)
+                return key, indicator, val, date, None
             except _WBUnavailable as exc:
-                val, date = None, None
-                notes.append(f"{indicator} fetch failed for {iso3}: {exc}")
+                return key, indicator, None, None, str(exc)
+
+        results = await asyncio.gather(*(
+            _fetch_one(k, ind) for k, ind in keys_and_indicators
+        ))
+
+        for key, indicator, val, date, err in results:
+            if err:
+                notes.append(f"{indicator} fetch failed for {iso3}: {err}")
             out[key] = val
             if date and "as_of" not in out:
                 out["as_of"] = date
@@ -218,21 +228,42 @@ class SRSKFunction(BaseFunction):
         wb_success = 0
         sources: list[str] = []
 
-        for country in countries:
+        async def _fetch_one_country(country: str):
             iso3 = _ISO2_TO_ISO3.get(country, country)
             macro: dict[str, Any] = {}
             macro_notes: list[str] = []
             wb_ok = False
+            wb_err = None
             try:
                 macro, macro_notes = await self._country_macro(iso3)
                 wb_ok = any(
                     macro.get(k) is not None for k in _WB_INDICATORS
                 )
-                if wb_ok:
-                    wb_success += 1
             except _WBUnavailable as exc:
+                wb_err = exc
+
+            target_y = None
+            fred_err = None
+            fid = sovereign_fred_ids.get(country)
+            if self.deps.fred and ust_y is not None and fid and country != "US":
+                try:
+                    target = await self.deps.fred.series(fid)
+                    target_y = float(target["value"].iloc[-1])
+                except Exception as exc:
+                    fred_err = exc
+            return country, macro, macro_notes, wb_ok, wb_err, target_y, fred_err
+
+        results = await asyncio.gather(*(_fetch_one_country(c) for c in countries))
+
+        for country, macro, macro_notes, wb_ok, wb_err, target_y, fred_err in results:
+            if wb_err:
                 wb_network_failures += 1
-                warnings.append(f"worldbank {country}: {exc}")
+                warnings.append(f"worldbank {country}: {wb_err}")
+            elif wb_ok:
+                wb_success += 1
+
+            if fred_err:
+                warnings.append(f"{country}: {fred_err}")
 
             # Build the 0-100 composite risk score from available legs.
             legs: dict[str, float | None] = {
@@ -265,14 +296,9 @@ class SRSKFunction(BaseFunction):
                         "US sovereign self-spread is zero; PD shown for completeness only "
                         "and is not a credit-risk reading"
                     )
-                else:
-                    try:
-                        target = await self.deps.fred.series(fid)
-                        target_y = float(target["value"].iloc[-1])
-                        proxy_spread = round(target_y - ust_y, 4)
-                        source_mode = "fred+worldbank" if risk_score is not None else "fred"
-                    except Exception as exc:  # pragma: no cover - key-gated
-                        warnings.append(f"{country}: {exc}")
+                elif target_y is not None:
+                    proxy_spread = round(target_y - ust_y, 4)
+                    source_mode = "fred+worldbank" if risk_score is not None else "fred"
 
             pd_1y = proxy_spread / 100 / max(0.01, (1 - recovery))
             rows.append(

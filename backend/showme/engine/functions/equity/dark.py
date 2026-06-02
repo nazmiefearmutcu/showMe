@@ -61,6 +61,24 @@ class DARKFunction(BaseFunction):
         sym = (instrument.symbol if instrument else
                params.get("symbol") or "AAPL").upper()
         try:
+            return await asyncio.wait_for(
+                self._execute_inner(instrument, **params),
+                timeout=9.0,
+            )
+        except (asyncio.TimeoutError, TimeoutError) as exc:
+            reason = f"DARK execution timed out: {exc}"
+            return FunctionResult(
+                code=self.code, instrument=instrument,
+                data=_unavailable(sym, reason, [reason]),
+                sources=["finra"],
+                warnings=[reason],
+                metadata={"provider_errors": [reason]},
+            )
+
+    async def _execute_inner(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
+        sym = (instrument.symbol if instrument else
+               params.get("symbol") or "AAPL").upper()
+        try:
             weeks = int(params.get("weeks", 8))
         except (TypeError, ValueError):
             weeks = 8
@@ -68,12 +86,28 @@ class DARKFunction(BaseFunction):
 
         provider_errors: list[str] = []
 
-        # 1) Pull FINRA weekly ATS rows (per-venue per-week).
+        # 1) Pull FINRA weekly ATS rows and yfinance weekly total volume concurrently.
         raw_rows: list[dict[str, Any]] = []
-        try:
-            raw_rows = await self._fetch_finra_ats(sym)
-        except Exception as exc:  # network / parse failure only
-            provider_errors.append(f"finra: {exc}")
+        week_total_volume: dict[str, float] = {}
+
+        async def _safe_finra():
+            try:
+                return await self._fetch_finra_ats(sym)
+            except Exception as exc:
+                provider_errors.append(f"finra: {exc}")
+                return []
+
+        async def _safe_weekly():
+            try:
+                return await self._weekly_total_volume(sym)
+            except Exception as exc:
+                provider_errors.append(f"yfinance weekly volume: {exc}")
+                return {}
+
+        raw_rows, week_total_volume = await asyncio.gather(
+            _safe_finra(),
+            _safe_weekly()
+        )
 
         if not raw_rows:
             reason = (
@@ -89,8 +123,6 @@ class DARKFunction(BaseFunction):
             )
 
         df = pd.DataFrame(raw_rows)
-        # Per-week total weekly volume from yfinance for a real dark-pool %.
-        week_total_volume = await self._weekly_total_volume(sym)
 
         # 2) Aggregate by venue (across reported weeks) and by week.
         df["ats_share_volume"] = df["ats_share_volume"].apply(lambda v: finite(v) or 0.0)
@@ -243,7 +275,7 @@ class DARKFunction(BaseFunction):
             _FINRA_WEEKLY_URL,
             json=payload,
             headers={"Accept": "application/json"},
-            timeout=20.0,
+            timeout=8.0,
         )
         resp.raise_for_status()
         body = resp.json()
@@ -259,10 +291,13 @@ class DARKFunction(BaseFunction):
         try:
             import yfinance as yf
 
-            hist = await asyncio.to_thread(
-                lambda: yf.Ticker(symbol).history(
-                    period="6mo", interval="1wk", auto_adjust=False
-                )
+            hist = await asyncio.wait_for(
+                asyncio.to_thread(
+                    lambda: yf.Ticker(symbol).history(
+                        period="6mo", interval="1wk", auto_adjust=False
+                    )
+                ),
+                timeout=4.0,
             )
             if hist is None or hist.empty or "Volume" not in hist.columns:
                 return {}

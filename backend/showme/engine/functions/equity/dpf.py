@@ -26,10 +26,13 @@ async def _weekly_total_volume(symbol: str) -> dict[str, float]:
     try:
         import yfinance as yf
 
-        hist = await asyncio.to_thread(
-            lambda: yf.Ticker(symbol).history(
-                period="6mo", interval="1wk", auto_adjust=False
-            )
+        hist = await asyncio.wait_for(
+            asyncio.to_thread(
+                lambda: yf.Ticker(symbol).history(
+                    period="6mo", interval="1wk", auto_adjust=False
+                )
+            ),
+            timeout=4.0,
         )
         if hist is None or hist.empty or "Volume" not in hist.columns:
             return {}
@@ -63,6 +66,44 @@ class DPFFunction(BaseFunction):
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         if instrument is None:
             raise ValueError("DPF requires instrument")
+        try:
+            return await asyncio.wait_for(
+                self._execute_inner(instrument, **params),
+                timeout=9.0,
+            )
+        except (asyncio.TimeoutError, TimeoutError) as exc:
+            reason = f"DPF execution timed out: {exc}"
+            weekly = recent_week_rows(instrument.symbol, int(params.get("weeks", 12)), source_mode="labelled_current_shape_model")
+            for row in weekly:
+                row["source_mode"] = "finra_ats_weekly_stale"
+                row["data_warning"] = reason
+            return FunctionResult(
+                code=self.code, instrument=instrument,
+                data={
+                    "status": "provider_unavailable",
+                    "reason": reason,
+                    "weekly": weekly,
+                    "rows": weekly,
+                    "history": weekly,
+                    "raw_rows": 0,
+                    "methodology": "DPF reports weekly FINRA ATS/off-exchange share volume and computes dark-pool percent as ATS volume divided by the REAL consolidated weekly volume from yfinance for the same week. When the real total volume is unavailable for a week, dark_pool_pct and estimated_total_volume are left null rather than fabricated. Stale FINRA snapshots are labelled provider_unavailable instead of being presented as current data.",
+                    "field_dictionary": {
+                        "weekStartDate": "FINRA reporting week start date.",
+                        "ats_share_volume": "ATS/off-exchange shares reported for the symbol.",
+                        "estimated_total_volume": "Real consolidated weekly volume (yfinance) for that week; null when unavailable.",
+                        "dark_pool_pct": "ATS share of the real total weekly volume (%); null when the real denominator is unavailable.",
+                        "source_mode": "Live FINRA row or labelled fallback shape.",
+                    },
+                    "next_actions": ["Connect or refresh FINRA ATS feed for current venue-level volume."],
+                },
+                sources=["dark_pool_model"],
+                metadata={
+                    "note": "Anonymous FINRA endpoint may rate-limit; OAuth recommended.",
+                    "provider_errors": [reason],
+                },
+            )
+
+    async def _execute_inner(self, instrument: Instrument, **params: Any) -> FunctionResult:
         weeks = int(params.get("weeks", 12))
         warnings: list[str] = []
         sources: list[str] = []

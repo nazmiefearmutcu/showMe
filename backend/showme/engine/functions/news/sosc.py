@@ -75,9 +75,13 @@ async def _gdelt_articles(symbol: str, timespan: str, maxrecords: int) -> list[d
     as a hard provider_unavailable, retry ONCE after honouring the documented
     cool-off so a quick second click (or a verification burst) still resolves.
     """
+    import time
     client = await _client()
+    t_start = time.perf_counter()
 
     async def _hit(query: str) -> list[dict[str, Any]]:
+        if time.perf_counter() - t_start > 4.0:
+            return []
         params = {
             "query": query,
             "mode": "ArtList",
@@ -88,15 +92,24 @@ async def _gdelt_articles(symbol: str, timespan: str, maxrecords: int) -> list[d
         }
         r = None
         for attempt in range(2):
-            r = await client.get(_GDELT_DOC, params=params, headers=_UA, timeout=12.0)
-            if r.status_code == 429 and attempt == 0:
-                # GDELT asks for one request / 5s; wait past the window, retry.
-                await asyncio.sleep(6.0)
-                continue
-            r.raise_for_status()
-            break
-        # GDELT returns 200 + a plain-text error (e.g. a malformed query) or an
-        # empty body when throttled; both fail JSON parse → treat as no rows.
+            if time.perf_counter() - t_start > 5.0:
+                break
+            try:
+                r = await client.get(_GDELT_DOC, params=params, headers=_UA, timeout=3.0)
+                if r.status_code == 429:
+                    if attempt == 0:
+                        await asyncio.sleep(1.0)
+                        continue
+                    else:
+                        break
+                r.raise_for_status()
+                break
+            except Exception:
+                if attempt == 1:
+                    raise
+                await asyncio.sleep(0.5)
+        if r is None:
+            return []
         try:
             payload = r.json()
         except Exception:
@@ -105,10 +118,7 @@ async def _gdelt_articles(symbol: str, timespan: str, maxrecords: int) -> list[d
         return arts if isinstance(arts, list) else []
 
     arts = await _hit(_query_for(symbol))
-    if not arts:
-        # Thinly-covered ticker: fall back to the bare symbol term (valid GDELT
-        # syntax) before giving up, so a quiet-news symbol still surfaces what
-        # coverage exists rather than reporting a false empty.
+    if not arts and (time.perf_counter() - t_start < 4.0):
         arts = await _hit(symbol.upper())
     return arts
 
@@ -203,7 +213,7 @@ class SOSCFunction(BaseFunction):
         fb = _finbert()
         if fb is not None and headlines:
             try:
-                sample = headlines[:40]
+                sample = headlines[:8]
                 results = await asyncio.to_thread(
                     lambda: [fb.analyze_text(h) for h in sample]
                 )

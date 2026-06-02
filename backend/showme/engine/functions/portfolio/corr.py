@@ -232,11 +232,11 @@ class CORRFunction(BaseFunction):
         for symbol in dropped_symbols:
             previous = coverage_status.get(symbol, {})
             coverage_status[symbol] = {
-                "status": "dropped_nan_heavy",
+                "status": "dropped_null_heavy",
                 "source": previous.get("source") or "live_provider",
                 "provider_symbol": previous.get("provider_symbol") or _provider_symbol(symbol),
                 "message": (
-                    f"Series had more than {int(NAN_DROP_THRESHOLD * 100)}% NaN rows; "
+                    f"Series had more than {int(NAN_DROP_THRESHOLD * 100)}% null rows; "
                     "removed from correlation matrix."
                 ),
             }
@@ -265,7 +265,7 @@ class CORRFunction(BaseFunction):
         if dropped_symbols:
             warnings.insert(
                 0,
-                f"Dropped {len(dropped_symbols)} NaN-heavy symbol(s): "
+                f"Dropped {len(dropped_symbols)} null-heavy symbol(s): "
                 f"{', '.join(dropped_symbols)}",
             )
         return FunctionResult(
@@ -915,7 +915,7 @@ def _drop_nan_heavy_columns(
     drop = [str(col) for col in frame.columns if col not in keep]
     if drop:
         LOG.warning(
-            "CORR dropped %d NaN-heavy column(s) above %.0f%% threshold: %s",
+            "CORR dropped %d null-heavy column(s) above %.0f%% threshold: %s",
             len(drop),
             threshold * 100,
             drop,

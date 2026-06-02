@@ -6,6 +6,7 @@ Mevcut Backtest framework'unu (sma_crossover gibi) ızgara üzerinde
 
 from __future__ import annotations
 
+import asyncio
 import itertools
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -75,8 +76,31 @@ class BTUNEFunction(BaseFunction):
         if not grid:
             return FunctionResult(code=self.code, instrument=instrument, data={},
                                   warnings=[f"no grid for {strategy}"])
-        warnings: list[str] = []
         days = int(params.get("days", 365 * 3))
+        try:
+            return await asyncio.wait_for(
+                self._execute_inner(instrument, **params),
+                timeout=9.0,
+            )
+        except (asyncio.TimeoutError, TimeoutError) as exc:
+            reason = f"BTUNE execution timed out: {exc}"
+            return FunctionResult(
+                code=self.code,
+                instrument=instrument,
+                data=_tune_template(strategy, grid),
+                sources=["local_backtest_model"],
+                warnings=[reason],
+                metadata={"days": days, "live": False, "provider_errors": [reason]},
+            )
+
+    async def _execute_inner(self, instrument: Instrument, **params: Any) -> FunctionResult:
+        strategy = params.get("strategy") or "sma_crossover"
+        grid = params.get("grid") or GRIDS.get(strategy)
+        if not grid:
+            return FunctionResult(code=self.code, instrument=instrument, data={},
+                                  warnings=[f"no grid for {strategy}"])
+        days = int(params.get("days", 365 * 3))
+        warnings: list[str] = []
         if not _truthy(params.get("live_backtest") or params.get("live")):
             return FunctionResult(
                 code=self.code,
@@ -94,6 +118,7 @@ class BTUNEFunction(BaseFunction):
                     kind=DataKind.OHLCV, instrument=instrument,
                     start=datetime.now(timezone.utc) - timedelta(days=days),
                     interval="1d",
+                    extra={"timeout": 3.0},
                 ))
         except Exception as exc:
             warnings.append(f"yfinance: {exc or type(exc).__name__}")

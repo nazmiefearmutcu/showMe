@@ -232,8 +232,15 @@ def params_for(entry: dict[str, Any], asset: str | None) -> dict[str, Any]:
     elif code == "BQL":
         sym = params.get("symbol", "AAPL")
         params["query"] = f"get(close, volume) for(['{sym}']) with(period='1mo', interval='1d') by(date)"
-    elif code in {"EQS", "SECF"}:
-        params["query"] = "marketCap > 0"
+    elif code in {"EQS", "SECF", "SRCH", "FSRC", "CSRC"}:
+        if code == "SRCH":
+            params["query"] = "yield >= 0"
+        elif code == "FSRC":
+            params["query"] = "expenseRatio < 0.05"
+        elif code == "CSRC":
+            params["query"] = 'sector = "Energy"'
+        else:
+            params["query"] = "marketCap > 0"
     elif code == "FTS":
         params["form_type"] = "8-K"
     elif code == "FLDS":
@@ -291,6 +298,8 @@ def params_for(entry: dict[str, Any], asset: str | None) -> dict[str, Any]:
             "vol": 0.35,
             "rate": 0.04,
         }]
+    elif code in {"EMSX", "BBGT", "TSOX", "FXGO"}:
+        params.update({"quantity": 1.0, "price": 100.0, "side": "BUY", "submit": True})
     return params
 
 
@@ -536,11 +545,12 @@ def main() -> int:
         "| code | asset | category | reason | ms |",
         "|---|---|---|---|---:|",
     ])
-    lines.extend(
-        f"| {r['code']} | {r['asset']} | {r['category']} | {str(r['reason']).replace('|', '\\|')} | {r['elapsed_ms']} |"
-        for r in rows
-        if r["status"] == "FAIL"
-    )
+    failures = []
+    for r in rows:
+        if r["status"] == "FAIL":
+            reason = str(r["reason"]).replace('|', '\\|')
+            failures.append(f"| {r['code']} | {r['asset']} | {r['category']} | {reason} | {r['elapsed_ms']} |")
+    lines.extend(failures)
     lines.extend([
         "",
         "## Warnings",
@@ -548,11 +558,12 @@ def main() -> int:
         "| code | asset | category | reason | ms |",
         "|---|---|---|---|---:|",
     ])
-    lines.extend(
-        f"| {r['code']} | {r['asset']} | {r['category']} | {str(r['reason']).replace('|', '\\|')} | {r['elapsed_ms']} |"
-        for r in rows
-        if r["status"] == "WARN"
-    )
+    warnings_list = []
+    for r in rows:
+        if r["status"] == "WARN":
+            reason = str(r["reason"]).replace('|', '\\|')
+            warnings_list.append(f"| {r['code']} | {r['asset']} | {r['category']} | {reason} | {r['elapsed_ms']} |")
+    lines.extend(warnings_list)
     lines.extend(["", f"Raw JSONL: {jsonl_path}"])
     summary_path.write_text("\n".join(lines), encoding="utf-8")
     print(f"python audit summary: PASS={counts['PASS']} WARN={counts['WARN']} FAIL={counts['FAIL']}")

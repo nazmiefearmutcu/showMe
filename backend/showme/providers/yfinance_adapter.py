@@ -59,7 +59,10 @@ class YfinanceAdapter(ProviderAdapter):
         """
         t0 = time.perf_counter()
         try:
-            result = await asyncio.to_thread(fn, *args, **kwargs)
+            result = await asyncio.wait_for(
+                asyncio.to_thread(fn, *args, **kwargs),
+                timeout=12.0,
+            )
         except Exception as exc:
             self._record_failure(exc)
             raise AdapterError(f"yfinance call failed: {exc}") from exc

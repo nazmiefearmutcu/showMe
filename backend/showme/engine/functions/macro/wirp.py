@@ -108,10 +108,14 @@ class WIRPFunction(BaseFunction):
         # take the whole path down — fetch the FRED legs in their own try, and
         # the (already non-raising) IRX call separately.
         try:
+            timeout = float(params.get("timeout", 8.0) or 8.0)
+        except (TypeError, ValueError):
+            timeout = 8.0
+        try:
             upper, lower, effr = await asyncio.gather(
-                _fetch_fred_latest(FRED_TARGET_UPPER_CSV),
-                _fetch_fred_latest(FRED_TARGET_LOWER_CSV),
-                _fetch_fred_latest(FRED_EFFR_CSV),
+                _fetch_fred_latest(FRED_TARGET_UPPER_CSV, timeout=timeout),
+                _fetch_fred_latest(FRED_TARGET_LOWER_CSV, timeout=timeout),
+                _fetch_fred_latest(FRED_EFFR_CSV, timeout=timeout),
             )
         except Exception as exc:  # noqa: BLE001 — FRED outage is the real failure
             upper = lower = effr = None
@@ -289,7 +293,7 @@ def _result(
 # --------------------------------------------------------------------------- #
 # Live data fetch
 # --------------------------------------------------------------------------- #
-async def _fetch_fred_latest(url: str) -> tuple[str, float] | None:
+async def _fetch_fred_latest(url: str, timeout: float = 8.0) -> tuple[str, float] | None:
     """Return the most recent ``(date, value)`` from a FRED single-series CSV.
 
     FRED CSV rows look like ``2026-05-28,4.50`` with placeholder ``.`` for
@@ -302,7 +306,7 @@ async def _fetch_fred_latest(url: str) -> tuple[str, float] | None:
     # FRED's fredgraph.csv endpoint is frequently slow to first byte; the
     # shared client's 20 s default sometimes times out on cold cache. Give it
     # a more generous budget so the live path isn't spuriously downgraded.
-    resp = await client.get(url, timeout=45.0)
+    resp = await client.get(url, timeout=timeout)
     resp.raise_for_status()
     last: tuple[str, float] | None = None
     for line in resp.text.strip().splitlines():

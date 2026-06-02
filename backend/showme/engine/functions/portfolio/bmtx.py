@@ -37,6 +37,37 @@ class BMTXFunction(BaseFunction):
             strategies = [s.strip() for s in strategies.split(",") if s.strip()]
         days = int(params.get("days", 365 * 3))
         fee_bps = float(params.get("fee_bps", 5.0))
+        try:
+            return await asyncio.wait_for(
+                self._execute_inner(instrument, **params),
+                timeout=9.0,
+            )
+        except (asyncio.TimeoutError, TimeoutError) as exc:
+            reason = f"BMTX execution timed out: {exc}"
+            return FunctionResult(
+                code=self.code,
+                instrument=instrument,
+                data=_matrix_template(symbols, strategies),
+                sources=["local_backtest_model"],
+                warnings=[reason],
+                metadata={"days": days, "fee_bps": fee_bps, "live": False, "provider_errors": [reason]},
+            )
+
+    async def _execute_inner(
+        self,
+        instrument: Instrument | None = None,
+        **params: Any,
+    ) -> FunctionResult:
+        symbols = params.get("symbols") or [
+            "SPY", "QQQ", "IWM", "AAPL", "MSFT", "TSLA", "NVDA", "AMZN",
+        ]
+        if isinstance(symbols, str):
+            symbols = [s.strip() for s in symbols.split(",") if s.strip()]
+        strategies = params.get("strategies") or list(STRATEGY_REGISTRY.keys())
+        if isinstance(strategies, str):
+            strategies = [s.strip() for s in strategies.split(",") if s.strip()]
+        days = int(params.get("days", 365 * 3))
+        fee_bps = float(params.get("fee_bps", 5.0))
         sources = ["yfinance"]
         if not _truthy(params.get("live_backtest") or params.get("live")):
             return FunctionResult(
