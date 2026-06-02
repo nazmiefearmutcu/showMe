@@ -597,33 +597,40 @@ class DEBTFunction(BaseFunction):
         started = time.monotonic()
         rows: list[dict[str, Any]] = []
         any_error: Exception | None = None
+        import asyncio
         try:
             client = await get_client()
-            for iso2 in normalised:
+
+            async def _fetch_one(iso2: str) -> dict[str, Any] | None:
                 iso3 = _ISO2_TO_ISO3.get(iso2)
                 if not iso3:
-                    continue
+                    return None
                 try:
                     r = await client.get(
                         _WORLDBANK_URL.format(iso=iso3, code=_WB_DEBT_TO_GDP),
                         params={"format": "json", "per_page": "60"},
+                        timeout=4.0,
                     )
                     r.raise_for_status()
                     payload = r.json()
                 except Exception as exc:  # noqa: BLE001 — per-country tolerant
+                    nonlocal any_error
                     any_error = exc
-                    continue
+                    return None
                 series = payload[1] if isinstance(payload, list) and len(payload) > 1 and isinstance(payload[1], list) else []
                 latest = next((obs for obs in series if obs.get("value") is not None), None)
                 if latest is None:
-                    continue
-                rows.append({
+                    return None
+                return {
                     "country": iso2,
                     "debt_to_gdp": round(float(latest["value"]), 2),
                     "local_currency_share": self._LOCAL_CCY_REF.get(iso2, 0.0),
                     "portfolio_weight_pct": 0.0,
                     "year": latest.get("date"),
-                })
+                }
+
+            results = await asyncio.gather(*(_fetch_one(iso2) for iso2 in normalised))
+            rows = [r for r in results if r is not None]
         except Exception as exc:  # noqa: BLE001
             any_error = exc
 
