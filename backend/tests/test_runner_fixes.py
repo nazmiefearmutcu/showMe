@@ -251,6 +251,45 @@ async def test_s1_exit_fallback_when_broker_lacks_close_position(monkeypatch, tm
     assert kwargs["quantity"] == pytest.approx(0.5)
 
 
+@pytest.mark.asyncio
+async def test_s1_exit_fallback_partial_fill_uses_persisted_qty(monkeypatch, tmp_path):
+    """Exit fallback must use the entry's actual filled qty to close the position
+    in case of partial fills."""
+    sid = _save_strategy_for_exit(tmp_path, monkeypatch,
+                                   sizing_kind="fixed_base", sizing_value=0.5,
+                                   side="long")
+    broker = _register_fake_broker("c-s1f-pf", include_close_position=False)
+    store = BotStore(tmp_path / "bots")
+    from showme.bots.record import SignalEntry
+
+    # Simulating a partial fill on entry (only 0.2 units filled out of 0.5 requested)
+    entry_event = SignalEntry(
+        bar_index=0, bar_time="2026-05-22 00:00:00+00:00",
+        kind="entry", price=101.0, action="placed", qty=0.2,
+    )
+
+    bot = store.save(BotRecord(
+        strategy_id=sid, credential_id="c-s1f-pf", exchange_id="binance",
+        symbol="BTC/USDT", enabled=True, mode="live",
+        last_processed_event=entry_event,
+        signal_log=[entry_event],
+    ))
+    monkeypatch.setattr(
+        "showme.bots.runner.fetch_ohlcv",
+        AsyncMock(side_effect=lambda *a, **k: _exit_df()),
+    )
+
+    runner = BotRunner()
+    signal = await runner.tick(bot.id, store)
+    assert signal is not None
+    assert signal.kind == "exit"
+    assert signal.action == "placed"
+
+    # Fallback path must use the persisted entry qty of 0.2 instead of re-resolving to 0.5.
+    args, kwargs = broker.submit_order.call_args
+    assert kwargs["quantity"] == pytest.approx(0.2)
+
+
 # ── S2: sizing_value branches on sizing_kind ─────────────────────────────
 
 

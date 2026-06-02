@@ -94,7 +94,7 @@ class BotStore:
                 LOG.warning("skip corrupt %s: %s", f.name, exc)
                 continue
             out.append(BotMeta(
-                id=d.get("id") or f.stem,
+                id=f.stem,
                 strategy_id=d.get("strategy_id") or "",
                 credential_id=d.get("credential_id") or "",
                 exchange_id=d.get("exchange_id") or "",
@@ -111,7 +111,14 @@ class BotStore:
         p = self._path(bot_id)
         if not p.exists():
             raise UnknownBot(bot_id)
-        return BotRecord.from_json(p.read_text())
+        rec = BotRecord.from_json(p.read_text())
+        if rec.id != bot_id:
+            rec = rec.model_copy(update={"id": bot_id})
+            try:
+                self.save(rec)
+            except Exception as exc:  # noqa: BLE001
+                LOG.warning("auto-heal failed for bot %s: %s", bot_id, exc)
+        return rec
 
     def save(self, rec: BotRecord) -> BotRecord:
         p = self._path(rec.id)

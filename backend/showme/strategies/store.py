@@ -89,7 +89,7 @@ class StrategyStore:
                 LOG.warning("skip corrupt %s: %s", f.name, exc)
                 continue
             out.append(StrategyMeta(
-                id=d.get("id") or f.stem,
+                id=f.stem,
                 name=d.get("name") or "",
                 description=d.get("description") or "",
                 timeframe=d.get("timeframe") or "1h",
@@ -102,7 +102,14 @@ class StrategyStore:
         p = self._path(strategy_id)
         if not p.exists():
             raise UnknownStrategy(strategy_id)
-        return StrategySpec.from_json(p.read_text())
+        spec = StrategySpec.from_json(p.read_text())
+        if spec.id != strategy_id:
+            spec = spec.model_copy(update={"id": strategy_id})
+            try:
+                self.save(spec)
+            except Exception as exc:  # noqa: BLE001
+                LOG.warning("auto-heal failed for strategy %s: %s", strategy_id, exc)
+        return spec
 
     def save(self, spec: StrategySpec) -> StrategySpec:
         p = self._path(spec.id)

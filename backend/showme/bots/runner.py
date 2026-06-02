@@ -806,9 +806,13 @@ class BotRunner:
             opposite_side = (
                 OrderSide.SELL if strategy_side == "long" else OrderSide.BUY
             )
-            qty = await _resolve_quantity_async(
-                spec, df, broker, leverage=float(rec.leverage),
-            )
+            matching_entry = _last_non_skipped_entry(rec.signal_log)
+            if matching_entry is not None and matching_entry.qty is not None and matching_entry.qty > 0:
+                qty = matching_entry.qty
+            else:
+                qty = await _resolve_quantity_async(
+                    spec, df, broker, leverage=float(rec.leverage),
+                )
             qty = await _round_qty_to_precision(broker, rec.symbol, qty)
             return await broker.submit_order(
                 symbol=rec.symbol,

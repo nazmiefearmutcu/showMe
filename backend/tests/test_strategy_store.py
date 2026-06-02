@@ -66,3 +66,27 @@ def test_fresh_uses_app_home(monkeypatch, tmp_path):
     store = StrategyStore.fresh()
     s = store.save(_spec())
     assert (tmp_path / "strategies" / f"{s.id}.json").exists()
+
+
+def test_strategy_store_auto_heal(store: StrategyStore):
+    spec = _spec("to-rename")
+    saved = store.save(spec)
+
+    old_path = store._path(saved.id)
+    new_id = "renamed_strategy"
+    new_path = store._path(new_id)
+    old_path.rename(new_path)
+
+    # list() should return the new filename stem as the authoritative ID
+    lst = store.list()
+    assert len(lst) == 1
+    assert lst[0].id == new_id
+
+    # get() should auto-heal the internal spec's id and persist it
+    got = store.get(new_id)
+    assert got.id == new_id
+
+    # Confirm it was persisted to disk with the new ID
+    import json
+    data = json.loads(new_path.read_text())
+    assert data["id"] == new_id
