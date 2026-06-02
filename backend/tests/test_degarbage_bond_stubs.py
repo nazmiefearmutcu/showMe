@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import asyncio
 
-import pytest
 
 from showme.engine.core.instrument import AssetClass, Instrument
 from showme.engine.functions.bond._stubs import (

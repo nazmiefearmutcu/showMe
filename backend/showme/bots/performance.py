@@ -30,7 +30,6 @@ import numpy as np
 
 from showme.bots.record import ClosedTrade, SignalEntry
 from showme.strategies.sizing import (
-    DEFAULT_COMMISSION_RATE,
     Side,
     SizingKind,
     compute_commission,

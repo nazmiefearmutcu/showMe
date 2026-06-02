@@ -10,7 +10,6 @@ import {
 import { useAppStore } from "@/lib/store";
 import type { FunctionEntry } from "@/lib/sidecar";
 import { navigate, useRoute } from "@/lib/router";
-import { listNativeCodes } from "@/functions/registry";
 import { t } from "@/i18n";
 import { listRecentCodes } from "@/lib/palette-recents";
 import {
@@ -238,7 +237,7 @@ export function Sidebar() {
           ? "PREF"
           : "";
   const activePath = routeToPath(route);
-  const nativeCodes = useMemo(() => new Set(listNativeCodes()), []);
+  const nativeCodes = useMemo(() => new Set(index.map((e) => e.code)), [index]);
   // QA-2026-05-23: Recent group is sourced from `palette-recents.ts`. We
   // re-read on each route change because `RouteSync` in App.tsx records a
   // new code synchronously during the same React commit cycle.

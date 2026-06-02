@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import asyncio
 
-import pytest
 
 from showme.engine.functions.portfolio.bmtx import BMTXFunction
 from showme.engine.functions.portfolio.port_opt import PortOptFunction

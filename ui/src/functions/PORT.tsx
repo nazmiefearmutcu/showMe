@@ -718,13 +718,18 @@ export function PORTPane({ code }: FunctionPaneProps) {
         title="Empty portfolio"
         body={
           data?.data?.next_actions?.[0] ??
-          "No local positions are attached to this runtime."
+          "No local positions are attached to this runtime. Connect a broker account or use Portfolio What-If to simulate trades."
         }
         icon="∅"
         action={
-          <button type="button" className="btn btn--accent" onClick={() => navigate("/fn/PORT_WHATIF")}>
-            Open What-If
-          </button>
+          <div style={{ display: "flex", gap: "8px" }}>
+            <button type="button" className="btn btn--accent" onClick={() => navigate("/fn/CONN")}>
+              Connect Broker
+            </button>
+            <button type="button" className="btn" onClick={() => navigate("/fn/PORT_WHATIF")}>
+              Open What-If
+            </button>
+          </div>
         }
       />
     ) : (

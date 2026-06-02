@@ -39,7 +39,7 @@ import { listTrades, type StateTrade } from "@/lib/state";
 import { useVisibilityTick } from "@/lib/useVisibilityTick";
 import { useWorkspace } from "@/lib/workspace";
 import { navigate } from "@/lib/router";
-import { buildTradeCsv } from "./TRAN.csv";
+import { buildTradeCsv } from "./TXNS.csv";
 import {
   FunctionControlGroup,
   LoadStatePill,
@@ -55,10 +55,10 @@ import type { FunctionPaneProps } from "./registry-types";
 
 const REFRESH_MS = 60_000;
 
-export function TRANPane({ code, symbol }: FunctionPaneProps) {
+export function TXNSPane({ code, symbol }: FunctionPaneProps) {
   const [filter, setFilter] = useState(symbol ?? "");
   const [limit, setLimit] = usePersistentOption<RowLimit>(
-    "showme.tran-limit",
+    "showme.txns-limit",
     ROW_LIMITS,
     200,
   );

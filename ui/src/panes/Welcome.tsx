@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
 import { Pill, Skeleton, Sparkline } from "@/design-system";
-import { listNativeCodes } from "@/functions/registry";
 import { navigate } from "@/lib/router";
 import { useSentimentStore } from "@/lib/sentiment-store";
 import type { FunctionEntry } from "@/lib/sidecar";
@@ -337,7 +336,7 @@ export function Welcome() {
   const engineRoot = useAppStore((s) => s.engineRoot);
   const port = useAppStore((s) => s.sidecarPort);
   const index = useAppStore((s) => s.functionIndex);
-  const nativeCodes = useMemo(() => new Set(listNativeCodes()), []);
+  const nativeCodes = useMemo(() => new Set(index.map((e) => e.code)), [index]);
   const functionByCode = useMemo(
     () => new Map(index.map((entry) => [entry.code, entry])),
     [index],

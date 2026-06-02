@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import pytest
 
-import showme.portfolio_aggregate as pa
 from showme.portfolio_aggregate import (
     STABLE_DEPEG_THRESHOLD,
     _compute_totals,

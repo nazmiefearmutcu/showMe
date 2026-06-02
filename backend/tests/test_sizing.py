@@ -11,7 +11,6 @@ Bugs blocked by these tests:
 """
 from __future__ import annotations
 
-import math
 
 import pytest
 

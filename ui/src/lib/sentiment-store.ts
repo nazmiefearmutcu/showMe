@@ -59,12 +59,16 @@ export const useSentimentStore = create<SentimentStoreShape>((set, get) => ({
   _inflight: null,
 
   refresh: async (symbols: string[]) => {
+    const cleanedSymbols = Array.isArray(symbols)
+      ? symbols.map((sym) => sym.replace(/[^A-Za-z0-9._:=-]/g, "")).filter(Boolean)
+      : [];
+
     // CRITICAL FIX (audit S6): when called with an empty watchlist (cold
     // boot / user cleared every pin), we used to flip loading=true → false
     // every 60s for nothing, which made the gauge skeleton blink. Bail
     // EARLY without touching `loading` so the panel stays at its current
     // visual state (neutral baseline).
-    if (!Array.isArray(symbols) || symbols.length === 0) {
+    if (cleanedSymbols.length === 0) {
       // Make sure we don't leak an in-flight controller from a previous
       // non-empty call either — abort + clear so the next refresh sees a
       // clean slate.
@@ -87,7 +91,7 @@ export const useSentimentStore = create<SentimentStoreShape>((set, get) => ({
       // Fan out; tolerate per-symbol failures so one dead ticker doesn't kill
       // the whole aggregate.
       const results = await Promise.allSettled(
-        symbols.map((sym) =>
+        cleanedSymbols.map((sym) =>
           sidecarFetch<XSymbolChip>(
             `/api/x/symbol_chip?symbol=${encodeURIComponent(sym)}`,
             { signal: controller.signal },

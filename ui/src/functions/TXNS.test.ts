@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildTradeCsv } from "./TRAN.csv";
+import { buildTradeCsv } from "./TXNS.csv";
 import type { StateTrade } from "@/lib/state";
 
 const sample: StateTrade[] = [
@@ -27,7 +27,7 @@ const sample: StateTrade[] = [
   },
 ];
 
-describe("TRAN buildTradeCsv", () => {
+describe("TXNS buildTradeCsv", () => {
   it("emits the canonical header row", () => {
     const lines = buildTradeCsv([]).split("\n");
     expect(lines[0]).toBe(

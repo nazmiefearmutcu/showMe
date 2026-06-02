@@ -16,11 +16,9 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
 
-import pytest
 
 from showme.engine.core.base_data_source import DataKind, DataRequest
 from showme.engine.core.instrument import AssetClass, Instrument
-from showme.engine.data_sources.equity import finnhub_adapter
 from showme.engine.data_sources.equity.finnhub_adapter import (
     FinnhubAdapter,
     _ensure_utc,

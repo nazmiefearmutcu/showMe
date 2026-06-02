@@ -9,7 +9,6 @@ belongs in the auxiliary tray, not the finance-first workspace default.
 from __future__ import annotations
 
 from ..enums import (
-    AssetClass,
     Category,
     ControlKind,
     DataMode,

@@ -121,9 +121,6 @@ function resolveSignalCount(
 function BotTable() {
   const bots = useBotsSupervisionStore((s) => s.bots);
   const feed = useBotsSupervisionStore((s) => s.feed);
-  if (bots.length === 0) {
-    return <div style={{ padding: 16, color: "var(--fg-2)" }}>Henüz bot yok.</div>;
-  }
   // UA-HIGH-19: memoize byBot so the per-row map() loop doesn't rebuild this
   // index on every render unrelated to the feed (e.g. parent KPI strip
   // ticking the polling clock).
@@ -134,6 +131,9 @@ function BotTable() {
     }
     return acc;
   }, [feed]);
+  if (bots.length === 0) {
+    return <div style={{ padding: 16, color: "var(--fg-2)" }}>Henüz bot yok.</div>;
+  }
   return (
     <table style={{ width: "100%", fontSize: 12, marginTop: 8 }}>
       <thead>

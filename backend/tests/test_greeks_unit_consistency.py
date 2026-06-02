@@ -29,8 +29,8 @@ if str(ENGINE) not in sys.path:
 
 from showme.engine.services.greeks import (  # noqa: E402
     DAYS_PER_YEAR, RHO_BPS, VEGA_VOL_PT, aggregate_book, bs_call_price,
-    bs_delta_call, bs_gamma, bs_rho_call, bs_rho_put, bs_theta_call,
-    bs_theta_put, bs_vega, position_greeks,
+    bs_delta_call, bs_gamma, bs_rho_call, bs_theta_call,
+    bs_vega, position_greeks,
 )
 from showme.engine.functions.derivative.ovme import _bs_price  # noqa: E402
 

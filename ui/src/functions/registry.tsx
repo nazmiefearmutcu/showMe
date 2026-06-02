@@ -87,6 +87,7 @@ const AIMPane = lazy(() => import("./AIM").then((m) => ({ default: m.AIMPane }))
 const TCAPane = lazy(() => import("./TCA").then((m) => ({ default: m.TCAPane })));
 const SATPane = lazy(() => import("./SAT").then((m) => ({ default: m.SATPane })));
 const POLYPane = lazy(() => import("./POLY").then((m) => ({ default: m.POLYPane })));
+const TXNSPane = lazy(() => import("./TXNS").then((m) => ({ default: m.TXNSPane })));
 
 const PANES: Record<string, PaneComponent> = {
   AGENT: AGENTPane,
@@ -172,6 +173,8 @@ const PANES: Record<string, PaneComponent> = {
   TCA: TCAPane,
   SAT: SATPane,
   POLY: POLYPane,
+  // Trade Blotter bespoke pane
+  TXNS: TXNSPane,
 };
 
 const NATIVE_FUNCTION_ENTRIES: FunctionEntry[] = [
@@ -274,6 +277,12 @@ const NATIVE_FUNCTION_ENTRIES: FunctionEntry[] = [
     category: "news",
     description:
       "Account-free X scrape + fine-tuned RoBERTa (sentiment / emotion / topic) with a bullish score, examples, and INSTANT feed contribution.",
+  },
+  {
+    code: "TXNS",
+    name: "Trade Blotter",
+    category: "portfolio",
+    description: "Bloomberg-grade transaction ledger showing realized P&L and metrics.",
   },
 ];
 

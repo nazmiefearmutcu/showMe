@@ -11,7 +11,6 @@ Pin:
 
 from __future__ import annotations
 
-import math
 import sys
 from pathlib import Path
 

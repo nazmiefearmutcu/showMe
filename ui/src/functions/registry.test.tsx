@@ -29,12 +29,16 @@ describe("function pane registry", () => {
     expect(resolvePane("TECH")).toBeNull();
   });
 
-  it("treats CN as an alias for NI (Round 24)", () => {
-    expect(resolvePane("CN")).toBe(resolvePane("NI"));
+  it("resolves TXNS to the Trade Blotter pane", () => {
+    expect(resolvePane("TXNS")).toBeTruthy();
   });
 
   it("lets TRAN fall back to the earnings transcript function", () => {
     expect(resolvePane("TRAN")).toBeNull();
+  });
+
+  it("treats CN as an alias for NI (Round 24)", () => {
+    expect(resolvePane("CN")).toBe(resolvePane("NI"));
   });
 
   it("adds native-only panes to a backend function index", () => {
@@ -58,11 +62,11 @@ describe("function pane registry", () => {
   });
 });
 
-describe("155-function merged catalog invariant", () => {
+describe("156-function merged catalog invariant", () => {
   // The static index ships 141 codes from the backend catalog; the native
-  // registry contributes 14 codes not in the static index (AGENT, ASK,
+  // registry contributes 15 codes not in the static index (AGENT, ASK,
   // BDA, BOT, BOTS, CONN, INDX, INSTANT, MIS, PERF, STRA, TMPL, WATCH,
-  // XSEN — CN overlaps and is dedup'd). Total 155. This is the contract
+  // XSEN, TXNS — CN overlaps and is dedup'd). Total 156. This is the contract
   // the sidebar, command palette, and FunctionStub fallback all depend
   // on. CONN was added in T9 of the multi-exchange portfolio foundation;
   // INDX was added in F4 of the indicator-depot sub-system; STRA was
@@ -70,16 +74,16 @@ describe("155-function merged catalog invariant", () => {
   // bot sub-system; TMPL was added in G3 of the template-bot library
   // sub-system; BOTS was added in H2 of the bot-supervision sub-system;
   // PERF was added in I2 of the cumulative-performance sub-system; BDA
-  // was added in J1 of the NL-assistant sub-system. All are native
-  // panes with no backend-side stub fallback.
-  const NATIVE_ONLY = ["AGENT", "ASK", "BDA", "BOT", "BOTS", "CONN", "INDX", "INSTANT", "MIS", "PERF", "STRA", "TMPL", "WATCH", "XSEN"];
+  // was added in J1 of the NL-assistant sub-system; TXNS was added to clear
+  // collision with TRAN. All are native panes with no backend-side stub fallback.
+  const NATIVE_ONLY = ["AGENT", "ASK", "BDA", "BOT", "BOTS", "CONN", "INDX", "INSTANT", "MIS", "PERF", "STRA", "TMPL", "WATCH", "XSEN", "TXNS"];
 
   it("static index is exactly 141 entries", () => {
     expect(STATIC_FUNCTION_INDEX).toHaveLength(141);
   });
 
-  it("merged catalog is exactly 155 entries", () => {
-    expect(mergeNativeFunctionIndex(STATIC_FUNCTION_INDEX)).toHaveLength(155);
+  it("merged catalog is exactly 156 entries", () => {
+    expect(mergeNativeFunctionIndex(STATIC_FUNCTION_INDEX)).toHaveLength(156);
   });
 
   it("every native-only entry is appended after merge", () => {

@@ -255,6 +255,7 @@ export function PortfolioAnalyticsPane({ code, symbol }: FunctionPaneProps) {
         columns={columns}
         metrics={metrics}
         warnings={warnings}
+        refetch={refetch}
       />
     );
 
@@ -443,6 +444,7 @@ function PortfolioAnalyticsView({
   columns,
   metrics,
   warnings,
+  refetch,
 }: {
   code: string;
   payload: PortfolioPayload | undefined;
@@ -450,16 +452,79 @@ function PortfolioAnalyticsView({
   columns: DataGridColumn<Row>[];
   metrics: Array<{ key: string; label: string; value: unknown }>;
   warnings: string[];
+  refetch: () => void;
 }) {
   const nextActions = payload?.next_actions ?? [];
   const emptyReason = payload?.reason ?? nextActions[0];
 
-  if (rows.length === 0 && metrics.length === 0) {
+  const isStatusEmptyOrError =
+    payload?.status === "ready_no_positions" ||
+    payload?.status === "input_error" ||
+    payload?.status === "input_required" ||
+    payload?.status === "empty" ||
+    payload?.status === "empty_portfolio" ||
+    payload?.status === "not_configured" ||
+    payload?.status === "provider_unavailable";
+
+  if (rows.length === 0 || isStatusEmptyOrError) {
+    let title = "No data available";
+    let icon = "∅";
+    let body = emptyReason ?? "This portfolio function returned no data.";
+    let action: React.ReactNode = null;
+
+    if (
+      payload?.status === "ready_no_positions" ||
+      payload?.status === "empty_portfolio" ||
+      payload?.status === "empty" ||
+      (!payload?.status && rows.length === 0)
+    ) {
+      title = "No portfolio positions";
+      icon = "∅";
+      body = emptyReason ?? "You do not have any open positions in your portfolio. Connect a broker account or use Portfolio What-If to simulate trades.";
+      action = (
+        <div className="empty-actions" style={{ display: "flex", gap: "8px" }}>
+          <button type="button" className="btn btn--accent" onClick={() => navigate("/fn/CONN")}>
+            Connect Broker
+          </button>
+          <button type="button" className="btn" onClick={() => navigate("/fn/PORT_WHATIF")}>
+            Open What-If
+          </button>
+        </div>
+      );
+    } else if (payload?.status === "input_error") {
+      title = "Invalid Parameters";
+      icon = "!";
+      body = emptyReason ?? "Please check the input parameters and try again.";
+    } else if (payload?.status === "input_required") {
+      title = "Input Required";
+      icon = "⌖";
+      body = emptyReason ?? "This function requires additional inputs to run.";
+    } else if (payload?.status === "provider_unavailable") {
+      title = "Provider Unavailable";
+      icon = "!";
+      body = emptyReason ?? "The required data provider is currently offline or unavailable. Please check your credentials or try again later.";
+      action = (
+        <button type="button" className="btn btn--accent" onClick={() => refetch()}>
+          Retry
+        </button>
+      );
+    } else if (payload?.status === "not_configured") {
+      title = "Not Configured";
+      icon = "⚙️";
+      body = emptyReason ?? "This function has not been configured yet.";
+      action = (
+        <button type="button" className="btn btn--accent" onClick={() => navigate("/fn/CONN")}>
+          Configure Connection
+        </button>
+      );
+    }
+
     return (
       <Empty
-        title={payload?.status === "ready_no_positions" ? "No portfolio positions" : "No rows"}
-        body={emptyReason ?? "This portfolio function returned no tabular data."}
-        icon="∅"
+        title={title}
+        body={body}
+        icon={icon}
+        action={action}
       />
     );
   }
@@ -883,6 +948,10 @@ function isLowSignalKey(key: string): boolean {
     "sources",
     "metadata",
     "live_fetch_errors",
+    "status",
+    "reason",
+    "error",
+    "message",
   ].includes(key);
 }
 

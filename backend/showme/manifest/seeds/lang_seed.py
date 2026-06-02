@@ -8,7 +8,6 @@ the change to subscribers via the i18n bus.
 from __future__ import annotations
 
 from ..enums import (
-    AssetClass,
     Category,
     ControlKind,
     DataMode,

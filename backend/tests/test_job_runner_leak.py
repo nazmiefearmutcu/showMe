@@ -7,9 +7,7 @@ without context-management, so a crash mid-execution would leak both.
 
 from __future__ import annotations
 
-import os
 import sys
-import tempfile
 from pathlib import Path
 
 import pytest

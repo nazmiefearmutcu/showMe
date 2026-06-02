@@ -9,7 +9,6 @@ calls go through the Tauri biometric bridge.
 from __future__ import annotations
 
 from ..enums import (
-    AssetClass,
     Category,
     ControlKind,
     DataMode,

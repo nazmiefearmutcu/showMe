@@ -22,6 +22,8 @@ import {
 } from "./Welcome";
 import { useAppStore } from "@/lib/store";
 import { useSentimentStore } from "@/lib/sentiment-store";
+import type { QuoteView, NormalizedTick } from "@/lib/market-data";
+import type { QuoteSnapshot } from "@/lib/quotes";
 
 // Default-no-op useFunction prevents jsdom from chasing the sidecar.
 vi.mock("@/lib/useFunction", () => ({
@@ -100,7 +102,7 @@ describe("Welcome KPI strip — live quotes + per-tile DEMO", () => {
         symbol: "BTC/USDT",
         price: 78421,
         changePct: 1.42,
-      } as any,
+      } as unknown as QuoteView,
     });
     expect(overlaid[0]!.demo).toBe(false);
     expect(overlaid[0]!.value).toBe("78421.00");
@@ -135,9 +137,9 @@ describe("Welcome watchlist — empty state + CTA", () => {
           symbol: "AAPL",
           price: 308.82,
           changePct: 1.42,
-          lastTick: { bid: 308.8, ask: 308.84 } as any,
+          lastTick: { bid: 308.8, ask: 308.84 } as unknown as NormalizedTick,
           snapshot: null,
-        } as any,
+        } as unknown as QuoteView,
       },
     );
     expect(rows).toHaveLength(1);
@@ -173,9 +175,9 @@ describe("Welcome watchlist — empty state + CTA", () => {
           symbol: "NVDA",
           price: 1100,
           changePct: -1.5,
-          lastTick: { bid: 1099.95, ask: 1100.05 } as any,
-          snapshot: { volume: 3500000, asset_class: "EQUITY" } as any,
-        } as any,
+          lastTick: { bid: 1099.95, ask: 1100.05 } as unknown as NormalizedTick,
+          snapshot: { volume: 3500000, asset_class: "EQUITY" } as unknown as QuoteSnapshot,
+        } as unknown as QuoteView,
       },
     );
     expect(rows[0]!.bid).toBe("1099.95");
@@ -201,7 +203,7 @@ describe("Welcome movers — buildMovers contract", () => {
     const out = buildMovers({
       rows: [
         { symbol: "AAA", last: 10, change_pct: 1.2 },
-        { symbol: "BBB", last: null as any, change_pct: 0.5 },
+        { symbol: "BBB", last: null as unknown as number, change_pct: 0.5 },
         { symbol: "", last: 5, change_pct: -1 },
         { symbol: "CCC", last: 50 },
         { symbol: "DDD", last: 50, change_pct: NaN },
