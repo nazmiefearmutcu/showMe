@@ -238,6 +238,43 @@ def test_put_strips_other_runtime_state_fields(client, seeded):
     assert body["enabled"] is False  # preserved from existing record
     assert body["last_processed_event"] is None
     assert body["created_at"] != "1970-01-01T00:00:00Z"
+    # The client-supplied mock is ignored, and the existing (empty) list is preserved.
+    assert body["closed_trades_log"] == []
+
+
+def test_put_preserves_closed_trades_log(client, seeded):
+    """PUT must preserve the bot's existing closed_trades_log history."""
+    from showme.bots.store import BotStore
+    from showme.bots.record import ClosedTrade
+    r = client.post("/api/bots", json=seeded)
+    bid = r.json()["id"]
+
+    # Directly inject an existing closed trade into the store
+    store = BotStore.fresh()
+    rec = store.get(bid)
+    trade = ClosedTrade(
+        entry_timestamp="2026-05-22T09:00:00Z",
+        exit_timestamp="2026-05-22T09:05:00Z",
+        entry_price=100.0,
+        exit_price=105.0,
+        qty=1.0,
+        side="long",
+        pnl=5.0,
+        bar_index_entry=10,
+        bar_index_exit=15,
+    )
+    rec.closed_trades_log.append(trade)
+    store.save(rec)
+
+    # Now execute a PUT update (e.g. changing symbol)
+    p = client.put(
+        f"/api/bots/{bid}",
+        json={**seeded, "symbol": "ETH/USDT"},
+    )
+    assert p.status_code == 200, p.text
+    body = p.json()
+    assert len(body["closed_trades_log"]) == 1
+    assert body["closed_trades_log"][0]["pnl"] == 5.0
 
 
 def test_negative_sizing_rejected_at_route(client):

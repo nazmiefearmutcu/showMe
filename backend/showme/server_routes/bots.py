@@ -320,6 +320,7 @@ def register(app: FastAPI, deps: AppDeps) -> None:
         # Re-attach the server-side runtime state from the existing record.
         # Clients never set these directly anymore.
         payload["signal_log"] = [e.model_dump() for e in existing.signal_log]
+        payload["closed_trades_log"] = [e.model_dump() for e in existing.closed_trades_log]
         payload["last_processed_event"] = (
             existing.last_processed_event.model_dump()
             if existing.last_processed_event else None

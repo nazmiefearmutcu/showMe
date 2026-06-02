@@ -71,6 +71,20 @@ def _ensure_catalog() -> None:
         LOG.warning("catalog load failed: %s", exc)
 
 
+def _evict_and_close(name: str) -> None:
+    """Pop a broker from the live registry and schedule its aclose() if active."""
+    broker = _LIVE.pop(name, None)
+    if broker is not None:
+        close = getattr(broker, "aclose", None)
+        if close is not None:
+            try:
+                import asyncio
+                loop = asyncio.get_running_loop()
+                loop.create_task(close())
+            except RuntimeError:
+                pass
+
+
 def register_broker(name: str, factory: Callable[[], BaseBroker]) -> None:
     """Register ``factory`` under ``name`` so :func:`get_broker` can look it up.
 
@@ -80,7 +94,7 @@ def register_broker(name: str, factory: Callable[[], BaseBroker]) -> None:
     (re-register with new secrets) or when tests swap a fixture.
     """
     _REGISTRY[name] = factory
-    _LIVE.pop(name, None)
+    _evict_and_close(name)
 
 
 def list_brokers() -> list[str]:
@@ -163,7 +177,7 @@ def unregister_credential(credential_id: str) -> bool:
     if name is None:
         return False
     _REGISTRY.pop(name, None)
-    _LIVE.pop(name, None)
+    _evict_and_close(name)
     for hook in _INVALIDATION_HOOKS:
         try:
             hook(credential_id)

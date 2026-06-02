@@ -104,6 +104,23 @@ def test_unregister_credential_evicts_cache():
     assert "binance:c1" not in factory_mod._LIVE
 
 
+@pytest.mark.asyncio
+async def test_unregister_credential_calls_aclose():
+    """unregister_credential must call aclose() on the evicted broker."""
+    import asyncio
+    from unittest.mock import AsyncMock
+    from showme.brokers import factory as factory_mod
+
+    mock_broker = AsyncMock()
+    factory_mod.register_broker("binance:c2", lambda: mock_broker)
+    factory_mod._DYNAMIC["c2"] = "binance:c2"
+    factory_mod.get_broker("binance:c2")
+
+    factory_mod.unregister_credential("c2")
+    await asyncio.sleep(0.01)
+    mock_broker.aclose.assert_called_once()
+
+
 # ── C-API-2: bollinger std_dev alias ────────────────────────────────────
 
 

@@ -10,7 +10,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 def _now_iso() -> str:
@@ -71,6 +71,25 @@ class Position(BaseModel):
     # protective direction for the side).
     entry_order_type: Literal["market", "limit", "stop_limit"] = "market"
     limit_price_offset_pct: float = 0.0  # for limit / stop_limit entries
+
+    @model_validator(mode="after")
+    def _validate_position(self) -> Position:
+        import math
+        if not math.isfinite(self.sizing_value) or self.sizing_value <= 0:
+            raise ValueError("sizing_value must be a finite positive number")
+        if self.sizing_kind in ("risk_pct", "risk_per_trade"):
+            if not (0.0 < self.sizing_value <= 100.0):
+                raise ValueError(f"{self.sizing_kind} sizing_value must be in (0, 100]")
+        if self.sizing_kind == "risk_per_trade":
+            if self.stop_loss_pct is None or self.stop_loss_pct <= 0 or not math.isfinite(self.stop_loss_pct):
+                raise ValueError("risk_per_trade requires stop_loss_pct to be set and > 0")
+        if self.stop_loss_pct is not None:
+            if not math.isfinite(self.stop_loss_pct) or self.stop_loss_pct <= 0:
+                raise ValueError("stop_loss_pct must be a finite positive number")
+        if self.take_profit_pct is not None:
+            if not math.isfinite(self.take_profit_pct) or self.take_profit_pct <= 0:
+                raise ValueError("take_profit_pct must be a finite positive number")
+        return self
 
 
 class StrategySpec(BaseModel):

@@ -56,3 +56,25 @@ def test_signal_entry_validates_action():
     with pytest.raises(Exception):
         SignalEntry(bar_index=0, bar_time="t", kind="entry",
                     price=100.0, action="invalid")
+
+
+def test_auto_derived_tick_interval():
+    # 1h timeframe -> default is 3600 // 4 = 900
+    b1 = BotRecord(strategy_id="s", credential_id="c", exchange_id="e",
+                   symbol="X", timeframe="1h")
+    assert b1.tick_interval_seconds == 900
+
+    # 1m timeframe -> default is 60 // 4 = 15
+    b2 = BotRecord(strategy_id="s", credential_id="c", exchange_id="e",
+                   symbol="X", timeframe="1m")
+    assert b2.tick_interval_seconds == 15
+
+    # 1d timeframe -> default is 86400 // 4 = 21600 -> clamped to 3600 ceiling
+    b3 = BotRecord(strategy_id="s", credential_id="c", exchange_id="e",
+                   symbol="X", timeframe="1d")
+    assert b3.tick_interval_seconds == 3600
+
+    # Explicit value should be preserved
+    b4 = BotRecord(strategy_id="s", credential_id="c", exchange_id="e",
+                   symbol="X", timeframe="1h", tick_interval_seconds=120)
+    assert b4.tick_interval_seconds == 120

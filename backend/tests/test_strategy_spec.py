@@ -79,3 +79,34 @@ def test_equals_approximately_requires_tolerance():
     )
     with pytest.raises(ValueError, match="tolerance"):
         s.validate_against_catalog({"rsi"})
+
+
+def test_position_validation_negative_sizing():
+    from showme.strategies.spec import Position
+    with pytest.raises(ValueError, match="sizing_value"):
+        Position(sizing_value=-5.0)
+
+
+def test_position_validation_zero_sizing():
+    from showme.strategies.spec import Position
+    with pytest.raises(ValueError, match="sizing_value"):
+        Position(sizing_value=0.0)
+
+
+def test_position_validation_risk_pct_out_of_bounds():
+    from showme.strategies.spec import Position
+    with pytest.raises(ValueError, match="risk_pct.*sizing_value"):
+        Position(sizing_kind="risk_pct", sizing_value=120.0)
+
+
+def test_position_validation_risk_per_trade_requires_stop_loss():
+    from showme.strategies.spec import Position
+    with pytest.raises(ValueError, match="risk_per_trade.*stop_loss_pct"):
+        Position(sizing_kind="risk_per_trade", sizing_value=5.0)
+
+
+def test_position_validation_valid_risk_per_trade():
+    from showme.strategies.spec import Position
+    p = Position(sizing_kind="risk_per_trade", sizing_value=5.0, stop_loss_pct=2.0)
+    assert p.sizing_value == 5.0
+    assert p.stop_loss_pct == 2.0

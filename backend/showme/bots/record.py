@@ -139,6 +139,15 @@ class BotRecord(BaseModel):
     def _cap_log(cls, v: list[SignalEntry]) -> list[SignalEntry]:
         return v[-SIGNAL_LOG_CAP:] if len(v) > SIGNAL_LOG_CAP else v
 
+    @model_validator(mode="before")
+    @classmethod
+    def _set_default_tick_interval(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            timeframe = data.get("timeframe", "1h")
+            if "tick_interval_seconds" not in data or data["tick_interval_seconds"] is None:
+                data["tick_interval_seconds"] = default_tick_interval(timeframe)
+        return data
+
     @model_validator(mode="after")
     def _check_tick_interval_vs_timeframe(self) -> "BotRecord":
         """C-RUNTIME-1 fix: refuse pairs that would create extreme tick rates.
