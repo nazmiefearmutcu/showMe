@@ -25,7 +25,7 @@
     "@tauri-apps/plugin-process": "^2",
     "@tauri-apps/plugin-store": "^2",
     "focus-trap": "^8.2.0",
-    "lightweight-charts": "^4.2.0",
+    "lightweight-charts": "^5.2.0",
     "re-resizable": "^6.11.2",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
