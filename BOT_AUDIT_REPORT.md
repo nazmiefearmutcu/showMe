@@ -309,4 +309,3 @@ Bunun nedeni: mevcut testler "happy path" + Pydantic shape + birkaç koruma test
 
 **Audit metodu:** 4 paralel `general-purpose` agent, her biri ~12-15 dakika boyunca kod okudu + pytest/vitest çalıştırdı + kenar durum aradı. Toplam 4 ayrı bakış açısının örtüştüğü temalar yukarıdaki "Sistemik Temalar" bölümünde.
 
-**Raporu hazırlayan:** Claude (Opus 4.7, 1M context) — `/Users/nazmi/Desktop/Projeler/proje/showMe/BOT_AUDIT_REPORT.md`
