@@ -2,7 +2,7 @@
  * GEX — Dealer gamma exposure pane (Session 16 BugHunt).
  *
  * Before this pane existed, GEX fell through to the static
- * `Claude Design` export Pro mock which renders thirteen hard-coded
+ * `Design` export Pro mock which renders thirteen hard-coded
  * strikes around $940 regardless of the selected symbol. The backend
  * has had a real `/api/fn/GEX` route since the engine landed
  * (`backend/showme/engine/functions/derivative/gex.py`), but the UI

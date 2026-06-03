@@ -179,8 +179,8 @@ describe("CSP utility-class stylesheet (Round-4A)", () => {
 });
 
 describe("Dashboard theme token integration", () => {
-  it("wires the Claude cockpit shell to Preferences theme tokens", () => {
-    const marker = "/* Claude Design terminal cockpit integration. */";
+  it("wires the cockpit shell to Preferences theme tokens", () => {
+    const marker = "/* Design terminal cockpit integration. */";
     const cockpitCss = indexCssRaw.slice(indexCssRaw.indexOf(marker));
     expect(cockpitCss).toContain("--terminal-bg: var(--bg);");
     expect(cockpitCss).toContain("--terminal-panel: var(--surface-1);");

@@ -36,7 +36,7 @@ const ALLOWLIST_FILES = new Set([
   "lib/chart-palette.ts",
   // a11y luminance helpers — internal math, not rendering.
   "lib/a11y.ts",
-  // Generated Claude Design export CSS carries its own scoped theme token
+  // Generated Design export CSS carries its own scoped theme token
   // set under `.design-export`; those literals are the imported design source.
   "design-export/showme-design-export.css",
   "design-export/showme-design-export.tsx",

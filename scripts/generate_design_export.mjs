@@ -6,7 +6,7 @@ import postcss from "postcss";
 const ROOT = resolve(new URL("..", import.meta.url).pathname);
 const DESIGN_SRC =
   process.env.SHOWME_DESIGN_SRC ||
-  "/Users/nazmi/Desktop/ShowMe_Claude_Designs_2026-05-16/conversation-2-ShowMe-0.01-019e2b82/src";
+  "/Users/nazmi/Desktop/ShowMe_Designs_2026-05-16/conversation-2-ShowMe-0.01-019e2b82/src";
 const OUT_DIR = resolve(ROOT, "ui/src/design-export");
 const OUT_TSX = join(OUT_DIR, "showme-design-export.tsx");
 const OUT_CSS = join(OUT_DIR, "showme-design-export.css");
@@ -128,10 +128,10 @@ function buildTsx() {
   chunks.push(read("data.js").replace(/\bwindow\.SM_DATA\s*=/, "const SM_DATA ="));
   chunks.push(read("data-fns.js").replace(/\bwindow\.SM_FNS\s*=/, "const SM_FNS ="));
   chunks.push(``);
-  chunks.push(`/* Shared Basic shell primitives from Claude Design export. */`);
+  chunks.push(`/* Shared Basic shell primitives from Design export. */`);
   chunks.push(asDesignWindowSource("basic.jsx"));
   chunks.push(``);
-  chunks.push(`/* Shared Pro shell primitives from Claude Design export. */`);
+  chunks.push(`/* Shared Pro shell primitives from Design export. */`);
   chunks.push(asDesignWindowSource("pro.jsx"));
   chunks.push(``);
   chunks.push(`/* Function catalog artboards. */`);

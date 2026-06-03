@@ -1,5 +1,5 @@
 /**
- * Per-fn mock content extracted from the Claude Design export. Used as the
+ * Per-fn mock content extracted from the Design export. Used as the
  * design-state placeholder when no live sidecar payload is available. Real
  * sidecar payloads (when present) take precedence — these mocks only
  * surface the design layout.

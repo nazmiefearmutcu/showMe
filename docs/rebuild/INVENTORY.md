@@ -4,7 +4,7 @@ Audit date: 2026-05-24
 Total codes in catalogue: **141** (union of `DESIGN_BASIC_CODES`, `DESIGN_PRO_CODES`, native registry, template mock-data, and engine `FunctionRegistry`).
 
 Codes whose UI resolves to `FunctionStub` render via `ui/src/panes/function_stub/index.tsx` (calls `/api/fn/{code}`, displays generic JSON tree + a small set of stock controls).
-Codes whose UI resolves to `TemplateRenderer` overlay a sidecar payload onto a hard-coded Claude-Design mock from `ui/src/templates/mock-data.ts`.
+Codes whose UI resolves to `TemplateRenderer` overlay a sidecar payload onto a hard-coded Design mock from `ui/src/templates/mock-data.ts`.
 "design-export" tier was collapsed to "stub" in Workspace.tsx on 2026-05-23 (per QA-2026-05-23) but the data list is still consumed by `pane-completeness.ts`.
 
 Provider keys:

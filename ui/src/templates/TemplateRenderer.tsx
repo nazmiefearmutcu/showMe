@@ -1,5 +1,5 @@
 /**
- * TemplateRenderer — renders the Claude Design Basic-variant layout for a
+ * TemplateRenderer — renders the Design Basic-variant layout for a
  * given fn code. The pattern is chosen by the mock template's content
  * shape (kpis + feed → news; kpis + tableRows → table; heatCells →
  * heatmap; formRows → form; kvs → kv grid). Real sidecar data, when

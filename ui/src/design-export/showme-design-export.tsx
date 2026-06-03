@@ -404,7 +404,7 @@ const SM_FNS = (function () {
 
 
 
-/* Shared Basic shell primitives from Claude Design export. */
+/* Shared Basic shell primitives from Design export. */
 
 // Basic variant — friendly, calm, story-first.
 // HOME · PORT · DES live in this file; each is exported on DESIGN_WINDOW.
@@ -1177,7 +1177,7 @@ const BasicDes = DESIGN_WINDOW.BasicDes = function BasicDes({ theme }) {
 
 
 
-/* Shared Pro shell primitives from Claude Design export. */
+/* Shared Pro shell primitives from Design export. */
 
 // Pro variant — terminal-class. Workspaces, command bar, dense panels.
 // HOME · PORT · DES exported on DESIGN_WINDOW.

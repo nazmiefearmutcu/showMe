@@ -6,7 +6,7 @@
  * returned true. Since `DESIGN_PRO_CODES` contains all 141 catalog codes
  * (plus HOME), every bespoke pane (HP, GP, DES, FA, EQS, BTMM, ASK,
  * BIO, NI → CN alias, MIS, …) was dead code at runtime — users only
- * ever saw the static Claude Design Pro mockups.
+ * ever saw the static Design Pro mockups.
  *
  * S16 inverted the precedence (native > template > design-export > stub)
  * but the design-export tier still served the 39k-line mockup with

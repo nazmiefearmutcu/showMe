@@ -2,7 +2,7 @@
 /**
  * scripts/verify_template_integration.mjs
  *
- * Enumerates every `window.Basic*` / `window.Pro*` template in the Claude
+ * Enumerates every `window.Basic*` / `window.Pro*` template in the
  * Design export, maps each to its ShowMe fn code, and checks that the real
  * repo has a dedicated template-backed renderer (TemplateRenderer pattern
  * or a bespoke native pane) for it. Generic FunctionStub fallback for a
@@ -21,7 +21,7 @@ import { fileURLToPath } from "node:url";
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DESIGN_SRC =
   process.env.SHOWME_DESIGN_SRC ||
-  "/Users/nazmi/Desktop/ShowMe_Claude_Designs_2026-05-16/conversation-2-ShowMe-0.01-019e2b82/src";
+  "/Users/nazmi/Desktop/ShowMe_Designs_2026-05-16/conversation-2-ShowMe-0.01-019e2b82/src";
 const TEMPLATES_DIR = resolve(ROOT, "ui/src/templates");
 const REGISTRY_TSX = resolve(ROOT, "ui/src/functions/registry.tsx");
 const DESIGN_EXPORT_TSX = resolve(ROOT, "ui/src/design-export/showme-design-export.tsx");

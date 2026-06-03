@@ -6237,7 +6237,7 @@
   border-color: var(--accent);
 }
 
-/* Claude Design terminal cockpit integration. */
+/* Design terminal cockpit integration. */
 .app-shell {
   --cockpit-grid-line: color-mix(in srgb, var(--accent) 12%, transparent);
   --cockpit-grid-line-soft: color-mix(in srgb, var(--accent) 8%, transparent);

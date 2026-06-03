@@ -2,7 +2,7 @@
  * Template primitives shared across the 120 design-template-backed panes.
  *
  * These are token-driven adaptations of the `sm-bs-*` classes from the
- * Claude Design export's Basic variant. Each accepts theme via tokens.css
+ * Design export's Basic variant. Each accepts theme via tokens.css
  * (no `data-theme` prop needed). The shell-level chrome (sidebar/header)
  * comes from the existing ShowMe Workspace; templates render INSIDE a
  * PaneChrome, so these primitives only cover the per-fn body.
