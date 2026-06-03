@@ -2648,7 +2648,7 @@ sdist = { url = "https://files.pythonhosted.org/packages/9e/bd/3704a8c3e0942d711
 
 [[package]]
 name = "showme-backend"
-version = "0.0.1"
+version = "0.1.1"
 source = { editable = "." }
 dependencies = [
     { name = "ccxt" },
@@ -2709,7 +2709,7 @@ requires-dist = [
     { name = "safetensors", specifier = ">=0.4" },
     { name = "tokenizers", specifier = ">=0.20" },
     { name = "torch", specifier = ">=2.6.0,<3" },
-    { name = "transformers", specifier = ">=4.48,<5" },
+    { name = "transformers", specifier = ">=4.48,<6" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32" },
     { name = "websockets", specifier = ">=14" },
     { name = "yfinance", specifier = ">=0.2.55" },
