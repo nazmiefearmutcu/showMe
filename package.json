@@ -25,6 +25,7 @@
     "test:e2e:audit": "npx playwright test --config tests/e2e/playwright.config.ts --project=audit",
     "test:e2e:list": "npx playwright list --config tests/e2e/playwright.config.ts",
     "test:backend": "cd backend && uv run pytest",
+    "test": "npm run test:backend && npm --workspace ui run test",
     "lint": "npm --workspace ui run lint",
     "lint:py": "cd backend && uv run ruff check .",
     "format": "npm --workspace ui run format"

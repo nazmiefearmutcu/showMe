@@ -93,3 +93,5 @@ backend/coverage.xml
 
 # UI coverage artifact directory (vitest --coverage)
 ui/coverage/
+.ralph/
+cache/
