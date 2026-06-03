@@ -44,7 +44,7 @@ def register(app: FastAPI, deps: AppDeps) -> None:
     @router.get("/api/sidecar/info")
     async def sidecar_info() -> dict[str, Any]:
         return {
-            "version": "0.0.1",
+            "version": "0.1.1",
             "python": sys.version,
             "platform": sys.platform,
             "engine": deps.boot_state,

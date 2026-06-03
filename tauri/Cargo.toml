@@ -1,6 +1,6 @@
 [package]
 name = "showme"
-version = "0.0.1"
+version = "0.1.1"
 description = "showMe — native trader cockpit"
 authors = ["showMe team"]
 edition = "2021"

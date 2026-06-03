@@ -1184,7 +1184,7 @@ def build_app(engine_root: Path | None) -> FastAPI:
 
     app = FastAPI(
         title="showMe sidecar",
-        version="0.0.1",
+        version="0.1.1",
         description="Localhost backend driving the showMe Tauri shell.",
         lifespan=lifespan,
     )

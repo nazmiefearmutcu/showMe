@@ -1,6 +1,6 @@
 [project]
 name = "showme-backend"
-version = "0.0.1"
+version = "0.1.1"
 description = "showMe backend sidecar — exposes the bundled 139-function engine through a localhost FastAPI server discovered by the Tauri shell."
 requires-python = ">=3.11"
 # Floors are pinned per SEC-10 to versions that include published security
