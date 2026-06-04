@@ -1,3 +1,4 @@
+# ruff: noqa: E402
 """showMe sidecar entrypoint.
 
 Boot strategy:

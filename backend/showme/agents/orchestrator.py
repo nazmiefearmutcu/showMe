@@ -19,13 +19,13 @@ import time
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-LOG = logging.getLogger("showme.agents.orchestrator")
-
 from .planner import Plan, plan_for
 from .search import search as run_search
 from .summarizer import summarize
 from .viz import pick_viz
 from ..llm import build_default_providers, plan_for_smart
+
+LOG = logging.getLogger("showme.agents.orchestrator")
 
 
 @dataclass

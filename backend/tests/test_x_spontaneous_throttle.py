@@ -113,9 +113,9 @@ def test_throttle_does_not_eat_route_timeout(monkeypatch, _fresh_throttle):
 
     t0 = time.monotonic()
     try:
-        posts = scraper.search("AAPL", limit=10)
+        scraper.search("AAPL", limit=10)
     except Exception:
-        posts = []
+        pass
     elapsed = time.monotonic() - t0
 
     assert elapsed < 8.0, f"search took {elapsed:.1f}s — throttle eating budget"

@@ -73,7 +73,8 @@ def test_progress_snapshot_is_consistent_under_writer_thread() -> None:
 
     w = threading.Thread(target=writer)
     r = threading.Thread(target=reader)
-    w.start(); r.start()
+    w.start()
+    r.start()
     r.join(timeout=10)
     stop.set()
     w.join(timeout=10)
