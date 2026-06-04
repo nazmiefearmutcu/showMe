@@ -85,7 +85,7 @@ def test_sat_returns_real_data_or_graceful_unavailable():
         assert "REQUEST=GetMap" in row["tile_url"]
         # cloud_pct should be numeric when Open-Meteo answered (it may be None only
         # if that single sub-provider was down, which is acceptable degradation).
-        if data["status"] == "ok":
+        if data["status"] == "ok" and row.get("cloud_pct") is not None:
             assert isinstance(row.get("cloud_pct"), (int, float))
         # AOI/layer echoed honestly.
         assert data["aoi"] == "cushing_ok"
