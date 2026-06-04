@@ -30,6 +30,12 @@ def main() -> int:
     if not root.exists():
         raise SystemExit(f"scan path does not exist: {root}")
 
+    # If the root contains subdirectories, resolve to the latest one
+    if root.is_dir():
+        subdirs = [d for d in root.iterdir() if d.is_dir() and not d.name.startswith(".")]
+        if subdirs:
+            root = max(subdirs, key=lambda d: d.name)
+
     hits: list[str] = []
     for path in root.rglob("*"):
         if not path.is_file() or path.suffix.lower() not in {".json", ".jsonl", ".md", ".log", ".txt"}:
