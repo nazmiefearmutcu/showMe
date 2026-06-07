@@ -1,223 +1,291 @@
-# showMe
+<p align="center">
+  <img src="docs/assets/hero.svg" alt="showMe — a financial terminal for macOS" width="100%">
+</p>
 
-[![License: MIT](https://img.shields.io/github/license/nazmiefearmutcu/showMe?color=blue)](LICENSE)
-[![Stars](https://img.shields.io/github/stars/nazmiefearmutcu/showMe?style=flat&logo=github)](https://github.com/nazmiefearmutcu/showMe/stargazers)
-[![Tauri](https://img.shields.io/badge/shell-Tauri%202-24c8db?logo=tauri&logoColor=white)](https://tauri.app/)
-[![Python](https://img.shields.io/badge/sidecar-Python%203.11%2B-3776ab?logo=python&logoColor=white)](https://python.org)
-[![Platform](https://img.shields.io/badge/platform-macOS%20ARM64-lightgrey?logo=apple&logoColor=white)](#)
-[![Backend](https://img.shields.io/badge/backend-pytest-success)](#maintainer-quickstart)
-[![UI](https://img.shields.io/badge/ui-vitest-success)](#maintainer-quickstart)
-[![Native](https://img.shields.io/badge/native-tauri%20smoke-blue)](#maintainer-quickstart)
+<p align="center">
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/github/license/nazmiefearmutcu/showMe?color=blue"></a>
+  <img alt="Platform: macOS ARM64" src="https://img.shields.io/badge/platform-macOS%20ARM64-lightgrey?logo=apple&logoColor=white">
+  <img alt="Shell: Tauri 2" src="https://img.shields.io/badge/shell-Tauri%202-24c8db?logo=tauri&logoColor=white">
+  <img alt="UI: React 18" src="https://img.shields.io/badge/ui-React%2018-61dafb?logo=react&logoColor=white">
+  <img alt="Engine: Python 3.11+" src="https://img.shields.io/badge/engine-Python%203.11%2B-3776ab?logo=python&logoColor=white">
+  <a href="https://github.com/nazmiefearmutcu/showMe/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/nazmiefearmutcu/showMe?color=dc5721"></a>
+</p>
 
-**Trading terminal for macOS. Scans 3 370 symbols across 12 timeframes simultaneously to surface what's moving together — and gives you the rest of the analyst workflow (charts, sentiment, paper trading, strategy editor) on top.** MIT-licensed open source, runs entirely on your own machine, no subscription, no broker lock-in.
+<p align="center">
+  <b>A financial terminal for macOS.</b> Type a short code, get an analyst function — about <b>138</b> of them,
+  from company financials to options gamma to central-bank rate odds. Open source, runs entirely on your own
+  machine, no subscription, no broker lock-in.
+</p>
 
-Under the hood: a thin Tauri shell (Rust, signed updater), a React/Vite UI, and a unified Python backend that ships the **141-function** market engine (live snapshot of `/api/function-index`; baseline ≥138) as a regular `showme.engine` subpackage.
+<p align="center">
+  <a href="#what-is-showme">What is it</a> ·
+  <a href="#preview">Preview</a> ·
+  <a href="#how-the-terminal-works">How it works</a> ·
+  <a href="#function-catalog">Functions</a> ·
+  <a href="#honest-by-design">Honesty</a> ·
+  <a href="#get-started">Get started</a> ·
+  <a href="#architecture">Architecture</a>
+</p>
+
+## What is showMe?
+
+showMe is a desktop **financial terminal** for macOS. Instead of hunting through menus, you drive it the way
+professional desks do: type a short **function code** into a command line and the matching analyst tool opens —
+`FA` for financial statements, `GEX` for options gamma exposure, `WIRP` for rate-hike odds, `ECO` for the
+economic calendar. There are about **138 functions** spanning equities, options, bonds, FX, commodities, macro,
+news, and portfolio analytics.
+
+It's the kind of professional terminal workflow you'd otherwise pay for in a Bloomberg Terminal — rebuilt as
+open source, running entirely on your own Mac, with no subscription and no broker lock-in.
+
+Under the hood: a thin **Tauri 2** (Rust) shell with a signed updater, a **React + Vite** UI, and a unified
+**Python (FastAPI)** sidecar that runs the function engine locally. Your data and keys never leave the machine.
 
 ## Preview
 
-#### Welcome cockpit
-![Default cockpit with sector heat strip across the top, KPI tiles for headline indices, today's brief and risks panes, Cautiously Bearish forecast gauge, watchlist with price + change + spark cells, recent functions strip, and sidebar nav for 40+ analyst functions](docs/screenshots/01-cockpit.png)
+#### Cockpit
+![showMe cockpit: a sector heat strip across the top, KPI tiles for headline indices, a daily brief and risks pane, a forecast gauge, a watchlist with price/change/spark cells, and a left sidebar listing analyst functions](docs/screenshots/01-cockpit.png)
 
-#### MIS — Multi-Indicator Scan
-![Multi-indicator scan view: market chips for Kripto / Hisse / ETF / Döviz / Emtia / Tahvil, 12-timeframe selector strip, ZAK weighting matrix, top BUY and top SELL columns, per-symbol confidence with consistency rank](docs/screenshots/02-mis-scan.png)
+#### Command palette — every function, one keystroke away
+![The function command palette open over the cockpit, listing function codes (GEX, NG, CPF, ESG, …) with their full names, filtered as you type](docs/screenshots/02-function-palette.png)
 
-Native macOS .app (Tauri + signed updater). Boot from `/Applications/showMe.app` after a `npm run build:native`.
+#### A function in context
+![A single-symbol function view for SPX showing the data-quality header, source pills, and a fielded layout](docs/screenshots/03-symbol-equity-view.png)
 
-> **2026-05-25 rebuild:** Fallback-driven → contract-first. 143 manifest
-> seeds registered, production-fakery scrubbed to 0 (strict-zero gate ON),
-> sentiment + speech transcription + rates-event data wired, every panel
-> header now surfaces a `📜 M` manifest dot + data-mode pill + sources +
-> warnings.
-> Full before/after + commit map: **[REBUILD_2026_05_25.md](REBUILD_2026_05_25.md)**.
+## How the terminal works
 
-> Last updated: 2026-05-25. Function/indicator/pane counts are the live
-> values; if they drift, run `npm run audit:functions` and update.
+showMe has one core idea: a **command line for markets**. Press the palette shortcut, type a short code, hit
+enter — the function opens as a pane. No two functions look the same, because each is a purpose-built tool, but
+they all share the same launch gesture. If you know the code you want, you're one keystroke away; if you don't,
+the palette filters by name as you type.
 
-## Architecture (at a glance)
+A taste of the breadth — twelve representative codes:
+
+| Code | Function | What it shows |
+| --- | --- | --- |
+| `FA` | Financial Analysis | Income statement, balance sheet, cash flow |
+| `DCF` | Discounted Cash Flow | Intrinsic-value model from projected free cash flow |
+| `GEX` | Gamma Exposure | Dealer hedging structure across the option chain |
+| `OMON` | Option Monitor | Single-name option chain with Greeks |
+| `WIRP` | World Interest Rate Probability | Market-implied rate-hike / cut odds |
+| `YAS` | Yield & Spread Analytics | Bond yield, spread, and curve positioning |
+| `ECO` | Economic Calendar | Upcoming macro releases and prints |
+| `CORR` | Correlation Matrix | Cross-asset correlation grid |
+| `PORT` | Portfolio Analytics | Holdings, exposure, and performance |
+| `ESG` | ESG Scores | Environmental / social / governance ratings |
+| `GMM` | Global Macro Movers | What's moving across global macro |
+| `BRIEF` | Daily Brief | A composed morning read across your surfaces |
+
+## Function catalog
+
+About **138 functions** across 14 categories. The exact set evolves; run `npm run audit:functions` for the live
+list. A representative slice by category:
+
+<details>
+<summary><b>Show the function catalog</b></summary>
+
+**Equities & fundamentals** — `FA` financials · `DCF` / `DDM` discounted cash flow · `DCFS` DCF sensitivity ·
+`RV` relative valuation · `WACC` cost of capital · `BETA` CAPM beta · `EE` earnings & estimates ·
+`EREV` earnings revisions · `ANR` analyst recommendations · `DVD` dividends & splits · `HDS` holders ·
+`HFS` holder search · `FORM4` insider transactions · `DARK` / `DPF` dark-pool volume · `CACT` corporate actions ·
+`FTS` SEC full-text search · `PIB` public information book · `DES` description · `EQS` equity screener.
+
+**Options & derivatives** — `GEX` gamma exposure · `OMON` option monitor · `OVME` option valuation (Black-Scholes + Greeks).
+
+**Bonds & rates** — `YAS` yield & spread · `CRVF` yield curve · `GC3D` 3-D yield curve · `WB` world bonds ·
+`SRSK` sovereign risk · `TAUC` Treasury auction calendar · `CRPR` credit-rating profile.
+
+**FX** — `FXH` FX hedge · `FXFC` FX forecasts.
+
+**Commodities** — oil, natural gas, metals and weather-linked commodity functions (`BOIL`, `NGAS`, `GLCO`, `WETR`, …).
+
+**Macro & economics** — `ECO` economic calendar · `ECST` economic statistics · `ECFC` economic forecasts ·
+`WIRP` rate-probability · `GMM` global macro movers · `REGM` market regime · `BTMM` country rate environment ·
+`COUN` country guide · `TRDH` trading hours.
+
+**News & intelligence** — `TOP` top news · `CN` company news · `NI` news by topic · `BRIEF` daily brief ·
+`TLDR` daily TL;DR · `NSE` news search · `SOSC` social sentiment · `TRAN` earnings-call transcripts ·
+`TRQA` transcript Q&A · `TSAR` transcript sentiment · `EVTS` corporate events · `NALRT` critical news alerts ·
+`READ` reading list · `AV` audio/video archive.
+
+**Portfolio & risk** — `PORT` portfolio analytics · `PORT_OPT` optimizer · `CORR` correlation matrix ·
+`GREEKS` portfolio Greeks · `PVAR` position VaR / MCR · `STRS` stress test · `PFA` performance attribution ·
+`BLAK` Black-Litterman · `RPAR` risk parity · `REBA` rebalancer · `PSC` position sizing · `TLH` tax-loss harvesting ·
+`LOTS` tax lots · `MGN` cross-account margin · `ACCT` multi-account aggregation · `PCAS` PCA factor stress ·
+`MLSIG` ML signal · `BMTX` backtest matrix · `BTFW` walk-forward · `BTUNE` auto-tuner.
+
+**Screen & maps** — `SECT` sector heatmap · `ICX` index constituents · `MAP` world market heatmap ·
+`MICRO` market microstructure · `FRH` funding-rate heatmap.
+
+**Trade execution** — `EXEC` execution monitor · `TCA` trade-cost analysis · `EMSX` execution management.
+
+**Reference & data** — `ISIN` symbol cross-reference (OpenFIGI) · `FLDS` field lookup · `DAPI` data API ·
+`BQL` query language · `BQUANT` notebook.
+
+**Alt-data & alerts** — `ONCH` on-chain metrics · `WHAL` whale alerts · `POLY` Polymarket · `SAT` satellite imagery ·
+`ALRT` alerts · `CDE` custom data fields.
+
+</details>
+
+## Honest by design
+
+A finance tool is only as trustworthy as the data behind it, so showMe is explicit about provenance.
+
+- **Data-mode pills.** Every function pane labels where its numbers came from — live exchange/vendor data,
+  delayed reference data, or a *modeled* value (e.g. option Greeks computed from a pricing model).
+- **Strict-zero gate.** When a live source is unavailable, a function shows a `PROVIDER_UNAVAILABLE` state
+  instead of inventing plausible-looking fake data. No silent fakery.
+
+### What showMe is — and isn't
+
+| ✅ It is | ❌ It isn't |
+| --- | --- |
+| A local, open-source **financial terminal** | A live-money broker by default — execution is **paper trading** out of the box |
+| **macOS (Apple Silicon)** native app | Cross-platform — there is no Windows/Linux/Intel build |
+| **100% local** — your data and keys stay on the machine | A cloud service — there are no showMe servers |
+| **MIT-licensed**, free, no subscription | Investment advice or a guarantee — provided **as-is**, no warranty |
+
+## Architecture
 
 ```mermaid
 flowchart LR
+    user(["You"]) -->|type a function code| react
     subgraph shell["Native shell"]
-      tauri["Tauri 2 / Rust<br/>lifecycle · tray · menubar<br/>signed updater"]
+      tauri["Tauri 2 / Rust<br/>lifecycle · tray · menubar<br/>signed updater · Keychain"]
     end
-
     subgraph ui["UI process"]
-      react["React + Vite + Tailwind<br/>zustand store<br/>30 function components"]
-      ds["Design system<br/>command palette<br/>i18n (en / tr)"]
+      react["React + Vite + Tailwind<br/>zustand store<br/>command palette · i18n (12 langs)"]
     end
-
-    subgraph backend["Sidecar"]
-      fastapi["FastAPI<br/>/api/health, /function-index<br/>/fn/* contracts"]
-      engine["showme.engine<br/>141-function market engine<br/>23 indicators · 12 TFs"]
-      manifest["Manifest seeds<br/>strict-zero gate<br/>data-mode pills"]
-      brokers["Brokers<br/>paper · alpaca · factory"]
-      ml["ML adapters<br/>FinBERT · X-sentiment<br/>(opt-in)"]
+    subgraph backend["Python sidecar"]
+      fastapi["FastAPI<br/>/api/health · /function-index · /fn/*"]
+      engine["Function engine<br/>~138 functions · 14 categories"]
+      data["Data layer<br/>providers · data-mode tagging"]
     end
-
-    user(["User"]) -->|click / search| react
-    react -->|IPC bridge| tauri
+    react -->|IPC| tauri
     tauri -->|spawn + HTTP| fastapi
-    fastapi --> engine
-    fastapi --> manifest
-    fastapi --> brokers
-    fastapi -.opt-in.-> ml
     react -->|fetch JSON| fastapi
+    fastapi --> engine --> data
 
     classDef shellNode fill:#dc572115,stroke:#dc5721,color:#dc5721
-    classDef uiNode fill:#61dbfb15,stroke:#61dbfb,color:#61dbfb
+    classDef uiNode fill:#61dafb15,stroke:#61dafb,color:#1f6feb
     classDef beNode fill:#1f6bff15,stroke:#1f6bff,color:#1f6bff
     class tauri shellNode
-    class react,ds uiNode
-    class fastapi,engine,manifest,brokers,ml beNode
+    class react uiNode
+    class fastapi,engine,data beNode
 ```
 
-## Layout
+The Tauri shell discovers the sidecar's port from a single stdout line (`SIDECAR_PORT=<u16>`), restarts it up to
+3× with exponential backoff on failure, and tears it down with a SIGTERM → 5 s grace → SIGKILL on quit. The
+WKWebView stays presentation-only; all native chrome (menubar, tray, dock, deep links, hotkeys, biometric unlock)
+lives in Rust.
+
+## Tech stack
+
+| Layer | Stack |
+| --- | --- |
+| Native shell | Tauri 2 (Rust), code-signed `.app` + `.dmg`, signed updater |
+| UI | React 18 · Vite 5 · Tailwind 4 · zustand 5 · TypeScript 5 · lightweight-charts 5 |
+| Backend | Python 3.11+ · FastAPI · Uvicorn · pydantic 2 · DuckDB · Polars |
+| Packaging | PyInstaller (arm64 onedir sidecar) |
+
+## Data sources
+
+Most functions pull **keyless, public** data; a few are opt-in and need a key.
+
+| Provider | Used for |
+| --- | --- |
+| yfinance | Equities, ETFs, FX, commodities, bonds — OHLCV and quotes |
+| Binance | Crypto spot and perpetuals |
+| FRED | Macro time series |
+| SEC EDGAR | Filings and full-text search |
+| GDELT | Global news / events |
+| OpenFIGI | Identifier cross-reference (ISIN / CUSIP / ticker) |
+| Treasury Direct | US Treasury auctions |
+| RSS feeds | Configurable news |
+
+## AI features (opt-in)
+
+These are off by default and each needs its own model or key:
+
+| Feature | What it does | Needs |
+| --- | --- | --- |
+| FinBERT sentiment | Scores news headlines positive / neutral / negative | Bundled model (first call loads it) |
+| Whisper transcription | Turns earnings-call audio into text | Local Whisper model |
+| X / social sentiment | Sentiment on posts mentioning a ticker | Your X API key |
+| LLM assistant | A conversational analyst over your data | OpenAI key **or** a local Ollama model |
+
+## Get started
+
+### Download
+
+Grab the latest signed build from **[Releases](https://github.com/nazmiefearmutcu/showMe/releases/latest)**
+(`showMe_0.1.1_aarch64.dmg`, macOS Apple Silicon).
+
+### Run from source (dev)
+
+```bash
+# 1 — UI deps
+cd ui && npm install && cd ..
+
+# 2 — sidecar deps
+cd backend && python3 -m pip install -e ".[dev]" && cd ..
+
+# 3 — run dev (Tauri spawns the sidecar + UI together)
+npm run tauri:dev
+```
+
+No Rust toolchain? Inspect the UI in the browser:
+
+```bash
+# terminal 1
+cd backend && python3 -m showme.server --port 8765
+# terminal 2
+cd ui && npm run dev        # http://localhost:5173
+```
+
+### Build a native bundle
+
+```bash
+bash packaging/build_sidecar.sh   # PyInstaller arm64 sidecar
+npm run tauri:build               # .app + .dmg
+```
+
+Signing and notarization (optional, needs Apple credentials) live in `packaging/sign.sh` and
+`packaging/notarize.sh`.
+
+## Project layout
+
+<details>
+<summary><b>Show the directory tree</b></summary>
 
 ```
 showMe/
-├── tauri/                  Native macOS shell (Rust)
-│   ├── src/                lifecycle, tray, menubar, dock, deep-link, biometric
-│   ├── tauri.conf.json
-│   ├── entitlements.plist
-│   ├── icons/
-│   ├── capabilities/
-│   ├── binaries/           PyInstaller backend goes here
-│   └── Cargo.toml
-│
-├── ui/                     React + Vite + Tailwind + zustand frontend
-│   ├── src/
-│   │   ├── App.tsx, main.tsx
-│   │   ├── shell/          titlebar, sidebar, statusbar, symbolbar
-│   │   ├── panes/          Splash, Welcome, Preferences, FunctionStub
-│   │   ├── functions/      30 function components (PORT, WATCH, SCAN, …)
-│   │   ├── lib/            sidecar HTTP client, store, router, state
-│   │   ├── design-system/  Card, Toolbar, Pane, Tabs, Field, Crumb, …
-│   │   ├── command-palette/
-│   │   ├── i18n/           en, tr (12-lang ready)
-│   │   └── styles/         tokens.css
-│   ├── package.json
-│   └── vite.config.ts
-│
-├── backend/                Unified Python sidecar + bundled engine
-│   ├── pyproject.toml
-│   ├── showme-backend.spec PyInstaller spec
-│   ├── tests/              pytest suite (17 files)
-│   ├── config/             default.yaml (engine thresholds, cooldowns)
-│   └── showme/             single Python package
-│       ├── server.py       FastAPI entry; /api/health, /function-index, /fn/*
-│       ├── function_contracts.py
-│       ├── scanner.py
-│       ├── streams.py      exchange WS + polling fan-out
-│       ├── quotes.py, state_api.py, chart_history.py, instant_line.py,
-│       ├── migration.py, llm.py, crypto_aliases.py, veryfinder_bridge.py,
-│       ├── agents/         orchestrator, planner, search, summarizer, viz
-│       ├── brokers/        base, paper, alpaca, factory
-│       ├── core/, services/, persistence/, ipc/, data_sources/
-│       └── engine/         the bundled function engine (was engine/src/*)
-│           ├── consensus/, indicators/ (23), functions/ (141 in 14 cats)
-│           ├── data/, data_sources/, services/, trading/, control/
-│           ├── monitoring/, persistence/, portfolio/, reference/
-│           ├── core/, assets/, agents/, api/, utils/
-│           └── main.py
-│
-├── packaging/              build / sign / notarize / dmg / deploy
-├── scripts/                audit + dev tools (function audit, sentinels, …)
-├── tests/                  cross-cutting Playwright e2e
-├── docs/                   architecture, ui_standards, engine_independence,
-│                           coder_log, round_notes/13.md → 33.md
-├── package.json            root npm workspace (tauri, ui)
-└── pyproject.toml          (lives at backend/, root has only npm/cargo)
+├── tauri/        Native macOS shell (Rust): lifecycle, tray, menubar, deep-link, biometric
+├── ui/           React + Vite + Tailwind + zustand frontend
+│   └── src/      shell · panes · functions · command-palette · i18n (12 langs) · design-system
+├── backend/      Python FastAPI sidecar + function engine
+│   └── showme/   server · function_contracts · providers · brokers · agents
+│       └── engine/functions/   the ~138 functions, in 14 category folders
+├── packaging/    build / sign / notarize / dmg
+├── scripts/      audits & dev tools (npm run audit:functions, …)
+├── tests/        cross-cutting Playwright e2e
+└── docs/         architecture, screenshots, specs, plans
 ```
 
-The engine is now a regular Python subpackage (`from showme.engine.X import Y`)
-— no more `sys.path` injection. Production builds bundle `backend/showme/engine/`
-and `backend/config/` via the PyInstaller spec.
+</details>
 
-## Quickstart
+## Development & testing
 
 ```bash
-# 1 — install front-end deps once
-cd ui && npm install && cd ..
-
-# 2 — install sidecar deps
-cd backend && python3 -m pip install -e ".[dev]" && cd ..
-
-# 3 — run dev (Tauri spawns sidecar + UI together)
-npm run tauri:dev
-
-# 4 — (optional but recommended) install pre-commit hooks
-pip install pre-commit && pre-commit install
-```
-
-## Maintainer quickstart
-
-```bash
-npm install
 npm run test:backend          # backend pytest suite
-npm --workspace ui test       # UI unit tests
+npm --workspace ui test       # UI vitest suite
 npm run test:e2e:smoke:fast   # fast Playwright smoke path
-npm run tauri:build           # native bundle smoke before release
+npm run audit:functions       # live function inventory
+npm run lint && npm run lint:py
 ```
 
-Without the Rust toolchain you can still inspect the UI in browser-mode:
+Contributions welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
 
-```bash
-# in two terminals:
-cd backend && python3 -m showme.server --port 8765
-cd ui && npm run dev    # http://localhost:5173
-```
+## License
 
-## Production build
-
-```bash
-bash packaging/build_sidecar.sh          # PyInstaller arm64 backend
-npm run tauri:build                      # bundles .app + .dmg
-APPLE_SIGNING_IDENTITY="Developer ID Application: ..." \
-  bash packaging/sign.sh
-APPLE_ID=... APPLE_TEAM_ID=... APPLE_APP_SPECIFIC_PASSWORD=... \
-  bash packaging/notarize.sh
-```
-
-## Quality audits
-
-```bash
-npm run audit:functions         # asset-aware function sweep
-npm run audit:sentinels         # sentinel / watchdog audit
-npm run audit:legacy-functions  # legacy audit harness
-npm run test:backend            # pytest in backend/
-npm run lint && npm run lint:py # ESLint 9 + ruff
-npm run test:e2e                # Playwright
-```
-
-The audit is asset-aware: it tests each function with a compatible crypto,
-equity, FX, commodity, bond, or standalone option profile instead of forcing a
-single symbol into every function.
-
-## Runtime protocol
-
-The Tauri shell discovers the Python runtime port from a single stdout line:
-
-```
-SIDECAR_PORT=<u16>
-```
-
-Lifecycle: 3× restart with exponential backoff (250 / 750 / 2250 ms), then
-fatal `NSAlert`. SIGTERM → 5 s grace → SIGKILL on quit.
-
-## Native conventions
-
-- Custom titlebar (`Overlay`, hidden title) + macOS traffic lights at (14, 18).
-- `app-region: drag` on titlebar; everything `.interactive` opts out.
-- NSVisualEffect vibrancy via `windowEffects: ["sidebar", "underWindowBackground"]`.
-- `~/Library/Application Support/showMe` for state; `~/Library/Logs/showMe`
-  symlink for Console.app streaming.
-- API keys in macOS Keychain (`app.showme.terminal/<name>`).
-- All native chrome (NSMenuBar, NSStatusItem, NSDockTile, deep-link, hotkeys,
-  LocalAuthentication) lives in `tauri/src/`; the WKWebView stays presentation-only.
-
-## Refactor history
-
-May 2026 — single-tree unification: merged `engine/` into `backend/showme/engine/`,
-collapsed `src-tauri` → `tauri`, `src-py` → `backend`, `src-ui` → `ui`. Imports
-rewritten from `src.X` to `showme.engine.X`. Pre-refactor snapshot at tag
-`refactor-base-2026-05-09` and branch `backup-pre-restructure`.
+[MIT](LICENSE) © 2026 Nazmi Efe Armutcu. Provided as-is, with no warranty. Not investment advice.
