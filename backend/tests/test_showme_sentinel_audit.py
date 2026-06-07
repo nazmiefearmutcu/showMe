@@ -11,7 +11,7 @@ SCRIPTS_DIR = Path(__file__).resolve().parents[2] / "scripts"
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.append(str(SCRIPTS_DIR))
 
-from showme_sentinel_audit import main
+from showme_sentinel_audit import main  # noqa: E402
 
 
 def test_sentinel_audit_picks_latest_subdir(capsys):

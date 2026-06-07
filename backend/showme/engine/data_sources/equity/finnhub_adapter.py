@@ -167,3 +167,28 @@ class FinnhubAdapter(BaseDataSource):
 
     async def metrics(self, symbol: str, metric: str = "all") -> dict[str, Any]:
         return await self._get("/stock/metric", symbol=symbol, metric=metric)
+
+    async def economic_calendar(self, start: str | None = None, end: str | None = None) -> list[dict[str, Any]]:
+        params = {}
+        if start:
+            params["from"] = start
+        if end:
+            params["to"] = end
+        res = await self._get("/calendar/economic", **params)
+        raw_events = res.get("economicCalendar") if isinstance(res, dict) else (res or [])
+        mapped_events = []
+        for item in raw_events:
+            if not isinstance(item, dict):
+                continue
+            mapped_events.append({
+                "country": item.get("country"),
+                "event": item.get("event"),
+                "date": item.get("time"),
+                "importance": item.get("impact"),
+                "forecast": item.get("estimate"),
+                "actual": item.get("actual"),
+                "previous": item.get("prev"),
+                "unit": item.get("unit", ""),
+            })
+        return mapped_events
+

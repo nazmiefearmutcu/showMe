@@ -23,21 +23,44 @@ class ECOFunction(BaseFunction):
         events: list = []
         provider_errors: list[str] = []
         live = _truthy(params.get("live_calendar") or params.get("live"))
-        if live and self.deps.tradingeconomics:
-            try:
-                events = await asyncio.wait_for(
-                    self.deps.tradingeconomics.calendar(
-                        country=country,
-                        importance=importance,
-                    ),
-                    timeout=float(params.get("timeout", 8)),
-                )
-            except Exception as exc:
-                provider_errors.append(f"tradingeconomics: {exc}")
+        source_mode = "calendar_feed_model"
+
+        if live:
+            if self.deps.tradingeconomics:
+                try:
+                    events = await asyncio.wait_for(
+                        self.deps.tradingeconomics.calendar(
+                            country=country,
+                            importance=importance,
+                        ),
+                        timeout=float(params.get("timeout", 8)),
+                    )
+                    if events:
+                        source_mode = "tradingeconomics"
+                except Exception as exc:
+                    provider_errors.append(f"tradingeconomics: {exc}")
+
+            if not events and self.deps.finnhub:
+                try:
+                    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                    end_str = (datetime.now(timezone.utc) + timedelta(days=days)).strftime("%Y-%m-%d")
+                    events = await asyncio.wait_for(
+                        self.deps.finnhub.economic_calendar(
+                            start=today_str,
+                            end=end_str,
+                        ),
+                        timeout=float(params.get("timeout", 8)),
+                    )
+                    if events:
+                        source_mode = "finnhub"
+                except Exception as exc:
+                    provider_errors.append(f"finnhub: {exc}")
+
         if not events:
             events = _calendar_feed_model(country, importance)
+            source_mode = "calendar_feed_model"
+
         rows = _normalize_events(events, country=country, importance=importance, days=days)
-        source_mode = "tradingeconomics" if live and self.deps.tradingeconomics and not provider_errors else "calendar_feed_model"
         for row in rows:
             row.setdefault("source_mode", source_mode)
         return FunctionResult(
@@ -81,20 +104,62 @@ def _truthy(value: Any) -> bool:
 
 
 def _calendar_feed_model(country: str | None, importance: str | None) -> list[dict[str, Any]]:
-    selected_country = country or "US"
     today = datetime.now(timezone.utc).date()
-    events = [
-        {"country": selected_country, "event": "CPI", "date": (today + timedelta(days=9)).isoformat(),
-         "importance": "high", "forecast": 2.9, "previous": 3.1, "unit": "% y/y"},
-        {"country": selected_country, "event": "FOMC rate decision", "date": (today + timedelta(days=37)).isoformat(),
-         "importance": "high", "forecast": 3.75, "previous": 4.0, "unit": "%"},
-        {"country": selected_country, "event": "Retail sales", "date": (today + timedelta(days=11)).isoformat(),
-         "importance": "medium", "forecast": 0.3, "previous": 0.1, "unit": "% m/m"},
+    raw_events = [
+        # --- US ---
+        {"country": "US", "event": "FOMC Interest Rate Decision", "offset": -2, "importance": "high", "forecast": 4.5, "actual": 4.5, "previous": 4.75, "unit": "%"},
+        {"country": "US", "event": "Non Farm Payrolls", "offset": -1, "importance": "high", "forecast": 180, "actual": 210, "previous": 175, "unit": "K"},
+        {"country": "US", "event": "Unemployment Rate", "offset": -1, "importance": "high", "forecast": 3.9, "actual": 3.8, "previous": 3.9, "unit": "%"},
+        {"country": "US", "event": "CPI MoM", "offset": 0, "importance": "high", "forecast": 0.2, "actual": 0.3, "previous": 0.1, "unit": "%"},
+        {"country": "US", "event": "CPI YoY", "offset": 0, "importance": "high", "forecast": 3.1, "actual": 3.2, "previous": 3.0, "unit": "%"},
+        {"country": "US", "event": "Initial Jobless Claims", "offset": 2, "importance": "low", "forecast": 215, "actual": None, "previous": 220, "unit": "K"},
+        {"country": "US", "event": "Retail Sales MoM", "offset": 4, "importance": "medium", "forecast": 0.3, "actual": None, "previous": 0.1, "unit": "%"},
+        {"country": "US", "event": "PPI MoM", "offset": 5, "importance": "medium", "forecast": 0.1, "actual": None, "previous": 0.2, "unit": "%"},
+        {"country": "US", "event": "GDP Growth Rate QoQ (Est)", "offset": 10, "importance": "high", "forecast": 2.1, "actual": None, "previous": 1.8, "unit": "%"},
+        {"country": "US", "event": "S&P Global Manufacturing PMI", "offset": 15, "importance": "medium", "forecast": 50.5, "actual": None, "previous": 49.9, "unit": ""},
+        {"country": "US", "event": "Michigan Consumer Sentiment", "offset": 20, "importance": "low", "forecast": 72.5, "actual": None, "previous": 70.2, "unit": ""},
+
+        # --- EU ---
+        {"country": "EU", "event": "ECB Interest Rate Decision", "offset": -3, "importance": "high", "forecast": 3.75, "actual": 3.5, "previous": 3.75, "unit": "%"},
+        {"country": "EU", "event": "Inflation Rate YoY (Flash)", "offset": -1, "importance": "high", "forecast": 2.4, "actual": 2.4, "previous": 2.6, "unit": "%"},
+        {"country": "EU", "event": "Unemployment Rate", "offset": 1, "importance": "medium", "forecast": 6.5, "actual": None, "previous": 6.5, "unit": "%"},
+        {"country": "EU", "event": "GDP Growth Rate QoQ (Flash)", "offset": 3, "importance": "high", "forecast": 0.2, "actual": None, "previous": 0.1, "unit": "%"},
+        {"country": "EU", "event": "ZEW Economic Sentiment Index", "offset": 6, "importance": "medium", "forecast": 43.0, "actual": None, "previous": 42.9, "unit": ""},
+        {"country": "EU", "event": "Industrial Production MoM", "offset": 12, "importance": "low", "forecast": 0.5, "actual": None, "previous": -0.2, "unit": "%"},
+        {"country": "EU", "event": "HCOB Eurozone Manufacturing PMI", "offset": 18, "importance": "medium", "forecast": 47.2, "actual": None, "previous": 47.3, "unit": ""},
+
+        # --- UK ---
+        {"country": "UK", "event": "BoE Interest Rate Decision", "offset": -2, "importance": "high", "forecast": 5.0, "actual": 5.0, "previous": 5.25, "unit": "%"},
+        {"country": "UK", "event": "Inflation Rate YoY", "offset": 0, "importance": "high", "forecast": 2.1, "actual": 2.0, "previous": 2.3, "unit": "%"},
+        {"country": "UK", "event": "Unemployment Rate (3M)", "offset": 2, "importance": "medium", "forecast": 4.3, "actual": None, "previous": 4.2, "unit": "%"},
+        {"country": "UK", "event": "GDP Growth Rate MoM", "offset": 5, "importance": "high", "forecast": 0.1, "actual": None, "previous": 0.2, "unit": "%"},
+        {"country": "UK", "event": "Retail Sales MoM", "offset": 8, "importance": "medium", "forecast": -0.3, "actual": None, "previous": 0.5, "unit": "%"},
+        {"country": "UK", "event": "S&P Global Services PMI", "offset": 14, "importance": "medium", "forecast": 52.9, "actual": None, "previous": 53.1, "unit": ""},
+
+        # --- TR ---
+        {"country": "TR", "event": "TCMB Interest Rate Decision", "offset": -4, "importance": "high", "forecast": 45.0, "actual": 45.0, "previous": 45.0, "unit": "%"},
+        {"country": "TR", "event": "Inflation Rate YoY (CPI)", "offset": -1, "importance": "high", "forecast": 68.2, "actual": 69.8, "previous": 67.1, "unit": "%"},
+        {"country": "TR", "event": "Unemployment Rate", "offset": 1, "importance": "medium", "forecast": 8.7, "actual": None, "previous": 8.8, "unit": "%"},
+        {"country": "TR", "event": "Industrial Production YoY", "offset": 3, "importance": "medium", "forecast": 2.1, "actual": None, "previous": 1.3, "unit": "%"},
+        {"country": "TR", "event": "GDP Growth Rate YoY", "offset": 7, "importance": "high", "forecast": 4.0, "actual": None, "previous": 4.5, "unit": "%"},
+        {"country": "TR", "event": "Current Account Balance", "offset": 11, "importance": "medium", "forecast": -2.1, "actual": None, "previous": -1.8, "unit": "B USD"},
+        {"country": "TR", "event": "Retail Sales YoY", "offset": 16, "importance": "low", "forecast": 9.5, "actual": None, "previous": 10.2, "unit": "%"},
     ]
-    if importance:
-        wanted = str(importance).lower()
-        events = [event for event in events if event["importance"].lower() == wanted] or events[:1]
+    events = []
+    for item in raw_events:
+        event_date = today + timedelta(days=item["offset"])
+        events.append({
+            "country": item["country"],
+            "event": item["event"],
+            "date": event_date.isoformat(),
+            "importance": item["importance"],
+            "forecast": item["forecast"],
+            "actual": item["actual"],
+            "previous": item["previous"],
+            "unit": item["unit"],
+        })
     return events
+
 
 
 # S05 BUGHUNT B4: trading-economics tags UK/EU/JP events with ISO 3166 alpha-2

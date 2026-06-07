@@ -4,7 +4,9 @@
   "private": true,
   "description": "showMe — native macOS market cockpit with a unified Python function engine and a thin Tauri shell.",
   "type": "module",
-  "workspaces": ["ui"],
+  "workspaces": [
+    "ui"
+  ],
   "scripts": {
     "dev": "npm --workspace ui run dev",
     "build:ui": "npm --workspace ui run build",
@@ -32,6 +34,8 @@
   },
   "devDependencies": {
     "@playwright/test": "1.49.1",
-    "@tauri-apps/cli": "2.1.0"
+    "@tauri-apps/cli": "2.1.0",
+    "vitest": "^4.1.8",
+    "jsdom": "^29.1.1"
   }
 }
