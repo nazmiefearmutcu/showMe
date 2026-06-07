@@ -67,18 +67,26 @@ coincidentally close; the Explore agent's "4,393" was wrong — it summed pre-de
 1. **Hero** — custom SVG banner (terminal-style `showMe` wordmark + tagline), one-line value
    prop, badge row (license · platform · Tauri · Python · React · tests), quick-nav links.
 2. **What is showMe?** — honest elevator pitch (3–4 sentences). A market terminal for macOS;
-   100% local; no subscription, no broker lock-in. The two core ideas: (a) the MIS multi-asset
-   scanner, (b) the function-code terminal. Positioning sentence with the single Bloomberg mention.
+   100% local; no subscription, no broker lock-in. **Two co-equal pillars, given equal billing:**
+   (a) the ~138-function analyst terminal, and (b) the MIS multi-asset scanner. Positioning
+   sentence with the single Bloomberg mention.
 3. **Preview** — the 4 existing screenshots (cockpit · MIS scan · function palette · symbol view)
    with honest captions.
-4. **Two core ideas** — the "genuinely explains it" section:
+4. **Two core pillars** — the "genuinely explains it" section. **Both pillars get equal depth,
+   equal word-count, and equal visual weight — neither is "the headline."** Order them as
+   terminal-first then scanner (or side by side), so the functions are not framed as secondary:
+   - **The function terminal:** type a short code into the command palette to open a function.
+     ~138 functions spanning equities, options, bonds, FX, commodities, macro, news, and
+     portfolio. Show a curated marquee grid of ~10–12 representative codes *inline* (not
+     collapsed) — e.g. `FA` financials, `GEX` gamma exposure, `WIRP` rate-hike odds, `ESG`,
+     `CORR` correlation, `PORT` portfolio analytics, `ECO` calendar — each with a one-line gloss,
+     so a reader immediately grasps the breadth.
    - **MIS — Multi-Indicator Scan:** the ZAK weighting matrix; 3,375 symbols · 6 markets · 12
      timeframes · 23 indicators → a weighted-consensus BUY/SELL ranking. Explain consensus +
      confidence honestly.
-   - **The function terminal:** type a short code into the command palette to open a function;
-     ~138 functions spanning equities, options, bonds, FX, commodities, macro, news, portfolio.
-5. **Function catalog** — table grouped by category with representative codes + one-line
-   descriptions, wrapped in `<details>` so it is scannable.
+5. **Full function catalog** — the *complete* table grouped by category with codes + one-line
+   descriptions, wrapped in `<details>` (the marquee grid in §4 is the always-visible teaser;
+   this is the exhaustive reference for those who expand).
 6. **Honest by design** — the real differentiator:
    - data-mode pill + strict-zero gate (live vs modeled-data transparency; shows
      `PROVIDER_UNAVAILABLE` instead of fake data).
@@ -123,6 +131,9 @@ coincidentally close; the Explore agent's "4,393" was wrong — it summed pre-de
 
 - [ ] Every numeric claim matches §3 (or uses the soft "140+/~138 + audit command" form).
 - [ ] The function-code terminal concept is clearly explained for a non-expert reader.
+- [ ] The function terminal and the MIS scanner are given **equal weight** — comparable depth,
+      word-count, and visual prominence; neither framed as primary/secondary. A curated marquee
+      grid of representative function codes appears inline (not only collapsed).
 - [ ] Bloomberg is named exactly once, in the positioning sentence; no other mentions.
 - [ ] "What it is / is NOT" section present and honest (paper trading, macOS ARM64, local, MIT).
 - [ ] Hero banner SVG renders on GitHub; all 4 screenshots referenced with honest captions.
