@@ -28,10 +28,20 @@ The current `README.md` (10 KB) is dense and developer-leaning, and has several 
 
 | Decision | Choice |
 | --- | --- |
+| **Core framing** | **showMe is introduced as a financial terminal** — a function-driven market workstation. NOT framed around the scanner. |
 | Primary audience | Balanced general open-source (users *and* developers) |
 | Language | English |
 | Visual scope | Custom SVG hero banner + existing 4 screenshots + badges + mermaid diagram |
 | Structure | Approach A — product-first, progressive depth (`<details>` for heavy dev sections) |
+
+### Identity / framing policy (explicit user instruction)
+
+**Break the scanner-centric structure completely.** The MIS Multi-Indicator Scan is *one of the
+~138 functions*, not a headline pillar and not a co-equal half of the page. The README's single,
+top-level identity is: **a financial terminal you drive by typing function codes.** The scanner
+appears only as one notable function entry inside the terminal's catalog (it may carry a slightly
+richer gloss because it scans 3,375 symbols, but it gets no dedicated structural section of its
+own). There is no "two pillars" framing and no scanner-as-hero framing.
 
 ### Bloomberg-naming policy (explicit user instruction)
 
@@ -48,14 +58,22 @@ function"), with no "Bloomberg-style" filler.
 
 Derived directly from the assembled data structures, **not** raw seed lists.
 
+Terminal-level identity numbers (lead with these):
+
 | Metric | Value | Source |
 | --- | --- | --- |
-| Symbols scanned | **3,375** (Crypto 381 · Equity 2,461 · ETF 416 · FX 68 · Commodity 32 · Bond 17) | `backend/showme/mis.py` → `MIS_UNIVERSES` |
-| Asset classes / markets | **6** | `MIS_UNIVERSES` keys |
+| Function codes | **~138** | grep of `backend/showme/engine/functions/` distinct codes |
+| Asset classes | **6** (equities, ETFs, crypto, FX, commodities, bonds) | `MIS_UNIVERSES` keys |
+| UI languages | **12** | `ui/src/i18n/*.json` |
+
+Function-level numbers (these describe the **MIS function specifically**, not the whole app —
+use them only inside the MIS catalog entry, never as the app's headline):
+
+| Metric | Value | Source |
+| --- | --- | --- |
+| Symbols the scan covers | **3,375** (Crypto 381 · Equity 2,461 · ETF 416 · FX 68 · Commodity 32 · Bond 17) | `backend/showme/mis.py` → `MIS_UNIVERSES` |
 | Timeframes | **12** | `MARKET_DEFAULT_TFS` |
 | Technical indicators | **23** | `backend/showme/engine/indicators/` (24 files − `base.py`) |
-| Function codes | **~138** | grep of `backend/showme/engine/functions/` distinct codes |
-| UI languages | **12** | `ui/src/i18n/*.json` |
 
 Note: the function count drifts as functions are added; README will say "**140+ functions**" or
 "**~138 functions**" and reference `npm run audit:functions` as the live check, rather than a
@@ -65,28 +83,32 @@ coincidentally close; the Explore agent's "4,393" was wrong — it summed pre-de
 ## 4. Final structure (Approach A)
 
 1. **Hero** — custom SVG banner (terminal-style `showMe` wordmark + tagline), one-line value
-   prop, badge row (license · platform · Tauri · Python · React · tests), quick-nav links.
-2. **What is showMe?** — honest elevator pitch (3–4 sentences). A market terminal for macOS;
-   100% local; no subscription, no broker lock-in. **Two co-equal pillars, given equal billing:**
-   (a) the ~138-function analyst terminal, and (b) the MIS multi-asset scanner. Positioning
-   sentence with the single Bloomberg mention.
-3. **Preview** — the 4 existing screenshots (cockpit · MIS scan · function palette · symbol view)
-   with honest captions.
-4. **Two core pillars** — the "genuinely explains it" section. **Both pillars get equal depth,
-   equal word-count, and equal visual weight — neither is "the headline."** Order them as
-   terminal-first then scanner (or side by side), so the functions are not framed as secondary:
-   - **The function terminal:** type a short code into the command palette to open a function.
-     ~138 functions spanning equities, options, bonds, FX, commodities, macro, news, and
-     portfolio. Show a curated marquee grid of ~10–12 representative codes *inline* (not
-     collapsed) — e.g. `FA` financials, `GEX` gamma exposure, `WIRP` rate-hike odds, `ESG`,
-     `CORR` correlation, `PORT` portfolio analytics, `ECO` calendar — each with a one-line gloss,
-     so a reader immediately grasps the breadth.
-   - **MIS — Multi-Indicator Scan:** the ZAK weighting matrix; 3,375 symbols · 6 markets · 12
-     timeframes · 23 indicators → a weighted-consensus BUY/SELL ranking. Explain consensus +
-     confidence honestly.
-5. **Full function catalog** — the *complete* table grouped by category with codes + one-line
-   descriptions, wrapped in `<details>` (the marquee grid in §4 is the always-visible teaser;
-   this is the exhaustive reference for those who expand).
+   prop ("**a financial terminal for macOS**"), badge row (license · platform · Tauri · Python ·
+   React · tests), quick-nav links.
+2. **What is showMe?** — honest elevator pitch (3–4 sentences), framed as **a financial
+   terminal**: a local, open-source market workstation you drive by typing short *function codes*.
+   ~138 functions span equities, options, bonds, FX, commodities, macro, news, and portfolio.
+   100% local; no subscription, no broker lock-in. Positioning sentence with the single Bloomberg
+   mention. **No "scanner" framing here.**
+3. **Preview** — the 4 existing screenshots (cockpit · function palette · symbol view · scan)
+   with honest captions. Lead with the cockpit + function palette (terminal identity); the scan
+   screenshot is just one of the four, not foregrounded.
+4. **How the terminal works** — the single "genuinely explains it" section, all about the
+   function-code model:
+   - The command palette: type a code → a function opens. Explain the mental model for a reader
+     who has never used a professional terminal.
+   - A curated **marquee grid of ~12 representative function codes** *inline* (not collapsed),
+     each with a one-line gloss, chosen to show breadth across categories — e.g. `FA` financials,
+     `GEX` gamma exposure, `WIRP` rate-hike odds, `ESG` scores, `CORR` correlation matrix,
+     `PORT` portfolio analytics, `ECO` economic calendar, `YAS` yield & spread, `OMON` option
+     monitor, `MIS` multi-indicator scan, `GMM` global macro movers, `BRIEF` daily briefing.
+   - `MIS` sits in this grid as **one entry among equals**. Its gloss may note it scans 3,375
+     symbols across 6 asset classes × 12 timeframes × 23 indicators into a consensus ranking —
+     but it gets **no dedicated section**, no separate heading, no co-equal half. It is a function.
+5. **Full function catalog** — the *complete* table grouped by category (equities · options ·
+   bonds · FX · commodities · macro · news · portfolio · screen/scan · trade · misc) with codes +
+   one-line descriptions, wrapped in `<details>`. The screen/scan category (where MIS lives) is
+   one category among many.
 6. **Honest by design** — the real differentiator:
    - data-mode pill + strict-zero gate (live vs modeled-data transparency; shows
      `PROVIDER_UNAVAILABLE` instead of fake data).
@@ -130,10 +152,13 @@ coincidentally close; the Explore agent's "4,393" was wrong — it summed pre-de
 ## 7. Acceptance criteria
 
 - [ ] Every numeric claim matches §3 (or uses the soft "140+/~138 + audit command" form).
+- [ ] showMe is introduced as **a financial terminal** (function-code workstation) in the hero
+      and the "What is" section — this is the single top-level identity.
 - [ ] The function-code terminal concept is clearly explained for a non-expert reader.
-- [ ] The function terminal and the MIS scanner are given **equal weight** — comparable depth,
-      word-count, and visual prominence; neither framed as primary/secondary. A curated marquee
-      grid of representative function codes appears inline (not only collapsed).
+- [ ] **The scanner is fully de-structured:** MIS appears only as one entry in the function
+      marquee/catalog — no dedicated section, no separate heading, no headline or co-equal
+      framing. No section is built around "scanning."
+- [ ] A curated marquee grid of ~12 representative function codes appears inline (not only collapsed).
 - [ ] Bloomberg is named exactly once, in the positioning sentence; no other mentions.
 - [ ] "What it is / is NOT" section present and honest (paper trading, macOS ARM64, local, MIT).
 - [ ] Hero banner SVG renders on GitHub; all 4 screenshots referenced with honest captions.
