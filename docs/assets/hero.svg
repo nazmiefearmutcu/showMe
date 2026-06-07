@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 360" role="img" aria-label="showMe — a financial terminal for macOS">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0e1116"/>
+      <stop offset="1" stop-color="#070a0e"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#dc5721"/>
+      <stop offset="1" stop-color="#f0883e"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="360" fill="url(#bg)"/>
+  <!-- top sector heat strip -->
+  <g>
+    <rect x="0"    y="0" width="120" height="6" fill="#3fb950"/>
+    <rect x="120"  y="0" width="120" height="6" fill="#2ea043"/>
+    <rect x="240"  y="0" width="120" height="6" fill="#d29922"/>
+    <rect x="360"  y="0" width="120" height="6" fill="#dc5721"/>
+    <rect x="480"  y="0" width="120" height="6" fill="#f85149"/>
+    <rect x="600"  y="0" width="120" height="6" fill="#3fb950"/>
+    <rect x="720"  y="0" width="120" height="6" fill="#d29922"/>
+    <rect x="840"  y="0" width="120" height="6" fill="#2ea043"/>
+    <rect x="960"  y="0" width="120" height="6" fill="#f85149"/>
+    <rect x="1080" y="0" width="120" height="6" fill="#3fb950"/>
+  </g>
+  <!-- wordmark -->
+  <text x="80" y="160" font-family="ui-monospace, 'SF Mono', Menlo, Consolas, monospace" font-size="92" font-weight="700" fill="#e6edf3">show<tspan fill="url(#accent)">Me</tspan></text>
+  <!-- command-line prompt -->
+  <g font-family="ui-monospace, 'SF Mono', Menlo, Consolas, monospace" font-size="26">
+    <text x="84" y="224" fill="#dc5721">&gt;</text>
+    <text x="112" y="224" fill="#8b949e">FA</text>
+    <rect x="150" y="203" width="13" height="26" fill="#dc5721"/>
+  </g>
+  <!-- tagline -->
+  <text x="80" y="286" font-family="ui-monospace, 'SF Mono', Menlo, Consolas, monospace" font-size="27" fill="#adbac7">A financial terminal for macOS — 138 functions, one command line.</text>
+  <!-- function-code chips -->
+  <g font-family="ui-monospace, 'SF Mono', Menlo, Consolas, monospace" font-size="18" fill="#6e7681">
+    <text x="80"  y="330">GEX</text>
+    <text x="140" y="330">WIRP</text>
+    <text x="214" y="330">ECO</text>
+    <text x="268" y="330">PORT</text>
+    <text x="340" y="330">YAS</text>
+    <text x="396" y="330">ESG</text>
+    <text x="452" y="330">CORR</text>
+    <text x="524" y="330">OMON</text>
+    <text x="598" y="330">DCF</text>
+    <text x="654" y="330">GMM</text>
+    <text x="716" y="330">BRIEF</text>
+  </g>
+</svg>
