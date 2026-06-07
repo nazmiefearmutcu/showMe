@@ -80,6 +80,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  (confirmAction as ReturnType<typeof vi.fn>).mockClear();
 });
 
 describe("handleCredentialDelete — A12 bots_unknown warning", () => {

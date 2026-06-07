@@ -39,6 +39,7 @@ interface TimeScaleStub {
 interface ChartStub {
   addCandlestickSeries: ReturnType<typeof vi.fn<(...args: unknown[]) => SeriesStub>>;
   addLineSeries: ReturnType<typeof vi.fn<(...args: unknown[]) => SeriesStub>>;
+  addAreaSeries: ReturnType<typeof vi.fn<(...args: unknown[]) => SeriesStub>>;
   addHistogramSeries: ReturnType<typeof vi.fn<(...args: unknown[]) => SeriesStub>>;
   removeSeries: ReturnType<typeof vi.fn>;
   priceScale: ReturnType<typeof vi.fn>;
@@ -48,6 +49,7 @@ interface ChartStub {
   resize: ReturnType<typeof vi.fn>;
   __series: SeriesStub[];
   __timeScale: TimeScaleStub;
+  addSeries: ReturnType<typeof vi.fn>;
 }
 
 const chartInstances: ChartStub[] = [];
@@ -61,6 +63,10 @@ function makeSeries(): SeriesStub {
 }
 
 vi.mock("lightweight-charts", () => {
+  class LineSeries {}
+  class CandlestickSeries {}
+  class HistogramSeries {}
+  class AreaSeries {}
   const createChart = vi.fn(() => {
     const series: SeriesStub[] = [];
     const track = (s: SeriesStub) => {
@@ -78,6 +84,7 @@ vi.mock("lightweight-charts", () => {
     const instance: ChartStub = {
       addCandlestickSeries: vi.fn(() => track(makeSeries())),
       addLineSeries: vi.fn(() => track(makeSeries())),
+      addAreaSeries: vi.fn(() => track(makeSeries())),
       addHistogramSeries: vi.fn(() => track(makeSeries())),
       removeSeries: vi.fn(),
       priceScale: vi.fn(() => ({ applyOptions: vi.fn() })),
@@ -87,11 +94,18 @@ vi.mock("lightweight-charts", () => {
       resize: vi.fn(),
       __series: series,
       __timeScale: timeScaleStub,
+      addSeries: vi.fn((constructor, options) => {
+        if (constructor === CandlestickSeries) return instance.addCandlestickSeries(options);
+        if (constructor === LineSeries) return instance.addLineSeries(options);
+        if (constructor === HistogramSeries) return instance.addHistogramSeries(options);
+        if (constructor === AreaSeries) return instance.addAreaSeries(options);
+        return track(makeSeries());
+      }),
     };
     chartInstances.push(instance);
     return instance;
   });
-  return { createChart };
+  return { createChart, LineSeries, CandlestickSeries, HistogramSeries, AreaSeries };
 });
 
 // jsdom ships no ResizeObserver — stub it so the mount effect doesn't throw.

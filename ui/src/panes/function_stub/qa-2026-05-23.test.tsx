@@ -79,21 +79,42 @@ class FakeResizeObserver {
 }
 (globalThis as { ResizeObserver?: unknown }).ResizeObserver = FakeResizeObserver;
 
-vi.mock("lightweight-charts", () => ({
-  createChart: vi.fn(() => ({
-    addCandlestickSeries: vi.fn(() => ({ setData: vi.fn(), update: vi.fn(), applyOptions: vi.fn() })),
-    addLineSeries: vi.fn(() => ({ setData: vi.fn(), update: vi.fn(), applyOptions: vi.fn() })),
-    addHistogramSeries: vi.fn(() => ({ setData: vi.fn(), update: vi.fn(), applyOptions: vi.fn() })),
-    removeSeries: vi.fn(),
-    priceScale: vi.fn(() => ({ applyOptions: vi.fn() })),
-    timeScale: vi.fn(() => ({ fitContent: vi.fn(), setVisibleLogicalRange: vi.fn() })),
-    subscribeCrosshairMove: vi.fn(),
-    remove: vi.fn(),
-    applyOptions: vi.fn(),
-    resize: vi.fn(),
-    takeScreenshot: vi.fn(() => document.createElement("canvas")),
-  })),
-}));
+vi.mock("lightweight-charts", () => {
+  class LineSeries {}
+  class CandlestickSeries {}
+  class HistogramSeries {}
+  class AreaSeries {}
+  return {
+    LineSeries,
+    CandlestickSeries,
+    HistogramSeries,
+    AreaSeries,
+    createChart: vi.fn(() => {
+      const instance = {
+        addCandlestickSeries: vi.fn((_options?: any) => ({ setData: vi.fn(), update: vi.fn(), applyOptions: vi.fn() })),
+        addLineSeries: vi.fn((_options?: any) => ({ setData: vi.fn(), update: vi.fn(), applyOptions: vi.fn() })),
+        addAreaSeries: vi.fn((_options?: any) => ({ setData: vi.fn(), update: vi.fn(), applyOptions: vi.fn() })),
+        addHistogramSeries: vi.fn((_options?: any) => ({ setData: vi.fn(), update: vi.fn(), applyOptions: vi.fn() })),
+        removeSeries: vi.fn(),
+        priceScale: vi.fn(() => ({ applyOptions: vi.fn() })),
+        timeScale: vi.fn(() => ({ fitContent: vi.fn(), setVisibleLogicalRange: vi.fn() })),
+        subscribeCrosshairMove: vi.fn(),
+        remove: vi.fn(),
+        applyOptions: vi.fn(),
+        resize: vi.fn(),
+        takeScreenshot: vi.fn(() => document.createElement("canvas")),
+        addSeries: vi.fn((constructor, options) => {
+          if (constructor === CandlestickSeries) return instance.addCandlestickSeries(options);
+          if (constructor === LineSeries) return instance.addLineSeries(options);
+          if (constructor === HistogramSeries) return instance.addHistogramSeries(options);
+          if (constructor === AreaSeries) return instance.addAreaSeries(options);
+          return { setData: vi.fn(), update: vi.fn(), applyOptions: vi.fn() };
+        }),
+      };
+      return instance;
+    }),
+  };
+});
 
 // Imports must come AFTER vi.mock declarations.
 import FunctionStub from "./index";

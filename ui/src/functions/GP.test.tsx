@@ -46,6 +46,7 @@ interface ChartStub {
   applyOptions: ReturnType<typeof vi.fn>;
   resize: ReturnType<typeof vi.fn>;
   __series: SeriesStub[];
+  addSeries: ReturnType<typeof vi.fn>;
 }
 
 const chartInstances: ChartStub[] = [];
@@ -59,6 +60,10 @@ function makeSeries(): SeriesStub {
 }
 
 vi.mock("lightweight-charts", () => {
+  class LineSeries {}
+  class CandlestickSeries {}
+  class HistogramSeries {}
+  class AreaSeries {}
   const createChart = vi.fn(() => {
     const series: SeriesStub[] = [];
     const track = (s: SeriesStub) => {
@@ -81,11 +86,18 @@ vi.mock("lightweight-charts", () => {
       applyOptions: vi.fn(),
       resize: vi.fn(),
       __series: series,
+      addSeries: vi.fn((constructor, options) => {
+        if (constructor === CandlestickSeries) return instance.addCandlestickSeries(options);
+        if (constructor === LineSeries) return instance.addLineSeries(options);
+        if (constructor === HistogramSeries) return instance.addHistogramSeries(options);
+        if (constructor === AreaSeries) return instance.addAreaSeries(options);
+        return track(makeSeries());
+      }),
     };
     chartInstances.push(instance);
     return instance;
   });
-  return { createChart };
+  return { createChart, LineSeries, CandlestickSeries, HistogramSeries, AreaSeries };
 });
 
 // jsdom ships no ResizeObserver — stub it so the mount effect doesn't throw.

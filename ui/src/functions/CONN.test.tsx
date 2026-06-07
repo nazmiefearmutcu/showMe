@@ -37,6 +37,8 @@ beforeEach(() => {
 
 afterEach(() => {
   global.fetch = ORIGINAL_FETCH;
+  vi.restoreAllMocks();
+  (confirmAction as ReturnType<typeof vi.fn>).mockClear();
 });
 
 describe("CONN pane", () => {

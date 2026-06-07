@@ -39,19 +39,20 @@ interface SeriesStub {
   applyOptions: ReturnType<typeof vi.fn>;
 }
 interface ChartStub {
-  addCandlestickSeries: ReturnType<typeof vi.fn>;
-  addLineSeries: ReturnType<typeof vi.fn>;
-  addAreaSeries: ReturnType<typeof vi.fn>;
-  addHistogramSeries: ReturnType<typeof vi.fn>;
-  removeSeries: ReturnType<typeof vi.fn>;
-  subscribeCrosshairMove: ReturnType<typeof vi.fn>;
-  priceScale: ReturnType<typeof vi.fn>;
-  timeScale: ReturnType<typeof vi.fn>;
-  remove: ReturnType<typeof vi.fn>;
-  applyOptions: ReturnType<typeof vi.fn>;
-  resize: ReturnType<typeof vi.fn>;
-  takeScreenshot: ReturnType<typeof vi.fn>;
+  addCandlestickSeries: any;
+  addLineSeries: any;
+  addAreaSeries: any;
+  addHistogramSeries: any;
+  removeSeries: any;
+  subscribeCrosshairMove: any;
+  priceScale: any;
+  timeScale: any;
+  remove: any;
+  applyOptions: any;
+  resize: any;
+  takeScreenshot: any;
   __series: SeriesStub[];
+  addSeries: any;
 }
 
 const chartInstances: ChartStub[] = [];
@@ -65,6 +66,10 @@ function makeSeries(): SeriesStub {
 }
 
 vi.mock("lightweight-charts", () => {
+  class LineSeries {}
+  class CandlestickSeries {}
+  class HistogramSeries {}
+  class AreaSeries {}
   const createChart = vi.fn(() => {
     const series: SeriesStub[] = [];
     const track = (s: SeriesStub) => {
@@ -88,11 +93,18 @@ vi.mock("lightweight-charts", () => {
       resize: vi.fn(),
       takeScreenshot: vi.fn(() => document.createElement("canvas")),
       __series: series,
+      addSeries: vi.fn((constructor, options) => {
+        if (constructor === CandlestickSeries) return instance.addCandlestickSeries(options);
+        if (constructor === LineSeries) return instance.addLineSeries(options);
+        if (constructor === HistogramSeries) return instance.addHistogramSeries(options);
+        if (constructor === AreaSeries) return instance.addAreaSeries(options);
+        return track(makeSeries());
+      }),
     };
     chartInstances.push(instance);
     return instance;
   });
-  return { createChart };
+  return { createChart, LineSeries, CandlestickSeries, HistogramSeries, AreaSeries };
 });
 
 class FakeResizeObserver {
