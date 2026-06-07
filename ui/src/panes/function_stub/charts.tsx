@@ -1,6 +1,9 @@
 import { useEffect, useRef } from "react";
 import {
   createChart,
+  LineSeries,
+  CandlestickSeries,
+  HistogramSeries,
   type CandlestickData,
   type HistogramData,
   type LineData,

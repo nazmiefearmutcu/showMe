@@ -1,21 +1,28 @@
 # i18n catalogs
 
-Round 13 ships **English (`en.json`)** and **Turkish (`tr.json`)** as
-authoritative catalogs. The other 10 locales targeted in Rapor 1 §17.4
-(`de fr es it ja zh ko ar pt ru`) fall back to English at runtime via
-`t()`.
+This directory contains the localization catalogs and helper modules for the application.
 
-To add a locale:
+All 12 supported locales are fully populated with 100% key parity:
+`en`, `tr`, `de`, `fr`, `es`, `it`, `ja`, `zh`, `ko`, `ar`, `pt`, `ru`
 
-1. Drop a `<locale>.json` file mirroring the shape of `en.json`.
-2. Import + register it in `i18n/index.ts → CATALOGS`.
-3. Confirm `setLocale("xx")` flips `<html lang="xx" dir="…">`.
+## 🔒 Crucial Rules & Architecture
 
-Translator workflow lives in `docs/round_notes/<round>.md` once we hire
-contractors (Round 24+).
+1. **Strict Key Parity**: Every catalog (`<locale>.json`) must contain exactly the same set of keys as the English source of truth (`en.json`).
+2. **Zero English Fallback**: At runtime, `t()` does **NOT** fall back to English if a key is missing in the active locale. A missing key will immediately return the caller-supplied default/fallback or the key name itself to prevent language mixing.
+3. **Arabic Direction**: Arabic (`ar`) automatically configures `<html dir="rtl">` for Right-to-Left layout.
+
+## 🛠️ Adding or Updating Keys
+
+When you add, edit, or delete a translation key:
+
+1. Update the key in **all 12 JSON files** (`en.json`, `tr.json`, `de.json`, `fr.json`, `es.json`, `it.json`, `ja.json`, `zh.json`, `ko.json`, `ar.json`, `pt.json`, `ru.json`).
+2. Do **not** leave any key missing in any catalog, as it will print the raw key name to the user instead of falling back to English.
+3. Verify your changes by running the unit tests:
+   ```bash
+   npx vitest run src/i18n/
+   ```
+   This suite automatically asserts 100% key parity and correct fallback behavior across all registered locales.
 
 ## Key naming
 
-`<scope>.<sub-scope>.<purpose>` — e.g. `preferences.appearance.theme`,
-`shell.palette.placeholder`. Keep keys stable; missing keys fall back to
-English, then to `<key>` itself, so mis-typing is loud.
+`<scope>.<sub-scope>.<purpose>` — e.g. `preferences.appearance.theme`, `shell.palette.placeholder`. Keep keys stable.

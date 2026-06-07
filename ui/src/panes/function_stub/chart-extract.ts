@@ -206,7 +206,13 @@ export function rowsToTimePoints(
       }
       const y = toFiniteNumber(row[yKey]);
       if (y === null) return null;
-      return { xLabel: formatAxisLabel(row[xKey], idx), y, time };
+      const compareY = toFiniteNumber(row["compare_value"]);
+      return {
+        xLabel: formatAxisLabel(row[xKey], idx),
+        y,
+        time,
+        ...(compareY !== null ? { compareY } : {}),
+      };
     })
   return points
     .filter((point): point is ChartPoint => point !== null)

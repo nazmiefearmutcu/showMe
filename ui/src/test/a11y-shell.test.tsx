@@ -117,17 +117,17 @@ describe("Sidebar nav links (A11Y-08)", () => {
       toJSON: () => ({}),
     });
 
-    const gammaSource = getAllByRole("link", { name: /Gamma Exposure GEX/i })[0];
+    const gammaSource = getAllByRole("link", { name: /Gamma Exposure\s*GEX/i })[0];
     fireEvent.mouseDown(gammaSource, { button: 0, clientX: 72, clientY: 420 });
     fireEvent.mouseMove(window, { clientX: 92, clientY: 300 });
 
     const ghost = container.querySelector(".pin-drag-ghost");
     expect(ghost?.textContent).toContain("Gamma Exposure");
-    expect(queryByRole("link", { name: /Gamma Exposure GEX/i })).toBeNull();
+    expect(queryByRole("link", { name: /Gamma Exposure\s*GEX/i })).toBeNull();
 
     fireEvent.mouseUp(window, { clientX: 92, clientY: 140 });
     expect(getByRole("heading", { name: /Pinned\s*5/i })).toBeTruthy();
-    expect(getAllByRole("link", { name: /Gamma Exposure GEX/i })).toHaveLength(1);
+    expect(getAllByRole("link", { name: /Gamma Exposure\s*GEX/i })).toHaveLength(1);
     expect(queryByRole("link", { name: /GEX Gamma Exposure/i })).toBeNull();
   });
 
@@ -145,7 +145,7 @@ describe("Sidebar nav links (A11Y-08)", () => {
     const { getAllByRole, getByRole, queryByRole } = render(<Sidebar />);
 
     expect(getByRole("heading", { name: /Pinned\s*5/i })).toBeTruthy();
-    expect(getAllByRole("link", { name: /Gamma Exposure GEX/i })).toHaveLength(1);
+    expect(getAllByRole("link", { name: /Gamma Exposure\s*GEX/i })).toHaveLength(1);
     expect(queryByRole("link", { name: /GEX Gamma Exposure/i })).toBeNull();
     // QA-2026-05-23: Recent is now sourced from palette-recents.ts.
     // It starts empty on first boot; pinning an entry from the index

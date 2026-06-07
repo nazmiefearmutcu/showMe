@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { listLocales, locale, setLocale, t } from "./index";
+import { listLocales, locale, setLocale, t, CATALOGS } from "./index";
 
 describe("i18n", () => {
   beforeEach(() => setLocale("en"));
@@ -10,9 +10,18 @@ describe("i18n", () => {
     ]);
   });
 
-  it("falls back to English when key missing in active locale", () => {
-    setLocale("de"); // not authored yet → falls back to en
-    expect(t("app.name")).toBe("showMe");
+  it("does NOT fall back to English when key is missing in the active locale catalog", () => {
+    const originalDe = CATALOGS.de;
+    // mock CATALOGS.de to simulate a missing key
+    CATALOGS.de = { ...originalDe };
+    delete CATALOGS.de["app.name"];
+
+    setLocale("de");
+    expect(t("app.name")).toBe("app.name"); // should not return "showMe"
+    expect(t("app.name", "Deutsch Fallback")).toBe("Deutsch Fallback"); // should return fallback
+
+    // restore
+    CATALOGS.de = originalDe;
   });
 
   it("returns Turkish translation when active", () => {

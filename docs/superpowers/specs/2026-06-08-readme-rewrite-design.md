@@ -28,7 +28,7 @@ The current `README.md` (10 KB) is dense and developer-leaning, and has several 
 
 | Decision | Choice |
 | --- | --- |
-| **Core framing** | **showMe is introduced as a financial terminal** — a function-driven market workstation. NOT framed around the scanner. |
+| **Core framing** | **showMe is introduced as a financial terminal** — a function-driven market workstation. The MIS scanner is **removed from the README entirely**. |
 | Primary audience | Balanced general open-source (users *and* developers) |
 | Language | English |
 | Visual scope | Custom SVG hero banner + existing 4 screenshots + badges + mermaid diagram |
@@ -36,12 +36,15 @@ The current `README.md` (10 KB) is dense and developer-leaning, and has several 
 
 ### Identity / framing policy (explicit user instruction)
 
-**Break the scanner-centric structure completely.** The MIS Multi-Indicator Scan is *one of the
-~138 functions*, not a headline pillar and not a co-equal half of the page. The README's single,
-top-level identity is: **a financial terminal you drive by typing function codes.** The scanner
-appears only as one notable function entry inside the terminal's catalog (it may carry a slightly
-richer gloss because it scans 3,375 symbols, but it gets no dedicated structural section of its
-own). There is no "two pillars" framing and no scanner-as-hero framing.
+**The MIS Multi-Indicator Scan is removed from the README completely** — no dedicated section, no
+catalog entry, no marquee entry, no scan screenshots, and none of its scan-specific numbers
+(3,375 symbols / 12 timeframes / 23 indicators / consensus ranking). It is not mentioned at all.
+
+The README's single, top-level identity is: **a financial terminal you drive by typing function
+codes.** There is no "two pillars" framing, no scanner-as-hero framing, and no scanner present.
+Other genuine functions that happen to involve screening or heatmaps (e.g. `SECT` sector heatmap,
+`ICX` industry explorer) may still appear in the catalog as ordinary functions, but the README is
+never built or labelled around "scanning."
 
 ### Bloomberg-naming policy (explicit user instruction)
 
@@ -56,29 +59,23 @@ function"), with no "Bloomberg-style" filler.
 
 ## 3. Verified canonical numbers (single source of truth)
 
-Derived directly from the assembled data structures, **not** raw seed lists.
+Derived directly from the code, **not** raw seed lists.
 
-Terminal-level identity numbers (lead with these):
+Terminal-level identity numbers (the only numbers the README leads with):
 
 | Metric | Value | Source |
 | --- | --- | --- |
 | Function codes | **~138** | grep of `backend/showme/engine/functions/` distinct codes |
-| Asset classes | **6** (equities, ETFs, crypto, FX, commodities, bonds) | `MIS_UNIVERSES` keys |
+| Asset classes covered | **6** (equities, options, bonds, FX, commodities, crypto) | engine function folders: `equity` · `derivative` · `bond` · `fx` · `commodity` + crypto coverage |
+| Function categories | **14** | `backend/showme/engine/functions/` subfolders |
 | UI languages | **12** | `ui/src/i18n/*.json` |
-
-Function-level numbers (these describe the **MIS function specifically**, not the whole app —
-use them only inside the MIS catalog entry, never as the app's headline):
-
-| Metric | Value | Source |
-| --- | --- | --- |
-| Symbols the scan covers | **3,375** (Crypto 381 · Equity 2,461 · ETF 416 · FX 68 · Commodity 32 · Bond 17) | `backend/showme/mis.py` → `MIS_UNIVERSES` |
-| Timeframes | **12** | `MARKET_DEFAULT_TFS` |
-| Technical indicators | **23** | `backend/showme/engine/indicators/` (24 files − `base.py`) |
 
 Note: the function count drifts as functions are added; README will say "**140+ functions**" or
 "**~138 functions**" and reference `npm run audit:functions` as the live check, rather than a
-brittle exact number. The "3,375" figure is the assembled-universe truth (the old "3 370" was
-coincidentally close; the Explore agent's "4,393" was wrong — it summed pre-dedup raw lists).
+brittle exact number.
+
+**Excluded numbers (scanner-specific, do NOT use anywhere):** 3,375 symbols, 12 timeframes,
+23 indicators, consensus/ZAK ranking — all tied to the removed MIS scanner.
 
 ## 4. Final structure (Approach A)
 
@@ -90,9 +87,9 @@ coincidentally close; the Explore agent's "4,393" was wrong — it summed pre-de
    ~138 functions span equities, options, bonds, FX, commodities, macro, news, and portfolio.
    100% local; no subscription, no broker lock-in. Positioning sentence with the single Bloomberg
    mention. **No "scanner" framing here.**
-3. **Preview** — the 4 existing screenshots (cockpit · function palette · symbol view · scan)
-   with honest captions. Lead with the cockpit + function palette (terminal identity); the scan
-   screenshot is just one of the four, not foregrounded.
+3. **Preview** — **3** existing screenshots only: cockpit · function palette · symbol view, with
+   honest captions. **The two MIS scan screenshots (`02-mis-scan.png`, `04-mis-scan.png`) are NOT
+   used.** Lead with cockpit + function palette (the terminal identity).
 4. **How the terminal works** — the single "genuinely explains it" section, all about the
    function-code model:
    - The command palette: type a code → a function opens. Explain the mental model for a reader
@@ -101,14 +98,13 @@ coincidentally close; the Explore agent's "4,393" was wrong — it summed pre-de
      each with a one-line gloss, chosen to show breadth across categories — e.g. `FA` financials,
      `GEX` gamma exposure, `WIRP` rate-hike odds, `ESG` scores, `CORR` correlation matrix,
      `PORT` portfolio analytics, `ECO` economic calendar, `YAS` yield & spread, `OMON` option
-     monitor, `MIS` multi-indicator scan, `GMM` global macro movers, `BRIEF` daily briefing.
-   - `MIS` sits in this grid as **one entry among equals**. Its gloss may note it scans 3,375
-     symbols across 6 asset classes × 12 timeframes × 23 indicators into a consensus ranking —
-     but it gets **no dedicated section**, no separate heading, no co-equal half. It is a function.
+     monitor, `DCF` discounted cash flow, `GMM` global macro movers, `BRIEF` daily briefing.
+   - **`MIS` is NOT in this grid.** No scan/consensus language anywhere in this section.
 5. **Full function catalog** — the *complete* table grouped by category (equities · options ·
-   bonds · FX · commodities · macro · news · portfolio · screen/scan · trade · misc) with codes +
-   one-line descriptions, wrapped in `<details>`. The screen/scan category (where MIS lives) is
-   one category among many.
+   bonds · FX · commodities · macro · news · portfolio · screen · trade · misc) with codes +
+   one-line descriptions, wrapped in `<details>`. **`MIS` is omitted from the catalog.** Other
+   screen-category functions (`SECT`, `ICX`, `MAP`, `MICRO`, `FRH`) may remain as ordinary
+   functions, but the category is labelled neutrally (e.g. "Screen") — never "scanner."
 6. **Honest by design** — the real differentiator:
    - data-mode pill + strict-zero gate (live vs modeled-data transparency; shows
      `PROVIDER_UNAVAILABLE` instead of fake data).
@@ -131,7 +127,9 @@ coincidentally close; the Explore agent's "4,393" was wrong — it summed pre-de
 ### Removed from current README
 
 "2026-05-25 rebuild" blockquote · "Last updated" line · "Refactor history" section · scattered
-"Bloomberg-style" phrasing.
+"Bloomberg-style" phrasing · **the entire MIS / Multi-Indicator Scan feature** (its screenshots,
+its 3,375-symbol / 12-TF / 23-indicator numbers, and the "what's moving together" scan pitch in
+the current hero tagline).
 
 ## 5. Hero banner (new asset)
 
@@ -155,10 +153,10 @@ coincidentally close; the Explore agent's "4,393" was wrong — it summed pre-de
 - [ ] showMe is introduced as **a financial terminal** (function-code workstation) in the hero
       and the "What is" section — this is the single top-level identity.
 - [ ] The function-code terminal concept is clearly explained for a non-expert reader.
-- [ ] **The scanner is fully de-structured:** MIS appears only as one entry in the function
-      marquee/catalog — no dedicated section, no separate heading, no headline or co-equal
-      framing. No section is built around "scanning."
-- [ ] A curated marquee grid of ~12 representative function codes appears inline (not only collapsed).
+- [ ] **The MIS scanner is removed entirely:** the string "MIS" and the words scan/scanner/
+      consensus/ZAK do not appear; no scan screenshots; no 3,375 / 12-timeframe / 23-indicator
+      numbers; no section built around scanning.
+- [ ] A curated marquee grid of ~12 representative function codes (excluding MIS) appears inline.
 - [ ] Bloomberg is named exactly once, in the positioning sentence; no other mentions.
 - [ ] "What it is / is NOT" section present and honest (paper trading, macOS ARM64, local, MIT).
 - [ ] Hero banner SVG renders on GitHub; all 4 screenshots referenced with honest captions.

@@ -26,6 +26,7 @@ export interface ChartPoint {
   low?: number;
   close?: number;
   volume?: number;
+  compareY?: number;
 }
 
 export interface ChartSeries {

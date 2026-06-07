@@ -57,6 +57,7 @@ class FREDAdapter(BaseDataSource):
         start: str | datetime | None = None,
         end: str | datetime | None = None,
         frequency: str | None = None,
+        vintage: str | None = None,
     ) -> pd.DataFrame:
         """Return a DataFrame indexed by date with column 'value'."""
         if not self.api_key:
@@ -84,6 +85,8 @@ class FREDAdapter(BaseDataSource):
             )
         if frequency:
             params["frequency"] = frequency
+        if vintage and vintage != "latest":
+            params["vintage_dates"] = vintage
         r = await client.get("/series/observations", params=params)
         r.raise_for_status()
         data = r.json().get("observations") or []
