@@ -1,6 +1,9 @@
 import { useEffect, useRef } from "react";
 import {
   createChart,
+  LineSeries,
+  CandlestickSeries,
+  HistogramSeries,
   type CandlestickData,
   type HistogramData,
   type LineData,
@@ -65,6 +68,7 @@ function LightweightSeriesChart({ chartId, series }: { chartId: string; series: 
 
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<"Candlestick" | "Line"> | null>(null);
+  const compareSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
   const volSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
   const firstSeedFocusedRef = useRef(false);
 
@@ -104,7 +108,7 @@ function LightweightSeriesChart({ chartId, series }: { chartId: string; series: 
       // Derive precision from the last close so sub-cent assets keep digits
       // on the price axis (PENGU $0.000620 → precision 8) instead of
       // collapsing to "0.00" with lightweight-charts' default precision 2.
-      const candle = chart.addCandlestickSeries({
+      const candle = chart.addSeries(CandlestickSeries, {
         upColor: palette.positive,
         downColor: palette.negative,
         borderUpColor: palette.positive,
@@ -115,7 +119,7 @@ function LightweightSeriesChart({ chartId, series }: { chartId: string; series: 
       });
       seriesRef.current = candle;
 
-      const vol = chart.addHistogramSeries({
+      const vol = chart.addSeries(HistogramSeries, {
         priceScaleId: "volume",
         color: palette.volNeutral,
         priceFormat: { type: "volume" },
@@ -125,8 +129,9 @@ function LightweightSeriesChart({ chartId, series }: { chartId: string; series: 
       chart.priceScale("volume").applyOptions({
         scaleMargins: { top: 0.78, bottom: 0 },
       });
+      compareSeriesRef.current = null;
     } else {
-      const line = chart.addLineSeries({
+      const line = chart.addSeries(LineSeries, {
         color: delta >= 0 ? palette.positive : palette.negative,
         lineWidth: 2,
         priceLineVisible: false,
@@ -134,6 +139,20 @@ function LightweightSeriesChart({ chartId, series }: { chartId: string; series: 
       });
       seriesRef.current = line;
       volSeriesRef.current = null;
+
+      // Instantiate comparison series if there is compareY data
+      const hasCompare = series.points.some((point) => point.compareY !== undefined);
+      if (hasCompare) {
+        const compareLine = chart.addSeries(LineSeries, {
+          color: palette.accent || "var(--accent)",
+          lineWidth: 2,
+          priceLineVisible: false,
+          priceFormat: getCandlePriceFormat(last),
+        });
+        compareSeriesRef.current = compareLine;
+      } else {
+        compareSeriesRef.current = null;
+      }
     }
 
     const ro = new ResizeObserver(() => {
@@ -151,6 +170,7 @@ function LightweightSeriesChart({ chartId, series }: { chartId: string; series: 
       try { chart.remove(); } catch { /* chart already disposed */ }
       chartRef.current = null;
       seriesRef.current = null;
+      compareSeriesRef.current = null;
       volSeriesRef.current = null;
     };
   }, [series.kind, paletteKey]);
@@ -203,6 +223,22 @@ function LightweightSeriesChart({ chartId, series }: { chartId: string; series: 
         color: delta >= 0 ? palette.positive : palette.negative,
         priceFormat: getCandlePriceFormat(last),
       });
+
+      if (compareSeriesRef.current) {
+        compareSeriesRef.current.setData(
+          series.points
+            .filter(hasTimePoint)
+            .filter((p) => p.compareY !== undefined)
+            .map<LineData>((point) => ({
+              time: point.time,
+              value: point.compareY!,
+            })),
+        );
+        compareSeriesRef.current.applyOptions({
+          color: palette.accent || "var(--accent)",
+          priceFormat: getCandlePriceFormat(last),
+        });
+      }
     }
 
     // Framing: only run focusLatestBars for the first data seed on this chart instance

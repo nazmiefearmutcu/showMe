@@ -141,7 +141,10 @@ export function simpleParamSpecsForFunction(code: string): SimpleParamSpec[] {
     case "ECST":
       return [
         { key: "series_id", label: "Series", hint: "CPIAUCSL/GDPC1/UNRATE/DGS10" },
-        { key: "frequency", label: "Frequency", hint: "monthly/quarterly" },
+        { key: "compare_with", label: "Compare with", hint: "e.g. DGS2, PCE" },
+        { key: "frequency", label: "Frequency", hint: "native/daily/weekly/monthly/quarterly/annual" },
+        { key: "date_range", label: "Date Range", hint: "1Y/3Y/5Y/10Y/20Y/MAX" },
+        { key: "vintage", label: "Vintage", hint: "latest or YYYY-MM-DD" },
       ];
     case "GMM":
       return [
@@ -341,7 +344,7 @@ export function defaultSimpleParamsForFunction(code: string): Record<string, str
     OVDV: { atm_vol: "0.085", rr_25d: "0.002", bf_25d: "0.0015", tenors: "1W,1M,3M,6M,1Y" },
     COUN: { country: "US" },
     ECFC: { country: "USA", indicators: "NGDP_RPCH,PCPIPCH,LUR,GGXCNL_NGDP,GGXWDG_NGDP" },
-    ECST: { series_id: "CPIAUCSL", frequency: "" },
+    ECST: { series_id: "CPIAUCSL", compare_with: "", frequency: "", date_range: "10Y", vintage: "latest" },
     GMM: { country: "", importance: "all" },
     REGM: { action: "current", days: "1095", window: "60" },
     TRDH: { exchanges: "NYSE,NASDAQ,LSE,FWB,TYO,HKEX,ASX,BIST,BINANCE,DERIBIT" },
@@ -729,6 +732,19 @@ export function buildSimpleControlParams(code: string, values: Record<string, st
   }
   if (upper === "MGN") {
     return { cash: numeric("cash", 10000), margin_type: values.margin_type || "reg_t", include_saved: true, include_legacy: true };
+  }
+  if (upper === "ECST") {
+    const frequency = (values.frequency || "").trim();
+    const compare_with = (values.compare_with || "").trim();
+    const date_range = (values.date_range || "").trim();
+    const vintage = (values.vintage || "").trim();
+    return {
+      series_id: (values.series_id || "CPIAUCSL").trim().toUpperCase(),
+      ...(frequency ? { frequency } : {}),
+      ...(compare_with ? { compare_with } : {}),
+      ...(date_range ? { date_range } : {}),
+      ...(vintage ? { vintage } : {}),
+    };
   }
   return {};
 }
