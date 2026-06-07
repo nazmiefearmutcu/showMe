@@ -12,6 +12,16 @@
  */
 import en from "./en.json";
 import tr from "./tr.json";
+import de from "./de.json";
+import fr from "./fr.json";
+import es from "./es.json";
+import it from "./it.json";
+import ja from "./ja.json";
+import zh from "./zh.json";
+import ko from "./ko.json";
+import ar from "./ar.json";
+import pt from "./pt.json";
+import ru from "./ru.json";
 
 export type Locale =
   | "en" | "tr" | "de" | "fr" | "es" | "it"
@@ -25,9 +35,19 @@ const PERSIST_KEY = "showme.locale.v1";
 
 type Catalog = Record<string, string>;
 
-const CATALOGS: Record<string, Catalog> = {
+export const CATALOGS: Record<string, Catalog> = {
   en: en as Catalog,
   tr: tr as Catalog,
+  de: de as Catalog,
+  fr: fr as Catalog,
+  es: es as Catalog,
+  it: it as Catalog,
+  ja: ja as Catalog,
+  zh: zh as Catalog,
+  ko: ko as Catalog,
+  ar: ar as Catalog,
+  pt: pt as Catalog,
+  ru: ru as Catalog,
 };
 
 let active: Locale = pickInitial();
@@ -98,12 +118,10 @@ export function t(
     typeof fallbackOrVars === "object" && fallbackOrVars
       ? fallbackOrVars
       : maybeVars;
-  const dict = CATALOGS[active] ?? CATALOGS.en;
+  const dict = CATALOGS[active];
   let template: string;
-  if (key in dict) {
+  if (dict && key in dict) {
     template = dict[key];
-  } else if (active !== "en" && key in CATALOGS.en) {
-    template = CATALOGS.en[key];
   } else {
     template = fallback ?? key;
   }

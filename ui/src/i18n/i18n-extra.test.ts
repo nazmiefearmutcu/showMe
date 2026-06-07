@@ -21,9 +21,9 @@ describe("i18n catalog parity", () => {
     expect(missing).toEqual([]);
   });
 
-  it("isLocaleComplete returns true for tr, false for de (no catalog yet)", () => {
+  it("isLocaleComplete returns true for registered complete locales like tr and de", () => {
     expect(isLocaleComplete("tr")).toBe(true);
-    expect(isLocaleComplete("de")).toBe(false);
+    expect(isLocaleComplete("de")).toBe(true);
   });
 });
 
