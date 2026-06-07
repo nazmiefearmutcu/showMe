@@ -1,0 +1,2182 @@
+# Auto-generated from ccxt.exchanges by scripts/build_exchange_catalog.py.
+# Do NOT hand-edit this section — re-run the generator after a ccxt bump.
+# The traditional-broker section below the marker IS hand-curated.
+- id: aftermath
+  display_name: AftermathFinance
+  aliases: []
+  asset_classes:
+  - futures
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: aftermath
+  requires:
+  - private_key
+  - wallet_address
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: true
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: alpaca
+  display_name: Alpaca
+  aliases: []
+  asset_classes:
+  - spot
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: alpaca
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: false
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: apex
+  display_name: Apex
+  aliases: []
+  asset_classes:
+  - futures
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: apex
+  requires:
+  - api_key
+  - api_secret
+  - passphrase
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: true
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: arkham
+  display_name: ARKHAM
+  aliases: []
+  asset_classes:
+  - spot
+  - futures
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: arkham
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: true
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: ascendex
+  display_name: AscendEX
+  aliases: []
+  asset_classes:
+  - spot
+  - futures
+  - margin
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: ascendex
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: true
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: aster
+  display_name: Aster
+  aliases: []
+  asset_classes:
+  - spot
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: aster
+  requires:
+  - private_key
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: true
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: backpack
+  display_name: Backpack
+  aliases: []
+  asset_classes:
+  - spot
+  - futures
+  - margin
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: backpack
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: true
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: bequant
+  display_name: Bequant
+  aliases: []
+  asset_classes:
+  - spot
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: bequant
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: true
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: bigone
+  display_name: BigONE
+  aliases: []
+  asset_classes:
+  - spot
+  - futures
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: bigone
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: false
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: binance
+  display_name: Binance
+  aliases: []
+  asset_classes:
+  - spot
+  - futures
+  - options
+  - margin
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: binance
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: true
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: binancecoinm
+  display_name: Binance COIN-M
+  aliases: []
+  asset_classes:
+  - futures
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: binancecoinm
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: true
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: binanceus
+  display_name: Binance US
+  aliases: []
+  asset_classes:
+  - spot
+  regions:
+  - us
+  adapter: ccxt
+  ccxt_id: binanceus
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: false
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: binanceusdm
+  display_name: Binance USDⓈ-M
+  aliases: []
+  asset_classes:
+  - futures
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: binanceusdm
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: true
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: bingx
+  display_name: BingX
+  aliases: []
+  asset_classes:
+  - spot
+  - futures
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: bingx
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: true
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: bit2c
+  display_name: Bit2C
+  aliases: []
+  asset_classes:
+  - spot
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: bit2c
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: false
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: bitbank
+  display_name: bitbank
+  aliases: []
+  asset_classes:
+  - spot
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: bitbank
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: false
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: bitbns
+  display_name: Bitbns
+  aliases: []
+  asset_classes:
+  - spot
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: bitbns
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: false
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: bitfinex
+  display_name: Bitfinex
+  aliases: []
+  asset_classes:
+  - spot
+  - futures
+  - margin
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: bitfinex
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: true
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: bitflyer
+  display_name: bitFlyer
+  aliases: []
+  asset_classes:
+  - spot
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: bitflyer
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: true
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: bitget
+  display_name: Bitget
+  aliases: []
+  asset_classes:
+  - spot
+  - futures
+  - margin
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: bitget
+  requires:
+  - api_key
+  - api_secret
+  - passphrase
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: true
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: bithumb
+  display_name: Bithumb
+  aliases: []
+  asset_classes:
+  - spot
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: bithumb
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: false
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: bitmart
+  display_name: BitMart
+  aliases: []
+  asset_classes:
+  - spot
+  - futures
+  - margin
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: bitmart
+  requires:
+  - api_key
+  - api_secret
+  - uid
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: true
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: bitmex
+  display_name: BitMEX
+  aliases: []
+  asset_classes:
+  - spot
+  - futures
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: bitmex
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: true
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: bitopro
+  display_name: BitoPro
+  aliases: []
+  asset_classes:
+  - spot
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: bitopro
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: false
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: bitrue
+  display_name: Bitrue
+  aliases: []
+  asset_classes:
+  - spot
+  - futures
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: bitrue
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: false
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: bitso
+  display_name: Bitso
+  aliases: []
+  asset_classes:
+  - spot
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: bitso
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: false
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: bitstamp
+  display_name: Bitstamp
+  aliases: []
+  asset_classes:
+  - spot
+  regions:
+  - us
+  - eu
+  adapter: ccxt
+  ccxt_id: bitstamp
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: false
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: bitteam
+  display_name: BIT.TEAM
+  aliases: []
+  asset_classes:
+  - spot
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: bitteam
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: false
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: bittrade
+  display_name: BitTrade
+  aliases: []
+  asset_classes:
+  - spot
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: bittrade
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: false
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: bitvavo
+  display_name: Bitvavo
+  aliases: []
+  asset_classes:
+  - spot
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: bitvavo
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: false
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: blockchaincom
+  display_name: Blockchain.com
+  aliases: []
+  asset_classes:
+  - spot
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: blockchaincom
+  requires:
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: false
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: blofin
+  display_name: BloFin
+  aliases: []
+  asset_classes:
+  - futures
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: blofin
+  requires:
+  - api_key
+  - api_secret
+  - passphrase
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: true
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: btcbox
+  display_name: BtcBox
+  aliases: []
+  asset_classes:
+  - spot
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: btcbox
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: false
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: btcmarkets
+  display_name: BTC Markets
+  aliases: []
+  asset_classes:
+  - spot
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: btcmarkets
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: false
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: btcturk
+  display_name: BTCTurk
+  aliases: []
+  asset_classes:
+  - spot
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: btcturk
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: false
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: bullish
+  display_name: Bullish
+  aliases: []
+  asset_classes:
+  - spot
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: bullish
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: true
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: bybit
+  display_name: Bybit
+  aliases: []
+  asset_classes:
+  - spot
+  - futures
+  - options
+  - margin
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: bybit
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: true
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: bydfi
+  display_name: BYDFi
+  aliases: []
+  asset_classes:
+  - futures
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: bydfi
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: true
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: false
+- id: cex
+  display_name: CEX.IO
+  aliases: []
+  asset_classes:
+  - spot
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: cex
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: false
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: coinbase
+  display_name: Coinbase Advanced
+  aliases: []
+  asset_classes:
+  - spot
+  regions:
+  - us
+  - global
+  adapter: ccxt
+  ccxt_id: coinbase
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: true
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: coinbaseadvanced
+  display_name: Coinbase Advanced
+  aliases: []
+  asset_classes:
+  - spot
+  regions:
+  - us
+  adapter: ccxt
+  ccxt_id: coinbaseadvanced
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: true
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: coinbaseexchange
+  display_name: Coinbase Exchange
+  aliases: []
+  asset_classes:
+  - spot
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: coinbaseexchange
+  requires:
+  - api_key
+  - api_secret
+  - passphrase
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: false
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: coinbaseinternational
+  display_name: Coinbase International
+  aliases: []
+  asset_classes:
+  - spot
+  - futures
+  - margin
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: coinbaseinternational
+  requires:
+  - api_key
+  - api_secret
+  - passphrase
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: true
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: coincheck
+  display_name: coincheck
+  aliases: []
+  asset_classes:
+  - spot
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: coincheck
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: false
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: coinex
+  display_name: CoinEx
+  aliases: []
+  asset_classes:
+  - spot
+  - futures
+  - margin
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: coinex
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: true
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: coinmate
+  display_name: CoinMate
+  aliases: []
+  asset_classes:
+  - spot
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: coinmate
+  requires:
+  - api_key
+  - api_secret
+  - uid
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: false
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: coinmetro
+  display_name: Coinmetro
+  aliases: []
+  asset_classes:
+  - spot
+  - margin
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: coinmetro
+  requires:
+  - token
+  - uid
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: false
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: coinone
+  display_name: CoinOne
+  aliases: []
+  asset_classes:
+  - spot
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: coinone
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: false
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: coinsph
+  display_name: Coins.ph
+  aliases: []
+  asset_classes:
+  - spot
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: coinsph
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: false
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: coinspot
+  display_name: CoinSpot
+  aliases: []
+  asset_classes:
+  - spot
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: coinspot
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: false
+    fetch_open_orders: false
+    create_order: true
+    cancel_order: true
+- id: cryptocom
+  display_name: Crypto.com
+  aliases: []
+  asset_classes:
+  - spot
+  - futures
+  - options
+  - margin
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: cryptocom
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: true
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: cryptomus
+  display_name: Cryptomus
+  aliases: []
+  asset_classes:
+  - spot
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: cryptomus
+  requires:
+  - api_secret
+  - uid
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: false
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: deepcoin
+  display_name: DeepCoin
+  aliases: []
+  asset_classes:
+  - spot
+  - futures
+  - margin
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: deepcoin
+  requires:
+  - api_key
+  - api_secret
+  - passphrase
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: true
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: delta
+  display_name: Delta Exchange
+  aliases: []
+  asset_classes:
+  - spot
+  - futures
+  - options
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: delta
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: true
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: deribit
+  display_name: Deribit
+  aliases: []
+  asset_classes:
+  - spot
+  - futures
+  - options
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: deribit
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: true
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: derive
+  display_name: derive
+  aliases: []
+  asset_classes:
+  - spot
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: derive
+  requires:
+  - private_key
+  - wallet_address
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: true
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: digifinex
+  display_name: DigiFinex
+  aliases: []
+  asset_classes:
+  - spot
+  - futures
+  - margin
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: digifinex
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: true
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: dydx
+  display_name: dYdX
+  aliases: []
+  asset_classes:
+  - futures
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: dydx
+  requires: []
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: true
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: exmo
+  display_name: EXMO
+  aliases: []
+  asset_classes:
+  - spot
+  - margin
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: exmo
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: false
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: fmfwio
+  display_name: FMFW.io
+  aliases: []
+  asset_classes:
+  - spot
+  - futures
+  - margin
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: fmfwio
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: true
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: foxbit
+  display_name: Foxbit
+  aliases: []
+  asset_classes:
+  - spot
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: foxbit
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: false
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: gate
+  display_name: Gate
+  aliases: []
+  asset_classes:
+  - spot
+  - futures
+  - options
+  - margin
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: gate
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: true
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: gateio
+  display_name: Gate
+  aliases: []
+  asset_classes:
+  - spot
+  - futures
+  - options
+  - margin
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: gateio
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: true
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: gemini
+  display_name: Gemini
+  aliases: []
+  asset_classes:
+  - spot
+  - futures
+  regions:
+  - us
+  adapter: ccxt
+  ccxt_id: gemini
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: false
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: grvt
+  display_name: GRVT
+  aliases: []
+  asset_classes:
+  - futures
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: grvt
+  requires:
+  - private_key
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: true
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: hashkey
+  display_name: HashKey Global
+  aliases: []
+  asset_classes:
+  - spot
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: hashkey
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: true
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: hibachi
+  display_name: Hibachi
+  aliases: []
+  asset_classes:
+  - futures
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: hibachi
+  requires:
+  - accountId
+  - api_key
+  - private_key
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: true
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: hitbtc
+  display_name: HitBTC
+  aliases: []
+  asset_classes:
+  - spot
+  - futures
+  - margin
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: hitbtc
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: true
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: hollaex
+  display_name: HollaEx
+  aliases: []
+  asset_classes:
+  - spot
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: hollaex
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: false
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: htx
+  display_name: HTX
+  aliases: []
+  asset_classes:
+  - spot
+  - futures
+  - margin
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: htx
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: true
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: huobi
+  display_name: HTX
+  aliases: []
+  asset_classes:
+  - spot
+  - futures
+  - margin
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: huobi
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: true
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: hyperliquid
+  display_name: Hyperliquid
+  aliases: []
+  asset_classes:
+  - spot
+  - futures
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: hyperliquid
+  requires:
+  - private_key
+  - wallet_address
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: true
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: independentreserve
+  display_name: Independent Reserve
+  aliases: []
+  asset_classes:
+  - spot
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: independentreserve
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: false
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: indodax
+  display_name: INDODAX
+  aliases: []
+  asset_classes:
+  - spot
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: indodax
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: false
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: kraken
+  display_name: Kraken
+  aliases: []
+  asset_classes:
+  - spot
+  - margin
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: kraken
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: true
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: krakenfutures
+  display_name: Kraken Futures
+  aliases: []
+  asset_classes:
+  - futures
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: krakenfutures
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: true
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: kucoin
+  display_name: KuCoin
+  aliases: []
+  asset_classes:
+  - spot
+  - futures
+  - margin
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: kucoin
+  requires:
+  - api_key
+  - api_secret
+  - passphrase
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: true
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: kucoinfutures
+  display_name: KuCoin Futures
+  aliases: []
+  asset_classes:
+  - futures
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: kucoinfutures
+  requires:
+  - api_key
+  - api_secret
+  - passphrase
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: true
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: latoken
+  display_name: Latoken
+  aliases: []
+  asset_classes:
+  - spot
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: latoken
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: false
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: lbank
+  display_name: LBank
+  aliases: []
+  asset_classes:
+  - spot
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: lbank
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: false
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: lighter
+  display_name: Lighter
+  aliases: []
+  asset_classes:
+  - futures
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: lighter
+  requires:
+  - private_key
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: true
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: luno
+  display_name: luno
+  aliases: []
+  asset_classes:
+  - spot
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: luno
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: false
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: mercado
+  display_name: Mercado Bitcoin
+  aliases: []
+  asset_classes:
+  - spot
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: mercado
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: false
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: mexc
+  display_name: MEXC Global
+  aliases: []
+  asset_classes:
+  - spot
+  - futures
+  - margin
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: mexc
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: true
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: modetrade
+  display_name: Mode Trade
+  aliases: []
+  asset_classes:
+  - futures
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: modetrade
+  requires:
+  - accountId
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: true
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: myokx
+  display_name: MyOKX(EEA)
+  aliases: []
+  asset_classes:
+  - spot
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: myokx
+  requires:
+  - api_key
+  - api_secret
+  - passphrase
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: true
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: ndax
+  display_name: NDAX
+  aliases: []
+  asset_classes:
+  - spot
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: ndax
+  requires:
+  - api_key
+  - api_secret
+  - login
+  - passphrase
+  - uid
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: false
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: novadax
+  display_name: NovaDAX
+  aliases: []
+  asset_classes:
+  - spot
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: novadax
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: false
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: okx
+  display_name: OKX
+  aliases: []
+  asset_classes:
+  - spot
+  - futures
+  - options
+  - margin
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: okx
+  requires:
+  - api_key
+  - api_secret
+  - passphrase
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: true
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: okxus
+  display_name: OKX(US)
+  aliases: []
+  asset_classes:
+  - spot
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: okxus
+  requires:
+  - api_key
+  - api_secret
+  - passphrase
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: true
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: onetrading
+  display_name: One Trading
+  aliases: []
+  asset_classes:
+  - spot
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: onetrading
+  requires:
+  - api_key
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: false
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: oxfun
+  display_name: OXFUN
+  aliases: []
+  asset_classes:
+  - spot
+  - futures
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: oxfun
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: true
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: p2b
+  display_name: p2b
+  aliases: []
+  asset_classes:
+  - spot
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: p2b
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: false
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: pacifica
+  display_name: Pacifica
+  aliases: []
+  asset_classes:
+  - futures
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: pacifica
+  requires:
+  - private_key
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: true
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: paradex
+  display_name: Paradex
+  aliases: []
+  asset_classes:
+  - futures
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: paradex
+  requires:
+  - private_key
+  - wallet_address
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: true
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: false
+- id: paymium
+  display_name: Paymium
+  aliases: []
+  asset_classes:
+  - spot
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: paymium
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: false
+    fetch_open_orders: false
+    create_order: true
+    cancel_order: true
+- id: phemex
+  display_name: Phemex
+  aliases: []
+  asset_classes:
+  - spot
+  - futures
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: phemex
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: true
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: poloniex
+  display_name: Poloniex
+  aliases: []
+  asset_classes:
+  - spot
+  - futures
+  regions:
+  - us
+  adapter: ccxt
+  ccxt_id: poloniex
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: true
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: tokocrypto
+  display_name: Tokocrypto
+  aliases: []
+  asset_classes:
+  - spot
+  - margin
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: tokocrypto
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: false
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: toobit
+  display_name: Toobit
+  aliases: []
+  asset_classes:
+  - spot
+  - futures
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: toobit
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: false
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: upbit
+  display_name: Upbit
+  aliases: []
+  asset_classes:
+  - spot
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: upbit
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: false
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: wavesexchange
+  display_name: Waves.Exchange
+  aliases: []
+  asset_classes:
+  - spot
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: wavesexchange
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: false
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: weex
+  display_name: Weex
+  aliases: []
+  asset_classes:
+  - spot
+  - futures
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: weex
+  requires:
+  - api_key
+  - api_secret
+  - passphrase
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: true
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: whitebit
+  display_name: WhiteBit
+  aliases: []
+  asset_classes:
+  - spot
+  - futures
+  - margin
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: whitebit
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: true
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: woo
+  display_name: WOO X
+  aliases: []
+  asset_classes:
+  - spot
+  - futures
+  - margin
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: woo
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: true
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: woofipro
+  display_name: WOOFI PRO
+  aliases: []
+  asset_classes:
+  - futures
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: woofipro
+  requires:
+  - accountId
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: true
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: xt
+  display_name: XT
+  aliases: []
+  asset_classes:
+  - spot
+  - futures
+  - margin
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: xt
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: true
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: yobit
+  display_name: YoBit
+  aliases: []
+  asset_classes:
+  - spot
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: yobit
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: false
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: zaif
+  display_name: Zaif
+  aliases: []
+  asset_classes:
+  - spot
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: zaif
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: false
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true
+- id: zebpay
+  display_name: Zebpay
+  aliases: []
+  asset_classes:
+  - spot
+  - futures
+  regions:
+  - global
+  adapter: ccxt
+  ccxt_id: zebpay
+  requires:
+  - api_key
+  - api_secret
+  optional: []
+  capabilities:
+    fetch_balance: true
+    fetch_positions: true
+    fetch_open_orders: true
+    create_order: true
+    cancel_order: true

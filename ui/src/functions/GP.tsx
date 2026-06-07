@@ -24,6 +24,10 @@ import {
   type LineData,
   type Time,
   createChart,
+  LineSeries,
+  CandlestickSeries,
+  HistogramSeries,
+  AreaSeries,
 } from "lightweight-charts";
 import { useLiveQuote } from "@/lib/market-data";
 import type { TransportState } from "@/lib/market-data";
@@ -878,7 +882,7 @@ export function ChartView({
 
     let mainSeries: MainSeries;
     if (chartStyle === "candle") {
-      mainSeries = chart.addCandlestickSeries({
+      mainSeries = chart.addSeries(CandlestickSeries, {
         upColor: p.positive,
         downColor: p.negative,
         borderUpColor: p.positive,
@@ -887,13 +891,13 @@ export function ChartView({
         wickDownColor: p.negative,
       });
     } else if (chartStyle === "line") {
-      mainSeries = chart.addLineSeries({
+      mainSeries = chart.addSeries(LineSeries, {
         color: p.accent,
         lineWidth: 2,
         priceLineVisible: false,
       });
     } else {
-      mainSeries = chart.addAreaSeries({
+      mainSeries = chart.addSeries(AreaSeries, {
         lineColor: p.accent,
         topColor: alpha(p.accent, 0.32),
         bottomColor: alpha(p.accent, 0.02),
@@ -901,7 +905,7 @@ export function ChartView({
       });
     }
 
-    const volSeries: ISeriesApi<"Histogram"> = chart.addHistogramSeries({
+    const volSeries: ISeriesApi<"Histogram"> = chart.addSeries(HistogramSeries, {
       priceScaleId: "volume",
       color: p.volNeutral,
       priceFormat: { type: "volume" },
@@ -1102,14 +1106,15 @@ export function ChartView({
       if (!Array.isArray(points) || points.length === 0) return;
       let series = map.get(key);
       if (!series) {
-        series = chart.addLineSeries({
+        const newSeries = chart.addSeries(LineSeries, {
           color: indicatorColors[idx % indicatorColors.length],
           lineWidth: 1,
           priceLineVisible: false,
           lastValueVisible: false,
         });
-        (series as unknown as { __label?: string }).__label = key;
-        map.set(key, series);
+        (newSeries as unknown as { __label?: string }).__label = key;
+        map.set(key, newSeries);
+        series = newSeries;
       } else {
         series.applyOptions({
           color: indicatorColors[idx % indicatorColors.length],

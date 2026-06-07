@@ -25,6 +25,10 @@ import {
   type LineData,
   type Time,
   createChart,
+  LineSeries,
+  CandlestickSeries,
+  HistogramSeries,
+  AreaSeries,
 } from "lightweight-charts";
 import {
   DeltaChip,
@@ -1437,7 +1441,7 @@ export function PriceChart({
     });
 
     if (compareMode) {
-      mainSeriesRef.current = chart.addLineSeries({
+      mainSeriesRef.current = chart.addSeries(LineSeries, {
         color: palette.accent,
         lineWidth: 2,
         priceLineVisible: false,
@@ -1448,7 +1452,7 @@ export function PriceChart({
         },
       });
     } else if (chartStyle === "candle") {
-      mainSeriesRef.current = chart.addCandlestickSeries({
+      mainSeriesRef.current = chart.addSeries(CandlestickSeries, {
         upColor: palette.positive,
         downColor: palette.negative,
         borderUpColor: palette.positive,
@@ -1457,13 +1461,13 @@ export function PriceChart({
         wickDownColor: palette.negative,
       });
     } else if (chartStyle === "line") {
-      mainSeriesRef.current = chart.addLineSeries({
+      mainSeriesRef.current = chart.addSeries(LineSeries, {
         color: palette.accent,
         lineWidth: 2,
         priceLineVisible: false,
       });
     } else {
-      mainSeriesRef.current = chart.addAreaSeries({
+      mainSeriesRef.current = chart.addSeries(AreaSeries, {
         lineColor: palette.accent,
         topColor: alpha(palette.accent, 0.32),
         bottomColor: alpha(palette.accent, 0.02),
@@ -1472,7 +1476,7 @@ export function PriceChart({
     }
 
     if (!compareMode) {
-      volumeSeriesRef.current = chart.addHistogramSeries({
+      volumeSeriesRef.current = chart.addSeries(HistogramSeries, {
         priceScaleId: "volume",
         color: palette.volNeutral,
         priceFormat: { type: "volume" },
@@ -1582,14 +1586,15 @@ export function PriceChart({
         wanted.add(s.symbol);
         let peerLine = compareSeriesRef.current.get(s.symbol);
         if (!peerLine) {
-          peerLine = chart.addLineSeries({
+          const newSeries = chart.addSeries(LineSeries, {
             color: s.color,
             lineWidth: 2,
             priceLineVisible: false,
             lastValueVisible: true,
             title: s.symbol,
           });
-          compareSeriesRef.current.set(s.symbol, peerLine);
+          compareSeriesRef.current.set(s.symbol, newSeries);
+          peerLine = newSeries;
         } else {
           peerLine.applyOptions({ color: s.color });
         }
@@ -1677,13 +1682,14 @@ export function PriceChart({
       wanted.add(name);
       let series = indicatorSeriesRef.current.get(name);
       if (!series) {
-        series = chart.addLineSeries({
+        const newSeries = chart.addSeries(LineSeries, {
           color: indicatorColors[idx % indicatorColors.length],
           lineWidth: 1,
           priceLineVisible: false,
           lastValueVisible: false,
         });
-        indicatorSeriesRef.current.set(name, series);
+        indicatorSeriesRef.current.set(name, newSeries);
+        series = newSeries;
       } else {
         series.applyOptions({
           color: indicatorColors[idx % indicatorColors.length],
