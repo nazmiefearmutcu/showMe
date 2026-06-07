@@ -1,3 +1,4 @@
+# ruff: noqa: E402
 """Tests for the sentinel audit script."""
 from __future__ import annotations
 
