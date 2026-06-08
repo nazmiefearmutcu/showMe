@@ -59,7 +59,7 @@ Each task is one page. Execute it as a **subagent-driven-development** mini-cycl
 ## Wave 3 — Trading & automation tools
 
 - [x] **Task 14: INSTANT — Trade Ticket (Instant Squawk Line).** Pane: `ui/src/functions/INSTANT.tsx`. Backend: `backend/showme/engine/functions/trade/`. Focus: ticket UX, order fields, validation, squawk feed.
-- [ ] **Task 15: ALRT — Alerts.** Pane: `ui/src/functions/ALRT.tsx`. Backend: `backend/showme/engine/functions/misc/alrt.py`. Focus: create/manage alerts, persistence, trigger display.
+- [x] **Task 15: ALRT — Alerts.** Pane: `ui/src/functions/ALRT.tsx`. Backend: `backend/showme/engine/functions/misc/alrt.py`. Focus: create/manage alerts, persistence, trigger display.
 - [ ] **Task 16: STRA — Strategy Editor.** Pane: `ui/src/functions/STRA.tsx`. Backend: `backend/showme/strategies`. Focus: editor UX, rule building, save/load, validation.
 - [ ] **Task 17: TMPL — Strategy Templates.** Pane: `ui/src/functions/TMPL.tsx`. Backend: `backend/showme/templates`. Focus: template library, preview, instantiate.
 - [ ] **Task 18: BOT — Bot Manager.** Pane: `ui/src/functions/BOT.tsx`. Backend: `backend/showme/bots`. Focus: bot list, start/stop, status display.
