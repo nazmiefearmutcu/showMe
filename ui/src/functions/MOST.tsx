@@ -109,20 +109,6 @@ const PRESET_TILES: Array<{
   { code: "FX-MOV", description: "FX · |Δ%|", tab: "fx", sort: "abs_change" },
 ];
 
-function deterministicTrend(seed: string, n = 22): number[] {
-  let h = 0;
-  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0;
-  const out: number[] = [];
-  let v = 50;
-  for (let i = 0; i < n; i++) {
-    h = (h * 1664525 + 1013904223) >>> 0;
-    const x = ((h & 0xff) / 255 - 0.5) * 14;
-    v = Math.max(15, Math.min(85, v + x));
-    out.push(v);
-  }
-  return out;
-}
-
 function median(values: number[]): number | null {
   if (!values.length) return null;
   const sorted = [...values].sort((a, b) => a - b);
@@ -517,14 +503,12 @@ export function MOSTPane({ code }: FunctionPaneProps) {
                     label="Active"
                     value={String(rows.length)}
                     caption={`OF ${payload?.universe_size ?? "—"} UNIVERSE`}
-                    trend={deterministicTrend(`a-${rows.length}-${tab}`)}
                     tone="neutral"
                   />
                   <StatCard
                     label="Median |Δ%|"
                     value={medianAbsChange != null ? `${medianAbsChange.toFixed(2)}%` : "—"}
                     caption={`SORTED BY ${sortLabel(sort)}`}
-                    trend={deterministicTrend(`d-${medianAbsChange ?? 0}-${sort}`)}
                     tone={
                       medianAbsChange == null
                         ? "neutral"
@@ -537,14 +521,12 @@ export function MOSTPane({ code }: FunctionPaneProps) {
                     label="Volume sum"
                     value={formatCompactNumber(totalVolume, { fixedDigits: 2 })}
                     caption={`LIVE ${liveCount}/${rows.length}`}
-                    trend={deterministicTrend(`v-${totalVolume}-${liveCount}`)}
                     tone="neutral"
                   />
                   <StatCard
                     label="Source"
                     value={sourceLabel.toUpperCase()}
                     caption={`AS OF ${payload?.as_of ? new Date(payload.as_of).toLocaleTimeString() : "—"}`}
-                    trend={deterministicTrend(`s-${sourceLabel}-${rows.length}`)}
                     tone="neutral"
                   />
                 </div>
@@ -700,7 +682,7 @@ function ActivityBars({ rows, sort }: { rows: MostRow[]; sort: SortKey }) {
   const visible = rows.slice(0, 8);
   // UA-HIGH: stack-safe. `Math.max(1, ...arr)` spreads the array onto the
   // call stack and overflows on large inputs; maxOf() is O(n) constant-stack.
-  const max = maxOf([1, ...visible.map((row) => Math.abs(sortVal(row, sort)))]) || 1;
+  const max = maxOf([1, ...visible.map((row) => Math.abs(sortVal(row, sort)))]);
   return (
     <div className="most-bars" aria-hidden="true">
       {visible.map((row) => {
