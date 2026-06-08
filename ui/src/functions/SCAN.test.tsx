@@ -156,6 +156,59 @@ describe("SCAN pane — empty results honesty", () => {
   });
 });
 
+describe("SCAN pane — reset & retry uses reset filters", () => {
+  it("re-runs with the reset universe/phases, not the stale pre-reset closure", async () => {
+    const runSpy = vi
+      .spyOn(scanner, "runScan")
+      .mockResolvedValue(makeResult([]));
+    render(<SCANPane code="SCAN" />);
+    // Wait for the universe override <select> to be populated, then pick a
+    // non-default universe so the reset has something to clear.
+    await waitFor(() =>
+      expect(
+        screen.getByRole("option", { name: /CRYPTO_TOP/i }),
+      ).toBeInTheDocument(),
+    );
+    fireEvent.change(screen.getByDisplayValue("(auto from intent)"), {
+      target: { value: "CRYPTO_TOP" },
+    });
+    // Disable Phase C and Phase D so the reset (which re-enables both) is
+    // observable in the re-run's `phases` payload.
+    fireEvent.click(screen.getByRole("button", { name: /^C · fine$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^D · risk$/i }));
+
+    // Run with the modified filters → empty result surfaces "Reset & retry".
+    fireEvent.click(
+      screen.getByRole("button", { name: /run scan with current filters/i }),
+    );
+    await screen.findByText(/no matches with current filters/i);
+
+    // Sanity: the first run used the modified filters (universe set, no C/D).
+    expect(runSpy).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        universe: "CRYPTO_TOP",
+        phases: ["A", "B"],
+      }),
+      expect.anything(),
+    );
+
+    runSpy.mockClear();
+    fireEvent.click(
+      screen.getByRole("button", { name: /reset filters and retry the scan/i }),
+    );
+    // The re-run must use the RESET values: universe cleared (undefined) and
+    // Phase C + D back on — proving run() did not read the stale closure.
+    await waitFor(() => expect(runSpy).toHaveBeenCalledTimes(1));
+    expect(runSpy).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        universe: undefined,
+        phases: ["A", "B", "C", "D"],
+      }),
+      expect.anything(),
+    );
+  });
+});
+
 describe("SCAN pane — error retry", () => {
   it("offers a Retry action on scan failure that re-runs the scan", async () => {
     const runSpy = vi
@@ -189,7 +242,7 @@ describe("SCAN pane — keyboard launch DES", () => {
     expect(router.navigate).toHaveBeenCalledWith("/symbol/BTCUSDT/DES");
   });
 
-  it("still launches DES on double-click of the symbol", async () => {
+  it("launches DES exactly once on double-click of the symbol (no double-fire)", async () => {
     vi.spyOn(scanner, "runScan").mockResolvedValue(
       makeResult([makeRow({ symbol: "ETHUSDT" })]),
     );
@@ -200,8 +253,12 @@ describe("SCAN pane — keyboard launch DES", () => {
     const symbolBtn = await screen.findByRole("button", {
       name: /open ethusdt in des/i,
     });
+    // Double-clicking the symbol button used to fire jumpToDES twice: once
+    // from the button's onDoubleClick and once from the DataGrid row's
+    // onRowDoubleClick (the event bubbled). stopPropagation() now stops it.
     fireEvent.doubleClick(symbolBtn);
     expect(router.navigate).toHaveBeenCalledWith("/symbol/ETHUSDT/DES");
+    expect(router.navigate).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -221,5 +278,41 @@ describe("SCAN pane — data honesty", () => {
     expect(
       screen.getAllByRole("button", { name: /in des$/i }),
     ).toHaveLength(1);
+  });
+
+  it("has no synthetic per-row Trend column (procedural data must not pose as real history)", async () => {
+    vi.spyOn(scanner, "runScan").mockResolvedValue(
+      makeResult([makeRow({ symbol: "SOLUSDT" })]),
+    );
+    const { container } = render(<SCANPane code="SCAN" />);
+    fireEvent.click(
+      screen.getByRole("button", { name: /run scan with current filters/i }),
+    );
+    const grid = await screen.findByRole("table");
+    // The "Trend" column header was fed by a deterministic pseudo-random
+    // series (not real price history) and has been removed entirely.
+    expect(within(grid).queryByText("Trend")).not.toBeInTheDocument();
+    expect(
+      within(grid).queryByText("~Trend"),
+    ).not.toBeInTheDocument();
+    expect(
+      within(grid).queryByText("Est"),
+    ).not.toBeInTheDocument();
+    // And there is no unlabeled synthetic per-row sparkline inside the grid:
+    // the only allowed in-cell sparkline (Score) renders 4 points, while the
+    // removed Trend sparkline drew 22. We simply require any remaining grid
+    // sparkline to be explicitly marked if it ever carries procedural data.
+    grid
+      .querySelectorAll("svg")
+      .forEach((svg) => {
+        // A grid sparkline that is NOT marked synthetic must be derived from
+        // the real per-row score, never the old procedural Trend series.
+        expect(svg.getAttribute("data-synthetic")).not.toBe("true");
+      });
+    // Guard against a regression that re-introduces the column: the header
+    // row now carries 8 columns (#, Symbol, Class, Dir, Conf %, Score,
+    // Δ today, TFs) — the 9th "Trend" column is gone.
+    const headerCells = container.querySelectorAll("thead th");
+    expect(headerCells.length).toBe(8);
   });
 });

@@ -138,7 +138,12 @@ function buildColumns(
         return (
           <button
             type="button"
-            onDoubleClick={() => r.symbol && onJumpDES(r.symbol)}
+            onDoubleClick={(e) => {
+              // Stop the event bubbling to the DataGrid's onRowDoubleClick,
+              // which would otherwise fire jumpToDES a second time.
+              e.stopPropagation();
+              if (r.symbol) onJumpDES(r.symbol);
+            }}
             onKeyDown={(e) => {
               // Keyboard parity with double-click: Enter on the focused
               // symbol launches DES for that symbol. The button is the
@@ -235,19 +240,6 @@ function buildColumns(
         if (v == null) return <span className="u-text-mute">—</span>;
         return <DeltaChip value={v} format="percent" fractionDigits={2} />;
       },
-    },
-    {
-      key: "trend",
-      header: "Trend",
-      width: 76,
-      render: (r) => (
-        <Sparkline
-          values={deterministicTrend(`${r.symbol}-${r.score ?? 0}`, 22)}
-          width={64}
-          height={16}
-          tone={r.direction === "SHORT" ? "negative" : "positive"}
-        />
-      ),
     },
     {
       key: "timeframes",
@@ -405,27 +397,37 @@ export function SCANPane({ code }: FunctionPaneProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const run = async () => {
+  const run = async (overrides?: {
+    universe?: string;
+    phaseC?: boolean;
+    phaseD?: boolean;
+  }) => {
     // Round 24 MEDIUM — early-exit on rapid re-trigger. ⌘Enter from
     // composer + Run button click within one tick used to fire two
     // scans simultaneously.
     if (running) return;
+    // Optional overrides let callers (e.g. "Reset & retry") scan with
+    // freshly-reset values instead of the stale render-closure state —
+    // the setState calls above haven't committed yet when run() fires.
+    const effUniverse = overrides?.universe ?? universe;
+    const effPhaseC = overrides?.phaseC ?? phaseC;
+    const effPhaseD = overrides?.phaseD ?? phaseD;
     setRunning(true);
     setError(null);
     setResult(null);
     setOpenSymbol(null);
     try {
       const phases = ["A", "B"];
-      if (phaseC) phases.push("C");
-      if (phaseD) phases.push("D");
+      if (effPhaseC) phases.push("C");
+      if (effPhaseD) phases.push("D");
       const r = await scanFetch.run((signal) =>
         runScan(
           {
             intent,
-            universe: universe || undefined,
+            universe: effUniverse || undefined,
             top_n: topN,
             phases,
-            fine_top_k: phaseC ? Math.min(topN, 8) : undefined,
+            fine_top_k: effPhaseC ? Math.min(topN, 8) : undefined,
           },
           signal,
         ),
@@ -512,7 +514,7 @@ export function SCANPane({ code }: FunctionPaneProps) {
               <button
                 type="button"
                 className="btn btn--accent u-btn-24"
-                onClick={run}
+                onClick={() => run()}
                 disabled={running || !intent.trim()}
                 aria-label="Run scan with current filters"
               >
@@ -573,8 +575,9 @@ export function SCANPane({ code }: FunctionPaneProps) {
                     <button
                       type="button"
                       className="btn btn--accent u-btn-mini"
-                      onClick={run}
+                      onClick={() => run()}
                       disabled={running || !intent.trim()}
+                      aria-label="Apply scan filters"
                       title={
                         !intent.trim()
                           ? "Enter intent text first"
@@ -668,7 +671,7 @@ export function SCANPane({ code }: FunctionPaneProps) {
                   <button
                     type="button"
                     className="btn btn--accent"
-                    onClick={run}
+                    onClick={() => run()}
                     disabled={running}
                     aria-label="Retry the scan"
                   >
@@ -719,9 +722,9 @@ export function SCANPane({ code }: FunctionPaneProps) {
                     label="Long / Short"
                     value={
                       <span>
-                        <span className="u-text-positive scan-divider u-text-negative">{longs}</span>
-                        <span >·</span>
-                        <span >{shorts}</span>
+                        <span className="u-text-positive">{longs}</span>
+                        <span className="scan-divider">·</span>
+                        <span className="u-text-negative">{shorts}</span>
                       </span>
                     }
                     caption={`ELAPSED ${Math.round(result.elapsed_ms)}MS`}
@@ -767,7 +770,7 @@ export function SCANPane({ code }: FunctionPaneProps) {
                             <button
                               type="button"
                               className="btn btn--ghost"
-                              onClick={run}
+                              onClick={() => run()}
                               disabled={running}
                               aria-label="Retry the scan"
                             >
@@ -780,7 +783,9 @@ export function SCANPane({ code }: FunctionPaneProps) {
                                 setUniverse("");
                                 setPhaseC(true);
                                 setPhaseD(true);
-                                run();
+                                // Pass the reset values inline — run() would
+                                // otherwise read the stale pre-reset closure.
+                                run({ universe: "", phaseC: true, phaseD: true });
                               }}
                               aria-label="Reset filters and retry the scan"
                             >
