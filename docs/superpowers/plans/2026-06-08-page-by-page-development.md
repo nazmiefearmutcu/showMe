@@ -41,7 +41,7 @@ Each task is one page. Execute it as a **subagent-driven-development** mini-cycl
 
 - [x] **Task 1: HOME — Overview.** Pane: `ui/src/panes/Welcome.tsx` (+ `Welcome.test.tsx`, `Welcome.cascade.test.tsx`, `Welcome.sentiment.test.tsx`). Backend: market snapshot/sentiment feeds. Focus: first-screen impact, live tiles, navigation affordances.
 - [x] **Task 2: WATCH — Live Watchlist.** Pane: `ui/src/functions/WATCH.tsx`. Backend: quotes/streaming provider. Focus: live updates, add/remove symbols, sparkline/quote density, empty state.
-- [ ] **Task 3: PORT — Portfolio.** Pane: `ui/src/functions/PORT.tsx`. Backend: portfolio aggregation. Focus: holdings table, P&L, real broker/positions data sufficiency.
+- [x] **Task 3: PORT — Portfolio.** Pane: `ui/src/functions/PORT.tsx`. Backend: portfolio aggregation. Focus: holdings table, P&L, real broker/positions data sufficiency.
 - [ ] **Task 4: WEI — Macro Monitor.** Pane: `ui/src/functions/WEI.tsx`. Backend: world indices/macro. Focus: index grid completeness, freshness, formatting.
 - [ ] **Task 5: NI — News Desk (CN alias = Company News).** Pane: `ui/src/functions/NI.tsx`. Backend: `backend/showme/engine/functions/news/`. Focus: real headlines, filtering, readable list, empty/error states.
 - [ ] **Task 6: SCAN — All Functions.** Pane: `ui/src/functions/SCAN.tsx`. Backend: function index. Focus: discoverability, search, categories, launch affordances.
