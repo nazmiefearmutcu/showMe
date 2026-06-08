@@ -655,9 +655,25 @@ export function PORTPane({ code }: FunctionPaneProps) {
         const qty = Number(bp.quantity) || 0;
         const mark = current ?? entry ?? 0;
         const market_value = qty * mark;
+        // Use the broker-reported asset class when present (e.g. Alpaca tags
+        // equities via raw.asset_class) instead of mislabelling every position
+        // as CRYPTO. Tolerant accessor — PortfolioPosition has no typed field,
+        // and vendors surface it under different keys. Default to OTHER, never
+        // fabricate CRYPTO.
+        const rawBp = bp as unknown as {
+          asset_class?: string;
+          assetClass?: string;
+          raw?: { asset_class?: string; assetClass?: string };
+        };
+        const assetClass =
+          rawBp.asset_class ??
+          rawBp.assetClass ??
+          rawBp.raw?.asset_class ??
+          rawBp.raw?.assetClass ??
+          "OTHER";
         rows.push({
           symbol: bp.symbol,
-          asset_class: "CRYPTO",
+          asset_class: assetClass,
           quantity: qty,
           entry_price: entry ?? null,
           current_price: current ?? null,

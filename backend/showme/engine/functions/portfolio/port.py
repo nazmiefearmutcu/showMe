@@ -105,7 +105,9 @@ class PORTFunction(BaseFunction):
                                                    "n_positions": len(out_rows),
                                                    "unrealized_pnl": sum(r["unrealized_pnl"] for r in out_rows)}},
                                   sources=["user_positions"])
-        # Best-effort: get last prices via yfinance for non-crypto, last close from runtime for crypto.
+        # Best-effort: get live last prices via yfinance for *all* asset classes
+        # (crypto included — see note below), falling back to the runtime last
+        # price / avg_cost when no quote is available.
         prices: dict[str, float] = {}
         rows: list[dict[str, Any]] = []
         used_sources = {"portfolio_state"}

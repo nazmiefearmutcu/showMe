@@ -135,7 +135,8 @@ describe("PORT terminal-grade", () => {
       Array.from(grid.querySelectorAll("tbody .u-symbol-link")).map((el) => el.textContent);
 
     // Input order: AAPL (-100 P&L) then MSFT (+100 P&L).
-    expect(symbolsNow()).toEqual(["AAPL", "MSFT"]);
+    const originalOrder = symbolsNow();
+    expect(originalOrder).toEqual(["AAPL", "MSFT"]);
 
     const pnlHeader = within(grid).getByText(/Unrl P&L/i);
     // First click → descending P&L → MSFT (+100) first.
@@ -145,5 +146,10 @@ describe("PORT terminal-grade", () => {
     // Second click → ascending P&L → AAPL (-100) first.
     fireEvent.click(pnlHeader);
     expect(symbolsNow()).toEqual(["AAPL", "MSFT"]);
+
+    // Third click → clears the sort (setSortBy(null)) → rows revert to the
+    // original/unsorted order rather than staying sorted.
+    fireEvent.click(pnlHeader);
+    expect(symbolsNow()).toEqual(originalOrder);
   });
 });
