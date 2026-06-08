@@ -51,7 +51,7 @@ import { addSymbol } from "@/lib/watchlist";
 import { toast } from "@/lib/toast";
 import { navigate } from "@/lib/router";
 import { useWorkspace } from "@/lib/workspace";
-import { formatPercent, formatPrice } from "@/lib/format";
+import { formatMissing, formatNumber, formatPercent, formatPrice } from "@/lib/format";
 import { FunctionControlGroup, LoadStatePill } from "./function-controls";
 import type { FunctionPaneProps } from "./registry-types";
 
@@ -105,6 +105,9 @@ export function MISPane({ code }: FunctionPaneProps) {
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<MisScanResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Inline validation message surfaced next to the market selector (in
+  // addition to the toast) when the user runs with no markets selected.
+  const [marketError, setMarketError] = useState<string | null>(null);
   const [progressNote, setProgressNote] = useState<string>("");
 
   // Live progress snapshot polled from ``GET /api/mis/scan/progress``
@@ -125,6 +128,18 @@ export function MISPane({ code }: FunctionPaneProps) {
   // fetching after the user navigates away. Belt-and-suspenders to the
   // ``finally`` in ``run`` below.
   useEffect(() => stopPolling, [stopPolling]);
+
+  // Per-row drill-down: which symbols have their full indicator breakdown
+  // expanded. Keyed by ``market:symbol`` so two markets can't collide.
+  const [expandedRows, setExpandedRows] = useState<Set<string>>(() => new Set());
+  const toggleExpanded = useCallback((key: string) => {
+    setExpandedRows((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
 
   const [markets, setMarkets] = useState<MisMarketSummary[]>([]);
   const [indicators, setIndicators] = useState<string[]>([]);
@@ -182,6 +197,7 @@ export function MISPane({ code }: FunctionPaneProps) {
   }, [result]);
 
   const toggleMarket = (m: MisMarket) => {
+    setMarketError(null);
     setSelected((prev) => {
       const next = new Set(prev);
       if (next.has(m)) next.delete(m);
@@ -190,14 +206,20 @@ export function MISPane({ code }: FunctionPaneProps) {
     });
   };
 
-  const allOn = () => setSelected(new Set(MIS_MARKETS));
+  const allOn = () => {
+    setMarketError(null);
+    setSelected(new Set(MIS_MARKETS));
+  };
   const noneOn = () => setSelected(new Set());
 
   const run = useCallback(async () => {
     if (selected.size === 0) {
-      toast.warn("MIS", "En az bir piyasa seçmelisiniz");
+      const msg = "En az bir piyasa seçmelisiniz";
+      setMarketError(msg);
+      toast.warn("MIS", msg);
       return;
     }
+    setMarketError(null);
     setRunning(true);
     setError(null);
     setProgressNote(
@@ -321,6 +343,7 @@ export function MISPane({ code }: FunctionPaneProps) {
             type="button"
             className="btn btn--accent u-btn-mini"
             title={`${r.symbol} → Watchlist`}
+            aria-label={`Add ${r.symbol} to watchlist`}
             onClick={(e) => {
               e.stopPropagation();
               handleAddToWatch(r.symbol);
@@ -410,10 +433,12 @@ export function MISPane({ code }: FunctionPaneProps) {
         // visual order consistent across markets with different TF
         // success rates.
         render: (r) => (
-          <ChangeText
-            value={r.normalized_score ?? r.weighted_score}
-            digits={3}
-          />
+          <span className="terminal-grid-numeric">
+            <ChangeText
+              value={r.normalized_score ?? r.weighted_score}
+              digits={3}
+            />
+          </span>
         ),
       },
       {
@@ -423,9 +448,11 @@ export function MISPane({ code }: FunctionPaneProps) {
         numeric: true,
         render: (r) =>
           r.change_pct == null ? (
-            <span className="u-text-mute">—</span>
+            <span className="u-text-mute">{formatMissing}</span>
           ) : (
-            <DeltaChip value={r.change_pct} format="percent" fractionDigits={2} />
+            <span className="terminal-grid-numeric">
+              <DeltaChip value={r.change_pct} format="percent" fractionDigits={2} />
+            </span>
           ),
       },
       {
@@ -435,9 +462,9 @@ export function MISPane({ code }: FunctionPaneProps) {
         numeric: true,
         render: (r) =>
           r.last == null ? (
-            <span className="u-text-mute">—</span>
+            <span className="u-text-mute">{formatMissing}</span>
           ) : (
-            <span className="u-mono-xs">{formatPrice(r.last)}</span>
+            <span className="u-mono-xs terminal-grid-numeric">{formatPrice(r.last)}</span>
           ),
       },
       {
@@ -470,8 +497,36 @@ export function MISPane({ code }: FunctionPaneProps) {
           </span>
         ),
       },
+      {
+        key: "expand",
+        header: "",
+        width: 32,
+        align: "center",
+        render: (r) => {
+          const rowKey = `${r.market}:${r.symbol}`;
+          const open = expandedRows.has(rowKey);
+          const n = r.indicator_breakdown?.length ?? 0;
+          return (
+            <button
+              type="button"
+              className="btn btn--ghost u-btn-mini"
+              aria-expanded={open}
+              aria-label={`Show indicator breakdown for ${r.symbol}`}
+              title={`${r.symbol} · ${n} indikatör detayı`}
+              disabled={n === 0}
+              onClick={(e) => {
+                e.stopPropagation();
+                toggleExpanded(rowKey);
+              }}
+              style={{ width: 22, height: 22, padding: 0, fontSize: 11, lineHeight: 1 }}
+            >
+              {open ? "▾" : "▸"}
+            </button>
+          );
+        },
+      },
     ],
-    [handleAddToWatch, jumpToDES],
+    [handleAddToWatch, jumpToDES, expandedRows, toggleExpanded],
   );
 
   // ── Settings handlers ────────────────────────────────────────────────
@@ -689,6 +744,8 @@ export function MISPane({ code }: FunctionPaneProps) {
               toggleMarket={toggleMarket}
               allOn={allOn}
               noneOn={noneOn}
+              run={run}
+              marketError={marketError}
               tfSets={tfSets}
               setTfSets={setTfSets}
               topN={topN}
@@ -706,6 +763,7 @@ export function MISPane({ code }: FunctionPaneProps) {
               error={error}
               cols={cols}
               rows={rows}
+              expandedRows={expandedRows}
               longs={longs}
               shorts={shorts}
               medianScore={medianScore}
@@ -759,6 +817,8 @@ function ResultsTab(props: {
   toggleMarket: (m: MisMarket) => void;
   allOn: () => void;
   noneOn: () => void;
+  run: () => void;
+  marketError: string | null;
   tfSets: Partial<Record<MisMarket, string[]>>;
   setTfSets: (next: Partial<Record<MisMarket, string[]>>) => void;
   topN: number;
@@ -776,6 +836,7 @@ function ResultsTab(props: {
   error: string | null;
   cols: DataGridColumn<MisScanRow>[];
   rows: MisScanRow[];
+  expandedRows: Set<string>;
   longs: number;
   shorts: number;
   medianScore: number | null;
@@ -789,6 +850,8 @@ function ResultsTab(props: {
     toggleMarket,
     allOn,
     noneOn,
+    run,
+    marketError,
     tfSets,
     setTfSets,
     topN,
@@ -806,6 +869,7 @@ function ResultsTab(props: {
     error,
     cols,
     rows,
+    expandedRows,
     longs,
     shorts,
     medianScore,
@@ -826,12 +890,41 @@ function ResultsTab(props: {
               <button type="button" className="btn btn--ghost u-btn-mini" onClick={noneOn}>
                 Temizle
               </button>
+              <button
+                type="button"
+                className="btn btn--accent u-btn-mini"
+                data-testid="mis-run-inline"
+                onClick={run}
+                disabled={running}
+                aria-describedby={marketError ? "mis-market-error" : undefined}
+              >
+                {running ? "Taranıyor…" : "Şimdi tara"}
+              </button>
             </span>
           }
         >
           Piyasa filtresi
         </CardHeader>
         <CardBody>
+          {marketError && (
+            <div
+              id="mis-market-error"
+              role="alert"
+              style={{
+                marginBottom: 10,
+                padding: "6px 10px",
+                borderRadius: "var(--radius-sm)",
+                border: "1px solid var(--negative)",
+                background: "color-mix(in srgb, var(--negative) 12%, transparent)",
+                color: "var(--negative)",
+                fontSize: 11,
+                fontFamily: "JetBrains Mono, monospace",
+                letterSpacing: "0.03em",
+              }}
+            >
+              {marketError}
+            </div>
+          )}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 8 }}>
             {MIS_MARKETS.map((m) => {
               const meta = markets.find((x) => x.key === m);
@@ -885,14 +978,20 @@ function ResultsTab(props: {
                       </Pill>
                     </span>
                   </label>
-                  <div
+                  <fieldset
+                    aria-label={`Timeframes for ${m}`}
                     style={{
                       display: "flex",
                       flexWrap: "wrap",
                       gap: 4,
+                      border: 0,
+                      margin: 0,
+                      padding: 0,
+                      minInlineSize: 0,
                       opacity: checked ? 1 : 0.55,
                       pointerEvents: checked ? "auto" : "none",
                     }}
+                    disabled={!checked}
                     title={`ZAK ağırlıkları: ${allTfs.map((t) => `${t}=${meta?.tf_weights?.[t] ?? 50}`).join(" · ")}`}
                   >
                     {allTfs.map((tf) => {
@@ -904,6 +1003,8 @@ function ResultsTab(props: {
                           type="button"
                           onClick={() => toggleTf(tf)}
                           style={tfChipStyle(on)}
+                          aria-pressed={on}
+                          aria-label={`Toggle ${tf} timeframe for ${m}`}
                           title={weight ? `${tf} · ZAK=${weight}` : tf}
                         >
                           {tf}
@@ -915,6 +1016,7 @@ function ResultsTab(props: {
                       className="btn btn--ghost u-btn-mini"
                       onClick={allOnThis}
                       style={{ marginLeft: 4 }}
+                      aria-label={`Enable all timeframes for ${m}`}
                       title="Tümünü aç"
                     >
                       hepsi
@@ -923,11 +1025,12 @@ function ResultsTab(props: {
                       type="button"
                       className="btn btn--ghost u-btn-mini"
                       onClick={allOffThis}
+                      aria-label={`Disable all timeframes for ${m}`}
                       title="Tümünü kapat"
                     >
                       hiçbiri
                     </button>
-                  </div>
+                  </fieldset>
                 </div>
               );
             })}
@@ -1006,20 +1109,32 @@ function ResultsTab(props: {
           <div style={kpiStripStyle}>
             <StatCard
               label="Eşleşme / Tarama"
-              value={`${rows.length} / ${completed + skipped}`}
+              value={
+                <span className="terminal-grid-numeric">
+                  {rows.length} / {completed + skipped}
+                </span>
+              }
               caption={`${completed} başarılı · ${skipped} atlandı`}
               tone="neutral"
             />
             <StatCard
               label="Median güven"
-              value={medianConfidence != null ? `${medianConfidence.toFixed(1)}%` : "—"}
+              value={
+                <span className="terminal-grid-numeric">
+                  {formatPercent(medianConfidence, { digits: 1 })}
+                </span>
+              }
               caption={`min ${formatPercent(minConfidence)}`}
               tone={medianConfidence != null && medianConfidence >= 50 ? "positive" : "neutral"}
             />
             <StatCard
               label="Median skor"
-              value={medianScore != null ? medianScore.toFixed(3) : "—"}
-              caption={`süre ${Math.round(result.elapsed_ms)} ms`}
+              value={
+                <span className="terminal-grid-numeric">
+                  {formatNumber(medianScore, 3)}
+                </span>
+              }
+              caption={`süre ${formatNumber(Math.round(result.elapsed_ms))} ms`}
               tone="neutral"
             />
             <StatCard
@@ -1062,12 +1177,23 @@ function ResultsTab(props: {
                   body="Mevcut filtrelerle eşleşen sembol bulunamadı. Min. güveni düşürmeyi veya NEUTRAL'ları göstermeyi deneyin."
                 />
               ) : (
-                <DataGrid
-                  columns={cols}
-                  rows={rows}
-                  rowKey={(r) => `${r.market}:${r.symbol}`}
-                  density="compact"
-                />
+                <>
+                  <DataGrid
+                    columns={cols}
+                    rows={rows}
+                    rowKey={(r) => `${r.market}:${r.symbol}`}
+                    density="compact"
+                    ariaLabel="Multi Indicator Scan results"
+                  />
+                  {rows
+                    .filter((r) => expandedRows.has(`${r.market}:${r.symbol}`))
+                    .map((r) => (
+                      <IndicatorBreakdownPanel
+                        key={`${r.market}:${r.symbol}`}
+                        row={r}
+                      />
+                    ))}
+                </>
               )}
             </CardBody>
           </Card>
@@ -1078,6 +1204,16 @@ function ResultsTab(props: {
         <Empty
           title="Hazır"
           body="Piyasaları seçin ve 'Tara' butonuna basın. Tüm seçili piyasalardaki her sembol 23-indikatör konsensüsünden geçirilir."
+          action={
+            <button
+              type="button"
+              className="btn btn--accent u-btn-mini"
+              data-testid="mis-empty-select-all"
+              onClick={allOn}
+            >
+              Tüm piyasaları seç
+            </button>
+          }
         />
       )}
     </div>
@@ -1286,6 +1422,96 @@ function SettingsTab(props: {
 // Small helpers
 // ─────────────────────────────────────────────────────────────────────────
 
+/**
+ * Drill-down panel — the full per-indicator breakdown for one row. Shows
+ * each indicator's signal direction + score + reason, plus the per-TF
+ * consensus detail, so the user can see *why* the aggregate is bullish or
+ * bearish. Rendered below the grid when the row's expand toggle is open.
+ */
+function IndicatorBreakdownPanel({ row }: { row: MisScanRow }) {
+  const breakdown = row.indicator_breakdown ?? [];
+  return (
+    <section
+      data-testid={`mis-breakdown-${row.symbol}`}
+      aria-label={`Indicator breakdown for ${row.symbol}`}
+      style={{
+        marginTop: 8,
+        padding: "10px 12px",
+        background: "var(--surface-2)",
+        border: "1px solid var(--border-subtle)",
+        borderRadius: "var(--radius-md)",
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          marginBottom: 8,
+          fontFamily: "JetBrains Mono, monospace",
+          fontSize: 12,
+        }}
+      >
+        <strong>{row.symbol}</strong>
+        <Pill tone={dirTone(row.direction)} variant="soft" withDot={false}>
+          {row.direction}
+        </Pill>
+        <span style={fieldLabelStyle}>
+          {breakdown.length} indikatör · {row.tf_count_with_signal}/{row.tf_count_scanned} TF sinyalli
+        </span>
+      </div>
+      {breakdown.length === 0 ? (
+        <span className="u-text-mute u-text-10">{formatMissing}</span>
+      ) : (
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "minmax(120px, 0.8fr) 80px 70px minmax(140px, 1.4fr)",
+            gap: "2px 12px",
+            fontSize: 11,
+            fontFamily: "JetBrains Mono, monospace",
+          }}
+        >
+          <span style={fieldLabelStyle}>İndikatör</span>
+          <span style={fieldLabelStyle}>Sinyal</span>
+          <span style={{ ...fieldLabelStyle, textAlign: "right" }}>Skor</span>
+          <span style={fieldLabelStyle}>Gerekçe</span>
+          {breakdown.map((ind, i) => {
+            const tone = SIGNAL_TONE[ind.signal] ?? "muted";
+            return [
+              <strong key={`${ind.name}-${i}-n`}>{ind.name}</strong>,
+              <span key={`${ind.name}-${i}-s`}>
+                <Pill tone={tone} variant="soft" withDot={false}>
+                  {ind.signal.replace("_", " ")}
+                </Pill>
+              </span>,
+              <span
+                key={`${ind.name}-${i}-sc`}
+                className="terminal-grid-numeric"
+                style={{ textAlign: "right" }}
+              >
+                <ChangeText value={ind.score} digits={3} />
+              </span>,
+              <span
+                key={`${ind.name}-${i}-r`}
+                className="u-text-mute"
+                style={{
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+                title={ind.reason}
+              >
+                {ind.reason || formatMissing}
+              </span>,
+            ];
+          })}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function PerTfStrip({ row }: { row: MisScanRow }) {
   if (!row.per_tf || row.per_tf.length === 0) {
     return <span className="u-text-mute u-text-10">—</span>;
@@ -1443,10 +1669,18 @@ function TfCalibrationCard({
 
 function ConfidenceBar({ value }: { value: number }) {
   const v = Math.max(0, Math.min(100, value || 0));
+  const rounded = Math.round(v);
   return (
-    <span className="scan-conf-bar">
+    <span
+      className="scan-conf-bar terminal-grid-numeric"
+      role="meter"
+      aria-label={`Confidence ${rounded}%`}
+      aria-valuenow={rounded}
+      aria-valuemin={0}
+      aria-valuemax={100}
+    >
       <span aria-hidden className="scan-conf-bar__fill" style={{ ["--u-pct" as string]: `${v}%` }} />
-      <span className="scan-conf-bar__label">{v.toFixed(0)}</span>
+      <span className="scan-conf-bar__label">{formatNumber(v)}</span>
     </span>
   );
 }
@@ -1478,7 +1712,7 @@ function ScanProgressPanel({
   // the user gets a stable final % to look at while the POST resolves.
   const headline =
     total > 0
-      ? `${completed.toLocaleString()} / ${total.toLocaleString()} sembol tarandı`
+      ? `${formatNumber(completed)} / ${formatNumber(total)} sembol tarandı`
       : "Tarama hazırlanıyor…";
 
   return (
