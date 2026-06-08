@@ -6,7 +6,7 @@
  *   • mode=auto reads from `Intl.DateTimeFormat().resolvedOptions().timeZone`
  *   • flipping back to manual restores the user's previous city
  */
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   formatNewsTimestamp,
   formatTime,
@@ -18,11 +18,20 @@ import {
   writeTimezone,
 } from "./timezone";
 
+// Freeze the clock so the "is this today?" branch in formatNewsTimestamp is
+// exercised at a known instant. Mid-day UTC keeps the chosen "today" on the
+// same Istanbul (UTC+3) calendar date as the frozen "now", regardless of the
+// machine's wall-clock — this is what broke at the UTC-midnight rollover.
+const FROZEN_NOW = new Date("2026-06-08T12:00:00Z");
+
 beforeEach(() => {
   localStorage.clear();
+  vi.useFakeTimers();
+  vi.setSystemTime(FROZEN_NOW);
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   localStorage.clear();
 });
 
@@ -43,9 +52,12 @@ describe("timezone module", () => {
   });
 
   it("formatNewsTimestamp shows time-of-day for today, MMM DD for older", () => {
-    const today = new Date();
+    // Both dates are anchored to the frozen "now" (2026-06-08T12:00Z). At UTC
+    // 13:00 the instant is still 2026-06-08 in Europe/Istanbul (16:00 TRT) —
+    // the same calendar day as "now" there — so the "today" branch fires.
+    const today = new Date(FROZEN_NOW);
     today.setUTCHours(13, 0, 0, 0);
-    const old = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const old = new Date(FROZEN_NOW.getTime() - 7 * 24 * 60 * 60 * 1000);
     expect(formatNewsTimestamp(today.toISOString(), "Europe/Istanbul")).toMatch(
       /^\d{2}:\d{2}$/,
     );

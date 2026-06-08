@@ -1,16 +1,30 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useBotsSupervisionStore } from "./bots-supervision-store";
 
 vi.mock("./sidecar", () => ({ sidecarFetch: vi.fn() }));
 import { sidecarFetch } from "./sidecar";
 const mock = sidecarFetch as ReturnType<typeof vi.fn>;
 
+// `signals_today` buckets by the *host-local* calendar date (the H-7 fix uses
+// toLocaleDateString('en-CA'), not a UTC ISO slice). Freeze the clock so the
+// store's "today" is a known instant; deriving the test's signal timestamp
+// from this same frozen "now" keeps it on the same local day on any machine —
+// previously the test's UTC date-slice drifted past the local date at the
+// UTC-midnight rollover and mis-counted by one.
+const FROZEN_NOW = new Date("2026-06-08T12:00:00Z");
+
 beforeEach(() => {
+  vi.useFakeTimers();
+  vi.setSystemTime(FROZEN_NOW);
   useBotsSupervisionStore.setState({
     stats: { total: 0, enabled: 0, live: 0, signals_today: 0 },
     bots: [], feed: [], generatedAt: null, loading: false, error: null,
   });
   mock.mockReset();
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 describe("bots-supervision-store", () => {
@@ -26,12 +40,14 @@ describe("bots-supervision-store", () => {
         symbol: "SOL/USDT", timeframe: "1h", mode: "shadow", enabled: false,
         created_at: "", updated_at: "" },
     ] });
-    const today = new Date().toISOString().slice(0, 10);
+    // Use the frozen "now" instant itself for the today-signal: its host-local
+    // date is, by construction, identical to the store's "today" on any machine.
+    const todayTs = FROZEN_NOW.toISOString();
     mock.mockResolvedValueOnce({
-      generated_at: `${today}T12:00:00Z`,
+      generated_at: todayTs,
       signals: [
-        { bar_index: 1, bar_time: `${today}T11:00:00Z`, kind: "entry",
-          price: 100, action: "shadow", timestamp: `${today}T11:00:00Z`,
+        { bar_index: 1, bar_time: todayTs, kind: "entry",
+          price: 100, action: "shadow", timestamp: todayTs,
           bot_id: "a", bot_symbol: "BTC/USDT", bot_strategy_id: "s",
           bot_exchange_id: "binance", bot_mode: "live" },
         { bar_index: 2, bar_time: "2026-05-21T11:00:00Z", kind: "exit",
