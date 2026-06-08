@@ -225,7 +225,9 @@ def register(app: FastAPI, deps: AppDeps) -> None:
 
     @router.get("/api/bots/performance")
     async def bots_performance_leaderboard() -> dict[str, Any]:
-        from showme.bots.performance import compute_trades, compute_metrics
+        from showme.bots.performance import (
+            compute_trades, compute_trades_from_closed, compute_metrics,
+        )
         from showme.strategies.store import StrategyStore, UnknownStrategy
         store = _store()
         sstore = StrategyStore.fresh()
@@ -241,7 +243,14 @@ def register(app: FastAPI, deps: AppDeps) -> None:
                 sizing = float(spec.position.sizing_value or 100.0)
             except UnknownStrategy:
                 pass
-            trades = compute_trades(rec.signal_log, sizing_value=sizing)
+            # P1 correctness: signal_log is FIFO-capped at 100, so a bot with
+            # >100 signals computes wrong/incomplete PnL. Prefer the uncapped
+            # closed_trades_log when it has any entries; only fall back to the
+            # legacy signal_log path for bots that pre-date the C4 split.
+            if rec.closed_trades_log:
+                trades = compute_trades_from_closed(rec.closed_trades_log)
+            else:
+                trades = compute_trades(rec.signal_log, sizing_value=sizing)
             metrics = compute_metrics(trades)
             records.append({
                 "bot_id": rec.id,
@@ -258,7 +267,8 @@ def register(app: FastAPI, deps: AppDeps) -> None:
     @router.get("/api/bots/{bot_id}/performance")
     async def bot_performance_detail(bot_id: str) -> dict[str, Any]:
         from showme.bots.performance import (
-            compute_trades, compute_metrics, compute_equity_curve,
+            compute_trades, compute_trades_from_closed, compute_metrics,
+            compute_equity_curve,
         )
         from showme.bots.store import UnknownBot
         from showme.strategies.store import StrategyStore, UnknownStrategy
@@ -275,7 +285,12 @@ def register(app: FastAPI, deps: AppDeps) -> None:
             sizing = float(spec.position.sizing_value or 100.0)
         except UnknownStrategy:
             pass
-        trades = compute_trades(rec.signal_log, sizing_value=sizing)
+        # P1 correctness: prefer the uncapped closed_trades_log (the
+        # signal_log is FIFO-capped at 100). See leaderboard route above.
+        if rec.closed_trades_log:
+            trades = compute_trades_from_closed(rec.closed_trades_log)
+        else:
+            trades = compute_trades(rec.signal_log, sizing_value=sizing)
         return {
             "bot_id": bot_id,
             "symbol": rec.symbol,

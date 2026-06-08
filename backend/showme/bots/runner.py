@@ -625,7 +625,20 @@ class BotRunner:
             error: str | None = None
             filled_qty: float | None = None
             avg_fill_price: float | None = None
+            # H13 honesty: provenance of the equity used to size a LIVE
+            # order. Threaded onto the SignalEntry so the UI can flag a
+            # fallback-equity-sized order. Shadow entries leave this None.
+            equity_source: str | None = None
             if rec.mode == "live":
+                # Resolve the equity source for sizing-aware honesty tagging.
+                # Only risk-based sizing consults broker equity; fixed_* sizing
+                # ignores it, so leave the tag None for those kinds.
+                if spec.position.sizing_kind in ("risk_pct", "risk_per_trade"):
+                    try:
+                        _eq_val, equity_source = await _resolve_equity_with_source(broker)
+                    except Exception as exc:  # noqa: BLE001
+                        LOG.debug("equity source resolve failed: %s", exc)
+                        equity_source = None
                 try:
                     order = await self._dispatch_live_order(
                         bot_id=bot_id,
@@ -695,6 +708,7 @@ class BotRunner:
                 qty=persisted_qty,
                 bar_close_time=bar_close_time(last_event.bar_time, rec.timeframe),
                 reason=getattr(last_event, "reason", None),
+                equity_source=equity_source,
             )
 
             try:

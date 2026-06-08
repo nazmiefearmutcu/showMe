@@ -336,6 +336,55 @@ def test_enable_requires_broker_registry(client, seeded):
     assert "broker not registered" in e.json()["detail"]
 
 
+def test_performance_prefers_closed_trades_log(client, seeded):
+    """P1 — per-bot + leaderboard performance MUST be derived from the
+    uncapped ``closed_trades_log`` when it has entries, not the FIFO-capped
+    ``signal_log``. We inject a closed trade with a known PnL while leaving
+    signal_log empty: if the route still read signal_log it would report
+    zero trades, so a non-zero trade_count proves the closed-trades path.
+    """
+    from showme.bots.store import BotStore
+    from showme.bots.record import ClosedTrade
+
+    r = client.post("/api/bots", json=seeded)
+    bid = r.json()["id"]
+
+    store = BotStore.fresh()
+    rec = store.get(bid)
+    # Two closed round-trips with deterministic PnL. signal_log stays empty.
+    rec.closed_trades_log.append(ClosedTrade(
+        entry_timestamp="2026-05-22T09:00:00Z",
+        exit_timestamp="2026-05-22T09:05:00Z",
+        entry_price=100.0, exit_price=110.0, qty=1.0, side="long",
+        pnl=10.0, bar_index_entry=1, bar_index_exit=2,
+        commission_paid=0.0, funding_paid=0.0, net_pnl=10.0,
+    ))
+    rec.closed_trades_log.append(ClosedTrade(
+        entry_timestamp="2026-05-22T10:00:00Z",
+        exit_timestamp="2026-05-22T10:05:00Z",
+        entry_price=110.0, exit_price=115.0, qty=1.0, side="long",
+        pnl=5.0, bar_index_entry=3, bar_index_exit=4,
+        commission_paid=0.0, funding_paid=0.0, net_pnl=5.0,
+    ))
+    store.save(rec)
+    assert store.get(bid).signal_log == []  # guard: signal_log empty
+
+    # Per-bot detail endpoint reflects the closed trades.
+    detail = client.get(f"/api/bots/{bid}/performance")
+    assert detail.status_code == 200, detail.text
+    dj = detail.json()
+    assert dj["metrics"]["trade_count"] == 2
+    assert dj["metrics"]["total_pnl"] == 15.0
+    assert len(dj["trades"]) == 2
+
+    # Leaderboard endpoint reflects the same closed trades.
+    board = client.get("/api/bots/performance")
+    assert board.status_code == 200, board.text
+    row = next(r for r in board.json()["records"] if r["bot_id"] == bid)
+    assert row["trade_count"] == 2
+    assert row["total_pnl"] == 15.0
+
+
 def test_list_bots_includes_signal_count(client, seeded):
     """H-SUP-2 — GET /api/bots includes ``signal_count`` per record so
     the supervisor UI can show accurate per-bot tallies."""

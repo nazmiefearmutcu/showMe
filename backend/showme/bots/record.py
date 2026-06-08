@@ -74,6 +74,13 @@ class SignalEntry(BaseModel):
     bar_close_time: str | None = None
     # Q4 audit C9 fix: SL/TP intrabar hit reason ("sl_hit" / "tp_hit").
     reason: str | None = None
+    # H13 honesty: provenance of the equity used to size a LIVE order.
+    # ``"broker"`` = real broker.account() equity; ``"fallback_10k"`` = the
+    # documented $10k floor when the broker exposed no usable equity. ``None``
+    # for shadow entries (no real order sized) and for persisted records that
+    # pre-date this field. The UI flags ``fallback_10k`` so a user knows a
+    # live order was sized on the fallback, not real broker equity.
+    equity_source: str | None = None
 
 
 class ClosedTrade(BaseModel):

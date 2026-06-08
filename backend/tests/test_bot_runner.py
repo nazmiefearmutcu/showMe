@@ -66,6 +66,25 @@ def _save_strategy_with_always_entry(tmp_path: Path, monkeypatch) -> str:
     return saved.id
 
 
+def _save_strategy_risk_pct(tmp_path: Path, monkeypatch) -> str:
+    """Strategy with risk_pct sizing so the runner consults broker equity.
+
+    risk_pct is the sizing kind that threads ``_resolve_equity_with_source``,
+    so the equity-source honesty tag is only meaningful for this kind.
+    """
+    monkeypatch.setenv("SHOWME_HOME", str(tmp_path))
+    from showme.strategies.store import StrategyStore
+    from showme.strategies.spec import StrategySpec, Rule, Position
+    spec = StrategySpec(
+        name="last_bar_cross_risk",
+        entry_rules=[Rule(kind="crosses_above", left="close", right="literal:100")],
+        exit_rules=[],
+        position=Position(sizing_kind="risk_pct", sizing_value=2.0),
+    )
+    saved = StrategyStore.fresh().save(spec)
+    return saved.id
+
+
 def _register_fake_broker(credential_id: str, ohlcv_rows: list[list[float]]):
     from showme.brokers import factory as factory_mod
     broker = MagicMock()
@@ -207,3 +226,68 @@ async def test_tick_live_mode_calls_submit_order(monkeypatch, tmp_path):
     assert signal.action == "placed"
     assert signal.order_id == "order-123"
     broker.submit_order.assert_called_once()
+
+
+# ── H13 honesty: equity_source threading ────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_live_tick_tags_equity_source_broker(monkeypatch, tmp_path):
+    """A live tick whose broker reports real equity tags the SignalEntry
+    with ``equity_source == "broker"`` (risk_pct sizing path)."""
+    sid = _save_strategy_risk_pct(tmp_path, monkeypatch)
+    rows = [[1748000000000, 100.0, 101.0, 99.0, 100.5, 1000.0]]
+    broker = _register_fake_broker("ce1", rows)
+    broker.account = AsyncMock(return_value={"equity": 50_000.0})
+    store = BotStore(tmp_path / "bots")
+    bot = store.save(BotRecord(
+        strategy_id=sid, credential_id="ce1", exchange_id="binance",
+        symbol="BTC/USDT", enabled=True, mode="live",
+    ))
+    monkeypatch.setattr("showme.bots.runner.fetch_ohlcv",
+                        AsyncMock(side_effect=lambda *a, **k: _ohlcv_df()))
+    runner = BotRunner()
+    signal = await runner.tick(bot.id, store)
+    assert signal is not None
+    assert signal.equity_source == "broker"
+
+
+@pytest.mark.asyncio
+async def test_live_tick_tags_equity_source_fallback(monkeypatch, tmp_path):
+    """A live tick whose broker.account() is unavailable tags the
+    SignalEntry with ``equity_source == "fallback_10k"``."""
+    sid = _save_strategy_risk_pct(tmp_path, monkeypatch)
+    rows = [[1748000000000, 100.0, 101.0, 99.0, 100.5, 1000.0]]
+    broker = _register_fake_broker("ce2", rows)
+    # account() raises → fallback path.
+    broker.account = AsyncMock(side_effect=RuntimeError("no account"))
+    store = BotStore(tmp_path / "bots")
+    bot = store.save(BotRecord(
+        strategy_id=sid, credential_id="ce2", exchange_id="binance",
+        symbol="BTC/USDT", enabled=True, mode="live",
+    ))
+    monkeypatch.setattr("showme.bots.runner.fetch_ohlcv",
+                        AsyncMock(side_effect=lambda *a, **k: _ohlcv_df()))
+    runner = BotRunner()
+    signal = await runner.tick(bot.id, store)
+    assert signal is not None
+    assert signal.equity_source == "fallback_10k"
+
+
+@pytest.mark.asyncio
+async def test_shadow_tick_leaves_equity_source_none(monkeypatch, tmp_path):
+    """Shadow-mode entries never size a real order → equity_source None."""
+    sid = _save_strategy_risk_pct(tmp_path, monkeypatch)
+    _register_fake_broker("ce3", [])
+    store = BotStore(tmp_path / "bots")
+    bot = store.save(BotRecord(
+        strategy_id=sid, credential_id="ce3", exchange_id="binance",
+        symbol="BTC/USDT", enabled=True, mode="shadow",
+    ))
+    monkeypatch.setattr("showme.bots.runner.fetch_ohlcv",
+                        AsyncMock(side_effect=lambda *a, **k: _ohlcv_df()))
+    runner = BotRunner()
+    signal = await runner.tick(bot.id, store)
+    assert signal is not None
+    assert signal.action == "shadow"
+    assert signal.equity_source is None
