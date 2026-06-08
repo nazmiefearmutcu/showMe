@@ -728,26 +728,6 @@
     fetch_open_orders: true
     create_order: true
     cancel_order: true
-- id: bybiteu
-  display_name: Bybit EU
-  aliases: []
-  asset_classes:
-  - spot
-  - margin
-  regions:
-  - global
-  adapter: ccxt
-  ccxt_id: bybiteu
-  requires:
-  - api_key
-  - api_secret
-  optional: []
-  capabilities:
-    fetch_balance: true
-    fetch_positions: true
-    fetch_open_orders: true
-    create_order: true
-    cancel_order: true
 - id: bydfi
   display_name: BYDFi
   aliases: []
@@ -1900,7 +1880,7 @@
     fetch_positions: true
     fetch_open_orders: true
     create_order: true
-    cancel_order: true
+    cancel_order: false
 - id: paymium
   display_name: Paymium
   aliases: []
