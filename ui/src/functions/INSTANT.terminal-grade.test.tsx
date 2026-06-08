@@ -2,8 +2,10 @@
  * INSTANT — terminal-grade accessibility, key-stability and data-honesty.
  *
  * Pins the P1–P4 work items:
- *  - the event feed is an aria-live log region (screen readers announce new
- *    events on a busy squawk line);
+ *  - the visible event feed is a role=log region but NOT an aria-live region
+ *    (the whole list re-renders every poll; a separate visually-hidden polite
+ *    announcer reads out only genuinely-new events so screen readers aren't
+ *    spammed with all rows each cycle);
  *  - filter chips expose aria-pressed/aria-label state;
  *  - the backfill button reports aria-busy while a backfill is running;
  *  - event rows render with stable keys (no array-index suffix) so React
@@ -75,7 +77,7 @@ afterEach(() => {
 });
 
 describe("INSTANT terminal-grade", () => {
-  it("wraps the event feed in an aria-live log region", async () => {
+  it("renders a role=log feed that is NOT a live region, plus a separate polite announcer", async () => {
     vi.spyOn(instant, "fetchInstantStatus").mockResolvedValue(baseStatus);
     vi.spyOn(instant, "fetchInstantEvents").mockResolvedValue({
       events: [makeEvent({ dedupe_key: "a", title: "Alpha headline" })],
@@ -87,10 +89,21 @@ describe("INSTANT terminal-grade", () => {
       expect(container.querySelector('[role="log"]')).not.toBeNull();
     });
     const log = container.querySelector('[role="log"]') as HTMLElement;
-    expect(log.getAttribute("aria-live")).toBe("polite");
+    // FIX-1: the visible list keeps role=log but must NOT carry aria-live, so
+    // the whole re-rendered list is not re-announced each poll.
+    expect(log.getAttribute("aria-live")).toBeNull();
     expect(log.getAttribute("aria-label")).toBeTruthy();
-    // The event rows render inside the live region.
+    // The event rows render inside the log region.
     expect(within(log).getByText("Alpha headline")).toBeTruthy();
+
+    // FIX-1: a SEPARATE visually-hidden polite announcer exists, distinct from
+    // the log, for short new-event summaries.
+    const announcer = container.querySelector(
+      '[aria-live="polite"][role="status"]',
+    ) as HTMLElement;
+    expect(announcer).not.toBeNull();
+    expect(announcer).not.toBe(log);
+    expect(announcer.className).toContain("u-sr-only");
   });
 
   it("exposes aria-pressed and aria-label on filter chips", async () => {
@@ -138,7 +151,9 @@ describe("INSTANT terminal-grade", () => {
       expect(getByText("Backfill")).toBeTruthy();
     });
     const backfillBtn = getByText("Backfill").closest("button") as HTMLButtonElement;
-    expect(backfillBtn.getAttribute("aria-busy")).toBe("false");
+    // FIX-6: assert idle is "not busy" rather than the literal "false", so the
+    // test doesn't break if the idle state ever drops the attribute entirely.
+    expect(backfillBtn.getAttribute("aria-busy")).not.toBe("true");
 
     fireEvent.click(backfillBtn);
 
@@ -200,5 +215,76 @@ describe("INSTANT terminal-grade", () => {
       expect(getByText("live-cache")).toBeTruthy();
     });
     expect(queryByText(/documented optimizations/i)).toBeNull();
+  });
+
+  it("flashes only genuinely-new events across polls (baseline does not flash)", async () => {
+    vi.spyOn(instant, "fetchInstantStatus").mockResolvedValue(baseStatus);
+    // Low score (< 58) so the fresh flash class is eligible to apply.
+    const batch1 = {
+      events: [
+        makeEvent({ dedupe_key: "alpha", title: "Alpha", priority_score: 10 }),
+        makeEvent({ dedupe_key: "beta", title: "Beta", priority_score: 10 }),
+      ],
+    } as never;
+    const batch2 = {
+      events: [
+        makeEvent({ dedupe_key: "gamma", title: "Gamma", priority_score: 10 }),
+        makeEvent({ dedupe_key: "alpha", title: "Alpha", priority_score: 10 }),
+        makeEvent({ dedupe_key: "beta", title: "Beta", priority_score: 10 }),
+      ],
+    } as never;
+    vi.spyOn(instant, "fetchInstantEvents")
+      .mockResolvedValueOnce(batch1)
+      .mockResolvedValue(batch2);
+
+    const { getByText } = render(<INSTANTPane code="INSTANT" symbol={undefined} />);
+
+    // First population is the baseline → NOTHING flashes.
+    await waitFor(() => expect(getByText("Alpha")).toBeTruthy());
+    expect(getByText("Alpha").closest("article")?.className ?? "").not.toContain(
+      "instant-event--fresh",
+    );
+    expect(getByText("Beta").closest("article")?.className ?? "").not.toContain(
+      "instant-event--fresh",
+    );
+
+    // Second poll: only the genuinely-new "Gamma" should flash; the carried-
+    // over Alpha/Beta must not re-flash.
+    fireEvent.click(getByText("Refresh"));
+    await waitFor(() => expect(getByText("Gamma")).toBeTruthy());
+    expect(getByText("Gamma").closest("article")?.className ?? "").toContain(
+      "instant-event--fresh",
+    );
+    expect(getByText("Alpha").closest("article")?.className ?? "").not.toContain(
+      "instant-event--fresh",
+    );
+    expect(getByText("Beta").closest("article")?.className ?? "").not.toContain(
+      "instant-event--fresh",
+    );
+  });
+
+  it("distinguishes connected-but-empty speedups from an absent field", async () => {
+    // transport=http (connected) AND speedups present-but-empty → honest
+    // "live feed connected · no active optimizations reported" caption.
+    vi.spyOn(instant, "fetchInstantStatus").mockResolvedValue({
+      ...baseStatus,
+      transport: "http",
+      performance: { speedups: [] },
+    } as unknown as instant.InstantStatus);
+    vi.spyOn(instant, "fetchInstantEvents").mockResolvedValue({ events: [] } as never);
+
+    const { getByText, queryByText } = render(
+      <INSTANTPane code="INSTANT" symbol={undefined} />,
+    );
+
+    await waitFor(() => {
+      expect(getByText(/no active optimizations reported/i)).toBeTruthy();
+    });
+    // Must NOT fall back to the "service disconnected" documented caption.
+    expect(
+      queryByText(
+        /documented optimizations · active when the live feed service is connected/i,
+      ),
+    ).toBeNull();
   });
 });

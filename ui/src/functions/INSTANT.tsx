@@ -25,7 +25,6 @@ import { fetchXInstantEvents } from "@/lib/xai";
 import { toast } from "@/lib/toast";
 import { useXInjectStore } from "@/lib/xinject";
 import { readTimezone as readTz } from "@/lib/timezone";
-import { relativeTimeLabel } from "@/lib/time";
 import { useVisibilityTick } from "@/lib/useVisibilityTick";
 import type { FunctionPaneProps } from "./registry-types";
 
@@ -68,6 +67,13 @@ export function INSTANTPane({ code }: FunctionPaneProps) {
   // the headline a second time. Now we evict the key with the lowest ts.
   const spokenRef = useRef<Map<string, number>>(new Map());
   const SPOKEN_MAX = 500;
+  // FIX-2: track genuinely-new events across renders. An event flashes only on
+  // the render where its identity key first appears — not on every 30s poll
+  // (where the whole batch is freshly server-stamped). `seeded` guards the very
+  // first population so we don't flash all ~160 baseline rows on initial load.
+  const seenKeysRef = useRef<Set<string>>(new Set());
+  const seededRef = useRef(false);
+  const SEEN_MAX = 500;
   const [categoryFilter, setCategoryFilter] = useState<string>("all");
   const [regionFilter, setRegionFilter] = useState<string>("all");
   const [sourceFilter, setSourceFilter] = useState<string>("all");
@@ -257,11 +263,17 @@ export function INSTANTPane({ code }: FunctionPaneProps) {
   // Flow Speed honesty: only treat speedups as live-measured when the backend
   // actually reported them. Otherwise we surface the hardcoded KNOWN_SPEEDUPS,
   // labeled as *documented* optimizations rather than live status.
-  const liveSpeedups = status?.performance?.speedups ?? [];
-  const speedupsAreLive = liveSpeedups.length > 0;
+  // FIX-5: distinguish "field absent" (service not reporting) from "field
+  // present but empty" (service connected, but reported zero optimizations).
+  const speedupsField = status?.performance?.speedups;
+  const speedupsAreLive = Array.isArray(speedupsField) && speedupsField.length > 0;
+  const liveSpeedups = speedupsField ?? [];
   const speedups = useMemo(() => {
     return speedupsAreLive ? liveSpeedups : KNOWN_SPEEDUPS;
   }, [speedupsAreLive, liveSpeedups]);
+  // The speedups field is present (an array) but empty — the live service IS
+  // connected and simply reported no active optimizations.
+  const speedupsConnectedEmpty = Array.isArray(speedupsField) && speedupsField.length === 0;
   const sourceHealth = status?.health?.sources ?? [];
   // QA-2026-05-24 (#10d): default to "loading" on first paint instead of
   // "unavailable". The pre-fetch state previously painted a misleading red
@@ -299,6 +311,54 @@ export function INSTANTPane({ code }: FunctionPaneProps) {
         message: `[${score.toFixed(0)}] ${event.title ?? "(untitled)"}`,
       };
     }).reverse();
+  }, [sorted]);
+
+  // FIX-1 / FIX-2: detect genuinely-new events for the flash class and the
+  // screen-reader announcer. An event is "new" only when its identity key is
+  // absent from the seen-set; the whole `sorted` array gets a new reference
+  // every poll, but established keys are already in the set so they don't
+  // re-announce or re-flash. The first non-empty population seeds the set as a
+  // baseline (no flash). Returned `newKeys` drives per-row flashing in
+  // EventList; `announcement` is read out by the polite live region only.
+  const { newKeys, announcement } = useMemo(() => {
+    const seen = seenKeysRef.current;
+    const keys = sorted.map((event, index) => eventKey(event, index));
+
+    if (!seededRef.current) {
+      // First population is the baseline — record everything, flash nothing.
+      if (sorted.length > 0) {
+        for (const k of keys) seen.add(k);
+        seededRef.current = true;
+      }
+      return { newKeys: new Set<string>(), announcement: "" };
+    }
+
+    const fresh = new Set<string>();
+    let topHeadline = "";
+    sorted.forEach((event, index) => {
+      const k = keys[index];
+      if (!seen.has(k)) {
+        fresh.add(k);
+        if (!topHeadline) topHeadline = event.title ?? "(untitled)";
+      }
+    });
+
+    // Record current keys, then cap the set to avoid unbounded growth.
+    for (const k of keys) seen.add(k);
+    if (seen.size > SEEN_MAX) {
+      const overflow = seen.size - SEEN_MAX;
+      let removed = 0;
+      for (const k of seen) {
+        if (removed >= overflow) break;
+        seen.delete(k);
+        removed += 1;
+      }
+    }
+
+    const count = fresh.size;
+    const summary =
+      count > 0 ? `${count} new event${count === 1 ? "" : "s"}: ${topHeadline}` : "";
+    return { newKeys: fresh, announcement: summary };
   }, [sorted]);
 
   const triggerBackfill = () => {
@@ -491,8 +551,15 @@ export function INSTANTPane({ code }: FunctionPaneProps) {
                   }
                 />
               ) : (
-                <EventList events={sorted} />
+                <EventList events={sorted} newKeys={newKeys} />
               )}
+              {/* FIX-1: a separate visually-hidden polite live region announces
+                  ONLY a short summary of genuinely-new events. The visible feed
+                  list (role=log) is intentionally NOT a live region so screen
+                  readers don't re-announce all rows on every 30s re-render. */}
+              <div className="u-sr-only" aria-live="polite" role="status">
+                {announcement}
+              </div>
             </section>
             <aside style={sideColumn}>
               <Panel title="Line State">
@@ -522,7 +589,9 @@ export function INSTANTPane({ code }: FunctionPaneProps) {
                 <div style={speedupCaption}>
                   {speedupsAreLive
                     ? "live-reported · active optimizations"
-                    : "documented optimizations · active when the live feed service is connected"}
+                    : speedupsConnectedEmpty && transport === "http"
+                      ? "live feed connected · no active optimizations reported"
+                      : "documented optimizations · active when the live feed service is connected"}
                 </div>
                 <div style={chipGrid}>
                   {speedups.map((item) => (
@@ -532,10 +601,17 @@ export function INSTANTPane({ code }: FunctionPaneProps) {
                   ))}
                 </div>
                 {!speedupsAreLive ? (
-                  <p style={mutedNote}>
-                    Live speedup metadata only ships when the instant HTTP service is reachable. The
-                    chips above are documented optimizations, not live-measured metrics.
-                  </p>
+                  speedupsConnectedEmpty && transport === "http" ? (
+                    <p style={mutedNote}>
+                      The live feed reported no active optimizations right now. The chips above are
+                      documented optimizations, not live-measured metrics.
+                    </p>
+                  ) : (
+                    <p style={mutedNote}>
+                      Live speedup metadata only ships when the instant HTTP service is reachable. The
+                      chips above are documented optimizations, not live-measured metrics.
+                    </p>
+                  )
                 ) : null}
               </Panel>
               <Panel title={`Source Health · ${sourceHealth.length}`}>
@@ -806,25 +882,27 @@ function ChipButton({
   );
 }
 
-function EventList({ events }: { events: InstantEvent[] }) {
+function EventList({ events, newKeys }: { events: InstantEvent[]; newKeys: Set<string> }) {
+  // FIX-1: role="log" marks this as the feed list, but it is NOT a live region
+  // (no aria-live) — the whole list re-renders every poll, so announcing it
+  // would re-read all rows. A separate visually-hidden announcer in the parent
+  // reads out only genuinely-new events.
   return (
     <div
       style={eventList}
       role="log"
-      aria-live="polite"
       aria-label="Instant event feed"
     >
-      {events.map((event) => {
+      {events.map((event, index) => {
         const score = Number(event.priority_score ?? 0);
-        // Stable identity across re-sorts/filters: prefer the server dedupe
-        // key, then link/id, with title only as a last resort. Never append
-        // the array index — that breaks React reconciliation on reorder.
-        const key =
-          event.dedupe_key || event.link || (event.id != null ? String(event.id) : null) || event.title || "instant-event";
-        // New-item flash only for low/normal rows (score < 58); higher-score
-        // rows already carry a persistent accent background that the flash
-        // would fight with.
-        const fresh = score < 58 && isFresh(event.fetched_at);
+        // Stable, unique identity — see eventKey(). The index is used ONLY in
+        // the last-resort fallback so identity-less rows never collide.
+        const key = eventKey(event, index);
+        // FIX-2: new-item flash only for low/normal rows (score < 58; higher-
+        // score rows already carry a persistent accent background the flash
+        // would fight with) AND only when the event is genuinely new this
+        // render — not on the per-poll fresh-stamp heuristic.
+        const fresh = score < 58 && newKeys.has(key);
         return (
           <article
             key={key}
@@ -860,8 +938,8 @@ function EventList({ events }: { events: InstantEvent[] }) {
                   title={event.published_at ?? undefined}
                 >
                   published {formatDate(event.published_at)}
-                  {relativeTimeLabel(event.published_at) ? (
-                    <span style={metaCellRel}> · {relativeTimeLabel(event.published_at)}</span>
+                  {event.published_at ? (
+                    <span style={metaCellRel}> · {timeAgo(event.published_at)} ago</span>
                   ) : null}
                 </span>
                 <span style={metaCellMute}>·</span>
@@ -998,11 +1076,19 @@ function dateValue(value?: string | null): number {
 
 // True when an event was fetched within the last ~5 seconds, used to drive the
 // brief new-item flash highlight on freshly-arrived rows.
-function isFresh(value?: string | null): boolean {
-  if (!value) return false;
-  const ts = Date.parse(value);
-  if (!Number.isFinite(ts)) return false;
-  return Date.now() - ts < 5_000;
+// Stable identity for an event row. Prefers the server dedupe key, then
+// link/id, with title only as a last resort. The final fallback appends the
+// array index so multiple identity-less rows never collide into one React key
+// (a static fallback made React drop duplicate-keyed rows). Items WITH any
+// identity get a stable key, so reorders don't churn their keys.
+function eventKey(event: InstantEvent, index: number): string {
+  return (
+    event.dedupe_key ||
+    event.link ||
+    (event.id != null ? String(event.id) : null) ||
+    event.title ||
+    `instant-${index}`
+  );
 }
 
 function formatDate(value?: string | null): string {
