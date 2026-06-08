@@ -7,8 +7,9 @@
  *   - "Last poll HH:MM UTC" → wall-clock (unchanged source)
  *   - "Data as of <data.as_of>" → from the backend envelope
  *
- * The live pill must flip to "warn" when the BTMM backend pushes a
- * `data_stale_24h` warning into the warnings array.
+ * The live pill must flip to "stale" when the BTMM backend pushes a
+ * `data_stale_24h` warning into the warnings array (P1.3 freshness honesty;
+ * the old generic "warn" label did not say WHY).
  */
 import { cleanup, render } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -77,7 +78,7 @@ describe("BTMM pane data-freshness stamps", () => {
     expect(pollStamp?.textContent).toMatch(/Last poll \d{2}:\d{2} UTC/);
   });
 
-  it("flips live pill to warn when backend emits data_stale_24h warning", () => {
+  it("flips live pill to stale when backend emits data_stale_24h warning", () => {
     useFunctionMock.mockReturnValue({
       state: "ok" as const,
       refetch: vi.fn(),
@@ -98,7 +99,8 @@ describe("BTMM pane data-freshness stamps", () => {
     });
     const { container } = render(<BTMMPane code="BTMM" />);
     const livePill = container.querySelector('[data-testid="btmm-live-pill"]');
-    expect(livePill?.textContent).toBe("warn");
+    // P1.3: a >24h-old snapshot reads "stale" (not the old generic "warn").
+    expect(livePill?.textContent).toBe("stale");
   });
 
   it("shows '—' for Data as of when backend omits as_of", () => {

@@ -25,6 +25,7 @@ import {
 } from "@/design-system";
 import { useFunction } from "@/lib/useFunction";
 import { maxOf, minOf } from "@/lib/maxOf";
+import { formatPercent, formatNumber, formatMissing } from "@/lib/format";
 import {
   FunctionControlGroup,
   LoadStatePill,
@@ -138,19 +139,49 @@ const COLS: DataGridColumn<BTMMRow>[] = [
     header: "Rate",
     numeric: true,
     width: 96,
-    render: (row) => <span style={primaryNumStyle}>{fmtPct(row.policy_rate)}</span>,
+    render: (row) => (
+      <span className="terminal-grid-numeric" style={primaryNumStyle}>
+        {fmtPct(row.policy_rate)}
+      </span>
+    ),
   },
   {
     key: "trend",
-    header: "12m",
+    // P2.6: clarify the ambiguous "12m" header for hover/AT.
+    header: (
+      <span title="12-month policy-rate trend (real history only)">12m</span>
+    ),
     width: 84,
     render: (row) => {
-      const series = trendSeries(row);
+      const series = realTrendSeries(row);
+      // P1.1: no fabricated trend. With < 4 real observations show a muted
+      // em-dash placeholder (data-synthetic) instead of a procedural line.
+      if (series.length < 4) {
+        return (
+          <span
+            className="btmm-spark btmm-spark--empty"
+            data-synthetic="true"
+            aria-label="insufficient history for a trend"
+            title="Insufficient history — no trend available"
+          >
+            {formatMissing}
+          </span>
+        );
+      }
+      // Fixed-income convention is inverted vs equities: a rate CUT (negative
+      // bp) is "easing"/bullish → green/positive; a HIKE (positive bp) is
+      // tightening → red/negative.
       const dir =
         (row.trend_3m_bp ?? row.change_bp ?? 0) >= 0 ? "negative" : "positive";
       return (
-        <span className="u-inline-flex">
-          <Sparkline values={series} width={64} height={18} tone={dir} />
+        <span className="btmm-spark" data-synthetic="false">
+          <Sparkline
+            values={series}
+            width={64}
+            height={18}
+            tone={dir}
+            ariaLabel={`${row.country_code ?? "policy rate"} 12-month trend`}
+          />
         </span>
       );
     },
@@ -161,13 +192,19 @@ const COLS: DataGridColumn<BTMMRow>[] = [
     numeric: true,
     width: 138,
     render: (row) => (
-      <span className="u-inline-flex u-items-center u-gap-6">
+      <span className="u-inline-flex u-items-center u-gap-6 terminal-grid-numeric">
         {movePill(row.last_move)}
         {row.change_bp == null ? (
-          "—"
+          formatMissing
         ) : (
           <DeltaChip
             value={row.change_bp}
+            // INVERTED fixed-income convention: a HIKE (positive bp) tightens
+            // policy → red/down; a CUT (negative bp) eases → green/up. This is
+            // the opposite of the equity default (positive=green), so we drive
+            // `direction` explicitly to keep the column consistent with the
+            // hike/cut pill, KPI tilt, and sparkline tone.
+            direction={bpDirection(row.change_bp)}
             format="raw"
             fractionDigits={0}
             ariaLabel={`change ${row.change_bp} basis points`}
@@ -183,16 +220,33 @@ const COLS: DataGridColumn<BTMMRow>[] = [
     width: 92,
     render: (row) =>
       row.trend_3m_bp == null ? (
-        "—"
+        formatMissing
       ) : (
-        <DeltaChip value={row.trend_3m_bp} format="raw" fractionDigits={0} />
+        <span className="terminal-grid-numeric">
+          {/* INVERTED convention — see "change_bp" above. */}
+          <DeltaChip
+            value={row.trend_3m_bp}
+            direction={bpDirection(row.trend_3m_bp)}
+            format="raw"
+            fractionDigits={0}
+          />
+        </span>
       ),
   },
   {
     key: "as_of",
-    header: "As of",
+    // P2.6: clarify what "As of" dates.
+    header: (
+      <span title="Date of the latest BIS CBPOL observation for this rate">
+        As of
+      </span>
+    ),
     width: 100,
-    render: (row) => <span style={mutedNumStyle}>{row.as_of ?? "—"}</span>,
+    render: (row) => (
+      <span className="terminal-grid-numeric" style={mutedNumStyle}>
+        {row.as_of ?? formatMissing}
+      </span>
+    ),
   },
   {
     key: "source",
@@ -236,7 +290,23 @@ export function BTMMPane({ code }: FunctionPaneProps) {
   // the header pill said `HH:MM UTC` from `new Date()` which made a 24-day
   // old fallback look freshly polled. We now display both.
   const dataAsOf = payload.as_of ?? null;
-  const isLive = state === "ok" && (data?.warnings?.length ?? 0) === 0;
+  // P1.2: the backend flips `sources` to ["local fallback"] (and stamps every
+  // row's `source`) when it served the hardcoded snapshot. That is the clean
+  // frontend signal — no backend change needed.
+  const isFallback =
+    (data?.sources?.some((s) => s.toLowerCase().includes("fallback")) ?? false) ||
+    rawRows.some((r) => String(r.source ?? "").toLowerCase().includes("fallback"));
+  // P1.3 / P2.6: freshness honesty. "live" used to mean "the fetch succeeded"
+  // even when serving a 6h cache or a 24-day-old fallback. Reflect REAL
+  // freshness from `stale_seconds` (server-computed age of the freshest
+  // observation in scope) so a clearly-stale snapshot reads "stale", not "live".
+  const staleSeconds = payload.stale_seconds ?? null;
+  const isStale =
+    isFallback ||
+    (data?.warnings?.length ?? 0) > 0 ||
+    (staleSeconds != null && staleSeconds > 24 * 3600);
+  const isLive = state === "ok" && !isStale;
+  const freshnessLabel = state !== "ok" ? "warn" : isLive ? "live" : "stale";
 
   return (
     <div className="u-pane-host">
@@ -265,9 +335,18 @@ export function BTMMPane({ code }: FunctionPaneProps) {
                   Data as of {dataAsOf ?? "—"}
                 </Pill>
               </span>
-              <span data-testid="btmm-live-pill">
+              <span
+                data-testid="btmm-live-pill"
+                title={
+                  isLive
+                    ? "Freshest BIS observation is current"
+                    : isFallback
+                      ? "Serving a stored fallback snapshot"
+                      : "Serving a cached / stale snapshot"
+                }
+              >
                 <Pill tone={isLive ? "positive" : "warn"} variant="soft">
-                  {isLive ? "live" : "warn"}
+                  {freshnessLabel}
                 </Pill>
               </span>
               <LoadStatePill state={state} />
@@ -281,12 +360,16 @@ export function BTMMPane({ code }: FunctionPaneProps) {
         />
         <div style={filterBarStyle}>
           <FunctionControlGroup>
-            <label style={searchLabelStyle}>
+            <label htmlFor="btmm-search" style={searchLabelStyle}>
               Search
               <input
+                id="btmm-search"
+                type="search"
+                aria-label="Search central banks by country, bank, or currency"
                 value={search}
                 onChange={(event) => setSearch(event.target.value)}
                 placeholder="country, bank, ccy"
+                className="btmm-search-input"
                 style={searchInputStyle}
               />
             </label>
@@ -340,6 +423,21 @@ export function BTMMPane({ code }: FunctionPaneProps) {
             />
           ) : (
             <>
+              {isFallback ? (
+                <div
+                  role="status"
+                  aria-live="polite"
+                  data-testid="btmm-fallback-banner"
+                  className="btmm-fallback-banner"
+                >
+                  <span className="btmm-fallback-banner__dot" aria-hidden />
+                  <strong>Stored fallback snapshot</strong>
+                  <span className="u-text-secondary">
+                    Central-bank feed unavailable — showing a stored snapshot
+                    {dataAsOf ? ` from ${dataAsOf}` : ""}. Rates may be stale.
+                  </span>
+                </div>
+              ) : null}
               <KPIRibbon
                 summary={summary}
                 largestMove={largestMove}
@@ -409,7 +507,7 @@ function KPIRibbon({
       />
       <StatCard
         label="Range"
-        value={`${fmtPctCompact(summary?.min_policy_rate)} – ${fmtPctCompact(summary?.max_policy_rate)}`}
+        value={`${fmtPct(summary?.min_policy_rate)} – ${fmtPct(summary?.max_policy_rate)}`}
         caption="MIN – MAX"
         tone="neutral"
         trend={[]}
@@ -418,6 +516,17 @@ function KPIRibbon({
         label="Tilt (H − C)"
         value={`${tilt >= 0 ? "+" : ""}${tilt}`}
         caption={`${hikes}H · ${cuts}C · ${holds}HO`}
+        // P2.6: the bare "H − C" label is opaque; the info marker spells out
+        // that tilt = number of hikes minus number of cuts across the universe.
+        rightSlot={
+          <span
+            className="btmm-info"
+            title="Tilt = hikes minus cuts across the visible central banks. Positive = net tightening (red); negative = net easing (green)."
+            aria-label="Tilt is hikes minus cuts across the visible central banks"
+          >
+            ⓘ
+          </span>
+        }
         tone={tilt > 0 ? "negative" : tilt < 0 ? "positive" : "neutral"}
         trend={[]}
       />
@@ -466,6 +575,13 @@ function PolicyRateHistory({ row }: { row?: BTMMRow }) {
     .join(" ");
   const areaPath = `${path} L${width},${height} L0,${height} Z`;
   const latest = points[points.length - 1];
+  const first = points[0];
+  // P2.4: text alternative for the raw <svg> so screen readers get country +
+  // date range + min/max instead of an unlabelled graphic.
+  const chartAriaLabel =
+    `${row?.country_code ?? "Policy rate"} policy-rate history, ` +
+    `${first?.date ?? "?"} to ${latest?.date ?? "?"}, ` +
+    `min ${fmtPct(min)}, max ${fmtPct(max)}`;
   return (
     <ResizableChartFrame
       storageId={`BTMM.policy-rate.${row?.country_code ?? "default"}`}
@@ -493,6 +609,8 @@ function PolicyRateHistory({ row }: { row?: BTMMRow }) {
       <svg
         viewBox={`0 0 ${width} ${height}`}
         preserveAspectRatio="none"
+        role="img"
+        aria-label={chartAriaLabel}
         style={{ width: "100%", flex: "1 1 0", minHeight: 0, minWidth: 0 }}
       >
         <defs>
@@ -528,25 +646,17 @@ function PolicyRateHistory({ row }: { row?: BTMMRow }) {
   );
 }
 
-function trendSeries(row: BTMMRow): number[] {
-  const hist = row.history ?? [];
-  if (hist.length >= 4) {
-    return hist
-      .filter((p) => typeof p.policy_rate === "number")
-      .map((p) => Number(p.policy_rate))
-      .slice(-12);
-  }
-  const seed = (row.country_code ?? "row") + (row.currency ?? "");
-  let h = 0;
-  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) % 1009;
-  const out: number[] = [];
-  let v = 50;
-  for (let i = 0; i < 12; i++) {
-    const x = Math.sin((i + h) * 0.6) * 5 + Math.cos((i * 0.3 + h) * 1.1) * 3.5;
-    v = Math.max(20, Math.min(80, v + x * 0.55));
-    out.push(v);
-  }
-  return out;
+// P1.1 data-honesty: only return a series when we have a REAL trend. The old
+// implementation fabricated a deterministic pseudo-random walk for rows with
+// < 4 observations and rendered it as a plain sparkline — a fake line shown as
+// data. We now return at least 2 real points or nothing; the caller renders a
+// muted "insufficient history" placeholder instead of a synthetic curve.
+function realTrendSeries(row: BTMMRow): number[] {
+  const values = (row.history ?? [])
+    .filter((p) => typeof p.policy_rate === "number")
+    .map((p) => Number(p.policy_rate))
+    .slice(-12);
+  return values.length >= 4 ? values : [];
 }
 
 function filterRows(rows: BTMMRow[], search: string): BTMMRow[] {
@@ -619,23 +729,31 @@ function normalizePayload(payload: BTMMPayload | unknown): BTMMPayload {
   return { rows: [] };
 }
 
+// P3.7: rates/yields share format.ts's `formatPercent` (already-percent
+// contract, fixed 2dp) so the columns never jitter. The previous bespoke
+// `fmtPct` allowed 2–4 decimals which made the Rate column shift width as
+// magnitudes changed; `fmtPctCompact` duplicated the 2dp variant.
 function fmtPct(value: number | null | undefined): string {
-  if (value == null || !Number.isFinite(value)) return "—";
-  return `${value.toLocaleString(undefined, {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 4,
-  })}%`;
+  return formatPercent(value, { digits: 2 });
 }
 
-function fmtPctCompact(value: number | null | undefined): string {
-  if (value == null || !Number.isFinite(value)) return "—";
-  return `${value.toFixed(2)}%`;
-}
-
+// bps: format.ts has no "+12bp" unit helper, so this stays a thin local wrapper
+// — but it reuses the shared `formatMissing`/`formatNumber` sentinel + locale
+// so sign + unit are consistent with the rest of the dashboard.
 function fmtBp(value: number | null | undefined): string {
-  if (value == null || !Number.isFinite(value)) return "—";
+  if (value == null || !Number.isFinite(value)) return formatMissing;
   const prefix = value > 0 ? "+" : "";
-  return `${prefix}${value.toFixed(0)}bp`;
+  return `${prefix}${formatNumber(value, 0)}bp`;
+}
+
+// INVERTED fixed-income convention: a hike (positive bp) is tightening
+// (bearish → "down"/red), a cut (negative bp) is easing (bullish → "up"/green).
+// DeltaChip defaults to the equity mapping (positive=green), so BTMM passes
+// `direction` explicitly everywhere a bps delta is shown.
+function bpDirection(bp: number): "up" | "down" | "flat" {
+  if (bp > 0) return "down";
+  if (bp < 0) return "up";
+  return "flat";
 }
 
 function movePill(move: BTMMRow["last_move"]): ReactNode {

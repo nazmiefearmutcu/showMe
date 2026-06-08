@@ -7015,6 +7015,59 @@
   border-radius: 2px;
 }
 
+/* BTMM (central-bank policy-rate monitor) — data-honesty + a11y styling. */
+.btmm-spark {
+  display: inline-flex;
+}
+/* P1.1: sparse history shows a muted em-dash placeholder, never a fake line. */
+.btmm-spark--empty {
+  align-items: center;
+  justify-content: center;
+  width: 64px;
+  height: 18px;
+  color: var(--text-mute);
+  font-family: var(--font-mono, inherit);
+  font-variant-numeric: tabular-nums;
+}
+/* P1.2: prominent stored-fallback-snapshot disclosure banner. */
+.btmm-fallback-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  border: 1px solid color-mix(in srgb, var(--warn) 55%, transparent);
+  background: var(--warn-soft);
+  border-radius: var(--radius-sm);
+  padding: 8px 11px;
+  font-size: 12px;
+}
+.btmm-fallback-banner strong {
+  color: var(--warn);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.btmm-fallback-banner__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--warn);
+  box-shadow: 0 0 6px var(--warn);
+  flex-shrink: 0;
+}
+/* P2.5: visible focus ring on the search input. */
+.btmm-search-input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-color: var(--accent);
+}
+/* P2.6: small info marker on the "Tilt" KPI. */
+.btmm-info {
+  cursor: help;
+  color: var(--text-mute);
+  font-size: 11px;
+  line-height: 1;
+}
+
 /* P2: sparkline honesty — a real intraday series renders solid; a procedural
    (no-history) trend is de-emphasized so it cannot masquerade as real data. */
 .wei-spark {
