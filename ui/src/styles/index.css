@@ -8461,7 +8461,10 @@
   font-size: 10.5px;
   letter-spacing: 0.16em;
   text-transform: uppercase;
-  color: var(--text-mute);
+  /* Was --text-mute (the faintest token) — axis ticks were near-invisible
+   * on dark themes. --text-secondary keeps them legible without competing
+   * with the bars. */
+  color: var(--text-secondary);
   padding: 0 4px;
 }
 
@@ -8520,6 +8523,11 @@
   position: absolute;
   left: 50%;
   transform: translateX(-50%);
+  /* Stable, centered width so the label stops jumping horizontally when a
+   * strike gains/loses a decimal (612 vs 612.34). The fixed min-width keeps
+   * the zero-line label column visually locked. */
+  min-width: 64px;
+  text-align: center;
   color: var(--text-primary);
   background: var(--surface);
   padding: 0 6px;
@@ -8532,19 +8540,61 @@
   font-weight: 600;
 }
 
+/* Call / put WALL emphasis — the heaviest dealer-gamma concentrations.
+ * Was barely visible (a soft box-shadow over a translucent bar). Now the
+ * wall bar is solid, taller, and ringed so it reads as the dominant level
+ * even at a glance, plus a faint full-row tint to anchor it. */
+.gex-chart__row--call-wall .gex-chart__bar--call,
+.gex-chart__row--put-wall .gex-chart__bar--put {
+  height: 11px;
+}
+
+.gex-chart__row--call-wall {
+  background: linear-gradient(
+    90deg,
+    transparent 50%,
+    color-mix(in srgb, var(--positive) 12%, transparent)
+  );
+}
+
 .gex-chart__row--call-wall .gex-chart__bar--call {
-  background: color-mix(in srgb, var(--positive) 90%, transparent);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--positive) 60%, transparent);
+  background: var(--positive);
+  box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--positive) 85%, transparent);
+}
+
+.gex-chart__row--put-wall {
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--negative) 12%, transparent),
+    transparent 50%
+  );
 }
 
 .gex-chart__row--put-wall .gex-chart__bar--put {
-  background: color-mix(in srgb, var(--negative) 90%, transparent);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--negative) 60%, transparent);
+  background: var(--negative);
+  box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--negative) 85%, transparent);
+}
+
+/* Zero-gamma FLIP point — the strike where dealer hedging changes polarity.
+ * Surface it as a dashed --warn rule across the row plus a tinted band so
+ * the user can read the regime boundary, not just a recoloured number. */
+.gex-chart__row--flip {
+  background: color-mix(in srgb, var(--warn) 10%, transparent);
+}
+
+.gex-chart__row--flip::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 0;
+  border-top: 1px dashed color-mix(in srgb, var(--warn) 70%, transparent);
+  pointer-events: none;
 }
 
 .gex-chart__row--flip .gex-chart__strike {
   color: var(--warn);
   font-weight: 600;
+  background: color-mix(in srgb, var(--warn) 16%, var(--surface));
 }
 
 .gex-chart__legend {
@@ -8552,7 +8602,9 @@
   flex-wrap: wrap;
   gap: 14px;
   font-size: 11.5px;
-  color: var(--text-faint);
+  /* Was --text-faint — the legend was nearly unreadable. --text-secondary
+   * brings it to a legible weight while staying subordinate to the bars. */
+  color: var(--text-secondary);
   padding-top: 4px;
   border-top: 1px solid color-mix(in srgb, var(--line, var(--border-default)) 60%, transparent);
 }
@@ -8584,4 +8636,30 @@
 
 .gex-chart__sw--flip {
   background: var(--warn);
+}
+
+/* Prominent degradation banner shown when the backend served the synthetic
+ * reference model instead of a live options chain. Negative tone (not the
+ * softer --warn) because the data is fabricated, not merely stale. */
+.gex-synthetic-note {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  padding: 9px 12px;
+  border-radius: var(--radius-sm, 6px);
+  border: 1px solid color-mix(in srgb, var(--negative) 55%, transparent);
+  background: color-mix(in srgb, var(--negative) 12%, transparent);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.gex-synthetic-note__title {
+  color: var(--negative);
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.gex-synthetic-note__body {
+  color: var(--text-secondary);
 }

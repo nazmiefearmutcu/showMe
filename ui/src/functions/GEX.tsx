@@ -9,8 +9,12 @@
  * never consumed it. This pane closes that gap: it calls the function
  * registry with `live_options: true` so the backend pulls live yfinance
  * options chains and runs the Black-Scholes per-strike gamma exposure
- * model. When yfinance is unreachable we degrade to the reference
- * model and surface the warning in the load-state pill.
+ * model. When yfinance is unreachable the backend degrades to a SYNTHETIC
+ * reference model (hardcoded OI, constant IV) and flags it
+ * (`summary.synthetic` + a `warning`). This pane surfaces that honestly:
+ * a prominent negative badge plus an inline alert banner so a fabricated
+ * curve is never presented as real dealer positioning. It also discloses
+ * that only the nearest expiry is fetched (`max_expiries=1`).
  *
  * Visual structure mirrors the ProGex bar chart (call bars right of
  * the zero line, put bars left) but every value is token-driven and
@@ -33,6 +37,11 @@ import { SymbolBar } from "@/shell/SymbolBar";
 import { useFunction } from "@/lib/useFunction";
 import { defaultSymbolForFunction } from "@/lib/symbols";
 import {
+  formatCurrency,
+  formatMissing,
+  formatPrice,
+} from "@/lib/format";
+import {
   FunctionControlGroup,
   LoadStatePill,
   RefreshButton,
@@ -48,6 +57,10 @@ interface GEXSummary {
   put_wall?: number | { strike?: number; gex?: number };
   n_strikes?: number;
   source_mode?: string;
+  /** True when the backend served the synthetic reference model rather
+   * than a real options chain (live chain unavailable). */
+  synthetic?: boolean;
+  degraded?: boolean;
 }
 
 interface GEXRow {
@@ -72,6 +85,9 @@ interface GEXData {
   call_wall?: number | { strike?: number };
   put_wall?: number | { strike?: number };
   methodology?: string;
+  /** Human-readable degradation note surfaced verbatim when the synthetic
+   * reference model is in use. */
+  warning?: string;
 }
 
 function strikeOf(value: number | { strike?: number } | undefined): number | null {
@@ -82,18 +98,17 @@ function strikeOf(value: number | { strike?: number } | undefined): number | nul
   return null;
 }
 
-function fmtCurrency(n: number | null | undefined): string {
-  if (n == null || !Number.isFinite(n)) return "—";
-  const abs = Math.abs(n);
-  if (abs >= 1e9) return `${n < 0 ? "-" : ""}$${(abs / 1e9).toFixed(2)}B`;
-  if (abs >= 1e6) return `${n < 0 ? "-" : ""}$${(abs / 1e6).toFixed(2)}M`;
-  if (abs >= 1e3) return `${n < 0 ? "-" : ""}$${(abs / 1e3).toFixed(1)}K`;
-  return `${n < 0 ? "-" : ""}$${abs.toFixed(0)}`;
+/** GEX dollar magnitudes (net Γ, walls) — compact "$" with 2 sig decimals,
+ * shared sentinel for missing. Delegates to the canonical formatter so the
+ * pane stops shipping its own rounding contract. */
+function gexCurrency(n: number | null | undefined): string {
+  return formatCurrency(n, { compact: true, fractionDigits: 2 });
 }
 
-function fmtStrike(n: number | null | undefined): string {
-  if (n == null || !Number.isFinite(n)) return "—";
-  return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
+/** Strike labels — price-grade precision (keeps sub-dollar precision for
+ * cheap underlyings) instead of a bespoke locale call. */
+function gexStrike(n: number | null | undefined): string {
+  return formatPrice(n);
 }
 
 export function GEXPane({ code, symbol }: FunctionPaneProps) {
@@ -126,8 +141,26 @@ export function GEXPane({ code, symbol }: FunctionPaneProps) {
     strikeOf(summary?.gamma_flip) ??
     strikeOf((payload as { gamma_flip?: number | { strike?: number } } | undefined)?.gamma_flip ?? undefined);
 
-  const isLive = (summary?.source_mode ?? "").includes("live");
-  const expiriesLabel = (payload?.expiries ?? []).slice(0, 2).join(", ") || "—";
+  // Honest source detection. The backend flags the synthetic reference
+  // model explicitly (`summary.synthetic`); we also defend against an
+  // older payload by treating any `synthetic*` source_mode as degraded.
+  const sourceMode = summary?.source_mode ?? "";
+  const isSynthetic =
+    summary?.synthetic === true ||
+    summary?.degraded === true ||
+    sourceMode.startsWith("synthetic");
+  const isLive = !isSynthetic && sourceMode.includes("live");
+  const syntheticNote =
+    payload?.warning ??
+    "Live options chain unavailable — showing a synthetic reference model, NOT real dealer positioning.";
+  const expiriesLabel = (payload?.expiries ?? []).slice(0, 2).join(", ") || formatMissing;
+  // Single-expiry disclosure: the backend defaults to the nearest expiry
+  // only (max_expiries=1) to avoid slow/timeout-prone deep fetches, which
+  // omits most dealer gamma. Say so plainly instead of implying the whole
+  // surface is represented.
+  const expiryCount = (payload?.expiries ?? []).length;
+  const expiryScope =
+    expiryCount <= 1 ? "nearest expiry only" : `${expiryCount} expiries`;
 
   const maxAbs = useMemo(() => {
     let m = 0;
@@ -147,7 +180,7 @@ export function GEXPane({ code, symbol }: FunctionPaneProps) {
           title={`Dealer gamma · ${effectiveSymbol ?? "—"}`}
           subtitle={
             status === "ok"
-              ? `${rows.length} strike · spot ${fmtStrike(spot)} · exp ${expiriesLabel}`
+              ? `${rows.length} strike · spot ${gexStrike(spot)} · ${expiryScope}${expiriesLabel !== formatMissing ? ` (${expiriesLabel})` : ""}`
               : status === "provider_unavailable"
                 ? "Options provider unavailable"
                 : "Waiting for options chain"
@@ -157,9 +190,15 @@ export function GEXPane({ code, symbol }: FunctionPaneProps) {
               <Pill tone="muted" variant="soft" withDot={false}>
                 {rows.length} k
               </Pill>
-              <Pill tone={isLive ? "positive" : "warn"} variant="soft">
-                {isLive ? "live chain" : "reference"}
-              </Pill>
+              {isSynthetic ? (
+                <Pill tone="negative" variant="filled">
+                  ⚠ Synthetic model — not live options
+                </Pill>
+              ) : (
+                <Pill tone={isLive ? "positive" : "warn"} variant="soft">
+                  {isLive ? "live chain" : "reference"}
+                </Pill>
+              )}
               <LoadStatePill state={state} />
               <RefreshButton
                 loading={state === "loading"}
@@ -177,6 +216,14 @@ export function GEXPane({ code, symbol }: FunctionPaneProps) {
             minHeight: 0,
           }}
         >
+          {isSynthetic && status === "ok" ? (
+            <div className="gex-synthetic-note" role="alert">
+              <strong className="gex-synthetic-note__title">
+                ⚠ Synthetic reference model
+              </strong>
+              <span className="gex-synthetic-note__body">{syntheticNote}</span>
+            </div>
+          ) : null}
           <div
             style={{
               display: "grid",
@@ -186,7 +233,11 @@ export function GEXPane({ code, symbol }: FunctionPaneProps) {
           >
             <StatCard
               label="Net dealer Γ"
-              value={fmtCurrency(summary?.net_gex)}
+              value={
+                <span className="terminal-grid-numeric">
+                  {gexCurrency(summary?.net_gex)}
+                </span>
+              }
               caption="per 1% spot move"
               tone={
                 (summary?.net_gex ?? 0) >= 0 ? "positive" : "negative"
@@ -194,7 +245,11 @@ export function GEXPane({ code, symbol }: FunctionPaneProps) {
             />
             <StatCard
               label="Gamma flip"
-              value={fmtStrike(flipStrike)}
+              value={
+                <span className="terminal-grid-numeric">
+                  {gexStrike(flipStrike)}
+                </span>
+              }
               caption={
                 flipStrike != null && spot != null
                   ? `${(flipStrike - spot).toFixed(2)} vs spot`
@@ -204,8 +259,12 @@ export function GEXPane({ code, symbol }: FunctionPaneProps) {
             />
             <StatCard
               label="Call wall"
-              value={fmtStrike(callWallStrike)}
-              caption={fmtCurrency(
+              value={
+                <span className="terminal-grid-numeric">
+                  {gexStrike(callWallStrike)}
+                </span>
+              }
+              caption={gexCurrency(
                 typeof payload?.call_wall === "object"
                   ? (payload.call_wall as { gex?: number }).gex
                   : summary?.call_gex_total,
@@ -214,8 +273,12 @@ export function GEXPane({ code, symbol }: FunctionPaneProps) {
             />
             <StatCard
               label="Put wall"
-              value={fmtStrike(putWallStrike)}
-              caption={fmtCurrency(
+              value={
+                <span className="terminal-grid-numeric">
+                  {gexStrike(putWallStrike)}
+                </span>
+              }
+              caption={gexCurrency(
                 typeof payload?.put_wall === "object"
                   ? (payload.put_wall as { gex?: number }).gex
                   : summary?.put_gex_total,
@@ -236,12 +299,16 @@ export function GEXPane({ code, symbol }: FunctionPaneProps) {
                 />
               ) : (
                 <div className="gex-chart">
-                  <div className="gex-chart__axis">
-                    <span>{fmtCurrency(-maxAbs)}</span>
+                  <div className="gex-chart__axis terminal-grid-numeric">
+                    <span>{gexCurrency(-maxAbs)}</span>
                     <span>0</span>
-                    <span>{fmtCurrency(maxAbs)}</span>
+                    <span>{gexCurrency(maxAbs)}</span>
                   </div>
-                  <div className="gex-chart__rows" role="list">
+                  <div
+                    className="gex-chart__rows terminal-grid-numeric"
+                    role="list"
+                    aria-label={`Dealer gamma exposure by strike for ${effectiveSymbol ?? "instrument"}, ${rows.length} strikes`}
+                  >
                     <span className="gex-chart__zero" aria-hidden />
                     {rows.map((row) => {
                       const v = row.gex ?? row.value ?? 0;
@@ -260,31 +327,44 @@ export function GEXPane({ code, symbol }: FunctionPaneProps) {
                         (isPutWall ? " gex-chart__row--put-wall" : "") +
                         (isFlip ? " gex-chart__row--flip" : "") +
                         (isSpot ? " gex-chart__row--spot" : "");
+                      const direction = v >= 0 ? "call gamma" : "put gamma";
+                      const tags = [
+                        isCallWall ? "call wall" : null,
+                        isPutWall ? "put wall" : null,
+                        isFlip ? "gamma flip" : null,
+                        isSpot ? "spot" : null,
+                      ].filter(Boolean);
+                      const ariaLabel =
+                        `Strike ${gexStrike(row.strike)}: ${direction} ${gexCurrency(Math.abs(v))}` +
+                        (tags.length ? ` (${tags.join(", ")})` : "");
                       return (
                         <div
                           className={rowCls}
                           role="listitem"
+                          aria-label={ariaLabel}
                           key={row.strike}
-                          title={`strike ${fmtStrike(row.strike)} · gex ${fmtCurrency(v)}`}
+                          title={ariaLabel}
                         >
                           {v < 0 ? (
                             <span
                               className="gex-chart__bar gex-chart__bar--put"
                               style={{ width: `${pct}%` }}
+                              aria-hidden="true"
                             />
                           ) : (
-                            <span className="gex-chart__bar gex-chart__bar--put" />
+                            <span className="gex-chart__bar gex-chart__bar--put" aria-hidden="true" />
                           )}
                           {v >= 0 ? (
                             <span
                               className="gex-chart__bar gex-chart__bar--call"
                               style={{ width: `${pct}%` }}
+                              aria-hidden="true"
                             />
                           ) : (
-                            <span className="gex-chart__bar gex-chart__bar--call" />
+                            <span className="gex-chart__bar gex-chart__bar--call" aria-hidden="true" />
                           )}
                           <span className="gex-chart__strike">
-                            {fmtStrike(row.strike)}
+                            {gexStrike(row.strike)}
                           </span>
                         </div>
                       );
@@ -292,22 +372,22 @@ export function GEXPane({ code, symbol }: FunctionPaneProps) {
                   </div>
                   <div className="gex-chart__legend">
                     <span>
-                      <span className="gex-chart__sw gex-chart__sw--call" /> Call
+                      <span className="gex-chart__sw gex-chart__sw--call" aria-hidden="true" /> Call
                       gamma · dealer long
                     </span>
                     <span>
-                      <span className="gex-chart__sw gex-chart__sw--put" /> Put
+                      <span className="gex-chart__sw gex-chart__sw--put" aria-hidden="true" /> Put
                       gamma · dealer short
                     </span>
                     {spot != null && (
                       <span>
-                        <span className="gex-chart__sw gex-chart__sw--spot" /> Spot
-                        {fmtStrike(spot) !== "—" ? ` ${fmtStrike(spot)}` : ""}
+                        <span className="gex-chart__sw gex-chart__sw--spot" aria-hidden="true" /> Spot
+                        {gexStrike(spot) !== formatMissing ? ` ${gexStrike(spot)}` : ""}
                       </span>
                     )}
                     {flipStrike != null && (
                       <span>
-                        <span className="gex-chart__sw gex-chart__sw--flip" /> Flip
+                        <span className="gex-chart__sw gex-chart__sw--flip" aria-hidden="true" /> Flip
                       </span>
                     )}
                   </div>

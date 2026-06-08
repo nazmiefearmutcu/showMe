@@ -32,7 +32,17 @@ def _model_gex(symbol: str, spot: float, rate: float, div_yield: float = 0.0) ->
     out = chain_gex(spot=spot, calls=calls, puts=puts, rate=rate, div_yield=div_yield)
     out["symbol"] = symbol
     out["expiries"] = expiries
-    return _shape_gex_payload(out, symbol=symbol, source_mode="reference")
+    return _shape_gex_payload(
+        out, symbol=symbol, source_mode="synthetic_reference", synthetic=True
+    )
+
+
+# Surfaced verbatim by the UI so the user is never shown synthetic dealer
+# positioning dressed up as a live options chain.
+SYNTHETIC_WARNING = (
+    "Live options chain unavailable — showing a synthetic reference model, "
+    "NOT real dealer positioning."
+)
 
 
 _GEX_FIELDS = {
@@ -45,7 +55,9 @@ _GEX_FIELDS = {
 }
 
 
-def _shape_gex_payload(raw: dict[str, Any], *, symbol: str, source_mode: str) -> dict[str, Any]:
+def _shape_gex_payload(
+    raw: dict[str, Any], *, symbol: str, source_mode: str, synthetic: bool = False
+) -> dict[str, Any]:
     rows: list[dict[str, Any]] = []
     cumulative = 0.0
     for row in raw.get("gex_per_strike") or []:
@@ -64,7 +76,7 @@ def _shape_gex_payload(raw: dict[str, Any], *, symbol: str, source_mode: str) ->
             "value": gex_num,
             "cumulative_gex": cumulative,
         })
-    return {
+    payload: dict[str, Any] = {
         "status": "ok",
         "symbol": symbol,
         "spot": raw.get("spot"),
@@ -80,6 +92,8 @@ def _shape_gex_payload(raw: dict[str, Any], *, symbol: str, source_mode: str) ->
             "put_wall": (raw.get("put_wall") or {}).get("strike"),
             "n_strikes": raw.get("n_strikes") or len(rows),
             "source_mode": source_mode,
+            "synthetic": synthetic,
+            "degraded": synthetic,
         },
         "call_wall": raw.get("call_wall"),
         "put_wall": raw.get("put_wall"),
@@ -89,6 +103,10 @@ def _shape_gex_payload(raw: dict[str, Any], *, symbol: str, source_mode: str) ->
         ),
         "field_dictionary": _GEX_FIELDS,
     }
+    if synthetic:
+        payload["warning"] = SYNTHETIC_WARNING
+        payload["reason"] = SYNTHETIC_WARNING
+    return payload
 
 
 @FunctionRegistry.register
@@ -217,7 +235,8 @@ class GEXFunction(BaseFunction):
         shaped = _shape_gex_payload(
             out,
             symbol=sym,
-            source_mode="live_chain" if used_live_chain else "reference_chain",
+            source_mode="live_chain" if used_live_chain else "synthetic_reference_chain",
+            synthetic=not used_live_chain,
         )
         return FunctionResult(code=self.code, instrument=instrument,
                               data=shaped,
