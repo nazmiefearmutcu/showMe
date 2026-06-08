@@ -291,3 +291,78 @@ async def test_shadow_tick_leaves_equity_source_none(monkeypatch, tmp_path):
     assert signal is not None
     assert signal.action == "shadow"
     assert signal.equity_source is None
+
+
+@pytest.mark.asyncio
+async def test_live_risk_pct_tick_resolves_equity_exactly_once(monkeypatch, tmp_path):
+    """P1 regression: a live risk_pct tick must call ``broker.account()``
+    EXACTLY ONCE, and the recorded ``equity_source`` must match that single
+    resolution.
+
+    Before the fix, equity was resolved twice per tick: once to tag the
+    SignalEntry (``_resolve_equity_with_source``) and again inside the
+    dispatch / persisted-qty path (``_resolve_equity``). A consistent mock
+    masked the divergence; this counter-backed fake catches a double-call
+    regression directly.
+    """
+    sid = _save_strategy_risk_pct(tmp_path, monkeypatch)
+    rows = [[1748000000000, 100.0, 101.0, 99.0, 100.5, 1000.0]]
+    broker = _register_fake_broker("ce4", rows)
+
+    # account() increments a counter every time it's awaited so we can
+    # assert the runner hits the broker a single time per tick.
+    call_count = {"n": 0}
+
+    async def _counting_account():
+        call_count["n"] += 1
+        return {"equity": 50_000.0}
+
+    broker.account = _counting_account
+    store = BotStore(tmp_path / "bots")
+    bot = store.save(BotRecord(
+        strategy_id=sid, credential_id="ce4", exchange_id="binance",
+        symbol="BTC/USDT", enabled=True, mode="live",
+    ))
+    monkeypatch.setattr("showme.bots.runner.fetch_ohlcv",
+                        AsyncMock(side_effect=lambda *a, **k: _ohlcv_df()))
+    runner = BotRunner()
+    signal = await runner.tick(bot.id, store)
+    assert signal is not None
+    # Exactly one broker.account() round-trip for the whole tick.
+    assert call_count["n"] == 1, (
+        f"expected broker.account() called once, got {call_count['n']}"
+    )
+    # The tag reflects that single (broker) resolution.
+    assert signal.equity_source == "broker"
+
+
+@pytest.mark.asyncio
+async def test_live_risk_pct_tick_tag_matches_resolved_source(monkeypatch, tmp_path):
+    """P1 regression: when account() falls back, the tag is ``fallback_10k``
+    AND account() is still attempted exactly once (no second divergent call
+    that could resolve differently)."""
+    sid = _save_strategy_risk_pct(tmp_path, monkeypatch)
+    rows = [[1748000000000, 100.0, 101.0, 99.0, 100.5, 1000.0]]
+    broker = _register_fake_broker("ce5", rows)
+
+    call_count = {"n": 0}
+
+    async def _counting_account():
+        call_count["n"] += 1
+        raise RuntimeError("no account")  # forces fallback_10k
+
+    broker.account = _counting_account
+    store = BotStore(tmp_path / "bots")
+    bot = store.save(BotRecord(
+        strategy_id=sid, credential_id="ce5", exchange_id="binance",
+        symbol="BTC/USDT", enabled=True, mode="live",
+    ))
+    monkeypatch.setattr("showme.bots.runner.fetch_ohlcv",
+                        AsyncMock(side_effect=lambda *a, **k: _ohlcv_df()))
+    runner = BotRunner()
+    signal = await runner.tick(bot.id, store)
+    assert signal is not None
+    assert call_count["n"] == 1, (
+        f"expected broker.account() called once, got {call_count['n']}"
+    )
+    assert signal.equity_source == "fallback_10k"

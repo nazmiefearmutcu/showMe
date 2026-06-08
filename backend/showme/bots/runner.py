@@ -237,6 +237,7 @@ def _resolve_quantity(spec: Any, df: Any) -> float:
 
 async def _resolve_quantity_async(
     spec: Any, df: Any, broker: Any, leverage: float = 1.0,
+    equity_override: float | None = None,
 ) -> float:
     """Translate spec.position sizing into a broker-ready qty.
 
@@ -246,6 +247,13 @@ async def _resolve_quantity_async(
 
     Q4 audit C5: ``leverage`` threaded through so risk_pct and
     risk_per_trade sizing get correct effective notional.
+
+    P1 honesty fix: when ``equity_override`` is provided the internal
+    ``_resolve_equity`` call is skipped and the supplied value is used.
+    This lets the caller resolve ``broker.account()`` ONCE per tick (via
+    ``_resolve_equity_with_source`` for the honesty tag) and thread the
+    SAME equity value down here, so the ``equity_source`` tag on the
+    SignalEntry always matches the equity actually used to size the order.
     """
     sizing_kind: SizingKind = spec.position.sizing_kind
     sizing_value = float(spec.position.sizing_value)
@@ -256,7 +264,11 @@ async def _resolve_quantity_async(
             f"cannot resolve quantity: last-close lookup failed ({exc})",
         ) from exc
     if sizing_kind in ("risk_pct", "risk_per_trade"):
-        equity = await _resolve_equity(broker)
+        equity = (
+            float(equity_override)
+            if equity_override is not None
+            else await _resolve_equity(broker)
+        )
     else:
         equity = _REFERENCE_EQUITY_USD  # unused by fixed_* but pass through
     try:
@@ -629,16 +641,24 @@ class BotRunner:
             # order. Threaded onto the SignalEntry so the UI can flag a
             # fallback-equity-sized order. Shadow entries leave this None.
             equity_source: str | None = None
+            # P1 honesty fix: resolve broker equity ONCE per tick (for
+            # risk-based sizing) and thread the resolved VALUE into the
+            # dispatch path so ``broker.account()`` is hit a single time and
+            # the ``equity_source`` tag matches the equity used to size.
+            equity_for_sizing: float | None = None
             if rec.mode == "live":
                 # Resolve the equity source for sizing-aware honesty tagging.
                 # Only risk-based sizing consults broker equity; fixed_* sizing
                 # ignores it, so leave the tag None for those kinds.
                 if spec.position.sizing_kind in ("risk_pct", "risk_per_trade"):
                     try:
-                        _eq_val, equity_source = await _resolve_equity_with_source(broker)
+                        equity_for_sizing, equity_source = (
+                            await _resolve_equity_with_source(broker)
+                        )
                     except Exception as exc:  # noqa: BLE001
                         LOG.debug("equity source resolve failed: %s", exc)
                         equity_source = None
+                        equity_for_sizing = None
                 try:
                     order = await self._dispatch_live_order(
                         bot_id=bot_id,
@@ -647,6 +667,7 @@ class BotRunner:
                         rec=rec,
                         event=last_event,
                         df=df,
+                        equity_override=equity_for_sizing,
                     )
                     order_id = order.id if hasattr(order, "id") else str(order)
                     # H-RT-1 partial-fill audit. If the broker came back
@@ -689,10 +710,15 @@ class BotRunner:
                 if filled_qty is not None and filled_qty > 0:
                     persisted_qty = float(filled_qty)
                 else:
-                    # Shadow: pre-compute qty so PnL reads correctly downstream.
+                    # Pre-compute qty so PnL reads correctly downstream. In
+                    # live mode, reuse the equity resolved once above so this
+                    # does NOT trigger a second ``broker.account()`` round-trip
+                    # (P1) — the persisted qty is then sized on the very same
+                    # equity that was tagged onto the entry.
                     try:
                         persisted_qty = await _resolve_quantity_async(
                             spec, df, broker, leverage=float(rec.leverage),
+                            equity_override=equity_for_sizing,
                         )
                     except (BotRunnerError, Exception):  # noqa: BLE001
                         persisted_qty = None
@@ -737,11 +763,18 @@ class BotRunner:
                         qty = float(matching_entry.qty)
                     else:
                         try:
-                            equity_hint = (
-                                await _resolve_equity(broker)
-                                if rec.mode == "live"
-                                else _REFERENCE_EQUITY_USD
-                            )
+                            # P1: reuse the equity resolved once this tick when
+                            # available so an exit tick doesn't fire a second
+                            # broker.account() round-trip for the PnL-qty
+                            # recompute. Falls back only for legacy/fixed paths.
+                            if rec.mode == "live":
+                                equity_hint = (
+                                    float(equity_for_sizing)
+                                    if equity_for_sizing is not None
+                                    else await _resolve_equity(broker)
+                                )
+                            else:
+                                equity_hint = _REFERENCE_EQUITY_USD
                             qty = resolve_quantity(
                                 sizing_kind=spec.position.sizing_kind,
                                 sizing_value=float(spec.position.sizing_value),
@@ -800,6 +833,7 @@ class BotRunner:
         rec: BotRecord,
         event: Any,
         df: Any,
+        equity_override: float | None = None,
     ) -> Any:
         """Submit the live-mode order for ``event`` against ``broker``.
 
@@ -814,6 +848,11 @@ class BotRunner:
         Entry path: open in the strategy's declared direction; qty comes
         from the shared sizing module so a negative / out-of-range value
         raises ``BotRunnerError`` *before* touching the wire.
+
+        P1 honesty fix: ``equity_override`` is threaded into the sizing
+        calls so risk-based sizing reuses the equity the caller already
+        resolved (and tagged) this tick — ``broker.account()`` is called
+        exactly once, so the ``equity_source`` tag matches the sized qty.
         """
         from showme.brokers import OrderSide, OrderType, TimeInForce
         # Strategy-declared direction. Prefer the event's side (carries
@@ -850,6 +889,7 @@ class BotRunner:
             else:
                 qty = await _resolve_quantity_async(
                     spec, df, broker, leverage=float(rec.leverage),
+                    equity_override=equity_override,
                 )
             qty = await _round_qty_to_precision(broker, rec.symbol, qty)
             return await broker.submit_order(
@@ -865,6 +905,7 @@ class BotRunner:
         side = OrderSide.BUY if strategy_side == "long" else OrderSide.SELL
         qty = await _resolve_quantity_async(
             spec, df, broker, leverage=float(rec.leverage),
+            equity_override=equity_override,
         )
         # Q4 audit H12: ccxt lot/tick precision rounding before submit.
         qty = await _round_qty_to_precision(broker, rec.symbol, qty)
