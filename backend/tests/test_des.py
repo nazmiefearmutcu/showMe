@@ -459,6 +459,32 @@ def test_coingecko_refdata_accepts_matching_symbol_for_unmapped_id() -> None:
     assert out.get("symbol") == "somecoin"
 
 
+def test_coingecko_base_symbol_strips_separator() -> None:
+    # The guard compares the returned coin symbol against the requested base
+    # symbol. For separator-style tickers ("BTC-USD", "BTC/USD") the separator
+    # must be stripped along with the quote suffix, else the base would carry a
+    # trailing "-"/"/" and falsely mismatch a correct coin.
+    assert CoinGeckoAdapter._base_symbol("BTCUSDT") == "BTC"
+    assert CoinGeckoAdapter._base_symbol("BTC-USD") == "BTC"
+    assert CoinGeckoAdapter._base_symbol("BTC/USD") == "BTC"
+
+
+def test_coingecko_refdata_accepts_hyphenated_matching_symbol() -> None:
+    # An unmapped, hyphen-separated ticker whose coin's canonical symbol matches
+    # the base must be ACCEPTED — not falsely rejected by a trailing-separator
+    # base ("FOO-" != "FOO"). Guards the _base_symbol separator fix.
+    good = {
+        "id": "foo-usd",
+        "symbol": "foo",
+        "name": "Foo Coin",
+        "market_data": {"current_price": {"usd": 1.0}},
+    }
+    adapter = _adapter_with_refdata(good)
+    out = _run(adapter.fetch(_refdata_request("FOO-USD")))
+    assert out.get("name") == "Foo Coin"
+    assert out.get("status") != "provider_unavailable"
+
+
 def test_coingecko_refdata_trusts_mapped_id_even_if_symbol_differs() -> None:
     # Mapped ids (e.g. MATIC→polygon-pos) are curated; the returned symbol may
     # legitimately differ from the Binance ticker, so the guard must not fire.

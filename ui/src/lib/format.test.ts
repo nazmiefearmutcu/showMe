@@ -29,6 +29,24 @@ describe("formatCurrency", () => {
     expect(formatCurrency(1.234, { fractionDigits: 2 })).toBe("$1.23");
   });
 
+  it("treats explicit fractionDigits as the minimum too (trailing zeros)", () => {
+    expect(formatCurrency(302.5, { fractionDigits: 2 })).toBe("$302.50");
+    expect(formatCurrency(5, { fractionDigits: 2 })).toBe("$5.00");
+  });
+
+  it("keeps min-0 (no trailing zeros) when fractionDigits is omitted", () => {
+    expect(formatCurrency(302.5)).toBe("$303");
+    expect(formatCurrency(1234)).toBe("$1,234");
+  });
+
+  it("does not pad compact notation min digits", () => {
+    // Compact path is left untouched even with explicit fractionDigits.
+    expect(formatCurrency(1_200_000_000, { compact: true })).toBe("$1.2B");
+    expect(formatCurrency(1_000_000_000, { compact: true, fractionDigits: 2 })).toBe(
+      "$1B",
+    );
+  });
+
   it("returns em-dash for null / undefined / NaN / Infinity", () => {
     expect(formatCurrency(null)).toBe(formatMissing);
     expect(formatCurrency(undefined)).toBe(formatMissing);

@@ -95,7 +95,9 @@ describe("DES quote header — terminal-grade numerics", () => {
     const { container } = render(<DESPane code="DES" symbol="AAPL" />);
     const change = container.querySelector('[data-testid="des-change-abs"]');
     expect(change).not.toBeNull();
-    expect(change?.textContent).toMatch(/\+2\.50/);
+    // Absolute change carries the currency symbol (consistent with the price)
+    // and keeps the leading + sign.
+    expect(change?.textContent).toMatch(/\+\$2\.50/);
     // sign-coloured via the positive token, not a flat secondary grey.
     expect((change as HTMLElement).style.color).toContain("--positive");
   });
@@ -106,7 +108,8 @@ describe("DES quote header — terminal-grade numerics", () => {
     );
     const { container } = render(<DESPane code="DES" symbol="AAPL" />);
     const change = container.querySelector('[data-testid="des-change-abs"]');
-    expect(change?.textContent).toMatch(/-2\.00/);
+    // Negative change: U+2212 minus + currency symbol (e.g. "−$2.00").
+    expect(change?.textContent).toMatch(/−\$2\.00/);
     expect((change as HTMLElement).style.color).toContain("--negative");
   });
 

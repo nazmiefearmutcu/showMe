@@ -40,12 +40,17 @@ export function formatCurrency(
   if (!isFiniteNumber(n)) return formatMissing;
   const { compact = false, fractionDigits, currency = "USD" } = opts;
   const digits = fractionDigits ?? (compact ? 2 : 0);
+  // An explicitly-passed fractionDigits on the non-compact path is also the
+  // MINIMUM, so 2dp shows trailing zeros ("$302.50", not "$302.5"). When
+  // fractionDigits is omitted we keep the legacy min-0 behaviour. Compact
+  // notation is left untouched so "$1.2B" never grows unwanted min digits.
+  const minDigits = fractionDigits != null && !compact ? fractionDigits : 0;
   const fmt = new Intl.NumberFormat("en-US", {
     style: "currency",
     currency,
     notation: compact ? "compact" : "standard",
     maximumFractionDigits: digits,
-    minimumFractionDigits: 0,
+    minimumFractionDigits: minDigits,
   });
   // Intl emits "$-1.50B" by default; we want "-$1.50B".
   if (n < 0) return `-${fmt.format(Math.abs(n))}`;

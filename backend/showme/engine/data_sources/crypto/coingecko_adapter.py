@@ -78,13 +78,16 @@ class CoinGeckoAdapter(BaseDataSource):
 
     @staticmethod
     def _base_symbol(symbol: str) -> str:
-        """Strip a trailing quote-currency suffix so "GASUSDT" → "GAS". Used to
-        compare a Binance-style ticker against CoinGecko's canonical coin
-        symbol when guarding against an id-fallback mismatch."""
+        """Strip a trailing quote-currency suffix (and any ``-`` / ``/``
+        separator) so "GASUSDT", "BTC-USD" and "BTC/USD" all reduce to the bare
+        base symbol. Used to compare a Binance-style ticker against CoinGecko's
+        canonical coin symbol when guarding against an id-fallback mismatch."""
         s = symbol.upper()
         for quote in ("USDT", "USDC", "USD", "FDUSD", "TUSD", "BUSD", "EUR", "TRY"):
-            if s.endswith(quote) and len(s) > len(quote):
-                return s[: -len(quote)]
+            for sep in ("-", "/", ""):
+                suffix = f"{sep}{quote}"
+                if s.endswith(suffix) and len(s) > len(suffix):
+                    return s[: -len(suffix)]
         return s
 
     async def quote(self, symbol: str, vs: str = "usd") -> dict[str, Any]:

@@ -409,8 +409,8 @@ function QuoteHeaderValues({
           className="terminal-grid-numeric"
           style={{ ...changeAbsStyle, color: changeColor }}
         >
-          {change >= 0 ? "+" : ""}
-          {change.toFixed(2)}
+          {change >= 0 ? "+" : "−"}
+          {fmtCurrency(Math.abs(change), currency)}
         </span>
       )}
     </div>
@@ -436,9 +436,12 @@ function BusinessSummary({
   const [expanded, setExpanded] = useState(false);
   const clampable = !!summary && summary.length > SUMMARY_CLAMP_CHARS;
 
+  const summaryId = "des-business-summary";
+
   return (
     <>
       <p
+        id={summaryId}
         data-testid="des-summary"
         data-expanded={expanded ? "true" : "false"}
         style={
@@ -454,6 +457,7 @@ function BusinessSummary({
           type="button"
           onClick={() => setExpanded((v) => !v)}
           aria-expanded={expanded}
+          aria-controls={summaryId}
           className="des-link"
           style={summaryToggleStyle}
         >
