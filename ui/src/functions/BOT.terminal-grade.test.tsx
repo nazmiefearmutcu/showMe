@@ -210,6 +210,32 @@ describe("BOT F4 — async error live region", () => {
     expect(err.getAttribute("aria-live")).toBe("polite");
     expect(err.textContent).toMatch(/ters gitti/);
   });
+
+  it("shows a store error even when no bot is selected (draft === null)", () => {
+    // P2a — a loadList/store error with no draft must still surface; the
+    // error region used to live inside the {draft && …} block and was
+    // invisible while nothing was selected.
+    useBotStore.setState({
+      draft: null,
+      error: "Liste yüklenemedi",
+    });
+    render(<BOTPane />);
+    const err = screen.getByTestId("bot-pane-error");
+    expect(err).toBeInTheDocument();
+    expect(err.getAttribute("role")).toBe("status");
+    expect(err.getAttribute("aria-live")).toBe("polite");
+    expect(err.textContent).toMatch(/yüklenemedi/);
+  });
+
+  it("does not render the pane error twice when a draft is present", () => {
+    // P2a — single instance guarantee: error region appears exactly once.
+    useBotStore.setState({
+      draft: { ...PERSISTED_DRAFT } as never,
+      error: "tek sefer",
+    });
+    render(<BOTPane />);
+    expect(screen.getAllByTestId("bot-pane-error")).toHaveLength(1);
+  });
 });
 
 describe("BOT F5 — empty / loading sidebar states", () => {

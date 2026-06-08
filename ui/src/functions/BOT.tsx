@@ -71,8 +71,14 @@ function SignalLog({ entries }: { entries: SignalEntry[] }) {
       <tbody>
         {entries.slice(-20).reverse().map((e, i) => {
           const isFallback = e.equity_source === FALLBACK_EQUITY_SOURCE;
+          // P2b — stable composite key from entry identity so a new signal
+          // arriving doesn't remount every row (index keys on a reversed
+          // slice shift every row). bar_index disambiguates same-bar_time
+          // entry/exit pairs; `i` is a final tiebreaker against any residual
+          // collision (e.g. legacy rows with empty bar_time).
+          const rowKey = `${e.bar_time}-${e.kind}-${e.bar_index}-${i}`;
           return (
-            <tr key={i}>
+            <tr key={rowKey}>
               <td>{e.bar_time.slice(0, 19)}</td>
               <td className={e.kind === "entry" ? "u-text-positive" : "u-text-warn"}>
                 {e.kind}
@@ -321,6 +327,18 @@ export function BOTPane() {
       </div>
 
       <div style={{ overflowY: "auto", padding: 16 }}>
+        {/* F4 — async error is an announced live region. Rendered at the pane
+            root (not inside the {draft && …} block) so a loadList/store error
+            that occurs while no bot is selected (draft === null) is still
+            visible. Single instance → never shown twice. */}
+        {error && (
+          <div data-testid="bot-pane-error"
+               role="status" aria-live="polite"
+               className="u-text-negative"
+               style={{ marginBottom: 8 }}>
+            {error}
+          </div>
+        )}
         {!draft && (
           <div className="u-text-secondary">
             Soldan bir bot seç ya da <strong>+ Yeni bot</strong>.
@@ -489,7 +507,7 @@ export function BOTPane() {
             {/* B-C3 / F6 — shadow→live save needs confirm_account_label. Only
                 render the re-type input while actually transitioning to live;
                 never permanently visible in shadow mode. */}
-            {transitioningToLive && draft.mode === "live" && (
+            {transitioningToLive && (
               <label htmlFor="bot-save-confirm-label">
                 Live moda geçiş onayı — account_label tekrar yaz
                 <input
@@ -563,15 +581,6 @@ export function BOTPane() {
               </button>
             )}
             </div>
-
-            {/* F4 — async error is an announced live region. */}
-            {error && (
-              <div data-testid="bot-pane-error"
-                   role="status" aria-live="polite"
-                   className="u-text-negative">
-                {error}
-              </div>
-            )}
 
             <h4>Signal log ({(draft.signal_log ?? []).length})</h4>
             <SignalLog entries={draft.signal_log ?? []} />
