@@ -453,3 +453,27 @@ def test_list_bots_health_defaults_for_no_signals(client, seeded):
     assert row["is_running"] is False
     assert row["last_event_at"] is None
     assert row["last_action"] is None
+
+
+def test_list_bots_is_running_null_on_runner_error(client, seeded, monkeypatch):
+    """P2-B — when ``runner.is_running`` raises (e.g. a transient failure on
+    sidecar restart), GET /api/bots reports ``is_running == None`` (JSON null,
+    the honest "unknown" state), NOT False. False would make the UI paint
+    EVERY enabled bot as STUCK, flooding the supervisor with false alarms.
+    """
+    r = client.post("/api/bots", json=seeded)
+    bid = r.json()["id"]
+
+    # Make the shared runner singleton's introspection blow up deterministically.
+    import showme.bots.lifespan as lifespan
+    runner = lifespan.get_runner()
+
+    def _boom(_bot_id: str) -> bool:
+        raise RuntimeError("runner introspection failed")
+
+    monkeypatch.setattr(runner, "is_running", _boom)
+
+    records = client.get("/api/bots").json()["records"]
+    row = next(b for b in records if b.get("id") == bid)
+    # Honest unknown, not a false STUCK.
+    assert row["is_running"] is None

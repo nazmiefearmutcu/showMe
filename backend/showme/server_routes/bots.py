@@ -193,8 +193,13 @@ def register(app: FastAPI, deps: AppDeps) -> None:
                 # CHEAP: only checks whether the asyncio task is done; no I/O.
                 d["is_running"] = runner.is_running(meta.id)
             except Exception as exc:  # noqa: BLE001
-                LOG.debug("is_running lookup failed for %s: %s", meta.id, exc)
-                d["is_running"] = False
+                # P2-B — on a transient runner-introspection failure (e.g.
+                # sidecar restart) report None ("unknown"), NOT False. False
+                # makes the UI paint EVERY enabled bot as STUCK; None falls
+                # back to the honest legacy LIVE/SHADOW-by-mode rendering.
+                # WARNING (not debug) so operators see the introspection error.
+                LOG.warning("is_running lookup failed for %s: %s", meta.id, exc)
+                d["is_running"] = None
             out.append(d)
         return {"records": out}
 
