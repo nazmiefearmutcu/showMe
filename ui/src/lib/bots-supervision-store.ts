@@ -18,10 +18,25 @@ import type { BotMeta as BaseBotMeta, SignalEntry } from "./bot-store";
  *
  * Both are optional — if the backend hasn't shipped them yet the supervisor
  * gracefully falls back to feed-derived counts and shows no badge.
+ *
+ * Terminal-grade supervision health (all optional for backward compat with
+ * an older payload):
+ *
+ *   - `is_running`: whether the runner's asyncio task is alive. Cheap
+ *     server-side check (no broker/network). An `enabled` bot with
+ *     `is_running === false` is STUCK.
+ *   - `last_event_at`: ISO timestamp of the bot's most recent signal_log
+ *     entry (used for last-tick freshness). `null` when it has never ticked.
+ *   - `last_action`: the `action` ("placed"/"shadow"/"skipped") of that same
+ *     most-recent entry. A live/alive bot whose latest tick was "skipped" is
+ *     DEGRADED.
  */
 export interface SupervisedBot extends BaseBotMeta {
   signal_count?: number;
   permission_revoked?: boolean;
+  is_running?: boolean;
+  last_event_at?: string | null;
+  last_action?: string | null;
 }
 
 export type BotMeta = SupervisedBot;
