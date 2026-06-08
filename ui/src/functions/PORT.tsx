@@ -125,18 +125,6 @@ interface PortData {
 // negatives render as "-$1.50B" not "$-1.50B". See ui/src/lib/format.ts.
 const fmt$ = (n?: number) => formatCurrency(n, { compact: true });
 
-// Stable seeded micro-trend for KPI sparklines until tick history is wired.
-function makeTrend(seed: number, n = 16): number[] {
-  const out: number[] = [];
-  let v = 50;
-  for (let i = 0; i < n; i++) {
-    const x = Math.sin((i + seed) * 0.7) * 6 + Math.cos((i * 0.3 + seed) * 1.1) * 4;
-    v = Math.max(20, Math.min(80, v + x * 0.6));
-    out.push(v);
-  }
-  return out;
-}
-
 function PortfolioExchangeDeck({ hasAnyCredential }: { hasAnyCredential: boolean }) {
   const groups = usePortfolioStore((s) => s.groups);
   const loading = usePortfolioStore((s) => s.loading);
@@ -406,9 +394,13 @@ function CredentialGroup({ g }: { g: PortfolioGroup }) {
       </header>
       {g.account && (
         <div className="port-account-card__metrics">
-          <AccountStat label="Equity" value={`${g.account.equity.toFixed(2)} ${g.account.currency}`} />
-          <AccountStat label="Cash" value={`${g.account.cash.toFixed(2)} ${g.account.currency}`} />
-          <AccountStat label="Buying power" value={`${g.account.buying_power.toFixed(2)} ${g.account.currency}`} />
+          <AccountStat
+            label="Equity"
+            value={`${formatNumber(g.account.equity, 2)} ${g.account.currency}`}
+            tone={g.account.equity > 0 ? "positive" : g.account.equity < 0 ? "negative" : "neutral"}
+          />
+          <AccountStat label="Cash" value={`${formatNumber(g.account.cash, 2)} ${g.account.currency}`} />
+          <AccountStat label="Buying power" value={`${formatNumber(g.account.buying_power, 2)} ${g.account.currency}`} />
           {showNonStableBadge && ccy ? <NonStableCurrencyBadge currency={ccy} /> : null}
         </div>
       )}
@@ -437,15 +429,15 @@ function CredentialGroup({ g }: { g: PortfolioGroup }) {
               return (
               <tr key={`${g.credential_id ?? "g"}-${p.symbol}-${i}`}>
                 <td>{p.symbol}</td>
-                <td align="right">{fmtNum(p.quantity)}</td>
-                <td align="right">
+                <td align="right" className="terminal-grid-numeric">{formatNumber(p.quantity, 6)}</td>
+                <td align="right" className="terminal-grid-numeric">
                   {entry != null ? formatPrice(entry) : formatMissing}
                 </td>
-                <td align="right">
+                <td align="right" className="terminal-grid-numeric">
                   {current != null ? formatPrice(current) : formatMissing}
                 </td>
-                <td align="right">{formatCurrency(notional, { compact: true })}</td>
-                <td align="right">
+                <td align="right" className="terminal-grid-numeric">{formatCurrency(notional, { compact: true })}</td>
+                <td align="right" className="terminal-grid-numeric">
                   <DeltaChip value={p.unrealized_pnl ?? 0} format="currency" fractionDigits={2} />
                 </td>
                 <td align="right">
@@ -647,6 +639,63 @@ export function PORTPane({ code }: FunctionPaneProps) {
       ? aggregateByClass(enriched)
       : data?.data?.by_asset_class ?? aggregateByClass(positions);
 
+  // DATA-SUFFICIENCY (P4): the PORT function only returns *local paper*
+  // positions, which are empty for most users. Connected-broker positions
+  // arrive via the portfolio store (already fetched for the account cards).
+  // When the main table would otherwise be empty, surface those real broker
+  // positions here so a user with connected brokers never sees a false
+  // "Empty portfolio". We reuse data already in memory — nothing fabricated.
+  const brokerPositions = useMemo<Position[]>(() => {
+    if (enriched.length > 0) return [];
+    const rows: Position[] = [];
+    for (const g of portfolioGroups) {
+      for (const bp of g.positions) {
+        const entry = positionEntryPrice(bp);
+        const current = positionCurrentPrice(bp);
+        const qty = Number(bp.quantity) || 0;
+        const mark = current ?? entry ?? 0;
+        const market_value = qty * mark;
+        rows.push({
+          symbol: bp.symbol,
+          asset_class: "CRYPTO",
+          quantity: qty,
+          entry_price: entry ?? null,
+          current_price: current ?? null,
+          market_value,
+          unrealized_pnl:
+            typeof bp.unrealized_pnl === "number"
+              ? bp.unrealized_pnl
+              : (mark - (entry ?? mark)) * qty,
+          currency: g.account?.currency,
+          _broker: `${g.exchange_id}:${g.account_label}`,
+        });
+      }
+    }
+    const totalMv = rows.reduce((s, p) => s + (Number(p.market_value) || 0), 0);
+    return rows.map((p) => ({
+      ...p,
+      weight: totalMv > 0 ? (Number(p.market_value) || 0) / totalMv : undefined,
+    }));
+  }, [enriched.length, portfolioGroups]);
+
+  // The view shows local positions when present, else surfaced broker rows.
+  const viewPositions = enriched.length > 0 ? enriched : brokerPositions;
+  const brokerSurfaced = enriched.length === 0 && brokerPositions.length > 0;
+  const viewTotals = brokerSurfaced
+    ? {
+        market_value: brokerPositions.reduce((s, p) => s + (Number(p.market_value) || 0), 0),
+        cost_basis: brokerPositions.reduce(
+          (s, p) => s + (Number(p.quantity) || 0) * (positionEntryPrice(p) ?? 0),
+          0,
+        ),
+        unrealized_pnl: brokerPositions.reduce((s, p) => s + (Number(p.unrealized_pnl) || 0), 0),
+        n_positions: brokerPositions.length,
+      }
+    : liveTotals;
+  const viewClassBreakdown = brokerSurfaced
+    ? aggregateByClass(brokerPositions)
+    : classBreakdown;
+
   async function previewClose(position: Position) {
     setBusySymbol(position.symbol);
     setCloseError(null);
@@ -686,19 +735,25 @@ export function PORTPane({ code }: FunctionPaneProps) {
   }
 
   const utcNow = new Date().toISOString().slice(11, 16);
-  const pnlValue = liveTotals?.unrealized_pnl ?? 0;
+  const pnlValue = viewTotals?.unrealized_pnl ?? 0;
   const pnlTone: "positive" | "negative" | "neutral" =
     pnlValue > 0 ? "positive" : pnlValue < 0 ? "negative" : "neutral";
   const pnlPct =
-    liveTotals?.cost_basis && liveTotals.cost_basis !== 0
-      ? (pnlValue / Math.abs(liveTotals.cost_basis)) * 100
+    viewTotals?.cost_basis && viewTotals.cost_basis !== 0
+      ? (pnlValue / Math.abs(viewTotals.cost_basis)) * 100
       : null;
-  const positionCount = liveTotals?.n_positions ?? positions.length;
+  const positionCount = viewTotals?.n_positions ?? positions.length;
   const liveProvider = data?.sources?.[0] ?? "—";
 
   const body =
     state === "loading" || state === "idle" ? (
-      <div className="skeleton-stack">
+      <div
+        className="skeleton-stack"
+        role="status"
+        aria-busy="true"
+        aria-live="polite"
+        aria-label="Loading portfolio"
+      >
         <Skeleton height={20} width="40%" />
         <Skeleton height={14} />
         <Skeleton height={14} width="80%" />
@@ -713,7 +768,7 @@ export function PORTPane({ code }: FunctionPaneProps) {
           <button onClick={refetch} className="btn">Retry</button>
         }
       />
-    ) : enriched.length === 0 ? (
+    ) : viewPositions.length === 0 ? (
       <Empty
         title="Empty portfolio"
         body={
@@ -733,19 +788,30 @@ export function PORTPane({ code }: FunctionPaneProps) {
         }
       />
     ) : (
-      <PORTView
-        positions={enriched}
-        totals={liveTotals}
-        byClass={classBreakdown}
-        closePreview={closePreview}
-        closeError={closeError}
-        busySymbol={busySymbol}
-        utcNow={utcNow}
-        pnlTone={pnlTone}
-        pnlPct={pnlPct}
-        onPreviewClose={previewClose}
-        onClosePosition={closePosition}
-      />
+      <>
+        {brokerSurfaced ? (
+          <div className="port-alert port-alert--info" data-testid="port-broker-surfaced-note">
+            Showing live <strong>connected-broker</strong> positions (no local paper
+            positions yet). These mirror the account cards above; close actions
+            for them live in those cards. Use <em>Open What-If</em> to add paper
+            positions.
+          </div>
+        ) : null}
+        <PORTView
+          positions={viewPositions}
+          totals={viewTotals}
+          byClass={viewClassBreakdown}
+          closePreview={closePreview}
+          closeError={closeError}
+          busySymbol={busySymbol}
+          utcNow={utcNow}
+          pnlTone={pnlTone}
+          pnlPct={pnlPct}
+          brokerReadOnly={brokerSurfaced}
+          onPreviewClose={previewClose}
+          onClosePosition={closePosition}
+        />
+      </>
     );
 
   // Cancel + close confirmations come from the credential-group table buttons
@@ -815,6 +881,7 @@ function PORTView({
   utcNow,
   pnlTone,
   pnlPct,
+  brokerReadOnly = false,
   onPreviewClose,
   onClosePosition,
 }: {
@@ -827,6 +894,7 @@ function PORTView({
   utcNow: string;
   pnlTone: "positive" | "negative" | "neutral";
   pnlPct: number | null;
+  brokerReadOnly?: boolean;
   onPreviewClose: (position: Position) => void;
   onClosePosition: (position: Position) => void;
 }) {
@@ -841,16 +909,54 @@ function PORTView({
   const topPositions = [...positions]
     .sort((a, b) => (b.weight ?? 0) - (a.weight ?? 0))
     .slice(0, 5);
+
+  // P5 — local column sort. DataGrid supports sortBy/sortDir/onSort but PORT
+  // never wired them. Clicking a sortable header cycles desc → asc → off.
+  const [sortBy, setSortBy] = useState<string | null>(null);
+  const [sortDir, setSortDir] = useState<"ascending" | "descending">("descending");
+  const onSort = (key: string) => {
+    if (sortBy !== key) {
+      setSortBy(key);
+      setSortDir("descending");
+    } else if (sortDir === "descending") {
+      setSortDir("ascending");
+    } else {
+      setSortBy(null); // third click clears the sort
+    }
+  };
+  const sortedPositions = useMemo(() => {
+    if (!sortBy) return positions;
+    const accessor = (p: Position): number | undefined => {
+      if (sortBy === "quantity") return p.quantity;
+      if (sortBy === "avg_cost") return positionEntryPrice(p);
+      if (sortBy === "last") return positionCurrentPrice(p);
+      if (sortBy === "market_value") return p.market_value;
+      if (sortBy === "unrealized_pnl") return p.unrealized_pnl;
+      if (sortBy === "weight") return p.weight;
+      return undefined;
+    };
+    const dir = sortDir === "ascending" ? 1 : -1;
+    return [...positions].sort((a, b) => {
+      const av = accessor(a);
+      const bv = accessor(b);
+      // Push missing values to the bottom regardless of direction.
+      if (av == null && bv == null) return 0;
+      if (av == null) return 1;
+      if (bv == null) return -1;
+      return (av - bv) * dir;
+    });
+  }, [positions, sortBy, sortDir]);
+
   const cols = useMemo(
-    () => positionColumns({ busySymbol, onPreviewClose, onClosePosition }),
-    [busySymbol, onPreviewClose, onClosePosition],
+    () => positionColumns({ busySymbol, brokerReadOnly, onPreviewClose, onClosePosition }),
+    [busySymbol, brokerReadOnly, onPreviewClose, onClosePosition],
   );
   return (
     <div className="showme-port__view showme-card-reveal port-view">
       <section className="port-terminal-summary" aria-label="Portfolio summary">
         <div className="port-terminal-summary__primary">
           <span className="port-label">Local analytics equity</span>
-          <strong>{fmt$(totalMV)}</strong>
+          <strong className="terminal-grid-numeric">{fmt$(totalMV)}</strong>
           <span className={`port-terminal-summary__pnl port-terminal-summary__pnl--${pnlTone}`}>
             <ChangeText value={totals?.unrealized_pnl ?? 0} prefix="$" digits={0} />
             {pnlPct != null ? <em>{formatPercent(pnlPct, { signed: true })}</em> : null}
@@ -865,10 +971,18 @@ function PORTView({
             value={maxPosition ? `${maxPosition.symbol} ${formatPercent((maxPosition.weight ?? 0) * 100)}` : formatMissing}
           />
         </div>
-        <div className="port-terminal-summary__spark" aria-hidden>
-          {makeTrend(21, 28).map((v, i) => (
-            <span key={i} style={{ ["--u-h" as string]: `${18 + v * 0.72}px` }} />
-          ))}
+        {/* Honest real metric replaces the former seeded fake sparkline
+            (DATA-HONESTY): no tick history is available to draw a true
+            series, so we surface the genuine unrealized return vs cost
+            basis instead of a synthetic squiggle that looked like data. */}
+        <div
+          className={`port-terminal-summary__return port-terminal-summary__return--${pnlTone}`}
+          data-testid="port-return-badge"
+        >
+          <span className="port-label">Unrealized return</span>
+          <strong className="terminal-grid-numeric">
+            {pnlPct != null ? formatPercent(pnlPct, { signed: true, digits: 2 }) : formatMissing}
+          </strong>
         </div>
       </section>
 
@@ -886,7 +1000,7 @@ function PORTView({
           <DataGrid
             className="showme-port__grid showme-motion-grid port-main-grid"
             columns={cols}
-            rows={positions}
+            rows={sortedPositions}
             rowKey={(p, idx) => `${p.symbol}-${idx}`}
             rowClassName={(p, idx) =>
               [
@@ -898,6 +1012,9 @@ function PORTView({
             }
             density="compact"
             ariaLabel="Portfolio positions"
+            sortBy={sortBy ?? undefined}
+            sortDir={sortBy ? sortDir : "none"}
+            onSort={onSort}
           />
         </section>
 
@@ -940,7 +1057,7 @@ function PortfolioMetric({ label, value }: { label: string; value: ReactNode }) 
   return (
     <div className="port-metric-tile">
       <span>{label}</span>
-      <strong>{value}</strong>
+      <strong className="terminal-grid-numeric">{value}</strong>
     </div>
   );
 }
@@ -967,13 +1084,15 @@ function AssetClassCard({
       <div className="port-class-card__value">
         <span
           key={`${cls}-mv-${mv}`}
-          className={liveCellClass("neutral")}
+          className={`${liveCellClass("neutral")} terminal-grid-numeric`}
         >
           {fmt$(mv)}
         </span>
       </div>
       {totalMV > 0 && (
-        <div className="port-class-card__share">{pct.toFixed(1)}%</div>
+        <div className="port-class-card__share terminal-grid-numeric">
+          {formatPercent(pct, { digits: 1 })}
+        </div>
       )}
     </div>
   );
@@ -981,10 +1100,12 @@ function AssetClassCard({
 
 function positionColumns({
   busySymbol,
+  brokerReadOnly = false,
   onPreviewClose,
   onClosePosition,
 }: {
   busySymbol: string | null;
+  brokerReadOnly?: boolean;
   onPreviewClose: (position: Position) => void;
   onClosePosition: (position: Position) => void;
 }): DataGridColumn<Position>[] {
@@ -998,6 +1119,7 @@ function positionColumns({
           type="button"
           onClick={() => navigate(`/symbol/${p.symbol}/DES`)}
           className="u-symbol-link"
+          aria-label={`View ${p.symbol} details`}
         >
           {p.symbol}
         </button>
@@ -1020,35 +1142,45 @@ function positionColumns({
       key: "quantity",
       header: "Qty",
       numeric: true,
+      sortable: true,
       width: 90,
-      render: (p) => (p.quantity != null ? fmtNum(p.quantity) : "—"),
+      render: (p) => (
+        <span className="terminal-grid-numeric">
+          {p.quantity != null ? formatNumber(p.quantity, 6) : formatMissing}
+        </span>
+      ),
     },
     {
       key: "avg_cost",
       header: "Entry",
       numeric: true,
+      sortable: true,
       width: 96,
-      render: (p) =>
-        positionEntryPrice(p) != null
-          ? `$${formatPrice(positionEntryPrice(p))}`
-          : formatMissing,
+      render: (p) => (
+        <span className="terminal-grid-numeric">
+          {positionEntryPrice(p) != null
+            ? `$${formatPrice(positionEntryPrice(p))}`
+            : formatMissing}
+        </span>
+      ),
     },
     {
       key: "last",
       header: "Mark",
       numeric: true,
+      sortable: true,
       width: 96,
       render: (p) => {
         const px = positionCurrentPrice(p);
         return px != null ? (
           <span
             key={liveMotionKey(p, "last")}
-            className={liveCellClass("neutral")}
+            className={`${liveCellClass("neutral")} terminal-grid-numeric`}
           >
             ${formatPrice(px)}
           </span>
         ) : (
-          formatMissing
+          <span className="terminal-grid-numeric">{formatMissing}</span>
         );
       },
     },
@@ -1056,11 +1188,12 @@ function positionColumns({
       key: "market_value",
       header: "MV",
       numeric: true,
+      sortable: true,
       width: 110,
       render: (p) => (
         <span
           key={liveMotionKey(p, "market_value")}
-          className={liveCellClass("neutral")}
+          className={`${liveCellClass("neutral")} terminal-grid-numeric`}
         >
           {fmt$(p.market_value)}
         </span>
@@ -1070,13 +1203,14 @@ function positionColumns({
       key: "unrealized_pnl",
       header: "Unrl P&L",
       numeric: true,
+      sortable: true,
       width: 122,
       render: (p) => {
         const v = p.unrealized_pnl;
         if (v == null || !Number.isFinite(v))
-          return <span className="u-text-mute">—</span>;
+          return <span className="u-text-mute terminal-grid-numeric">—</span>;
         return (
-          <span key={liveMotionKey(p, "unrealized_pnl")}>
+          <span key={liveMotionKey(p, "unrealized_pnl")} className="terminal-grid-numeric">
             <DeltaChip value={v} format="currency" fractionDigits={0} />
           </span>
         );
@@ -1086,6 +1220,7 @@ function positionColumns({
       key: "weight",
       header: "%",
       numeric: true,
+      sortable: true,
       width: 88,
       render: (p) => <WeightFill pct={p.weight != null ? p.weight * 100 : null} />,
     },
@@ -1094,6 +1229,16 @@ function positionColumns({
       header: "Actions",
       width: 154,
       render: (p) => {
+        // Broker-surfaced rows are real exchange positions, not local paper —
+        // the local paper close/preview would be misleading. Point users to
+        // the account cards instead of showing inert buttons.
+        if (brokerReadOnly) {
+          return (
+            <span className="u-text-mute" title="Manage this position in the account card above">
+              broker
+            </span>
+          );
+        }
         const busy = busySymbol === p.symbol;
         return (
           <div className="port-action-row">
@@ -1136,7 +1281,9 @@ function WeightFill({ pct }: { pct: number | null }) {
         className="port-weight__track"
         style={{ ["--u-empty" as string]: `${100 - clamped}%` }}
       />
-      <span className="port-weight__label">{clamped.toFixed(1)}%</span>
+      <span className="port-weight__label terminal-grid-numeric">
+        {formatPercent(clamped, { digits: 1 })}
+      </span>
     </span>
   );
 }
@@ -1174,18 +1321,20 @@ function ClosePreviewPanel({
       </div>
       <div className="port-close-panel__kpi-grid">
         <Kpi label="Symbol" value={r.symbol} />
-        <Kpi label="Quantity" value={fmtNum(r.quantity)} />
+        <Kpi label="Quantity" numeric value={formatNumber(r.quantity, 6)} />
         <Kpi
           label="Exit"
+          numeric
           value={
             r.exit_price != null && Number.isFinite(r.exit_price)
               ? `$${formatPrice(r.exit_price)}`
               : formatMissing
           }
         />
-        <Kpi label="Notional" value={fmt$(r.market_value)} />
+        <Kpi label="Notional" numeric value={fmt$(r.market_value)} />
         <Kpi
           label="Realized P&L"
+          numeric
           value={<ChangeText value={r.realized_pnl ?? 0} prefix="$" digits={0} />}
         />
       </div>
@@ -1201,14 +1350,18 @@ function ClosePreviewPanel({
 function Kpi({
   label,
   value,
+  numeric = false,
 }: {
   label: string;
   value: ReactNode;
+  numeric?: boolean;
 }) {
   return (
     <div className="showme-port__kpi showme-card-reveal u-kpi-surface">
       <div className="port-class-card__caption">{label}</div>
-      <div className="port-class-card__value">{value}</div>
+      <div className={`port-class-card__value${numeric ? " terminal-grid-numeric" : ""}`}>
+        {value}
+      </div>
     </div>
   );
 }
@@ -1240,10 +1393,6 @@ function aggregateByClass(positions: Position[]): Record<string, number> {
     out[key] = (out[key] ?? 0) + (p.market_value ?? 0);
   }
   return out;
-}
-
-function fmtNum(n?: number) {
-  return n == null ? "—" : n.toLocaleString(undefined, { maximumFractionDigits: 6 });
 }
 
 async function requestPortfolioClose(position: Position, dryRun: boolean): Promise<CloseResponse> {

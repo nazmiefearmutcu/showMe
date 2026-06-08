@@ -113,7 +113,11 @@ class PORTFunction(BaseFunction):
             sym = pos.instrument.symbol
             last = _position_last_price(pos)
             try:
-                if self.deps.yfinance and pos.instrument.asset_class.value not in ("CRYPTO",):
+                # Crypto is no longer excluded: the yfinance data source's
+                # `_yf_symbol` already maps crypto pairs (BTCUSDT / BTC/USDT)
+                # to Yahoo's "BTC-USD" spot form, so crypto positions can take
+                # a live mark instead of falling back to a stale avg_cost.
+                if self.deps.yfinance:
                     from showme.engine.core.base_data_source import DataKind, DataRequest
                     q = await self.deps.yfinance.fetch(DataRequest(
                         kind=DataKind.QUOTE, instrument=pos.instrument

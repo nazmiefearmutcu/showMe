@@ -3261,6 +3261,13 @@
   border-color: color-mix(in srgb, var(--negative) 45%, transparent);
   color: var(--negative);
 }
+.port-alert--info {
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+  color: var(--text-secondary);
+}
+.port-alert--info strong {
+  color: var(--text-primary);
+}
 .port-empty-terminal {
   color: var(--text-secondary);
   display: grid;
@@ -3327,22 +3334,33 @@
 .port-terminal-summary__pnl--neutral {
   color: var(--text-secondary);
 }
-.port-terminal-summary__spark {
-  align-items: end;
+/* Honest unrealized-return badge — replaces the former seeded fake spark. */
+.port-terminal-summary__return {
+  align-items: flex-start;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
-  display: flex;
-  gap: 2px;
+  display: grid;
+  gap: 6px;
   justify-content: stretch;
+  align-content: center;
   min-height: 76px;
-  padding: 8px;
+  padding: 10px 12px;
 }
-.port-terminal-summary__spark span {
-  background: linear-gradient(180deg, var(--positive), color-mix(in srgb, var(--accent) 48%, transparent));
-  border-radius: 2px 2px 0 0;
-  flex: 1 1 0;
-  height: var(--u-h, 30px);
-  min-width: 2px;
+.port-terminal-summary__return > strong {
+  color: var(--text-display);
+  font-family: var(--font-mono);
+  font-size: 22px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+.port-terminal-summary__return--positive > strong {
+  color: var(--positive);
+}
+.port-terminal-summary__return--negative > strong {
+  color: var(--negative);
+}
+.port-terminal-summary__return--neutral > strong {
+  color: var(--text-secondary);
 }
 .port-workbench,
 .portfolio-analytics-grid {
