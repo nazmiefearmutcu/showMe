@@ -44,7 +44,7 @@ Each task is one page. Execute it as a **subagent-driven-development** mini-cycl
 - [x] **Task 3: PORT — Portfolio.** Pane: `ui/src/functions/PORT.tsx`. Backend: portfolio aggregation. Focus: holdings table, P&L, real broker/positions data sufficiency.
 - [x] **Task 4: WEI — Macro Monitor.** Pane: `ui/src/functions/WEI.tsx`. Backend: world indices/macro. Focus: index grid completeness, freshness, formatting.
 - [x] **Task 5: NI — News Desk (CN alias = Company News).** Pane: `ui/src/functions/NI.tsx`. Backend: `backend/showme/engine/functions/news/`. Focus: real headlines, filtering, readable list, empty/error states.
-- [ ] **Task 6: SCAN — All Functions.** Pane: `ui/src/functions/SCAN.tsx`. Backend: function index. Focus: discoverability, search, categories, launch affordances.
+- [x] **Task 6: SCAN — All Functions.** Pane: `ui/src/functions/SCAN.tsx`. Backend: function index. Focus: discoverability, search, categories, launch affordances. _(Note: SCAN is actually a TRADING SCANNER, not a function catalog — improved as such; function discovery lives in the Command Palette.)_
 - [ ] **Task 7: MIS — Multi Indicator Scan.** Pane: `ui/src/functions/MIS.tsx`. Backend: indicators engine (`backend/showme/indicators`). Focus: multi-indicator results, real scans, result density.
 - [ ] **Task 8: PREF — Settings.** Pane: `ui/src/panes/Preferences.tsx` (+ `ui/src/panes/__tests__/`). Focus: every setting wired & persisted, language/theme, sane defaults, layout.
 
