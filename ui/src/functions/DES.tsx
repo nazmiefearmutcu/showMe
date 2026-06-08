@@ -4,7 +4,7 @@
  * Bloomberg-grade company detail with a chart-led header strip and
  * description-first body. Profile data via yfinance + finnhub feeds.
  */
-import { type CSSProperties } from "react";
+import { type CSSProperties, useEffect, useRef, useState } from "react";
 import {
   Card,
   CardBody,
@@ -31,7 +31,13 @@ import {
 } from "./function-controls";
 import { XSenChip } from "./XSenChip";
 import type { FunctionPaneProps } from "./registry-types";
-import { formatCurrency, formatMissing } from "@/lib/format";
+import {
+  formatCurrency,
+  formatMissing,
+  formatNumber,
+  formatPercent,
+  formatCompactNumber,
+} from "@/lib/format";
 
 interface DESData {
   status?: string;
@@ -92,61 +98,29 @@ interface DESData {
 const isCryptoProfile = (data?: DESData) =>
   String(data?.asset_class ?? "").toUpperCase() === "CRYPTO";
 
-const fmtNum = (n?: number | null) =>
-  n == null || !Number.isFinite(n)
-    ? formatMissing
-    : Number(n).toLocaleString(undefined, { maximumFractionDigits: 2 });
+// All numeric/currency/percent formatting now delegates to the shared
+// `@/lib/format` source of truth (unified rounding + "—" sentinel). The
+// previous ~6 bespoke local formatters were removed in the page-by-page pass.
+const fmtNum = (n?: number | null) => formatNumber(n, 2);
 
-// Delegates to `formatCurrency` so negative market caps render as "-$1.50T"
-// (sign-first) instead of the local rolled-own "$-1.50T".
 const fmtMcap = (n?: number | null) =>
   formatCurrency(n, { compact: true, fractionDigits: 2 });
 
-const fmtPct = (n?: number | null) => {
-  if (n == null || !Number.isFinite(n)) return "—";
-  return `${n.toFixed(2)}%`;
-};
+const fmtPct = (n?: number | null) => formatPercent(n, { digits: 2 });
 
-const fmtSupply = (n?: number | null) => {
-  if (n == null || !Number.isFinite(n)) return "—";
-  const a = Math.abs(n);
-  if (a >= 1e12) return `${(n / 1e12).toFixed(2)}T`;
-  if (a >= 1e9) return `${(n / 1e9).toFixed(2)}B`;
-  if (a >= 1e6) return `${(n / 1e6).toFixed(2)}M`;
-  if (a >= 1e3) return `${(n / 1e3).toFixed(2)}K`;
-  return Number(n).toLocaleString(undefined, { maximumFractionDigits: 0 });
-};
+const fmtSupply = (n?: number | null) => formatCompactNumber(n);
+
+const fmtCurrency = (n?: number | null, currency?: string) =>
+  formatCurrency(n, { currency: (currency || "USD").toUpperCase(), fractionDigits: 2 });
 
 const fmtDate = (iso?: string | null) => {
-  if (!iso) return "—";
-  // Accept full ISO timestamps or YYYY-MM-DD bare dates.
+  // No `@/lib/format` equivalent exists for dates — keep local. Accepts full
+  // ISO timestamps or bare YYYY-MM-DD.
+  if (!iso) return formatMissing;
   const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso.slice(0, 10) || "—";
+  if (Number.isNaN(d.getTime())) return iso.slice(0, 10) || formatMissing;
   return d.toISOString().slice(0, 10);
 };
-
-const fmtCurrency = (n?: number | null, currency?: string) => {
-  if (n == null || !Number.isFinite(n)) return "—";
-  const symbol = currencySymbol(currency);
-  return `${symbol}${Number(n).toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
-};
-
-function currencySymbol(currency?: string): string {
-  switch ((currency || "USD").toUpperCase()) {
-    case "USD":
-      return "$";
-    case "EUR":
-      return "€";
-    case "GBP":
-      return "£";
-    case "JPY":
-      return "¥";
-    case "TRY":
-      return "₺";
-    default:
-      return "";
-  }
-}
 
 export function DESPane({ code, symbol }: FunctionPaneProps) {
   // Fall back to a sensible default symbol so the panel doesn't stall on
@@ -281,22 +255,12 @@ export function DESPane({ code, symbol }: FunctionPaneProps) {
               )}
               <TransportPill state={transportState} snapshotOnly={snapshotOnly} />
             </div>
-            <div className="u-flex u-items-center u-gap-14">
-              {last != null && (
-                <span style={lastPriceStyle}>
-                  {fmtCurrency(last, profile?.currency)}
-                </span>
-              )}
-              {changePct != null && (
-                <DeltaChip value={changePct} format="percent" fractionDigits={2} />
-              )}
-              {change != null && (
-                <span style={changeAbsStyle}>
-                  {change >= 0 ? "+" : ""}
-                  {change.toFixed(2)}
-                </span>
-              )}
-            </div>
+            <QuoteHeaderValues
+              last={last}
+              change={change}
+              changePct={changePct}
+              currency={profile?.currency}
+            />
           </div>
         )}
 
@@ -380,6 +344,126 @@ function TransportPill({
   return null;
 }
 
+/**
+ * Quote-header price + change cluster. The price flashes (reusing the shared
+ * `.flash-pos` / `.flash-neg` keyframes) on each tick via a ref + effect keyed
+ * on the value — the DOM node is stable (no remount) so the strip never
+ * jitters. Price and absolute change carry `terminal-grid-numeric` (monospace
+ * tabular figures) and the change is sign-coloured like the percent chip.
+ */
+function QuoteHeaderValues({
+  last,
+  change,
+  changePct,
+  currency,
+}: {
+  last: number | null;
+  change: number | null;
+  changePct: number | null;
+  currency?: string;
+}) {
+  const priceRef = useRef<HTMLSpanElement>(null);
+  const prevPriceRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    const el = priceRef.current;
+    if (!el || last == null) return;
+    const prev = prevPriceRef.current;
+    prevPriceRef.current = last;
+    // No flash on the first paint or when the price is unchanged.
+    if (prev == null || prev === last) return;
+    const cls = last >= prev ? "flash-pos" : "flash-neg";
+    el.classList.remove("flash-pos", "flash-neg");
+    // Force reflow so the animation restarts on the same stable node.
+    void el.offsetWidth;
+    el.classList.add(cls);
+  }, [last]);
+
+  const changeColor =
+    change == null
+      ? "var(--text-secondary)"
+      : change > 0
+        ? "var(--positive)"
+        : change < 0
+          ? "var(--negative)"
+          : "var(--text-secondary)";
+
+  return (
+    <div className="u-flex u-items-center u-gap-14">
+      {last != null && (
+        <span
+          ref={priceRef}
+          data-testid="des-last-price"
+          className="terminal-grid-numeric"
+          style={lastPriceStyle}
+        >
+          {fmtCurrency(last, currency)}
+        </span>
+      )}
+      {changePct != null && (
+        <DeltaChip value={changePct} format="percent" fractionDigits={2} />
+      )}
+      {change != null && (
+        <span
+          data-testid="des-change-abs"
+          className="terminal-grid-numeric"
+          style={{ ...changeAbsStyle, color: changeColor }}
+        >
+          {change >= 0 ? "+" : ""}
+          {change.toFixed(2)}
+        </span>
+      )}
+    </div>
+  );
+}
+
+/** Threshold past which a business summary is clamped behind a toggle. */
+const SUMMARY_CLAMP_CHARS = 480;
+
+/**
+ * Business summary with a readability clamp. Long descriptions (a 2000-char
+ * yfinance summary would otherwise blow out the pane) collapse to a few lines
+ * with a "Show more" / "Show less" toggle. Short summaries render in full with
+ * no affordance.
+ */
+function BusinessSummary({
+  summary,
+  fallback,
+}: {
+  summary: string | null;
+  fallback: string;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const clampable = !!summary && summary.length > SUMMARY_CLAMP_CHARS;
+
+  return (
+    <>
+      <p
+        data-testid="des-summary"
+        data-expanded={expanded ? "true" : "false"}
+        style={
+          clampable && !expanded
+            ? { ...summaryParagraphStyle, ...summaryClampedStyle }
+            : summaryParagraphStyle
+        }
+      >
+        {summary ?? fallback}
+      </p>
+      {clampable && (
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          aria-expanded={expanded}
+          className="des-link"
+          style={summaryToggleStyle}
+        >
+          {expanded ? "Show less" : "Show more"}
+        </button>
+      )}
+    </>
+  );
+}
+
 function DESView({ data }: { data?: DESData }) {
   if (!data) return <Empty title="No description data" />;
   const summary = data.longBusinessSummary ?? data.description ?? null;
@@ -405,12 +489,14 @@ function DESView({ data }: { data?: DESData }) {
             {crypto ? "About the asset" : "Business summary"}
           </CardHeader>
           <CardBody>
-            <p style={summaryParagraphStyle}>
-              {summary ??
-                (crypto
+            <BusinessSummary
+              summary={summary}
+              fallback={
+                crypto
                   ? "CoinGecko did not return a profile summary for this asset."
-                  : "Provider did not return a business summary.")}
-            </p>
+                  : "Provider did not return a business summary."
+              }
+            />
             {data.website && (
               <div style={websiteRowStyle}>
                 <span style={websiteLabelStyle}>Website</span>
@@ -418,6 +504,8 @@ function DESView({ data }: { data?: DESData }) {
                   href={data.website}
                   target="_blank"
                   rel="noopener noreferrer"
+                  aria-label="Company website (opens in new tab)"
+                  className="des-link"
                   style={websiteLinkStyle}
                 >
                   {data.website}
@@ -431,6 +519,8 @@ function DESView({ data }: { data?: DESData }) {
                   href={data.github_repo}
                   target="_blank"
                   rel="noopener noreferrer"
+                  aria-label="GitHub repository (opens in new tab)"
+                  className="des-link"
                   style={websiteLinkStyle}
                 >
                   {data.github_repo}
@@ -741,8 +831,31 @@ const mainGridStyle: CSSProperties = {
 const summaryParagraphStyle: CSSProperties = {
   margin: 0,
   fontSize: 12,
-  lineHeight: 1.55,
+  lineHeight: 1.6,
   color: "var(--text-secondary)",
+  whiteSpace: "pre-line",
+};
+
+// Collapsed state: clamp to ~7 lines and fade nothing harshly — overflow is
+// hidden and the toggle reveals the rest. Avoids a 2000-char wall of text.
+const summaryClampedStyle: CSSProperties = {
+  display: "-webkit-box",
+  WebkitLineClamp: 7,
+  WebkitBoxOrient: "vertical",
+  overflow: "hidden",
+  maxHeight: "calc(1.6em * 7)",
+};
+
+const summaryToggleStyle: CSSProperties = {
+  marginTop: 8,
+  padding: 0,
+  background: "none",
+  border: "none",
+  cursor: "pointer",
+  color: "var(--accent)",
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: 11,
+  letterSpacing: "0.04em",
 };
 
 const websiteRowStyle: CSSProperties = {

@@ -8675,3 +8675,12 @@
 .gex-synthetic-note__body {
   color: var(--text-secondary);
 }
+
+/* DES external links + summary toggle — keyboard-discoverable focus ring.
+ * These are inline-styled anchors/buttons in the DES pane that otherwise
+ * carried no visible focus affordance. */
+.des-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}

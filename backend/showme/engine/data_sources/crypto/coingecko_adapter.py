@@ -69,6 +69,24 @@ class CoinGeckoAdapter(BaseDataSource):
     def _to_id(symbol: str) -> str:
         return _ID_MAP.get(symbol.upper(), symbol.lower())
 
+    @staticmethod
+    def _is_mapped(symbol: str) -> bool:
+        """True when ``symbol`` has a curated ``_ID_MAP`` entry. Curated ids are
+        trusted even if CoinGecko's canonical symbol differs (e.g.
+        MATIC→polygon-pos now reports symbol "POL")."""
+        return symbol.upper() in _ID_MAP
+
+    @staticmethod
+    def _base_symbol(symbol: str) -> str:
+        """Strip a trailing quote-currency suffix so "GASUSDT" → "GAS". Used to
+        compare a Binance-style ticker against CoinGecko's canonical coin
+        symbol when guarding against an id-fallback mismatch."""
+        s = symbol.upper()
+        for quote in ("USDT", "USDC", "USD", "FDUSD", "TUSD", "BUSD", "EUR", "TRY"):
+            if s.endswith(quote) and len(s) > len(quote):
+                return s[: -len(quote)]
+        return s
+
     async def quote(self, symbol: str, vs: str = "usd") -> dict[str, Any]:
         client = await self._client_()
         cg_id = self._to_id(symbol)
@@ -140,5 +158,34 @@ class CoinGeckoAdapter(BaseDataSource):
                                    params={"localization": "false", "tickers": "false",
                                            "community_data": "false", "developer_data": "false"})
             r.raise_for_status()
-            return r.json()
+            payload = r.json()
+            return self._guard_refdata_symbol(sym, payload)
         raise DataSourceError(f"unsupported kind {request.kind}")
+
+    def _guard_refdata_symbol(self, symbol: str, payload: Any) -> Any:
+        """Reject an id-fallback mismatch.
+
+        Unmapped symbols use ``symbol.lower()`` as the CoinGecko id, which can
+        resolve to a *different* asset (e.g. "GAS" → CoinGecko "gas" whose
+        canonical symbol is "neogas"). Presenting that coin under the requested
+        ticker would show the WRONG asset's profile. When the symbol was not
+        curated in ``_ID_MAP`` and the returned coin's ``symbol`` does not match
+        the requested base symbol, return an honest no-profile result instead.
+        Curated (``_ID_MAP``) ids are trusted even if symbols differ."""
+        if not isinstance(payload, dict):
+            return payload
+        if self._is_mapped(symbol):
+            return payload
+        returned = str(payload.get("symbol") or "").upper()
+        requested = self._base_symbol(symbol)
+        if returned and returned != requested:
+            return {
+                "symbol": requested,
+                "status": "provider_unavailable",
+                "reason": (
+                    f"CoinGecko id '{self._to_id(symbol)}' resolved to a different "
+                    f"asset (symbol '{returned}', not '{requested}'); refusing to "
+                    "present mismatched profile data."
+                ),
+            }
+        return payload

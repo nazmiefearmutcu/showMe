@@ -382,3 +382,92 @@ def test_des_crypto_provider_unavailable_when_all_fail() -> None:
     data = result.data
     assert data["status"] == "provider_unavailable"
     assert result.sources == ["coingecko", "cryptocompare", "yfinance"]
+
+
+# ── CoinGecko ID-mismatch guard ───────────────────────────────────────────
+#
+# Unmapped symbols fall back to ``symbol.lower()`` as the CoinGecko id. That
+# id can resolve to a *different* asset (e.g. requesting "GAS" returns a coin
+# whose canonical symbol is not "GAS"), which would otherwise present the WRONG
+# coin's profile under the requested ticker. The adapter must refuse to pass a
+# symbol-mismatched payload off as the requested asset.
+
+
+import httpx  # noqa: E402
+
+from showme.engine.core.base_data_source import DataKind, DataRequest  # noqa: E402
+from showme.engine.core.instrument import Instrument as _Instrument  # noqa: E402
+from showme.engine.data_sources.crypto.coingecko_adapter import (  # noqa: E402
+    CoinGeckoAdapter,
+)
+
+
+def _adapter_with_refdata(payload: dict[str, Any]) -> CoinGeckoAdapter:
+    """Build a CoinGeckoAdapter whose HTTP client returns ``payload`` for the
+    ``/coins/{id}`` REFDATA call, using an httpx MockTransport (no network)."""
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=payload)
+
+    adapter = CoinGeckoAdapter()
+    adapter._client = httpx.AsyncClient(
+        base_url=adapter.base_url,
+        transport=httpx.MockTransport(_handler),
+    )
+    return adapter
+
+
+def _refdata_request(symbol: str) -> DataRequest:
+    return DataRequest(
+        kind=DataKind.REFDATA,
+        instrument=_Instrument(
+            symbol=symbol, asset_class=AssetClass.CRYPTO, exchange="BINANCE",
+            currency="USD",
+        ),
+    )
+
+
+def test_coingecko_refdata_rejects_symbol_mismatch_for_unmapped_id() -> None:
+    # "GAS" is not in _ID_MAP → id falls back to "gas"; suppose CoinGecko's
+    # "gas" coin actually carries a different canonical symbol. The adapter
+    # must NOT present that coin as "GAS".
+    wrong = {
+        "id": "gas",
+        "symbol": "neogas",  # canonical symbol differs from the request
+        "name": "Some Other Coin",
+        "market_data": {"current_price": {"usd": 5.0}},
+    }
+    adapter = _adapter_with_refdata(wrong)
+    out = _run(adapter.fetch(_refdata_request("GAS")))
+    # Honest no-profile result, NOT the mismatched coin's data.
+    assert isinstance(out, dict)
+    assert out.get("status") == "provider_unavailable"
+    assert out.get("name") != "Some Other Coin"
+
+
+def test_coingecko_refdata_accepts_matching_symbol_for_unmapped_id() -> None:
+    # An unmapped symbol whose CoinGecko id resolves to the SAME symbol is fine.
+    good = {
+        "id": "somecoin",
+        "symbol": "somecoin",
+        "name": "Some Coin",
+        "market_data": {"current_price": {"usd": 1.0}},
+    }
+    adapter = _adapter_with_refdata(good)
+    out = _run(adapter.fetch(_refdata_request("SOMECOIN")))
+    assert out.get("name") == "Some Coin"
+    assert out.get("symbol") == "somecoin"
+
+
+def test_coingecko_refdata_trusts_mapped_id_even_if_symbol_differs() -> None:
+    # Mapped ids (e.g. MATIC→polygon-pos) are curated; the returned symbol may
+    # legitimately differ from the Binance ticker, so the guard must not fire.
+    payload = {
+        "id": "polygon-pos",
+        "symbol": "pol",  # CoinGecko renamed MATIC's symbol to POL
+        "name": "Polygon",
+        "market_data": {"current_price": {"usd": 0.5}},
+    }
+    adapter = _adapter_with_refdata(payload)
+    out = _run(adapter.fetch(_refdata_request("MATIC")))
+    assert out.get("name") == "Polygon"
