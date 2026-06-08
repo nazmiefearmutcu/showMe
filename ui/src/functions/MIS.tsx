@@ -10,7 +10,15 @@
  * Intentionally NOT a trade bot — there is no SL/TP, no order routing,
  * no PORT linkage. MIS only ranks. The user decides what to do next.
  */
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type CSSProperties,
+} from "react";
 import {
   Card,
   CardBody,
@@ -140,6 +148,32 @@ export function MISPane({ code }: FunctionPaneProps) {
       return next;
     });
   }, []);
+  // Mirror the expanded set into a ref so the grid's ``expand`` column can read
+  // the *current* state without listing ``expandedRows`` in the ``cols``
+  // useMemo deps. Keeping it out of the deps means toggling a row no longer
+  // rebuilds the entire columns array → the memoized DataGrid stays stable and
+  // only the cheap chevron / breakdown re-render. ``ExpandToggle`` (the chevron)
+  // lives inside the memoized grid, which won't re-render on toggle, so it
+  // subscribes to the change signal below via ``useSyncExternalStore`` and reads
+  // its open state from the ref — that keeps its aria-expanded / icon in lockstep
+  // with state without forcing a full grid re-render. The breakdown panels keep
+  // reading ``expandedRows`` state directly (they live outside the grid and
+  // re-render on the normal state change).
+  const expandedRowsRef = useRef(expandedRows);
+  const expandSubsRef = useRef<Set<() => void>>(new Set());
+  const subscribeExpanded = useCallback((cb: () => void) => {
+    expandSubsRef.current.add(cb);
+    return () => {
+      expandSubsRef.current.delete(cb);
+    };
+  }, []);
+  useEffect(() => {
+    expandedRowsRef.current = expandedRows;
+    // Notify chevron subscribers after the state ref is fresh so their
+    // useSyncExternalStore snapshot reads the new value.
+    expandSubsRef.current.forEach((cb) => cb());
+  }, [expandedRows]);
+  const isRowExpanded = useCallback((key: string) => expandedRowsRef.current.has(key), []);
 
   const [markets, setMarkets] = useState<MisMarketSummary[]>([]);
   const [indicators, setIndicators] = useState<string[]>([]);
@@ -214,9 +248,10 @@ export function MISPane({ code }: FunctionPaneProps) {
 
   const run = useCallback(async () => {
     if (selected.size === 0) {
-      const msg = "En az bir piyasa seçmelisiniz";
-      setMarketError(msg);
-      toast.warn("MIS", msg);
+      // Inline ``role="alert"`` (rendered next to the market selector) is the
+      // single immediate announcement here — no toast, otherwise screen readers
+      // announce the same message twice.
+      setMarketError("En az bir piyasa seçmelisiniz");
       return;
     }
     setMarketError(null);
@@ -504,29 +539,21 @@ export function MISPane({ code }: FunctionPaneProps) {
         align: "center",
         render: (r) => {
           const rowKey = `${r.market}:${r.symbol}`;
-          const open = expandedRows.has(rowKey);
           const n = r.indicator_breakdown?.length ?? 0;
           return (
-            <button
-              type="button"
-              className="btn btn--ghost u-btn-mini"
-              aria-expanded={open}
-              aria-label={`Show indicator breakdown for ${r.symbol}`}
-              title={`${r.symbol} · ${n} indikatör detayı`}
-              disabled={n === 0}
-              onClick={(e) => {
-                e.stopPropagation();
-                toggleExpanded(rowKey);
-              }}
-              style={{ width: 22, height: 22, padding: 0, fontSize: 11, lineHeight: 1 }}
-            >
-              {open ? "▾" : "▸"}
-            </button>
+            <ExpandToggle
+              rowKey={rowKey}
+              symbol={r.symbol}
+              count={n}
+              subscribe={subscribeExpanded}
+              isOpen={isRowExpanded}
+              onToggle={toggleExpanded}
+            />
           );
         },
       },
     ],
-    [handleAddToWatch, jumpToDES, expandedRows, toggleExpanded],
+    [handleAddToWatch, jumpToDES, subscribeExpanded, isRowExpanded, toggleExpanded],
   );
 
   // ── Settings handlers ────────────────────────────────────────────────
@@ -989,7 +1016,10 @@ function ResultsTab(props: {
                       padding: 0,
                       minInlineSize: 0,
                       opacity: checked ? 1 : 0.55,
-                      pointerEvents: checked ? "auto" : "none",
+                      // ``disabled`` already makes the inner buttons inert, so
+                      // drop ``pointerEvents: none`` (it swallowed the cursor
+                      // hint) and surface a not-allowed cursor instead.
+                      cursor: checked ? undefined : "not-allowed",
                     }}
                     disabled={!checked}
                     title={`ZAK ağırlıkları: ${allTfs.map((t) => `${t}=${meta?.tf_weights?.[t] ?? 50}`).join(" · ")}`}
@@ -1667,6 +1697,53 @@ function TfCalibrationCard({
   );
 }
 
+/**
+ * The per-row drill-down chevron. Lives inside the memoized DataGrid, which
+ * does *not* re-render when only ``expandedRows`` changes (so the columns array
+ * can stay referentially stable for perf). To keep its ``aria-expanded`` + icon
+ * in lockstep with state regardless, it subscribes to the expand change signal
+ * via ``useSyncExternalStore`` and reads its open flag from the live ref — so it
+ * re-renders on toggle without rebuilding ``cols`` or the whole grid body.
+ */
+function ExpandToggle({
+  rowKey,
+  symbol,
+  count,
+  subscribe,
+  isOpen,
+  onToggle,
+}: {
+  rowKey: string;
+  symbol: string;
+  count: number;
+  subscribe: (cb: () => void) => () => void;
+  isOpen: (key: string) => boolean;
+  onToggle: (key: string) => void;
+}) {
+  const open = useSyncExternalStore(
+    subscribe,
+    () => isOpen(rowKey),
+    () => isOpen(rowKey),
+  );
+  return (
+    <button
+      type="button"
+      className="btn btn--ghost u-btn-mini"
+      aria-expanded={open}
+      aria-label={`Show indicator breakdown for ${symbol}`}
+      title={`${symbol} · ${count} indikatör detayı`}
+      disabled={count === 0}
+      onClick={(e) => {
+        e.stopPropagation();
+        onToggle(rowKey);
+      }}
+      style={{ width: 22, height: 22, padding: 0, fontSize: 11, lineHeight: 1 }}
+    >
+      {open ? "▾" : "▸"}
+    </button>
+  );
+}
+
 function ConfidenceBar({ value }: { value: number }) {
   const v = Math.max(0, Math.min(100, value || 0));
   const rounded = Math.round(v);
@@ -1680,7 +1757,7 @@ function ConfidenceBar({ value }: { value: number }) {
       aria-valuemax={100}
     >
       <span aria-hidden className="scan-conf-bar__fill" style={{ ["--u-pct" as string]: `${v}%` }} />
-      <span className="scan-conf-bar__label">{formatNumber(v)}</span>
+      <span className="scan-conf-bar__label">{formatNumber(rounded)}</span>
     </span>
   );
 }
