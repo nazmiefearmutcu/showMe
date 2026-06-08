@@ -131,23 +131,70 @@ def register(app: FastAPI, deps: AppDeps) -> None:
 
     @router.get("/api/bots")
     async def list_bots() -> dict[str, Any]:
-        """List bots with per-bot ``signal_count``.
+        """List bots with per-bot supervision health fields.
 
         H-SUP-2 (BOT_AUDIT_REPORT.md): the supervisor UI used to derive
         "Sinyaller" from the feed window which capped the count; this
         endpoint now reports the real per-bot length so the table can
         show an accurate per-row tally.
+
+        Supervision health (terminal-grade pass): each record also carries
+
+        * ``is_running``    — whether the runner's asyncio task is alive.
+          ``runner.is_running`` is CHEAP (it only checks ``task.done()``;
+          no network, no broker round-trip), so it's safe on the poll
+          endpoint. An ``enabled`` bot with ``is_running == False`` is
+          STUCK (task crashed / never spawned).
+        * ``last_event_at`` — timestamp of the most recent signal_log
+          entry (its ``timestamp`` field — wall-clock when the entry was
+          minted; always present via the model default_factory). Falls
+          back to ``bar_close_time`` / ``bar_time`` then
+          ``last_processed_event.timestamp``. ``None`` when the bot has
+          never produced a signal. Used by the UI for last-tick
+          freshness.
+        * ``last_action``   — the ``action`` ("placed"/"shadow"/"skipped")
+          of that same most-recent entry. Lets the UI flag a DEGRADED bot
+          whose latest tick did nothing (broker / permission issue).
+
+        NOTE: no broker / credential / network call is made here. The
+        per-bot loop only touches the already-loaded ``rec`` and the
+        cheap ``runner.is_running`` task check. ``_has_trade_perm`` and
+        any live permission re-probe are deliberately NOT called.
         """
         store = _store()
+        runner = _runner()
         out: list[dict[str, Any]] = []
         for meta in store.list():
             d = dict(meta.to_dict())
             try:
                 rec = store.get(meta.id)
                 d["signal_count"] = len(rec.signal_log)
+                last = rec.signal_log[-1] if rec.signal_log else None
+                if last is not None:
+                    d["last_event_at"] = (
+                        last.timestamp or last.bar_close_time or last.bar_time or None
+                    )
+                    d["last_action"] = last.action
+                elif rec.last_processed_event is not None:
+                    lpe = rec.last_processed_event
+                    d["last_event_at"] = (
+                        lpe.timestamp or lpe.bar_close_time or lpe.bar_time or None
+                    )
+                    d["last_action"] = lpe.action
+                else:
+                    d["last_event_at"] = None
+                    d["last_action"] = None
             except Exception as exc:  # noqa: BLE001
                 LOG.debug("signal_count lookup failed for %s: %s", meta.id, exc)
                 d["signal_count"] = 0
+                d["last_event_at"] = None
+                d["last_action"] = None
+            try:
+                # CHEAP: only checks whether the asyncio task is done; no I/O.
+                d["is_running"] = runner.is_running(meta.id)
+            except Exception as exc:  # noqa: BLE001
+                LOG.debug("is_running lookup failed for %s: %s", meta.id, exc)
+                d["is_running"] = False
             out.append(d)
         return {"records": out}
 

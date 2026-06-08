@@ -408,3 +408,48 @@ def test_list_bots_includes_signal_count(client, seeded):
         b.get("id") == bid and b.get("signal_count") == 3
         for b in lst["records"]
     )
+
+
+def test_list_bots_includes_supervision_health(client, seeded):
+    """Terminal-grade — GET /api/bots exposes is_running / last_event_at /
+    last_action so the supervisor can derive a real health status without a
+    broker / network round-trip.
+
+    Deterministic: we seed a single signal_log entry with a fixed timestamp
+    and assert last_event_at / last_action mirror it, and that a freshly
+    created (never enabled) bot reports is_running == False.
+    """
+    r = client.post("/api/bots", json=seeded)
+    bid = r.json()["id"]
+
+    from showme.bots.store import BotStore
+    from showme.bots.record import SignalEntry
+    store = BotStore.fresh()
+    rec = store.get(bid)
+    fixed_ts = "2026-05-22T10:00:00Z"
+    rec = rec.append_signal(SignalEntry(
+        bar_index=0, bar_time=fixed_ts, kind="entry",
+        price=100.0, action="skipped", timestamp=fixed_ts,
+        error="broker unavailable",
+    ))
+    store.save(rec)
+
+    records = client.get("/api/bots").json()["records"]
+    row = next(b for b in records if b.get("id") == bid)
+    # Never started → runner task is not alive.
+    assert row["is_running"] is False
+    # last_event_at / last_action reflect the seeded entry.
+    assert row["last_event_at"] == fixed_ts
+    assert row["last_action"] == "skipped"
+
+
+def test_list_bots_health_defaults_for_no_signals(client, seeded):
+    """A bot with no signals reports last_event_at/last_action as None and
+    is_running False — the UI shows OFF / "—" honestly."""
+    r = client.post("/api/bots", json=seeded)
+    bid = r.json()["id"]
+    records = client.get("/api/bots").json()["records"]
+    row = next(b for b in records if b.get("id") == bid)
+    assert row["is_running"] is False
+    assert row["last_event_at"] is None
+    assert row["last_action"] is None
