@@ -13,6 +13,7 @@ import asyncio
 
 from showme.engine.functions.screen._funcs import (
     WEIFunction,
+    _WORLD_INDEX_BASELINE,
     _WORLD_INDEX_META,
     _world_index_symbols,
     _world_index_template,
@@ -46,6 +47,13 @@ def test_each_region_has_multiple_indices() -> None:
         counts[_WORLD_INDEX_META[sym]["region"]] += 1
     for region, n in counts.items():
         assert n >= 2, f"region {region} only has {n} index(es)"
+
+
+def test_every_symbol_has_a_baseline_so_template_never_defaults() -> None:
+    # Guards META/BASELINE drift: a symbol added to META without a baseline
+    # would silently render a wrong-magnitude ~1000.0 model level.
+    missing = set(_world_index_symbols()) - set(_WORLD_INDEX_BASELINE.keys())
+    assert not missing, f"symbols missing from _WORLD_INDEX_BASELINE: {missing}"
 
 
 def test_template_derives_from_symbol_set_and_is_labelled_model() -> None:
