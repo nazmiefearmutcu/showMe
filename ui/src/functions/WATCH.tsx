@@ -41,7 +41,13 @@ import { useAppStore } from "@/lib/store";
 import { isInTauri } from "@/lib/tauri";
 import { useWorkspace } from "@/lib/workspace";
 import { navigate } from "@/lib/router";
-import { formatMissing, formatPercent, formatPrice } from "@/lib/format";
+import {
+  formatCompactNumber,
+  formatCurrency,
+  formatMissing,
+  formatPercent,
+  formatPrice,
+} from "@/lib/format";
 import {
   formatTime as formatTzTime,
   readTimezone as readTzId,
@@ -293,10 +299,11 @@ export function WATCHPane({ code }: FunctionPaneProps) {
             return <span className="u-text-mute">{formatMissing}</span>;
           const tone = (view.changePct ?? 0) >= 0 ? "positive" : "negative";
           return (
-            <span
-              key={`${r.symbol}-last-${view.fetchedAt ?? 0}-${view.price}`}
-              className={liveCellClass(tone)}
-            >
+            // STABLE key — a per-tick key (fetchedAt/price) forced a DOM
+            // remount every refresh, which flickered the cell. The pulse flash
+            // keys off the `liveCellClass` tone/className change, not the React
+            // key, so a constant key keeps the flash while killing the churn.
+            <span key="last" className={`${liveCellClass(tone)} terminal-grid-numeric`}>
               {/* Adaptive precision: keeps sub-dollar prices readable. */}
               {formatPrice(view.price)}
             </span>
@@ -311,12 +318,49 @@ export function WATCHPane({ code }: FunctionPaneProps) {
         render: (r) => {
           const c = quotes[r.symbol]?.changePct;
           if (c == null || !Number.isFinite(c))
-            return <span className="u-text-mute">—</span>;
+            return <span className="u-text-mute">{formatMissing}</span>;
           return (
-            <span
-              key={`${r.symbol}-change-${quotes[r.symbol]?.fetchedAt ?? 0}-${c}`}
-            >
+            // STABLE key — see the "last" cell note. A per-tick key remounted
+            // the chip every refresh.
+            <span key="chg" className="terminal-grid-numeric">
               <DeltaChip value={c} format="percent" fractionDigits={2} />
+            </span>
+          );
+        },
+      },
+      {
+        key: "volume",
+        header: "Volume",
+        numeric: true,
+        width: 92,
+        render: (r) => {
+          // Volume lives on the snapshot (lib/quotes QuoteSnapshot.volume).
+          // Live ticks also carry volume, but the snapshot is the canonical
+          // 24h figure; render honest "—" when the provider omits it.
+          const vol = quotes[r.symbol]?.snapshot?.volume;
+          return (
+            <span className="terminal-grid-numeric u-text-secondary">
+              {formatCompactNumber(vol, { fixedDigits: 2 })}
+            </span>
+          );
+        },
+      },
+      {
+        key: "notional",
+        header: "Notional",
+        numeric: true,
+        width: 100,
+        render: (r) => {
+          const view = quotes[r.symbol];
+          const vol = view?.snapshot?.volume;
+          const price = view?.price;
+          const notional =
+            vol != null && Number.isFinite(vol) && price != null && Number.isFinite(price)
+              ? vol * price
+              : null;
+          return (
+            <span className="terminal-grid-numeric u-text-secondary">
+              {notional == null ? formatMissing : formatCurrency(notional, { compact: true })}
             </span>
           );
         },
@@ -336,8 +380,8 @@ export function WATCHPane({ code }: FunctionPaneProps) {
             <span key={`${r.symbol}-spark-${sparkMotionKey(points)}`}>
               <Sparkline
                 values={points.map((p) => p.value)}
-                width={80}
-                height={22}
+                width={64}
+                height={16}
                 tone={tone}
               />
             </span>
@@ -380,7 +424,7 @@ export function WATCHPane({ code }: FunctionPaneProps) {
             );
           }
           return (
-            <span className="u-mono-xs u-text-secondary">
+            <span className="u-mono-xs u-text-secondary terminal-grid-numeric">
               {formatFreshness(freshness)}
               {view.stale ? " · stale" : ""}
             </span>
@@ -460,6 +504,7 @@ export function WATCHPane({ code }: FunctionPaneProps) {
             className="btn btn--ghost watch-remove-btn"
             onClick={() => onRemove(r.symbol)}
             title={`Remove ${r.symbol}`}
+            aria-label={`Remove ${r.symbol} from watchlist`}
           >
             ✕
           </button>
@@ -582,6 +627,7 @@ export function WATCHPane({ code }: FunctionPaneProps) {
               placeholder="add symbol — AAPL, BTCUSDT…"
               list="watch-symbol-options"
               className="watch-composer__input"
+              aria-label="Add symbol to watchlist"
               disabled={addingSymbol}
             />
             <datalist id="watch-symbol-options">
@@ -598,7 +644,11 @@ export function WATCHPane({ code }: FunctionPaneProps) {
             </button>
           </form>
           {lastRemoved ? (
-            <div className="showme-watch__undo watch-undo">
+            <div
+              className="showme-watch__undo watch-undo"
+              role="alert"
+              aria-live="assertive"
+            >
               <span>Removed {lastRemoved.symbol}</span>
               <button
                 type="button"
@@ -613,7 +663,9 @@ export function WATCHPane({ code }: FunctionPaneProps) {
           {rows.length === 0 ? (
             <Empty title="Empty watchlist" body="Add a symbol above to start." />
           ) : !hasAnyData ? (
-            <Skeleton height={120} />
+            <div role="status" aria-label="Loading watchlist">
+              <Skeleton height={120} />
+            </div>
           ) : (
             <DataGrid
               className="showme-watch__grid showme-motion-grid"
