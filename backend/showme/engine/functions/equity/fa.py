@@ -132,38 +132,6 @@ class FAFunction(BaseFunction):
         return f"<section class='showme-fn fn-fa'><h2>FA — {r.instrument and r.instrument.symbol}</h2>{''.join(rows)}</section>"
 
 
-def _financial_snapshot_model(symbol: str, period: Any) -> dict[str, Any]:
-    seed = (sum(ord(ch) for ch in symbol.upper()) % 17) / 100
-    revenue = 100_000_000_000 * (1 + seed)
-    gross_margin = 0.36 + seed / 4
-    operating_margin = 0.22 + seed / 5
-    free_cash_flow_margin = 0.18 + seed / 6
-    return {
-        "symbol": symbol,
-        "status": "computed_statement_snapshot",
-        "period": period,
-        "income": [
-            {"line_item": "revenue", "latest": round(revenue, 2)},
-            {"line_item": "gross_profit", "latest": round(revenue * gross_margin, 2)},
-            {"line_item": "operating_income", "latest": round(revenue * operating_margin, 2)},
-            {"line_item": "net_income", "latest": round(revenue * (operating_margin * 0.78), 2)},
-        ],
-        "cashflow": [
-            {"line_item": "free_cash_flow", "latest": round(revenue * free_cash_flow_margin, 2)},
-            {"line_item": "capex", "latest": round(-(revenue * 0.045), 2)},
-        ],
-        "balance": [
-            {"line_item": "cash_and_equivalents", "latest": round(revenue * 0.18, 2)},
-            {"line_item": "total_debt", "latest": round(revenue * 0.24, 2)},
-        ],
-        "quality": {
-            "gross_margin": round(gross_margin, 4),
-            "operating_margin": round(operating_margin, 4),
-            "free_cash_flow_margin": round(free_cash_flow_margin, 4),
-        },
-    }
-
-
 def _financial_unavailable_payload(
     symbol: str,
     period: Any,
@@ -177,6 +145,7 @@ def _financial_unavailable_payload(
         "balance_sheet": [],
         "cash_flow": [],
         "ratios": {},
+        "filing_date": None,
         "reason": "No SEC EDGAR or yfinance statement payload was returned.",
         "provider_errors": warnings,
         "next_actions": [
@@ -198,12 +167,25 @@ def _normalise_fa_payload(
         income_rows = _rows_from_canonical(sec_data, "income")
         balance_rows = _rows_from_canonical(sec_data, "balance")
         cash_rows = _rows_from_canonical(sec_data, "cash_flow")
+        filing_date = _latest_filing_date(sec_data)
     else:
         yfin_data = yfin_data or {}
         canonical = _latest_yfinance_values(yfin_data)
         income_rows = _rows_from_frame(yfin_data.get("income"))
         balance_rows = _rows_from_frame(yfin_data.get("balance"))
         cash_rows = _rows_from_frame(yfin_data.get("cashflow"))
+        filing_date = _latest_filing_date(
+            {
+                k: v
+                for k, v in {
+                    "income": yfin_data.get("income"),
+                    "balance": yfin_data.get("balance"),
+                    "cashflow": yfin_data.get("cashflow"),
+                }.items()
+                if v is not None
+            },
+            from_frames=True,
+        )
 
     ratios = _compute_ratios(canonical)
     status = "ok" if ratios else "calc_error"
@@ -213,6 +195,7 @@ def _normalise_fa_payload(
         "period": period,
         "source": source,
         "asOf": datetime.now(timezone.utc).isoformat(),
+        "filing_date": filing_date,
         "income_statement": income_rows,
         "balance_sheet": balance_rows,
         "cash_flow": cash_rows,
@@ -457,3 +440,41 @@ def _date_label(value: Any) -> str:
         except Exception:
             pass
     return str(value)[:10]
+
+
+def _latest_filing_date(data: Any, *, from_frames: bool = False) -> str | None:
+    """Derive the most recent real period/filing date from statement data.
+
+    SEC: ``data`` is ``{canonical_key: pd.Series}`` where each series is
+    indexed by the XBRL period ``end`` date. yfinance (``from_frames``):
+    ``data`` is ``{section: DataFrame}`` whose columns are period dates.
+
+    Returns the latest period end as an ISO ``YYYY-MM-DD`` string, or
+    ``None`` when no real date is available (never fabricated).
+    """
+    if not isinstance(data, dict):
+        return None
+    latest: Any = None
+    for value in data.values():
+        candidates: Any = []
+        if from_frames:
+            if value is None or not hasattr(value, "columns"):
+                continue
+            candidates = list(value.columns)
+        else:
+            index = getattr(value, "index", None)
+            if index is None:
+                continue
+            candidates = list(index)
+        for raw in candidates:
+            stamp = pd.to_datetime(raw, errors="coerce")
+            if stamp is None or pd.isna(stamp):
+                continue
+            if latest is None or stamp > latest:
+                latest = stamp
+    if latest is None:
+        return None
+    try:
+        return latest.date().isoformat()
+    except Exception:
+        return str(latest)[:10]

@@ -28,6 +28,12 @@ import { SymbolBar } from "@/shell/SymbolBar";
 import { useFunction } from "@/lib/useFunction";
 import { defaultSymbolForFunction } from "@/lib/symbols";
 import {
+  formatCompactNumber,
+  formatCurrency,
+  formatMissing,
+  formatPercent,
+} from "@/lib/format";
+import {
   FunctionControlGroup,
   LoadStatePill,
   RefreshButton,
@@ -92,6 +98,9 @@ export function FAPane({ code, symbol }: FunctionPaneProps) {
   });
 
   const payload = data?.data;
+  // Hoisted so the error-state Retry button can disable during an in-flight
+  // refetch without TS narrowing `state` to a non-overlapping literal.
+  const isFetching: boolean = state === "loading";
   const currency = (payload?.currency as string | undefined) ?? "USD";
   const filingDate =
     (payload?.filing_date as string | undefined) ??
@@ -115,7 +124,13 @@ export function FAPane({ code, symbol }: FunctionPaneProps) {
       body={error?.message ?? "—"}
       icon="!"
       action={
-        <button onClick={refetch} className="btn">
+        <button
+          type="button"
+          onClick={refetch}
+          className="btn"
+          aria-label="Retry fetching fundamentals"
+          disabled={isFetching}
+        >
           Retry
         </button>
       }
@@ -221,10 +236,16 @@ function FAView({
       />
     );
   }
+  const statementLabel =
+    tab === "income"
+      ? "Income statement"
+      : tab === "balance"
+        ? "Balance sheet"
+        : "Cash flow statement";
   return (
     <div data-testid="function-payload" className="u-grid-gap-12">
       {heroRatios.length ? <RatioRibbon ratios={heroRatios} /> : null}
-      <FinancialGrid rows={rows} />
+      <FinancialGrid rows={rows} ariaLabel={statementLabel} />
       <Methodology data={data} />
     </div>
   );
@@ -269,35 +290,36 @@ function RatioRibbon({ ratios }: { ratios: HeroRatio[] }) {
   return (
     <div className="fa-ratio-ribbon">
       {ratios.map((r) => (
-        <StatCard key={r.label} label={r.label} value={r.value} tone={r.tone} />
+        <StatCard
+          key={r.label}
+          label={r.label}
+          value={<span className="terminal-grid-numeric">{r.value}</span>}
+          tone={r.tone}
+        />
       ))}
     </div>
   );
 }
 
 function formatHeroValue(key: string, value: unknown): string {
-  if (value == null) return "—";
+  if (value == null) return formatMissing;
   const n = typeof value === "number" ? value : Number(value);
   if (!Number.isFinite(n)) return String(value);
   if (key === "revenue") {
-    const a = Math.abs(n);
-    if (a >= 1e12) return `$${(n / 1e12).toFixed(2)}T`;
-    if (a >= 1e9) return `$${(n / 1e9).toFixed(2)}B`;
-    if (a >= 1e6) return `$${(n / 1e6).toFixed(2)}M`;
-    return `$${n.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
+    return formatCurrency(n, { compact: true, fractionDigits: 2 });
   }
   if (key === "gross_margin" || key === "operating_margin") {
     // payload stores as 0-1 ratio or already-percent; detect.
-    const pct = Math.abs(n) <= 1 ? n * 100 : n;
-    return `${pct.toFixed(1)}%`;
+    const fromFraction = Math.abs(n) <= 1;
+    return formatPercent(n, { fromFraction, digits: 1 });
   }
   if (key === "eps") {
-    return `$${n.toFixed(2)}`;
+    return formatCurrency(n, { fractionDigits: 2 });
   }
   if (key === "pe" || key === "pb") {
     return `${n.toFixed(2)}x`;
   }
-  return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
+  return formatCompactNumber(n);
 }
 
 function toRows(value: unknown): Record<string, unknown>[] {
@@ -311,9 +333,30 @@ function toRows(value: unknown): Record<string, unknown>[] {
   return [];
 }
 
-function FinancialGrid({ rows }: { rows: Record<string, unknown>[] }) {
+function FinancialGrid({
+  rows,
+  ariaLabel,
+}: {
+  rows: Record<string, unknown>[];
+  ariaLabel: string;
+}) {
   const cols = useMemo(() => buildColumns(rows), [rows]);
-  return <DataGrid columns={cols} rows={rows} density="compact" />;
+  return (
+    <DataGrid
+      columns={cols}
+      rows={rows}
+      density="compact"
+      ariaLabel={`${ariaLabel} statement`}
+    />
+  );
+}
+
+/** Title-case a raw snake/camel key: `total_revenue` → `Total Revenue`. */
+function humanizeLabel(key: string): string {
+  return key
+    .replace(/_/g, " ")
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 function buildColumns(
@@ -322,30 +365,55 @@ function buildColumns(
   if (!rows.length) return [];
   const sample = rows[0];
   const keys = Object.keys(sample);
-  return keys.map((k) => ({
-    key: k,
-    header: k,
-    numeric: typeof sample[k] === "number",
-    render: (r) =>
-      typeof sample[k] === "number" ? (
-        <span className="fa-cell-numeric">{formatCell(r[k])}</span>
-      ) : (
-        <span className="u-text-secondary">{formatCell(r[k])}</span>
-      ),
-  }));
+  return keys.map((k) => {
+    const numeric = typeof sample[k] === "number";
+    return {
+      key: k,
+      header: humanizeLabel(k),
+      numeric,
+      render: (r) => <StatementCell value={r[k]} numeric={numeric} />,
+    };
+  });
 }
 
+/** Format a magnitude with compact notation, no currency symbol. */
 function formatCell(v: unknown): string {
-  if (v == null) return "—";
+  if (v == null) return formatMissing;
   if (typeof v === "number") {
-    const a = Math.abs(v);
-    if (a >= 1e12) return `${(v / 1e12).toFixed(2)}T`;
-    if (a >= 1e9) return `${(v / 1e9).toFixed(2)}B`;
-    if (a >= 1e6) return `${(v / 1e6).toFixed(2)}M`;
-    if (a >= 1e3) return v.toLocaleString(undefined, { maximumFractionDigits: 0 });
-    return v.toLocaleString(undefined, { maximumFractionDigits: 4 });
+    return formatCompactNumber(v);
   }
   return String(v);
+}
+
+/**
+ * Statement-grid cell. Numeric negatives render in `--negative` color and
+ * parentheses `(123.4M)` — terminal convention so a loss reads at a glance.
+ * Non-numeric labels get a `title` attr so long line-items aren't lost to
+ * ellipsis truncation.
+ */
+function StatementCell({ value, numeric }: { value: unknown; numeric: boolean }) {
+  if (!numeric) {
+    const text = value == null ? formatMissing : String(value);
+    return (
+      <span className="u-text-secondary" title={text}>
+        {humanizeLabel(text)}
+      </span>
+    );
+  }
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return <span className="fa-cell-numeric">{formatMissing}</span>;
+  }
+  const negative = value < 0;
+  const magnitude = formatCompactNumber(Math.abs(value));
+  const rendered = negative ? `(${magnitude})` : magnitude;
+  return (
+    <span
+      className={`fa-cell-numeric${negative ? " fa-cell--negative" : ""}`}
+      title={rendered}
+    >
+      {rendered}
+    </span>
+  );
 }
 
 function Ratios({ data }: { data?: Record<string, unknown> }) {
@@ -381,20 +449,19 @@ function Ratios({ data }: { data?: Record<string, unknown> }) {
 
 function RatioCell({ label, value }: { label: string; value: unknown }) {
   const n = typeof value === "number" ? value : Number(value);
-  const tone =
-    Number.isFinite(n)
-      ? n > 0
-        ? "var(--positive)"
-        : n < 0
-          ? "var(--negative)"
-          : "var(--text-primary)"
-      : "var(--text-primary)";
+  const tone = Number.isFinite(n)
+    ? n > 0
+      ? "fa-ratio-cell__value--positive"
+      : n < 0
+        ? "fa-ratio-cell__value--negative"
+        : ""
+    : "";
   return (
     <div className="fa-ratio-cell">
-      <span className="fa-ratio-cell__label">
-        {label.replace(/_/g, " ")}
+      <span className="fa-ratio-cell__label" title={humanizeLabel(label)}>
+        {humanizeLabel(label)}
       </span>
-      <span className="fa-ratio-cell__value" style={{ color: tone }}>
+      <span className={`fa-ratio-cell__value terminal-grid-numeric ${tone}`}>
         {formatCell(value)}
       </span>
     </div>

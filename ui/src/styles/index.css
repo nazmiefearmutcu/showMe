@@ -6132,6 +6132,10 @@
   font-variant-numeric: tabular-nums;
   color: var(--text-primary);
 }
+/* Negative statement values: red + parentheses are added by the renderer. */
+.fa-cell--negative {
+  color: var(--negative);
+}
 .fa-ratio-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -6163,6 +6167,14 @@
   font-size: 16px;
   font-weight: 600;
   letter-spacing: 0.02em;
+  color: var(--text-primary);
+}
+/* Ratio tone classes (moved off inline `style={{color}}`). */
+.fa-ratio-cell__value--positive {
+  color: var(--positive);
+}
+.fa-ratio-cell__value--negative {
+  color: var(--negative);
 }
 .fa-methodology-dl {
   margin: 0;
