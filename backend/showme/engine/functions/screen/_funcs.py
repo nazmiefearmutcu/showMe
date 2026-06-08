@@ -866,6 +866,10 @@ def _rank_most_active_rows(rows: list[dict[str, Any]], sort_key: str) -> list[di
     enriched: list[dict[str, Any]] = []
     for row in rows:
         merged = dict(row)
+        # Self-describing rows: deterministic (non-live) reference rows carry
+        # quote_state="reference". setdefault never clobbers the "live" state
+        # stamped by _merge_live_most_rows, so the shared live path is safe.
+        merged.setdefault("quote_state", "reference")
         if merged.get("dollar_volume") is None and merged.get("last") is not None and merged.get("volume") is not None:
             merged["dollar_volume"] = float(merged["last"]) * float(merged["volume"])
         merged["activity_score"] = (

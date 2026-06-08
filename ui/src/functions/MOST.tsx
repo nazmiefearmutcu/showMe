@@ -26,7 +26,6 @@ import {
   PaneHeader,
   Pill,
   Skeleton,
-  Sparkline,
   StatCard,
   Tabs,
 } from "@/design-system";
@@ -34,6 +33,7 @@ import { useFunction } from "@/lib/useFunction";
 import { useWorkspace } from "@/lib/workspace";
 import { maxOf } from "@/lib/maxOf";
 import { navigate } from "@/lib/router";
+import { formatCompactNumber, formatMissing, formatPrice } from "@/lib/format";
 import {
   FunctionControlGroup,
   LoadStatePill,
@@ -201,7 +201,9 @@ export function MOSTPane({ code }: FunctionPaneProps) {
         width: 36,
         numeric: true,
         render: (_r, idx) => (
-          <span className="scan-rank">{String(idx + 1).padStart(2, "0")}</span>
+          <span className="scan-rank terminal-grid-numeric">
+            {String(idx + 1).padStart(2, "0")}
+          </span>
         ),
       },
       {
@@ -271,7 +273,9 @@ export function MOSTPane({ code }: FunctionPaneProps) {
         numeric: true,
         width: 96,
         render: (r) => (
-          <span className="most-price-cell">{fmtPrice(r.last ?? r.price)}</span>
+          <span className="most-price-cell terminal-grid-numeric">
+            {formatPrice(r.last ?? r.price)}
+          </span>
         ),
       },
       {
@@ -281,23 +285,16 @@ export function MOSTPane({ code }: FunctionPaneProps) {
         width: 92,
         render: (r) => {
           const v = r.change_pct ?? r.changePercent;
-          if (v == null) return <span className="u-text-mute">—</span>;
-          return <DeltaChip value={Number(v)} format="percent" fractionDigits={2} />;
-        },
-      },
-      {
-        key: "trend",
-        header: "Trend",
-        width: 76,
-        render: (r) => {
-          const v = r.change_pct ?? r.changePercent ?? 0;
+          if (v == null)
+            return (
+              <span className="u-text-mute terminal-grid-numeric">
+                {formatMissing}
+              </span>
+            );
           return (
-            <Sparkline
-              values={deterministicTrend(`${r.symbol ?? r.ticker ?? "x"}-${v}`, 22)}
-              width={64}
-              height={16}
-              tone={Number(v) < 0 ? "negative" : "positive"}
-            />
+            <span className="terminal-grid-numeric">
+              <DeltaChip value={Number(v)} format="percent" fractionDigits={2} />
+            </span>
           );
         },
       },
@@ -309,7 +306,12 @@ export function MOSTPane({ code }: FunctionPaneProps) {
         render: (r) => {
           const v = Number(r.volume ?? 0);
           const ratio = maxVolume > 0 ? v / maxVolume : 0;
-          return <NumericBar value={fmtCompact(r.volume)} ratio={ratio} />;
+          return (
+            <NumericBar
+              value={formatCompactNumber(r.volume, { fixedDigits: 2 })}
+              ratio={ratio}
+            />
+          );
         },
       },
       {
@@ -318,11 +320,11 @@ export function MOSTPane({ code }: FunctionPaneProps) {
         numeric: true,
         width: 110,
         render: (r) => {
-          const v = Number(r.dollar_volume ?? estimateDollar(r));
-          const ratio = maxDollarVolume > 0 ? v / maxDollarVolume : 0;
+          const dollar = r.dollar_volume ?? estimateDollar(r);
+          const ratio = maxDollarVolume > 0 ? dollar / maxDollarVolume : 0;
           return (
             <NumericBar
-              value={fmtCompact(r.dollar_volume ?? estimateDollar(r))}
+              value={formatCompactNumber(dollar, { fixedDigits: 2 })}
               ratio={ratio}
             />
           );
@@ -361,7 +363,8 @@ export function MOSTPane({ code }: FunctionPaneProps) {
           title="Most active"
           subtitle={`${rows.length} row(s) · ${payload?.asset_class_filter ?? assetClass ?? "all"} · sorted by ${sort}`}
           trailing={
-            <FunctionControlGroup>
+            <div role="group" aria-label="Most-active controls">
+              <FunctionControlGroup>
               <Pill tone="accent" variant="soft" withDot={false}>
                 MATCHED {rows.length} / {payload?.universe_size ?? "—"}
               </Pill>
@@ -388,7 +391,8 @@ export function MOSTPane({ code }: FunctionPaneProps) {
               />
               <LoadStatePill state={state} />
               <RefreshButton loading={state === "loading"} onClick={refetch} />
-            </FunctionControlGroup>
+              </FunctionControlGroup>
+            </div>
           }
         />
         <div className="most-tab-strip">
@@ -435,21 +439,19 @@ export function MOSTPane({ code }: FunctionPaneProps) {
                   <span className="u-inline-flex u-gap-6 u-items-center btn btn--ghost u-btn-mini btn--accent">
                     <button
                       type="button"
-                      
+                      aria-label="Reset filters"
                       onClick={() => {
                         setTab("all");
                         setSort("volume");
                         setLimit(50);
                       }}
-                      
                     >
                       Reset
                     </button>
                     <button
                       type="button"
-                      
+                      aria-label="Apply filters"
                       onClick={refetch}
-                      
                     >
                       Apply
                     </button>
@@ -479,7 +481,12 @@ export function MOSTPane({ code }: FunctionPaneProps) {
                 body={error?.message ?? "—"}
                 icon="!"
                 action={
-                  <button onClick={refetch} className="btn">
+                  <button
+                    type="button"
+                    onClick={refetch}
+                    className="btn"
+                    aria-label="Retry loading most-active data"
+                  >
                     Retry
                   </button>
                 }
@@ -492,6 +499,7 @@ export function MOSTPane({ code }: FunctionPaneProps) {
                   <button
                     type="button"
                     className="btn btn--accent"
+                    aria-label="Reset filters and retry"
                     onClick={() => {
                       setTab("all");
                       setSort("volume");
@@ -527,7 +535,7 @@ export function MOSTPane({ code }: FunctionPaneProps) {
                   />
                   <StatCard
                     label="Volume sum"
-                    value={fmtCompact(totalVolume)}
+                    value={formatCompactNumber(totalVolume, { fixedDigits: 2 })}
                     caption={`LIVE ${liveCount}/${rows.length}`}
                     trend={deterministicTrend(`v-${totalVolume}-${liveCount}`)}
                     tone="neutral"
@@ -602,7 +610,7 @@ function NumericBar({ value, ratio }: { value: string; ratio: number }) {
         className="most-numeric-bar__track"
         style={{ ["--u-empty" as string]: `${100 - pct}%` }}
       />
-      <span className="most-numeric-bar__label">{value}</span>
+      <span className="most-numeric-bar__label terminal-grid-numeric">{value}</span>
     </span>
   );
 }
@@ -690,9 +698,11 @@ function MostMethodology({
 
 function ActivityBars({ rows, sort }: { rows: MostRow[]; sort: SortKey }) {
   const visible = rows.slice(0, 8);
-  const max = Math.max(1, ...visible.map((row) => Math.abs(sortVal(row, sort))));
+  // UA-HIGH: stack-safe. `Math.max(1, ...arr)` spreads the array onto the
+  // call stack and overflows on large inputs; maxOf() is O(n) constant-stack.
+  const max = maxOf([1, ...visible.map((row) => Math.abs(sortVal(row, sort)))]) || 1;
   return (
-    <div className="most-bars">
+    <div className="most-bars" aria-hidden="true">
       {visible.map((row) => {
         const symbol = row.symbol ?? row.ticker ?? "—";
         const value = Math.abs(sortVal(row, sort));
@@ -736,32 +746,17 @@ function formatSortValue(r: MostRow, key: SortKey): string {
     const v = Math.abs(Number(r.change_pct ?? r.changePercent ?? 0));
     return `${v.toFixed(2)}%`;
   }
-  if (key === "dollar_volume") return fmtCompact(r.dollar_volume ?? estimateDollar(r));
-  return fmtCompact(r.volume);
+  if (key === "dollar_volume")
+    return formatCompactNumber(r.dollar_volume ?? estimateDollar(r), {
+      fixedDigits: 2,
+    });
+  return formatCompactNumber(r.volume, { fixedDigits: 2 });
 }
 
 function estimateDollar(r: MostRow): number {
   const p = r.last ?? r.price;
   if (p == null || r.volume == null) return 0;
   return p * r.volume;
-}
-
-function fmtPrice(v: number | undefined): string {
-  if (v == null) return "—";
-  return v.toLocaleString(undefined, {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 4,
-  });
-}
-
-function fmtCompact(v: number | undefined | null): string {
-  if (v == null || !Number.isFinite(v)) return "—";
-  const a = Math.abs(v);
-  if (a >= 1e12) return `${(v / 1e12).toFixed(2)}T`;
-  if (a >= 1e9) return `${(v / 1e9).toFixed(2)}B`;
-  if (a >= 1e6) return `${(v / 1e6).toFixed(2)}M`;
-  if (a >= 1e3) return `${(v / 1e3).toFixed(2)}K`;
-  return v.toLocaleString(undefined, { maximumFractionDigits: 0 });
 }
 
 const presetGridStyle: CSSProperties = {
