@@ -1,39 +1,36 @@
 # Original User Request
 
-## Initial Request — 2026-06-07T12:57:00Z
+## Initial Request — 2026-06-06T12:37:36+03:00
 
-Update all supported language catalogs (en, tr, de, fr, es, it, ja, zh, ko, ar, pt, ru) in the showMe desktop app to match the current 138-key English catalog exactly, and ensure that selecting a language does not mix with any other languages (strictly zero English fallback).
+Systematic improvement of all 141+ backend functions and 30 UI components in the `showMe` trading terminal to ensure robust data flows, UI compatibility, a dedicated data pool inspection panel, and enhanced capabilities exceeding basic claims.
 
-Working directory: /Users/nazmi/showMe_temp
+Working directory: /Users/nazmi/Desktop/Projeler/proje/showMe
 Integrity mode: development
 
 ## Requirements
 
-### R1. Translate and Populate All Catalog Files
-All 12 supported locales must have their `<locale>.json` files fully populated in the `ui/src/i18n` directory. Each file must contain exactly the same 138 keys as `en.json` (as of the current application state) with accurate, context-aware translations. 
-*Note: The translation agent team should use LLM models (e.g. Gemini) to translate keys based on the context of the English values.*
+### R1. Robust Real-World Data Flows
+All functions registered in the system (141+ codes) must use real data adapters (yfinance, FRED, CCXT, DuckDB analytics, etc.) or correct analytical calculations. They must not rely on simple static placeholders or mock templates in production mode. Banned mock or fake production files must be strictly avoided.
 
-### R2. Register and Integrate Locales
-All 12 translation files must be imported and registered in `ui/src/i18n/index.ts` within the `CATALOGS` record. Selecting a language in the preferences must correctly switch the application language.
+### R2. Dynamic UI Compatibility
+All UI components must adapt to and correctly display all metrics returned by the backend data contract. The interface must dynamically format and scale according to the incoming data structure, avoiding layout shift or data compatibility crashes.
 
-### R3. Remove Runtime Fallback to English
-To ensure other languages never mix when a language is selected, modify the translation function `t()` in `ui/src/i18n/index.ts` so that it does not fall back to English when a key is missing in the active locale catalog. Instead, it should immediately fall back to the caller-supplied default or the key name itself.
+### R3. Data Pool Inspection Panel
+Every function interface must provide a dedicated feature, pane, or modal to view and inspect the raw underlying data (JSON payload or structured table) of the function's output.
 
-### R4. Verify Integration and UI Completeness
-Ensure that all UI unit tests pass and add validation tests verifying that all supported catalogs are 100% complete, free of missing keys, and that no runtime language mixing can occur.
+### R4. Value-Added Capabilities (Exceeding Basic Claim)
+Every function must go beyond its basic minimum claim. For example, if a function claims to compute a metric, it should also present related context such as historical trend analysis, multi-asset comparisons, statistical distributions, or threshold alerts.
+
+### R5. Audit and Validation Integrity
+The project's function audit (`npm run audit:functions`) and unit/E2E test suites must pass 100% green. All panel headers must correctly surface the manifest status (`📜 M`), honest `DataMode` pills, source names, and warning counts.
 
 ## Acceptance Criteria
 
-### Translation Completeness
-- [ ] Every catalog file (`de.json`, `fr.json`, `es.json`, `it.json`, `ja.json`, `zh.json`, `ko.json`, `ar.json`, `pt.json`, `ru.json`, `tr.json`, `en.json`) exists in `ui/src/i18n/`.
-- [ ] Every JSON file contains exactly the same set of keys as `en.json` (138 keys).
-- [ ] No key contains untranslated English placeholders or untranslated values, guaranteeing that when any language is selected, it does not mix with other languages.
+### Function Audit & Test Performance
+- [ ] Running `npm run audit:functions` results in 0 errors and contains no `FAIL_STATUSES` (e.g. `input_error`, `calc_error`) or banned sentinels (e.g. `"No rows"`, `"No ratios"`, `"undefined"`, `"NaN"`).
+- [ ] Running `npm run test` (including pytest and vitest suites) finishes with 100% green status.
 
-### Code Integration
-- [ ] `ui/src/i18n/index.ts` is updated to import and register all 12 catalogs in `CATALOGS`.
-- [ ] The translation function `t()` does not fall back to English if the active locale has a catalog.
-- [ ] Compilation builds (`npm run build:ui`) complete successfully without any TypeScript or bundling errors.
-
-### Testing
-- [ ] All existing and new i18n tests pass successfully.
-- [ ] Test cases in `ui/src/i18n/i18n.test.ts` and `ui/src/i18n/i18n-extra.test.ts` are updated to assert the new fallback behavior (i.e. not falling back to English when a catalog exists).
+### UI Data Inspection & Visual Integrity
+- [ ] Every active function page in the UI renders a clickable inspection/data-pool button that displays the raw backend payload in a formatted JSON tree or interactive table.
+- [ ] Every pane shows a valid, honest `DataMode` pill (such as `live_official`, `live_exchange`, `delayed_reference`) and displays at least one authentic source provenance name.
+- [ ] All dynamic data feeds are styled correctly, utilizing modern typography and smooth visual feedback without rendering fallback or mock stubs in production.
