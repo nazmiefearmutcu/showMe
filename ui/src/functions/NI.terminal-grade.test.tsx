@@ -89,7 +89,14 @@ describe("NI data honesty", () => {
     });
     render(<NIPane code="CN" symbol="ACME" />);
     // Wait for the honest banner body (unique to the unavailable state).
-    const body = await screen.findByText(/No live headlines right now/i);
+    // The fetch effect runs a real 600ms retry `delay()` before settling, so
+    // give the query a longer-than-default timeout to stay deterministic on
+    // slow CI runners (default 1000ms can race the 600ms delay).
+    const body = await screen.findByText(
+      /No live headlines right now/i,
+      {},
+      { timeout: 3000 },
+    );
     // It must live inside a role=status region (announced to AT).
     expect(body.closest('[role="status"]')).not.toBeNull();
     // The synthetic placeholder must NOT be rendered as a normal feed article.

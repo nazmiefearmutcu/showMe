@@ -786,7 +786,7 @@ function ArticleList({
       aria-busy={scoring}
     >
       {scoring ? (
-        <li className="ni-feed-scoring" aria-live="polite">
+        <li className="ni-feed-scoring">
           <span className="ni-load-spinner ni-load-spinner--sm" aria-hidden="true" />
           Scoring social signals…
         </li>
@@ -804,7 +804,7 @@ function ArticleList({
             key={key}
             role="button"
             tabIndex={0}
-            aria-pressed={isSelected}
+            data-selected={isSelected}
             aria-label={fullTitle}
             onClick={() => onSelect(key)}
             onKeyDown={(ev) => {
