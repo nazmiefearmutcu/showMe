@@ -25,6 +25,7 @@ import { fetchXInstantEvents } from "@/lib/xai";
 import { toast } from "@/lib/toast";
 import { useXInjectStore } from "@/lib/xinject";
 import { readTimezone as readTz } from "@/lib/timezone";
+import { relativeTimeLabel } from "@/lib/time";
 import { useVisibilityTick } from "@/lib/useVisibilityTick";
 import type { FunctionPaneProps } from "./registry-types";
 
@@ -253,11 +254,14 @@ export function INSTANTPane({ code }: FunctionPaneProps) {
   }).length;
 
   const metrics = status?.health?.metrics ?? status?.performance?.metrics;
+  // Flow Speed honesty: only treat speedups as live-measured when the backend
+  // actually reported them. Otherwise we surface the hardcoded KNOWN_SPEEDUPS,
+  // labeled as *documented* optimizations rather than live status.
+  const liveSpeedups = status?.performance?.speedups ?? [];
+  const speedupsAreLive = liveSpeedups.length > 0;
   const speedups = useMemo(() => {
-    const fromStatus = status?.performance?.speedups ?? [];
-    if (fromStatus.length) return fromStatus;
-    return KNOWN_SPEEDUPS;
-  }, [status]);
+    return speedupsAreLive ? liveSpeedups : KNOWN_SPEEDUPS;
+  }, [speedupsAreLive, liveSpeedups]);
   const sourceHealth = status?.health?.sources ?? [];
   // QA-2026-05-24 (#10d): default to "loading" on first paint instead of
   // "unavailable". The pre-fetch state previously painted a misleading red
@@ -388,6 +392,7 @@ export function INSTANTPane({ code }: FunctionPaneProps) {
                 className="btn btn--ghost u-btn-mini"
                 onClick={triggerBackfill}
                 disabled={state === "loading" || backfillBusy}
+                aria-busy={backfillBusy}
               >
                 {backfillBusy ? "Backfilling…" : "Backfill"}
               </button>
@@ -514,6 +519,11 @@ export function INSTANTPane({ code }: FunctionPaneProps) {
                 <LogStream entries={recentTail} maxHeight={188} follow monoFontSize={10} />
               </Panel>
               <Panel title="Flow Speed">
+                <div style={speedupCaption}>
+                  {speedupsAreLive
+                    ? "live-reported · active optimizations"
+                    : "documented optimizations · active when the live feed service is connected"}
+                </div>
                 <div style={chipGrid}>
                   {speedups.map((item) => (
                     <span key={item.name} style={chip} title={item.impact}>
@@ -521,10 +531,10 @@ export function INSTANTPane({ code }: FunctionPaneProps) {
                     </span>
                   ))}
                 </div>
-                {!status?.performance?.speedups?.length ? (
+                {!speedupsAreLive ? (
                   <p style={mutedNote}>
                     Live speedup metadata only ships when the instant HTTP service is reachable. The
-                    chips above are the documented optimizations.
+                    chips above are documented optimizations, not live-measured metrics.
                   </p>
                 ) : null}
               </Panel>
@@ -613,7 +623,7 @@ function FilterStrip({
   return (
     <div style={filterStrip}>
       <div style={filterGroup}>
-        <span style={filterLabel}>min score</span>
+        <span style={filterLabel} id="instant-min-score-label">min score</span>
         <input
           type="range"
           min={0}
@@ -622,6 +632,9 @@ function FilterStrip({
           value={minScore}
           onChange={(event) => onMinScore(Number(event.target.value))}
           className="instant-range"
+          aria-labelledby="instant-min-score-label"
+          aria-label={`Minimum priority score filter (${minScore || "off"})`}
+          aria-valuetext={minScore ? `${minScore}` : "off"}
         />
         <strong className="instant-filter-count">{minScore || "off"}</strong>
       </div>
@@ -779,6 +792,8 @@ function ChipButton({
     <button
       type="button"
       onClick={onClick}
+      aria-pressed={active}
+      aria-label={`${label} filter`}
       style={{
         ...chipButton,
         background: active ? "var(--accent)" : "var(--surface-2)",
@@ -793,13 +808,28 @@ function ChipButton({
 
 function EventList({ events }: { events: InstantEvent[] }) {
   return (
-    <div style={eventList}>
-      {events.map((event, index) => {
+    <div
+      style={eventList}
+      role="log"
+      aria-live="polite"
+      aria-label="Instant event feed"
+    >
+      {events.map((event) => {
         const score = Number(event.priority_score ?? 0);
+        // Stable identity across re-sorts/filters: prefer the server dedupe
+        // key, then link/id, with title only as a last resort. Never append
+        // the array index — that breaks React reconciliation on reorder.
+        const key =
+          event.dedupe_key || event.link || (event.id != null ? String(event.id) : null) || event.title || "instant-event";
+        // New-item flash only for low/normal rows (score < 58); higher-score
+        // rows already carry a persistent accent background that the flash
+        // would fight with.
+        const fresh = score < 58 && isFresh(event.fetched_at);
         return (
           <article
-            key={(event.dedupe_key ?? event.link ?? event.title ?? "") + index}
+            key={key}
             style={eventRowStyle(score)}
+            className={fresh ? "instant-event--fresh" : undefined}
           >
             <div style={scoreBoxStyle(score)}>
               <strong className="instant-score-num">{score.toFixed(0)}</strong>
@@ -824,11 +854,20 @@ function EventList({ events }: { events: InstantEvent[] }) {
                 <span style={metaCellMute}>·</span>
                 <span style={metaCell}>{event.source_region ?? "global"}</span>
                 <span style={metaCellMute}>·</span>
-                <span style={metaCell} title={event.published_at ?? undefined}>
+                <span
+                  className="terminal-grid-numeric"
+                  style={metaCell}
+                  title={event.published_at ?? undefined}
+                >
                   published {formatDate(event.published_at)}
+                  {relativeTimeLabel(event.published_at) ? (
+                    <span style={metaCellRel}> · {relativeTimeLabel(event.published_at)}</span>
+                  ) : null}
                 </span>
                 <span style={metaCellMute}>·</span>
-                <span style={metaCell}>latency {formatLatency(event.latency_seconds)}</span>
+                <span className="terminal-grid-numeric" style={metaCell}>
+                  latency {formatLatency(event.latency_seconds)}
+                </span>
                 {event.calendar_window ? (
                   <>
                     <span style={metaCellMute}>·</span>
@@ -877,12 +916,19 @@ function SourceHealthRow({
   const tone: "positive" | "negative" | "warn" = ok ? "positive" : enabled ? "negative" : "warn";
   const label = ok ? "OK" : enabled ? "ERR" : "OFF";
   const collapsed = `${source.last_item_count ?? 0} items / ${source.last_latency_ms ?? "n/a"} ms`;
+  const displayName = source.source_name ?? source.source_id ?? "source";
   return (
     <div style={sourceRowOuter}>
-      <button type="button" onClick={onToggle} style={sourceRowButton} aria-expanded={expanded}>
+      <button
+        type="button"
+        onClick={onToggle}
+        style={sourceRowButton}
+        aria-expanded={expanded}
+        aria-label={`${displayName} source health — ${label}, ${expanded ? "expanded" : "collapsed"}`}
+      >
         <div className="instant-source-row-text">
           <strong style={sourceName}>{source.source_name ?? source.source_id}</strong>
-          <span style={sourceMeta}>{collapsed}</span>
+          <span style={sourceMeta} className="terminal-grid-numeric">{collapsed}</span>
         </div>
         <Pill tone={tone} variant="soft" withDot={false}>{label}</Pill>
       </button>
@@ -948,6 +994,15 @@ function dateValue(value?: string | null): number {
   if (!value) return 0;
   const parsed = Date.parse(value);
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+// True when an event was fetched within the last ~5 seconds, used to drive the
+// brief new-item flash highlight on freshly-arrived rows.
+function isFresh(value?: string | null): boolean {
+  if (!value) return false;
+  const ts = Date.parse(value);
+  if (!Number.isFinite(ts)) return false;
+  return Date.now() - ts < 5_000;
 }
 
 function formatDate(value?: string | null): string {
@@ -1210,6 +1265,10 @@ const metaCell: CSSProperties = {
   color: "var(--text-mute)",
 };
 
+const metaCellRel: CSSProperties = {
+  color: "var(--text-secondary)",
+};
+
 const metaCellMute: CSSProperties = {
   color: "var(--border-strong)",
 };
@@ -1367,6 +1426,15 @@ const mutedNote: CSSProperties = {
   color: "var(--text-mute)",
   fontSize: 10,
   lineHeight: 1.4,
+};
+
+const speedupCaption: CSSProperties = {
+  marginBottom: 6,
+  color: "var(--text-mute)",
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: 9,
+  textTransform: "uppercase",
+  letterSpacing: "0.06em",
 };
 
 const xInjectStrip: CSSProperties = {

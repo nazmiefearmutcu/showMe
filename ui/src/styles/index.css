@@ -4148,6 +4148,28 @@
   gap: 8px;
 }
 
+/*
+ * INSTANT new-item flash. Freshly-arrived rows (fetched within ~5s) get a
+ * brief accent tint that fades out so the eye catches new squawks on a busy
+ * feed. Respects reduced-motion.
+ */
+@keyframes instantNewFlash {
+  0% {
+    background-color: var(--accent-soft);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+.instant-event--fresh {
+  animation: instantNewFlash 4s ease-out 1;
+}
+@media (prefers-reduced-motion: reduce) {
+  .instant-event--fresh {
+    animation: none;
+  }
+}
+
 /* XSEN absorbers. */
 .xsen-empty-body {
   display: grid;
