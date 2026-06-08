@@ -18,45 +18,84 @@ import {
   TIMEFRAMES,
   validateSymbol,
 } from "@/lib/validators";
-import { ConfirmDialog } from "@/design-system";
+import { ConfirmDialog, Empty, Pill, SkeletonRow } from "@/design-system";
+import { formatPrice } from "@/lib/format";
+
+// Sentinel the backend stamps onto a SignalEntry whose live order was sized
+// on the fallback equity ($10k) rather than real broker equity.
+const FALLBACK_EQUITY_SOURCE = "fallback_10k";
+
+// F1 — map a bot's (enabled, mode) state to a design-system Pill tone and
+// an accessible status label.
+function statusToneAndLabel(rec: { mode: string; enabled: boolean }):
+  { tone: "negative" | "warn" | "muted"; label: string } {
+  if (!rec.enabled) return { tone: "muted", label: "OFF" };
+  return rec.mode === "live"
+    ? { tone: "negative", label: "LIVE" }
+    : { tone: "warn", label: "SHADOW" };
+}
 
 function StatusPill({ rec }: { rec: { mode: string; enabled: boolean } }) {
-  const live = rec.mode === "live";
-  const color = !rec.enabled ? "var(--fg-2)"
-              : live ? "var(--accent-err)"
-              : "var(--accent-warn)";
+  const { tone, label } = statusToneAndLabel(rec);
+  // F1 — Pill carries the visible label; the wrapper gives it an accessible
+  // name so screen readers announce "Durum: LIVE/SHADOW/OFF".
   return (
-    <span style={{
-      fontSize: 10, fontWeight: 600, color, border: `1px solid ${color}`,
-      padding: "1px 6px", borderRadius: 4,
-    }}>
-      {rec.enabled ? (live ? "LIVE" : "SHADOW") : "OFF"}
+    <span role="status" aria-label={`Durum: ${label}`}>
+      <Pill tone={tone} variant="soft" withDot>
+        {label}
+      </Pill>
     </span>
   );
 }
 
 function SignalLog({ entries }: { entries: SignalEntry[] }) {
-  if (entries.length === 0) return <div style={{ color: "var(--fg-2)" }}>(no signals yet)</div>;
+  if (entries.length === 0) return <div className="u-text-secondary">(no signals yet)</div>;
   return (
-    <table style={{ width: "100%", fontSize: 11 }}>
+    <table
+      className="terminal-grid-numeric"
+      aria-label="Sinyal kayıtları"
+      style={{ width: "100%", fontSize: 11 }}
+    >
+      <caption className="u-sr-only">
+        Botun ürettiği sinyaller — zaman, tür, fiyat, aksiyon ve detay.
+      </caption>
       <thead>
-        <tr style={{ color: "var(--fg-2)" }}>
-          <th align="left">Time</th><th>Kind</th><th align="right">Price</th>
-          <th>Action</th><th align="left">Detail</th>
+        <tr className="u-text-secondary">
+          <th scope="col" align="left">Time</th>
+          <th scope="col">Kind</th>
+          <th scope="col" align="right">Price</th>
+          <th scope="col">Action</th>
+          <th scope="col" align="left">Detail</th>
         </tr>
       </thead>
       <tbody>
-        {entries.slice(-20).reverse().map((e, i) => (
-          <tr key={i}>
-            <td>{e.bar_time.slice(0, 19)}</td>
-            <td style={{ color: e.kind === "entry" ? "var(--accent-ok)" : "var(--accent-warn)" }}>
-              {e.kind}
-            </td>
-            <td align="right">{e.price.toFixed(2)}</td>
-            <td>{e.action}</td>
-            <td>{e.error || e.order_id || ""}</td>
-          </tr>
-        ))}
+        {entries.slice(-20).reverse().map((e, i) => {
+          const isFallback = e.equity_source === FALLBACK_EQUITY_SOURCE;
+          return (
+            <tr key={i}>
+              <td>{e.bar_time.slice(0, 19)}</td>
+              <td className={e.kind === "entry" ? "u-text-positive" : "u-text-warn"}>
+                {e.kind}
+              </td>
+              <td align="right">{formatPrice(e.price)}</td>
+              <td>{e.action}</td>
+              <td>
+                {e.error || e.order_id || ""}
+                {isFallback && (
+                  <span
+                    data-testid="bot-signal-fallback-equity"
+                    title="Bu canlı emir gerçek broker bakiyesi yerine yedek ($10k) bakiye ile boyutlandırıldı."
+                    style={{ marginLeft: 6, display: "inline-block" }}
+                  >
+                    <Pill tone="warn" variant="soft" withDot={false}>
+                      ≈$10k
+                    </Pill>
+                  </span>
+                )}
+              </td>
+            </tr>
+          );
+        })}
       </tbody>
     </table>
   );
@@ -96,6 +135,8 @@ export function BOTPane() {
   // on save success without forgetting it on mode toggles.
   const lastDraftIdRef = useRef<string | null>(null);
   const [pendingDeleteBotId, setPendingDeleteBotId] = useState<string | null>(null);
+  // F6 — confirm before disabling a (possibly live) running bot.
+  const [pendingDisableId, setPendingDisableId] = useState<string | null>(null);
 
   useEffect(() => {
     // C-UI-5 — always refresh strategies/credentials on mount so that
@@ -176,6 +217,20 @@ export function BOTPane() {
     !dirty || saving || missingStrategy || missingCredential || missingSymbol ||
     timeframeUnknown;
 
+  // F6 — explain *why* Save is disabled (same validation that disables it).
+  // Returns undefined when Save is enabled so the button has no stale title.
+  const saveDisabledReason: string | undefined = (() => {
+    if (!saveDisabled && !liveConfirmMissing) return undefined;
+    if (saving) return "Kaydediliyor…";
+    if (missingStrategy) return "Strateji seçilmeli.";
+    if (missingCredential) return "Bağlantı seçilmeli.";
+    if (missingSymbol) return "Geçerli bir sembol gerekli.";
+    if (timeframeUnknown) return "Geçerli bir timeframe seç.";
+    if (liveConfirmMissing) return "Live moda geçiş için account_label onayı gerekli.";
+    if (!dirty) return "Değişiklik yok.";
+    return "Strateji, bağlantı ve sembol gerekli.";
+  })();
+
   // Round 24 — replace blocking window.confirm with ConfirmDialog.
   // `dirtySwitchTarget = "new" | botId | null` carries the intent across
   // the async confirm. Only one modal at a time.
@@ -219,7 +274,7 @@ export function BOTPane() {
   return (
     <div style={{ display: "grid", gridTemplateColumns: "280px 1fr", height: "100%",
                   overflow: "hidden" }}>
-      <div style={{ borderRight: "1px solid var(--border-1)", padding: 8, overflowY: "auto" }}>
+      <div style={{ borderRight: "1px solid var(--border-card)", padding: 8, overflowY: "auto" }}>
         <button onClick={() => {
           if (dirty) {
             setDirtySwitchTarget("new");
@@ -236,40 +291,56 @@ export function BOTPane() {
                     gap: 6, alignItems: "center", padding: "6px 8px",
                     width: "100%", textAlign: "left",
                     background: draft?.id === b.id ? "var(--surface-2)" : "transparent",
-                    border: "none", borderBottom: "1px solid var(--border-1)",
+                    border: "none", borderBottom: "1px solid var(--border-card)",
                     cursor: "pointer",
                   }}>
             <div>
               <div><strong>{b.symbol}</strong></div>
-              <div style={{ fontSize: 10, color: "var(--fg-2)" }}>
+              <div className="u-text-secondary" style={{ fontSize: 10 }}>
                 {b.exchange_id} · {b.timeframe}
               </div>
             </div>
             <StatusPill rec={b} />
           </button>
         ))}
-        {list.length === 0 && (
-          <div style={{ color: "var(--fg-2)", fontSize: 11, padding: 8 }}>
-            Henüz bot yok.
+        {/* F5 — Skeleton while the first load is in flight and we have
+            nothing to show yet. */}
+        {loading && list.length === 0 && (
+          <div data-testid="bot-list-loading" aria-busy="true">
+            {Array.from({ length: 6 }).map((_, i) => (
+              <SkeletonRow key={i} columns={1} />
+            ))}
+          </div>
+        )}
+        {/* F5 — design-system Empty when the load finished with no bots. */}
+        {!loading && list.length === 0 && (
+          <div data-testid="bot-list-empty">
+            <Empty title="Henüz bot yok" body="Bir strateji + bağlantı seçip yeni bot oluştur." />
           </div>
         )}
       </div>
 
       <div style={{ overflowY: "auto", padding: 16 }}>
         {!draft && (
-          <div style={{ color: "var(--fg-2)" }}>
+          <div className="u-text-secondary">
             Soldan bir bot seç ya da <strong>+ Yeni bot</strong>.
           </div>
         )}
         {draft && (
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             <h3 style={{ margin: 0 }}>
-              {draft.symbol || "(yeni bot)"} {dirty && <em style={{ color: "var(--accent-warn)" }}>*</em>}
+              {draft.symbol || "(yeni bot)"} {dirty && <em className="u-text-warn">*</em>}
               {draft.id && <span style={{ marginLeft: 8 }}><StatusPill rec={draft as BotRecord} /></span>}
             </h3>
-            <label>
+            <label htmlFor="bot-strategy-select">
               Strateji
-              <select value={draft.strategy_id ?? ""}
+              <select id="bot-strategy-select"
+                      aria-describedby={
+                        strategyOrphan ? "bot-field-err-strategy-orphan"
+                        : missingStrategy ? "bot-field-err-strategy"
+                        : undefined
+                      }
+                      value={draft.strategy_id ?? ""}
                       onChange={(e) => setField("strategy_id", e.target.value)}>
                 <option value="">— seç —</option>
                 {/* C-UI-1 — keep orphan id in dropdown so user knows what's wrong. */}
@@ -283,20 +354,28 @@ export function BOTPane() {
               </select>
             </label>
             {strategyOrphan && (
-              <div data-testid="bot-field-err-strategy-orphan"
-                   style={{ color: "var(--accent-err)", fontSize: 11 }}>
+              <div id="bot-field-err-strategy-orphan"
+                   data-testid="bot-field-err-strategy-orphan"
+                   className="u-text-negative" style={{ fontSize: 11 }}>
                 Seçili strateji silinmiş. Listeden başka bir strateji seç.
               </div>
             )}
             {missingStrategy && !strategyOrphan && (
-              <div data-testid="bot-field-err-strategy"
-                   style={{ color: "var(--accent-err)", fontSize: 11 }}>
+              <div id="bot-field-err-strategy"
+                   data-testid="bot-field-err-strategy"
+                   className="u-text-negative" style={{ fontSize: 11 }}>
                 Bir strateji seçmelisin.
               </div>
             )}
-            <label>
+            <label htmlFor="bot-credential-select">
               Bağlantı
-              <select value={draft.credential_id ?? ""}
+              <select id="bot-credential-select"
+                      aria-describedby={
+                        credentialOrphan ? "bot-field-err-credential-orphan"
+                        : missingCredential ? "bot-field-err-credential"
+                        : undefined
+                      }
+                      value={draft.credential_id ?? ""}
                       onChange={(e) => {
                         const id = e.target.value;
                         const c = credentials.find((x) => x.id === id);
@@ -325,20 +404,24 @@ export function BOTPane() {
               </select>
             </label>
             {credentialOrphan && (
-              <div data-testid="bot-field-err-credential-orphan"
-                   style={{ color: "var(--accent-err)", fontSize: 11 }}>
+              <div id="bot-field-err-credential-orphan"
+                   data-testid="bot-field-err-credential-orphan"
+                   className="u-text-negative" style={{ fontSize: 11 }}>
                 Seçili bağlantı silinmiş. Listeden başka bir bağlantı seç.
               </div>
             )}
             {missingCredential && !credentialOrphan && (
-              <div data-testid="bot-field-err-credential"
-                   style={{ color: "var(--accent-err)", fontSize: 11 }}>
+              <div id="bot-field-err-credential"
+                   data-testid="bot-field-err-credential"
+                   className="u-text-negative" style={{ fontSize: 11 }}>
                 Bir bağlantı seçmelisin.
               </div>
             )}
-            <label>
+            <label htmlFor="bot-symbol-input">
               Symbol
               <input
+                id="bot-symbol-input"
+                aria-describedby={symbolError ? "bot-field-err-symbol" : undefined}
                 value={symbolRaw}
                 onChange={(e) => {
                   // C-UI-2 — normalize for state but keep the raw locally so
@@ -351,14 +434,17 @@ export function BOTPane() {
                 placeholder="BTC/USDT" />
             </label>
             {symbolError && (
-              <div data-testid="bot-field-err-symbol"
-                   style={{ color: "var(--accent-err)", fontSize: 11 }}>
+              <div id="bot-field-err-symbol"
+                   data-testid="bot-field-err-symbol"
+                   className="u-text-negative" style={{ fontSize: 11 }}>
                 {symbolError}
               </div>
             )}
-            <label>
+            <label htmlFor="bot-timeframe-select">
               Timeframe
-              <select value={draft.timeframe ?? "1h"}
+              <select id="bot-timeframe-select"
+                      aria-describedby={timeframeUnknown ? "bot-field-err-timeframe" : undefined}
+                      value={draft.timeframe ?? "1h"}
                       onChange={(e) => setField("timeframe", e.target.value as BotRecord["timeframe"])}>
                 {/* H-UI-3 — surface unknown values so the user sees them. */}
                 {timeframeUnknown && draft.timeframe && (
@@ -371,48 +457,54 @@ export function BOTPane() {
               </select>
             </label>
             {timeframeUnknown && (
-              <div data-testid="bot-field-err-timeframe"
-                   style={{ color: "var(--accent-err)", fontSize: 11 }}>
+              <div id="bot-field-err-timeframe"
+                   data-testid="bot-field-err-timeframe"
+                   className="u-text-negative" style={{ fontSize: 11 }}>
                 Bilinmeyen timeframe: "{draft.timeframe}". Listeden seç.
               </div>
             )}
-            <label>
+            <label htmlFor="bot-tick-input">
               Tick interval (saniye)
-              <input type="number" min={5} max={3600}
+              <input id="bot-tick-input" type="number" min={5} max={3600}
                      value={tickInputRaw}
                      onChange={(e) => setTickInputRaw(e.target.value)}
                      onBlur={commitTickInterval} />
             </label>
 
-            <fieldset style={{ borderColor: "var(--border-1)", padding: 8 }}>
+            <fieldset style={{ borderColor: "var(--border-card)", padding: 8 }}>
               <legend>Mod</legend>
-              <label>
-                <input type="radio" checked={draft.mode === "shadow"}
+              <label htmlFor="bot-mode-shadow">
+                <input id="bot-mode-shadow" type="radio" checked={draft.mode === "shadow"}
                        onChange={() => setField("mode", "shadow")} />
                 Shadow (sadece signal log)
               </label>
               <br />
-              <label style={{ color: "var(--accent-err)" }}>
-                <input type="radio" checked={draft.mode === "live"}
+              <label htmlFor="bot-mode-live" className="u-text-negative">
+                <input id="bot-mode-live" type="radio" checked={draft.mode === "live"}
                        onChange={() => setField("mode", "live")} />
                 Live (gerçek emir)
               </label>
             </fieldset>
 
-            {/* B-C3 — shadow→live save needs confirm_account_label */}
-            {transitioningToLive && (
-              <label>
+            {/* B-C3 / F6 — shadow→live save needs confirm_account_label. Only
+                render the re-type input while actually transitioning to live;
+                never permanently visible in shadow mode. */}
+            {transitioningToLive && draft.mode === "live" && (
+              <label htmlFor="bot-save-confirm-label">
                 Live moda geçiş onayı — account_label tekrar yaz
                 <input
+                  id="bot-save-confirm-label"
                   data-testid="bot-save-confirm-label"
+                  aria-describedby={liveConfirmMissing ? "bot-field-err-confirm-label" : undefined}
                   placeholder={credential?.account_label ?? "account_label"}
                   value={confirmLabel}
                   onChange={(e) => setConfirmLabel(e.target.value)}
                   style={{ width: 200 }}
                 />
                 {liveConfirmMissing && (
-                  <div data-testid="bot-field-err-confirm-label"
-                       style={{ color: "var(--accent-err)", fontSize: 11 }}>
+                  <div id="bot-field-err-confirm-label"
+                       data-testid="bot-field-err-confirm-label"
+                       className="u-text-negative" style={{ fontSize: 11 }}>
                     account_label "{credential?.account_label ?? "?"}" ile eşleşmeli.
                   </div>
                 )}
@@ -424,6 +516,7 @@ export function BOTPane() {
               <button
                 onClick={handleSave}
                 disabled={saveDisabled || liveConfirmMissing}
+                title={saveDisabledReason}
               >
                 {saving ? "Kaydediliyor..." : "Kaydet"}
               </button>
@@ -452,7 +545,10 @@ export function BOTPane() {
                 </>
               )}
               {draft.id && draft.enabled && (
-                <button onClick={() => disable(draft.id!)} disabled={toggling}>
+                <button
+                  data-testid="bot-durdur-button"
+                  onClick={() => setPendingDisableId(draft.id!)}
+                  disabled={toggling || pendingDisableId !== null}>
                   {toggling ? "..." : "Durdur"}
                 </button>
               )}
@@ -461,15 +557,18 @@ export function BOTPane() {
                 data-testid="bot-sil-button"
                 onClick={() => setPendingDeleteBotId(draft.id!)}
                 disabled={loading || pendingDeleteBotId !== null}
-                style={{ marginLeft: "auto", color: "var(--accent-err)" }}>
+                className="u-text-negative"
+                style={{ marginLeft: "auto" }}>
                 Sil
               </button>
             )}
             </div>
 
+            {/* F4 — async error is an announced live region. */}
             {error && (
               <div data-testid="bot-pane-error"
-                   style={{ color: "var(--accent-err)" }}>
+                   role="status" aria-live="polite"
+                   className="u-text-negative">
                 {error}
               </div>
             )}
@@ -477,7 +576,7 @@ export function BOTPane() {
             <h4>Signal log ({(draft.signal_log ?? []).length})</h4>
             <SignalLog entries={draft.signal_log ?? []} />
             {(draft.signal_log ?? []).length > 20 && (
-              <div style={{ fontSize: 11, color: "var(--fg-2)" }}>
+              <div className="u-text-secondary" style={{ fontSize: 11 }}>
                 Son 20 sinyal gösteriliyor — toplam {(draft.signal_log ?? []).length}.
               </div>
             )}
@@ -514,6 +613,23 @@ export function BOTPane() {
           void remove(id);
         }}
         onCancel={() => setPendingDeleteBotId(null)}
+      />
+
+      {/* F6 — confirm before stopping a (possibly live) running bot. */}
+      <ConfirmDialog
+        open={pendingDisableId !== null}
+        title="Botu durdur"
+        body="Bu bot çalışıyor (canlı modda gerçek emir verebilir). Durdurmak istediğine emin misin?"
+        confirmLabel="Durdur"
+        destructive
+        busy={toggling}
+        onConfirm={() => {
+          if (!pendingDisableId) return;
+          const id = pendingDisableId;
+          setPendingDisableId(null);
+          void disable(id);
+        }}
+        onCancel={() => setPendingDisableId(null)}
       />
     </div>
   );

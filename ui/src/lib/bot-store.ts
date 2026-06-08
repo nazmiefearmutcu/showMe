@@ -13,6 +13,13 @@ export interface SignalEntry {
   order_id?: string | null;
   error?: string | null;
   timestamp?: string;
+  /**
+   * H13 honesty: provenance of the equity used to size a LIVE order.
+   * "broker" = real broker.account() equity; "fallback_10k" = the
+   * documented $10k floor when the broker exposed no usable equity.
+   * undefined/null for shadow entries and pre-existing records.
+   */
+  equity_source?: string | null;
 }
 
 export interface BotRecord {
