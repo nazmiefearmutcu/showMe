@@ -139,8 +139,19 @@ function buildColumns(
           <button
             type="button"
             onDoubleClick={() => r.symbol && onJumpDES(r.symbol)}
+            onKeyDown={(e) => {
+              // Keyboard parity with double-click: Enter on the focused
+              // symbol launches DES for that symbol. The button is the
+              // per-row launch affordance and is tab-reachable.
+              if ((e.key === "Enter" || e.key === " ") && r.symbol) {
+                e.preventDefault();
+                e.stopPropagation();
+                onJumpDES(r.symbol);
+              }
+            }}
             className={`scan-symbol${isActive ? " scan-symbol--active" : ""}`}
-            title="Double-click → DES"
+            title="Enter / double-click → DES"
+            aria-label={`Open ${r.symbol} in DES`}
           >
             {r.symbol}
           </button>
@@ -253,12 +264,12 @@ function buildColumns(
         return (
           <span className="u-inline-flex u-gap-4 u-flex-wrap">
             {tfs.slice(0, 4).map((tf) => (
-              <span key={tf} style={tfChipStyle}>
+              <span key={tf} className="scan-tf-chip">
                 {tf}
               </span>
             ))}
             {tfs.length > 4 && (
-              <span style={tfChipStyle} className="u-text-mute">+{tfs.length - 4}</span>
+              <span className="scan-tf-chip u-text-mute">+{tfs.length - 4}</span>
             )}
           </span>
         );
@@ -503,7 +514,7 @@ export function SCANPane({ code }: FunctionPaneProps) {
                 className="btn btn--accent u-btn-24"
                 onClick={run}
                 disabled={running || !intent.trim()}
-                
+                aria-label="Run scan with current filters"
               >
                 {running ? "Scanning..." : "Run scan"}
               </button>
@@ -603,7 +614,7 @@ export function SCANPane({ code }: FunctionPaneProps) {
                           type="button"
                           className="btn btn--ghost u-text-10 u-mono"
                           onClick={() => setIntent(s)}
-                          
+                          aria-label={`Load preset intent: ${s}`}
                         >
                           {s}
                         </button>
@@ -648,7 +659,24 @@ export function SCANPane({ code }: FunctionPaneProps) {
               </CardBody>
             </Card>
 
-            {error && <Empty title="Scan failed" body={error} icon="!" />}
+            {error && (
+              <Empty
+                title="Scan failed"
+                body={error}
+                icon="!"
+                action={
+                  <button
+                    type="button"
+                    className="btn btn--accent"
+                    onClick={run}
+                    disabled={running}
+                    aria-label="Retry the scan"
+                  >
+                    Retry
+                  </button>
+                }
+              />
+            )}
 
             {running && (
               <Card>
@@ -733,20 +761,32 @@ export function SCANPane({ code }: FunctionPaneProps) {
                     {sortedRows.length === 0 ? (
                       <Empty
                         title="No matches with current filters"
-                        body="Universe scanned but nothing produced a signal."
+                        body="Universe scanned but nothing produced a signal. Try relaxing phases or expanding the universe."
                         action={
-                          <button
-                            type="button"
-                            className="btn btn--accent"
-                            onClick={() => {
-                              setUniverse("");
-                              setPhaseC(true);
-                              setPhaseD(true);
-                              run();
-                            }}
-                          >
-                            Reset & retry
-                          </button>
+                          <span className="u-inline-flex u-gap-6 u-items-center">
+                            <button
+                              type="button"
+                              className="btn btn--ghost"
+                              onClick={run}
+                              disabled={running}
+                              aria-label="Retry the scan"
+                            >
+                              Retry
+                            </button>
+                            <button
+                              type="button"
+                              className="btn btn--accent"
+                              onClick={() => {
+                                setUniverse("");
+                                setPhaseC(true);
+                                setPhaseD(true);
+                                run();
+                              }}
+                              aria-label="Reset filters and retry the scan"
+                            >
+                              Reset & retry
+                            </button>
+                          </span>
                         }
                       />
                     ) : (
@@ -807,13 +847,13 @@ function FilterChip({
   onRemove?: () => void;
 }) {
   return (
-    <span style={filterChipStyle}>
+    <span className="scan-filter-chip">
       <span>{label}</span>
       {onRemove && (
         <button
           type="button"
           onClick={onRemove}
-          style={filterChipCloseStyle}
+          className="scan-filter-chip-close"
           title="Remove filter"
           aria-label={`Remove filter ${label}`}
         >
@@ -1105,35 +1145,6 @@ const filterChipRowStyle: CSSProperties = {
   alignItems: "center",
 };
 
-const filterChipStyle: CSSProperties = {
-  display: "inline-flex",
-  alignItems: "center",
-  gap: 6,
-  height: 22,
-  padding: "0 8px",
-  background: "var(--surface-3)",
-  border: "1px solid var(--border-subtle)",
-  borderRadius: 11,
-  fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
-  letterSpacing: "0.06em",
-  color: "var(--text-secondary)",
-};
-
-const filterChipCloseStyle: CSSProperties = {
-  all: "unset",
-  cursor: "default",
-  width: 14,
-  height: 14,
-  display: "inline-flex",
-  alignItems: "center",
-  justifyContent: "center",
-  borderRadius: "50%",
-  color: "var(--text-mute)",
-  fontSize: 12,
-  lineHeight: 1,
-};
-
 const textareaStyle: CSSProperties = {
   width: "100%",
   resize: "vertical",
@@ -1169,20 +1180,6 @@ const selectStyle: CSSProperties = {
   fontSize: 12,
   height: 28,
   padding: "0 8px",
-};
-
-const tfChipStyle: CSSProperties = {
-  display: "inline-flex",
-  alignItems: "center",
-  height: 16,
-  padding: "0 6px",
-  background: "var(--surface-3)",
-  border: "1px solid var(--border-subtle)",
-  borderRadius: 4,
-  fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
-  color: "var(--text-secondary)",
-  letterSpacing: "0.04em",
 };
 
 const kpiStripStyle: CSSProperties = {

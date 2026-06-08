@@ -4558,8 +4558,16 @@
 /* SCAN absorbers. */
 .scan-sort-btn {
   all: unset;
-  cursor: default;
+  cursor: pointer;
   font-weight: 500;
+}
+.scan-sort-btn:hover {
+  color: var(--accent);
+}
+.scan-sort-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 2px;
 }
 .scan-sort-btn--active {
   color: var(--accent);
@@ -4579,15 +4587,22 @@
 .scan-symbol {
   background: transparent;
   border: 0;
-  cursor: default;
+  cursor: pointer;
   padding: 0;
-  font-family:
-    JetBrains Mono,
-    monospace;
+  font-family: var(--font-mono);
   color: var(--accent);
   font-weight: 700;
   font-size: 12px;
   letter-spacing: 0.02em;
+}
+.scan-symbol:hover {
+  color: var(--accent-strong);
+  text-decoration: underline;
+}
+.scan-symbol:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 2px;
 }
 .scan-symbol--active {
   color: var(--accent-strong);
@@ -4601,6 +4616,54 @@
 .scan-divider {
   color: var(--text-mute);
   margin: 0 6px;
+}
+.scan-tf-chip {
+  display: inline-flex;
+  align-items: center;
+  height: 16px;
+  padding: 0 6px;
+  background: var(--surface-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-secondary);
+  letter-spacing: 0.04em;
+}
+.scan-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  padding: 0 8px;
+  background: var(--surface-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: 11px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  color: var(--text-secondary);
+}
+.scan-filter-chip-close {
+  all: unset;
+  cursor: pointer;
+  width: 14px;
+  height: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  color: var(--text-mute);
+  font-size: 12px;
+  line-height: 1;
+}
+.scan-filter-chip-close:hover {
+  background: var(--surface-2);
+  color: var(--text-primary);
+}
+.scan-filter-chip-close:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 /* AGENT absorbers. */
@@ -6775,11 +6838,13 @@
   color: var(--text-secondary);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
-  font-family:
-    JetBrains Mono,
-    monospace;
+  font-family: var(--font-mono);
   font-size: 10px;
-  cursor: default;
+  cursor: pointer;
+}
+.scan-phase-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 .scan-phase-toggle--active {
   background: var(--accent-soft);
