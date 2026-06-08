@@ -5,7 +5,7 @@
  * for ~60 indices grouped by region. KPI ribbon + per-row sparkline +
  * DeltaChip pills for every Δ field.
  */
-import { useMemo, type CSSProperties } from "react";
+import { useMemo, useState, type CSSProperties } from "react";
 import {
   DataGrid,
   type DataGridColumn,
@@ -24,6 +24,7 @@ import {
   Tabs,
 } from "@/design-system";
 import { useFunction } from "@/lib/useFunction";
+import { formatNumber, formatMissing } from "@/lib/format";
 import { useVisibilityTick } from "@/lib/useVisibilityTick";
 import { useWorkspace } from "@/lib/workspace";
 import { maxAbsOf } from "@/lib/maxOf";
@@ -82,17 +83,54 @@ export function WEIPane({ code }: FunctionPaneProps) {
     params: { region: region === "all" ? undefined : region, tick },
   });
 
-  const rows = useMemo(() => {
+  // P4: local sort state for the grid (DataGrid is presentation-only —
+  // we own the ordering and pass sortBy/sortDir/onSort through).
+  const [sort, setSort] = useState<{ key: SortKey; dir: SortDir }>({
+    key: "change_pct",
+    dir: "none",
+  });
+
+  const baseRows = useMemo(() => {
     const all = normalizeRows(data?.data);
     if (region === "all") return all;
     return all.filter(
       (r) => (r.region ?? "").toLowerCase() === region.toLowerCase(),
     );
   }, [data, region]);
+  const rows = useMemo(
+    () => sortRows(baseRows, sort.key, sort.dir),
+    [baseRows, sort],
+  );
   const notice = useMemo(() => statusNotice(data?.data, data?.metadata), [data]);
+  // P2: model/fallback detection — true when the payload is the
+  // deterministic world-index model, not live market quotes.
+  const isModel = useMemo(
+    () => isModelData(baseRows, data?.data, data?.metadata),
+    [baseRows, data],
+  );
   const stats = useMemo(() => deriveStats(rows), [rows]);
-  const utcStamp = useMemo(() => new Date().toISOString().slice(11, 16), [tick]);
-  const isLive = state === "ok" && !notice;
+  // P2: prefer the server-stamped data freshness (`as_of`) over the client
+  // wall clock so the header reflects REAL data age, not render time.
+  const asOf = useMemo(() => extractAsOf(data?.data), [data]);
+  const utcStamp = useMemo(
+    () => asOf ?? new Date().toISOString().slice(11, 16),
+    [asOf, tick],
+  );
+  const isLive = state === "ok" && !notice && !isModel;
+
+  function onSort(key: string) {
+    setSort((prev) => {
+      if (prev.key !== key) return { key: key as SortKey, dir: "descending" };
+      // Cycle: descending → ascending → none (back to natural order).
+      const next: SortDir =
+        prev.dir === "descending"
+          ? "ascending"
+          : prev.dir === "ascending"
+            ? "none"
+            : "descending";
+      return { key: key as SortKey, dir: next };
+    });
+  }
 
   const cols = useMemo<DataGridColumn<WEIRow>[]>(
     () => [
@@ -105,14 +143,15 @@ export function WEIPane({ code }: FunctionPaneProps) {
           return (
             <button
               type="button"
+              aria-label={sym ? `View ${sym} details` : "View index details"}
               onClick={() => {
                 if (!sym) return;
                 setFocusedTarget("DES", sym);
                 navigate(`/symbol/${sym}/DES`);
               }}
-              style={symbolButtonStyle}
+              className="wei-symbol-button"
             >
-              {sym || "—"}
+              {sym || formatMissing}
             </button>
           );
         },
@@ -121,46 +160,55 @@ export function WEIPane({ code }: FunctionPaneProps) {
         key: "name",
         header: "Name",
         render: (r) => (
-          <span className="u-text-secondary">{r.name ?? "—"}</span>
+          <span className="u-text-secondary">{r.name ?? formatMissing}</span>
         ),
       },
       {
         key: "region",
         header: "Region",
         width: 96,
-        render: (r) => (r.region ? <RegionChip region={r.region} /> : "—"),
+        render: (r) => (r.region ? <RegionChip region={r.region} /> : formatMissing),
       },
       {
         key: "last",
         header: "Last",
         numeric: true,
+        sortable: true,
         width: 100,
         render: (r) => (
-          <span style={numCell}>{fmtNum(r.last ?? r.price)}</span>
+          <span className="terminal-grid-numeric">{fmtIndex(r.last ?? r.price)}</span>
         ),
       },
       {
         key: "change",
         header: "Δ",
         numeric: true,
+        sortable: true,
         width: 96,
         render: (r) => {
-          const v =
-            r.change ??
-            ((r.last ?? r.price ?? 0) - (r.prev_close ?? r.last ?? r.price ?? 0));
-          if (v == null || !Number.isFinite(v)) return "—";
-          return <DeltaChip value={v} format="raw" fractionDigits={2} />;
+          const v = rowChange(r);
+          if (v == null || !Number.isFinite(v)) return formatMissing;
+          return (
+            <span className="terminal-grid-numeric">
+              <DeltaChip value={v} format="raw" fractionDigits={2} />
+            </span>
+          );
         },
       },
       {
         key: "change_pct",
         header: "Δ %",
         numeric: true,
+        sortable: true,
         width: 92,
         render: (r) => {
           const v = r.change_pct ?? r.changePercent;
-          if (v == null) return "—";
-          return <DeltaChip value={v} format="percent" fractionDigits={2} />;
+          if (v == null) return formatMissing;
+          return (
+            <span className="terminal-grid-numeric">
+              <DeltaChip value={v} format="percent" fractionDigits={2} />
+            </span>
+          );
         },
       },
       {
@@ -168,10 +216,23 @@ export function WEIPane({ code }: FunctionPaneProps) {
         header: "5d",
         width: 78,
         render: (r) => {
+          // P2 honesty: a real intraday series (r.history) renders at full
+          // opacity; otherwise the line is procedural — de-emphasize it and
+          // mark it data-synthetic so it can't masquerade as real history.
+          const real = hasRealHistory(r);
           const series = trendSeries(r);
-          const dir = (r.change_pct ?? r.changePercent ?? 0) >= 0 ? "positive" : "negative";
+          const dir =
+            (r.change_pct ?? r.changePercent ?? 0) >= 0 ? "positive" : "negative";
           return (
-            <span className="u-inline-flex">
+            <span
+              className={real ? "wei-spark wei-spark--real" : "wei-spark wei-spark--synthetic"}
+              data-synthetic={real ? "false" : "true"}
+              title={
+                real
+                  ? "Intraday history"
+                  : "Illustrative trend — no real history available"
+              }
+            >
               <Sparkline values={series} width={62} height={18} tone={dir} />
             </span>
           );
@@ -182,7 +243,7 @@ export function WEIPane({ code }: FunctionPaneProps) {
         header: "Day range",
         width: 138,
         render: (r) => {
-          if (r.low == null || r.high == null) return "—";
+          if (r.low == null || r.high == null) return formatMissing;
           return <DayRangeBar row={r} />;
         },
       },
@@ -206,12 +267,15 @@ export function WEIPane({ code }: FunctionPaneProps) {
               {r.market_state}
             </Pill>
           ) : (
-            "—"
+            formatMissing
           ),
       },
     ],
     [setFocusedTarget],
   );
+
+  const sortDir: SortDir = sort.dir;
+  const sortBy = sort.dir === "none" ? undefined : sort.key;
 
   return (
     <div className="u-pane-host">
@@ -229,10 +293,10 @@ export function WEIPane({ code }: FunctionPaneProps) {
                 {utcStamp} UTC
               </Pill>
               <Pill
-                tone={isLive ? "positive" : notice ? "warn" : "muted"}
+                tone={isLive ? "positive" : isModel || notice ? "warn" : "muted"}
                 variant="soft"
               >
-                {isLive ? "live" : notice ? "stale" : state}
+                {isLive ? "live" : isModel ? "model" : notice ? "stale" : state}
               </Pill>
               <LoadStatePill state={state} />
               <RefreshButton loading={state === "loading"} onClick={refetch} />
@@ -258,19 +322,27 @@ export function WEIPane({ code }: FunctionPaneProps) {
             />
           ) : rows.length === 0 ? (
             <>
+              {isModel ? <ModelDataBadge /> : null}
               {notice ? <StatusNotice notice={notice} /> : null}
               <Empty title="No quotes" body={`No WEI rows for ${region}.`} />
             </>
           ) : (
             <div className="u-grid-gap-14">
+              {isModel ? <ModelDataBadge /> : null}
               {notice ? <StatusNotice notice={notice} /> : null}
               <KPIRibbon stats={stats} stamp={utcStamp} />
-              <IndexPerformanceStrip rows={rows} />
+              <IndexPerformanceStrip rows={rows} onPick={(sym) => {
+                setFocusedTarget("DES", sym);
+                navigate(`/symbol/${sym}/DES`);
+              }} />
               <DataGrid
                 columns={cols}
                 rows={rows}
                 rowKey={(r, i) => `${r.symbol ?? r.ticker ?? ""}-${i}`}
                 density="compact"
+                sortBy={sortBy}
+                sortDir={sortDir}
+                onSort={onSort}
                 onRowDoubleClick={(r) => {
                   const sym = r.symbol ?? r.ticker;
                   if (!sym) return;
@@ -383,7 +455,11 @@ function KPIRibbon({ stats, stamp }: { stats: DerivedStats; stamp: string }) {
     ? Math.round((stats.advancers / stats.count) * 100)
     : 0;
   return (
-    <section style={kpiGridStyle} aria-label="WEI KPI ribbon">
+    <section
+      style={kpiGridStyle}
+      className="terminal-grid-numeric"
+      aria-label="WEI KPI ribbon"
+    >
       <StatCard
         label="Aggregate Δ"
         value={`${stats.weightedChange >= 0 ? "+" : ""}${stats.weightedChange.toFixed(2)}%`}
@@ -400,22 +476,22 @@ function KPIRibbon({ stats, stamp }: { stats: DerivedStats; stamp: string }) {
       />
       <StatCard
         label="Leader"
-        value={stats.leader?.sym ?? "—"}
+        value={stats.leader?.sym ?? formatMissing}
         caption={
           stats.leader
             ? `${stats.leader.chg >= 0 ? "+" : ""}${stats.leader.chg.toFixed(2)}% · ${truncate(stats.leader.name, 18)}`
-            : "—"
+            : formatMissing
         }
         tone="positive"
         trend={stats.leaderTrend}
       />
       <StatCard
         label="Laggard"
-        value={stats.laggard?.sym ?? "—"}
+        value={stats.laggard?.sym ?? formatMissing}
         caption={
           stats.laggard
             ? `${stats.laggard.chg.toFixed(2)}% · ${truncate(stats.laggard.name, 18)}`
-            : "—"
+            : formatMissing
         }
         tone="negative"
         trend={stats.laggardTrend}
@@ -441,12 +517,12 @@ function DayRangeBar({ row }: { row: WEIRow }) {
   const span = hi - lo;
   const pct = span > 0 ? Math.max(0, Math.min(100, ((last - lo) / span) * 100)) : 50;
   return (
-    <span style={rangeWrap}>
-      <span style={rangeLabel}>{fmtNum(lo)}</span>
+    <span style={rangeWrap} className="terminal-grid-numeric">
+      <span style={rangeLabel}>{fmtIndex(lo)}</span>
       <span style={rangeTrack}>
         <span style={{ ...rangeFill, left: `${pct}%` }} aria-hidden />
       </span>
-      <span style={rangeLabel}>{fmtNum(hi)}</span>
+      <span style={rangeLabel}>{fmtIndex(hi)}</span>
     </span>
   );
 }
@@ -470,7 +546,11 @@ function statusNotice(
   const o = payload as Record<string, unknown>;
   const status = String(o.status ?? "").toLowerCase();
   const degraded = Boolean(metadata?.fallback || metadata?.degraded);
-  if (!status && !degraded) return null;
+  // Honesty fix: a healthy live snapshot (status "ok"/"" and not degraded)
+  // must NOT raise a "Degraded WEI snapshot" notice. Only surface the
+  // banner for genuinely non-OK or degraded payloads.
+  const okStatus = status === "" || status === "ok";
+  if (okStatus && !degraded) return null;
   const reason = String(
     o.reason ?? "Live quote provider did not return a complete WEI snapshot.",
   );
@@ -486,6 +566,95 @@ function statusNotice(
   };
 }
 
+/** Stable, prominent "model data — not live" banner. */
+function ModelDataBadge() {
+  return (
+    <div className="wei-model-badge" role="status" aria-label="Model data — not live">
+      <span className="wei-model-badge__dot" aria-hidden />
+      <strong>Model data — not live</strong>
+      <span className="u-text-secondary">
+        These rows are a deterministic world-index model, not live market quotes.
+      </span>
+    </div>
+  );
+}
+
+// ── Sort ────────────────────────────────────────────────────────────────
+type SortKey = "last" | "change" | "change_pct";
+type SortDir = "ascending" | "descending" | "none";
+
+function rowChange(r: WEIRow): number | undefined {
+  if (r.change != null && Number.isFinite(r.change)) return r.change;
+  const last = r.last ?? r.price;
+  const prev = r.prev_close;
+  if (last == null || prev == null) return undefined;
+  return last - prev;
+}
+
+function sortValue(r: WEIRow, key: SortKey): number | undefined {
+  if (key === "last") return r.last ?? r.price;
+  if (key === "change") return rowChange(r);
+  return r.change_pct ?? r.changePercent;
+}
+
+function sortRows(rows: WEIRow[], key: SortKey, dir: SortDir): WEIRow[] {
+  if (dir === "none") return rows;
+  const factor = dir === "ascending" ? 1 : -1;
+  // Stable sort; missing values always sink to the bottom regardless of dir.
+  return [...rows]
+    .map((r, i) => ({ r, i }))
+    .sort((a, b) => {
+      const va = sortValue(a.r, key);
+      const vb = sortValue(b.r, key);
+      const aMissing = va == null || !Number.isFinite(va);
+      const bMissing = vb == null || !Number.isFinite(vb);
+      if (aMissing && bMissing) return a.i - b.i;
+      if (aMissing) return 1;
+      if (bMissing) return -1;
+      if (va !== vb) return (va < vb ? -1 : 1) * factor;
+      return a.i - b.i;
+    })
+    .map((x) => x.r);
+}
+
+// ── Data honesty helpers ─────────────────────────────────────────────────
+/** True when a row carries a usable real intraday series. */
+function hasRealHistory(r: WEIRow): boolean {
+  return Array.isArray(r.history) && r.history.length >= 4;
+}
+
+/** Extract server data-freshness (`as_of`) as an HH:MM UTC stamp, if present. */
+function extractAsOf(payload: unknown): string | undefined {
+  if (!payload || typeof payload !== "object") return undefined;
+  const raw = (payload as Record<string, unknown>).as_of;
+  if (typeof raw !== "string" || !raw) return undefined;
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) return undefined;
+  return d.toISOString().slice(11, 16);
+}
+
+/**
+ * Detect model / fallback data: the deterministic world-index template the
+ * backend returns when the live provider is unavailable. Treated as model
+ * when the metadata flags it degraded/fallback, the payload source mode is
+ * the template, or every row is explicitly market_state "model".
+ */
+function isModelData(
+  rows: WEIRow[],
+  payload: unknown,
+  metadata: Record<string, unknown> | undefined,
+): boolean {
+  if (metadata?.degraded === true || metadata?.fallback === true) return true;
+  const o = (payload && typeof payload === "object" ? payload : {}) as Record<string, unknown>;
+  const mode = String(o.source_mode ?? "").toLowerCase();
+  if (mode === "world_index_template") return true;
+  if (String(o.status ?? "").toLowerCase() === "provider_unavailable") return true;
+  if (rows.length && rows.every((r) => (r.market_state ?? "").toLowerCase() === "model")) {
+    return true;
+  }
+  return false;
+}
+
 function StatusNotice({ notice }: { notice: { title: string; body: string } }) {
   return (
     <div style={noticeStyle}>
@@ -495,7 +664,13 @@ function StatusNotice({ notice }: { notice: { title: string; body: string } }) {
   );
 }
 
-function IndexPerformanceStrip({ rows }: { rows: WEIRow[] }) {
+function IndexPerformanceStrip({
+  rows,
+  onPick,
+}: {
+  rows: WEIRow[];
+  onPick?: (symbol: string) => void;
+}) {
   const points = rows
     .map((row) => ({
       symbol: row.symbol ?? row.ticker ?? "-",
@@ -513,32 +688,44 @@ function IndexPerformanceStrip({ rows }: { rows: WEIRow[] }) {
         const intensity = 0.18 + Math.min(Math.abs(point.change) / maxAbs, 1) * 0.5;
         const tone = point.change >= 0 ? "var(--positive)" : "var(--negative)";
         const bg = `color-mix(in srgb, ${tone} ${(intensity * 100).toFixed(0)}%, transparent)`;
+        const sign = point.change >= 0 ? "+" : "";
+        const pickable = Boolean(onPick && point.symbol && point.symbol !== "-");
         return (
-          <div
+          <button
             key={point.symbol}
+            type="button"
             className="wei-index-tile"
-            style={{ ...indexTile, ["--wei-bg" as string]: bg, ["--wei-tone" as string]: tone }}
+            disabled={!pickable}
+            aria-label={`${point.symbol} ${sign}${point.change.toFixed(2)}%`}
+            onClick={() => pickable && onPick?.(point.symbol)}
+            style={{
+              ...indexTile,
+              ["--wei-bg" as string]: bg,
+              ["--wei-tone" as string]: tone,
+            }}
           >
             <strong className="wei-index-tile__sym">{point.symbol}</strong>
             <span className="u-text-secondary u-text-10">{truncate(point.name, 16)}</span>
-            <b className="wei-index-tile__chg">
-              {point.change >= 0 ? "+" : ""}
+            <b className="wei-index-tile__chg terminal-grid-numeric">
+              {sign}
               {point.change.toFixed(2)}%
             </b>
             <small className="wei-index-tile__state">{point.state}</small>
-          </div>
+          </button>
         );
       })}
     </section>
   );
 }
 
-function fmtNum(v: number | undefined | null): string {
-  if (v == null || !Number.isFinite(v)) return "—";
-  return v.toLocaleString(undefined, {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
+/**
+ * Index-level numeric formatter — thin wrapper over the shared
+ * {@link formatNumber} helper pinned to 2 decimals (DRY; replaces the old
+ * local `fmtNum`). Missing values render the shared {@link formatMissing}
+ * sentinel.
+ */
+function fmtIndex(v: number | undefined | null): string {
+  return formatNumber(v, 2);
 }
 
 function truncate(s: string, n: number): string {
@@ -551,28 +738,11 @@ const tabBarStyle: CSSProperties = {
   background: "var(--surface-2)",
 };
 
-const symbolButtonStyle: CSSProperties = {
-  background: "transparent",
-  border: "none",
-  color: "var(--accent)",
-  cursor: "default",
-  font: "inherit",
-  padding: 0,
-  fontFamily: "JetBrains Mono, monospace",
-  fontWeight: 600,
-  letterSpacing: "0.02em",
-  transition: "transform var(--motion-base)",
-};
-
-const numCell: CSSProperties = {
-  fontFamily: "JetBrains Mono, monospace",
-  fontVariantNumeric: "tabular-nums",
-  color: "var(--text-primary)",
-};
-
+// P4: responsive KPI ribbon — wraps to fewer columns in a narrow pane
+// instead of squeezing four fixed columns.
 const kpiGridStyle: CSSProperties = {
   display: "grid",
-  gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
+  gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
   gap: 10,
 };
 

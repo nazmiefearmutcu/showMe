@@ -264,16 +264,24 @@ class WEIFunction(BaseFunction):
     category = "screen"
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
-        indices = ["^GSPC", "^DJI", "^IXIC", "^RUT", "^FTSE", "^GDAXI", "^FCHI",
-                   "^N225", "^HSI", "^STOXX50E", "XU100.IS"]
+        # Single source of truth: the curated, provider-verified world set.
+        indices = _world_index_symbols()
         live = _truthy(params.get("live_screen") or params.get("live"))
         if live and self.deps.yfinance:
             rows, warnings = await _quote_rows(
                 self.deps.yfinance,
                 indices,
                 asset_class=AssetClass.INDEX,
+                # Larger universe (~30 symbols) — the fetch is concurrent
+                # (_quote_rows fans out one task per symbol) and pending
+                # tasks are cancelled at screen_timeout, so the page never
+                # hangs: it paints whatever resolved and the 30s poll fills
+                # the rest across cycles. Bumped from 5.0s to give slow
+                # regional exchanges headroom; free-provider burst throttling
+                # means a single poll may return a partial set, which is
+                # surfaced honestly rather than padded with model rows.
                 timeout=_float_param(params, "quote_timeout", 4.0),
-                screen_timeout=_float_param(params, "screen_timeout", 5.0),
+                screen_timeout=_float_param(params, "screen_timeout", 7.0),
             )
             if rows:
                 rows = [_enrich_world_index_row(row) for row in rows]
@@ -290,6 +298,7 @@ class WEIFunction(BaseFunction):
                         "rows": rows,
                         "universe_size": len(indices),
                         "source_mode": "yfinance_live",
+                        "as_of": _utc_now_iso(),
                     },
                     metadata={"live": True, "universe_size": len(indices)},
                     sources=["yfinance"],
@@ -303,6 +312,8 @@ class WEIFunction(BaseFunction):
                     "status": "provider_unavailable",
                     "reason": "World index quote provider returned no usable live rows.",
                     "rows": fallback_rows,
+                    "source_mode": "world_index_template",
+                    "as_of": _utc_now_iso(),
                     "next_actions": [
                         "Retry WEI after the public quote provider recovers.",
                         "Rows shown are a deterministic world-index model, not live quotes.",
@@ -319,6 +330,9 @@ class WEIFunction(BaseFunction):
                 warnings=warnings,
             )
         warnings = [] if not live else ["market data provider did not return world-index quotes within the latency budget"]
+        # No live provider wired ⇒ deterministic model. Mark it degraded so
+        # the UI never paints model rows as live market data.
+        degraded = True
         return FunctionResult(
             code=self.code,
             instrument=None,
@@ -327,8 +341,9 @@ class WEIFunction(BaseFunction):
                 "rows": _world_index_template(),
                 "universe_size": len(indices),
                 "source_mode": "world_index_template",
+                "as_of": _utc_now_iso(),
             },
-            metadata={"live": False, "universe_size": len(indices)},
+            metadata={"live": False, "fallback": True, "degraded": degraded, "universe_size": len(indices)},
             sources=["showme_local_baseline"],
             warnings=warnings,
         )
@@ -777,6 +792,15 @@ def _truthy(value: Any) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
+def _utc_now_iso() -> str:
+    """Server-side data-fetch timestamp (UTC, ISO-8601).
+
+    Gives the UI a *real* data-freshness anchor instead of the client
+    wall clock, which can drift from when the snapshot was actually built.
+    """
+    return datetime.now(timezone.utc).isoformat()
+
+
 def _most_active_reference_rows() -> list[dict[str, Any]]:
     return [
         {"symbol": "NVDA", "name": "NVIDIA", "asset_class": "equity", "exchange": "NASDAQ", "last": 198.45, "volume": 310_000_000, "change_pct": 2.1},
@@ -895,19 +919,73 @@ def _most_active_payload(
     }
 
 
-_WORLD_INDEX_META = {
+# Curated world-equity-index meta. Every entry was verified to resolve on
+# the public yfinance quote provider (2026-06). The set is the single
+# source of truth for both the live universe and the deterministic
+# fallback template — keep them derived from this map so they never drift.
+# Saudi TASI (^TASI / TASI.SR) is intentionally omitted: both 404 on the
+# provider, and a broken row is worse than a missing region member.
+_WORLD_INDEX_META: dict[str, dict[str, str]] = {
+    # Americas
     "^GSPC": {"name": "S&P 500", "region": "americas"},
     "^DJI": {"name": "Dow Jones Industrial Average", "region": "americas"},
     "^IXIC": {"name": "Nasdaq Composite", "region": "americas"},
     "^RUT": {"name": "Russell 2000", "region": "americas"},
+    "^GSPTSE": {"name": "S&P/TSX Composite (Canada)", "region": "americas"},
+    "^BVSP": {"name": "Bovespa (Brazil)", "region": "americas"},
+    "^MXX": {"name": "IPC (Mexico)", "region": "americas"},
+    # Europe
     "^FTSE": {"name": "FTSE 100", "region": "europe"},
     "^GDAXI": {"name": "DAX", "region": "europe"},
     "^FCHI": {"name": "CAC 40", "region": "europe"},
+    "^STOXX50E": {"name": "Euro Stoxx 50", "region": "europe"},
+    "^IBEX": {"name": "IBEX 35 (Spain)", "region": "europe"},
+    "^AEX": {"name": "AEX (Netherlands)", "region": "europe"},
+    "^SSMI": {"name": "SMI (Switzerland)", "region": "europe"},
+    "FTSEMIB.MI": {"name": "FTSE MIB (Italy)", "region": "europe"},
+    "^OMX": {"name": "OMX Stockholm 30 (Sweden)", "region": "europe"},
+    # Asia
     "^N225": {"name": "Nikkei 225", "region": "asia"},
     "^HSI": {"name": "Hang Seng", "region": "asia"},
-    "^STOXX50E": {"name": "Euro Stoxx 50", "region": "europe"},
-    "XU100.IS": {"name": "BIST 100", "region": "mea"},
+    "^KS11": {"name": "KOSPI (Korea)", "region": "asia"},
+    "^TWII": {"name": "TAIEX (Taiwan)", "region": "asia"},
+    "^BSESN": {"name": "BSE Sensex (India)", "region": "asia"},
+    "^NSEI": {"name": "Nifty 50 (India)", "region": "asia"},
+    "^AXJO": {"name": "S&P/ASX 200 (Australia)", "region": "asia"},
+    "^STI": {"name": "Straits Times (Singapore)", "region": "asia"},
+    "^JKSE": {"name": "Jakarta Composite (Indonesia)", "region": "asia"},
+    "000001.SS": {"name": "SSE Composite (Shanghai)", "region": "asia"},
+    "^KLSE": {"name": "FTSE Bursa Malaysia KLCI", "region": "asia"},
+    # MEA
+    "XU100.IS": {"name": "BIST 100 (Turkey)", "region": "mea"},
+    "^TA125.TA": {"name": "TA-125 (Israel)", "region": "mea"},
+    "^J203.JO": {"name": "JSE All Share (South Africa)", "region": "mea"},
+    "^CASE30": {"name": "EGX 30 (Egypt)", "region": "mea"},
 }
+
+# Deterministic baseline levels for the offline / provider-down template.
+# Coarse round numbers — these are explicitly NOT live quotes (rows carry
+# market_state="model"); they exist only so the UI has structure to show
+# while clearly labelled as model data.
+_WORLD_INDEX_BASELINE: dict[str, float] = {
+    "^GSPC": 5200.0, "^DJI": 39000.0, "^IXIC": 16500.0, "^RUT": 2050.0,
+    "^GSPTSE": 22000.0, "^BVSP": 128000.0, "^MXX": 56000.0,
+    "^FTSE": 8200.0, "^GDAXI": 18400.0, "^FCHI": 8100.0, "^STOXX50E": 5000.0,
+    "^IBEX": 11000.0, "^AEX": 900.0, "^SSMI": 12000.0, "FTSEMIB.MI": 34000.0,
+    "^OMX": 2500.0,
+    "^N225": 39200.0, "^HSI": 18100.0, "^KS11": 2700.0, "^TWII": 22000.0,
+    "^BSESN": 80000.0, "^NSEI": 24000.0, "^AXJO": 7800.0, "^STI": 3400.0,
+    "^JKSE": 7200.0, "000001.SS": 3000.0, "^KLSE": 1600.0,
+    "XU100.IS": 9800.0, "^TA125.TA": 2000.0, "^J203.JO": 80000.0, "^CASE30": 28000.0,
+}
+
+
+def _world_index_symbols() -> list[str]:
+    """Curated world-index universe (single source of truth).
+
+    Order = insertion order of ``_WORLD_INDEX_META`` (region-grouped).
+    """
+    return list(_WORLD_INDEX_META.keys())
 
 
 def _enrich_world_index_row(row: dict[str, Any]) -> dict[str, Any]:
@@ -921,14 +999,31 @@ def _enrich_world_index_row(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _world_index_template() -> list[dict[str, Any]]:
-    return [
-        {"symbol": "^GSPC", "name": "S&P 500", "region": "americas", "last": 5200.0, "change_pct": 0.18, "high": 5215.0, "low": 5178.0, "market_state": "model"},
-        {"symbol": "^DJI", "name": "Dow Jones Industrial Average", "region": "americas", "last": 39000.0, "change_pct": -0.05, "high": 39120.0, "low": 38860.0, "market_state": "model"},
-        {"symbol": "^IXIC", "name": "Nasdaq Composite", "region": "americas", "last": 16500.0, "change_pct": 0.31, "high": 16590.0, "low": 16380.0, "market_state": "model"},
-        {"symbol": "^FTSE", "name": "FTSE 100", "region": "europe", "last": 8200.0, "change_pct": 0.12, "high": 8230.0, "low": 8160.0, "market_state": "model"},
-        {"symbol": "^GDAXI", "name": "DAX", "region": "europe", "last": 18400.0, "change_pct": 0.21, "high": 18480.0, "low": 18260.0, "market_state": "model"},
-        {"symbol": "^FCHI", "name": "CAC 40", "region": "europe", "last": 8100.0, "change_pct": -0.09, "high": 8155.0, "low": 8048.0, "market_state": "model"},
-        {"symbol": "^N225", "name": "Nikkei 225", "region": "asia", "last": 39200.0, "change_pct": 0.27, "high": 39420.0, "low": 38980.0, "market_state": "model"},
-        {"symbol": "^HSI", "name": "Hang Seng", "region": "asia", "last": 18100.0, "change_pct": -0.22, "high": 18240.0, "low": 17990.0, "market_state": "model"},
-        {"symbol": "XU100.IS", "name": "BIST 100", "region": "mea", "last": 9800.0, "change_pct": 0.44, "high": 9860.0, "low": 9720.0, "market_state": "model"},
-    ]
+    """Deterministic offline / provider-down model for the full universe.
+
+    Derived from ``_WORLD_INDEX_META`` so it never drifts from the live
+    set. Every row is labelled ``market_state="model"`` — these are NOT
+    live quotes and the UI must surface them as model data.
+    """
+    rows: list[dict[str, Any]] = []
+    for sym in _world_index_symbols():
+        meta = _WORLD_INDEX_META[sym]
+        base = _WORLD_INDEX_BASELINE.get(sym, 1000.0)
+        # Stable, deterministic pseudo-move from the symbol so the model
+        # table isn't a wall of zeros, while staying clearly synthetic.
+        seed = sum(ord(ch) for ch in sym)
+        change_pct = round(((seed % 11) - 5) * 0.08, 2)
+        last = round(base * (1 + change_pct / 100), 2)
+        high = round(last * 1.004, 2)
+        low = round(last * 0.996, 2)
+        rows.append({
+            "symbol": sym,
+            "name": meta["name"],
+            "region": meta["region"],
+            "last": last,
+            "change_pct": change_pct,
+            "high": high,
+            "low": low,
+            "market_state": "model",
+        })
+    return rows
