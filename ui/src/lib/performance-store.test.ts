@@ -6,7 +6,9 @@ import { sidecarFetch } from "./sidecar";
 const mock = sidecarFetch as ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
-  usePerformanceStore.setState({ leaderboard: [], selected: null, loading: false, error: null });
+  usePerformanceStore.setState({
+    leaderboard: [], selected: null, loading: false, error: null, generatedAt: null,
+  });
   mock.mockReset();
 });
 
@@ -18,6 +20,19 @@ describe("performance-store", () => {
     ] });
     await usePerformanceStore.getState().loadLeaderboard();
     expect(usePerformanceStore.getState().leaderboard).toHaveLength(1);
+  });
+
+  it("loadLeaderboard captures generated_at freshness stamp", async () => {
+    mock.mockResolvedValueOnce({ records: [], generated_at: "2026-06-08T12:00:00Z" });
+    await usePerformanceStore.getState().loadLeaderboard();
+    expect(usePerformanceStore.getState().generatedAt).toBe("2026-06-08T12:00:00Z");
+  });
+
+  it("loadLeaderboard tolerates a missing records array (no throw)", async () => {
+    mock.mockResolvedValueOnce({ generated_at: "2026-06-08T12:00:00Z" } as never);
+    await usePerformanceStore.getState().loadLeaderboard();
+    expect(usePerformanceStore.getState().leaderboard).toEqual([]);
+    expect(usePerformanceStore.getState().error).toBeNull();
   });
 
   it("loadBot populates detail", async () => {

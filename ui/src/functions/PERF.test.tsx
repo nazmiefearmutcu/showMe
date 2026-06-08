@@ -132,14 +132,25 @@ describe("PERF pane", () => {
     expect(screen.queryByTestId("perf-kpi-en-karli")).toBeNull();
   });
 
-  // ─── BUG #7 — simulated equity badge always shown ────────────────────
-  it("renders the simulated starting-equity badge", () => {
+  // ─── BUG #7 / F1 — simulated equity disclosure on the curve ──────────
+  // The header-level badge moved into the detail view, next to the equity
+  // curve it actually describes (more honest: the disclosure sits with the
+  // simulated curve, not the always-on toolbar).
+  it("discloses the simulated starting equity next to the curve", () => {
     usePerformanceStore.setState({
-      leaderboard: [_entry({ bot_id: "a", symbol: "BTC/USDT", total_pnl: 1 })],
+      leaderboard: [],
+      selected: {
+        bot_id: "a", symbol: "BTC/USDT", strategy_id: "s",
+        metrics: { total_pnl: 50, win_rate: 0.8, trade_count: 10, avg_pnl: 5, max_drawdown: 3 },
+        trades: [],
+        equity_curve: [{ t: "start", equity: 10000 }, { t: "x", equity: 10050 }],
+        starting_equity: 10000,
+      },
     });
     render(<PERFPane />);
-    const badge = screen.getByTestId("perf-sim-equity-badge");
-    expect(badge.textContent).toMatch(/Simule/);
-    expect(badge.textContent).toMatch(/10,?000/);
+    const disclaimer = screen.getByTestId("perf-equity-disclaimer");
+    expect(disclaimer.textContent).toMatch(/Simüle/i);
+    expect(disclaimer.textContent).toMatch(/10,?000/);
+    expect(disclaimer.textContent).toMatch(/gerçek hesap bakiyesi değildir/i);
   });
 });
