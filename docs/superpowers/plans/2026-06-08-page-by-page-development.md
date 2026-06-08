@@ -46,7 +46,7 @@ Each task is one page. Execute it as a **subagent-driven-development** mini-cycl
 - [x] **Task 5: NI — News Desk (CN alias = Company News).** Pane: `ui/src/functions/NI.tsx`. Backend: `backend/showme/engine/functions/news/`. Focus: real headlines, filtering, readable list, empty/error states.
 - [x] **Task 6: SCAN — All Functions.** Pane: `ui/src/functions/SCAN.tsx`. Backend: function index. Focus: discoverability, search, categories, launch affordances. _(Note: SCAN is actually a TRADING SCANNER, not a function catalog — improved as such; function discovery lives in the Command Palette.)_
 - [x] **Task 7: MIS — Multi Indicator Scan.** Pane: `ui/src/functions/MIS.tsx`. Backend: indicators engine (`backend/showme/indicators`). Focus: multi-indicator results, real scans, result density.
-- [ ] **Task 8: PREF — Settings.** Pane: `ui/src/panes/Preferences.tsx` (+ `ui/src/panes/__tests__/`). Focus: every setting wired & persisted, language/theme, sane defaults, layout.
+- [x] **Task 8: PREF — Settings.** Pane: `ui/src/panes/Preferences.tsx` (+ `ui/src/panes/__tests__/`). Focus: every setting wired & persisted, language/theme, sane defaults, layout.
 
 ## Wave 2 — Featured quick analytics
 
