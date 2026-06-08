@@ -27,7 +27,6 @@
  *   F5 — Skeleton on first load, design-system Empty states, last-updated
  *        freshness indicator from generated_at; honest "—" when absent.
  */
-import { useRef } from "react";
 import {
   usePerformanceStore,
   type LeaderboardEntry,
@@ -69,7 +68,9 @@ function formatRatio(value: number | string | undefined, digits = 2): string {
   if (value === "inf") return "∞";
   if (value === "-inf") return "-∞";
   if (typeof value !== "number" || !Number.isFinite(value)) return formatMissing;
-  return value.toFixed(digits);
+  // Fixed decimals so ratios read consistently ("2.10", not "2.1"). Uses the
+  // shared format.ts helper instead of a raw .toFixed() (page-spec).
+  return formatNumber(value, digits, { minimumFractionDigits: digits });
 }
 
 function KPI({ label, value, fmt }: {
@@ -191,19 +192,14 @@ function BotPill({
 
 /**
  * F4 — the SINGLE pane-level live region. Announces the at-a-glance leaderboard
- * summary, and only when it changes: a `useRef` guards the last announced
- * string so the 10s poll re-render with identical text does NOT mutate the DOM
- * text node (and so does not re-trigger a screen-reader announcement). Visually
- * hidden.
+ * summary. React's vDOM diffing already leaves an unchanged text node untouched
+ * across the 10s poll re-render, so an identical summary is not re-announced —
+ * no manual suppression is needed. Visually hidden.
  */
 function PerfSummaryLive({ summary }: { summary: string }) {
-  const lastRef = useRef<string | null>(null);
-  if (summary !== lastRef.current) {
-    lastRef.current = summary;
-  }
   return (
     <span className="u-sr-only" role="status" data-testid="perf-summary">
-      {lastRef.current}
+      {summary}
     </span>
   );
 }

@@ -153,14 +153,25 @@ export function formatPrice(n: number | null | undefined): string {
   return n.toExponential(2);
 }
 
+export interface FormatNumberOptions {
+  /**
+   * Force a minimum number of fractional digits, so trailing zeros are kept
+   * (e.g. a Sharpe ratio renders "2.10" not "2.1"). Defaults to 0 — the legacy
+   * trailing-zeros-trimmed behaviour — so existing callers are unaffected.
+   */
+  minimumFractionDigits?: number;
+}
+
 /** Format a number with locale-en-US thousands separators, no currency. */
 export function formatNumber(
   n: number | null | undefined,
   fractionDigits = 0,
+  opts: FormatNumberOptions = {},
 ): string {
   if (!isFiniteNumber(n)) return formatMissing;
+  const { minimumFractionDigits = 0 } = opts;
   return new Intl.NumberFormat("en-US", {
     maximumFractionDigits: fractionDigits,
-    minimumFractionDigits: 0,
+    minimumFractionDigits,
   }).format(n);
 }

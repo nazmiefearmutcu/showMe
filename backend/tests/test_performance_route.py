@@ -217,3 +217,37 @@ def test_detail_equity_source_broker(client, seeded):
     r = client.get(f"/api/bots/{bid}/performance")
     assert r.status_code == 200, r.text
     assert r.json()["equity_source"] == "broker"
+
+
+def _push_two_signals_with_sources(bot_id, *, older_source, newer_source):
+    """Append an OLDER then a NEWER signal_log entry, each carrying a distinct
+    equity_source, so the detail route's most-recent-wins derivation (it scans
+    ``reversed(rec.signal_log)``) can be exercised across multiple entries."""
+    from showme.bots.store import BotStore
+    from showme.bots.record import SignalEntry
+    store = BotStore.fresh()
+    rec = store.get(bot_id)
+    rec = rec.append_signal(SignalEntry(
+        bar_index=0, bar_time="2026-05-22T10:00:00Z", kind="entry", price=100.0,
+        action="placed", timestamp="2026-05-22T10:00:00Z",
+        equity_source=older_source,
+    ))
+    rec = rec.append_signal(SignalEntry(
+        bar_index=1, bar_time="2026-05-22T11:00:00Z", kind="exit", price=110.0,
+        action="placed", timestamp="2026-05-22T11:00:00Z",
+        equity_source=newer_source,
+    ))
+    store.save(rec)
+
+
+def test_detail_equity_source_most_recent_wins(client, seeded):
+    """When successive signals carry different equity sources, the route returns
+    the source of the MOST-RECENT entry (it scans reversed(signal_log))."""
+    bid = _create_bot(client, seeded)
+    _push_two_signals_with_sources(
+        bid, older_source="fallback_10k", newer_source="broker",
+    )
+    r = client.get(f"/api/bots/{bid}/performance")
+    assert r.status_code == 200, r.text
+    # Newer "broker" entry must win over the older "fallback_10k" entry.
+    assert r.json()["equity_source"] == "broker"

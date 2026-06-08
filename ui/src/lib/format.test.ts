@@ -162,6 +162,17 @@ describe("formatNumber", () => {
     expect(formatNumber(1.5, 2)).toBe("1.5");
   });
 
+  it("keeps trailing zeros when minimumFractionDigits is requested", () => {
+    expect(formatNumber(2.1, 2, { minimumFractionDigits: 2 })).toBe("2.10");
+    expect(formatNumber(3, 2, { minimumFractionDigits: 2 })).toBe("3.00");
+    expect(formatNumber(-1.5, 2, { minimumFractionDigits: 2 })).toBe("-1.50");
+  });
+
+  it("default (no minimumFractionDigits) still trims trailing zeros", () => {
+    expect(formatNumber(2.1, 2)).toBe("2.1");
+    expect(formatNumber(3, 2)).toBe("3");
+  });
+
   it("returns em-dash for non-finite", () => {
     expect(formatNumber(undefined)).toBe(formatMissing);
   });
