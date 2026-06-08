@@ -26,6 +26,7 @@ if str(ENGINE) not in sys.path:
 
 from showme.engine.functions.equity.fa import (  # noqa: E402
     _financial_unavailable_payload,
+    _latest_filing_date,
     _normalise_fa_payload,
 )
 
@@ -57,3 +58,21 @@ def test_filing_date_populated_from_latest_sec_period_end() -> None:
 def test_filing_date_absent_on_provider_unavailable_path() -> None:
     payload = _financial_unavailable_payload("ZZZZ", "annual", ["no source"])
     assert payload.get("filing_date") is None
+
+
+def test_filing_date_handles_mixed_tz_aware_and_naive_indexes() -> None:
+    """One series is tz-AWARE (UTC), another tz-naive. Comparing the two
+    Timestamps directly would raise ``TypeError: Cannot compare tz-naive and
+    tz-aware timestamps``; ``_latest_filing_date`` must normalize both and
+    return the correct latest date without raising."""
+    naive = pd.Series(
+        [10.0, 20.0], index=pd.to_datetime(["2023-12-31", "2024-12-31"])
+    )
+    aware = pd.Series(
+        [30.0, 40.0],
+        index=pd.to_datetime(["2024-06-30", "2025-03-31"], utc=True),
+    )
+    # Latest across both is 2025-03-31 (from the tz-aware series).
+    assert _latest_filing_date({"naive": naive, "aware": aware}) == "2025-03-31"
+    # Order-independent: tz-aware series first must also work.
+    assert _latest_filing_date({"aware": aware, "naive": naive}) == "2025-03-31"

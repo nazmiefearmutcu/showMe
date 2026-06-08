@@ -467,9 +467,13 @@ def _latest_filing_date(data: Any, *, from_frames: bool = False) -> str | None:
                 continue
             candidates = list(index)
         for raw in candidates:
-            stamp = pd.to_datetime(raw, errors="coerce")
+            # Parse tz-aware (utc=True) then drop tz so every stamp is naive
+            # and mutually comparable — mixing tz-aware and tz-naive
+            # Timestamps in ``stamp > latest`` otherwise raises TypeError.
+            stamp = pd.to_datetime(raw, errors="coerce", utc=True)
             if stamp is None or pd.isna(stamp):
                 continue
+            stamp = stamp.tz_localize(None)
             if latest is None or stamp > latest:
                 latest = stamp
     if latest is None:

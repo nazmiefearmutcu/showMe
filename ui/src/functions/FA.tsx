@@ -100,7 +100,14 @@ export function FAPane({ code, symbol }: FunctionPaneProps) {
   const payload = data?.data;
   // Hoisted so the error-state Retry button can disable during an in-flight
   // refetch without TS narrowing `state` to a non-overlapping literal.
-  const isFetching: boolean = state === "loading";
+  // NOTE: in practice the error UI (rendered only when `state === "error"`)
+  // and the in-flight states (`"loading"`/`"refreshing"`) are mutually
+  // exclusive body branches — a refetch from the error state flips
+  // `useFunction` to "loading" (skeleton replaces the Retry button) or
+  // "refreshing" (FAView replaces it), so this guard never visibly disables
+  // a rendered Retry. It is kept as a defensive contract: were the branches
+  // ever merged (error + stale-data + in-flight), Retry would self-disable.
+  const isFetching: boolean = state === "loading" || state === "refreshing";
   const currency = (payload?.currency as string | undefined) ?? "USD";
   const filingDate =
     (payload?.filing_date as string | undefined) ??
@@ -346,7 +353,7 @@ function FinancialGrid({
       columns={cols}
       rows={rows}
       density="compact"
-      ariaLabel={`${ariaLabel} statement`}
+      ariaLabel={ariaLabel}
     />
   );
 }
@@ -374,15 +381,6 @@ function buildColumns(
       render: (r) => <StatementCell value={r[k]} numeric={numeric} />,
     };
   });
-}
-
-/** Format a magnitude with compact notation, no currency symbol. */
-function formatCell(v: unknown): string {
-  if (v == null) return formatMissing;
-  if (typeof v === "number") {
-    return formatCompactNumber(v);
-  }
-  return String(v);
 }
 
 /**
@@ -456,13 +454,19 @@ function RatioCell({ label, value }: { label: string; value: unknown }) {
         ? "fa-ratio-cell__value--negative"
         : ""
     : "";
+  const display =
+    value == null
+      ? formatMissing
+      : typeof value === "number"
+        ? formatCompactNumber(value)
+        : String(value);
   return (
     <div className="fa-ratio-cell">
       <span className="fa-ratio-cell__label" title={humanizeLabel(label)}>
         {humanizeLabel(label)}
       </span>
       <span className={`fa-ratio-cell__value terminal-grid-numeric ${tone}`}>
-        {formatCell(value)}
+        {display}
       </span>
     </div>
   );

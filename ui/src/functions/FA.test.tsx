@@ -201,6 +201,39 @@ describe("FA pane — accessibility", () => {
     expect(retry).toHaveAttribute("type", "button");
   });
 
+  it("error-state Retry is enabled when no fetch is in flight, and the disabled binding tracks isFetching", () => {
+    // The error UI renders only for state === "error". In that state no
+    // fetch is in flight (isFetching = state === "loading" || "refreshing"),
+    // so the rendered Retry button is enabled — proving the disabled binding
+    // evaluates correctly (it is NOT unconditionally disabled).
+    setMockFn({ state: "error", data: undefined, error: new Error("boom") });
+    render(<FAPane code="FA" symbol="AAPL" />);
+    const retry = screen.getByRole("button", {
+      name: /retry fetching fundamentals/i,
+    });
+    expect(retry).toBeEnabled();
+
+    // The genuinely-disabled path is not reachable through the normal body
+    // branches: a refetch flips useFunction to "loading" (skeleton replaces
+    // the Retry button) or "refreshing" (FAView replaces it), so the error
+    // UI and the in-flight states are mutually exclusive. Confirm those
+    // in-flight states do NOT render the Retry button at all (rather than
+    // rendering it disabled), which is the achievable contract here.
+    cleanup();
+    setMockFn({ state: "loading", data: undefined });
+    render(<FAPane code="FA" symbol="AAPL" />);
+    expect(
+      screen.queryByRole("button", { name: /retry fetching fundamentals/i }),
+    ).toBeNull();
+
+    cleanup();
+    setMockFn({ state: "refreshing", ...okPayload() });
+    render(<FAPane code="FA" symbol="AAPL" />);
+    expect(
+      screen.queryByRole("button", { name: /retry fetching fundamentals/i }),
+    ).toBeNull();
+  });
+
   it("ratio cells use tone classes instead of inline color styles", () => {
     mockTab = "ratios";
     setMockFn({ state: "ok", ...okPayload() });
