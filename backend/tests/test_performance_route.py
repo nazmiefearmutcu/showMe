@@ -91,6 +91,21 @@ def _push_signals(bot_id, signals):
     store.save(rec)
 
 
+def _push_signal_with_source(bot_id, *, equity_source: str):
+    """Seed a single signal_log entry carrying an explicit equity_source so the
+    detail route's provenance derivation (B2) can be exercised."""
+    from showme.bots.store import BotStore
+    from showme.bots.record import SignalEntry
+    store = BotStore.fresh()
+    rec = store.get(bot_id)
+    rec = rec.append_signal(SignalEntry(
+        bar_index=0, bar_time="2026-05-22T10:00:00Z", kind="entry", price=100.0,
+        action="placed", timestamp="2026-05-22T10:00:00Z",
+        equity_source=equity_source,
+    ))
+    store.save(rec)
+
+
 def test_leaderboard_empty(client):
     r = client.get("/api/bots/performance")
     assert r.status_code == 200
@@ -139,3 +154,66 @@ def test_bot_performance_detail(client, seeded):
 def test_bot_performance_404(client):
     r = client.get("/api/bots/no-such-id/performance")
     assert r.status_code == 404
+
+
+# ─── B1 — freshness stamp on both perf routes ────────────────────────────
+def _assert_iso(value) -> None:
+    """A non-empty, parseable ISO-8601 string. No wall-clock value assertion
+    (deterministic across machines)."""
+    from datetime import datetime
+    assert isinstance(value, str) and value, value
+    # datetime.fromisoformat parses the `datetime.now(...).isoformat()` output.
+    datetime.fromisoformat(value)
+
+
+def test_leaderboard_includes_generated_at(client, seeded):
+    _create_bot(client, seeded, "BTC/USDT")
+    r = client.get("/api/bots/performance")
+    assert r.status_code == 200, r.text
+    _assert_iso(r.json()["generated_at"])
+
+
+def test_leaderboard_generated_at_present_when_empty(client):
+    r = client.get("/api/bots/performance")
+    assert r.status_code == 200
+    assert r.json()["records"] == []
+    _assert_iso(r.json()["generated_at"])
+
+
+def test_detail_includes_generated_at(client, seeded):
+    bid = _create_bot(client, seeded)
+    r = client.get(f"/api/bots/{bid}/performance")
+    assert r.status_code == 200, r.text
+    _assert_iso(r.json()["generated_at"])
+
+
+# ─── B2 — honest equity provenance on the detail route ───────────────────
+def test_detail_starting_equity_is_10000(client, seeded):
+    bid = _create_bot(client, seeded)
+    r = client.get(f"/api/bots/{bid}/performance")
+    assert r.status_code == 200, r.text
+    assert r.json()["starting_equity"] == 10000
+
+
+def test_detail_equity_source_none_when_no_signal_source(client, seeded):
+    bid = _create_bot(client, seeded)
+    # No signal carries an equity_source (shadow bot / no live sizing).
+    r = client.get(f"/api/bots/{bid}/performance")
+    assert r.status_code == 200, r.text
+    assert r.json()["equity_source"] is None
+
+
+def test_detail_equity_source_fallback_10k(client, seeded):
+    bid = _create_bot(client, seeded)
+    _push_signal_with_source(bid, equity_source="fallback_10k")
+    r = client.get(f"/api/bots/{bid}/performance")
+    assert r.status_code == 200, r.text
+    assert r.json()["equity_source"] == "fallback_10k"
+
+
+def test_detail_equity_source_broker(client, seeded):
+    bid = _create_bot(client, seeded)
+    _push_signal_with_source(bid, equity_source="broker")
+    r = client.get(f"/api/bots/{bid}/performance")
+    assert r.status_code == 200, r.text
+    assert r.json()["equity_source"] == "broker"

@@ -277,6 +277,7 @@ def register(app: FastAPI, deps: AppDeps) -> None:
 
     @router.get("/api/bots/performance")
     async def bots_performance_leaderboard() -> dict[str, Any]:
+        from datetime import datetime, timezone
         from showme.bots.performance import (
             compute_trades, compute_trades_from_closed, compute_metrics,
         )
@@ -314,10 +315,16 @@ def register(app: FastAPI, deps: AppDeps) -> None:
             })
         # Sort by total_pnl desc (best first), then by trade_count desc for stable tie-break.
         records.sort(key=lambda r: (-r["total_pnl"], -r["trade_count"]))
-        return {"records": records}
+        # B1 — freshness stamp, mirroring the feed route (/api/bots/feed). Lets
+        # the UI show a "last updated" indicator for the polling leaderboard.
+        return {
+            "records": records,
+            "generated_at": datetime.now(tz=timezone.utc).isoformat(),
+        }
 
     @router.get("/api/bots/{bot_id}/performance")
     async def bot_performance_detail(bot_id: str) -> dict[str, Any]:
+        from datetime import datetime, timezone
         from showme.bots.performance import (
             compute_trades, compute_trades_from_closed, compute_metrics,
             compute_equity_curve,
@@ -343,13 +350,34 @@ def register(app: FastAPI, deps: AppDeps) -> None:
             trades = compute_trades_from_closed(rec.closed_trades_log)
         else:
             trades = compute_trades(rec.signal_log, sizing_value=sizing)
+        # B2 — honest equity provenance. The equity curve is a SIMULATED,
+        # relative curve seeded at this baseline (NOT the user's real account
+        # balance), so we expose it explicitly. We also surface the live order
+        # sizing source from the most-recent signal_log entry that carries one
+        # ("broker" or "fallback_10k"); None for shadow bots / no live sizing.
+        # Defensive: a malformed signal_log must never 500 this read route.
+        starting_equity = 10_000
+        equity_source: str | None = None
+        try:
+            for entry in reversed(rec.signal_log):
+                src = getattr(entry, "equity_source", None)
+                if src:
+                    equity_source = src
+                    break
+        except Exception:  # noqa: BLE001
+            equity_source = None
         return {
             "bot_id": bot_id,
             "symbol": rec.symbol,
             "strategy_id": rec.strategy_id,
             "metrics": compute_metrics(trades),
             "trades": [t.to_dict() for t in trades],
-            "equity_curve": compute_equity_curve(trades, starting_equity=10_000),
+            "equity_curve": compute_equity_curve(trades, starting_equity=starting_equity),
+            # B2 — the exact simulated baseline the curve uses (honesty: not a
+            # real balance) + the live-sizing equity source (warn flag on UI).
+            "starting_equity": starting_equity,
+            "equity_source": equity_source,
+            "generated_at": datetime.now(tz=timezone.utc).isoformat(),
         }
 
     @router.get("/api/bots/{bot_id}")
