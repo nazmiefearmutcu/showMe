@@ -35,8 +35,8 @@ export function PreferencesChrome({
         display: "flex",
         gap: 4,
         padding: "10px 14px",
-        borderBottom: "1px solid var(--border-subtle, rgba(255,255,255,.06))",
-        background: "var(--bg-elev-2, rgba(0,0,0,.4))",
+        borderBottom: "1px solid var(--border-subtle)",
+        background: "var(--bg-elev-2)",
         overflowX: "auto",
       }}
     >
@@ -48,14 +48,12 @@ export function PreferencesChrome({
           data-section={id}
           onClick={() => onSection(id)}
           style={{
-            border: "1px solid var(--border-subtle, rgba(255,255,255,.08))",
+            border: "1px solid var(--border-subtle)",
             background:
-              section === id
-                ? "var(--accent, #4a9eff)"
-                : "var(--bg-elev-3, rgba(255,255,255,.04))",
-            color: section === id ? "var(--bg, #000)" : "var(--text-primary, #ddd)",
+              section === id ? "var(--accent)" : "var(--bg-elev-3)",
+            color: section === id ? "var(--bg)" : "var(--text-primary)",
             padding: "6px 12px",
-            borderRadius: "var(--radius-sm, 4px)",
+            borderRadius: "var(--radius-sm)",
             fontFamily: "JetBrains Mono, monospace",
             fontSize: 12,
             cursor: "pointer",

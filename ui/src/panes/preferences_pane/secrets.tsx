@@ -153,6 +153,7 @@ export function SecretsSection() {
               <button
                 type="button"
                 onClick={() => onDelete(e.account)}
+                aria-label={`Delete ${e.account}`}
                 className="btn btn--ghost secrets-del-btn"
               >
                 ✕

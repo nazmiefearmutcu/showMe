@@ -9,18 +9,21 @@ export function LlmSection() {
   const port = useAppStore((s) => s.sidecarPort);
   const [data, setData] = useState<LlmCost | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
   const [tick, setTick] = useState(0);
 
   useEffect(() => {
     if (!port) return;
     let cancelled = false;
     setError(null);
+    setLoading(true);
     // 2026-05-11 hotfix: route through sidecarFetch so the auth token gets
     // attached automatically — bypassing it would 401 against the live
     // signed build's auth middleware.
     sidecarFetch<LlmCost>("/api/llm/cost")
       .then((d) => !cancelled && setData(d))
-      .catch((err) => !cancelled && setError(String(err)));
+      .catch((err) => !cancelled && setError(String(err)))
+      .finally(() => !cancelled && setLoading(false));
     return () => {
       cancelled = true;
     };
@@ -34,6 +37,8 @@ export function LlmSection() {
             type="button"
             className="btn btn--ghost"
             onClick={() => setTick((t) => t + 1)}
+            aria-label="Refresh cost ledger"
+            aria-busy={loading}
           >
             ⟳
           </button>
@@ -49,7 +54,13 @@ export function LlmSection() {
           <code>SHOWME_LLM_DAILY_USD</code> env var.
         </p>
 
-        {error && <div className="about-llm-error">{error}</div>}
+        {loading && !data && (
+          <div role="status" aria-live="polite" className="u-text-11 u-text-mute">
+            Loading cost ledger…
+          </div>
+        )}
+
+        {error && <div role="alert" className="about-llm-error">{error}</div>}
 
         {data && (
           <>

@@ -19,14 +19,17 @@ export function StreamsSection() {
   const port = useAppStore((s) => s.sidecarPort);
   const [stats, setStats] = useState<Awaited<ReturnType<typeof fetchStreamStats>> | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
   const [tick, setTick] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
     setError(null);
+    setLoading(true);
     fetchStreamStats()
       .then((res) => !cancelled && setStats(res))
-      .catch((err) => !cancelled && setError(String(err)));
+      .catch((err) => !cancelled && setError(String(err)))
+      .finally(() => !cancelled && setLoading(false));
     return () => {
       cancelled = true;
     };
@@ -82,7 +85,8 @@ export function StreamsSection() {
               type="button"
               onClick={() => setTick((t) => t + 1)}
               className="btn btn--ghost u-btn-24"
-              
+              aria-label="Refresh stream stats"
+              aria-busy={loading}
             >
               Refresh
             </button>
@@ -102,7 +106,11 @@ export function StreamsSection() {
         </div>
 
         {error ? (
-          <pre className="streams-error">{error}</pre>
+          <pre role="alert" className="streams-error">{error}</pre>
+        ) : loading && rows.length === 0 ? (
+          <div role="status" aria-live="polite" className="u-text-mute u-text-12">
+            loading stream channels…
+          </div>
         ) : rows.length === 0 ? (
           <div className="u-text-mute u-text-12">
             no active stream channels

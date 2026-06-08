@@ -10,6 +10,12 @@ import {
 import { invoke, isInTauri } from "@/lib/tauri";
 import { toast } from "@/lib/toast";
 import { useAppStore } from "@/lib/store";
+import {
+  readMigrationPath,
+  readMigrationWritable,
+  writeMigrationPath,
+  writeMigrationWritable,
+} from "@/lib/migration-prefs";
 import { modeBtn, type MigrationSummary } from "./_types";
 
 export function MigrationSection() {
@@ -17,19 +23,32 @@ export function MigrationSection() {
   // Never prefill a real developer path here — the field used to ship the
   // hardcoded `/Users/nazmi/Desktop/Projeler/proje/showMe/engine` value which
   // leaked into every demo screenshot and silently no-op'd on other machines.
-  // Default to empty so the placeholder prompt shows; once the engine boots,
-  // the effect below overwrites with the canonical `engineRoot` from the
-  // app store.
-  const [enginePath, setEnginePathLocal] = useState("");
-  const [writable, setWritable] = useState(false);
+  // A persisted user value (set last session) takes precedence; otherwise we
+  // start empty so the placeholder prompts, and the effect below fills in the
+  // canonical `engineRoot` from the app store once the engine boots.
+  const [enginePath, setEnginePathLocal] = useState(() => readMigrationPath() ?? "");
+  const [writable, setWritableLocal] = useState(() => readMigrationWritable() ?? false);
   const [running, setRunning] = useState(false);
   const [last, setLast] = useState<MigrationSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
   const engineRoot = useAppStore((s) => s.engineRoot);
 
   useEffect(() => {
-    if (engineRoot) setEnginePathLocal(engineRoot);
-  }, [engineRoot]);
+    // Only auto-fill from the store when the user has neither persisted nor
+    // typed a path — a persisted/typed value must win over the auto-fill.
+    if (engineRoot && !enginePath && !readMigrationPath()) {
+      setEnginePathLocal(engineRoot);
+    }
+  }, [engineRoot, enginePath]);
+
+  const setEnginePath = (next: string) => {
+    setEnginePathLocal(next);
+    writeMigrationPath(next);
+  };
+  const setWritable = (next: boolean) => {
+    setWritableLocal(next);
+    writeMigrationWritable(next);
+  };
 
   const onRun = async () => {
     if (!inTauri) {
@@ -79,15 +98,21 @@ export function MigrationSection() {
           <Field
             label="ShowMe engine path"
             value={enginePath}
-            onChange={(e) => setEnginePathLocal(e.target.value)}
+            onChange={(e) => setEnginePath(e.target.value)}
             placeholder="~/path/to/legacy/data"
             hint="Defaults to the bundled ShowMe engine"
           />
           <label className="migration-mode-label">
             <span className="migration-mode-caption">Mode</span>
-            <div className="u-flex u-gap-6 prefs-h-28 u-items-center">
+            <div
+              role="radiogroup"
+              aria-label="Migration mode"
+              className="u-flex u-gap-6 prefs-h-28 u-items-center"
+            >
               <button
                 type="button"
+                role="radio"
+                aria-checked={!writable}
                 onClick={() => setWritable(false)}
                 style={modeBtn}
                 className={`migration-mode-btn${!writable ? " migration-mode-btn--active" : ""}`}
@@ -96,6 +121,8 @@ export function MigrationSection() {
               </button>
               <button
                 type="button"
+                role="radio"
+                aria-checked={writable}
                 onClick={() => setWritable(true)}
                 style={modeBtn}
                 className={`migration-mode-btn${writable ? " migration-mode-btn--active" : ""}`}
@@ -112,10 +139,15 @@ export function MigrationSection() {
             className="btn btn--accent u-btn-26"
             onClick={onRun}
             disabled={running || !enginePath.trim()}
-            
+            aria-busy={running}
           >
             {running ? "Running…" : "Run import"}
           </button>
+          {running && (
+            <span role="status" aria-live="polite" className="u-text-11 u-text-mute">
+              Importing state…
+            </span>
+          )}
           {!inTauri && (
             <span className="u-text-11 u-text-mute">
               CLI: <code>python3 -m showme.migration</code>
@@ -124,7 +156,7 @@ export function MigrationSection() {
         </div>
 
         {error && (
-          <div className="migration-error">{error}</div>
+          <div role="alert" className="migration-error">{error}</div>
         )}
 
         {last && (

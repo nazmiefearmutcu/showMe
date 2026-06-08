@@ -4909,6 +4909,10 @@
 .prefs-tz__chip:hover {
   border-color: var(--border-strong);
 }
+.prefs-tz__chip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
 .prefs-tz__chip--active {
   background: var(--accent-soft);
   color: var(--accent-strong);
@@ -4926,6 +4930,14 @@
   width: 100%;
   max-width: 360px;
   cursor: pointer;
+}
+.prefs-tz__select:hover {
+  border-color: var(--border-strong);
+}
+.prefs-tz__select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-color: var(--accent);
 }
 
 /* Appearance color slot + mock. */
@@ -4966,6 +4978,9 @@
   opacity: 0;
   cursor: default;
 }
+.prefs-color-slot__inner:focus-within {
+  border-color: var(--accent);
+}
 .prefs-color-slot__hex {
   background: transparent;
   border: none;
@@ -4975,6 +4990,19 @@
     monospace;
   font-size: 12px;
   outline: none;
+  border-radius: var(--radius-sm);
+}
+.prefs-color-slot__hex:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.prefs-color-slot__hex[aria-invalid="true"] {
+  color: var(--negative, #ff5c5c);
+}
+.prefs-color-slot__error {
+  font-size: 10px;
+  color: var(--negative, #ff5c5c);
+  letter-spacing: 0.02em;
 }
 .prefs-color-slot__copy {
   background: transparent;
@@ -4984,6 +5012,14 @@
   font-size: 10px;
   height: 22px;
   cursor: default;
+}
+.prefs-color-slot__copy:hover {
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+.prefs-color-slot__copy:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 .prefs-mock {
   margin-top: 14px;

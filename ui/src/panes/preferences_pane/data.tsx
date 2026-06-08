@@ -62,7 +62,12 @@ export function DataSection() {
               value="~/Library/Application Support/showMe"
               readOnly
               trailing={
-                <button type="button" onClick={reveal} style={btnStyle}>
+                <button
+                  type="button"
+                  onClick={reveal}
+                  aria-label="Reveal app data folder in Finder"
+                  style={btnStyle}
+                >
                   {t("preferences.data.reveal")}
                 </button>
               }

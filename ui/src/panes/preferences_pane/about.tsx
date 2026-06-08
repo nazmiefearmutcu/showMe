@@ -76,6 +76,7 @@ export function AboutSection({
             type="button"
             onClick={onCheck}
             disabled={busy}
+            aria-busy={busy}
             className="btn btn--accent u-btn-24"
           >
             {busy ? "Checking…" : "Check for updates"}
@@ -116,6 +117,7 @@ export function AboutSection({
             type="button"
             onClick={onInstall}
             disabled={installing || !inTauri}
+            aria-busy={installing}
             className="btn btn--accent u-btn-26"
           >
             {installing ? "Installing..." : "Install to Applications"}
@@ -123,7 +125,11 @@ export function AboutSection({
         </div>
 
         {check && (
-          <div className="about-card-row about-card-row--block">
+          <div
+            className="about-card-row about-card-row--block"
+            role={check.error ? "alert" : "status"}
+            aria-live="polite"
+          >
             <div className="u-flex u-gap-8 u-items-center">
               <Pill
                 tone={

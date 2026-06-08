@@ -97,7 +97,12 @@ export function AppearanceSection({
           trailing={
             <button
               type="button"
-              onClick={() => onPreset("midnight")}
+              onClick={() =>
+                // Reset to the current non-custom preset (the "home" preset is
+                // papyrus), NOT always midnight — resetting from papyrus used to
+                // jump the whole app to a dark theme.
+                onPreset(state.preset === "custom" ? "papyrus" : state.preset)
+              }
               className="btn btn--ghost prefs-reset-btn"
               title={t("preferences.appearance.reset_to_default")}
             >
@@ -153,11 +158,17 @@ export function AppearanceSection({
       <Card>
         <CardHeader>{t("preferences.appearance.density")}</CardHeader>
         <CardBody>
-          <div className="u-flex u-gap-6">
+          <div
+            role="radiogroup"
+            aria-label={t("preferences.appearance.density")}
+            className="u-flex u-gap-6"
+          >
             {(["compact", "comfortable"] as Density[]).map((d) => (
               <button
                 type="button"
                 key={d}
+                role="radio"
+                aria-checked={d === density}
                 onClick={() => onDensity(d)}
                 className={`prefs-density-btn${d === density ? " prefs-density-btn--active" : ""}`}
               >
@@ -175,11 +186,17 @@ export function AppearanceSection({
       <Card>
         <CardHeader>{t("preferences.appearance.language")}</CardHeader>
         <CardBody>
-          <div className="prefs-locale-grid">
+          <div
+            role="radiogroup"
+            aria-label={t("preferences.appearance.language")}
+            className="prefs-locale-grid"
+          >
             {listLocales().map((l) => (
               <button
                 type="button"
                 key={l}
+                role="radio"
+                aria-checked={l === loc}
                 onClick={() => onLocale(l)}
                 className={`prefs-locale-btn${l === loc ? " prefs-locale-btn--active" : ""}`}
               >
@@ -203,9 +220,22 @@ function ColorSlot({
   onChange: (v: string) => void;
 }) {
   const [draft, setDraft] = useState(hex);
-  useEffect(() => setDraft(hex), [hex]);
+  const [invalid, setInvalid] = useState(false);
+  useEffect(() => {
+    setDraft(hex);
+    setInvalid(false);
+  }, [hex]);
+  const isValidHex = (v: string) => /^#([0-9a-f]{3}){1,2}$/i.test(v);
   const commit = (v: string) => {
-    if (/^#([0-9a-f]{3}){1,2}$/i.test(v)) onChange(v);
+    if (isValidHex(v)) {
+      setInvalid(false);
+      onChange(v);
+    } else {
+      // Surface feedback then restore the last valid value so the swatch and
+      // text never drift out of sync from a typo.
+      setInvalid(true);
+      setDraft(hex);
+    }
   };
   return (
     <div className="prefs-color-slot">
@@ -228,7 +258,11 @@ function ColorSlot({
         <input
           type="text"
           value={draft}
-          onChange={(e) => setDraft(e.target.value)}
+          aria-invalid={invalid || undefined}
+          onChange={(e) => {
+            setDraft(e.target.value);
+            if (invalid) setInvalid(false);
+          }}
           onBlur={() => commit(draft)}
           onKeyDown={(e) => {
             if (e.key === "Enter") commit(draft);
@@ -240,11 +274,20 @@ function ColorSlot({
           type="button"
           onClick={() => navigator.clipboard?.writeText(hex)}
           title="Copy hex"
+          aria-label="Copy hex color"
           className="prefs-color-slot__copy"
         >
           ⎘
         </button>
       </div>
+      {invalid && (
+        <span role="alert" className="prefs-color-slot__error">
+          {t(
+            "preferences.appearance.invalid_hex",
+            "Enter a valid hex color, e.g. #1a2b3c",
+          )}
+        </span>
+      )}
     </div>
   );
 }
@@ -400,12 +443,19 @@ function TimezonePicker() {
     <div className="prefs-tz">
       <p className="prefs-lede">{t("preferences.appearance.timezone.hint")}</p>
       <div className="prefs-tz__row">
-        <span className="prefs-tz__row-label">
+        <span className="prefs-tz__row-label" id="prefs-tz-mode-label">
           {t("preferences.appearance.timezone.mode")}
         </span>
-        <div className="prefs-tz__chips">
+        <div
+          role="radiogroup"
+          aria-labelledby="prefs-tz-mode-label"
+          aria-label={t("preferences.appearance.timezone.mode")}
+          className="prefs-tz__chips"
+        >
           <button
             type="button"
+            role="radio"
+            aria-checked={mode === "auto"}
             onClick={() => onModeChange("auto")}
             className={`prefs-tz__chip${mode === "auto" ? " prefs-tz__chip--active" : ""}`}
             title={systemTz}
@@ -414,6 +464,8 @@ function TimezonePicker() {
           </button>
           <button
             type="button"
+            role="radio"
+            aria-checked={mode === "manual"}
             onClick={() => onModeChange("manual")}
             className={`prefs-tz__chip${mode === "manual" ? " prefs-tz__chip--active" : ""}`}
           >
