@@ -54,7 +54,7 @@ Each task is one page. Execute it as a **subagent-driven-development** mini-cycl
 - [x] **Task 10: FA — Financial Analysis.** Pane: `ui/src/functions/FA.tsx`. Backend: fundamentals provider (SEC EDGAR). Focus: statements, ratios, real filings data, table quality.
 - [x] **Task 11: DES — Description.** Pane: `ui/src/functions/DES.tsx`. Backend: company/instrument description. Focus: profile completeness, formatting.
 - [x] **Task 12: BTMM — Rates Environment.** Pane: `ui/src/functions/BTMM.tsx`. Backend: `backend/showme/engine/functions/macro/btmm.py`. Focus: rates/curve display, freshness.
-- [ ] **Task 13: MOST — Most Active.** Pane: `ui/src/functions/MOST.tsx`. Backend: movers provider. Focus: real most-active data, ranking table, refresh.
+- [x] **Task 13: MOST — Most Active.** Pane: `ui/src/functions/MOST.tsx`. Backend: movers provider. Focus: real most-active data, ranking table, refresh.
 
 ## Wave 3 — Trading & automation tools
 
