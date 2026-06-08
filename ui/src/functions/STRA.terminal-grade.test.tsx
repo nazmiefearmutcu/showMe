@@ -133,9 +133,11 @@ describe("STRA P5 — empty / loading sidebar states", () => {
 });
 
 describe("STRA P2 — no nonexistent CSS tokens", () => {
-  it("STRA.tsx references no --accent-err or --fg-2 tokens", () => {
+  it("STRA.tsx references no nonexistent CSS tokens", () => {
     const src = readFileSync(join(__dir, "STRA.tsx"), "utf8");
-    expect(src).not.toMatch(/--accent-err/);
-    expect(src).not.toMatch(/--fg-2/);
+    expect(src).not.toMatch(/--accent-err\b/);
+    expect(src).not.toMatch(/--fg-2\b/);
+    expect(src).not.toMatch(/--border-1\b/);
+    expect(src).not.toMatch(/--accent-warn\b/);
   });
 });

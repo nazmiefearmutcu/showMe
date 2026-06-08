@@ -90,7 +90,7 @@ export function STRAPane() {
   return (
     <div style={{ display: "grid", gridTemplateColumns: "260px 1fr", height: "100%",
                   overflow: "hidden" }}>
-      <div style={{ borderRight: "1px solid var(--border-1)", padding: 8,
+      <div style={{ borderRight: "1px solid var(--border-card)", padding: 8,
                     overflowY: "auto" }}>
         <button onClick={() => {
           if (dirty) {
@@ -105,9 +105,11 @@ export function STRAPane() {
           <button key={m.id} onClick={() => handleSidebarClick(m.id)}
                   style={{
                     display: "block", width: "100%", textAlign: "left",
-                    padding: "6px 8px", borderBottom: "1px solid var(--border-1)",
+                    padding: "6px 8px",
                     background: draft?.id === m.id ? "var(--surface-2)" : "transparent",
-                    border: "none", cursor: "pointer",
+                    border: "none",
+                    borderBottom: "1px solid var(--border-row)",
+                    cursor: "pointer",
                   }}>
             <div><strong>{m.name || "(unnamed)"}</strong></div>
             <div style={{ fontSize: 10, color: "var(--text-secondary)" }}>{m.timeframe}</div>
@@ -142,7 +144,7 @@ export function STRAPane() {
         {draft && (
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             <h3 style={{ margin: 0 }}>
-              {draft.name || "(yeni strateji)"} {dirty && <em style={{ color: "var(--accent-warn)" }}>*</em>}
+              {draft.name || "(yeni strateji)"} {dirty && <em style={{ color: "var(--warn)" }}>*</em>}
             </h3>
             <label>
               Ad
