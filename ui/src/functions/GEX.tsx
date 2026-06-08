@@ -310,7 +310,7 @@ export function GEXPane({ code, symbol }: FunctionPaneProps) {
                     aria-label={`Dealer gamma exposure by strike for ${effectiveSymbol ?? "instrument"}, ${rows.length} strikes`}
                   >
                     <span className="gex-chart__zero" aria-hidden />
-                    {rows.map((row) => {
+                    {rows.map((row, index) => {
                       const v = row.gex ?? row.value ?? 0;
                       const pct = Math.min(50, Math.abs((v / maxAbs) * 50));
                       const isCallWall =
@@ -342,7 +342,7 @@ export function GEXPane({ code, symbol }: FunctionPaneProps) {
                           className={rowCls}
                           role="listitem"
                           aria-label={ariaLabel}
-                          key={row.strike}
+                          key={row.strike ?? index}
                           title={ariaLabel}
                         >
                           {v < 0 ? (

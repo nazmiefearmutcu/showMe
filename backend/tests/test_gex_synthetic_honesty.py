@@ -57,7 +57,11 @@ class _EmptyChainYf:
 
     async def fetch(self, request):  # noqa: ANN001
         if request.kind == DataKind.OPTIONS_CHAIN:
-            return {"expiries": ["2026-07-17"], "calls": None, "puts": None}
+            if request.extra.get("expiry") is None:
+                # expiry-list call
+                return {"expiries": ["2026-07-17"]}
+            # per-expiry call — empty chain forces the synthetic fallback
+            return {"calls": None, "puts": None}
         return None
 
 
