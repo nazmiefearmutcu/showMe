@@ -170,9 +170,11 @@ const COLS: DataGridColumn<BTMMRow>[] = [
       }
       // Fixed-income convention is inverted vs equities: a rate CUT (negative
       // bp) is "easing"/bullish → green/positive; a HIKE (positive bp) is
-      // tightening → red/negative.
-      const dir =
-        (row.trend_3m_bp ?? row.change_bp ?? 0) >= 0 ? "negative" : "positive";
+      // tightening → red/negative. A 0-bp / null "hold" carries no direction,
+      // so it is NEUTRAL (gray) — consistent with bpDirection(0) → "flat".
+      const bpVal = row.trend_3m_bp ?? row.change_bp ?? null;
+      const dir: "negative" | "positive" | "neutral" =
+        bpVal == null || bpVal === 0 ? "neutral" : bpVal > 0 ? "negative" : "positive";
       return (
         <span className="btmm-spark" data-synthetic="false">
           <Sparkline
@@ -301,9 +303,15 @@ export function BTMMPane({ code }: FunctionPaneProps) {
   // freshness from `stale_seconds` (server-computed age of the freshest
   // observation in scope) so a clearly-stale snapshot reads "stale", not "live".
   const staleSeconds = payload.stale_seconds ?? null;
+  // The backend `warnings` array is general-purpose; an informational warning
+  // (not about freshness) must NOT flip the pill to "stale". Only treat
+  // warnings that actually signal staleness/fallback as a freshness signal.
+  const hasFreshnessWarning = (data?.warnings ?? []).some((w) =>
+    /stale|fallback|outdated|unavailable/i.test(String(w)),
+  );
   const isStale =
     isFallback ||
-    (data?.warnings?.length ?? 0) > 0 ||
+    hasFreshnessWarning ||
     (staleSeconds != null && staleSeconds > 24 * 3600);
   const isLive = state === "ok" && !isStale;
   const freshnessLabel = state !== "ok" ? "warn" : isLive ? "live" : "stale";
@@ -338,11 +346,13 @@ export function BTMMPane({ code }: FunctionPaneProps) {
               <span
                 data-testid="btmm-live-pill"
                 title={
-                  isLive
-                    ? "Freshest BIS observation is current"
-                    : isFallback
-                      ? "Serving a stored fallback snapshot"
-                      : "Serving a cached / stale snapshot"
+                  state === "error"
+                    ? "Policy-rate data could not be loaded"
+                    : isLive
+                      ? "Freshest BIS observation is current"
+                      : isFallback
+                        ? "Serving a stored fallback snapshot"
+                        : "Serving a cached / stale snapshot"
                 }
               >
                 <Pill tone={isLive ? "positive" : "warn"} variant="soft">

@@ -174,6 +174,60 @@ describe("BTMM freshness-pill honesty (P1/P2)", () => {
     const pill = container.querySelector('[data-testid="btmm-live-pill"]');
     expect(pill?.textContent).toBe("stale");
   });
+
+  it("reads 'stale' when a freshness-related warning is present", () => {
+    useFunctionMock.mockReturnValue(
+      liveEnvelope([richRow], {
+        warnings: ["data_stale_24h: freshest BIS observation is 552h old"],
+      }),
+    );
+    const { container } = render(<BTMMPane code="BTMM" />);
+    const pill = container.querySelector('[data-testid="btmm-live-pill"]');
+    expect(pill?.textContent).toBe("stale");
+  });
+
+  it("stays 'live' for a NON-freshness informational warning", () => {
+    // A general-purpose warning that does not signal staleness/fallback must
+    // NOT flip the pill to "stale" (data is fresh: stale_seconds = 0).
+    useFunctionMock.mockReturnValue(
+      liveEnvelope([richRow], {
+        warnings: ["provisional data: one estimate is revised monthly"],
+      }),
+    );
+    const { container } = render(<BTMMPane code="BTMM" />);
+    const pill = container.querySelector('[data-testid="btmm-live-pill"]');
+    expect(pill?.textContent).toBe("live");
+  });
+});
+
+describe("BTMM sparkline tone honesty (P1)", () => {
+  it("does NOT tone a hold/0-bp row's sparkline negative (red)", () => {
+    // A hold has change_bp = 0 and trend_3m_bp = 0 → no direction → neutral.
+    const holdRich = {
+      ...richRow,
+      country_code: "JP",
+      last_move: "hold",
+      change_bp: 0,
+      trend_3m_bp: 0,
+      history: [
+        { date: "2026-01-28", policy_rate: 0.5 },
+        { date: "2026-02-28", policy_rate: 0.5 },
+        { date: "2026-03-28", policy_rate: 0.5 },
+        { date: "2026-04-28", policy_rate: 0.5 },
+      ],
+    };
+    // Render the big chart from a sparse first row to dodge ResizeObserver.
+    useFunctionMock.mockReturnValue(liveEnvelope([sparseRow, holdRich]));
+    const { container } = render(<BTMMPane code="BTMM" />);
+    const spark = container.querySelector(
+      '.btmm-spark[data-synthetic="false"] svg',
+    );
+    expect(spark).not.toBeNull();
+    // Tone is driven via CSS custom-property tokens; a negative tone uses
+    // var(--negative). A neutral hold must NOT reference the negative token.
+    expect(spark?.innerHTML ?? "").not.toContain("--negative");
+    expect(spark?.innerHTML ?? "").toContain("--text-secondary");
+  });
 });
 
 describe("BTMM accessibility (P2)", () => {
