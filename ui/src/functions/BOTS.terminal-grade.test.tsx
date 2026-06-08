@@ -73,10 +73,13 @@ afterEach(() => {
 });
 
 describe("BOTS F1 — health-aware status with accessible name", () => {
+  // P2-A — per-row status pills are no longer role="status" live regions
+  // (that re-announced all N rows on every 10s poll). They keep their
+  // accessible name via aria-label, so getByLabelText still finds them.
   it("shows STUCK (negative) when enabled but is_running === false", () => {
     seedBots([bot({ enabled: true, mode: "shadow", is_running: false })]);
     render(<BOTSPane />);
-    const stuck = screen.getByRole("status", { name: /durum: stuck/i });
+    const stuck = screen.getByLabelText(/durum: stuck/i);
     expect(stuck.textContent).toMatch(/STUCK/);
     expect(stuck.querySelector(".ds-pill--tone-negative")).not.toBeNull();
   });
@@ -84,7 +87,7 @@ describe("BOTS F1 — health-aware status with accessible name", () => {
   it("shows DEGRADED (warn) when alive and last_action === 'skipped'", () => {
     seedBots([bot({ enabled: true, mode: "live", is_running: true, last_action: "skipped" })]);
     render(<BOTSPane />);
-    const deg = screen.getByRole("status", { name: /durum: degraded/i });
+    const deg = screen.getByLabelText(/durum: degraded/i);
     expect(deg.textContent).toMatch(/DEGRADED/);
     expect(deg.querySelector(".ds-pill--tone-warn")).not.toBeNull();
   });
@@ -92,21 +95,21 @@ describe("BOTS F1 — health-aware status with accessible name", () => {
   it("shows LIVE (negative) when alive + live + last tick acted", () => {
     seedBots([bot({ enabled: true, mode: "live", is_running: true, last_action: "placed" })]);
     render(<BOTSPane />);
-    const live = screen.getByRole("status", { name: /durum: live/i });
+    const live = screen.getByLabelText(/durum: live/i);
     expect(live.querySelector(".ds-pill--tone-negative")).not.toBeNull();
   });
 
   it("shows SHADOW (warn) when alive + shadow", () => {
     seedBots([bot({ enabled: true, mode: "shadow", is_running: true, last_action: "shadow" })]);
     render(<BOTSPane />);
-    const shadow = screen.getByRole("status", { name: /durum: shadow/i });
+    const shadow = screen.getByLabelText(/durum: shadow/i);
     expect(shadow.querySelector(".ds-pill--tone-warn")).not.toBeNull();
   });
 
   it("shows OFF (muted) when disabled", () => {
     seedBots([bot({ enabled: false, mode: "live", is_running: false })]);
     render(<BOTSPane />);
-    const off = screen.getByRole("status", { name: /durum: off/i });
+    const off = screen.getByLabelText(/durum: off/i);
     expect(off.querySelector(".ds-pill--tone-muted")).not.toBeNull();
   });
 
@@ -114,8 +117,47 @@ describe("BOTS F1 — health-aware status with accessible name", () => {
     // Older payload without is_running: must not crash and must not show STUCK.
     seedBots([bot({ enabled: true, mode: "live" /* no is_running */ })]);
     render(<BOTSPane />);
-    expect(screen.getByRole("status", { name: /durum: live/i })).toBeInTheDocument();
-    expect(screen.queryByRole("status", { name: /durum: stuck/i })).toBeNull();
+    expect(screen.getByLabelText(/durum: live/i)).toBeInTheDocument();
+    expect(screen.queryByLabelText(/durum: stuck/i)).toBeNull();
+  });
+
+  it("falls back to legacy LIVE/SHADOW when is_running is null (P2-B unknown)", () => {
+    // P2-B — backend reports null on a transient runner-introspection error;
+    // the UI must treat null identically to undefined (NO false STUCK).
+    seedBots([bot({ enabled: true, mode: "live", is_running: null as never })]);
+    render(<BOTSPane />);
+    expect(screen.getByLabelText(/durum: live/i)).toBeInTheDocument();
+    expect(screen.queryByLabelText(/durum: stuck/i)).toBeNull();
+  });
+});
+
+describe("BOTS P2-A — single summary live region (no per-row SR-spam)", () => {
+  it("per-row status pills are NOT role=status but keep their aria-label", () => {
+    seedBots([bot({ id: "a", enabled: true, is_running: false })]); // STUCK
+    render(<BOTSPane />);
+    // The accessible name is still reachable...
+    expect(screen.getByLabelText(/durum: stuck/i)).toBeInTheDocument();
+    // ...but no status role is attached to the per-row pill. The only
+    // role="status" nodes are the single summary region (+ error when shown),
+    // none of which carry a per-row "Durum:" accessible name.
+    const statuses = screen.queryAllByRole("status");
+    for (const node of statuses) {
+      expect(node.getAttribute("aria-label") ?? "").not.toMatch(/durum:/i);
+    }
+  });
+
+  it("renders exactly one summary live region reflecting the unhealthy count", () => {
+    seedBots([
+      bot({ id: "a", enabled: true, is_running: false }),                       // STUCK
+      bot({ id: "b", enabled: true, is_running: true, last_action: "skipped" }), // DEGRADED
+      bot({ id: "c", enabled: true, is_running: true, last_action: "shadow" }),  // healthy
+    ]);
+    render(<BOTSPane />);
+    const summary = screen.getByTestId("bots-supervision-summary");
+    expect(summary.getAttribute("role")).toBe("status");
+    expect(summary.textContent).toBe("3 bot, 2 stuck/degraded");
+    // No error region here, so the summary is the ONLY status live region.
+    expect(screen.getAllByRole("status").length).toBe(1);
   });
 });
 
@@ -194,8 +236,10 @@ describe("BOTS F4 — states (Empty / Skeleton / error region)", () => {
     useBotsSupervisionStore.setState({ error: "Yükleme başarısız", bots: [], feed: [] });
     render(<BOTSPane />);
     const err = screen.getByTestId("bots-pane-error");
+    // P3-A — role="status" already implies aria-live="polite"; the redundant
+    // explicit aria-live was removed, so it must NOT be present anymore.
     expect(err.getAttribute("role")).toBe("status");
-    expect(err.getAttribute("aria-live")).toBe("polite");
+    expect(err.getAttribute("aria-live")).toBeNull();
     expect(err.className).toMatch(/u-text-negative/);
     expect(err.textContent).toMatch(/başarısız/);
   });

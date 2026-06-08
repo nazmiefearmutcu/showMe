@@ -24,7 +24,10 @@ import type { BotMeta as BaseBotMeta, SignalEntry } from "./bot-store";
  *
  *   - `is_running`: whether the runner's asyncio task is alive. Cheap
  *     server-side check (no broker/network). An `enabled` bot with
- *     `is_running === false` is STUCK.
+ *     `is_running === false` is STUCK. `null` is the backend's honest
+ *     "unknown" sentinel when runner-introspection failed (P2-B) and is
+ *     treated identically to `undefined` (legacy LIVE/SHADOW fallback), so a
+ *     transient runner error does not flash every bot as STUCK.
  *   - `last_event_at`: ISO timestamp of the bot's most recent signal_log
  *     entry (used for last-tick freshness). `null` when it has never ticked.
  *   - `last_action`: the `action` ("placed"/"shadow"/"skipped") of that same
@@ -34,7 +37,7 @@ import type { BotMeta as BaseBotMeta, SignalEntry } from "./bot-store";
 export interface SupervisedBot extends BaseBotMeta {
   signal_count?: number;
   permission_revoked?: boolean;
-  is_running?: boolean;
+  is_running?: boolean | null;
   last_event_at?: string | null;
   last_action?: string | null;
 }

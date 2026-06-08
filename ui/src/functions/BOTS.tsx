@@ -29,7 +29,7 @@
  *   F6 — refresh aria-label + busy state; feed window disclosed; KPI strip
  *        shows an at-a-glance Stuck/Degraded count.
  */
-import { useMemo } from "react";
+import { useMemo, useRef } from "react";
 import {
   useBotsSupervisionStore,
   type FeedSignal,
@@ -63,14 +63,17 @@ type HealthTone = "negative" | "warn" | "muted";
  *   enabled && is_running && mode === live     → LIVE      (negative)
  *   enabled && is_running && mode !== live     → SHADOW    (warn)
  *
- * Backward compat: when `is_running` is undefined (older payload) we fall
- * back to the prior enabled/mode behaviour so LIVE/SHADOW/OFF still resolve.
+ * Backward compat: when `is_running` is null/undefined (older payload, OR the
+ * backend's "unknown" sentinel when runner-introspection failed — P2-B) we
+ * fall back to the prior enabled/mode behaviour so LIVE/SHADOW/OFF still
+ * resolve and a transient runner error does NOT flash every bot as STUCK.
  */
 function deriveHealth(bot: SupervisedBot): { tone: HealthTone; label: string; withDot: boolean } {
   if (!bot.enabled) return { tone: "muted", label: "OFF", withDot: false };
   const live = bot.mode === "live";
-  // Older payload without is_running: keep the legacy live/shadow split.
-  if (bot.is_running === undefined) {
+  // Older payload (undefined) OR honest "unknown" (null, P2-B): keep the
+  // legacy live/shadow split. `== null` matches BOTH null and undefined.
+  if (bot.is_running == null) {
     return live
       ? { tone: "negative", label: "LIVE", withDot: true }
       : { tone: "warn", label: "SHADOW", withDot: true };
@@ -95,12 +98,39 @@ function isUnhealthy(bot: SupervisedBot): boolean {
 function StatusPill({ bot }: { bot: SupervisedBot }) {
   const { tone, label, withDot } = deriveHealth(bot);
   // F1 — Pill carries the visible label; the wrapper gives it an accessible
-  // name so screen readers announce "Durum: STUCK/DEGRADED/LIVE/…".
+  // name so screen readers + keyboard users get "Durum: STUCK/DEGRADED/LIVE/…".
+  //
+  // P2-A — this is a plain labelled <span>, NOT role="status". With N rows and
+  // a 10s poll that re-renders the table, a per-row live region re-announces
+  // every status on every cycle (SR-spam). The single pane-level summary live
+  // region (SupervisionSummaryLive) carries the only announcement instead.
   return (
-    <span role="status" aria-label={`Durum: ${label}`}>
+    <span aria-label={`Durum: ${label}`}>
       <Pill tone={tone} variant="soft" withDot={withDot}>
         {label}
       </Pill>
+    </span>
+  );
+}
+
+/**
+ * P2-A — the SINGLE supervision live region. Announces "N bot, M
+ * stuck/degraded" but only when the count actually changes: a `useRef` guards
+ * the last announced string so a poll that yields an identical summary does
+ * NOT mutate the DOM text node (and thus does not re-trigger the SR
+ * announcement). Visually hidden; placed near the KPI strip.
+ */
+function SupervisionSummaryLive({ total, unhealthy }: { total: number; unhealthy: number }) {
+  const summary = `${total} bot, ${unhealthy} stuck/degraded`;
+  const lastRef = useRef<string | null>(null);
+  // Only the changed summary reaches the DOM; an identical poll keeps the
+  // previous text node, so the live region stays quiet.
+  if (summary !== lastRef.current) {
+    lastRef.current = summary;
+  }
+  return (
+    <span className="u-sr-only" role="status" data-testid="bots-supervision-summary">
+      {lastRef.current}
     </span>
   );
 }
@@ -337,11 +367,13 @@ function SignalFeed() {
         </tr>
       </thead>
       <tbody>
-        {feed.map((s, i) => {
+        {feed.map((s) => {
           const isFallback = s.equity_source === FALLBACK_EQUITY_SOURCE;
-          // Stable composite key: bot + bar identity, with index tiebreaker
-          // against same-bar entry/exit collisions and legacy empty bar_time.
-          const rowKey = `${s.bot_id}-${s.bar_time}-${s.bar_index}-${i}`;
+          // P3-B — stable composite key. The old trailing array index `-${i}`
+          // shifted for every row when a newer signal prepended, defeating key
+          // stability. Disambiguate same-bar entry/exit via kind + action
+          // (both on FeedSignal) instead of the positional index.
+          const rowKey = `${s.bot_id}-${s.bar_time}-${s.bar_index}-${s.action ?? ""}-${s.kind ?? ""}`;
           return (
             <tr key={rowKey}>
               <td>{formatLocalTimestamp(s.timestamp ?? s.bar_time)}</td>
@@ -402,6 +434,10 @@ export function BOTSPane() {
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
       <KPIStrip unhealthy={unhealthyCount} />
+      {/* P2-A — the ONLY supervision live region. Announces the at-a-glance
+          summary, and only when it changes (guarded inside the component) so
+          the 10s poll doesn't re-announce all N rows. */}
+      <SupervisionSummaryLive total={bots.length} unhealthy={unhealthyCount} />
       <div style={{ overflowY: "auto", padding: "0 16px" }}>
         {/* F4 — async error is an announced live region. Rendered at the pane
             root (outside any bot/feed conditional) so a loadAll error that
@@ -410,7 +446,6 @@ export function BOTSPane() {
           <div
             data-testid="bots-pane-error"
             role="status"
-            aria-live="polite"
             className="u-text-negative"
             style={{ padding: 8 }}
           >
