@@ -324,6 +324,23 @@
   --warn-soft: var(--warn-soft-hex, rgba(240, 180, 69, 0.14));
   --neutral: #a0a4ab;
 
+  /* ──────────────────────────────────────────────────────────────────
+   * Legacy token aliases (ROOT FIX). Several panes (TMPL/BOT/BOTS/CONN/
+   * PERF/INDX) and the shared ConfirmDialog/AppErrorBoundary referenced
+   * these names which were never defined anywhere — they silently fell
+   * back to the CSS-wide-keyword "invalid value" (transparent/initial),
+   * making borders + status colors invisible. Aliasing them to their
+   * canonical tokens fixes every consumer at once with zero regression
+   * risk (they were previously unset). Because each alias resolves
+   * `var(--canonical)` at use-time, per-theme overrides of the canonical
+   * token (matrix/neon/papyrus) flow through automatically.
+   * ────────────────────────────────────────────────────────────────── */
+  --border-1: var(--border-card);   /* panel/card border */
+  --fg-2: var(--text-secondary);    /* mid-dim secondary text */
+  --accent-err: var(--negative);    /* error / destructive */
+  --accent-warn: var(--warn);       /* warning / in-progress */
+  --accent-ok: var(--positive);     /* success / positive */
+
   /* Heatmap intensity scale (5 steps each side) — strengthened low steps for ≥3:1 */
   --heat-pos-1: rgba(47, 212, 128, 0.16);
   --heat-pos-2: rgba(47, 212, 128, 0.26);

@@ -7,7 +7,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useTemplateStore } from "@/lib/template-store";
 import { useFocusTrap } from "@/lib/a11y";
-import { ConfirmDialog } from "@/design-system";
+import { ConfirmDialog, Empty, SkeletonRow } from "@/design-system";
 
 export function TMPLPane() {
   const entries = useTemplateStore((s) => s.entries);
@@ -16,6 +16,7 @@ export function TMPLPane() {
   const setSelected = useTemplateStore((s) => s.setSelected);
   const instantiate = useTemplateStore((s) => s.instantiate);
   const error = useTemplateStore((s) => s.error);
+  const loading = useTemplateStore((s) => s.loading);
 
   const [useModal, setUseModal] = useState<string | null>(null);
   const [nameOverride, setNameOverride] = useState("");
@@ -111,31 +112,52 @@ export function TMPLPane() {
   return (
     <div style={{ display: "grid", gridTemplateColumns: "320px 1fr", height: "100%",
                   overflow: "hidden" }}>
-      <div style={{ borderRight: "1px solid var(--border-1)", padding: 8, overflowY: "auto" }}>
+      <div style={{ borderRight: "1px solid var(--border-card)", padding: 8, overflowY: "auto" }}>
         <h4>Template kütüphanesi ({entries.length})</h4>
-        {entries.map((e) => (
+        {/* P5 — loading skeleton while the catalog is still in flight and we
+            have nothing to show yet. */}
+        {loading && entries.length === 0 && (
+          <div data-testid="tmpl-list-loading" aria-busy="true">
+            {Array.from({ length: 6 }).map((_, i) => (
+              <SkeletonRow key={i} columns={1} />
+            ))}
+          </div>
+        )}
+        {/* P5 — empty catalog (load finished, nothing came back). */}
+        {!loading && entries.length === 0 && (
+          <Empty title="Template yok" body="Katalog boş ya da yüklenemedi." />
+        )}
+        {entries.map((e) => {
+          const isSelected = selectedId === e.id;
+          return (
           <button key={e.id} onClick={() => setSelected(e.id)}
+                  // A11Y — announce the active selection to assistive tech.
+                  aria-current={isSelected ? "true" : undefined}
                   style={{
                     display: "block", width: "100%", textAlign: "left",
-                    padding: "8px 10px", borderBottom: "1px solid var(--border-1)",
-                    background: selectedId === e.id ? "var(--surface-2)" : "transparent",
+                    padding: "8px 10px", borderBottom: "1px solid var(--border-row)",
+                    background: isSelected ? "var(--surface-2)" : "transparent",
                     border: "none", cursor: "pointer",
                   }}>
             <div><strong>{e.name}</strong></div>
-            <div style={{ fontSize: 10, color: "var(--fg-2)" }}>
+            <div style={{ fontSize: 10, color: "var(--text-secondary)" }}>
               {e.family} · {e.uses_indicators.join(", ")}
             </div>
           </button>
-        ))}
+          );
+        })}
       </div>
 
       <div style={{ overflowY: "auto", padding: 16 }}>
-        {!selected && <div style={{ color: "var(--fg-2)" }}>Soldan bir template seç.</div>}
+        {/* P5 — use the design-system Empty for the no-selection state. */}
+        {!selected && (
+          <Empty title="Template seçilmedi" body="Soldan bir template seç." />
+        )}
         {selected && (
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             <div>
               <h2 style={{ margin: 0 }}>{selected.name}</h2>
-              <div style={{ color: "var(--fg-2)" }}>{selected.family} · {selected.uses_indicators.join(", ")}</div>
+              <div style={{ color: "var(--text-secondary)" }}>{selected.family} · {selected.uses_indicators.join(", ")}</div>
               <p>{selected.description}</p>
             </div>
             <div>
@@ -149,7 +171,7 @@ export function TMPLPane() {
             </details>
             <div>
               <h4>Uygulanabilirlik</h4>
-              <p style={{ color: "var(--fg-2)" }}>{selected.applicability}</p>
+              <p style={{ color: "var(--text-secondary)" }}>{selected.applicability}</p>
             </div>
             <div>
               <h4>Önerilen ayarlar</h4>
@@ -165,12 +187,17 @@ export function TMPLPane() {
               setInstantiateError(null);
               setOverridesDirty(false);
             }}>Bu template'i kullan</button>
-            {error && <div style={{ color: "var(--accent-err)" }}>{error}</div>}
+            {/* A11Y — store-level errors are announced as an alert. */}
+            {error && (
+              <div role="alert" aria-live="assertive"
+                   style={{ color: "var(--negative)" }}>{error}</div>
+            )}
           </div>
         )}
 
         {useModal && (
           <div role="dialog" aria-modal="true"
+               aria-labelledby="tmpl-modal-title"
                data-testid="tmpl-modal-backdrop"
                onClick={(e) => {
                  // Round 24 HIGH 11 — route backdrop click through
@@ -188,41 +215,52 @@ export function TMPLPane() {
                  onClick={(e) => e.stopPropagation()}
                  data-testid="tmpl-modal-body"
                  style={{ background: "var(--surface-1)", padding: 16, minWidth: 360,
-                          border: "1px solid var(--border-1)" }}>
-              <h3 style={{ marginTop: 0 }}>Strateji oluştur</h3>
-              <label>
+                          border: "1px solid var(--border-card)" }}>
+              <h3 id="tmpl-modal-title" style={{ marginTop: 0 }}>Strateji oluştur</h3>
+              <label htmlFor="tmpl-name-input">
                 Ad
                 <input
+                  id="tmpl-name-input"
+                  type="text"
                   value={nameOverride}
                   onChange={(e) => { setNameOverride(e.target.value); setOverridesDirty(true); }}
                 />
               </label>
               <br />
-              <label>
+              <label htmlFor="tmpl-symbol-input">
                 Sembol (opsiyonel)
                 <input
+                  id="tmpl-symbol-input"
+                  type="text"
                   value={symbolOverride}
                   onChange={(e) => { setSymbolOverride(e.target.value); setOverridesDirty(true); }}
                 />
               </label>
-              {creating && (
-                <div data-testid="tmpl-creating-indicator"
-                     style={{ color: "var(--accent-warn)", marginTop: 8 }}>
-                  Oluşturuluyor...
-                </div>
-              )}
-              {createdId && (
-                <div data-testid="tmpl-created-indicator"
-                     style={{ color: "var(--accent-ok)", marginTop: 8 }}>
-                  Oluşturuldu (id: {createdId.slice(0, 8)}). STRA paneline gidip düzenleyebilirsin.
-                </div>
-              )}
-              {instantiateError && !creating && (
-                <div data-testid="tmpl-error-indicator"
-                     style={{ color: "var(--accent-err)", marginTop: 8 }}>
-                  Hata: {instantiateError}
-                </div>
-              )}
+              {/* A11Y — transient creating/created/error status messages are
+                  wrapped in a polite live region so screen readers announce
+                  them. The error sub-message additionally carries role=alert
+                  for assertive announcement. */}
+              <div aria-live="polite" data-testid="tmpl-status-region">
+                {creating && (
+                  <div data-testid="tmpl-creating-indicator"
+                       style={{ color: "var(--warn)", marginTop: 8 }}>
+                    Oluşturuluyor...
+                  </div>
+                )}
+                {createdId && (
+                  <div data-testid="tmpl-created-indicator"
+                       style={{ color: "var(--positive)", marginTop: 8 }}>
+                    Oluşturuldu (id: {createdId.slice(0, 8)}). STRA paneline gidip düzenleyebilirsin.
+                  </div>
+                )}
+                {instantiateError && !creating && (
+                  <div data-testid="tmpl-error-indicator"
+                       role="alert"
+                       style={{ color: "var(--negative)", marginTop: 8 }}>
+                    Hata: {instantiateError}
+                  </div>
+                )}
+              </div>
               <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 8 }}>
                 {instantiateError && !creating && (
                   <button

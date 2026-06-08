@@ -137,3 +137,38 @@ def test_instantiate_rejects_non_string_name(client):
         "name": ["a", "b"],
     })
     assert r.status_code == 422, r.text
+
+
+# ── P2: catalog validation parity with strategies create/update routes ──
+
+
+def test_instantiate_validates_against_indicator_catalog(client):
+    """P2 — a normal template instantiate still succeeds (200) AND the
+    instantiate path now runs ``validate_against_catalog``, mirroring the
+    strategies create/update routes. The valid 12-template catalog only
+    references real indicators, so the happy path must still pass.
+    """
+    r = client.post("/api/templates/rsi-mean-revert/instantiate", json={})
+    assert r.status_code == 200, r.text
+
+
+def test_instantiate_rejects_spec_referencing_bad_indicator(client, monkeypatch):
+    """P2 — a spec referencing an indicator absent from the catalog is
+    rejected with 400 (instead of silently persisting an invalid strategy).
+
+    We narrow the catalog-ids set the instantiate path validates against to
+    an id that the template's spec does NOT use, forcing
+    ``validate_against_catalog`` to raise. This proves the validate call is
+    actually invoked on the instantiate path and that its ValueError is
+    surfaced as a 400 — exactly as the strategies create/update routes do.
+    """
+    import showme.server_routes.templates as tmod
+
+    monkeypatch.setattr(
+        tmod, "_indicator_catalog_ids",
+        lambda: {"some-other-indicator"},
+    )
+
+    r = client.post("/api/templates/rsi-mean-revert/instantiate", json={})
+    assert r.status_code == 400, r.text
+    assert "unknown indicator" in r.text.lower()

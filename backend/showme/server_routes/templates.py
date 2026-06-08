@@ -56,6 +56,29 @@ def _catalog_path() -> Path:
     return Path(__file__).resolve().parents[1] / "templates" / "catalog" / "templates.yml"
 
 
+def _indicator_catalog_ids() -> set[str]:
+    """Return the set of known indicator ids for spec validation.
+
+    Mirrors the ``_catalog_ids`` helper in ``strategies.py`` so the
+    template instantiate path enforces the SAME catalog contract that
+    the strategies create/update routes already enforce — an
+    instantiated spec must only reference real catalog indicators.
+    A failed catalog load degrades to an empty set (validation skipped)
+    so a broken indicator catalog never blocks instantiation that the
+    strategies routes would otherwise allow.
+    """
+    try:
+        from showme.indicators.catalog.loader import load_indicator_catalog
+        cat = load_indicator_catalog(
+            Path(__file__).resolve().parents[1]
+            / "indicators" / "catalog" / "indicators.yml"
+        )
+        return {e.id for e in cat.entries}
+    except Exception as exc:  # noqa: BLE001
+        LOG.warning("indicator catalog unavailable for validation: %s", exc)
+        return set()
+
+
 def _get_catalog():
     """Return the cached catalog or raise HTTPException(500) on failure.
 
@@ -145,6 +168,17 @@ def register(app: FastAPI, deps: AppDeps) -> None:
             spec = StrategySpec(**body)
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(400, detail=f"invalid template spec: {exc}")
+        # Data-integrity parity with the strategies create/update routes:
+        # the instantiated spec must reference only real catalog indicators.
+        # Previously this path skipped the catalog check, so a template that
+        # drifted from the indicator catalog could persist a strategy the
+        # strategies routes would have rejected.
+        cat_ids = _indicator_catalog_ids()
+        if cat_ids:
+            try:
+                spec.validate_against_catalog(cat_ids)
+            except ValueError as exc:
+                raise HTTPException(400, detail=str(exc))
         saved = StrategyStore.fresh().save(spec)
         return {
             "template_id": template_id,
