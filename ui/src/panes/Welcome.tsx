@@ -7,7 +7,13 @@ import { useAppStore } from "@/lib/store";
 import { useFunction } from "@/lib/useFunction";
 import { useVisibilityTick } from "@/lib/useVisibilityTick";
 import { useLiveQuotes, type QuoteView } from "@/lib/market-data";
-import { formatPrice } from "@/lib/format";
+import {
+  formatCompactNumber,
+  formatCurrency,
+  formatMissing,
+  formatPrice,
+  formatSignedCurrency,
+} from "@/lib/format";
 import { loadWatchlist, type WatchlistRow } from "@/lib/watchlist";
 import {
   describeNyseMarketState,
@@ -223,6 +229,28 @@ const BRIEF_ITEMS: BriefItem[] = [
   },
 ];
 
+/** BRIEF function payload (see backend/showme/engine/functions/news/brief.py). */
+interface BriefArticle {
+  title?: string;
+  headline?: string;
+  source?: string;
+  publisher?: string;
+  url?: string;
+  link?: string;
+  matched_symbol?: string;
+  symbol?: string;
+  section?: string;
+  sentiment?: string;
+  severity?: string;
+  importance_score?: number;
+}
+
+interface BriefResponse {
+  status?: string;
+  articles?: BriefArticle[];
+  rows?: BriefArticle[];
+}
+
 interface TopArticle {
   title?: string;
   headline?: string;
@@ -281,6 +309,49 @@ function articleTone(a: TopArticle): NewsItem["tone"] {
   const score = Number(a.importance_score);
   if (Number.isFinite(score) && score >= 80) return "warn";
   return "neutral";
+}
+
+function briefArticleTone(a: BriefArticle): BriefItem["tone"] {
+  const sent = String(a.sentiment ?? "").toLowerCase();
+  if (sent.includes("pos") || sent === "bullish") return "positive";
+  if (sent.includes("neg") || sent === "bearish") return "negative";
+  const sev = String(a.severity ?? "").toLowerCase();
+  if (sev === "high" || sev === "critical") return "warn";
+  const score = Number(a.importance_score);
+  if (Number.isFinite(score) && score >= 80) return "warn";
+  return "neutral";
+}
+
+/**
+ * How many brief ribbons the panel renders, and the `limit` passed to the
+ * BRIEF backend. Kept as one constant so the request size, the slice in
+ * {@link buildBriefItems}, and the "X stories" counter never disagree.
+ */
+export const BRIEF_DISPLAY_LIMIT = 6;
+
+/**
+ * Build the brief ribbons from a live BRIEF payload. Watchlist-scoped stories
+ * are tagged with their symbol; cross-asset macro stories get a "MARKET" tag.
+ * Returns an empty array if the payload is missing/empty so the caller can
+ * fall back to the honest demo banner.
+ */
+export function buildBriefItems(
+  payload: BriefResponse | undefined | null,
+  limit = BRIEF_DISPLAY_LIMIT,
+): BriefItem[] {
+  if (!payload) return [];
+  const articles = payload.articles ?? payload.rows ?? [];
+  if (!Array.isArray(articles)) return [];
+  return articles
+    .map((a) => {
+      const text = (a.title ?? a.headline ?? "").trim();
+      if (!text) return null;
+      const sym = String(a.matched_symbol ?? a.symbol ?? "").toUpperCase();
+      const tag = !sym || sym === "MACRO" ? "MARKET" : sym;
+      return { tag, tone: briefArticleTone(a), text } as BriefItem;
+    })
+    .filter((item): item is BriefItem => !!item)
+    .slice(0, limit);
 }
 
 const QUICK_CODES = [
@@ -423,11 +494,16 @@ export function Welcome() {
     [liveQuotes],
   );
 
-  // Movers: prefer `/api/fn/MOST` if the function is registered.
+  // Movers: prefer `/api/fn/MOST` if the function is registered. `live: true`
+  // is the param the MOST backend reads (via `_truthy(params["live"])`) to
+  // fan out real quotes; without it the endpoint returns the deterministic
+  // reference deck (status "reference") and the panel would silently show
+  // demo tape even with a healthy sidecar. The demo fallback below still
+  // covers the case where the live snapshot comes back empty.
   const moversAvailable = functionByCode.has("MOST");
   const moversFn = useFunction<MostMoverPayload>({
     code: "MOST",
-    params: { limit: 24 },
+    params: { live: true, limit: 24 },
     enabled: status === "healthy" && moversAvailable,
   });
   const liveMovers = useMemo(
@@ -436,6 +512,33 @@ export function Welcome() {
   );
   const moversRows: MoverRowData[] = liveMovers.length ? liveMovers : DEMO_MOVERS;
   const moversAreDemo = liveMovers.length === 0;
+  // Partition once per render instead of filtering four times in the JSX.
+  const moverGainers = useMemo(
+    () => moversRows.filter((m) => m.change > 0),
+    [moversRows],
+  );
+  const moverLosers = useMemo(
+    () => moversRows.filter((m) => m.change < 0),
+    [moversRows],
+  );
+
+  // BRIEF: compose the "Today's brief" ribbons from the live BRIEF function,
+  // which aggregates real TOP RSS/GDELT headlines (no LLM, no fabricated
+  // prose — see backend/showme/engine/functions/news/brief.py). The demo
+  // banner + placeholder copy below render ONLY when BRIEF returns nothing,
+  // so users never mistake a real outage for editorial content.
+  const briefAvailable = functionByCode.has("BRIEF");
+  const briefFn = useFunction<BriefResponse>({
+    code: "BRIEF",
+    params: { limit: BRIEF_DISPLAY_LIMIT },
+    enabled: status === "healthy" && briefAvailable,
+  });
+  const briefItems = useMemo(
+    () => buildBriefItems(briefFn.data?.data, BRIEF_DISPLAY_LIMIT),
+    [briefFn.data],
+  );
+  const briefIsLive = briefItems.length > 0;
+  const briefLoading = briefFn.state === "loading";
 
   const tz = useTimezone();
   const [now, setNow] = useState(() => new Date());
@@ -500,7 +603,7 @@ export function Welcome() {
   const dateStamp = formatDateStamp(now, tz);
   const localTime = formatTime(now, { tz });
   const tzLabel = tz.split("/").pop()?.replace(/_/g, " ") ?? tz;
-  const totalMarketValue = money(totals?.market_value);
+  const totalMarketValue = formatCurrency(totals?.market_value, { compact: true });
 
   return (
     <main className="terminal-home showme-home">
@@ -541,14 +644,21 @@ export function Welcome() {
             className="terminal-market-tile"
             data-testid={`kpi-tile-${tile.symbol}`}
             data-demo={tile.demo ? "1" : "0"}
+            aria-label={`View ${tile.label} (${tile.symbol})${
+              tile.demo ? " — demo placeholder" : ""
+            }`}
             onClick={() => navigate(`/symbol/${tile.symbol}/DES`)}
           >
             <span className="terminal-market-tile__top">
               <strong>{tile.symbol}</strong>
-              <span>{tile.label}</span>
+              <span title={tile.label}>{tile.label}</span>
             </span>
-            <span className="terminal-market-tile__value">{tile.value}</span>
-            <span className={toneClass("terminal-change", tile.change)}>
+            <span className="terminal-market-tile__value terminal-grid-numeric">
+              {tile.value}
+            </span>
+            <span
+              className={`${toneClass("terminal-change", tile.change)} terminal-grid-numeric`}
+            >
               {formatPct(tile.change)}
             </span>
             {tile.demo && (
@@ -567,49 +677,90 @@ export function Welcome() {
       <section className="terminal-home__layout showme-home__section showme-home__section--2">
         <div className="terminal-panel terminal-panel--brief">
           <div className="terminal-panel__header">
-            <h3>Today's brief - AI narrative</h3>
-            <span>Portfolio {totalMarketValue}</span>
-          </div>
-          {/* Prominent demo banner sits at the top of the card so users don't
-              mistake the placeholder narrative for live editorial. */}
-          <div
-            className="terminal-brief-demo-banner"
-            data-testid="brief-demo-banner"
-            role="status"
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-              padding: "8px 12px",
-              borderBottom: "1px solid var(--color-border-strong, #2a2a2a)",
-              background: "var(--color-bg-warn-soft, rgba(255, 200, 0, 0.06))",
-              fontSize: 12,
-              letterSpacing: 0.4,
-            }}
-          >
-            <Pill tone="warn" variant="soft" withDot={false}>
-              Demo data
-            </Pill>
+            <h3>Today's brief</h3>
             <span>
-              Today's brief shows placeholder narrative. The BRIEF/TOP endpoint
-              is not yet wired — copy below is illustrative only.
+              {briefIsLive ? (
+                <span data-testid="brief-live-banner">
+                  <Pill tone="positive" variant="soft" withDot={false}>
+                    Live
+                  </Pill>{" "}
+                  {briefItems.length} stories
+                </span>
+              ) : (
+                `Portfolio ${totalMarketValue}`
+              )}
             </span>
           </div>
-          <p className="terminal-brief-copy">
-            Three weeks of cooling inflation prints left a still-resilient labor market, and
-            a Fed path has rediscovered patience. The tape is calm, but cross-asset
-            positioning underneath it is the most lopsided it has been since November.
-          </p>
-          <div className="terminal-brief-ribbons">
-            {BRIEF_ITEMS.map((item) => (
-              <div key={`${item.tag}-${item.text}`} className="terminal-brief-ribbon">
-                <span className={`terminal-tag terminal-tag--${item.tone}`}>
-                  {item.tag}
+          {briefIsLive ? (
+            // LIVE: ribbons composed from the BRIEF function's aggregated
+            // headlines (real RSS/GDELT via TOP — never fabricated prose).
+            <div className="terminal-brief-ribbons terminal-brief-ribbons--live">
+              {briefItems.map((item) => (
+                <div key={`${item.tag}-${item.text}`} className="terminal-brief-ribbon">
+                  <span className={`terminal-tag terminal-tag--${item.tone}`}>
+                    {item.tag}
+                  </span>
+                  <span title={item.text}>{item.text}</span>
+                </div>
+              ))}
+            </div>
+          ) : briefLoading ? (
+            <div
+              className="terminal-brief-loading"
+              role="status"
+              aria-live="polite"
+              data-testid="brief-loading"
+              style={{ display: "grid", gap: 8, padding: 14 }}
+            >
+              <Skeleton height={16} />
+              <Skeleton height={16} width="80%" />
+              <Skeleton height={16} width="90%" />
+            </div>
+          ) : (
+            // EMPTY / FAILED: honest demo banner — no fabricated narrative.
+            <>
+              <div
+                className="terminal-brief-demo-banner"
+                data-testid="brief-demo-banner"
+                role="status"
+                aria-live="polite"
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  padding: "8px 12px",
+                  borderBottom: "1px solid var(--terminal-border)",
+                  background: "var(--color-bg-warn-soft, rgba(255, 200, 0, 0.06))",
+                  fontSize: 12,
+                  letterSpacing: 0.4,
+                }}
+              >
+                <Pill tone="warn" variant="soft" withDot={false}>
+                  Demo data
+                </Pill>
+                <span>
+                  No live brief yet — BRIEF returned no headlines (start the
+                  sidecar / check the news provider). Copy below is illustrative
+                  only and not yet wired to live editorial.
                 </span>
-                <span>{item.text}</span>
               </div>
-            ))}
-          </div>
+              <p className="terminal-brief-copy">
+                Three weeks of cooling inflation prints left a still-resilient labor market, and
+                a Fed path has rediscovered patience. The tape is calm, but cross-asset
+                positioning underneath it is the most lopsided it has been since November.
+              </p>
+              <div className="terminal-brief-ribbons">
+                {BRIEF_ITEMS.map((item) => (
+                  <div key={`${item.tag}-${item.text}`} className="terminal-brief-ribbon">
+                    <span className={`terminal-tag terminal-tag--${item.tone}`}>
+                      {item.tag}
+                    </span>
+                    <span title={item.text}>{item.text}</span>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
         </div>
 
         <div className="terminal-panel terminal-panel--sentiment">
@@ -632,7 +783,7 @@ export function Welcome() {
               }}
             />
           </div>
-          <div>
+          <div role="status" aria-live="polite">
             <span className="terminal-panel__meta">
               {sentimentEyebrow({
                 loading: sentimentLoading,
@@ -653,19 +804,10 @@ export function Welcome() {
                 </span>
                 <button
                   type="button"
+                  className="terminal-action terminal-action--retry"
                   data-testid="sentiment-retry"
+                  aria-label="Retry sentiment fetch"
                   onClick={sentimentRetry}
-                  style={{
-                    marginTop: 8,
-                    padding: "4px 10px",
-                    fontSize: 11,
-                    letterSpacing: 0.4,
-                    background: "transparent",
-                    border: "1px solid var(--color-border, #3a3a3a)",
-                    color: "var(--color-fg-primary, #e6e6e6)",
-                    borderRadius: 3,
-                    cursor: "pointer",
-                  }}
                 >
                   Retry
                 </button>
@@ -677,7 +819,7 @@ export function Welcome() {
                 </strong>
                 {sentimentUpdated || sentimentLoading ? (
                   <span
-                    className={toneClass("terminal-change", sentimentScore)}
+                    className={`${toneClass("terminal-change", sentimentScore)} terminal-grid-numeric`}
                     data-testid="sentiment-change"
                   >
                     {formatSentimentPct(sentimentScore)}
@@ -719,19 +861,19 @@ export function Welcome() {
           <div className="terminal-movers-grid">
             <div>
               <span className="terminal-panel__meta">Gainers</span>
-              {moversRows.filter((m) => m.change > 0).map((mover) => (
+              {moverGainers.map((mover) => (
                 <MoverRow key={`g-${mover.symbol}`} mover={mover} />
               ))}
-              {moversRows.filter((m) => m.change > 0).length === 0 && moversAreDemo && (
+              {moverGainers.length === 0 && moversAreDemo && (
                 <DemoMoverRows kind="gainer" />
               )}
             </div>
             <div>
               <span className="terminal-panel__meta">Losers</span>
-              {moversRows.filter((m) => m.change < 0).map((mover) => (
+              {moverLosers.map((mover) => (
                 <MoverRow key={`l-${mover.symbol}`} mover={mover} />
               ))}
-              {moversRows.filter((m) => m.change < 0).length === 0 && moversAreDemo && (
+              {moverLosers.length === 0 && moversAreDemo && (
                 <DemoMoverRows kind="loser" />
               )}
             </div>
@@ -750,10 +892,16 @@ export function Welcome() {
             </span>
           </div>
           {portfolio.state === "loading" ? (
-            <div className="terminal-watchlist__loading">
-              <Skeleton height={22} />
-              <Skeleton height={22} />
-              <Skeleton height={22} />
+            <div
+              className="terminal-watchlist__loading"
+              role="status"
+              aria-live="polite"
+              aria-label="Loading watchlist"
+              data-testid="watchlist-loading"
+            >
+              <Skeleton height={30} />
+              <Skeleton height={30} />
+              <Skeleton height={30} />
             </div>
           ) : watchEmpty ? (
             <div
@@ -799,24 +947,45 @@ export function Welcome() {
               </div>
               <div role="rowgroup">
                 {watchRows.map((row) => (
-                  <button
+                  // role="row" must live on a non-button element — a
+                  // <button role="row"> is an invalid ARIA override (the
+                  // button's implicit role conflicts with row). Use a
+                  // focusable div with explicit keyboard activation.
+                  <div
                     key={row.symbol}
-                    type="button"
                     className="terminal-watchlist__row"
                     role="row"
+                    tabIndex={0}
+                    aria-label={`View ${row.symbol}${
+                      row.name && row.name !== row.symbol ? ` (${row.name})` : ""
+                    } — last ${row.last}, change ${formatPct(row.change)}`}
                     onClick={() => navigate(`/symbol/${row.symbol}/DES`)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        navigate(`/symbol/${row.symbol}/DES`);
+                      }
+                    }}
                   >
                     <span className="terminal-watchlist__symbol" role="gridcell">
                       <strong>{row.symbol}</strong>
-                      <small>{row.name}</small>
+                      <small title={row.name}>{row.name}</small>
                     </span>
-                    <span role="gridcell">{row.sector}</span>
-                    <span role="gridcell">{row.bid}</span>
-                    <span role="gridcell">{row.ask}</span>
-                    <span role="gridcell">{row.last}</span>
+                    <span role="gridcell" title={row.sector}>
+                      {row.sector}
+                    </span>
+                    <span role="gridcell" className="terminal-grid-numeric">
+                      {row.bid}
+                    </span>
+                    <span role="gridcell" className="terminal-grid-numeric">
+                      {row.ask}
+                    </span>
+                    <span role="gridcell" className="terminal-grid-numeric">
+                      {row.last}
+                    </span>
                     <span
                       role="gridcell"
-                      className={toneClass("terminal-change", row.change)}
+                      className={`${toneClass("terminal-change", row.change)} terminal-grid-numeric`}
                     >
                       {formatPct(row.change)}
                     </span>
@@ -845,9 +1014,13 @@ export function Welcome() {
                         />
                       )}
                     </span>
-                    <span role="gridcell">{row.volume}</span>
-                    <span role="gridcell">{row.notional}</span>
-                  </button>
+                    <span role="gridcell" className="terminal-grid-numeric">
+                      {row.volume}
+                    </span>
+                    <span role="gridcell" className="terminal-grid-numeric">
+                      {row.notional}
+                    </span>
+                  </div>
                 ))}
               </div>
             </div>
@@ -873,10 +1046,11 @@ export function Welcome() {
                     key={code}
                     type="button"
                     className="terminal-command"
+                    aria-label={`Open ${code} — ${fn.name}`}
                     onClick={() => navigate(`/fn/${code}`)}
                   >
                     <strong>{code}</strong>
-                    <span>{shortName(fn)}</span>
+                    <span title={fn.name}>{shortName(fn)}</span>
                     {nativeCodes.has(code) && <em>N</em>}
                   </button>
                 );
@@ -914,18 +1088,30 @@ export function Welcome() {
 }
 
 function MoverRow({ mover }: { mover: MoverRowData }) {
+  // Demo rows carry no real tape — show the missing sentinel for both price
+  // and change so the placeholder never looks like a live quote. The DEMO
+  // pill + neutral tone make the placeholder state unambiguous.
+  const changeDisplay = mover.demo ? formatMissing : formatPct(mover.change);
   return (
     <button
       type="button"
       className="terminal-mover-row"
       data-testid={`mover-row-${mover.symbol}`}
       data-demo={mover.demo ? "1" : "0"}
+      aria-label={`View ${mover.symbol} — ${mover.price}, ${changeDisplay}${
+        mover.demo ? " (demo placeholder)" : ""
+      }`}
       onClick={() => navigate(`/symbol/${mover.symbol}/DES`)}
     >
       <strong>{mover.symbol}</strong>
-      <span>{mover.price}</span>
-      <span className={toneClass("terminal-change", mover.change)}>
-        {formatPct(mover.change)}
+      <span className="terminal-grid-numeric">{mover.price}</span>
+      <span
+        className={`${toneClass(
+          "terminal-change",
+          mover.demo ? 0 : mover.change,
+        )} terminal-grid-numeric`}
+      >
+        {changeDisplay}
       </span>
       {mover.demo && (
         <span
@@ -948,8 +1134,9 @@ function MoverRow({ mover }: { mover: MoverRowData }) {
 
 /**
  * Renders the demo gainers/losers slot when MOST isn't registered. Splits the
- * DEMO_MOVERS array so users see both sides of the panel even though every
- * entry's `change` is 0 by construction.
+ * DEMO_MOVERS array so users see both sides of the panel. Demo rows keep
+ * `change: 0` (no fabricated tick); MoverRow renders the missing sentinel for
+ * the change column so the placeholder never looks like a real move.
  */
 function DemoMoverRows({ kind }: { kind: "gainer" | "loser" }) {
   const slice = kind === "gainer"
@@ -958,10 +1145,7 @@ function DemoMoverRows({ kind }: { kind: "gainer" | "loser" }) {
   return (
     <>
       {slice.map((m) => (
-        <MoverRow
-          key={`demo-${kind}-${m.symbol}`}
-          mover={{ ...m, change: kind === "gainer" ? 0.01 : -0.01 }}
-        />
+        <MoverRow key={`demo-${kind}-${m.symbol}`} mover={m} />
       ))}
     </>
   );
@@ -982,7 +1166,7 @@ function ExposureLine({
       <div>
         <strong>{label}</strong>
         <span>
-          {money(value)} / {pct.toFixed(1)}%
+          {formatCurrency(value, { compact: true })} / {pct.toFixed(1)}%
         </span>
       </div>
       <span className="terminal-exposure__track" aria-hidden>
@@ -1033,8 +1217,8 @@ export function buildPortfolioWatchRows(
         change: effectiveChange,
         trend: [],
         volume:
-          position.weight_pct != null ? `${position.weight_pct.toFixed(1)}% wt` : "—",
-        notional: notionalValue != null ? signedMoney(notionalValue) : "—",
+          position.weight_pct != null ? `${position.weight_pct.toFixed(1)}% wt` : formatMissing,
+        notional: notionalValue != null ? formatSignedCurrency(notionalValue) : formatMissing,
       };
     });
 }
@@ -1067,8 +1251,11 @@ export function buildSavedWatchRows(
       last: price != null ? formatPrice(price) : "—",
       change: changePct,
       trend: [],
-      volume: quote?.snapshot?.volume != null ? compactVolume(quote.snapshot.volume) : "—",
-      notional: notionalValue != null ? signedMoney(notionalValue) : "—",
+      volume:
+        quote?.snapshot?.volume != null
+          ? formatCompactNumber(quote.snapshot.volume, { fixedDigits: 2 })
+          : formatMissing,
+      notional: notionalValue != null ? formatSignedCurrency(notionalValue) : formatMissing,
     };
   });
 }
@@ -1093,17 +1280,6 @@ export function buildMarketTiles(
       demo: false,
     };
   });
-}
-
-/** Format a numeric volume into "1.2B" / "230.4M" style without inventing data. */
-function compactVolume(v: number): string {
-  if (!Number.isFinite(v)) return "—";
-  const abs = Math.abs(v);
-  if (abs >= 1e12) return `${(abs / 1e12).toFixed(2)}T`;
-  if (abs >= 1e9) return `${(abs / 1e9).toFixed(2)}B`;
-  if (abs >= 1e6) return `${(abs / 1e6).toFixed(2)}M`;
-  if (abs >= 1e3) return `${(abs / 1e3).toFixed(1)}K`;
-  return abs.toFixed(0);
 }
 
 /**
@@ -1215,21 +1391,6 @@ function sentimentEyebrow({
   return `SENTIMENT / 24H${suffix}`;
 }
 
-function money(value?: number | null): string {
-  if (value == null || !Number.isFinite(value)) return "-";
-  const sign = value < 0 ? "-" : "";
-  const abs = Math.abs(value);
-  if (abs >= 1e12) return `${sign}$${(abs / 1e12).toFixed(2)}T`;
-  if (abs >= 1e9) return `${sign}$${(abs / 1e9).toFixed(2)}B`;
-  if (abs >= 1e6) return `${sign}$${(abs / 1e6).toFixed(2)}M`;
-  return `${sign}$${abs.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
-}
-
-function signedMoney(value?: number | null): string {
-  if (value == null || !Number.isFinite(value)) return "-";
-  return `${value >= 0 ? "+" : "-"}${money(Math.abs(value))}`;
-}
-
 /**
  * Eyebrow session label is the canonical NYSE state machine
  * (`lib/market-state.ts`). Replaces the heuristic UTC-hour rule that lit
@@ -1277,14 +1438,16 @@ function NewsflowPanel({ ready, tz }: { ready: boolean; tz: string }) {
               : "live RSS"}
         </span>
       </div>
-      <div className="terminal-newsflow" role="list">
+      <div className="terminal-newsflow" role="list" aria-live="polite" aria-busy={top.state === "loading"}>
         {top.state === "idle" && (
-          <div className="terminal-newsflow__placeholder">
+          <div className="terminal-newsflow__placeholder" role="status">
             Engine offline — start the sidecar to stream live headlines.
           </div>
         )}
         {top.state === "loading" && !items.length && (
-          <div className="terminal-newsflow__placeholder">Fetching headlines…</div>
+          <div className="terminal-newsflow__placeholder" role="status">
+            Fetching headlines…
+          </div>
         )}
         {top.state === "error" && (
           <div className="terminal-newsflow__placeholder terminal-newsflow__placeholder--error">
@@ -1316,32 +1479,35 @@ function NewsflowPanel({ ready, tz }: { ready: boolean; tz: string }) {
               </span>
             </>
           );
+          // role="listitem" must wrap the interactive element, not sit on it
+          // — putting it on the <a>/<button> overrides their link/button
+          // semantics. Keep the list item as a div and nest the control.
           if (href) {
             return (
-              <a
-                key={key}
-                role="listitem"
-                href={href}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="terminal-newsflow__item"
-                title={title}
-              >
-                {content}
-              </a>
+              <div key={key} role="listitem" className="terminal-newsflow__listitem">
+                <a
+                  href={href}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="terminal-newsflow__item"
+                  title={title}
+                >
+                  {content}
+                </a>
+              </div>
             );
           }
           return (
-            <button
-              key={key}
-              role="listitem"
-              type="button"
-              className="terminal-newsflow__item"
-              onClick={() => navigate("/fn/TOP")}
-              title={title}
-            >
-              {content}
-            </button>
+            <div key={key} role="listitem" className="terminal-newsflow__listitem">
+              <button
+                type="button"
+                className="terminal-newsflow__item"
+                onClick={() => navigate("/fn/TOP")}
+                title={title}
+              >
+                {content}
+              </button>
+            </div>
           );
         })}
       </div>

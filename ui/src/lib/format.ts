@@ -52,16 +52,48 @@ export function formatCurrency(
   return fmt.format(n);
 }
 
+export interface FormatCompactOptions {
+  /**
+   * Force a fixed number of fractional digits (both min and max). Use this
+   * for grid columns that must not jitter as magnitudes change — e.g. a
+   * volume column rendering "3.50M" / "1.20B" with stable width. When
+   * omitted, trailing zeros are trimmed ("3.5M").
+   */
+  fixedDigits?: number;
+}
+
 /**
  * Format a number using compact notation with up to 2 decimals.
  * Used for volumes, counts, and other non-currency magnitudes.
  */
-export function formatCompactNumber(n: number | null | undefined): string {
+export function formatCompactNumber(
+  n: number | null | undefined,
+  opts: FormatCompactOptions = {},
+): string {
   if (!isFiniteNumber(n)) return formatMissing;
+  const { fixedDigits } = opts;
   return new Intl.NumberFormat("en-US", {
     notation: "compact",
-    maximumFractionDigits: 2,
+    maximumFractionDigits: fixedDigits ?? 2,
+    ...(fixedDigits != null ? { minimumFractionDigits: fixedDigits } : {}),
   }).format(n);
+}
+
+export type FormatSignedCurrencyOptions = FormatCurrencyOptions;
+
+/**
+ * Currency with an explicit leading "+" / "-" sign. Wraps
+ * {@link formatCurrency} so leader/laggard and 1D-notional cells share one
+ * rounding + sentinel contract. Zero renders without a sign.
+ */
+export function formatSignedCurrency(
+  n: number | null | undefined,
+  opts: FormatSignedCurrencyOptions = {},
+): string {
+  if (!isFiniteNumber(n)) return formatMissing;
+  if (n === 0) return formatCurrency(0, opts);
+  const sign = n > 0 ? "+" : "-";
+  return `${sign}${formatCurrency(Math.abs(n), opts)}`;
 }
 
 export interface FormatPercentOptions {

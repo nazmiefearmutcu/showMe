@@ -7464,6 +7464,24 @@
   font-weight: 700;
 }
 
+.terminal-action--retry {
+  height: auto;
+  letter-spacing: 0.4px;
+  margin-top: 8px;
+  padding: 4px 10px;
+}
+
+/*
+ * Tabular monospace figures for every numeric grid cell so live updates
+ * don't reflow column widths (each digit shares one advance width). Reuses
+ * the --font-mono token; --font-mono falls back to the UI stack only if the
+ * token is unset.
+ */
+.terminal-grid-numeric {
+  font-family: var(--font-mono, inherit);
+  font-variant-numeric: tabular-nums;
+}
+
 .terminal-market-strip {
   border: 1px solid var(--terminal-border);
   display: grid;
@@ -7819,6 +7837,15 @@
 .terminal-newsflow::-webkit-scrollbar-thumb {
   background: var(--terminal-border);
   border-radius: 3px;
+}
+
+/*
+ * The list-item wrapper exists only to carry role="listitem" without
+ * stripping the nested <a>/<button> semantics. display: contents removes it
+ * from the flex flow so the item still renders as a direct column child.
+ */
+.terminal-newsflow__listitem {
+  display: contents;
 }
 
 .terminal-newsflow__item {

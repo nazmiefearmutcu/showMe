@@ -6,6 +6,7 @@ import {
   formatNumber,
   formatPercent,
   formatPrice,
+  formatSignedCurrency,
   formatSignedDelta,
 } from "./format";
 
@@ -43,6 +44,30 @@ describe("formatCompactNumber", () => {
 
   it("returns em-dash for non-finite", () => {
     expect(formatCompactNumber(Number.NaN)).toBe(formatMissing);
+  });
+
+  it("pads to fixed digits for jitter-free grid columns", () => {
+    expect(formatCompactNumber(3_500_000, { fixedDigits: 2 })).toBe("3.50M");
+    expect(formatCompactNumber(1_200_000_000, { fixedDigits: 2 })).toBe("1.20B");
+  });
+});
+
+describe("formatSignedCurrency", () => {
+  it("adds a leading + for positive values", () => {
+    expect(formatSignedCurrency(4.39)).toBe("+$4");
+  });
+
+  it("adds a leading - for negative values (sign before symbol)", () => {
+    expect(formatSignedCurrency(-16.5)).toMatch(/^-\$1[67]$/);
+  });
+
+  it("renders zero without a sign", () => {
+    expect(formatSignedCurrency(0)).toBe("$0");
+  });
+
+  it("returns em-dash for non-finite", () => {
+    expect(formatSignedCurrency(null)).toBe(formatMissing);
+    expect(formatSignedCurrency(Number.NaN)).toBe(formatMissing);
   });
 });
 
