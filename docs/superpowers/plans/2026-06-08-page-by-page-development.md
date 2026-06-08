@@ -52,7 +52,7 @@ Each task is one page. Execute it as a **subagent-driven-development** mini-cycl
 
 - [x] **Task 9: GEX — Gamma Exposure.** Pane: `ui/src/functions/GEX.tsx`. Backend: `backend/showme/engine/functions/derivative/gex.py`. Focus: gamma profile chart, strikes data sufficiency, dealer-positioning display.
 - [x] **Task 10: FA — Financial Analysis.** Pane: `ui/src/functions/FA.tsx`. Backend: fundamentals provider (SEC EDGAR). Focus: statements, ratios, real filings data, table quality.
-- [ ] **Task 11: DES — Description.** Pane: `ui/src/functions/DES.tsx`. Backend: company/instrument description. Focus: profile completeness, formatting.
+- [x] **Task 11: DES — Description.** Pane: `ui/src/functions/DES.tsx`. Backend: company/instrument description. Focus: profile completeness, formatting.
 - [ ] **Task 12: BTMM — Rates Environment.** Pane: `ui/src/functions/BTMM.tsx`. Backend: `backend/showme/engine/functions/macro/btmm.py`. Focus: rates/curve display, freshness.
 - [ ] **Task 13: MOST — Most Active.** Pane: `ui/src/functions/MOST.tsx`. Backend: movers provider. Focus: real most-active data, ranking table, refresh.
 
