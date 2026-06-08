@@ -449,7 +449,6 @@ function TimezonePicker() {
         <div
           role="radiogroup"
           aria-labelledby="prefs-tz-mode-label"
-          aria-label={t("preferences.appearance.timezone.mode")}
           className="prefs-tz__chips"
         >
           <button

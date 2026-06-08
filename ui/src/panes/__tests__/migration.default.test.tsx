@@ -21,6 +21,7 @@ vi.mock("@/lib/tauri", () => ({
 }));
 
 beforeEach(() => {
+  localStorage.clear();
   useAppStore.setState({
     sidecarStatus: "booting",
     sidecarPort: null,

@@ -128,7 +128,7 @@ export function AboutSection({
           <div
             className="about-card-row about-card-row--block"
             role={check.error ? "alert" : "status"}
-            aria-live="polite"
+            aria-live={check.error ? "assertive" : "polite"}
           >
             <div className="u-flex u-gap-8 u-items-center">
               <Pill
