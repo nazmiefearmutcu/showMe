@@ -17,9 +17,11 @@ import {
   PaneFooter,
   PaneHeader,
   Pill,
+  Skeleton,
   StatCard,
 } from "@/design-system";
 import { runFunction, FunctionCallError } from "@/lib/functions";
+import { formatMissing } from "@/lib/format";
 import { defaultSymbolForFunction } from "@/lib/symbols";
 import { useAppStore } from "@/lib/store";
 import { isInTauri } from "@/lib/tauri";
@@ -260,17 +262,12 @@ export function NIPane({ code, symbol }: FunctionPaneProps) {
   // Auto-refresh interval lives in `useVisibilityTick(REFRESH_MS)` above —
   // it pauses on hidden tabs and resumes on focus. No local setInterval.
 
-  const veryfinderTweetTarget = useMemo(
-    () =>
-      articles?.reduce(
-        (sum, article) => sum + recommendedVeryfinderSampleForNews(article, topicMode ? undefined : effectiveSymbol),
-        0,
-      ) ?? 0,
-    [articles, topicMode, effectiveSymbol],
-  );
-  const veryfinderIsBlocking =
+  // P1.3 honesty: Veryfinder no longer gates the headline list, so the
+  // load state reflects only the real headline fetch. The social column shows
+  // its own inline "scoring…" indicator while `veryfinderState === "loading"`.
+  const veryfinderScoring =
     Boolean(articles?.length) && (veryfinderState === "idle" || veryfinderState === "loading");
-  const effectiveState: LoadState = state === "ok" && veryfinderIsBlocking ? "loading" : state;
+  const effectiveState: LoadState = state;
 
   // Aggregate sentiment — average of veryfinder direction scores, mapped -1..+1
   const sentimentScore = useMemo(() => {
@@ -328,6 +325,16 @@ export function NIPane({ code, symbol }: FunctionPaneProps) {
 
   const timeline = useMemo(() => buildTimeline(sortedArticles, veryfinderMap), [sortedArticles, veryfinderMap]);
 
+  // P1.1 honesty: when every row the backend returned is a
+  // provider-unavailable / no-live-source placeholder, do NOT render those
+  // synthetic cards as real headlines. Surface an honest status banner
+  // instead. Real headlines (any non-placeholder row present) render normally.
+  const providersUnavailable = isProviderUnavailableFeed(articles);
+
+  // P1.3 honesty: headlines render as soon as they're fetched. The feed is
+  // no longer gated on the Veryfinder social-signal service — that column
+  // shows its own inline "scoring…" indicator instead. So the body only
+  // waits on the headline fetch (`state`), not on `veryfinderIsBlocking`.
   const body = !requestLabel ? (
     <Empty
       title={topicMode ? "Enter a topic" : "Pick a symbol"}
@@ -336,13 +343,24 @@ export function NIPane({ code, symbol }: FunctionPaneProps) {
     />
   ) : error ? (
     <Empty title="Function error" body={error} icon="!" />
-  ) : effectiveState === "loading" || articles == null ? (
-    <LoadingNews
-      label={requestLabel}
-      phase={veryfinderIsBlocking ? "veryfinder" : "headlines"}
-      headlineCount={articles?.length ?? 0}
-      tweetTarget={veryfinderTweetTarget}
-    />
+  ) : state === "loading" || articles == null ? (
+    <LoadingNews label={requestLabel} />
+  ) : providersUnavailable ? (
+    <div role="status" aria-live="polite" style={providerDownShell}>
+      <Empty
+        title="News providers unavailable"
+        body="No live headlines right now — every news source ShowMe tried is temporarily down or rate-limited. Try again in a moment."
+        icon="⚠"
+        action={
+          <RefreshButton
+            loading={false}
+            onClick={() => setTick((t) => t + 1)}
+            title="Retry headlines"
+            label="Retry"
+          />
+        }
+      />
+    </div>
   ) : sortedArticles.length === 0 ? (
     <Empty title="No headlines yet" body={`No news payload for ${requestLabel} in last ${limit}.`} />
   ) : (
@@ -373,12 +391,14 @@ export function NIPane({ code, symbol }: FunctionPaneProps) {
           title={topicMode ? `News intelligence — ${topicText.trim() || "topic"}` : `Company news — ${effectiveSymbol ?? ""}`}
           subtitle={
             effectiveState === "loading" && requestLabel
-              ? veryfinderIsBlocking
-                ? `scanning evidence for ${requestLabel} · ${articles?.length ?? 0} headline(s)`
-                : `loading ${requestLabel} · fetching latest ${FETCH_NEWS_LIMIT}`
-              : articles
-                ? `${Math.min(articles.length, limit)}/${articles.length} shown`
-                : "polling every 90s"
+              ? `loading ${requestLabel} · fetching latest ${FETCH_NEWS_LIMIT}`
+              : providersUnavailable
+                ? "news providers unavailable"
+                : veryfinderScoring && articles?.length
+                  ? `${Math.min(articles.length, limit)}/${articles.length} shown · scoring social signals`
+                  : articles
+                    ? `${Math.min(articles.length, limit)}/${articles.length} shown`
+                    : "polling every 90s"
           }
           trailing={
             <FunctionControlGroup>
@@ -399,8 +419,9 @@ export function NIPane({ code, symbol }: FunctionPaneProps) {
             </FunctionControlGroup>
           }
         />
-        {/* KPI ribbon */}
-        {articles && articles.length > 0 ? (
+        {/* KPI ribbon — hidden when only provider-unavailable placeholders
+            were returned, so synthetic rows never inflate the headline count. */}
+        {articles && articles.length > 0 && !providersUnavailable ? (
           <section style={kpiRibbon}>
             <StatCard
               label="Headlines"
@@ -708,147 +729,29 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
-const NEWS_PIPELINE_STEPS = [
-  {
-    title: "Headlines",
-    status: "fetching",
-    detail: "Live company headlines, source timestamps, direct links.",
-  },
-  {
-    title: "Symbol map",
-    status: "normalizing",
-    detail: "Ticker aliases, company names, crypto suffixes, query terms.",
-  },
-  {
-    title: "Social window",
-    status: "sizing",
-    detail: "Efficient min-tweet target and newest evidence window.",
-  },
-  {
-    title: "Search",
-    status: "probing",
-    detail: "Public web/news/social rows, recency filter, source fallback.",
-  },
-  {
-    title: "Dedupe",
-    status: "hashing",
-    detail: "Unique-account vote, duplicate rows and stale evidence dropped.",
-  },
-  {
-    title: "Inference",
-    status: "scoring",
-    detail: "Sentiment, action, market view, impact label, render payload.",
-  },
-] as const;
-
-const NEWS_PIPELINE_LOGS = [
-  "news.fetch: requesting latest headline batch",
-  "symbol.resolve: matching ticker, aliases, and source tags",
-  "window.size: assigning min tweet target per article",
-  "source.search: querying public web/news/social evidence",
-  "recency.filter: dropping stale rows before scoring",
-  "account.dedupe: one visible vote per source/account",
-  "inference.run: sentiment, action, view, impact",
-  "render.queue: cards update as soon as rows finish",
-] as const;
-
-function LoadingNews({
-  label,
-  phase = "headlines",
-  headlineCount = 0,
-  tweetTarget = 0,
-}: {
-  label: string;
-  phase?: "headlines" | "veryfinder";
-  headlineCount?: number;
-  tweetTarget?: number;
-}) {
-  const waitingForVeryfinder = phase === "veryfinder";
+function LoadingNews({ label }: { label: string }) {
+  // Honest loader: a labelled spinner + skeleton rows. No fabricated
+  // step-by-step "streaming" logs — only the two real phases the page runs
+  // (fetch headlines, then score social signals).
   return (
-    <div aria-live="polite" style={newsLoadShell}>
-      <style>{newsLoadAnimationCss}</style>
-      <div className="showme-news-scanline" />
+    <div role="status" aria-busy="true" aria-live="polite" style={newsLoadShell}>
       <div style={newsLoadHeader}>
+        <span className="ni-load-spinner" aria-hidden="true" />
         <div className="u-min-w-0">
-          <div style={newsLoadKicker}>
-            {waitingForVeryfinder ? "Veryfinder evidence pipeline" : "News + Veryfinder pipeline"}
-          </div>
-          <strong style={newsLoadTitle}>
-            {waitingForVeryfinder ? `Scanning evidence for ${label}` : `Building live view for ${label}`}
-          </strong>
+          <strong style={newsLoadTitle}>Fetching live headlines…</strong>
           <p style={newsLoadText}>
-            {waitingForVeryfinder
-              ? `Headline batch is ready (${headlineCount} rows). Keeping the loading screen open while Veryfinder collects the newest usable evidence, filters stale rows, dedupes sources, and scores every card. Target window: ${tweetTarget} evidence rows.`
-              : "Fetching headlines first, then rolling each item through source search, recency filtering, unique-account dedupe, and sentiment/action inference. Rows appear when each article has enough usable evidence or a clear source-capacity note."}
+            Pulling the latest headlines for {label}, then scoring social signals.
           </p>
         </div>
-        <div style={newsLoadDial} title="Pipeline activity">
-          <span style={newsLoadDialCenter}>VF</span>
-          {Array.from({ length: 12 }).map((_, index) => (
-            <span
-              key={index}
-              className="showme-news-orbit-dot"
-              style={{ transform: `rotate(${index * 30}deg) translateY(-34px)` }}
-            />
-          ))}
-        </div>
       </div>
-
-      <div style={newsLoadRail} className="showme-news-data-rail">
-        <span style={newsLoadRailLabel}>packet rail</span>
-        <span style={newsLoadRailValue}>
-          {waitingForVeryfinder
-            ? "headline batch ready -&gt; newest evidence -&gt; scored cards"
-            : "headline rows -&gt; evidence rows -&gt; scored cards"}
-        </span>
-      </div>
-
-      <div style={newsLoadSteps}>
-        {NEWS_PIPELINE_STEPS.map((step, index) => (
-          <div key={step.title} style={newsLoadStep}>
-            <div style={newsLoadStepIndex}>{index + 1}</div>
-            <div className="u-min-w-0">
-              <strong style={newsLoadStepTitle}>{step.title}</strong>
-              <span style={newsLoadStepStatus}>{step.status}</span>
-              <small style={newsLoadStepDetail}>{step.detail}</small>
-            </div>
+      <div style={newsLoadSkeletonList} aria-hidden="true">
+        {Array.from({ length: 4 }).map((_, index) => (
+          <div key={index} style={newsLoadSkeletonRow}>
+            <Skeleton width="78%" height={12} />
+            <Skeleton width="94%" height={10} />
+            <Skeleton width="40%" height={10} />
           </div>
         ))}
-      </div>
-
-      <div style={newsLoadTelemetryGrid}>
-        <div style={newsLoadTerminal}>
-          <div style={newsLoadTerminalHeader}>
-            <span>live pipeline log</span>
-            <strong>streaming</strong>
-          </div>
-          <div style={newsLoadLogList}>
-            {NEWS_PIPELINE_LOGS.map((line, index) => (
-              <div
-                key={line}
-                className="showme-news-log-line"
-                style={{ animationDelay: `${index * 220}ms` }}
-              >
-                <span>{String(index + 1).padStart(2, "0")}</span>
-                <code>{line}</code>
-              </div>
-            ))}
-          </div>
-        </div>
-        <div style={newsLoadStatusPanel}>
-          <div style={newsLoadStatusRow}>
-            <strong>Why this can take time</strong>
-            <span>Veryfinder waits for usable evidence instead of filling cards with stale rows.</span>
-          </div>
-          <div style={newsLoadStatusRow}>
-            <strong>Slow-source behavior</strong>
-            <span>If a provider is late, ShowMe keeps the search alive, records the source-capacity note, and renders partial rows.</span>
-          </div>
-          <div style={newsLoadStatusRow}>
-            <strong>Freshness rule</strong>
-            <span>Known old evidence is filtered before scoring, so the view stays recent.</span>
-          </div>
-        </div>
       </div>
     </div>
   );
@@ -871,17 +774,46 @@ function ArticleList({
   selectedKey: string;
   onSelect: (key: string) => void;
 }) {
+  // P1.3: the social column scores asynchronously; surface its own inline
+  // status instead of blocking the whole feed.
+  const scoring = veryfinderState === "idle" || veryfinderState === "loading";
   return (
-    <div className="ni-feed-list">
+    <ul
+      className="ni-feed-list"
+      role="list"
+      aria-label="Headlines"
+      aria-live="polite"
+      aria-busy={scoring}
+    >
+      {scoring ? (
+        <li className="ni-feed-scoring" aria-live="polite">
+          <span className="ni-load-spinner ni-load-spinner--sm" aria-hidden="true" />
+          Scoring social signals…
+        </li>
+      ) : null}
       {articles.map((a, i) => {
         const key = articleKey(a, i);
         const veryfinder = veryfinderMap[key];
         const tweetTarget = recommendedVeryfinderSampleForNews(a, fallbackSymbol);
         const isSelected = key === selectedKey;
+        const fullTitle = a.title ?? a.headline ?? "(untitled)";
+        const fullSummary = a.summary ? cleanSummary(a.summary) : "";
+        const sourceLabel = a.source ?? "source";
         return (
-          <article
+          <li
             key={key}
+            role="button"
+            tabIndex={0}
+            aria-pressed={isSelected}
+            aria-label={fullTitle}
             onClick={() => onSelect(key)}
+            onKeyDown={(ev) => {
+              if (ev.key === "Enter" || ev.key === " ") {
+                ev.preventDefault();
+                onSelect(key);
+              }
+            }}
+            className="ni-feed-row"
             style={feedRowStyle(isSelected)}
           >
             <div style={feedRowDot}>
@@ -890,12 +822,14 @@ function ArticleList({
             </div>
             <div className="u-min-w-0">
               <div style={articleHead}>
-                <strong className="ni-feed-title">
-                  {a.title ?? a.headline ?? "(untitled)"}
+                <strong className="ni-feed-title" title={fullTitle}>
+                  {fullTitle}
                 </strong>
               </div>
-              {a.summary ? (
-                <p style={summaryStyle}>{truncate(cleanSummary(a.summary), 180)}</p>
+              {fullSummary ? (
+                <p className="ni-feed-summary" style={summaryStyle} title={fullSummary}>
+                  {fullSummary}
+                </p>
               ) : null}
               <div style={articleMeta}>
                 {a.source ? (
@@ -924,6 +858,7 @@ function ArticleList({
                     key={s}
                     type="button"
                     className="btn btn--ghost"
+                    aria-label={`Navigate to ${s}`}
                     onClick={(ev) => {
                       ev.stopPropagation();
                       setFocusedTarget("DES", s);
@@ -935,12 +870,13 @@ function ArticleList({
                   </button>
                 ))}
                 <span className="u-flex-1" />
-                <span style={tinyMute}>{tsLabel(a) ?? ""}</span>
+                <span style={tinyMute}>{tsLabel(a) ?? formatMissing}</span>
                 {(a.url ?? a.link) ? (
                   <a
                     href={a.url ?? a.link}
                     target="_blank"
                     rel="noopener noreferrer"
+                    aria-label={`Open article at ${sourceLabel} (opens in new tab)`}
                     onClick={(ev) => ev.stopPropagation()}
                     className="ni-feed-source"
                   >
@@ -949,10 +885,10 @@ function ArticleList({
                 ) : null}
               </div>
             </div>
-          </article>
+          </li>
         );
       })}
-    </div>
+    </ul>
   );
 }
 
@@ -1053,6 +989,27 @@ function veryfinderTone(tone?: VeryfinderTone): "positive" | "negative" | "warn"
     return tone;
   }
   return "neutral";
+}
+
+/**
+ * True when the backend returned only synthetic provider-unavailable
+ * placeholders (status `provider_unavailable`, severity `unavailable`, or a
+ * `no_live_source` source marker) — i.e. there are no real headlines to show.
+ * Returns false the moment a single genuine headline is present, so partial
+ * live feeds still render normally.
+ */
+function isProviderUnavailableFeed(articles: NIArticle[] | null): boolean {
+  if (!articles || articles.length === 0) return false;
+  return articles.every((a) => {
+    const status = String((a as { status?: unknown }).status ?? "").toLowerCase();
+    const severity = String(a.severity ?? "").toLowerCase();
+    const source = String(a.source ?? "").toLowerCase();
+    return (
+      status === "provider_unavailable" ||
+      severity === "unavailable" ||
+      source === "no_live_source"
+    );
+  });
 }
 
 function normalize(payload: unknown): NIArticle[] {
@@ -1327,300 +1284,55 @@ const timelineAxis: CSSProperties = {
   letterSpacing: "0.04em",
 };
 
+const providerDownShell: CSSProperties = {
+  display: "grid",
+  placeItems: "center",
+  height: "100%",
+  minHeight: 0,
+  padding: 14,
+};
+
 const newsLoadShell: CSSProperties = {
-  position: "relative",
-  overflow: "hidden",
   display: "grid",
   gap: 14,
   padding: 14,
   margin: 14,
-  border: "1px solid color-mix(in srgb, var(--accent) 42%, transparent)",
+  border: "1px solid var(--border-subtle)",
   borderRadius: "var(--radius-md)",
-  background: [
-    "linear-gradient(135deg, var(--accent-soft), color-mix(in srgb, var(--accent) 5%, transparent))",
-    "radial-gradient(circle at 86% 12%, var(--accent-soft), transparent 24%)",
-    // Session 16 BugHunt: previously baked a raw light-mode overlay
-    // (color-mix with the literal "white" channel) which was invisible
-    // on Papyrus / wrong tone on Matrix. The scrim tokens flip per
-    // preset so the highlight tracks the active theme.
-    "linear-gradient(180deg, var(--scrim-low), transparent)",
-  ].join(", "),
-  boxShadow: "inset 0 1px 0 var(--scrim-low), var(--shadow-elev-3)",
+  background: "linear-gradient(180deg, var(--scrim-low), transparent)",
 };
 
 const newsLoadHeader: CSSProperties = {
   display: "grid",
-  gridTemplateColumns: "minmax(320px, 1fr) 86px",
-  gap: 18,
+  gridTemplateColumns: "20px minmax(0, 1fr)",
+  gap: 12,
   alignItems: "center",
-  position: "relative",
-  zIndex: 1,
-};
-
-const newsLoadKicker: CSSProperties = {
-  fontSize: 10,
-  color: "var(--accent)",
-  textTransform: "uppercase",
-  letterSpacing: "0.08em",
-  fontFamily: "JetBrains Mono, monospace",
 };
 
 const newsLoadTitle: CSSProperties = {
   display: "block",
-  marginTop: 5,
   color: "var(--text-primary)",
-  fontSize: 20,
+  fontSize: 15,
   letterSpacing: 0,
 };
 
 const newsLoadText: CSSProperties = {
-  margin: "8px 0 0",
+  margin: "4px 0 0",
   color: "var(--text-secondary)",
   fontSize: 12,
-  lineHeight: 1.55,
-  maxWidth: 920,
+  lineHeight: 1.5,
 };
 
-const newsLoadDial: CSSProperties = {
-  position: "relative",
-  width: 78,
-  height: 78,
-  borderRadius: "50%",
-  border: "1px solid color-mix(in srgb, var(--accent) 28%, transparent)",
-  background:
-    "radial-gradient(circle, var(--accent-soft), color-mix(in srgb, var(--bg) 45%, transparent) 58%, transparent 60%)",
-  boxShadow: "0 0 22px color-mix(in srgb, var(--accent) 20%, transparent)",
+const newsLoadSkeletonList: CSSProperties = {
   display: "grid",
-  placeItems: "center",
-  animation: "showme-news-dial 4.8s linear infinite",
-};
-
-const newsLoadDialCenter: CSSProperties = {
-  width: 36,
-  height: 36,
-  borderRadius: "50%",
-  display: "grid",
-  placeItems: "center",
-  fontFamily: "JetBrains Mono, monospace",
-  fontSize: 11,
-  color: "var(--accent)",
-  background: "color-mix(in srgb, var(--bg) 36%, transparent)",
-  border: "1px solid color-mix(in srgb, var(--accent) 30%, transparent)",
-  animation: "showme-news-dial-core 1.6s ease-in-out infinite",
-};
-
-const newsLoadRail: CSSProperties = {
-  position: "relative",
-  zIndex: 1,
-  minHeight: 34,
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "space-between",
-  gap: 12,
-  padding: "8px 10px",
-  border: "1px solid color-mix(in srgb, var(--accent) 22%, transparent)",
-  borderRadius: "var(--radius-sm)",
-  background: "color-mix(in srgb, var(--bg) 18%, transparent)",
-  overflow: "hidden",
-};
-
-const newsLoadRailLabel: CSSProperties = {
-  fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
-  color: "var(--accent)",
-  textTransform: "uppercase",
-  letterSpacing: "0.08em",
-};
-
-const newsLoadRailValue: CSSProperties = {
-  fontFamily: "JetBrains Mono, monospace",
-  fontSize: 11,
-  color: "var(--text-secondary)",
-  overflowWrap: "anywhere",
-};
-
-const newsLoadSteps: CSSProperties = {
-  display: "grid",
-  gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))",
-  gap: 8,
-  position: "relative",
-  zIndex: 1,
-};
-
-const newsLoadStep: CSSProperties = {
-  display: "grid",
-  gridTemplateColumns: "28px minmax(0, 1fr)",
-  alignItems: "start",
   gap: 10,
-  minHeight: 78,
+};
+
+const newsLoadSkeletonRow: CSSProperties = {
+  display: "grid",
+  gap: 6,
   padding: "10px 11px",
   border: "1px solid var(--border-subtle)",
   borderRadius: "var(--radius-sm)",
-  // Session 16 BugHunt: scrim tokens make the step card visible under
-  // Papyrus (cream) and Matrix (phosphor) instead of the prior
-  // dark-mode-only white overlay.
-  background: "linear-gradient(180deg, var(--scrim-low), transparent)",
-  color: "var(--text-secondary)",
-  fontSize: 11,
-  boxShadow: "inset 0 1px 0 var(--scrim-low)",
+  background: "var(--surface-1)",
 };
-
-const newsLoadStepIndex: CSSProperties = {
-  width: 24,
-  height: 24,
-  borderRadius: "50%",
-  display: "grid",
-  placeItems: "center",
-  fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
-  color: "var(--accent)",
-  background: "var(--accent-soft)",
-  border: "1px solid color-mix(in srgb, var(--accent) 22%, transparent)",
-};
-
-const newsLoadStepTitle: CSSProperties = {
-  display: "block",
-  color: "var(--text-primary)",
-  fontSize: 11,
-  lineHeight: 1.25,
-  textTransform: "uppercase",
-  letterSpacing: "0.04em",
-};
-
-const newsLoadStepStatus: CSSProperties = {
-  display: "block",
-  marginTop: 4,
-  color: "var(--accent)",
-  fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
-};
-
-const newsLoadStepDetail: CSSProperties = {
-  display: "block",
-  marginTop: 5,
-  color: "var(--text-secondary)",
-  lineHeight: 1.35,
-};
-
-const newsLoadTelemetryGrid: CSSProperties = {
-  position: "relative",
-  zIndex: 1,
-  display: "grid",
-  gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))",
-  gap: 10,
-};
-
-const newsLoadTerminal: CSSProperties = {
-  minHeight: 152,
-  border: "1px solid var(--border-subtle)",
-  borderRadius: "var(--radius-sm)",
-  background: "color-mix(in srgb, var(--bg) 38%, transparent)",
-  overflow: "hidden",
-};
-
-const newsLoadTerminalHeader: CSSProperties = {
-  display: "flex",
-  justifyContent: "space-between",
-  gap: 10,
-  padding: "8px 10px",
-  borderBottom: "1px solid var(--border-subtle)",
-  fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
-  color: "var(--text-mute)",
-  textTransform: "uppercase",
-  letterSpacing: "0.06em",
-};
-
-const newsLoadLogList: CSSProperties = {
-  display: "grid",
-  gap: 5,
-  padding: 10,
-  fontFamily: "JetBrains Mono, monospace",
-  fontSize: 11,
-};
-
-const newsLoadStatusPanel: CSSProperties = {
-  display: "grid",
-  gap: 8,
-  minWidth: 0,
-};
-
-const newsLoadStatusRow: CSSProperties = {
-  display: "grid",
-  gap: 4,
-  padding: "9px 10px",
-  border: "1px solid color-mix(in srgb, var(--warn) 18%, transparent)",
-  borderRadius: "var(--radius-sm)",
-  background: "color-mix(in srgb, var(--warn) 4%, transparent)",
-  color: "var(--text-secondary)",
-  fontSize: 11,
-};
-
-const newsLoadAnimationCss = `
-@keyframes showme-news-rail {
-  from { background-position: 0 0; }
-  to { background-position: 56px 0; }
-}
-@keyframes showme-news-scan {
-  0% { transform: translateY(-100%); opacity: 0; }
-  18% { opacity: 0.18; }
-  100% { transform: translateY(520px); opacity: 0; }
-}
-@keyframes showme-news-dial {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
-}
-@keyframes showme-news-dial-core {
-  0%, 100% { box-shadow: 0 0 0 transparent; }
-  50% { box-shadow: 0 0 18px color-mix(in srgb, var(--accent) 35%, transparent); }
-}
-@keyframes showme-news-log {
-  0%, 18% { opacity: 0.32; transform: translateX(-4px); }
-  35%, 100% { opacity: 1; transform: translateX(0); }
-}
-.showme-news-scanline {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background: linear-gradient(180deg, transparent, var(--accent-soft), transparent);
-  height: 80px;
-  animation: showme-news-scan 4.8s linear infinite;
-}
-.showme-news-orbit-dot {
-  position: absolute;
-  width: 4px;
-  height: 4px;
-  border-radius: 50%;
-  background: color-mix(in srgb, var(--accent) 70%, transparent);
-  box-shadow: 0 0 10px color-mix(in srgb, var(--accent) 55%, transparent);
-}
-.showme-news-data-rail::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  opacity: 0.28;
-  background-image: repeating-linear-gradient(
-    -45deg,
-    transparent,
-    transparent 10px,
-    color-mix(in srgb, var(--accent) 28%, transparent) 10px,
-    color-mix(in srgb, var(--accent) 28%, transparent) 18px
-  );
-  background-size: 56px 56px;
-  animation: showme-news-rail 900ms linear infinite;
-}
-.showme-news-log-line {
-  display: grid;
-  grid-template-columns: 24px minmax(0, 1fr);
-  gap: 9px;
-  color: var(--text-secondary);
-  animation: showme-news-log 1.8s ease-in-out infinite alternate;
-}
-.showme-news-log-line span {
-  color: var(--text-mute);
-}
-.showme-news-log-line code {
-  color: var(--text-secondary);
-  white-space: normal;
-}
-`;
