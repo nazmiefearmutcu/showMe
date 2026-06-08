@@ -63,7 +63,7 @@ Each task is one page. Execute it as a **subagent-driven-development** mini-cycl
 - [x] **Task 16: STRA — Strategy Editor.** Pane: `ui/src/functions/STRA.tsx`. Backend: `backend/showme/strategies`. Focus: editor UX, rule building, save/load, validation.
 - [x] **Task 17: TMPL — Strategy Templates.** Pane: `ui/src/functions/TMPL.tsx`. Backend: `backend/showme/templates`. Focus: template library, preview, instantiate.
 - [x] **Task 18: BOT — Bot Manager.** Pane: `ui/src/functions/BOT.tsx`. Backend: `backend/showme/bots`. Focus: bot list, start/stop, status display.
-- [ ] **Task 19: BOTS — Bot Supervision.** Pane: `ui/src/functions/BOTS.tsx`. Backend: `backend/showme/bots`. Focus: supervision view, health/metrics, controls.
+- [x] **Task 19: BOTS — Bot Supervision.** Pane: `ui/src/functions/BOTS.tsx`. Backend: `backend/showme/bots`. Focus: supervision view, health/metrics, controls.
 - [ ] **Task 20: PERF — Performance.** Pane: `ui/src/functions/PERF.tsx`. Backend: performance/leaderboard. Focus: cumulative perf charts, real metrics, leaderboard table.
 - [ ] **Task 21: BDA — Bot Dev Assistant.** Pane: `ui/src/functions/BDA.tsx`. Backend: `backend/showme/assistant`. Focus: NL→strategy parsing, explanation output quality.
 - [ ] **Task 22: INDX — Indicator Index.** Pane: `ui/src/functions/INDX.tsx`. Backend: `backend/showme/indicators`. Focus: indicator depot, search, descriptions, params.
