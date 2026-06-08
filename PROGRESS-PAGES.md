@@ -4,4 +4,5 @@ Ralph-driven, one page per iteration. Plan: `docs/superpowers/plans/2026-06-08-p
 
 | # | Code | Page | Status | Notes |
 |---|------|------|--------|-------|
-| 1 | HOME | Overview | in_progress | started 2026-06-08 |
+| 1 | HOME | Overview | ✅ done | live movers (live:true), BRIEF wired + honest demo fallback, aria-labels + role=status, div role=row (a11y fix), tabular-nums, centralized formatters; 78 tests pass. commit 749a156 |
+| 2 | WATCH | Live Watchlist | pending | |

@@ -95,3 +95,9 @@ backend/coverage.xml
 ui/coverage/
 .ralph/
 cache/
+
+# ralph/orchestrator scratch (keep page diffs clean)
+.agents/
+/ORIGINAL_REQUEST.md
+/BRIEFING.md
+/handoff.md
