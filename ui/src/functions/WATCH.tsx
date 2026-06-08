@@ -12,7 +12,7 @@
  * offline / error` transport states, and tears sockets/timers down cleanly on
  * symbol change. Sparkline fetch stays local — S03 owns the chart contract.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   DataGrid,
   type DataGridColumn,
@@ -298,15 +298,17 @@ export function WATCHPane({ code }: FunctionPaneProps) {
           if (view.price == null)
             return <span className="u-text-mute">{formatMissing}</span>;
           const tone = (view.changePct ?? 0) >= 0 ? "positive" : "negative";
+          // Row-level DOM stability is guaranteed by rowKey={(r)=>r.symbol} on
+          // the DataGrid (a per-tick React key here would force a remount and
+          // flicker the column). <LiveValue> keeps the SAME node across ticks
+          // and restarts the pulse animation on it (FIX 1) so the cell flashes
+          // on each price update without jitter. Tone drives the red/green
+          // direction via className.
           return (
-            // STABLE key — a per-tick key (fetchedAt/price) forced a DOM
-            // remount every refresh, which flickered the cell. The pulse flash
-            // keys off the `liveCellClass` tone/className change, not the React
-            // key, so a constant key keeps the flash while killing the churn.
-            <span key="last" className={`${liveCellClass(tone)} terminal-grid-numeric`}>
-              {/* Adaptive precision: keeps sub-dollar prices readable. */}
-              {formatPrice(view.price)}
-            </span>
+            <LiveValue
+              value={formatPrice(view.price)}
+              className={`${liveCellClass(tone)} terminal-grid-numeric`}
+            />
           );
         },
       },
@@ -319,12 +321,15 @@ export function WATCHPane({ code }: FunctionPaneProps) {
           const c = quotes[r.symbol]?.changePct;
           if (c == null || !Number.isFinite(c))
             return <span className="u-text-mute">{formatMissing}</span>;
+          // Row identity is anchored by rowKey={(r)=>r.symbol} on the DataGrid;
+          // <LiveValue> restarts the pulse on the stable node keyed on the
+          // changePct value (FIX 1) so the chip flashes per tick without a
+          // remount. `flashKey` drives the animation restart; children render
+          // the DeltaChip unchanged.
           return (
-            // STABLE key — see the "last" cell note. A per-tick key remounted
-            // the chip every refresh.
-            <span key="chg" className="terminal-grid-numeric">
+            <LiveValue className="terminal-grid-numeric" flashKey={c}>
               <DeltaChip value={c} format="percent" fractionDigits={2} />
-            </span>
+            </LiveValue>
           );
         },
       },
@@ -771,6 +776,63 @@ async function fetchSparkline(symbol: string): Promise<SparkPoint[]> {
 function sparkMotionKey(points: SparkPoint[]): string {
   const last = points[points.length - 1];
   return last ? `${points.length}-${last.time}-${last.value}` : "empty";
+}
+
+/**
+ * A live grid cell that flashes the `.showme-live-value` pulse on every value
+ * change WITHOUT remounting (so the column never jitters).
+ *
+ * Why a component: row-level DOM identity is held stable by the DataGrid
+ * (`rowKey={(r)=>r.symbol}`), so this span persists across ticks. A CSS
+ * animation does NOT restart just because the rendered text changes, so we
+ * explicitly restart the pulse on the SAME node via a `useEffect` keyed on the
+ * displayed value. (The old `key="last"`/`key="chg"` props were no-ops — React
+ * only honours `key` on array siblings — and never re-fired the flash.)
+ *
+ * `value` mode renders the text directly and keys the flash off it; `flashKey`
+ * mode renders arbitrary `children` (e.g. a DeltaChip) and keys the flash off
+ * the supplied scalar instead.
+ */
+function LiveValue({
+  value,
+  flashKey,
+  children,
+  className,
+}: {
+  value?: string;
+  flashKey?: string | number | null | undefined;
+  children?: ReactNode;
+  className?: string;
+}) {
+  const ref = useRef<HTMLSpanElement>(null);
+  const restartKey = flashKey !== undefined ? flashKey : value;
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    // Web Animations API path (real browser); guarded for jsdom which lacks it.
+    if (typeof el.getAnimations === "function") {
+      const anims = el.getAnimations();
+      if (anims.length) {
+        anims.forEach((a) => {
+          a.cancel();
+          a.play();
+        });
+        return;
+      }
+    }
+    // Fallback: reflow trick to restart the CSS animation on the same node.
+    el.style.animation = "none";
+    // force reflow
+    void el.offsetWidth;
+    el.style.animation = "";
+  }, [restartKey]);
+
+  return (
+    <span ref={ref} className={className}>
+      {children ?? value}
+    </span>
+  );
 }
 
 function liveCellClass(tone: "positive" | "negative", compact = false): string {

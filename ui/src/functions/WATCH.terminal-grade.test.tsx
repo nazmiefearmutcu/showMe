@@ -11,7 +11,7 @@
  *   - Live-cell stability: the "Last" cell uses a STABLE React key so a new
  *     quote tick updates the value in place instead of remounting (no flicker).
  */
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WATCHPane } from "./WATCH";
 import * as marketData from "@/lib/market-data";
@@ -175,7 +175,7 @@ describe("WATCH — Volume & Notional columns", () => {
 });
 
 describe("WATCH — live Last cell stability", () => {
-  it("updates the Last value in place across two quote ticks (stable key, no remount)", async () => {
+  it("updates the Last value in place across two quote ticks (stable node, no remount)", async () => {
     const spy = vi.spyOn(marketData, "useLiveQuotes");
     spy.mockReturnValue({
       AAPL: makeView({ symbol: "AAPL", price: 200, fetchedAt: 1_000 }),
@@ -187,13 +187,45 @@ describe("WATCH — live Last cell stability", () => {
     const before = container.querySelector(".showme-live-value");
     expect(before?.textContent).toContain("200");
 
-    // New tick: price changes, fetchedAt advances. With a stable key the same
-    // element node persists and only its text content updates.
+    // New tick: price changes, fetchedAt advances. Row identity is anchored by
+    // rowKey={(r)=>r.symbol} on the DataGrid, so the SAME DOM node must persist
+    // across the tick and only its text content updates (no remount/jitter).
+    // The pulse flash is driven by an animation restart on this stable node
+    // (FIX 1) — that side effect isn't observable in jsdom, so we assert node
+    // identity + value change rather than the animation itself.
     spy.mockReturnValue({
       AAPL: makeView({ symbol: "AAPL", price: 201.5, fetchedAt: 2_000 }),
     });
     rerender(<WATCHPane code="WATCH" symbol={undefined} />);
     const after = container.querySelector(".showme-live-value");
     expect(after?.textContent).toContain("201.50");
+    // Same physical DOM node — value changed in place, no column churn.
+    expect(after).toBe(before);
+  });
+});
+
+describe("WATCH — Undo banner accessibility", () => {
+  it("exposes the Removed/Undo banner as role=alert with assertive aria-live", async () => {
+    vi.spyOn(marketData, "useLiveQuotes").mockReturnValue({
+      AAPL: makeView({ symbol: "AAPL" }),
+    });
+    // Removing a symbol persists via lib/watchlist.removeSymbol — stub it so
+    // the remove flow resolves to an empty list and surfaces the Undo banner.
+    vi.spyOn(watchlist, "removeSymbol").mockResolvedValue([]);
+    render(<WATCHPane code="WATCH" symbol={undefined} />);
+    await screen.findByRole("button", { name: "AAPL" });
+
+    fireEvent.click(
+      screen.getByLabelText("Remove AAPL from watchlist"),
+    );
+
+    const banner = await screen.findByRole("alert");
+    expect(banner).toBeInTheDocument();
+    expect(banner).toHaveTextContent(/Removed\s+AAPL/);
+    expect(banner).toHaveAttribute("aria-live", "assertive");
+    // The Undo affordance lives inside the alert banner.
+    expect(
+      screen.getByRole("button", { name: "Undo" }),
+    ).toBeInTheDocument();
   });
 });
