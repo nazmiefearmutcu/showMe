@@ -128,6 +128,23 @@ describe("ALRT evaluation loop", () => {
     expect(toast.info).toHaveBeenCalledTimes(1);
   });
 
+  it("an above alert does NOT fire on first observation when already above threshold", async () => {
+    await seed({ symbol: "TSLA", direction: "above", threshold: 200 });
+    const fq = fetchQuote as ReturnType<typeof vi.fn>;
+    // First-ever observation is already above the threshold — no prior value,
+    // so there is no not-triggered→triggered edge and it must NOT fire.
+    fq.mockResolvedValue(quote("TSLA", 250));
+
+    await mountPane();
+    expect(screen.getByText("TSLA")).toBeInTheDocument();
+
+    await advancePoll(); // 250 — already above on first sight, must NOT fire
+    expect(toast.info).not.toHaveBeenCalled();
+
+    await advancePoll(); // 250 — still above, still no edge
+    expect(toast.info).not.toHaveBeenCalled();
+  });
+
   it("an above alert does NOT fire while it stays armed (below threshold)", async () => {
     await seed({ symbol: "MSFT", direction: "above", threshold: 500 });
     const fq = fetchQuote as ReturnType<typeof vi.fn>;

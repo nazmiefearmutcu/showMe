@@ -298,6 +298,7 @@ export function ALRTPane({ code }: FunctionPaneProps) {
           Number.isFinite(lastFired) && now - lastFired < FIRE_COOLDOWN_MS;
         if (inCooldown) continue;
         await fireAlert(row);
+        if (cancelled) break;
       }
     })();
 
