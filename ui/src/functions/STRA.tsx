@@ -4,7 +4,7 @@
  * Left: list of saved strategies + New. Right: form with indicators,
  * entry/exit rules, timeframe, position sizing + Save + Preview.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import {
   useStrategyStore,
   type IndicatorRef, type Rule, type StrategySpec,
@@ -16,9 +16,17 @@ import {
   TIMEFRAMES,
   validateOperand,
 } from "@/lib/validators";
-import { ConfirmDialog } from "@/design-system";
+import { ConfirmDialog, Empty, Skeleton } from "@/design-system";
 
 const PRICE_FIELDS = ["close", "open", "high", "low", "volume"];
+
+/** P4 DISPLAY — shared bordered-panel style for the Entry / Exit rule groups. */
+const RULE_GROUP_STYLE: CSSProperties = {
+  border: "1px solid var(--border-card)",
+  borderRadius: "var(--radius-md)",
+  background: "var(--surface-2)",
+  padding: 8,
+};
 
 /** Round 24 — typed shape for the pending-confirm intent. */
 type PendingConfirm =
@@ -32,6 +40,8 @@ export function STRAPane() {
   const lastPreview = useStrategyStore((s) => s.lastPreview);
   const error = useStrategyStore((s) => s.error);
   const removing = useStrategyStore((s) => s.removing);
+  // P5 — drive the sidebar empty / loading states off the real `loading` flag.
+  const loading = useStrategyStore((s) => s.loading);
   // Round 24 CRITICAL — Save guard. `saving` short-circuits double-click.
   const saving = useStrategyStore((s) => s.saving);
   // Round 24 HIGH — Preview guard.
@@ -100,19 +110,32 @@ export function STRAPane() {
                     border: "none", cursor: "pointer",
                   }}>
             <div><strong>{m.name || "(unnamed)"}</strong></div>
-            <div style={{ fontSize: 10, color: "var(--fg-2)" }}>{m.timeframe}</div>
+            <div style={{ fontSize: 10, color: "var(--text-secondary)" }}>{m.timeframe}</div>
           </button>
         ))}
-        {list.length === 0 && (
-          <div style={{ color: "var(--fg-2)", fontSize: 11, padding: 8 }}>
-            Henüz strateji yok.
+        {/* P5 — loading placeholder while the list is in flight + still empty. */}
+        {loading && list.length === 0 && (
+          <div data-testid="stra-list-loading"
+               style={{ display: "flex", flexDirection: "column", gap: 8, padding: 8 }}>
+            <Skeleton height={28} />
+            <Skeleton height={28} />
+            <Skeleton height={28} />
+          </div>
+        )}
+        {/* P5 — clear empty-state + CTA when there are genuinely no strategies. */}
+        {!loading && list.length === 0 && (
+          <div data-testid="stra-list-empty">
+            <Empty
+              title="Henüz strateji yok"
+              body="Yukarıdaki + Yeni strateji ile ilk stratejini oluştur."
+            />
           </div>
         )}
       </div>
 
       <div style={{ overflowY: "auto", padding: 16 }}>
         {!draft && (
-          <div style={{ color: "var(--fg-2)" }}>
+          <div style={{ color: "var(--text-secondary)" }}>
             Soldan bir strateji seç ya da <strong>+ Yeni strateji</strong>.
           </div>
         )}
@@ -145,7 +168,7 @@ export function STRAPane() {
             </label>
             {timeframeUnknown && (
               <div data-testid="stra-field-err-timeframe"
-                   style={{ color: "var(--accent-err)", fontSize: 11 }}>
+                   style={{ color: "var(--negative)", fontSize: 11 }}>
                 Bilinmeyen timeframe: "{draft.timeframe}". Listeden seç.
               </div>
             )}
@@ -168,7 +191,7 @@ export function STRAPane() {
                   }}
                     style={{
                       width: 100,
-                      border: isDup ? "1px solid var(--accent-err)" : undefined,
+                      border: isDup ? "1px solid var(--negative)" : undefined,
                     }}
                     title={isDup ? "Alias başka bir indikatörde de kullanılıyor — benzersiz olmalı." : undefined}
                     data-testid={`stra-indicator-alias-${idx}`}
@@ -178,50 +201,61 @@ export function STRAPane() {
                     const refs = [...(draft.indicators ?? [])];
                     refs[idx] = { ...refs[idx], id: e.target.value };
                     setField("indicators", refs);
-                  }}>
+                  }} aria-label={`Indicator type ${r.alias || idx}`}>
                     {catalogEntries.map((c) => <option key={c.id} value={c.id}>{c.display_name}</option>)}
                   </select>
-                  <button onClick={() => {
-                    const refs = (draft.indicators ?? []).filter((_, i) => i !== idx);
-                    setField("indicators", refs);
-                  }}>×</button>
+                  <button
+                    aria-label={`Remove indicator ${r.alias || idx}`}
+                    onClick={() => {
+                      const refs = (draft.indicators ?? []).filter((_, i) => i !== idx);
+                      setField("indicators", refs);
+                    }}>×</button>
                 </div>
               );
             })}
             {aliasDupIndices.size > 0 && (
               <div data-testid="stra-field-err-alias-dup"
-                   style={{ color: "var(--accent-err)", fontSize: 11 }}>
+                   style={{ color: "var(--negative)", fontSize: 11 }}>
                 Indikatör alias'ları benzersiz olmalı.
               </div>
             )}
 
-            <h4>Entry kuralları (logic:{" "}
-              <select value={draft.entry_logic ?? "all"}
-                      onChange={(e) => setField("entry_logic", e.target.value as "all" | "any")}>
-                <option value="all">tümü</option>
-                <option value="any">herhangi</option>
-              </select>)
-            </h4>
-            <RulesEditor
-              rules={draft.entry_rules ?? []}
-              onChange={(v) => setField("entry_rules", v)}
-              operandOptions={dedupeOperands(operandOptions)}
-              testIdPrefix="stra-entry"
-            />
+            {/* P4 DISPLAY — group Entry rules in a bordered panel so it is
+                clear which rules + which logic selector belong together. */}
+            <section data-testid="stra-entry-group" style={RULE_GROUP_STYLE}>
+              <h4 style={{ margin: "0 0 6px" }}>Entry kuralları (logic:{" "}
+                <select value={draft.entry_logic ?? "all"}
+                        aria-label="Entry logic"
+                        onChange={(e) => setField("entry_logic", e.target.value as "all" | "any")}>
+                  <option value="all">tümü</option>
+                  <option value="any">herhangi</option>
+                </select>)
+              </h4>
+              <RulesEditor
+                rules={draft.entry_rules ?? []}
+                onChange={(v) => setField("entry_rules", v)}
+                operandOptions={dedupeOperands(operandOptions)}
+                testIdPrefix="stra-entry"
+              />
+            </section>
 
-            <h4>Exit kuralları (logic:{" "}
-              <select value={draft.exit_logic ?? "any"}
-                      onChange={(e) => setField("exit_logic", e.target.value as "all" | "any")}>
-                <option value="all">tümü</option>
-                <option value="any">herhangi</option>
-              </select>)
-            </h4>
-            <RulesEditor
-              rules={draft.exit_rules ?? []}
-              onChange={(v) => setField("exit_rules", v)}
-              operandOptions={dedupeOperands(operandOptions)}
-              testIdPrefix="stra-exit"
-            />
+            {/* P4 DISPLAY — Exit rules in their own bordered panel. */}
+            <section data-testid="stra-exit-group" style={RULE_GROUP_STYLE}>
+              <h4 style={{ margin: "0 0 6px" }}>Exit kuralları (logic:{" "}
+                <select value={draft.exit_logic ?? "any"}
+                        aria-label="Exit logic"
+                        onChange={(e) => setField("exit_logic", e.target.value as "all" | "any")}>
+                  <option value="all">tümü</option>
+                  <option value="any">herhangi</option>
+                </select>)
+              </h4>
+              <RulesEditor
+                rules={draft.exit_rules ?? []}
+                onChange={(v) => setField("exit_rules", v)}
+                operandOptions={dedupeOperands(operandOptions)}
+                testIdPrefix="stra-exit"
+              />
+            </section>
 
             <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
               <button
@@ -234,6 +268,19 @@ export function STRAPane() {
                 }}
                 disabled={
                   saving || !dirty || aliasDupIndices.size > 0 || timeframeUnknown
+                }
+                // P3 A11Y — explain WHY Save is disabled (duplicate aliases /
+                // invalid timeframe / no unsaved changes / save in flight).
+                title={
+                  saving
+                    ? "Kaydediliyor…"
+                    : aliasDupIndices.size > 0
+                      ? "Indikatör alias'ları benzersiz olmalı."
+                      : timeframeUnknown
+                        ? "Geçersiz timeframe — listeden seç."
+                        : !dirty
+                          ? "Kaydedilecek değişiklik yok."
+                          : undefined
                 }>
                 {saving ? "Kaydediliyor..." : "Kaydet"}
               </button>
@@ -264,13 +311,14 @@ export function STRAPane() {
               })()}
               {(!draft.id || dirty) && (
                 <span data-testid="stra-preview-hint"
-                      style={{ fontSize: 11, color: "var(--fg-2)", alignSelf: "center" }}>
+                      style={{ fontSize: 11, color: "var(--text-secondary)", alignSelf: "center" }}>
                   {!draft.id ? "(Preview için önce kaydet)" : "(Önce kaydet)"}
                 </span>
               )}
             {draft.id && (
                 <button
                   data-testid="stra-sil-button"
+                  aria-label="Delete strategy"
                   disabled={removing}
                   onClick={() => {
                     // Round 24 CRITICAL 14 — replace blocking window.confirm
@@ -279,7 +327,7 @@ export function STRAPane() {
                     if (removing) return;
                     setPendingConfirm({ kind: "delete", id: draft.id! });
                   }}
-                  style={{ marginLeft: "auto", color: "var(--accent-err)" }}>
+                  style={{ marginLeft: "auto", color: "var(--negative)" }}>
                   {removing ? "Siliniyor..." : "Sil"}
                 </button>
               )}
@@ -287,7 +335,7 @@ export function STRAPane() {
 
             {error && (
               <div data-testid="stra-pane-error"
-                   style={{ color: "var(--accent-err)" }}>
+                   style={{ color: "var(--negative)" }}>
                 {formatPydanticError(error)}
               </div>
             )}
@@ -295,6 +343,27 @@ export function STRAPane() {
             {lastPreview && (
               <div style={{ marginTop: 8 }}>
                 <h4>Preview ({lastPreview.bars} bar · {lastPreview.source})</h4>
+                {/* P1 DATA HONESTY — drive the synthetic disclosure off the
+                    backend's real `source` field so it stays truthful if a
+                    real-OHLCV preview path ever lands. We only warn when the
+                    backend explicitly says the data is synthetic. */}
+                {isSyntheticSource(lastPreview.source) && (
+                  <div
+                    data-testid="stra-preview-synthetic-note"
+                    role="note"
+                    style={{
+                      color: "var(--text-secondary)",
+                      fontSize: 11,
+                      margin: "0 0 6px",
+                      padding: "4px 8px",
+                      border: "1px solid var(--border-card)",
+                      borderRadius: "var(--radius-md)",
+                      background: "var(--surface-2)",
+                    }}>
+                    ⚠ Preview runs on synthetic random-walk data — validates
+                    whether rules fire, NOT real market performance.
+                  </div>
+                )}
                 <ul style={{ fontSize: 12 }}>
                   {lastPreview.events.slice(0, 30).map((e, i) => (
                     <li key={i}>
@@ -361,6 +430,17 @@ function dedupeOperands(operands: string[]): string[] {
 }
 
 /**
+ * P1 DATA HONESTY — is the preview's data source synthetic?
+ *
+ * The backend currently returns "synthetic_random_walk" (POST /preview runs
+ * a seeded random walk, NOT real market data). We key off the substring so a
+ * future real-OHLCV source (e.g. "exchange_ohlcv") does NOT trip the warning.
+ */
+function isSyntheticSource(source: string | undefined): boolean {
+  return typeof source === "string" && source.toLowerCase().includes("synthetic");
+}
+
+/**
  * Best-effort Pydantic 422 detail formatter (LOW: error message rendering).
  * Falls through to the raw string when the payload isn't JSON.
  */
@@ -403,7 +483,13 @@ function RulesEditor({
       {rules.map((r, idx) => {
         const rightError = validateOperand(r.right, operandOptions);
         return (
-          <div key={idx} style={{ display: "flex", gap: 4, alignItems: "center", marginTop: 4 }}>
+          // P4 DISPLAY — fixed grid so left-operand / operator / right-operand
+          // + delete line up across rows instead of drifting with flex.
+          <div key={idx} style={{
+            display: "grid",
+            gridTemplateColumns: "140px 140px 1fr auto",
+            gap: 4, alignItems: "center", marginTop: 4,
+          }}>
             <select value={r.left} onChange={(e) => {
               const next = [...rules]; next[idx] = { ...next[idx], left: e.target.value };
               onChange(next);
@@ -413,7 +499,7 @@ function RulesEditor({
             <select value={r.kind} onChange={(e) => {
               const next = [...rules]; next[idx] = { ...next[idx], kind: e.target.value as Rule["kind"] };
               onChange(next);
-            }}>
+            }} aria-label={`Rule ${idx} operator`}>
               {["crosses_above", "crosses_below", "greater_than", "less_than", "equals_approximately"].map((k) =>
                 <option key={k} value={k}>{k.replace(/_/g, " ")}</option>)}
             </select>
@@ -424,17 +510,21 @@ function RulesEditor({
                    aria-label={`rule-${idx}-right`}
                    title={rightError ?? undefined}
                    data-testid={testIdPrefix ? `${testIdPrefix}-rule-${idx}-right` : undefined}
+                   // P4 — mono tabular numerals for the threshold/right operand.
+                   className="terminal-grid-numeric"
                    style={{
-                     flex: 1,
-                     border: rightError ? "1px solid var(--accent-err)" : undefined,
+                     width: "100%",
+                     border: rightError ? "1px solid var(--negative)" : undefined,
                    }} />
-            <button onClick={() => onChange(rules.filter((_, i) => i !== idx))}>×</button>
+            <button
+              aria-label={`Remove rule ${idx}`}
+              onClick={() => onChange(rules.filter((_, i) => i !== idx))}>×</button>
           </div>
         );
       })}
       {rules.some((r) => validateOperand(r.right, operandOptions)) && (
         <div data-testid={testIdPrefix ? `${testIdPrefix}-operand-hint` : undefined}
-             style={{ color: "var(--accent-err)", fontSize: 11, marginTop: 4 }}>
+             style={{ color: "var(--negative)", fontSize: 11, marginTop: 4 }}>
           Sayılar için "literal:" öneki kullan (ör. literal:30).
         </div>
       )}
