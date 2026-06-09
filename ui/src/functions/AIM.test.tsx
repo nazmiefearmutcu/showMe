@@ -221,6 +221,17 @@ describe("AIM pane — load states", () => {
     const refresh = screen.getByRole("button", { name: /refresh/i });
     expect(refresh).toHaveAttribute("aria-busy", "true");
   });
+
+  it("does NOT wrap the steady-state order grid in a polite live region", () => {
+    // Regression: the live region must be scoped to loading/error transitions.
+    // The grid re-renders on every 15s poll — if it sat inside an aria-live
+    // region, screen readers would re-announce the whole blotter each refresh.
+    setMockFn({ state: "ok", ...okPayload() });
+    const { container } = render(<AIMPane code="AIM" />);
+    const grid = container.querySelector('[aria-label="AIM order blotter"]');
+    expect(grid).not.toBeNull();
+    expect(grid?.closest('[role="status"]')).toBeNull();
+  });
 });
 
 describe("AIM pane — honest empty states per data_mode", () => {

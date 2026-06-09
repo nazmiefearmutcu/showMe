@@ -329,22 +329,24 @@ export function AIMPane({ code, symbol }: FunctionPaneProps) {
           />
         </div>
         <PaneBody>
-          {/* A1 — async transitions (loading / error / empty) are announced to
-              screen readers via a polite live region; aria-busy flips while the
-              poll is in flight. */}
-          <div
-            role="status"
-            aria-live="polite"
-            aria-busy={state === "loading" || state === "refreshing"}
-          >
+          {/* A1 — async transitions (loading / error) are announced to screen
+              readers via a SCOPED polite live region; aria-busy flips while the
+              first paint is in flight. The success branch below re-renders on
+              every 15s poll, so it is deliberately kept OUTSIDE any live region —
+              otherwise the order grid would re-announce itself on each refresh
+              (the refresh state is surfaced on the RefreshButton instead, A2). */}
           {state === "loading" || state === "idle" ? (
-            <Skeleton height={300} />
+            <div role="status" aria-live="polite" aria-busy>
+              <Skeleton height={300} />
+            </div>
           ) : state === "error" ? (
-            <Empty
-              title="Function error"
-              body={error?.message ?? formatMissing}
-              icon="!"
-            />
+            <div role="status" aria-live="polite">
+              <Empty
+                title="Function error"
+                body={error?.message ?? formatMissing}
+                icon="!"
+              />
+            </div>
           ) : (
             <div className="u-grid-gap-14">
               {/* H3 — the degraded/cached state EXPLAINS itself rather than just
@@ -459,7 +461,6 @@ export function AIMPane({ code, symbol }: FunctionPaneProps) {
               )}
             </div>
           )}
-          </div>
         </PaneBody>
         <PaneFooter>
           <StatusSection label="brokers" value={sources} />
