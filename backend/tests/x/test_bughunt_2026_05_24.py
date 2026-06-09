@@ -244,6 +244,56 @@ def test_symbol_chip_does_not_pretend_to_have_data_on_insufficient(
     assert chip["verdict"] == "insufficient_data"
 
 
+# ── Honest freshness — _aggregate stamps a served-time fetched_at ──────────
+
+
+def test_aggregate_includes_parseable_fetched_at() -> None:
+    """The aggregated analyze response must carry an ISO `fetched_at` marking
+    when the response was served, so the UI can show honest freshness instead
+    of mistaking the scrape duration for data age.
+
+    Tests `_aggregate()` directly with stubbed posts/analyses so the test runs
+    without the RoBERTa model (which may be unavailable in CI). We assert the
+    field exists and parses as ISO-8601, not its exact value.
+    """
+    from datetime import datetime
+
+    from showme import x_analysis
+    from showme.x_spontaneous import Post, clean_text
+
+    analyzer = x_analysis.XAnalyzer()
+
+    posts = [
+        Post(id="1", text="apple is fine and strong", user="alice", date="", likes=3, retweets=1),
+        Post(id="2", text="aapl trade desk looks weak", user="bob", date="", likes=1, retweets=0),
+    ]
+
+    def _analysis(text: str) -> dict:
+        return {
+            "text": clean_text(text),
+            "sentiment": "positive",
+            "sentiment_score": 0.8,
+            "sentiment_probs": [0.1, 0.9],
+            "emotion": "joy",
+            "topic": "stocks",
+        }
+
+    analyses = [_analysis(p.text) for p in posts]
+
+    out = analyzer._aggregate("AAPL", posts, analyses, scrape_seconds=0.5, lang="en")
+
+    assert "fetched_at" in out, "aggregate response is missing the served-time fetched_at"
+    fetched_at = out["fetched_at"]
+    assert isinstance(fetched_at, str) and fetched_at, "fetched_at must be a non-empty string"
+    # Must parse as ISO-8601 without raising.
+    parsed = datetime.fromisoformat(fetched_at)
+    assert parsed.tzinfo is not None, "fetched_at must be timezone-aware (UTC)"
+    # scrape_seconds (processing duration) and fetched_at (served time) are
+    # distinct fields — freshness is NOT the scrape duration.
+    assert out["scrape_seconds"] == 0.5
+    assert out["fetched_at"] != out["scrape_seconds"]
+
+
 # ── Bug #7 — /api/veryfinder/batch fails closed when runtime is missing ────
 
 

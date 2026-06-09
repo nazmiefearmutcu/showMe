@@ -471,6 +471,13 @@ class XAnalyzer:
             "query": query,
             "post_count": n,
             "scrape_seconds": round(scrape_seconds, 2),
+            # Honest freshness marker: the wall-clock instant THIS response was
+            # served / analysis completed. The underlying search-engine tweet-ID
+            # list may itself be cached up to ~30 min (see x_spontaneous.py
+            # cache_ttl) — `fetched_at` is the served time, NOT a guarantee that
+            # every post is brand new. `scrape_seconds` above is processing
+            # duration (scrape + classify), not data age.
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
             "device": self._device,
             "model_dir": str(self._model_dir) if self._model_dir else None,
             "summary": summary,
