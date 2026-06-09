@@ -21,9 +21,13 @@ import {
 import {
   capabilities,
   requestBiometric,
+  type BioVia,
   type BiometricCapabilities,
   type BiometricResult,
+  type BiometryKind,
 } from "@/lib/biometric";
+import { formatMissing, formatNumber } from "@/lib/format";
+import { relativeTimeLabel } from "@/lib/time";
 import { FunctionControlGroup, LoadStatePill, RefreshButton } from "./function-controls";
 import type { FunctionPaneProps } from "./registry-types";
 
@@ -36,6 +40,8 @@ interface BioStatusCard {
   sub: string;
   tone: StatusTone;
   icon: string;
+  /** A1 — accessible name so state isn't conveyed by colour alone. */
+  ariaLabel: string;
 }
 
 export function BIOPane({ code }: FunctionPaneProps) {
@@ -109,17 +115,33 @@ export function BIOPane({ code }: FunctionPaneProps) {
   const cards = useMemo<BioStatusCard[]>(() => {
     if (!caps) return [];
     const lastTs = lastVerifiedAt.current;
-    const lastLabel = lastTs ? formatRelTime(lastTs) : "never";
+    // D2 — honest freshness via the shared relativeTimeLabel; no fabricated time.
+    const lastLabel = lastTs
+      ? relativeTimeLabel(new Date(lastTs).toISOString()) ?? formatMissing
+      : "henüz yok";
     const total = verifyCount.allowed + verifyCount.denied;
     const winRate = total > 0 ? Math.round((verifyCount.allowed / total) * 100) : null;
+    const allowedCount = formatNumber(verifyCount.allowed);
+    const deniedCount = formatNumber(verifyCount.denied);
+    // D1 — human-readable biometry kind (touch_id → "Touch ID", none → "—").
+    const biometryLabel = biometryKindLabel(caps.biometry_kind);
+    const biometrySub = caps.biometry_available
+      ? "available"
+      : "Biyometri yalnızca masaüstü uygulamada kullanılabilir";
+    const lastResultText = result
+      ? result.allowed
+        ? "ALLOWED"
+        : "DENIED"
+      : "NOT RUN";
     return [
       {
         key: "biometry",
         label: "Biometry",
-        primary: caps.biometry_kind.replace("_", " ").toUpperCase(),
-        sub: caps.biometry_available ? "available" : "unavailable",
+        primary: biometryLabel,
+        sub: biometrySub,
         tone: caps.biometry_available ? "positive" : "muted",
         icon: "◉",
+        ariaLabel: `Biometry: ${biometryLabel} — ${caps.biometry_available ? "kullanılabilir" : "kullanılamıyor"}`,
       },
       {
         key: "passcode",
@@ -128,34 +150,41 @@ export function BIOPane({ code }: FunctionPaneProps) {
         sub: "macOS owner policy",
         tone: caps.passcode_available ? "positive" : "warn",
         icon: "▣",
+        ariaLabel: `Device passcode: ${caps.passcode_available ? "ENABLED" : "DISABLED"}`,
       },
       {
         key: "last",
         label: "Last verify",
-        primary: result
-          ? result.allowed
-            ? "ALLOWED"
-            : "DENIED"
-          : "NOT RUN",
+        primary: lastResultText,
+        // D1 — human-readable via; D2 — honest relative freshness.
         sub: result
-          ? `${result.via} · ${lastLabel}`
+          ? `${viaLabel(result.via)} · ${lastLabel}`
           : "click verify to open OS prompt",
         tone: result ? (result.allowed ? "positive" : "negative") : "muted",
         icon: "⌖",
+        // A1 — include result + via + freshness so allowed/denied isn't colour-only.
+        ariaLabel: result
+          ? `Last verify: ${lastResultText} — ${viaLabel(result.via)}, ${lastLabel}`
+          : `Last verify: ${lastResultText}`,
       },
       {
         key: "session",
         label: "Session",
+        // D3 — counts via formatNumber for locale consistency.
         primary:
           total === 0
-            ? "—"
-            : `${verifyCount.allowed} / ${total}${winRate != null ? ` · ${winRate}%` : ""}`,
+            ? formatMissing
+            : `${allowedCount} / ${formatNumber(total)}${winRate != null ? ` · ${winRate}%` : ""}`,
         sub:
           total === 0
             ? "no verifications this session"
-            : `allowed · ${verifyCount.allowed} · denied · ${verifyCount.denied}`,
+            : `allowed · ${allowedCount} · denied · ${deniedCount}`,
         tone: total === 0 ? "muted" : winRate != null && winRate >= 80 ? "positive" : "warn",
         icon: "◇",
+        ariaLabel:
+          total === 0
+            ? "Session: no verifications this session"
+            : `Session: ${allowedCount} allowed of ${formatNumber(total)}`,
       },
     ];
   }, [caps, result, verifyCount]);
@@ -182,6 +211,9 @@ export function BIOPane({ code }: FunctionPaneProps) {
                 type="button"
                 onClick={verify}
                 disabled={loading || !caps}
+                aria-busy={loading}
+                aria-label="Biyometrik doğrulama iste"
+                title={!caps ? "Yetenekler yükleniyor…" : undefined}
               >
                 {loading ? "Verifying…" : "Verify"}
               </button>
@@ -203,7 +235,12 @@ export function BIOPane({ code }: FunctionPaneProps) {
             />
 
             {!caps ? (
-              <Skeleton height={128} />
+              // A3 — the load transition is announced; scoped to the !caps state
+              // only (the steady-state card grid below is NOT wrapped, so it
+              // won't re-announce on every refresh).
+              <div role="status" aria-live="polite" aria-busy>
+                <Skeleton height={128} />
+              </div>
             ) : (
               <div className="bio-card-grid">
                 {cards.map((card) => (
@@ -272,6 +309,7 @@ function StatusCard({ card }: { card: BioStatusCard }) {
   return (
     <div
       className="bio-status-card"
+      aria-label={card.ariaLabel}
       style={{
         ["--bio-fg" as string]: fg,
         ["--bio-bg" as string]: bg,
@@ -291,10 +329,34 @@ function StatusCard({ card }: { card: BioStatusCard }) {
   );
 }
 
-function formatRelTime(ts: number): string {
-  const diff = Date.now() - ts;
-  if (diff < 1500) return "now";
-  if (diff < 60_000) return `${Math.round(diff / 1000)}s ago`;
-  if (diff < 3_600_000) return `${Math.round(diff / 60_000)}m ago`;
-  return `${Math.round(diff / 3_600_000)}h ago`;
+// D1 — map the OS biometry kind to a human label ("none" → honest "—").
+function biometryKindLabel(kind: BiometryKind): string {
+  switch (kind) {
+    case "touch_id":
+      return "Touch ID";
+    case "face_id":
+      return "Face ID";
+    case "none":
+    default:
+      return formatMissing;
+  }
+}
+
+// D1 — map the verify `via` to a human label for the Last-verify sub-line.
+function viaLabel(via: BioVia): string {
+  switch (via) {
+    case "touch_id":
+      return "Touch ID";
+    case "face_id":
+      return "Face ID";
+    case "password":
+      return "Passcode";
+    case "denied":
+      return "Reddedildi";
+    case "unavailable":
+    case "stub":
+      return "Kullanılamıyor";
+    default:
+      return via;
+  }
 }

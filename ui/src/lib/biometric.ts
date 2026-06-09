@@ -9,7 +9,13 @@
 import { invoke, isInTauri } from "./tauri";
 
 export type BiometryKind = "none" | "touch_id" | "face_id";
-export type BioVia = "touch_id" | "face_id" | "password" | "stub" | "denied";
+export type BioVia =
+  | "touch_id"
+  | "face_id"
+  | "password"
+  | "stub"
+  | "denied"
+  | "unavailable";
 
 export interface BiometricCapabilities {
   biometry_available: boolean;
@@ -46,20 +52,27 @@ export async function capabilities(): Promise<BiometricCapabilities> {
   }
 }
 
+const UNAVAILABLE_CAPS: BiometricCapabilities = {
+  biometry_available: false,
+  passcode_available: false,
+  biometry_kind: "none",
+};
+
 export async function requestBiometric(reason: string): Promise<BiometricResult> {
+  // Security gate: fail CLOSED. Outside Tauri there is no LocalAuthentication
+  // bridge, so deny rather than silently approve (mirrors `capabilities()`,
+  // the Rust core's Ok(false) on non-macOS, and the bio_seed manifest contract:
+  // allowed=false, via="unavailable", "not configured"). "BIO never silently
+  // approves." Production is always in Tauri, so this only affects dev/browser.
   if (!isInTauri()) {
-    return {
-      allowed: true,
-      reason,
-      via: "stub",
-      capabilities: {
-        biometry_available: false,
-        passcode_available: false,
-        biometry_kind: "none",
-      },
-    };
+    return { allowed: false, reason, via: "unavailable", capabilities: UNAVAILABLE_CAPS };
   }
-  return invoke<BiometricResult>("request_biometric", { reason });
+  try {
+    return await invoke<BiometricResult>("request_biometric", { reason });
+  } catch {
+    // An errored OS call must DENY — never throw-through or approve.
+    return { allowed: false, reason, via: "unavailable", capabilities: UNAVAILABLE_CAPS };
+  }
 }
 
 /**
