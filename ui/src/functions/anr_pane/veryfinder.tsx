@@ -218,9 +218,14 @@ export function VeryfinderSearchLoadScreen({
 }) {
   const posts = previous?.posts ?? previous?.analyzed_posts ?? [];
   return (
-    <div style={veryfinderLoadShellStyle} aria-live="polite">
+    <div style={veryfinderLoadShellStyle}>
       <div style={veryfinderLoadTopStyle}>
-        <div>
+        {/*
+          A11Y: the live region is SCOPED to this transient status/progress
+          node only. The static step cards below sit OUTSIDE it, so the 30s
+          Veryfinder poll re-announces the status message, not the whole shell.
+        */}
+        <div role="status" aria-live="polite">
           <div style={veryfinderLoadKickerStyle}>Veryfinder live search</div>
           <div style={veryfinderLoadTitleStyle}>Searching social reaction</div>
           <p style={analysisTextStyle}>

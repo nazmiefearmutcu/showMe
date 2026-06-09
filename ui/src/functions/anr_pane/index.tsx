@@ -59,6 +59,7 @@ import {
 } from "./styles";
 import {
   ConsensusCard,
+  DataNotesCard,
   StaleRuleCard,
   TargetCard,
   VeryfinderConsensusCard,
@@ -302,7 +303,12 @@ export function ANRPane({ code, symbol }: FunctionPaneProps) {
           subtitle={`${summary?.label ?? "loading"} · target: ${summary?.target_price_source ?? "—"}`}
           trailing={
             <FunctionControlGroup>
-              <Pill tone={headerTone} variant="soft" withDot={headerTone !== "muted"}>
+              <Pill
+                tone={headerTone}
+                variant="soft"
+                withDot={headerTone !== "muted"}
+                aria-label={`konsensüs: ${headerPillLabel}`}
+              >
                 {headerPillLabel}
               </Pill>
               {analystCount != null ? (
@@ -328,6 +334,7 @@ export function ANRPane({ code, symbol }: FunctionPaneProps) {
                 onChange={(event) => setVeryfinderSource(event.target.value)}
                 disabled={!veryfinderEnabled}
                 title="Veryfinder source"
+                aria-label="Veryfinder kaynağı"
                 style={miniSelectStyle}
               >
                 <option value="auto">auto</option>
@@ -337,6 +344,7 @@ export function ANRPane({ code, symbol }: FunctionPaneProps) {
               <LoadStatePill state={state} />
               <RefreshButton
                 loading={state === "loading"}
+                busy={state === "loading" || state === "refreshing"}
                 onClick={() => {
                   refetch();
                   setVeryfinderTick((tick) => tick + 1);
@@ -493,6 +501,7 @@ function ANRView({
         <SourceFreshness sources={data.source_details ?? []} />
         <AnalystQuality status={data.analyst_detail_status} crypto={crypto} />
       </div>
+      <DataNotesCard notes={data.data_notes} />
       <Methodology data={data} />
     </>
   );

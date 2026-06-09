@@ -60,6 +60,8 @@ export function providerLabel(value?: string): string {
     public_search: "Public web/news/social search",
     expanded_public_search: "Expanded public search",
     search_exhausted: "Search exhausted",
+    article_context: "Makale bağlamı",
+    unavailable: "Kullanılamıyor",
   };
   return labels[value] ?? value.replaceAll("_", " ");
 }
@@ -99,6 +101,25 @@ export function formatHeaderTime(value: string): string {
     const d = new Date(value);
     if (Number.isNaN(d.getTime())) return value.slice(0, 16);
     return d.toISOString().slice(11, 16) + " UTC";
+  } catch {
+    return value.slice(0, 16);
+  }
+}
+
+/**
+ * Date + UTC time for a server-provided timestamp (e.g. summary.last_updated,
+ * oldest_included_rating_date). Surfaces the date so a raw ISO blob never
+ * reaches the UI, and keeps a UTC marker so the user knows it is the server's
+ * clock. Falls back to the "—" sentinel when the field is genuinely absent —
+ * never fabricates a time.
+ */
+export function formatConsensusDate(value?: string | null): string {
+  if (!value) return "—";
+  try {
+    const d = new Date(value);
+    if (Number.isNaN(d.getTime())) return value.slice(0, 16);
+    const iso = d.toISOString();
+    return `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC`;
   } catch {
     return value.slice(0, 16);
   }

@@ -100,6 +100,12 @@ export interface ANRData {
   methodology?: string;
   field_dictionary?: Record<string, string>;
   analyst_quality?: Record<string, unknown>;
+  /**
+   * Honest data-quality caveats emitted by the backend (anr.py). These are
+   * genuine disclosures (e.g. "Derived target-price ranges are display
+   * references, not analyst targets.") and are surfaced to the user.
+   */
+  data_notes?: string[];
 }
 
 export type AlertRule = "label_change" | "score_below" | "score_above" | "positive_pct_below";

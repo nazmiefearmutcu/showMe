@@ -5865,6 +5865,22 @@
   color: var(--text-secondary);
   line-height: 1.45;
 }
+.anr-data-notes {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  line-height: 1.45;
+}
+.anr-data-notes > li {
+  position: relative;
+  padding-left: 14px;
+}
+.anr-data-notes > li::before {
+  content: "·";
+  position: absolute;
+  left: 2px;
+  color: var(--text-mute);
+}
 .anr-dist-fill {
   display: block;
   height: 100%;

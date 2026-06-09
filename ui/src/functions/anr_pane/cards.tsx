@@ -18,6 +18,7 @@ import type {
 } from "./_types";
 import {
   distributionLabel,
+  formatConsensusDate,
   formatInt,
   formatMoney,
   formatPct,
@@ -37,6 +38,35 @@ import {
 } from "./styles";
 import { StatGrid } from "./tables";
 
+/**
+ * Consensus score (0–5 weighted bucket score) as an accessible role=meter.
+ * `aria-valuenow` is CLAMPED to the [0,5] band so an out-of-range value can
+ * never leak through assistive tech; the visible text is preserved verbatim.
+ */
+export function ConsensusScoreMeter({
+  score,
+  className,
+}: {
+  score?: number | null;
+  className?: string;
+}) {
+  const numeric = Number(score);
+  const hasValue = score != null && Number.isFinite(numeric);
+  const clamped = hasValue ? Math.max(0, Math.min(5, numeric)) : undefined;
+  return (
+    <span
+      role="meter"
+      aria-label="Konsensüs skoru (0-5)"
+      aria-valuemin={0}
+      aria-valuemax={5}
+      aria-valuenow={clamped}
+      className={className}
+    >
+      {formatScore(score)} / 5
+    </span>
+  );
+}
+
 export function ConsensusCard({ summary, symbol }: { summary: ANRSummary; symbol: string }) {
   const label = summary.label ?? "No consensus";
   const crypto = isCryptoSummary(summary);
@@ -52,7 +82,7 @@ export function ConsensusCard({ summary, symbol }: { summary: ANRSummary; symbol
       <CardHeader
         trailing={
           <div className="u-flex u-gap-6 u-flex-wrap u-justify-end">
-            <Pill tone={tone} variant="soft">{label}</Pill>
+            <Pill tone={tone} variant="soft" aria-label={`konsensüs: ${label}`}>{label}</Pill>
             {summary.not_analyst_target ? <Pill tone="warn" variant="soft">not analyst target</Pill> : null}
           </div>
         }
@@ -67,14 +97,15 @@ export function ConsensusCard({ summary, symbol }: { summary: ANRSummary; symbol
                 {summary.title ?? `${symbol} ${crypto ? "Crypto Market Consensus" : "Analyst Consensus"}`}
               </div>
               <div className="anr-consensus-meta">
-                {formatInt(count)} {countLabel} · last updated {summary.last_updated ?? "—"}
+                {formatInt(count)} {countLabel} · last updated {formatConsensusDate(summary.last_updated)}
               </div>
             </div>
             <div className="anr-consensus-score">
               <div className="anr-consensus-score-label">Consensus</div>
-              <div className="anr-consensus-score-val">
-                {formatScore(summary.consensus_score)} / 5
-              </div>
+              <ConsensusScoreMeter
+                score={summary.consensus_score}
+                className="anr-consensus-score-val"
+              />
             </div>
           </div>
           <StatGrid
@@ -85,7 +116,7 @@ export function ConsensusCard({ summary, symbol }: { summary: ANRSummary; symbol
               ["Source", providerLabel(summary.consensus_source)],
               ["Included", formatInt(summary.included_count)],
               [crypto ? "Freshness excluded" : "Stale excluded", formatInt(summary.excluded_stale_count)],
-              [crypto ? "Market data" : "Oldest included", crypto ? summary.last_updated ?? "—" : summary.oldest_included_rating_date ?? "—"],
+              [crypto ? "Market data" : "Oldest included", crypto ? formatConsensusDate(summary.last_updated) : formatConsensusDate(summary.oldest_included_rating_date)],
             ]}
           />
         </div>
@@ -117,7 +148,7 @@ export function VeryfinderConsensusCard({
       <CardHeader
         trailing={
           <div className="u-flex u-gap-6 u-flex-wrap u-justify-end">
-            <Pill tone={tone} variant="soft">{label}</Pill>
+            <Pill tone={tone} variant="soft" aria-label={`konsensüs: ${label}`}>{label}</Pill>
             {errored && overlay ? <Pill tone="warn" variant="soft">refresh failed</Pill> : null}
             {overlay?.fixture_mode ? <Pill tone="warn" variant="soft">fixture</Pill> : null}
             {overlay?.fallback_mode ? <Pill tone="warn" variant="soft">{providerLabel(overlay.fallback_mode)}</Pill> : null}
@@ -239,6 +270,28 @@ export function StaleRuleCard({ stale }: { stale?: StaleRule }) {
         <p className="anr-stale-rule">
           {stale?.rule ?? "Recommendation rows older than one year are excluded from consensus."}
         </p>
+      </CardBody>
+    </Card>
+  );
+}
+
+/**
+ * Surfaces the backend's honest data-quality caveats (`data.data_notes`).
+ * Rendered only when notes are present so a genuinely clean run shows nothing.
+ */
+export function DataNotesCard({ notes }: { notes?: string[] }) {
+  if (!notes?.length) return null;
+  return (
+    <Card>
+      <CardHeader trailing={<Pill tone="muted" variant="soft" withDot={false}>{notes.length}</Pill>}>
+        Veri notları
+      </CardHeader>
+      <CardBody>
+        <ul className="anr-data-notes u-grid-gap-6">
+          {notes.map((note) => (
+            <li key={note} className="u-text-12 u-text-secondary">{note}</li>
+          ))}
+        </ul>
       </CardBody>
     </Card>
   );

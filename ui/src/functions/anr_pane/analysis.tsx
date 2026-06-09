@@ -17,6 +17,7 @@ import type {
   VeryfinderRunState,
 } from "./_types";
 import {
+  formatConsensusDate,
   formatInt,
   formatMoney,
   formatPct,
@@ -39,7 +40,7 @@ import {
   analysisWarningListStyle,
   twoColumnAnalysisGridStyle,
 } from "./styles";
-import { DistributionBars } from "./cards";
+import { DistributionBars, ConsensusScoreMeter } from "./cards";
 import { StatGrid, Methodology } from "./tables";
 import { VeryfinderAnalysisCard } from "./veryfinder";
 
@@ -116,7 +117,7 @@ export function ANRAnalysisScreen({
               </div>
               <div style={analysisScoreStyle}>
                 <span style={analysisScoreLabelStyle}>consensus</span>
-                <strong>{formatScore(summary.consensus_score)} / 5</strong>
+                <ConsensusScoreMeter score={summary.consensus_score} />
               </div>
             </div>
             <StatGrid
@@ -126,7 +127,7 @@ export function ANRAnalysisScreen({
                 ["Positive", formatPct(summary.positive_pct)],
                 ["Neutral", formatPct(summary.neutral_pct)],
                 ["Negative", formatPct(summary.negative_pct)],
-                ["Last updated", summary.last_updated ?? "—"],
+                ["Last updated", formatConsensusDate(summary.last_updated)],
                 ["Elapsed", elapsedMs == null ? "—" : `${elapsedMs.toFixed(0)} ms`],
                 ["Asset class", summary.asset_class ?? (crypto ? "CRYPTO" : "EQUITY")],
               ]}
