@@ -59,6 +59,12 @@ class ECOFunction(BaseFunction):
         if not events:
             events = _calendar_feed_model(country, importance)
             source_mode = "calendar_feed_model"
+            # Honesty: surface the fallback prominently. The synthetic calendar
+            # is illustrative — its schedule and values are NOT live releases.
+            provider_errors.append(
+                "Canlı takvim sağlayıcıları kullanılamadı — örnek (sentetik) "
+                "takvim gösteriliyor; değerler illüstratiftir."
+            )
 
         rows = _normalize_events(events, country=country, importance=importance, days=days)
         for row in rows:
@@ -88,6 +94,9 @@ class ECOFunction(BaseFunction):
                     "surprise": "Actual minus forecast.",
                 },
                 "source_mode": source_mode,
+                # Machine-readable freshness so the UI shows REAL data age
+                # (server fetch time), not the client render clock.
+                "as_of": datetime.now(timezone.utc).isoformat(),
             },
             sources=[source_mode],
             warnings=provider_errors,
@@ -154,7 +163,11 @@ def _calendar_feed_model(country: str | None, importance: str | None) -> list[di
             "date": event_date.isoformat(),
             "importance": item["importance"],
             "forecast": item["forecast"],
-            "actual": item["actual"],
+            # Honesty: never emit fabricated printed values from the synthetic
+            # template. We show the SCHEDULE (forecast/previous as illustrative
+            # context) but the `actual` print is always blank so a sample
+            # calendar is never mistaken for real releases.
+            "actual": None,
             "previous": item["previous"],
             "unit": item["unit"],
         })
