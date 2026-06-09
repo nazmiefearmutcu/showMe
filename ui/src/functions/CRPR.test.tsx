@@ -318,6 +318,22 @@ describe("CRPR pane — A1 accessible rating ladder meter", () => {
     expect(marked).toBeInTheDocument();
   });
 
+  it("tones speculative rungs (BB/B/CCC) as speculative on a coarse scale", () => {
+    // Regression: the IG floor must be relative to the rendered scale. A coarse
+    // 7-rung backend scale (…BBB,BB,B,CCC) once reused the canonical "BBB-"=9
+    // index, marking EVERY rung as investment grade — visually mislabelling
+    // speculative credits. Each speculative rung must read "(spekülatif)".
+    setMockFn({ state: "ok", ...corporatePayload() });
+    render(<CRPRPane code="CRPR" />);
+    expect(screen.getByLabelText(/^BB \(spekülatif\)$/)).toBeInTheDocument();
+    expect(screen.getByLabelText(/^B \(spekülatif\)$/)).toBeInTheDocument();
+    expect(screen.getByLabelText(/^CCC \(spekülatif\)$/)).toBeInTheDocument();
+    // …and an investment-grade rung still reads IG (no over-correction).
+    expect(
+      screen.getByLabelText(/^A \(yatırım yapılabilir\)$/),
+    ).toBeInTheDocument();
+  });
+
   it("labels the IG / speculative legend so it is not color-only", () => {
     setMockFn({ state: "ok", ...corporatePayload() });
     render(<CRPRPane code="CRPR" />);

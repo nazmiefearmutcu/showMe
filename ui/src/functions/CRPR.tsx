@@ -297,7 +297,17 @@ export function CRPRPane({ code, symbol }: FunctionPaneProps) {
       Array.isArray(payload.scale) && payload.scale.length
         ? payload.scale.map(normGrade)
         : DEFAULT_SCALE;
-    const floor = IG_FLOOR_INDEX < 0 ? 9 : IG_FLOOR_INDEX;
+    /* IG floor must be relative to THIS scale, not the canonical 22-rung one.
+       A coarse backend scale (…BBB, BB, B, CCC) has its lowest investment-grade
+       rung at "BBB"; reusing the fixed DEFAULT_SCALE index ("BBB-"=9) would mark
+       every rung of a 7-rung scale as investment grade — visually mislabelling
+       BB/B/CCC speculative credits as IG. Locate the boundary in `scale`. */
+    const floor =
+      scale.indexOf("BBB-") >= 0
+        ? scale.indexOf("BBB-")
+        : scale.indexOf("BBB") >= 0
+          ? scale.indexOf("BBB")
+          : Math.floor(scale.length * 0.43);
     return scale.map((grade, idx) => ({
       grade,
       marker: grade === impliedRating,
@@ -572,12 +582,22 @@ export function CRPRPane({ code, symbol }: FunctionPaneProps) {
                   </div>
                   <div
                     style={ladderWrapStyle}
-                    role="meter"
-                    aria-label="Kredi notu merdiveni"
-                    aria-valuemin={0}
-                    aria-valuemax={meterMax}
-                    aria-valuenow={meterNow ?? undefined}
-                    aria-valuetext={impliedRating || undefined}
+                    {...(meterNow !== null
+                      ? {
+                          // Valid meter: always carries a value within [min,max].
+                          role: "meter",
+                          "aria-label": "Kredi notu merdiveni",
+                          "aria-valuemin": 0,
+                          "aria-valuemax": meterMax,
+                          "aria-valuenow": meterNow,
+                          "aria-valuetext": impliedRating || undefined,
+                        }
+                      : {
+                          // No marked bucket → a meter without aria-valuenow is
+                          // invalid ARIA; degrade to a labelled group.
+                          role: "group",
+                          "aria-label": "Kredi notu merdiveni (işaretli kova yok)",
+                        })}
                   >
                     {visibleLadder.map((r) => {
                       const marked = !!r.marker || r.grade === impliedRating;
