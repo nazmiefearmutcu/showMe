@@ -82,7 +82,7 @@ Each task is one page. Execute it as a **subagent-driven-development** mini-cycl
 
 ## Wave 5 — Portfolio analytics family (one pane, 20 codes)
 
-- [ ] **Task 32: PORTX — Portfolio Analytics.** Pane: `ui/src/functions/PortfolioAnalytics.tsx`. Codes: ACCT, BLAK, BMTX, BTFW, BTUNE, LOTS, MARS, MGN, MLSIG, PCAS, PFA, PORT_OPT, PORT_WHATIF, PSC, PVAR, REBA, RPAR, STRS, TLH, TRA. Backend: portfolio analytics. Focus: each code's view renders the right analytic with real data; verify the shared pane branches correctly per code; tables/charts terminal-grade.
+- [x] **Task 32: PORTX — Portfolio Analytics.** Pane: `ui/src/functions/PortfolioAnalytics.tsx`. Codes: ACCT, BLAK, BMTX, BTFW, BTUNE, LOTS, MARS, MGN, MLSIG, PCAS, PFA, PORT_OPT, PORT_WHATIF, PSC, PVAR, REBA, RPAR, STRS, TLH, TRA. Backend: portfolio analytics. Focus: each code's view renders the right analytic with real data; verify the shared pane branches correctly per code; tables/charts terminal-grade.
 
 ## Wave 6 — Long-tail bespoke analytics (alphabetical by code)
 
