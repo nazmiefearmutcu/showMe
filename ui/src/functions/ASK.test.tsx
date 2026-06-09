@@ -311,4 +311,30 @@ describe("ASK pane — usability (U1)", () => {
     );
     resolve(makeResponse());
   });
+
+  it("cancels the in-flight query when Escape is pressed in the textarea (U2)", async () => {
+    let resolve!: (r: AskResponse) => void;
+    vi.spyOn(askLib, "ask").mockReturnValue(
+      new Promise<AskResponse>((r) => {
+        resolve = r;
+      }),
+    );
+    render(<ASKPane code="ASK" />);
+    await submitQuery();
+    // The Stop affordance proves a query is in flight.
+    const ta = document.getElementById(
+      "ask-composer-input",
+    ) as HTMLTextAreaElement;
+    await screen.findByTestId("ask-stop");
+    // Esc in the textarea cancels the abortable fetch and clears running.
+    fireEvent.keyDown(ta, { key: "Escape" });
+    // Stop affordance disappears and the submit button is no longer aria-busy.
+    await waitFor(() =>
+      expect(screen.queryByTestId("ask-stop")).not.toBeInTheDocument(),
+    );
+    expect(
+      screen.getByRole("button", { name: /sorguyu çalıştır|önce bir sorgu/i }),
+    ).toHaveAttribute("aria-busy", "false");
+    resolve(makeResponse());
+  });
 });
