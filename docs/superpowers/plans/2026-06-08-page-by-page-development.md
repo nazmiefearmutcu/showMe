@@ -78,7 +78,7 @@ Each task is one page. Execute it as a **subagent-driven-development** mini-cycl
 - [x] **Task 28: CORR — Correlation.** Pane: `ui/src/functions/CORR.tsx`. Backend: correlation compute. Focus: correlation matrix/heatmap, symbol selection, real series.
 - [x] **Task 29: MAP — Market Heatmap (SECT alias).** Pane: `ui/src/functions/MarketHeatmap.tsx`. Backend: sector/market data. Focus: heatmap fidelity, sizing/coloring, real constituents.
 - [x] **Task 30: TOP — Top Movers.** Pane: `ui/src/functions/TOP.tsx`. Backend: movers. Focus: gainers/losers, real data, ranking quality.
-- [ ] **Task 31: ECO — Economic Calendar.** Pane: `ui/src/functions/ECO.tsx`. Backend: `backend/showme/engine/functions/macro/eco.py`. Focus: events calendar, real schedule, importance/actual/forecast.
+- [x] **Task 31: ECO — Economic Calendar.** Pane: `ui/src/functions/ECO.tsx`. Backend: `backend/showme/engine/functions/macro/eco.py`. Focus: events calendar, real schedule, importance/actual/forecast.
 
 ## Wave 5 — Portfolio analytics family (one pane, 20 codes)
 
