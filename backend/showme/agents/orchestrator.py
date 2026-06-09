@@ -23,7 +23,7 @@ from .planner import Plan, plan_for
 from .search import search as run_search
 from .summarizer import summarize
 from .viz import pick_viz
-from ..llm import build_default_providers, plan_for_smart
+from ..llm import CostLedger, build_default_providers, plan_for_smart
 
 LOG = logging.getLogger("showme.agents.orchestrator")
 
@@ -51,6 +51,15 @@ class AskResponse:
     phases: list[AskPhase]
     elapsed_ms: float
     warnings: list[str]
+    # Honest provenance — the UI surfaces these instead of guessing. The
+    # ANSWER (narrative + highlights) is always a DETERMINISTIC composition
+    # from real function outputs (summarizer.py); only the PLAN step may
+    # call an LLM. These fields describe the PLAN step truthfully.
+    plan_method: str = "deterministic"   # "llm" | "deterministic"
+    model_used: str | None = None        # real model id when an LLM planned
+    provider: str | None = None          # "anthropic" | "openai" | None
+    cost_usd: float = 0.0                 # real ledger delta for this ask
+    was_llm_called: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -67,21 +76,56 @@ async def ask(req: AskRequest, deps: Any) -> AskResponse:
     # Phase 1 — Planner. LLM-augmented when API keys are configured AND
     # the daily cost cap hasn't been reached; otherwise the deterministic
     # planner handles every query.
+    #
+    # HONESTY: we measure the REAL ledger delta around the planner call so
+    # the UI can show the truth instead of a fabricated cost/model. A
+    # successful LLM planner call records a CostEntry to the ledger; the
+    # deterministic path (and any silent LLM fallback) records nothing, so
+    # the delta is exactly 0.0. We construct the ledger the same way the
+    # `/api/llm/cost` route does.
     p_started = time.perf_counter()
     providers = build_default_providers()
+    plan_cost_usd = 0.0
+    spend_before: float | None = None
     if providers:
+        try:
+            spend_before = CostLedger.load().today_spend()
+        except Exception:  # noqa: BLE001 — ledger read must never break the ask
+            LOG.exception("cost ledger read failed before planner; cost=0.0")
+            spend_before = None
         plan = await plan_for_smart(
             req.query,
             function_codes=function_codes,
             providers=providers,
         )
+        if spend_before is not None:
+            try:
+                spend_after = CostLedger.load().today_spend()
+                plan_cost_usd = max(0.0, spend_after - spend_before)
+            except Exception:  # noqa: BLE001
+                LOG.exception("cost ledger read failed after planner; cost=0.0")
+                plan_cost_usd = 0.0
     else:
         plan = plan_for(req.query, function_codes=function_codes)
+
+    # A non-zero ledger delta means an LLM planner call actually recorded a
+    # charge → the LLM was used. Zero means deterministic (no provider, cap
+    # hit, or silent fallback). Only when truly used do we name the model.
+    was_llm_called = plan_cost_usd > 0.0
+    plan_method = "llm" if was_llm_called else "deterministic"
+    model_used: str | None = None
+    provider_name: str | None = None
+    if was_llm_called and providers:
+        active = providers[0]
+        model_used = getattr(active, "model", None)
+        provider_name = getattr(active, "name", None)
+
     plan_phase = AskPhase(
         name="plan",
         elapsed_ms=(time.perf_counter() - p_started) * 1000,
         output={"intent": plan.intent, "agents": plan.agents,
-                "args": plan.args, "rationale": plan.rationale},
+                "args": plan.args, "rationale": plan.rationale,
+                "method": plan_method},
     )
 
     phases: list[AskPhase] = [plan_phase]
@@ -141,6 +185,11 @@ async def ask(req: AskRequest, deps: Any) -> AskResponse:
         phases=phases,
         elapsed_ms=(time.perf_counter() - started) * 1000,
         warnings=warnings,
+        plan_method=plan_method,
+        model_used=model_used,
+        provider=provider_name,
+        cost_usd=plan_cost_usd,
+        was_llm_called=was_llm_called,
     )
 
 
