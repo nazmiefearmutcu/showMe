@@ -34,6 +34,7 @@ import {
 import { useAbortableFetch } from "@/lib/useAbortableFetch";
 import { useWorkspace } from "@/lib/workspace";
 import { navigate } from "@/lib/router";
+import { formatCurrency } from "@/lib/format";
 import type { FunctionPaneProps } from "./registry-types";
 
 const SUGGESTION_CHIPS = [
@@ -55,7 +56,22 @@ interface ChatTurn {
 }
 
 const COST_CAP_USD = 1.0;
-const ASK_MODEL_LABEL = "claude-sonnet-4.6";
+
+// HONESTY: the answer (narrative + highlights) is composed DETERMINISTICALLY
+// from real function outputs — it is NOT AI-written. Only the PLAN step may
+// call an LLM (and only a small Haiku/4o-mini model, gated on API keys + a
+// daily cap). When no LLM is used the plan is rule-based and costs $0.00.
+const DETERMINISTIC_PLAN_LABEL = "kural-tabanlı plan";
+const ANSWER_DISCLOSURE =
+  "Yanıt (özet + öne çıkanlar) gerçek fonksiyon çıktılarından DETERMİNİSTİK " +
+  "olarak derlenir — yapay zekâ tarafından yazılmaz. Yalnızca PLAN adımı, " +
+  "API anahtarları ve günlük bütçe uygunsa bir LLM kullanabilir.";
+
+/** Honest model label for the header/status pills. */
+function modelLabel(result: AskResponse | null): string {
+  if (result?.was_llm_called && result.model_used) return result.model_used;
+  return DETERMINISTIC_PLAN_LABEL;
+}
 
 export function ASKPane({ code }: FunctionPaneProps) {
   const [draft, setDraft] = useState("");
@@ -103,10 +119,11 @@ export function ASKPane({ code }: FunctionPaneProps) {
         ts: Date.now(),
       };
       setThread((prev) => [...prev, agentTurn]);
-      // Approximate cost: each phase ~ $0.005 baseline + 0.0005/ms blended
-      const elapsed = Number(r.elapsed_ms ?? 0);
-      const incr = Math.min(0.05, 0.005 + elapsed * 0.000_05);
-      setCostSpentUsd((prev) => Math.min(COST_CAP_USD, prev + incr));
+      // HONEST cost: the REAL ledger delta the backend measured for this ask.
+      // On the deterministic (rule-based) path this is genuinely $0.00 — no
+      // fake minimum. We accumulate it for the session-total pill.
+      const incr = Number.isFinite(r.cost_usd) ? Number(r.cost_usd) : 0;
+      setCostSpentUsd((prev) => Math.min(COST_CAP_USD, prev + Math.max(0, incr)));
     } catch (err) {
       if (!askFetch.isMounted()) return;
       // Don't surface AbortError as a chat-bubble error — the user already
@@ -125,6 +142,16 @@ export function ASKPane({ code }: FunctionPaneProps) {
     } finally {
       if (askFetch.isMounted()) setRunning(false);
     }
+  };
+
+  // U2 — cancel the in-flight ask (Esc or the Stop button). The abortable
+  // fetch aborts the request; the run()'s catch swallows the AbortError and
+  // finally restores `running`. We also flip running immediately so the
+  // composer/Stop affordance updates without waiting for the rejection.
+  const cancel = () => {
+    if (!running) return;
+    askFetch.cancel();
+    setRunning(false);
   };
 
   const onOpenHint = (paneCode: string, symbol?: string) => {
@@ -160,33 +187,55 @@ export function ASKPane({ code }: FunctionPaneProps) {
       <Pane>
         <PaneHeader
           code={code}
-          title="Ask Agent"
-          subtitle={lastResult ? lastResult.plan.intent : "Planner · Search · Summarize · Viz"}
+          title="Ask"
+          subtitle={
+            lastResult
+              ? lastResult.plan.intent
+              : "Planla · Ara · Derle (deterministik) · Görselleştir"
+          }
           trailing={
             <div style={headerTrailing}>
-              <Pill tone="accent" variant="soft" withDot={false}>
-                {ASK_MODEL_LABEL}
+              <Pill
+                tone={lastResult?.was_llm_called ? "accent" : "muted"}
+                variant="soft"
+                withDot={false}
+              >
+                {modelLabel(lastResult)}
               </Pill>
               <Pill tone={costTone} variant="soft" withDot={false}>
-                ${costSpentUsd.toFixed(3)} / ${COST_CAP_USD.toFixed(2)}
+                {formatCurrency(costSpentUsd, { fractionDigits: 4 })} /{" "}
+                {formatCurrency(COST_CAP_USD, { fractionDigits: 2 })}
               </Pill>
               <Pill
                 tone={running ? "warn" : "muted"}
                 variant="soft"
                 withDot={running}
               >
-                {running ? "thinking" : "ready"}
+                {running ? "çalışıyor" : "hazır"}
               </Pill>
             </div>
           }
         />
-        {/* Status strip with model + cost detail */}
+        {/* Status strip with HONEST model + cost detail */}
         <section style={statusStrip}>
-          <StatusSection label="MODEL" value={ASK_MODEL_LABEL} tone="accent" withDot />
+          <StatusSection
+            label="PLAN"
+            value={modelLabel(lastResult)}
+            tone={lastResult?.was_llm_called ? "accent" : "muted"}
+            withDot={Boolean(lastResult?.was_llm_called)}
+          />
           <StatusDivider />
-          <StatusSection label="COST" value={`$${costSpentUsd.toFixed(3)}`} tone={costTone} />
+          <StatusSection
+            label="COST"
+            value={formatCurrency(costSpentUsd, { fractionDigits: 4 })}
+            tone={costTone}
+          />
           <StatusDivider />
-          <StatusSection label="CAP" value={`$${COST_CAP_USD.toFixed(2)}`} tone="muted" />
+          <StatusSection
+            label="CAP"
+            value={formatCurrency(COST_CAP_USD, { fractionDigits: 2 })}
+            tone="muted"
+          />
           <StatusDivider />
           <StatusSection label="TURNS" value={String(thread.filter((t) => t.role === "user").length)} tone="neutral" />
           <StatusDivider />
@@ -216,7 +265,13 @@ export function ASKPane({ code }: FunctionPaneProps) {
             {running ? <ThinkingBubble /> : null}
           </div>
 
-          {/* Suggestion chips above composer */}
+          {/* Answer-vs-plan honesty disclosure (F3) */}
+          <p style={disclosureRow} data-testid="ask-disclosure">
+            {ANSWER_DISCLOSURE}
+          </p>
+
+          {/* Suggestion chips above composer — U1: disabled while a query is
+              in flight so a click can't silently overwrite the running draft. */}
           <div style={suggestionRow}>
             {SUGGESTION_CHIPS.map((s) => (
               <button
@@ -225,6 +280,7 @@ export function ASKPane({ code }: FunctionPaneProps) {
                 onClick={() => setDraft(s)}
                 style={suggestionChip}
                 title={s}
+                disabled={running}
               >
                 {s}
               </button>
@@ -239,13 +295,22 @@ export function ASKPane({ code }: FunctionPaneProps) {
               if (!running && draft.trim()) run();
             }}
           >
+            {/* A1 — visually-hidden but programmatically bound label. */}
+            <label htmlFor="ask-composer-input" className="u-sr-only">
+              Sorgunuzu yazın
+            </label>
             <textarea
+              id="ask-composer-input"
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={(e) => {
                 if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
                   e.preventDefault();
                   if (!running && draft.trim()) run();
+                } else if (e.key === "Escape" && running) {
+                  // U2 — Esc cancels the in-flight query.
+                  e.preventDefault();
+                  cancel();
                 }
               }}
               rows={2}
@@ -264,15 +329,44 @@ export function ASKPane({ code }: FunctionPaneProps) {
                 + Attach
               </button>
               <span className="ask-run-hint">
-                <span className="kbd">⌘↵</span> run
+                <span className="kbd">⌘↵</span> çalıştır · <span className="kbd">Esc</span> durdur
               </span>
+              {running ? (
+                // U2 — visible Stop affordance mirrors the Esc cancel.
+                <button
+                  type="button"
+                  className="btn btn--ghost"
+                  onClick={cancel}
+                  style={composerRun}
+                  aria-label="Sorguyu durdur"
+                  title="Sorguyu durdur (Esc)"
+                  data-testid="ask-stop"
+                >
+                  Durdur
+                </button>
+              ) : null}
               <button
                 type="submit"
                 className="btn btn--accent"
                 disabled={running || !draft.trim()}
+                aria-busy={running}
+                aria-label={
+                  running
+                    ? "Sorgu çalışıyor"
+                    : !draft.trim()
+                      ? "Çalıştırmak için önce bir sorgu yazın"
+                      : "Sorguyu çalıştır"
+                }
+                title={
+                  running
+                    ? "Sorgu çalışıyor…"
+                    : !draft.trim()
+                      ? "Çalıştırmak için önce bir sorgu yazın"
+                      : "Sorguyu çalıştır (⌘↵)"
+                }
                 style={composerRun}
               >
-                {running ? "Thinking…" : "Run"}
+                {running ? "Çalışıyor…" : "Run"}
               </button>
             </div>
           </form>
@@ -282,7 +376,7 @@ export function ASKPane({ code }: FunctionPaneProps) {
           <span>
             elapsed · {lastResult ? formatMs(lastResult.elapsed_ms) : "—"}
           </span>
-          <span>cost · ${costSpentUsd.toFixed(3)}</span>
+          <span>cost · {formatCurrency(costSpentUsd, { fractionDigits: 4 })}</span>
           {lastResult?.warnings?.length ? (
             <span>{lastResult.warnings.length} warn</span>
           ) : null}
@@ -298,8 +392,9 @@ function EmptyAskState() {
       <div className="ask-empty-eyebrow">Conversational query</div>
       <h2 className="ask-empty-h2">What can I help you with?</h2>
       <p className="ask-empty-body">
-        Type a question below or pick a suggestion. The agent will plan, search, and summarize, then
-        suggest a pane to dig deeper.
+        Bir soru yazın ya da bir öneri seçin. Sorgu planlanır, ilgili fonksiyonlar
+        çalıştırılır ve yanıt bu çıktılardan DETERMİNİSTİK olarak derlenir
+        (yapay zekâ yazımı değil); ardından derine inmek için bir panel önerilir.
       </p>
     </div>
   );
@@ -313,7 +408,7 @@ function ThinkingBubble() {
         <span style={dotPulse} />
         <span style={dotPulse} />
         <span className="ask-thinking-meta">
-          planning · searching · summarizing
+          planlanıyor · aranıyor · derleniyor
         </span>
       </div>
     </div>
@@ -341,7 +436,8 @@ function ChatBubble({
   if (turn.error) {
     return (
       <div style={agentRow}>
-        <div style={agentBubble}>
+        {/* A3 — failures are announced. */}
+        <div style={agentBubble} role="status" aria-live="polite">
           <Empty title="Ask failed" body={turn.error} icon="!" />
         </div>
       </div>
@@ -349,11 +445,24 @@ function ChatBubble({
   }
   const r = turn.result;
   if (!r) return null;
+  const llmPlanned = Boolean(r.was_llm_called && r.model_used);
   return (
     <div style={agentRow}>
-      <div style={agentBubble}>
+      {/* A3 — a blocking request resolves once, so a single polite
+          announcement on arrival (no streaming spam). */}
+      <div style={agentBubble} role="status" aria-live="polite">
         {/* Plan summary chip row */}
         <div style={planChipRow}>
+          {/* F3 — honest per-turn plan-method badge. */}
+          <span data-testid="ask-plan-method">
+            <Pill
+              tone={llmPlanned ? "accent" : "muted"}
+              variant="soft"
+              withDot={false}
+            >
+              {llmPlanned ? `Plan: AI (${r.model_used})` : "Plan: kural-tabanlı"}
+            </Pill>
+          </span>
           <Pill tone="accent" variant="soft" withDot={false}>
             intent · {r.plan.intent}
           </Pill>
@@ -372,12 +481,24 @@ function ChatBubble({
         {/* Narrative */}
         <p style={agentNarrative}>{r.narrative}</p>
 
-        {/* Highlights with citation chips */}
+        {/* Highlights with ACTIONABLE citation chips (A4). Each [n] resolves
+            to the matching evidence ref's function code (by index, then the
+            first available) and opens that pane on click/Enter/Space. */}
         {r.highlights.length > 0 ? (
           <div style={highlightRow}>
-            {r.highlights.map((h, i) => (
-              <HighlightWithCitation key={`${h.label}-${i}`} h={h} index={i + 1} />
-            ))}
+            {r.highlights.map((h, i) => {
+              const ev = collectEvidence(r);
+              const cite = ev[i] ?? ev[0];
+              return (
+                <HighlightWithCitation
+                  key={`${h.label}-${i}`}
+                  h={h}
+                  index={i + 1}
+                  code={cite?.code}
+                  onOpen={onOpen}
+                />
+              );
+            })}
           </div>
         ) : null}
 
@@ -429,7 +550,7 @@ function ChatBubble({
               <Card variant="elev-2" density="compact">
                 <CardHeader trailing={`${collectEvidence(r).length} refs`}>Evidence</CardHeader>
                 <CardBody>
-                  <EvidenceTable evidence={collectEvidence(r)} />
+                  <EvidenceTable evidence={collectEvidence(r)} onOpen={onOpen} />
                 </CardBody>
               </Card>
             ) : null}
@@ -445,19 +566,44 @@ function ChatBubble({
   );
 }
 
-function HighlightWithCitation({ h, index }: { h: AskHighlight; index: number }) {
+function HighlightWithCitation({
+  h,
+  index,
+  code,
+  onOpen,
+}: {
+  h: AskHighlight;
+  index: number;
+  code?: string;
+  onOpen?: (code: string, symbol?: string) => void;
+}) {
   const tone =
     h.tone === "neutral"
       ? "muted"
       : (h.tone as "positive" | "negative" | "warn" | "muted");
+  // A4 — when the citation resolves to a function code, the [n] chip is a
+  // focusable button that opens that pane (keyboard via native <button>).
+  const actionable = Boolean(code && onOpen);
   return (
     <span className="u-inline-flex u-items-center u-gap-4">
       <Pill tone={tone} variant="soft" withDot={false}>
         {h.label} · {h.value}
       </Pill>
-      <span style={citationChip} title={`citation [${index}]`}>
-        [{index}]
-      </span>
+      {actionable ? (
+        <button
+          type="button"
+          style={citationButton}
+          onClick={() => onOpen!(code!)}
+          aria-label={`Kaynak [${index}] — ${code} panelini aç`}
+          title={`Kaynak [${index}] · ${code} panelini aç`}
+        >
+          [{index}]
+        </button>
+      ) : (
+        <span style={citationChip} title={`citation [${index}]`}>
+          [{index}]
+        </span>
+      )}
     </span>
   );
 }
@@ -525,23 +671,58 @@ function collectEvidence(result: AskResponse): AskEvidence[] {
   );
 }
 
-function EvidenceTable({ evidence }: { evidence: AskEvidence[] }) {
+function EvidenceTable({
+  evidence,
+  onOpen,
+}: {
+  evidence: AskEvidence[];
+  onOpen?: (code: string, symbol?: string) => void;
+}) {
   return (
     <div className="u-grid-gap-8">
       {evidence.map((item, index) => {
         const top = item.top?.filter(Boolean).slice(0, 4) ?? [];
+        // A4 — each evidence ref opens its cited function/pane. The whole
+        // [n]+code becomes a single focusable button when a code is present.
+        const code = item.code && item.code !== "—" ? item.code : undefined;
+        const actionable = Boolean(code && onOpen);
         return (
           <div
             key={`${item.branch ?? "root"}-${item.code ?? "?"}-${index}`}
             style={evidenceRow}
           >
-            <span style={citationChip} title={`reference [${index + 1}]`}>
-              [{index + 1}]
-            </span>
+            {actionable ? (
+              <button
+                type="button"
+                style={citationButton}
+                onClick={() => onOpen!(code!)}
+                aria-label={`Kaynak [${index + 1}] — ${code} panelini aç`}
+                title={`Kaynak [${index + 1}] · ${code} panelini aç`}
+              >
+                [{index + 1}]
+              </button>
+            ) : (
+              <span style={citationChip} title={`reference [${index + 1}]`}>
+                [{index + 1}]
+              </span>
+            )}
             <Pill tone="accent" variant="soft" withDot={false}>
               {item.branch ?? "root"}
             </Pill>
-            <strong className="ask-evidence-code">{item.code ?? "—"}</strong>
+            {actionable ? (
+              <button
+                type="button"
+                className="ask-evidence-code"
+                style={evidenceCodeButton}
+                onClick={() => onOpen!(code!)}
+                aria-label={`${code} panelini aç`}
+                title={`${code} panelini aç`}
+              >
+                {code}
+              </button>
+            ) : (
+              <strong className="ask-evidence-code">{item.code ?? "—"}</strong>
+            )}
             <span className="u-text-secondary u-text-10">
               {item.status ?? "ok"}
             </span>
@@ -954,6 +1135,33 @@ const citationChip: CSSProperties = {
   fontSize: 9,
   fontWeight: 600,
   letterSpacing: "0.02em",
+};
+
+// A4 — actionable variant of the citation chip (clickable/focusable button).
+const citationButton: CSSProperties = {
+  ...citationChip,
+  border: "1px solid color-mix(in srgb, var(--accent) 40%, transparent)",
+  cursor: "pointer",
+};
+
+const evidenceCodeButton: CSSProperties = {
+  background: "transparent",
+  border: "none",
+  padding: 0,
+  cursor: "pointer",
+  textAlign: "left",
+  textDecoration: "underline",
+  textUnderlineOffset: 2,
+};
+
+const disclosureRow: CSSProperties = {
+  margin: 0,
+  padding: "6px 14px",
+  borderTop: "1px solid var(--border-subtle)",
+  background: "var(--surface-1)",
+  color: "var(--text-mute)",
+  fontSize: 10,
+  lineHeight: 1.45,
 };
 
 const suggestionRow: CSSProperties = {

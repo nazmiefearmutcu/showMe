@@ -5371,6 +5371,17 @@
 }
 
 /* ASK absorbers. */
+/* G1 — the thinking-dots reference `showme-ask-pulse` but the keyframe was
+   never defined, so the dots never animated. Define it here. */
+@keyframes showme-ask-pulse {
+  0%,
+  100% {
+    opacity: 0.4;
+  }
+  50% {
+    opacity: 1;
+  }
+}
 .ask-body {
   padding: 0;
   display: flex;

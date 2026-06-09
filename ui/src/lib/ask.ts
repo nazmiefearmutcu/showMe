@@ -84,6 +84,18 @@ export interface AskResponse {
   phases: AskPhase[];
   elapsed_ms: number;
   warnings: string[];
+  /**
+   * Honest provenance for the PLAN step. The ANSWER (narrative + highlights)
+   * is ALWAYS a deterministic composition from real function outputs; only
+   * the PLAN may call an LLM. These describe the plan step truthfully.
+   */
+  plan_method?: "llm" | "deterministic";
+  /** Real model id when an LLM actually planned (e.g. "claude-haiku-4-5"). */
+  model_used?: string | null;
+  provider?: string | null;
+  /** Real ledger delta in USD for this ask ($0.00 on the deterministic path). */
+  cost_usd?: number;
+  was_llm_called?: boolean;
 }
 
 export async function ask(query: string, signal?: AbortSignal): Promise<AskResponse> {
