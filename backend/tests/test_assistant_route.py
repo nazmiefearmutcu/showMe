@@ -58,6 +58,39 @@ def test_strategy_from_text_unknown_indicator(client):
     assert len(body["notes"]) > 0
 
 
+def test_strategy_from_text_catalog_invalid_not_persisted(client, monkeypatch):
+    """B6 — a spec referencing a non-catalog indicator returns a
+    ``katalog doğrulaması`` note, ``saved_id is None``, and is NOT persisted
+    (even with save=True). The keyword parser cannot emit a bogus indicator,
+    so we monkeypatch ``parse_request`` to exercise the validation path."""
+    bogus_spec = {
+        "name": "bogus",
+        "timeframe": "1h",
+        "indicators": [{"alias": "x1", "id": "not_a_real_indicator", "params": {}}],
+        "entry_rules": [{"kind": "greater_than", "left": "close", "right": "x1"}],
+        "exit_rules": [],
+        "position": {"side": "long", "sizing_kind": "fixed_quote",
+                     "sizing_value": 100, "stop_loss_pct": 2.0},
+    }
+
+    def fake_parse(text):
+        return bogus_spec, ["Tanınan indikatör: not_a_real_indicator"]
+
+    import showme.assistant.parser as parser_mod
+    monkeypatch.setattr(parser_mod, "parse_request", fake_parse)
+
+    before = client.get("/api/strategies").json()["records"]
+    r = client.post("/api/assistant/strategy-from-text",
+                    json={"text": "anything", "save": True})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["saved_id"] is None
+    assert any("katalog doğrulaması" in n for n in body["notes"])
+    # Not persisted despite save=True.
+    after = client.get("/api/strategies").json()["records"]
+    assert len(after) == len(before)
+
+
 def test_explain_requires_strategy_id(client):
     r = client.post("/api/assistant/explain-strategy", json={})
     assert r.status_code == 400

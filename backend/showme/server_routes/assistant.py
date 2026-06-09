@@ -1,9 +1,35 @@
 """Routes: /api/assistant/* — NL→spec parsing + explain delegation."""
 from __future__ import annotations
 
+import logging
+from pathlib import Path
 from typing import Any
 from fastapi import APIRouter, FastAPI, HTTPException
 from . import AppDeps
+
+LOG = logging.getLogger("showme.server_routes.assistant")
+
+
+def _indicator_catalog_ids() -> set[str]:
+    """Known indicator ids for catalog validation of generated specs.
+
+    Mirrors ``templates.py:_indicator_catalog_ids`` so an assistant-produced
+    spec is held to the SAME catalog contract the strategies create/update
+    routes enforce — a generated spec must only reference real catalog
+    indicators. A failed catalog load degrades to an empty set (validation
+    skipped) so a broken catalog never blocks generation that the strategies
+    routes would otherwise allow.
+    """
+    try:
+        from showme.indicators.catalog.loader import load_indicator_catalog
+        cat = load_indicator_catalog(
+            Path(__file__).resolve().parents[1]
+            / "indicators" / "catalog" / "indicators.yml"
+        )
+        return {e.id for e in cat.entries}
+    except Exception as exc:  # noqa: BLE001
+        LOG.warning("indicator catalog unavailable for validation: %s", exc)
+        return set()
 
 
 def register(app: FastAPI, deps: AppDeps) -> None:
@@ -43,6 +69,19 @@ def register(app: FastAPI, deps: AppDeps) -> None:
         except Exception as exc:  # noqa: BLE001
             return {"spec": spec_dict, "notes": notes + [f"validation failed: {exc}"],
                     "saved_id": None}
+
+        # B5 — catalog-validate the produced spec against the SAME indicator
+        # catalog STRA/the engine enforces. A catalog-invalid spec is NEVER
+        # persisted (even when save=True); we return it for transparency with
+        # an honest note so the user sees why nothing was saved.
+        try:
+            spec.validate_against_catalog(_indicator_catalog_ids())
+        except ValueError as err:
+            return {
+                "spec": spec_dict,
+                "notes": notes + [f"katalog doğrulaması başarısız: {err}"],
+                "saved_id": None,
+            }
 
         saved_id = None
         if save:

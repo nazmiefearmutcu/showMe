@@ -32,12 +32,72 @@ _SYMBOL_RE = re.compile(r"\b([A-Z]{2,8}/[A-Z]{2,8})\b")
 _TIMEFRAME_RE = re.compile(r"\b(1m|5m|15m|30m|1h|2h|4h|6h|1d|1w)\b", re.IGNORECASE)
 _NUMBER_RE = re.compile(r"(\d+(?:\.\d+)?)")
 
+# Curated map of concepts the parser CANNOT model → human label for the
+# honesty note. Each entry is (display_label, [keyword, ...]). Detected
+# concepts are echoed back verbatim as "ignored" so the user is never
+# misled into thinking a phrase was understood. Keep this list curated and
+# every branch tested — do NOT claim to support any of these.
+_IGNORED_CONCEPTS: list[tuple[str, tuple[str, ...]]] = [
+    ("divergence", ("divergence", "diverjans", "uyumsuzluk")),
+    ("stop-loss / take-profit", (
+        "stop loss", "stop-loss", "stoploss", "take profit", "take-profit",
+        "takeprofit", "kar al", "zarar durdur",
+    )),
+    ("risk / pozisyon boyutlandırma", (
+        "% risk", "per trade", "sizing", "pozisyon büyüklüğü",
+        "pozisyon buyuklugu", "kelly", "risk yönetimi", "risk yonetimi",
+    )),
+    ("trailing stop", ("trailing", "iz süren", "iz suren")),
+    ("mum / fiyat formasyonu", (
+        "pattern", "engulfing", "breakout", "kırılım", "kirilim",
+        "candlestick", "mum formasyonu",
+    )),
+]
+
+# Word-boundary-sensitive ignored concepts: short tokens (sl/tp/risk/mum)
+# that would false-positive as substrings (e.g. "sl" in "alt_close").
+# Matched against tokenised words instead of raw substring.
+_IGNORED_CONCEPTS_WORDS: list[tuple[str, tuple[str, ...]]] = [
+    ("stop-loss / take-profit", ("sl", "tp")),
+    ("risk / pozisyon boyutlandırma", ("risk",)),
+    ("mum / fiyat formasyonu", ("mum",)),
+]
+
 
 def _find_indicator(text_low: str) -> tuple[str, str] | None:
     for keyword, (ind_id, alias) in _KNOWN_INDICATORS.items():
         if keyword in text_low:
             return (ind_id, alias)
     return None
+
+
+def _all_matched_indicators(text_low: str) -> list[str]:
+    """Distinct indicator ids whose keyword appears in the text, in
+    keyword-table order. Used to detect multi-indicator sentences where
+    only the first is actually wired into the spec."""
+    seen: list[str] = []
+    for keyword, (ind_id, _alias) in _KNOWN_INDICATORS.items():
+        if keyword in text_low and ind_id not in seen:
+            seen.append(ind_id)
+    return seen
+
+
+def _detect_ignored(text_low: str) -> list[str]:
+    """Return display labels for known-but-UNSUPPORTED concepts present in
+    the text. Each label is returned at most once."""
+    found: list[str] = []
+    for label, keywords in _IGNORED_CONCEPTS:
+        if label in found:
+            continue
+        if any(kw in text_low for kw in keywords):
+            found.append(label)
+    words = set(re.findall(r"[a-zçğıöşü%]+", text_low))
+    for label, tokens in _IGNORED_CONCEPTS_WORDS:
+        if label in found:
+            continue
+        if any(tok in words for tok in tokens):
+            found.append(label)
+    return found
 
 
 def _extract_numbers(s: str) -> list[float]:
@@ -109,9 +169,11 @@ def parse_request(text: str) -> tuple[dict[str, Any] | None, list[str]]:
                     symbols.append("DOGE/USDT")
                 break
 
-    # Timeframe
+    # Timeframe — track whether it was parsed or defaulted so we can be
+    # honest about it in the notes (B2).
     tf_match = _TIMEFRAME_RE.search(text)
     timeframe = tf_match.group(1).lower() if tf_match else "1h"
+    timeframe_defaulted = tf_match is None
 
     # Build base spec
     spec: dict[str, Any] = {
@@ -184,10 +246,24 @@ def parse_request(text: str) -> tuple[dict[str, Any] | None, list[str]]:
         notes.append("MACD sıfır çizgisi cross — klasik trend giriş/çıkış")
 
     elif ind_id == "ema":
-        period = int(nums[0]) if nums else 20
+        # B3 — two-number EMA fix. Previously the second number ("EMA 20 50")
+        # was silently dropped and the long period hardcoded to period*3.
+        # Now: ≥2 numbers → use nums[0]/nums[1]; 1 → period + period*3; 0 → 20/60.
+        if len(nums) >= 2:
+            short_p = int(nums[0])
+            long_p = int(nums[1])
+            ema_from_input = True
+        elif len(nums) == 1:
+            short_p = int(nums[0])
+            long_p = short_p * 3
+            ema_from_input = False
+        else:
+            short_p = 20
+            long_p = 60
+            ema_from_input = False
         spec["indicators"] = [
-            {"alias": "ema_short", "id": "ema", "params": {"period": period}},
-            {"alias": "ema_long", "id": "ema", "params": {"period": period * 3}},
+            {"alias": "ema_short", "id": "ema", "params": {"period": short_p}},
+            {"alias": "ema_long", "id": "ema", "params": {"period": long_p}},
         ]
         spec["entry_rules"].append({
             "kind": "crosses_above", "left": "ema_short", "right": "ema_long",
@@ -195,7 +271,10 @@ def parse_request(text: str) -> tuple[dict[str, Any] | None, list[str]]:
         spec["exit_rules"].append({
             "kind": "crosses_below", "left": "ema_short", "right": "ema_long",
         })
-        notes.append(f"EMA({period}) ve EMA({period*3}) crossover")
+        if ema_from_input:
+            notes.append(f"EMA({short_p}) ve EMA({long_p}) crossover (her iki periyot da girişten alındı)")
+        else:
+            notes.append(f"EMA({short_p}) ve EMA({long_p}) crossover (uzun periyot varsayıldı)")
 
     else:
         # Generic: just use the indicator without strong rules
@@ -210,6 +289,34 @@ def parse_request(text: str) -> tuple[dict[str, Any] | None, list[str]]:
     notes.insert(0, f"Tanınan indikatör: {ind_id} (alias={alias})")
     if symbols:
         notes.append(f"Tanınan sembol(ler): {', '.join(symbols)}")
-    notes.append(f"Timeframe: {timeframe}")
+
+    # B2 — honest timeframe note: distinguish parsed vs defaulted.
+    if timeframe_defaulted:
+        notes.append(f"Timeframe: {timeframe} (varsayılan — belirtilmedi)")
+    else:
+        notes.append(f"Timeframe: {timeframe}")
+
+    # B2 — disclose the injected position/stop defaults so the user knows
+    # they were not requested. Match the actual values in ``spec["position"]``.
+    pos = spec["position"]
+    notes.append(
+        f"Varsayılan: pozisyon {pos['side']}, {pos['sizing_kind']} "
+        f"{pos['sizing_value']}, stop-loss %{pos['stop_loss_pct']} (talep edilmedi)"
+    )
+
+    # B1 — echo a second indicator that the user mentioned but we did NOT wire
+    # in (only the first is used). EMA replaces spec["indicators"] with two EMA
+    # legs, so "matched ids" is computed from the original text, not the spec.
+    matched_ids = _all_matched_indicators(text_low)
+    if len(matched_ids) > 1:
+        extra = ", ".join(matched_ids[1:])
+        notes.append(
+            f"⚠ Yalnızca ilk gösterge ({ind_id}) kullanıldı — diğerleri "
+            f"({extra}) yok sayıldı"
+        )
+
+    # B1 — echo every known-but-unsupported concept detected in the input.
+    for label in _detect_ignored(text_low):
+        notes.append(f"⚠ '{label}' desteklenmiyor — yok sayıldı")
 
     return spec, notes
