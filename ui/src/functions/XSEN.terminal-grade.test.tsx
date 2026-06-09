@@ -15,7 +15,10 @@
  *    aria-labels are present.
  */
 import { act, cleanup, render, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+// Frozen "now" for relative-time assertions (see F1 / F3 describe blocks).
+const FROZEN_NOW = new Date("2026-06-09T12:00:00Z");
 
 vi.mock("@/lib/xai", () => ({
   fetchXHealth: vi.fn(),
@@ -39,7 +42,8 @@ function fullResponse(overrides: Partial<XAnalysisResponse> = {}): XAnalysisResp
     query: "AAPL",
     post_count: 6,
     scrape_seconds: 0.5,
-    fetched_at: new Date(Date.now() - 4 * 60_000).toISOString(), // 4 min ago
+    // 4 min before FROZEN_NOW (2026-06-09T12:00:00Z) → "4 dakika önce".
+    fetched_at: "2026-06-09T11:56:00.000Z",
     device: "cpu",
     mood: "bullish",
     summary_tr: "özet",
@@ -66,7 +70,8 @@ function fullResponse(overrides: Partial<XAnalysisResponse> = {}): XAnalysisResp
           score: 0.91,
           emotion: "joy",
           topic: "stocks",
-          date: new Date(Date.now() - 10 * 60_000).toISOString(), // 10 min ago
+          // 10 min before FROZEN_NOW (2026-06-09T12:00:00Z) → "10 dakika önce".
+          date: "2026-06-09T11:50:00.000Z",
         },
         {
           user: "carol",
@@ -105,12 +110,24 @@ afterEach(() => {
 });
 
 describe("XSEN F1 — honest freshness", () => {
+  // Freeze the clock so the rendered relative-time output is deterministic
+  // (relativeTimeLabel reads Date.now() internally — see ui/src/lib/time.ts).
+  beforeEach(() => {
+    // shouldAdvanceTime keeps real timer scheduling working (so act/waitFor
+    // resolve), while setSystemTime pins Date.now() to the frozen base.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(FROZEN_NOW);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("renders a 'Veri alındı' freshness indicator from fetched_at", async () => {
     const container = await renderWithData();
     const fresh = container.querySelector('[data-testid="xsen-fetched-at"]');
     expect(fresh).not.toBeNull();
-    // 4 min ago → Turkish relative label.
-    expect(fresh!.textContent ?? "").toMatch(/dakika önce/);
+    // fetched_at is exactly 4 min before FROZEN_NOW → exact label.
+    expect(fresh!.textContent ?? "").toMatch(/4 dakika önce/);
     expect(fresh!.textContent ?? "").toMatch(/VERİ ALINDI/i);
   });
 
@@ -133,13 +150,25 @@ describe("XSEN F1 — honest freshness", () => {
 });
 
 describe("XSEN F3 — per-tweet date", () => {
+  // Freeze the clock so the per-tweet relative-time output is deterministic
+  // (relativeTimeLabel reads Date.now() internally — see ui/src/lib/time.ts).
+  beforeEach(() => {
+    // shouldAdvanceTime keeps real timer scheduling working (so act/waitFor
+    // resolve), while setSystemTime pins Date.now() to the frozen base.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(FROZEN_NOW);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("renders a relative-time age for tweets with a date", async () => {
     const container = await renderWithData();
     const dates = Array.from(
       container.querySelectorAll('[data-testid="xsen-tweet-date"]'),
     ).map((el) => el.textContent ?? "");
-    // First example is 10 min ago.
-    expect(dates.some((t) => /dakika önce/.test(t))).toBe(true);
+    // First example is exactly 10 min before FROZEN_NOW → exact label.
+    expect(dates.some((t) => /10 dakika önce/.test(t))).toBe(true);
   });
 
   it("shows honest 'tarih yok' (not 'now') for missing dates", async () => {
@@ -254,5 +283,28 @@ describe("XSEN A6 — load announcement", () => {
           .join(" "),
       ).toMatch(/6 gönderi yüklendi, ruh hali bullish/),
     );
+  });
+});
+
+describe("XSEN A7 — Since chip selected state", () => {
+  it("marks the active Since window aria-pressed=true and the rest false", async () => {
+    vi.mocked(fetchXHealth).mockResolvedValueOnce(HEALTHY);
+    vi.mocked(analyzeXTopic).mockResolvedValueOnce(fullResponse());
+    let container!: HTMLElement;
+    await act(async () => {
+      container = render(<XSENPane code="XSEN" symbol="AAPL" />).container;
+    });
+    const group = container.querySelector('[role="group"][aria-label="Since"]');
+    expect(group).not.toBeNull();
+    const chips = Array.from(group!.querySelectorAll("button"));
+    expect(chips.length).toBeGreaterThan(1);
+    // Default draftSince is "7d" (label "7d") — see XSEN.tsx.
+    const active = chips.find((b) => (b.textContent ?? "").trim() === "7d");
+    expect(active).toBeTruthy();
+    expect(active!.getAttribute("aria-pressed")).toBe("true");
+    for (const chip of chips) {
+      if (chip === active) continue;
+      expect(chip.getAttribute("aria-pressed")).toBe("false");
+    }
   });
 });

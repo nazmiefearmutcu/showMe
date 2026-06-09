@@ -341,6 +341,7 @@ export function XSENPane({ code, symbol }: FunctionPaneProps) {
                 <button
                   key={opt.value}
                   type="button"
+                  aria-pressed={draftSince === opt.value}
                   onClick={() => setDraftSince(opt.value)}
                   style={{
                     ...chipButton,
