@@ -201,6 +201,45 @@ def test_failed_test_leaves_last_verified_unchanged(
     assert rec["last_verified"] is None
 
 
+def test_failed_test_after_success_preserves_prior_last_verified(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P3-2 — a later FAILED connection test must not clear or overwrite a
+    prior SUCCESSFUL verification: last_verified stays at the value stamped by
+    the first (successful) /test."""
+    import showme.brokers as brokers_mod
+
+    r = client.post("/api/exchange/credentials", json={
+        "exchange_id": "binance", "account_label": "main",
+        "secrets": {"api_key": "k", "api_secret": "s"},
+        "permissions": ["read"], "skip_test": True,
+    })
+    rid = r.json()["id"]
+
+    # 1) First test succeeds (uses the fake ccxt broker) → stamps last_verified=T1.
+    ok = client.post(f"/api/exchange/credentials/{rid}/test")
+    assert ok.status_code == 200
+    t1 = ok.json()["last_verified"]
+    assert t1 is not None
+
+    # 2) Now make the broker fail and test again.
+    class _BoomBroker:
+        async def account(self):
+            raise RuntimeError("auth rejected")
+
+    monkeypatch.setattr(brokers_mod, "get_broker", lambda *_a, **_k: _BoomBroker())
+    fail = client.post(f"/api/exchange/credentials/{rid}/test")
+    assert fail.status_code == 200
+    assert fail.json()["ok"] is False
+    # A failure response carries no last_verified to overwrite the stored one.
+    assert "last_verified" not in fail.json()
+
+    # 3) The listing still shows the ORIGINAL successful timestamp.
+    listed = client.get("/api/exchange/credentials").json()["records"]
+    rec = next(x for x in listed if x["id"] == rid)
+    assert rec["last_verified"] == t1
+
+
 def test_list_credentials_exposes_last_verified_metadata(client: TestClient) -> None:
     """B1 — last_verified is part of the metadata-only to_dict() shape (and is
     never accompanied by a secret)."""
