@@ -192,6 +192,13 @@ describe("ANR pane — A3 consensus score meter", () => {
     const meter = screen.getByRole("meter");
     expect(meter).toHaveAttribute("aria-valuenow", "0");
   });
+
+  it("omits aria-valuenow when consensus_score is null (no NaN leak)", () => {
+    render(<ConsensusCard summary={{ label: "No consensus", consensus_score: null }} symbol="AMZN" />);
+    const meter = screen.getByRole("meter");
+    // An absent score must not leak a NaN/out-of-band aria-valuenow.
+    expect(meter).not.toHaveAttribute("aria-valuenow");
+  });
 });
 
 describe("ANR pane — A4 RefreshButton aria-busy", () => {
