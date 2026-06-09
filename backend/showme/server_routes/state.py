@@ -1,6 +1,7 @@
 """Read-only state routes: positions, trades, migrations, LLM cost."""
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, FastAPI, Query
@@ -24,7 +25,16 @@ def register(app: FastAPI, deps: AppDeps) -> None:
     ) -> dict[str, Any]:
         from showme.state_api import list_trades
         out = list_trades(limit=limit, symbol=symbol)
-        return {"rows": out.rows, "total": out.total, "source": out.source}
+        # Freshness stamp for the TXNS blotter's "Son güncelleme" indicator.
+        # Stamped at the route layer so the framework-light StateRead dataclass
+        # stays unchanged. This marks when THIS response was served, not when
+        # the underlying rows were imported (those carry their own imported_at).
+        return {
+            "rows": out.rows,
+            "total": out.total,
+            "source": out.source,
+            "generated_at": datetime.now(tz=timezone.utc).isoformat(),
+        }
 
     @router.get("/api/state/migrations")
     async def state_migrations(limit: int = Query(50, ge=1, le=500)) -> dict[str, Any]:

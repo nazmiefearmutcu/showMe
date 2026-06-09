@@ -258,6 +258,21 @@ def test_state_trades_route_bounds_limit(client: TestClient) -> None:
     assert resp.status_code == 422
 
 
+def test_state_trades_route_includes_parseable_generated_at(client: TestClient) -> None:
+    # B1 — the route stamps a freshness marker for the TXNS blotter's
+    # "Son güncelleme" indicator. Assert it is present and a parseable ISO
+    # timestamp (don't assert the exact instant).
+    from datetime import datetime
+
+    resp = client.get("/api/state/trades")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "generated_at" in body
+    # fromisoformat accepts the timezone-aware ISO string we emit.
+    parsed = datetime.fromisoformat(body["generated_at"])
+    assert parsed.tzinfo is not None
+
+
 # ── /api/scanner/run / universes ─────────────────────────────────────────
 
 
