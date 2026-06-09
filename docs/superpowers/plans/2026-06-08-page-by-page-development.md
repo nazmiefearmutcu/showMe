@@ -72,7 +72,7 @@ Each task is one page. Execute it as a **subagent-driven-development** mini-cycl
 
 ## Wave 4 — Research / AI / market-structure
 
-- [ ] **Task 25: AGENT — Symbol Agent.** Pane: `ui/src/functions/AGENT.tsx`. Backend: `backend/showme/agents`. Focus: ranked function set per symbol, relevance, display.
+- [x] **Task 25: AGENT — Symbol Agent.** Pane: `ui/src/functions/AGENT.tsx`. Backend: `backend/showme/agents`. Focus: ranked function set per symbol, relevance, display.
 - [ ] **Task 26: ASK — Ask.** Pane: `ui/src/functions/ASK.tsx`. Backend: assistant/research. Focus: query UX, answer rendering, function-backed citations.
 - [ ] **Task 27: XSEN — X Sentiment AI.** Pane: `ui/src/functions/XSEN.tsx`. Backend: `x_scraper_ai`/news. Focus: sentiment feed real data, scoring display, freshness.
 - [ ] **Task 28: CORR — Correlation.** Pane: `ui/src/functions/CORR.tsx`. Backend: correlation compute. Focus: correlation matrix/heatmap, symbol selection, real series.
