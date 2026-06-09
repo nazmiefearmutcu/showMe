@@ -86,7 +86,7 @@ Each task is one page. Execute it as a **subagent-driven-development** mini-cycl
 
 ## Wave 6 — Long-tail bespoke analytics (alphabetical by code)
 
-- [ ] **Task 33: AIM.** Pane: `ui/src/functions/AIM.tsx`. Backend via `rg -il aim backend/showme/engine/functions`.
+- [x] **Task 33: AIM.** Pane: `ui/src/functions/AIM.tsx`. Backend via `rg -il aim backend/showme/engine/functions`.
 - [ ] **Task 34: ANR.** Pane: `ui/src/functions/ANR.tsx` (+ `anr_pane/`). Backend: analyst recommendations.
 - [ ] **Task 35: BIO.** Pane: `ui/src/functions/BIO.tsx`. Backend via `rg -il bio backend/showme/engine/functions`.
 - [ ] **Task 36: CRPR.** Pane: `ui/src/functions/CRPR.tsx`. Backend: crypto price (CoinGecko/Binance).
