@@ -28,6 +28,7 @@ import {
 } from "@/design-system";
 import { useFunction } from "@/lib/useFunction";
 import { useVisibilityTick } from "@/lib/useVisibilityTick";
+import { formatMissing, formatPercent } from "@/lib/format";
 import {
   FunctionControlGroup,
   LoadStatePill,
@@ -58,6 +59,8 @@ interface DebtRow {
   change_pct?: number | null;
   history?: number[];
   trend?: number[];
+  /** Observation vintage (World Bank year, e.g. "2023") — NOT the fetch date. */
+  year?: string | number | null;
 }
 
 interface DebtSummary {
@@ -197,11 +200,35 @@ export function DEBTPane({ code, symbol }: FunctionPaneProps) {
       },
       {
         key: "local_currency_share",
-        header: "Local ccy",
+        header: (
+          <span style={refHeaderStyle}>
+            Local ccy
+            <span
+              style={refBadgeStyle}
+              role="img"
+              aria-label="Yayınlanmış referans (canlı seri değil)"
+              title="Yayınlanmış referans — canlı World Bank serisi değil"
+            >
+              referans
+            </span>
+          </span>
+        ),
         numeric: true,
         sortable: true,
-        width: 130,
+        width: 150,
         render: (r) => <LocalCcyBar value={localShare(r)} />,
+      },
+      {
+        key: "year",
+        header: "Veri yılı",
+        numeric: true,
+        sortable: true,
+        width: 80,
+        render: (r) => {
+          const y = vintageYear(r);
+          if (!y) return <span style={mutedNum}>{formatMissing}</span>;
+          return <span style={mutedNum}>{y}</span>;
+        },
       },
       {
         key: "portfolio_weight_pct",
@@ -211,8 +238,27 @@ export function DEBTPane({ code, symbol }: FunctionPaneProps) {
         width: 110,
         render: (r) => {
           const v = numeric(r.portfolio_weight_pct);
-          if (v == null || v === 0) return <span style={mutedNum}>0.00%</span>;
-          return <span style={primaryNum}>{fmtPct(v, 2)}</span>;
+          // Honest missing-vs-real-zero: a null/absent weight is unknown
+          // (em-dash), a real 0 is the baseline "no portfolio link" reading.
+          if (v == null) {
+            return (
+              <span style={mutedNum} data-testid={`debt-portfolio-${r.country ?? r.name ?? "row"}`}>
+                {formatMissing}
+              </span>
+            );
+          }
+          if (v === 0) {
+            return (
+              <span style={mutedNum} data-testid={`debt-portfolio-${r.country ?? r.name ?? "row"}`}>
+                {fmtPct(0, 2)}
+              </span>
+            );
+          }
+          return (
+            <span style={primaryNum} data-testid={`debt-portfolio-${r.country ?? r.name ?? "row"}`}>
+              {fmtPct(v, 2)}
+            </span>
+          );
         },
       },
       {
@@ -282,13 +328,18 @@ export function DEBTPane({ code, symbol }: FunctionPaneProps) {
                 {isLive ? "live" : dataMode}
               </Pill>
               <LoadStatePill state={state} />
-              <RefreshButton loading={state === "loading"} onClick={refetch} />
+              <RefreshButton
+                loading={state === "loading"}
+                busy={state === "loading" || state === "refreshing"}
+                onClick={refetch}
+              />
             </FunctionControlGroup>
           }
         />
         <div style={tabBarStyle}>
           <Tabs
             variant="segmented"
+            ariaLabel="Bölge filtresi"
             items={REGIONS.map((r) => ({ id: r.id, label: r.label }))}
             active={region}
             onChange={(id) => setRegion(id as RegionId)}
@@ -296,20 +347,46 @@ export function DEBTPane({ code, symbol }: FunctionPaneProps) {
         </div>
         <PaneBody>
           {state === "loading" || state === "idle" ? (
-            <Skeleton height={320} />
+            // SCOPED live region: the pane polls, so only the loading / error /
+            // empty transition may be aria-live — the steady-state board must
+            // NOT be (else SRs re-announce the whole table every poll).
+            <div role="status" aria-live="polite" aria-busy={state === "loading"}>
+              <Skeleton height={320} />
+            </div>
           ) : state === "error" ? (
-            <Empty
-              title="Function error"
-              body={error?.message ?? "—"}
-              icon="!"
-            />
+            <div role="status" aria-live="polite">
+              <Empty
+                title="Function error"
+                body={error?.message ?? "—"}
+                icon="!"
+              />
+            </div>
           ) : allRows.length === 0 ? (
-            <Empty
-              title="No sovereign data"
-              body="The debt provider returned no country rows."
-            />
+            <div role="status" aria-live="polite">
+              <Empty
+                title="No sovereign data"
+                body="The debt provider returned no country rows."
+              />
+            </div>
           ) : (
             <div className="u-grid-gap-14">
+              {/* PORTFOLIO honesty: when no portfolio is wired this board is a
+                  macro overlay, NOT the operator's holdings. Make it
+                  unmistakable so a row's "0.00%" weight is never misread. */}
+              {!portfolioLinked ? (
+                <section
+                  data-testid="debt-portfolio-note"
+                  style={macroNoteStyle}
+                >
+                  <strong className="u-text-secondary">Sadece makro</strong>
+                  <span className="u-text-mute">
+                    Portföy bağlı değil — bu tablo ülke bazında makro borç
+                    görünümüdür, gerçek pozisyonlarınız değildir. Portföy ağırlığı
+                    her satırda 0&apos;a sabitlenmiştir.
+                  </span>
+                </section>
+              ) : null}
+
               {warnings.length ? (
                 <section style={noticeStyle}>
                   <strong className="u-text-warn">Provider warnings</strong>
@@ -358,9 +435,21 @@ export function DEBTPane({ code, symbol }: FunctionPaneProps) {
               ) : (
                 <section style={boardStyle} aria-label="Debt-to-GDP ranking">
                   <div style={legendRowStyle}>
-                    <LegendDot color="var(--positive)" label="< 60%" />
-                    <LegendDot color="var(--accent)" label="60–100%" />
-                    <LegendDot color="var(--negative)" label="> 100%" />
+                    <LegendDot
+                      color="var(--positive)"
+                      label="< 60%"
+                      ariaLabel="Düşük borç/GSYİH: %60 altı"
+                    />
+                    <LegendDot
+                      color="var(--accent)"
+                      label="60–100%"
+                      ariaLabel="Orta borç/GSYİH: %60–100"
+                    />
+                    <LegendDot
+                      color="var(--negative)"
+                      label="> 100%"
+                      ariaLabel="Yüksek borç/GSYİH: %100 üstü"
+                    />
                     <span style={legendScaleStyle}>
                       scaled to {scaleMax.toFixed(0)}%
                     </span>
@@ -382,7 +471,15 @@ export function DEBTPane({ code, symbol }: FunctionPaneProps) {
                 rows={rows}
                 rowKey={(r, i) => `${r.country ?? r.name ?? "row"}-${i}`}
                 density="compact"
+                ariaLabel="Ülke bazında devlet borcu"
               />
+
+              <p style={refFootnoteStyle}>
+                <strong>Local ccy</strong> sütunu yayınlanmış bir{" "}
+                <em>referans</em>tır, canlı World Bank serisi değildir.{" "}
+                <strong>Veri yılı</strong> gözlem vintage&apos;ini gösterir —{" "}
+                <code>as of</code> ise getirme zamanıdır.
+              </p>
 
               {methodology ? (
                 <section style={methodPanelStyle}>
@@ -425,8 +522,16 @@ function DebtBar({ row, scaleMax }: { row: DebtRow; scaleMax: number }) {
   const color = debtColor(v);
   const change = numeric(row.change ?? row.change_pct);
   const label = row.country ?? row.name ?? "—";
+  const hasValue = numeric(row.debt_to_gdp) != null;
+  // Bars convey magnitude via width + severity color only — expose the reading
+  // to assistive tech so it is not a color/width-only datum. Lead with the ISO
+  // code (plus the long name when present) so the value is unambiguous.
+  const accName = row.name ? `${label} ${row.name}` : label;
+  const ariaLabel = `${accName}: borç/GSYİH ${
+    hasValue ? fmtPct(v) : formatMissing
+  }${change != null ? `, 5Y Δ ${fmtPct(change)}` : ""}`;
   return (
-    <div style={barRowStyle}>
+    <div style={barRowStyle} role="img" aria-label={ariaLabel}>
       <div style={barLabelStyle} title={row.name ?? label}>
         {label}
       </div>
@@ -467,10 +572,20 @@ function LocalCcyBar({ value }: { value: number | null }) {
   );
 }
 
-function LegendDot({ color, label }: { color: string; label: string }) {
+function LegendDot({
+  color,
+  label,
+  ariaLabel,
+}: {
+  color: string;
+  label: string;
+  ariaLabel: string;
+}) {
+  // Severity is encoded by swatch color — expose its meaning to AT so the
+  // legend is not a color-only key.
   return (
-    <span style={legendDotStyle}>
-      <span style={{ ...legendSwatchStyle, background: color }} />
+    <span style={legendDotStyle} role="img" aria-label={ariaLabel}>
+      <span aria-hidden style={{ ...legendSwatchStyle, background: color }} />
       {label}
     </span>
   );
@@ -539,6 +654,14 @@ function localShare(r: DebtRow): number | null {
   return numeric(r.local_currency_share ?? r.local_ccy_share);
 }
 
+/** Observation vintage (World Bank year) as a clean string, or "" if absent. */
+function vintageYear(r: DebtRow): string {
+  const y = r.year;
+  if (y == null) return "";
+  const s = String(y).trim();
+  return s && s.toLowerCase() !== "nan" ? s : "";
+}
+
 function matchesRegion(r: DebtRow, region: RegionId): boolean {
   return (r.region ?? "").toLowerCase().includes(region);
 }
@@ -556,9 +679,14 @@ function trendForRow(r: DebtRow): number[] {
   return [];
 }
 
+/**
+ * Percent formatter delegating to the shared `format.ts`. The backend already
+ * emits debt_to_gdp / local_currency_share / portfolio_weight_pct IN PERCENT
+ * (0–100), so `fromFraction` stays false (the default) — multiplying would
+ * render "12567%". Absent values fall back to the shared em-dash sentinel.
+ */
 function fmtPct(v: number | null | undefined, digits = 1): string {
-  if (v == null || !Number.isFinite(v)) return "—";
-  return `${v.toFixed(digits)}%`;
+  return formatPercent(v, { digits });
 }
 
 function numeric(v: unknown): number | null {
@@ -684,7 +812,7 @@ const isoStyle: CSSProperties = {
 
 const countryNameStyle: CSSProperties = {
   fontSize: 10,
-  color: "var(--text-tertiary)",
+  color: "var(--text-secondary)",
   overflow: "hidden",
   textOverflow: "ellipsis",
   whiteSpace: "nowrap",
@@ -749,6 +877,41 @@ const warningListStyle: CSSProperties = {
   margin: 0,
   paddingLeft: 18,
   fontSize: "var(--font-size-xs)",
+};
+
+const macroNoteStyle: CSSProperties = {
+  border: "1px solid var(--border-card)",
+  background: "var(--surface-2)",
+  borderRadius: "var(--radius-sm)",
+  padding: "8px 10px",
+  display: "grid",
+  gap: 3,
+  fontSize: 12,
+};
+
+const refHeaderStyle: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 5,
+};
+
+const refBadgeStyle: CSSProperties = {
+  fontSize: 9,
+  fontWeight: 700,
+  letterSpacing: "0.04em",
+  textTransform: "uppercase",
+  padding: "1px 5px",
+  borderRadius: 999,
+  border: "1px solid color-mix(in srgb, var(--accent) 35%, transparent)",
+  color: "var(--accent)",
+  background: "color-mix(in srgb, var(--accent) 12%, transparent)",
+};
+
+const refFootnoteStyle: CSSProperties = {
+  margin: 0,
+  color: "var(--text-mute)",
+  fontSize: 11,
+  lineHeight: 1.5,
 };
 
 const methodPanelStyle: CSSProperties = {

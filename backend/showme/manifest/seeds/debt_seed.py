@@ -79,7 +79,7 @@ def debt() -> FunctionManifest:
             "provider_mode": DataMode.MODELED.value,
         },
         provider_chain=ProviderChain(
-            primary="fred",
+            primary="worldbank",
             fallbacks=["cached_snapshot"],
             acceptable_modes=[
                 DataMode.LIVE_OFFICIAL,
@@ -117,19 +117,22 @@ def debt() -> FunctionManifest:
             ],
         ),
         methodology=(
-            "DEBT is a sovereign macro exposure table. Without a portfolio link the bundled baseline"
-            " pins ``portfolio_weight_pct = 0`` for every country so it is never misread as actual"
-            " operator exposure; ``summary.portfolio_linked`` reports the wiring state explicitly."
-            " Country rows can be restricted via the ``countries`` filter (case-insensitive); supplying"
-            " ``exposures`` directly bypasses the macro baseline. When connected to a macro feed the"
-            " chain pulls debt/GDP from FRED's debt-to-GDP family and local-currency share from the"
-            " IMF SDDS series via the cached_snapshot fallback."
+            "DEBT is a sovereign macro exposure table. Debt/GDP is pulled live from the World Bank"
+            " general-government debt-to-GDP indicator (annual, keyless), taking the most recent"
+            " non-null observation per country; each row reports the observation ``year`` so the data"
+            " vintage is distinct from the fetch timestamp. local_currency_share is a published"
+            " REFERENCE (a stable, labelled lookup), NOT a live World Bank series. Without a portfolio"
+            " link the bundled baseline pins ``portfolio_weight_pct = 0`` for every country so it is"
+            " never misread as actual operator exposure; ``summary.portfolio_linked`` reports the"
+            " wiring state explicitly. Country rows can be restricted via the ``countries`` filter"
+            " (case-insensitive); supplying ``exposures`` directly bypasses the World Bank fetch."
         ),
         formula_dict={},
         field_dict={
             "rows[].country": FieldDef(description="ISO-2 country code.", source="catalog"),
-            "rows[].debt_to_gdp": FieldDef(unit="%", description="General government debt as percent of GDP.", source="fred"),
-            "rows[].local_currency_share": FieldDef(unit="%", description="Share of sovereign debt issued in local currency.", source="fred"),
+            "rows[].debt_to_gdp": FieldDef(unit="%", description="General government debt as percent of GDP (World Bank, latest annual).", source="worldbank"),
+            "rows[].local_currency_share": FieldDef(unit="%", description="Published REFERENCE share of sovereign debt issued in local currency (not a live World Bank series).", source="worldbank_reference"),
+            "rows[].year": FieldDef(description="Year of the World Bank debt-to-GDP observation.", source="worldbank"),
             "rows[].portfolio_weight_pct": FieldDef(unit="%", description="Portfolio country weight; zero when no portfolio link.", source="portfolio_state"),
         },
         provenance=ProvenanceSpec(

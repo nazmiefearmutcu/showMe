@@ -153,6 +153,34 @@ def test_debt_portfolio_weight_zero_when_unlinked():
         assert res.data["summary"]["portfolio_linked"] is False
 
 
+def test_debt_manifest_provider_is_honest_worldbank_not_fred():
+    """The DEBT manifest must advertise the provider its handler actually uses.
+
+    The handler pulls the World Bank debt-to-GDP indicator (see DEBTFunction),
+    so the seed's provider_chain / field sources / methodology must say
+    'worldbank', never 'fred' or 'IMF SDDS' — otherwise the rendered
+    methodology is a user-facing false provider claim.
+    """
+    from showme.manifest import REGISTRY, load_seeds
+
+    load_seeds()
+    entry = REGISTRY.get("DEBT")
+    assert entry.provider_chain.primary == "worldbank", (
+        f"DEBT primary provider must be 'worldbank' (got "
+        f"{entry.provider_chain.primary!r}) — its handler uses the World Bank API."
+    )
+    # Field sources must not pin the dishonest FRED claim.
+    debt_field = entry.field_dict["rows[].debt_to_gdp"]
+    assert debt_field.source == "worldbank"
+    assert entry.field_dict["rows[].local_currency_share"].source != "fred"
+    # Methodology must describe the real source and drop the FRED / IMF-SDDS claim.
+    method = entry.methodology.lower()
+    assert "world bank" in method
+    assert "fred" not in method
+    assert "imf sdds" not in method
+    assert "reference" in method  # local-ccy share honestly flagged as reference
+
+
 # ---- ALLQ -----------------------------------------------------------------
 
 

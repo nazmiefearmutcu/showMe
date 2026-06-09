@@ -49,6 +49,7 @@ KNOWN_PRIMARY_PROVIDERS = frozenset(
         "fred",
         "treasury_direct",
         "openfigi",
+        "worldbank",
         "binance",
         "yfinance",
         "gdelt",
@@ -260,7 +261,8 @@ def test_yas_uses_bar_ladder_or_no_chart() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Spec wiring: TAUC primary is treasury_direct, GC3D/CRVF/WB/SRSK/DEBT use fred
+# Spec wiring: TAUC primary is treasury_direct, GC3D/CRVF/WB/SRSK use fred,
+# DEBT uses worldbank (its handler pulls the World Bank debt-to-GDP indicator).
 # ---------------------------------------------------------------------------
 
 
@@ -270,7 +272,7 @@ def test_yas_uses_bar_ladder_or_no_chart() -> None:
     ("GC3D", "fred"),
     ("WB", "fred"),
     ("SRSK", "fred"),
-    ("DEBT", "fred"),
+    ("DEBT", "worldbank"),
     ("CRPR", "internal"),
     ("ALLQ", "internal"),
     ("PEOP", "internal"),
