@@ -23,7 +23,7 @@ from .planner import Plan, plan_for
 from .search import search as run_search
 from .summarizer import summarize
 from .viz import pick_viz
-from ..llm import CostLedger, build_default_providers, plan_for_smart
+from ..llm import CostEntry, build_default_providers, plan_for_smart
 
 LOG = logging.getLogger("showme.agents.orchestrator")
 
@@ -58,7 +58,7 @@ class AskResponse:
     plan_method: str = "deterministic"   # "llm" | "deterministic"
     model_used: str | None = None        # real model id when an LLM planned
     provider: str | None = None          # "anthropic" | "openai" | None
-    cost_usd: float = 0.0                 # real ledger delta for this ask
+    cost_usd: float = 0.0                 # real CostEntry.usd for this ask
     was_llm_called: bool = False
 
     def to_dict(self) -> dict[str, Any]:
@@ -77,48 +77,38 @@ async def ask(req: AskRequest, deps: Any) -> AskResponse:
     # the daily cost cap hasn't been reached; otherwise the deterministic
     # planner handles every query.
     #
-    # HONESTY: we measure the REAL ledger delta around the planner call so
-    # the UI can show the truth instead of a fabricated cost/model. A
-    # successful LLM planner call records a CostEntry to the ledger; the
-    # deterministic path (and any silent LLM fallback) records nothing, so
-    # the delta is exactly 0.0. We construct the ledger the same way the
-    # `/api/llm/cost` route does.
+    # HONESTY: provenance is read straight off the CostEntry that the
+    # provider which ACTUALLY succeeded recorded — it carries the real
+    # provider/model/usd. This names the right model even when the primary
+    # provider failed and a fallback (e.g. GPT-4o-mini) actually planned,
+    # and it can't absorb a concurrent request's spend the way a
+    # before/after ledger delta could. A deterministic plan (no providers,
+    # cap hit, or any LLM fallback) yields ``None`` ⇒ $0 / no model.
     p_started = time.perf_counter()
     providers = build_default_providers()
-    plan_cost_usd = 0.0
-    spend_before: float | None = None
+    cost_entry: CostEntry | None = None
     if providers:
         try:
-            spend_before = CostLedger.load().today_spend()
-        except Exception:  # noqa: BLE001 — ledger read must never break the ask
-            LOG.exception("cost ledger read failed before planner; cost=0.0")
-            spend_before = None
-        plan = await plan_for_smart(
-            req.query,
-            function_codes=function_codes,
-            providers=providers,
-        )
-        if spend_before is not None:
-            try:
-                spend_after = CostLedger.load().today_spend()
-                plan_cost_usd = max(0.0, spend_after - spend_before)
-            except Exception:  # noqa: BLE001
-                LOG.exception("cost ledger read failed after planner; cost=0.0")
-                plan_cost_usd = 0.0
+            plan, cost_entry = await plan_for_smart(
+                req.query,
+                function_codes=function_codes,
+                providers=providers,
+            )
+        except Exception:  # noqa: BLE001 — never let a planner fault break the ask
+            LOG.exception("planner crashed; falling back to deterministic plan")
+            plan = plan_for(req.query, function_codes=function_codes)
+            cost_entry = None
     else:
         plan = plan_for(req.query, function_codes=function_codes)
 
-    # A non-zero ledger delta means an LLM planner call actually recorded a
-    # charge → the LLM was used. Zero means deterministic (no provider, cap
-    # hit, or silent fallback). Only when truly used do we name the model.
-    was_llm_called = plan_cost_usd > 0.0
+    # A CostEntry exists iff a provider actually recorded a charge → the LLM
+    # was used. ``None`` means deterministic (no provider, cap hit, or silent
+    # fallback). Provenance comes verbatim from the succeeding entry.
+    was_llm_called = cost_entry is not None
     plan_method = "llm" if was_llm_called else "deterministic"
-    model_used: str | None = None
-    provider_name: str | None = None
-    if was_llm_called and providers:
-        active = providers[0]
-        model_used = getattr(active, "model", None)
-        provider_name = getattr(active, "name", None)
+    model_used = cost_entry.model if cost_entry else None
+    provider_name = cost_entry.provider if cost_entry else None
+    plan_cost_usd = float(cost_entry.usd) if cost_entry else 0.0
 
     plan_phase = AskPhase(
         name="plan",

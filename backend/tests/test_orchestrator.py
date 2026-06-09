@@ -17,6 +17,20 @@ from showme.agents.orchestrator import (  # noqa: E402
     _extract_rows_for_evidence,
     _evidence_row_label,
 )
+from showme.llm import CostEntry  # noqa: E402
+
+
+def _cost_entry(provider: str, model: str, usd: float) -> CostEntry:
+    """Build a CostEntry like the one a succeeding provider records."""
+    return CostEntry(
+        ts="2026-06-09T00:00:00+00:00",
+        provider=provider,
+        model=model,
+        input_tokens=100,
+        output_tokens=20,
+        usd=usd,
+        purpose="planner",
+    )
 
 
 @pytest.mark.asyncio
@@ -28,7 +42,7 @@ async def test_ask_basic_flow():
          patch("showme.agents.orchestrator.run_search", new_callable=AsyncMock) as mock_run_search, \
          patch("showme.agents.orchestrator.summarize") as mock_summarize, \
          patch("showme.agents.orchestrator.pick_viz") as mock_pick_viz, \
-         patch("showme.agents.orchestrator.build_default_providers", return_value=None):
+         patch("showme.agents.orchestrator.build_default_providers", return_value=[]):
 
         mock_plan = MagicMock()
         mock_plan.intent = "scan"
@@ -77,17 +91,10 @@ async def test_ask_basic_flow():
 
 @pytest.mark.asyncio
 async def test_ask_provenance_llm_planner_records_real_cost():
-    """When an LLM planner actually charges the ledger, the response names the
-    real model + provider + measured cost (NOT a hardcoded/fabricated label)."""
+    """When an LLM planner succeeds, the response names the model + provider +
+    cost from the ACTUAL CostEntry it threaded back (NOT a hardcoded label)."""
     req = AskRequest(query="smart query")
     deps = MagicMock()
-
-    # Two ledgers (before/after the planner call) returning a real +$0.0123
-    # delta — i.e. the LLM planner recorded a charge.
-    before_ledger = MagicMock()
-    before_ledger.today_spend.return_value = 0.1000
-    after_ledger = MagicMock()
-    after_ledger.today_spend.return_value = 0.1123
 
     provider = MagicMock()
     provider.model = "claude-haiku-4-5"
@@ -95,16 +102,17 @@ async def test_ask_provenance_llm_planner_records_real_cost():
 
     with patch("showme.agents.orchestrator.plan_for_smart", new_callable=AsyncMock) as mock_plan_for_smart, \
          patch("showme.agents.orchestrator.run_search", new_callable=AsyncMock) as mock_run_search, \
-         patch("showme.agents.orchestrator.build_default_providers", return_value=[provider]), \
-         patch("showme.agents.orchestrator.CostLedger") as mock_ledger_cls:
-
-        mock_ledger_cls.load.side_effect = [before_ledger, after_ledger]
+         patch("showme.agents.orchestrator.build_default_providers", return_value=[provider]):
 
         mock_plan = MagicMock()
         mock_plan.intent = "scan"
         mock_plan.agents = ["search"]
         mock_plan.to_dict.return_value = {"intent": "scan"}
-        mock_plan_for_smart.return_value = mock_plan
+        # The planner returns (plan, CostEntry) — the entry carries the truth.
+        mock_plan_for_smart.return_value = (
+            mock_plan,
+            _cost_entry("anthropic", "claude-haiku-4-5", 0.0123),
+        )
 
         mock_run_search.return_value = {"kind": "scan"}
 
@@ -118,14 +126,55 @@ async def test_ask_provenance_llm_planner_records_real_cost():
 
 
 @pytest.mark.asyncio
-async def test_ask_provenance_llm_silent_fallback_is_deterministic():
-    """Providers configured but the LLM silently fell back (no ledger charge):
-    the delta is 0 ⇒ honestly reported as deterministic, no model named."""
+async def test_ask_provenance_names_the_fallback_provider_not_the_first():
+    """Multi-provider: the primary (anthropic) failed and the SECOND provider
+    (gpt-4o-mini) actually planned. The response must name the model that ran
+    — read from the succeeding CostEntry — NOT providers[0]'s model. This is
+    the honesty bug this feature exists to prevent."""
     req = AskRequest(query="smart query")
     deps = MagicMock()
 
-    flat_ledger = MagicMock()
-    flat_ledger.today_spend.return_value = 0.2000  # unchanged before/after
+    # build_default_providers() => [anthropic, openai]; anthropic is first.
+    anthropic = MagicMock()
+    anthropic.model = "claude-haiku-4-5"
+    anthropic.name = "anthropic"
+    openai = MagicMock()
+    openai.model = "gpt-4o-mini"
+    openai.name = "openai"
+
+    with patch("showme.agents.orchestrator.plan_for_smart", new_callable=AsyncMock) as mock_plan_for_smart, \
+         patch("showme.agents.orchestrator.run_search", new_callable=AsyncMock) as mock_run_search, \
+         patch("showme.agents.orchestrator.build_default_providers", return_value=[anthropic, openai]):
+
+        mock_plan = MagicMock()
+        mock_plan.intent = "scan"
+        mock_plan.agents = ["search"]
+        mock_plan.to_dict.return_value = {"intent": "scan"}
+        # Anthropic failed; GPT-4o-mini succeeded → its CostEntry is threaded up.
+        mock_plan_for_smart.return_value = (
+            mock_plan,
+            _cost_entry("openai", "gpt-4o-mini", 0.0004),
+        )
+
+        mock_run_search.return_value = {"kind": "scan"}
+
+        resp = await ask(req, deps)
+        d = resp.to_dict()
+        assert d["was_llm_called"] is True
+        assert d["plan_method"] == "llm"
+        # The model that ACTUALLY ran — never the first provider's model.
+        assert d["model_used"] == "gpt-4o-mini"
+        assert d["provider"] == "openai"
+        assert d["model_used"] != "claude-haiku-4-5"
+        assert d["cost_usd"] == pytest.approx(0.0004)
+
+
+@pytest.mark.asyncio
+async def test_ask_provenance_llm_silent_fallback_is_deterministic():
+    """Providers configured but the LLM silently fell back (no CostEntry):
+    None entry ⇒ honestly reported as deterministic, no model named, $0."""
+    req = AskRequest(query="smart query")
+    deps = MagicMock()
 
     provider = MagicMock()
     provider.model = "claude-haiku-4-5"
@@ -133,16 +182,14 @@ async def test_ask_provenance_llm_silent_fallback_is_deterministic():
 
     with patch("showme.agents.orchestrator.plan_for_smart", new_callable=AsyncMock) as mock_plan_for_smart, \
          patch("showme.agents.orchestrator.run_search", new_callable=AsyncMock) as mock_run_search, \
-         patch("showme.agents.orchestrator.build_default_providers", return_value=[provider]), \
-         patch("showme.agents.orchestrator.CostLedger") as mock_ledger_cls:
-
-        mock_ledger_cls.load.return_value = flat_ledger
+         patch("showme.agents.orchestrator.build_default_providers", return_value=[provider]):
 
         mock_plan = MagicMock()
         mock_plan.intent = "scan"
         mock_plan.agents = ["search"]
         mock_plan.to_dict.return_value = {"intent": "scan"}
-        mock_plan_for_smart.return_value = mock_plan
+        # Deterministic fallback path ⇒ (plan, None).
+        mock_plan_for_smart.return_value = (mock_plan, None)
         mock_run_search.return_value = {"kind": "scan"}
 
         resp = await ask(req, deps)
@@ -155,8 +202,8 @@ async def test_ask_provenance_llm_silent_fallback_is_deterministic():
 
 
 @pytest.mark.asyncio
-async def test_ask_provenance_ledger_failure_never_crashes():
-    """If the cost ledger can't be read, the ask still succeeds with a
+async def test_ask_provenance_planner_crash_never_crashes_the_ask():
+    """If plan_for_smart raises unexpectedly, the ask still succeeds with a
     conservative deterministic / $0 provenance (no crash)."""
     req = AskRequest(query="smart query")
     deps = MagicMock()
@@ -165,24 +212,27 @@ async def test_ask_provenance_ledger_failure_never_crashes():
     provider.model = "claude-haiku-4-5"
     provider.name = "anthropic"
 
+    mock_plan = MagicMock()
+    mock_plan.intent = "scan"
+    mock_plan.agents = ["search"]
+    mock_plan.to_dict.return_value = {"intent": "scan"}
+
     with patch("showme.agents.orchestrator.plan_for_smart", new_callable=AsyncMock) as mock_plan_for_smart, \
+         patch("showme.agents.orchestrator.plan_for", return_value=mock_plan) as mock_plan_for, \
          patch("showme.agents.orchestrator.run_search", new_callable=AsyncMock) as mock_run_search, \
-         patch("showme.agents.orchestrator.build_default_providers", return_value=[provider]), \
-         patch("showme.agents.orchestrator.CostLedger") as mock_ledger_cls:
+         patch("showme.agents.orchestrator.build_default_providers", return_value=[provider]):
 
-        mock_ledger_cls.load.side_effect = RuntimeError("ledger boom")
-
-        mock_plan = MagicMock()
-        mock_plan.intent = "scan"
-        mock_plan.agents = ["search"]
-        mock_plan.to_dict.return_value = {"intent": "scan"}
-        mock_plan_for_smart.return_value = mock_plan
+        mock_plan_for_smart.side_effect = RuntimeError("planner boom")
         mock_run_search.return_value = {"kind": "scan"}
 
         resp = await ask(req, deps)  # must not raise
         d = resp.to_dict()
+        # Defensive fallback used the deterministic planner.
+        mock_plan_for.assert_called_once()
         assert d["plan_method"] == "deterministic"
         assert d["cost_usd"] == 0.0
+        assert d["model_used"] is None
+        assert d["provider"] is None
         assert d["was_llm_called"] is False
 
 
@@ -199,7 +249,10 @@ async def test_ask_llm_augmented_planner():
         mock_plan.intent = "scan"
         mock_plan.agents = ["search"]
         mock_plan.to_dict.return_value = {"intent": "scan"}
-        mock_plan_for_smart.return_value = mock_plan
+        mock_plan_for_smart.return_value = (
+            mock_plan,
+            _cost_entry("anthropic", "claude-haiku-4-5", 0.0001),
+        )
 
         mock_run_search.return_value = {"kind": "scan"}
 
@@ -216,7 +269,7 @@ async def test_ask_fanout_flow():
 
     with patch("showme.agents.orchestrator.plan_for") as mock_plan_for, \
          patch("showme.agents.orchestrator.run_search", new_callable=AsyncMock) as mock_run_search, \
-         patch("showme.agents.orchestrator.build_default_providers", return_value=None):
+         patch("showme.agents.orchestrator.build_default_providers", return_value=[]):
 
         mock_plan = MagicMock()
         mock_plan.intent = "briefing"
@@ -247,7 +300,7 @@ async def test_ask_fanout_timeout_and_error():
 
     with patch("showme.agents.orchestrator.plan_for") as mock_plan_for, \
          patch("showme.agents.orchestrator.run_search", new_callable=AsyncMock) as mock_run_search, \
-         patch("showme.agents.orchestrator.build_default_providers", return_value=None):
+         patch("showme.agents.orchestrator.build_default_providers", return_value=[]):
 
         mock_plan = MagicMock()
         mock_plan.intent = "briefing"

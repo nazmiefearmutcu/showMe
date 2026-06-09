@@ -143,12 +143,14 @@ def test_llm_plan_for_raises_when_cap_already_hit(tmp_path: Path) -> None:
 
 
 def test_plan_for_smart_falls_back_to_deterministic_when_no_providers() -> None:
-    plan = asyncio.run(
+    plan, entry = asyncio.run(
         plan_for_smart("show me FA on AAPL", providers=[], function_codes={"FA", "DES"})
     )
     # Deterministic planner classifies this as a function intent on AAPL.
     assert plan.args.get("symbols") == ["AAPL"]
     assert plan.args.get("code") == "FA"
+    # No LLM ran ⇒ no CostEntry threaded back.
+    assert entry is None
 
 
 def test_plan_for_smart_uses_llm_when_provider_succeeds(tmp_path: Path) -> None:
@@ -163,9 +165,13 @@ def test_plan_for_smart_uses_llm_when_provider_succeeds(tmp_path: Path) -> None:
         "input_tokens": 50,
         "output_tokens": 50,
     })
-    plan = asyncio.run(plan_for_smart("morning briefing", providers=[provider], ledger=led))
+    plan, entry = asyncio.run(plan_for_smart("morning briefing", providers=[provider], ledger=led))
     assert plan.intent == "briefing"
     assert "fanout" in plan.agents
+    # The succeeding provider's CostEntry is threaded back for honest provenance.
+    assert entry is not None
+    assert entry.provider == "anthropic"
+    assert entry.model == "claude-haiku-4-5"
 
 
 def test_plan_for_smart_retries_deterministic_when_llm_returns_invalid_json(
@@ -173,8 +179,9 @@ def test_plan_for_smart_retries_deterministic_when_llm_returns_invalid_json(
 ) -> None:
     bad = _stub_provider({"plan_json": "not-json", "input_tokens": 0, "output_tokens": 0})
     led = CostLedger(path=tmp_path / "costs.json")
-    plan = asyncio.run(plan_for_smart("scan oversold tech", providers=[bad], ledger=led))
+    plan, entry = asyncio.run(plan_for_smart("scan oversold tech", providers=[bad], ledger=led))
     assert plan.intent == "scan"  # deterministic fallback still classifies it
+    assert entry is None  # all providers failed ⇒ deterministic, no entry
 
 
 def _raise(exc: Exception):

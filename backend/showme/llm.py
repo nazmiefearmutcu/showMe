@@ -277,22 +277,28 @@ async def plan_for_smart(
     function_codes: Iterable[str] | None = None,
     providers: list[Provider] | None = None,
     ledger: CostLedger | None = None,
-) -> Plan:
-    """Try LLM, fall back to deterministic planner on any error/cap hit."""
+) -> tuple[Plan, CostEntry | None]:
+    """Try LLM, fall back to deterministic planner on any error/cap hit.
+
+    Returns ``(plan, entry)`` where ``entry`` is the CostEntry recorded by the
+    provider that actually succeeded (carrying the REAL provider/model/usd), or
+    ``None`` on the deterministic / fallback path. Threading the entry up lets
+    callers report honest provenance without re-deriving it from a ledger delta.
+    """
     if providers:
         try:
-            plan, _ = await llm_plan_for(
+            plan, entry = await llm_plan_for(
                 query,
                 function_codes=function_codes,
                 providers=providers,
                 ledger=ledger,
             )
-            return plan
+            return plan, entry
         except (LlmPlannerError, CostCapExceeded) as exc:
             LOG.info("LLM planner skipped (%s); using deterministic fallback", exc)
         except Exception as exc:  # noqa: BLE001 — never let LLM faults break /api/ask
             LOG.warning("LLM planner crashed (%s); falling back", exc)
-    return plan_for(query, function_codes=set(function_codes or []))
+    return plan_for(query, function_codes=set(function_codes or [])), None
 
 
 # ── Provider builders (real network) ─────────────────────────────────────
