@@ -188,6 +188,42 @@ export function TOPPane({ code }: FunctionPaneProps) {
     return set.size;
   }, [articles]);
 
+  // H1 honesty: detect whether every Veryfinder overlay we received is a
+  // fixture/fallback (demo) so we can label the KPI VF caption as DEMO and
+  // never let a synthetic social score read as real X/Twitter data.
+  const veryfinderOverlays = useMemo(() => Object.values(veryfinderMap), [veryfinderMap]);
+  const allVeryfinderFixture = useMemo(
+    () => veryfinderOverlays.length > 0 && veryfinderOverlays.every(isFixtureOverlay),
+    [veryfinderOverlays],
+  );
+  const veryfinderScoredCount = useMemo(
+    () => veryfinderOverlays.filter((o) => o?.ok).length,
+    [veryfinderOverlays],
+  );
+
+  // A2 honesty/a11y: ONE shared live region announces the Veryfinder batch
+  // state once per transition, instead of every card carrying its own
+  // aria-live (which spams screen readers on each 60s poll). Gated through a
+  // ref so an unchanged message is not re-announced.
+  const veryfinderLastAnnounced = useRef("");
+  const veryfinderLiveMessage =
+    veryfinderState === "loading"
+      ? "Veryfinder sosyal sinyal hesaplanıyor"
+      : veryfinderState === "ok"
+        ? `Veryfinder ${veryfinderScoredCount} başlık için sosyal sinyal hesaplandı${allVeryfinderFixture ? " (demo verisi)" : ""}`
+        : veryfinderState === "error"
+          ? "Veryfinder sosyal sinyal alınamadı"
+          : "";
+  const veryfinderAnnounce =
+    veryfinderLiveMessage && veryfinderLiveMessage !== veryfinderLastAnnounced.current
+      ? veryfinderLiveMessage
+      : "";
+  useEffect(() => {
+    if (veryfinderAnnounce) {
+      veryfinderLastAnnounced.current = veryfinderAnnounce;
+    }
+  }, [veryfinderAnnounce]);
+
   // UA-HIGH-17: previously deps were `[articles, query, state]` — every 60s
   // poll handed back a fresh `articles` array identity, so the Veryfinder
   // batch fetch restarted from scratch even when nothing changed. We hash
@@ -288,15 +324,22 @@ export function TOPPane({ code }: FunctionPaneProps) {
                 intervalSec={REFRESH_MS / 1000}
               />
               {/*
-                Sort indicator. There is only one sort mode for the news
-                tape (newest first); the prior `↓` arrow read as a
-                clickable sort toggle and would mislead the user into
-                tapping a static pill. Dropped the arrow and reworded
-                so the pill is unambiguously a passive label.
+                Sort indicator. Honesty fix: the tape is NOT newest-first.
+                The backend ranks by deterministic importance_score DESC and
+                only then by published_at DESC, so the prior recency-only
+                label misrepresented the order. The pill now reads
+                "ÖNEM → YENİ" (importance, then newest) with a tooltip that
+                spells out the composite ranking. It stays a passive label
+                (no arrow, no click affordance).
               */}
-              <Pill tone="muted" variant="soft" withDot={false}>
-                RECENT FIRST
-              </Pill>
+              <span
+                title="Sıralama: önem puanı (yüksekten düşüğe), eşitlikte yayın zamanı (yeniden eskiye). Her başlıkta önem gerekçeleri gösterilir."
+                data-testid="top-sort-label"
+              >
+                <Pill tone="muted" variant="soft" withDot={false}>
+                  ÖNEM → YENİ
+                </Pill>
+              </span>
               <NewsLimitControl value={limit} onChange={setLimit} disabled={state === "loading"} />
               <SegmentedControl
                 label="QUERY"
@@ -325,6 +368,21 @@ export function TOPPane({ code }: FunctionPaneProps) {
         />
         <PaneBody>
           <div className="u-flex u-flex-col u-gap-14">
+            {/*
+              A2: single shared Veryfinder live region. Replaces the
+              per-card aria-live on the social-loading state (which spammed
+              screen readers every poll). Announces the batch transition once;
+              `veryfinderAnnounce` is gated by a ref so the same message is
+              not repeated on subsequent renders.
+            */}
+            <div
+              className="u-sr-only"
+              role="status"
+              aria-live="polite"
+              data-testid="top-vf-live"
+            >
+              {veryfinderAnnounce}
+            </div>
             <Card variant="elev-2">
               <CardHeader
                 trailing={
@@ -467,7 +525,7 @@ export function TOPPane({ code }: FunctionPaneProps) {
                   <StatCard
                     label="Sources"
                     value={String(distinctSources)}
-                    caption={`VF · ${veryfinderState.toUpperCase()}`}
+                    caption={`VF · ${veryfinderState.toUpperCase()}${allVeryfinderFixture ? " · DEMO" : ""}`}
                     trend={deterministicTrend(`src-${distinctSources}-${veryfinderState}`)}
                     tone="neutral"
                   />
@@ -494,7 +552,21 @@ export function TOPPane({ code }: FunctionPaneProps) {
                     News tape
                   </CardHeader>
                   <CardBody>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    {/*
+                      A1: headlines render as a semantic list with
+                      keyboard-focusable rows (mirrors NI's ArticleList).
+                      `aria-busy` reflects the social-scoring phase; the
+                      single shared live region (above) does the SR
+                      announcing, so individual rows no longer carry
+                      aria-live.
+                    */}
+                    <ul
+                      className="top-news-list"
+                      role="list"
+                      aria-label="Başlıklar"
+                      aria-busy={veryfinderState === "loading"}
+                      style={{ display: "flex", flexDirection: "column", gap: 8, margin: 0, padding: 0, listStyle: "none" }}
+                    >
                       {articles.map((a, i) => (
                         <NewsRow
                           key={(a.url ?? a.title ?? "") + i}
@@ -508,7 +580,7 @@ export function TOPPane({ code }: FunctionPaneProps) {
                           }}
                         />
                       ))}
-                    </div>
+                    </ul>
                   </CardBody>
                 </Card>
               </>
@@ -545,11 +617,36 @@ function NewsRow({
 }) {
   const a = article;
   const key = articleKey(a, index);
+  const fullTitle = a.title || a.headline || "(untitled)";
+  const href = a.url ?? a.link;
+  const sourceLabel = a.source ?? "kaynak";
+  const reasonsTitle =
+    Array.isArray(a.importance_reasons) && a.importance_reasons.length > 0
+      ? a.importance_reasons.join(" · ")
+      : undefined;
+  // A1: open the source URL when the whole row is activated (click or
+  // keyboard). Sub-controls (symbol jump / source link) call
+  // stopPropagation so they don't double-fire this handler.
+  const openSource = () => {
+    if (href) window.open(href, "_blank", "noopener,noreferrer");
+  };
   return (
-    <div className="top-news-card">
+    <li
+      className="top-news-card"
+      role="button"
+      tabIndex={0}
+      aria-label={fullTitle}
+      onClick={openSource}
+      onKeyDown={(ev) => {
+        if (ev.key === "Enter" || ev.key === " ") {
+          ev.preventDefault();
+          openSource();
+        }
+      }}
+    >
       <div className="top-news-card__head">
-        <strong className="top-news-card__title">
-          {a.title || a.headline || "(untitled)"}
+        <strong className="top-news-card__title" title={fullTitle}>
+          {fullTitle}
         </strong>
         {a.source && (
           <Pill tone="muted" variant="soft" withDot={false}>
@@ -575,17 +672,25 @@ function NewsRow({
                   : null
             }
           >
-            {a.sentiment}
+            {/*
+              A4: sentiment is conveyed by TEXT (POZİTİF / NEGATİF / NÖTR)
+              plus the arrow glyph, never color alone. We normalize the
+              backend label to a Turkish word so colorblind / SR users get
+              the direction without relying on the pill tint.
+            */}
+            {sentimentText(a.sentiment)}
           </Pill>
         )}
         {a.importance_score != null && (
-          <Pill
-            tone={a.severity === "critical" || a.severity === "high" ? "negative" : "muted"}
-            variant="soft"
-            withDot={false}
-          >
-            IMPACT {Number(a.importance_score).toFixed(0)}
-          </Pill>
+          <span title="Önem puanı: ilgililik + kritiklik + kaynak + tazelik bileşeninden hesaplanan deterministik skor. Gerekçeler aşağıda listelenir.">
+            <Pill
+              tone={a.severity === "critical" || a.severity === "high" ? "negative" : "muted"}
+              variant="soft"
+              withDot={false}
+            >
+              IMPACT {Number(a.importance_score).toFixed(0)}
+            </Pill>
+          </span>
         )}
         {veryfinderMap[key] ? (
           <VeryfinderImpactPill overlay={veryfinderMap[key]} />
@@ -596,7 +701,10 @@ function NewsRow({
         ) : null}
       </div>
       {a.summary && (
-        <p className="top-news-card__summary">
+        <p
+          className="top-news-card__summary"
+          title={cleanSummary(a.summary)}
+        >
           {truncate(cleanSummary(a.summary), 240)}
         </p>
       )}
@@ -614,7 +722,11 @@ function NewsRow({
             key={s}
             type="button"
             className="btn btn--ghost top-news-card__sym"
-            onClick={() => onJumpDES(s)}
+            aria-label={`${s} detayına git`}
+            onClick={(ev) => {
+              ev.stopPropagation();
+              onJumpDES(s);
+            }}
           >
             {s}
           </button>
@@ -624,25 +736,40 @@ function NewsRow({
         )}
         {Array.isArray(a.importance_reasons) &&
           a.importance_reasons.slice(0, 2).map((reason) => (
-            <span key={reason} className="top-news-card__reason">{reason}</span>
+            <span key={reason} className="top-news-card__reason" title={reasonsTitle}>{reason}</span>
           ))}
         <span className="u-flex-1" />
         {tsLabel(a) && (
           <span className="top-news-card__ts">{tsLabel(a)}</span>
         )}
-        {(a.url ?? a.link) && (
+        {href && (
           <a
-            href={a.url ?? a.link}
+            href={href}
             target="_blank"
             rel="noopener noreferrer"
             className="top-news-card__source"
+            aria-label={`${sourceLabel} — haberi aç (yeni sekme)`}
+            onClick={(ev) => ev.stopPropagation()}
           >
             source ↗
           </a>
         )}
       </div>
-    </div>
+    </li>
   );
+}
+
+/**
+ * A4: maps the backend sentiment label to an explicit Turkish word so the
+ * direction is carried by text, not just the pill colour. Unknown labels
+ * pass through verbatim (still text, never color-only).
+ */
+function sentimentText(sentiment: string): string {
+  const s = sentiment.toLowerCase();
+  if (s.startsWith("pos")) return "POZİTİF";
+  if (s.startsWith("neg")) return "NEGATİF";
+  if (s.startsWith("neu") || s.startsWith("nöt") || s.startsWith("not")) return "NÖTR";
+  return sentiment.toUpperCase();
 }
 
 /**
@@ -762,20 +889,73 @@ function truncate(value: string, max: number): string {
 }
 
 function VeryfinderImpactPill({ overlay }: { overlay: VeryfinderOverlay }) {
+  const provenance = veryfinderProvenance(overlay);
   if ((overlay.dominant_view?.label ?? "") === "no_data" || Number(overlay.unique_accounts ?? 0) <= 0) {
     return (
-      <Pill tone="muted" variant="soft" withDot={false}>
-        VF NO MATCH
-      </Pill>
+      <span title={provenance?.title}>
+        <Pill tone="muted" variant="soft" withDot={false}>
+          VF NO MATCH{provenance ? ` ${provenance.marker}` : ""}
+        </Pill>
+      </span>
     );
   }
   const score = Number(overlay.social_score ?? 0);
   const label = overlay.dominant_view?.display ?? overlay.label ?? "social view";
+  // H1 honesty: when the overlay is a fixture (demo) or served from a
+  // fallback source, append a clear [DEMO]/[YEDEK] marker and a tooltip
+  // explaining its provenance so a synthetic social score is never read as
+  // real X/Twitter data. The score itself is NOT hidden.
   return (
-    <Pill tone={veryfinderTone(overlay.tone)} variant="soft" withDot={false}>
-      VF {score > 0 ? "+" : ""}
-      {formatInt(score)} {label.toUpperCase()} {formatPct(Number(overlay.dominant_view?.score ?? 0))}
-    </Pill>
+    <span title={provenance?.title}>
+      <Pill tone={provenance ? "warn" : veryfinderTone(overlay.tone)} variant="soft" withDot={false}>
+        <span>
+          VF {score > 0 ? "+" : ""}
+          {formatInt(score)} {label.toUpperCase()} {formatPct(Number(overlay.dominant_view?.score ?? 0))}
+        </span>
+        {provenance && (
+          <span data-testid="top-vf-fixture"> {provenance.marker}</span>
+        )}
+      </Pill>
+    </span>
+  );
+}
+
+/**
+ * H1: returns a provenance marker for a Veryfinder overlay whose social
+ * signal is NOT real live X/Twitter data. Reads `fixture_mode` (demo
+ * fixture), then `fallback_mode` / `source_fallback_from` (served from a
+ * proxy/fallback source). Returns null for genuine live overlays.
+ */
+function veryfinderProvenance(
+  overlay: VeryfinderOverlay,
+): { marker: string; title: string } | null {
+  if (overlay.fixture_mode === true) {
+    const reason =
+      overlay.model_notes?.[0] ??
+      "Demo/fixture sosyal verisi — gerçek X/Twitter verisi değildir.";
+    return { marker: "[DEMO]", title: `Veryfinder demo verisi · ${reason}` };
+  }
+  const fallback = overlay.fallback_mode || overlay.source_fallback_from;
+  if (fallback) {
+    const reason =
+      overlay.model_notes?.[0] ??
+      (overlay.source_fallback_from
+        ? `${overlay.source_fallback_from} kaynağından yedeğe düşüldü`
+        : String(fallback));
+    return { marker: "[YEDEK]", title: `Veryfinder yedek kaynak · ${reason}` };
+  }
+  return null;
+}
+
+/**
+ * H1 (KPI caption): true when an overlay carries no real live social data —
+ * either a fixture (demo) or any fallback mode. Used to label the KPI VF
+ * caption "VF · DEMO" when EVERY overlay is non-live.
+ */
+function isFixtureOverlay(overlay: VeryfinderOverlay | undefined): boolean {
+  if (!overlay) return false;
+  return Boolean(
+    overlay.fixture_mode || overlay.fallback_mode || overlay.source_fallback_from,
   );
 }
 
@@ -809,8 +989,11 @@ function VeryfinderArticleInsight({ overlay, target }: { overlay: VeryfinderOver
 }
 
 function VeryfinderArticleLoading({ target }: { target: number }) {
+  // A2: no per-card aria-live here — the single shared `top-vf-live` region
+  // (rendered once in PaneBody) announces the batch state. Marked aria-hidden
+  // so the redundant per-row visual loader is not read out by screen readers.
   return (
-    <div style={vfInsightLoadingStyle} aria-live="polite">
+    <div style={vfInsightLoadingStyle} aria-hidden="true">
       <span>Veryfinder searching</span>
       <span>target {formatInt(target)} tweets</span>
       <span>dedupe + social inference</span>

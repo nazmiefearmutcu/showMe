@@ -134,8 +134,17 @@ describe("S04-R · TOP sort indicator is not falsely interactive", () => {
   });
 
   it("Replaced with an unambiguous passive label", () => {
+    // Honesty upgrade (TOP terminal-grade pass): the tape is ranked by
+    // importance_score DESC then published_at DESC, so the old "RECENT FIRST"
+    // label was inaccurate. The pill is still a passive <Pill> (no onClick,
+    // no arrow) but now reads "ÖNEM → YENİ" (importance, then newest) and
+    // carries a tooltip on its wrapping <span> spelling out the composite
+    // ranking.
+    expect(TOP_SRC).not.toMatch(/RECENT FIRST/);
     expect(TOP_SRC).toMatch(
-      /<Pill\s+tone="muted"\s+variant="soft"\s+withDot=\{false\}>\s*RECENT FIRST\s*<\/Pill>/,
+      /<Pill\s+tone="muted"\s+variant="soft"\s+withDot=\{false\}>\s*ÖNEM → YENİ\s*<\/Pill>/,
     );
+    // Still passive — the sort label carries no click handler.
+    expect(TOP_SRC).not.toMatch(/top-sort-label[\s\S]{0,120}onClick/);
   });
 });

@@ -6141,12 +6141,34 @@
   font-size: 13px;
   color: var(--text-primary);
   letter-spacing: -0.01em;
+  /* P3 / D1: clamp long headlines to 2 lines; full text in title attr. */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .top-news-card__summary {
   margin: 0;
   font-size: 11px;
   color: var(--text-secondary);
   line-height: 1.45;
+  /* P3 / D1: clamp summary to 3 lines; full text in title attr. */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* A11Y: keyboard focus affordance for the list-item headline rows. */
+.top-news-card {
+  outline: none;
+}
+.top-news-card:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 .top-news-card__tags {
   display: flex;
