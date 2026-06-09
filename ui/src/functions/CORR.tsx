@@ -18,6 +18,7 @@ import {
   StatusDivider,
 } from "@/design-system";
 import { useFunction } from "@/lib/useFunction";
+import { formatMissing, formatNumber, formatPercent } from "@/lib/format";
 import {
   FunctionControlGroup,
   LoadStatePill,
@@ -25,6 +26,10 @@ import {
   SegmentedControl,
 } from "./function-controls";
 import type { FunctionPaneProps } from "./registry-types";
+
+/** Off-diagonal pairs with fewer than this many overlapping observations are
+ * statistically unreliable and surfaced as a low-n honesty warning. */
+const LOW_N_THRESHOLD = 20;
 
 type ReturnMethod = "log" | "simple";
 type Frequency = "daily" | "weekly" | "monthly";
@@ -262,14 +267,52 @@ export function CORRPane({ code }: FunctionPaneProps) {
     return buckets;
   }, [bugRows]);
 
-  const fallbackCoverage = coverageRows.filter((row) =>
-    String(row.status).includes("fallback"),
+  // A symbol is "synthetic" when the backend could not fetch it live and
+  // substituted a deterministic reference/fallback price series. Such a series
+  // even carries baked-in cross-market correlation, so any pair touching it is
+  // NOT real market data and must be disclosed.
+  const fallbackCoverage = useMemo(
+    () =>
+      coverageRows.filter((row) => {
+        const status = String(row.status ?? "");
+        return status.includes("fallback") || status.includes("reference");
+      }),
+    [coverageRows],
   );
+
+  const syntheticSymbols = useMemo(() => {
+    const set = new Set<string>();
+    for (const row of fallbackCoverage) {
+      if (row.symbol) set.add(row.symbol);
+    }
+    return set;
+  }, [fallbackCoverage]);
+
+  // Count of off-diagonal pairs computed on too few overlapping observations to
+  // be trustworthy. We count each unordered pair once.
+  const lowNPairCount = useMemo(() => {
+    const seen = new Set<string>();
+    let count = 0;
+    for (const cell of matrix) {
+      const left = cell.left ?? cell.y;
+      const right = cell.right ?? cell.x;
+      if (!left || !right || left === right) continue;
+      const key = left < right ? `${left}::${right}` : `${right}::${left}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const obs = cell.observations ?? 0;
+      if (obs < LOW_N_THRESHOLD) count += 1;
+    }
+    return count;
+  }, [matrix]);
 
   const liveSourceMode =
     state === "ok" && (data as { cached?: boolean } | undefined)?.cached !== true;
 
   const run = (overrideWindow?: WindowChoice) => {
+    // Double-submit guard: ignore re-entrant Run/window clicks while a request
+    // is in flight so we don't queue a stampede of overlapping correlation runs.
+    if (state === "loading") return;
     const nextRunId = runId + 1;
     setRunId(nextRunId);
     setSelectedPair(null);
@@ -290,7 +333,7 @@ export function CORRPane({ code }: FunctionPaneProps) {
   const body = (() => {
     if (state === "loading" && !payload) {
       return (
-        <div className="u-grid-gap-8">
+        <div className="u-grid-gap-8" aria-busy="true" aria-live="polite">
           {Array.from({ length: 12 }).map((_, idx) => (
             <SkeletonRow key={idx} columns={4} />
           ))}
@@ -299,10 +342,12 @@ export function CORRPane({ code }: FunctionPaneProps) {
     }
     if (state === "error") {
       return (
-        <Empty
-          title="CORR failed"
-          body={error?.message ?? "Correlation request failed."}
-        />
+        <div role="status">
+          <Empty
+            title="CORR failed"
+            body={error?.message ?? "Correlation request failed."}
+          />
+        </div>
       );
     }
     if (!impact) {
@@ -348,6 +393,13 @@ export function CORRPane({ code }: FunctionPaneProps) {
           />
         </div>
 
+        <SyntheticWarning
+          symbols={Array.from(syntheticSymbols)}
+          metricLabel={METRIC_LABELS[activeMetric]}
+        />
+
+        <LowNWarning count={lowNPairCount} threshold={LOW_N_THRESHOLD} />
+
         <FormulaStrip formula={impact.formula} />
 
         {/* Matrix grid + right rail */}
@@ -376,6 +428,7 @@ export function CORRPane({ code }: FunctionPaneProps) {
               activeMetric={activeMetric}
               annualizedVol={annualizedVol}
               marketBySymbol={marketBySymbol}
+              syntheticSymbols={syntheticSymbols}
               selectedPair={selectedPair}
               onSelect={(left, right) => setSelectedPair([left, right])}
             />
@@ -538,9 +591,13 @@ export function CORRPane({ code }: FunctionPaneProps) {
 
         {/* Universe + advanced options */}
         <div style={universeRowStyle}>
-          <label className="u-grid-gap-4 u-min-w-0 u-flex-1">
+          <label
+            className="u-grid-gap-4 u-min-w-0 u-flex-1"
+            htmlFor="corr-universe-input"
+          >
             <span style={controlLabelStyle}>Universe</span>
             <textarea
+              id="corr-universe-input"
               value={draftSymbols}
               onChange={(event) => setDraftSymbols(event.target.value)}
               rows={2}
@@ -595,7 +652,8 @@ export function CORRPane({ code }: FunctionPaneProps) {
                 className="btn btn--primary u-btn-24 corr-run-btn"
                 onClick={() => run()}
                 disabled={state === "loading"}
-                
+                aria-busy={state === "loading"}
+                aria-label="Run correlation analysis"
               >
                 Run
               </button>
@@ -739,6 +797,7 @@ function MatrixHeatmap({
   activeMetric,
   annualizedVol,
   marketBySymbol,
+  syntheticSymbols,
   selectedPair,
   onSelect,
 }: {
@@ -748,6 +807,7 @@ function MatrixHeatmap({
   activeMetric: CorrMetric;
   annualizedVol: Record<string, number | null>;
   marketBySymbol: Map<string, string>;
+  syntheticSymbols: Set<string>;
   selectedPair: [string, string] | null;
   onSelect: (left: string, right: string) => void;
 }) {
@@ -755,6 +815,22 @@ function MatrixHeatmap({
     const map = new Map<string, MatrixCell>();
     fallbackCells.forEach((cell) => {
       if (cell.y && cell.x) map.set(`${cell.y}::${cell.x}`, cell);
+    });
+    return map;
+  }, [fallbackCells]);
+
+  // Per-pair overlapping-observation count, keyed both directions so either
+  // matrix orientation resolves. `observations` is the REAL sample size the
+  // backend used for the coefficient — surfaced so n=10 ≠ n=100 visually.
+  const obsByPair = useMemo(() => {
+    const map = new Map<string, number>();
+    fallbackCells.forEach((cell) => {
+      const left = cell.left ?? cell.y;
+      const right = cell.right ?? cell.x;
+      if (left && right && typeof cell.observations === "number") {
+        map.set(`${left}::${right}`, cell.observations);
+        map.set(`${right}::${left}`, cell.observations);
+      }
     });
     return map;
   }, [fallbackCells]);
@@ -771,6 +847,8 @@ function MatrixHeatmap({
     return null;
   };
 
+  const metricLabel = METRIC_LABELS[activeMetric];
+
   return (
     <div style={matrixScrollStyle}>
       <table
@@ -781,93 +859,195 @@ function MatrixHeatmap({
           minWidth: Math.max(520, symbols.length * 64),
         }}
       >
+        <caption className="u-sr-only">
+          {symbols.length}×{symbols.length} {metricLabel} korelasyon matrisi.
+          Köşegen yıllık volatiliteyi gösterir. "~" ile işaretli semboller
+          sentetik referans serisidir.
+        </caption>
         <thead>
           <tr>
-            <th style={matrixHeaderStyle} />
-            {symbols.map((symbol) => (
-              <th
-                key={symbol}
-                title={`${symbol} · ${marketBySymbol.get(symbol) ?? ""}`}
-                style={matrixHeaderStyle}
-              >
-                <div style={headerCellInnerStyle}>
-                  <span>{symbol}</span>
-                  <MarketDot market={marketBySymbol.get(symbol)} />
-                </div>
-              </th>
-            ))}
+            <th scope="col" style={matrixHeaderStyle} />
+            {symbols.map((symbol) => {
+              const synthetic = syntheticSymbols.has(symbol);
+              return (
+                <th
+                  key={symbol}
+                  scope="col"
+                  title={
+                    synthetic
+                      ? `${symbol} · ${marketBySymbol.get(symbol) ?? ""} · sentetik referans serisi`
+                      : `${symbol} · ${marketBySymbol.get(symbol) ?? ""}`
+                  }
+                  style={matrixHeaderStyle}
+                >
+                  <div style={headerCellInnerStyle}>
+                    <span>
+                      {symbol}
+                      {synthetic ? <SyntheticMark /> : null}
+                    </span>
+                    <MarketDot market={marketBySymbol.get(symbol)} />
+                  </div>
+                </th>
+              );
+            })}
           </tr>
         </thead>
         <tbody>
-          {symbols.map((rowSymbol) => (
-            <tr key={rowSymbol}>
-              <th
-                title={`${rowSymbol} · ${marketBySymbol.get(rowSymbol) ?? ""}`}
-                style={{
-                  ...matrixHeaderStyle,
-                  textAlign: "left",
-                  position: "sticky",
-                  left: 0,
-                }}
-              >
-                <div className="u-flex u-items-center u-gap-6">
-                  <MarketDot market={marketBySymbol.get(rowSymbol)} />
-                  <span>{rowSymbol}</span>
-                </div>
-              </th>
-              {symbols.map((colSymbol) => {
-                const isDiagonal = rowSymbol === colSymbol;
-                const value = lookup(rowSymbol, colSymbol);
-                const active =
-                  selectedPair &&
-                  ((selectedPair[0] === rowSymbol &&
-                    selectedPair[1] === colSymbol) ||
-                    (selectedPair[0] === colSymbol &&
-                      selectedPair[1] === rowSymbol));
+          {symbols.map((rowSymbol) => {
+            const rowSynthetic = syntheticSymbols.has(rowSymbol);
+            return (
+              <tr key={rowSymbol}>
+                <th
+                  scope="row"
+                  title={
+                    rowSynthetic
+                      ? `${rowSymbol} · ${marketBySymbol.get(rowSymbol) ?? ""} · sentetik referans serisi`
+                      : `${rowSymbol} · ${marketBySymbol.get(rowSymbol) ?? ""}`
+                  }
+                  style={{
+                    ...matrixHeaderStyle,
+                    textAlign: "left",
+                    position: "sticky",
+                    left: 0,
+                  }}
+                >
+                  <div className="u-flex u-items-center u-gap-6">
+                    <MarketDot market={marketBySymbol.get(rowSymbol)} />
+                    <span>
+                      {rowSymbol}
+                      {rowSynthetic ? <SyntheticMark /> : null}
+                    </span>
+                  </div>
+                </th>
+                {symbols.map((colSymbol) => {
+                  const isDiagonal = rowSymbol === colSymbol;
+                  const value = lookup(rowSymbol, colSymbol);
+                  const active =
+                    selectedPair &&
+                    ((selectedPair[0] === rowSymbol &&
+                      selectedPair[1] === colSymbol) ||
+                      (selectedPair[0] === colSymbol &&
+                        selectedPair[1] === rowSymbol));
 
-                if (isDiagonal) {
-                  const vol = annualizedVol[rowSymbol];
+                  if (isDiagonal) {
+                    const vol = annualizedVol[rowSymbol];
+                    return (
+                      <td key={`${rowSymbol}-${colSymbol}`} className="u-p-0">
+                        <HeatCell
+                          value={0}
+                          diagonal
+                          size={32}
+                          ariaLabel={`${rowSymbol} köşegen: yıllık volatilite ${formatPct(vol)}`}
+                          label={
+                            <span style={diagonalLabelStyle}>
+                              σ {formatPct(vol)}
+                            </span>
+                          }
+                        />
+                      </td>
+                    );
+                  }
+                  const obs =
+                    obsByPair.get(`${rowSymbol}::${colSymbol}`) ?? null;
+                  const syntheticLeg =
+                    syntheticSymbols.has(rowSymbol) ||
+                    syntheticSymbols.has(colSymbol);
+                  const synthNote = syntheticLeg ? " (sentetik leg)" : "";
+                  const nText = obs == null ? "?" : String(obs);
+                  const cellTitle = `${rowSymbol} (${marketBySymbol.get(rowSymbol) ?? "?"}) / ${colSymbol} (${marketBySymbol.get(colSymbol) ?? "?"}) · ${metricLabel} ${formatCorr(value)} · n=${nText}${synthNote}`;
+                  const ariaLabel = `${rowSymbol}–${colSymbol} ${metricLabel}: ${formatCorr(value)}, n=${nText}${synthNote}`;
                   return (
-                    <td key={`${rowSymbol}-${colSymbol}`} className="u-p-0">
-                      <HeatCell
-                        value={0}
-                        diagonal
-                        size={32}
-                        label={
-                          <span style={diagonalLabelStyle}>
-                            σ {formatPercent(vol)}
-                          </span>
-                        }
-                      />
+                    <td
+                      key={`${rowSymbol}-${colSymbol}`}
+                      style={{
+                        padding: 0,
+                        outline: active ? "1px solid var(--accent)" : "none",
+                        borderRadius: 2,
+                      }}
+                    >
+                      <div title={cellTitle}>
+                        <HeatCell
+                          value={value ?? 0}
+                          size={32}
+                          fractionDigits={2}
+                          ariaLabel={ariaLabel}
+                          label={value == null ? formatMissing : value.toFixed(2)}
+                          onClick={() => onSelect(rowSymbol, colSymbol)}
+                        />
+                      </div>
                     </td>
                   );
-                }
-                const cellTitle = `${rowSymbol} (${marketBySymbol.get(rowSymbol) ?? "?"}) / ${colSymbol} (${marketBySymbol.get(colSymbol) ?? "?"}) · ${METRIC_LABELS[activeMetric]} ${formatCorr(value)}`;
-                return (
-                  <td
-                    key={`${rowSymbol}-${colSymbol}`}
-                    style={{
-                      padding: 0,
-                      outline: active ? "1px solid var(--accent)" : "none",
-                      borderRadius: 2,
-                    }}
-                  >
-                    <div title={cellTitle}>
-                      <HeatCell
-                        value={value ?? 0}
-                        size={32}
-                        fractionDigits={2}
-                        label={value == null ? "—" : value.toFixed(2)}
-                        onClick={() => onSelect(rowSymbol, colSymbol)}
-                      />
-                    </div>
-                  </td>
-                );
-              })}
-            </tr>
-          ))}
+                })}
+              </tr>
+            );
+          })}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+/** Visible "~" superscript marking a symbol whose price series is synthetic. */
+function SyntheticMark() {
+  return (
+    <sup
+      title="sentetik referans serisi"
+      aria-label="sentetik referans serisi"
+      style={syntheticMarkStyle}
+    >
+      ~
+    </sup>
+  );
+}
+
+function SyntheticWarning({
+  symbols,
+  metricLabel,
+}: {
+  symbols: string[];
+  metricLabel: string;
+}) {
+  if (!symbols.length) return null;
+  const names = symbols.join(", ");
+  return (
+    <div
+      data-testid="corr-synthetic-warning"
+      role="status"
+      style={syntheticWarningStyle}
+    >
+      <strong style={syntheticWarningTitleStyle}>
+        ⚠ Sentetik veri kullanıldı — gerçek piyasa verisi değil
+      </strong>
+      <span style={syntheticWarningBodyStyle}>
+        Şu sembol(ler) canlı çekilemedi ve deterministik bir referans serisiyle
+        ikame edildi: <strong>{names}</strong>. Bu sembolleri içeren tüm{" "}
+        {metricLabel} korelasyonları sentetik bir seriden hesaplanmıştır; gerçek
+        piyasa fiyatlarını yansıtmaz ve içlerinde önceden gömülü çapraz-piyasa
+        korelasyonu olabilir.
+      </span>
+    </div>
+  );
+}
+
+function LowNWarning({
+  count,
+  threshold,
+}: {
+  count: number;
+  threshold: number;
+}) {
+  if (count <= 0) return null;
+  return (
+    <div
+      data-testid="corr-low-n-warning"
+      role="status"
+      style={lowNWarningStyle}
+    >
+      <strong style={syntheticWarningTitleStyle}>⚠ Düşük örneklem</strong>
+      <span style={syntheticWarningBodyStyle}>
+        {count} çift {threshold}&apos;den az gözlemle hesaplandı — güvenilmez.
+        Küçük n korelasyonlarını kesin sonuç gibi okumayın.
+      </span>
     </div>
   );
 }
@@ -1084,7 +1264,7 @@ function SymbolDiversificationCard({ rows }: { rows: SymbolRow[] }) {
                 <span title="avg pearson">avg {formatNum(value, 3)}</span>
                 <span title="avg downside">↓ {formatNum(downside, 3)}</span>
                 <span title="annualized volatility">
-                  σ {formatPercent(row.annualized_vol ?? null)}
+                  σ {formatPct(row.annualized_vol ?? null)}
                 </span>
               </div>
             </div>
@@ -1203,17 +1383,24 @@ function parseSymbols(value: string) {
     .filter(Boolean);
 }
 
+// Thin wrappers over the shared @/lib/format helpers so the whole pane shares
+// the app-wide "—" missing sentinel (NOT a bespoke "N/A") and one rounding
+// contract. Correlation stays at 2dp; the legacy precision of other call sites
+// is preserved via the `digits` argument.
 function formatCorr(value?: number | null) {
-  return value == null || Number.isNaN(value) ? "N/A" : value.toFixed(2);
+  return value == null
+    ? formatMissing
+    : formatNumber(value, 2, { minimumFractionDigits: 2 });
 }
 
 function formatNum(value?: number | null, digits = 4) {
-  return value == null || Number.isNaN(value) ? "—" : value.toFixed(digits);
+  return value == null
+    ? formatMissing
+    : formatNumber(value, digits, { minimumFractionDigits: digits });
 }
 
-function formatPercent(value?: number | null) {
-  if (value == null || Number.isNaN(value)) return "—";
-  return `${(Number(value) * 100).toFixed(1)}%`;
+function formatPct(value?: number | null) {
+  return formatPercent(value, { fromFraction: true, digits: 1 });
 }
 
 // Stable seeded pseudo-delta for "Δ vs prev window" indicator on top pairs.
@@ -1519,6 +1706,47 @@ const formulaStripStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
   fontSize: 11,
   color: "var(--text-secondary)",
+};
+
+const syntheticMarkStyle: CSSProperties = {
+  color: "var(--warn)",
+  fontWeight: 700,
+  marginLeft: 1,
+};
+
+const syntheticWarningStyle: CSSProperties = {
+  display: "grid",
+  gap: 4,
+  border: "1px solid var(--warn)",
+  borderLeft: "3px solid var(--warn)",
+  borderRadius: "var(--radius-md)",
+  background: "var(--warn-soft, var(--surface-2))",
+  padding: "10px 12px",
+};
+
+const lowNWarningStyle: CSSProperties = {
+  display: "grid",
+  gap: 4,
+  border: "1px solid var(--border-card)",
+  borderLeft: "3px solid var(--warn)",
+  borderRadius: "var(--radius-md)",
+  background: "var(--surface-2)",
+  padding: "8px 12px",
+};
+
+const syntheticWarningTitleStyle: CSSProperties = {
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: 12,
+  fontWeight: 700,
+  color: "var(--warn)",
+  letterSpacing: "0.02em",
+};
+
+const syntheticWarningBodyStyle: CSSProperties = {
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: 11,
+  color: "var(--text-secondary)",
+  lineHeight: 1.5,
 };
 
 const mainGridStyle: CSSProperties = {
