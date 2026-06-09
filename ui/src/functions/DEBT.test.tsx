@@ -243,6 +243,29 @@ describe("DEBT pane — a11y (bars, labels)", () => {
     expect(bar).toBeInTheDocument();
   });
 
+  it("does not duplicate the name in a bar label for a name-only row (no country)", () => {
+    // Regression: accName once collapsed country??name into `label` and then
+    // re-appended name → "Eurozone Eurozone". A row with name but no country
+    // must read its name exactly once.
+    setMockFn({
+      state: "ok",
+      ...okPayload({
+        rows: [
+          {
+            name: "Eurozone",
+            debt_to_gdp: 90.0,
+            local_currency_share: 100,
+            portfolio_weight_pct: 0,
+            year: "2023",
+          },
+        ],
+      }),
+    });
+    render(<DEBTPane code="DEBT" />);
+    const bar = screen.getByRole("img", { name: /Eurozone: borç/i });
+    expect(bar.getAttribute("aria-label") ?? "").not.toMatch(/Eurozone\s+Eurozone/);
+  });
+
   it("gives the region Tabs and the DataGrid accessible names", () => {
     setMockFn({ state: "ok", ...okPayload() });
     const { container } = render(<DEBTPane code="DEBT" />);

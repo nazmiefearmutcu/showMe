@@ -526,7 +526,10 @@ function DebtBar({ row, scaleMax }: { row: DebtRow; scaleMax: number }) {
   // Bars convey magnitude via width + severity color only — expose the reading
   // to assistive tech so it is not a color/width-only datum. Lead with the ISO
   // code (plus the long name when present) so the value is unambiguous.
-  const accName = row.name ? `${label} ${row.name}` : label;
+  const accName =
+    row.country && row.name && row.country !== row.name
+      ? `${row.country} ${row.name}`
+      : label;
   const ariaLabel = `${accName}: borç/GSYİH ${
     hasValue ? fmtPct(v) : formatMissing
   }${change != null ? `, 5Y Δ ${fmtPct(change)}` : ""}`;
