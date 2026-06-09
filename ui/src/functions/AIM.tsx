@@ -32,6 +32,7 @@ import {
 } from "@/design-system";
 import { useFunction } from "@/lib/useFunction";
 import { useVisibilityTick } from "@/lib/useVisibilityTick";
+import { formatCurrency, formatMissing, formatNumber } from "@/lib/format";
 import {
   FunctionControlGroup,
   LoadStatePill,
@@ -176,7 +177,14 @@ export function AIMPane({ code, symbol }: FunctionPaneProps) {
   const sources =
     data?.sources?.join(", ") ||
     (brokersChecked.length ? brokersChecked.join(", ") : "no broker adapters");
+  // Client wall-clock fallback for "AS OF" captions when the server omits as_of.
   const utcStamp = useMemo(() => new Date().toISOString().slice(11, 16), [tick]);
+  // Server data-freshness (payload.as_of) as an HH:MM UTC stamp; falls back to
+  // the client clock so the header always shows something honest.
+  const asOfStamp = useMemo(() => extractAsOfHHMM(payload.as_of) ?? utcStamp, [
+    payload.as_of,
+    utcStamp,
+  ]);
 
   const cols = useMemo<DataGridColumn<AimOrder>[]>(
     () => [
@@ -184,7 +192,7 @@ export function AIMPane({ code, symbol }: FunctionPaneProps) {
         key: "symbol",
         header: "Symbol",
         width: 92,
-        render: (r) => <span style={symbolCell}>{r.symbol || "—"}</span>,
+        render: (r) => <span style={symbolCell}>{r.symbol || formatMissing}</span>,
       },
       {
         key: "side",
@@ -197,7 +205,7 @@ export function AIMPane({ code, symbol }: FunctionPaneProps) {
         header: "Type",
         width: 84,
         render: (r) => (
-          <span style={typeCell}>{(r.type || "—").toUpperCase()}</span>
+          <span style={typeCell}>{(r.type || formatMissing).toUpperCase()}</span>
         ),
       },
       {
@@ -212,7 +220,9 @@ export function AIMPane({ code, symbol }: FunctionPaneProps) {
           return (
             <span style={mutedNumStyle}>
               {fmtNum(r.quantity)}
-              {partial && <span style={fillTagStyle}>· {fmtNum(r.filled_qty)} fl</span>}
+              {partial && (
+                <span style={fillTagStyle}>· {fmtNum(r.filled_qty)} fl</span>
+              )}
             </span>
           );
         },
@@ -236,7 +246,7 @@ export function AIMPane({ code, symbol }: FunctionPaneProps) {
         width: 100,
         render: (r) =>
           r.avg_fill_px == null ? (
-            <span style={mutedNumStyle}>—</span>
+            <span style={mutedNumStyle}>{formatMissing}</span>
           ) : (
             <span style={primaryNumStyle}>{fmtNum(r.avg_fill_px)}</span>
           ),
@@ -261,7 +271,7 @@ export function AIMPane({ code, symbol }: FunctionPaneProps) {
         width: 124,
         render: (r) => (
           <Pill tone="muted" variant="soft" withDot={false}>
-            {r.broker ?? "—"}
+            {r.broker ?? formatMissing}
           </Pill>
         ),
       },
@@ -287,17 +297,23 @@ export function AIMPane({ code, symbol }: FunctionPaneProps) {
               <Pill tone="muted" variant="soft" withDot={false}>
                 {openOrders.length} open
               </Pill>
+              {/* H3 — freshness derived from server as_of (falls back to client). */}
               <Pill tone="accent" variant="soft" withDot={false}>
-                {utcStamp} UTC
+                {`Veri: ${asOfStamp} UTC`}
               </Pill>
               <Pill
                 tone={isLive ? "positive" : isDegraded ? "negative" : "warn"}
                 variant="soft"
+                aria-label={`Veri modu: ${dataModeExplanation(dataMode)}`}
               >
                 {dataMode}
               </Pill>
               <LoadStatePill state={state} />
-              <RefreshButton loading={state === "loading"} onClick={refetch} />
+              <RefreshButton
+                loading={state === "loading"}
+                busy={state === "loading" || state === "refreshing"}
+                onClick={refetch}
+              />
             </FunctionControlGroup>
           }
         />
@@ -313,33 +329,45 @@ export function AIMPane({ code, symbol }: FunctionPaneProps) {
           />
         </div>
         <PaneBody>
+          {/* A1 — async transitions (loading / error / empty) are announced to
+              screen readers via a polite live region; aria-busy flips while the
+              poll is in flight. */}
+          <div
+            role="status"
+            aria-live="polite"
+            aria-busy={state === "loading" || state === "refreshing"}
+          >
           {state === "loading" || state === "idle" ? (
             <Skeleton height={300} />
           ) : state === "error" ? (
-            <Empty title="Function error" body={error?.message ?? "—"} icon="!" />
+            <Empty
+              title="Function error"
+              body={error?.message ?? formatMissing}
+              icon="!"
+            />
           ) : (
             <div className="u-grid-gap-14">
+              {/* H3 — the degraded/cached state EXPLAINS itself rather than just
+                  colouring a pill. role=status so the reason reaches SR users. */}
               {!isLive ? (
-                <section style={noticeStyle}>
-                  <strong className="u-text-warn">
-                    {notConfigured
-                      ? "No broker configured"
-                      : isDegraded
-                        ? "Brokers unavailable"
-                        : dataMode === "cached_snapshot"
-                          ? "Cached snapshot"
-                          : "Reference blotter"}
-                  </strong>
+                <section
+                  style={noticeStyle}
+                  role="status"
+                  aria-live="polite"
+                  data-testid="aim-mode-notice"
+                >
+                  <strong className="u-text-warn">{dataModeTitle(dataMode)}</strong>
                   <span className="u-text-secondary">
-                    {payload.reason ||
-                      nextActions[0] ||
-                      payload.methodology ||
-                      "No live broker order feed. The blotter is labelled and no fills are simulated."}
+                    {dataModeExplanation(dataMode)}
+                    {payload.reason ? ` — ${payload.reason}` : ""}
                   </span>
+                  {nextActions[0] ? (
+                    <span className="u-text-mute">{nextActions[0]}</span>
+                  ) : null}
                 </section>
               ) : null}
               {providerErrors.length ? (
-                <section style={warningBox}>
+                <section style={warningBox} role="alert">
                   <strong className="u-text-warn">Broker errors</strong>
                   <ul style={warningList}>
                     {providerErrors.slice(0, 3).map((e, i) => (
@@ -350,7 +378,7 @@ export function AIMPane({ code, symbol }: FunctionPaneProps) {
                   </ul>
                 </section>
               ) : warningsList.length ? (
-                <section style={warningBox}>
+                <section style={warningBox} role="status" aria-live="polite">
                   <strong className="u-text-warn">Warnings</strong>
                   <ul style={warningList}>
                     {warningsList.slice(0, 3).map((w, i) => (
@@ -369,10 +397,12 @@ export function AIMPane({ code, symbol }: FunctionPaneProps) {
                   caption={`${historyOrders.length} historical`}
                   tone="neutral"
                 />
+                {/* H1 — counts ALL filled/partially-filled rows in the history
+                    tail, not just today's. Labelled honestly as "Filled". */}
                 <StatCard
-                  label="Filled Today"
+                  label="Filled"
                   value={String(filledToday)}
-                  caption={`AS OF ${utcStamp} UTC`}
+                  caption={`AS OF ${asOfStamp} UTC`}
                   tone={filledToday > 0 ? "positive" : "neutral"}
                 />
                 <StatCard
@@ -396,7 +426,9 @@ export function AIMPane({ code, symbol }: FunctionPaneProps) {
                 <StatCard
                   label="Notional"
                   value={fmtNotional(totalNotional)}
-                  caption={rejectedCount > 0 ? `${rejectedCount} rejected` : "USD est."}
+                  caption={
+                    rejectedCount > 0 ? `${rejectedCount} rejected` : "USD est."
+                  }
                   tone={rejectedCount > 0 ? "negative" : "neutral"}
                 />
               </section>
@@ -427,6 +459,7 @@ export function AIMPane({ code, symbol }: FunctionPaneProps) {
               )}
             </div>
           )}
+          </div>
         </PaneBody>
         <PaneFooter>
           <StatusSection label="brokers" value={sources} />
@@ -455,21 +488,22 @@ export function AIMPane({ code, symbol }: FunctionPaneProps) {
   );
 }
 
+// D1 — design-system Pill (not a hand-rolled span) so side is theme-consistent.
+// A3 — accessible name so buy/sell isn't conveyed by colour alone.
 function SideChip({ side }: { side?: string | null }) {
   const s = (side ?? "").toLowerCase();
-  if (!s) return <span style={mutedNumStyle}>—</span>;
-  const tone =
-    s === "buy" ? "var(--positive)" : s === "sell" ? "var(--negative)" : "var(--accent)";
+  if (!s) return <span style={mutedNumStyle}>{formatMissing}</span>;
+  const tone: "positive" | "negative" | "accent" =
+    s === "buy" ? "positive" : s === "sell" ? "negative" : "accent";
   return (
-    <span
-      style={{
-        ...sideChipStyle,
-        color: tone,
-        borderColor: `color-mix(in srgb, ${tone} 45%, transparent)`,
-      }}
+    <Pill
+      tone={tone}
+      variant="soft"
+      withDot={false}
+      aria-label={`yön: ${s === "buy" ? "alış" : s === "sell" ? "satış" : s}`}
     >
       {s.toUpperCase()}
-    </span>
+    </Pill>
   );
 }
 
@@ -487,9 +521,16 @@ function StatusPill({ status }: { status?: string | null }) {
             : s === "open" || s === "accepted" || s === "new"
               ? "accent"
               : "muted";
+  const text = s ? s.replace(/_/g, " ").toUpperCase() : formatMissing;
+  // A3 — accessible name so status isn't conveyed by colour alone.
   return (
-    <Pill tone={tone} variant="soft" withDot={false}>
-      {s ? s.replace(/_/g, " ").toUpperCase() : "—"}
+    <Pill
+      tone={tone}
+      variant="soft"
+      withDot={false}
+      aria-label={s ? `durum: ${s.replace(/_/g, " ")}` : "durum: yok"}
+    >
+      {text}
     </Pill>
   );
 }
@@ -500,25 +541,65 @@ function numeric(v: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+// D1 — delegate to the shared format.ts (single source of truth). Quantities /
+// prices keep up to 6 fractional digits; missing values share the "—" sentinel.
 function fmtNum(v: number | null | undefined): string {
-  if (v == null || !Number.isFinite(v)) return "—";
-  return v.toLocaleString(undefined, { maximumFractionDigits: 6 });
+  return formatNumber(v, 6);
 }
 
+// D1 — notional uses the shared compact currency formatter ("$1.20M").
 function fmtNotional(v: number): string {
-  if (!Number.isFinite(v) || v === 0) return "—";
-  const a = Math.abs(v);
-  if (a >= 1e9) return `$${(v / 1e9).toFixed(2)}B`;
-  if (a >= 1e6) return `$${(v / 1e6).toFixed(2)}M`;
-  if (a >= 1e3) return `$${(v / 1e3).toFixed(2)}K`;
-  return `$${v.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+  if (!Number.isFinite(v) || v === 0) return formatMissing;
+  return formatCurrency(v, { compact: true });
 }
 
+// format.ts has no ISO HH:MM helper, so keep a local UTC time formatter.
 function fmtTime(ts: string | null | undefined): string {
-  if (!ts) return "—";
+  if (!ts) return formatMissing;
   const d = new Date(ts);
   if (Number.isNaN(d.getTime())) return String(ts);
   return d.toISOString().slice(0, 16).replace("T", " ");
+}
+
+/** Server data-freshness (`as_of`) as an HH:MM UTC stamp, if parseable. */
+function extractAsOfHHMM(raw: string | null | undefined): string | undefined {
+  if (typeof raw !== "string" || !raw) return undefined;
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) return undefined;
+  return d.toISOString().slice(11, 16);
+}
+
+// H3 — honest, human-readable data_mode title + reason (no raw token).
+function dataModeTitle(mode: string): string {
+  switch (mode) {
+    case "live_exchange":
+      return "Canlı";
+    case "cached_snapshot":
+      return "Önbellek anlık görüntüsü";
+    case "not_configured":
+      return "Broker yapılandırılmamış";
+    case "provider_unavailable":
+    case "degraded":
+      return "Brokerlara ulaşılamıyor";
+    default:
+      return "Referans defteri";
+  }
+}
+
+function dataModeExplanation(mode: string): string {
+  switch (mode) {
+    case "live_exchange":
+      return "Canlı broker emir akışı.";
+    case "cached_snapshot":
+      return "Canlı broker bağlantısı yok — son anlık görüntü gösteriliyor.";
+    case "not_configured":
+      return "Broker yapılandırılmamış.";
+    case "provider_unavailable":
+    case "degraded":
+      return "Brokerlara ulaşılamıyor — kayıtlı emir geçmişi gösteriliyor.";
+    default:
+      return "Canlı broker emir akışı yok. Defter etiketlendi ve hiçbir gerçekleşme uydurulmuyor.";
+  }
 }
 
 const tabBarStyle: CSSProperties = {
@@ -572,20 +653,6 @@ const marketTagStyle: CSSProperties = {
   fontWeight: 600,
   letterSpacing: "0.06em",
   color: "var(--text-mute)",
-};
-
-const sideChipStyle: CSSProperties = {
-  display: "inline-flex",
-  alignItems: "center",
-  padding: "1px 7px",
-  height: 18,
-  borderRadius: 9,
-  border: "1px solid",
-  background: "var(--surface-3)",
-  fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
-  fontWeight: 700,
-  letterSpacing: "0.06em",
 };
 
 const noticeStyle: CSSProperties = {
