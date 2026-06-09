@@ -90,7 +90,7 @@ Each task is one page. Execute it as a **subagent-driven-development** mini-cycl
 - [x] **Task 34: ANR.** Pane: `ui/src/functions/ANR.tsx` (+ `anr_pane/`). Backend: analyst recommendations.
 - [x] **Task 35: BIO.** Pane: `ui/src/functions/BIO.tsx`. Backend via `rg -il bio backend/showme/engine/functions`.
 - [x] **Task 36: CRPR.** Pane: `ui/src/functions/CRPR.tsx`. (Plan mislabel: NOT crypto price — actually **Credit Rating Profile**, model-implied from SEC EDGAR.)
-- [ ] **Task 37: DEBT.** Pane: `ui/src/functions/DEBT.tsx`. Backend: Treasury/debt.
+- [x] **Task 37: DEBT.** Pane: `ui/src/functions/DEBT.tsx`. Backend: sovereign debt-to-GDP (World Bank).
 - [ ] **Task 38: DPF.** Pane: `ui/src/functions/DPF.tsx`. Backend via `rg -il dpf backend/showme/engine/functions`.
 - [ ] **Task 39: DVD.** Pane: `ui/src/functions/DVD.tsx`. Backend: dividends.
 - [ ] **Task 40: ECFC.** Pane: `ui/src/functions/ECFC.tsx`. Backend: `backend/showme/engine/functions/macro/ecfc.py`.
