@@ -7327,6 +7327,47 @@
   background: var(--warn);
   box-shadow: 0 0 6px var(--warn);
 }
+
+/* H1: shared PORTX data-quality badge (modeled / sample / degraded). */
+.portx-data-badge {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  border: 1px solid color-mix(in srgb, var(--warn) 55%, transparent);
+  background: var(--warn-soft);
+  border-radius: var(--radius-sm);
+  padding: 8px 11px;
+  font-size: 12px;
+  margin-bottom: 10px;
+}
+.portx-data-badge strong {
+  color: var(--warn);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.portx-data-badge__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--warn);
+  box-shadow: 0 0 6px var(--warn);
+}
+.portx-data-badge__reason {
+  font-variant-numeric: tabular-nums;
+}
+/* Partial-live is less severe than fully-modeled — use the accent tone. */
+.portx-data-badge--degraded {
+  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+.portx-data-badge--degraded strong {
+  color: var(--accent-strong, var(--accent));
+}
+.portx-data-badge--degraded .portx-data-badge__dot {
+  background: var(--accent);
+  box-shadow: 0 0 6px var(--accent);
+}
 .wei-index-tile__sym {
   color: var(--text-display);
   font-size: 11px;

@@ -33,6 +33,13 @@ type Row = Record<string, unknown>;
 interface PortfolioPayload {
   status?: string;
   reason?: string;
+  // Honesty signals (heterogeneous across the 20 backends — see
+  // portfolioDataMode). Any one of these flips the pane out of "live".
+  data_mode?: string;
+  source_mode?: string;
+  return_data_state?: string;
+  fallback?: boolean;
+  fallback_reason?: string;
   rows?: Row[];
   positions?: Row[];
   comparisons?: Row[];
@@ -76,6 +83,17 @@ const PORTFOLIO_TOOLS = [
   "PORT_WHATIF",
   "MARS",
   "TRA",
+  "TLH",
+  // U1: the six codes that ship in the registry + TOOL_CONFIG but were
+  // previously absent from the toolbar, leaving them unreachable from the
+  // strip. All 20 portfolio codes are now discoverable here.
+  "ACCT",
+  "BMTX",
+  "BTFW",
+  "BTUNE",
+  "LOTS",
+  "MGN",
+  "MLSIG",
 ] as const;
 
 const TOOL_CONFIG: Record<string, ToolConfig> = {
@@ -232,6 +250,16 @@ export function PortfolioAnalyticsPane({ code, symbol }: FunctionPaneProps) {
   const metrics = useMemo(() => deriveMetrics(payload), [payload]);
   const status = payload?.status ?? data?.status ?? "ok";
   const warnings = data?.warnings ?? [];
+  // H1: shared data-quality classification. Reads the heterogeneous
+  // "not-fully-live" signals every one of the 20 backends already emits
+  // (status / data_mode / source_mode / return_data_state / fallback /
+  // metadata + any synthetic `sources` entry) so a SINGLE badge covers
+  // all codes at once. Computed in the pane so it's available to both the
+  // populated and the empty render branch.
+  const dataQuality = useMemo(
+    () => portfolioDataMode(payload, data?.metadata, data?.sources),
+    [payload, data?.metadata, data?.sources],
+  );
 
   const body =
     state === "loading" || state === "idle" ? (
@@ -241,12 +269,14 @@ export function PortfolioAnalyticsPane({ code, symbol }: FunctionPaneProps) {
         <Skeleton height={26} width="60%" />
       </div>
     ) : state === "error" ? (
-      <Empty
-        title="Function error"
-        body={error?.message ?? "—"}
-        icon="!"
-        action={<button className="btn" onClick={refetch}>Retry</button>}
-      />
+      <div role="status">
+        <Empty
+          title="Function error"
+          body={error?.message ?? "—"}
+          icon="!"
+          action={<button className="btn" onClick={refetch}>Retry</button>}
+        />
+      </div>
     ) : (
       <PortfolioAnalyticsView
         code={upper}
@@ -255,6 +285,7 @@ export function PortfolioAnalyticsPane({ code, symbol }: FunctionPaneProps) {
         columns={columns}
         metrics={metrics}
         warnings={warnings}
+        dataQuality={dataQuality}
         refetch={refetch}
       />
     );
@@ -288,7 +319,11 @@ export function PortfolioAnalyticsPane({ code, symbol }: FunctionPaneProps) {
                 />
               ) : null}
               <LoadStatePill state={state} status={status} />
-              <RefreshButton loading={state === "loading"} onClick={refetch} />
+              <RefreshButton
+                loading={state === "loading"}
+                busy={state === "refreshing" || state === "loading"}
+                onClick={refetch}
+              />
             </FunctionControlGroup>
           }
         />
@@ -381,12 +416,18 @@ function PortfolioControls({
   if (!config.usesUniverse && !config.usesSymbol && code !== "REBA" && code !== "PSC") {
     return null;
   }
+  // A1: each field binds <label htmlFor> ↔ input id so the control is
+  // programmatically associated for screen readers (the old <span>+<input>
+  // wrapping was visual-only). ids are namespaced per code to stay unique
+  // when more than one portfolio pane mounts.
+  const fid = (name: string) => `portx-${code.toLowerCase()}-${name}`;
   return (
     <div className="portfolio-controls">
       {config.usesUniverse ? (
-        <label className="portfolio-control-field portfolio-control-field--wide">
+        <label className="portfolio-control-field portfolio-control-field--wide" htmlFor={fid("universe")}>
           <span>Universe</span>
           <input
+            id={fid("universe")}
             value={symbols}
             onChange={(e) => setSymbols(e.target.value.toUpperCase())}
             spellCheck={false}
@@ -394,9 +435,10 @@ function PortfolioControls({
         </label>
       ) : null}
       {config.usesSymbol ? (
-        <label className="portfolio-control-field">
+        <label className="portfolio-control-field" htmlFor={fid("symbol")}>
           <span>Symbol</span>
           <input
+            id={fid("symbol")}
             value={symbolInput}
             onChange={(e) => setSymbolInput(e.target.value.toUpperCase())}
             spellCheck={false}
@@ -404,30 +446,30 @@ function PortfolioControls({
         </label>
       ) : null}
       {code === "REBA" ? (
-        <label className="portfolio-control-field portfolio-control-field--wide">
+        <label className="portfolio-control-field portfolio-control-field--wide" htmlFor={fid("targets")}>
           <span>Targets</span>
-          <input value={targetText} onChange={(e) => setTargetText(e.target.value.toUpperCase())} />
+          <input id={fid("targets")} value={targetText} onChange={(e) => setTargetText(e.target.value.toUpperCase())} />
         </label>
       ) : null}
       {code === "PSC" || code === "PORT_WHATIF" ? (
         <>
-          <label className="portfolio-control-field">
+          <label className="portfolio-control-field" htmlFor={fid("account")}>
             <span>{code === "PSC" ? "Account" : "Quantity"}</span>
-            <input value={account} onChange={(e) => setAccount(e.target.value)} inputMode="decimal" />
+            <input id={fid("account")} value={account} onChange={(e) => setAccount(e.target.value)} inputMode="decimal" />
           </label>
-          <label className="portfolio-control-field">
+          <label className="portfolio-control-field" htmlFor={fid("entry")}>
             <span>Entry</span>
-            <input value={entry} onChange={(e) => setEntry(e.target.value)} inputMode="decimal" />
+            <input id={fid("entry")} value={entry} onChange={(e) => setEntry(e.target.value)} inputMode="decimal" />
           </label>
           {code === "PSC" ? (
             <>
-              <label className="portfolio-control-field">
+              <label className="portfolio-control-field" htmlFor={fid("stop")}>
                 <span>Stop</span>
-                <input value={stop} onChange={(e) => setStop(e.target.value)} inputMode="decimal" />
+                <input id={fid("stop")} value={stop} onChange={(e) => setStop(e.target.value)} inputMode="decimal" />
               </label>
-              <label className="portfolio-control-field">
+              <label className="portfolio-control-field" htmlFor={fid("target")}>
                 <span>Target</span>
-                <input value={target} onChange={(e) => setTarget(e.target.value)} inputMode="decimal" />
+                <input id={fid("target")} value={target} onChange={(e) => setTarget(e.target.value)} inputMode="decimal" />
               </label>
             </>
           ) : null}
@@ -444,6 +486,7 @@ function PortfolioAnalyticsView({
   columns,
   metrics,
   warnings,
+  dataQuality,
   refetch,
 }: {
   code: string;
@@ -452,6 +495,7 @@ function PortfolioAnalyticsView({
   columns: DataGridColumn<Row>[];
   metrics: Array<{ key: string; label: string; value: unknown }>;
   warnings: string[];
+  dataQuality: PortfolioDataQuality;
   refetch: () => void;
 }) {
   const nextActions = payload?.next_actions ?? [];
@@ -482,7 +526,9 @@ function PortfolioAnalyticsView({
       icon = "∅";
       body = emptyReason ?? "You do not have any open positions in your portfolio. Connect a broker account or use Portfolio What-If to simulate trades.";
       action = (
-        <div className="empty-actions" style={{ display: "flex", gap: "8px" }}>
+        // D2: was `empty-actions` (no such class) + inline flex. Use the
+        // shared flex utilities so the two buttons sit on one row.
+        <div className="u-flex u-gap-8">
           <button type="button" className="btn btn--accent" onClick={() => navigate("/fn/CONN")}>
             Connect Broker
           </button>
@@ -520,17 +566,27 @@ function PortfolioAnalyticsView({
     }
 
     return (
-      <Empty
-        title={title}
-        body={body}
-        icon={icon}
-        action={action}
-      />
+      <div className="portfolio-analytics-empty">
+        {/* H1: disclosure must survive zero rows — render the badge above
+            the empty state too, so a synthetic/sample fallback is never
+            mistaken for "the portfolio is genuinely empty live". */}
+        <PortfolioDataBadge quality={dataQuality} />
+        <div role="status">
+          <Empty
+            title={title}
+            body={body}
+            icon={icon}
+            action={action}
+          />
+        </div>
+      </div>
     );
   }
 
   return (
     <div className="portfolio-analytics-view">
+      {/* H1: prominent shared data-quality badge ABOVE the analytics. */}
+      <PortfolioDataBadge quality={dataQuality} />
       <section className="portfolio-analytics-summary">
         <div className="portfolio-analytics-summary__hero">
           <span className="portfolio-analytics-label">{code}</span>
@@ -541,14 +597,22 @@ function PortfolioAnalyticsView({
           {metrics.slice(0, 6).map((metric) => (
             <div key={metric.key} className="portfolio-analytics-metric">
               <span>{metric.label}</span>
-              <strong>{formatSmart(metric.key, metric.value)}</strong>
+              <strong className={signToneClass(metric.key, metric.value)}>
+                {formatSmart(metric.key, metric.value)}
+              </strong>
             </div>
           ))}
         </div>
       </section>
 
       {warnings.length ? (
-        <div className="portfolio-warning-strip">
+        // A2: live region so screen readers announce warnings as they arrive.
+        <div
+          className="portfolio-warning-strip"
+          role="status"
+          aria-live="polite"
+          data-testid="portx-warning-strip"
+        >
           {warnings.slice(0, 3).map((warning) => (
             <Pill key={warning} tone="warn" variant="soft" withDot={false}>
               {warning}
@@ -570,7 +634,7 @@ function PortfolioAnalyticsView({
             rows={rows}
             rowKey={(row, idx) => row.symbol ? `${String(row.symbol)}-${idx}` : idx}
             density="compact"
-            ariaLabel={`${code} portfolio analytics matrix`}
+            ariaLabel={`${code} portföy analitiği`}
           />
         </section>
 
@@ -599,20 +663,26 @@ function PortfolioVisual({
   if (frontier.length > 1) {
     return <FrontierChart points={frontier} />;
   }
+  const ladderSources: Array<keyof Row | string> = [
+    "weight_pct",
+    "component_pct_of_portfolio_risk",
+    "risk_contribution_pct",
+    "total_effect",
+    "total_pnl",
+    "notional_delta",
+    "value",
+  ];
   const ladderRows = rows
     .map((row) => {
       const label = String(row.symbol ?? row.sector ?? row.factor ?? row.metric ?? row.scenario ?? row.action ?? "row");
-      const raw =
-        numberValue(row.weight_pct) ??
-        numberValue(row.component_pct_of_portfolio_risk) ??
-        numberValue(row.risk_contribution_pct) ??
-        numberValue(row.total_effect) ??
-        numberValue(row.total_pnl) ??
-        numberValue(row.notional_delta) ??
-        numberValue(row.value);
-      return raw == null ? null : { label, value: raw };
+      // Track WHICH key produced the value so the value text can be
+      // sign-coloured only for sign-meaningful sources (D1) — weight /
+      // risk-contribution stay neutral.
+      const source = ladderSources.find((key) => numberValue(row[key]) != null);
+      const raw = source ? numberValue(row[source]) : null;
+      return raw == null ? null : { label, value: raw, labelKey: String(source) };
     })
-    .filter((row): row is { label: string; value: number } => Boolean(row))
+    .filter((row): row is { label: string; value: number; labelKey: string } => Boolean(row))
     .slice(0, 8);
 
   return (
@@ -632,7 +702,9 @@ function PortfolioVisual({
                     style={{ ["--u-width" as string]: `${width}%` }}
                   />
                 </div>
-                <strong>{formatSmart("weight_pct", row.value)}</strong>
+                <strong className={signToneClass(row.labelKey, row.value)}>
+                  {formatSmart("weight_pct", row.value)}
+                </strong>
               </div>
             );
           })}
@@ -756,7 +828,12 @@ function renderCell(key: string, value: unknown) {
     return <Pill tone={tone} variant="soft" withDot={false}>{text}</Pill>;
   }
   if (typeof value === "boolean") return value ? "yes" : "no";
-  return <span className={numberValue(value) != null ? "portfolio-analytics-num" : undefined}>{formatSmart(key, value)}</span>;
+  // D1: sign-meaningful numerics (P&L / return / drawdown / …) get a
+  // tone class; neutral metrics (weight / vol / price / count) stay plain.
+  const numClass = numberValue(value) != null ? "portfolio-analytics-num" : undefined;
+  const tone = signToneClass(key, value);
+  const cls = [numClass, tone].filter(Boolean).join(" ") || undefined;
+  return <span className={cls}>{formatSmart(key, value)}</span>;
 }
 
 function extractRows(payload: PortfolioPayload | undefined): Row[] {
@@ -953,6 +1030,150 @@ function isLowSignalKey(key: string): boolean {
     "error",
     "message",
   ].includes(key);
+}
+
+// ── Honesty: shared data-quality classification (H1) ──────────────────────
+
+type PortfolioDataModeKind = "live" | "modeled" | "sample" | "degraded";
+
+interface PortfolioDataQuality {
+  mode: PortfolioDataModeKind;
+  /** Short human reason (fallback_reason / source_mode / status) if known. */
+  reason?: string;
+}
+
+const SYNTHETIC_SOURCE_RE = /model|template|reference|sample|synthetic/i;
+
+/**
+ * Classify a portfolio payload as live / modeled / sample / degraded by
+ * reading the HETEROGENEOUS "not-fully-live" signals the 20 backends emit.
+ * One shared classifier ⇒ one shared badge covering every code:
+ *
+ *   - `status` ∈ {reference, modeled, provider_unavailable, empty}
+ *   - `data_mode` ("modeled" / "delayed_reference")
+ *   - `source_mode` containing model/reference/template
+ *   - `return_data_state` ("synthetic_fallback")
+ *   - `fallback === true` / `fallback_reason`
+ *   - `metadata.degraded` / `metadata.fallback`
+ *   - any `sources[]` entry matching /model|template|reference|sample|synthetic/i
+ *
+ * "sample" is reserved for explicitly sample/template payloads; everything
+ * else non-live is "modeled", with "degraded" for partial-live (provider
+ * unavailable / metadata-degraded but no explicit model signal).
+ */
+function portfolioDataMode(
+  payload: PortfolioPayload | undefined,
+  metadata: Record<string, unknown> | undefined,
+  sources: string[] | undefined,
+): PortfolioDataQuality {
+  const status = String(payload?.status ?? "").toLowerCase();
+  const dataMode = String(payload?.data_mode ?? "").toLowerCase();
+  const sourceMode = String(payload?.source_mode ?? "").toLowerCase();
+  const returnState = String(payload?.return_data_state ?? "").toLowerCase();
+  const fallback = payload?.fallback === true;
+  const fallbackReason = typeof payload?.fallback_reason === "string" ? payload.fallback_reason : "";
+  const metaDegraded = metadata?.degraded === true || metadata?.fallback === true;
+  const syntheticSource = (sources ?? []).find((s) => SYNTHETIC_SOURCE_RE.test(s));
+
+  // Explicit sample / template wins as "sample".
+  const sampleSignal =
+    /sample|template/.test(sourceMode) ||
+    /sample|template/.test(status) ||
+    (syntheticSource ? /sample|template/i.test(syntheticSource) : false);
+  if (sampleSignal) {
+    return {
+      mode: "sample",
+      reason: fallbackReason || sourceMode || syntheticSource || status || undefined,
+    };
+  }
+
+  // Synthetic / modeled returns or computed-from-model covariance.
+  const modeledSignal =
+    returnState === "synthetic_fallback" ||
+    dataMode === "modeled" ||
+    /model|reference/.test(sourceMode) ||
+    status === "reference" ||
+    status === "modeled" ||
+    fallback ||
+    Boolean(syntheticSource);
+  if (modeledSignal) {
+    return {
+      mode: "modeled",
+      reason: fallbackReason || dataMode || sourceMode || returnState || syntheticSource || status || undefined,
+    };
+  }
+
+  // Partial-live: provider unavailable / delayed reference / metadata degraded
+  // without an explicit model signal.
+  const degradedSignal =
+    metaDegraded ||
+    status === "provider_unavailable" ||
+    dataMode === "delayed_reference";
+  if (degradedSignal) {
+    return {
+      mode: "degraded",
+      reason: fallbackReason || (status === "provider_unavailable" ? "provider unavailable" : dataMode) || undefined,
+    };
+  }
+
+  return { mode: "live" };
+}
+
+/**
+ * Prominent shared data-quality badge. Mirrors WEI's ModelDataBadge tone.
+ * Silent when the data is genuinely live; otherwise warns that the figures
+ * are illustrative (modeled / sample) or only partially live (degraded).
+ */
+function PortfolioDataBadge({ quality }: { quality: PortfolioDataQuality }) {
+  if (quality.mode === "live") return null;
+  const degraded = quality.mode === "degraded";
+  const headline = degraded ? "KISMİ CANLI VERİ" : "ÖRNEK/MODEL VERİ";
+  const detail = degraded
+    ? "bazı değerler canlı sağlayıcıdan gelmiyor — eksik/gecikmeli olabilir."
+    : "canlı piyasa değil; değerler illüstratiftir.";
+  const title = quality.reason ? `${headline} — ${quality.reason}` : headline;
+  return (
+    <div
+      className={`portx-data-badge${degraded ? " portx-data-badge--degraded" : ""}`}
+      role="status"
+      data-testid="portx-data-badge"
+      data-mode={quality.mode}
+      aria-label={`${headline} — ${detail}`}
+      title={title}
+    >
+      <span className="portx-data-badge__dot" aria-hidden />
+      <strong>{headline}</strong>
+      <span className="u-text-secondary">{detail}</span>
+      {quality.reason ? (
+        <span className="portx-data-badge__reason u-text-secondary">· {quality.reason}</span>
+      ) : null}
+    </div>
+  );
+}
+
+// ── Display: sign tone for financial numerics (D1) ────────────────────────
+
+// Keys whose sign carries meaning (P&L / return / drawdown / alpha / …).
+// Neutral metrics (weight, vol, price, count, ratio) are deliberately
+// excluded so they never render red/green.
+const SIGN_MEANINGFUL_RE =
+  /pnl|return|alpha|delta|drawdown|surprise|notional|effect|gain|loss|contribution/i;
+
+/**
+ * Returns a sign-tone utility class for a sign-meaningful numeric key, or
+ * undefined for neutral keys / non-numeric / zero values. "contribution" is
+ * matched but `risk_contribution_pct` / `component_*` are weight-like, so
+ * exclude the risk-contribution family explicitly.
+ */
+function signToneClass(key: string, value: unknown): string | undefined {
+  const n = numberValue(value);
+  if (n == null || n === 0) return undefined;
+  const k = key.toLowerCase();
+  if (!SIGN_MEANINGFUL_RE.test(k)) return undefined;
+  // Risk-contribution / component-risk are non-negative weight-like shares,
+  // not directional P&L — keep them neutral.
+  if (/risk_contribution|component_pct|risk_contribution_pct/.test(k)) return undefined;
+  return n < 0 ? "u-text-negative" : "u-text-positive";
 }
 
 export default PortfolioAnalyticsPane;
