@@ -65,7 +65,7 @@ Each task is one page. Execute it as a **subagent-driven-development** mini-cycl
 - [x] **Task 18: BOT — Bot Manager.** Pane: `ui/src/functions/BOT.tsx`. Backend: `backend/showme/bots`. Focus: bot list, start/stop, status display.
 - [x] **Task 19: BOTS — Bot Supervision.** Pane: `ui/src/functions/BOTS.tsx`. Backend: `backend/showme/bots`. Focus: supervision view, health/metrics, controls.
 - [x] **Task 20: PERF — Performance.** Pane: `ui/src/functions/PERF.tsx`. Backend: performance/leaderboard. Focus: cumulative perf charts, real metrics, leaderboard table.
-- [ ] **Task 21: BDA — Bot Dev Assistant.** Pane: `ui/src/functions/BDA.tsx`. Backend: `backend/showme/assistant`. Focus: NL→strategy parsing, explanation output quality.
+- [x] **Task 21: BDA — Bot Dev Assistant.** Pane: `ui/src/functions/BDA.tsx`. Backend: `backend/showme/assistant`. Focus: NL→strategy parsing, explanation output quality.
 - [ ] **Task 22: INDX — Indicator Index.** Pane: `ui/src/functions/INDX.tsx`. Backend: `backend/showme/indicators`. Focus: indicator depot, search, descriptions, params.
 - [ ] **Task 23: CONN — Connect Exchange.** Pane: `ui/src/functions/CONN.tsx`. Backend: `backend/showme/brokers`/`integrations`. Focus: connection flow, status, key handling UX (no secrets logged).
 - [ ] **Task 24: TXNS — Trade Blotter.** Pane: `ui/src/functions/TXNS.tsx`. Backend: transactions/fills. Focus: blotter table, real fills, filtering, export.
