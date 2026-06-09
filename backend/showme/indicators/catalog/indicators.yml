@@ -1,5 +1,11 @@
 # showMe indicator depot — Sub-system F.
 # Hand-curated metadata. Computation lives in E (deferred).
+#
+# HONESTY NOTE: `confidence` (1-10) and `confidence_rationale` are SUBJECTIVE
+# editorial assessments by the catalog author — NOT backtested or statistically
+# validated metrics. Likewise `suggested_strategy` is an ILLUSTRATIVE example,
+# not a validated/backtested trading recommendation. The UI discloses this; do
+# not present these fields as authoritative performance numbers.
 # Confidence is 1-10 (UI tier-colored: 9-10 green, 7-8 light-green, 5-6 yellow, 3-4 orange, 1-2 red).
 
 - id: rsi
