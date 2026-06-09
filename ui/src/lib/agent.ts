@@ -59,6 +59,14 @@ export interface RunBestSymbolAgentRequest {
   candidates: Array<string | AgentCandidateInput>;
   max_candidates?: number;
   per_function_timeout?: number;
+  /**
+   * Opt-in live mode. When false/omitted the backend ranks candidates with
+   * its DETERMINISTIC `agent_fast_probe` payloads (transparent synthetic
+   * scoring — no real per-symbol function execution). When true the backend
+   * actually runs each function per symbol (slower). The backend echoes the
+   * chosen mode back via `method` ("…v3_fast_probe" vs "…v1_live").
+   */
+  execute_functions?: boolean;
 }
 
 export function parseCandidateText(value: string): string[] {
