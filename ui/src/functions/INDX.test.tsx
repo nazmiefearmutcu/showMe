@@ -34,7 +34,9 @@ describe("INDX pane", () => {
 
   it("family chip filters by family", () => {
     render(<INDXPane />);
-    fireEvent.click(screen.getByRole("button", { name: /^trend$/i }));
+    // Family buttons now carry an explicit a11y name ("Aile: trend") so the
+    // filter is announced to assistive tech, not just visually styled.
+    fireEvent.click(screen.getByRole("button", { name: /^Aile: trend$/i }));
     expect(screen.queryByText("RSI")).toBeNull();
     expect(screen.getByText("EMA")).toBeInTheDocument();
   });
