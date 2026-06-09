@@ -124,22 +124,28 @@ describe("CONN pane", () => {
   });
 
   // ─── resolveDeletePlan unit (C9 force/cascade semantics preserved) ──────
-  it("resolveDeletePlan: bot count >0 → force=true + count copy", async () => {
-    const dependents = vi
-      .spyOn(useExchangeStore.getState(), "dependentBots")
-      .mockResolvedValue({ credential_id: "abc", bot_count: 3, bot_ids: ["b1", "b2", "b3"] });
-    const plan = await resolveDeletePlan("abc", "main");
-    expect(dependents).toHaveBeenCalledWith("abc");
+  // P2-1 — resolveDeletePlan now takes the PRE-FETCHED dependents (no second
+  // network call); the force/cascade semantics are unchanged.
+  it("resolveDeletePlan: bot count >0 → force=true + count copy", () => {
+    const plan = resolveDeletePlan("main", {
+      credential_id: "abc", bot_count: 3, bot_ids: ["b1", "b2", "b3"],
+    });
     expect(plan.title).toMatch(/3 bot/);
     expect(plan.body).toMatch(/3 bota bağlı/);
     expect(plan.force).toBe(true);
   });
 
-  it("resolveDeletePlan: zero dependents → force=false", async () => {
-    vi.spyOn(useExchangeStore.getState(), "dependentBots")
-      .mockResolvedValue({ credential_id: "abc", bot_count: 0, bot_ids: [] });
-    const plan = await resolveDeletePlan("abc", "main");
+  it("resolveDeletePlan: zero dependents → force=false", () => {
+    const plan = resolveDeletePlan("main", {
+      credential_id: "abc", bot_count: 0, bot_ids: [],
+    });
     expect(plan.force).toBe(false);
+  });
+
+  it("resolveDeletePlan: null deps (lookup failed) → force=true + doğrulanamadı", () => {
+    const plan = resolveDeletePlan("main", null);
+    expect(plan.title).toMatch(/doğrulanamadı/i);
+    expect(plan.force).toBe(true);
   });
 
   // ─── F5 — in-app ConfirmDialog drives the delete ───────────────────────

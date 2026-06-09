@@ -91,28 +91,27 @@ function renderWithCredential() {
 }
 
 describe("delete plan — A12 bots_unknown warning", () => {
-  it("resolveDeletePlan: bots_unknown=true → doğrulanamadı copy + force=true", async () => {
-    vi.spyOn(useExchangeStore.getState(), "dependentBots").mockResolvedValue({
+  it("resolveDeletePlan: bots_unknown=true → doğrulanamadı copy + force=true", () => {
+    // P2-1 — deps are pre-fetched and passed in directly (no second lookup).
+    const plan = resolveDeletePlan("main", {
       credential_id: "abc",
       bot_count: 0,
       bot_ids: [],
       bots_unknown: true,
     });
-    const plan = await resolveDeletePlan("abc", "main");
     expect(plan.title).toMatch(/doğrulanamadı/i);
     expect(plan.body).toMatch(/doğrulanamadı/i);
     // Defensive cascade.
     expect(plan.force).toBe(true);
   });
 
-  it("resolveDeletePlan: bots_unknown=false keeps the plain copy + force=false", async () => {
-    vi.spyOn(useExchangeStore.getState(), "dependentBots").mockResolvedValue({
+  it("resolveDeletePlan: bots_unknown=false keeps the plain copy + force=false", () => {
+    const plan = resolveDeletePlan("main", {
       credential_id: "abc",
       bot_count: 0,
       bot_ids: [],
       bots_unknown: false,
     });
-    const plan = await resolveDeletePlan("abc", "main");
     expect(plan.title).toBe("Bağlantıyı sil");
     expect(plan.body).not.toMatch(/doğrulanamadı/i);
     expect(plan.force).toBe(false);

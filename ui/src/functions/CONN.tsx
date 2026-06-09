@@ -14,6 +14,7 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   type CatalogEntry,
+  type CredentialDependents,
   type CredentialRecord,
   useExchangeStore,
 } from "@/lib/exchange-store";
@@ -100,20 +101,26 @@ export function collidingDisplayNames(entries: CatalogEntry[]): Set<string> {
 
 /**
  * F4 — connection status derived from the last test result + last_verified.
- * Honest: never claims "connected" without a real verification.
+ * Honest: never claims "connected" without a real, IN-SESSION verification.
+ *
+ * P2-2 — a credential `last_verified` in a PREVIOUS session no longer shows
+ * the green "Doğrulandı" (which would imply live connectivity); it gets a
+ * muted "Daha önce doğrulandı" ("stale") instead. Green is reserved for an
+ * in-session successful test only.
  */
-type ConnStatus = "ok" | "failed" | "untested";
+type ConnStatus = "ok" | "failed" | "stale" | "untested";
 
 function statusFor(rec: CredentialRecord, lastTest: "idle" | "ok" | "err"): ConnStatus {
   if (lastTest === "ok") return "ok";
   if (lastTest === "err") return "failed";
-  return rec.last_verified ? "ok" : "untested";
+  return rec.last_verified ? "stale" : "untested";
 }
 
 function StatusPill({ status }: { status: ConnStatus }) {
   const map: Record<ConnStatus, { tone: "positive" | "negative" | "muted"; label: string }> = {
     ok: { tone: "positive", label: "Doğrulandı" },
     failed: { tone: "negative", label: "Başarısız" },
+    stale: { tone: "muted", label: "Daha önce doğrulandı" },
     untested: { tone: "muted", label: "Denenmedi" },
   };
   const { tone, label } = map[status];
@@ -143,7 +150,10 @@ function CredentialRow({
   rec, onDelete, onEscalate,
 }: {
   rec: CredentialRecord;
-  onDelete: (id: string) => void;
+  // P2-1 — the row passes the dependents it already fetched in the click
+  // handler so resolveDeletePlan does NOT fetch a second time. `null` means
+  // the single lookup threw (both endpoints failed) → treated as unknown.
+  onDelete: (id: string, deps: CredentialDependents | null) => void;
   onEscalate: (id: string, label: string) => void;
 }) {
   const [confirm, setConfirm] = useState("");
@@ -189,6 +199,9 @@ function CredentialRow({
       <button
         aria-busy={testingInFlight}
         disabled={testingInFlight}
+        // P3-1 — associate the live test-result region with this trigger so
+        // SR users hear the outcome announced against the Test button.
+        aria-describedby={testResultId}
         title={testingInFlight ? "Test sürüyor…" : undefined}
         onClick={async () => {
           // Round 24 — short-circuit a 2nd rapid click; the store-level
@@ -283,15 +296,20 @@ function CredentialRow({
           // covers the DELETE itself.
           if (dependentLoading || deletingInFlight) return;
           setDependentLoading(true);
+          // P2-1 — fetch dependents EXACTLY ONCE and thread the result into
+          // onDelete → resolveDeletePlan. The row's `botsUnknown` banner and
+          // the dialog's `plan.force` now derive from this SAME single fetch,
+          // so they can never diverge. A throw → deps=null → unknown.
+          let deps: CredentialDependents | null = null;
           try {
-            const deps = await useExchangeStore.getState().dependentBots(rec.id);
+            deps = await useExchangeStore.getState().dependentBots(rec.id);
             setBotsUnknown(deps.bots_unknown === true);
           } catch {
             setBotsUnknown(true);
           } finally {
             setDependentLoading(false);
           }
-          onDelete(rec.id);
+          onDelete(rec.id, deps);
         }}
       >
         {(dependentLoading || deletingInFlight) ? "..." : "Sil"}
@@ -330,13 +348,19 @@ export interface DeletePlan {
   force: boolean;
 }
 
-export async function resolveDeletePlan(
-  credentialId: string,
+/**
+ * P2-1 — accepts the PRE-FETCHED dependents from the row's click handler so
+ * the delete path performs ONLY ONE `dependentBots` round-trip per Sil click
+ * (previously the row and this function each fetched, which double-tripped the
+ * network and could diverge). `dependents === null` means the single lookup
+ * threw (both endpoints failed) → treated identically to `bots_unknown`.
+ */
+export function resolveDeletePlan(
   accountLabel: string,
-): Promise<DeletePlan> {
-  const dependents = await useExchangeStore.getState().dependentBots(credentialId);
-  const botCount = dependents.bot_count;
-  const unknown = dependents.bots_unknown === true;
+  dependents: CredentialDependents | null,
+): DeletePlan {
+  const botCount = dependents?.bot_count ?? 0;
+  const unknown = dependents === null || dependents.bots_unknown === true;
   if (unknown) {
     return {
       title: "Bot bağımlılıkları doğrulanamadı",
@@ -402,8 +426,10 @@ function ExchangeForm({ entry }: { entry: CatalogEntry }) {
   const errorRegionId = `conn-form-error-${entry.id}`;
   const labelInputId = `conn-account-label-${entry.id}`;
 
-  const requestDelete = async (id: string, lbl: string) => {
-    const plan = await resolveDeletePlan(id, lbl);
+  // P2-1 — `deps` is the single fetch performed by the row; resolveDeletePlan
+  // reuses it instead of re-fetching, so one Sil click = one dependents call.
+  const requestDelete = (id: string, lbl: string, deps: CredentialDependents | null) => {
+    const plan = resolveDeletePlan(lbl, deps);
     setPendingDelete({ id, label: lbl, plan });
   };
 
@@ -420,8 +446,8 @@ function ExchangeForm({ entry }: { entry: CatalogEntry }) {
         <CredentialRow
           key={rec.id}
           rec={rec}
-          onDelete={(id) => {
-            void requestDelete(id, rec.account_label);
+          onDelete={(id, deps) => {
+            requestDelete(id, rec.account_label, deps);
           }}
           onEscalate={(id, lbl) => useExchangeStore.getState().upgradeToTrade(id, lbl)}
         />

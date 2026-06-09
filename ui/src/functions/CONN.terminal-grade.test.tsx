@@ -169,7 +169,7 @@ describe("CONN terminal-grade — F4 status Pill + last_verified", () => {
     expect(screen.getByText(/son doğrulama: —/i)).toBeInTheDocument();
   });
 
-  it("renders 'Doğrulandı' + relative last_verified text when present", () => {
+  it("P2-2: only last_verified (no in-session test) → muted 'Daha önce doğrulandı', NOT green", () => {
     const tenMinAgo = new Date(Date.now() - 10 * 60_000).toISOString();
     useExchangeStore.setState({
       credentials: [{
@@ -180,8 +180,40 @@ describe("CONN terminal-grade — F4 status Pill + last_verified", () => {
       selectedExchangeId: "binance",
     });
     render(<CONNPane />);
-    expect(screen.getByRole("status", { name: /durum: doğrulandı/i })).toBeInTheDocument();
+    // Honest: a stale prior-session verification does NOT claim live "Doğrulandı".
+    expect(
+      screen.getByRole("status", { name: /durum: daha önce doğrulandı/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("status", { name: /^durum: doğrulandı$/i }),
+    ).toBeNull();
+    // The relative-time context line still shows.
     expect(screen.getByText(/son doğrulama:.*önce/i)).toBeInTheDocument();
+  });
+
+  it("P2-2: an in-session successful test flips to green 'Doğrulandı'", async () => {
+    const tenMinAgo = new Date(Date.now() - 10 * 60_000).toISOString();
+    useExchangeStore.setState({
+      credentials: [{
+        id: "abc", exchange_id: "binance", account_label: "main",
+        permissions: ["read"], created_at: "2026-05-21T10:00:00Z",
+        last_verified: tenMinAgo,
+      }],
+      selectedExchangeId: "binance",
+    });
+    vi.spyOn(useExchangeStore.getState(), "testCredential")
+      .mockResolvedValue({ ok: true });
+    render(<CONNPane />);
+    // Before the test it is muted/stale.
+    expect(
+      screen.getByRole("status", { name: /durum: daha önce doğrulandı/i }),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /^test$/i }));
+    await waitFor(() =>
+      expect(
+        screen.getByRole("status", { name: /durum: doğrulandı/i }),
+      ).toBeInTheDocument(),
+    );
   });
 
   it("a failed test flips the status Pill to 'Başarısız'", async () => {
@@ -252,6 +284,77 @@ describe("CONN terminal-grade — F5 in-app delete dialog", () => {
     expect(dialog).toBeInTheDocument();
     fireEvent.click(within(dialog).getByTestId("confirm-dialog-confirm"));
     await waitFor(() => expect(del).toHaveBeenCalledWith("abc", { force: false }));
+  });
+});
+
+describe("CONN terminal-grade — P2-1 single dependents fetch per Sil click", () => {
+  function seedOne() {
+    useExchangeStore.setState({
+      credentials: [{
+        id: "abc", exchange_id: "binance", account_label: "main",
+        permissions: ["read"], created_at: "2026-05-21T10:00:00Z",
+      }],
+      selectedExchangeId: "binance",
+    });
+  }
+
+  it("no-bots: dependentBots called EXACTLY ONCE, dialog confirms force=false", async () => {
+    seedOne();
+    const depsSpy = vi
+      .spyOn(useExchangeStore.getState(), "dependentBots")
+      .mockResolvedValue({ credential_id: "abc", bot_count: 0, bot_ids: [] });
+    const del = vi
+      .spyOn(useExchangeStore.getState(), "deleteCredential")
+      .mockResolvedValue(true);
+
+    render(<CONNPane />);
+    fireEvent.click(screen.getByTestId("conn-sil-abc"));
+    const dialog = await screen.findByRole("dialog");
+    expect(depsSpy).toHaveBeenCalledTimes(1);
+    fireEvent.click(within(dialog).getByTestId("confirm-dialog-confirm"));
+    await waitFor(() => expect(del).toHaveBeenCalledWith("abc", { force: false }));
+    // Still exactly one fetch — resolveDeletePlan did NOT re-fetch.
+    expect(depsSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("has-bots: dependentBots called EXACTLY ONCE, dialog confirms force=true", async () => {
+    seedOne();
+    const depsSpy = vi
+      .spyOn(useExchangeStore.getState(), "dependentBots")
+      .mockResolvedValue({ credential_id: "abc", bot_count: 2, bot_ids: ["b1", "b2"] });
+    const del = vi
+      .spyOn(useExchangeStore.getState(), "deleteCredential")
+      .mockResolvedValue(true);
+
+    render(<CONNPane />);
+    fireEvent.click(screen.getByTestId("conn-sil-abc"));
+    const dialog = await screen.findByRole("dialog");
+    expect(depsSpy).toHaveBeenCalledTimes(1);
+    fireEvent.click(within(dialog).getByTestId("confirm-dialog-confirm"));
+    await waitFor(() => expect(del).toHaveBeenCalledWith("abc", { force: true }));
+    expect(depsSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("bots-unknown: ONE fetch, row banner + dialog force=true derive from the SAME fetch", async () => {
+    seedOne();
+    const depsSpy = vi
+      .spyOn(useExchangeStore.getState(), "dependentBots")
+      .mockResolvedValue({
+        credential_id: "abc", bot_count: 0, bot_ids: [], bots_unknown: true,
+      });
+    const del = vi
+      .spyOn(useExchangeStore.getState(), "deleteCredential")
+      .mockResolvedValue(true);
+
+    render(<CONNPane />);
+    fireEvent.click(screen.getByTestId("conn-sil-abc"));
+    const dialog = await screen.findByRole("dialog");
+    expect(depsSpy).toHaveBeenCalledTimes(1);
+    // Row-level banner derives from the same single fetch.
+    expect(screen.getByTestId("conn-bots-unknown-abc")).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByTestId("confirm-dialog-confirm"));
+    await waitFor(() => expect(del).toHaveBeenCalledWith("abc", { force: true }));
+    expect(depsSpy).toHaveBeenCalledTimes(1);
   });
 });
 
