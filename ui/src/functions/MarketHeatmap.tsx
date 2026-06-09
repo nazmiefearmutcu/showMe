@@ -824,7 +824,12 @@ function payloadStatusLabel(
   const status = String(record.status ?? "").toLowerCase();
   const degraded = Boolean(metadata?.fallback || metadata?.degraded);
   const reason = String(record.reason ?? "");
-  if (!status && !degraded && !reason) return null;
+  // A healthy "ok"/"live" status on a clean payload is NOT a notice — emitting
+  // a warning box for it is UI noise (and a honesty regression: it implies a
+  // problem when there is none). Only genuinely degraded/fallback/error/model
+  // statuses (or any non-empty reason / degraded metadata) produce a notice.
+  const healthy = !status || status === "ok" || status === "live";
+  if (healthy && !degraded && !reason) return null;
   const providerErrors = Array.isArray(metadata?.provider_errors)
     ? metadata.provider_errors.map(String).slice(0, 2).join(" · ")
     : "";

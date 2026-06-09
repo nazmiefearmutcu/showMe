@@ -7192,6 +7192,9 @@
   font: inherit;
   color: inherit;
   background: transparent;
+  /* Reset the native UA button border so it doesn't bleed on top/left/right;
+     the inline `borderBottom` row separator still applies on top of this. */
+  border: none;
 }
 .mh-rank-row:hover:not(:disabled) {
   background: var(--surface-2);

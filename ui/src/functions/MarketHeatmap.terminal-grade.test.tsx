@@ -239,6 +239,24 @@ describe("MarketHeatmap — model/fallback badge (H3)", () => {
     render(<MarketHeatmapPane code="MAP" />);
     expect(screen.queryByTestId("map-model-badge")).toBeNull();
   });
+
+  // P1 regression: a clean `status: "ok"` payload used to leak a spurious
+  // StatusNotice warning box whose title was literally "ok" — UI noise that
+  // implied a problem when there was none. The status notice must stay silent
+  // for a healthy payload.
+  it("does NOT render a spurious 'ok' status notice for an all-live payload", () => {
+    mockOk({ status: "ok", period: "1D", rows: [countryRow({ quote_type: "live" })] });
+    const { container } = render(<MarketHeatmapPane code="MAP" />);
+    // The StatusNotice renders its title in a <strong>; a healthy payload must
+    // not produce a notice whose title is literally "ok". (A bare /^ok$/ text
+    // query is intentionally NOT used: the pane legitimately renders "ok" in
+    // unrelated pill/status chips — only the warning-box <strong> title is the
+    // regression we're locking out.)
+    const okTitle = Array.from(container.querySelectorAll("strong")).find(
+      (el) => el.textContent?.trim().toLowerCase() === "ok",
+    );
+    expect(okTitle).toBeUndefined();
+  });
 });
 
 /* ── A3: async regions ────────────────────────────────────────────────── */
