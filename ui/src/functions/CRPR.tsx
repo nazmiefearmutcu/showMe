@@ -31,6 +31,12 @@ import {
 import { useFunction } from "@/lib/useFunction";
 import { useVisibilityTick } from "@/lib/useVisibilityTick";
 import {
+  formatCurrency,
+  formatMissing,
+  formatNumber,
+} from "@/lib/format";
+import { relativeTimeLabel } from "@/lib/time";
+import {
   FunctionControlGroup,
   LoadStatePill,
   RefreshButton,
@@ -51,8 +57,24 @@ interface CrprAgencyRow {
   name?: string;
   rating?: string | null;
   outlook?: string | null;
+  watch?: string | null;
   action?: string | null;
   date?: string | null;
+  rating_date?: string | null;
+  rationale?: string | null;
+}
+
+/** Rating drivers the backend emits inside `data.summary` (corporate path). */
+interface CrprSummary {
+  issuer?: string | null;
+  cik?: string | null;
+  implied_bucket?: string | null;
+  agencies?: number | null;
+  leverage_x?: number | null;
+  interest_coverage_x?: number | null;
+  gross_debt_usd?: number | null;
+  ebitda_proxy_usd?: number | null;
+  source_mode?: string | null;
 }
 
 interface CrprLadderRow {
@@ -71,11 +93,12 @@ interface CrprMetricRow {
 interface CrprPayload {
   symbol?: string | null;
   as_of?: string | null;
-  summary?: string | null;
+  summary?: CrprSummary | string | null;
   status?: string | null;
   reason?: string | null;
   implied_rating?: string | null;
   rating_bucket?: string | null;
+  implied_bucket?: string | null;
   outlook?: string | null;
   cards?: CrprCard[] | null;
   rows?: CrprAgencyRow[] | null;
@@ -85,6 +108,7 @@ interface CrprPayload {
   metrics?: CrprMetricRow[] | null;
   source_mode?: string | null;
   methodology?: string | null;
+  next_actions?: string[] | null;
   warnings?: string[] | null;
 }
 
@@ -145,14 +169,16 @@ export function CRPRPane({ code, symbol }: FunctionPaneProps) {
     [data?.data],
   );
 
-  const impliedRating = useMemo(
-    () => normGrade(payload.implied_rating ?? payload.rating_bucket),
-    [payload.implied_rating, payload.rating_bucket],
-  );
-
-  const cards = useMemo<CrprCard[]>(
-    () => (Array.isArray(payload.cards) ? payload.cards : []),
-    [payload.cards],
+  /* Backend nests the rating drivers in an OBJECT `summary` (corporate path);
+     legacy/synthetic payloads sometimes pass a string — guard both. */
+  const summary = useMemo<CrprSummary>(
+    () =>
+      payload.summary &&
+      typeof payload.summary === "object" &&
+      !Array.isArray(payload.summary)
+        ? (payload.summary as CrprSummary)
+        : {},
+    [payload.summary],
   );
 
   const agencyRows = useMemo<CrprAgencyRow[]>(
@@ -165,20 +191,100 @@ export function CRPRPane({ code, symbol }: FunctionPaneProps) {
     [payload.rows, payload.agencies],
   );
 
+  /* The implied rating lives on the first model_implied row; fall back to the
+     legacy top-level fields for synthetic payloads. */
+  const impliedRating = useMemo(
+    () =>
+      normGrade(
+        agencyRows.find((r) => normGrade(r.rating))?.rating ??
+          payload.implied_rating ??
+          payload.rating_bucket,
+      ),
+    [agencyRows, payload.implied_rating, payload.rating_bucket],
+  );
+
+  const cards = useMemo<CrprCard[]>(
+    () => (Array.isArray(payload.cards) ? payload.cards : []),
+    [payload.cards],
+  );
+
   const metrics = useMemo<CrprMetricRow[]>(
     () => (Array.isArray(payload.metrics) ? payload.metrics : []),
     [payload.metrics],
   );
 
+  /* Rating DRIVERS that justify the model-implied bucket. These are the most
+     valuable honesty surface: for an in-house model we must show its inputs. */
+  const driverCards = useMemo<CrprCard[]>(() => {
+    const out: CrprCard[] = [];
+    out.push({
+      label: "Implied rating",
+      value: impliedRating || formatMissing,
+      caption: payload.outlook ?? summary.implied_bucket ?? "long-term issuer",
+      tone: "neutral",
+    });
+    if (
+      summary.leverage_x != null ||
+      summary.interest_coverage_x != null ||
+      summary.gross_debt_usd != null
+    ) {
+      out.push({
+        label: "Leverage (debt/EBITDA)",
+        value: formatRatio(summary.leverage_x),
+        caption: "gross debt ÷ EBITDA proxy",
+        tone: leverageTone(summary.leverage_x),
+      });
+      out.push({
+        label: "Interest coverage",
+        value: formatRatio(summary.interest_coverage_x),
+        caption: "EBITDA ÷ interest expense",
+        tone: coverageTone(summary.interest_coverage_x),
+      });
+      out.push({
+        label: "Issuer scale",
+        value: formatCurrency(summary.gross_debt_usd, { compact: true }),
+        caption: `EBITDA ${formatCurrency(summary.ebitda_proxy_usd, { compact: true })}`,
+        tone: "neutral",
+      });
+    }
+    return out;
+  }, [
+    impliedRating,
+    payload.outlook,
+    summary.implied_bucket,
+    summary.leverage_x,
+    summary.interest_coverage_x,
+    summary.gross_debt_usd,
+    summary.ebitda_proxy_usd,
+  ]);
+
   const warnings = useMemo<string[]>(
     () =>
-      Array.isArray(payload.warnings)
-        ? payload.warnings
-        : Array.isArray(data?.warnings)
-          ? (data.warnings as string[])
+      Array.isArray(data?.warnings)
+        ? (data.warnings as string[])
+        : Array.isArray(payload.warnings)
+          ? payload.warnings
           : [],
-    [payload.warnings, data?.warnings],
+    [data?.warnings, payload.warnings],
   );
+
+  /* Mode + freshness live in `metadata` (data.metadata), not the payload. */
+  const dataMode = useMemo<string>(() => {
+    const meta = (data?.metadata ?? {}) as Record<string, unknown>;
+    const raw = meta.data_mode ?? payload.status;
+    return raw != null ? String(raw) : "—";
+  }, [data?.metadata, payload.status]);
+
+  const asOfRaw = useMemo<string | null>(() => {
+    const meta = (data?.metadata ?? {}) as Record<string, unknown>;
+    const raw = meta.as_of ?? payload.as_of;
+    return raw != null && String(raw).trim() ? String(raw) : null;
+  }, [data?.metadata, payload.as_of]);
+
+  const asOfLabel = useMemo<string>(() => {
+    if (!asOfRaw) return formatMissing;
+    return relativeTimeLabel(asOfRaw) ?? asOfRaw;
+  }, [asOfRaw]);
 
   /* Build the rating ladder: prefer an explicit ladder/scale from the
      backend, otherwise synthesize the canonical scale and mark the
@@ -199,17 +305,27 @@ export function CRPRPane({ code, symbol }: FunctionPaneProps) {
     }));
   }, [payload.ladder, payload.scale, impliedRating]);
 
+  /* Index of the marked bucket on the FULL ladder (for the meter valuenow). */
+  const markerIndex = useMemo(() => {
+    const idx = ladder.findIndex(
+      (r) => r.marker || r.grade === impliedRating,
+    );
+    return idx;
+  }, [ladder, impliedRating]);
+
   /* When compact, show a window around the marker so the ladder stays tight. */
   const visibleLadder = useMemo<CrprLadderRow[]>(() => {
     if (scaleMode === "full" || !ladder.length) return ladder;
-    const markerIdx = ladder.findIndex(
-      (r) => r.marker || r.grade === impliedRating,
-    );
-    if (markerIdx < 0) return ladder.slice(0, 11);
-    const start = Math.max(0, markerIdx - 4);
-    const end = Math.min(ladder.length, markerIdx + 5);
+    if (markerIndex < 0) return ladder.slice(0, 11);
+    const start = Math.max(0, markerIndex - 4);
+    const end = Math.min(ladder.length, markerIndex + 5);
     return ladder.slice(start, end);
-  }, [ladder, scaleMode, impliedRating]);
+  }, [ladder, scaleMode, markerIndex]);
+
+  /* ARIA meter geometry: valuenow CLAMPED into [0, ladder.length-1]. */
+  const meterMax = Math.max(0, ladder.length - 1);
+  const meterNow =
+    markerIndex >= 0 ? Math.max(0, Math.min(meterMax, markerIndex)) : null;
 
   const agencyColumns = useMemo<DataGridColumn<CrprAgencyRow>[]>(
     () => [
@@ -252,15 +368,40 @@ export function CRPRPane({ code, symbol }: FunctionPaneProps) {
         header: "Outlook",
         width: 100,
         render: (r) => (
-          <span className="u-text-secondary">{r.outlook ?? "—"}</span>
+          <span className="u-text-secondary">{cleanCell(r.outlook)}</span>
         ),
       },
       {
-        key: "action",
-        header: "Last action",
+        key: "watch",
+        header: "Watch",
+        width: 84,
+        render: (r) => (
+          <span className="u-text-secondary">{cleanCell(r.watch)}</span>
+        ),
+      },
+      {
+        key: "rationale",
+        header: "Rationale",
+        render: (r) => {
+          const text = cleanCell(r.rationale ?? r.action);
+          return (
+            <span
+              className="u-text-secondary"
+              style={rationaleCellStyle}
+              title={text !== formatMissing ? text : undefined}
+            >
+              {text}
+            </span>
+          );
+        },
+      },
+      {
+        key: "date",
+        header: "As of",
+        width: 110,
         render: (r) => (
           <span className="u-text-secondary">
-            {r.action ?? r.date ?? "—"}
+            {cleanCell(r.rating_date ?? r.date)}
           </span>
         ),
       },
@@ -286,15 +427,19 @@ export function CRPRPane({ code, symbol }: FunctionPaneProps) {
     [],
   );
 
-  const src = classifySource(payload.source_mode, payload.status);
+  const sourceMode = summary.source_mode ?? payload.source_mode;
+  const src = classifySource(sourceMode, payload.status);
   const sources =
     data?.sources?.join(", ") ||
-    String(payload.source_mode ?? "showMe credit model");
+    String(sourceMode ?? "showMe credit model");
+  const summaryText =
+    typeof payload.summary === "string" ? payload.summary : null;
+  /* "Has issuer?" — distinguishes "nothing selected yet" from "model returned
+     nothing for a real issuer" so the empty copy can differ (Di3). */
+  const hasIssuer = !!(payload.symbol ?? symbol ?? summary.issuer);
   const hasContent =
-    cards.length > 0 ||
-    agencyRows.length > 0 ||
-    ladder.length > 0 ||
-    !!impliedRating;
+    agencyRows.length > 0 || !!impliedRating || driverCards.length > 1;
+  const isBusy = state === "loading" || state === "refreshing";
 
   return (
     <div className="u-pane-host">
@@ -326,36 +471,61 @@ export function CRPRPane({ code, symbol }: FunctionPaneProps) {
                   setScaleMode(scaleMode === "full" ? "compact" : "full")
                 }
                 style={scaleToggleStyle}
+                aria-label={
+                  scaleMode === "full"
+                    ? "Show a compact rating scale window around the issuer"
+                    : "Show the full AAA→CCC rating scale"
+                }
                 title="Toggle full AAA→D scale"
               >
                 {scaleMode === "full" ? "compact scale" : "full scale"}
               </button>
               <LoadStatePill state={state} />
-              <RefreshButton loading={state === "loading"} onClick={refetch} />
+              <RefreshButton
+                loading={state === "loading"}
+                busy={isBusy}
+                onClick={refetch}
+              />
             </FunctionControlGroup>
           }
         />
         <PaneBody>
           {state === "loading" || state === "idle" ? (
-            <div className="u-grid-gap-14">
-              <Skeleton height={72} />
-              <Skeleton height={300} />
+            // SCOPED live region: the pane polls, so only the loading/error/empty
+            // transition may be aria-live — the steady-state body must NOT be
+            // (else SRs re-announce the whole ladder every poll).
+            <div role="status" aria-live="polite" aria-busy={isBusy}>
+              <div className="u-grid-gap-14">
+                <Skeleton height={72} />
+                <Skeleton height={300} />
+              </div>
             </div>
           ) : state === "error" ? (
-            <Empty
-              title="Credit rating unavailable"
-              body={error?.message ?? "—"}
-              icon="!"
-            />
+            <div role="status" aria-live="polite">
+              <Empty
+                title="Credit rating unavailable"
+                body={error?.message ?? "—"}
+                icon="!"
+              />
+            </div>
           ) : !hasContent ? (
-            <Empty
-              title="No rating data"
-              body="The credit model returned no implied bucket for this issuer."
-            />
+            <div role="status" aria-live="polite">
+              {hasIssuer ? (
+                <Empty
+                  title="No rating data"
+                  body="The credit model returned no implied bucket for this issuer."
+                />
+              ) : (
+                <Empty
+                  title="No issuer selected"
+                  body="Choose a ticker or issuer to derive a model-implied credit profile from SEC financials."
+                />
+              )}
+            </div>
           ) : (
             <div className="u-grid-gap-14">
               {src.tone !== "positive" ? (
-                <section style={noticeStyle}>
+                <section role="status" style={noticeStyle}>
                   <strong className="u-text-warn">
                     Model-implied rating — not an agency rating
                   </strong>
@@ -366,14 +536,16 @@ export function CRPRPane({ code, symbol }: FunctionPaneProps) {
                 </section>
               ) : null}
 
-              {payload.summary ? (
-                <p style={summaryStyle}>{payload.summary}</p>
+              {summaryText ? (
+                <p style={summaryStyle}>{summaryText}</p>
               ) : null}
 
-              {/* KPI ribbon: implied rating, debt/EBITDA, interest coverage, … */}
+              {/* KPI ribbon: the rating DRIVERS that justify the implied bucket
+                  (leverage, coverage, scale) — the core honesty surface. Prefer
+                  any backend-shipped cards, else synthesize from the summary. */}
               <section style={kpiGridStyle} aria-label="CRPR KPI ribbon">
-                {cards.length ? (
-                  cards.slice(0, 4).map((card, i) => (
+                {(cards.length ? cards.slice(0, 4) : driverCards).map(
+                  (card, i) => (
                     <StatCard
                       key={`${card.label ?? "card"}-${i}`}
                       label={card.label ?? `Metric ${i + 1}`}
@@ -381,14 +553,7 @@ export function CRPRPane({ code, symbol }: FunctionPaneProps) {
                       caption={card.caption ?? card.hint ?? undefined}
                       tone={cardTone(card.tone)}
                     />
-                  ))
-                ) : (
-                  <StatCard
-                    label="Implied rating"
-                    value={impliedRating || "—"}
-                    caption={payload.outlook ?? "long-term issuer"}
-                    tone="neutral"
-                  />
+                  ),
                 )}
               </section>
 
@@ -405,13 +570,29 @@ export function CRPRPane({ code, symbol }: FunctionPaneProps) {
                       </Pill>
                     ) : null}
                   </div>
-                  <div style={ladderWrapStyle}>
+                  <div
+                    style={ladderWrapStyle}
+                    role="meter"
+                    aria-label="Kredi notu merdiveni"
+                    aria-valuemin={0}
+                    aria-valuemax={meterMax}
+                    aria-valuenow={meterNow ?? undefined}
+                    aria-valuetext={impliedRating || undefined}
+                  >
                     {visibleLadder.map((r) => {
                       const marked = !!r.marker || r.grade === impliedRating;
                       const isIG = r.tone === "ig";
+                      const gradeKind = isIG
+                        ? "yatırım yapılabilir"
+                        : "spekülatif";
                       return (
                         <div
                           key={r.grade}
+                          aria-label={
+                            marked
+                              ? `${r.grade} — işaretli kredi notu kovası (${gradeKind})`
+                              : `${r.grade} (${gradeKind})`
+                          }
                           style={{
                             ...ladderRowStyle,
                             background: marked
@@ -457,10 +638,22 @@ export function CRPRPane({ code, symbol }: FunctionPaneProps) {
                       );
                     })}
                   </div>
-                  <div style={legendStyle}>
-                    <span style={{ color: "var(--positive)" }}>● Investment</span>
-                    <span style={{ color: "var(--negative)" }}>● Speculative</span>
-                  </div>
+                  <dl style={legendStyle}>
+                    <dd
+                      role="img"
+                      aria-label="Yatırım yapılabilir (investment grade)"
+                      style={{ margin: 0, color: "var(--positive)" }}
+                    >
+                      <span aria-hidden>●</span> Investment
+                    </dd>
+                    <dd
+                      role="img"
+                      aria-label="Spekülatif (speculative grade)"
+                      style={{ margin: 0, color: "var(--negative)" }}
+                    >
+                      <span aria-hidden>●</span> Speculative
+                    </dd>
+                  </dl>
                 </aside>
 
                 {/* Agency rows + optional credit metrics */}
@@ -473,6 +666,7 @@ export function CRPRPane({ code, symbol }: FunctionPaneProps) {
                         rows={agencyRows}
                         rowKey={(r, i) => `${r.agency ?? r.name ?? "ag"}-${i}`}
                         density="compact"
+                        ariaLabel="Agency ratings"
                       />
                     ) : (
                       <Empty
@@ -490,6 +684,7 @@ export function CRPRPane({ code, symbol }: FunctionPaneProps) {
                         rows={metrics}
                         rowKey={(r, i) => `${r.label ?? "m"}-${i}`}
                         density="compact"
+                        ariaLabel="Credit metrics"
                       />
                     </div>
                   ) : null}
@@ -497,7 +692,7 @@ export function CRPRPane({ code, symbol }: FunctionPaneProps) {
               </div>
 
               {warnings.length ? (
-                <section style={warningBox}>
+                <section role="alert" style={warningBox}>
                   <strong className="u-text-warn">Provider warnings</strong>
                   <ul style={warningList}>
                     {warnings.slice(0, 3).map((w, i) => (
@@ -521,6 +716,17 @@ export function CRPRPane({ code, symbol }: FunctionPaneProps) {
         <PaneFooter>
           <StatusSection label="model" value={src.label} tone="accent" />
           <StatusDivider />
+          {/* Honest data_mode: live_official vs reference vs user_input vs
+              provider_unavailable/empty so the user can tell live-model apart. */}
+          <span data-testid="crpr-data-mode" style={{ display: "inline-flex" }}>
+            <StatusSection
+              label="mode"
+              value={dataMode}
+              tone={dataModeTone(dataMode)}
+              title={`data_mode: ${dataMode}`}
+            />
+          </span>
+          <StatusDivider />
           <StatusSection label="provider" value={sources} />
           <StatusDivider />
           <StatusSection label="poll" value={`${REFRESH_MS / 1000}s`} />
@@ -531,12 +737,14 @@ export function CRPRPane({ code, symbol }: FunctionPaneProps) {
             label="elapsed"
             value={`${data?.elapsed_ms?.toFixed(0) ?? "—"} ms`}
           />
-          {payload.as_of ? (
-            <>
-              <StatusDivider />
-              <StatusSection label="as of" value={payload.as_of} />
-            </>
-          ) : null}
+          <StatusDivider />
+          <span
+            data-testid="crpr-as-of"
+            style={{ display: "inline-flex" }}
+            title={asOfRaw ?? undefined}
+          >
+            <StatusSection label="as of" value={asOfLabel} />
+          </span>
         </PaneFooter>
       </Pane>
     </div>
@@ -548,14 +756,28 @@ function normGrade(g?: string | null): string {
   return (g ?? "").trim().toUpperCase();
 }
 
-function fmtCell(v: string | number | null | undefined): string {
-  if (v == null) return "—";
+/** Sentinel strings that mean "no value" and must render as the em-dash. */
+const MISSING_SENTINELS = new Set(["", "n/a", "na", "none", "null", "undefined", "nan", "-"]);
+
+/** Normalize a raw cell value, mapping junk sentinels to the em-dash. */
+function cleanCell(v: string | number | null | undefined): string {
+  if (v == null) return formatMissing;
   if (typeof v === "number") {
-    if (!Number.isFinite(v)) return "—";
-    return v.toLocaleString(undefined, { maximumFractionDigits: 2 });
+    return Number.isFinite(v) ? formatNumber(v, 2) : formatMissing;
   }
   const s = String(v).trim();
-  return s.length ? s : "—";
+  if (!s || MISSING_SENTINELS.has(s.toLowerCase())) return formatMissing;
+  return s;
+}
+
+/** Render a ratio as "N×" (leverage / coverage); missing → em-dash. */
+function formatRatio(n: number | null | undefined): string {
+  if (typeof n !== "number" || !Number.isFinite(n)) return formatMissing;
+  return `${formatNumber(n, 2)}×`;
+}
+
+function fmtCell(v: string | number | null | undefined): string {
+  return cleanCell(v);
 }
 
 /* StatCard's tone union is only neutral|positive|negative. */
@@ -596,6 +818,39 @@ function classifySource(
     return { label: "DEGRADED", tone: "warn" };
   }
   return { label: "MODEL-IMPLIED", tone: "warn" };
+}
+
+/** Footer tone for the honest data_mode tag. */
+function dataModeTone(
+  mode: string,
+): "positive" | "warn" | "negative" | "muted" | "accent" {
+  switch (mode.toLowerCase()) {
+    case "live_official":
+      return "positive";
+    case "reference":
+    case "user_input":
+      return "accent";
+    case "provider_unavailable":
+    case "empty":
+      return "warn";
+    default:
+      return "muted";
+  }
+}
+
+/* Higher leverage = riskier; map to a card tone. Coverage is the inverse. */
+function leverageTone(n: number | null | undefined): string {
+  if (typeof n !== "number" || !Number.isFinite(n)) return "neutral";
+  if (n <= 2.5) return "positive";
+  if (n >= 4.5) return "negative";
+  return "neutral";
+}
+
+function coverageTone(n: number | null | undefined): string {
+  if (typeof n !== "number" || !Number.isFinite(n)) return "neutral";
+  if (n >= 6) return "positive";
+  if (n < 2.5) return "negative";
+  return "neutral";
 }
 
 const scaleToggleStyle: CSSProperties = {
@@ -700,6 +955,15 @@ const metricValueStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
   fontVariantNumeric: "tabular-nums",
   color: "var(--text-display)",
+};
+
+const rationaleCellStyle: CSSProperties = {
+  display: "block",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+  maxWidth: 320,
+  fontSize: 11,
 };
 
 const noticeStyle: CSSProperties = {
