@@ -68,7 +68,7 @@ Each task is one page. Execute it as a **subagent-driven-development** mini-cycl
 - [x] **Task 21: BDA — Bot Dev Assistant.** Pane: `ui/src/functions/BDA.tsx`. Backend: `backend/showme/assistant`. Focus: NL→strategy parsing, explanation output quality.
 - [x] **Task 22: INDX — Indicator Index.** Pane: `ui/src/functions/INDX.tsx`. Backend: `backend/showme/indicators`. Focus: indicator depot, search, descriptions, params.
 - [x] **Task 23: CONN — Connect Exchange.** Pane: `ui/src/functions/CONN.tsx`. Backend: `backend/showme/brokers`/`integrations`. Focus: connection flow, status, key handling UX (no secrets logged).
-- [ ] **Task 24: TXNS — Trade Blotter.** Pane: `ui/src/functions/TXNS.tsx`. Backend: transactions/fills. Focus: blotter table, real fills, filtering, export.
+- [x] **Task 24: TXNS — Trade Blotter.** Pane: `ui/src/functions/TXNS.tsx`. Backend: transactions/fills. Focus: blotter table, real fills, filtering, export.
 
 ## Wave 4 — Research / AI / market-structure
 
