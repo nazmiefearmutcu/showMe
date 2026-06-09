@@ -1,13 +1,7 @@
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CONNPane, handleCredentialDelete } from "./CONN";
+import { CONNPane, resolveDeletePlan } from "./CONN";
 import { useExchangeStore } from "@/lib/exchange-store";
-// confirmAction is imported at module init by CONN; stub it so the spec can
-// drive the user's accept/decline branch deterministically.
-vi.mock("@/lib/confirm", () => ({
-  confirmAction: vi.fn(async () => true),
-}));
-import { confirmAction } from "@/lib/confirm";
 
 const ORIGINAL_FETCH = global.fetch;
 
@@ -38,9 +32,20 @@ beforeEach(() => {
 afterEach(() => {
   global.fetch = ORIGINAL_FETCH;
   vi.restoreAllMocks();
-  (confirmAction as ReturnType<typeof vi.fn>).mockClear();
   vi.clearAllMocks();
 });
+
+/** Mount CONN, select Binance, and seed one credential for delete tests. */
+function renderWithCredential() {
+  useExchangeStore.setState({
+    credentials: [{
+      id: "abc", exchange_id: "binance", account_label: "main",
+      permissions: ["read"], created_at: "2026-05-21T10:00:00Z",
+    }],
+    selectedExchangeId: "binance",
+  });
+  return render(<CONNPane />);
+}
 
 describe("CONN pane", () => {
   it("renders the exchange list", () => {
@@ -69,9 +74,11 @@ describe("CONN pane", () => {
   it("selecting OKX reveals passphrase input", () => {
     render(<CONNPane />);
     fireEvent.click(screen.getByText("OKX"));
-    expect(screen.getByLabelText(/api_key/i)).toBeInTheDocument();
-    expect(screen.getByLabelText(/api_secret/i)).toBeInTheDocument();
-    expect(screen.getByLabelText(/passphrase/i)).toBeInTheDocument();
+    // scope to <input> — secret fields now also expose a show/hide toggle
+    // button whose aria-label contains the field name (F1).
+    expect(screen.getByLabelText(/api_key/i, { selector: "input" })).toBeInTheDocument();
+    expect(screen.getByLabelText(/api_secret/i, { selector: "input" })).toBeInTheDocument();
+    expect(screen.getByLabelText(/passphrase/i, { selector: "input" })).toBeInTheDocument();
   });
 
   it("read-only is the default; trade toggle shows red warning copy", () => {
@@ -89,8 +96,8 @@ describe("CONN pane", () => {
     render(<CONNPane />);
     fireEvent.click(screen.getByText("Binance"));
     fireEvent.change(screen.getByLabelText(/account label/i), { target: { value: "main" } });
-    fireEvent.change(screen.getByLabelText(/api_key/i), { target: { value: "k" } });
-    fireEvent.change(screen.getByLabelText(/api_secret/i), { target: { value: "s" } });
+    fireEvent.change(screen.getByLabelText(/api_key/i, { selector: "input" }), { target: { value: "k" } });
+    fireEvent.change(screen.getByLabelText(/api_secret/i, { selector: "input" }), { target: { value: "s" } });
     fireEvent.click(screen.getByRole("button", { name: /bağlan/i }));
     await waitFor(() => expect(save).toHaveBeenCalled());
     const call = save.mock.calls[0][0];
@@ -116,51 +123,79 @@ describe("CONN pane", () => {
     expect(testSpy).toHaveBeenCalledWith("abc");
   });
 
-  // ─── C9 (FIX_CONTRACT) — delete confirm with bot count ────────────────
-  it("test_credential_delete_shows_dependent_bot_warning", async () => {
+  // ─── resolveDeletePlan unit (C9 force/cascade semantics preserved) ──────
+  it("resolveDeletePlan: bot count >0 → force=true + count copy", async () => {
     const dependents = vi
       .spyOn(useExchangeStore.getState(), "dependentBots")
+      .mockResolvedValue({ credential_id: "abc", bot_count: 3, bot_ids: ["b1", "b2", "b3"] });
+    const plan = await resolveDeletePlan("abc", "main");
+    expect(dependents).toHaveBeenCalledWith("abc");
+    expect(plan.title).toMatch(/3 bot/);
+    expect(plan.body).toMatch(/3 bota bağlı/);
+    expect(plan.force).toBe(true);
+  });
+
+  it("resolveDeletePlan: zero dependents → force=false", async () => {
+    vi.spyOn(useExchangeStore.getState(), "dependentBots")
+      .mockResolvedValue({ credential_id: "abc", bot_count: 0, bot_ids: [] });
+    const plan = await resolveDeletePlan("abc", "main");
+    expect(plan.force).toBe(false);
+  });
+
+  // ─── F5 — in-app ConfirmDialog drives the delete ───────────────────────
+  it("Sil → in-app dialog shows bot count, confirm deletes with force=true", async () => {
+    vi.spyOn(useExchangeStore.getState(), "dependentBots")
       .mockResolvedValue({ credential_id: "abc", bot_count: 3, bot_ids: ["b1", "b2", "b3"] });
     const del = vi
       .spyOn(useExchangeStore.getState(), "deleteCredential")
       .mockResolvedValue(true);
 
-    const ok = await handleCredentialDelete("abc", "main");
+    renderWithCredential();
+    fireEvent.click(screen.getByTestId("conn-sil-abc"));
 
-    expect(dependents).toHaveBeenCalledWith("abc");
-    expect(confirmAction).toHaveBeenCalledTimes(1);
-    const args = (confirmAction as ReturnType<typeof vi.fn>).mock.calls[0][0];
-    expect(args.title).toMatch(/3 bot/);
-    expect(args.body).toMatch(/3 bota bağlı/);
-    expect(args.destructive).toBe(true);
-    // User accepted → cascade-disable via force=true.
-    expect(del).toHaveBeenCalledWith("abc", { force: true });
-    expect(ok).toBe(true);
+    // Dialog appears with the bot-count copy (no native confirm).
+    await waitFor(() =>
+      expect(screen.getByTestId("confirm-dialog-body")).toBeInTheDocument(),
+    );
+    expect(screen.getByText(/3 bot etkilenecek/)).toBeInTheDocument();
+    expect(screen.getByText(/3 bota bağlı/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("confirm-dialog-confirm"));
+    await waitFor(() => expect(del).toHaveBeenCalledWith("abc", { force: true }));
   });
 
-  it("delete with zero dependents does NOT force=true", async () => {
+  it("Sil with zero dependents confirms with force=false", async () => {
     vi.spyOn(useExchangeStore.getState(), "dependentBots")
       .mockResolvedValue({ credential_id: "abc", bot_count: 0, bot_ids: [] });
     const del = vi
       .spyOn(useExchangeStore.getState(), "deleteCredential")
       .mockResolvedValue(true);
 
-    await handleCredentialDelete("abc", "main");
-
-    expect(del).toHaveBeenCalledWith("abc", { force: false });
+    renderWithCredential();
+    fireEvent.click(screen.getByTestId("conn-sil-abc"));
+    await waitFor(() =>
+      expect(screen.getByTestId("confirm-dialog-body")).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByTestId("confirm-dialog-confirm"));
+    await waitFor(() => expect(del).toHaveBeenCalledWith("abc", { force: false }));
   });
 
-  it("declining the confirm aborts the delete", async () => {
-    (confirmAction as ReturnType<typeof vi.fn>).mockResolvedValueOnce(false);
+  it("cancelling the in-app dialog aborts the delete", async () => {
     vi.spyOn(useExchangeStore.getState(), "dependentBots")
-      .mockResolvedValue({ credential_id: "abc", bot_count: 2, bot_ids: [] });
+      .mockResolvedValue({ credential_id: "abc", bot_count: 2, bot_ids: ["b1", "b2"] });
     const del = vi
       .spyOn(useExchangeStore.getState(), "deleteCredential")
       .mockResolvedValue(true);
 
-    const ok = await handleCredentialDelete("abc", "main");
-
-    expect(ok).toBe(false);
+    renderWithCredential();
+    fireEvent.click(screen.getByTestId("conn-sil-abc"));
+    await waitFor(() =>
+      expect(screen.getByTestId("confirm-dialog-body")).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByTestId("confirm-dialog-cancel"));
+    await waitFor(() =>
+      expect(screen.queryByTestId("confirm-dialog-body")).toBeNull(),
+    );
     expect(del).not.toHaveBeenCalled();
   });
 

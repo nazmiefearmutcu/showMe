@@ -51,6 +51,12 @@ export interface CredentialRecord {
   account_label: string;
   permissions: ("read" | "trade")[];
   created_at: string;
+  /**
+   * B1 — UTC ISO timestamp of the last *successful* connection test. Metadata
+   * only (never a secret). `null`/absent means "never verified" → the CONN
+   * pane shows an honest "Denenmedi" / "—" instead of implying "connected".
+   */
+  last_verified?: string | null;
 }
 
 export interface CreateCredentialPayload {
@@ -101,7 +107,7 @@ interface ExchangeStoreShape {
   loadCredentials: () => Promise<void>;
   saveCredential: (payload: CreateCredentialPayload) => Promise<boolean>;
   deleteCredential: (credentialId: string, opts?: { force?: boolean }) => Promise<boolean>;
-  testCredential: (credentialId: string) => Promise<{ ok: boolean; account?: unknown; error?: string }>;
+  testCredential: (credentialId: string) => Promise<{ ok: boolean; account?: unknown; error?: string; last_verified?: string | null }>;
   upgradeToTrade: (credentialId: string, accountLabel: string) => Promise<boolean>;
   /**
    * C9 (FIX_CONTRACT) — count bots that depend on this credential so the UI
@@ -287,10 +293,24 @@ export const useExchangeStore = create<ExchangeStoreShape>((set, get) => ({
     next.add(credentialId);
     set({ testing: next });
     try {
-      return await sidecarFetch<{ ok: boolean; account?: unknown; error?: string }>(
+      const res = await sidecarFetch<{
+        ok: boolean; account?: unknown; error?: string; last_verified?: string | null;
+      }>(
         `/api/exchange/credentials/${credentialId}/test`,
         { method: "POST" },
       );
+      // B1 — on a successful test the backend stamps last_verified; mirror it
+      // into the in-memory record so the CONN pane's status Pill / relative-
+      // time text update without a full reload. Metadata only (no secret).
+      if (res.ok && res.last_verified) {
+        const lv = res.last_verified;
+        set({
+          credentials: get().credentials.map((c) =>
+            c.id === credentialId ? { ...c, last_verified: lv } : c,
+          ),
+        });
+      }
+      return res;
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) };
     } finally {

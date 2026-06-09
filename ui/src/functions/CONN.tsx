@@ -4,6 +4,12 @@
  * Sub-system A's user surface. Search + filter the catalog, add /
  * test / delete connections, escalate read-only credentials to
  * trade via re-typed-label confirmation.
+ *
+ * SECURITY: secret form inputs (api_secret / passphrase / ...) live in
+ * component-local React state ONLY, are never logged, never persisted to the
+ * metadata index, and are cleared after a successful save. The show/hide
+ * toggle (F1) flips input *visibility* only — it never copies, logs, or
+ * transmits the value.
  */
 import { useEffect, useMemo, useState } from "react";
 import {
@@ -11,10 +17,16 @@ import {
   type CredentialRecord,
   useExchangeStore,
 } from "@/lib/exchange-store";
-import { confirmAction } from "@/lib/confirm";
+import { ConfirmDialog, Empty, Pill, Skeleton } from "@/design-system";
+import { relativeTimeLabel } from "@/lib/time";
 
 const ASSET_CLASSES = ["spot", "futures", "swap", "margin", "options", "equity", "fx"] as const;
 const REGIONS = ["global", "us", "eu", "asia"] as const;
+
+/** Does this credential field hold a secret? (drives type=password + toggle). */
+function isSecretField(field: string): boolean {
+  return field.includes("secret") || field.includes("passphrase");
+}
 
 function Initials({ name, fallbackId }: { name: string; fallbackId?: string }) {
   // QA-2026-05-24 (A12): when a name collides on its 2-letter prefix (e.g.
@@ -86,6 +98,47 @@ export function collidingDisplayNames(entries: CatalogEntry[]): Set<string> {
   return out;
 }
 
+/**
+ * F4 — connection status derived from the last test result + last_verified.
+ * Honest: never claims "connected" without a real verification.
+ */
+type ConnStatus = "ok" | "failed" | "untested";
+
+function statusFor(rec: CredentialRecord, lastTest: "idle" | "ok" | "err"): ConnStatus {
+  if (lastTest === "ok") return "ok";
+  if (lastTest === "err") return "failed";
+  return rec.last_verified ? "ok" : "untested";
+}
+
+function StatusPill({ status }: { status: ConnStatus }) {
+  const map: Record<ConnStatus, { tone: "positive" | "negative" | "muted"; label: string }> = {
+    ok: { tone: "positive", label: "Doğrulandı" },
+    failed: { tone: "negative", label: "Başarısız" },
+    untested: { tone: "muted", label: "Denenmedi" },
+  };
+  const { tone, label } = map[status];
+  // role=status so SRs announce the change; the Pill carries the visible label.
+  return (
+    <span role="status" aria-label={`Durum: ${label}`}>
+      <Pill tone={tone} variant="soft" withDot>
+        {label}
+      </Pill>
+    </span>
+  );
+}
+
+function PermissionPill({ canTrade }: { canTrade: boolean }) {
+  return canTrade ? (
+    <Pill tone="warn" variant="soft" withDot={false}>
+      okuma + işlem
+    </Pill>
+  ) : (
+    <Pill tone="muted" variant="soft" withDot={false}>
+      salt okuma
+    </Pill>
+  );
+}
+
 function CredentialRow({
   rec, onDelete, onEscalate,
 }: {
@@ -111,20 +164,32 @@ function CredentialRow({
   const deletingInFlight = useExchangeStore((s) => s.deleting.has(rec.id));
   const upgradingInFlight = useExchangeStore((s) => s.upgrading.has(rec.id));
   const canTrade = rec.permissions.includes("trade");
+  const status = statusFor(rec, testing);
+  const verifiedLabel = rec.last_verified ? relativeTimeLabel(rec.last_verified) : null;
+  const upgradeInputId = `conn-upgrade-confirm-${rec.id}`;
+  const testResultId = `conn-test-result-${rec.id}`;
   return (
     <div style={{
       display: "grid", gridTemplateColumns: "1fr auto auto auto auto",
       gap: 8, alignItems: "center", padding: "6px 0",
       borderBottom: "1px solid var(--border-1)",
     }}>
-      <div>
-        <strong>{rec.account_label}</strong>{" "}
-        <span style={{ color: canTrade ? "var(--accent-warn)" : "var(--fg-2)" }}>
-          {canTrade ? "okuma + işlem" : "salt okuma"}
+      <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <strong>{rec.account_label}</strong>
+          <PermissionPill canTrade={canTrade} />
+          <StatusPill status={status} />
+        </div>
+        <span style={{ fontSize: 11, color: "var(--fg-2)" }}>
+          {verifiedLabel
+            ? `Son doğrulama: ${verifiedLabel}`
+            : "Son doğrulama: — (Denenmedi)"}
         </span>
       </div>
       <button
+        aria-busy={testingInFlight}
         disabled={testingInFlight}
+        title={testingInFlight ? "Test sürüyor…" : undefined}
         onClick={async () => {
           // Round 24 — short-circuit a 2nd rapid click; the store-level
           // `testing.has(id)` guard is the canonical seal.
@@ -147,13 +212,35 @@ function CredentialRow({
             onEscalate(rec.id, confirm);
           }
         }} style={{ display: "flex", gap: 4 }}>
+          <label
+            htmlFor={upgradeInputId}
+            style={{
+              position: "absolute",
+              width: 1,
+              height: 1,
+              overflow: "hidden",
+              clip: "rect(0 0 0 0)",
+              whiteSpace: "nowrap",
+            }}
+          >
+            İşlem iznine yükseltmek için hesap etiketini yeniden yaz: {rec.account_label}
+          </label>
           <input
+            id={upgradeInputId}
             placeholder={`re-type "${rec.account_label}"`}
             value={confirm}
             onChange={(e) => setConfirm(e.target.value)}
             style={{ width: 140 }}
           />
           <button type="submit"
+                  aria-busy={upgradingInFlight}
+                  title={
+                    upgradingInFlight
+                      ? "Yükseltme sürüyor…"
+                      : confirm !== rec.account_label
+                        ? "Onaylamak için hesap etiketini birebir yaz."
+                        : undefined
+                  }
                   disabled={upgradingInFlight || confirm !== rec.account_label}>
             {upgradingInFlight ? "..." : "Upgrade"}
           </button>
@@ -178,7 +265,15 @@ function CredentialRow({
       )}
       <button
         data-testid={`conn-sil-${rec.id}`}
+        aria-busy={dependentLoading || deletingInFlight}
         disabled={dependentLoading || deletingInFlight}
+        title={
+          dependentLoading
+            ? "Bot bağımlılıkları kontrol ediliyor…"
+            : deletingInFlight
+              ? "Silme sürüyor…"
+              : undefined
+        }
         onClick={async () => {
           // Round 24 HIGH 7 — guard the pre-flight + onDelete sequence. The
           // old handler ran 3 awaits in a row (dependents → confirm modal →
@@ -202,7 +297,13 @@ function CredentialRow({
         {(dependentLoading || deletingInFlight) ? "..." : "Sil"}
       </button>
       {testMsg && (
-        <div style={{ gridColumn: "1 / -1", color: testing === "ok" ? "var(--accent-ok)" : "var(--accent-err)" }}>
+        <div
+          id={testResultId}
+          role="status"
+          aria-live="polite"
+          className={testing === "ok" ? "u-text-positive" : "u-text-negative"}
+          style={{ gridColumn: "1 / -1" }}
+        >
           {testMsg}
         </div>
       )}
@@ -211,55 +312,55 @@ function CredentialRow({
 }
 
 /**
- * C9 (FIX_CONTRACT) — cascade-aware delete handler.  Resolves the dependent
- * bot count via Agent 2's `/api/exchange/credentials/{id}/dependents` (with a
- * client-side fallback when the endpoint is missing), shows the user a
- * confirm dialog with the bot count, and forwards `force=true` to the DELETE
- * route so the backend cascade-disables the dependents instead of 409'ing.
+ * C9 (FIX_CONTRACT) — resolve the dependent-bot count + confirm copy for a
+ * credential delete. Split out from the dialog so the in-app ConfirmDialog
+ * (F5) can show the bot count / "doğrulanamadı" warning before the user
+ * confirms, and so the same `force`/cascade semantics drive the actual
+ * delete. Exported for tests.
  *
  * QA-2026-05-24 (A12): when `bots_unknown === true` (both endpoints failed
- * the lookup), the confirm dialog now warns the user instead of silently
- * pretending zero bots are affected — and the delete uses `force=true`
- * defensively so any uncategorized bot dependents are disabled rather than
- * leaving an orphan bot pointing at a missing credential.
- *
- * Exported only for test purposes (`CONN.test.tsx::test_credential_delete_...`).
+ * the lookup), the copy warns the user instead of silently pretending zero
+ * bots are affected — and `force` is set defensively so any uncategorized bot
+ * dependents are disabled rather than leaving an orphan bot pointing at a
+ * missing credential.
  */
-export async function handleCredentialDelete(
+export interface DeletePlan {
+  title: string;
+  body: string;
+  force: boolean;
+}
+
+export async function resolveDeletePlan(
   credentialId: string,
   accountLabel: string,
-): Promise<boolean> {
+): Promise<DeletePlan> {
   const dependents = await useExchangeStore.getState().dependentBots(credentialId);
   const botCount = dependents.bot_count;
   const unknown = dependents.bots_unknown === true;
-  let title: string;
-  let body: string;
   if (unknown) {
-    title = "Bot bağımlılıkları doğrulanamadı";
-    body =
-      `"${accountLabel}" bağlantısının kaç bota bağlı olduğu sunucu tarafından ` +
-      `doğrulanamadı (her iki uç nokta da başarısız). Silme işlemi muhtemelen ` +
-      `kategorize edilmemiş botları etkileyecek — devam edilsin mi?`;
-  } else if (botCount > 0) {
-    title = `${botCount} bot etkilenecek`;
-    body =
-      `Bu credential ${botCount} bota bağlı. Silme işlemi bu botları otomatik olarak ` +
-      `devre dışı bırakacak. Devam edilsin mi?`;
-  } else {
-    title = "Bağlantıyı sil";
-    body = `"${accountLabel}" bağlantısı silinsin mi?`;
+    return {
+      title: "Bot bağımlılıkları doğrulanamadı",
+      body:
+        `"${accountLabel}" bağlantısının kaç bota bağlı olduğu sunucu tarafından ` +
+        `doğrulanamadı (her iki uç nokta da başarısız). Silme işlemi muhtemelen ` +
+        `kategorize edilmemiş botları etkileyecek — devam edilsin mi?`,
+      force: true,
+    };
   }
-  const ok = await confirmAction({
-    title,
-    body,
-    primary: "Sil",
-    destructive: true,
-  });
-  if (!ok) return false;
-  return useExchangeStore.getState().deleteCredential(credentialId, {
-    // Force when (a) we know bots are attached, or (b) we couldn't verify.
-    force: botCount > 0 || unknown,
-  });
+  if (botCount > 0) {
+    return {
+      title: `${botCount} bot etkilenecek`,
+      body:
+        `Bu credential ${botCount} bota bağlı. Silme işlemi bu botları otomatik olarak ` +
+        `devre dışı bırakacak. Devam edilsin mi?`,
+      force: true,
+    };
+  }
+  return {
+    title: "Bağlantıyı sil",
+    body: `"${accountLabel}" bağlantısı silinsin mi?`,
+    force: false,
+  };
 }
 
 function ExchangeForm({ entry }: { entry: CatalogEntry }) {
@@ -273,23 +374,54 @@ function ExchangeForm({ entry }: { entry: CatalogEntry }) {
   const storeSaving = useExchangeStore((s) => s.saving);
   const [label, setLabel] = useState("");
   const [secrets, setSecrets] = useState<Record<string, string>>({});
+  // F1 — per-field visibility toggle for secret inputs. Local-only: this
+  // flips the input `type` between password/text and never touches the value.
+  const [revealed, setRevealed] = useState<Record<string, boolean>>({});
   const [permsTrade, setPermsTrade] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  // F5 — in-app delete confirmation state (replaces native confirmAction).
+  const [pendingDelete, setPendingDelete] = useState<
+    { id: string; label: string; plan: DeletePlan } | null
+  >(null);
+  const deleting = useExchangeStore((s) => s.deleting);
 
   const allFields = [...entry.requires, ...entry.optional];
 
   const myCreds = credentials.filter((c) => c.exchange_id === entry.id);
 
+  // F2 — client-side gate: account_label + all `requires` fields present.
+  const missingRequired = entry.requires.filter((f) => !(secrets[f] ?? "").trim());
+  const labelMissing = label.trim().length === 0;
+  const canSubmit = !labelMissing && missingRequired.length === 0;
+  const disabledReason = labelMissing
+    ? "Hesap etiketi gerekli."
+    : missingRequired.length
+      ? `Zorunlu alanlar eksik: ${missingRequired.join(", ")}`
+      : undefined;
+
+  const errorRegionId = `conn-form-error-${entry.id}`;
+  const labelInputId = `conn-account-label-${entry.id}`;
+
+  const requestDelete = async (id: string, lbl: string) => {
+    const plan = await resolveDeletePlan(id, lbl);
+    setPendingDelete({ id, label: lbl, plan });
+  };
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
       <h3>{entry.display_name} bağlantıları</h3>
-      {myCreds.length === 0 && <div style={{ color: "var(--fg-2)" }}>(henüz bağlantı yok)</div>}
+      {myCreds.length === 0 && (
+        <Empty
+          title="Henüz bağlantı yok"
+          body={`${entry.display_name} için kayıtlı bir API anahtarı yok. Aşağıdan ekle.`}
+        />
+      )}
       {myCreds.map((rec) => (
         <CredentialRow
           key={rec.id}
           rec={rec}
           onDelete={(id) => {
-            void handleCredentialDelete(id, rec.account_label);
+            void requestDelete(id, rec.account_label);
           }}
           onEscalate={(id, lbl) => useExchangeStore.getState().upgradeToTrade(id, lbl)}
         />
@@ -302,7 +434,7 @@ function ExchangeForm({ entry }: { entry: CatalogEntry }) {
           // button has `disabled={submitting || storeSaving}` but React's
           // re-render lags the click. Inline guard is the cheapest layer.
           e.preventDefault();
-          if (submitting || storeSaving) return;
+          if (submitting || storeSaving || !canSubmit) return;
           setSubmitting(true);
           const ok = await save({
             exchange_id: entry.id,
@@ -312,28 +444,61 @@ function ExchangeForm({ entry }: { entry: CatalogEntry }) {
           });
           setSubmitting(false);
           if (ok) {
+            // SECURITY: clear secret inputs from local state after save.
             setLabel("");
             setSecrets({});
+            setRevealed({});
             setPermsTrade(false);
           }
         }}
         style={{ display: "flex", flexDirection: "column", gap: 6 }}
       >
-        <label>
+        <label htmlFor={labelInputId}>
           account label
-          <input value={label} onChange={(e) => setLabel(e.target.value)} required minLength={1} />
+          <input
+            id={labelInputId}
+            value={label}
+            onChange={(e) => setLabel(e.target.value)}
+            required
+            minLength={1}
+            aria-describedby={errorRegionId}
+          />
         </label>
-        {allFields.map((field) => (
-          <label key={field}>
-            {field}
-            <input
-              type={field.includes("secret") || field.includes("passphrase") ? "password" : "text"}
-              value={secrets[field] ?? ""}
-              onChange={(e) => setSecrets({ ...secrets, [field]: e.target.value })}
-              required={entry.requires.includes(field)}
-            />
-          </label>
-        ))}
+        {allFields.map((field) => {
+          const secret = isSecretField(field);
+          const fieldId = `conn-field-${entry.id}-${field}`;
+          const shown = revealed[field] === true;
+          return (
+            <label key={field} htmlFor={fieldId}>
+              {field}
+              <span style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                <input
+                  id={fieldId}
+                  type={secret && !shown ? "password" : "text"}
+                  value={secrets[field] ?? ""}
+                  onChange={(e) => setSecrets({ ...secrets, [field]: e.target.value })}
+                  required={entry.requires.includes(field)}
+                  aria-describedby={errorRegionId}
+                  style={{ flex: 1 }}
+                />
+                {secret && (
+                  <button
+                    type="button"
+                    aria-label={`${shown ? "Gizle" : "Göster"}: ${field}`}
+                    aria-pressed={shown}
+                    title={shown ? "Gizle" : "Göster"}
+                    onClick={() =>
+                      setRevealed((r) => ({ ...r, [field]: !r[field] }))
+                    }
+                    style={{ flex: "0 0 auto" }}
+                  >
+                    {shown ? "🙈" : "👁"}
+                  </button>
+                )}
+              </span>
+            </label>
+          );
+        })}
         <label>
           <input
             type="checkbox"
@@ -343,17 +508,51 @@ function ExchangeForm({ entry }: { entry: CatalogEntry }) {
           Okuma + işlem (trade) izni
         </label>
         {permsTrade && (
-          <div style={{ color: "var(--accent-err)" }}>
+          <div className="u-text-negative">
             Dikkat: bu kimlik bilgisi gerçek hesapta emir gönderebilir. Borsa tarafında da
             "trading" scope'unu gerçekten verdiğinden ve API anahtarını IP'ye bağladığından
             emin ol.
           </div>
         )}
-        <button type="submit" disabled={submitting || storeSaving}>
+        <button
+          type="submit"
+          aria-busy={submitting || storeSaving}
+          disabled={submitting || storeSaving || !canSubmit}
+          title={
+            submitting || storeSaving ? "Kaydediliyor…" : disabledReason
+          }
+        >
           {(submitting || storeSaving) ? "..." : "Bağlan"}
         </button>
-        {error && <div style={{ color: "var(--accent-err)" }}>{error}</div>}
+        {/* F2 — add-form error region (announced). */}
+        <div
+          id={errorRegionId}
+          role="status"
+          aria-live="polite"
+          className="u-text-negative"
+        >
+          {error || ""}
+        </div>
       </form>
+
+      {/* F5 — in-app, focus-trapped delete confirmation (replaces native
+          confirmAction). Preserves the bot-count / "doğrulanamadı" copy and
+          the exact force/cascade semantics from resolveDeletePlan(). */}
+      <ConfirmDialog
+        open={pendingDelete !== null}
+        title={pendingDelete?.plan.title ?? ""}
+        body={pendingDelete?.plan.body}
+        confirmLabel="Sil"
+        destructive
+        busy={pendingDelete ? deleting.has(pendingDelete.id) : false}
+        onConfirm={() => {
+          if (!pendingDelete) return;
+          const { id, plan } = pendingDelete;
+          setPendingDelete(null);
+          void useExchangeStore.getState().deleteCredential(id, { force: plan.force });
+        }}
+        onCancel={() => setPendingDelete(null)}
+      />
     </div>
   );
 }
@@ -362,6 +561,8 @@ export function CONNPane() {
   const catalog = useExchangeStore((s) => s.catalog);
   const credentials = useExchangeStore((s) => s.credentials);
   const selectedId = useExchangeStore((s) => s.selectedExchangeId);
+  const catalogLoading = useExchangeStore((s) => s.catalogLoading);
+  const credentialsLoading = useExchangeStore((s) => s.credentialsLoading);
   const filterCatalog = useExchangeStore((s) => s.filterCatalog);
   const loadCatalog = useExchangeStore((s) => s.loadCatalog);
   const loadCreds = useExchangeStore((s) => s.loadCredentials);
@@ -417,6 +618,9 @@ export function CONNPane() {
     arr: string[], setArr: (v: string[]) => void, val: string,
   ) => () => setArr(arr.includes(val) ? arr.filter((x) => x !== val) : [...arr, val]);
 
+  // F6 — show a skeleton while the catalog (+ credentials) load on first paint.
+  const loading = (catalogLoading || credentialsLoading) && catalog.length === 0;
+
   return (
     <div style={{ display: "grid", gridTemplateColumns: "minmax(280px, 1fr) 2fr", gap: 16, height: "100%" }}>
       <div style={{ display: "flex", flexDirection: "column", gap: 8, overflow: "hidden" }}>
@@ -432,6 +636,8 @@ export function CONNPane() {
               key={a}
               onClick={toggle(assetClasses, setAssetClasses, a)}
               aria-pressed={assetClasses.includes(a)}
+              aria-label={a}
+              title={`Varlık sınıfı filtresi: ${a}`}
               style={{
                 opacity: assetClasses.includes(a) ? 1 : 0.55,
                 fontSize: 11,
@@ -447,6 +653,8 @@ export function CONNPane() {
               key={r}
               onClick={toggle(regions, setRegions, r)}
               aria-pressed={regions.includes(r)}
+              aria-label={r}
+              title={`Bölge filtresi: ${r}`}
               style={{
                 opacity: regions.includes(r) ? 1 : 0.55,
                 fontSize: 11,
@@ -457,7 +665,14 @@ export function CONNPane() {
           ))}
         </div>
         <div style={{ overflowY: "auto", flex: 1, minHeight: 0 }}>
-          {filtered.map((e) => {
+          {loading && (
+            <div data-testid="conn-catalog-loading" aria-busy="true" style={{ display: "flex", flexDirection: "column", gap: 8, padding: 8 }}>
+              <Skeleton height={32} />
+              <Skeleton height={32} />
+              <Skeleton height={32} />
+            </div>
+          )}
+          {!loading && filtered.map((e) => {
             const nameClash = collidingNames.has(e.display_name);
             const initialsClash = collidingInitialsIds.has(e.id);
             const labelSuffix = nameClash ? ` (${e.id})` : "";
@@ -485,17 +700,18 @@ export function CONNPane() {
                   </div>
                 </div>
                 {credCount(e.id) > 0 && (
-                  <span style={{ fontSize: 11, color: "var(--accent-ok)" }}>
+                  <span className="u-text-positive" style={{ fontSize: 11 }}>
                     Bağlı: {credCount(e.id)}
                   </span>
                 )}
               </button>
             );
           })}
-          {filtered.length === 0 && (
-            <div style={{ padding: 12, color: "var(--fg-2)" }}>
-              Eşleşen borsa yok.
-            </div>
+          {!loading && filtered.length === 0 && (
+            <Empty
+              title="Eşleşen borsa yok"
+              body="Arama veya filtreleri gevşetmeyi dene."
+            />
           )}
         </div>
       </div>
@@ -503,7 +719,7 @@ export function CONNPane() {
         {selected ? (
           <ExchangeForm key={selected.id} entry={selected} />
         ) : (
-          <div style={{ color: "var(--fg-2)" }}>
+          <div style={{ color: "var(--text-primary)" }}>
             Soldan bir borsa seç.
           </div>
         )}

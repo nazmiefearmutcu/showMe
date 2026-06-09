@@ -12,19 +12,14 @@
  *   - Filter buttons with zero matches in the current catalog are hidden.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import {
   CONNPane,
   collidingDisplayNames,
   collidingInitials,
-  handleCredentialDelete,
+  resolveDeletePlan,
 } from "../CONN";
 import { useExchangeStore } from "@/lib/exchange-store";
-
-vi.mock("@/lib/confirm", () => ({
-  confirmAction: vi.fn(async () => true),
-}));
-import { confirmAction } from "@/lib/confirm";
 
 beforeEach(() => {
   useExchangeStore.setState({
@@ -80,29 +75,50 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
-  (confirmAction as ReturnType<typeof vi.fn>).mockClear();
   vi.clearAllMocks();
 });
 
-describe("handleCredentialDelete — A12 bots_unknown warning", () => {
-  it("shows the 'doğrulanamadı' warning copy when bots_unknown=true", async () => {
+/** Mount CONN, select Coinbase Advanced, and seed one credential. */
+function renderWithCredential() {
+  useExchangeStore.setState({
+    credentials: [{
+      id: "abc", exchange_id: "coinbase", account_label: "main",
+      permissions: ["read"], created_at: "2026-05-21T10:00:00Z",
+    }],
+    selectedExchangeId: "coinbase",
+  });
+  return render(<CONNPane />);
+}
+
+describe("delete plan — A12 bots_unknown warning", () => {
+  it("resolveDeletePlan: bots_unknown=true → doğrulanamadı copy + force=true", async () => {
     vi.spyOn(useExchangeStore.getState(), "dependentBots").mockResolvedValue({
       credential_id: "abc",
       bot_count: 0,
       bot_ids: [],
       bots_unknown: true,
     });
-    vi.spyOn(useExchangeStore.getState(), "deleteCredential").mockResolvedValue(true);
-
-    await handleCredentialDelete("abc", "main");
-
-    const args = (confirmAction as ReturnType<typeof vi.fn>).mock.calls[0][0];
-    expect(args.title).toMatch(/doğrulanamadı/i);
-    expect(args.body).toMatch(/doğrulanamadı/i);
-    expect(args.destructive).toBe(true);
+    const plan = await resolveDeletePlan("abc", "main");
+    expect(plan.title).toMatch(/doğrulanamadı/i);
+    expect(plan.body).toMatch(/doğrulanamadı/i);
+    // Defensive cascade.
+    expect(plan.force).toBe(true);
   });
 
-  it("forces force=true when bots_unknown=true (defensive cascade)", async () => {
+  it("resolveDeletePlan: bots_unknown=false keeps the plain copy + force=false", async () => {
+    vi.spyOn(useExchangeStore.getState(), "dependentBots").mockResolvedValue({
+      credential_id: "abc",
+      bot_count: 0,
+      bot_ids: [],
+      bots_unknown: false,
+    });
+    const plan = await resolveDeletePlan("abc", "main");
+    expect(plan.title).toBe("Bağlantıyı sil");
+    expect(plan.body).not.toMatch(/doğrulanamadı/i);
+    expect(plan.force).toBe(false);
+  });
+
+  it("Sil → in-app dialog surfaces the 'doğrulanamadı' warning, confirm forces", async () => {
     vi.spyOn(useExchangeStore.getState(), "dependentBots").mockResolvedValue({
       credential_id: "abc",
       bot_count: 0,
@@ -113,23 +129,16 @@ describe("handleCredentialDelete — A12 bots_unknown warning", () => {
       .spyOn(useExchangeStore.getState(), "deleteCredential")
       .mockResolvedValue(true);
 
-    await handleCredentialDelete("abc", "main");
-    expect(del).toHaveBeenCalledWith("abc", { force: true });
-  });
+    renderWithCredential();
+    fireEvent.click(screen.getByTestId("conn-sil-abc"));
+    await waitFor(() =>
+      expect(screen.getByTestId("confirm-dialog-body")).toBeInTheDocument(),
+    );
+    // Both the title and body carry the "doğrulanamadı" warning copy.
+    expect(screen.getByTestId("confirm-dialog-body-text")).toHaveTextContent(/doğrulanamadı/i);
 
-  it("bots_unknown=false keeps the existing copy paths", async () => {
-    vi.spyOn(useExchangeStore.getState(), "dependentBots").mockResolvedValue({
-      credential_id: "abc",
-      bot_count: 0,
-      bot_ids: [],
-      bots_unknown: false,
-    });
-    vi.spyOn(useExchangeStore.getState(), "deleteCredential").mockResolvedValue(true);
-
-    await handleCredentialDelete("abc", "main");
-    const args = (confirmAction as ReturnType<typeof vi.fn>).mock.calls[0][0];
-    expect(args.title).toBe("Bağlantıyı sil");
-    expect(args.body).not.toMatch(/doğrulanamadı/i);
+    fireEvent.click(screen.getByTestId("confirm-dialog-confirm"));
+    await waitFor(() => expect(del).toHaveBeenCalledWith("abc", { force: true }));
   });
 });
 
