@@ -192,6 +192,26 @@ describe("CORR — synthetic-data honesty (H1/H2)", () => {
     render(<CORRPane code="CORR" />);
     expect(screen.queryByTestId("corr-synthetic-warning")).toBeNull();
   });
+
+  it("treats 'computed_reference' as synthetic too (banner + warn-toned coverage pill)", () => {
+    const payload = okPayload();
+    // The OTHER synthetic flavour: a computed REFERENCE series (not "fallback").
+    payload.data.data.impactor.market_coverage[1].status = "computed_reference";
+    mockReturn.current = { state: "ok", ...payload };
+    render(<CORRPane code="CORR" />);
+
+    // Banner still fires and still names the synthetic symbol.
+    const banner = screen.getByTestId("corr-synthetic-warning");
+    expect(banner).toBeInTheDocument();
+    expect(within(banner).getByText(/BTCUSDT/)).toBeInTheDocument();
+
+    // The Market Coverage table pill for that status is warn-toned, NOT the
+    // green "positive" — table must agree with the banner.
+    const statusPill = screen.getByText("computed_reference").closest(".ds-pill");
+    expect(statusPill).not.toBeNull();
+    expect(statusPill?.className).toMatch(/ds-pill--tone-warn/);
+    expect(statusPill?.className).not.toMatch(/ds-pill--tone-positive/);
+  });
 });
 
 describe("CORR — per-pair sample size + honest cell labels (H3)", () => {
@@ -261,6 +281,15 @@ describe("CORR — accessibility (A1/A2/A3)", () => {
       name: /run correlation analysis/i,
     });
     expect(runBtn.getAttribute("aria-busy")).toBe("true");
+  });
+
+  it("binds the universe textarea to its label (htmlFor/id linkage)", () => {
+    setOk();
+    render(<CORRPane code="CORR" />);
+    const universe = screen.getByLabelText(/universe/i);
+    expect(universe).toBeInTheDocument();
+    expect(universe.tagName).toBe("TEXTAREA");
+    expect(universe.id).toBe("corr-universe-input");
   });
 
   it("announces the error state via role=status", () => {

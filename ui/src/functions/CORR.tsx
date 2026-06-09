@@ -267,16 +267,11 @@ export function CORRPane({ code }: FunctionPaneProps) {
     return buckets;
   }, [bugRows]);
 
-  // A symbol is "synthetic" when the backend could not fetch it live and
-  // substituted a deterministic reference/fallback price series. Such a series
+  // Rows whose price series is synthetic (see isSyntheticStatus). Such a series
   // even carries baked-in cross-market correlation, so any pair touching it is
   // NOT real market data and must be disclosed.
   const fallbackCoverage = useMemo(
-    () =>
-      coverageRows.filter((row) => {
-        const status = String(row.status ?? "");
-        return status.includes("fallback") || status.includes("reference");
-      }),
+    () => coverageRows.filter((row) => isSyntheticStatus(row.status)),
     [coverageRows],
   );
 
@@ -1411,6 +1406,16 @@ function pseudoDelta(seed: string): number {
   return Number(v.toFixed(3));
 }
 
+// A coverage row is "synthetic" when the backend could not fetch the symbol
+// live and substituted a deterministic reference/fallback series (status
+// "computed_fallback" or "computed_reference"). Single source of truth shared
+// by the synthetic banner, the matrix "~" markers, and the coverage-table Pill
+// so the table can never contradict the banner.
+function isSyntheticStatus(status?: string): boolean {
+  const text = String(status ?? "");
+  return text.includes("fallback") || text.includes("reference");
+}
+
 function severityTone(
   severity?: string,
 ): "neutral" | "positive" | "negative" | "accent" | "warn" | "muted" {
@@ -1436,7 +1441,7 @@ const coverageColumns: DataGridColumn<CoverageRow>[] = [
     width: 130,
     render: (row) => (
       <Pill
-        tone={String(row.status).includes("fallback") ? "warn" : "positive"}
+        tone={isSyntheticStatus(row.status) ? "warn" : "positive"}
         withDot={false}
         variant="soft"
       >
