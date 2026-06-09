@@ -170,6 +170,9 @@ export function INDXPane() {
   }, [entries, query, family]);
 
   const selected = selectedId ? entries.find((e) => e.id === selectedId) ?? null : null;
+  // Distinguish "filter hid everything" from "catalog is genuinely empty" so the
+  // empty-state copy doesn't blame a filter the user never applied.
+  const hasActiveFilter = query.trim() !== "" || family !== "all";
 
   return (
     <div style={{ display: "grid", gridTemplateColumns: "320px 1fr",
@@ -209,7 +212,7 @@ export function INDXPane() {
             </div>
           )}
           {error && (
-            <div data-testid="indx-error" role="status"
+            <div data-testid="indx-error" role="alert"
                  style={{ padding: 12, color: "var(--accent-err)", fontSize: 12 }}>
               Katalog yüklenemedi: {error}
             </div>
@@ -233,8 +236,13 @@ export function INDXPane() {
           ))}
           {!loading && !error && visible.length === 0 && (
             <div data-testid="indx-empty" style={{ padding: 12 }}>
-              <Empty title="Eşleşen indikatör yok."
-                     body="Aramayı veya aile filtresini değiştir." />
+              {hasActiveFilter ? (
+                <Empty title="Eşleşen indikatör yok."
+                       body="Aramayı veya aile filtresini değiştir." />
+              ) : (
+                <Empty title="Katalogda indikatör yok."
+                       body="Henüz indikatör yok." />
+              )}
             </div>
           )}
         </div>

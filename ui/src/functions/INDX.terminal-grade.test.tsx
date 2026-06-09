@@ -13,6 +13,7 @@
  *  A1 — search input has a bound label.
  *  A2 — family filter buttons have aria-labels.
  *  A3 — parameter table has a caption + scope="col" on every <th>.
+ *  A4 — detail pane is a labelled role="region" (aria-label).
  *  A5 — result count is a role="status" with the right count.
  *
  * Additive; existing INDX + indicator-store suites stay green.
@@ -149,6 +150,19 @@ describe("INDX A3 — parameter table semantics", () => {
     const ths = table.querySelectorAll("th");
     expect(ths.length).toBeGreaterThanOrEqual(1);
     ths.forEach((th) => expect(th.getAttribute("scope")).toBe("col"));
+  });
+});
+
+describe("INDX A4 — detail pane is a labelled region", () => {
+  it("exposes the detail pane as a role=region named by its aria-label", () => {
+    useIndicatorStore.setState({
+      entries: FIXTURES, loading: false, error: null, selectedId: "rsi", loadCatalog: noopLoad,
+    });
+    render(<INDXPane />);
+    const region = screen.getByRole("region", { name: /indikatör detayları/i });
+    expect(region).toBeInTheDocument();
+    // The selected indicator's detail actually renders inside that region.
+    expect(within(region).getByText("RSI")).toBeInTheDocument();
   });
 });
 
