@@ -96,6 +96,73 @@ def test_update_permissions_returns_new_record(store: CredentialStore) -> None:
     assert listed[0].permissions == ("read", "trade")
 
 
+def test_last_verified_defaults_to_none_and_is_metadata(store: CredentialStore) -> None:
+    """B1 — a freshly added credential has no last_verified, and the field is
+    surfaced (None) in the metadata-only to_dict()."""
+    rec = store.add(
+        exchange_id="binance", account_label="main",
+        secrets={"api_key": "k", "api_secret": "s"}, permissions=("read",),
+    )
+    assert rec.last_verified is None
+    d = rec.to_dict()
+    assert d["last_verified"] is None
+    # Metadata-only: no secret material leaks into to_dict().
+    assert "api_key" not in d and "api_secret" not in d
+
+
+def test_set_last_verified_stamps_and_persists(store: CredentialStore) -> None:
+    """B1 — set_last_verified records a timestamp, persists it, and never
+    carries a secret."""
+    rec = store.add(
+        exchange_id="binance", account_label="main",
+        secrets={"api_key": "k", "api_secret": "s"}, permissions=("read",),
+    )
+    updated = store.set_last_verified(rec.id, when="2026-06-09T12:00:00+00:00")
+    assert updated.last_verified == "2026-06-09T12:00:00+00:00"
+    # Reflected in the list metadata.
+    listed = store.list()
+    assert listed[0].last_verified == "2026-06-09T12:00:00+00:00"
+    assert listed[0].to_dict()["last_verified"] == "2026-06-09T12:00:00+00:00"
+    # Metadata-safe: no secret in the dict.
+    assert "api_secret" not in listed[0].to_dict()
+
+
+def test_set_last_verified_default_now_is_iso(store: CredentialStore) -> None:
+    """B1 — when no explicit timestamp is given it stamps current UTC ISO."""
+    rec = store.add(
+        exchange_id="binance", account_label="main",
+        secrets={"api_key": "k", "api_secret": "s"}, permissions=("read",),
+    )
+    updated = store.set_last_verified(rec.id)
+    assert updated.last_verified is not None
+    # ISO-8601 with timezone offset.
+    from datetime import datetime
+    parsed = datetime.fromisoformat(updated.last_verified)
+    assert parsed.tzinfo is not None
+
+
+def test_set_last_verified_unknown_raises(store: CredentialStore) -> None:
+    with pytest.raises(UnknownCredential):
+        store.set_last_verified("does-not-exist")
+
+
+def test_last_verified_survives_reload(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """B1 — last_verified is persisted to the JSON index and re-read on load."""
+    monkeypatch.setenv("SHOWME_CREDENTIAL_BACKEND", "memory")
+    monkeypatch.setenv("SHOWME_HOME", str(tmp_path))
+    store1 = CredentialStore.fresh()
+    rec = store1.add(
+        exchange_id="binance", account_label="main",
+        secrets={"api_key": "k", "api_secret": "s"}, permissions=("read",),
+    )
+    store1.set_last_verified(rec.id, when="2026-06-09T12:00:00+00:00")
+    store2 = CredentialStore.fresh()
+    listed = store2.list()
+    assert listed[0].last_verified == "2026-06-09T12:00:00+00:00"
+
+
 def test_metadata_persists_to_credentials_json(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:

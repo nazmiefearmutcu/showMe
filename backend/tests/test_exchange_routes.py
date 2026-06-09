@@ -141,6 +141,79 @@ def test_test_credential_calls_account(client: TestClient) -> None:
     assert body["account"]["equity"] == 10
 
 
+def test_successful_test_records_last_verified(client: TestClient) -> None:
+    """B1 — a successful POST .../test stamps last_verified, returns it, and
+    it then appears in the list metadata."""
+    r = client.post("/api/exchange/credentials", json={
+        "exchange_id": "binance", "account_label": "main",
+        "secrets": {"api_key": "k", "api_secret": "s"},
+        "permissions": ["read"], "skip_test": True,
+    })
+    rid = r.json()["id"]
+    # Before any test, last_verified is None in the listing.
+    listed_before = client.get("/api/exchange/credentials").json()["records"]
+    rec_before = next(x for x in listed_before if x["id"] == rid)
+    assert rec_before["last_verified"] is None
+
+    t = client.post(f"/api/exchange/credentials/{rid}/test")
+    assert t.status_code == 200
+    body = t.json()
+    assert body["ok"] is True
+    assert body["last_verified"] is not None
+    # No secret leaks in the test response.
+    assert "api_key" not in t.text and "api_secret" not in t.text
+
+    # And the new timestamp is reflected in the list metadata.
+    listed_after = client.get("/api/exchange/credentials").json()["records"]
+    rec_after = next(x for x in listed_after if x["id"] == rid)
+    assert rec_after["last_verified"] == body["last_verified"]
+
+
+def test_failed_test_leaves_last_verified_unchanged(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """B1 — a failed connection test must NOT update last_verified."""
+    import showme.brokers as brokers_mod
+
+    r = client.post("/api/exchange/credentials", json={
+        "exchange_id": "binance", "account_label": "main",
+        "secrets": {"api_key": "k", "api_secret": "s"},
+        "permissions": ["read"], "skip_test": True,
+    })
+    rid = r.json()["id"]
+
+    class _BoomBroker:
+        async def account(self):
+            raise RuntimeError("auth rejected")
+
+    # The route does `from showme.brokers import ... get_broker` at call time,
+    # so patch the name on the package the route imports from.
+    monkeypatch.setattr(brokers_mod, "get_broker", lambda *_a, **_k: _BoomBroker())
+    t = client.post(f"/api/exchange/credentials/{rid}/test")
+    assert t.status_code == 200
+    body = t.json()
+    assert body["ok"] is False
+    assert "last_verified" not in body
+
+    # last_verified stays None after the failed test.
+    listed = client.get("/api/exchange/credentials").json()["records"]
+    rec = next(x for x in listed if x["id"] == rid)
+    assert rec["last_verified"] is None
+
+
+def test_list_credentials_exposes_last_verified_metadata(client: TestClient) -> None:
+    """B1 — last_verified is part of the metadata-only to_dict() shape (and is
+    never accompanied by a secret)."""
+    client.post("/api/exchange/credentials", json={
+        "exchange_id": "binance", "account_label": "main",
+        "secrets": {"api_key": "k", "api_secret": "s"},
+        "permissions": ["read"], "skip_test": True,
+    })
+    listed = client.get("/api/exchange/credentials")
+    assert "last_verified" in listed.json()["records"][0]
+    assert "api_key" not in listed.text and "api_secret" not in listed.text
+
+
 def test_patch_permissions_requires_re_typed_label(client: TestClient) -> None:
     r = client.post("/api/exchange/credentials", json={
         "exchange_id": "binance", "account_label": "main",

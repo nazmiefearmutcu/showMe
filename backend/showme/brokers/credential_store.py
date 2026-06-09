@@ -48,6 +48,13 @@ class CredentialRecord:
     account_label: str
     permissions: tuple[str, ...]
     created_at: str
+    # B1 — UTC ISO-8601 timestamp of the last *successful* connection test
+    # (a real ``broker.account()`` call). ``None`` means "never verified".
+    # This is METADATA, not a secret: it carries no key/secret material and
+    # is safe to persist to the JSON index + return in API responses. It lets
+    # the CONN pane answer "is this connection actually working / when last
+    # verified" honestly instead of implying "connected" without proof.
+    last_verified: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -56,6 +63,7 @@ class CredentialRecord:
             "account_label": self.account_label,
             "permissions": list(self.permissions),
             "created_at": self.created_at,
+            "last_verified": self.last_verified,
         }
 
 
@@ -242,6 +250,24 @@ class CredentialStore:
         self._save_index()
         return new_rec
 
+    def set_last_verified(
+        self, credential_id: str, when: str | None = None,
+    ) -> CredentialRecord:
+        """Record a successful connection test (B1).
+
+        Stamps ``last_verified`` with ``when`` (defaults to now, UTC ISO).
+        Metadata-only — carries no secret material — so it is persisted to
+        the JSON index. Callers MUST only invoke this after a *successful*
+        ``broker.account()`` so the timestamp stays honest.
+        """
+        rec = self._records.get(credential_id)
+        if rec is None:
+            raise UnknownCredential(credential_id)
+        new_rec = replace(rec, last_verified=when or _now_iso())
+        self._records[credential_id] = new_rec
+        self._save_index()
+        return new_rec
+
     @staticmethod
     def _secret_key(rec: CredentialRecord) -> str:
         return f"{rec.exchange_id}:{rec.id}"
@@ -261,6 +287,7 @@ class CredentialStore:
                 account_label=r["account_label"],
                 permissions=tuple(r.get("permissions") or ("read",)),
                 created_at=r.get("created_at") or _now_iso(),
+                last_verified=r.get("last_verified"),
             )
 
     def _save_index(self) -> None:

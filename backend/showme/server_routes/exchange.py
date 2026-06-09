@@ -214,8 +214,17 @@ def register(app: FastAPI, deps: AppDeps) -> None:
         try:
             broker = get_broker(f"{rec.exchange_id}:{rec.id}")
             account = await broker.account()
-            return {"ok": True, "account": account}
         except Exception as exc:  # noqa: BLE001
+            # B1 — a failed test must NOT update last_verified (stay honest).
             return {"ok": False, "error": str(exc)}
+        # B1 — only on a genuine successful account() call do we stamp the
+        # last-verified timestamp. Metadata-only (no secret), persisted to
+        # the JSON index, and echoed back so the CONN pane can show it.
+        verified = store.set_last_verified(rec.id)
+        return {
+            "ok": True,
+            "account": account,
+            "last_verified": verified.last_verified,
+        }
 
     app.include_router(router)
