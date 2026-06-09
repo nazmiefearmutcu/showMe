@@ -50,10 +50,16 @@ export interface StateMigration {
   summary?: Record<string, unknown>;
 }
 
-interface StateRead<T> {
+export interface StateRead<T> {
   rows: T[];
   total: number;
   source: string;
+  /**
+   * ISO timestamp the backend stamped when serving the response. Currently
+   * only the `/api/state/trades` route emits it (drives the TXNS blotter
+   * freshness indicator); other reads leave it undefined.
+   */
+  generated_at?: string;
 }
 
 async function get<T>(path: string): Promise<StateRead<T>> {

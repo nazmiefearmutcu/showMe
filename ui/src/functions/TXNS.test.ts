@@ -15,6 +15,7 @@ const sample: StateTrade[] = [
     opened_at: "2026-04-01T10:00:00Z",
     closed_at: "2026-04-15T16:00:00Z",
     mode: "read_only",
+    source: "showme_import",
   },
   {
     id: 2,
@@ -31,14 +32,14 @@ describe("TXNS buildTradeCsv", () => {
   it("emits the canonical header row", () => {
     const lines = buildTradeCsv([]).split("\n");
     expect(lines[0]).toBe(
-      "trade_id,symbol,side,quantity,entry_price,exit_price,realized_pnl,opened_at,closed_at,mode",
+      "trade_id,symbol,side,quantity,entry_price,exit_price,realized_pnl,opened_at,closed_at,mode,source",
     );
   });
 
   it("renders a fully-populated row with raw numeric cells", () => {
     const lines = buildTradeCsv([sample[0]]).split("\n");
     expect(lines[1]).toBe(
-      "t1,AAPL,LONG,10,180,195,150,2026-04-01T10:00:00Z,2026-04-15T16:00:00Z,read_only",
+      "t1,AAPL,LONG,10,180,195,150,2026-04-01T10:00:00Z,2026-04-15T16:00:00Z,read_only,showme_import",
     );
   });
 

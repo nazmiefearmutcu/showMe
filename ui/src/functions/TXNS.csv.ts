@@ -12,6 +12,10 @@ export function buildTradeCsv(rows: StateTrade[]): string {
     "opened_at",
     "closed_at",
     "mode",
+    // `source` mirrors the per-row provenance column now surfaced in the UI
+    // (e.g. "showme_import"), so the export stays honest about each row's
+    // origin instead of dropping it.
+    "source",
   ];
   const lines = [header.join(",")];
   for (const r of rows) {
@@ -27,6 +31,7 @@ export function buildTradeCsv(rows: StateTrade[]): string {
         csvCell(r.opened_at),
         csvCell(r.closed_at),
         csvCell(r.mode),
+        csvCell(r.source),
       ].join(","),
     );
   }
