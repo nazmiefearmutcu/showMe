@@ -383,10 +383,10 @@ export function TXNSPane({ code, symbol }: FunctionPaneProps) {
                 disabled={rows == null}
               />
               <LoadStatePill
-                state={rows == null ? "loading" : error ? "error" : "ok"}
+                state={error ? "error" : rows == null ? "loading" : "ok"}
               />
               <RefreshButton
-                loading={rows == null}
+                loading={rows == null && !error}
                 onClick={() => setTick((t) => t + 1)}
                 title="Refresh trades"
               />
@@ -575,11 +575,16 @@ function fmtDate(v: string | undefined): string {
   );
 }
 
-/** B-UI — compact HH:MM clock for the freshness indicator. */
+/**
+ * B-UI — compact HH:MM clock for the freshness indicator. `generated_at` is a
+ * UTC ISO string, so render it in UTC with an explicit "UTC" suffix (matching
+ * the StatCard "AS OF … UTC" captions) instead of an unlabelled local time.
+ */
 function fmtClock(v: string): string {
   const d = new Date(v);
   if (Number.isNaN(d.getTime())) return formatMissing;
-  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())} UTC`;
 }
 
 function downloadCsv(label: string, rows: StateTrade[]): void {

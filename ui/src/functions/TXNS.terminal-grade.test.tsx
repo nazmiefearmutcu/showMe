@@ -123,12 +123,15 @@ describe("TXNS terminal-grade", () => {
     );
   });
 
-  it("B-UI: shows a 'Son güncelleme' freshness indicator when generated_at is present", async () => {
+  it("B-UI: shows a 'Son güncelleme' freshness indicator (UTC-labelled) when generated_at is present", async () => {
     await renderWith(trades(SAMPLE));
     const fresh = screen.getByTestId("txns-last-updated");
     expect(fresh.textContent).toMatch(/Son güncelleme:/);
     // A real clock value, not the missing-sentinel em-dash.
     expect(fresh.textContent).not.toMatch(/Son güncelleme:\s*—/);
+    // generated_at is UTC, so the clock is rendered in UTC with an explicit
+    // suffix (honest, TZ-independent) — 12:34Z -> "12:34 UTC".
+    expect(fresh.textContent).toMatch(/12:34 UTC/);
   });
 
   it("B-UI: freshness falls back to '—' when generated_at is absent", async () => {
@@ -168,6 +171,26 @@ describe("TXNS terminal-grade", () => {
     expect(err).toHaveAttribute("role", "status");
     expect(err.className).toMatch(/u-text-negative/);
     expect(err.textContent).toMatch(/sidecar down/);
+  });
+
+  it("P2: on fetch failure the header pill shows error (not loading) and refresh stays clickable", async () => {
+    // rows stays null forever after a rejection; error must win over the
+    // null/loading branch so the pill doesn't spin and refresh can retry.
+    listTradesMock.mockRejectedValue(new Error("sidecar down"));
+    render(<TXNSPane code="TXNS" symbol="" />);
+    // Wait for the error body to surface (proves the fetch rejected).
+    await screen.findByTestId("txns-error");
+
+    // The header LoadStatePill must read "error", never "loading".
+    const controls = screen.getByTestId("txns-last-updated").parentElement!;
+    expect(controls.textContent).toMatch(/error/);
+    expect(controls.textContent).not.toMatch(/loading/);
+
+    // The RefreshButton must be a retry affordance: enabled, not in the
+    // loading "..." state.
+    const refresh = screen.getByRole("button", { name: "Refresh trades" });
+    expect(refresh).not.toBeDisabled();
+    expect(refresh.textContent).not.toBe("...");
   });
 
   it("A3: clicking a sortable header fires onSort, sets aria-sort, and reorders rows", async () => {
