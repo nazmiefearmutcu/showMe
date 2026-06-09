@@ -4,7 +4,6 @@ import {
   type DataGridColumn,
   DeltaChip,
   Empty,
-  HeatCell,
   intensityToken,
   Pane,
   PaneBody,
@@ -16,8 +15,10 @@ import {
   StatusDivider,
 } from "@/design-system";
 import { useFunction } from "@/lib/useFunction";
-import { formatMissing, formatPrice } from "@/lib/format";
+import { formatMissing, formatPercent, formatPrice } from "@/lib/format";
 import { maxAbsOf } from "@/lib/maxOf";
+import { navigate } from "@/lib/router";
+import { useWorkspace } from "@/lib/workspace";
 import {
   FunctionControlGroup,
   LoadStatePill,
@@ -36,6 +37,7 @@ interface HeatmapRow {
   last?: number;
   change_pct?: number;
   period?: string;
+  change_pct_period?: string;
   quote_type?: string;
 }
 
@@ -56,6 +58,7 @@ export function MarketHeatmapPane({ code }: FunctionPaneProps) {
   const isSector = upperCode === "SECT";
   const [mode, setMode] = useState<HeatmapMode>("live");
   const [period, setPeriod] = useState<HeatmapPeriod>("1D");
+  const setFocusedTarget = useWorkspace((s) => s.setFocusedTarget);
 
   const { state, data, error, refetch } = useFunction<unknown>({
     code,
@@ -70,6 +73,29 @@ export function MarketHeatmapPane({ code }: FunctionPaneProps) {
 
   const rows = useMemo(() => normalizeHeatmapRows(data?.data), [data]);
   const payloadStatus = payloadStatusLabel(data?.data, data?.metadata);
+  // The user-requested change window (the WINDOW selector for SECT; MAP is
+  // always intraday). `requestedPeriod` is what the user asked for; the backend
+  // tells us what it actually DELIVERED via `change_pct_period` (e.g. "1D" in
+  // live mode regardless of the request). We label every change value with the
+  // DELIVERED period so an MTD request can't masquerade as MTD data.
+  const requestedPeriod = isSector ? period : "1D";
+  const deliveredPeriod = deliveredPeriodOf(data?.data, rows, requestedPeriod);
+  const periodMismatch = isSector && deliveredPeriod !== requestedPeriod;
+  const warnings = extractWarnings(data);
+  // P-honesty: model/fallback detection — synthetic rows must not read as real
+  // market sentiment. True when metadata flags degraded/fallback OR every row
+  // is quote_type "model".
+  const isModel = useMemo(
+    () => isModelData(rows, data?.data, data?.metadata),
+    [rows, data],
+  );
+  const asOf = useMemo(() => extractAsOf(data), [data]);
+
+  const onPick = (sym?: string) => {
+    if (!sym) return;
+    setFocusedTarget("DES", sym);
+    navigate(`/symbol/${sym}/DES`);
+  };
   const best = useMemo(
     () =>
       rows.reduce<HeatmapRow | null>(
@@ -119,7 +145,7 @@ export function MarketHeatmapPane({ code }: FunctionPaneProps) {
       },
       {
         key: "change_pct",
-        header: `${isSector ? period : "1D"} change`,
+        header: `${deliveredPeriod} change`,
         numeric: true,
         width: 110,
         render: (row) =>
@@ -148,7 +174,7 @@ export function MarketHeatmapPane({ code }: FunctionPaneProps) {
         ),
       },
     ],
-    [isSector, mode, period],
+    [isSector, mode, deliveredPeriod],
   );
 
   const totalUp = rows.filter((r) => numericChange(r) > 0).length;
@@ -199,10 +225,21 @@ export function MarketHeatmapPane({ code }: FunctionPaneProps) {
             {isSector ? "S&P 11" : "Country ETFs"} ({rows.length})
           </Pill>
           <Pill
-            tone={state === "ok" ? "positive" : state === "loading" ? "warn" : "muted"}
+            tone={
+              isModel
+                ? "warn"
+                : state === "ok"
+                  ? "positive"
+                  : state === "loading"
+                    ? "warn"
+                    : "muted"
+            }
             variant="soft"
           >
-            {state === "ok" ? "live" : state}
+            {isModel ? "model" : state === "ok" ? "live" : state}
+          </Pill>
+          <Pill tone="muted" variant="soft" withDot={false}>
+            {asOf ? `${asOf} UTC` : "—"}
           </Pill>
           {data?.elapsed_ms != null && (
             <Pill tone="muted" variant="soft" withDot={false}>
@@ -214,15 +251,27 @@ export function MarketHeatmapPane({ code }: FunctionPaneProps) {
         <PaneBody className="u-p-0">
           <div className="u-p-14 u-grid-gap-12">
             {state === "loading" || state === "idle" ? (
-              <Skeleton height={360} />
+              <div aria-busy="true" aria-live="polite">
+                <Skeleton height={360} />
+              </div>
             ) : state === "error" ? (
-              <Empty
-                title="Function error"
-                body={error?.message ?? "—"}
-                icon="!"
-              />
+              <div role="status">
+                <Empty
+                  title="Function error"
+                  body={error?.message ?? "—"}
+                  icon="!"
+                />
+              </div>
             ) : rows.length === 0 ? (
               <>
+                {isModel ? <ModelDataBadge /> : null}
+                {periodMismatch ? (
+                  <PeriodMismatchNotice
+                    requested={requestedPeriod}
+                    delivered={deliveredPeriod}
+                    warnings={warnings}
+                  />
+                ) : null}
                 {payloadStatus ? <StatusNotice notice={payloadStatus} /> : null}
                 <Empty
                   title="No heatmap rows"
@@ -231,6 +280,14 @@ export function MarketHeatmapPane({ code }: FunctionPaneProps) {
               </>
             ) : (
               <>
+                {isModel ? <ModelDataBadge /> : null}
+                {periodMismatch ? (
+                  <PeriodMismatchNotice
+                    requested={requestedPeriod}
+                    delivered={deliveredPeriod}
+                    warnings={warnings}
+                  />
+                ) : null}
                 {payloadStatus ? <StatusNotice notice={payloadStatus} /> : null}
 
                 {/* Stat strip */}
@@ -245,7 +302,7 @@ export function MarketHeatmapPane({ code }: FunctionPaneProps) {
                   <SuperlativeCard label="Worst" row={worst} tone="negative" />
                   <SimpleCard
                     label="Window"
-                    value={isSector ? period : "1D"}
+                    value={deliveredPeriod}
                     sub={mode}
                   />
                 </div>
@@ -253,9 +310,20 @@ export function MarketHeatmapPane({ code }: FunctionPaneProps) {
                 {/* Main: heatmap grid (left) + legend rail (right) */}
                 <div style={mainGridStyle}>
                   <div className="u-min-w-0">
-                    <SectorHeatGrid rows={rows} isSector={isSector} />
+                    <SectorHeatGrid
+                      rows={rows}
+                      isSector={isSector}
+                      deliveredPeriod={deliveredPeriod}
+                      isModel={isModel}
+                      onPick={onPick}
+                    />
                   </div>
-                  <LegendRail rows={rows} />
+                  <LegendRail
+                    rows={rows}
+                    deliveredPeriod={deliveredPeriod}
+                    isModel={isModel}
+                    onPick={onPick}
+                  />
                 </div>
 
                 <DataGrid
@@ -311,7 +379,9 @@ function PillRow({
           <button
             key={it.id}
             type="button"
+            aria-pressed={isActive}
             onClick={() => onChange(it.id)}
+            className="mh-pill-button"
             style={{
               ...pillButtonStyle,
               background:
@@ -339,69 +409,92 @@ function PillRow({
 function SectorHeatGrid({
   rows,
   isSector,
+  deliveredPeriod,
+  isModel,
+  onPick,
 }: {
   rows: HeatmapRow[];
   isSector: boolean;
+  deliveredPeriod: string;
+  isModel: boolean;
+  onPick: (sym?: string) => void;
 }) {
   // UA-HIGH-12: stack-safe.
   const maxAbs = maxAbsOf(rows.map(numericChange), 1);
   return (
-    <section style={heatGridStyle} aria-label="ETF performance heatmap">
-      {rows.map((row, idx) => {
-        const value = numericChange(row);
-        const cellSize = sizeForValue(value, maxAbs);
-        const tone =
-          value === 0
-            ? "neutral"
-            : value > 0
-              ? "positive"
-              : "negative";
-        return (
-          <div
-            key={`${labelForRow(row)}-${idx}`}
-            style={{
-              ...heatCellWrapStyle,
-              gridColumn: `span ${cellSize}`,
-              background: intensityToken(value, maxAbs),
-              borderColor:
-                tone === "positive"
-                  ? "color-mix(in srgb, var(--positive) 32%, transparent)"
-                  : tone === "negative"
-                    ? "color-mix(in srgb, var(--negative) 32%, transparent)"
-                    : "var(--border-subtle)",
-            }}
-            title={`${labelForRow(row)} · ${value.toFixed(2)}% (${isSector ? "sector" : "country"})`}
-          >
-            <div style={heatCellTopRowStyle}>
-              <strong style={heatCellLabelStyle}>{labelForRow(row)}</strong>
-              <span style={heatCellTickerStyle}>
-                {row.etf ?? row.symbol ?? "—"}
-              </span>
-            </div>
-            <div style={heatCellValueRowStyle}>
-              <span
-                style={{
-                  ...heatCellValueStyle,
-                  color: tone === "positive"
-                    ? "var(--positive)"
+    <div className="u-grid-gap-6">
+      <section style={heatGridStyle} aria-label="ETF performance heatmap">
+        {rows.map((row, idx) => {
+          const value = numericChange(row);
+          const cellSize = sizeForValue(value, maxAbs);
+          const tone =
+            value === 0
+              ? "neutral"
+              : value > 0
+                ? "positive"
+                : "negative";
+          const sym = row.etf ?? row.symbol;
+          const synthetic =
+            isModel ||
+            String(row.quote_type ?? "").toLowerCase() === "model";
+          // DI1: ratio-driven contrast (mirror HeatCell) — high-intensity
+          // tiles use the bright display color so green/red text stays legible
+          // on a saturated same-tone background; low-intensity uses secondary.
+          const fg = textColorForCell(value, maxAbs);
+          const pct = formatPercent(value, { digits: 2, signed: true });
+          return (
+            <button
+              key={`${labelForRow(row)}-${idx}`}
+              type="button"
+              className="mh-heat-cell"
+              onClick={() => onPick(sym)}
+              disabled={!sym}
+              aria-label={`${labelForRow(row)} (${sym ?? "—"}) ${pct} ${deliveredPeriod}${synthetic ? " (model)" : ""}`}
+              style={{
+                ...heatCellWrapStyle,
+                gridColumn: `span ${cellSize}`,
+                background: intensityToken(value, maxAbs),
+                borderColor:
+                  tone === "positive"
+                    ? "color-mix(in srgb, var(--positive) 32%, transparent)"
                     : tone === "negative"
-                      ? "var(--negative)"
-                      : "var(--text-secondary)",
-                }}
-              >
-                {value >= 0 ? "+" : ""}
-                {value.toFixed(2)}%
-              </span>
-              <span style={heatCellLastStyle}>{fmtNum(row.last)}</span>
-            </div>
-          </div>
-        );
-      })}
-    </section>
+                      ? "color-mix(in srgb, var(--negative) 32%, transparent)"
+                      : "var(--border-subtle)",
+              }}
+              title={`${labelForRow(row)} · ${pct} ${deliveredPeriod} (${isSector ? "sector" : "country"})`}
+            >
+              <div style={heatCellTopRowStyle}>
+                <strong style={{ ...heatCellLabelStyle, color: fg }}>
+                  {labelForRow(row)}
+                </strong>
+                <span style={heatCellTickerStyle}>{sym ?? "—"}</span>
+              </div>
+              <div style={heatCellValueRowStyle}>
+                <span style={{ ...heatCellValueStyle, color: fg }}>{pct}</span>
+                <span style={heatCellLastStyle}>{fmtNum(row.last)}</span>
+              </div>
+            </button>
+          );
+        })}
+      </section>
+      <p style={sizingNoteStyle} data-testid="map-sizing-note">
+        Kutu boyutu = % değişim büyüklüğü (piyasa değeri DEĞİL).
+      </p>
+    </div>
   );
 }
 
-function LegendRail({ rows }: { rows: HeatmapRow[] }) {
+function LegendRail({
+  rows,
+  deliveredPeriod,
+  isModel,
+  onPick,
+}: {
+  rows: HeatmapRow[];
+  deliveredPeriod: string;
+  isModel: boolean;
+  onPick: (sym?: string) => void;
+}) {
   const sorted = [...rows].sort(
     (a, b) => numericChange(b) - numericChange(a),
   );
@@ -438,14 +531,28 @@ function LegendRail({ rows }: { rows: HeatmapRow[] }) {
       <RailSection title="Top movers">
         <div className="u-grid-gap-4">
           {top5.map((row, idx) => (
-            <RankRow key={`top-${idx}`} row={row} tone="positive" />
+            <RankRow
+              key={`top-${idx}`}
+              row={row}
+              tone="positive"
+              deliveredPeriod={deliveredPeriod}
+              isModel={isModel}
+              onPick={onPick}
+            />
           ))}
         </div>
       </RailSection>
       <RailSection title="Worst movers">
         <div className="u-grid-gap-4">
           {bottom5.map((row, idx) => (
-            <RankRow key={`bot-${idx}`} row={row} tone="negative" />
+            <RankRow
+              key={`bot-${idx}`}
+              row={row}
+              tone="negative"
+              deliveredPeriod={deliveredPeriod}
+              isModel={isModel}
+              onPick={onPick}
+            />
           ))}
         </div>
       </RailSection>
@@ -453,24 +560,133 @@ function LegendRail({ rows }: { rows: HeatmapRow[] }) {
   );
 }
 
-function RankRow({ row, tone }: { row: HeatmapRow; tone: "positive" | "negative" }) {
+function RankRow({
+  row,
+  tone,
+  deliveredPeriod,
+  isModel,
+  onPick,
+}: {
+  row: HeatmapRow;
+  tone: "positive" | "negative";
+  deliveredPeriod: string;
+  isModel: boolean;
+  onPick: (sym?: string) => void;
+}) {
   const value = numericChange(row);
+  const sym = row.etf ?? row.symbol;
+  const synthetic =
+    isModel || String(row.quote_type ?? "").toLowerCase() === "model";
+  const pct = formatPercent(value, { digits: 2, signed: true });
+  // DI1: ratio-driven contrast — the mover value uses the bright display
+  // color for big moves (legible against any row tint) and the tone color
+  // for small ones.
+  const fg = textColorForCell(value, 5);
   return (
-    <div style={rankRowStyle}>
-      <HeatCell value={value} range={5} size={22} fractionDigits={1} />
+    <button
+      type="button"
+      className="mh-rank-row"
+      style={rankRowStyle}
+      onClick={() => onPick(sym)}
+      disabled={!sym}
+      aria-label={`${labelForRow(row)} (${sym ?? "—"}) ${pct} ${deliveredPeriod}${synthetic ? " (model)" : ""}`}
+    >
+      {/* Heat swatch — a plain element (NOT design-system HeatCell, which is a
+          <button>) so we don't nest interactive controls inside this row
+          button. */}
+      <span
+        aria-hidden
+        style={{
+          width: 22,
+          height: 22,
+          flexShrink: 0,
+          borderRadius: 4,
+          background: intensityToken(value, 5),
+          border: "1px solid var(--border-row)",
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          fontSize: 9,
+          fontFamily: "JetBrains Mono, monospace",
+          fontVariantNumeric: "tabular-nums",
+          color: textColorForCell(value, 5),
+        }}
+      >
+        {value.toFixed(1)}
+      </span>
       <div style={rankColumnStyle}>
         <span style={rankLabelStyle}>{labelForRow(row)}</span>
-        <span style={rankTickerStyle}>{row.etf ?? row.symbol ?? "—"}</span>
+        <span style={rankTickerStyle}>{sym ?? "—"}</span>
       </div>
       <span
         style={{
           ...rankValueStyle,
-          color: tone === "positive" ? "var(--positive)" : "var(--negative)",
+          color:
+            fg === "var(--text-display)"
+              ? "var(--text-display)"
+              : tone === "positive"
+                ? "var(--positive)"
+                : "var(--negative)",
         }}
       >
-        {value >= 0 ? "+" : ""}
-        {value.toFixed(2)}%
+        {pct}
       </span>
+    </button>
+  );
+}
+
+/** Prominent "MODEL data — not live" badge (mirrors WEI's ModelDataBadge). */
+function ModelDataBadge() {
+  return (
+    <div
+      className="wei-model-badge"
+      role="status"
+      data-testid="map-model-badge"
+      aria-label="Model veri — canlı piyasa değil"
+    >
+      <span className="wei-model-badge__dot" aria-hidden />
+      <strong>MODEL VERİ — canlı piyasa değil</strong>
+      <span className="u-text-secondary">
+        Bu kutular deterministik bir ETF modeli, canlı piyasa kotasyonu değil.
+      </span>
+    </div>
+  );
+}
+
+/**
+ * SECT live mode delivers only intraday (1D) changes even when the user picks
+ * MTD/QTD/YTD. This notice discloses the delivered vs. requested period and
+ * surfaces any backend `warnings`, so an MTD request can't read as MTD data.
+ */
+function PeriodMismatchNotice({
+  requested,
+  delivered,
+  warnings,
+}: {
+  requested: string;
+  delivered: string;
+  warnings: string[];
+}) {
+  return (
+    <div
+      className="wei-model-badge"
+      role="status"
+      data-testid="map-period-notice"
+      aria-label="Period mismatch"
+    >
+      <span className="wei-model-badge__dot" aria-hidden />
+      <strong>
+        Canlı modda yalnız günlük ({delivered}) değişim var
+      </strong>
+      <span className="u-text-secondary">
+        Seçilen {requested} için geçmiş veri gerekir; gösterilen değerler{" "}
+        {delivered} değişimidir.
+      </span>
+      {warnings.map((w, i) => (
+        <span key={i} className="u-text-secondary">
+          {w}
+        </span>
+      ))}
     </div>
   );
 }
@@ -625,6 +841,84 @@ function labelForRow(row: HeatmapRow): string {
   return row.sector ?? row.country ?? row.symbol ?? row.etf ?? "—";
 }
 
+/**
+ * The period the backend ACTUALLY delivered for the change values. SECT live
+ * mode stamps `change_pct_period` ("1D") even when the user asked for
+ * MTD/QTD/YTD; we prefer that, fall back to the per-row `period`, then to the
+ * requested period. This is the label we put on every change value so a
+ * mismatch can't masquerade as the requested window.
+ */
+function deliveredPeriodOf(
+  payload: unknown,
+  rows: HeatmapRow[],
+  requested: string,
+): string {
+  if (payload && typeof payload === "object") {
+    const cp = (payload as Record<string, unknown>).change_pct_period;
+    if (typeof cp === "string" && cp) return cp;
+  }
+  const rowPeriod = rows.find(
+    (r) => typeof r.change_pct_period === "string" && r.change_pct_period,
+  )?.change_pct_period;
+  if (rowPeriod) return rowPeriod;
+  return requested;
+}
+
+/** Top-level FunctionResult `warnings` (string[]); empty if absent. */
+function extractWarnings(envelope: unknown): string[] {
+  if (!envelope || typeof envelope !== "object") return [];
+  const w = (envelope as Record<string, unknown>).warnings;
+  if (!Array.isArray(w)) return [];
+  return w.filter((x): x is string => typeof x === "string" && x.length > 0);
+}
+
+/** Server data-freshness (`fetched_at`) as an HH:MM UTC stamp, if present. */
+function extractAsOf(envelope: unknown): string | undefined {
+  if (!envelope || typeof envelope !== "object") return undefined;
+  const raw = (envelope as Record<string, unknown>).fetched_at;
+  if (typeof raw !== "string" || !raw) return undefined;
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) return undefined;
+  return d.toISOString().slice(11, 16);
+}
+
+/**
+ * Detect model / fallback data: synthetic rows must not read as real market
+ * sentiment. True when metadata flags degraded/fallback, the payload status is
+ * model/provider_unavailable, or every row is explicitly quote_type "model".
+ */
+function isModelData(
+  rows: HeatmapRow[],
+  payload: unknown,
+  metadata: Record<string, unknown> | undefined,
+): boolean {
+  if (metadata?.degraded === true || metadata?.fallback === true) return true;
+  const o = (payload && typeof payload === "object" ? payload : {}) as Record<
+    string,
+    unknown
+  >;
+  const status = String(o.status ?? "").toLowerCase();
+  if (status === "model" || status === "provider_unavailable") return true;
+  if (
+    rows.length &&
+    rows.every((r) => String(r.quote_type ?? "").toLowerCase() === "model")
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * DI1: ratio-driven foreground contrast (mirror design-system/HeatCell).
+ * On a high-intensity tile the same-tone green/red text loses contrast, so we
+ * switch to the bright `--text-display`; low-intensity tiles use a readable
+ * secondary tone.
+ */
+function textColorForCell(value: number, range: number): string {
+  const ratio = range ? Math.min(1, Math.abs(value) / range) : 0;
+  return ratio > 0.5 ? "var(--text-display)" : "var(--text-secondary)";
+}
+
 function numericChange(row: HeatmapRow): number {
   return typeof row.change_pct === "number" && Number.isFinite(row.change_pct)
     ? row.change_pct
@@ -688,9 +982,17 @@ const pillButtonStyle: CSSProperties = {
   borderRadius: "var(--radius-sm)",
   fontFamily: "JetBrains Mono, monospace",
   fontSize: 10,
-  cursor: "default",
+  cursor: "pointer",
   letterSpacing: "0.04em",
   transition: "background var(--motion-fast), color var(--motion-fast)",
+};
+
+const sizingNoteStyle: CSSProperties = {
+  margin: 0,
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: 9,
+  color: "var(--text-mute)",
+  letterSpacing: "0.04em",
 };
 
 const statStripStyle: CSSProperties = {

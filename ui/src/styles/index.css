@@ -7160,6 +7160,43 @@
   border-radius: 2px;
 }
 
+/* MAP / SECT market-heatmap — interactive tiles + movers (a11y). The grid
+   tiles and legend mover rows are real <button>s so they're keyboard-operable
+   and navigate to the ETF in DES. Reset the UA button chrome but keep the
+   inline tile/row styling, and add a visible focus ring. */
+.mh-heat-cell {
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+}
+.mh-heat-cell:disabled,
+.mh-rank-row:disabled {
+  cursor: default;
+}
+.mh-heat-cell:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+.mh-heat-cell:focus-visible,
+.mh-rank-row:focus-visible,
+.mh-pill-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+.mh-rank-row {
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+  background: transparent;
+}
+.mh-rank-row:hover:not(:disabled) {
+  background: var(--surface-2);
+}
+
 /* BTMM (central-bank policy-rate monitor) — data-honesty + a11y styling. */
 .btmm-spark {
   display: inline-flex;
