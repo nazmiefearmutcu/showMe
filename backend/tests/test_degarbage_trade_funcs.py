@@ -132,6 +132,49 @@ def test_aim_history_tail_respects_limit(monkeypatch):
     assert len(res.data["rows"]) <= 3
 
 
+def test_aim_manifest_provider_chain_is_honest() -> None:
+    """The AIM manifest must not mislabel its provider chain.
+
+    H2: the impl fans out across binance/alpaca/ibkr/oanda broker adapters and
+    degrades to a cached order_history snapshot — it is NOT a single
+    ``ccxt_broker`` provider. The seed primary must reflect the multi-broker
+    fanout while keeping the cached_snapshot fallback.
+    """
+    from showme.manifest.registry import REGISTRY
+    from showme.manifest.seeds import load_seeds
+
+    load_seeds()
+    entry = REGISTRY.get("AIM")
+    assert entry.provider_chain.primary != "ccxt_broker", (
+        "AIM provider_chain.primary must not claim a single ccxt_broker — it "
+        "fans out across multiple broker adapters"
+    )
+    assert entry.provider_chain.primary == "broker_adapters", (
+        f"expected 'broker_adapters', got {entry.provider_chain.primary!r}"
+    )
+    assert "cached_snapshot" in entry.provider_chain.fallbacks
+
+
+def test_aim_filled_card_label_is_not_misnamed_today() -> None:
+    """H1: the 'Filled' KPI counts all-time fills, so it must not say 'today'.
+
+    The data key stays ``filled_today`` for contract stability, but the
+    user-facing label must be the honest all-time "Filled".
+    """
+    from showme.manifest.registry import REGISTRY
+    from showme.manifest.seeds import load_seeds
+
+    load_seeds()
+    entry = REGISTRY.get("AIM")
+    filled_slots = [s for s in entry.card_schema.slots if s.key == "filled_today"]
+    assert filled_slots, "AIM must expose a filled KPI slot"
+    label = filled_slots[0].label or ""
+    assert "today" not in label.lower(), (
+        f"the all-time fill count must not be labelled 'today'; got {label!r}"
+    )
+    assert label == "Filled"
+
+
 # --------------------------------------------------------------------------- #
 # FXGO — live dealing board
 # --------------------------------------------------------------------------- #

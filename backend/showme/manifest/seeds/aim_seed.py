@@ -107,7 +107,10 @@ def aim() -> FunctionManifest:
             "provider_mode": DataMode.LIVE_EXCHANGE.value,
         },
         provider_chain=ProviderChain(
-            primary="ccxt_broker",
+            # AIM fans out across binance/alpaca/ibkr/oanda broker adapters and
+            # degrades to the persisted order_history cached snapshot — it is NOT
+            # a single ccxt_broker provider, so name it for the multi-broker fanout.
+            primary="broker_adapters",
             fallbacks=["cached_snapshot"],
             acceptable_modes=[
                 DataMode.LIVE_EXCHANGE,
@@ -145,7 +148,10 @@ def aim() -> FunctionManifest:
         card_schema=CardSchema(
             slots=[
                 CardSlot(key="open_count", label="Open", kind="kpi"),
-                CardSlot(key="filled_today", label="Filled Today", kind="kpi"),
+                # Counts ALL filled/partially-filled rows in the history tail,
+                # not just today's — label honestly as "Filled" (the data key
+                # `filled_today` is kept for contract stability).
+                CardSlot(key="filled_today", label="Filled", kind="kpi"),
                 CardSlot(key="brokers_online", label="Brokers", kind="kpi"),
                 CardSlot(key="total_notional", label="Notional", kind="kpi", unit="USD"),
                 CardSlot(key="data_mode", label="Mode", kind="mode_pill"),
