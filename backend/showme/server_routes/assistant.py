@@ -16,9 +16,11 @@ def _indicator_catalog_ids() -> set[str]:
     Mirrors ``templates.py:_indicator_catalog_ids`` so an assistant-produced
     spec is held to the SAME catalog contract the strategies create/update
     routes enforce — a generated spec must only reference real catalog
-    indicators. A failed catalog load degrades to an empty set (validation
-    skipped) so a broken catalog never blocks generation that the strategies
-    routes would otherwise allow.
+    indicators. A failed catalog load returns an EMPTY set; the caller MUST
+    treat an empty set as "catalog unavailable → skip validation" (NOT as a
+    catalog with zero indicators), since otherwise every indicator would be
+    rejected. A broken catalog therefore never blocks generation that the
+    strategies routes would otherwise allow.
     """
     try:
         from showme.indicators.catalog.loader import load_indicator_catalog
@@ -74,14 +76,23 @@ def register(app: FastAPI, deps: AppDeps) -> None:
         # catalog STRA/the engine enforces. A catalog-invalid spec is NEVER
         # persisted (even when save=True); we return it for transparency with
         # an honest note so the user sees why nothing was saved.
-        try:
-            spec.validate_against_catalog(_indicator_catalog_ids())
-        except ValueError as err:
-            return {
-                "spec": spec_dict,
-                "notes": notes + [f"katalog doğrulaması başarısız: {err}"],
-                "saved_id": None,
-            }
+        #
+        # P2-1 — only validate when the catalog set is non-empty. An empty set
+        # means the catalog could not be loaded (see ``_indicator_catalog_ids``);
+        # ``validate_against_catalog`` rejects EVERY indicator against an empty
+        # set (``ref.id not in set()`` is always True), so calling it would make
+        # a broken catalog block ALL saves. Empty = unavailable → skip
+        # validation, matching the docstring intent.
+        catalog_ids = _indicator_catalog_ids()
+        if catalog_ids:
+            try:
+                spec.validate_against_catalog(catalog_ids)
+            except ValueError as err:
+                return {
+                    "spec": spec_dict,
+                    "notes": notes + [f"katalog doğrulaması başarısız: {err}"],
+                    "saved_id": None,
+                }
 
         saved_id = None
         if save:

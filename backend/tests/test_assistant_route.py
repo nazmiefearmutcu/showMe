@@ -91,6 +91,30 @@ def test_strategy_from_text_catalog_invalid_not_persisted(client, monkeypatch):
     assert len(after) == len(before)
 
 
+def test_strategy_from_text_empty_catalog_skips_validation(client, monkeypatch):
+    """P2-1 — when the indicator catalog cannot be loaded,
+    ``_indicator_catalog_ids`` returns an EMPTY set. The route MUST treat
+    that as "catalog unavailable → skip validation", NOT validate against an
+    empty set (which rejects every indicator). A valid MACD strategy with
+    save=True must still be saved, with NO ``katalog doğrulaması`` note."""
+    import showme.server_routes.assistant as assistant_mod
+    monkeypatch.setattr(assistant_mod, "_indicator_catalog_ids", lambda: set())
+
+    before = client.get("/api/strategies").json()["records"]
+    r = client.post("/api/assistant/strategy-from-text",
+                    json={"text": "MACD strategy", "save": True})
+    assert r.status_code == 200
+    body = r.json()
+    # Validation skipped, not failed-for-all → strategy IS saved.
+    assert body["saved_id"] is not None
+    assert not any("katalog doğrulaması" in n for n in body["notes"])
+    # Actually persisted.
+    after = client.get("/api/strategies").json()["records"]
+    ids = {rec["id"] for rec in after}
+    assert body["saved_id"] in ids
+    assert len(after) == len(before) + 1
+
+
 def test_explain_requires_strategy_id(client):
     r = client.post("/api/assistant/explain-strategy", json={})
     assert r.status_code == 400

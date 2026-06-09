@@ -115,6 +115,54 @@ def test_multi_indicator_notes_only_first_used():
     assert any("macd" in n for n in notes)
 
 
+# ─── P2-2 — short-token ignored-concept FALSE-POSITIVE guard ────────────────
+# The parser matches short tokens (sl/tp/risk/mum) as WHOLE words (via a
+# tokenised word-set), NOT substrings, to avoid false positives. These tests
+# prove the guard: each short token must NOT fire when it only appears as a
+# substring of an otherwise-normal word. The ignored-concept note format is
+# "⚠ '<label>' desteklenmiyor — yok sayıldı", so we assert no "yok sayıldı"
+# note carries the relevant label.
+def _ignored_labels(notes: list[str]) -> list[str]:
+    """Labels echoed as ignored/unsupported concepts."""
+    return [n for n in notes if "yok sayıldı" in n and "desteklenmiyor" in n]
+
+
+def test_sl_token_does_not_fire_inside_words():
+    # "sl" appears in "ssl"/"alt_close"/"url" but never as a whole token.
+    spec, notes = parse_request("RSI ssl alt_close url")
+    assert spec is not None
+    assert not any("take-profit" in n for n in _ignored_labels(notes))
+
+
+def test_risk_token_does_not_fire_inside_risksiz():
+    # "risk" is a substring of "risksiz" — must NOT trigger the sizing note.
+    spec, notes = parse_request("RSI risksiz yaklaşım")
+    assert spec is not None
+    assert not any("boyutlandırma" in n for n in _ignored_labels(notes))
+
+
+def test_mum_token_does_not_fire_inside_momentum():
+    # "mum" is a substring of "momentum"/"maximum" — no candlestick note.
+    spec, notes = parse_request("MACD momentum maximum")
+    assert spec is not None
+    assert not any("formasyon" in n for n in _ignored_labels(notes))
+
+
+def test_tp_token_does_not_fire_inside_http():
+    # "tp" is a substring of "http" — no take-profit note.
+    spec, notes = parse_request("RSI http endpoint")
+    assert spec is not None
+    assert not any("take-profit" in n for n in _ignored_labels(notes))
+
+
+def test_sl_token_DOES_fire_as_whole_word_positive_control():
+    # Positive control: a bare "sl" token (and "tp") IS detected, proving the
+    # negative tests above would catch a regression in EITHER direction.
+    spec, notes = parse_request("RSI sl tp")
+    assert spec is not None
+    assert any("take-profit" in n for n in _ignored_labels(notes))
+
+
 # ─── B2 — defaults vs parsed disclosure ─────────────────────────────────────
 def test_timeframe_defaulted_note_when_not_specified():
     spec, notes = parse_request("RSI strateji")
