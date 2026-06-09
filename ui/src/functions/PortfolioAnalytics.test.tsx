@@ -139,6 +139,64 @@ describe("PORTX shared data-quality badge (H1)", () => {
     render(<PortfolioAnalyticsPane code="MARS" symbol="" />);
     expect(screen.queryByTestId("portx-data-badge")).toBeNull();
   });
+
+  // P2a — "reference" in a FREE-TEXT provider source name must NOT brand
+  // live data as MODEL. The token is too ambiguous (e.g. a security-master
+  // "*_reference_*"); only the CONTROLLED enum fields may detect "reference".
+  it("does NOT fire for a live payload whose sources name contains 'reference'", () => {
+    mockOk(
+      { status: "ok", rows: LIVE_ROWS },
+      { sources: ["bloomberg_reference"], metadata: { live: true } },
+    );
+    render(<PortfolioAnalyticsPane code="MARS" symbol="" />);
+    expect(screen.queryByTestId("portx-data-badge")).toBeNull();
+  });
+
+  // …but the CONTROLLED `status` enum still detects "reference".
+  it("STILL fires for status: reference (a controlled enum field)", () => {
+    mockOk({ status: "reference", rows: LIVE_ROWS });
+    render(<PortfolioAnalyticsPane code="MARS" symbol="" />);
+    expect(screen.getByTestId("portx-data-badge")).toBeTruthy();
+  });
+});
+
+describe("PORTX exposure ladder value format (P1)", () => {
+  // The ladder must format its value with the REAL field key, not a
+  // hardcoded "weight_pct". A dollar field (total_pnl) rendered as a
+  // percent turns 1200 into a wildly-wrong "120,000%".
+  it("formats a total_pnl ladder value as currency (NOT a giant percent)", () => {
+    mockOk({
+      status: "ok",
+      // No weight_pct / risk keys, so the ladder resolves to total_pnl.
+      rows: [
+        { symbol: "AAA", total_pnl: 1200 },
+        { symbol: "BBB", total_pnl: -800 },
+      ],
+    });
+    const { container } = render(<PortfolioAnalyticsPane code="PORT" symbol="" />);
+    const ladder = container.querySelector(".portfolio-ladder");
+    expect(ladder).toBeTruthy();
+    const text = ladder!.textContent ?? "";
+    // Dollar P&L must not be percent-formatted.
+    expect(text).not.toContain("%");
+    expect(text).not.toContain("120,000");
+    // And the real currency value is present (1,200 / $1,200 etc.).
+    expect(text).toMatch(/1[,.]?200/);
+  });
+
+  it("still formats a weight_pct ladder value as a percent", () => {
+    mockOk({
+      status: "ok",
+      rows: [
+        { symbol: "AAA", weight_pct: 0.4 },
+        { symbol: "BBB", weight_pct: 0.6 },
+      ],
+    });
+    const { container } = render(<PortfolioAnalyticsPane code="PORT" symbol="" />);
+    const ladder = container.querySelector(".portfolio-ladder");
+    expect(ladder).toBeTruthy();
+    expect(ladder!.textContent).toContain("%");
+  });
 });
 
 describe("PORTX sign-coloured financial numerics (D1)", () => {

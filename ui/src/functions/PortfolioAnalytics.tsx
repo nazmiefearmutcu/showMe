@@ -571,7 +571,10 @@ function PortfolioAnalyticsView({
             the empty state too, so a synthetic/sample fallback is never
             mistaken for "the portfolio is genuinely empty live". */}
         <PortfolioDataBadge quality={dataQuality} />
-        <div role="status">
+        {/* A11y: the badge above is already a polite live region (role=status).
+            The Empty content is static, so a second role=status here would
+            double-announce — keep just one live region in this branch. */}
+        <div>
           <Empty
             title={title}
             body={body}
@@ -703,7 +706,7 @@ function PortfolioVisual({
                   />
                 </div>
                 <strong className={signToneClass(row.labelKey, row.value)}>
-                  {formatSmart("weight_pct", row.value)}
+                  {formatSmart(row.labelKey, row.value)}
                 </strong>
               </div>
             );
@@ -1042,7 +1045,14 @@ interface PortfolioDataQuality {
   reason?: string;
 }
 
-const SYNTHETIC_SOURCE_RE = /model|template|reference|sample|synthetic/i;
+// Free-text provider `sources[]` names: match ONLY unambiguous synthetic
+// markers. "reference" is DELIBERATELY excluded here — a legitimate live
+// provider source can legitimately contain it (e.g. a security-master
+// "*_reference_*"), and matching it would falsely brand real data "MODEL".
+// "reference" is still detected, but only on the CONTROLLED enum fields
+// (status / data_mode / return_data_state) below, where the value space is
+// fixed and unambiguous.
+const SYNTHETIC_SOURCE_RE = /model|template|synthetic|sample/i;
 
 /**
  * Classify a portfolio payload as live / modeled / sample / degraded by
@@ -1055,7 +1065,9 @@ const SYNTHETIC_SOURCE_RE = /model|template|reference|sample|synthetic/i;
  *   - `return_data_state` ("synthetic_fallback")
  *   - `fallback === true` / `fallback_reason`
  *   - `metadata.degraded` / `metadata.fallback`
- *   - any `sources[]` entry matching /model|template|reference|sample|synthetic/i
+ *   - any free-text `sources[]` entry matching /model|template|synthetic|sample/i
+ *     (NOT "reference" — ambiguous in provider names; only the controlled
+ *     `status`/`data_mode`/`return_data_state` enums detect "reference")
  *
  * "sample" is reserved for explicitly sample/template payloads; everything
  * else non-live is "modeled", with "degraded" for partial-live (provider
