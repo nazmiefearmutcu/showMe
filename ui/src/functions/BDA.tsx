@@ -140,7 +140,6 @@ export function BDAPane() {
                   style={{ width: "100%", fontFamily: "var(--font-mono)",
                            fontSize: "var(--font-size-sm)" }}
                   placeholder='Örn: "RSI 30 altında alım, 70 üstünde satım, BTC/USDT 1h"'
-                  aria-label="Strategy request"
                   aria-describedby={error ? "bda-help bda-error" : "bda-help"} />
 
         <div style={{ display: "flex", gap: 8, marginTop: 8 }}>

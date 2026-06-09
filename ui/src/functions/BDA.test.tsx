@@ -21,14 +21,14 @@ beforeEach(() => {
 describe("BDA pane", () => {
   it("renders textarea + buttons", () => {
     render(<BDAPane />);
-    expect(screen.getByLabelText(/strategy request/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/strateji isteği/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^strateji öner$/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /öner.*kaydet/i })).toBeInTheDocument();
   });
 
   it("textarea updates store text", () => {
     render(<BDAPane />);
-    fireEvent.change(screen.getByLabelText(/strategy request/i), {
+    fireEvent.change(screen.getByLabelText(/strateji isteği/i), {
       target: { value: "RSI 30 altında" },
     });
     expect(useAssistantStore.getState().text).toBe("RSI 30 altında");
