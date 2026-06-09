@@ -151,6 +151,32 @@ describe("ECO pane — synthetic-calendar honesty", () => {
     expect(screen.queryByText(/calendar_feed_model/)).toBeNull();
   });
 
+  it("still renders the model badge when a synthetic calendar has zero events", () => {
+    // Honesty: even if the synthetic calendar returns/filters to NO rows, the
+    // empty state must keep disclosing that this is the unavailable-providers
+    // sample — not let the user assume there's simply no calendar data.
+    setMockFn({
+      state: "ok",
+      data: {
+        data: {
+          events: [],
+          rows: [],
+          source_mode: "calendar_feed_model",
+          as_of: AS_OF,
+        },
+        sources: ["calendar_feed_model"],
+        elapsed_ms: 12,
+      },
+    });
+    render(<ECOPane code="ECO" />);
+    // The empty state is shown…
+    expect(screen.getByText(/Calendar empty/i)).toBeInTheDocument();
+    // …but the synthetic disclosure badge is still present.
+    const badge = screen.getByTestId("eco-model-badge");
+    expect(badge).toBeInTheDocument();
+    expect(badge).toHaveAttribute("role", "status");
+  });
+
   it("does NOT render the model badge for a live (tradingeconomics) payload", () => {
     setMockFn({ state: "ok", ...livePayload() });
     render(<ECOPane code="ECO" />);

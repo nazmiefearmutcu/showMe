@@ -222,6 +222,7 @@ export function ECOPane({ code }: FunctionPaneProps) {
               <LoadStatePill state={state} />
               <RefreshButton
                 loading={state === "loading"}
+                busy={state === "loading" || state === "refreshing"}
                 onClick={refetch}
                 title="Takvimi yenile"
               />
@@ -245,10 +246,13 @@ export function ECOPane({ code }: FunctionPaneProps) {
               />
             </div>
           ) : events.length === 0 ? (
-            <Empty
-              title="Calendar empty"
-              body={`${country} · ${importance} · next ${days} days`}
-            />
+            <div className="u-grid-gap-14">
+              {isModel ? <ModelCalendarBadge /> : null}
+              <Empty
+                title="Calendar empty"
+                body={`${country} · ${importance} · next ${days} days`}
+              />
+            </div>
           ) : (
             <div className="u-grid-gap-14">
               {isModel ? <ModelCalendarBadge /> : null}

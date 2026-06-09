@@ -108,12 +108,14 @@ export function RefreshButton({
   disabled,
   title = "Refresh",
   label,
+  busy,
 }: {
   loading?: boolean;
   onClick: () => void;
   disabled?: boolean;
   title?: string;
   label?: string;
+  busy?: boolean;
 }) {
   return (
     <button
@@ -123,6 +125,7 @@ export function RefreshButton({
       disabled={disabled || loading}
       title={title}
       aria-label={title}
+      aria-busy={busy ?? undefined}
     >
       {loading ? "..." : label ?? "↻"}
     </button>
