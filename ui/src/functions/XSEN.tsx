@@ -7,7 +7,7 @@
  * a one-click INSTANT merge action that pushes the active query into the
  * INSTANT pane's X sentiment merge slot.
  */
-import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import {
   Card,
   CardHeader,
@@ -35,6 +35,8 @@ import { useWorkspace } from "@/lib/workspace";
 import { navigate } from "@/lib/router";
 import { useXInjectStore } from "@/lib/xinject";
 import { maxOf } from "@/lib/maxOf";
+import { relativeTimeLabel } from "@/lib/time";
+import { formatNumber, formatPercent, formatSignedDelta } from "@/lib/format";
 import type { FunctionPaneProps } from "./registry-types";
 
 type LoadState = "idle" | "loading" | "ok" | "error";
@@ -65,6 +67,11 @@ export function XSENPane({ code, symbol }: FunctionPaneProps) {
   const [health, setHealth] = useState<XHealth | null>(null);
   const [expandedTweet, setExpandedTweet] = useState<string | null>(null);
   const setFocusedTarget = useWorkspace((s) => s.setFocusedTarget);
+  // A6: SR-only live region announces the load result ONCE on completion.
+  // useRef of the last announced message gates re-announcement so the region
+  // doesn't re-fire on every render (mirrors INSTANT/AGENT).
+  const [announcement, setAnnouncement] = useState("");
+  const lastAnnouncedRef = useRef<string>("");
 
   // When the pane is symbol-bound (#/symbol/AAPL/XSEN), auto-run once on
   // mount so the user lands on data, not a blank state. Manual queries always
@@ -144,6 +151,16 @@ export function XSENPane({ code, symbol }: FunctionPaneProps) {
     };
   }, [runId]); // eslint-disable-line react-hooks/exhaustive-deps -- Run-button gated on purpose
 
+  // A6: announce the load result exactly once when it lands. Gated on a ref
+  // of the last spoken message so re-renders (hover, expand) don't re-announce.
+  useEffect(() => {
+    if (state !== "ok" || !data) return;
+    const msg = `${data.post_count ?? 0} gönderi yüklendi, ruh hali ${data.mood ?? "—"}`;
+    if (lastAnnouncedRef.current === msg) return;
+    lastAnnouncedRef.current = msg;
+    setAnnouncement(msg);
+  }, [state, data]);
+
   const run = () => {
     setQuery(draftQuery.trim() || "AAPL");
     setLimit(Math.max(20, Math.min(500, draftLimit)));
@@ -207,7 +224,7 @@ export function XSENPane({ code, symbol }: FunctionPaneProps) {
         <PaneHeader
           code={code}
           title="X social sentiment"
-          subtitle={`AI · sentiment + emotion + topic · query "${query || "—"}" · ${data?.post_count ?? 0} posts`}
+          subtitle={`Yerel RoBERTa · sentiment + emotion + topic · query "${query || "—"}" · ${data?.post_count ?? 0} posts`}
           help={<XSENHelp health={health} />}
           trailing={
             <div style={toolbar}>
@@ -254,23 +271,49 @@ export function XSENPane({ code, symbol }: FunctionPaneProps) {
             tone="neutral"
           />
           <StatusDivider />
-          <StatusSection
-            label="SCRAPE"
-            value={data?.scrape_seconds != null ? `${data.scrape_seconds}s` : "—"}
-            tone="neutral"
-          />
+          {/* F1: real freshness — when THIS response was served, from
+              fetched_at. Distinct from the analysis-duration field below. */}
+          <span
+            data-testid="xsen-fetched-at"
+            title="Veri alındı: bu sonucun sunulduğu (analizin tamamlandığı) an. Arama sonuçları sorgu başına ~30 dk'ya kadar önbelleğe alınmış olabilir."
+          >
+            <StatusSection
+              label="VERİ ALINDI"
+              value={
+                data?.fetched_at
+                  ? (relativeTimeLabel(data.fetched_at) ?? "—")
+                  : "—"
+              }
+              tone="neutral"
+            />
+          </span>
+          <StatusDivider />
+          {/* F1: relabel scrape_seconds — it is processing duration (how long
+              scrape+classify took), NOT data freshness. */}
+          <span title="Analiz süresi: kazıma + sınıflandırma kaç saniye sürdü. Verinin tazeliği DEĞİL — bunun için 'VERİ ALINDI'ya bakın.">
+            <StatusSection
+              label="ANALİZ SÜRESİ"
+              value={data?.scrape_seconds != null ? `${data.scrape_seconds}s` : "—"}
+              tone="neutral"
+            />
+          </span>
           <StatusDivider />
           <StatusSection
             label="CONF"
-            value={String(data?.scores?.confidence ?? "—")}
+            value={
+              data?.scores?.confidence != null
+                ? formatNumber(data.scores.confidence, 2, { minimumFractionDigits: 2 })
+                : "—"
+            }
             tone="neutral"
           />
         </section>
         {/* Control bar */}
         <div style={controlBar}>
-          <label style={fieldLabel}>
+          <label style={fieldLabel} htmlFor="xsen-query">
             <span style={fieldHint}>Query</span>
             <input
+              id="xsen-query"
               type="text"
               value={draftQuery}
               spellCheck={false}
@@ -279,9 +322,10 @@ export function XSENPane({ code, symbol }: FunctionPaneProps) {
               placeholder="AAPL  /  $TSLA  /  bitcoin"
             />
           </label>
-          <label style={fieldLabel}>
+          <label style={fieldLabel} htmlFor="xsen-posts">
             <span style={fieldHint}>Posts</span>
             <input
+              id="xsen-posts"
               type="number"
               min={20}
               max={500}
@@ -290,7 +334,7 @@ export function XSENPane({ code, symbol }: FunctionPaneProps) {
               style={numberInput}
             />
           </label>
-          <div style={fieldLabel}>
+          <div style={fieldLabel} role="group" aria-label="Since">
             <span style={fieldHint}>Since</span>
             <div className="u-flex u-gap-4">
               {SINCE_OPTIONS.map((opt) => (
@@ -311,9 +355,10 @@ export function XSENPane({ code, symbol }: FunctionPaneProps) {
               ))}
             </div>
           </div>
-          <label style={fieldLabel}>
+          <label style={fieldLabel} htmlFor="xsen-lang">
             <span style={fieldHint}>Lang</span>
             <input
+              id="xsen-lang"
               type="text"
               value={draftLang}
               maxLength={5}
@@ -326,12 +371,20 @@ export function XSENPane({ code, symbol }: FunctionPaneProps) {
             className="btn btn--primary xsen-run-btn"
             onClick={run}
             disabled={state === "loading"}
+            aria-busy={state === "loading"}
+            aria-label={state === "loading" ? "X analizi çalışıyor" : "X analizini çalıştır"}
+            title={state === "loading" ? "Analiz çalışıyor — bitince yeniden çalıştırabilirsiniz" : undefined}
           >
             {state === "loading" ? "Working…" : "Run"}
           </button>
         </div>
 
         <PaneBody className="xsen-pane-body">
+          {/* A6: SR-only polite live region — announces the load result once
+              (gated by lastAnnouncedRef) so SRs don't re-read on every render. */}
+          <div className="u-sr-only" role="status" aria-live="polite">
+            {announcement}
+          </div>
           {/*
             Bug #10e: when /api/x/health returns {ok:false} because the
             RoBERTa load timed out, render an explicit "model offline"
@@ -429,6 +482,9 @@ export function XSENPane({ code, symbol }: FunctionPaneProps) {
             />
           ) : (
             <div className="xsen-results">
+              {/* F4 + F2: honest disclosure — local RoBERTa model (not an LLM /
+                  keyword heuristic) + search-result cache caveat. */}
+              <ScoringDisclosure fetchedAt={data.fetched_at} />
               {/* KPI ribbon */}
               <SentimentKPIRibbon data={data} />
               {/* Bullish gauge band */}
@@ -469,11 +525,41 @@ export function XSENPane({ code, symbol }: FunctionPaneProps) {
         <PaneFooter>
           <span>scraper · {scrapeSource}</span>
           <span>device · {data?.device ?? "—"}</span>
-          <span>scrape · {data?.scrape_seconds != null ? `${data.scrape_seconds}s` : "—"}</span>
-          <span>conf · {data?.scores?.confidence ?? "—"}</span>
+          <span title="Veri alındı: bu sonucun sunulduğu an (arama listesi ~30 dk'ya kadar önbellekli olabilir)">
+            alındı · {data?.fetched_at ? (relativeTimeLabel(data.fetched_at) ?? "—") : "—"}
+          </span>
+          <span title="Analiz süresi (kazıma + sınıflandırma), tazelik değil">
+            analiz · {data?.scrape_seconds != null ? `${data.scrape_seconds}s` : "—"}
+          </span>
+          <span>
+            conf ·{" "}
+            {data?.scores?.confidence != null
+              ? formatNumber(data.scores.confidence, 2, { minimumFractionDigits: 2 })
+              : "—"}
+          </span>
         </PaneFooter>
       </Pane>
     </div>
+  );
+}
+
+function ScoringDisclosure({ fetchedAt }: { fetchedAt?: string }) {
+  // F4: reinforce the HONEST AI claim — the sentiment label comes from a
+  // locally-run fine-tuned RoBERTa (`showme_x_v1`, 3 task heads), NOT an LLM
+  // and NOT a keyword heuristic.
+  // F2: search-result tweet-ID lists are cached up to ~30 min per query, while
+  // per-post engagement (likes/retweets) is re-fetched each run — so the feed
+  // is near-real-time, not guaranteed live.
+  const fresh = fetchedAt ? relativeTimeLabel(fetchedAt) : null;
+  return (
+    <p data-testid="xsen-scoring-note" style={scoringNoteStyle}>
+      Duygu skoru, yerel çalışan ince ayarlı bir <strong className="u-text-primary">RoBERTa</strong>{" "}
+      modeliyle (<code>showme_x_v1</code>, 3 görev başlığı) üretilir — LLM ya da anahtar-kelime
+      sezgiseli değildir. Arama sonuçları sorgu başına ~30 dakikaya kadar önbelleğe alınmış olabilir;
+      her gönderinin etkileşimi (beğeni/RT) her çalıştırmada tazelenir — yani akış gerçek zamanlıya
+      yakındır, garantili canlı değildir.
+      {fresh ? <span className="u-text-mute"> Veri alındı: {fresh}.</span> : null}
+    </p>
   );
 }
 
@@ -493,26 +579,26 @@ function SentimentKPIRibbon({ data }: { data: XAnalysisResponse }) {
     <section style={kpiRibbonGrid}>
       <StatCard
         label="Positive"
-        value={`${positivePct.toFixed(1)}%`}
+        value={formatPercent(positivePct, { digits: 1 })}
         caption="of posts"
         tone="positive"
       />
       <StatCard
         label="Negative"
-        value={`${negativePct.toFixed(1)}%`}
+        value={formatPercent(negativePct, { digits: 1 })}
         caption="of posts"
         tone="negative"
       />
       <StatCard
         label="Neutral"
-        value={`${neutralPct.toFixed(1)}%`}
+        value={formatPercent(neutralPct, { digits: 1 })}
         caption="of posts"
         tone="neutral"
       />
       <StatCard
         label="Top emotion"
         value={topEmotion}
-        caption={`${topEmotionPct.toFixed(1)}%`}
+        caption={formatPercent(topEmotionPct, { digits: 1 })}
         tone="neutral"
       />
     </section>
@@ -530,16 +616,19 @@ function BullishBand({ data }: { data: XAnalysisResponse }) {
             {data.mood ?? "—"}
           </Pill>
           <strong
-            className="xsen-band-score"
+            className="xsen-band-score u-mono"
             style={{ color: bullishColor(score) }}
             title="engagement-weighted bullish score"
           >
-            {score >= 0 ? "+" : ""}
-            {score.toFixed(2)}
+            {formatSignedDelta(score, 2)}
           </strong>
           <span className="xsen-band-avg">
-            avg {avgScore >= 0 ? "+" : ""}
-            {avgScore.toFixed(2)} · conf {data.scores?.confidence ?? "—"}
+            avg <span className="u-mono">{formatSignedDelta(avgScore, 2)}</span> · conf{" "}
+            <span className="u-mono">
+              {data.scores?.confidence != null
+                ? formatNumber(data.scores.confidence, 2, { minimumFractionDigits: 2 })
+                : "—"}
+            </span>
           </span>
         </div>
         <span className="xsen-band-meta">
@@ -556,7 +645,14 @@ function BullishGauge({ score }: { score: number }) {
   const positiveWidth = clamped >= 0 ? clamped * 50 : 0;
   const negativeWidth = clamped < 0 ? Math.abs(clamped) * 50 : 0;
   return (
-    <div className="xsen-gauge">
+    <div
+      className="xsen-gauge"
+      role="meter"
+      aria-label="Yükseliş skoru"
+      aria-valuenow={clamped}
+      aria-valuemin={-1}
+      aria-valuemax={1}
+    >
       <div
         className="xsen-gauge__neg"
         style={{
@@ -621,10 +717,18 @@ function DistributionCard({
   const entries = Object.entries(pct).sort((a, b) => b[1] - a[1]);
   // UA-HIGH-12: stack-safe.
   const max = Math.max(maxOf(entries.map(([, v]) => v)), 1);
+  // A5: full breakdown for screen readers (e.g. "Sentiment dağılımı:
+  // positive %67, neutral %20, negative %13"). The visual bars carry the same
+  // information sighted users see.
+  const ariaLabel = entries.length
+    ? `${title} dağılımı: ${entries
+        .map(([label, value]) => `${label} ${formatPercent(value, { digits: 0 })}`)
+        .join(", ")}`
+    : `${title} dağılımı: veri yok`;
   return (
     <Card>
       <CardHeader trailing={`${entries.length}`}>{title}</CardHeader>
-      <div className="u-grid-gap-6">
+      <div className="u-grid-gap-6" role="img" aria-label={ariaLabel}>
         {entries.length === 0 ? (
           <span className="u-text-mute u-text-11">No data</span>
         ) : (
@@ -645,7 +749,9 @@ function DistributionCard({
                     }}
                   />
                 </div>
-                <span className="xsen-dist-row__label">{value.toFixed(1)}%</span>
+                <span className="xsen-dist-row__label u-mono">
+                  {formatPercent(value, { digits: 1 })}
+                </span>
               </div>
             );
           })
@@ -705,6 +811,9 @@ function ExamplesSection({
               {items.map((item) => {
                 const key = `${kind}-${item.url || item.text.slice(0, 60)}`;
                 const isExpanded = expandedKey === key;
+                // F3: per-post age from the real `date`. Honest "tarih yok"
+                // when the date is absent/unparseable — never fabricated "now".
+                const ago = relativeTimeLabel(item.date);
                 return (
                   <article
                     key={key}
@@ -717,8 +826,15 @@ function ExamplesSection({
                           <strong className="xsen-tweet__user" title={item.user}>
                             @{item.user || "x"}
                           </strong>
-                          <span className="u-text-mute u-text-10">
-                            ❤ {item.likes ?? 0} · ↻ {item.retweets ?? 0} · score {item.score?.toFixed?.(2) ?? "—"}
+                          <span className="u-text-mute u-text-10 u-mono">
+                            ❤ {formatNumber(item.likes ?? 0)} · ↻ {formatNumber(item.retweets ?? 0)} · score {item.score?.toFixed?.(2) ?? "—"}
+                          </span>
+                          <span
+                            className="u-text-mute u-text-10"
+                            title={item.date || "tarih yok"}
+                            data-testid="xsen-tweet-date"
+                          >
+                            · {ago ?? "tarih yok"}
                           </span>
                           <span className="u-flex-1" />
                           <button
@@ -726,6 +842,7 @@ function ExamplesSection({
                             onClick={() => onToggle(key)}
                             className="btn btn--ghost xsen-tweet__toggle"
                             aria-expanded={isExpanded}
+                            aria-label={isExpanded ? "gerekçeyi kapat" : "gerekçeyi aç"}
                           >
                             {isExpanded ? "−" : "+"}
                           </button>
@@ -744,6 +861,7 @@ function ExamplesSection({
                               target="_blank"
                               rel="noopener noreferrer"
                               className="xsen-tweet__open"
+                              aria-label={`@${item.user || "x"} gönderisini aç`}
                             >
                               open ↗
                             </a>
@@ -751,10 +869,10 @@ function ExamplesSection({
                         </div>
                         {isExpanded ? (
                           <div style={tweetRationaleStyle}>
-                            <strong className="xsen-tweet__rationale-title">AI rationale</strong>
+                            <strong className="xsen-tweet__rationale-title">RoBERTa sınıflandırması</strong>
                             <p className="xsen-tweet__rationale">
-                              Classified <strong className="u-text-primary">{kind}</strong> · emotion <strong className="u-text-primary">{item.emotion}</strong> · topic <strong className="u-text-primary">{item.topic}</strong>.
-                              Engagement-weighted score {item.score?.toFixed?.(3) ?? "—"} (likes: {item.likes ?? 0}, retweets: {item.retweets ?? 0}).
+                              RoBERTa modeli <strong className="u-text-primary">{kind}</strong> · duygu <strong className="u-text-primary">{item.emotion}</strong> · tema <strong className="u-text-primary">{item.topic}</strong> olarak sınıflandırdı.
+                              Etkileşim-ağırlıklı skor {item.score?.toFixed?.(3) ?? "—"} (beğeni: {formatNumber(item.likes ?? 0)}, RT: {formatNumber(item.retweets ?? 0)}).
                             </p>
                           </div>
                         ) : null}
@@ -783,10 +901,19 @@ function SentimentDotInline({ sentiment }: { sentiment: string }) {
           : tone === "accent"
             ? "var(--accent)"
             : "var(--text-mute)";
+  // A4: color is not the sole signal — label the dot for screen readers.
+  const label =
+    tone === "positive"
+      ? "olumlu gönderi"
+      : tone === "negative"
+        ? "olumsuz gönderi"
+        : "nötr gönderi";
   return (
     <span
       className="xsen-sent-dot"
       style={{ ["--u-color" as string]: color }}
+      role="img"
+      aria-label={label}
     />
   );
 }
@@ -798,10 +925,10 @@ function EngagementCard({ data }: { data: XAnalysisResponse }) {
     <Card>
       <CardHeader trailing="totals">Engagement</CardHeader>
       <div className="xsen-engage-grid">
-        <EngageTile label="avg likes" value={String(eng.avg_likes)} helper="per post" tone="accent" />
-        <EngageTile label="avg retweets" value={String(eng.avg_retweets)} helper="per post" tone="accent" />
-        <EngageTile label="total likes" value={String(eng.total_likes)} helper="window" tone="neutral" />
-        <EngageTile label="total retweets" value={String(eng.total_retweets)} helper="window" tone="neutral" />
+        <EngageTile label="avg likes" value={formatNumber(eng.avg_likes, 1)} helper="per post" tone="accent" />
+        <EngageTile label="avg retweets" value={formatNumber(eng.avg_retweets, 1)} helper="per post" tone="accent" />
+        <EngageTile label="total likes" value={formatNumber(eng.total_likes)} helper="window" tone="neutral" />
+        <EngageTile label="total retweets" value={formatNumber(eng.total_retweets)} helper="window" tone="neutral" />
       </div>
     </Card>
   );
@@ -845,9 +972,17 @@ function XSENHelp({ health }: { health: XHealth | null }) {
     <div className="fn-help-grid">
       <strong>XSEN · X Sentiment AI</strong>
       <span className="fn-help-grid__hint">
-        Multi-strategy account-free X scraper feeds a fine-tuned RoBERTa with three task heads
-        (sentiment, emotion, topic). Scraping order: Brave→syndication, then Nitter mirror pool,
-        then Jina reader proxy. The model lives inside the .app bundle.
+        Multi-strategy account-free X scraper feeds a locally-run fine-tuned RoBERTa model
+        (<code>showme_x_v1</code>, three task heads: sentiment, emotion, topic). The label is the
+        model's — not an LLM, not a keyword heuristic. Scraping order: Brave→syndication, then
+        Nitter mirror pool, then Jina reader proxy. The model lives inside the .app bundle.
+      </span>
+      {/* F2: honest freshness caveat — search results cache, engagement refreshes. */}
+      <span className="fn-help-grid__hint">
+        Freshness: search-result tweet lists may be cached up to ~30 min per query, while per-post
+        engagement (likes/retweets) is refreshed each run — so the feed is near-real-time, not
+        guaranteed live. The "VERİ ALINDI" chip shows when this result was served; "ANALİZ SÜRESİ"
+        is the scrape+classify processing time, NOT data age.
       </span>
       <span className="fn-help-grid__hint-mute">
         guest token: {health?.scraper?.guest_token_present ? "active" : "off"} · nitter mirrors:
@@ -991,6 +1126,17 @@ const chipButton: CSSProperties = {
   fontSize: 10,
   cursor: "pointer",
   whiteSpace: "nowrap",
+};
+
+const scoringNoteStyle: CSSProperties = {
+  margin: 0,
+  padding: "8px 10px",
+  border: "1px solid var(--border-subtle)",
+  borderRadius: "var(--radius-md)",
+  background: "var(--surface-2)",
+  fontSize: 11,
+  lineHeight: 1.5,
+  color: "var(--text-secondary)",
 };
 
 const kpiRibbonGrid: CSSProperties = {

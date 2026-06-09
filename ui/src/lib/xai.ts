@@ -62,6 +62,12 @@ export interface XAnalysisResponse {
   query: string;
   post_count: number;
   scrape_seconds?: number;
+  // Honest freshness marker: ISO-8601 UTC instant THIS response was served
+  // (analysis completion). The underlying search-engine tweet-ID list may be
+  // cached up to ~30 min, so `fetched_at` is the served time — NOT a guarantee
+  // every post is brand new. Distinct from `scrape_seconds` (processing
+  // duration, not data age). See backend x_analysis.py:_aggregate.
+  fetched_at?: string;
   device?: string;
   model_dir?: string | null;
   summary_tr?: string;
