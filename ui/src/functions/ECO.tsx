@@ -30,6 +30,7 @@ import {
 } from "./function-controls";
 import { usePersistentOption } from "./function-control-state";
 import type { FunctionPaneProps } from "./registry-types";
+import { formatMissing, formatNumber } from "@/lib/format";
 
 interface EcoEvent {
   date?: string;
@@ -99,8 +100,14 @@ export function ECOPane({ code }: FunctionPaneProps) {
     [data, days],
   );
   const stats = useMemo(() => deriveEcoStats(events), [events]);
-  const utcStamp = useMemo(() => new Date().toISOString().slice(11, 16), [data]);
-  const isLive = state === "ok";
+  // Honesty: the calendar is the hardcoded synthetic model when the backend
+  // flagged the source as "calendar_feed_model" (both live providers failed).
+  const isModel = useMemo(() => isModelData(data), [data]);
+  // Freshness: prefer the server-stamped `as_of` over the client wall clock so
+  // the header reflects REAL data age, not render time. Honest "—" when absent.
+  const asOf = useMemo(() => extractAsOf(data?.data), [data]);
+  const utcStamp = asOf ?? formatMissing;
+  const isLive = state === "ok" && !isModel;
 
   const COLS: DataGridColumn<EcoEvent>[] = useMemo(
     () => [
@@ -137,7 +144,7 @@ export function ECOPane({ code }: FunctionPaneProps) {
         numeric: true,
         width: 84,
         render: (e) => (
-          <span style={mutedNumStyle}>{fmtNum(e.forecast, e.unit)}</span>
+          <span style={mutedNumStyle}>{fmtVal(e.forecast, e.unit)}</span>
         ),
       },
       {
@@ -146,7 +153,7 @@ export function ECOPane({ code }: FunctionPaneProps) {
         numeric: true,
         width: 88,
         render: (e) => (
-          <span style={primaryNumStyle}>{fmtNum(e.actual, e.unit)}</span>
+          <span style={primaryNumStyle}>{fmtVal(e.actual, e.unit)}</span>
         ),
       },
       {
@@ -155,7 +162,7 @@ export function ECOPane({ code }: FunctionPaneProps) {
         numeric: true,
         width: 80,
         render: (e) => (
-          <span style={mutedNumStyle}>{fmtNum(e.previous, e.unit)}</span>
+          <span style={mutedNumStyle}>{fmtVal(e.previous, e.unit)}</span>
         ),
       },
       {
@@ -165,7 +172,7 @@ export function ECOPane({ code }: FunctionPaneProps) {
         width: 96,
         render: (e) => {
           const surprise = computeSurprise(e);
-          if (surprise == null) return "—";
+          if (surprise == null) return formatMissing;
           return <DeltaChip value={surprise} format="raw" fractionDigits={2} />;
         },
       },
@@ -186,25 +193,28 @@ export function ECOPane({ code }: FunctionPaneProps) {
                 {events.length} ev
               </Pill>
               <Pill tone="accent" variant="soft" withDot={false}>
-                {utcStamp} UTC
+                {`Veri: ${utcStamp === formatMissing ? formatMissing : `${utcStamp} UTC`}`}
               </Pill>
-              <Pill tone={isLive ? "positive" : "warn"} variant="soft">
-                {isLive ? "live" : state}
+              <Pill tone={isModel ? "warn" : isLive ? "positive" : "warn"} variant="soft">
+                {isModel ? "örnek" : isLive ? "live" : state}
               </Pill>
               <SegmentedControl
                 label="COUNTRY"
+                title="Ülke filtresi"
                 value={country}
                 options={COUNTRIES}
                 onChange={setCountry}
               />
               <SegmentedControl
                 label="IMP"
+                title="Önem filtresi"
                 value={importance}
                 options={IMPORTANCE}
                 onChange={setImportance}
               />
               <Tabs
                 variant="segmented"
+                ariaLabel="Zaman aralığı"
                 items={RANGES.map((r) => ({ id: r.id, label: r.label }))}
                 active={range}
                 onChange={(id) => setRange(id as RangeId)}
@@ -213,7 +223,7 @@ export function ECOPane({ code }: FunctionPaneProps) {
               <RefreshButton
                 loading={state === "loading"}
                 onClick={refetch}
-                title="Refresh calendar"
+                title="Takvimi yenile"
               />
             </FunctionControlGroup>
           }
@@ -222,16 +232,18 @@ export function ECOPane({ code }: FunctionPaneProps) {
           {state === "loading" || state === "idle" ? (
             <Skeleton height={300} />
           ) : state === "error" ? (
-            <Empty
-              title="Function error"
-              body={error?.message ?? "—"}
-              icon="!"
-              action={
-                <button onClick={refetch} className="btn">
-                  Retry
-                </button>
-              }
-            />
+            <div role="status">
+              <Empty
+                title="Function error"
+                body={error?.message ?? formatMissing}
+                icon="!"
+                action={
+                  <button onClick={refetch} className="btn">
+                    Retry
+                  </button>
+                }
+              />
+            </div>
           ) : events.length === 0 ? (
             <Empty
               title="Calendar empty"
@@ -239,14 +251,19 @@ export function ECOPane({ code }: FunctionPaneProps) {
             />
           ) : (
             <div className="u-grid-gap-14">
+              {isModel ? <ModelCalendarBadge /> : null}
               <KPIRibbon stats={stats} stamp={utcStamp} />
               <div style={twoColLayout}>
-                <DataGrid
-                  columns={COLS}
-                  rows={events}
-                  rowKey={(e, i) => `${e.date ?? e.ts ?? ""}-${i}`}
-                  density="compact"
-                />
+                <div className="u-grid-gap-8">
+                  <DataGrid
+                    columns={COLS}
+                    rows={events}
+                    rowKey={(e, i) => `${e.date ?? e.ts ?? ""}-${i}`}
+                    density="compact"
+                    ariaLabel="Ekonomik takvim"
+                  />
+                  <span style={tzNoteStyle}>Zamanlar UTC</span>
+                </div>
                 <NextPrintsRail events={events} />
               </div>
             </div>
@@ -255,7 +272,7 @@ export function ECOPane({ code }: FunctionPaneProps) {
         <PaneFooter>
           <StatusSection
             label="sources"
-            value={data?.sources?.join(", ") || "showMe engine"}
+            value={formatSourceLabel(data?.sources) || "showMe engine"}
           />
           <StatusDivider />
           <StatusSection label="filter" value={`${country}/${importance}`} />
@@ -486,14 +503,22 @@ function filterEvents(events: EcoEvent[], days: number): EcoEvent[] {
 }
 
 function importanceBadge(value: string | number | undefined): ReactNode {
-  if (value == null) return "—";
+  if (value == null) return formatMissing;
   const text = String(value).toLowerCase();
   const high = text.includes("high") || text === "3" || Number(value) >= 3;
   const med = text.includes("med") || text === "2" || Number(value) === 2;
   const tone: "negative" | "warn" | "muted" = high ? "negative" : med ? "warn" : "muted";
+  // a11y: never rely on colour alone. Keep the word AND add a non-colour
+  // triangle cue + an explicit aria-label, so screen-reader / colour-blind
+  // users still get the impact level.
+  const level = high ? "yüksek" : med ? "orta" : "düşük";
+  const cue = high ? "▲▲▲" : med ? "▲▲" : "▲";
   const label = high ? "high" : med ? "med" : "low";
   return (
-    <Pill tone={tone} variant="soft" withDot={false}>
+    <Pill tone={tone} variant="soft" withDot={false} aria-label={`önem: ${level}`}>
+      <span aria-hidden style={impCueStyle}>
+        {cue}
+      </span>
       {label}
     </Pill>
   );
@@ -516,12 +541,67 @@ function computeSurprise(e: EcoEvent): number | null {
   return null;
 }
 
-function fmtNum(v: unknown, unit?: string): string {
-  if (v == null || v === "") return "—";
+/**
+ * Format an economic-calendar numeric cell using the app-wide
+ * {@link formatNumber} (shared "—" sentinel via {@link formatMissing}), then
+ * append the unit. Non-numeric strings pass through verbatim.
+ */
+function fmtVal(v: unknown, unit?: string): string {
+  if (v == null || v === "") return formatMissing;
   const n = numeric(v);
   if (n == null) return String(v);
   const u = unit ?? "";
-  return `${n.toLocaleString(undefined, { maximumFractionDigits: 2 })}${u}`;
+  return `${formatNumber(n, 2)}${u}`;
+}
+
+/** True when the payload is the hardcoded synthetic fallback calendar. */
+function isModelData(payload: unknown): boolean {
+  if (!payload || typeof payload !== "object") return false;
+  const o = payload as Record<string, unknown>;
+  const sources = Array.isArray(o.sources) ? o.sources : [];
+  if (sources[0] === "calendar_feed_model") return true;
+  const inner = (o.data && typeof o.data === "object" ? o.data : {}) as Record<string, unknown>;
+  const mode = String(inner.source_mode ?? inner.data_mode ?? "").toLowerCase();
+  return mode === "calendar_feed_model";
+}
+
+/** Extract server data-freshness (`as_of`) as an HH:MM UTC stamp, if present. */
+function extractAsOf(payload: unknown): string | undefined {
+  if (!payload || typeof payload !== "object") return undefined;
+  const raw = (payload as Record<string, unknown>).as_of;
+  if (typeof raw !== "string" || !raw) return undefined;
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) return undefined;
+  return d.toISOString().slice(11, 16);
+}
+
+/** Map raw backend source tokens to honest, user-facing labels. */
+function formatSourceLabel(sources: string[] | undefined): string {
+  if (!sources || sources.length === 0) return "";
+  return sources
+    .map((s) =>
+      s === "calendar_feed_model" ? "Örnek takvim (canlı değil)" : s,
+    )
+    .join(", ");
+}
+
+/** Prominent "this calendar is the synthetic sample, not live" banner. */
+function ModelCalendarBadge() {
+  return (
+    <div
+      className="wei-model-badge"
+      role="status"
+      data-testid="eco-model-badge"
+      aria-label="Örnek takvim — canlı veri yok"
+    >
+      <span className="wei-model-badge__dot" aria-hidden />
+      <strong>ÖRNEK TAKVİM — canlı veri yok</strong>
+      <span className="u-text-secondary">
+        Bu takvimdeki olaylar ve değerler illüstratif örnek veridir; gerçek
+        (canlı) ekonomik açıklamalar değildir.
+      </span>
+    </div>
+  );
 }
 
 function parseTime(e: EcoEvent): number | null {
@@ -545,6 +625,20 @@ const kpiGridStyle: CSSProperties = {
   display: "grid",
   gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
   gap: 10,
+};
+
+const tzNoteStyle: CSSProperties = {
+  color: "var(--text-mute)",
+  fontSize: 10,
+  letterSpacing: "0.06em",
+  textTransform: "uppercase",
+  fontFamily: "JetBrains Mono, monospace",
+};
+
+const impCueStyle: CSSProperties = {
+  fontSize: 9,
+  marginRight: 3,
+  letterSpacing: "-0.06em",
 };
 
 const twoColLayout: CSSProperties = {

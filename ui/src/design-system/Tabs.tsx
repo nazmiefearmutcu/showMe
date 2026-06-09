@@ -11,12 +11,14 @@ interface TabsProps {
   active: string;
   onChange: (id: string) => void;
   variant?: "underline" | "segmented";
+  /** Accessible name for the tablist (screen readers). */
+  ariaLabel?: string;
 }
 
-export function Tabs({ items, active, onChange, variant = "underline" }: TabsProps) {
+export function Tabs({ items, active, onChange, variant = "underline", ariaLabel }: TabsProps) {
   if (variant === "segmented") {
     return (
-      <div role="tablist" className="tabs--segmented">
+      <div role="tablist" aria-label={ariaLabel} className="tabs--segmented">
         {items.map((it) => {
           const isActive = it.id === active;
           return (
@@ -37,7 +39,7 @@ export function Tabs({ items, active, onChange, variant = "underline" }: TabsPro
     );
   }
   return (
-    <div role="tablist" className="tabs--underline">
+    <div role="tablist" aria-label={ariaLabel} className="tabs--underline">
       {items.map((it) => {
         const isActive = it.id === active;
         return (
