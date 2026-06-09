@@ -13,7 +13,14 @@
  * `_agent_runtime.py`), NOT model/probabilistic uncertainty — it is relabelled
  * "sinyal yoğ." and disclosed as such wherever shown.
  */
-import { type CSSProperties, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type CSSProperties,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   DataGrid,
   type DataGridColumn,
@@ -114,13 +121,19 @@ export function AGENTPane(_props: FunctionPaneProps) {
     }
   };
 
-  const jumpToDES = (sym: string) => {
-    if (!sym) return;
-    setFocusedTarget("DES", sym);
-    navigate(`/symbol/${sym}/DES`);
-  };
+  const jumpToDES = useCallback(
+    (sym: string) => {
+      if (!sym) return;
+      setFocusedTarget("DES", sym);
+      navigate(`/symbol/${sym}/DES`);
+    },
+    [setFocusedTarget],
+  );
 
-  const candidateColumns = useMemo(() => buildCandidateColumns(jumpToDES), []);
+  const candidateColumns = useMemo(
+    () => buildCandidateColumns(jumpToDES),
+    [jumpToDES],
+  );
 
   const subtitle = result
     ? `${result.function_count} fn · ${result.method}`
@@ -351,7 +364,7 @@ export function AGENTPane(_props: FunctionPaneProps) {
           </section>
         </PaneBody>
         <PaneFooter>
-          <span>method {result?.method ?? "all_function_symbol_agent_v1"}</span>
+          <span>method {result?.method ?? "—"}</span>
           <span>mode {result ? (resultIsLive ? "live" : "fast_probe") : "-"}</span>
           <span>best {result?.best?.symbol ?? "-"}</span>
           <span>catalog {result?.catalog_count ?? "-"}</span>
@@ -465,7 +478,9 @@ function ScoreMeter({ value }: { value: number }) {
     <span
       role="meter"
       aria-label={`score ${text}`}
-      aria-valuenow={Number(value.toFixed(3))}
+      aria-valuenow={Number(
+        Math.max(-SCORE_BAND, Math.min(SCORE_BAND, value)).toFixed(3),
+      )}
       aria-valuemin={-SCORE_BAND}
       aria-valuemax={SCORE_BAND}
       className={`agent-meter agent-meter--${tone}`}

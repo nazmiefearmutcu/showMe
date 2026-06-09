@@ -297,6 +297,45 @@ describe("AGENT pane — DataGrid a11y (DI2)", () => {
     // At least one role=meter exists (score meter + density meter).
     expect(screen.getAllByRole("meter").length).toBeGreaterThanOrEqual(1);
   });
+
+  it("clamps out-of-band score meter aria-valuenow to the ±3 band (P1)", async () => {
+    // A backend score outside ±SCORE_BAND (e.g. 5.5 / -5.5) must NOT leak into
+    // aria-valuenow — the ARIA meter spec requires valuenow ∈ [valuemin,valuemax].
+    vi.spyOn(agent, "runBestSymbolAgent").mockResolvedValue(
+      makeResult({
+        best: makeCandidate({ symbol: "BTCUSDT", score: 5.5 }),
+        ranked: [
+          makeCandidate({ symbol: "BTCUSDT", score: 5.5 }),
+          makeCandidate({ symbol: "ETHUSDT", score: -5.5 }),
+        ],
+      }),
+    );
+    render(<AGENTPane code="AGENT" />);
+    fireEvent.click(screen.getByRole("button", { name: /sıralamayı çalıştır/i }));
+    await screen.findByRole("table", { name: /sıralanan adaylar/i });
+
+    // Score meters are labelled with a "score" prefix; density meters are not.
+    const scoreMeters = screen
+      .getAllByRole("meter")
+      .filter((m) => /^score /i.test(m.getAttribute("aria-label") ?? ""));
+    expect(scoreMeters.length).toBeGreaterThanOrEqual(2);
+
+    const nows = scoreMeters.map((m) => m.getAttribute("aria-valuenow"));
+    // The +5.5 row clamps to "3", the -5.5 row clamps to "-3" — never "5.5".
+    expect(nows).toContain("3");
+    expect(nows).toContain("-3");
+    expect(nows).not.toContain("5.5");
+    expect(nows).not.toContain("-5.5");
+
+    // Every score meter's valuenow stays within [valuemin, valuemax].
+    for (const m of scoreMeters) {
+      const now = Number(m.getAttribute("aria-valuenow"));
+      const min = Number(m.getAttribute("aria-valuemin"));
+      const max = Number(m.getAttribute("aria-valuemax"));
+      expect(now).toBeGreaterThanOrEqual(min);
+      expect(now).toBeLessThanOrEqual(max);
+    }
+  });
 });
 
 describe("AGENT pane — error region (D2)", () => {
