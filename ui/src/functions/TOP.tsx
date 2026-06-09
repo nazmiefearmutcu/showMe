@@ -104,20 +104,6 @@ const TOP_AGE_OPTIONS = [
 ] as const;
 type TopAgeDays = (typeof TOP_AGE_OPTIONS)[number]["value"];
 
-function deterministicTrend(seed: string, n = 22): number[] {
-  let h = 0;
-  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0;
-  const out: number[] = [];
-  let v = 50;
-  for (let i = 0; i < n; i++) {
-    h = (h * 1664525 + 1013904223) >>> 0;
-    const x = ((h & 0xff) / 255 - 0.5) * 14;
-    v = Math.max(15, Math.min(85, v + x));
-    out.push(v);
-  }
-  return out;
-}
-
 function median(values: number[]): number | null {
   if (!values.length) return null;
   const sorted = [...values].sort((a, b) => a - b);
@@ -233,9 +219,15 @@ export function TOPPane({ code }: FunctionPaneProps) {
     [articles],
   );
   useEffect(() => {
-    if (state !== "ok" || !articles.length) {
+    // P2a: this effect must run only when the distinct article SET changes —
+    // not on every loading→ok transition. We therefore drop `state` from the
+    // deps and gate on `articlesKeyForVeryfinder` instead of reading `state`.
+    // An empty key means there are no articles to score (a non-"ok" state or
+    // an empty payload both yield articles=[] → empty key), so we reset and
+    // bail without needing the current `state` in the closure.
+    if (!articlesKeyForVeryfinder || !articles.length) {
       setVeryfinderMap({});
-      setVeryfinderState(state === "loading" ? "loading" : "idle");
+      setVeryfinderState("idle");
       return;
     }
 
@@ -283,8 +275,8 @@ export function TOPPane({ code }: FunctionPaneProps) {
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- stable key
-  }, [articlesKeyForVeryfinder, query, state]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- articlesKeyForVeryfinder is the stable trigger; `articles` is intentionally read by-value inside but its identity churns every poll, so we key off the hash instead
+  }, [articlesKeyForVeryfinder, query]);
 
   const activeFilters: Array<{ id: string; label: string; onRemove?: () => void }> = [
     { id: "q", label: `QUERY · ${query.toUpperCase()}` },
@@ -499,14 +491,12 @@ export function TOPPane({ code }: FunctionPaneProps) {
                     label="Headlines"
                     value={String(articles.length)}
                     caption={`OF ${limit} REQUESTED`}
-                    trend={deterministicTrend(`h-${articles.length}-${query}`)}
                     tone="neutral"
                   />
                   <StatCard
                     label="Median impact"
                     value={medianImpact != null ? medianImpact.toFixed(0) : "—"}
                     caption={`AGE ${maxAgeDays}D`}
-                    trend={deterministicTrend(`i-${medianImpact ?? 0}-${maxAgeDays}`)}
                     tone="neutral"
                   />
                   <StatCard
@@ -519,15 +509,26 @@ export function TOPPane({ code }: FunctionPaneProps) {
                       </span>
                     }
                     caption={`POS / NEG`}
-                    trend={deterministicTrend(`s-${positiveCount}-${negativeCount}`)}
                     tone={positiveCount === negativeCount ? "neutral" : positiveCount > negativeCount ? "positive" : "negative"}
                   />
                   <StatCard
                     label="Sources"
                     value={String(distinctSources)}
-                    caption={`VF · ${veryfinderState.toUpperCase()}${allVeryfinderFixture ? " · DEMO" : ""}`}
-                    trend={deterministicTrend(`src-${distinctSources}-${veryfinderState}`)}
+                    caption="DISTINCT OUTLETS"
                     tone="neutral"
+                  />
+                  {/*
+                    P2b honesty: the Veryfinder DEMO disclosure lives on its OWN
+                    StatCard so the DEMO qualifier is unambiguously about the
+                    social-signal overlay, not the news sources. The caption
+                    reads DEMO VERİ when every overlay is a fixture/fallback,
+                    otherwise the live VF batch state.
+                  */}
+                  <StatCard
+                    label="Veryfinder"
+                    value={veryfinderState.toUpperCase()}
+                    caption={`VF · ${veryfinderState.toUpperCase()}${allVeryfinderFixture ? " · DEMO" : ""}`}
+                    tone={allVeryfinderFixture ? "negative" : "neutral"}
                   />
                 </div>
 
@@ -624,30 +625,27 @@ function NewsRow({
     Array.isArray(a.importance_reasons) && a.importance_reasons.length > 0
       ? a.importance_reasons.join(" · ")
       : undefined;
-  // A1: open the source URL when the whole row is activated (click or
-  // keyboard). Sub-controls (symbol jump / source link) call
-  // stopPropagation so they don't double-fire this handler.
+  // P1 (a11y): open the source URL when the TITLE is activated (click or
+  // keyboard). The row <li> is now a PLAIN container — the title button is the
+  // primary activator, and the symbol jump buttons + source link are SIBLINGS,
+  // so no interactive element is nested inside another interactive element
+  // (ARIA/APG forbids interactive-in-interactive). No stopPropagation needed
+  // anymore because clicks no longer bubble to a row-level handler.
   const openSource = () => {
     if (href) window.open(href, "_blank", "noopener,noreferrer");
   };
   return (
-    <li
-      className="top-news-card"
-      role="button"
-      tabIndex={0}
-      aria-label={fullTitle}
-      onClick={openSource}
-      onKeyDown={(ev) => {
-        if (ev.key === "Enter" || ev.key === " ") {
-          ev.preventDefault();
-          openSource();
-        }
-      }}
-    >
+    <li className="top-news-card">
       <div className="top-news-card__head">
-        <strong className="top-news-card__title" title={fullTitle}>
+        <button
+          type="button"
+          className="top-news-card__title"
+          aria-label={fullTitle}
+          title={fullTitle}
+          onClick={openSource}
+        >
           {fullTitle}
-        </strong>
+        </button>
         {a.source && (
           <Pill tone="muted" variant="soft" withDot={false}>
             {a.source}
@@ -723,10 +721,7 @@ function NewsRow({
             type="button"
             className="btn btn--ghost top-news-card__sym"
             aria-label={`${s} detayına git`}
-            onClick={(ev) => {
-              ev.stopPropagation();
-              onJumpDES(s);
-            }}
+            onClick={() => onJumpDES(s)}
           >
             {s}
           </button>
@@ -749,7 +744,6 @@ function NewsRow({
             rel="noopener noreferrer"
             className="top-news-card__source"
             aria-label={`${sourceLabel} — haberi aç (yeni sekme)`}
-            onClick={(ev) => ev.stopPropagation()}
           >
             source ↗
           </a>

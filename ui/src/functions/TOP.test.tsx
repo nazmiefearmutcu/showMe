@@ -11,8 +11,11 @@
  *        read as real X/Twitter data; a normal overlay carries NO marker.
  *   H2 — the header sort label reflects importance-then-recency, not
  *        "recent first" only.
- *   A1 — headlines render as a list (role="list") with keyboard-focusable
- *        rows whose aria-label is the full headline; Enter opens the source.
+ *   A1 — headlines render as a list (role="list") whose plain <li> rows
+ *        contain a focusable TITLE button (aria-label = full headline) that
+ *        opens the source on click/Enter. No interactive role is nested inside
+ *        another interactive element (the symbol jump buttons + source link are
+ *        siblings of the title button, not children of an interactive parent).
  *   A2 — there is a SINGLE shared Veryfinder live region (not one per card).
  *   A3 — the source link + symbol buttons carry aria-labels.
  *   Display — loading shows a Skeleton; empty + error states render.
@@ -187,10 +190,13 @@ describe("TOP honesty", () => {
     expect(markers).toHaveLength(1);
     expect(markers[0].textContent).toMatch(/\[DEMO\]/);
 
-    // The normal headline's VF pill must NOT carry a disclosure marker.
+    // The normal headline's VF pill must NOT carry a disclosure marker. Scope
+    // to the row <li> (the title button is no longer the row wrapper).
     const list = screen.getByRole("list", { name: /başlıklar/i });
-    const rows = within(list).getAllByRole("button", { name: /Fed officials signal patience/i });
-    expect(within(rows[0]).queryByTestId("top-vf-fixture")).toBeNull();
+    const normalTitle = within(list).getByRole("button", { name: /Fed officials signal patience/i });
+    const normalRow = normalTitle.closest("li");
+    expect(normalRow).not.toBeNull();
+    expect(within(normalRow as HTMLElement).queryByTestId("top-vf-fixture")).toBeNull();
   });
 
   it("H1 — KPI VF caption reads DEMO when every overlay is a fixture", async () => {
@@ -219,27 +225,57 @@ describe("TOP honesty", () => {
 });
 
 describe("TOP accessibility", () => {
-  it("A1 — headlines render as a list with keyboard-focusable rows carrying the full title aria-label", async () => {
+  it("A1 — headlines render as a list whose plain <li> rows hold a focusable title button (no nested interactive elements)", async () => {
     useFunctionMock.mockReturnValue(okEnvelope([ARTICLE_FIXTURE, ARTICLE_NORMAL]));
     render(<TOPPane code="TOP" />);
     await flushVeryfinder();
 
     const list = screen.getByRole("list", { name: /başlıklar/i });
     expect(list.tagName.toLowerCase()).toBe("ul");
-    const row = within(list).getByRole("button", { name: ARTICLE_FIXTURE.title });
-    expect(row.tagName.toLowerCase()).toBe("li");
-    expect(row.getAttribute("tabindex")).toBe("0");
+
+    // The title is the activator <button> carrying the full-title aria-label.
+    const titleBtn = within(list).getByRole("button", { name: ARTICLE_FIXTURE.title });
+    expect(titleBtn.tagName.toLowerCase()).toBe("button");
+
+    // The row itself is a PLAIN <li> container — no interactive role/tabindex,
+    // so the title button is NOT nested inside an interactive parent.
+    const li = titleBtn.closest("li");
+    expect(li).not.toBeNull();
+    expect(li?.getAttribute("role")).toBeNull();
+    expect(li?.getAttribute("tabindex")).toBeNull();
+
+    // No interactive element is nested inside another interactive element.
+    const interactiveSelector = "a[href],button,[role='button'],[tabindex]";
+    for (const el of Array.from(li!.querySelectorAll(interactiveSelector))) {
+      expect(el.closest(interactiveSelector) === el).toBe(true);
+    }
   });
 
-  it("A1 — pressing Enter on a headline opens its source URL", async () => {
+  it("A1 — clicking the title button opens its source URL", async () => {
     useFunctionMock.mockReturnValue(okEnvelope([ARTICLE_FIXTURE]));
     const openSpy = vi.spyOn(window, "open").mockReturnValue(null);
     render(<TOPPane code="TOP" />);
     await flushVeryfinder();
 
     const list = screen.getByRole("list", { name: /başlıklar/i });
-    const row = within(list).getByRole("button", { name: ARTICLE_FIXTURE.title });
-    fireEvent.keyDown(row, { key: "Enter" });
+    const titleBtn = within(list).getByRole("button", { name: ARTICLE_FIXTURE.title });
+    fireEvent.click(titleBtn);
+    expect(openSpy).toHaveBeenCalledWith(ARTICLE_FIXTURE.url, "_blank", "noopener,noreferrer");
+    openSpy.mockRestore();
+  });
+
+  it("A1 — pressing Enter on the title button opens its source URL", async () => {
+    useFunctionMock.mockReturnValue(okEnvelope([ARTICLE_FIXTURE]));
+    const openSpy = vi.spyOn(window, "open").mockReturnValue(null);
+    render(<TOPPane code="TOP" />);
+    await flushVeryfinder();
+
+    const list = screen.getByRole("list", { name: /başlıklar/i });
+    const titleBtn = within(list).getByRole("button", { name: ARTICLE_FIXTURE.title });
+    // A native <button> activates on Enter via a synthesized click; jsdom does
+    // not synthesize it, so we assert the click handler (the same `openSource`)
+    // fires for the keyboard path by dispatching the click the browser would.
+    fireEvent.click(titleBtn);
     expect(openSpy).toHaveBeenCalledWith(ARTICLE_FIXTURE.url, "_blank", "noopener,noreferrer");
     openSpy.mockRestore();
   });

@@ -6138,7 +6138,20 @@
   flex-wrap: wrap;
 }
 .top-news-card__title {
+  /* P1 (a11y): the title is now the primary activator <button> (opens the
+     source), so reset native button chrome and keep it reading like a heading
+     while staying keyboard-focusable. */
+  appearance: none;
+  -webkit-appearance: none;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
   font-size: 13px;
+  font-weight: 700;
   color: var(--text-primary);
   letter-spacing: -0.01em;
   /* P3 / D1: clamp long headlines to 2 lines; full text in title attr. */
@@ -6148,6 +6161,9 @@
   line-clamp: 2;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.top-news-card__title:hover {
+  color: var(--accent);
 }
 .top-news-card__summary {
   margin: 0;
@@ -6162,13 +6178,15 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
-/* A11Y: keyboard focus affordance for the list-item headline rows. */
-.top-news-card {
+/* A11Y (P1): keyboard focus affordance now lives on the title-activator
+   button (the row <li> is a plain container with no interactive role). */
+.top-news-card__title {
   outline: none;
+  border-radius: var(--radius-sm);
 }
-.top-news-card:focus-visible {
+.top-news-card__title:focus-visible {
   outline: 2px solid var(--accent);
-  outline-offset: -2px;
+  outline-offset: 2px;
 }
 .top-news-card__tags {
   display: flex;
