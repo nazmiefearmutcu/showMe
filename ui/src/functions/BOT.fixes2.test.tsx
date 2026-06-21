@@ -90,6 +90,43 @@ describe("BOT pane fixes2", () => {
     expect(screen.getByTestId("bot-field-err-credential-orphan")).toBeInTheDocument();
   });
 
+  it("multiple_concurrent_orphans_and_empty_lists_should_not_crash_and_block_save", () => {
+    // Stress test: empty strategies & credentials lists, multiple orphans, invalid timeframe, and invalid symbol.
+    useStrategyStore.setState({
+      strategies: [],
+    });
+    useExchangeStore.setState({
+      credentials: [],
+    });
+    useBotStore.setState({
+      draft: {
+        ...PERSISTED_DRAFT,
+        strategy_id: "ghost-id",
+        credential_id: "ghost-c",
+        timeframe: "30m",
+        symbol: "   ",
+        dirty: true,
+      } as never,
+    });
+
+    render(<BOTPane />);
+
+    // Assert that orphan options are rendered in dropdowns
+    expect(screen.getByTestId("bot-strategy-orphan-option")).toBeInTheDocument();
+    expect(screen.getByTestId("bot-credential-orphan-option")).toBeInTheDocument();
+    expect(screen.getByTestId("bot-timeframe-unknown-option")).toBeInTheDocument();
+
+    // Assert that correct error messages are visible
+    expect(screen.getByTestId("bot-field-err-strategy-orphan")).toBeInTheDocument();
+    expect(screen.getByTestId("bot-field-err-credential-orphan")).toBeInTheDocument();
+    expect(screen.getByTestId("bot-field-err-timeframe")).toBeInTheDocument();
+    expect(screen.getByTestId("bot-field-err-symbol")).toBeInTheDocument();
+
+    // Assert that saving is disabled
+    const kaydet = screen.getByRole("button", { name: /^kaydet$/i }) as HTMLButtonElement;
+    expect(kaydet.disabled).toBe(true);
+  });
+
   // ─── C-UI-2 ──────────────────────────────────────────────────────────
   it("symbol_validation_rejects_whitespace_only", () => {
     useBotStore.setState({
@@ -278,4 +315,24 @@ describe("BOT pane fixes2", () => {
     fireEvent.click(screen.getByTestId("confirm-dialog-confirm"));
     expect(openSpy).toHaveBeenCalledWith("b2");
   });
+
+  // ─── Bot Activation Orphan Gating ─────────────────────────────────────
+  it("etkinlestir_button_disabled_when_only_strategyOrphan_is_true", () => {
+    useBotStore.setState({
+      draft: { ...PERSISTED_DRAFT, id: "b1", strategy_id: "ghost-id", credential_id: "c1", enabled: false } as never,
+    });
+    render(<BOTPane />);
+    const btn = screen.getByRole("button", { name: /etkinleştir|^\.\.\.$/i }) as HTMLButtonElement;
+    expect(btn.disabled).toBe(true);
+  });
+
+  it("etkinlestir_button_disabled_when_only_credentialOrphan_is_true", () => {
+    useBotStore.setState({
+      draft: { ...PERSISTED_DRAFT, id: "b1", strategy_id: "s1", credential_id: "ghost-c", enabled: false } as never,
+    });
+    render(<BOTPane />);
+    const btn = screen.getByRole("button", { name: /etkinleştir|^\.\.\.$/i }) as HTMLButtonElement;
+    expect(btn.disabled).toBe(true);
+  });
 });
+

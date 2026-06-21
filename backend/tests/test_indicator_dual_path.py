@@ -44,16 +44,16 @@ def df() -> pd.DataFrame:
 
 def test_bollinger_compute_uses_ddof_1(df):
     """Compute Bollinger bands match SMA ± k * sample_std (ddof=1)."""
-    period, num_std = 20, 2.0
+    period, std_dev = 20, 2.0
     out = compute(df, [
         IndicatorRef(alias="bbu", id="bollinger_upper",
-                     params={"period": period, "num_std": num_std}),
+                     params={"period": period, "std_dev": std_dev}),
         IndicatorRef(alias="bbl", id="bollinger_lower",
-                     params={"period": period, "num_std": num_std}),
+                     params={"period": period, "std_dev": std_dev}),
     ])
     sma = df["close"].rolling(period).mean()
-    expected_upper = sma + num_std * df["close"].rolling(period).std(ddof=1)
-    expected_lower = sma - num_std * df["close"].rolling(period).std(ddof=1)
+    expected_upper = sma + std_dev * df["close"].rolling(period).std(ddof=1)
+    expected_lower = sma - std_dev * df["close"].rolling(period).std(ddof=1)
     pd.testing.assert_series_equal(
         out["bbu"].dropna().rename("x"), expected_upper.dropna().rename("x"),
     )
@@ -64,13 +64,13 @@ def test_bollinger_compute_uses_ddof_1(df):
 
 def test_bollinger_compute_does_not_use_ddof_0(df):
     """Pin: ``ddof=0`` would be the old buggy value; bands must differ."""
-    period, num_std = 20, 2.0
+    period, std_dev = 20, 2.0
     out = compute(df, [
         IndicatorRef(alias="bbu", id="bollinger_upper",
-                     params={"period": period, "num_std": num_std}),
+                     params={"period": period, "std_dev": std_dev}),
     ])
     sma = df["close"].rolling(period).mean()
-    pop_upper = sma + num_std * df["close"].rolling(period).std(ddof=0)
+    pop_upper = sma + std_dev * df["close"].rolling(period).std(ddof=0)
     # On any non-trivial fixture sample and population std differ.
     assert not out["bbu"].dropna().equals(pop_upper.dropna())
 

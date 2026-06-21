@@ -123,7 +123,7 @@ def test_h14_negative_tolerance_collapses_to_false():
 
 
 def test_h16_bollinger_upper_lower_match_sma_plus_minus_std(df):
-    """Upper band = SMA + num_std * std; lower band = SMA - num_std * std.
+    """Upper band = SMA + std_dev * std; lower band = SMA - std_dev * std.
 
     Q1 CRITICAL fix: std uses ``ddof=1`` (sample std) to match
     Bollinger (1980) and the engine ``bollinger.py`` path. The old
@@ -131,19 +131,19 @@ def test_h16_bollinger_upper_lower_match_sma_plus_minus_std(df):
     bar — dual-path divergence that silently broke rules referencing
     BBU/BBL from either side."""
     period = 20
-    num_std = 2.0
+    std_dev = 2.0
     out = compute(df, [
         IndicatorRef(alias="bbm", id="bollinger_bands",
                      params={"period": period}),
         IndicatorRef(alias="bbu", id="bollinger_upper",
-                     params={"period": period, "num_std": num_std}),
+                     params={"period": period, "std_dev": std_dev}),
         IndicatorRef(alias="bbl", id="bollinger_lower",
-                     params={"period": period, "num_std": num_std}),
+                     params={"period": period, "std_dev": std_dev}),
     ])
     sma = df["close"].rolling(period).mean()
     std = df["close"].rolling(period).std(ddof=1)
-    expected_upper = sma + num_std * std
-    expected_lower = sma - num_std * std
+    expected_upper = sma + std_dev * std
+    expected_lower = sma - std_dev * std
     # Drop the NaN warm-up rows from both sides for comparison.
     pd.testing.assert_series_equal(
         out["bbu"].dropna().rename("x"),
@@ -168,15 +168,15 @@ def test_h16_bollinger_upper_above_midline_above_lower(df):
 
 
 def test_h16_bollinger_num_std_param_respected(df):
-    """num_std=1 produces tighter bands than num_std=3 at every bar."""
+    """std_dev=1 produces tighter bands than std_dev=3 at every bar."""
     period = 20
     out_tight = compute(df, [
         IndicatorRef(alias="bbu", id="bollinger_upper",
-                     params={"period": period, "num_std": 1.0}),
+                     params={"period": period, "std_dev": 1.0}),
     ])
     out_wide = compute(df, [
         IndicatorRef(alias="bbu", id="bollinger_upper",
-                     params={"period": period, "num_std": 3.0}),
+                     params={"period": period, "std_dev": 3.0}),
     ])
     valid = ~(out_tight["bbu"].isna() | out_wide["bbu"].isna())
     # Wider band is strictly higher (assuming positive std).

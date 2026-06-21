@@ -366,3 +366,53 @@ async def test_live_risk_pct_tick_tag_matches_resolved_source(monkeypatch, tmp_p
         f"expected broker.account() called once, got {call_count['n']}"
     )
     assert signal.equity_source == "fallback_10k"
+
+
+@pytest.mark.asyncio
+async def test_disable_does_not_block_on_task_termination(monkeypatch, tmp_path):
+    import asyncio
+    import time
+    store = BotStore(tmp_path / "bots")
+    bot = store.save(BotRecord(
+        strategy_id="s1", credential_id="c1", exchange_id="binance",
+        symbol="BTC/USDT", enabled=True, mode="shadow",
+        tick_interval_seconds=10,
+    ))
+
+    task_started = asyncio.Event()
+    task_cancelled = asyncio.Event()
+    cleanup_done = asyncio.Event()
+
+    async def slow_cleanup_loop():
+        task_started.set()
+        try:
+            while True:
+                await asyncio.sleep(0.01)
+        except asyncio.CancelledError:
+            task_cancelled.set()
+            await asyncio.sleep(0.2)
+            cleanup_done.set()
+            raise
+
+    runner = BotRunner()
+    task = asyncio.create_task(slow_cleanup_loop())
+    runner._tasks[bot.id] = task
+
+    await task_started.wait()
+
+    t0 = time.perf_counter()
+    rec = await runner.disable(bot.id, store)
+    t1 = time.perf_counter()
+
+    assert t1 - t0 < 0.1
+    assert not cleanup_done.is_set()
+    await asyncio.sleep(0.01)
+    assert task_cancelled.is_set()
+
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+    assert cleanup_done.is_set()
+

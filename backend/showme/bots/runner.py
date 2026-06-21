@@ -205,7 +205,7 @@ async def _round_price_to_precision(broker: Any, symbol: str, price: float) -> f
         return round(float(price), 8)
 
 
-def _resolve_quantity(spec: Any, df: Any) -> float:
+def _resolve_quantity(spec: Any, df: Any, equity_override: float | None = None) -> float:
     """Legacy synchronous sizing resolver kept for backward compatibility.
 
     Pre-2026-05-23 callers (notably ``tests/test_runner_fixes.py``) imported
@@ -223,12 +223,13 @@ def _resolve_quantity(spec: Any, df: Any) -> float:
         raise BotRunnerError(
             f"cannot resolve quantity: last-close lookup failed ({exc})",
         ) from exc
+    equity = equity_override if equity_override is not None else _REFERENCE_EQUITY_USD
     try:
         return resolve_quantity(
             sizing_kind=sizing_kind,
             sizing_value=sizing_value,
             price=price,
-            equity=_REFERENCE_EQUITY_USD,
+            equity=equity,
             stop_loss_pct=spec.position.stop_loss_pct,
         )
     except ValueError as exc:
@@ -368,6 +369,37 @@ class BotRunner:
             for meta in store.list():
                 if not meta.enabled:
                     continue
+                from showme.strategies.store import StrategyStore, UnknownStrategy
+                strategy_exists = True
+                try:
+                    StrategyStore.fresh().get(meta.strategy_id)
+                except (UnknownStrategy, ValueError):
+                    strategy_exists = False
+                
+                if not strategy_exists:
+                    LOG.warning(
+                        "bot %s: strategy %s not found; auto-disabling",
+                        meta.id, meta.strategy_id,
+                    )
+                    async with self._get_lock(meta.id):
+                        try:
+                            rec = store.get(meta.id)
+                            entry = SignalEntry(
+                                bar_index=-1,
+                                bar_time="",
+                                kind="entry",
+                                price=0.0,
+                                action="skipped",
+                                error="stopped/error: strategy deleted",
+                            )
+                            rec = rec.model_copy(update={"enabled": False})
+                            rec = rec.append_signal(entry)
+                            store.save(rec)
+                        except UnknownBot:
+                            LOG.debug("bot %s disappeared during start_all", meta.id)
+                    self._drop_lock(meta.id)
+                    continue
+
                 if meta.mode == "live":
                     has_trade = _has_trade_perm(meta.credential_id)
                     if not has_trade:
@@ -381,6 +413,7 @@ class BotRunner:
                                 store.save(rec.model_copy(update={"enabled": False}))
                             except UnknownBot:
                                 LOG.debug("bot %s disappeared during start_all", meta.id)
+                        self._drop_lock(meta.id)
                         continue
                 if not self.is_running(meta.id):
                     self._spawn(meta.id, store)
@@ -403,29 +436,42 @@ class BotRunner:
             self._spawn(bot_id, store)
         return rec
 
-    async def disable(self, bot_id: str, store: BotStore) -> BotRecord:
+    async def disable(self, bot_id: str, store: BotStore, reason: str | None = None) -> BotRecord:
         """Disable a bot and cancel its loop.
 
-        H-RT-2 fix: cancel the asyncio task BEFORE acquiring the per-bot
-        lock so a tick that's mid-flight (and holding the lock) doesn't
-        force the DELETE UX to wait 5-30s for the tick to release.
+        H-RT-2 fix: cancel the asyncio task and immediately update database 
+        under lock, allowing the task to terminate asynchronously in the 
+        background without blocking the API/UX response.
         """
         task = self._tasks.pop(bot_id, None)
         if task is not None:
             task.cancel()
-            try:
-                await task
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                pass
-        async with self._get_lock(bot_id):
-            try:
-                rec = store.get(bot_id)
-            except UnknownBot:
-                # Bot was deleted concurrently — nothing to disable.
-                raise
-            if rec.enabled:
-                rec = rec.model_copy(update={"enabled": False})
-                rec = store.save(rec)
+        try:
+            async with self._get_lock(bot_id):
+                try:
+                    rec = store.get(bot_id)
+                except UnknownBot:
+                    # Bot was deleted concurrently — nothing to disable.
+                    raise
+                changed = False
+                if rec.enabled:
+                    rec = rec.model_copy(update={"enabled": False})
+                    changed = True
+                if reason is not None:
+                    entry = SignalEntry(
+                        bar_index=-1,
+                        bar_time="",
+                        kind="entry",
+                        price=0.0,
+                        action="skipped",
+                        error=reason,
+                    )
+                    rec = rec.append_signal(entry)
+                    changed = True
+                if changed:
+                    rec = store.save(rec)
+        finally:
+            self._locks.pop(bot_id, None)
         return rec
 
     async def aclose(self) -> None:
@@ -505,6 +551,13 @@ class BotRunner:
                                    error=f"broker unavailable: {exc}")
                 store.save(rec.append_signal(entry))
                 return entry
+
+            # Q4 audit: Broker reconciliation check
+            if rec.mode == "live":
+                from showme.bots.risk_policy import RiskPolicy
+                recon_ok, recon_msg = await RiskPolicy.reconcile_broker(rec, broker)
+                if not recon_ok:
+                    LOG.warning("Broker reconciliation failed for bot %s: %s", bot_id, recon_msg)
 
             # Resolve strategy + fetch ohlcv.
             from showme.strategies.store import StrategyStore, UnknownStrategy
@@ -659,46 +712,89 @@ class BotRunner:
                         LOG.debug("equity source resolve failed: %s", exc)
                         equity_source = None
                         equity_for_sizing = None
+                
+                # Sizing resolution for RiskPolicy check
                 try:
-                    order = await self._dispatch_live_order(
-                        bot_id=bot_id,
-                        broker=broker,
-                        spec=spec,
-                        rec=rec,
-                        event=last_event,
-                        df=df,
-                        equity_override=equity_for_sizing,
-                    )
-                    order_id = order.id if hasattr(order, "id") else str(order)
-                    # H-RT-1 partial-fill audit. If the broker came back
-                    # with ``filled_quantity`` strictly smaller than the
-                    # requested ``quantity``, report the signal as
-                    # ``placed`` (the order DID go through) but stash the
-                    # diagnostic in the ``error`` field so PERF / UI can
-                    # surface it. A fully-rejected IOC (``filled=0``)
-                    # downgrades to ``skipped``.
-                    fq = getattr(order, "filled_quantity", None)
-                    rq = getattr(order, "quantity", None)
-                    if fq is not None:
-                        filled_qty = float(fq)
-                    if avg := getattr(order, "avg_fill_price", None):
-                        avg_fill_price = float(avg)
-                    if filled_qty is not None and rq is not None:
-                        if float(filled_qty) <= 0:
-                            action = "skipped"
-                            error = f"IOC unfilled (filled=0 of {float(rq)})"
-                        elif float(filled_qty) + 1e-9 < float(rq):
-                            action = "placed"
-                            error = (
-                                f"partial fill: {float(filled_qty)} of {float(rq)}"
+                    proposed_qty = 1.0
+                    if last_event.kind == "exit":
+                        matching_entry = _last_non_skipped_entry(rec.signal_log)
+                        if matching_entry is not None and matching_entry.qty is not None and matching_entry.qty > 0:
+                            proposed_qty = matching_entry.qty
+                        else:
+                            proposed_qty = await _resolve_quantity_async(
+                                spec, df, broker, leverage=float(rec.leverage),
+                                equity_override=equity_for_sizing,
                             )
+                    else:
+                        proposed_qty = await _resolve_quantity_async(
+                            spec, df, broker, leverage=float(rec.leverage),
+                            equity_override=equity_for_sizing,
+                        )
+                    proposed_qty = await _round_qty_to_precision(broker, rec.symbol, proposed_qty)
+                except Exception:
+                    proposed_qty = 1.0
+
+                proposed_price = float(df.iloc[-1]["close"])
+                strategy_side = getattr(last_event, "side", None) or spec.position.side
+
+                from showme.bots.risk_policy import RiskPolicy
+                active_bots = store.list()
+                allowed, risk_reason = RiskPolicy.check_trade(
+                    bot=rec,
+                    active_bots=active_bots,
+                    symbol=rec.symbol,
+                    side="long" if strategy_side == "long" else "short",
+                    qty=proposed_qty,
+                    price=proposed_price,
+                    kind=last_event.kind,
+                )
+
+                if not allowed:
+                    action = "skipped"
+                    error = f"RiskPolicy violation: {risk_reason}"
+                    if "kill switch" in risk_reason or "daily loss" in risk_reason:
+                        await self.disable(bot_id, store, reason=error)
+                else:
+                    try:
+                        order = await self._dispatch_live_order(
+                            bot_id=bot_id,
+                            broker=broker,
+                            spec=spec,
+                            rec=rec,
+                            event=last_event,
+                            df=df,
+                            equity_override=equity_for_sizing,
+                        )
+                        order_id = order.id if hasattr(order, "id") else str(order)
+                        # H-RT-1 partial-fill audit. If the broker came back
+                        # with ``filled_quantity`` strictly smaller than the
+                        # requested ``quantity``, report the signal as
+                        # ``placed`` (the order DID go through) but stash the
+                        # diagnostic in the ``error`` field so PERF / UI can
+                        # surface it. A fully-rejected IOC (``filled=0``)
+                        # downgrades to ``skipped``.
+                        fq = getattr(order, "filled_quantity", None)
+                        rq = getattr(order, "quantity", None)
+                        if fq is not None:
+                            filled_qty = float(fq)
+                        if avg := getattr(order, "avg_fill_price", None):
+                            avg_fill_price = float(avg)
+                        if filled_qty is not None and rq is not None:
+                            if float(filled_qty) <= 0:
+                                action = "skipped"
+                                error = f"IOC unfilled (filled=0 of {float(rq)})"
+                            elif float(filled_qty) + 1e-9 < float(rq):
+                                action = "placed"
+                                error = (
+                                    f"partial fill: {float(filled_qty)} of {float(rq)}"
+                                )
+                            else:
+                                action = "placed"
                         else:
                             action = "placed"
-                    else:
-                        action = "placed"
-                except Exception as exc:  # noqa: BLE001
-                    action = "skipped"
-                    error = f"submit failed: {exc}"
+                    except Exception as exc:  # noqa: BLE001
+                        action = "skipped"
+                        error = f"submit failed: {exc}"
 
             # Resolve quote price for closed-trade pairing. In shadow mode
             # the qty is the strategy's spec qty (so PnL reads end-to-end);

@@ -123,38 +123,34 @@ def _compute_bollinger_bands(df: pd.DataFrame, params: dict[str, Any]) -> pd.Ser
 
 
 def _bb_num_std(params: dict[str, Any]) -> float:
-    """C-API-2 fix: accept ``num_std`` *or* ``std_dev`` aliases."""
-    if "num_std" in params:
-        return float(_param(params, "num_std", 2.0))
-    if "std_dev" in params:
-        return float(_param(params, "std_dev", 2.0))
-    return 2.0
+    """C-API-2: expect/use std_dev directly from params."""
+    return float(_param(params, "std_dev", 2.0))
 
 
 def _compute_bollinger_upper(df: pd.DataFrame, params: dict[str, Any]) -> pd.Series:
-    """H-16 fix: upper Bollinger band = SMA + num_std * rolling std.
+    """H-16 fix: upper Bollinger band = SMA + std_dev * rolling std.
 
     Q1 CRITICAL fix: ``ddof=1`` (sample std) to match Bollinger (1980)
     and engine ``bollinger.py``. Old ``ddof=0`` produced a different
     result from the engine path on every bar — dual-path divergence.
     """
     period = int(_param(params, "period", 20))
-    num_std = _bb_num_std(params)
+    std_dev = _bb_num_std(params)
     sma = df["close"].rolling(period).mean()
     std = df["close"].rolling(period).std(ddof=1)
-    return (sma + num_std * std).rename("bbu")
+    return (sma + std_dev * std).rename("bbu")
 
 
 def _compute_bollinger_lower(df: pd.DataFrame, params: dict[str, Any]) -> pd.Series:
-    """H-16 fix: lower Bollinger band = SMA - num_std * rolling std.
+    """H-16 fix: lower Bollinger band = SMA - std_dev * rolling std.
 
     Q1 CRITICAL fix: ``ddof=1`` (sample std) — see ``_compute_bollinger_upper``.
     """
     period = int(_param(params, "period", 20))
-    num_std = _bb_num_std(params)
+    std_dev = _bb_num_std(params)
     sma = df["close"].rolling(period).mean()
     std = df["close"].rolling(period).std(ddof=1)
-    return (sma - num_std * std).rename("bbl")
+    return (sma - std_dev * std).rename("bbl")
 
 
 def _stoch_k_d(df: pd.DataFrame, params: dict[str, Any]) -> tuple[pd.Series, pd.Series]:

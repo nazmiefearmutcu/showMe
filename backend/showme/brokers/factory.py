@@ -80,7 +80,9 @@ def _evict_and_close(name: str) -> None:
             try:
                 import asyncio
                 loop = asyncio.get_running_loop()
-                loop.create_task(close())
+                coro = close()
+                if asyncio.iscoroutine(coro):
+                    loop.create_task(coro)
             except RuntimeError:
                 pass
 

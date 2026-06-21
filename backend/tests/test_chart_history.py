@@ -543,3 +543,288 @@ def test_ohlcv_wrapper_passes_attribute_access_through() -> None:
     # And the wrapper must not steal attributes the inner has under the
     # same name as a wrapper method — wrappers can shadow ``fetch`` only.
     assert wrapper.name == inner.name
+
+
+def test_normalize_history_interval_1M_case_collision() -> None:
+    # "1M" should map to "1mo"
+    assert normalize_history_interval("1M") == "1mo"
+    assert normalize_history_interval(" 1M ") == "1mo"
+    # "1m" should remain "1m"
+    assert normalize_history_interval("1m") == "1m"
+
+
+def test_fetch_yahoo_history_resamples_4h() -> None:
+    mock_payload = {
+        "chart": {
+            "result": [
+                {
+                    "timestamp": [
+                        1781913600,
+                        1781917200,
+                        1781920800,
+                        1781924400,
+                        1781928000
+                    ],
+                    "indicators": {
+                        "quote": [
+                            {
+                                "open": [100.0, 101.0, 102.0, 103.0, 104.0],
+                                "high": [105.0, 106.0, 107.0, 108.0, 109.0],
+                                "low": [95.0, 94.0, 93.0, 92.0, 91.0],
+                                "close": [101.0, 102.0, 103.0, 104.0, 105.0],
+                                "volume": [10, 20, 30, 40, 50]
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+    }
+    
+    from showme.chart_history import fetch_yahoo_history
+    from httpx import Response, Request
+    
+    req = Request("GET", "https://query1.finance.yahoo.com")
+    mock_get = AsyncMock(return_value=Response(200, json=mock_payload, request=req))
+    
+    with patch("httpx.AsyncClient.get", mock_get):
+        res = asyncio.run(
+            fetch_yahoo_history(
+                symbol="AAPL",
+                asset_class="EQUITY",
+                interval="4h",
+                days=2,
+                bars=100
+            )
+        )
+    
+    assert len(res.rows) == 2
+    
+    r1 = res.rows[0]
+    assert r1["time"] == 1781913600
+    assert r1["open"] == 100.0
+    assert r1["close"] == 104.0
+    assert r1["high"] == 108.0
+    assert r1["low"] == 92.0
+    assert r1["volume"] == 100
+    assert r1["date"] == "2026-06-20T00:00:00+00:00"
+    
+    r2 = res.rows[1]
+    assert r2["time"] == 1781928000
+    assert r2["open"] == 104.0
+    assert r2["close"] == 105.0
+    assert r2["high"] == 109.0
+    assert r2["low"] == 91.0
+    assert r2["volume"] == 50
+    assert r2["date"] == "2026-06-20T04:00:00+00:00"
+
+
+def test_normalize_history_interval_1M_adversarial() -> None:
+    # Check leading/trailing space handling
+    assert normalize_history_interval("1M ") == "1mo"
+    assert normalize_history_interval(" 1M") == "1mo"
+    assert normalize_history_interval(" 1M ") == "1mo"
+    
+    # Check that "1m" is NOT mapped to "1mo"
+    assert normalize_history_interval("1m") == "1m"
+    assert normalize_history_interval("1m ") == "1m"
+    assert normalize_history_interval(" 1m") == "1m"
+    assert normalize_history_interval(" 1m ") == "1m"
+    
+    # Case variation for "1M" (only exact "1M" or case-insensitive aliases like "1mo" / "1month")
+    # "1m" resolves to "1m", "1M" resolves to "1mo"
+    assert normalize_history_interval("1M") == "1mo"
+
+
+def test_fetch_yahoo_history_resamples_4h_empty_rows() -> None:
+    from showme.chart_history import fetch_yahoo_history
+    from httpx import Response, Request
+
+    mock_payload = {
+        "chart": {
+            "result": [
+                {
+                    "timestamp": [],
+                    "indicators": {
+                        "quote": []
+                    }
+                }
+            ]
+        }
+    }
+    req = Request("GET", "https://query1.finance.yahoo.com")
+    mock_get = AsyncMock(return_value=Response(200, json=mock_payload, request=req))
+
+    with patch("httpx.AsyncClient.get", mock_get):
+        with pytest.raises(RuntimeError) as exc_info:
+            asyncio.run(
+                fetch_yahoo_history(
+                    symbol="AAPL",
+                    asset_class="EQUITY",
+                    interval="4h",
+                    days=2,
+                    bars=100
+                )
+            )
+    assert "no Yahoo chart history" in str(exc_info.value)
+
+
+def test_fetch_yahoo_history_resamples_4h_boundary_timestamps() -> None:
+    from showme.chart_history import fetch_yahoo_history
+    from httpx import Response, Request
+
+    # Timestamps are already on the 4-hour boundary (UTC):
+    # 1781913600 is 2026-06-20T00:00:00+00:00
+    # 1781928000 is 2026-06-20T04:00:00+00:00
+    mock_payload = {
+        "chart": {
+            "result": [
+                {
+                    "timestamp": [1781913600, 1781928000],
+                    "indicators": {
+                        "quote": [
+                            {
+                                "open": [100.0, 200.0],
+                                "high": [110.0, 210.0],
+                                "low": [90.0, 190.0],
+                                "close": [105.0, 205.0],
+                                "volume": [1000, 2000]
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+    }
+    req = Request("GET", "https://query1.finance.yahoo.com")
+    mock_get = AsyncMock(return_value=Response(200, json=mock_payload, request=req))
+
+    with patch("httpx.AsyncClient.get", mock_get):
+        res = asyncio.run(
+            fetch_yahoo_history(
+                symbol="AAPL",
+                asset_class="EQUITY",
+                interval="4h",
+                days=2,
+                bars=100
+            )
+        )
+    assert len(res.rows) == 2
+    assert res.rows[0]["time"] == 1781913600
+    assert res.rows[0]["open"] == 100.0
+    assert res.rows[0]["close"] == 105.0
+    assert res.rows[1]["time"] == 1781928000
+    assert res.rows[1]["open"] == 200.0
+    assert res.rows[1]["close"] == 205.0
+
+
+def test_fetch_yahoo_history_resamples_4h_missing_ohlcv_values() -> None:
+    from showme.chart_history import fetch_yahoo_history
+    from httpx import Response, Request
+
+    # Timestamps:
+    # 1781913600 (00:00)
+    # 1781917200 (01:00) -> missing high, low, volume
+    # 1781920800 (02:00) -> all present
+    # 1781924400 (03:00) -> missing high, low, volume
+    # 1781928000 (04:00) -> next boundary
+    mock_payload = {
+        "chart": {
+            "result": [
+                {
+                    "timestamp": [1781913600, 1781917200, 1781920800, 1781924400, 1781928000],
+                    "indicators": {
+                        "quote": [
+                            {
+                                "open": [100.0, 101.0, 102.0, 103.0, 200.0],
+                                "high": [110.0, None, 115.0, None, 210.0],
+                                "low": [90.0, None, 85.0, None, 190.0],
+                                "close": [105.0, 106.0, 104.0, 107.0, 205.0],
+                                "volume": [100, None, 300, None, 2000]
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+    }
+    req = Request("GET", "https://query1.finance.yahoo.com")
+    mock_get = AsyncMock(return_value=Response(200, json=mock_payload, request=req))
+
+    with patch("httpx.AsyncClient.get", mock_get):
+        res = asyncio.run(
+            fetch_yahoo_history(
+                symbol="AAPL",
+                asset_class="EQUITY",
+                interval="4h",
+                days=2,
+                bars=100
+            )
+        )
+    assert len(res.rows) == 2
+    r1 = res.rows[0]
+    assert r1["time"] == 1781913600
+    assert r1["open"] == 100.0
+    assert r1["high"] == 115.0  # max of 110.0, 115.0 (excluding None)
+    assert r1["low"] == 85.0    # min of 90.0, 85.0 (excluding None)
+    assert r1["close"] == 107.0  # close of last candle in group (03:00)
+    assert r1["volume"] == 400.0  # sum of 100, 300 (excluding None)
+
+    r2 = res.rows[1]
+    assert r2["time"] == 1781928000
+    assert r2["open"] == 200.0
+    assert r2["high"] == 210.0
+    assert r2["low"] == 190.0
+    assert r2["close"] == 205.0
+    assert r2["volume"] == 2000.0
+
+
+def test_fetch_yahoo_history_resamples_4h_missing_first_open_or_last_close() -> None:
+    from showme.chart_history import fetch_yahoo_history
+    from httpx import Response, Request
+
+    # 1781913600 (00:00) -> open is None
+    # 1781917200 (01:00) -> close is None (should be filtered out by _rows_from_yahoo_chart!)
+    # 1781920800 (02:00) -> all valid
+    # Since 01:00 has close = None, it won't be in the group at all.
+    mock_payload = {
+        "chart": {
+            "result": [
+                {
+                    "timestamp": [1781913600, 1781917200, 1781920800],
+                    "indicators": {
+                        "quote": [
+                            {
+                                "open": [None, 101.0, 102.0],
+                                "high": [110.0, 111.0, 115.0],
+                                "low": [90.0, 89.0, 85.0],
+                                "close": [105.0, None, 104.0],
+                                "volume": [100, 150, 300]
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+    }
+    req = Request("GET", "https://query1.finance.yahoo.com")
+    mock_get = AsyncMock(return_value=Response(200, json=mock_payload, request=req))
+
+    with patch("httpx.AsyncClient.get", mock_get):
+        res = asyncio.run(
+            fetch_yahoo_history(
+                symbol="AAPL",
+                asset_class="EQUITY",
+                interval="4h",
+                days=2,
+                bars=100
+            )
+        )
+    assert len(res.rows) == 1
+    r1 = res.rows[0]
+    # Check that first open being None results in None open
+    assert r1["open"] is None
+    # Check close is the last non-filtered close in the group, which is 104.0 (02:00)
+    assert r1["close"] == 104.0
+
+

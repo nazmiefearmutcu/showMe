@@ -124,9 +124,8 @@ async def test_unregister_credential_calls_aclose():
 # ── C-API-2: bollinger std_dev alias ────────────────────────────────────
 
 
-def test_bollinger_accepts_std_dev_alias():
-    """The shipped template uses ``std_dev`` but compute used to read only
-    ``num_std``. Both spellings must yield identical bands."""
+def test_bollinger_uses_std_dev():
+    """The compute engine has been standardized to use `std_dev` directly."""
     from showme.strategies.compute import compute
     from showme.strategies.spec import IndicatorRef
     n = 60
@@ -136,16 +135,15 @@ def test_bollinger_accepts_std_dev_alias():
         "close": [100.0 + (i % 7) for i in range(n)], "volume": [1000] * n,
     }, index=idx)
 
-    via_num_std = compute(df, [
-        IndicatorRef(alias="bbu", id="bollinger_upper",
-                     params={"period": 20, "num_std": 3.0}),
-    ])
     via_std_dev = compute(df, [
         IndicatorRef(alias="bbu", id="bollinger_upper",
                      params={"period": 20, "std_dev": 3.0}),
     ])
+    sma = df["close"].rolling(20).mean()
+    std = df["close"].rolling(20).std(ddof=1)
+    expected_upper = sma + 3.0 * std
     pd.testing.assert_series_equal(
-        via_num_std["bbu"].dropna(), via_std_dev["bbu"].dropna(),
+        via_std_dev["bbu"].dropna(), expected_upper.dropna(),
         check_names=False,
     )
 

@@ -555,7 +555,7 @@ export function BOTPane() {
                       if (rec) setConfirmLabel("");
                     }
                   }} disabled={
-                    dirty || toggling ||
+                    dirty || toggling || strategyOrphan || credentialOrphan ||
                     (draft.mode === "live" && confirmLabel !== credential?.account_label)
                   }>
                     {toggling ? "..." : "Etkinleştir"}

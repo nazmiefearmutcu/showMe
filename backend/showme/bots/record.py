@@ -178,11 +178,9 @@ class BotRecord(BaseModel):
         identified — the runner already de-dupes sub-bar ticks so
         moderate over-polling is harmless.
 
-        * ``tick_interval_seconds`` more than 4× *slower* than the bar
-          (e.g. tick=3600s on a 1m timeframe → 60 bars per tick, signal
-          skip risk). Bars whose 4× length exceeds the global tick
-          ceiling (3600s) are exempt because the field already caps the
-          tick at 3600s.
+        * ``tick_interval_seconds`` slower than the bar period (tf_s).
+          Bars whose length exceeds the global tick ceiling (3600s) are
+          exempt because the field already caps the tick at 3600s.
         * For 4h+ timeframes, reject sub-30s ticks (e.g. ``(1d, 5s)``
           generates 17,280 ticks/day — rate-limit-ban risk that the
           audit cited explicitly). Sub-hour timeframes accept the
@@ -192,10 +190,10 @@ class BotRecord(BaseModel):
         remain accepted.
         """
         tf_s = _TF_SECONDS.get(self.timeframe, 60)
-        # Reject "too slow": tick more than 4× the bar period. Skip the
+        # Reject "too slow": tick more than the bar period (tf_s). Skip the
         # check for 4h/1d where the 3600s global ceiling already caps
-        # tick faster than 4× bar period.
-        ceiling_cap = tf_s * 4
+        # tick faster than the bar period.
+        ceiling_cap = tf_s
         if ceiling_cap <= 3600 and self.tick_interval_seconds > ceiling_cap:
             raise ValueError(
                 f"tick_interval_seconds={self.tick_interval_seconds} too slow "

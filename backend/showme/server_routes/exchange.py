@@ -37,10 +37,7 @@ async def _cascade_disable_bots(bot_ids: list[str]) -> list[dict[str, str]]:
     store = BotStore.fresh()
     for bid in bot_ids:
         try:
-            await runner.disable(bid, store)
-            locks = getattr(runner, "_locks", None)
-            if isinstance(locks, dict):
-                locks.pop(bid, None)
+            await runner.disable(bid, store, reason="stopped/error: exchange credential deleted")
             results.append({"bot_id": bid, "status": "disabled"})
         except Exception as exc:  # noqa: BLE001
             LOG.warning("cascade disable failed for bot %s: %s", bid, exc)

@@ -149,6 +149,30 @@ def test_risk_pct_over_100_rejected(client):
     assert r.status_code == 400, r.text
 
 
+def test_risk_per_trade_over_100_rejected(client):
+    """C-API-1 — risk_per_trade sizing must be in (0, 100]."""
+    bad = dict(_SPEC)
+    bad["position"] = {
+        "sizing_kind": "risk_per_trade",
+        "sizing_value": 250,
+        "stop_loss_pct": 2.0,
+    }
+    r = client.post("/api/strategies", json=bad)
+    assert r.status_code == 400, r.text
+
+
+def test_risk_per_trade_valid_accepted(client):
+    """C-API-1 — valid risk_per_trade is accepted."""
+    good = dict(_SPEC)
+    good["position"] = {
+        "sizing_kind": "risk_per_trade",
+        "sizing_value": 5.0,
+        "stop_loss_pct": 2.0,
+    }
+    r = client.post("/api/strategies", json=good)
+    assert r.status_code == 200, r.text
+
+
 def test_dependents_endpoint_lists_referencing_bots(client, monkeypatch):
     """GET /api/strategies/{id}/dependents returns the bots that reference it."""
     monkeypatch.setenv("SHOWME_CREDENTIAL_BACKEND", "memory")

@@ -69,7 +69,7 @@ def _on_credential_deleted(credential_id: str) -> None:
                 # Schedule the runner-aware disable so the task is cancelled
                 # before we mutate the on-disk record (avoids a tick racing
                 # the cascade and re-writing enabled=True).
-                loop.create_task(runner.disable(meta.id, store))
+                loop.create_task(runner.disable(meta.id, store, reason="stopped/error: exchange credential deleted"))
             else:
                 # No running loop / no runner instance — just persist the
                 # disabled flag so the next sidecar boot doesn't replay.
@@ -77,9 +77,22 @@ def _on_credential_deleted(credential_id: str) -> None:
                     try:
                         rec = store.get(meta.id)
                         if rec.enabled:
-                            store.save(rec.model_copy(update={"enabled": False}))
+                            from showme.bots.record import SignalEntry
+                            entry = SignalEntry(
+                                bar_index=-1,
+                                bar_time="",
+                                kind="entry",
+                                price=0.0,
+                                action="skipped",
+                                error="stopped/error: exchange credential deleted",
+                            )
+                            rec = rec.model_copy(update={"enabled": False})
+                            rec = rec.append_signal(entry)
+                            store.save(rec)
                     except UnknownBot:
                         LOG.debug("cascade: bot %s disappeared", meta.id)
+                if runner is not None:
+                    runner._drop_lock(meta.id)
         except Exception as exc:  # noqa: BLE001
             LOG.warning(
                 "cascade disable failed for bot %s: %s", meta.id, exc,

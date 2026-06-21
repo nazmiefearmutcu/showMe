@@ -385,6 +385,67 @@ def test_performance_prefers_closed_trades_log(client, seeded):
     assert row["total_pnl"] == 15.0
 
 
+def test_performance_signal_log_passes_strategy_params(client, seeded):
+    """H-SUP-3 — detail performance endpoints must extract strategy params
+    (sizing_kind, side, stop_loss_pct) and bot overrides (commission_rate, leverage)
+    and pass them to compute_trades when fallback to legacy signal_log occurs.
+    """
+    from showme.bots.store import BotStore
+    from showme.bots.record import SignalEntry
+    from showme.strategies.store import StrategyStore
+
+    # We update the strategy spec with custom params
+    sstore = StrategyStore.fresh()
+    spec = sstore.get(seeded["strategy_id"])
+    spec.position.sizing_kind = "fixed_base"
+    spec.position.sizing_value = 0.5
+    spec.position.side = "short"
+    spec.position.stop_loss_pct = 2.0
+    sstore.save(spec)
+
+    r = client.post("/api/bots", json=seeded)
+    bid = r.json()["id"]
+
+    store = BotStore.fresh()
+    rec = store.get(bid)
+    # Update bot record overrides
+    rec.commission_rate = 0.001
+    rec.leverage = 2.0
+
+    # Seed legacy signal_log entries (entry and exit)
+    rec.signal_log = [
+        SignalEntry(
+            bar_index=1, bar_time="2026-05-22T09:00:00Z", kind="entry",
+            price=100.0, action="placed", qty=None,
+        ),
+        SignalEntry(
+            bar_index=2, bar_time="2026-05-22T09:05:00Z", kind="exit",
+            price=95.0, action="placed",
+        )
+    ]
+    store.save(rec)
+
+    # detail endpoint
+    detail = client.get(f"/api/bots/{bid}/performance")
+    assert detail.status_code == 200, detail.text
+    dj = detail.json()
+
+    assert len(dj["trades"]) == 1
+    trade = dj["trades"][0]
+    assert trade["qty"] == 0.5
+    assert trade["side"] == "short"
+    assert trade["pnl"] == 2.5
+    assert trade["commission_paid"] == pytest.approx(0.0975)
+    assert trade["net_pnl"] == pytest.approx(2.4025)
+
+    # leaderboard endpoint
+    board = client.get("/api/bots/performance")
+    assert board.status_code == 200, board.text
+    row = next(row for row in board.json()["records"] if row["bot_id"] == bid)
+    assert row["total_pnl"] == 2.5
+    assert row["net_pnl"] == pytest.approx(2.4025)
+
+
 def test_list_bots_includes_signal_count(client, seeded):
     """H-SUP-2 — GET /api/bots includes ``signal_count`` per record so
     the supervisor UI can show accurate per-bot tallies."""

@@ -8,7 +8,7 @@ from showme.engine.utils.logger import get_logger
 logger = get_logger("validators")
 
 VALID_SYMBOL_PATTERN = re.compile(r"^[A-Z0-9]{2,20}$")
-VALID_TIMEFRAMES = {"1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w", "1M"}
+VALID_TIMEFRAMES = {"1m", "5m", "15m", "1h", "4h", "1d"}
 VALID_MODES = {"paper", "live"}
 VALID_MARKET_TYPES = {"spot", "futures"}
 

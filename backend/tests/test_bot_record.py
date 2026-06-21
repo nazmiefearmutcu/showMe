@@ -106,3 +106,16 @@ def test_symbol_validation():
     with pytest.raises(ValueError, match="symbol must not contain control characters"):
         BotRecord(strategy_id="s", credential_id="c", exchange_id="e", symbol="BTC/USDT\n")
 
+
+def test_tick_interval_slower_than_timeframe_raises_value_error():
+    with pytest.raises(ValueError, match="too slow for timeframe"):
+        BotRecord(
+            strategy_id="s",
+            credential_id="c",
+            exchange_id="e",
+            symbol="BTC/USDT",
+            timeframe="1m",
+            tick_interval_seconds=120
+        )
+
+

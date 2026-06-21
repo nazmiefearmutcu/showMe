@@ -92,7 +92,10 @@ class DeepHistoryResult:
 
 
 def normalize_history_interval(value: Any, default: str = "1d") -> str:
-    raw = str(value or default).strip().lower()
+    val_str = str(value or default).strip()
+    if val_str == "1M":
+        return "1mo"
+    raw = val_str.lower()
     aliases = {
         "60m": "1h",
         "1hr": "1h",
@@ -648,6 +651,35 @@ async def fetch_yahoo_history(
         response = await client.get(f"/v8/finance/chart/{provider_symbol}", params=params)
         response.raise_for_status()
         rows = _rows_from_yahoo_chart(response.json())
+    if normalize_history_interval(interval) == "4h":
+        groups: dict[int, list[dict[str, Any]]] = {}
+        for r in rows:
+            ts = int(r["time"])
+            dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+            boundary_hour = (dt.hour // 4) * 4
+            boundary_dt = dt.replace(hour=boundary_hour, minute=0, second=0, microsecond=0)
+            boundary_ts = int(boundary_dt.timestamp())
+            groups.setdefault(boundary_ts, []).append(r)
+        
+        resampled_rows = []
+        for b_ts, group_rows in groups.items():
+            sorted_group = sorted(group_rows, key=lambda x: x["time"])
+            b_dt = datetime.fromtimestamp(b_ts, tz=timezone.utc)
+            
+            highs = [c["high"] for c in sorted_group if c.get("high") is not None]
+            lows = [c["low"] for c in sorted_group if c.get("low") is not None]
+            vols = [c["volume"] for c in sorted_group if c.get("volume") is not None]
+            
+            resampled_rows.append({
+                "date": b_dt.isoformat(),
+                "time": b_ts,
+                "open": sorted_group[0]["open"],
+                "high": max(highs) if highs else None,
+                "low": min(lows) if lows else None,
+                "close": sorted_group[-1]["close"],
+                "volume": sum(vols) if vols else None,
+            })
+        rows = resampled_rows
     rows = _dedupe_sort_trim(rows, bars)
     if not rows:
         raise RuntimeError(f"no Yahoo chart history for {provider_symbol}")

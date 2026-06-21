@@ -28,6 +28,7 @@ _PUT_STRIPPED_FIELDS = (
     "created_at",
     "updated_at",
     "enabled",
+    "cumulative_funding_pnl",
 )
 
 
@@ -291,9 +292,16 @@ def register(app: FastAPI, deps: AppDeps) -> None:
             except Exception:  # noqa: BLE001
                 continue
             sizing = 100.0
+            sizing_kind = "fixed_quote"
+            side = "long"
+            stop_loss_pct = None
             try:
                 spec = sstore.get(rec.strategy_id)
                 sizing = float(spec.position.sizing_value or 100.0)
+                if spec.position:
+                    sizing_kind = spec.position.sizing_kind
+                    side = spec.position.side
+                    stop_loss_pct = spec.position.stop_loss_pct
             except UnknownStrategy:
                 pass
             # P1 correctness: signal_log is FIFO-capped at 100, so a bot with
@@ -303,7 +311,15 @@ def register(app: FastAPI, deps: AppDeps) -> None:
             if rec.closed_trades_log:
                 trades = compute_trades_from_closed(rec.closed_trades_log)
             else:
-                trades = compute_trades(rec.signal_log, sizing_value=sizing)
+                trades = compute_trades(
+                    rec.signal_log,
+                    sizing_value=sizing,
+                    sizing_kind=sizing_kind,
+                    side=side,
+                    stop_loss_pct=stop_loss_pct,
+                    commission_rate=float(rec.commission_rate or 0.0),
+                    leverage=float(rec.leverage or 1.0),
+                )
             metrics = compute_metrics(trades)
             records.append({
                 "bot_id": rec.id,
@@ -339,9 +355,16 @@ def register(app: FastAPI, deps: AppDeps) -> None:
         except ValueError:
             raise HTTPException(400, detail="invalid bot id")
         sizing = 100.0
+        sizing_kind = "fixed_quote"
+        side = "long"
+        stop_loss_pct = None
         try:
             spec = StrategyStore.fresh().get(rec.strategy_id)
             sizing = float(spec.position.sizing_value or 100.0)
+            if spec.position:
+                sizing_kind = spec.position.sizing_kind
+                side = spec.position.side
+                stop_loss_pct = spec.position.stop_loss_pct
         except UnknownStrategy:
             pass
         # P1 correctness: prefer the uncapped closed_trades_log (the
@@ -349,7 +372,15 @@ def register(app: FastAPI, deps: AppDeps) -> None:
         if rec.closed_trades_log:
             trades = compute_trades_from_closed(rec.closed_trades_log)
         else:
-            trades = compute_trades(rec.signal_log, sizing_value=sizing)
+            trades = compute_trades(
+                rec.signal_log,
+                sizing_value=sizing,
+                sizing_kind=sizing_kind,
+                side=side,
+                stop_loss_pct=stop_loss_pct,
+                commission_rate=float(rec.commission_rate or 0.0),
+                leverage=float(rec.leverage or 1.0),
+            )
         # B2 — honest equity provenance. The equity curve is a SIMULATED,
         # relative curve seeded at this baseline (NOT the user's real account
         # balance), so we expose it explicitly. We also surface the live order
@@ -421,6 +452,8 @@ def register(app: FastAPI, deps: AppDeps) -> None:
             if existing.last_processed_event else None
         )
         payload["enabled"] = existing.enabled
+        payload["created_at"] = existing.created_at
+        payload["cumulative_funding_pnl"] = existing.cumulative_funding_pnl
 
         # Faz 2 / M-1 — same explicit mode allowlist as POST.
         mode = payload.get("mode", existing.mode)
@@ -505,6 +538,13 @@ def register(app: FastAPI, deps: AppDeps) -> None:
             raise HTTPException(404, detail=f"unknown bot: {bot_id}")
         except ValueError:
             raise HTTPException(400, detail="invalid bot id")
+        # Check strategy existence
+        from showme.strategies.store import StrategyStore, UnknownStrategy
+        try:
+            StrategyStore.fresh().get(rec.strategy_id)
+        except (UnknownStrategy, ValueError):
+            raise HTTPException(400, detail="strategy not found")
+
         # H-API-1 (BOT_AUDIT_REPORT.md): before flipping ``enabled``, make
         # sure the broker factory actually has an entry for
         # ``{exchange_id}:{credential_id}``. Without this check a bot can

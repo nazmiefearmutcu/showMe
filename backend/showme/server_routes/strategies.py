@@ -33,7 +33,7 @@ def _enforce_indicator_cap(payload: dict[str, Any]) -> None:
 # risk-pct / NaN / inf bodies persist and reach the live runner. We guard at
 # the route layer so the constraint holds regardless of what the model accepts.
 # FIX_CONTRACT.md C1 documents the runtime semantics (mirrors sizing.py).
-_VALID_SIZING_KINDS = ("fixed_quote", "fixed_base", "risk_pct")
+_VALID_SIZING_KINDS = ("fixed_quote", "fixed_base", "risk_pct", "risk_per_trade")
 
 
 def _enforce_position_sizing(payload: dict[str, Any]) -> None:
@@ -61,9 +61,9 @@ def _enforce_position_sizing(payload: dict[str, Any]) -> None:
                 400,
                 detail=f"position.sizing_kind must be one of {_VALID_SIZING_KINDS}",
             )
-        if kind == "risk_pct" and sv > 100.0:
+        if kind in ("risk_pct", "risk_per_trade") and sv > 100.0:
             raise HTTPException(
-                400, detail="position.sizing_value must be <= 100 when sizing_kind='risk_pct'",
+                400, detail=f"position.sizing_value must be <= 100 when sizing_kind='{kind}'",
             )
     for fld in ("stop_loss_pct", "take_profit_pct"):
         if fld in pos and pos[fld] is not None:
@@ -97,14 +97,7 @@ async def _cascade_disable_bots(bot_ids: list[str]) -> list[dict[str, str]]:
     store = BotStore.fresh()
     for bid in bot_ids:
         try:
-            await runner.disable(bid, store)
-            # H-API-2 — clean up the runner's per-bot lock so the map
-            # cannot grow unbounded across cascade-delete cycles. The
-            # runner's own DELETE flow doesn't reach here; this is the
-            # cascade path's hygiene.
-            locks = getattr(runner, "_locks", None)
-            if isinstance(locks, dict):
-                locks.pop(bid, None)
+            await runner.disable(bid, store, reason="stopped/error: strategy deleted")
             results.append({"bot_id": bid, "status": "disabled"})
         except Exception as exc:  # noqa: BLE001
             LOG.warning("cascade disable failed for bot %s: %s", bid, exc)

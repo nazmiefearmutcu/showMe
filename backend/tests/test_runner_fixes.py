@@ -333,6 +333,19 @@ def test_s2_sizing_kind_risk_pct_uses_reference_equity():
     assert _resolve_quantity(spec, df) == pytest.approx(budget / 200.0)
 
 
+def test_s2_sizing_kind_risk_pct_respects_equity_override():
+    """risk_pct sizing respects equity_override when provided to _resolve_quantity."""
+    from showme.strategies.spec import Position, StrategySpec
+    spec = StrategySpec(
+        name="x",
+        position=Position(sizing_kind="risk_pct", sizing_value=2.0),
+    )
+    df = _ohlcv_df(closes=[200.0])
+    override_equity = 50_000.0
+    budget = override_equity * 0.02
+    assert _resolve_quantity(spec, df, equity_override=override_equity) == pytest.approx(budget / 200.0)
+
+
 def test_s2_sizing_resolver_rejects_non_positive_price():
     """Defensive: a zero last close raises rather than dividing by zero."""
     from showme.bots.ohlcv import BotRunnerError

@@ -36,17 +36,17 @@ def df() -> pd.DataFrame:
 
 def test_compute_bollinger_uses_sample_std(df):
     """compute path: BBU = SMA + k * std(ddof=1)."""
-    period, num_std = 20, 2.0
+    period, std_dev = 20, 2.0
     out = compute(df, [
         IndicatorRef(alias="bbu", id="bollinger_upper",
-                     params={"period": period, "num_std": num_std}),
+                     params={"period": period, "std_dev": std_dev}),
         IndicatorRef(alias="bbl", id="bollinger_lower",
-                     params={"period": period, "num_std": num_std}),
+                     params={"period": period, "std_dev": std_dev}),
     ])
     sma = df["close"].rolling(period).mean()
     sample_std = df["close"].rolling(period).std(ddof=1)
-    expected_upper = sma + num_std * sample_std
-    expected_lower = sma - num_std * sample_std
+    expected_upper = sma + std_dev * sample_std
+    expected_lower = sma - std_dev * sample_std
     pd.testing.assert_series_equal(
         out["bbu"].dropna().rename("x"), expected_upper.dropna().rename("x"),
     )
@@ -57,16 +57,16 @@ def test_compute_bollinger_uses_sample_std(df):
 
 def test_engine_and_compute_agree_on_bollinger_bands(df):
     """Both code paths must report identical bands at the last bar."""
-    period, num_std = 20, 2.0
+    period, std_dev = 20, 2.0
     out = compute(df, [
         IndicatorRef(alias="bbu", id="bollinger_upper",
-                     params={"period": period, "num_std": num_std}),
+                     params={"period": period, "std_dev": std_dev}),
         IndicatorRef(alias="bbl", id="bollinger_lower",
-                     params={"period": period, "num_std": num_std}),
+                     params={"period": period, "std_dev": std_dev}),
     ])
     engine = BollingerBandsIndicator(config={
         "indicator_thresholds": {
-            "bollinger": {"period": period, "std_dev": num_std,
+            "bollinger": {"period": period, "std_dev": std_dev,
                           # tame extra knobs so they don't influence raw values:
                           "adx_period": 14, "adx_trend_floor": 20,
                           "high_volume_multiplier": 1.5,
@@ -80,19 +80,19 @@ def test_engine_and_compute_agree_on_bollinger_bands(df):
     assert out["bbl"].iloc[-1] == pytest.approx(raw["lower"], rel=1e-6)
     assert out["bbu"].dropna().iloc[-1] != pytest.approx(
         df["close"].rolling(period).mean().iloc[-1]
-        + num_std * df["close"].rolling(period).std(ddof=0).iloc[-1],
+        + std_dev * df["close"].rolling(period).std(ddof=0).iloc[-1],
         rel=1e-6,
     ), "compute path must NOT match ddof=0 (population std) — that was the bug"
 
 
 def test_population_std_no_longer_matches_compute(df):
     """Regression guard: if anyone reverts compute to ddof=0, this fails."""
-    period, num_std = 20, 2.0
+    period, std_dev = 20, 2.0
     out = compute(df, [
         IndicatorRef(alias="bbu", id="bollinger_upper",
-                     params={"period": period, "num_std": num_std}),
+                     params={"period": period, "std_dev": std_dev}),
     ])
     pop_upper = (df["close"].rolling(period).mean()
-                 + num_std * df["close"].rolling(period).std(ddof=0))
+                 + std_dev * df["close"].rolling(period).std(ddof=0))
     # Should NOT be equal — they differ by sqrt(n / (n-1)) factor.
     assert not out["bbu"].dropna().equals(pop_upper.dropna())
