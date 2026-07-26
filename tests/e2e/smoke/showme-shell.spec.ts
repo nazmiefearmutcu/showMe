@@ -167,7 +167,15 @@ test.describe("showMe shell smoke", () => {
   test("navigates to Preferences pane", async ({ page }) => {
     await page.goto("/#/preferences");
     await expect(page.locator("body")).toBeVisible();
-    await expect(page.locator("body")).toContainText(/Preferences|Settings/i, { timeout: 6_000 });
+    // Assert on content the pane actually renders. The old assertion looked
+    // for the literal words "Preferences" or "Settings", neither of which is
+    // in the DOM — the nav label is "Prefs" and the pane is organised as
+    // Appearance / Data / Streams / Secrets / Migration / LLM / About. The
+    // pane was rendering correctly all along; the assertion was stale, and it
+    // went unnoticed because e2e-smoke is gated behind
+    // needs: [python, ui, rust] and had never run.
+    await expect(page.locator("body")).toContainText(/Theme presets/i, { timeout: 6_000 });
+    await expect(page.locator("body")).toContainText(/Appearance/i, { timeout: 6_000 });
   });
 
   test("theme toggle button is reachable and clickable", async ({ page }) => {
