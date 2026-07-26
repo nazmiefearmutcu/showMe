@@ -3,6 +3,46 @@
 All notable changes to showMe are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- **BTFW was not a walk-forward backtest.** `backtest_framework.py` was
+  docstring'd "Walk-forward backtest framework", BTFW shipped
+  `"methodology": "Single-symbol walk-forward backtest"` to the user, and the
+  seed advertised a stitched out-of-sample equity curve — but `Backtest.run()`
+  was a single in-sample pass with no train/test split anywhere. Real
+  walk-forward is now implemented: sequential folds, parameters fitted on the
+  train slice only, results reported from the test slices, a per-fold leakage
+  tripwire, and worst-fold reporting.
+- **BTFW's P&L was dimensionally wrong**, so every Sharpe / CAGR / Calmar /
+  drawdown it reported was meaningless. Equity was marked as
+  `cash += pos * (price - last_price)` — the P&L of one share — while the fee
+  was charged on a ~$10,000 notional. Position size is now an explicit fraction
+  of equity and both the mark and the fee use that same basis. Regression tests
+  pin that a +1% move on a long is exactly +1% equity and that round-trip cost
+  equals the configured bps on the notional actually traded. **Any BTFW result
+  recorded before this change should be discarded.** BMTX and BTUNE share the
+  engine and were equally affected.
+- **CI had been red on every run.** The `rust` job died in `tauri_build::build()`
+  on a resource glob pointing at a gitignored sidecar directory CI never builds;
+  `npm ci` died on a `vitest` / `@vitest/coverage-v8` peer conflict left by an
+  incomplete dependency bump; four backend tests depended on a third-party
+  install present only on the author's machine, one made a live World Bank call,
+  and one had hardcoded dates that aged past a 45-day freshness filter.
+  `e2e-smoke` and `e2e-audit` had consequently never executed a single step.
+
+### Changed
+- BTFW now emits `oos_equity_curve`, `per_step_metrics` and an out-of-sample
+  `summary` (including `worst_fold`) — the fields its manifest declared but the
+  implementation never produced. `equity_curve` remains as an alias.
+- BTFW's no-backtest path no longer reports invented metrics (it shipped a
+  hardcoded `sharpe: 1.18`, `max_drawdown: -0.061`, `trades: 8`); the payload is
+  now flagged as a placeholder with null metrics.
+- BMTX and BTUNE state plainly that their rankings are in-sample.
+- `no-undef` and `react-hooks/exhaustive-deps` re-enabled in the UI ESLint
+  config, with the ambient-type and Node globals eslint was missing declared so
+  the rules produce signal rather than noise.
+
 ## [0.1.1] — 2026-06-03
 
 First release where the in-app version, the bundle/DMG version, and the
