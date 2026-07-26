@@ -164,7 +164,11 @@ jobs:
         run: |
           npx --yes playwright install --with-deps chromium
       - name: Validate playwright config
-        run: npx playwright list --config tests/e2e/playwright.config.ts
+        # `playwright list` is not a Playwright command ("error: unknown
+        # command 'list'"); enumerating tests is `test --list`. This step had
+        # never executed — e2e-smoke is gated behind needs:[python, ui, rust],
+        # all of which were failing — so the typo sat here unnoticed.
+        run: npx playwright test --config tests/e2e/playwright.config.ts --list
       # S06 — explicit build step so the smoke project NEVER serves a
       # stale `ui/dist`. The webServer block in playwright.config.ts
       # also chains this build, but a dedicated step surfaces UI build
