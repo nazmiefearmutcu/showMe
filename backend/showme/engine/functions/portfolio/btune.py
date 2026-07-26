@@ -184,7 +184,15 @@ class BTUNEFunction(BaseFunction):
                     "best_calmar": best_calmar_value,
                     "source_mode": "live_yfinance" if live_ok else "local_backtest_model",
                 },
-                "methodology": "Hyperparameter sweep: build each strategy configuration, run the same daily-OHLCV backtest, then rank all configurations by Sharpe, total return, and Calmar.",
+                "methodology": (
+                    "Hyperparameter sweep: build each strategy configuration, run the "
+                    "same daily-OHLCV backtest, then rank all configurations by Sharpe, "
+                    "total return, and Calmar. IN-SAMPLE — every configuration is scored "
+                    "on the same history it is selected from, so the winning Sharpe is "
+                    "optimistically biased by the search itself and is not an estimate "
+                    "of future performance. Use BTFW to evaluate a chosen configuration "
+                    "out-of-sample."
+                ),
                 "field_dictionary": {
                     "sharpe": "Annualized return/risk score from the backtest equity curve.",
                     "calmar": "Total return divided by absolute max drawdown.",

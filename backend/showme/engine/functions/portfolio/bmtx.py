@@ -156,7 +156,13 @@ class BMTXFunction(BaseFunction):
                     "runs": len(cells),
                     "best_sharpe": cells[0]["sharpe"] if cells else None,
                 },
-                "methodology": "Runs each selected strategy on each symbol's daily OHLCV history with the selected fee, then ranks cells by Sharpe and total return.",
+                "methodology": (
+                    "Runs each selected strategy on each symbol's daily OHLCV history "
+                    "with the selected fee, then ranks cells by Sharpe and total return. "
+                    "IN-SAMPLE — each cell is scored on the same history it is ranked "
+                    "over, so the top cell is favoured by the comparison itself. Use "
+                    "BTFW to evaluate a chosen strategy/symbol pair out-of-sample."
+                ),
                 "field_dictionary": {
                     "sharpe": "Annualized return/risk score from the backtest equity curve.",
                     "total_return": "Final equity divided by initial equity minus one.",
