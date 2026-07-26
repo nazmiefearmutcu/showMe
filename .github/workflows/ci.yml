@@ -88,18 +88,31 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: tauri
-      - name: Stub sidecar resource dir (compile-only)
-        # tauri.conf.json bundles `binaries/showme-backend/**/*`, and
-        # tauri_build::build() hard-errors when that glob matches nothing:
-        #   "glob pattern binaries/showme-backend/**/* path not found"
-        # `tauri/binaries/` is gitignored and produced by
-        # packaging/build_sidecar.sh (PyInstaller + the full Python backend),
-        # which this job has no reason to run — it only type-checks Rust.
-        # An empty placeholder satisfies the glob so `cargo check`/`cargo test`
-        # can run. It is NOT a substitute for the sidecar: build-mac.yml and
-        # release.yml both run build_sidecar.sh before packaging, so every
-        # workflow that actually ships an app bundles the real binary.
-        run: mkdir -p tauri/binaries/showme-backend && touch tauri/binaries/showme-backend/.gitkeep
+      - name: Stub build artifacts (compile-only)
+        # Tauri resolves bundle paths at COMPILE time, so this Rust-only job
+        # cannot even type-check without artifacts it has no reason to build.
+        # Two separate hard errors, both fatal before any Rust is compiled:
+        #
+        #   1. tauri_build::build() on the `resources` glob in tauri.conf.json:
+        #        glob pattern binaries/showme-backend/**/* path not found
+        #      `tauri/binaries/` is gitignored and produced by
+        #      packaging/build_sidecar.sh (PyInstaller + the full Python
+        #      backend).
+        #   2. tauri::generate_context!() on `frontendDist`:
+        #        the `frontendDist` configuration is set to `"../ui/dist"`
+        #        but this path doesn't exist
+        #      `ui/dist` is gitignored and produced by `npm run build`.
+        #
+        # Empty placeholders satisfy both so `cargo check` / `cargo test` can
+        # run. They are NOT substitutes for the real artifacts: build-mac.yml
+        # and release.yml build the sidecar and the UI before packaging, so
+        # every workflow that actually ships an app bundles the real ones. The
+        # `ui` job type-checks, builds and tests the frontend for real.
+        run: |
+          mkdir -p tauri/binaries/showme-backend
+          touch tauri/binaries/showme-backend/.gitkeep
+          mkdir -p ui/dist
+          [ -f ui/dist/index.html ] || echo '<!doctype html><title>ci placeholder</title>' > ui/dist/index.html
       - name: Cargo check
         working-directory: tauri
         run: cargo check --all-features
