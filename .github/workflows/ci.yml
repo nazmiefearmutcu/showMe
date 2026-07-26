@@ -122,7 +122,14 @@ jobs:
       - name: Install cargo-audit
         # SEC-10 — pinned floor; cached via rust-cache so subsequent
         # runs don't re-build it.
-        run: cargo install cargo-audit --locked --version "^0.21" || true
+        #
+        # Floor raised 0.21 -> 0.22: 0.21 cannot parse CVSS 4.0 and dies
+        # loading the advisory database itself, not on any finding —
+        #   error loading advisory database: ... RUSTSEC-2026-0073.md:
+        #   unsupported CVSS version: 4.0
+        # which surfaced the moment the earlier compile failures were fixed
+        # and this step ran for the first time.
+        run: cargo install cargo-audit --locked --version "^0.22" || true
       - name: Cargo audit
         working-directory: tauri
         run: cargo audit --deny warnings

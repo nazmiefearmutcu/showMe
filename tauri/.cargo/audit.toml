@@ -1,0 +1,62 @@
+# cargo-audit config — see https://docs.rs/cargo-audit/
+#
+# CONTEXT: `cargo audit` had never actually executed in CI. The rust job died
+# earlier in the pipeline on every run, and once that was fixed the pinned
+# cargo-audit ^0.21 could not even load the advisory database ("unsupported
+# CVSS version: 4.0"). With the pin at ^0.22 the audit runs for the first
+# time, and the entries below are the backlog it surfaced.
+#
+# Everything ignored here was checked with `cargo tree -i <crate> --target all`
+# and is either not compiled into the shipped binary or not reachable from
+# attacker-controlled input. showMe ships macOS/aarch64-apple-darwin ONLY
+# (release.yml builds that single target; the README states there is no
+# Windows/Linux/Intel build), but Cargo.lock is platform-agnostic, so
+# cargo-audit sees every platform's dependency tree regardless.
+#
+# Two advisories found in the same pass were REAL and were fixed by updating
+# the lockfile rather than ignored:
+#   RUSTSEC-2026-0185  quinn-proto 0.11.14 -> 0.11.16  (remote memory exhaustion)
+#   RUSTSEC-2026-0190  anyhow 1.0.102 -> 1.0.104       (Error::downcast_mut unsoundness)
+#
+# Re-check this list whenever Tauri is bumped — most entries resolve upstream.
+
+[advisories]
+ignore = [
+  # ── quick-xml DoS advisories (unbounded namespace allocation / quadratic
+  # attribute scan on hostile XML). Patched in >=0.41.0, but both parents pin
+  # below that, so clearing these is blocked on an upstream bump.
+  #   quick-xml 0.37.5 <- tauri-winrt-notification <- notify-rust
+  #                    <- tauri-plugin-notification  — WINDOWS-ONLY, never
+  #     compiled into the macOS binary.
+  #   quick-xml 0.39.4 <- plist <- tauri             — parses Apple property
+  #     lists (the app's own Info.plist / bundle metadata), not attacker-
+  #     supplied XML. showMe's own source calls neither quick_xml nor plist.
+  "RUSTSEC-2026-0194",  # quick-xml quadratic duplicate-attribute scan
+  "RUSTSEC-2026-0195",  # quick-xml unbounded namespace-declaration allocation
+
+  # ── GTK 0.18 stack: Tauri's LINUX backend. Present in Cargo.lock, never
+  # built for aarch64-apple-darwin. Unmaintained-crate notices, not CVEs.
+  "RUSTSEC-2024-0411",  # gdkwayland-sys unmaintained
+  "RUSTSEC-2024-0412",  # gdk unmaintained
+  "RUSTSEC-2024-0413",  # atk unmaintained
+  "RUSTSEC-2024-0414",  # gdkx11-sys unmaintained
+  "RUSTSEC-2024-0415",  # gtk unmaintained
+  "RUSTSEC-2024-0416",  # atk-sys unmaintained
+  "RUSTSEC-2024-0417",  # gdkx11 unmaintained
+  "RUSTSEC-2024-0418",  # gdk-sys unmaintained
+  "RUSTSEC-2024-0419",  # gtk3-macros unmaintained
+  "RUSTSEC-2024-0420",  # gtk-sys unmaintained
+  "RUSTSEC-2024-0429",  # glib VariantStrIter unsoundness — same Linux stack
+  "RUSTSEC-2024-0345",  # cocoa 0.26 unmaintained; retained for tray-icon glue
+                        # while the macOS surface migrates to objc2
+
+  # ── Build-time only: not linked into the shipped binary.
+  #   proc-macro-error <- glib-macros (proc-macro)  — Linux stack, build time
+  #   unic-* <- urlpattern <- tauri-utils <- tauri-build [build-dependencies]
+  "RUSTSEC-2024-0370",  # proc-macro-error unmaintained
+  "RUSTSEC-2025-0075",  # unic-char-range unmaintained
+  "RUSTSEC-2025-0080",  # unic-common unmaintained
+  "RUSTSEC-2025-0081",  # unic-char-property unmaintained
+  "RUSTSEC-2025-0098",  # unic-ucd-version unmaintained
+  "RUSTSEC-2025-0100",  # unic-ucd-ident unmaintained
+]
