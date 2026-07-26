@@ -163,13 +163,20 @@ describe("B3. aria-labels on interactive elements", () => {
       JSON.stringify({ rows: [{ symbol: "AAPL" }] }),
     );
     const { container } = render(<Welcome />);
-    await waitFor(() => {
-      expect(container.querySelector("[role='grid']")).not.toBeNull();
+    // Wait for the DATA row, not merely for the grid. The grid mounts with
+    // only its header row while the watchlist is still loading, so waiting on
+    // [role='grid'] races the async populate: the row selector then returns
+    // null and `undefined.toMatch()` throws. That is exactly how this test
+    // flaked in CI ("expects to receive a string, but got undefined") while
+    // passing locally.
+    const row = await waitFor(() => {
+      const el = container.querySelector(
+        ".terminal-watchlist__row:not(.terminal-watchlist__row--head)",
+      );
+      expect(el).not.toBeNull();
+      return el as Element;
     });
-    const row = container.querySelector(
-      ".terminal-watchlist__row:not(.terminal-watchlist__row--head)",
-    );
-    expect(row?.getAttribute("aria-label")).toMatch(/AAPL/);
+    expect(row.getAttribute("aria-label")).toMatch(/AAPL/);
   });
 });
 
