@@ -1,4 +1,10 @@
-"""BTFW — Walk-forward backtest function."""
+"""BTFW — Walk-forward backtest function.
+
+Runs a real walk-forward evaluation via
+``showme.engine.services.backtest_framework.WalkForwardBacktest``: sequential
+train/test folds, parameters fitted on the train slice only, results reported
+from the out-of-sample slices with a leakage tripwire and worst-fold reporting.
+"""
 
 from __future__ import annotations
 
@@ -12,7 +18,7 @@ from showme.engine.core.base_data_source import DataKind, DataRequest
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from showme.engine.core.instrument import AssetClass, Instrument
 from showme.engine.services.backtest_framework import (
-    Backtest, STRATEGY_REGISTRY,
+    STRATEGY_REGISTRY, WalkForwardBacktest,
 )
 
 
@@ -37,7 +43,9 @@ class BTFWFunction(BaseFunction):
     name = "Walk-Forward Backtest"
     asset_classes = (AssetClass.EQUITY, AssetClass.CRYPTO, AssetClass.ETF, AssetClass.FX)
     category = "portfolio"
-    description = "Run a registered strategy on historical OHLCV; equity curve + Sharpe + drawdown."
+    description = ("Walk-forward a registered strategy over historical OHLCV: "
+                   "fit per fold on train, report out-of-sample equity, Sharpe, "
+                   "drawdown and the worst fold.")
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         if instrument is None:
@@ -59,9 +67,12 @@ class BTFWFunction(BaseFunction):
                 code=self.code,
                 instrument=instrument,
                 data=_walk_forward_template(instrument.symbol, strategy_name, cash),
-                sources=["local_backtest_model"],
-                warnings=[reason],
-                metadata={"days": days, "fee_bps": fee_bps, "allow_short": allow_short, "live": False, "provider_errors": [reason]},
+                sources=["placeholder_no_backtest_run"],
+                warnings=[reason, "Showing an illustrative placeholder — no "
+                                  "backtest completed, so no metrics are reported."],
+                metadata={"days": days, "fee_bps": fee_bps, "allow_short": allow_short,
+                          "live": False, "is_placeholder": True,
+                          "provider_errors": [reason]},
             )
 
     async def _execute_inner(
@@ -84,8 +95,12 @@ class BTFWFunction(BaseFunction):
                 code=self.code,
                 instrument=instrument,
                 data=_walk_forward_template(instrument.symbol, strategy_name, cash),
-                sources=["local_backtest_model"],
-                metadata={"days": days, "fee_bps": fee_bps, "allow_short": allow_short, "live": False},
+                sources=["placeholder_no_backtest_run"],
+                warnings=["No backtest was run — showing an illustrative "
+                          "placeholder. Pass live=true to compute a real "
+                          "out-of-sample result."],
+                metadata={"days": days, "fee_bps": fee_bps, "allow_short": allow_short,
+                          "live": False, "is_placeholder": True},
             )
         elif self.deps.yfinance:
             try:
@@ -101,45 +116,93 @@ class BTFWFunction(BaseFunction):
         if df.empty:
             df = _template_history(days)
             sources = ["local_backtest_model"]
-        bt = Backtest(df, STRATEGY_REGISTRY[strategy_name],
-                       initial_cash=cash, fee_bps=fee_bps,
-                       allow_short=allow_short, warmup=int(params.get("warmup", 30)))
-        res = bt.run()
-        # Trim equity curve to JSON-friendly size
-        eq = res.equity_curve
+        walk_steps = int(params.get("walk_steps", params.get("n_splits", 5)))
+        train_pct = float(params.get("train_pct", 0.7))
+        walk_mode = str(params.get("walk_mode", "anchored"))
+        warmup = int(params.get("warmup", 30))
+        try:
+            wf = WalkForwardBacktest(
+                df, strategy_name, n_splits=walk_steps, train_pct=train_pct,
+                mode=walk_mode, initial_cash=cash, fee_bps=fee_bps,
+                allow_short=allow_short, warmup=warmup,
+            )
+            res = wf.run()
+        except ValueError as exc:
+            return FunctionResult(
+                code=self.code, instrument=instrument,
+                data=_walk_forward_template(instrument.symbol, strategy_name, cash),
+                sources=["local_backtest_model"],
+                warnings=[f"walk-forward could not run on this history: {exc}"],
+                metadata={"days": days, "fee_bps": fee_bps,
+                          "allow_short": allow_short, "live": False},
+            )
+
+        eq = res.oos_equity_curve
         idx_strs = [str(i) for i in eq.index]
+        step = max(1, len(eq) // 500)
         return FunctionResult(
             code=self.code, instrument=instrument,
             data={
                 "status": "ok",
                 "symbol": instrument.symbol,
                 "strategy": strategy_name,
-                "metrics": res.metrics,
-                "final_equity": res.final_equity,
-                "trades": res.trades[:200],
+                "walk_mode": walk_mode,
+                "train_pct": train_pct,
+                "oos_equity_curve": [
+                    {"ts": idx_strs[i], "equity": float(eq.iloc[i])}
+                    for i in range(0, len(eq), step)
+                ],
+                # Back-compat alias for older consumers; same OOS series.
                 "equity_curve": [
                     {"ts": idx_strs[i], "equity": float(eq.iloc[i])}
-                    for i in range(0, len(eq), max(1, len(eq) // 500))
+                    for i in range(0, len(eq), step)
                 ],
-                "summary": {
-                    "strategy": strategy_name,
-                    "total_return": res.metrics.get("total_return"),
-                    "sharpe": res.metrics.get("sharpe"),
-                    "max_drawdown": res.metrics.get("max_drawdown"),
-                    "trades": res.metrics.get("trades"),
-                    "samples": res.metrics.get("samples"),
-                },
-                "methodology": "Single-symbol walk-forward backtest: the selected strategy is evaluated on daily OHLCV, equity is marked each bar, and metrics are derived from the equity curve after fees.",
+                "per_step_metrics": [
+                    {
+                        "step": f.fold,
+                        "train_start": f.train_start, "train_end": f.train_end,
+                        "test_start": f.test_start, "test_end": f.test_end,
+                        "train_bars": f.train_bars, "test_bars": f.test_bars,
+                        "params": f.params,
+                        "oos_return": f.oos_return,
+                        "sharpe": f.metrics.get("sharpe"),
+                        "cagr": f.metrics.get("cagr"),
+                        "max_drawdown": f.metrics.get("max_drawdown"),
+                        "trades": f.metrics.get("trades"),
+                    }
+                    for f in res.folds
+                ],
+                "final_equity": float(eq.iloc[-1]),
+                "trades": res.trades[:200],
+                "summary": res.summary,
+                "methodology": (
+                    "Single-symbol walk-forward backtest. The history is cut into "
+                    f"{res.summary['n_splits']} successive folds; in each fold the first "
+                    f"{train_pct:.0%} of bars fits the strategy's parameters by grid search "
+                    "and the remainder is evaluated out-of-sample with those parameters "
+                    "frozen. A per-fold tripwire asserts the test slice starts strictly "
+                    "after the last bar the fit could see. Reported metrics come from the "
+                    "stitched out-of-sample equity curve only; the worst fold is reported "
+                    "alongside so a single favourable fold cannot be quoted on its own. "
+                    "Position size is a fraction of current equity and fees are charged on "
+                    "the notional actually traded, so returns are scale-free."
+                ),
                 "field_dictionary": {
-                    "equity": "Account equity after marking the strategy position on each bar.",
-                    "sharpe": "Annualized mean daily equity return divided by daily volatility.",
+                    "oos_equity_curve": "Stitched out-of-sample equity: only test-slice bars contribute.",
+                    "per_step_metrics": "Per-fold train/test boundaries, fitted parameters and local metrics.",
+                    "summary.oos_sharpe": "Annualized Sharpe of the stitched out-of-sample curve.",
+                    "summary.positive_steps_pct": "Fraction of folds with a positive out-of-sample return.",
+                    "summary.worst_fold": "The weakest fold, always reported to prevent cherry-picking.",
+                    "equity": "Account equity after marking the position on each bar, net of fees.",
                     "total_return": "Final equity divided by initial equity minus one.",
                     "max_drawdown": "Worst peak-to-trough equity decline.",
                     "trades": "Number of entry/exit trade events.",
                 },
             },
             sources=sources,
-            metadata={"days": days, "fee_bps": fee_bps, "allow_short": allow_short},
+            metadata={"days": days, "fee_bps": fee_bps, "allow_short": allow_short,
+                      "walk_steps": res.summary["n_splits"], "walk_mode": walk_mode,
+                      "in_sample": False},
         )
 
 
@@ -150,40 +213,64 @@ def _truthy(value: Any) -> bool:
 
 
 def _walk_forward_template(symbol: str, strategy: str, cash: float) -> dict[str, Any]:
+    """Illustrative placeholder shown when no backtest was actually run.
+
+    Every number here is INVENTED — a smooth synthetic ramp with hardcoded
+    Sharpe/drawdown/trade counts. It exists so the pane has a shape to render
+    before the user opts into a live backtest. It is flagged on every level
+    that a consumer might read (status, is_placeholder, each metric block, the
+    methodology string and a warning) so it can never be mistaken for a
+    measured result.
+    """
     curve = [
         {"ts": f"template-{idx + 1:03d}", "equity": round(cash * (1 + idx * 0.0015), 2)}
         for idx in range(30)
     ]
     final_equity = curve[-1]["equity"]
+    disclaimer = (
+        "PLACEHOLDER — not a backtest. These numbers are invented for layout "
+        "purposes and say nothing about this strategy or this symbol. Re-run "
+        "with live=true to compute a real out-of-sample result."
+    )
     return {
-        "status": "reference",
+        "status": "placeholder",
+        "is_placeholder": True,
+        "measured": False,
         "symbol": symbol,
         "strategy": strategy,
+        "disclaimer": disclaimer,
         "metrics": {
-            "sharpe": 1.18,
-            "total_return": round((final_equity / cash) - 1, 4),
-            "max_drawdown": -0.061,
-            "trades": 8,
+            "is_placeholder": True,
+            "sharpe": None,
+            "total_return": None,
+            "max_drawdown": None,
+            "trades": None,
+            "note": disclaimer,
         },
         "final_equity": final_equity,
-        "trades": [
-            {"symbol": symbol, "side": "BUY", "qty": 1, "price": 100.0, "ts": "template-001"},
-            {"symbol": symbol, "side": "SELL", "qty": 1, "price": 104.2, "ts": "template-020"},
-        ],
+        "trades": [],
         "equity_curve": curve,
+        "oos_equity_curve": curve,
+        "per_step_metrics": [],
         "summary": {
             "strategy": strategy,
-            "total_return": round((final_equity / cash) - 1, 4),
-            "sharpe": 1.18,
-            "max_drawdown": -0.061,
-            "trades": 8,
-            "source_mode": "reference_model",
+            "is_placeholder": True,
+            "measured": False,
+            "oos_sharpe": None,
+            "oos_total_return": None,
+            "oos_max_drawdown": None,
+            "positive_steps_pct": None,
+            "trades": None,
+            "source_mode": "placeholder_shape_only",
+            "note": disclaimer,
         },
-        "methodology": "Reference walk-forward equity curve used when live backtest data is not requested or unavailable.",
+        "methodology": (
+            "No backtest was run. The curve below is an invented placeholder "
+            "used only to give the pane a shape; it is not derived from market "
+            "data and no metrics are reported from it."
+        ),
         "field_dictionary": {
-            "equity": "Account equity after marking the strategy position on each bar.",
-            "sharpe": "Annualized mean daily equity return divided by daily volatility.",
-            "total_return": "Final equity divided by initial equity minus one.",
-            "max_drawdown": "Worst peak-to-trough equity decline.",
+            "is_placeholder": "True when the payload is illustrative rather than measured.",
+            "equity_curve": "Synthetic ramp for layout only — carries no information.",
         },
     }
