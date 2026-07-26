@@ -35,7 +35,7 @@
   "devDependencies": {
     "@playwright/test": "1.49.1",
     "@tauri-apps/cli": "2.1.0",
-    "vitest": "^4.1.8",
+    "vitest": "^2.1.9",
     "jsdom": "^29.1.1"
   }
 }
