@@ -103,6 +103,7 @@ export const TABLE_KEYS = [
   "news",
   "ohlcv",
   "orders",
+  "per_step_metrics",
   "positions",
   "records",
   "results",
@@ -117,6 +118,7 @@ export const TABLE_KEYS = [
 
 export const CHART_KEYS = [
   "equity_curve",
+  "oos_equity_curve",
   "ohlcv",
   "bars",
   "history",
