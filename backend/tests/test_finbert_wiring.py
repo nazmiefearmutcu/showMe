@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -32,6 +33,20 @@ sys.path.insert(0, str(ROOT))
 
 
 # --- Helpers ----------------------------------------------------------------
+
+
+def _hours_ago_iso(hours: float) -> str:
+    """Timestamp ``hours`` in the past, as the RSS/instant feeds emit them.
+
+    Fixtures MUST NOT hardcode absolute dates: ``news/top.py`` drops
+    headlines older than ``max_age_days`` (default 45) via
+    ``_within_age_window``, so a frozen date silently turns these tests red
+    once wall-clock time passes it. Relative timestamps keep the fixtures
+    inside every age window at any date the suite is run.
+    """
+
+    stamp = datetime.now(timezone.utc) - timedelta(hours=hours)
+    return stamp.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _run(coro):
@@ -325,14 +340,14 @@ def test_top_handler_stamps_sentiment_on_each_item():
                     "summary": "Apple posted record revenue.",
                     "feed": "Bloomberg",
                     "url": "https://example.com/apple",
-                    "published_at": "2026-05-24T12:00:00Z",
+                    "published_at": _hours_ago_iso(6),
                 },
                 {
                     "title": "Tesla cuts guidance",
                     "summary": "Lower deliveries weighed on profit.",
                     "feed": "Reuters",
                     "url": "https://example.com/tesla",
-                    "published_at": "2026-05-24T11:30:00Z",
+                    "published_at": _hours_ago_iso(6.5),
                 },
             ]
 
@@ -367,14 +382,14 @@ def test_instant_route_stamps_sentiment_on_events(monkeypatch):
                     "title": "Major exchange hack reported",
                     "summary": "Hot wallet drained, withdrawals frozen.",
                     "source_id": "rss_breaking",
-                    "published_at": "2026-05-24T08:00:00Z",
+                    "published_at": _hours_ago_iso(2),
                 },
                 {
                     "id": 2,
                     "title": "Tesla up 4% pre-market",
                     "summary": "Solid delivery numbers.",
                     "source_id": "rss_breaking",
-                    "published_at": "2026-05-24T07:30:00Z",
+                    "published_at": _hours_ago_iso(2.5),
                 },
             ],
         }

@@ -9,6 +9,7 @@ Codes covered: CSRC, DAPI, DARK, DCF, DCFS, DDIS, DDM, DEBT, DES, DINE.
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pytest
@@ -157,8 +158,11 @@ def test_dark_stale_reason_flags_malformed_dates() -> None:
     assert _stale_reason("2026-13-99") is not None  # invalid month/day
     assert _stale_reason("") is None
     assert _stale_reason(None) is None
-    # Real recent date should pass
-    assert _stale_reason("2026-05-10") is None
+    # Real recent date should pass. Relative on purpose: ``dark._stale_reason``
+    # flags anything older than 180 days, so a hardcoded date is a time bomb
+    # that turns this test red once wall-clock time crosses that window.
+    recent = (datetime.now(timezone.utc) - timedelta(days=7)).date().isoformat()
+    assert _stale_reason(recent) is None
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -344,17 +348,85 @@ def test_csrc_screen_returns_commodity_rows() -> None:
 # ─────────────────────────────────────────────────────────────────────
 
 
-def test_debt_country_filter_applies() -> None:
-    """Filter param must narrow rows; methodology hint must stay honest."""
+class _StubWorldBankResponse:
+    """Minimal stand-in for the httpx response DEBT consumes."""
 
+    def __init__(self, payload: Any) -> None:
+        self._payload = payload
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> Any:
+        return self._payload
+
+
+class _StubWorldBankClient:
+    """Answers the World Bank indicator endpoint for *any* country.
+
+    Deliberately not selective: every ISO-3 DEBT asks about gets a valid
+    series back, so the ``countries=`` assertion below is decided purely by
+    the function's own filter, not by which stub responses exist.
+    """
+
+    #: World Bank returns observations newest-first, and recent years are
+    #: often still null — DEBT must skip those and take the latest non-null.
+    _SERIES: dict[str, list[dict[str, Any]]] = {
+        "USA": [{"date": "2024", "value": None}, {"date": "2023", "value": 122.34}],
+        "DEU": [{"date": "2023", "value": 63.61}],
+    }
+
+    def __init__(self) -> None:
+        self.requested_iso3: list[str] = []
+
+    async def get(self, url: str, params: Any = None, timeout: Any = None) -> _StubWorldBankResponse:
+        assert "api.worldbank.org" in url, f"Unexpected DEBT upstream: {url}"
+        iso3 = url.split("/country/", 1)[1].split("/", 1)[0]
+        self.requested_iso3.append(iso3)
+        series = self._SERIES.get(iso3) or [{"date": "2023", "value": 70.0}]
+        header = {"page": 1, "pages": 1, "per_page": 60, "total": len(series)}
+        return _StubWorldBankResponse([header, series])
+
+
+def test_debt_country_filter_applies(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Filter param must narrow rows; methodology hint must stay honest.
+
+    ``DEBTFunction.execute`` fetches https://api.worldbank.org live with a
+    4s timeout and swallows every per-country error, so an unstubbed run
+    silently degrades to ``status=provider_unavailable`` / ``rows=[]``
+    whenever the CI runner has no (or slow) egress — which is exactly how
+    this test flaked. We stub the HTTP seam (``_stubs.get_client``) with a
+    client that serves *every* country, so the country filter is the only
+    thing that can narrow the result.
+    """
+
+    from showme.engine.functions.bond import _stubs
     from showme.engine.functions.bond._stubs import DEBTFunction
+
+    client = _StubWorldBankClient()
+
+    async def _stub_get_client() -> _StubWorldBankClient:
+        return client
+
+    monkeypatch.setattr(_stubs, "get_client", _stub_get_client)
 
     deps = FunctionDeps()
     fn = DEBTFunction(deps)
     result = asyncio.run(fn.execute(countries="US, DE"))
+    assert result.data["status"] == "ok", (
+        f"Stubbed World Bank fetch must produce live-shaped rows. Got: {result.data}"
+    )
     rows = result.data["rows"]
     countries = {row["country"] for row in rows}
     assert countries == {"US", "DE"}
+    # The filter must narrow the *requests* too, not just the returned rows.
+    assert set(client.requested_iso3) == {"USA", "DEU"}, (
+        f"DEBT must only query the requested countries. Got: {client.requested_iso3}"
+    )
+    by_country = {row["country"]: row for row in rows}
+    assert by_country["US"]["debt_to_gdp"] == 122.34
+    assert by_country["US"]["year"] == "2023", "Latest non-null observation must win."
+    assert by_country["DE"]["debt_to_gdp"] == 63.61
     assert result.data["summary"]["portfolio_linked"] is False, (
         "Bundled baseline must never claim portfolio linkage."
     )
