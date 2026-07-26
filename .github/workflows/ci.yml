@@ -88,6 +88,18 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: tauri
+      - name: Stub sidecar resource dir (compile-only)
+        # tauri.conf.json bundles `binaries/showme-backend/**/*`, and
+        # tauri_build::build() hard-errors when that glob matches nothing:
+        #   "glob pattern binaries/showme-backend/**/* path not found"
+        # `tauri/binaries/` is gitignored and produced by
+        # packaging/build_sidecar.sh (PyInstaller + the full Python backend),
+        # which this job has no reason to run — it only type-checks Rust.
+        # An empty placeholder satisfies the glob so `cargo check`/`cargo test`
+        # can run. It is NOT a substitute for the sidecar: build-mac.yml and
+        # release.yml both run build_sidecar.sh before packaging, so every
+        # workflow that actually ships an app bundles the real binary.
+        run: mkdir -p tauri/binaries/showme-backend && touch tauri/binaries/showme-backend/.gitkeep
       - name: Cargo check
         working-directory: tauri
         run: cargo check --all-features
