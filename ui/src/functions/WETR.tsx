@@ -25,6 +25,7 @@ import {
   Tabs,
 } from "@/design-system";
 import { useFunction } from "@/lib/useFunction";
+import { useUtcStamp } from "@/lib/useUtcStamp";
 import { useVisibilityTick } from "@/lib/useVisibilityTick";
 import {
   FunctionControlGroup,
@@ -104,7 +105,7 @@ export function WETRPane({ code }: FunctionPaneProps) {
 
   const sourceMode = payload.source_mode ?? rows[0]?.source_mode ?? "—";
   const isLive = payload.status === "ok" && sourceMode.includes("openweather");
-  const utcStamp = useMemo(() => new Date().toISOString().slice(11, 16), [tick]);
+  const utcStamp = useUtcStamp(tick);
 
   const stats = useMemo(() => deriveWeatherStats(rows), [rows]);
 

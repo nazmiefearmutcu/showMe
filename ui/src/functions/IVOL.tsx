@@ -43,6 +43,7 @@ import {
   Tabs,
 } from "@/design-system";
 import { useFunction } from "@/lib/useFunction";
+import { useUtcStamp } from "@/lib/useUtcStamp";
 import { useVisibilityTick } from "@/lib/useVisibilityTick";
 import {
   FunctionControlGroup,
@@ -326,7 +327,7 @@ export function IVOLPane({ code, symbol }: FunctionPaneProps) {
       : [];
   const sources =
     data?.sources?.join(", ") || sourceMode || "showMe option-chain reference";
-  const utcStamp = useMemo(() => new Date().toISOString().slice(11, 16), [tick]);
+  const utcStamp = useUtcStamp(tick);
 
   const cardTone = (
     label: string,

@@ -34,6 +34,7 @@ import {
   Tabs,
 } from "@/design-system";
 import { useFunction } from "@/lib/useFunction";
+import { useUtcStamp } from "@/lib/useUtcStamp";
 import { useVisibilityTick } from "@/lib/useVisibilityTick";
 import {
   FunctionControlGroup,
@@ -322,7 +323,7 @@ export function SATPane({ code, symbol }: FunctionPaneProps) {
   const windDir = num(weather?.wind_dir_deg);
   const cloud = num(weather?.cloud_cover_pct);
   const precip = num(weather?.precip_mm);
-  const utcStamp = useMemo(() => new Date().toISOString().slice(11, 16), [tick]);
+  const utcStamp = useUtcStamp(tick);
 
   const cols = useMemo<DataGridColumn<SATRow>[]>(
     () => [

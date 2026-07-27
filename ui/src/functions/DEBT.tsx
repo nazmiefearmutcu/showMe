@@ -27,6 +27,7 @@ import {
   Tabs,
 } from "@/design-system";
 import { useFunction } from "@/lib/useFunction";
+import { useUtcStamp } from "@/lib/useUtcStamp";
 import { useVisibilityTick } from "@/lib/useVisibilityTick";
 import { formatMissing, formatPercent } from "@/lib/format";
 import {
@@ -166,7 +167,7 @@ export function DEBTPane({ code, symbol }: FunctionPaneProps) {
   const sources =
     data?.sources?.join(", ") || String(payload.source_mode ?? dataMode);
   const asOf = payload.as_of ?? summary.as_of ?? "—";
-  const utcStamp = useMemo(() => new Date().toISOString().slice(11, 16), [tick]);
+  const utcStamp = useUtcStamp(tick);
 
   const cols = useMemo<DataGridColumn<DebtRow>[]>(() => {
     const base: DataGridColumn<DebtRow>[] = [

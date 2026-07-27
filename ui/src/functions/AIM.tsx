@@ -31,6 +31,7 @@ import {
   Tabs,
 } from "@/design-system";
 import { useFunction } from "@/lib/useFunction";
+import { useUtcStamp } from "@/lib/useUtcStamp";
 import { useVisibilityTick } from "@/lib/useVisibilityTick";
 import { formatCurrency, formatMissing, formatNumber } from "@/lib/format";
 import {
@@ -178,7 +179,7 @@ export function AIMPane({ code, symbol }: FunctionPaneProps) {
     data?.sources?.join(", ") ||
     (brokersChecked.length ? brokersChecked.join(", ") : "no broker adapters");
   // Client wall-clock fallback for "AS OF" captions when the server omits as_of.
-  const utcStamp = useMemo(() => new Date().toISOString().slice(11, 16), [tick]);
+  const utcStamp = useUtcStamp(tick);
   // Server data-freshness (payload.as_of) as an HH:MM UTC stamp; falls back to
   // the client clock so the header always shows something honest.
   const asOfStamp = useMemo(() => extractAsOfHHMM(payload.as_of) ?? utcStamp, [

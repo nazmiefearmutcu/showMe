@@ -23,6 +23,7 @@ import {
   Tabs,
 } from "@/design-system";
 import { useFunction } from "@/lib/useFunction";
+import { useUtcStamp } from "@/lib/useUtcStamp";
 import { useVisibilityTick } from "@/lib/useVisibilityTick";
 import {
   FunctionControlGroup,
@@ -103,7 +104,7 @@ export function WBPane({ code }: FunctionPaneProps) {
   }, [allRows, region]);
 
   const stats = useMemo(() => deriveStats(allRows), [allRows]);
-  const utcStamp = useMemo(() => new Date().toISOString().slice(11, 16), [tick]);
+  const utcStamp = useUtcStamp(tick);
   const sourceMode = payload.summary?.source_mode ?? rows[0]?.source_mode ?? "—";
   const isLiveSource = sourceMode === "fred";
   const noticeText =

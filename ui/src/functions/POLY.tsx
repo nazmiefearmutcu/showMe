@@ -30,6 +30,7 @@ import {
   Tabs,
 } from "@/design-system";
 import { useFunction } from "@/lib/useFunction";
+import { useUtcStamp } from "@/lib/useUtcStamp";
 import { useVisibilityTick } from "@/lib/useVisibilityTick";
 import {
   FunctionControlGroup,
@@ -217,7 +218,7 @@ export function POLYPane({ code }: FunctionPaneProps) {
       ? payload.market_count
       : markets.length;
 
-  const utcStamp = useMemo(() => new Date().toISOString().slice(11, 16), [tick]);
+  const utcStamp = useUtcStamp(tick);
 
   const cols = useMemo<DataGridColumn<PolyMarket>[]>(
     () => [

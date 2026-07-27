@@ -26,6 +26,7 @@ import {
   StatusSection,
 } from "@/design-system";
 import { useFunction } from "@/lib/useFunction";
+import { useUtcStamp } from "@/lib/useUtcStamp";
 import { defaultSymbolForFunction } from "@/lib/symbols";
 import { maxOf, minOf } from "@/lib/maxOf";
 import {
@@ -98,7 +99,7 @@ export function WACCPane({ code, symbol }: FunctionPaneProps) {
     [payload.surface],
   );
 
-  const utcStamp = useMemo(() => new Date().toISOString().slice(11, 16), [data]);
+  const utcStamp = useUtcStamp(data);
   const warnings = Array.isArray(data?.warnings) ? data?.warnings : [];
   const sources = Array.isArray(data?.sources) ? data?.sources : [];
   const fellBack = warnings.some((w) => /fred|damodaran|yfinance|beta/i.test(String(w)));

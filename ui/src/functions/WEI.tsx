@@ -24,6 +24,7 @@ import {
   Tabs,
 } from "@/design-system";
 import { useFunction } from "@/lib/useFunction";
+import { useUtcStamp } from "@/lib/useUtcStamp";
 import { formatNumber, formatMissing } from "@/lib/format";
 import { useVisibilityTick } from "@/lib/useVisibilityTick";
 import { useWorkspace } from "@/lib/workspace";
@@ -112,10 +113,8 @@ export function WEIPane({ code }: FunctionPaneProps) {
   // P2: prefer the server-stamped data freshness (`as_of`) over the client
   // wall clock so the header reflects REAL data age, not render time.
   const asOf = useMemo(() => extractAsOf(data?.data), [data]);
-  const utcStamp = useMemo(
-    () => asOf ?? new Date().toISOString().slice(11, 16),
-    [asOf, tick],
-  );
+  const clockStamp = useUtcStamp(tick);
+  const utcStamp = asOf ?? clockStamp;
   const isLive = state === "ok" && !notice && !isModel;
 
   function onSort(key: string) {

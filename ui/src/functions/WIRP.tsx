@@ -25,6 +25,7 @@ import {
   Tabs,
 } from "@/design-system";
 import { useFunction } from "@/lib/useFunction";
+import { useUtcStamp } from "@/lib/useUtcStamp";
 import { useVisibilityTick } from "@/lib/useVisibilityTick";
 import {
   FunctionControlGroup,
@@ -101,7 +102,7 @@ export function WIRPPane({ code }: FunctionPaneProps) {
   const isReferenceTable = sourceMode !== "live";
   const warningsList = Array.isArray(data?.warnings) ? data?.warnings : [];
 
-  const utcStamp = useMemo(() => new Date().toISOString().slice(11, 16), [tick]);
+  const utcStamp = useUtcStamp(tick);
 
   const cols = useMemo<DataGridColumn<WIRPRow>[]>(
     () => [

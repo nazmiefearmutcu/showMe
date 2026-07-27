@@ -32,6 +32,7 @@ import {
   StatusSection,
 } from "@/design-system";
 import { useFunction } from "@/lib/useFunction";
+import { useUtcStamp } from "@/lib/useUtcStamp";
 import { useVisibilityTick } from "@/lib/useVisibilityTick";
 import {
   FunctionControlGroup,
@@ -163,7 +164,7 @@ export function MICROPane({ code, symbol }: FunctionPaneProps) {
     [data?.warnings],
   );
 
-  const utcStamp = useMemo(() => new Date().toISOString().slice(11, 19), [tick]);
+  const utcStamp = useUtcStamp(tick, "second");
   const sym = payload.symbol ?? symbol ?? "—";
 
   // Bar scaling: longest cumulative across both sides anchors the bar width.

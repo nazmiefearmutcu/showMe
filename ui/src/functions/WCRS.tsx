@@ -25,6 +25,7 @@ import {
   Tabs,
 } from "@/design-system";
 import { useFunction } from "@/lib/useFunction";
+import { useUtcStamp } from "@/lib/useUtcStamp";
 import { useVisibilityTick } from "@/lib/useVisibilityTick";
 import { formatSignedDelta } from "@/lib/format";
 import {
@@ -112,7 +113,7 @@ export function WCRSPane({ code }: FunctionPaneProps) {
     [payload.field_dictionary],
   );
   const stats = useMemo(() => deriveStats(rows, base), [rows, base]);
-  const utcStamp = useMemo(() => new Date().toISOString().slice(11, 16), [tick]);
+  const utcStamp = useUtcStamp(tick);
   const isLive = state === "ok";
 
   const cols = useMemo<DataGridColumn<CrossRate>[]>(

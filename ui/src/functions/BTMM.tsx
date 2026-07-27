@@ -24,6 +24,7 @@ import {
   StatusSection,
 } from "@/design-system";
 import { useFunction } from "@/lib/useFunction";
+import { useUtcStamp } from "@/lib/useUtcStamp";
 import { maxOf, minOf } from "@/lib/maxOf";
 import { formatPercent, formatNumber, formatMissing } from "@/lib/format";
 import {
@@ -287,7 +288,7 @@ export function BTMMPane({ code }: FunctionPaneProps) {
   const chartRow = rows[0] ?? rawRows[0];
   // Wall-clock when the UI last polled (sticky to `data` so it doesn't
   // tick every render). Replaces the old single stamp.
-  const utcStamp = useMemo(() => new Date().toISOString().slice(11, 16), [data]);
+  const utcStamp = useUtcStamp(data);
   // Bug #24 fix: surface the BIS data freshness as its own stamp. Previously
   // the header pill said `HH:MM UTC` from `new Date()` which made a 24-day
   // old fallback look freshly polled. We now display both.

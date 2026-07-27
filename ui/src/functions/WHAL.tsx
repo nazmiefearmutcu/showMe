@@ -26,6 +26,7 @@ import {
   Tabs,
 } from "@/design-system";
 import { useFunction } from "@/lib/useFunction";
+import { useUtcStamp } from "@/lib/useUtcStamp";
 import { useVisibilityTick } from "@/lib/useVisibilityTick";
 import {
   FunctionControlGroup,
@@ -153,7 +154,7 @@ export function WHALPane({ code, symbol }: FunctionPaneProps) {
 
   const cards = Array.isArray(payload.cards) ? payload.cards : [];
   const warnings = Array.isArray(payload.provider_warnings) ? payload.provider_warnings : [];
-  const utcStamp = useMemo(() => new Date().toISOString().slice(11, 16), [tick]);
+  const utcStamp = useUtcStamp(tick);
   const isLive = payload.status === "ok";
   const thresholdHits = rows.filter((r) => r.threshold_crossed).length;
 

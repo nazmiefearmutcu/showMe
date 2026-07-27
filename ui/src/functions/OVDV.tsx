@@ -39,6 +39,7 @@ import {
   Tabs,
 } from "@/design-system";
 import { useFunction } from "@/lib/useFunction";
+import { useUtcStamp } from "@/lib/useUtcStamp";
 import { useVisibilityTick } from "@/lib/useVisibilityTick";
 import {
   FunctionControlGroup,
@@ -207,7 +208,7 @@ export function OVDVPane({ code }: FunctionPaneProps) {
     return [...fromPayload, ...fromEnvelope.map((w) => String(w))];
   }, [payload.warnings, data?.warnings]);
 
-  const utcStamp = useMemo(() => new Date().toISOString().slice(11, 16), [tick]);
+  const utcStamp = useUtcStamp(tick);
   const sources =
     data?.sources?.join(", ") || (isLive ? "yfinance" : "reference_fx_vol_model");
 
