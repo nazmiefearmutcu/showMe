@@ -1,8 +1,5 @@
 # Sub-system E — Strategy editor (SHIPPED 2026-05-22)
 
-Spec: [docs/superpowers/specs/2026-05-22-strategy-editor-design.md](../docs/superpowers/specs/2026-05-22-strategy-editor-design.md)
-Plan: [docs/superpowers/plans/2026-05-22-strategy-editor.md](../docs/superpowers/plans/2026-05-22-strategy-editor.md)
-
 ## What landed
 
 * StrategySpec pydantic models + JSON roundtrip + catalog validation

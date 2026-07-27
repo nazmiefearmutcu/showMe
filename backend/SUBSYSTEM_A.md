@@ -1,8 +1,5 @@
 # Sub-system A — Multi-exchange portfolio foundation (SHIPPED 2026-05-22)
 
-Spec:  [docs/superpowers/specs/2026-05-21-multi-exchange-portfolio-foundation-design.md](../docs/superpowers/specs/2026-05-21-multi-exchange-portfolio-foundation-design.md)
-Plan:  [docs/superpowers/plans/2026-05-21-multi-exchange-portfolio-foundation.md](../docs/superpowers/plans/2026-05-21-multi-exchange-portfolio-foundation.md)
-
 ## What landed
 
 * Credential vault (`brokers/credential_store.py`) backed by macOS Keychain (service `com.showme.exchanges`) with in-memory backend for tests via `SHOWME_CREDENTIAL_BACKEND=memory`.

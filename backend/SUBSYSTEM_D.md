@@ -1,8 +1,5 @@
 # Sub-system D — Strategy bot runner (SHIPPED 2026-05-22)
 
-Spec: [docs/superpowers/specs/2026-05-22-bot-runner-design.md](../docs/superpowers/specs/2026-05-22-bot-runner-design.md)
-Plan: [docs/superpowers/plans/2026-05-22-bot-runner.md](../docs/superpowers/plans/2026-05-22-bot-runner.md)
-
 ## What landed
 
 * BotRecord + SignalEntry models + FS store under $SHOWME_HOME/bots

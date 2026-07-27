@@ -1,8 +1,5 @@
 # Sub-system J — NL bot dev assistant (SHIPPED 2026-05-22 — FINAL)
 
-Spec: [docs/superpowers/specs/2026-05-22-nl-assistant-design.md](../docs/superpowers/specs/2026-05-22-nl-assistant-design.md)
-Plan: [docs/superpowers/plans/2026-05-22-nl-assistant.md](../docs/superpowers/plans/2026-05-22-nl-assistant.md)
-
 ## What landed
 
 * Rule-based NL→StrategySpec parser (TR + EN phrasings)

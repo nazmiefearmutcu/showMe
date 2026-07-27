@@ -101,3 +101,12 @@ cache/
 /ORIGINAL_REQUEST.md
 /BRIEFING.md
 /handoff.md
+
+# ── Agent working notes ─────────────────────────────────────────────────────
+# Plans, specs and verification prompts written *for an agent to execute*.
+# They carry local machine paths and private working directives, and they go
+# stale the moment the work ships. The durable record is the close-out doc
+# (backend/SUBSYSTEM_*.md, docs/rebuild/) — that is what gets committed.
+docs/superpowers/
+.superpowers/
+docs/refactor_verification_prompts.md

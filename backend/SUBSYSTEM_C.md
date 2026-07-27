@@ -1,8 +1,5 @@
 # Sub-system C — Manual trading UI (SHIPPED 2026-05-22)
 
-Spec: [docs/superpowers/specs/2026-05-22-manual-trading-ui-design.md](../docs/superpowers/specs/2026-05-22-manual-trading-ui-design.md)
-Plan: [docs/superpowers/plans/2026-05-22-manual-trading-ui.md](../docs/superpowers/plans/2026-05-22-manual-trading-ui.md)
-
 ## What landed
 
 * `ui/src/lib/trading-store.ts` — zustand store wrapping POST /api/broker/orders + DELETE

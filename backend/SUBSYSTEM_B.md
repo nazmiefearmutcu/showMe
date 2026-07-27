@@ -1,8 +1,5 @@
 # Sub-system B — Read-only portfolio aggregation (SHIPPED 2026-05-22)
 
-Spec: [docs/superpowers/specs/2026-05-22-read-portfolio-aggregation-design.md](../docs/superpowers/specs/2026-05-22-read-portfolio-aggregation-design.md)
-Plan: [docs/superpowers/plans/2026-05-22-read-portfolio-aggregation.md](../docs/superpowers/plans/2026-05-22-read-portfolio-aggregation.md)
-
 ## What landed
 
 * `backend/showme/portfolio_aggregate.py` — asyncio fan-out across `factory._DYNAMIC`, 30-second in-process cache, factory-hook subscription so invalidated credentials drop their cache entries.

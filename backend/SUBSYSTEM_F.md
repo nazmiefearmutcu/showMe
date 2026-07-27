@@ -1,8 +1,5 @@
 # Sub-system F — Indicator depot (SHIPPED 2026-05-22)
 
-Spec: [docs/superpowers/specs/2026-05-22-indicator-depot-design.md](../docs/superpowers/specs/2026-05-22-indicator-depot-design.md)
-Plan: [docs/superpowers/plans/2026-05-22-indicator-depot.md](../docs/superpowers/plans/2026-05-22-indicator-depot.md)
-
 ## What landed
 
 * 15 hand-curated indicators (RSI, MACD, EMA, SMA, Bollinger Bands, Stochastic, ATR, ADX, CCI, OBV, Williams %R, VWAP, Ichimoku, Parabolic SAR, KDJ) covering trend/momentum/volatility/volume.

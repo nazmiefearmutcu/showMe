@@ -1,8 +1,5 @@
 # Sub-system K — GitHub/HF integrations (SHIPPED 2026-05-22)
 
-Spec: [docs/superpowers/specs/2026-05-22-github-hf-integrations-design.md](../docs/superpowers/specs/2026-05-22-github-hf-integrations-design.md)
-Plan: [docs/superpowers/plans/2026-05-22-github-hf-integrations.md](../docs/superpowers/plans/2026-05-22-github-hf-integrations.md)
-
 ## What landed
 
 * GitHub code search (`/api/integrations/github/search`) — thin httpx, 5-min cache, never raises

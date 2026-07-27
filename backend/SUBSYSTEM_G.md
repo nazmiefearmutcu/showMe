@@ -1,8 +1,5 @@
 # Sub-system G — Template bot library (SHIPPED 2026-05-22)
 
-Spec: [docs/superpowers/specs/2026-05-22-template-bots-design.md](../docs/superpowers/specs/2026-05-22-template-bots-design.md)
-Plan: [docs/superpowers/plans/2026-05-22-template-bots.md](../docs/superpowers/plans/2026-05-22-template-bots.md)
-
 ## What landed
 
 * 12 hand-curated templates with TR NL explanations + math + applicability

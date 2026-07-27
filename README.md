@@ -269,7 +269,7 @@ showMe/
 ├── packaging/    build / sign / notarize / dmg
 ├── scripts/      audits & dev tools (npm run audit:functions, …)
 ├── tests/        cross-cutting Playwright e2e
-└── docs/         architecture, screenshots, specs, plans
+└── docs/         architecture, screenshots, rebuild notes, round notes
 ```
 
 </details>

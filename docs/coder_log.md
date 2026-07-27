@@ -1572,8 +1572,8 @@ kuruldu. **ShowMe dosyalarına dokunulmadı** — Rapor 2 §10 madde 1.
 
 ### Yeni proje konumu
 
-`/Users/nazmi/Desktop/Projeler/proje/showMe/` — ShowMe kardeşi, ayrı VCS, ayrı
-process. Tauri 2 + Rust + React 18/TS + Python sidecar.
+`showMe/` (bu depo) — ShowMe kardeşi, ayrı VCS, ayrı process. Tauri 2 + Rust +
+React 18/TS + Python sidecar.
 
 ### Klasör yapısı (Rapor 2 §2 ile birebir)
 

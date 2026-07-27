@@ -1,6 +1,6 @@
 # ShowMe — Page-by-Page Development Progress
 
-Ralph-driven, one page per iteration. Plan: `docs/superpowers/plans/2026-06-08-page-by-page-development.md`.
+Ralph-driven, one page per iteration.
 
 | # | Code | Page | Status | Notes |
 |---|------|------|--------|-------|

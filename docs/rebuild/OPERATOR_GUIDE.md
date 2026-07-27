@@ -192,17 +192,20 @@ When the count reaches 0, un-skip `tests/test_production_fakery_banned.py::test_
 Every change should be able to run this without surprises:
 
 ```bash
+# Run these from the repository root. Each `cd` is wrapped in a subshell so the
+# steps stay independent of one another.
+
 # Backend
-cd backend && .venv/bin/python -m pytest --no-cov -q
+(cd backend && .venv/bin/python -m pytest --no-cov -q)
 
 # Frontend
-cd ui && npm test -- --run
+(cd ui && npm test -- --run)
 
 # Ban-list
-cd /Users/nazmi/Desktop/Projeler/proje/showMe && python -m pytest tests/test_production_fakery_banned.py -v
+python -m pytest tests/test_production_fakery_banned.py -v
 
 # Full app health
-cd backend && .venv/bin/python -m showme.server --port 0 &
+(cd backend && .venv/bin/python -m showme.server --port 0 &)
 # wait for SIDECAR_PORT=... then curl /api/health, /api/manifest, /api/manifest/GP
 ```
 
