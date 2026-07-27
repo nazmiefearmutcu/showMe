@@ -65,6 +65,14 @@ function LightweightSeriesChart({ chartId, series }: { chartId: string; series: 
   const delta = last - first;
   const intradayTime = series.points.some((point) => typeof point.time === "number");
   const paletteKey = Object.values(palette).join("|");
+  // Hoisted out of the rebuild effect so its *presence* can be a dependency.
+  // `compareY` arrives from a `compare_value` column in the payload, so a
+  // comparison can start (or stop) between polls. The rebuild effect is what
+  // creates the compare series, and the data effect only fills it in when it
+  // already exists — so without this the second line never appeared. A boolean
+  // is compared by value, so the chart is rebuilt when comparison data appears
+  // or disappears, not on every price tick.
+  const hasCompare = series.points.some((point) => point.compareY !== undefined);
 
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<"Candlestick" | "Line"> | null>(null);
@@ -141,7 +149,6 @@ function LightweightSeriesChart({ chartId, series }: { chartId: string; series: 
       volSeriesRef.current = null;
 
       // Instantiate comparison series if there is compareY data
-      const hasCompare = series.points.some((point) => point.compareY !== undefined);
       if (hasCompare) {
         const compareLine = chart.addSeries(LineSeries, {
           color: palette.accent || "var(--accent)",
@@ -173,7 +180,14 @@ function LightweightSeriesChart({ chartId, series }: { chartId: string; series: 
       compareSeriesRef.current = null;
       volSeriesRef.current = null;
     };
-  }, [series.kind, paletteKey]);
+    // Deliberately narrow. This effect DESTROYS and rebuilds the canvas, which
+    // also resets the user's zoom and pan, so it must not run on price ticks.
+    // The values the linter wants added are all re-applied without a rebuild:
+    // `palette.*` is covered by `paletteKey` (a digest of Object.values(palette),
+    // so complete by construction), `last` and `delta` by the data effect's
+    // applyOptions below, and `intradayTime` by the option effect after it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [series.kind, paletteKey, hasCompare]);
 
   // 2. Data effect: when points, delta, or series.kind changes, update the series data.
   useEffect(() => {
@@ -248,6 +262,9 @@ function LightweightSeriesChart({ chartId, series }: { chartId: string; series: 
       const width = el ? measureChartElement(el, 460).width : 460;
       focusLatestBars(chart, series.points.length, width);
     }
+    // `last` is `series.points.at(-1)?.y`, so it cannot change without
+    // `series.points` changing; `palette.*` is covered by `paletteKey`.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [series.points, delta, series.kind, paletteKey]);
 
   // 3. Option effect: when intradayTime changes, toggle timeScale.timeVisible.

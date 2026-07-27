@@ -1414,6 +1414,11 @@ export function PriceChart({
   useEffect(() => {
     const el = hostRef.current;
     if (!el) return;
+    // Captured here rather than read in the cleanup: both refs hold Maps that
+    // are created once and only ever mutated, so this is the same object, and
+    // it keeps the cleanup from reaching through a ref after a rebuild.
+    const indicatorSeries = indicatorSeriesRef.current;
+    const compareSeries = compareSeriesRef.current;
     const size = measureChartElement(el);
     const chart = createChart(el, {
       layout: {
@@ -1546,12 +1551,14 @@ export function PriceChart({
       chartApiRef.current = null;
       mainSeriesRef.current = null;
       volumeSeriesRef.current = null;
-      indicatorSeriesRef.current.clear();
-      compareSeriesRef.current.clear();
+      indicatorSeries.clear();
+      compareSeries.clear();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- paletteKey is a
-    // value-stable proxy for `palette`; depending on the object identity would
-    // remount the chart on every render (see paletteKey comment above).
+    // paletteKey is a value-stable proxy for `palette`; depending on the object
+    // identity would remount the chart on every render (see the paletteKey
+    // comment above). The disable has to sit immediately above the dependency
+    // array — the rule reports on that line, so a wrapped comment misses it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chartStyle, compareMode, interval, paletteKey, chartApiRef]);
 
   // Keep a ref to the most recent chartRows so the crosshair closure created

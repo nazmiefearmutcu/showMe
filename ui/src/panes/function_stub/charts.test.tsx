@@ -339,3 +339,70 @@ describe("SeriesChart — line color sign flip applies via applyOptions", () => 
     expect(lineSeriesStub.applyOptions.mock.calls.length).toBeGreaterThan(before);
   });
 });
+
+describe("SeriesChart — comparison series arriving after first paint", () => {
+  // `compareY` is extracted from a `compare_value` column in the payload, so a
+  // comparison can start mid-instance (user attaches a peer symbol) rather than
+  // being known at mount. The rebuild effect is the only thing that creates the
+  // second line series, and the data effect fills it in only when it already
+  // exists — so the rebuild effect has to notice compare data appearing.
+  function comparedLineSeries(closes: number[]): ChartSeries {
+    const base = lineSeries(closes);
+    return {
+      ...base,
+      points: base.points.map((point, i) => ({ ...point, compareY: closes[i] / 2 })),
+    };
+  }
+
+  it("creates and fills the compare line when compareY shows up later", () => {
+    const plain = lineSeries([100, 101, 102]);
+    const compared = comparedLineSeries([100, 101, 102, 103]);
+
+    const { rerender } = render(<SeriesChart chartId="STUB" series={plain} />);
+    expect(chartInstances).toHaveLength(1);
+    // No compare data yet → main line only.
+    expect(chartInstances[0].addLineSeries).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      rerender(<SeriesChart chartId="STUB" series={compared} />);
+    });
+
+    // Compare data appeared, so the chart rebuilds once to add the second line.
+    expect(chartInstances).toHaveLength(2);
+    expect(chartInstances[1].addLineSeries).toHaveBeenCalledTimes(2);
+
+    // And the compare line is actually populated, not just constructed.
+    const compareLine = chartInstances[1].__series[1];
+    expect(compareLine.setData).toHaveBeenCalled();
+    expect(compareLine.setData.mock.calls[0][0]).toHaveLength(4);
+  });
+
+  it("keeps the mount-once guarantee while comparison data keeps arriving", () => {
+    const first = comparedLineSeries([100, 101, 102]);
+    const second = comparedLineSeries([100, 101, 102, 103]);
+
+    const { rerender } = render(<SeriesChart chartId="STUB" series={first} />);
+    expect(chartInstances).toHaveLength(1);
+
+    act(() => {
+      rerender(<SeriesChart chartId="STUB" series={second} />);
+    });
+    // compareY presence is unchanged, so no rebuild — the user's zoom survives.
+    expect(chartInstances).toHaveLength(1);
+    expect(chartInstances[0].remove).not.toHaveBeenCalled();
+  });
+
+  it("drops the compare line when comparison data goes away", () => {
+    const compared = comparedLineSeries([100, 101, 102]);
+    const plain = lineSeries([100, 101, 102, 103]);
+
+    const { rerender } = render(<SeriesChart chartId="STUB" series={compared} />);
+    expect(chartInstances[0].addLineSeries).toHaveBeenCalledTimes(2);
+
+    act(() => {
+      rerender(<SeriesChart chartId="STUB" series={plain} />);
+    });
+    expect(chartInstances).toHaveLength(2);
+    expect(chartInstances[1].addLineSeries).toHaveBeenCalledTimes(1);
+  });
+});
