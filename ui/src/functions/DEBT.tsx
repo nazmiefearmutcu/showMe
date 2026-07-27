@@ -129,7 +129,12 @@ export function DEBTPane({ code, symbol }: FunctionPaneProps) {
     () => (Array.isArray(payload.rows) ? payload.rows : []),
     [payload.rows],
   );
-  const summary = payload.summary ?? {};
+  // Memoized because the `?? {}` fallback would otherwise hand `kpi` a fresh
+  // object identity on every render and defeat its useMemo entirely.
+  const summary = useMemo<DebtSummary>(
+    () => payload.summary ?? {},
+    [payload.summary],
+  );
 
   const rows = useMemo(
     () =>

@@ -169,7 +169,12 @@ export function XSENPane({ code, symbol }: FunctionPaneProps) {
     setRunId((id) => id + 1);
   };
 
-  const examples = data?.examples ?? {};
+  // Memoized so the `?? {}` fallback stops handing `sentimentOrder` a new
+  // object identity on every render.
+  const examples = useMemo<Record<string, XExample[]>>(
+    () => data?.examples ?? {},
+    [data?.examples],
+  );
   const sentimentOrder = useMemo(() => orderSentiments(Object.keys(examples)), [examples]);
 
   // Active scrape source label (Brave -> Nitter -> Jina order).

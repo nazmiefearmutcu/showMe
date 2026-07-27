@@ -267,10 +267,11 @@ export function INSTANTPane({ code }: FunctionPaneProps) {
   // present but empty" (service connected, but reported zero optimizations).
   const speedupsField = status?.performance?.speedups;
   const speedupsAreLive = Array.isArray(speedupsField) && speedupsField.length > 0;
-  const liveSpeedups = speedupsField ?? [];
+  // The `?? []` fallback lives inside the callback: as a bare const it was a
+  // fresh array each render, so this memo never actually held.
   const speedups = useMemo(() => {
-    return speedupsAreLive ? liveSpeedups : KNOWN_SPEEDUPS;
-  }, [speedupsAreLive, liveSpeedups]);
+    return speedupsAreLive ? (speedupsField ?? []) : KNOWN_SPEEDUPS;
+  }, [speedupsAreLive, speedupsField]);
   // The speedups field is present (an array) but empty — the live service IS
   // connected and simply reported no active optimizations.
   const speedupsConnectedEmpty = Array.isArray(speedupsField) && speedupsField.length === 0;

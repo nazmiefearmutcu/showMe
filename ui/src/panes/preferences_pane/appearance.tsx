@@ -422,11 +422,17 @@ function TimezoneClock() {
 }
 
 function TimezonePicker() {
-  const tz = useTimezone();
+  // Subscribed for the re-render, not the value: picking a new manual zone
+  // must repaint this picker so `manualSelection` below re-reads the store.
+  useTimezone();
   const mode = useTimezoneMode();
   const all = useMemo(() => listAllTimezones(), []);
   const systemTz = useMemo(() => getSystemTimezone(), []);
-  const manualSelection = useMemo(() => readManualTimezone(), [mode, tz]);
+  // Plain read rather than a memo keyed on [mode, tz]: this returns a string
+  // out of persisted state, so re-reading per render is both cheap and immune
+  // to going stale on a signal we forgot to list. `useTimezone`/
+  // `useTimezoneMode` already re-render this picker when either changes.
+  const manualSelection = readManualTimezone();
   const onPick = (next: string) => {
     const applied = writeTimezone(next);
     toast.info(`Timezone → ${applied}`);

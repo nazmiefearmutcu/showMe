@@ -599,8 +599,13 @@ export function CONNPane() {
 
   useEffect(() => { loadCatalog(); loadCreds(); }, [loadCatalog, loadCreds]);
 
+  // `catalog` looks unused to the linter but is load-bearing: `filterCatalog`
+  // is a stable store action that reads `get().catalog` internally, so this is
+  // the only dependency that re-filters once loadCatalog() resolves. Drop it
+  // and the exchange list stays empty forever.
   const filtered = useMemo(
     () => filterCatalog({ query, assetClasses, regions }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [query, assetClasses, regions, filterCatalog, catalog],
   );
 

@@ -204,7 +204,9 @@ export function MISPane({ code }: FunctionPaneProps) {
       );
   }, [markets, selected, maxPerMarket]);
 
-  const rows: MisScanRow[] = result?.rows ?? [];
+  // Memoized because the `?? []` fallback would otherwise be a new array on
+  // every render, recomputing both medians below each time.
+  const rows = useMemo<MisScanRow[]>(() => result?.rows ?? [], [result?.rows]);
   const longs = rows.filter((r) => r.direction === "LONG").length;
   const shorts = rows.filter((r) => r.direction === "SHORT").length;
   const medianConfidence = useMemo(

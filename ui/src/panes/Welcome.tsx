@@ -418,7 +418,13 @@ export function Welcome() {
   });
 
   const totals = portfolio.data?.data?.totals;
-  const positions = portfolio.data?.data?.positions ?? [];
+  // Memoized so the `?? []` fallback stops minting a new array each render.
+  // This also makes the UA-CRITICAL-06 guard below hold as intended: its key
+  // memo was re-running every render, not just when positions changed.
+  const positions = useMemo<PortfolioPosition[]>(
+    () => portfolio.data?.data?.positions ?? [],
+    [portfolio.data?.data?.positions],
+  );
   const exposureRows = useMemo(
     () =>
       Object.entries(portfolio.data?.data?.by_asset_class ?? {})
