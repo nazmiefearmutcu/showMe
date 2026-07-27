@@ -1083,7 +1083,6 @@ export function ChartView({
     } else {
       lastBarRef.current = null;
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [candles, chartStyle]);
 
   // ── Indicator overlays ────────────────────────────────────────────────

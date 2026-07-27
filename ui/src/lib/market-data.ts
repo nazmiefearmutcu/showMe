@@ -1140,7 +1140,6 @@ export function useChartSeries(
       handle?.close();
       refetchRef.current = () => undefined;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled, sym, interval, depth, range, autoSubscribe]);
 
   return {

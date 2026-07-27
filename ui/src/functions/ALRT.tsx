@@ -307,7 +307,6 @@ export function ALRTPane({ code }: FunctionPaneProps) {
     };
     // evalTick is the trigger; rows feed via rowsRef to avoid re-arming the
     // loop on every CRUD-driven re-render.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [evalTick]);
 
   const currentValue = quote ? quoteValue(quote, field) : null;

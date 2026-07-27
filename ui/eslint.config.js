@@ -52,11 +52,21 @@ export default [
       // These two catch real bugs, not style: `no-undef` catches references
       // to identifiers that do not exist, and `exhaustive-deps` catches stale
       // closures in hooks (an effect capturing a value it never refreshes).
-      // Both were "off"; they are warnings rather than errors only so the
-      // existing backlog does not block the build. Do not switch them back
-      // off — fix the call site or add a scoped eslint-disable with a reason.
+      // Do not switch them back off — fix the call site, restructure the
+      // effect, or add a scoped eslint-disable with a reason.
+      //
+      // `exhaustive-deps` is an error now that the backlog is empty, so a new
+      // stale closure fails the build instead of joining a warning pile. Two
+      // things to know when a disable is genuinely warranted:
+      //   - this rule reports on the DEPENDENCY ARRAY line, so the directive
+      //     must sit immediately above that line, not above `useEffect(`;
+      //   - a `-- reason` suffix that wraps onto a second line disables the
+      //     comment instead of the code. Put the prose above the directive.
+      // `no-undef` stays a warning (still build-failing under
+      // --max-warnings 0) because its accuracy depends on the per-pattern
+      // globals config below, which a new file type can outrun.
       "no-undef": "warn",
-      "react-hooks/exhaustive-deps": "warn",
+      "react-hooks/exhaustive-deps": "error",
       // Style/HMR-ergonomics rules, left off deliberately.
       "react-refresh/only-export-components": "off",
       "@typescript-eslint/no-unused-vars": "off",

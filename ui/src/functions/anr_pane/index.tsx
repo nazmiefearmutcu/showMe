@@ -197,7 +197,7 @@ export function ANRPane({ code, symbol }: FunctionPaneProps) {
       return;
     }
     runVeryfinderFetchRef.current({ refresh: true, background: true });
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- ref-captured
+    // runVeryfinderFetch is read through a ref, so it is not a dependency.
   }, [effectiveSymbol, veryfinderEnabled, veryfinderLiveTick]);
 
   useEffect(() => {
