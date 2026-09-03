@@ -305,7 +305,7 @@ function KPIRibbon({
                 ? card.value == null
                   ? "—"
                   : String(card.value)
-                : `${n >= 0 ? "+" : ""}${n.toLocaleString(undefined, { maximumFractionDigits: 2 })}`
+                : `${n >= 0 ? "+" : ""}${n.toLocaleString("en-US", { maximumFractionDigits: 2 })}`
             }
             caption={country}
             tone={tone}
@@ -331,7 +331,7 @@ function ForecastCell({ row }: { row: EcfcRow }): ReactNode {
   }
   return (
     <span style={primaryNumStyle}>
-      {n.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+      {n.toLocaleString("en-US", { maximumFractionDigits: 2 })}
       {row.unit ? <span style={unitStyle}> {row.unit}</span> : null}
     </span>
   );

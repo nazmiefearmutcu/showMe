@@ -849,7 +849,7 @@ function describeBranch(key: string, branch: AskFanoutBranch): BranchSummary {
       tag: `${n} pos`,
       tone: n > 0 ? "neutral" : "muted",
       line: mv
-        ? `Market value ≈ $${Math.round(mv).toLocaleString()}`
+        ? `Market value ≈ $${Math.round(mv).toLocaleString("en-US")}`
         : "No live market value (book may be empty).",
     };
   }

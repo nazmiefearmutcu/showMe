@@ -754,6 +754,6 @@ function previewCondition(value: number, direction: AlertDirection, threshold: n
 function formatPreviewValue(value: number | null): string {
   if (value === null || !Number.isFinite(value)) return "—";
   return Math.abs(value) >= 1000
-    ? value.toLocaleString(undefined, { maximumFractionDigits: 2 })
-    : value.toLocaleString(undefined, { maximumFractionDigits: 4 });
+    ? value.toLocaleString("en-US", { maximumFractionDigits: 2 })
+    : value.toLocaleString("en-US", { maximumFractionDigits: 4 });
 }

@@ -168,7 +168,7 @@ export function MigrationSection() {
                 label="paper $"
                 value={
                   last.paper_balance != null
-                    ? `$${last.paper_balance.toLocaleString(undefined, {
+                    ? `$${last.paper_balance.toLocaleString("en-US", {
                         maximumFractionDigits: 2,
                       })}`
                     : "—"
@@ -178,7 +178,7 @@ export function MigrationSection() {
                 label="daily P&L"
                 value={
                   last.daily_pnl != null
-                    ? last.daily_pnl.toLocaleString(undefined, {
+                    ? last.daily_pnl.toLocaleString("en-US", {
                         maximumFractionDigits: 2,
                       })
                     : "—"

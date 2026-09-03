@@ -1399,7 +1399,7 @@ function sentimentEyebrow({
   if (loading && !lastUpdated) return "SENTIMENT / loading…";
   if (error && !lastUpdated) return "SENTIMENT / unavailable";
   if (!lastUpdated) return "SENTIMENT / 24H";
-  const suffix = mentions > 0 ? ` / ${mentions.toLocaleString()} mentions` : "";
+  const suffix = mentions > 0 ? ` / ${mentions.toLocaleString("en-US")} mentions` : "";
   return `SENTIMENT / 24H${suffix}`;
 }
 

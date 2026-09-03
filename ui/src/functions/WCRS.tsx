@@ -520,7 +520,7 @@ function fmtPair(r: CrossRate): string {
 function fmtRate(v: number | undefined): string {
   if (v == null || !Number.isFinite(v)) return "—";
   const dp = Math.abs(v) > 20 ? 2 : 4;
-  return v.toLocaleString(undefined, {
+  return v.toLocaleString("en-US", {
     minimumFractionDigits: dp,
     maximumFractionDigits: dp,
   });

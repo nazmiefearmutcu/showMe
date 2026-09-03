@@ -485,7 +485,7 @@ function DESView({ data }: { data?: DESData }) {
             trailing={
               summary ? (
                 <Pill tone="muted" withDot={false}>
-                  {summary.length.toLocaleString()} chars
+                  {summary.length.toLocaleString("en-US")} chars
                 </Pill>
               ) : null
             }
@@ -628,7 +628,7 @@ function EquitySnapshotTerms({ data }: { data: DESData }) {
       <Term k="HQ">{hq}</Term>
       <Term k="Employees">
         {employees != null
-          ? Number(employees).toLocaleString(undefined, { maximumFractionDigits: 0 })
+          ? Number(employees).toLocaleString("en-US", { maximumFractionDigits: 0 })
           : "—"}
       </Term>
       <Term k="Exchange">{exchange}</Term>

@@ -112,7 +112,7 @@ function fmtCompact(v: number): string {
   if (a >= 1e9) return `${(v / 1e9).toFixed(2)}B`;
   if (a >= 1e6) return `${(v / 1e6).toFixed(2)}M`;
   if (a >= 1e3) return `${(v / 1e3).toFixed(1)}K`;
-  return v.toLocaleString(undefined, { maximumFractionDigits: 4 });
+  return v.toLocaleString("en-US", { maximumFractionDigits: 4 });
 }
 
 export function EQSPane({ code }: FunctionPaneProps) {

@@ -59,7 +59,7 @@ export function StreamsSection() {
         render: (row) =>
           row.last_price == null
             ? "-"
-            : row.last_price.toLocaleString(undefined, {
+            : row.last_price.toLocaleString("en-US", {
                 maximumFractionDigits: 6,
               }),
       },

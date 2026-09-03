@@ -535,7 +535,7 @@ function formatDateTimeValue(value: unknown): ReactNode {
   if (typeof value !== "string" && typeof value !== "number") return formatMissing;
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return String(value);
-  return date.toLocaleString(undefined, {
+  return date.toLocaleString("en-US", {
     year: "numeric",
     month: "short",
     day: "2-digit",

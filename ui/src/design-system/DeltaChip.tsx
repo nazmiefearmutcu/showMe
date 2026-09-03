@@ -45,8 +45,8 @@ function DeltaChipImpl({
     format === "percent"
       ? `${sign}${value.toFixed(fractionDigits)}%`
       : format === "currency"
-        ? `${sign}$${Math.abs(value).toLocaleString(undefined, { maximumFractionDigits: fractionDigits })}`
-        : `${sign}${value.toLocaleString(undefined, { maximumFractionDigits: fractionDigits })}`;
+        ? `${sign}$${Math.abs(value).toLocaleString("en-US", { maximumFractionDigits: fractionDigits })}`
+        : `${sign}${value.toLocaleString("en-US", { maximumFractionDigits: fractionDigits })}`;
 
   return (
     <span

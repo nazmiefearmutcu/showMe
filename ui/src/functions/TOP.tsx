@@ -1030,7 +1030,7 @@ function formatPct(value: number | null | undefined): string {
 function formatInt(value: number | null | undefined): string {
   const n = Number(value ?? 0);
   if (!Number.isFinite(n)) return "0";
-  return Math.round(n).toLocaleString();
+  return Math.round(n).toLocaleString("en-US");
 }
 
 const presetGridStyle: CSSProperties = {

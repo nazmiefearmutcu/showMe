@@ -265,7 +265,7 @@ export function TRQAPane({ code }: FunctionPaneProps) {
                   <StatCard
                     label="Total cost"
                     value={`$${(payload.total_cost_usd ?? 0).toFixed(4)}`}
-                    caption={`${answers.reduce((s, a) => s + (a.tokens ?? 0), 0).toLocaleString()} tokens`}
+                    caption={`${answers.reduce((s, a) => s + (a.tokens ?? 0), 0).toLocaleString("en-US")} tokens`}
                     tone="neutral"
                   />
                 </section>

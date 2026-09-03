@@ -532,7 +532,7 @@ function matchesSector(r: CommodityRow, sector: string): boolean {
 
 function fmtNum(v: number | undefined | null): string {
   if (v == null || !Number.isFinite(v)) return "—";
-  return v.toLocaleString(undefined, {
+  return v.toLocaleString("en-US", {
     minimumFractionDigits: 2,
     maximumFractionDigits: 4,
   });
@@ -544,7 +544,7 @@ function fmtCompact(v: number | undefined | null): string {
   if (a >= 1e9) return `${(v / 1e9).toFixed(2)}B`;
   if (a >= 1e6) return `${(v / 1e6).toFixed(2)}M`;
   if (a >= 1e3) return `${(v / 1e3).toFixed(2)}K`;
-  return v.toLocaleString(undefined, { maximumFractionDigits: 0 });
+  return v.toLocaleString("en-US", { maximumFractionDigits: 0 });
 }
 
 function numeric(v: unknown): number | null {

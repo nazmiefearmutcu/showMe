@@ -123,7 +123,7 @@ export async function gateLiveTrade<T>(
   const reason =
     opts.reason ??
     (notional
-      ? `Live trade · $${notional.toLocaleString(undefined, { maximumFractionDigits: 0 })}`
+      ? `Live trade · $${notional.toLocaleString("en-US", { maximumFractionDigits: 0 })}`
       : "Live trade");
   if (notional > 0 && notional < threshold) {
     return action();

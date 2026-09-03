@@ -575,7 +575,7 @@ function PreviewSummary({
           value={
             <span style={numericStyle}>
               {typeof p?.quantity === "number"
-                ? p.quantity.toLocaleString(undefined, {
+                ? p.quantity.toLocaleString("en-US", {
                     maximumFractionDigits: 8,
                   })
                 : "—"}

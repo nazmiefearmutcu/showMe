@@ -567,7 +567,7 @@ function num(v: unknown): number | null {
 function fmtPx(v: number): string {
   const a = Math.abs(v);
   const digits = a >= 1000 ? 2 : a >= 1 ? 4 : 6;
-  return v.toLocaleString(undefined, {
+  return v.toLocaleString("en-US", {
     minimumFractionDigits: 2,
     maximumFractionDigits: digits,
   });
@@ -577,7 +577,7 @@ function fmtSize(v: number): string {
   const a = Math.abs(v);
   if (a >= 1e6) return `${(v / 1e6).toFixed(3)}M`;
   if (a >= 1e3) return `${(v / 1e3).toFixed(3)}K`;
-  return v.toLocaleString(undefined, { maximumFractionDigits: 4 });
+  return v.toLocaleString("en-US", { maximumFractionDigits: 4 });
 }
 
 function fmtCompact(v: number): string {
@@ -585,7 +585,7 @@ function fmtCompact(v: number): string {
   if (a >= 1e9) return `${(v / 1e9).toFixed(2)}B`;
   if (a >= 1e6) return `${(v / 1e6).toFixed(2)}M`;
   if (a >= 1e3) return `${(v / 1e3).toFixed(2)}K`;
-  return v.toLocaleString(undefined, { maximumFractionDigits: 2 });
+  return v.toLocaleString("en-US", { maximumFractionDigits: 2 });
 }
 
 /* ── styles ──────────────────────────────────────────────────────── */

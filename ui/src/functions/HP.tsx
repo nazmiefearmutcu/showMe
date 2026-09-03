@@ -1758,7 +1758,7 @@ export function PriceChart({
   return (
     <>
       <div style={chartFitToolbarStyle}>
-        <span>{chartRows.length.toLocaleString()} bars loaded</span>
+        <span>{chartRows.length.toLocaleString("en-US")} bars loaded</span>
         <div className="u-flex u-gap-6 hp-chart-toolbar-actions">
           <button
             type="button"

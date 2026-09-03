@@ -127,7 +127,7 @@ export function formatConsensusDate(value?: string | null): string {
 
 export function formatInt(value?: number | null): string {
   if (value == null || !Number.isFinite(Number(value))) return "—";
-  return Number(value).toLocaleString(undefined, { maximumFractionDigits: 0 });
+  return Number(value).toLocaleString("en-US", { maximumFractionDigits: 0 });
 }
 
 export function clampTweetSample(value: string | number): number {
@@ -148,7 +148,7 @@ export function formatMoney(value?: number | string | null): string {
   if (value == null || value === "") return "—";
   const n = Number(value);
   if (!Number.isFinite(n)) return "—";
-  return n.toLocaleString(undefined, {
+  return n.toLocaleString("en-US", {
     style: "currency",
     currency: "USD",
     maximumFractionDigits: 2,

@@ -348,7 +348,7 @@ function fmtAmount(v: unknown, kind?: string): string {
   const n = typeof v === "number" ? v : Number(v);
   if (!Number.isFinite(n)) return "—";
   if (kind === "split") return `${n.toFixed(2)}:1`;
-  return `$${n.toLocaleString(undefined, { maximumFractionDigits: 4 })}`;
+  return `$${n.toLocaleString("en-US", { maximumFractionDigits: 4 })}`;
 }
 
 function actionPill(action: string | undefined) {

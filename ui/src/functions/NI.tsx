@@ -981,7 +981,7 @@ function formatSignedInt(value?: number | null): string {
 
 function formatInt(value?: number | null): string {
   if (value == null || !Number.isFinite(Number(value))) return "—";
-  return Number(value).toLocaleString(undefined, { maximumFractionDigits: 0 });
+  return Number(value).toLocaleString("en-US", { maximumFractionDigits: 0 });
 }
 
 function veryfinderTone(tone?: VeryfinderTone): "positive" | "negative" | "warn" | "muted" | "neutral" {

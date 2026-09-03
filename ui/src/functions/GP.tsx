@@ -1190,7 +1190,7 @@ export function ChartView({
     <>
       <div style={chartFitToolbarStyle}>
         <span>
-          {candles.length.toLocaleString()} candles · drag/scroll to inspect history
+          {candles.length.toLocaleString("en-US")} candles · drag/scroll to inspect history
         </span>
         <div className="u-flex u-gap-6 hp-chart-toolbar-actions">
           <button

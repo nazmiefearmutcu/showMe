@@ -105,14 +105,14 @@ function fmtMoney(v: number | null): string {
 }
 function fmtPrice(v: number | null): string {
   if (v === null) return "—";
-  return v.toLocaleString(undefined, {
+  return v.toLocaleString("en-US", {
     minimumFractionDigits: 2,
     maximumFractionDigits: 4,
   });
 }
 function fmtQty(v: number | null): string {
   if (v === null) return "—";
-  return v.toLocaleString(undefined, { maximumFractionDigits: 4 });
+  return v.toLocaleString("en-US", { maximumFractionDigits: 4 });
 }
 function fmtTime(v: unknown): string {
   const s = str(v);

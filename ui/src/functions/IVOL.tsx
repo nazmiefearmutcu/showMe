@@ -143,7 +143,7 @@ const signedPct = (decimal: number | undefined, digits = 2): string =>
 
 const numFmt = (v: number | undefined | null, digits = 0): string =>
   typeof v === "number" && Number.isFinite(v)
-    ? v.toLocaleString(undefined, {
+    ? v.toLocaleString("en-US", {
         minimumFractionDigits: digits,
         maximumFractionDigits: digits,
       })

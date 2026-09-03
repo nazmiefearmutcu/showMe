@@ -309,7 +309,7 @@ function ScoreCell({ score }: { score: number | null }): ReactNode {
   }
   return (
     <span style={scoreStyle}>
-      {score.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+      {score.toLocaleString("en-US", { maximumFractionDigits: 2 })}
     </span>
   );
 }
@@ -341,7 +341,7 @@ function KpiCell({
   const value =
     score == null
       ? "—"
-      : score.toLocaleString(undefined, { maximumFractionDigits: 2 });
+      : score.toLocaleString("en-US", { maximumFractionDigits: 2 });
   const caption = unavailable ? "vendor unavailable" : "vendor score";
   const tone: "neutral" | "positive" | "negative" =
     score == null ? "neutral" : score >= 50 ? "positive" : "negative";

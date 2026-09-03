@@ -364,5 +364,5 @@ export function humanizeKey(value: string): string {
 
 // Compact format-value used internally (avoids dep on helpers.tsx).
 function formatValueShort(value: number): string {
-  return value.toLocaleString(undefined, { maximumFractionDigits: 6 });
+  return value.toLocaleString("en-US", { maximumFractionDigits: 6 });
 }

@@ -137,7 +137,7 @@ export function ECSTPane({ code }: FunctionPaneProps) {
           if (n == null) return <span style={primaryNumStyle}>—</span>;
           return (
             <span style={primaryNumStyle}>
-              {n.toLocaleString(undefined, { maximumFractionDigits: 4 })}
+              {n.toLocaleString("en-US", { maximumFractionDigits: 4 })}
               {unit ? <span style={unitStyle}> {unit}</span> : null}
             </span>
           );
@@ -303,7 +303,7 @@ function KPIRibbon({
                 ? card.value == null || card.value === ""
                   ? "—"
                   : String(card.value)
-                : n.toLocaleString(undefined, { maximumFractionDigits: 4 })
+                : n.toLocaleString("en-US", { maximumFractionDigits: 4 })
             }
             caption={frequency}
             tone="neutral"
@@ -368,7 +368,7 @@ function deriveTrendTone(values: number[]): {
   const tone: "positive" | "negative" | "neutral" =
     diff > 0 ? "positive" : diff < 0 ? "negative" : "neutral";
   const sign = diff > 0 ? "+" : "";
-  const summary = `${values.length} obs · Δ ${sign}${diff.toLocaleString(undefined, { maximumFractionDigits: 2 })} (${sign}${pct.toFixed(2)}%)`;
+  const summary = `${values.length} obs · Δ ${sign}${diff.toLocaleString("en-US", { maximumFractionDigits: 2 })} (${sign}${pct.toFixed(2)}%)`;
   return { tone, summary };
 }
 

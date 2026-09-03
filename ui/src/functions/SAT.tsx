@@ -153,7 +153,7 @@ function num(v: unknown): number | null {
 function fmt(v: unknown, digits = 1): string {
   const n = num(v);
   if (n === null) return "—";
-  return n.toLocaleString(undefined, {
+  return n.toLocaleString("en-US", {
     minimumFractionDigits: digits,
     maximumFractionDigits: digits,
   });
