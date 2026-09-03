@@ -44,10 +44,22 @@ class ExecutionEngine:
                 "reason": decision["reason"],
             }
 
+        # DEFAULT-SAFE gate: only an exact "live" may reach real orders. The
+        # old inverted check (`!= "paper"` → live) sent a typo'd mode such as
+        # "Paper" or "live " to the REAL broker.
         if self.mode == "paper":
             return self._execute_paper(action, symbol, quantity, price, decision["reason"], leverage)
-        else:
+        if self.mode == "live":
             return self._execute_live(action, symbol, quantity, price, decision["reason"], leverage)
+        logger.error(
+            "Unknown execution mode %r — refusing to trade (expected 'paper' or 'live')",
+            self.mode,
+        )
+        return {
+            "executed": False,
+            "action": action.value,
+            "reason": f"Unknown mode {self.mode!r} — order refused",
+        }
 
     def _execute_paper(
         self,
@@ -249,7 +261,16 @@ class ExecutionEngine:
                 self.client.client.futures_change_leverage(symbol=symbol, leverage=leverage)
                 logger.info(f"[LIVE] Leverage set to {leverage}x for {symbol}")
             except Exception as e:
-                logger.error(f"Failed to set leverage for {symbol}: {e}")
+                # ABORT, not warn-and-continue: if the leverage change fails the
+                # exchange would fill at its current/default leverage, which can
+                # be many times riskier than the sized-for leverage (sizing math
+                # assumed `leverage`). Refusing the order is the safe outcome.
+                logger.error(f"Failed to set leverage for {symbol}: {e} — order refused")
+                return {
+                    "executed": False,
+                    "action": action.value,
+                    "reason": f"Leverage change failed: {e}",
+                }
 
         if action == TradeAction.OPEN_LONG:
             # Round quantity to symbol precision

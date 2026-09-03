@@ -54,6 +54,14 @@ class BinanceClient:
                     )
                 self._client = Client(api_key, api_secret)
                 logger.info("Connected to Binance LIVE")
+        else:
+            # Fail fast on a typo'd mode ("Live", " paper", "real"). The old
+            # behavior left _client=None but still stamped _initialized=True,
+            # so every order call later blew up with an opaque AttributeError
+            # (or, via ExecutionEngine's old inverted gate, traded live).
+            raise ValueError(
+                f"Unknown mode {self.mode!r}; expected 'paper' or 'live'"
+            )
 
         self._initialized = True
         logger.info("BinanceClient initialized | mode=%s | market=%s", self.mode, self.market_type)
