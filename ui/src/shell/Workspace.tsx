@@ -199,7 +199,7 @@ function PaneContent({
     }
   }
   return (
-    <PaneErrorBoundary code={code}>
+    <PaneErrorBoundary code={code} symbol={symbol}>
       <Suspense fallback={<PaneFallback />}>{body}</Suspense>
     </PaneErrorBoundary>
   );

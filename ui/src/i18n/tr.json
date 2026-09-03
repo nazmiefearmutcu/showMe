@@ -5,6 +5,7 @@
   "shell.palette.empty": "eşleşme yok",
   "shell.palette.navigate": "git",
   "shell.palette.open": "aç",
+  "shell.palette.jump": "atla",
   "shell.palette.close": "kapat",
   "shell.palette.recents": "Son kullanılan",
   "shell.palette.aria_label": "Fonksiyon ara",

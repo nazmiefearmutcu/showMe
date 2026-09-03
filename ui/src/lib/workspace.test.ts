@@ -48,6 +48,10 @@ describe("workspace tree helpers", () => {
     expect(next.kind).toBe("split");
     expect(next.children).toHaveLength(2);
     expect(next.sizes.reduce((s, v) => s + v, 0)).toBeCloseTo(1, 9);
+    // Proportional, not equal: survivors keep their relative weight
+    // (0.5 and 0.25 of the old 0.75 total).
+    expect(next.sizes[0]).toBeCloseTo(0.5 / 0.75, 9);
+    expect(next.sizes[1]).toBeCloseTo(0.25 / 0.75, 9);
   });
 });
 

@@ -5,6 +5,7 @@
   "shell.palette.empty": "aucun résultat",
   "shell.palette.navigate": "naviguer",
   "shell.palette.open": "ouvrir",
+  "shell.palette.jump": "aller à",
   "shell.palette.close": "fermer",
   "shell.palette.recents": "Récents",
   "shell.palette.aria_label": "Recherche de fonction",

@@ -34,6 +34,20 @@ const STATIC_ENTRIES: PaletteEntry[] = [
 const LISTBOX_ID = "showme-palette-listbox";
 const INPUT_ID = "showme-palette-input";
 
+/**
+ * Label for the palette's modifier key. The app-level shortcut handler
+ * (App.tsx) accepts both `metaKey` and `ctrlKey`, but the on-screen hint
+ * should name the key this platform's keyboard actually has: ⌘ on Apple
+ * hardware, Ctrl everywhere else. The old hard-coded ⌘ lied on Windows/Linux.
+ */
+const MOD_KEY = /\b(Mac|iPhone|iPad|iPod)\b/.test(
+  typeof navigator !== "undefined"
+    ? navigator.platform || navigator.userAgent
+    : "",
+)
+  ? "⌘"
+  : "Ctrl";
+
 export function CommandPalette() {
   const open = useAppStore((s) => s.paletteOpen);
   const togglePalette = useAppStore((s) => s.togglePalette);
@@ -202,7 +216,7 @@ export function CommandPalette() {
           {filtered.map((it, i) => {
             const isCursor = i === cursor;
             const recencyHint = i < 9 && (
-              <span aria-hidden className="palette__recency-hint">⌘{i + 1}</span>
+              <span aria-hidden className="palette__recency-hint">{MOD_KEY}{i + 1}</span>
             );
             return (
               <a
@@ -233,7 +247,7 @@ export function CommandPalette() {
           <span>
             <span className="kbd">↑↓</span> {t("shell.palette.navigate")} ·{" "}
             <span className="kbd">↵</span> {t("shell.palette.open")} ·{" "}
-            <span className="kbd">⌘1-9</span> jump
+            <span className="kbd">{MOD_KEY}1-9</span> {t("shell.palette.jump")}
           </span>
           <span>
             <span className="kbd">esc</span> {t("shell.palette.close")}

@@ -2710,6 +2710,13 @@
 .picker-popup__row--active {
   background: var(--bg-elev-3);
 }
+/* Keyboard cursor (ArrowUp/ArrowDown in the picker input) — distinct from
+   the --active "currently open function" tint so both can coexist. */
+.picker-popup__row--cursor {
+  background: var(--accent-soft);
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
 .picker-popup__row-code {
   color: var(--accent);
   font-weight: 700;
@@ -8303,14 +8310,18 @@
 
 .terminal-gauge__needle {
   background: var(--terminal-heading);
-  bottom: 16px;
+  bottom: 4px;
   display: block;
-  height: 2px;
-  left: 44px;
+  /* Vertical needle pivoting from the arc center: sentimentNeedleAngle maps
+     [-1,+1] → [-90°,+90°] with 0° meaning "straight up", so the drawn bar
+     must point up at rotate(0). The old horizontal bar pointed EAST at 0°,
+     reading as "max positive" while the label said Neutral. */
+  height: 34px;
+  left: 45px;
   position: absolute;
   /* transform driven inline from sentiment-store (Faz 5) */
-  transform-origin: left center;
-  width: 38px;
+  transform-origin: bottom center;
+  width: 2px;
 }
 
 .terminal-panel--sentiment strong {
@@ -8336,7 +8347,14 @@
   font-size: 10px;
   gap: 8px;
   grid-template-columns: 42px minmax(0, 1fr) auto;
-  height: 24px;
+  /* Buttons shrink-wrap to min-content even at display:grid in Chromium, so
+     an explicit width is required to fill the movers-grid cell. */
+  width: 100%;
+  /* min-height, not height: demo rows carry a 4th child (the DEMO pill) that
+     auto-places onto an implicit 2nd grid row — a fixed height made that row
+     overflow and paint over the next mover row. */
+  min-height: 24px;
+  align-items: center;
   padding: 0;
   text-align: left;
 }

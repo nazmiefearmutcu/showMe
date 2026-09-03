@@ -2,6 +2,9 @@ import { Component, type ErrorInfo, type ReactNode } from "react";
 
 interface Props {
   code: string;
+  /** Optional bound symbol — a link-group symbol switch must also clear a
+      stuck error surface (same code, different symbol is a new pane load). */
+  symbol?: string;
   children: ReactNode;
 }
 
@@ -37,7 +40,13 @@ export class PaneErrorBoundary extends Component<Props, State> {
   }
 
   componentDidUpdate(prev: Props): void {
-    if (prev.code !== this.props.code && this.state.error) {
+    // Reset on a code OR symbol change: link-group navigation swaps the
+    // symbol while keeping the code, and without this the pane stayed stuck
+    // on the old crash even though the failing input was gone.
+    if (
+      (prev.code !== this.props.code || prev.symbol !== this.props.symbol) &&
+      this.state.error
+    ) {
       this.setState({ error: null, componentStack: null });
     }
   }

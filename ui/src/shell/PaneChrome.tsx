@@ -428,6 +428,7 @@ function Picker({
   onDismiss: () => void;
 }) {
   const [query, setQuery] = useState("");
+  const [cursor, setCursor] = useState(0);
   const filtered = !query.trim()
     ? options.slice(0, 30)
     : options
@@ -437,24 +438,74 @@ function Picker({
             o.name.toLowerCase().includes(query.toLowerCase()),
         )
         .slice(0, 30);
+  // Reset the keyboard cursor whenever the filter changes so Enter always
+  // picks a row the user can actually see highlighted.
+  useEffect(() => {
+    setCursor(0);
+  }, [query]);
+  const pickAt = (index: number) => {
+    const row = filtered[index];
+    if (row) onPick(row.code);
+  };
   return (
-    <div className="picker-popup" onBlur={onDismiss}>
+    // Same containment pattern as the actions menu above: a blur to a node
+    // OUTSIDE the popup dismisses it. A bare `onBlur={onDismiss}` fired when
+    // the mousedown moved focus to a row — unmounting the list before the
+    // row's click ever fired, so mouse selection was dead.
+    <div
+      className="picker-popup"
+      onBlur={(e) => {
+        const next = e.relatedTarget;
+        if (next instanceof Node && e.currentTarget.contains(next)) return;
+        onDismiss();
+      }}
+    >
       <input
         autoFocus
         value={query}
         onChange={(e) => setQuery(e.target.value)}
         placeholder="Filter functions…"
         aria-label="Filter functions"
-        onKeyDown={(e) => e.key === "Escape" && onDismiss()}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") {
+            onDismiss();
+          } else if (e.key === "ArrowDown") {
+            e.preventDefault();
+            setCursor((c) => Math.min(c + 1, filtered.length - 1));
+          } else if (e.key === "ArrowUp") {
+            e.preventDefault();
+            setCursor((c) => Math.max(c - 1, 0));
+          } else if (e.key === "Enter") {
+            e.preventDefault();
+            pickAt(cursor);
+          }
+        }}
+        role="combobox"
+        aria-expanded
+        aria-controls="pane-chrome-picker-listbox"
+        aria-activedescendant={
+          filtered[cursor] ? `pane-chrome-picker-opt-${filtered[cursor].code}` : undefined
+        }
         className="picker-popup__input"
       />
-      <div className="picker-popup__list">
-        {filtered.map((o) => (
+      <div
+        id="pane-chrome-picker-listbox"
+        role="listbox"
+        className="picker-popup__list"
+      >
+        {filtered.map((o, i) => (
           <button
             key={o.code}
             type="button"
             onClick={() => onPick(o.code)}
-            className={`picker-popup__row${o.code === current ? " picker-popup__row--active" : ""}`}
+            // Keep focus on the input: no blur fires mid-click, so the popup
+            // survives until onPick/onDismiss runs (Safari never focuses
+            // buttons on mousedown, which defeated the blur handler alone).
+            onMouseDown={(e) => e.preventDefault()}
+            id={`pane-chrome-picker-opt-${o.code}`}
+            role="option"
+            aria-selected={i === cursor}
+            className={`picker-popup__row${o.code === current ? " picker-popup__row--active" : ""}${i === cursor ? " picker-popup__row--cursor" : ""}`}
           >
             <span className="picker-popup__row-code">{o.code}</span>
             <span>{o.name}</span>

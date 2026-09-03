@@ -37,20 +37,20 @@ interface SeriesStub {
   applyOptions: ReturnType<typeof vi.fn>;
 }
 interface ChartStub {
-  addCandlestickSeries: any;
-  addLineSeries: any;
-  addAreaSeries: any;
-  addHistogramSeries: any;
-  removeSeries: any;
-  subscribeCrosshairMove: any;
-  priceScale: any;
-  timeScale: any;
-  remove: any;
-  applyOptions: any;
-  resize: any;
-  takeScreenshot: any;
+  addCandlestickSeries: ReturnType<typeof vi.fn>;
+  addLineSeries: ReturnType<typeof vi.fn>;
+  addAreaSeries: ReturnType<typeof vi.fn>;
+  addHistogramSeries: ReturnType<typeof vi.fn>;
+  removeSeries: ReturnType<typeof vi.fn>;
+  subscribeCrosshairMove: ReturnType<typeof vi.fn>;
+  priceScale: ReturnType<typeof vi.fn>;
+  timeScale: ReturnType<typeof vi.fn>;
+  remove: ReturnType<typeof vi.fn>;
+  applyOptions: ReturnType<typeof vi.fn>;
+  resize: ReturnType<typeof vi.fn>;
+  takeScreenshot: ReturnType<typeof vi.fn>;
   __series: SeriesStub[];
-  addSeries: any;
+  addSeries: ReturnType<typeof vi.fn>;
 }
 
 const chartInstances: ChartStub[] = [];

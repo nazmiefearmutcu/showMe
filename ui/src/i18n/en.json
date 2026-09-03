@@ -5,6 +5,7 @@
   "shell.palette.empty": "no matches",
   "shell.palette.navigate": "navigate",
   "shell.palette.open": "open",
+  "shell.palette.jump": "jump",
   "shell.palette.close": "close",
   "shell.palette.recents": "Recent",
   "shell.palette.aria_label": "Function search",

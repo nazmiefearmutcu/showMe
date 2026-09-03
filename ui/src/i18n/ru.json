@@ -5,6 +5,7 @@
   "shell.palette.empty": "нет совпадений",
   "shell.palette.navigate": "перейти",
   "shell.palette.open": "открыть",
+  "shell.palette.jump": "переход",
   "shell.palette.close": "закрыть",
   "shell.palette.recents": "Недавние",
   "shell.palette.aria_label": "Поиск функций",

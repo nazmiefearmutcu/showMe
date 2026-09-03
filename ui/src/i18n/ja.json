@@ -5,6 +5,7 @@
   "shell.palette.empty": "一致なし",
   "shell.palette.navigate": "ナビゲート",
   "shell.palette.open": "開く",
+  "shell.palette.jump": "ジャンプ",
   "shell.palette.close": "閉じる",
   "shell.palette.recents": "最近",
   "shell.palette.aria_label": "関数検索",

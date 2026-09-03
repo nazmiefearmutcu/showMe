@@ -5,6 +5,7 @@
   "shell.palette.empty": "일치하는 결과 없음",
   "shell.palette.navigate": "이동",
   "shell.palette.open": "열기",
+  "shell.palette.jump": "이동",
   "shell.palette.close": "닫기",
   "shell.palette.recents": "최근 항목",
   "shell.palette.aria_label": "함수 검색",

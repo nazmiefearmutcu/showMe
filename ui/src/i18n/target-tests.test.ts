@@ -7,10 +7,11 @@ describe("Target i18n Verification", () => {
     setLocale("en");
   });
 
-  it("should have exactly 137 keys in all registered catalogs", () => {
+  it("should have exactly 138 keys in all registered catalogs", () => {
     for (const dict of Object.values(CATALOGS)) {
       const keys = Object.keys(dict);
-      expect(keys.length).toBe(137);
+      // 2026-09-03: +1 for shell.palette.jump (palette footer, was hardcoded).
+      expect(keys.length).toBe(138);
     }
   });
 

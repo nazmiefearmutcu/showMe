@@ -5,6 +5,7 @@
   "shell.palette.empty": "sem correspondências",
   "shell.palette.navigate": "navegar",
   "shell.palette.open": "abrir",
+  "shell.palette.jump": "ir para",
   "shell.palette.close": "fechar",
   "shell.palette.recents": "Recentes",
   "shell.palette.aria_label": "Busca de funções",

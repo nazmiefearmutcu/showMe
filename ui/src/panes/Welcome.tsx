@@ -60,7 +60,11 @@ interface MarketTile {
   quoteSymbol?: string;
   label: string;
   value: string;
-  change: number;
+  /**
+   * One-day percent change. `null` = no live quote yet — the tile renders the
+   * missing sentinel ("—") instead of a fabricated "0.00%" flat day.
+   */
+  change: number | null;
   detail: string;
   /** When true, render the tile with a "DEMO" pill — no quote endpoint. */
   demo?: boolean;
@@ -119,7 +123,7 @@ export const MARKET_STRIP_SEED: MarketTile[] = [
     quoteSymbol: "^GSPC",
     label: "S&P 500",
     value: "—",
-    change: 0,
+    change: null,
     detail: "cash index",
     demo: true,
   },
@@ -128,7 +132,7 @@ export const MARKET_STRIP_SEED: MarketTile[] = [
     quoteSymbol: "^NDX",
     label: "Nasdaq 100",
     value: "—",
-    change: 0,
+    change: null,
     detail: "mega-cap bid",
     demo: true,
   },
@@ -137,7 +141,7 @@ export const MARKET_STRIP_SEED: MarketTile[] = [
     quoteSymbol: "BTCUSDT",
     label: "Bitcoin",
     value: "—",
-    change: 0,
+    change: null,
     detail: "crypto beta",
     demo: true,
   },
@@ -146,7 +150,7 @@ export const MARKET_STRIP_SEED: MarketTile[] = [
     quoteSymbol: "^TNX",
     label: "10Y yield",
     value: "—",
-    change: 0,
+    change: null,
     detail: "rates",
     demo: true,
   },
@@ -155,7 +159,7 @@ export const MARKET_STRIP_SEED: MarketTile[] = [
     quoteSymbol: "DX-Y.NYB",
     label: "Dollar",
     value: "—",
-    change: 0,
+    change: null,
     detail: "fx",
     demo: true,
   },
@@ -164,7 +168,7 @@ export const MARKET_STRIP_SEED: MarketTile[] = [
     quoteSymbol: "^VIX",
     label: "Volatility",
     value: "—",
-    change: 0,
+    change: null,
     detail: "risk",
     demo: true,
   },
@@ -173,7 +177,7 @@ export const MARKET_STRIP_SEED: MarketTile[] = [
     quoteSymbol: "CL=F",
     label: "Crude",
     value: "—",
-    change: 0,
+    change: null,
     detail: "energy",
     demo: true,
   },
@@ -182,7 +186,7 @@ export const MARKET_STRIP_SEED: MarketTile[] = [
     quoteSymbol: "GC=F",
     label: "Gold",
     value: "—",
-    change: 0,
+    change: null,
     detail: "metal",
     demo: true,
   },
@@ -191,7 +195,7 @@ export const MARKET_STRIP_SEED: MarketTile[] = [
     quoteSymbol: "EURUSD=X",
     label: "Euro",
     value: "—",
-    change: 0,
+    change: null,
     detail: "fx",
     demo: true,
   },
@@ -663,9 +667,9 @@ export function Welcome() {
               {tile.value}
             </span>
             <span
-              className={`${toneClass("terminal-change", tile.change)} terminal-grid-numeric`}
+              className={`${toneClass("terminal-change", tile.change ?? 0)} terminal-grid-numeric`}
             >
-              {formatPct(tile.change)}
+              {tile.change == null ? formatMissing : formatPct(tile.change)}
             </span>
             {tile.demo && (
               <span
@@ -1282,7 +1286,9 @@ export function buildMarketTiles(
     return {
       ...tile,
       value: formatPrice(q.price),
-      change: q.changePct ?? 0,
+      // Missing changePct stays null (renders "—") rather than faking a
+      // flat 0.00% day on a live price.
+      change: q.changePct ?? null,
       demo: false,
     };
   });

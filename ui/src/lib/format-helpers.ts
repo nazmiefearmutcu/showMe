@@ -65,7 +65,10 @@ export function getCandlePriceFormat(price: number | null | undefined): {
 export function formatAdaptive(value: number | null | undefined): string {
   if (value == null || !Number.isFinite(value)) return formatMissing;
   const digits = getDecimalsForPrice(value);
-  return value.toLocaleString(undefined, {
+  // Pinned locale: a terminal must not render "1.234,57" on a tr-TR machine
+  // and "1,234.57" on en-US — the format-helpers tests pin the en-US
+  // convention and every pane shares this helper.
+  return value.toLocaleString("en-US", {
     maximumFractionDigits: digits,
     minimumFractionDigits: 0,
   });

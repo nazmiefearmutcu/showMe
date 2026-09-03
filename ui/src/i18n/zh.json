@@ -5,6 +5,7 @@
   "shell.palette.empty": "无匹配",
   "shell.palette.navigate": "导航",
   "shell.palette.open": "打开",
+  "shell.palette.jump": "跳转",
   "shell.palette.close": "关闭",
   "shell.palette.recents": "最近",
   "shell.palette.aria_label": "函数搜索",

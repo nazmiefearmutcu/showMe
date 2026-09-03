@@ -228,8 +228,13 @@ export default function App() {
 
   // Workspace tree restore + autosave (per-window, persists across restarts).
   useEffect(() => {
+    let disposed = false;
     let dispose: (() => void) | undefined;
     restoreWorkspace().finally(() => {
+      // StrictMode unmount can run the cleanup BEFORE the promise settles.
+      // Starting autosave then would leak the subscription forever (nothing
+      // would ever call its dispose), so bail out instead.
+      if (disposed) return;
       const target = routeToTarget(parseRoute(window.location.hash || "#/"));
       if (target) {
         useWorkspace.getState().setFocusedTarget(target.code, target.symbol);
@@ -237,7 +242,10 @@ export default function App() {
       dispose = startWorkspaceAutosave();
       setWorkspaceReady(true);
     });
-    return () => dispose?.();
+    return () => {
+      disposed = true;
+      dispose?.();
+    };
   }, []);
 
   // Keyboard shortcuts (single source of truth — QA-2026-05-23):
@@ -356,12 +364,24 @@ export default function App() {
           if (!ok && status === "crashed") toast.error("Sidecar crashed", "Restarting…");
         });
       });
+      // Each await above the cleanup window is a leak window: StrictMode
+      // unmounts the first mount while `boot()` is still awaiting, so the
+      // cleanup has already drained `unsubscribe` by the time these return.
+      // Register-then-check keeps every late listener disposable.
+      if (unmount) {
+        offStatus();
+        return;
+      }
       unsubscribe.push(offStatus);
 
       const offReload = await listen("function-index:reload", () => {
         refreshFunctionIndex();
         toast.info("Function index reloaded");
       });
+      if (unmount) {
+        offReload();
+        return;
+      }
       unsubscribe.push(offReload);
 
       const offPalette = await listen("palette:toggle", () => {
@@ -373,16 +393,28 @@ export default function App() {
         if (shouldSuppressPaletteEvent(isOpen)) return;
         togglePalette();
       });
+      if (unmount) {
+        offPalette();
+        return;
+      }
       unsubscribe.push(offPalette);
 
       const offNav = await listen<string>("nav:open", (e) => {
         if (typeof e.payload === "string") navigate(e.payload);
       });
+      if (unmount) {
+        offNav();
+        return;
+      }
       unsubscribe.push(offNav);
 
       const offFatal = await listen<string>("sidecar:fatal", (e) => {
         toast.error("Sidecar fatal", String(e.payload));
       });
+      if (unmount) {
+        offFatal();
+        return;
+      }
       unsubscribe.push(offFatal);
     };
     boot();

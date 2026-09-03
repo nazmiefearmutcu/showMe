@@ -25,7 +25,9 @@ export function ChangeText({
         ? "var(--negative)"
         : "var(--text-mute)";
   const formatted =
-    Math.abs(value).toLocaleString(undefined, {
+    // Pinned locale — P&L text must read "1,234.57" identically on every
+    // machine, not switch decimal separators with the OS locale.
+    Math.abs(value).toLocaleString("en-US", {
       minimumFractionDigits: digits,
       maximumFractionDigits: digits,
     });

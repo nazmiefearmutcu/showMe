@@ -73,6 +73,9 @@ export function useFunction<T = unknown>({
   // load. Persists across `tick`-only re-runs so `refetch()` is treated as a
   // refresh too.
   const previousFetchKey = useRef<string>("");
+  // One-shot guard for the abort-like retry (see the catch below). Reset
+  // whenever the fetch key changes so a genuine new load gets its own retry.
+  const abortRetried = useRef(false);
   // Bundle D / STALE-01. The refetch effect previously closed over the
   // `data` from the *render that scheduled it*, not the latest one. If two
   // refetches landed back-to-back (e.g. `refetch()` clicked while a poll
@@ -110,6 +113,10 @@ export function useFunction<T = unknown>({
       setState("loading");
       setError(undefined);
       setData(undefined);
+      // New key = fresh fetch budget: the single abort-like retry below is
+      // allowed once per key, so a persistently aborting fetcher can never
+      // ping-pong the effect into an infinite 0-ms hot loop.
+      abortRetried.current = false;
     }
     previousFetchKey.current = fetchKey;
     runFunction<T>(code, {
@@ -118,6 +125,9 @@ export function useFunction<T = unknown>({
       signal: ac.signal,
     })
       .then((res) => {
+        // The result of a fetch whose signal fired mid-flight is stale —
+        // don't let it clobber newer state (same guard the catch has).
+        if (ac.signal.aborted) return;
         setData(res);
         setError(undefined);
         setState("ok");
@@ -131,7 +141,15 @@ export function useFunction<T = unknown>({
       .catch((err: Error) => {
         if (ac.signal.aborted) return;
         if (isAbortLikeError(err)) {
-          window.setTimeout(() => setTick((t) => t + 1), 0);
+          // Retry ONCE per fetch key. The old unconditional setTick retried
+          // forever at 0-ms cadence when a fetcher (or an overlay layer)
+          // consistently wrapped its failures in an AbortError — a silent
+          // CPU hot loop. A second abort-like failure is swallowed: stale
+          // data stays on screen, same as any other aborted fetch.
+          if (!abortRetried.current) {
+            abortRetried.current = true;
+            window.setTimeout(() => setTick((t) => t + 1), 0);
+          }
           return;
         }
         setError(err);

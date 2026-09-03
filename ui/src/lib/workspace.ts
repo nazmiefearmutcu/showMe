@@ -342,23 +342,32 @@ export function removeLeaf(
   id: string,
 ): WorkspaceNode | null {
   if (node.kind === "leaf") return node.id === id ? null : node;
-  // Recurse into children.
+  // Recurse into children, carrying each survivor's pre-removal size so the
+  // redistribution below can stay proportional.
   const newChildren: WorkspaceNode[] = [];
+  const survivorSizes: number[] = [];
   let collapsed = false;
-  for (const c of node.children) {
-    const r = removeLeaf(c, id);
+  for (let i = 0; i < node.children.length; i += 1) {
+    const r = removeLeaf(node.children[i], id);
     if (r === null) {
       collapsed = true;
       continue;
     }
     newChildren.push(r);
+    survivorSizes.push(node.sizes[i] ?? 1 / node.children.length);
   }
   if (newChildren.length === 0) return null;
   if (newChildren.length === 1) return newChildren[0]; // collapse
-  // Re-distribute sizes proportionally to survivors when one was removed.
   if (collapsed) {
-    const survivors = newChildren.length;
-    const sizes = Array.from({ length: survivors }, () => 1 / survivors);
+    // Re-distribute the removed pane's share proportionally to the
+    // survivors' pre-removal sizes. The old code split EQUALLY, so closing
+    // one pane of a 0.5/0.3/0.2 row silently flattened the rest to 0.5/0.5
+    // and destroyed the user's layout on every ⌘W.
+    const total = survivorSizes.reduce((s, v) => s + v, 0);
+    const sizes =
+      total > 0
+        ? survivorSizes.map((v) => v / total)
+        : Array.from({ length: survivorSizes.length }, () => 1 / survivorSizes.length);
     return { ...node, children: newChildren, sizes };
   }
   return { ...node, children: newChildren };

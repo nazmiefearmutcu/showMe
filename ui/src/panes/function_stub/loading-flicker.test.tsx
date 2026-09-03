@@ -89,10 +89,10 @@ vi.mock("lightweight-charts", () => {
     AreaSeries,
     createChart: vi.fn(() => {
       const instance = {
-        addCandlestickSeries: vi.fn((_options?: any) => ({ setData: vi.fn(), update: vi.fn(), applyOptions: vi.fn() })),
-        addLineSeries: vi.fn((_options?: any) => ({ setData: vi.fn(), update: vi.fn(), applyOptions: vi.fn() })),
-        addAreaSeries: vi.fn((_options?: any) => ({ setData: vi.fn(), update: vi.fn(), applyOptions: vi.fn() })),
-        addHistogramSeries: vi.fn((_options?: any) => ({ setData: vi.fn(), update: vi.fn(), applyOptions: vi.fn() })),
+        addCandlestickSeries: vi.fn((_options?: unknown) => ({ setData: vi.fn(), update: vi.fn(), applyOptions: vi.fn() })),
+        addLineSeries: vi.fn((_options?: unknown) => ({ setData: vi.fn(), update: vi.fn(), applyOptions: vi.fn() })),
+        addAreaSeries: vi.fn((_options?: unknown) => ({ setData: vi.fn(), update: vi.fn(), applyOptions: vi.fn() })),
+        addHistogramSeries: vi.fn((_options?: unknown) => ({ setData: vi.fn(), update: vi.fn(), applyOptions: vi.fn() })),
         removeSeries: vi.fn(),
         priceScale: vi.fn(() => ({ applyOptions: vi.fn() })),
         timeScale: vi.fn(() => ({ fitContent: vi.fn(), setVisibleLogicalRange: vi.fn() })),

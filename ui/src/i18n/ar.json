@@ -5,6 +5,7 @@
   "shell.palette.empty": "لا توجد تطابقات",
   "shell.palette.navigate": "تنقل",
   "shell.palette.open": "فتح",
+  "shell.palette.jump": "انتقال",
   "shell.palette.close": "إغلاق",
   "shell.palette.recents": "الأخيرة",
   "shell.palette.aria_label": "بحث الدوال",
