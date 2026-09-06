@@ -26,10 +26,18 @@ Fix highlights (FIX_CONTRACT 2026-05-23):
 * C4 signal-log split: every paired exit appends a ``ClosedTrade`` to
   ``closed_trades_log`` (append-only, no cap) in addition to the existing
   ``signal_log`` debug entry.
+* Money-risk campaign 2026-09-05: F1 — live risk-based sizing REFUSES to
+  submit on fallback equity; F3 — a zero-fill GTC limit entry is cancelled
+  (or classified ``error`` when the cancel fails) instead of silently
+  resting on the exchange; F4 — failed (skipped) exits keep ``in_pos`` and
+  retry on the next tick; F5 — funding accrues on every in-position tick
+  and the accumulator resets on any non-skipped exit; F2 — equity resolves
+  in the bot symbol's quote currency via ``broker.account(symbol)``.
 """
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import time
 from typing import Any
@@ -55,7 +63,10 @@ LOG = logging.getLogger("showme.bots.runner")
 _REFERENCE_EQUITY_USD = 10_000.0
 
 
-async def _resolve_equity(broker: Any, fallback_usd: float = _REFERENCE_EQUITY_USD) -> float:
+async def _resolve_equity(
+    broker: Any, fallback_usd: float = _REFERENCE_EQUITY_USD,
+    symbol: str | None = None,
+) -> float:
     """Try ``broker.account()['equity']``; fall back to ``fallback_usd``.
 
     Used by ``_resolve_quantity_async`` for ``risk_pct`` sizing so the
@@ -65,19 +76,52 @@ async def _resolve_equity(broker: Any, fallback_usd: float = _REFERENCE_EQUITY_U
     Q4 audit H13: fallback path now WARN-level (was DEBUG) so a silent
     $10k assumption can't hide in stdout. Use ``_resolve_equity_with_source``
     to also get a tag (``"broker"`` vs ``"fallback_10k"``).
+
+    F2 fix: when ``symbol`` is given it is threaded into
+    ``broker.account(symbol)`` (when the broker accepts it) so a ccxt
+    broker resolves equity in the symbol's QUOTE currency instead of the
+    numerically-largest balance across all currencies.
     """
-    value, _source = await _resolve_equity_with_source(broker, fallback_usd)
+    value, _source = await _resolve_equity_with_source(
+        broker, fallback_usd, symbol=symbol,
+    )
     return value
+
+
+def _account_accepts_symbol(fn: Any) -> bool:
+    """F2 fix: True when ``fn`` accepts a positional symbol argument.
+
+    Signature inspection keeps production ``CcxtBroker.account(symbol)``
+    on the quote-currency path while legacy test fakes
+    (``async def account()``) and AsyncMocks keep their no-arg contract.
+    """
+    try:
+        sig = inspect.signature(fn)
+    except (TypeError, ValueError):  # pragma: no cover - exotic callables
+        return False
+    for p in sig.parameters.values():
+        if p.kind in (
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        ):
+            return True
+    return False
 
 
 async def _resolve_equity_with_source(
     broker: Any, fallback_usd: float = _REFERENCE_EQUITY_USD,
+    symbol: str | None = None,
 ) -> tuple[float, str]:
     """Q4 audit H13: equity + provenance.
 
     ``source`` ∈ ``{"broker", "fallback_10k"}``. Callers thread this into
     response payloads so UIs can flag a fallback (e.g. yellow badge on
     the dashboard "Sizing using fallback equity").
+
+    F2 fix: ``symbol`` is passed to ``broker.account(symbol)`` when the
+    broker's signature accepts it, so the equity comes back in the bot
+    symbol's quote currency (CcxtBroker._normalise_account) instead of
+    max-across-all-currencies.
     """
     fn = getattr(broker, "account", None)
     if fn is None:
@@ -87,7 +131,10 @@ async def _resolve_equity_with_source(
         )
         return float(fallback_usd), "fallback_10k"
     try:
-        acct = await fn()
+        if symbol is not None and _account_accepts_symbol(fn):
+            acct = await fn(symbol)
+        else:
+            acct = await fn()
     except Exception as exc:  # noqa: BLE001
         LOG.warning(
             "broker.account() failed (%s); using fallback equity %s USD", exc, fallback_usd,
@@ -237,7 +284,7 @@ def _resolve_quantity(spec: Any, df: Any) -> float:
 
 async def _resolve_quantity_async(
     spec: Any, df: Any, broker: Any, leverage: float = 1.0,
-    equity_override: float | None = None,
+    equity_override: float | None = None, symbol: str | None = None,
 ) -> float:
     """Translate spec.position sizing into a broker-ready qty.
 
@@ -254,6 +301,9 @@ async def _resolve_quantity_async(
     ``_resolve_equity_with_source`` for the honesty tag) and thread the
     SAME equity value down here, so the ``equity_source`` tag on the
     SignalEntry always matches the equity actually used to size the order.
+
+    F2 fix: ``symbol`` threads into the internal ``_resolve_equity`` fall-
+    back so quote-currency equity is used when no override was supplied.
     """
     sizing_kind: SizingKind = spec.position.sizing_kind
     sizing_value = float(spec.position.sizing_value)
@@ -267,7 +317,7 @@ async def _resolve_quantity_async(
         equity = (
             float(equity_override)
             if equity_override is not None
-            else await _resolve_equity(broker)
+            else await _resolve_equity(broker, symbol=symbol)
         )
     else:
         equity = _REFERENCE_EQUITY_USD  # unused by fixed_* but pass through
@@ -576,59 +626,77 @@ class BotRunner:
             # The runner is the source of truth for ``in_position``; the
             # last entry/exit in signal_log determines current state.
             from showme.strategies.evaluate import evaluate_last_bar
-            in_pos = bool(
-                rec.last_processed_event is not None
-                and rec.last_processed_event.kind == "entry"
-                and rec.last_processed_event.action != "skipped"
-            )
+            # F4/M1 companion: a SKIPPED exit means the close submit
+            # failed — the position is still OPEN. Keep ``in_pos`` True
+            # (and recover the original entry for price/qty math) instead
+            # of dropping the bot to flat state, which would make the
+            # failed exit un-retryable. ``in_pos_entry`` is the entry
+            # event that opened the position we (still) hold.
+            in_pos_entry: SignalEntry | None = None
+            last_ev = rec.last_processed_event
+            if (last_ev is not None and last_ev.kind == "entry"
+                    and last_ev.action != "skipped"):
+                in_pos_entry = last_ev
+            elif (last_ev is not None and last_ev.kind == "exit"
+                    and last_ev.action == "skipped"):
+                in_pos_entry = _last_non_skipped_entry(rec.signal_log)
+            in_pos = in_pos_entry is not None
             # Q4 audit C9: pass open-position entry price so evaluate_last_bar
             # can run an intrabar SL/TP check before the rule-based exit.
             entry_price_for_eval: float | None = None
-            if in_pos and rec.last_processed_event is not None:
+            if in_pos_entry is not None:
                 # Prefer broker-confirmed fill price; fall back to signal price.
                 entry_price_for_eval = float(
-                    rec.last_processed_event.fill_price
-                    or rec.last_processed_event.price
+                    in_pos_entry.fill_price or in_pos_entry.price
                 )
             last_event = evaluate_last_bar(
                 spec, df, in_position=in_pos,
                 entry_price=entry_price_for_eval,
             )
+
+            # Q4 audit C4 / F5 fix: accrue funding on ANY tick while in
+            # position — including ticks that produce a signal — so the
+            # bars around trades don't systematically undercount. Spot
+            # symbols and non-perp brokers return 0.0 (no-op).
+            if in_pos and in_pos_entry is not None:
+                funding_rate = await _fetch_funding_rate(broker, rec.symbol)
+                if funding_rate != 0.0 and in_pos_entry.qty:
+                    entry_px_funding = float(
+                        in_pos_entry.fill_price or in_pos_entry.price
+                    )
+                    notional = entry_px_funding * float(in_pos_entry.qty)
+                    delta = compute_funding_delta(
+                        position_notional=notional,
+                        funding_rate=funding_rate,
+                        dt_seconds=float(rec.tick_interval_seconds),
+                        side=spec.position.side,
+                    )
+                    if delta != 0.0:
+                        try:
+                            fresh_f = store.get(bot_id)
+                        except UnknownBot:
+                            return None
+                        new_cum = float(fresh_f.cumulative_funding_pnl) + delta
+                        store.save(fresh_f.model_copy(update={
+                            "cumulative_funding_pnl": new_cum,
+                        }))
+
             if last_event is None:
-                # Q4 audit C4: accrue funding even when no trade fired so the
-                # cumulative_funding_pnl ticks for an open position. Spot
-                # symbols and non-perp brokers return 0.0 (no-op).
-                if in_pos and rec.last_processed_event is not None:
-                    funding_rate = await _fetch_funding_rate(broker, rec.symbol)
-                    if funding_rate != 0.0 and rec.last_processed_event.qty:
-                        entry_px_funding = float(
-                            rec.last_processed_event.fill_price
-                            or rec.last_processed_event.price
-                        )
-                        notional = entry_px_funding * float(rec.last_processed_event.qty)
-                        delta = compute_funding_delta(
-                            position_notional=notional,
-                            funding_rate=funding_rate,
-                            dt_seconds=float(rec.tick_interval_seconds),
-                            side=spec.position.side,
-                        )
-                        if delta != 0.0:
-                            try:
-                                fresh_f = store.get(bot_id)
-                            except UnknownBot:
-                                return None
-                            new_cum = float(fresh_f.cumulative_funding_pnl) + delta
-                            store.save(fresh_f.model_copy(update={
-                                "cumulative_funding_pnl": new_cum,
-                            }))
                 return None
 
             # Deduplicate against the last processed event so a bot that
             # ticks faster than the bar produces one signal per bar at
             # most (idempotency against the same bar_time + kind).
+            # F4/M1 fix: the short-circuit only applies when the last
+            # event was NOT skipped — or the kind is an entry. Failed
+            # (skipped) EXITS retry on the next tick while the exit
+            # condition persists; failed ENTRIES stay deduped
+            # (resubmit-storm protection).
             if (rec.last_processed_event is not None
                     and rec.last_processed_event.bar_time == last_event.bar_time
-                    and rec.last_processed_event.kind == last_event.kind):
+                    and rec.last_processed_event.kind == last_event.kind
+                    and (rec.last_processed_event.action != "skipped"
+                         or last_event.kind == "entry")):
                 return None
 
             # Route.
@@ -653,12 +721,44 @@ class BotRunner:
                 if spec.position.sizing_kind in ("risk_pct", "risk_per_trade"):
                     try:
                         equity_for_sizing, equity_source = (
-                            await _resolve_equity_with_source(broker)
+                            await _resolve_equity_with_source(
+                                broker, symbol=rec.symbol,
+                            )
                         )
                     except Exception as exc:  # noqa: BLE001
                         LOG.debug("equity source resolve failed: %s", exc)
                         equity_source = None
                         equity_for_sizing = None
+                    # F1/H5 fix: fail CLOSED on fallback equity. A transient
+                    # broker outage must not silently substitute $10k for
+                    # real equity on the input that determines live position
+                    # size — refuse the order instead. (Exits are NOT gated
+                    # here: blocking a close on an equity blip would strand
+                    # the position; close_position sizes from the live
+                    # position, not from equity.)
+                    if equity_source != "broker" and last_event.kind == "entry":
+                        entry = SignalEntry(
+                            bar_index=last_event.bar_index,
+                            bar_time=last_event.bar_time,
+                            kind=last_event.kind,
+                            price=last_event.price,
+                            action="skipped",
+                            error=(
+                                "live sizing refused: broker equity unavailable "
+                                f"(equity_source={equity_source})"
+                            ),
+                            bar_close_time=bar_close_time(
+                                last_event.bar_time, rec.timeframe,
+                            ),
+                            reason=getattr(last_event, "reason", None),
+                            equity_source=equity_source,
+                        )
+                        try:
+                            fresh = store.get(bot_id)
+                        except UnknownBot:
+                            return None
+                        store.save(fresh.append_signal(entry))
+                        return entry
                 try:
                     order = await self._dispatch_live_order(
                         bot_id=bot_id,
@@ -685,8 +785,46 @@ class BotRunner:
                         avg_fill_price = float(avg)
                     if filled_qty is not None and rq is not None:
                         if float(filled_qty) <= 0:
-                            action = "skipped"
-                            error = f"IOC unfilled (filled=0 of {float(rq)})"
+                            from showme.brokers import OrderType, TimeInForce
+                            otype = getattr(order, "order_type", None)
+                            tif = getattr(order, "time_in_force", None)
+                            if otype == OrderType.LIMIT and tif == TimeInForce.GTC:
+                                # F3/H4 fix: the limit path submits GTC — a
+                                # zero-fill leaves a REAL resting order on
+                                # the exchange. Attempt a cancel; if the
+                                # cancel fails or the broker can't cancel,
+                                # the possibly-resting order must stay
+                                # VISIBLE: classify ``error`` (not
+                                # ``skipped``). Downstream state checks
+                                # treat the non-skipped entry as position-
+                                # affecting, so no new entry resubmits on
+                                # top of the unknown order.
+                                cancel_fn = getattr(broker, "cancel_order", None)
+                                cancelled = False
+                                if cancel_fn is not None and order_id:
+                                    try:
+                                        cancelled = bool(
+                                            await cancel_fn(str(order_id)),
+                                        )
+                                    except Exception as canc_exc:  # noqa: BLE001
+                                        LOG.warning(
+                                            "bot %s: cancel of unfilled GTC "
+                                            "limit %s failed: %s",
+                                            bot_id, order_id, canc_exc,
+                                        )
+                                if cancelled:
+                                    action = "skipped"
+                                    error = "GTC unfilled — cancelled"
+                                else:
+                                    action = "error"
+                                    error = (
+                                        "GTC limit zero-fill; cancel failed or "
+                                        "unavailable — order may rest on "
+                                        f"exchange (id={order_id})"
+                                    )
+                            else:
+                                action = "skipped"
+                                error = f"IOC unfilled (filled=0 of {float(rq)})"
                         elif float(filled_qty) + 1e-9 < float(rq):
                             action = "placed"
                             error = (
@@ -719,6 +857,7 @@ class BotRunner:
                         persisted_qty = await _resolve_quantity_async(
                             spec, df, broker, leverage=float(rec.leverage),
                             equity_override=equity_for_sizing,
+                            symbol=rec.symbol,
                         )
                     except (BotRunnerError, Exception):  # noqa: BLE001
                         persisted_qty = None
@@ -751,6 +890,13 @@ class BotRunner:
                 and in_pos
                 and entry.action != "skipped"
             ):
+                # F5/M2 fix: the position is gone as of ANY non-skipped
+                # exit. Reset the funding accumulator HERE — not inside
+                # the successful-pairing branch — so a failed pairing
+                # (entry fell off the 100-cap FIFO / price<=0) can no
+                # longer leak this position's funding into the next
+                # round-trip's net_pnl/funding_paid.
+                new_rec = new_rec.model_copy(update={"cumulative_funding_pnl": 0.0})
                 matching_entry = _last_non_skipped_entry(fresh.signal_log)
                 if matching_entry is not None and matching_entry.price > 0:
                     side: Side = spec.position.side  # type: ignore[assignment]
@@ -771,7 +917,9 @@ class BotRunner:
                                 equity_hint = (
                                     float(equity_for_sizing)
                                     if equity_for_sizing is not None
-                                    else await _resolve_equity(broker)
+                                    else await _resolve_equity(
+                                        broker, symbol=rec.symbol,
+                                    )
                                 )
                             else:
                                 equity_hint = _REFERENCE_EQUITY_USD
@@ -818,8 +966,8 @@ class BotRunner:
                         exit_reason=getattr(entry, "reason", None) or "rule",
                     )
                     new_rec = new_rec.append_closed_trade(closed)
-                    # Reset funding accumulator on close (next position starts fresh).
-                    new_rec = new_rec.model_copy(update={"cumulative_funding_pnl": 0.0})
+                    # (F5 fix: the funding-accumulator reset moved above —
+                    # it now fires on ANY non-skipped exit, paired or not.)
 
             store.save(new_rec)
             return entry
@@ -889,7 +1037,7 @@ class BotRunner:
             else:
                 qty = await _resolve_quantity_async(
                     spec, df, broker, leverage=float(rec.leverage),
-                    equity_override=equity_override,
+                    equity_override=equity_override, symbol=rec.symbol,
                 )
             qty = await _round_qty_to_precision(broker, rec.symbol, qty)
             return await broker.submit_order(
@@ -905,7 +1053,7 @@ class BotRunner:
         side = OrderSide.BUY if strategy_side == "long" else OrderSide.SELL
         qty = await _resolve_quantity_async(
             spec, df, broker, leverage=float(rec.leverage),
-            equity_override=equity_override,
+            equity_override=equity_override, symbol=rec.symbol,
         )
         # Q4 audit H12: ccxt lot/tick precision rounding before submit.
         qty = await _round_qty_to_precision(broker, rec.symbol, qty)

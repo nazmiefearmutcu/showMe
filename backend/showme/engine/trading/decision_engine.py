@@ -45,11 +45,20 @@ class DecisionEngine:
         has_position = self.position_manager.has_position(symbol)
         position = self.position_manager.get_position(symbol)
 
-        # Check daily loss limit
-        if self.position_manager.check_daily_loss_limit(daily_pnl, daily_start_balance):
+        # Check daily loss limit — ENTRIES ONLY (H2 fix).
+        # The old early return fired BEFORE the exit block below, so a
+        # tripping daily-loss limit also skipped ``update_position`` + the C1
+        # SL/TP auto-close for the position we already hold: the limiter
+        # pinned the losing position open exactly when its stop needed to
+        # fire. The gate now applies to NEW trades only; exits always
+        # evaluate (``has_position`` short-circuits the gate).
+        if (
+            not has_position
+            and self.position_manager.check_daily_loss_limit(daily_pnl, daily_start_balance)
+        ):
             return self._make_decision(
                 TradeAction.NO_ACTION, 0, symbol, current_price,
-                "Daily loss limit reached - no new trades",
+                "Daily loss limit reached - no NEW trades",
                 consensus,
             )
 
@@ -151,7 +160,15 @@ class DecisionEngine:
         leverage = 1
         market_type = self.config.get("market_type", "spot")
         if market_type == "futures" and self.leverage_manager:
-            leverage = self.leverage_manager.calculate_leverage(symbol, confidence)
+            # H14 fix: pass the SL the position will actually use so the
+            # liquidation-aware leverage cap is live. ``open_position`` reads
+            # the same risk_config value (default 0.025).
+            sl_distance_pct = float(
+                self.position_manager.risk_config.get("stop_loss_pct", 0.025)
+            )
+            leverage = self.leverage_manager.calculate_leverage(
+                symbol, confidence, sl_distance_pct=sl_distance_pct
+            )
 
         # Entry decision
         if final_signal in (Signal.STRONG_BUY, Signal.BUY):

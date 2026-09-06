@@ -366,3 +366,257 @@ async def test_live_risk_pct_tick_tag_matches_resolved_source(monkeypatch, tmp_p
         f"expected broker.account() called once, got {call_count['n']}"
     )
     assert signal.equity_source == "fallback_10k"
+
+
+# ── Money-risk campaign 2026-09-05: F1 / F3 / F4 / F5 regression tests ──
+
+
+def _exit_df() -> pd.DataFrame:
+    """close > 100 on bars 0..3 (entry fires bar 0), < 100 on the LAST
+    bar (exit fires on the last bar) — same shape as
+    tests/test_runner_fixes._exit_df."""
+    closes = [101, 102, 103, 104, 99]
+    n = len(closes)
+    idx = pd.date_range("2026-05-22", periods=n, freq="h")
+    return pd.DataFrame({
+        "open": closes, "high": [c + 0.5 for c in closes],
+        "low": [c - 0.5 for c in closes], "close": list(closes),
+        "volume": [1000] * n,
+    }, index=idx)
+
+
+def _save_strategy_with_exit(tmp_path: Path, monkeypatch) -> str:
+    """Strategy: entry when close > 100, exit when close < 100."""
+    monkeypatch.setenv("SHOWME_HOME", str(tmp_path))
+    from showme.strategies.spec import Rule, StrategySpec
+    from showme.strategies.store import StrategyStore
+    spec = StrategySpec(
+        name="entry_gt_exit_lt",
+        entry_rules=[Rule(kind="greater_than", left="close", right="literal:100")],
+        exit_rules=[Rule(kind="less_than", left="close", right="literal:100")],
+    )
+    saved = StrategyStore.fresh().save(spec)
+    return saved.id
+
+
+def _save_strategy_limit_entry(tmp_path: Path, monkeypatch) -> str:
+    """Strategy with a GTC limit entry (offset 0.1% below/above close)."""
+    monkeypatch.setenv("SHOWME_HOME", str(tmp_path))
+    from showme.strategies.spec import Position, Rule, StrategySpec
+    from showme.strategies.store import StrategyStore
+    spec = StrategySpec(
+        name="limit_entry",
+        entry_rules=[Rule(kind="crosses_above", left="close", right="literal:100")],
+        exit_rules=[],
+        position=Position(
+            entry_order_type="limit", limit_price_offset_pct=0.1,
+        ),
+    )
+    saved = StrategyStore.fresh().save(spec)
+    return saved.id
+
+
+def _seed_open_bot(store: BotStore, sid: str, credential_id: str) -> BotRecord:
+    """Persist a live bot whose last event is a placed entry (qty=1 @101)."""
+    from showme.bots.record import SignalEntry
+    entry_event = SignalEntry(
+        bar_index=0, bar_time="2026-05-22 00:00:00+00:00",
+        kind="entry", price=101.0, action="placed", qty=1.0,
+    )
+    return store.save(BotRecord(
+        strategy_id=sid, credential_id=credential_id, exchange_id="binance",
+        symbol="BTC/USDT", enabled=True, mode="live",
+        last_processed_event=entry_event, signal_log=[entry_event],
+    ))
+
+
+@pytest.mark.asyncio
+async def test_f1_live_risk_sizing_refused_on_fallback_equity(monkeypatch, tmp_path):
+    """F1: live + risk_pct sizing + broker.account() unavailable → the
+    entry is REFUSED (skipped, nothing submitted) instead of being sized
+    on the $10k fallback equity."""
+    sid = _save_strategy_risk_pct(tmp_path, monkeypatch)
+    broker = _register_fake_broker("f1", [])
+    broker.account = AsyncMock(side_effect=RuntimeError("no account"))
+    store = BotStore(tmp_path / "bots")
+    bot = store.save(BotRecord(
+        strategy_id=sid, credential_id="f1", exchange_id="binance",
+        symbol="BTC/USDT", enabled=True, mode="live",
+    ))
+    monkeypatch.setattr("showme.bots.runner.fetch_ohlcv",
+                        AsyncMock(side_effect=lambda *a, **k: _ohlcv_df()))
+    runner = BotRunner()
+    signal = await runner.tick(bot.id, store)
+    assert signal is not None
+    assert signal.action == "skipped"
+    assert "live sizing refused" in (signal.error or "")
+    assert signal.equity_source == "fallback_10k"
+    broker.submit_order.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_f1_live_risk_sizing_proceeds_on_broker_equity(monkeypatch, tmp_path):
+    """F1 complement: with real broker equity the live risk_pct entry is
+    still submitted (no over-refusal)."""
+    sid = _save_strategy_risk_pct(tmp_path, monkeypatch)
+    broker = _register_fake_broker("f1b", [])
+    broker.account = AsyncMock(return_value={"equity": 50_000.0})
+    store = BotStore(tmp_path / "bots")
+    bot = store.save(BotRecord(
+        strategy_id=sid, credential_id="f1b", exchange_id="binance",
+        symbol="BTC/USDT", enabled=True, mode="live",
+    ))
+    monkeypatch.setattr("showme.bots.runner.fetch_ohlcv",
+                        AsyncMock(side_effect=lambda *a, **k: _ohlcv_df()))
+    runner = BotRunner()
+    signal = await runner.tick(bot.id, store)
+    assert signal is not None
+    assert signal.action == "placed"
+    broker.submit_order.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_f3_gtc_limit_zero_fill_is_cancelled(monkeypatch, tmp_path):
+    """F3: a zero-fill GTC limit entry is CANCELLED and recorded as
+    skipped with an explicit reason — no untracked resting order."""
+    sid = _save_strategy_limit_entry(tmp_path, monkeypatch)
+    from showme.brokers import OrderType, TimeInForce
+    order = MagicMock(
+        id="gtc-1", filled_quantity=0.0, quantity=1.0, avg_fill_price=None,
+        order_type=OrderType.LIMIT, time_in_force=TimeInForce.GTC,
+    )
+    broker = _register_fake_broker("f3a", [])
+    broker.submit_order = AsyncMock(return_value=order)
+    broker.cancel_order = AsyncMock(return_value=True)
+    store = BotStore(tmp_path / "bots")
+    bot = store.save(BotRecord(
+        strategy_id=sid, credential_id="f3a", exchange_id="binance",
+        symbol="BTC/USDT", enabled=True, mode="live",
+    ))
+    monkeypatch.setattr("showme.bots.runner.fetch_ohlcv",
+                        AsyncMock(side_effect=lambda *a, **k: _ohlcv_df()))
+    runner = BotRunner()
+    entry = await runner.tick(bot.id, store)
+    assert entry is not None
+    assert entry.action == "skipped"
+    assert "cancelled" in (entry.error or "")
+    broker.cancel_order.assert_awaited_once_with("gtc-1")
+
+
+@pytest.mark.asyncio
+async def test_f3_gtc_limit_cancel_failure_classified_error(monkeypatch, tmp_path):
+    """F3: when the cancel fails, the entry is classified ``error`` —
+    visible, NOT silently skipped — because the order may rest on the
+    exchange."""
+    sid = _save_strategy_limit_entry(tmp_path, monkeypatch)
+    from showme.brokers import OrderType, TimeInForce
+    order = MagicMock(
+        id="gtc-2", filled_quantity=0.0, quantity=1.0, avg_fill_price=None,
+        order_type=OrderType.LIMIT, time_in_force=TimeInForce.GTC,
+    )
+    broker = _register_fake_broker("f3b", [])
+    broker.submit_order = AsyncMock(return_value=order)
+    broker.cancel_order = AsyncMock(return_value=False)
+    store = BotStore(tmp_path / "bots")
+    bot = store.save(BotRecord(
+        strategy_id=sid, credential_id="f3b", exchange_id="binance",
+        symbol="BTC/USDT", enabled=True, mode="live",
+    ))
+    monkeypatch.setattr("showme.bots.runner.fetch_ohlcv",
+                        AsyncMock(side_effect=lambda *a, **k: _ohlcv_df()))
+    runner = BotRunner()
+    entry = await runner.tick(bot.id, store)
+    assert entry is not None
+    assert entry.action == "error"
+    assert "rest on exchange" in (entry.error or "")
+
+
+@pytest.mark.asyncio
+async def test_f4_failed_exit_retries_on_next_tick(monkeypatch, tmp_path):
+    """F4: a failed (skipped) EXIT must not be dedup-blocked for the rest
+    of the bar — the close is re-attempted on the next tick while the
+    exit condition persists."""
+    sid = _save_strategy_with_exit(tmp_path, monkeypatch)
+    broker = _register_fake_broker("f4", [])
+    broker.close_position = AsyncMock(side_effect=RuntimeError("boom"))
+    store = BotStore(tmp_path / "bots")
+    bot = _seed_open_bot(store, sid, "f4")
+    monkeypatch.setattr("showme.bots.runner.fetch_ohlcv",
+                        AsyncMock(side_effect=lambda *a, **k: _exit_df()))
+    runner = BotRunner()
+    s1 = await runner.tick(bot.id, store)
+    assert s1 is not None
+    assert s1.kind == "exit"
+    assert s1.action == "skipped"
+    s2 = await runner.tick(bot.id, store)
+    assert s2 is not None
+    assert s2.kind == "exit"
+    # The retry actually reached the broker again.
+    assert broker.close_position.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_f5_funding_accrues_on_signal_tick_and_paid_at_close(monkeypatch, tmp_path):
+    """F5: funding accrues even on the tick that FIRES the exit — the
+    signal-tick slice is included in ``funding_paid`` — and the
+    accumulator resets to 0 after the close."""
+    sid = _save_strategy_with_exit(tmp_path, monkeypatch)
+    broker = _register_fake_broker("f5", [])
+    broker._ex.fetch_funding_rate = AsyncMock(
+        return_value={"fundingRate": 0.0001},
+    )
+    broker.close_position = AsyncMock(return_value=MagicMock(
+        id="close-1", filled_quantity=1.0, quantity=1.0, avg_fill_price=99.0,
+    ))
+    store = BotStore(tmp_path / "bots")
+    bot = _seed_open_bot(store, sid, "f5")
+    # Pre-seed prior accrual so we can distinguish "reset happened" from
+    # "accumulator was never touched".
+    fresh = store.get(bot.id)
+    store.save(fresh.model_copy(update={"cumulative_funding_pnl": 0.5}))
+    monkeypatch.setattr("showme.bots.runner.fetch_ohlcv",
+                        AsyncMock(side_effect=lambda *a, **k: _exit_df()))
+    runner = BotRunner()
+    s = await runner.tick(bot.id, store)
+    assert s is not None
+    assert s.action == "placed"
+    rec = store.get(bot.id)
+    assert len(rec.closed_trades_log) == 1
+    dt = float(rec.tick_interval_seconds)
+    signal_tick_delta = 101.0 * 1.0 * 0.0001 * (dt / (8 * 3600.0))
+    assert rec.closed_trades_log[0].funding_paid == pytest.approx(
+        0.5 + signal_tick_delta,
+    )
+    assert rec.cumulative_funding_pnl == 0.0
+
+
+@pytest.mark.asyncio
+async def test_f5_funding_resets_even_when_pairing_fails(monkeypatch, tmp_path):
+    """F5: a non-skipped exit resets the funding accumulator even when the
+    ClosedTrade pairing fails (opening entry missing from signal_log) —
+    the stale funding must not leak into the next round-trip."""
+    sid = _save_strategy_with_exit(tmp_path, monkeypatch)
+    broker = _register_fake_broker("f5b", [])
+    broker.close_position = AsyncMock(return_value=MagicMock(
+        id="close-2", filled_quantity=1.0, quantity=1.0, avg_fill_price=99.0,
+    ))
+    store = BotStore(tmp_path / "bots")
+    bot = _seed_open_bot(store, sid, "f5b")
+    # The pairing requires the entry IN signal_log; drop it so pairing
+    # fails while the exit still goes through.
+    fresh = store.get(bot.id)
+    fresh = fresh.model_copy(update={
+        "signal_log": [],
+        "cumulative_funding_pnl": 0.5,
+    })
+    store.save(fresh)
+    monkeypatch.setattr("showme.bots.runner.fetch_ohlcv",
+                        AsyncMock(side_effect=lambda *a, **k: _exit_df()))
+    runner = BotRunner()
+    s = await runner.tick(bot.id, store)
+    assert s is not None
+    assert s.action == "placed"
+    rec = store.get(bot.id)
+    assert rec.closed_trades_log == []  # pairing failed
+    # BASE behaviour kept the stale 0.5; the fix resets it.
+    assert rec.cumulative_funding_pnl == 0.0

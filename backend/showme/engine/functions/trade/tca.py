@@ -30,9 +30,13 @@ _METHODOLOGY = (
     "and the manual order_history store, then joins each fill against a live "
     "intraday VWAP benchmark sourced keyless (Binance klines for crypto, "
     "yfinance intraday candles otherwise) over the same trading session. "
+    "Only real placed orders count: paper/shadow signals that never reached a "
+    "broker are excluded, and rows without a positive executed size are "
+    "skipped rather than defaulted. "
     "Per-fill slippage_bps = (avg_fill - benchmark) / benchmark * 10000 * "
     "side_sign; implementation-shortfall is_bps = (avg_fill - arrival) / arrival "
-    "* 10000 * side_sign; opportunity_bps captures the cost of unfilled size. "
+    "* 10000 * side_sign; opportunity_bps is always null because the ledgers "
+    "record no target size from which unfilled quantity could be derived. "
     "total_cost_usd aggregates slippage_bps * notional / 10000. Summary KPIs are "
     "the fill-count means across the analysed tail. TCA is strictly read-only "
     "and never mutates broker state."
@@ -49,7 +53,9 @@ _FIELD_DICTIONARY = {
     "arrival_px": "Reference (arrival/decision) price at order entry.",
     "slippage_bps": "Signed slippage vs the VWAP benchmark, in basis points.",
     "is_bps": "Implementation shortfall vs arrival price, in basis points.",
-    "opportunity_bps": "Cost of unfilled quantity vs benchmark, in basis points.",
+    "opportunity_bps": "Cost of unfilled quantity vs benchmark, in basis "
+        "points. Always null in bot-fill rows: the fill ledgers do not record "
+        "the target order size, so unfilled quantity is unknowable.",
     "notional_usd": "avg_fill_px * quantity (quote-currency notional).",
     "cost_usd": "slippage_bps * notional / 10000 (execution cost).",
     "filled_at": "ISO-8601 timestamp of the fill.",
@@ -224,7 +230,13 @@ class TCAFunction(BaseFunction):
                 "arrival_px": round(arrival, 8) if arrival is not None else None,
                 "slippage_bps": round(slip_bps, 2) if slip_bps is not None else None,
                 "is_bps": round(is_bps, 2) if is_bps is not None else None,
-                "opportunity_bps": round(is_bps, 2) if is_bps is not None else None,
+                # F6/H10: opportunity_bps is NOT implementation shortfall. The
+                # field dictionary defines it as the cost of UNFILLED size vs
+                # benchmark, but fill-ledger rows never record a target size,
+                # so unfilled qty is unknowable here. Return None (with the
+                # dictionary corrected) instead of serving a mislabeled copy
+                # of is_bps.
+                "opportunity_bps": None,
                 "notional_usd": round(notional, 2),
                 "cost_usd": round(cost_usd, 2),
                 "filled_at": f.get("filled_at"),
@@ -304,6 +316,17 @@ class TCAFunction(BaseFunction):
         execution price (preferred), ``price`` is the signal/decision price we
         treat as the arrival benchmark, ``qty`` the executed size, and
         ``kind`` (entry/exit) maps to BUY/SELL.
+
+        F6 (MED, honest-data): only ``action == "placed"`` rows count as fills.
+        The old filter also accepted ``"shadow"`` — paper signals for which NO
+        real order was ever sent (bots/runner.py sets action="shadow" exactly
+        then) — so never-executed simulation rows were counted as executed
+        fills in every slippage/cost metric. Shadow rows are now excluded
+        outright (chosen over tagging ``executed: False``) because the module's
+        contract is "REAL executed fills" only; the summary KPIs are means over
+        rows and there is no honest way to present a blended population.
+        Entries with missing/non-positive qty are SKIPPED instead of being
+        defaulted to a fabricated size of 1.0.
         """
         out: list[dict[str, Any]] = []
         want_sym = symbol.upper() if symbol else None
@@ -322,7 +345,15 @@ class TCAFunction(BaseFunction):
                 except Exception:  # noqa: BLE001 — skip unreadable record
                     continue
                 for entry in rec.signal_log:
-                    if entry.action not in ("placed", "shadow"):
+                    if entry.action != "placed":
+                        continue
+                    try:
+                        qty = float(entry.qty) if entry.qty is not None else 0.0
+                    except (TypeError, ValueError):
+                        continue
+                    if qty <= 0:
+                        # No fabricated default size — a fill without a size
+                        # cannot contribute honest notional/cost numbers.
                         continue
                     fill_px = entry.fill_price if entry.fill_price else entry.price
                     if not fill_px or fill_px <= 0:
@@ -336,7 +367,7 @@ class TCAFunction(BaseFunction):
                         "symbol": bot_sym or None,
                         "broker": f"bot:{meta.id[:8]}",
                         "side": side,
-                        "quantity": float(entry.qty or 1.0),
+                        "quantity": qty,
                         "avg_fill_px": float(fill_px),
                         "arrival_px": float(arrival) if arrival is not None else None,
                         "filled_at": entry.bar_close_time or entry.timestamp,

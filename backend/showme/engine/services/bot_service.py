@@ -302,9 +302,41 @@ class BotService:
         self._shutdown()
 
     def _apply_config(self, new_config: dict[str, Any]) -> None:
-        """Apply a new config to all components at runtime."""
+        """Apply a new config to all components at runtime.
+
+        F3 (MED): mode/market_type changes are REFUSED while any position is
+        open (the old code swapped the UI-facing config while the ExecutionEngine
+        and BinanceClient kept their boot-time mode — the engine traded with a
+        stale mode). For accepted changes the execution engine's mode/fee
+        config is refreshed in place (paper balance preserved) and the
+        BinanceClient is re-initialised for the new mode/market; a failed
+        re-init reverts the change so the engine never trades a mode the
+        client cannot actually honour.
+        """
         old_tf = self.config.get("timeframe")
         old_interval = self.config.get("polling_interval_seconds")
+        old_mode = self.config.get("mode", "paper")
+        old_market_type = self.config.get("market_type", "spot")
+        new_mode = new_config.get("mode", "paper")
+        new_market_type = new_config.get("market_type", "spot")
+
+        mode_changed = new_mode != old_mode
+        market_changed = new_market_type != old_market_type
+        if (mode_changed or market_changed) and self.position_manager.positions:
+            logger.error(
+                "Config reload: refusing mode/market_type change "
+                f"({old_mode}/{old_market_type} -> {new_mode}/{new_market_type}) "
+                f"while {len(self.position_manager.positions)} position(s) are open — "
+                f"keeping {old_mode}/{old_market_type}. Close positions or restart to apply."
+            )
+            # Keep the OLD values for the refused fields so every component
+            # rebuilt below stays consistent with the engine's actual mode.
+            new_config = dict(new_config)
+            new_config["mode"] = old_mode
+            new_config["market_type"] = old_market_type
+            mode_changed = False
+            market_changed = False
+
         self.config = new_config
 
         # Update polling interval
@@ -320,17 +352,51 @@ class BotService:
         self.leverage_manager = LeverageManager(new_config, self.binance_client)
         # Update position manager's risk config so max_open_positions etc. take effect
         self.position_manager.risk_config = new_config.get("risk", {})
+        # Also keep the full config (paper.fee_pct in open_position) current.
+        self.position_manager.config = new_config
         self.decision_engine = DecisionEngine(new_config, self.position_manager, self.leverage_manager)
         self.market_data = MarketDataProvider(
             self.binance_client, new_config,
             cache=self.market_cache, store=self.market_store,
         )
 
+        # F3: refresh the execution engine + BinanceClient for accepted
+        # mode/market_type changes so the engine never trades a stale mode.
+        if mode_changed or market_changed:
+            try:
+                self.binance_client.mode = new_mode
+                self.binance_client.market_type = new_market_type
+                self.binance_client.initialize()
+            except Exception as e:
+                logger.error(
+                    f"Config reload: BinanceClient re-init for "
+                    f"{new_mode}/{new_market_type} failed ({e}) — reverting to "
+                    f"{old_mode}/{old_market_type}.",
+                    exc_info=True,
+                )
+                self.binance_client.mode = old_mode
+                self.binance_client.market_type = old_market_type
+                new_config["mode"] = old_mode
+                new_config["market_type"] = old_market_type
+                new_mode, new_market_type = old_mode, old_market_type
+            # Refresh the execution engine IN PLACE: mode + fee config only.
+            # Rebuilding would reset paper_balance to starting_balance.
+            self.execution_engine.config = new_config
+            self.execution_engine.mode = new_mode
+            self.execution_engine.paper_config = new_config.get("paper", {})
+            self.execution_engine.paper_fee_pct = self.execution_engine.paper_config.get("fee_pct", 0.001)
+            logger.info(
+                f"Execution engine refreshed | mode={new_mode} market={new_market_type} "
+                f"fee={self.execution_engine.paper_fee_pct} (paper balance preserved)"
+            )
+
         changes = []
         if old_tf != new_config.get("timeframe"):
             changes.append(f"timeframe: {old_tf} -> {new_config.get('timeframe')}")
         if old_interval != new_config.get("polling_interval_seconds"):
             changes.append(f"interval: {old_interval}s -> {new_config.get('polling_interval_seconds')}s")
+        if mode_changed or market_changed:
+            changes.append(f"mode/market: {old_mode}/{old_market_type} -> {new_mode}/{new_market_type}")
         if changes:
             logger.info(f"Config reloaded: {', '.join(changes)}")
         else:
@@ -363,7 +429,14 @@ class BotService:
             return
 
         current_price = float(df["close"].iloc[-1])
-        latest_candle_time = str(df.index[-1]) if hasattr(df.index[-1], 'isoformat') else str(df.index[-1])
+        # F9 (LOW): both the REST path (df.reset_index(drop=True)) and the WS
+        # cache path leave a RangeIndex, so df.index[-1] is the constant row
+        # count — the flag was stuck after the first cycle. Compare the
+        # candle's open_time instead; fall back to the index when absent.
+        if "open_time" in df.columns:
+            latest_candle_time = str(df["open_time"].iloc[-1])
+        else:
+            latest_candle_time = str(df.index[-1])
 
         # Same-candle detection
         if latest_candle_time != self._last_candle_time:
@@ -500,7 +573,17 @@ class BotService:
             logger.info(f"Execution: {json.dumps(execution_result, default=str)}")
 
     def _process_close_commands(self) -> None:
-        """Check for manual close commands written by dashboard and execute them."""
+        """Check for manual close commands written by dashboard and execute them.
+
+        F4 (MED): the command file is deleted only after a TERMINAL outcome —
+        the position is gone (already closed), the command is malformed, or
+        execute() returned executed=True. On executed=False or an exception the
+        file is KEPT so the close retries next cycle (the old code unlinked the
+        file up-front and even inside the except handler, silently consuming
+        failed close requests). When no live ticker price is available the
+        close is skipped this cycle instead of being priced at entry_price —
+        an entry-price fill would book fabricated ~0 PnL into daily_pnl.
+        """
         runtime_dir = Path("runtime")
         try:
             cmd_files = list(runtime_dir.glob("close_cmd_*.json"))
@@ -509,51 +592,71 @@ class BotService:
         for cmd_file in cmd_files:
             try:
                 data = json.loads(cmd_file.read_text())
-                sym = data.get("symbol", "")
-                cmd_file.unlink(missing_ok=True)  # remove command file immediately
-                if not sym:
-                    continue
-                pos = self.position_manager.get_position(sym)
-                if not pos:
-                    logger.info(f"Close command for {sym} but no position found (already closed)")
-                    continue
-                price = self.binance_client.get_ticker_price(sym)
-                if not price:
-                    price = pos.entry_price
-                close_action = (
-                    TradeAction.CLOSE_LONG if pos.side.value == "LONG"
-                    else TradeAction.CLOSE_SHORT
-                )
-                decision = {
-                    "action": close_action.value,
-                    "symbol": sym,
-                    "quantity": pos.quantity,
-                    "price": price,
-                    "reason": "Manuel kapatma (dashboard)",
-                    "timestamp": iso_now(),
-                    "consensus_signal": "NEUTRAL",
-                    "confidence": 0,
-                    "risk_level": "LOW",
-                    "leverage": pos.leverage,
-                }
-                exec_result = self.execution_engine.execute(decision)
-                if exec_result.get("executed"):
-                    pnl = exec_result.get("pnl", 0)
-                    daily_pnl = self.state_store.get("daily_pnl", 0.0) + pnl
-                    self.state_store.update(
-                        daily_pnl=round(daily_pnl, 4),
-                        total_realized_pnl=round(self.position_manager.total_realized_pnl, 4),
-                        positions=self.position_manager.get_positions_dict(),
-                        trade_history=[t.to_dict() for t in self.position_manager.trade_history[-100:]],
-                        paper_balance=round(self.execution_engine.paper_balance, 4),
-                    )
-                    logger.info(f"✅ {sym} manually closed via dashboard | PnL: {pnl:.4f}")
             except Exception as e:
-                logger.warning(f"Failed to process close command {cmd_file}: {e}")
-                try:
-                    cmd_file.unlink(missing_ok=True)
-                except Exception:
-                    pass
+                # Unreadable/locked file may be transient (mid-write) — retry
+                # next cycle instead of destroying the user's close request.
+                logger.warning(f"Close command {cmd_file.name} unread ({e}) — kept for retry")
+                continue
+            sym = data.get("symbol", "")
+            if not sym:
+                # Malformed command can never succeed — terminal, remove it.
+                logger.warning(f"Close command {cmd_file.name} has no symbol — removed")
+                cmd_file.unlink(missing_ok=True)
+                continue
+            pos = self.position_manager.get_position(sym)
+            if not pos:
+                logger.info(f"Close command for {sym} but no position found (already closed)")
+                cmd_file.unlink(missing_ok=True)  # terminal: nothing to close
+                continue
+            price = self.binance_client.get_ticker_price(sym)
+            if not price:
+                # No live price → no honest fill price. Skip this cycle (keep
+                # the command) rather than fabricating a break-even close.
+                logger.warning(
+                    f"Close command for {sym}: ticker price unavailable — "
+                    f"skipping this cycle (command kept for retry)"
+                )
+                continue
+            close_action = (
+                TradeAction.CLOSE_LONG if pos.side.value == "LONG"
+                else TradeAction.CLOSE_SHORT
+            )
+            decision = {
+                "action": close_action.value,
+                "symbol": sym,
+                "quantity": pos.quantity,
+                "price": price,
+                "reason": "Manuel kapatma (dashboard)",
+                "timestamp": iso_now(),
+                "consensus_signal": "NEUTRAL",
+                "confidence": 0,
+                "risk_level": "LOW",
+                "leverage": pos.leverage,
+            }
+            try:
+                exec_result = self.execution_engine.execute(decision)
+            except Exception as e:
+                logger.warning(
+                    f"Close command for {sym} raised {e} — command kept for retry"
+                )
+                continue
+            if exec_result.get("executed"):
+                pnl = exec_result.get("pnl", 0)
+                daily_pnl = self.state_store.get("daily_pnl", 0.0) + pnl
+                self.state_store.update(
+                    daily_pnl=round(daily_pnl, 4),
+                    total_realized_pnl=round(self.position_manager.total_realized_pnl, 4),
+                    positions=self.position_manager.get_positions_dict(),
+                    trade_history=[t.to_dict() for t in self.position_manager.trade_history[-100:]],
+                    paper_balance=round(self.execution_engine.paper_balance, 4),
+                )
+                cmd_file.unlink(missing_ok=True)  # terminal: close executed
+                logger.info(f"✅ {sym} manually closed via dashboard | PnL: {pnl:.4f}")
+            else:
+                logger.warning(
+                    f"Close command for {sym} not executed: "
+                    f"{exec_result.get('reason')} — command kept for retry"
+                )
 
     def _check_other_positions(self, active_symbol: str, balance: float) -> None:
         """Fast SL/TP/trailing/break-even check on ALL non-active positions.
@@ -583,12 +686,67 @@ class BotService:
                 exit_reason = self.position_manager.update_position(sym, price)
                 if exit_reason:
                     pos.warning = exit_reason
-                    logger.warning(
-                        f"Position {sym} hit {exit_reason} — NOT auto-closing. "
-                        f"Manual close required."
-                    )
+                    self._auto_close_non_active(sym, pos, price, exit_reason)
             except Exception as e:
                 logger.warning(f"Failed to update position {sym}: {e}")
+
+    def _auto_close_non_active(self, sym: str, pos: Any, price: float, exit_reason: str) -> None:
+        """F1 (HIGH): SL/TP/trailing hit on a NON-ACTIVE position → actually close.
+
+        Mirrors the active-symbol C1 path (decision_engine.decide lines 93-114):
+        builds the same CLOSE_LONG/CLOSE_SHORT decision _process_close_commands
+        builds and sends it to the execution engine. The old behavior stamped
+        ``pos.warning`` and logged "NOT auto-closing" — leaving real exposure
+        with no functional stop once its symbol lost active status (e.g. via
+        auto-select switch).
+
+        On execute failure the warning log is kept (position stays flagged on
+        the dashboard) and the error is logged loudly instead of swallowed.
+        """
+        try:
+            close_action = (
+                TradeAction.CLOSE_LONG if pos.side.value == "LONG"
+                else TradeAction.CLOSE_SHORT
+            )
+            decision = {
+                "action": close_action.value,
+                "symbol": sym,
+                "quantity": pos.quantity,
+                "price": price,
+                "reason": f"Auto-close: {exit_reason} (non-active position)",
+                "timestamp": iso_now(),
+                "consensus_signal": "NEUTRAL",
+                "confidence": 0,
+                "risk_level": "LOW",
+                "leverage": pos.leverage,
+            }
+            logger.warning(
+                f"Position {sym} hit {exit_reason} — auto-closing "
+                f"({close_action.value}) at {price}"
+            )
+            exec_result = self.execution_engine.execute(decision)
+            if exec_result.get("executed"):
+                pnl = exec_result.get("pnl", 0)
+                daily_pnl = self.state_store.get("daily_pnl", 0.0) + pnl
+                self.state_store.update(
+                    daily_pnl=round(daily_pnl, 4),
+                    total_realized_pnl=round(self.position_manager.total_realized_pnl, 4),
+                    positions=self.position_manager.get_positions_dict(),
+                    trade_history=[t.to_dict() for t in self.position_manager.trade_history[-100:]],
+                    paper_balance=round(self.execution_engine.paper_balance, 4),
+                )
+                logger.info(f"✅ {sym} auto-closed (non-active) | reason={exit_reason} | PnL: {pnl:.4f}")
+            else:
+                logger.warning(
+                    f"Position {sym} hit {exit_reason} — auto-close NOT executed: "
+                    f"{exec_result.get('reason')}. Manual close required."
+                )
+        except Exception as e:
+            logger.error(
+                f"Auto-close of non-active position {sym} failed ({exit_reason}): {e} — "
+                f"manual close required.",
+                exc_info=True,
+            )
 
     # ── Live multi-TF signals for active coin ──────────────────────
 
@@ -1073,7 +1231,26 @@ class BotService:
             if auto_select_on and cumulative:
                 top = cumulative[0]
                 current_symbol = self.symbol_controller.get_current_symbol()
-                if top["symbol"] != current_symbol:
+                # F2 (HIGH): block the symbol switch while the OUTGOING symbol
+                # still has an open position. The decision engine only manages
+                # the ACTIVE symbol, so switching away would drop a live
+                # position into the advisory-only zone (no SL/TP execution).
+                # With max_open_positions > 1 only the outgoing symbol blocks —
+                # positions on other symbols keep being auto-closed by
+                # _check_other_positions.
+                outgoing_pos = (
+                    self.position_manager.get_position(current_symbol)
+                    if current_symbol else None
+                )
+                if top["symbol"] != current_symbol and outgoing_pos is not None:
+                    logger.warning(
+                        f"⛔ Cumulative auto-select switch {current_symbol} → "
+                        f"{top['symbol']} BLOCKED: open position on {current_symbol} "
+                        f"({outgoing_pos.side.value} qty={outgoing_pos.quantity} "
+                        f"entry={outgoing_pos.entry_price}). Close it manually or "
+                        f"wait for SL/TP auto-close before switching."
+                    )
+                elif top["symbol"] != current_symbol:
                     logger.info(
                         f"⚡ Cumulative auto-select: "
                         f"{current_symbol} → {top['symbol']} "

@@ -180,3 +180,51 @@ def test_tca_is_read_only():
     handler = TCAFunction()
     for forbidden in ("place_order", "cancel_order", "submit", "amend"):
         assert not hasattr(handler, forbidden)
+
+
+# ---------------------------------------------------------------------------
+# 5) F6: only REAL "placed" fills count; shadow rows and rows without a
+#    usable quantity are excluded; opportunity_bps is null (not an is_bps
+#    copy) with a corrected field dictionary.
+# ---------------------------------------------------------------------------
+def test_tca_excludes_shadow_and_missing_qty_fills(tmp_path, monkeypatch):
+    _use_temp_home(tmp_path, monkeypatch)
+    store = BotStore.fresh()
+    log = [
+        # real fill — the only row that must survive
+        SignalEntry(bar_index=0, bar_time="2026-06-01T00:00:00Z", kind="entry",
+                    price=105.0, action="placed", order_id="r1",
+                    fill_price=110.0, qty=2.0),
+        # shadow = no real order was placed → must NOT count as a fill
+        SignalEntry(bar_index=1, bar_time="2026-06-01T01:00:00Z", kind="entry",
+                    price=105.0, action="shadow", order_id="r2",
+                    fill_price=None, qty=5.0),
+        # real placed order but missing qty → skipped, no fabricated 1.0
+        SignalEntry(bar_index=2, bar_time="2026-06-01T02:00:00Z", kind="exit",
+                    price=105.0, action="placed", order_id="r3",
+                    fill_price=108.0, qty=None),
+        # zero qty → skipped as well
+        SignalEntry(bar_index=3, bar_time="2026-06-01T03:00:00Z", kind="exit",
+                    price=105.0, action="placed", order_id="r4",
+                    fill_price=108.0, qty=0),
+    ]
+    rec = BotRecord(
+        strategy_id="s1", credential_id="c1", exchange_id="binance",
+        symbol="BTCUSDT", timeframe="1h", mode="live", enabled=True,
+        signal_log=log,
+    )
+    store.save(rec)
+
+    handler = _make_handler(_StubBinance())
+    res = _run(handler.execute(symbol="BTCUSDT", benchmark="VWAP"))
+    data = res.data
+
+    assert data["summary"]["fill_count"] == 1
+    assert len(data["rows"]) == 1
+    row = data["rows"][0]
+    assert row["order_id"] == "r1"
+    assert row["quantity"] == pytest.approx(2.0)
+    assert row["is_bps"] is not None
+    # opportunity_bps must not be a mislabelled copy of is_bps
+    assert row["opportunity_bps"] is None
+    assert "Always null" in data["field_dictionary"]["opportunity_bps"]

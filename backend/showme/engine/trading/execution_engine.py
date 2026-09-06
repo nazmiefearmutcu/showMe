@@ -86,8 +86,13 @@ class ExecutionEngine:
             # Kayıp gerçekleştiğinde (close veya liquidation) asıl bakiyeyi etkiler.
             if is_leveraged:
                 cost = fee
-                # Notional sınırı: bakiye * leverage (risk tavanı aynı kalsın)
-                max_notional = self.paper_balance * leverage * 0.99
+                # F5: cap new notional at FREE margin (balance minus margin
+                # already allocated to open leveraged positions). Margin is
+                # never locked on leveraged paper opens, so without this the
+                # affordability cap re-checks the full untouched balance.
+                free_margin = max(self.paper_balance - self._allocated_margin(), 0.0)
+                # Notional sınırı: serbest marjin * leverage (risk tavanı)
+                max_notional = free_margin * leverage * 0.99
                 if notional > max_notional:
                     max_qty = max_notional / (price * (1 + self.paper_fee_pct))
                     if max_qty <= 0:
@@ -169,9 +174,16 @@ class ExecutionEngine:
 
         elif action == TradeAction.OPEN_SHORT:
             # Futures: margin KİLİTLENMEZ — sadece fee bakiyeden düşer.
+            proceeds_credit = 0.0
             if is_leveraged:
                 cost = fee
-                max_notional = self.paper_balance * leverage * 0.99
+                # F5: leveraged opens only debit the fee, so margin is never
+                # locked. Cap new notional at the FREE margin (balance minus
+                # margin already allocated to open leveraged positions) —
+                # otherwise N stacked positions each re-check against the
+                # full untouched balance ≈ N×leverage account exposure.
+                free_margin = max(self.paper_balance - self._allocated_margin(), 0.0)
+                max_notional = free_margin * leverage * 0.99
                 if notional > max_notional:
                     max_qty = max_notional / (price * (1 + self.paper_fee_pct))
                     if max_qty <= 0:
@@ -181,12 +193,19 @@ class ExecutionEngine:
                     fee = notional * self.paper_fee_pct
                     cost = fee
             else:
-                cost = fee  # Spot short: only fee for borrow (simplified)
+                # F3 fix: only the entry fee is debited at open, but the
+                # short-sale proceeds MUST be credited. The old code never
+                # credited them while the close debits the full buyback + fee,
+                # so even a maximally profitable short DRAINED the balance.
+                cost = fee  # Spot short: entry fee only
+                proceeds_credit = notional
 
             if cost > self.paper_balance:
                 return {"executed": False, "action": action.value, "reason": "Insufficient paper balance"}
 
             self.paper_balance -= cost
+            if proceeds_credit:
+                self.paper_balance += proceeds_credit
             position = self.position_manager.open_position(
                 symbol, PositionSide.SHORT, price, quantity, leverage=leverage
             )
@@ -283,6 +302,22 @@ class ExecutionEngine:
             if order_result:
                 filled_price = self._get_avg_fill_price(order_result)
                 filled_qty = float(order_result.get("executedQty", quantity))
+                # L1 fix: a truthy ack with no real fill must NOT become a
+                # position — entry_price=0 gives TP=0 (instant close) and
+                # books the full notional as "profit". Treat as failure and
+                # keep the order_id for manual reconciliation.
+                if filled_price <= 0 or filled_qty <= 0:
+                    logger.error(
+                        f"[LIVE] OPEN LONG {symbol} acked without fill "
+                        f"(price={filled_price}, qty={filled_qty}) — position NOT booked "
+                        f"(order_id={order_result.get('orderId')})"
+                    )
+                    return {
+                        "executed": False,
+                        "action": action.value,
+                        "reason": "Order acked but no fill price/quantity — position NOT booked",
+                        "order_id": order_result.get("orderId"),
+                    }
                 self.position_manager.open_position(
                     symbol, PositionSide.LONG, filled_price, filled_qty, leverage=leverage
                 )
@@ -307,21 +342,64 @@ class ExecutionEngine:
 
             symbol_info = self.client.get_symbol_info(symbol)
             qty = self._adjust_quantity(position.quantity, symbol_info)
+            # Dust guard (mirror of the OPEN branch): a floor-to-zero sell
+            # would be rejected by the exchange while the old code still
+            # deleted the whole ledger position.
+            if qty <= 0:
+                return {
+                    "executed": False,
+                    "action": action.value,
+                    "reason": "quantity below LOT_SIZE minQty",
+                }
 
             order_result = self.client.place_market_sell(symbol, qty)
             if order_result:
                 filled_price = self._get_avg_fill_price(order_result)
-                record = self.position_manager.close_position(symbol, filled_price, reason)
-                logger.info(f"[LIVE] CLOSE LONG | {symbol} | price={filled_price}")
+                # L1 fix: never book a close at a zero/unfilled price — the
+                # ledger position stays tracked so the close can be retried.
+                if filled_price <= 0:
+                    logger.error(
+                        f"[LIVE] CLOSE LONG {symbol} acked without fill price — "
+                        f"close NOT booked (order_id={order_result.get('orderId')})"
+                    )
+                    return {
+                        "executed": False,
+                        "action": action.value,
+                        "reason": "Order acked but no fill price — close NOT booked",
+                        "order_id": order_result.get("orderId"),
+                    }
+                # H1 fix: sell only what actually filled. A partial fill must
+                # not be recorded as a full close — the remainder stays real
+                # exposure on the exchange and has to remain tracked.
+                filled_qty = float(order_result.get("executedQty", 0) or 0)
+                # Real commission from fills; fall back to the configured fee.
+                commission = self._get_total_commission(order_result)
+                if commission is not None:
+                    record = self.position_manager.close_position(
+                        symbol, filled_price, reason,
+                        filled_qty=filled_qty, fee_amount=commission,
+                    )
+                else:
+                    record = self.position_manager.close_position(
+                        symbol, filled_price, reason,
+                        self.paper_fee_pct, filled_qty=filled_qty,
+                    )
+                logger.info(f"[LIVE] CLOSE LONG | {symbol} | price={filled_price} | filled={filled_qty}")
                 return {
                     "executed": True,
                     "action": action.value,
                     "mode": "live",
                     "symbol": symbol,
                     "side": "SELL",
-                    "quantity": qty,
+                    "quantity": filled_qty,
                     "price": filled_price,
                     "pnl": record.pnl if record else 0,
+                    # Position still tracked after the close = partial fill,
+                    # remainder remains real exposure and keeps its SL/TP.
+                    "partial": bool(
+                        record is not None
+                        and self.position_manager.get_position(symbol) is not None
+                    ),
                     "order_id": order_result.get("orderId"),
                     "reason": reason,
                 }
@@ -366,6 +444,41 @@ class ExecutionEngine:
             precision = len(step_str.split(".")[-1])
             adjusted = round(adjusted, precision)
         return max(adjusted, 0.0)
+
+    def _allocated_margin(self) -> float:
+        """Sum the margin implicitly allocated to open leveraged paper positions.
+
+        F5: leveraged paper opens debit only the fee ("margin kilitleNMEZ"),
+        so the balance never shrinks as positions stack and every new open
+        re-checks its notional against the full untouched balance — N
+        concurrent positions at ``balance * leverage`` notional each give an
+        effective account leverage of N × leverage. Computed on the fly from
+        position_manager's EXISTING storage (no state-format change):
+        margin per position = notional / leverage.
+        """
+        total = 0.0
+        for position in self.position_manager.positions.values():
+            if position.leverage > 1:
+                total += (position.entry_price * position.quantity) / position.leverage
+        return total
+
+    @staticmethod
+    def _get_total_commission(order_result: dict) -> Optional[float]:
+        """Sum real commission from order fills (L2 fix).
+
+        Returns ``None`` when fills carry no commission field so the caller
+        can fall back to the configured fee. A present-but-zero commission
+        (e.g. BNB discount) is real and returned as 0.0.
+        """
+        fills = order_result.get("fills") or []
+        commissions = [
+            float(f["commission"])
+            for f in fills
+            if f.get("commission") is not None
+        ]
+        if not commissions:
+            return None
+        return sum(commissions)
 
     def _get_avg_fill_price(self, order_result: dict) -> float:
         """Extract average fill price from order result."""

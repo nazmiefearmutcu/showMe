@@ -23,6 +23,11 @@ from .base import (
 
 LOG = logging.getLogger("showme.brokers.ccxt")
 
+# F2 fix: quote currencies recognised for equity resolution. Ordered
+# longest-first so ``FDUSD``/``BUSD``/``USDT`` win over a bare ``USD``
+# suffix match on unslashed symbols (e.g. ``BTCUSDT``).
+_KNOWN_QUOTES: tuple[str, ...] = ("FDUSD", "USDT", "USDC", "BUSD", "USD")
+
 
 def _to_order_status(text: str) -> OrderStatus:
     mapping = {
@@ -112,9 +117,18 @@ class CcxtBroker(BaseBroker):
         except Exception as exc:  # noqa: BLE001
             LOG.debug("ccxt %s close ignored: %s", self._exchange_id, exc)
 
-    async def account(self) -> dict[str, Any]:
+    async def account(self, symbol: str | None = None) -> dict[str, Any]:
+        """Fetch and normalise the account balance.
+
+        F2 fix: when ``symbol`` is given, equity/cash are resolved in the
+        symbol's QUOTE currency (e.g. ``USDT`` for ``BTC/USDT``) instead
+        of the numerically-largest balance across all currencies (which
+        read 1M SHIB ≈ $10 as ``equity=1_000_000`` and fed that into
+        risk-based sizing). Callers without a symbol keep the legacy
+        max-pick, explicitly labeled via ``equity_basis``.
+        """
         bal = await self._ex.fetch_balance()
-        return self._normalise_account(bal)
+        return self._normalise_account(bal, quote=self._quote_of(symbol))
 
     async def list_positions(self) -> list[Position]:
         try:
@@ -201,17 +215,62 @@ class CcxtBroker(BaseBroker):
         )
 
     @staticmethod
-    def _normalise_account(bal: dict[str, Any]) -> dict[str, Any]:
+    def _quote_of(symbol: str | None) -> str | None:
+        """F2 fix: infer the quote currency from a bot symbol.
+
+        * ``"BTC/USDT"`` → ``"USDT"`` (slash form: the tail IS the quote).
+        * ``"BTCUSDT"`` → ``"USDT"`` (suffix match against
+          :data:`_KNOWN_QUOTES`, longest first).
+        * ``"AAPL"`` / empty / unknown → ``None`` (caller decides policy).
+        """
+        s = (symbol or "").strip().upper()
+        if not s:
+            return None
+        if "/" in s:
+            tail = s.rsplit("/", 1)[-1].strip()
+            return tail or None
+        for q in _KNOWN_QUOTES:
+            if s.endswith(q) and len(s) > len(q):
+                return q
+        return None
+
+    @staticmethod
+    def _normalise_account(
+        bal: dict[str, Any], quote: str | None = None,
+    ) -> dict[str, Any]:
         total = bal.get("total") or {}
         free = bal.get("free") or {}
+        if quote is not None:
+            # F2 fix: equity must be denominated in the bot symbol's QUOTE
+            # currency. When the quote balance is absent from the payload
+            # report equity=0/cash=0 — downstream qty resolution already
+            # treats 0 as no-trade — instead of falling back to some other
+            # currency's balance (a unit error on the sizing numerator).
+            if quote not in total:
+                LOG.warning(
+                    "fetch_balance: no %s balance in account payload; "
+                    "reporting equity=0/cash=0 (risk sizing will no-trade)",
+                    quote,
+                )
+            return {
+                "cash": float(free.get(quote) or 0),
+                "equity": float(total.get(quote) or 0),
+                "buying_power": float(free.get(quote) or 0),
+                "currency": quote,
+                "equity_basis": "quote_balance",
+                "raw": bal.get("info") or {},
+            }
+        # Fallback (synthetic / test symbols with no resolvable quote):
+        # the legacy numerically-largest-balance pick. NEVER used when a
+        # quote currency was supplied; labeled via ``equity_basis`` so
+        # callers can flag the unit-ambiguous number.
         ccy = max(total.keys(), key=lambda c: float(total.get(c) or 0), default="USD")
-        equity = float(total.get(ccy) or 0)
-        cash = float(free.get(ccy) or 0)
         return {
-            "cash": cash,
-            "equity": equity,
-            "buying_power": cash,
+            "cash": float(free.get(ccy) or 0),
+            "equity": float(total.get(ccy) or 0),
+            "buying_power": float(free.get(ccy) or 0),
             "currency": ccy,
+            "equity_basis": "max_balance_fallback",
             "raw": bal.get("info") or {},
         }
 

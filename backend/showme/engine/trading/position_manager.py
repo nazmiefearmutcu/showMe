@@ -273,19 +273,47 @@ class PositionManager:
         exit_price: float,
         reason: str = "",
         fee_pct: float = 0.001,
+        filled_qty: Optional[float] = None,
+        fee_amount: Optional[float] = None,
     ) -> Optional[TradeRecord]:
-        """Close a position and record the trade."""
+        """Close a position (fully or partially) and record the trade.
+
+        H1 fix — partial-close support:
+          - ``filled_qty`` omitted/None → close the WHOLE position (paper
+            paths, behaviour unchanged).
+          - ``filled_qty`` provided → when it covers the position quantity
+            (within a float-drift epsilon) the position closes fully;
+            otherwise ONLY the filled quantity is booked as a partial close
+            and the remainder stays tracked at its original entry price
+            (SL/TP keep guarding it).
+
+        ``fee_amount``: absolute fee override (real exchange commission
+            summed from order fills). When omitted the round-trip fee is
+            computed from ``fee_pct`` on both legs' notional, as before.
+        """
         position = self.positions.get(symbol)
         if not position:
             logger.warning(f"No position to close for {symbol}")
             return None
 
-        if position.side == PositionSide.LONG:
-            gross_pnl = (exit_price - position.entry_price) * position.quantity
-        else:
-            gross_pnl = (position.entry_price - exit_price) * position.quantity
+        # Epsilon tolerant of float drift after LOT_SIZE floor-by-step.
+        eps = abs(position.quantity) * 1e-9 + 1e-12
+        partial = (
+            filled_qty is not None
+            and filled_qty > 0
+            and filled_qty + eps < position.quantity
+        )
+        close_qty = float(filled_qty) if partial else position.quantity
 
-        fee = (position.entry_price * position.quantity + exit_price * position.quantity) * fee_pct
+        if position.side == PositionSide.LONG:
+            gross_pnl = (exit_price - position.entry_price) * close_qty
+        else:
+            gross_pnl = (position.entry_price - exit_price) * close_qty
+
+        if fee_amount is not None:
+            fee = float(fee_amount)
+        else:
+            fee = (position.entry_price * close_qty + exit_price * close_qty) * fee_pct
         net_pnl = gross_pnl - fee
 
         record = TradeRecord(
@@ -294,7 +322,7 @@ class PositionManager:
             side=position.side.value,
             entry_price=position.entry_price,
             exit_price=exit_price,
-            quantity=position.quantity,
+            quantity=close_qty,
             pnl=round(net_pnl, 4),
             fee=round(fee, 4),
             entry_time=position.open_time,
@@ -304,13 +332,25 @@ class PositionManager:
 
         self.trade_history.append(record)
         self.total_realized_pnl += net_pnl
-        del self.positions[symbol]
 
-        logger.info(
-            f"Position CLOSED | {symbol} {position.side.value} | "
-            f"entry={position.entry_price} exit={exit_price} | "
-            f"PnL={net_pnl:.4f} | reason={reason}"
-        )
+        if partial:
+            # Keep the remainder tracked at its original entry price.
+            position.quantity = round(position.quantity - close_qty, 8)
+            if position.quantity <= 0:
+                del self.positions[symbol]
+            logger.info(
+                f"Position PARTIAL CLOSE | {symbol} {position.side.value} | "
+                f"filled={close_qty} remainder={position.quantity} | "
+                f"entry={position.entry_price} exit={exit_price} | "
+                f"PnL={net_pnl:.4f} | reason={reason}"
+            )
+        else:
+            del self.positions[symbol]
+            logger.info(
+                f"Position CLOSED | {symbol} {position.side.value} | "
+                f"entry={position.entry_price} exit={exit_price} | "
+                f"PnL={net_pnl:.4f} | reason={reason}"
+            )
         return record
 
     def calculate_quantity(

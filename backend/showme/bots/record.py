@@ -56,7 +56,13 @@ class SignalEntry(BaseModel):
     bar_time: str
     kind: Literal["entry", "exit"]
     price: float                       # signal price (last close at evaluate time)
-    action: Literal["placed", "shadow", "skipped"]
+    # F3 fix (campaign 2026-09-05): ``"error"`` marks a submitted order
+    # whose outcome is UNKNOWN / untracked — e.g. a GTC limit entry that
+    # zero-filled AND whose cancel failed, so the order may still rest on
+    # the exchange. Deliberately NOT ``"skipped"``: the condition is
+    # visible and blocks same-bar re-entry (state checks treat any
+    # non-skipped action as position-affecting).
+    action: Literal["placed", "shadow", "skipped", "error"]
     order_id: str | None = None
     error: str | None = None
     timestamp: str = Field(default_factory=_now_iso)

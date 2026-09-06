@@ -16,6 +16,9 @@ from pathlib import Path
 from typing import Any
 
 from showme.engine.core.instrument import AssetClass, Instrument
+from showme.engine.utils.logger import get_logger
+
+logger = get_logger("engine.portfolio.state")
 
 
 @dataclass
@@ -62,6 +65,11 @@ class PortfolioState:
         self.cash: dict[str, float] = {}      # per-currency cash
         self.closed_symbols: set[str] = set()
         self.closed_positions: list[dict[str, Any]] = []
+        # F5 (MED): set when the file exists but failed to load. While
+        # degraded, save() refuses to write so the (empty) in-memory book
+        # cannot overwrite the possibly-recoverable file on disk.
+        self.degraded: bool = False
+        self.degraded_reason: str = ""
         self._load()
 
     def _load(self) -> None:
@@ -74,13 +82,41 @@ class PortfolioState:
                 self.closed_positions = [
                     row for row in data.get("closed_positions", []) if isinstance(row, dict)
                 ]
-            except Exception:
+            except Exception as exc:
+                # F5: never silently wipe the book. Preserve the corrupt file
+                # next to the original, flag the state degraded, and refuse
+                # save() until a fresh instance loads a healthy file.
+                backup = self.path.with_name(
+                    f"{self.path.name}.corrupt-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')}"
+                )
+                try:
+                    backup.write_bytes(self.path.read_bytes())
+                    backed_up = str(backup)
+                except Exception as copy_exc:
+                    backed_up = f"<backup failed: {copy_exc}>"
+                self.degraded = True
+                self.degraded_reason = (
+                    f"portfolio.json failed to load ({exc}); corrupt copy at {backed_up}"
+                )
+                logger.error(
+                    "PortfolioState: %s — save() disabled to protect the on-disk book",
+                    self.degraded_reason,
+                )
                 self.positions = []
                 self.cash = {}
                 self.closed_symbols = set()
                 self.closed_positions = []
 
     def save(self) -> None:
+        if self.degraded:
+            # The in-memory book is empty/possibly stale because the previous
+            # load failed — persisting it would destroy recoverable data.
+            logger.error(
+                "PortfolioState: refusing save() while degraded (%s); "
+                "restore or delete the corrupt backup first.",
+                self.degraded_reason,
+            )
+            return
         data = {
             "positions": [p.to_dict() for p in self.positions],
             "cash": self.cash,

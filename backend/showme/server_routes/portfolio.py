@@ -4,6 +4,7 @@ Read-only ``/api/state/positions`` lives in ``state.py``.
 """
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from fastapi import APIRouter, FastAPI, HTTPException
@@ -33,6 +34,13 @@ def register(app: FastAPI, deps: AppDeps) -> None:
             price = float(exit_price) if exit_price not in (None, "") else None
         except Exception:
             raise HTTPException(status_code=400, detail="exit_price must be numeric")
+        # F8: float("nan")/float("inf") parse fine but would book realized PnL
+        # as NaN and serialize as an invalid JSON token. Require a finite,
+        # non-negative price.
+        if price is not None and not (math.isfinite(price) and price >= 0):
+            raise HTTPException(
+                status_code=400, detail="exit_price must be a finite, non-negative number"
+            )
         portfolio = PortfolioState()
         if body.get("import_legacy", True):
             portfolio.import_legacy_crypto()
@@ -50,6 +58,10 @@ def register(app: FastAPI, deps: AppDeps) -> None:
             "record": record,
             "remaining_positions": len(portfolio.positions),
             "closed_symbols": sorted(portfolio.closed_symbols),
+            # F5: surface degraded state so callers know mutations are NOT
+            # being persisted while the on-disk book failed to load.
+            "degraded": bool(portfolio.degraded),
+            "degraded_reason": portfolio.degraded_reason or None,
         }
 
     app.include_router(router)

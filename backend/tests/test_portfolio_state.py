@@ -86,3 +86,32 @@ def test_port_uses_legacy_current_price_for_crypto_positions(
     assert row["last"] == 0.01231
     assert row["market_value"] == pytest.approx(1.231)
     assert result.sources == ["portfolio_state"]
+
+
+def test_corrupt_portfolio_file_backed_up_and_save_refused(tmp_path: Path) -> None:
+    """F5: a corrupt portfolio.json must not be silently wiped and persisted.
+
+    Load failure → corrupt copy saved next to the original + degraded flag set
+    + save() refuses to write the empty in-memory book over the recoverable
+    file. A healthy file loads with degraded=False as before.
+    """
+    portfolio_path = tmp_path / "portfolio.json"
+    portfolio_path.write_text('{"positions": [THIS IS NOT JSON')
+
+    portfolio = PortfolioState(portfolio_path)
+    assert portfolio.degraded is True
+    assert portfolio.degraded_reason
+    assert portfolio.positions == []
+
+    backups = list(tmp_path.glob("portfolio.json.corrupt-*"))
+    assert len(backups) == 1
+    assert backups[0].read_text() == '{"positions": [THIS IS NOT JSON'
+
+    before = portfolio_path.read_text()
+    portfolio.save()  # must be a logged no-op while degraded
+    assert portfolio_path.read_text() == before
+
+    healthy = PortfolioState(tmp_path / "ok.json")
+    assert healthy.degraded is False
+    healthy.save()
+    assert (tmp_path / "ok.json").exists()
