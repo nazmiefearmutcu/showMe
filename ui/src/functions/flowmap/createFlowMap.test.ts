@@ -53,6 +53,8 @@ const h = vi.hoisted(() => {
     setTolerance(): void {}
     setColormap(): void {}
     setNormPercentile(): void {}
+    setThemeRamp(): void {}
+    setBackgroundColor(): void {}
     setFollowTime(on: boolean): void {
       this.followCalls.push(on);
     }

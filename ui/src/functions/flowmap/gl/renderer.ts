@@ -43,7 +43,18 @@ import {
   TOLERANCE_MAX_FLOOR,
   type HeatmapView,
 } from './heatmap';
-import { createLUTTexture, rampForMode, RAMP_FLOW, type Colormap } from './lut';
+import {
+  buildLUTAtlas,
+  buildRamp,
+  createLUTTexture,
+  rampForColormap,
+  rampForMode,
+  RAMP_FLOW,
+  RAMP_SYNTH,
+  uploadLUTAtlas,
+  type Colormap,
+  type Stop,
+} from './lut';
 import { MipChain } from './mips';
 import { initGL, type GLContext } from './context';
 import {
@@ -180,6 +191,15 @@ const KEY_PAN_FRAC = 0.15;
 /** Near-black clear color (matches the CSS --bg so the canvas has no seam). */
 const BG = [0.008, 0.016, 0.027, 1] as const;
 
+/** Theme overrides for the heatmap ramps (see `setThemeRamp`). */
+export interface ThemeRampStops {
+  /** Ramp for REAL depth (the active colormap's atlas row). */
+  main: Stop[];
+  /** Ramp for reconstructed/synthetic columns — must stay visibly distinct
+   *  from `main` so backfilled history keeps its honesty signal (§7). */
+  synth: Stop[];
+}
+
 function clamp(v: number, lo: number, hi: number): number {
   return v < lo ? lo : v > hi ? hi : v;
 }
@@ -266,6 +286,12 @@ export class Renderer {
   /** The user's colormap family. Remembered here, like {@link contrastGamma},
    *  so it survives Heatmap re-creation on session reset / context restore. */
   private colormap: Colormap = 'inferno';
+  /** Active theme-ramp override (host-terminal palette), null = factory ramps. */
+  private themeRamp: ThemeRampStops | null = null;
+  /** Factory atlas snapshot — what {@link setThemeRamp}(null) restores. */
+  private factoryAtlas: Uint8Array = buildLUTAtlas();
+  /** Canvas clear color (terminal background), themed; alpha stays opaque. */
+  private bg: [number, number, number, number] = [BG[0], BG[1], BG[2], BG[3]];
   /** Render mode of the last column, for re-deriving the ramp on a knob change. */
   private lastColMode: number | null = null;
   /** Black point (§9 Tolerance), re-applied to every freshly built Heatmap. */
@@ -360,10 +386,10 @@ export class Renderer {
     this.overlays = new OverlayManager(this.ctx.gl, canvas);
 
     // Match the backing store to the CSS box, then paint the background once so
-    // the pre-data canvas is the terminal near-black, not transparent garbage.
+    // the pre-data canvas is the terminal background, not transparent garbage.
     this.resize();
     const gl = this.ctx.gl;
-    gl.clearColor(BG[0], BG[1], BG[2], BG[3]);
+    gl.clearColor(this.bg[0], this.bg[1], this.bg[2], this.bg[3]);
     gl.clear(gl.COLOR_BUFFER_BIT);
 
     this.resizeObserver = new ResizeObserver(() => this.resize());
@@ -552,6 +578,46 @@ export class Renderer {
   setColormap(colormap: Colormap): void {
     this.colormap = colormap;
     this.applyRamp();
+    // A themed atlas pins the ramp to a specific family row — re-theme the new
+    // family's row too, or the theme would silently "fall off" on a switch.
+    if (this.themeRamp !== null) this.uploadThemeRows();
+    this.dirty = true;
+  }
+
+  /**
+   * Retheme the heatmap ramps from the host terminal's design tokens, or pass
+   * `null` to restore the factory atlas.
+   *
+   * Only the CONTENT of the atlas changes: the real-depth ramp overwrites the
+   * active colormap family's row and `synth` overwrites the RAMP_SYNTH row, so
+   * {@link rampForMode} keeps selecting per honesty tier (§7) and reconstructed
+   * history stays visibly distinct from live depth. The factory atlas is kept
+   * for a byte-exact restore, and context-loss rebuilds re-apply the theme.
+   */
+  setThemeRamp(stops: ThemeRampStops | null): void {
+    this.themeRamp = stops !== null && stops.main && stops.synth ? stops : null;
+    if (this.themeRamp !== null) this.uploadThemeRows();
+    else uploadLUTAtlas(this.ctx.gl, this.lut, this.factoryAtlas);
+    this.dirty = true;
+  }
+
+  /** Rasterize + upload the themed rows into the live LUT atlas. */
+  private uploadThemeRows(): void {
+    const stops = this.themeRamp;
+    if (stops === null) return;
+    const gl = this.ctx.gl;
+    const atlas = this.factoryAtlas.slice();
+    atlas.set(buildRamp(stops.main), rampForColormap(this.colormap) * 256 * 4);
+    atlas.set(buildRamp(stops.synth), RAMP_SYNTH * 256 * 4);
+    uploadLUTAtlas(gl, this.lut, atlas);
+  }
+
+  /** Canvas background (terminal surface behind the density field). */
+  setBackgroundColor(color: [number, number, number, number] | null): void {
+    this.bg = color ?? [BG[0], BG[1], BG[2], BG[3]];
+    const gl = this.ctx.gl;
+    gl.clearColor(this.bg[0], this.bg[1], this.bg[2], this.bg[3]);
+    gl.clear(gl.COLOR_BUFFER_BIT);
     this.dirty = true;
   }
 
@@ -723,7 +789,7 @@ export class Renderer {
     // Wipe the old image now — preserveDrawingBuffer would otherwise keep the
     // stale frame on screen until the first new-session column draws.
     const gl = this.ctx.gl;
-    gl.clearColor(BG[0], BG[1], BG[2], BG[3]);
+    gl.clearColor(this.bg[0], this.bg[1], this.bg[2], this.bg[3]);
     gl.clear(gl.COLOR_BUFFER_BIT);
 
     this.dirty = true;
@@ -1602,13 +1668,14 @@ export class Renderer {
       preserveDrawingBuffer: true,
     });
     this.lut = createLUTTexture(this.ctx.gl);
+    if (this.themeRamp !== null) this.uploadThemeRows();
     // Overlay GL batches were invalidated by the loss — rebuild them (the 2D
     // text layer + overlay data survive).
     this.overlays.recreateGL(this.ctx.gl);
 
     const gl = this.ctx.gl;
     this.resize();
-    gl.clearColor(BG[0], BG[1], BG[2], BG[3]);
+    gl.clearColor(this.bg[0], this.bg[1], this.bg[2], this.bg[3]);
     gl.clear(gl.COLOR_BUFFER_BIT);
 
     if (this.ringRows > 0) {

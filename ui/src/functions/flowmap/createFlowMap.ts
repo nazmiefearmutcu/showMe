@@ -37,11 +37,20 @@ import type {
   FlowMapTarget,
 } from './index';
 import { attachGlobalKeys } from './input/keys';
+import { resetOverlayPalette } from './gl/overlays/palette';
 import { DEFAULT_SETTINGS, historyDepthCols } from './settings';
 import { createFlowMapStore, sessionResetKey } from './state/store';
+import { attachTheme } from './theme';
 
 /** How often to poll for the first column before firing the eager prefetch. */
 const PREFETCH_POLL_MS = 250;
+
+/**
+ * Live themed instances. The overlay palette is a module-level singleton, so
+ * the factory colors may only be restored when the LAST themed instance goes
+ * away — per-instance `attachTheme` cleanups would otherwise race each other.
+ */
+let themedInstances = 0;
 
 export function createFlowMap(
   canvas: HTMLCanvasElement,
@@ -74,6 +83,16 @@ export function createFlowMap(
     // WebGL2 unavailable in this environment: report honestly (webgl:false) and
     // degrade — the stream still connects so status/ladder-style consumers work.
     console.warn('[flowmap] WebGL2 renderer unavailable — webgl:false', err);
+  }
+
+  // --- theme inheritance (host design tokens → ramps/palette/background) ------
+  // Default ON: the heatmap should read as part of the terminal, not a foreign
+  // black rectangle. Token-less hosts (jsdom, third-party embeds) resolve to
+  // null inside attachTheme and simply keep the factory look.
+  let themeDispose: (() => void) | null = null;
+  if (renderer !== null && opts.theme !== false) {
+    themedInstances += 1;
+    themeDispose = attachTheme(canvas.ownerDocument, renderer, canvas.parentElement);
   }
 
   // --- status bridge (store low-frequency state → onStatus) ---------------------
@@ -159,6 +178,15 @@ export function createFlowMap(
     stopPrefetchTimer();
     unsubStore();
     keysDispose();
+    if (themeDispose !== null) {
+      themeDispose();
+      themeDispose = null;
+      themedInstances -= 1;
+      if (themedInstances <= 0) {
+        themedInstances = 0;
+        resetOverlayPalette();
+      }
+    }
     // Close the socket (rejects in-flight history waiters) BEFORE disposing the
     // renderer so no in-flight frame races the GL teardown.
     store.getState().disconnect();

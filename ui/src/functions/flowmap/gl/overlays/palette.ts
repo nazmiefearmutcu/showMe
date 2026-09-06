@@ -1,10 +1,12 @@
 /**
- * Overlay palette (§9 UI: trading-terminal, teal/red buy-sell accent pair).
+ * Overlay palette (§9 UI: trading-terminal buy-sell accent pair).
  *
  * One source of truth for the overlay colors, in both forms the two layers need:
  * `gl` = normalized RGBA [0..1] for the GL primitives, `css` = a string for the
- * 2D text layer / axis labels. Buy = teal (the app accent), sell = red — matched
- * to the crosshair's bid/ask coloring so the whole surface reads as one system.
+ * 2D text layer / axis labels. The FACTORY palette is the teal/red terminal
+ * pair; a host terminal can retheme every slot at runtime via
+ * {@link setOverlayPalette} (see `theme.ts` — ShowMe maps buy/sell onto its
+ * own positive/negative tokens so the surface reads as one system).
  */
 
 import type { RGBA } from './primitives';
@@ -16,7 +18,24 @@ function css(r: number, g: number, b: number, a = 1): string {
   return `rgba(${r}, ${g}, ${b}, ${a})`;
 }
 
-export const OVERLAY = {
+export interface OverlayColor {
+  /** Normalized RGBA [0..1] for the GL primitives. */
+  gl: RGBA;
+  /** CSS string for the 2D text layer / axis labels. */
+  css: string;
+}
+
+/** Every theme-adjustable overlay slot (see {@link OVERLAY} for semantics). */
+export type OverlayPalette = Record<
+  | 'buy' | 'sell' | 'unknown' | 'bid' | 'ask'
+  | 'price' | 'priceGlow' | 'priceFillTop' | 'priceFillBottom' | 'priceLevel'
+  | 'pricePill' | 'pricePillText'
+  | 'vwap' | 'cvd' | 'profile' | 'poc'
+  | 'liquidation' | 'gap' | 'event' | 'axis' | 'grid',
+  OverlayColor
+> & { badgeBg: string };
+
+const FACTORY_OVERLAY: OverlayPalette = {
   /** Aggressive buy (hits the ask). App accent teal. */
   buy: { gl: rgba(31, 182, 166, 0.95), css: css(31, 182, 166) },
   /** Aggressive sell (hits the bid). */
@@ -62,4 +81,33 @@ export const OVERLAY = {
   grid: { gl: rgba(120, 132, 150, 0.14), css: css(120, 132, 150, 0.14) },
   /** Text-badge background (near-black terminal chrome). */
   badgeBg: 'rgba(5, 8, 12, 0.82)',
-} as const;
+};
+
+
+/**
+ * Live overlay palette — the overlay colors, themed by the host terminal when
+ * `createFlowMap({ theme })` resolves the host's design tokens (see theme.ts).
+ * Every consumer reads it at draw time, so {@link setOverlayPalette} takes
+ * effect on the next frame without touching any caller.
+ */
+export const OVERLAY: OverlayPalette = { ...FACTORY_OVERLAY };
+
+type PaletteKey = keyof OverlayPalette;
+
+/** Merge theme overrides into the live palette (missing slots keep factory). */
+export function setOverlayPalette(
+  overrides: Partial<Record<PaletteKey, OverlayColor | string>>,
+): void {
+  for (const [key, value] of Object.entries(overrides) as [PaletteKey, OverlayColor | string][]) {
+    if (key === 'badgeBg') {
+      if (typeof value === 'string') OVERLAY.badgeBg = value;
+      continue;
+    }
+    if (typeof value !== 'string') OVERLAY[key] = { ...value };
+  }
+}
+
+/** Restore every slot to the factory terminal palette. */
+export function resetOverlayPalette(): void {
+  Object.assign(OVERLAY, FACTORY_OVERLAY);
+}

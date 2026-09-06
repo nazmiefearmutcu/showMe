@@ -37,6 +37,12 @@ export interface FlowMapOptions {
   wsUrl: string;
   target: FlowMapTarget;
   onStatus?: (status: FlowMapStatus) => void;
+  /**
+   * Inherit the host terminal's theme (design tokens → heatmap ramps, overlay
+   * palette, canvas background; live-synced on preset switches). Default true.
+   * Set false to keep the factory near-black terminal look.
+   */
+  theme?: boolean;
 }
 
 export interface FlowMapHandle {

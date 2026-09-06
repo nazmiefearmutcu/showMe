@@ -201,6 +201,20 @@ export function FLWPane({ code, symbol }: FunctionPaneProps) {
           </Pill>
         )}
       </div>
+      <div style={legendStyle} aria-hidden="true">
+        <span style={legendItemStyle}>
+          <span style={densityChipStyle} />
+          density
+        </span>
+        <span style={legendItemStyle}>
+          <span style={bidChipStyle} />
+          bid
+        </span>
+        <span style={legendItemStyle}>
+          <span style={askChipStyle} />
+          ask
+        </span>
+      </div>
     </div>
   );
 
@@ -277,6 +291,9 @@ const canvasHostStyle: CSSProperties = {
   flex: 1,
   minHeight: 0,
   width: "100%",
+  // Paint the terminal surface BEFORE the GL context clears to the same token,
+  // so there is no dark flash between mount and first frame.
+  background: "var(--bg)",
 };
 
 // Full-bleed canvas — the FlowMap library owns sizing via its ResizeObserver;
@@ -300,3 +317,50 @@ const overlayStyle: CSSProperties = {
   padding: "6px 8px",
   pointerEvents: "none",
 };
+
+// Reading legend, top-left (the honesty badge sits top-right). Pure CSS vars:
+// the chips re-theme with the active preset without any JS — the same tokens
+// the canvas theme bridge maps into the GL palette.
+const legendStyle: CSSProperties = {
+  position: "absolute",
+  bottom: 0,
+  left: 0,
+  display: "flex",
+  alignItems: "center",
+  gap: 12,
+  padding: "6px 10px",
+  pointerEvents: "none",
+  fontFamily: "var(--font-mono)",
+  fontSize: 10,
+  letterSpacing: "0.04em",
+  color: "var(--text-faint)",
+};
+
+const legendItemStyle: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 5,
+};
+
+const densityChipStyle: CSSProperties = {
+  width: 22,
+  height: 8,
+  borderRadius: 2,
+  // Abbreviated hint of the themed ramp (bg → accent → ink); the real ramp is
+  // rasterized from the same tokens inside the library's theme bridge.
+  background:
+    "linear-gradient(90deg, var(--bg) 0%, var(--accent) 60%, var(--text-display-hex) 100%)",
+  boxShadow: "inset 0 0 0 1px var(--line-strong)",
+};
+
+function chipStyle(bg: string): CSSProperties {
+  return {
+    width: 8,
+    height: 8,
+    borderRadius: 2,
+    background: bg,
+    boxShadow: "inset 0 0 0 1px var(--line-strong)",
+  };
+}
+const bidChipStyle = chipStyle("var(--positive-hex)");
+const askChipStyle = chipStyle("var(--negative-hex)");

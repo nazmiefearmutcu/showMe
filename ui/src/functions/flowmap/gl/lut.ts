@@ -79,7 +79,7 @@ export const DEFAULT_COLORMAP: Colormap = 'flow';
  */
 export const SYNTH_HUE_SAFE_MAX = 150;
 
-interface Stop {
+export interface Stop {
   /** Normalized position along the ramp, 0..1. */
   t: number;
   /** sRGB bytes, 0..255. */
@@ -275,6 +275,26 @@ export function buildLUTAtlas(): Uint8Array {
   atlas.set(buildClassicLUT(), RAMP_CLASSIC * LUT_SIZE * 4);
   atlas.set(buildFlowLUT(), RAMP_FLOW * LUT_SIZE * 4);
   return atlas;
+}
+
+/** Upload a full 256×LUT_ROWS atlas into an existing LUT texture in place. */
+export function uploadLUTAtlas(gl: WebGL2RenderingContext, tex: WebGLTexture, atlas: Uint8Array): void {
+  if (atlas.length !== LUT_SIZE * LUT_ROWS * 4) {
+    throw new Error('flowmap/lut: atlas size mismatch');
+  }
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texSubImage2D(
+    gl.TEXTURE_2D,
+    0,
+    0,
+    0,
+    LUT_SIZE,
+    LUT_ROWS,
+    gl.RGBA,
+    gl.UNSIGNED_BYTE,
+    atlas,
+  );
+  gl.bindTexture(gl.TEXTURE_2D, null);
 }
 
 /** Upload the LUT atlas as a 256×LUT_ROWS RGBA8 NEAREST-filtered texture. */
