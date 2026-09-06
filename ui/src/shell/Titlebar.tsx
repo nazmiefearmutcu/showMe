@@ -12,7 +12,7 @@ import {
 import { useWorkspace } from "@/lib/workspace";
 import { loadBuiltinPreset } from "@/lib/builtinPresets";
 import { OrbitMark, Pill, TopbarSegment } from "@/design-system";
-import { t } from "@/i18n";
+import { t, useLocale } from "@/i18n";
 import { PresetMenu } from "./PresetMenu";
 import { toast } from "@/lib/toast";
 
@@ -99,6 +99,9 @@ function isMarketNavActive(
 }
 
 export function Titlebar() {
+  // UI-ROBUSTNESS F6: subscribe to locale changes so every t() label below
+  // re-renders when the user switches language in Preferences.
+  useLocale();
   const status = useAppStore((s) => s.sidecarStatus);
   const port = useAppStore((s) => s.sidecarPort);
   // UI-INT-02 (extras): pull live count from store; backend may pass through

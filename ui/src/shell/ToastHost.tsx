@@ -1,6 +1,6 @@
 import { useToastStore, type ToastTone } from "@/lib/toast";
 import { useReducedMotion } from "@/lib/a11y";
-import { t as tr } from "@/i18n";
+import { t as tr, useLocale } from "@/i18n";
 
 const TONE_COLORS: Record<ToastTone, { fg: string; bg: string; border: string }> = {
   info:    { fg: "var(--text-primary)", bg: "var(--bg-elev-2)", border: "var(--border-strong)" },
@@ -10,6 +10,9 @@ const TONE_COLORS: Record<ToastTone, { fg: string; bg: string; border: string }>
 };
 
 export function ToastHost() {
+  // UI-ROBUSTNESS F6: locale subscription so the dismiss label below
+  // re-renders when the user switches language.
+  useLocale();
   const toasts = useToastStore((s) => s.toasts);
   const dismiss = useToastStore((s) => s.dismiss);
   const reducedMotion = useReducedMotion();

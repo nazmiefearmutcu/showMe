@@ -45,6 +45,18 @@ function timeoutSignal(timeoutMs: number): { signal: AbortSignal; cancel: () => 
   };
 }
 
+/**
+ * Default per-request deadline for signal-less `sidecarFetch` callers
+ * (UI-ROBUSTNESS F1). A hung handler / half-open TCP connection used to
+ * leave `useLiveQuotesInternal.refresh`'s `await Promise.all(...)` pending
+ * forever, which kept `polling === true` and silently skipped every future
+ * 30 s poll. With a deadline the fetch rejects, `finally` releases the
+ * loop, and the next poll recovers on its own. Callers that pass their own
+ * `init.signal` (e.g. `fetchFunctionIndex`, the portfolio abort plumbing)
+ * keep full control — the default deadline does not apply to them.
+ */
+const DEFAULT_SIDECAR_TIMEOUT_MS = 15_000;
+
 async function readPortSnapshot(): Promise<number | null> {
   try {
     const { port } = await invoke<{ port: number | null }>("sidecar_port");
@@ -206,7 +218,31 @@ export async function sidecarFetch<T>(path: string, init?: RequestInit): Promise
   if (token && !headers.has("X-ShowMe-Token")) {
     headers.set("X-ShowMe-Token", token);
   }
-  const res = await fetch(url, { ...init, headers });
+  // F1: apply the default deadline only when the caller did not supply a
+  // signal — an explicit `init.signal` means the caller owns cancellation.
+  const callerSignal = init?.signal;
+  const timeout = callerSignal ? null : timeoutSignal(DEFAULT_SIDECAR_TIMEOUT_MS);
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      ...init,
+      headers,
+      signal: callerSignal ?? timeout?.signal,
+    });
+  } catch (err) {
+    // Surface OUR deadline as a plain, catchable, clearly-labelled error so
+    // poll loops (`useLiveQuotesInternal.refresh`) recover on the next tick.
+    // Caller-initiated aborts (no timeout in that path) rethrow untouched so
+    // the existing "swallow AbortError" store logic keeps working.
+    if (timeout?.signal.aborted) {
+      throw new Error(
+        `${path}: request timed out after ${DEFAULT_SIDECAR_TIMEOUT_MS}ms`,
+      );
+    }
+    throw err;
+  } finally {
+    timeout?.cancel();
+  }
   if (!res.ok) {
     // CRITICAL FIX (audit S2): preserve FastAPI's `detail` field instead of
     // discarding the response body. Form panes (OrderTicket / BOT / STRA /

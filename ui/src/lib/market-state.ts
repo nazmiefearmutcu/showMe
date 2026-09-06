@@ -19,7 +19,14 @@ export type NyseMarketState =
   | "pre-open"
   | "open"
   | "after-hours"
-  | "closed";
+  | "closed"
+  /**
+   * UI-ROBUSTNESS F10: the requested year has no bundled holiday coverage,
+   * so the calendar cannot vouch for the classification. Weekday sessions
+   * surface this instead of a confident (and possibly lying) "open" — the
+   * exact Statusbar-lies regression this module exists to prevent.
+   */
+  | "unknown-calendar";
 
 const PRE_OPEN_START_MIN = 4 * 60; // 04:00 ET
 const REGULAR_OPEN_MIN = 9 * 60 + 30; // 09:30 ET
@@ -83,12 +90,34 @@ const DEFAULT_HOLIDAYS = new Set<string>([
 
 let holidayOverride: Set<string> | null = null;
 
+// UI-ROBUSTNESS F10 — the holiday table currently ends in 2027. From the
+// first weekday of an uncovered year (e.g. Good Friday 2028-04-14) every
+// holiday used to classify as `open` and the pill lied again. Instead of
+// inventing future dates, classify uncovered weekday sessions as
+// `unknown-calendar` and log once per year so the gap is visible.
+const BUNDLED_COVERAGE_YEARS = new Set<number>(
+  [...DEFAULT_HOLIDAYS].map((date) => Number(date.slice(0, 4))),
+);
+const warnedUnknownYears = new Set<number>();
+
+function warnUncoveredYearOnce(year: number): void {
+  if (warnedUnknownYears.has(year)) return;
+  warnedUnknownYears.add(year);
+  console.warn(
+    `[market-state] NYSE holiday table has no coverage for ${year}; ` +
+      "weekday sessions report \"unknown-calendar\" until the calendar is extended.",
+  );
+}
+
 /**
  * Test seam — replace the holiday list for the duration of a unit test. Pass
- * `null` to restore the bundled NYSE calendar.
+ * `null` to restore the bundled NYSE calendar. Setting or clearing an
+ * override also resets the once-per-year unknown-coverage warning budget so
+ * tests start with a clean slate.
  */
 export function __setHolidaysForTests(list: Iterable<string> | null): void {
   holidayOverride = list ? new Set(list) : null;
+  warnedUnknownYears.clear();
 }
 
 /**
@@ -158,6 +187,14 @@ export function getNyseMarketState(
   // Saturday = 6, Sunday = 0.
   if (parts.weekday === 0 || parts.weekday === 6) return "closed-weekend";
   const holidays = holidayOverride ?? DEFAULT_HOLIDAYS;
+  // F10: an explicit (test) override is authoritative for any year. Without
+  // one, an uncovered year can't distinguish a holiday from a normal weekday
+  // — surface the uncertainty instead of a possibly-false "open". Weekends
+  // stay deterministic (no calendar needed) and were handled above.
+  if (holidayOverride == null && !BUNDLED_COVERAGE_YEARS.has(parts.year)) {
+    warnUncoveredYearOnce(parts.year);
+    return "unknown-calendar";
+  }
   if (holidays.has(parts.isoDate)) return "closed-holiday";
   const minutesOfDay = parts.hour * 60 + parts.minute;
   if (minutesOfDay < PRE_OPEN_START_MIN) return "closed";
@@ -189,6 +226,9 @@ export function describeNyseMarketState(state: NyseMarketState): NyseMarketState
       return { label: "closed · weekend", tone: "muted", withDot: false };
     case "closed-holiday":
       return { label: "closed · holiday", tone: "muted", withDot: false };
+    case "unknown-calendar":
+      // F10: honest uncertainty — never rendered as a confident "open".
+      return { label: "unknown · calendar", tone: "warn", withDot: false };
     case "closed":
     default:
       return { label: "closed", tone: "muted", withDot: false };

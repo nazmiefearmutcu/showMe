@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useAppStore } from "@/lib/store";
 import { navigate } from "@/lib/router";
-import { t } from "@/i18n";
+import { t, useLocale } from "@/i18n";
 import { fuzzyRank } from "@/lib/fuzzy";
 import { listRecentCodes, recordRecentCode } from "@/lib/palette-recents";
 import { useFocusTrap } from "@/lib/a11y";
@@ -49,6 +49,10 @@ const MOD_KEY = /\b(Mac|iPhone|iPad|iPod)\b/.test(
   : "Ctrl";
 
 export function CommandPalette() {
+  // UI-ROBUSTNESS F6: locale subscription (before the `open` early-return —
+  // hooks must run unconditionally) so placeholder/footer/section copy
+  // re-renders when the user switches language.
+  useLocale();
   const open = useAppStore((s) => s.paletteOpen);
   const togglePalette = useAppStore((s) => s.togglePalette);
   const items = useAppStore((s) => s.functionIndex);

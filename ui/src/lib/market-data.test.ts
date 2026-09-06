@@ -18,6 +18,7 @@ import {
   normalizeTick,
   subscribeQuoteMultiplexed,
   subscribeQuoteStream,
+  useChartSeries,
   useLiveQuote,
   useLiveQuotes,
   useQuote,
@@ -50,6 +51,9 @@ type FakeStreamCtl = {
   close: () => void;
   closed: boolean;
   symbol: string;
+  /** F3: times the stale-escalation invoked `StreamHandle.reconnect`. */
+  reconnects: number;
+  reconnect: () => void;
 };
 
 function makeFakeSubscriber() {
@@ -58,6 +62,10 @@ function makeFakeSubscriber() {
     const ctl: FakeStreamCtl = {
       symbol,
       closed: false,
+      reconnects: 0,
+      reconnect: () => {
+        ctl.reconnects += 1;
+      },
       emitTick: (partial) => {
         if (ctl.closed) return;
         const tick: Tick = {
@@ -82,7 +90,7 @@ function makeFakeSubscriber() {
       },
     };
     handles.push(ctl);
-    return { close: () => ctl.close() };
+    return { close: () => ctl.close(), reconnect: () => ctl.reconnect() };
   });
   return { subscriber, handles };
 }
@@ -113,9 +121,10 @@ describe("normalizers", () => {
       ts: 1_700_000_000, // seconds
       source: "binance",
     });
-    expect(t.ts).toBe(1_700_000_000_000);
-    expect(t.changePct).toBe(1.2);
-    expect(t.bid).toBe(49_999);
+    expect(t).not.toBeNull();
+    expect(t!.ts).toBe(1_700_000_000_000);
+    expect(t!.changePct).toBe(1.2);
+    expect(t!.bid).toBe(49_999);
   });
 
   it("normalizeTick leaves milliseconds untouched", () => {
@@ -126,7 +135,8 @@ describe("normalizers", () => {
       ts: 1_700_000_000_000,
       source: "binance",
     });
-    expect(t.ts).toBe(1_700_000_000_000);
+    expect(t).not.toBeNull();
+    expect(t!.ts).toBe(1_700_000_000_000);
   });
 });
 
@@ -711,5 +721,187 @@ describe("useLiveQuotes multiplex integration", () => {
     // Four hook instances all want BTCUSDT — only one underlying WebSocket
     // subscription should be opened.
     expect(subscriber).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------- UI-ROBUSTNESS F2: untrusted tick validation ----------
+
+describe("normalizeTick validation (F2)", () => {
+  const valid: Tick = {
+    symbol: "BTCUSDT",
+    price: 50_000,
+    change_pct: 1.2,
+    volume: 100,
+    bid: 49_999,
+    ask: 50_001,
+    ts: 1_700_000_000,
+    source: "binance",
+  };
+
+  beforeEach(() => {
+    __internal.resetDroppedTickCountForTests();
+  });
+
+  it("coerces a numeric-string price into a real number", () => {
+    const t = normalizeTick({ ...valid, price: "123.45" as unknown as number });
+    expect(t).not.toBeNull();
+    expect(typeof t!.price).toBe("number");
+    expect(t!.price).toBe(123.45);
+    expect(__internal.droppedTickCount()).toBe(0);
+  });
+
+  it("rejects a missing price (previously emitted price: undefined)", () => {
+    const t = normalizeTick({ ...valid, price: undefined as unknown as number });
+    expect(t).toBeNull();
+    expect(__internal.droppedTickCount()).toBe(1);
+  });
+
+  it("rejects a non-numeric price", () => {
+    const t = normalizeTick({ ...valid, price: "abc" as unknown as number });
+    expect(t).toBeNull();
+    expect(__internal.droppedTickCount()).toBe(1);
+  });
+
+  it("rejects a null price instead of coercing Number(null)=0 into a fake $0.00 quote", () => {
+    const t = normalizeTick({ ...valid, price: null as unknown as number });
+    expect(t).toBeNull();
+    expect(__internal.droppedTickCount()).toBe(1);
+  });
+
+  it("rejects an empty-string price instead of coercing Number('')=0", () => {
+    const t = normalizeTick({ ...valid, price: "" as unknown as number });
+    expect(t).toBeNull();
+    expect(__internal.droppedTickCount()).toBe(1);
+  });
+
+  it("rejects a tick with a present-but-garbage optional numeric", () => {
+    const t = normalizeTick({ ...valid, bid: "not-a-number" as unknown as number });
+    expect(t).toBeNull();
+    expect(__internal.droppedTickCount()).toBe(1);
+  });
+
+  it("keeps absent optionals as null and passes valid ticks through", () => {
+    const t = normalizeTick({ ...valid, change_pct: null, bid: undefined, ask: undefined });
+    expect(t).not.toBeNull();
+    expect(t!.changePct).toBeNull();
+    expect(t!.bid).toBeNull();
+    expect(t!.ask).toBeNull();
+    expect(t!.price).toBe(50_000);
+    expect(__internal.droppedTickCount()).toBe(0);
+  });
+});
+
+// ---------- UI-ROBUSTNESS F3: stale transport escalation ----------
+
+describe("subscribeQuoteStream stale escalation (F3)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  it("forces an upstream reconnect after 4 consecutive stale intervals", () => {
+    const onTransport = vi.fn();
+    const { subscriber, handles } = makeFakeSubscriber();
+    const h = subscribeQuoteStream("AAPL", {
+      onTick: () => undefined,
+      onTransportState: onTransport,
+      staleTickMs: 100,
+      subscriber,
+    });
+    handles[0].emitTick({ price: 100 });
+    // 4 intervals × 100 ms. The first flips live → stale; the 4th escalates.
+    vi.advanceTimersByTime(450);
+    const transitions = onTransport.mock.calls.map((c) => c[0]);
+    expect(transitions).toContain("stale");
+    expect(handles[0].reconnects).toBe(1);
+    h.close();
+  });
+
+  it("does NOT escalate before the interval threshold", () => {
+    const { subscriber, handles } = makeFakeSubscriber();
+    const h = subscribeQuoteStream("AAPL", {
+      onTick: () => undefined,
+      onTransportState: () => undefined,
+      staleTickMs: 100,
+      subscriber,
+    });
+    handles[0].emitTick({ price: 100 });
+    vi.advanceTimersByTime(300); // only 3 intervals
+    expect(handles[0].reconnects).toBe(0);
+    h.close();
+  });
+
+  it("a fresh tick resets the escalation counter", () => {
+    const { subscriber, handles } = makeFakeSubscriber();
+    const h = subscribeQuoteStream("AAPL", {
+      onTick: () => undefined,
+      onTransportState: () => undefined,
+      staleTickMs: 100,
+      subscriber,
+    });
+    handles[0].emitTick({ price: 100 });
+    vi.advanceTimersByTime(300); // 3 stale intervals
+    handles[0].emitTick({ price: 101 }); // counter resets, timer re-arms
+    vi.advanceTimersByTime(300); // 3 more — still below threshold
+    expect(handles[0].reconnects).toBe(0);
+    vi.advanceTimersByTime(100); // 4th consecutive interval
+    expect(handles[0].reconnects).toBe(1);
+    h.close();
+  });
+
+  it("a live (re)connect status resets the escalation counter", () => {
+    const { subscriber, handles } = makeFakeSubscriber();
+    const h = subscribeQuoteStream("AAPL", {
+      onTick: () => undefined,
+      onTransportState: () => undefined,
+      staleTickMs: 100,
+      subscriber,
+    });
+    handles[0].emitTick({ price: 100 });
+    vi.advanceTimersByTime(300); // 3 stale intervals
+    handles[0].emitStatus("live"); // reconnect succeeded — counter resets
+    vi.advanceTimersByTime(300);
+    expect(handles[0].reconnects).toBe(0);
+    h.close();
+  });
+});
+
+// ---------- UI-ROBUSTNESS F7: chart background loads land in order ----------
+
+describe("useChartSeries sequence guard (F7)", () => {
+  it("a slow stale initial response cannot overwrite newer background bars", async () => {
+    const ohlcv = (close: number) => [
+      { time: 1, open: close, high: close, low: close, close, volume: null },
+    ];
+    let resolveInitial: ((v: unknown) => void) | null = null;
+    const fetcher = vi.fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveInitial = resolve;
+          }),
+      )
+      .mockImplementationOnce(() =>
+        Promise.resolve({ status: "ok", data: { ohlcv: ohlcv(210) } }),
+      );
+
+    const { result } = renderHook(() =>
+      useChartSeries("AAPL", { interval: "1m", fetcher, autoSubscribe: false }),
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+    // Initial load still in flight; fire a background refetch that resolves.
+    await act(async () => {
+      result.current.refetch();
+      await Promise.resolve();
+    });
+    expect(result.current.bars[0]?.close).toBe(210);
+
+    // The stale initial response lands LAST — it must be dropped.
+    await act(async () => {
+      resolveInitial?.({ status: "ok", data: { ohlcv: ohlcv(200) } });
+      await Promise.resolve();
+    });
+    expect(result.current.bars[0]?.close).toBe(210);
   });
 });

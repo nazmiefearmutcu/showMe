@@ -8,7 +8,7 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { useWorkspace } from "@/lib/workspace";
 import { useAppStore } from "@/lib/store";
-import { t } from "@/i18n";
+import { t, useLocale } from "@/i18n";
 import { useFocusTrap } from "@/lib/a11y";
 import { usePaneContract } from "@/lib/pane-contract-store";
 import { fetchManifests, useManifest } from "@/manifest/registry";
@@ -36,6 +36,9 @@ interface PaneDragPreview {
 const LINK_GROUPS = ["A", "B", "C", "D"] as const;
 
 export function PaneChrome({ leafId, code, symbol, linkGroup }: PaneChromeProps) {
+  // UI-ROBUSTNESS F6: locale subscription so the t() menu items below
+  // re-render when the user switches language.
+  useLocale();
   const splitFocused = useWorkspace((s) => s.splitFocused);
   const closeFocused = useWorkspace((s) => s.closeFocused);
   const setFocusedTarget = useWorkspace((s) => s.setFocusedTarget);

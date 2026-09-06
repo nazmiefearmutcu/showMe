@@ -161,6 +161,13 @@ export interface UseChartSeriesOptions {
 const DEFAULT_POLL_MS = 30_000;
 const DEFAULT_STALE_QUOTE_MS = 60_000;
 const DEFAULT_STALE_TICK_MS = 15_000;
+/**
+ * UI-ROBUSTNESS F3 — force a reconnect after this many consecutive stale
+ * intervals (default 4 × 15 s = 60 s without a tick on a supposedly-live
+ * socket). Half-open TCP connections never fire `onclose`, so without this
+ * the `stale` pill was terminal until the app restarted.
+ */
+const STALE_RECONNECT_AFTER_INTERVALS = 4;
 /** How often the freshness clock ticks (drives `freshnessMs` recompute). */
 const FRESHNESS_TICK_MS = 1_000;
 
@@ -171,17 +178,64 @@ export function normalizeSymbol(input: string | null | undefined): string {
   return input.trim().toUpperCase();
 }
 
-export function normalizeTick(tick: Tick): NormalizedTick {
+// UI-ROBUSTNESS F2 — untrusted WS frames must never emit `price: undefined`
+// into a field typed `number` (downstream consumers do unguarded arithmetic,
+// so one bad frame could render NaN or throw inside render). Coerce via
+// Number() and require finiteness; reject the whole tick when a required
+// field fails.
+function coerceFinite(value: unknown): number | null {
+  // Number(null) and Number("") are both 0 — coerce those to "missing"
+  // instead of fabricating a $0.00 quote from a field the backend omitted.
+  if (value === null || value === "" || typeof value === "boolean") return null;
+  const n = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function isPresent(value: unknown): boolean {
+  return value !== undefined && value !== null;
+}
+
+/** Test seam — number of ticks dropped by `normalizeTick` validation. */
+let droppedTickCount = 0;
+
+/**
+ * Normalize a raw WS tick into the view model. Returns `null` (and counts a
+ * dropped tick) when the frame is malformed: `price` missing / non-finite
+ * after coercion, or `bid` / `ask` / `change_pct` present-but-non-finite.
+ * Valid ticks always come back with a numeric `price`.
+ */
+export function normalizeTick(tick: Tick): NormalizedTick | null {
+  const price = coerceFinite(tick.price);
+  if (price == null) {
+    droppedTickCount += 1;
+    return null;
+  }
+  // Optional numerics: absent/null stays null; present-but-garbage rejects
+  // the whole tick (half a quote is worse than no quote).
+  const optionalFinite = (
+    value: unknown,
+  ): { ok: true; value: number | null } | { ok: false } => {
+    if (!isPresent(value)) return { ok: true, value: null };
+    const coerced = coerceFinite(value);
+    return coerced == null ? { ok: false } : { ok: true, value: coerced };
+  };
+  const changePct = optionalFinite(tick.change_pct);
+  const bid = optionalFinite(tick.bid);
+  const ask = optionalFinite(tick.ask);
+  if (!changePct.ok || !bid.ok || !ask.ok) {
+    droppedTickCount += 1;
+    return null;
+  }
   const rawTs = typeof tick.ts === "number" ? tick.ts : Date.now();
   // Backends sometimes deliver seconds, sometimes milliseconds. Normalize.
   const tsMs = rawTs > 1e12 ? rawTs : rawTs * 1000;
   return {
     symbol: tick.symbol,
-    price: tick.price,
-    changePct: tick.change_pct ?? null,
-    volume: tick.volume ?? null,
-    bid: tick.bid ?? null,
-    ask: tick.ask ?? null,
+    price,
+    changePct: changePct.value,
+    volume: isPresent(tick.volume) ? coerceFinite(tick.volume) : null,
+    bid: bid.value,
+    ask: ask.value,
     ts: tsMs,
     source: tick.source,
   };
@@ -223,6 +277,14 @@ export function subscribeQuoteStream(
   let staleTimer: ReturnType<typeof setTimeout> | null = null;
   let currentState: TransportState = "idle";
   let closed = false;
+  // UI-ROBUSTNESS F3: a half-open socket never fires `onclose`, so `stale`
+  // used to be terminal — the pill was honest but no reconnect was ever
+  // attempted. After STALE_RECONNECT_AFTER_INTERVALS consecutive stale
+  // intervals we force the upstream socket closed; the low-level helper's
+  // existing onclose → reconnect machinery then re-opens it. The counter
+  // resets on every tick / successful (re)connect.
+  let staleIntervals = 0;
+  let upstreamHandle: StreamHandle | null = null;
 
   const setState = (next: TransportState, info?: string) => {
     if (closed) return;
@@ -246,17 +308,33 @@ export function subscribeQuoteStream(
       staleTimer = null;
       if (closed) return;
       if (currentState === "live") setState("stale", "no tick");
+      staleIntervals += 1;
+      if (staleIntervals >= STALE_RECONNECT_AFTER_INTERVALS) {
+        staleIntervals = 0;
+        // Drop the dead socket; the low-level onclose schedules the
+        // reconnect with the existing backoff machinery.
+        upstreamHandle?.reconnect?.();
+        return;
+      }
+      // Keep counting consecutive stale intervals so persistent staleness
+      // escalates to a forced reconnect instead of idling forever.
+      armStaleTimer();
     }, wait);
   };
 
   const subscriberFn = opts.subscriber ?? subscribeQuote;
-  const handle = subscriberFn(target, {
+  upstreamHandle = subscriberFn(target, {
     onTick: (tick) => {
       if (closed) return;
       everConnected = true;
+      staleIntervals = 0;
       setState("live");
       armStaleTimer();
-      opts.onTick(normalizeTick(tick));
+      // F2: malformed payloads are skipped (and counted) — but the transport
+      // is demonstrably alive, so the liveness handling above still runs.
+      const normalized = normalizeTick(tick);
+      if (!normalized) return;
+      opts.onTick(normalized);
     },
     onStatus: (status: StreamStatus, info?: string) => {
       if (closed) return;
@@ -266,6 +344,7 @@ export function subscribeQuoteStream(
           break;
         case "live":
           everConnected = true;
+          staleIntervals = 0;
           setState("live", info);
           armStaleTimer();
           break;
@@ -287,7 +366,7 @@ export function subscribeQuoteStream(
       if (closed) return;
       closed = true;
       clearStaleTimer();
-      handle.close();
+      upstreamHandle?.close();
     },
   };
 }
@@ -1033,6 +1112,11 @@ export function useChartSeries(
 
   const [internal, setInternal] = useState<ChartSeriesInternalState>(emptyChartState);
   const refetchRef = useRef<() => void>(() => undefined);
+  // UI-ROBUSTNESS F7: a slow stale response must never overwrite newer bars.
+  // Every `load` takes a sequence number; each post-await `setInternal` bails
+  // when a newer load has started (same shape as the `cancelled` guard, but
+  // it also covers overlapping background loads within one effect run).
+  const loadSeqRef = useRef(0);
 
   useEffect(() => {
     if (!enabled) {
@@ -1048,6 +1132,7 @@ export function useChartSeries(
 
     const load = async (kind: "initial" | "background") => {
       if (cancelled) return;
+      const seq = ++loadSeqRef.current;
       setInternal((prev) => ({
         ...prev,
         state: kind === "initial" && prev.bars.length === 0 ? "loading" : "refreshing",
@@ -1055,7 +1140,7 @@ export function useChartSeries(
       }));
       try {
         const raw = await fetcherRef.current(sym, params);
-        if (cancelled) return;
+        if (cancelled || seq !== loadSeqRef.current) return;
         const payload = (raw ?? {}) as {
           status?: string;
           data?: { ohlcv?: unknown; bars?: unknown; rows?: unknown };
@@ -1101,7 +1186,7 @@ export function useChartSeries(
           };
         });
       } catch (err) {
-        if (cancelled) return;
+        if (cancelled || seq !== loadSeqRef.current) return;
         const message = err instanceof Error ? err.message : String(err ?? "chart error");
         setInternal((prev) => ({
           ...prev,
@@ -1166,4 +1251,10 @@ export const __internal = {
   withSnapshotError,
   withTick,
   withTransportState,
+  /** F2 test seam — ticks rejected by `normalizeTick` validation so far. */
+  droppedTickCount: (): number => droppedTickCount,
+  /** F2 test seam — zero the dropped-tick counter between cases. */
+  resetDroppedTickCountForTests: (): void => {
+    droppedTickCount = 0;
+  },
 };

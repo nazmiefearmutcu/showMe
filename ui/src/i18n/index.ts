@@ -9,7 +9,14 @@
  *   - flipping `<html dir="rtl">` for Arabic
  *
  * Round 14+ adds Intl.PluralRules for the Slavic / Arabic plurals targets.
+ *
+ * UI-ROBUSTNESS F6: `useLocale()` subscribes React components to
+ * LOCALE_CHANGE_EVENT via useSyncExternalStore so shell components that
+ * render `t()` output re-render when the user switches language. `t()`
+ * itself stays a plain function for non-React callers.
  */
+import { useSyncExternalStore } from "react";
+
 import en from "./en.json";
 import tr from "./tr.json";
 import de from "./de.json";
@@ -99,14 +106,40 @@ export function locale(): Locale {
   return active;
 }
 
+// UI-ROBUSTNESS F6 — reactive locale for React components. The store is the
+// module-scoped `active` variable; subscribers are notified through the
+// existing LOCALE_CHANGE_EVENT that `setLocale` dispatches (only on actual
+// change, so re-subscribes are cheap and loop-free).
+function subscribeLocale(onStoreChange: () => void): () => void {
+  if (typeof window === "undefined") return () => undefined;
+  window.addEventListener(LOCALE_CHANGE_EVENT, onStoreChange);
+  return () => window.removeEventListener(LOCALE_CHANGE_EVENT, onStoreChange);
+}
+
+/**
+ * Hook: the active locale. Re-renders the calling component whenever
+ * `setLocale` changes it. Pair with `t()` so shell chrome (Titlebar menus,
+ * Sidebar groups, palette placeholder/footer, toast copy, …) re-renders on
+ * locale switch instead of staying in the previous language until an
+ * unrelated state change happens to re-render it.
+ */
+export function useLocale(): Locale {
+  return useSyncExternalStore(
+    subscribeLocale,
+    () => active,
+    () => active,
+  );
+}
+
 export function listLocales(): Locale[] {
   return SUPPORTED.slice();
 }
 
 /**
- * Translate `key` via the active locale catalog. Falls back to the English
- * catalog, then to `fallback`, then to the key itself. Supports
- * `{name}` interpolation from the optional `vars` map.
+ * Translate `key` via the active locale catalog. Zero-English-fallback
+ * contract (i18n/README rule 2): the lookup is active catalog → `fallback`
+ * (when provided) → the key itself. There is deliberately NO English-catalog
+ * step. Supports `{name}` interpolation from the optional `vars` map.
  */
 export function t(
   key: string,

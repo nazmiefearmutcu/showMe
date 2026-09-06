@@ -7,7 +7,7 @@
  * for screen-reader / keyboard parity (A11Y-03).
  */
 import { useEffect, useRef, useState } from "react";
-import { t } from "@/i18n";
+import { t, useLocale } from "@/i18n";
 import { useEscape, useFocusTrap } from "@/lib/a11y";
 
 interface Group {
@@ -37,6 +37,10 @@ function buildGroups(): Group[] {
 }
 
 export function ShortcutsHelp() {
+  // UI-ROBUSTNESS F6: locale subscription (before the `open` early-return —
+  // hooks must run unconditionally) so the cheat-sheet copy re-renders when
+  // the user switches language while the overlay is open.
+  useLocale();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 

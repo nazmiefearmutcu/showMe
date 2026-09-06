@@ -10,7 +10,7 @@ import {
 import { useAppStore } from "@/lib/store";
 import type { FunctionEntry } from "@/lib/sidecar";
 import { navigate, useRoute } from "@/lib/router";
-import { t } from "@/i18n";
+import { t, useLocale } from "@/i18n";
 import { listRecentCodes } from "@/lib/palette-recents";
 import {
   PIN_DRAG_MIME,
@@ -371,6 +371,9 @@ function SidebarPanel({
   onPin,
   onClose,
 }: SidebarPanelProps) {
+  // UI-ROBUSTNESS F6: locale subscription so the t() labels/aria-labels in
+  // this panel re-render when the user switches language.
+  useLocale();
   const pinnedDropZoneRef = useRef<HTMLElement | null>(null);
   const suppressNextClickRef = useRef(false);
   const [dragPreview, setDragPreview] = useState<PinDragPreview | null>(null);

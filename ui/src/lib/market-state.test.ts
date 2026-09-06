@@ -6,7 +6,7 @@
  * the helper's `Intl` extraction logic is what's actually under test rather
  * than the host clock.
  */
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   __setHolidaysForTests,
   describeNyseMarketState,
@@ -16,6 +16,7 @@ import {
 
 afterEach(() => {
   __setHolidaysForTests(null);
+  vi.restoreAllMocks();
 });
 
 describe("getNyseMarketState — weekend rule", () => {
@@ -107,5 +108,56 @@ describe("describeNyseMarketState", () => {
     expect(describeNyseMarketState("closed-holiday").label).toContain("holiday");
     expect(describeNyseMarketState("pre-open").tone).toBe("warn");
     expect(describeNyseMarketState("after-hours").tone).toBe("warn");
+  });
+  it("maps unknown-calendar to an honest warn label", () => {
+    const display = describeNyseMarketState("unknown-calendar");
+    expect(display.label).toContain("unknown");
+    expect(display.tone).toBe("warn");
+    expect(display.withDot).toBe(false);
+  });
+});
+
+// ---------- UI-ROBUSTNESS F10: uncovered calendar years ----------
+
+describe("getNyseMarketState — uncovered year flag (F10)", () => {
+  it("2028 weekday in RTH → unknown-calendar, never a lying 'open'", () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    // Good Friday 2028-04-14 (Friday) 09:35 ET — the exact time bomb the old
+    // table ended in 2027. Without coverage the helper must NOT say "open".
+    const goodFriday = new Date("2028-04-14T13:35:00Z");
+    expect(getNyseMarketState(goodFriday)).toBe("unknown-calendar");
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("2028 weekends stay deterministic (no calendar needed)", () => {
+    const saturday = new Date("2028-04-15T19:00:00Z"); // Sat 15:00 ET
+    expect(getNyseMarketState(saturday)).toBe("closed-weekend");
+  });
+
+  it("warns once per uncovered year, not per call", () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const a = new Date("2028-04-14T13:35:00Z");
+    const b = new Date("2028-06-15T13:35:00Z"); // another 2028 weekday
+    getNyseMarketState(a);
+    getNyseMarketState(b);
+    const coverageWarnings = warnSpy.mock.calls.filter((c) =>
+      String(c[0]).includes("no coverage for 2028"),
+    );
+    expect(coverageWarnings).toHaveLength(1);
+  });
+
+  it("covered years keep full classification (no flag, no warning)", () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const fri = new Date("2026-05-22T13:35:00Z");
+    expect(getNyseMarketState(fri)).toBe("open");
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it("an explicit test override is authoritative even for uncovered years", () => {
+    __setHolidaysForTests(["2028-04-14"]);
+    const goodFriday = new Date("2028-04-14T13:35:00Z");
+    expect(getNyseMarketState(goodFriday)).toBe("closed-holiday");
+    const regularFriday = new Date("2028-04-21T13:35:00Z");
+    expect(getNyseMarketState(regularFriday)).toBe("open");
   });
 });

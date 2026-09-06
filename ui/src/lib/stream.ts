@@ -29,6 +29,14 @@ export type StreamStatus = "connecting" | "live" | "offline" | "error";
 
 export interface StreamHandle {
   close: () => void;
+  /**
+   * UI-ROBUSTNESS F3: force-close the live socket WITHOUT ending the
+   * subscription — the normal `onclose → scheduleReconnect` machinery then
+   * re-opens it. Used by the stale-transport escalation for half-open TCP
+   * connections where the browser never fires `onclose` on its own.
+   * Optional so test doubles can ignore it.
+   */
+  reconnect?: () => void;
 }
 
 export interface StreamOpts {
@@ -143,19 +151,36 @@ export function subscribeQuote(symbol: string, opts: StreamOpts): StreamHandle {
       opts.onStatus?.("live");
     };
     socket.onmessage = (ev) => {
+      // UI-ROBUSTNESS F2: `ev.data` is untrusted. Parse and shape-check in
+      // two separate steps so (a) unparsable JSON and (b) non-object frames
+      // (`5`, `"x"`, `null`, `[..]`) become a deliberate protocol-error
+      // status instead of a TypeError from `"error" in tick` that the old
+      // code caught as a generic transport error.
+      let parsed: unknown;
       try {
-        const tick = JSON.parse(ev.data) as Tick;
-        if ("error" in (tick as unknown as Record<string, unknown>)) {
-          opts.onStatus?.(
-            "error",
-            (tick as unknown as Record<string, unknown>).error as string,
-          );
-          return;
-        }
-        opts.onTick(tick);
+        parsed = JSON.parse(ev.data) as unknown;
       } catch (err) {
-        opts.onStatus?.("error", String(err));
+        opts.onStatus?.("error", `protocol error: unparsable frame (${String(err)})`);
+        return;
       }
+      if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+        opts.onStatus?.(
+          "error",
+          `protocol error: expected object frame, got ${
+            parsed === null ? "null" : Array.isArray(parsed) ? "array" : typeof parsed
+          }`,
+        );
+        return;
+      }
+      const frame = parsed as Record<string, unknown>;
+      if ("error" in frame) {
+        opts.onStatus?.(
+          "error",
+          typeof frame.error === "string" ? frame.error : JSON.stringify(frame.error),
+        );
+        return;
+      }
+      opts.onTick(parsed as Tick);
     };
     socket.onerror = () => {
       opts.onStatus?.("error", "socket error");
@@ -185,5 +210,20 @@ export function subscribeQuote(symbol: string, opts: StreamOpts): StreamHandle {
     signal?.removeEventListener("abort", stop);
   };
 
-  return { close };
+  // F3: drop only the live socket — `closed` stays false, so the socket's
+  // onclose handler (which our explicit close() triggers) runs the normal
+  // offline-toast + scheduleReconnect path and a fresh socket is opened.
+  const reconnectNow = () => {
+    if (closed) return;
+    if (!socket) return;
+    const dead = socket;
+    socket = null;
+    try {
+      dead.close();
+    } catch {
+      /* a wedged socket may refuse to close; the stale timer will re-fire */
+    }
+  };
+
+  return { close, reconnect: reconnectNow };
 }

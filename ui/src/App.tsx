@@ -329,7 +329,20 @@ export default function App() {
       });
       unsubscribe.push(offPort);
 
+      // UI-ROBUSTNESS F8: if the sidecar is healthy but `engine_root` never
+      // shows up (engine optional / slow / broken), this interval used to
+      // poll forever — 2 refresh calls every 2 s for the life of the
+      // session. Cap the retry budget (~150 attempts = ~5 min); a working
+      // engine clears the interval far sooner, and the `sidecar:status` /
+      // port-change listeners below still refresh on real events.
+      const WARMUP_RETRY_MAX_ATTEMPTS = 150;
+      let warmupAttempts = 0;
       const warmupRetry = window.setInterval(() => {
+        warmupAttempts += 1;
+        if (warmupAttempts > WARMUP_RETRY_MAX_ATTEMPTS) {
+          window.clearInterval(warmupRetry);
+          return;
+        }
         const state = useAppStore.getState();
         if (
           state.functionIndex.length > BACKEND_INDEX_READY_THRESHOLD &&
