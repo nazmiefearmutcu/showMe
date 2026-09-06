@@ -88,6 +88,9 @@ const TCAPane = lazy(() => import("./TCA").then((m) => ({ default: m.TCAPane }))
 const SATPane = lazy(() => import("./SAT").then((m) => ({ default: m.SATPane })));
 const POLYPane = lazy(() => import("./POLY").then((m) => ({ default: m.POLYPane })));
 const TXNSPane = lazy(() => import("./TXNS").then((m) => ({ default: m.TXNSPane })));
+// FLW — FlowMap depth heatmap: full-pane WebGL2 order-book density map over
+// the sidecar's binary /ws/flowmap feed.
+const FLWPane = lazy(() => import("./FLW").then((m) => ({ default: m.FLWPane })));
 
 const PANES: Record<string, PaneComponent> = {
   AGENT: AGENTPane,
@@ -138,6 +141,7 @@ const PANES: Record<string, PaneComponent> = {
   BOT: BOTPane,
   BOTS: BOTSPane,
   GEX: GEXPane,
+  FLW: FLWPane,
   CONN: CONNPane,
   CORR: CORRPane,
   INDX: INDXPane,
@@ -210,6 +214,13 @@ const NATIVE_FUNCTION_ENTRIES: FunctionEntry[] = [
     category: "screen",
     description:
       "Sub-system H supervisor: aggregate KPI strip (total/enabled/live/signals today), per-bot table with mode pill and last-signal column, and unified signal feed across every saved bot. Auto-refreshes every 10s.",
+  },
+  {
+    code: "FLW",
+    name: "FlowMap",
+    category: "chart",
+    description:
+      "FlowMap depth heatmap: time-weighted order-book density as a price×time WebGL heatmap with live BBO, bars and CVD, streamed over the sidecar /ws/flowmap feed.",
   },
   {
     code: "CN",

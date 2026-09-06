@@ -11,8 +11,9 @@ their own and easier to test.
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 
 from fastapi import FastAPI
 
@@ -45,6 +46,7 @@ def register_routes(app: FastAPI, *, deps: AppDeps) -> None:
         bots,
         broker,
         exchange,
+        flowmap_ws,
         function_index,
         health,
         indicators,
@@ -95,6 +97,7 @@ def register_routes(app: FastAPI, *, deps: AppDeps) -> None:
     watchlists.register(app, deps)
     veryfinder.register(app, deps)
     websocket.register(app, deps)
+    flowmap_ws.register(app, deps)
     proxy.register(app, deps)
 
 

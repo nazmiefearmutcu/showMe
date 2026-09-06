@@ -326,6 +326,12 @@ export const STATIC_FUNCTION_INDEX: FunctionEntry[] = [
     "description": ""
   },
   {
+    "code": "FLW",
+    "name": "FlowMap",
+    "category": "chart",
+    "description": "FlowMap depth heatmap: time-weighted order-book density as a price×time WebGL heatmap with live BBO, bars and CVD, streamed over the sidecar /ws/flowmap feed."
+  },
+  {
     "code": "FLY",
     "name": "Flight Tracking",
     "category": "misc",

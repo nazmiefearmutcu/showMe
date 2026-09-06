@@ -62,28 +62,29 @@ describe("function pane registry", () => {
   });
 });
 
-describe("156-function merged catalog invariant", () => {
-  // The static index ships 141 codes from the backend catalog; the native
+describe("157-function merged catalog invariant", () => {
+  // The static index ships 142 codes from the backend catalog; the native
   // registry contributes 15 codes not in the static index (AGENT, ASK,
   // BDA, BOT, BOTS, CONN, INDX, INSTANT, MIS, PERF, STRA, TMPL, WATCH,
-  // XSEN, TXNS — CN overlaps and is dedup'd). Total 156. This is the contract
-  // the sidebar, command palette, and FunctionStub fallback all depend
-  // on. CONN was added in T9 of the multi-exchange portfolio foundation;
+  // XSEN, TXNS — CN and FLW overlap and are dedup'd). Total 157. This is
+  // the contract the sidebar, command palette, and FunctionStub fallback
+  // all depend on. CONN was added in T9 of the multi-exchange portfolio foundation;
   // INDX was added in F4 of the indicator-depot sub-system; STRA was
   // added in E5 of the strategy sub-system; BOT was added in D5 of the
   // bot sub-system; TMPL was added in G3 of the template-bot library
   // sub-system; BOTS was added in H2 of the bot-supervision sub-system;
   // PERF was added in I2 of the cumulative-performance sub-system; BDA
   // was added in J1 of the NL-assistant sub-system; TXNS was added to clear
-  // collision with TRAN. All are native panes with no backend-side stub fallback.
+  // collision with TRAN; FLW (FlowMap depth heatmap) joined the static
+  // index as a native pane. All are native panes with no backend-side stub fallback.
   const NATIVE_ONLY = ["AGENT", "ASK", "BDA", "BOT", "BOTS", "CONN", "INDX", "INSTANT", "MIS", "PERF", "STRA", "TMPL", "WATCH", "XSEN", "TXNS"];
 
-  it("static index is exactly 141 entries", () => {
-    expect(STATIC_FUNCTION_INDEX).toHaveLength(141);
+  it("static index is exactly 142 entries", () => {
+    expect(STATIC_FUNCTION_INDEX).toHaveLength(142);
   });
 
-  it("merged catalog is exactly 156 entries", () => {
-    expect(mergeNativeFunctionIndex(STATIC_FUNCTION_INDEX)).toHaveLength(156);
+  it("merged catalog is exactly 157 entries", () => {
+    expect(mergeNativeFunctionIndex(STATIC_FUNCTION_INDEX)).toHaveLength(157);
   });
 
   it("every native-only entry is appended after merge", () => {

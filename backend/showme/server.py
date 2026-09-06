@@ -47,7 +47,11 @@ import shutil
 import importlib
 import logging
 import os
-import resource
+
+try:
+    import resource
+except ImportError:  # POSIX-only; Windows dev hosts boot the sidecar without it
+    resource = None  # type: ignore[assignment]
 import socket
 socket.setdefaulttimeout(9.0)
 import sys
