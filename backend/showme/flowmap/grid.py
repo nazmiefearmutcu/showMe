@@ -580,10 +580,13 @@ class Grid:
         if rebuild_state:
             # First banded anchor: the step itself changed, so row-shift math
             # does not apply — drop the nominal-frame accumulator and rebuild
-            # the dense state from the raw book on the new grid.
+            # the dense state from the raw book on the new grid. `_prev_ts` is
+            # deliberately KEPT: resetting it here (with `_cur_idx` still set)
+            # crashed the next `on_book` on `max(ts_ns, None)`, and upstream
+            # never resets it — the live state simply integrates across the
+            # anchor moment.
             self._acc[:] = 0.0
             self._state[:] = 0.0
-            self._prev_ts = None
         elif self._p0 != new_p0:
             delta = (new_p0 - self._p0) / self._step
             offset = round(delta)

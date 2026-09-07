@@ -87,6 +87,18 @@ def test_legacy_band_still_uses_central_70_rule():
     assert g.maybe_reanchor(100.0 + 0.90 * 1024 * 0.04) is not None  # outside
 
 
+def test_first_banded_anchor_mid_live_keeps_feed_alive():
+    """REGRESSION (review C1): a banded grid that anchors from a LIVE state
+    (cold start with failed backfill) must keep accepting books — resetting
+    `_prev_ts` with `_cur_idx` set crashed `on_book` on `max(ts_ns, None)`."""
+    g = _banded_grid()
+    t0 = 1_800_000_000_000_000_000
+    g.on_book(t0, 99.0, 1.0, 101.0, 1.0)
+    assert g.maybe_reanchor(100.0) is not None  # first live anchor
+    g.on_book(t0 + 250_000_000, 99.0, 1.0, 101.0, 1.0)  # used to raise
+    g.on_book(t0 + 500_000_000, 99.0, 1.0, 101.0, 1.0)
+
+
 def test_anchor_banded_ignores_legacy_and_bad_mids():
     legacy = Grid(GridCfg(
         tick=0.01, tick_multiple=1, dt_ns=250_000_000, p0=100.0,
