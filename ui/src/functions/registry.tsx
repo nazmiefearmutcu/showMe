@@ -111,11 +111,30 @@ const FORM4Pane = lazy(() => import("./FORM4").then((m) => ({ default: m.FORM4Pa
 const MOSSPane = lazy(() => import("./MOSS").then((m) => ({ default: m.MOSSPane })));
 const ONCHPane = lazy(() => import("./ONCH").then((m) => ({ default: m.ONCHPane })));
 const BRIEFPane = lazy(() => import("./BRIEF").then((m) => ({ default: m.BRIEFPane })));
+// FN-WAVE wave-3 (2026-09-08): equity-research + news/search lanes.
+const HDSPane = lazy(() => import("./HDS").then((m) => ({ default: m.HDSPane })));
+const HFSPane = lazy(() => import("./HFS").then((m) => ({ default: m.HFSPane })));
+const RVPane = lazy(() => import("./RV").then((m) => ({ default: m.RVPane })));
+const CACTPane = lazy(() => import("./CACT").then((m) => ({ default: m.CACTPane })));
+const TLDRPane = lazy(() => import("./TLDR").then((m) => ({ default: m.TLDRPane })));
+const FTSPane = lazy(() => import("./FTS").then((m) => ({ default: m.FTSPane })));
+const TRDHPane = lazy(() => import("./TRDH").then((m) => ({ default: m.TRDHPane })));
+const COUNPane = lazy(() => import("./COUN").then((m) => ({ default: m.COUNPane })));
 // Wave-2 valuation lane.
 const DDMPane = lazy(() => import("./DDM").then((m) => ({ default: m.DDMPane })));
 const DCFSPane = lazy(() => import("./DCFS").then((m) => ({ default: m.DCFSPane })));
 const BetaPane = lazy(() => import("./BETA").then((m) => ({ default: m.BetaPane })));
 const GreeksPane = lazy(() => import("./GREEKS").then((m) => ({ default: m.GreeksPane })));
+// FN-WAVE wave-3 exec/bond lane.
+const EXECPane = lazy(() => import("./EXEC").then((m) => ({ default: m.EXECPane })));
+const DDISPane = lazy(() => import("./DDIS").then((m) => ({ default: m.DDISPane })));
+const BQLPane = lazy(() => import("./BQL").then((m) => ({ default: m.BQLPane })));
+const NALRTPane = lazy(() => import("./NALRT").then((m) => ({ default: m.NALRTPane })));
+// FN-WAVE wave-3 options/vol lane.
+const OSAPane = lazy(() => import("./OSA").then((m) => ({ default: m.OSAPane })));
+const OVMEPane = lazy(() => import("./OVME").then((m) => ({ default: m.OVMEPane })));
+const HVTPane = lazy(() => import("./HVT").then((m) => ({ default: m.HVTPane })));
+const DARKPane = lazy(() => import("./DARK").then((m) => ({ default: m.DARKPane })));
 
 const PANES: Record<string, PaneComponent> = {
   AGENT: AGENTPane,
@@ -228,6 +247,23 @@ const PANES: Record<string, PaneComponent> = {
   DCFS: DCFSPane,
   BETA: BetaPane,
   GREEKS: GreeksPane,
+  // FN-WAVE wave-3 bespoke panes (codes already in static-index)
+  HDS: HDSPane,
+  HFS: HFSPane,
+  RV: RVPane,
+  CACT: CACTPane,
+  TLDR: TLDRPane,
+  FTS: FTSPane,
+  TRDH: TRDHPane,
+  COUN: COUNPane,
+  EXEC: EXECPane,
+  DDIS: DDISPane,
+  BQL: BQLPane,
+  NALRT: NALRTPane,
+  OSA: OSAPane,
+  OVME: OVMEPane,
+  HVT: HVTPane,
+  DARK: DARKPane,
 };
 
 const NATIVE_FUNCTION_ENTRIES: FunctionEntry[] = [

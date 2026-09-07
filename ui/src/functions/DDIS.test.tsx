@@ -1,0 +1,168 @@
+/**
+ * DDIS pane — load-state + honesty tests (GEX mock pattern).
+ *
+ * `useFunction` is mocked via a mutable shared object. Pins:
+ *  - loading skeleton, error, and ok branches render;
+ *  - a live SEC ladder renders bucket rows + % share bars;
+ *  - an illustrative payload renders the prominent honesty note;
+ *  - an empty ladder does NOT fabricate rows;
+ *  - interaction: the refresh button triggers a refetch.
+ */
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { DDISPane } from "./DDIS";
+
+/* ── useFunction mock ──────────────────────────────────────────────── */
+
+interface MockFnState {
+  state: "idle" | "loading" | "ok" | "error" | "refreshing";
+  data?: { data?: unknown } | undefined;
+  error?: Error | null;
+  refetch: ReturnType<typeof vi.fn>;
+}
+
+const mockFn: MockFnState = {
+  state: "idle",
+  data: undefined,
+  error: null,
+  refetch: vi.fn(),
+};
+
+function setMockFn(next: Partial<MockFnState>) {
+  mockFn.state = next.state ?? "idle";
+  mockFn.data = next.data;
+  mockFn.error = next.error ?? null;
+  if (next.refetch) mockFn.refetch = next.refetch;
+}
+
+vi.mock("@/lib/useFunction", () => ({
+  useFunction: () => ({
+    state: mockFn.state,
+    data: mockFn.data,
+    error: mockFn.error,
+    refetch: mockFn.refetch,
+  }),
+}));
+
+/* ── fixtures (shape mirrors a live /api/fn/DDIS probe) ────────────── */
+
+const secRows = [
+  { bucket: "0-1Y", tenor_years: 0.5, amount_usd_bn: 12.393, currency: "USD", pct: 13.6 },
+  { bucket: "1-3Y", tenor_years: 2.0, amount_usd_bn: 19.378, currency: "USD", pct: 21.2 },
+  { bucket: "3-5Y", tenor_years: 4.0, amount_usd_bn: 10.207, currency: "USD", pct: 11.2 },
+  { bucket: "5Y+", tenor_years: 7.0, amount_usd_bn: 49.303, currency: "USD", pct: 54.0 },
+];
+
+function secPayload() {
+  return {
+    status: "ok",
+    rows: secRows,
+    summary: {
+      issuer: "AAPL",
+      cik: "0000320193",
+      total_debt_usd_bn: 91.281,
+      currency: "USD",
+      source_mode: "sec_edgar",
+    },
+  };
+}
+
+function illustrativePayload() {
+  return {
+    status: "illustrative",
+    rows: [
+      { bucket: "0-1Y", tenor_years: 0.5, amount_usd_bn: 3.2, currency: "USD", pct: 12.1 },
+      { bucket: "1-3Y", tenor_years: 2.0, amount_usd_bn: 8.6, currency: "USD", pct: 32.6 },
+      { bucket: "3-5Y", tenor_years: 4.0, amount_usd_bn: 6.4, currency: "USD", pct: 24.2 },
+      { bucket: "5Y+", tenor_years: 7.0, amount_usd_bn: 8.5, currency: "USD", pct: 32.1 },
+    ],
+    summary: {
+      issuer: "US10Y",
+      total_debt_usd_bn: 26.7,
+      currency: "USD",
+      source_mode: "illustrative_model",
+    },
+  };
+}
+
+beforeEach(() => {
+  setMockFn({ state: "idle", data: undefined, refetch: vi.fn() });
+});
+afterEach(() => {
+  cleanup();
+});
+
+describe("DDIS pane — load states", () => {
+  it("renders a skeleton while loading", () => {
+    setMockFn({ state: "loading" });
+    const { container } = render(<DDISPane code="DDIS" symbol="AAPL" />);
+    expect(container.querySelector('[aria-busy="true"]')).not.toBeNull();
+  });
+
+  it("renders the error state when the fetch errors", () => {
+    setMockFn({ state: "error", error: new Error("sidecar exploded") });
+    render(<DDISPane code="DDIS" symbol="AAPL" />);
+    expect(screen.getByText(/sidecar exploded/i)).toBeInTheDocument();
+  });
+
+  it("renders the empty state without fabricating a ladder", () => {
+    setMockFn({
+      state: "ok",
+      data: { data: { status: "provider_unavailable", rows: [], summary: {} } },
+    });
+    render(<DDISPane code="DDIS" symbol="AAPL" />);
+    expect(screen.getByText(/No maturity ladder/i)).toBeInTheDocument();
+    expect(screen.queryByText(/0-1Y/)).toBeNull();
+  });
+});
+
+describe("DDIS pane — live ladder", () => {
+  it("renders bucket rows, notionals and issuer headline when ok", () => {
+    setMockFn({ state: "ok", data: { data: secPayload() } });
+    const { container } = render(<DDISPane code="DDIS" symbol="AAPL" />);
+    // Every bucket renders (5Y+ also appears as the largest-wall card).
+    for (const bucket of ["0-1Y", "1-3Y", "3-5Y"]) {
+      expect(screen.getByText(bucket)).toBeInTheDocument();
+    }
+    expect(screen.getAllByText("5Y+").length).toBeGreaterThanOrEqual(2);
+    // Issuer headline: total + CIK (card formats 91.281 -> $91.28bn).
+    expect(container.textContent).toContain("$91.28bn");
+    expect(container.textContent).toContain("CIK 0000320193");
+    // Largest wall = 5Y+ at 54.0%.
+    expect(container.textContent).toContain("54.0%");
+    // Live SEC pill (not the illustrative one).
+    expect(screen.getByText(/SEC live/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Illustrative model/i)).toBeNull();
+  });
+
+  it("gives each share bar a descriptive aria-label", () => {
+    setMockFn({ state: "ok", data: { data: secPayload() } });
+    const { container } = render(<DDISPane code="DDIS" symbol="AAPL" />);
+    const bars = Array.from(container.querySelectorAll('[aria-label*="share"]'));
+    expect(bars.length).toBe(4);
+    const wall = bars.find((b) => (b.getAttribute("aria-label") ?? "").includes("54.0"));
+    expect(wall).toBeTruthy();
+  });
+});
+
+describe("DDIS pane — illustrative honesty", () => {
+  it("renders the honesty note for an illustrative ladder and never calls it live", () => {
+    setMockFn({ state: "ok", data: { data: illustrativePayload() } });
+    const { container } = render(<DDISPane code="DDIS" symbol="AAPL" />);
+    expect(screen.getByText(/Illustrative model\./i)).toBeInTheDocument();
+    expect(container.textContent).toContain("NOT filed debt data");
+    // The status pill AND the load-state pill both read "illustrative".
+    expect(screen.getAllByText(/^illustrative$/).length).toBeGreaterThanOrEqual(2);
+    expect(screen.queryByText(/SEC live/i)).toBeNull();
+  });
+});
+
+describe("DDIS pane — interaction", () => {
+  it("triggers a refetch when the refresh button is clicked", () => {
+    const refetch = vi.fn();
+    setMockFn({ state: "ok", data: { data: secPayload() }, refetch });
+    render(<DDISPane code="DDIS" symbol="AAPL" />);
+    fireEvent.click(screen.getByRole("button", { name: /Refresh maturity ladder/i }));
+    expect(refetch).toHaveBeenCalledTimes(1);
+  });
+});
