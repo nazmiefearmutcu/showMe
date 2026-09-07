@@ -17,6 +17,8 @@ describe("function pane registry", () => {
         "FORM4", "MOSS", "ONCH", "BRIEF", "DDM", "DCFS", "BETA", "GREEKS",
         "EXEC", "DDIS", "BQL", "NALRT", "HDS", "HFS", "RV", "CACT",
         "TLDR", "FTS", "TRDH", "COUN", "OSA", "OVME", "HVT", "DARK",
+        "CRVF", "GC3D", "ALLQ", "DCF", "CSRC", "FSRC", "SRCH", "ICX",
+        "PIB", "LITM", "SPLC", "APPL", "NSE", "READ", "REGM", "FRH",
       ]),
     );
   });

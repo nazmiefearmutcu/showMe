@@ -135,6 +135,23 @@ const OSAPane = lazy(() => import("./OSA").then((m) => ({ default: m.OSAPane }))
 const OVMEPane = lazy(() => import("./OVME").then((m) => ({ default: m.OVMEPane })));
 const HVTPane = lazy(() => import("./HVT").then((m) => ({ default: m.HVTPane })));
 const DARKPane = lazy(() => import("./DARK").then((m) => ({ default: m.DARKPane })));
+// FN-WAVE wave-4 (2026-09-08): bond/valuation, screeners, equity-info, news/macro lanes.
+const CRVFPane = lazy(() => import("./CRVF").then((m) => ({ default: m.CRVFPane })));
+const GC3DPane = lazy(() => import("./GC3D").then((m) => ({ default: m.GC3DPane })));
+const ALLQPane = lazy(() => import("./ALLQ").then((m) => ({ default: m.ALLQPane })));
+const DCFPane = lazy(() => import("./DCF").then((m) => ({ default: m.DCFPane })));
+const CSRCPane = lazy(() => import("./CSRC").then((m) => ({ default: m.CSRCPane })));
+const FSRCPane = lazy(() => import("./FSRC").then((m) => ({ default: m.FSRCPane })));
+const SRCHPane = lazy(() => import("./SRCH").then((m) => ({ default: m.SRCHPane })));
+const ICXPane = lazy(() => import("./ICX").then((m) => ({ default: m.ICXPane })));
+const PIBPane = lazy(() => import("./PIB").then((m) => ({ default: m.PIBPane })));
+const LITMPane = lazy(() => import("./LITM").then((m) => ({ default: m.LITMPane })));
+const SPLCPane = lazy(() => import("./SPLC").then((m) => ({ default: m.SPLCPane })));
+const APPLPane = lazy(() => import("./APPL").then((m) => ({ default: m.APPLPane })));
+const NSEPane = lazy(() => import("./NSE").then((m) => ({ default: m.NSEPane })));
+const READPane = lazy(() => import("./READ").then((m) => ({ default: m.READPane })));
+const REGMPane = lazy(() => import("./REGM").then((m) => ({ default: m.REGMPane })));
+const FRHPane = lazy(() => import("./FRH").then((m) => ({ default: m.FRHPane })));
 
 const PANES: Record<string, PaneComponent> = {
   AGENT: AGENTPane,
@@ -264,6 +281,23 @@ const PANES: Record<string, PaneComponent> = {
   OVME: OVMEPane,
   HVT: HVTPane,
   DARK: DARKPane,
+  // FN-WAVE wave-4
+  CRVF: CRVFPane,
+  GC3D: GC3DPane,
+  ALLQ: ALLQPane,
+  DCF: DCFPane,
+  CSRC: CSRCPane,
+  FSRC: FSRCPane,
+  SRCH: SRCHPane,
+  ICX: ICXPane,
+  PIB: PIBPane,
+  LITM: LITMPane,
+  SPLC: SPLCPane,
+  APPL: APPLPane,
+  NSE: NSEPane,
+  READ: READPane,
+  REGM: REGMPane,
+  FRH: FRHPane,
 };
 
 const NATIVE_FUNCTION_ENTRIES: FunctionEntry[] = [

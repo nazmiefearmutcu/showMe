@@ -15,7 +15,7 @@ import pandas as pd
 from showme.engine.core.base_data_source import DataKind, DataRequest
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from showme.engine.core.instrument import AssetClass, Instrument
-from showme.engine.functions.equity._common import reference_profile, frame_rows
+from showme.engine.functions.equity._common import frame_rows, reference_profile
 
 
 @FunctionRegistry.register
@@ -67,8 +67,9 @@ class SPLCFunction(BaseFunction):
                                         import re as _re
                                         text = _re.sub(r"<[^>]+>", " ", r.text)
                                         from showme.engine.core.sec_taxonomy import (
-                                            TENK_CUSTOMER_PATTERNS, TENK_SUPPLIER_PATTERNS,
+                                            TENK_CUSTOMER_PATTERNS,
                                             TENK_DEBT_MATURITY_PATTERNS,
+                                            TENK_SUPPLIER_PATTERNS,
                                             extract_customer_concentration,
                                             find_section_window,
                                         )
@@ -90,7 +91,12 @@ class SPLCFunction(BaseFunction):
             "suppliers": suppliers,
             "debt_maturity_section": (debt_section or "")[:1000],
         }
-        data["rows"] = _relationship_rows(instrument.symbol, customers, suppliers, filings)
+        reference_peers = [
+            str(p) for p in (reference_profile(instrument.symbol).get("peers") or [])
+        ]
+        data["rows"] = _relationship_rows(
+            instrument.symbol, customers, suppliers, filings, peers=reference_peers
+        )
         sources = ["sec_edgar"]
         if not customers and not suppliers:
             ref = reference_profile(instrument.symbol)
@@ -98,8 +104,12 @@ class SPLCFunction(BaseFunction):
                 {"symbol": instrument.symbol, **item, "source_mode": "reference_supply_chain_10k_language"}
                 for item in [*ref.get("customers", []), *ref.get("suppliers", [])]
             ]
-            if ref_rows:
-                data["rows"] = ref_rows
+            comp_rows = [
+                {"symbol": instrument.symbol, "relationship": "competitor", "counterparty": str(p).strip().upper(), "ticker": str(p).strip().upper(), "confidence": 0.35, "source_mode": "reference_sector_peer_list"}
+                for p in (ref.get("peers") or [])
+            ]
+            if ref_rows or comp_rows:
+                data["rows"] = [*ref_rows, *comp_rows]
                 data["customers"] = [r for r in ref_rows if "customer" in str(r.get("relationship", ""))]
                 data["suppliers"] = [r for r in ref_rows if "supplier" in str(r.get("relationship", ""))]
                 sources = ["sec_edgar", "supply_chain_reference"]
@@ -125,7 +135,7 @@ class SPLCFunction(BaseFunction):
             sources = ["supply_chain_model"]
         data["methodology"] = "SPLC approximates supply-chain relationships by scanning recent 10-K sections for customer/supplier concentration language. Reference rows are labelled when extraction finds no explicit counterparty rows."
         data["field_dictionary"] = {
-            "relationship": "customer, supplier, partner, or unavailable state.",
+            "relationship": "customer, supplier, competitor, filing-evidence, or unavailable state.",
             "counterparty": "Named or summarized relationship counterparty.",
             "confidence": "Extraction confidence; lower values indicate approximate/reference rows.",
             "source_mode": "SEC extraction or labelled reference fallback.",
@@ -141,12 +151,24 @@ class SPLCFunction(BaseFunction):
         )
 
 
-def _relationship_rows(symbol: str, customers: list[dict[str, Any]], suppliers: list[dict[str, Any]], filings: pd.DataFrame) -> list[dict[str, Any]]:
+def _relationship_rows(
+    symbol: str,
+    customers: list[dict[str, Any]],
+    suppliers: list[dict[str, Any]],
+    filings: pd.DataFrame,
+    peers: list[str] | None = None,
+) -> list[dict[str, Any]]:
     rows = []
     for item in customers:
         rows.append({"symbol": symbol, "relationship": "customer", "counterparty": item.get("name") or item.get("counterparty") or item.get("text"), "confidence": item.get("confidence", 0.55), "source_mode": "sec_10k_customer_extraction"})
     for item in suppliers:
         rows.append({"symbol": symbol, "relationship": "supplier", "counterparty": item.get("name") or item.get("counterparty") or item.get("text"), "confidence": item.get("confidence", 0.55), "source_mode": "sec_10k_supplier_extraction"})
+    # Competitor rows come from the labelled reference sector peer list (ticker
+    # when the peer entry is a ticker); 10-K concentration mining does not
+    # extract competitors, so these rows stay explicitly reference-sourced.
+    for peer in peers or []:
+        ticker = str(peer).strip().upper()
+        rows.append({"symbol": symbol, "relationship": "competitor", "counterparty": ticker, "ticker": ticker, "confidence": 0.35, "source_mode": "reference_sector_peer_list"})
     if not rows:
         for item in frame_rows(filings, limit=3):
             rows.append({"symbol": symbol, "relationship": "evidence_filing", "counterparty": item.get("form"), "filingDate": item.get("filingDate"), "confidence": 0.2, "source_mode": "sec_10k_filing_evidence"})

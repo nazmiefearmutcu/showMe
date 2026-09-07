@@ -30,7 +30,7 @@ describe("Workspace pane-renderer resolution order", () => {
     // STRS/TLH/TRA (portfolio-analytics aliases), TCA (2026-06-01 bespoke
     // pane) and TAUC/TECH/TRAN (FN-WAVE wave-1 bespoke panes) were removed
     // from this list because they DO resolve native.
-    for (const code of ["DCF", "APPL", "PIB", "LITM", "SPLC"]) {
+    for (const code of ["AV", "BBGT", "BMC", "EVTS", "FLY"]) {
       expect(choosePaneRenderer(code)).toBe("stub");
     }
   });
