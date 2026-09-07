@@ -91,6 +91,12 @@ const TXNSPane = lazy(() => import("./TXNS").then((m) => ({ default: m.TXNSPane 
 // FLW — FlowMap depth heatmap: full-pane WebGL2 order-book density map over
 // the sidecar's binary /ws/flowmap feed.
 const FLWPane = lazy(() => import("./FLW").then((m) => ({ default: m.FLWPane })));
+// FN-WAVE wave-1 (2026-09-07): four of the 74 generic-catalog functions get
+// bespoke panes (survey: showme-review/fn-wave/survey-*.md).
+const OMONPane = lazy(() => import("./OMON").then((m) => ({ default: m.OMONPane })));
+const TAUCPane = lazy(() => import("./TAUC").then((m) => ({ default: m.TAUCPane })));
+const TECHPane = lazy(() => import("./TECH").then((m) => ({ default: m.TECHPane })));
+const TRANPane = lazy(() => import("./TRAN").then((m) => ({ default: m.TRANPane })));
 
 const PANES: Record<string, PaneComponent> = {
   AGENT: AGENTPane,
@@ -179,6 +185,12 @@ const PANES: Record<string, PaneComponent> = {
   POLY: POLYPane,
   // Trade Blotter bespoke pane
   TXNS: TXNSPane,
+  // FN-WAVE wave-1 bespoke panes (codes already in static-index — no
+  // NATIVE_FUNCTION_ENTRIES duplicates, the sidebar N badge comes from PANES)
+  OMON: OMONPane,
+  TAUC: TAUCPane,
+  TECH: TECHPane,
+  TRAN: TRANPane,
 };
 
 const NATIVE_FUNCTION_ENTRIES: FunctionEntry[] = [

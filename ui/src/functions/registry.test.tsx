@@ -25,16 +25,16 @@ describe("function pane registry", () => {
     expect(lower).toBe(upper);
   });
 
-  it("lets TECH fall back to the generic technical-indicator function", () => {
-    expect(resolvePane("TECH")).toBeNull();
+  it("resolves TECH to the bespoke technical-indicator pane (FN-WAVE)", () => {
+    expect(resolvePane("TECH")).toBeTruthy();
   });
 
   it("resolves TXNS to the Trade Blotter pane", () => {
     expect(resolvePane("TXNS")).toBeTruthy();
   });
 
-  it("lets TRAN fall back to the earnings transcript function", () => {
-    expect(resolvePane("TRAN")).toBeNull();
+  it("resolves TRAN to the bespoke transcript pane (FN-WAVE)", () => {
+    expect(resolvePane("TRAN")).toBeTruthy();
   });
 
   it("treats CN as an alias for NI (Round 24)", () => {
