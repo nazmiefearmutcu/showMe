@@ -97,6 +97,25 @@ const OMONPane = lazy(() => import("./OMON").then((m) => ({ default: m.OMONPane 
 const TAUCPane = lazy(() => import("./TAUC").then((m) => ({ default: m.TAUCPane })));
 const TECHPane = lazy(() => import("./TECH").then((m) => ({ default: m.TECHPane })));
 const TRANPane = lazy(() => import("./TRAN").then((m) => ({ default: m.TRANPane })));
+// FN-WAVE wave-2 (2026-09-07): twelve more generic-catalog functions get
+// bespoke panes (survey: showme-review/fn-wave/survey-*.md).
+const SRSKPane = lazy(() => import("./SRSK").then((m) => ({ default: m.SRSKPane })));
+const FRDPane = lazy(() => import("./FRD").then((m) => ({ default: m.FRDPane })));
+const FXHPane = lazy(() => import("./FXH").then((m) => ({ default: m.FXHPane })));
+const YASPane = lazy(() => import("./YAS").then((m) => ({ default: m.YASPane })));
+const GMMPane = lazy(() => import("./GMM").then((m) => ({ default: m.GMMPane })));
+const SECFPane = lazy(() => import("./SECF").then((m) => ({ default: m.SECFPane })));
+const ISINPane = lazy(() => import("./ISIN").then((m) => ({ default: m.ISINPane })));
+const DAPIPane = lazy(() => import("./DAPI").then((m) => ({ default: m.DAPIPane })));
+const FORM4Pane = lazy(() => import("./FORM4").then((m) => ({ default: m.FORM4Pane })));
+const MOSSPane = lazy(() => import("./MOSS").then((m) => ({ default: m.MOSSPane })));
+const ONCHPane = lazy(() => import("./ONCH").then((m) => ({ default: m.ONCHPane })));
+const BRIEFPane = lazy(() => import("./BRIEF").then((m) => ({ default: m.BRIEFPane })));
+// Wave-2 valuation lane.
+const DDMPane = lazy(() => import("./DDM").then((m) => ({ default: m.DDMPane })));
+const DCFSPane = lazy(() => import("./DCFS").then((m) => ({ default: m.DCFSPane })));
+const BetaPane = lazy(() => import("./BETA").then((m) => ({ default: m.BetaPane })));
+const GreeksPane = lazy(() => import("./GREEKS").then((m) => ({ default: m.GreeksPane })));
 
 const PANES: Record<string, PaneComponent> = {
   AGENT: AGENTPane,
@@ -191,6 +210,24 @@ const PANES: Record<string, PaneComponent> = {
   TAUC: TAUCPane,
   TECH: TECHPane,
   TRAN: TRANPane,
+  // FN-WAVE wave-2 bespoke panes (codes already in static-index)
+  SRSK: SRSKPane,
+  FRD: FRDPane,
+  FXH: FXHPane,
+  YAS: YASPane,
+  GMM: GMMPane,
+  SECF: SECFPane,
+  ISIN: ISINPane,
+  DAPI: DAPIPane,
+  FORM4: FORM4Pane,
+  MOSS: MOSSPane,
+  ONCH: ONCHPane,
+  BRIEF: BRIEFPane,
+  // Wave-2 valuation lane
+  DDM: DDMPane,
+  DCFS: DCFSPane,
+  BETA: BetaPane,
+  GREEKS: GreeksPane,
 };
 
 const NATIVE_FUNCTION_ENTRIES: FunctionEntry[] = [

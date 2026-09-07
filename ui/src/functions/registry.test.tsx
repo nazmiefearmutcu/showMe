@@ -11,6 +11,10 @@ describe("function pane registry", () => {
         "NI", "CN", "MOST", "WEI", "HP",
         "WCRS", "GLCO", "BTMM", "AGENT",
         "MAP", "SECT", "BIO", "CORR",
+        // FN-WAVE wave-1 + wave-2 bespoke panes
+        "OMON", "TAUC", "TECH", "TRAN",
+        "SRSK", "FRD", "FXH", "YAS", "GMM", "SECF", "ISIN", "DAPI",
+        "FORM4", "MOSS", "ONCH", "BRIEF", "DDM", "DCFS", "BETA", "GREEKS",
       ]),
     );
   });

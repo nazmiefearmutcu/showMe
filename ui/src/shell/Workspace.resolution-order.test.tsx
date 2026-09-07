@@ -27,7 +27,10 @@ describe("Workspace pane-renderer resolution order", () => {
     // NOTE (de-garbage 2026-06-01): these codes are genuinely paneless —
     // STRS/TLH/TRA (portfolio-analytics aliases) and TCA (new bespoke
     // pane) were removed from this list because they DO resolve native.
-    for (const code of ["TAUC", "TECH", "TLDR", "TRAN", "TRDH"]) {
+    // STRS/TLH/TRA (portfolio-analytics aliases), TCA (2026-06-01 bespoke
+    // pane) and TAUC/TECH/TRAN (FN-WAVE wave-1 bespoke panes) were removed
+    // from this list because they DO resolve native.
+    for (const code of ["TLDR", "TRDH", "DCF", "FTS", "COUN"]) {
       expect(choosePaneRenderer(code)).toBe("stub");
     }
   });
