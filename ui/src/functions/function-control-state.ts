@@ -57,6 +57,11 @@ function readStoredOption<T extends PrimitiveControlValue>(
 
 function readStoredNumber(key: string, fallback: number): number {
   if (typeof localStorage === "undefined") return fallback;
-  const raw = Number(localStorage.getItem(key));
-  return Number.isFinite(raw) ? raw : fallback;
+  // GUARD: Number(null) === 0, so an absent key must be checked BEFORE the
+  // numeric coercion or every fresh session reads 0 instead of `fallback`
+  // (and then persists the 0 on mount, wedging the control permanently).
+  const raw = localStorage.getItem(key);
+  if (raw == null || raw.trim() === "") return fallback;
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : fallback;
 }
