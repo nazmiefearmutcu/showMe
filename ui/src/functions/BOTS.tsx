@@ -141,11 +141,11 @@ function PermRevokedBadge() {
   return (
     <span
       data-testid="bots-perm-revoked-badge"
-      title="Bu botun credential trade izni iptal edilmiş; emirler reddediliyor."
+      title="This bot's credential had its trade permission revoked; orders are being rejected."
       style={{ marginLeft: 6, display: "inline-block" }}
     >
       <Pill tone="negative" variant="soft" withDot={false}>
-        İZİN İPTAL
+        PERMISSION REVOKED
       </Pill>
     </span>
   );
@@ -192,8 +192,8 @@ function KPIStrip({ unhealthy }: { unhealthy: number }) {
                   borderBottom: "1px solid var(--border-card)" }}>
       <KPI label="Toplam bot" value={stats.total} />
       <KPI label="Etkin" value={stats.enabled} />
-      <KPI label="Canlı" value={stats.live} highlight={stats.live > 0 ? "negative" : undefined} />
-      <KPI label="Bugünkü sinyal" value={stats.signals_today} />
+      <KPI label="Live" value={stats.live} highlight={stats.live > 0 ? "negative" : undefined} />
+      <KPI label="Signals today" value={stats.signals_today} />
       {/* F6 — at-a-glance unhealthy count so a supervisor sees problems
           immediately. Honest 0 when nothing is wrong. */}
       <div data-testid="bots-kpi-unhealthy">
@@ -204,7 +204,7 @@ function KPIStrip({ unhealthy }: { unhealthy: number }) {
         />
       </div>
       <div style={{ marginLeft: "auto", fontSize: 11 }} className="u-text-secondary">
-        {generatedAt ? `Son: ${new Date(generatedAt).toLocaleTimeString()}` : ""}
+        {generatedAt ? `Last: ${new Date(generatedAt).toLocaleTimeString()}` : ""}
       </div>
     </div>
   );
@@ -244,7 +244,7 @@ function resolveSignalCount(
   const fallback = feedRows?.length ?? 0;
   return {
     value: fallback,
-    tooltip: `Toplam sayım yok; son ${fallback} sinyal feed'den geliyor.`,
+    tooltip: `No total count; the last ${fallback} signals come from the feed.`,
   };
 }
 
@@ -267,7 +267,7 @@ function BotTable() {
   if (bots.length === 0) {
     return (
       <div data-testid="bots-empty">
-        <Empty title="Henüz bot yok" body="Bir bot oluşturup etkinleştirince burada görünür." />
+        <Empty title="No bots yet" body="Create and enable a bot and it will appear here." />
       </div>
     );
   }
@@ -278,8 +278,8 @@ function BotTable() {
       style={{ width: "100%", fontSize: 12, marginTop: 8 }}
     >
       <caption className="u-sr-only">
-        Tüm botların denetim özeti — sembol, timeframe, sağlık durumu, sinyal
-        sayısı ve son tick tazeliği.
+        Audit summary across all bots — symbol, timeframe, health, signal
+        count and last-tick freshness.
       </caption>
       <thead>
         <tr className="u-text-secondary">
@@ -343,19 +343,19 @@ function SignalFeed() {
   if (feed.length === 0) {
     return (
       <div data-testid="bots-feed-empty">
-        <Empty title="Henüz sinyal yok" body="Etkin botlar tick attıkça sinyaller burada akar." />
+        <Empty title="No signals yet" body="Signals from enabled bots stream here as they tick." />
       </div>
     );
   }
   return (
     <table
       className="terminal-grid-numeric"
-      aria-label="Birleşik sinyal akışı"
+      aria-label="Unified signal feed"
       style={{ width: "100%", fontSize: 11, marginTop: 8 }}
     >
       <caption className="u-sr-only">
-        Tüm botlardan gelen son sinyaller, en yeni üstte — zaman, bot, tür,
-        fiyat ve aksiyon.
+        Latest signals from all bots, newest first — time, bot, type,
+        price and action.
       </caption>
       <thead>
         <tr className="u-text-secondary">
@@ -394,7 +394,7 @@ function SignalFeed() {
                 {isFallback && (
                   <span
                     data-testid="bots-feed-fallback-equity"
-                    title="Bu canlı emir gerçek broker bakiyesi yerine yedek ($10k) bakiye ile boyutlandırıldı."
+                    title="This live order was sized with the fallback ($10k) balance instead of the real broker balance."
                     style={{ marginLeft: 6, display: "inline-block" }}
                   >
                     <Pill tone="warn" variant="soft" withDot={false}>
@@ -458,13 +458,13 @@ export function BOTSPane() {
           <h4 style={{ margin: 0 }}>Botlar</h4>
           <button
             data-testid="bots-refresh-all"
-            aria-label="Tüm denetim görünümünü yenile"
+            aria-label="Refresh the full audit view"
             aria-busy={loading}
             disabled={loading}
             onClick={() => loadAll()}
             style={{ marginLeft: "auto" }}
           >
-            {loading ? "Yenileniyor…" : "Tümünü yenile"}
+            {loading ? "Refreshing…" : "Refresh all"}
           </button>
         </div>
         {firstLoad ? (
@@ -476,7 +476,7 @@ export function BOTSPane() {
         ) : (
           <BotTable />
         )}
-        <h4 style={{ margin: "16px 0 4px" }}>Sinyal akışı (son {FEED_WINDOW} sinyal)</h4>
+        <h4 style={{ margin: "16px 0 4px" }}>Signal feed (last {FEED_WINDOW} signals)</h4>
         <SignalFeed />
       </div>
     </div>

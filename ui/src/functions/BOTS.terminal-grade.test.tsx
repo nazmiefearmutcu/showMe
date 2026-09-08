@@ -262,7 +262,7 @@ describe("BOTS F5 — table semantics", () => {
       bot_mode: "shadow",
     }]);
     render(<BOTSPane />);
-    const table = screen.getByRole("table", { name: /sinyal akışı/i });
+    const table = screen.getByRole("table", { name: /signal feed/i });
     expect(table.querySelector("caption")).not.toBeNull();
     expect(table.querySelectorAll("th[scope='col']").length).toBe(5);
   });

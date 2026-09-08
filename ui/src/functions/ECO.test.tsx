@@ -7,7 +7,7 @@
  * honesty fix the fabricated schedule looked exactly like real prints. These
  * tests pin:
  *
- *  - a SYNTHETIC payload renders a prominent model badge ("ÖRNEK TAKVİM")
+ *  - a SYNTHETIC payload renders a prominent model badge ("SAMPLE CALENDAR")
  *    with role=status, and the footer source label reads the honest
  *    "Örnek takvim (canlı değil)" text;
  *  - a LIVE payload does NOT render that badge and shows the raw provider;
@@ -138,15 +138,15 @@ describe("ECO pane — synthetic-calendar honesty", () => {
     const badge = screen.getByTestId("eco-model-badge");
     expect(badge).toBeInTheDocument();
     expect(badge).toHaveAttribute("role", "status");
-    expect(within(badge).getByText(/ÖRNEK TAKVİM/i)).toBeInTheDocument();
+    expect(within(badge).getByText(/SAMPLE CALENDAR/i)).toBeInTheDocument();
     // Subtext explains the values are illustrative sample data, not live.
-    expect(badge.textContent ?? "").toMatch(/canlı/i);
+    expect(badge.textContent ?? "").toMatch(/live/i);
   });
 
-  it("maps the footer source label to the honest 'Örnek takvim (canlı değil)' text", () => {
+  it("maps the footer source label to the honest 'Sample calendar (not live)' text", () => {
     setMockFn({ state: "ok", ...syntheticPayload() });
     render(<ECOPane code="ECO" />);
-    expect(screen.getByText(/Örnek takvim \(canlı değil\)/i)).toBeInTheDocument();
+    expect(screen.getByText(/Sample calendar \(not live\)/i)).toBeInTheDocument();
     // The raw machine token must not be shown to the user.
     expect(screen.queryByText(/calendar_feed_model/)).toBeNull();
   });
@@ -191,7 +191,7 @@ describe("ECO pane — accessibility", () => {
     setMockFn({ state: "ok", ...syntheticPayload() });
     render(<ECOPane code="ECO" />);
     // "high" importance → label keeps the word and adds a non-color symbol.
-    const high = screen.getAllByLabelText(/önem: yüksek/i);
+    const high = screen.getAllByLabelText(/importance: high/i);
     expect(high.length).toBeGreaterThan(0);
     expect(high[0].textContent ?? "").toMatch(/▲/);
   });
@@ -227,7 +227,7 @@ describe("ECO pane — display honesty", () => {
     setMockFn({ state: "ok", ...syntheticPayload() });
     render(<ECOPane code="ECO" />);
     // as_of = 11:55 UTC; client clock is frozen at 12:00 — must show 11:55.
-    const veri = screen.getByText(/Veri:/i);
+    const veri = screen.getByText(/Data:/i);
     expect(veri.textContent ?? "").toContain("11:55");
     expect(veri.textContent ?? "").not.toContain("12:00");
   });

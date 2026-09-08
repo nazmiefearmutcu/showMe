@@ -63,15 +63,15 @@ type LoadState = "idle" | "loading" | "ok" | "error";
 // DENSITY, not a probabilistic confidence. One source-of-truth tooltip string,
 // reused everywhere the metric is shown.
 const SIGNAL_DENSITY_TITLE =
-  "Sinyal yoğunluğu = eşleşen sinyal anahtar sayısına dayalı yoğunluk skoru " +
-  "(olasılıksal/model güveni DEĞİL).";
+  "Signal density = intensity score based on the number of matching signal " +
+  "keys (NOT probabilistic/model confidence).";
 
 // HONESTY (H1): static pre-run disclosure of HOW the ranker works.
 const STATIC_METHODOLOGY =
-  "Bu DETERMİNİSTİK bir sezgisel sıralayıcıdır (yapay zekâ/LLM değil). " +
-  "Varsayılan “Hızlı probe” modu adayları ŞEFFAF SENTETİK probe verileriyle " +
-  "puanlar — gerçek, sembol-başına fonksiyon yürütmesi yapmaz. Gerçek " +
-  "yürütme için “Canlı çalıştır” modunu açın (yavaş).";
+  "This is a DETERMINISTIC heuristic ranker (not AI/LLM). The default " +
+  "\u201cFast probe\u201d mode scores candidates with TRANSPARENT SYNTHETIC " +
+  "probe data \u2014 it does not run real per-symbol function execution. " +
+  "Enable \u201cLive run\u201d mode for real execution (slower).";
 
 function isLiveMethod(method: string | undefined): boolean {
   return Boolean(method && /live/i.test(method));
@@ -137,7 +137,7 @@ export function AGENTPane(_props: FunctionPaneProps) {
 
   const subtitle = result
     ? `${result.function_count} fn · ${result.method}`
-    : "deterministik sezgisel sıralayıcı";
+    : "deterministic heuristic ranker";
 
   return (
     <div className="u-pane-host">
@@ -177,7 +177,7 @@ export function AGENTPane(_props: FunctionPaneProps) {
                   variant="soft"
                   withDot={false}
                 >
-                  {resultIsLive ? "canlı" : "hızlı probe"}
+                  {resultIsLive ? "live" : "fast probe"}
                 </Pill>
               )}
               {/* D1: the btn classes now live on the BUTTON itself, not the
@@ -188,7 +188,7 @@ export function AGENTPane(_props: FunctionPaneProps) {
                 onClick={run}
                 disabled={state === "loading" || candidates.length === 0}
                 aria-busy={state === "loading"}
-                aria-label="Sıralamayı çalıştır"
+                aria-label="Run ranking"
               >
                 {state === "loading" ? "Running…" : "Run Agent"}
               </button>
@@ -225,10 +225,10 @@ export function AGENTPane(_props: FunctionPaneProps) {
                   onChange={(e) => setLiveMode(e.target.checked)}
                 />
                 <span>
-                  <strong>Canlı çalıştır</strong>
+                  <strong>Live run</strong>
                   <span className="agent-mode-hint">
-                    gerçek fonksiyon yürütme (yavaş). Kapalıyken: şeffaf
-                    sentetik hızlı probe.
+                    real function execution (slower). When off: transparent
+                    synthetic fast probe.
                   </span>
                 </span>
               </label>
@@ -243,7 +243,7 @@ export function AGENTPane(_props: FunctionPaneProps) {
                 {result && (
                   <span className="agent-methodology-method">
                     {" "}
-                    yöntem: {result.method}
+                    method: {result.method}
                   </span>
                 )}
               </p>
@@ -310,9 +310,9 @@ export function AGENTPane(_props: FunctionPaneProps) {
               {/* U2: result count + best summary, announced. */}
               {result && (
                 <div className="agent-summary" role="status" aria-live="polite">
-                  {result.ranked.length} aday sıralandı
-                  {result.best ? ` · en iyi: ${result.best.symbol}` : ""}
-                  {` · ${resultIsLive ? "canlı yürütme" : "hızlı probe"}`}
+                  {result.ranked.length} candidates ranked
+                  {result.best ? ` · best: ${result.best.symbol}` : ""}
+                  {` · ${resultIsLive ? "live execution" : "fast probe"}`}
                 </div>
               )}
 
@@ -333,7 +333,7 @@ export function AGENTPane(_props: FunctionPaneProps) {
                     columns={candidateColumns}
                     rowKey={(row) => row.symbol}
                     density="compact"
-                    ariaLabel="Sıralanan adaylar"
+                    ariaLabel="Ranked candidates"
                   />
                   <DataGrid
                     rows={evidence}
@@ -341,13 +341,13 @@ export function AGENTPane(_props: FunctionPaneProps) {
                     rowKey={(row) => row.code}
                     density="compact"
                     empty="no signal evidence"
-                    ariaLabel="En iyi aday için fonksiyon kanıtları"
+                    ariaLabel="Function evidence for the best candidate"
                   />
                 </>
               ) : state !== "loading" ? (
                 <Empty
                   title="Ready to scan"
-                  body={`Symbol Agent ${candidates.length} adayı tüm yerel fonksiyonlar üzerinde sıralar; sembol-başına skor + fonksiyon-başına kanıt döndürür. Varsayılan mod şeffaf sentetik probe kullanır.`}
+                  body={`Symbol Agent ranks ${candidates.length} candidates across all local functions; returns a per-symbol score plus per-function evidence. The default mode uses a transparent synthetic probe.`}
                   action={
                     <button
                       type="button"
@@ -400,8 +400,8 @@ function buildCandidateColumns(
               onJumpDES(row.symbol);
             }
           }}
-          aria-label={`${row.symbol} DES'te aç`}
-          title="DES'te aç"
+          aria-label={`Open ${row.symbol} in DES`}
+          title="Open in DES"
         >
           {row.symbol}
         </button>
@@ -444,7 +444,7 @@ const evidenceColumns: DataGridColumn<AgentFunctionEvidence>[] = [
     // a clarifying tooltip on the header and the cell.
     key: "confidence",
     header: (
-      <span title={SIGNAL_DENSITY_TITLE}>sinyal yoğ.</span>
+      <span title={SIGNAL_DENSITY_TITLE}>signal dens.</span>
     ),
     width: "96px",
     numeric: true,
@@ -504,7 +504,7 @@ function SignalDensityMeter({ value }: { value: number }) {
   return (
     <span
       role="meter"
-      aria-label={`sinyal yoğunluğu ${Math.round(pct)}%`}
+      aria-label={`signal density ${Math.round(pct)}%`}
       aria-valuenow={Math.round(pct)}
       aria-valuemin={0}
       aria-valuemax={100}

@@ -35,6 +35,37 @@ export function usePersistentNumber(key: string, fallback: number) {
   return [value, setValue] as const;
 }
 
+/**
+ * Persistence rule for pane controls (survey F3):
+ *
+ * - Whitelisted string/number options  -> `usePersistentOption`
+ * - Free numeric values                -> `usePersistentNumber`
+ * - Free single-string values          -> `usePersistentString`
+ * - Raw localStorage is ONLY allowed for structured values the hooks cannot
+ *   hold: JSON arrays/objects (HP/ISIN/HFS/OSA legs), comma-set semantics
+ *   (TECH, TRDH), and async-validated values whose option list is only known
+ *   after load (OMON/IVOL expiry vs the loaded expiry list). Keep the
+ *   `showme.<code>.<param>` key format in those cases too.
+ *
+ * All hooks store `String(value)` under the same key, so existing persisted
+ * values stay backward-compatible.
+ */
+export function usePersistentString(key: string, fallback: string) {
+  const [value, setValue] = useState<string>(() => readStoredString(key, fallback));
+  useEffect(() => {
+    if (typeof localStorage !== "undefined") {
+      localStorage.setItem(key, value);
+    }
+  }, [key, value]);
+  return [value, setValue] as const;
+}
+
+function readStoredString(key: string, fallback: string): string {
+  if (typeof localStorage === "undefined") return fallback;
+  const raw = localStorage.getItem(key);
+  return raw ?? fallback;
+}
+
 export function clampToOptions<T extends number>(
   value: number,
   options: readonly T[],

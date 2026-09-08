@@ -71,7 +71,7 @@ describe("BOT pane", () => {
       },
     });
     render(<BOTPane />);
-    const enableBtn = screen.getByRole("button", { name: /etkinleştir/i }) as HTMLButtonElement;
+    const enableBtn = screen.getByRole("button", { name: /enable/i }) as HTMLButtonElement;
     expect(enableBtn.disabled).toBe(true);
     const input = screen.getByPlaceholderText(/account_label/i);
     fireEvent.change(input, { target: { value: "main" } });

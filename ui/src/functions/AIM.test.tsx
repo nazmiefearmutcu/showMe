@@ -249,7 +249,7 @@ describe("AIM pane — honest empty states per data_mode", () => {
     render(<AIMPane code="AIM" />);
     const notice = screen.getByTestId("aim-mode-notice");
     expect(notice).toHaveAttribute("role", "status");
-    expect(notice.textContent ?? "").toMatch(/Broker yapılandırılmamış/i);
+    expect(notice.textContent ?? "").toMatch(/Broker not configured/i);
   });
 });
 
@@ -272,7 +272,7 @@ describe("AIM pane — symbol scoping + tabs", () => {
     fireEvent.click(screen.getByRole("tab", { name: /History/i }));
     expect(screen.queryByText("BTCUSDT")).toBeNull();
     expect(screen.getByText("AAPL")).toBeInTheDocument();
-    expect(screen.getByLabelText(/durum: filled/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/status: filled/i)).toBeInTheDocument();
   });
 });
 
@@ -284,19 +284,19 @@ describe("AIM pane — honesty fixes", () => {
     expect(screen.queryByText(/Filled Today/i)).toBeNull();
   });
 
-  it("cached_snapshot → notice explains 'son anlık görüntü' (degraded reason)", () => {
+  it("cached_snapshot → notice explains 'last snapshot' (degraded reason)", () => {
     setMockFn({ state: "ok", ...cachedPayload() });
     render(<AIMPane code="AIM" />);
     const notice = screen.getByTestId("aim-mode-notice");
     expect(notice).toHaveAttribute("role", "status");
-    expect(notice.textContent ?? "").toMatch(/son anlık görüntü/i);
+    expect(notice.textContent ?? "").toMatch(/last snapshot/i);
   });
 
   it("derives the header freshness from server as_of (not the client clock)", () => {
     setMockFn({ state: "ok", ...okPayload() });
     render(<AIMPane code="AIM" />);
     // as_of = 11:55 UTC; client clock frozen at 12:00 — must show 11:55.
-    const veri = screen.getByText(/Veri:/i);
+    const veri = screen.getByText(/Data:/i);
     expect(veri.textContent ?? "").toContain("11:55");
     expect(veri.textContent ?? "").not.toContain("12:00");
   });
@@ -307,7 +307,7 @@ describe("AIM pane — a11y + display", () => {
     setMockFn({ state: "ok", ...okPayload() });
     const { container } = render(<AIMPane code="AIM" />);
     // Two buy orders are open (AAPL + BTC) → both carry the buy aria-label.
-    const buys = screen.getAllByLabelText(/yön: alış/i);
+    const buys = screen.getAllByLabelText(/direction: long/i);
     expect(buys.length).toBeGreaterThan(0);
     // It is a design-system Pill, not the old hand-rolled span.
     expect(buys[0].classList.contains("ds-pill")).toBe(true);
@@ -332,6 +332,6 @@ describe("AIM pane — a11y + display", () => {
   it("labels the data_mode pill with a human-readable mode explanation", () => {
     setMockFn({ state: "ok", ...okPayload() });
     render(<AIMPane code="AIM" />);
-    expect(screen.getByLabelText(/Veri modu: Canlı/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/Data mode: Live/i)).toBeInTheDocument();
   });
 });

@@ -25,21 +25,15 @@
  *                        are neutralised.
  *   6. Density         — one space-step tighter on titlebar/header padding;
  *                        interactive targets lifted to the 24px floor.
- *   7. A11y floor      — :focus-visible rings re-asserted on inputs that
- *                        kill the global outline; no aria removed.
+ *   7. A11y floor      — the global :focus-visible ring (tokens.css)
+ *                        covers every input; no aria removed.
  */
 
 /* ============================================================
- * Focus — re-assert the accent ring where index.css sets
- * `outline: none` on the element itself (tokens.css ships the
- * global :focus-visible ring; these inputs opt out today).
+ * Focus — tokens.css ships the global :focus-visible ring
+ * (box-shadow) and it applies to every shell input; no extra
+ * outline is layered on top (was a triple stacked indicator).
  * ============================================================ */
-div.symbol-bar-host .symbol-bar-host__input:focus-visible,
-aside.sidebar .sidebar__search-input:focus-visible,
-div.preset-menu .preset-menu__input:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
 
 /* ============================================================
  * Titlebar — trim + flatten the instrument bezel.
@@ -58,11 +52,15 @@ header.titlebar .titlebar__quick-action {
 }
 
 /* Accent discipline: the first nav item is not permanently lit;
-   only the routed-active item carries accent (selection). */
+   only the routed-active item carries accent (selection). The
+   demotion rule above out-specifies a single-class --active
+   selector, so the active rule doubles its class to tie (0,3,1)
+   and win on later source order — otherwise the ACTIVE first tab
+   ("Overview", the default landing route) renders muted. */
 header.titlebar .titlebar__market-nav-btn:first-child {
   color: var(--text-secondary);
 }
-header.titlebar .titlebar__market-nav-btn--active {
+header.titlebar .titlebar__market-nav-btn--active.titlebar__market-nav-btn--active {
   color: var(--text-display);
   background: var(--accent-soft);
   border-color: var(--accent);
@@ -179,6 +177,11 @@ aside.sidebar .sidebar-shortcut-row:hover {
 }
 aside.sidebar .sidebar-shortcut-row:hover .sidebar-shortcut__dot {
   background: var(--text-secondary);
+}
+/* Active row keeps its accent dot on hover (grey hover recolor must
+   not flip the selected row's semaphore). */
+aside.sidebar .sidebar-shortcut-row--active:hover .sidebar-shortcut__dot {
+  background: var(--accent);
 }
 aside.sidebar .sidebar-shortcut-row--active {
   background: var(--surface-2);

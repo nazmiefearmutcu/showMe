@@ -29,7 +29,7 @@ import {
   RefreshButton,
   SegmentedControl,
 } from "./function-controls";
-import { usePersistentOption } from "./function-control-state";
+import { usePersistentOption, usePersistentString } from "./function-control-state";
 import type { FunctionPaneProps } from "./registry-types";
 
 interface FLDSRow {
@@ -70,19 +70,14 @@ const CATEGORY_OPTIONS = [
 const CATEGORY_IDS = CATEGORY_OPTIONS.map((o) => o.value);
 type CategoryFilter = (typeof CATEGORY_IDS)[number];
 
-function readStoredPrefix(): string {
-  if (typeof localStorage === "undefined") return "";
-  return localStorage.getItem(PREFIX_KEY) ?? "";
-}
-
 export function FLDSPane({ code }: FunctionPaneProps) {
   const [category, setCategory] = usePersistentOption<CategoryFilter>(
     "showme.flds.category",
     CATEGORY_IDS,
     "all",
   );
-  const [draft, setDraft] = useState<string>(readStoredPrefix);
-  const [prefix, setPrefix] = useState<string>(readStoredPrefix);
+  const [prefix, setPrefix] = usePersistentString(PREFIX_KEY, "");
+  const [draft, setDraft] = useState<string>(prefix);
 
   const { state, data, error, refetch } = useFunction<FLDSData>({
     code,
@@ -106,9 +101,6 @@ export function FLDSPane({ code }: FunctionPaneProps) {
     const next = draft.trim().toLowerCase();
     setDraft(next);
     setPrefix(next);
-    if (typeof localStorage !== "undefined") {
-      localStorage.setItem(PREFIX_KEY, next);
-    }
   }
 
   const COLS: DataGridColumn<FLDSRow>[] = useMemo(

@@ -87,7 +87,7 @@ describe("BOT pane fixes", () => {
   it("save_disabled_when_empty — Kaydet disabled while strategy/credential/symbol blank", () => {
     render(<BOTPane />);
     fireEvent.click(screen.getAllByRole("button", { name: /^\+ yeni bot$/i })[0]);
-    const kaydet = screen.getByRole("button", { name: /^kaydet$/i }) as HTMLButtonElement;
+    const kaydet = screen.getByRole("button", { name: /^save$/i }) as HTMLButtonElement;
     expect(kaydet.disabled).toBe(true);
   });
 
@@ -96,7 +96,7 @@ describe("BOT pane fixes", () => {
     fireEvent.click(screen.getAllByRole("button", { name: /^\+ yeni bot$/i })[0]);
     fireEvent.change(screen.getByLabelText(/strateji/i), { target: { value: "s1" } });
     fireEvent.change(screen.getByLabelText(/^symbol$/i), { target: { value: "btc/usdt" } });
-    const kaydet = screen.getByRole("button", { name: /^kaydet$/i }) as HTMLButtonElement;
+    const kaydet = screen.getByRole("button", { name: /^save$/i }) as HTMLButtonElement;
     expect(kaydet.disabled).toBe(true);
     expect(screen.queryByTestId("bot-field-err-credential")).toBeInTheDocument();
   });
@@ -105,9 +105,9 @@ describe("BOT pane fixes", () => {
     render(<BOTPane />);
     fireEvent.click(screen.getAllByRole("button", { name: /^\+ yeni bot$/i })[0]);
     fireEvent.change(screen.getByLabelText(/strateji/i), { target: { value: "s1" } });
-    fireEvent.change(screen.getByLabelText(/bağlantı/i), { target: { value: "c1" } });
+    fireEvent.change(screen.getByLabelText(/connection/i), { target: { value: "c1" } });
     fireEvent.change(screen.getByLabelText(/^symbol$/i), { target: { value: "btc/usdt" } });
-    const kaydet = screen.getByRole("button", { name: /^kaydet$/i }) as HTMLButtonElement;
+    const kaydet = screen.getByRole("button", { name: /^save$/i }) as HTMLButtonElement;
     expect(kaydet.disabled).toBe(false);
   });
 
@@ -141,7 +141,7 @@ describe("BOT pane fixes", () => {
     const confirmInput = screen.getByTestId("bot-save-confirm-label") as HTMLInputElement;
     fireEvent.change(confirmInput, { target: { value: "main" } });
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: /^kaydet$/i }));
+      fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
     });
     // Pane passes the confirm label through to the store action.
     expect(saveSpy).toHaveBeenCalledWith("main");
@@ -165,7 +165,7 @@ describe("BOT pane fixes", () => {
     fireEvent.click(liveRadio);
     // Inline error + disabled Kaydet.
     expect(screen.getByTestId("bot-field-err-confirm-label")).toBeInTheDocument();
-    const kaydet = screen.getByRole("button", { name: /^kaydet$/i }) as HTMLButtonElement;
+    const kaydet = screen.getByRole("button", { name: /^save$/i }) as HTMLButtonElement;
     expect(kaydet.disabled).toBe(true);
     expect(saveSpy).not.toHaveBeenCalled();
   });
@@ -185,10 +185,10 @@ describe("BOT pane fixes", () => {
     render(<BOTPane />);
     fireEvent.click(screen.getAllByRole("button", { name: /^\+ yeni bot$/i })[0]);
     fireEvent.change(screen.getByLabelText(/strateji/i), { target: { value: "s1" } });
-    fireEvent.change(screen.getByLabelText(/bağlantı/i), { target: { value: "c1" } });
+    fireEvent.change(screen.getByLabelText(/connection/i), { target: { value: "c1" } });
     fireEvent.change(screen.getByLabelText(/^symbol$/i), { target: { value: "BTC/USDT" } });
 
-    const kaydet = screen.getByRole("button", { name: /^kaydet$/i }) as HTMLButtonElement;
+    const kaydet = screen.getByRole("button", { name: /^save$/i }) as HTMLButtonElement;
     fireEvent.click(kaydet);
     // After first click, the saving flag should disable the button.
     expect(kaydet.disabled).toBe(true);
@@ -216,7 +216,7 @@ describe("BOT pane fixes", () => {
       },
     });
     render(<BOTPane />);
-    fireEvent.change(screen.getByLabelText(/bağlantı/i), { target: { value: "" } });
+    fireEvent.change(screen.getByLabelText(/connection/i), { target: { value: "" } });
     expect(useBotStore.getState().draft?.credential_id).toBe("");
     expect(useBotStore.getState().draft?.exchange_id).toBe("");
   });

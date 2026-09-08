@@ -159,7 +159,7 @@ describe("BIO pane — a11y + display (loaded)", () => {
     // After a verify, the freshness is a shared relative label ("az önce"),
     // not the old hand-rolled "Ns ago" / "never".
     const btn = screen.getByRole("button", {
-      name: /Biyometrik doğrulama iste/i,
+      name: /Request biometric verification/i,
     });
     fireEvent.click(btn);
     const after = await screen.findByLabelText(/Last verify: DENIED/i);
@@ -179,7 +179,7 @@ describe("BIO pane — a11y + display (loaded)", () => {
 
     render(<BIOPane code="BIO" />);
     const btn = await screen.findByRole("button", {
-      name: /Biyometrik doğrulama iste/i,
+      name: /Request biometric verification/i,
     });
     expect(btn).toHaveAttribute("aria-busy", "false");
 
@@ -193,7 +193,7 @@ describe("BIO pane — a11y + display (loaded)", () => {
     await waitFor(() => expect(btn).toHaveAttribute("aria-busy", "false"));
   });
 
-  it("renders an unavailable verify `via` as 'Kullanılamıyor' (D1, honesty)", async () => {
+  it("renders an unavailable verify `via` as 'Unavailable' (D1, honesty)", async () => {
     // Browser/test mode: clicking Verify honestly resolves DENIED via unavailable.
     mockBio.result = {
       allowed: false,
@@ -203,10 +203,10 @@ describe("BIO pane — a11y + display (loaded)", () => {
     };
     render(<BIOPane code="BIO" />);
     const btn = await screen.findByRole("button", {
-      name: /Biyometrik doğrulama iste/i,
+      name: /Request biometric verification/i,
     });
     fireEvent.click(btn);
     const lastCard = await screen.findByLabelText(/Last verify: DENIED/i);
-    expect(lastCard.textContent ?? "").toMatch(/Kullanılamıyor/i);
+    expect(lastCard.textContent ?? "").toMatch(/Unavailable/i);
   });
 });

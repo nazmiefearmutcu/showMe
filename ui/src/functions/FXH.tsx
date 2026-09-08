@@ -23,6 +23,7 @@ import {
   StatusDivider,
   StatusSection,
 } from "@/design-system";
+import { formatNumberFixed } from "@/lib/format";
 import { useFunction } from "@/lib/useFunction";
 import {
   FunctionControlGroup,
@@ -533,10 +534,7 @@ function fmtMoney(v: number | null | undefined, signed: boolean): string {
 
 function fmtNum(v: number | null | undefined, digits = 2): string {
   if (v == null || !Number.isFinite(v)) return "—";
-  return v.toLocaleString("en-US", {
-    minimumFractionDigits: digits,
-    maximumFractionDigits: digits,
-  });
+  return formatNumberFixed(v, digits);
 }
 
 function fmtRate(v: number | null | undefined): string {

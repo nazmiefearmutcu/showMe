@@ -67,12 +67,12 @@ describe("CONN terminal-grade — F1 secret show/hide", () => {
     fireEvent.click(screen.getByText("Binance"));
     const secret = screen.getByLabelText(/api_secret/i, { selector: "input" }) as HTMLInputElement;
     expect(secret.type).toBe("password");
-    const toggle = screen.getByRole("button", { name: /göster: api_secret/i });
+    const toggle = screen.getByRole("button", { name: /show: api_secret/i });
     expect(toggle).toHaveAttribute("aria-pressed", "false");
     fireEvent.click(toggle);
     expect((screen.getByLabelText(/api_secret/i, { selector: "input" }) as HTMLInputElement).type).toBe("text");
     expect(
-      screen.getByRole("button", { name: /gizle: api_secret/i }),
+      screen.getByRole("button", { name: /hide: api_secret/i }),
     ).toHaveAttribute("aria-pressed", "true");
   });
 
@@ -81,7 +81,7 @@ describe("CONN terminal-grade — F1 secret show/hide", () => {
     fireEvent.click(screen.getByText("Binance"));
     const key = screen.getByLabelText(/^api_key$/i) as HTMLInputElement;
     expect(key.type).toBe("text");
-    expect(screen.queryByRole("button", { name: /göster: api_key/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /show: api_key/i })).toBeNull();
   });
 });
 
@@ -103,7 +103,7 @@ describe("CONN terminal-grade — F2 form a11y", () => {
       selectedExchangeId: "binance",
     });
     render(<CONNPane />);
-    expect(screen.getByLabelText(/yeniden yaz/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/re-type the account label/i)).toBeInTheDocument();
   });
 
   it("the add-form error region is role=status and shows store error", async () => {
@@ -122,9 +122,9 @@ describe("CONN terminal-grade — F2 form a11y", () => {
   it("Bağlan is disabled with a title reason until required fields are filled", () => {
     render(<CONNPane />);
     fireEvent.click(screen.getByText("Binance"));
-    const submit = screen.getByRole("button", { name: /bağlan/i });
+    const submit = screen.getByRole("button", { name: /connect/i });
     expect(submit).toBeDisabled();
-    expect(submit.getAttribute("title")).toMatch(/etiket/i);
+    expect(submit.getAttribute("title")).toMatch(/account label/i);
   });
 });
 
@@ -147,14 +147,14 @@ describe("CONN terminal-grade — F3 async signaling", () => {
   it("Bağlan exposes aria-busy when saving is set", () => {
     useExchangeStore.setState({ selectedExchangeId: "binance", saving: true });
     render(<CONNPane />);
-    const submit = screen.getByRole("button", { name: /bağlan|\.\.\./i });
+    const submit = screen.getByRole("button", { name: /connect|\.\.\./i });
     expect(submit).toHaveAttribute("aria-busy", "true");
     expect(submit).toBeDisabled();
   });
 });
 
 describe("CONN terminal-grade — F4 status Pill + last_verified", () => {
-  it("renders 'Denenmedi' status when never verified", () => {
+  it("renders 'Never tested' status when never verified", () => {
     useExchangeStore.setState({
       credentials: [{
         id: "abc", exchange_id: "binance", account_label: "main",
@@ -164,12 +164,12 @@ describe("CONN terminal-grade — F4 status Pill + last_verified", () => {
       selectedExchangeId: "binance",
     });
     render(<CONNPane />);
-    const statusRegion = screen.getByRole("status", { name: /durum: denenmedi/i });
+    const statusRegion = screen.getByRole("status", { name: /status: never tested/i });
     expect(statusRegion).toBeInTheDocument();
-    expect(screen.getByText(/son doğrulama: —/i)).toBeInTheDocument();
+    expect(screen.getByText(/last verified: —/i)).toBeInTheDocument();
   });
 
-  it("P2-2: only last_verified (no in-session test) → muted 'Daha önce doğrulandı', NOT green", () => {
+  it("P2-2: only last_verified (no in-session test) → muted 'Previously verified', NOT green", () => {
     const tenMinAgo = new Date(Date.now() - 10 * 60_000).toISOString();
     useExchangeStore.setState({
       credentials: [{
@@ -182,16 +182,16 @@ describe("CONN terminal-grade — F4 status Pill + last_verified", () => {
     render(<CONNPane />);
     // Honest: a stale prior-session verification does NOT claim live "Doğrulandı".
     expect(
-      screen.getByRole("status", { name: /durum: daha önce doğrulandı/i }),
+      screen.getByRole("status", { name: /status: previously verified/i }),
     ).toBeInTheDocument();
     expect(
-      screen.queryByRole("status", { name: /^durum: doğrulandı$/i }),
+      screen.queryByRole("status", { name: /^status: verified$/i }),
     ).toBeNull();
     // The relative-time context line still shows.
-    expect(screen.getByText(/son doğrulama:.*önce/i)).toBeInTheDocument();
+    expect(screen.getByText(/last verified:/i)).toBeInTheDocument();
   });
 
-  it("P2-2: an in-session successful test flips to green 'Doğrulandı'", async () => {
+  it("P2-2: an in-session successful test flips to green 'Verified'", async () => {
     const tenMinAgo = new Date(Date.now() - 10 * 60_000).toISOString();
     useExchangeStore.setState({
       credentials: [{
@@ -206,17 +206,17 @@ describe("CONN terminal-grade — F4 status Pill + last_verified", () => {
     render(<CONNPane />);
     // Before the test it is muted/stale.
     expect(
-      screen.getByRole("status", { name: /durum: daha önce doğrulandı/i }),
+      screen.getByRole("status", { name: /status: previously verified/i }),
     ).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /^test$/i }));
     await waitFor(() =>
       expect(
-        screen.getByRole("status", { name: /durum: doğrulandı/i }),
+        screen.getByRole("status", { name: /status: verified/i }),
       ).toBeInTheDocument(),
     );
   });
 
-  it("a failed test flips the status Pill to 'Başarısız'", async () => {
+  it("a failed test flips the status Pill to 'Failed'", async () => {
     useExchangeStore.setState({
       credentials: [{
         id: "abc", exchange_id: "binance", account_label: "main",
@@ -229,13 +229,13 @@ describe("CONN terminal-grade — F4 status Pill + last_verified", () => {
     render(<CONNPane />);
     fireEvent.click(screen.getByRole("button", { name: /^test$/i }));
     await waitFor(() =>
-      expect(screen.getByRole("status", { name: /durum: başarısız/i })).toBeInTheDocument(),
+      expect(screen.getByRole("status", { name: /status: failed/i })).toBeInTheDocument(),
     );
   });
 });
 
 describe("CONN terminal-grade — F6 Pill / Empty", () => {
-  it("renders permission as a Pill (salt okuma / okuma + işlem)", () => {
+  it("renders permission as a Pill (read-only / read + trade)", () => {
     useExchangeStore.setState({
       credentials: [
         {
@@ -250,8 +250,8 @@ describe("CONN terminal-grade — F6 Pill / Empty", () => {
       selectedExchangeId: "binance",
     });
     const { container } = render(<CONNPane />);
-    expect(screen.getByText("salt okuma").closest(".ds-pill")).not.toBeNull();
-    expect(screen.getByText("okuma + işlem").closest(".ds-pill")).not.toBeNull();
+    expect(screen.getByText("read-only").closest(".ds-pill")).not.toBeNull();
+    expect(screen.getByText("read + trade").closest(".ds-pill")).not.toBeNull();
     // Both rendered as design-system pills.
     expect(container.querySelectorAll(".ds-pill").length).toBeGreaterThanOrEqual(2);
   });
@@ -259,7 +259,7 @@ describe("CONN terminal-grade — F6 Pill / Empty", () => {
   it("shows the Empty state when the selected exchange has no credentials", () => {
     useExchangeStore.setState({ selectedExchangeId: "binance", credentials: [] });
     render(<CONNPane />);
-    expect(screen.getByText(/henüz bağlantı yok/i)).toBeInTheDocument();
+    expect(screen.getByText(/no connections yet/i)).toBeInTheDocument();
   });
 });
 

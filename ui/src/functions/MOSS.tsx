@@ -30,6 +30,7 @@ import {
   StatusDivider,
   StatusSection,
 } from "@/design-system";
+import { formatNumberFixed } from "@/lib/format";
 import { useFunction } from "@/lib/useFunction";
 import {
   FunctionControlGroup,
@@ -346,10 +347,7 @@ function fmtNum(v: unknown, digits: number): string {
   if (v == null) return "—";
   const n = typeof v === "number" ? v : Number(v);
   if (!Number.isFinite(n)) return "—";
-  return n.toLocaleString("en-US", {
-    minimumFractionDigits: digits,
-    maximumFractionDigits: digits,
-  });
+  return formatNumberFixed(n, digits);
 }
 
 function fmtPct(v: unknown): string {

@@ -150,7 +150,7 @@ describe("DEBT pane — load states (scoped live region)", () => {
     expect(busy).not.toBeNull();
     // The country grid is not yet mounted.
     expect(
-      container.querySelector('[aria-label="Ülke bazında devlet borcu"]'),
+      container.querySelector('[aria-label="Country-level government debt"]'),
     ).toBeNull();
   });
 
@@ -169,7 +169,7 @@ describe("DEBT pane — load states (scoped live region)", () => {
     setMockFn({ state: "ok", ...okPayload() });
     const { container } = render(<DEBTPane code="DEBT" />);
     const grid = container.querySelector(
-      '[aria-label="Ülke bazında devlet borcu"]',
+      '[aria-label="Country-level government debt"]',
     );
     expect(grid).not.toBeNull();
     expect(grid?.closest('[aria-live]')).toBeNull();
@@ -220,7 +220,7 @@ describe("DEBT pane — portfolio honesty", () => {
     const { container } = render(<DEBTPane code="DEBT" />);
     const note = container.querySelector('[data-testid="debt-portfolio-note"]');
     expect(note).not.toBeNull();
-    expect(note?.textContent ?? "").toMatch(/sadece makro/i);
+    expect(note?.textContent ?? "").toMatch(/macro view only/i);
   });
 
   it("distinguishes a null portfolio weight (—) from a real 0 (0.00%)", () => {
@@ -262,7 +262,7 @@ describe("DEBT pane — a11y (bars, labels)", () => {
       }),
     });
     render(<DEBTPane code="DEBT" />);
-    const bar = screen.getByRole("img", { name: /Eurozone: borç/i });
+    const bar = screen.getByRole("img", { name: /Eurozone: debt/i });
     expect(bar.getAttribute("aria-label") ?? "").not.toMatch(/Eurozone\s+Eurozone/);
   });
 
@@ -270,17 +270,17 @@ describe("DEBT pane — a11y (bars, labels)", () => {
     setMockFn({ state: "ok", ...okPayload() });
     const { container } = render(<DEBTPane code="DEBT" />);
     expect(
-      container.querySelector('[role="tablist"][aria-label="Bölge filtresi"]'),
+      container.querySelector('[role="tablist"][aria-label="Region filter"]'),
     ).not.toBeNull();
     expect(
-      container.querySelector('[aria-label="Ülke bazında devlet borcu"]'),
+      container.querySelector('[aria-label="Country-level government debt"]'),
     ).not.toBeNull();
   });
 
   it("labels the severity legend dots (not color-only)", () => {
     setMockFn({ state: "ok", ...okPayload() });
     render(<DEBTPane code="DEBT" />);
-    const legends = screen.getAllByRole("img", { name: /borç\/GSYİH|< 60|> 100|60/i });
+    const legends = screen.getAllByRole("img", { name: /debt\/GDP|< 60|> 100|60/i });
     expect(legends.length).toBeGreaterThan(0);
   });
 });

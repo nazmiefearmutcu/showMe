@@ -118,15 +118,15 @@ function statusFor(rec: CredentialRecord, lastTest: "idle" | "ok" | "err"): Conn
 
 function StatusPill({ status }: { status: ConnStatus }) {
   const map: Record<ConnStatus, { tone: "positive" | "negative" | "muted"; label: string }> = {
-    ok: { tone: "positive", label: "Doğrulandı" },
-    failed: { tone: "negative", label: "Başarısız" },
-    stale: { tone: "muted", label: "Daha önce doğrulandı" },
-    untested: { tone: "muted", label: "Denenmedi" },
+    ok: { tone: "positive", label: "Verified" },
+    failed: { tone: "negative", label: "Failed" },
+    stale: { tone: "muted", label: "Previously verified" },
+    untested: { tone: "muted", label: "Never tested" },
   };
   const { tone, label } = map[status];
   // role=status so SRs announce the change; the Pill carries the visible label.
   return (
-    <span role="status" aria-label={`Durum: ${label}`}>
+    <span role="status" aria-label={`Status: ${label}`}>
       <Pill tone={tone} variant="soft" withDot>
         {label}
       </Pill>
@@ -137,11 +137,11 @@ function StatusPill({ status }: { status: ConnStatus }) {
 function PermissionPill({ canTrade }: { canTrade: boolean }) {
   return canTrade ? (
     <Pill tone="warn" variant="soft" withDot={false}>
-      okuma + işlem
+      read + trade
     </Pill>
   ) : (
     <Pill tone="muted" variant="soft" withDot={false}>
-      salt okuma
+      read-only
     </Pill>
   );
 }
@@ -192,8 +192,8 @@ function CredentialRow({
         </div>
         <span style={{ fontSize: 11, color: "var(--fg-2)" }}>
           {verifiedLabel
-            ? `Son doğrulama: ${verifiedLabel}`
-            : "Son doğrulama: — (Denenmedi)"}
+            ? `Last verified: ${verifiedLabel}`
+            : "Last verified: — (Never tested)"}
         </span>
       </div>
       <button
@@ -202,7 +202,7 @@ function CredentialRow({
         // P3-1 — associate the live test-result region with this trigger so
         // SR users hear the outcome announced against the Test button.
         aria-describedby={testResultId}
-        title={testingInFlight ? "Test sürüyor…" : undefined}
+        title={testingInFlight ? "Test in progress…" : undefined}
         onClick={async () => {
           // Round 24 — short-circuit a 2nd rapid click; the store-level
           // `testing.has(id)` guard is the canonical seal.
@@ -236,7 +236,7 @@ function CredentialRow({
               whiteSpace: "nowrap",
             }}
           >
-            İşlem iznine yükseltmek için hesap etiketini yeniden yaz: {rec.account_label}
+            Re-type the account label to escalate to trade permission: {rec.account_label}
           </label>
           <input
             id={upgradeInputId}
@@ -249,9 +249,9 @@ function CredentialRow({
                   aria-busy={upgradingInFlight}
                   title={
                     upgradingInFlight
-                      ? "Yükseltme sürüyor…"
+                      ? "Escalation in progress…"
                       : confirm !== rec.account_label
-                        ? "Onaylamak için hesap etiketini birebir yaz."
+                        ? "Type the account label exactly to confirm."
                         : undefined
                   }
                   disabled={upgradingInFlight || confirm !== rec.account_label}>
@@ -262,7 +262,7 @@ function CredentialRow({
       {botsUnknown && (
         <span
           data-testid={`conn-bots-unknown-${rec.id}`}
-          title="Bot bağımlılıkları doğrulanamadı — silmeden önce kontrol et."
+          title="Bot dependencies could not be verified — check before deleting."
           style={{
             fontSize: 11,
             color: "var(--accent-warn)",
@@ -282,9 +282,9 @@ function CredentialRow({
         disabled={dependentLoading || deletingInFlight}
         title={
           dependentLoading
-            ? "Bot bağımlılıkları kontrol ediliyor…"
+            ? "Checking bot dependencies…"
             : deletingInFlight
-              ? "Silme sürüyor…"
+              ? "Deleting…"
               : undefined
         }
         onClick={async () => {
@@ -312,7 +312,7 @@ function CredentialRow({
           onDelete(rec.id, deps);
         }}
       >
-        {(dependentLoading || deletingInFlight) ? "..." : "Sil"}
+        {(dependentLoading || deletingInFlight) ? "..." : "Delete"}
       </button>
       {testMsg && (
         <div
@@ -363,11 +363,11 @@ export function resolveDeletePlan(
   const unknown = dependents === null || dependents.bots_unknown === true;
   if (unknown) {
     return {
-      title: "Bot bağımlılıkları doğrulanamadı",
+      title: "Bot dependencies could not be verified",
       body:
-        `"${accountLabel}" bağlantısının kaç bota bağlı olduğu sunucu tarafından ` +
-        `doğrulanamadı (her iki uç nokta da başarısız). Silme işlemi muhtemelen ` +
-        `kategorize edilmemiş botları etkileyecek — devam edilsin mi?`,
+        `How many bots depend on the "${accountLabel}" connection could not be ` +
+        `verified server-side (both endpoints failed). Deleting will likely ` +
+        `affect uncategorized bots — continue?`,
       force: true,
     };
   }
@@ -375,14 +375,14 @@ export function resolveDeletePlan(
     return {
       title: `${botCount} bot etkilenecek`,
       body:
-        `Bu credential ${botCount} bota bağlı. Silme işlemi bu botları otomatik olarak ` +
-        `devre dışı bırakacak. Devam edilsin mi?`,
+        `This credential is used by ${botCount} bots. Deleting will automatically ` +
+        `disable them. Continue?`,
       force: true,
     };
   }
   return {
-    title: "Bağlantıyı sil",
-    body: `"${accountLabel}" bağlantısı silinsin mi?`,
+    title: "Delete connection",
+    body: `Delete the "${accountLabel}" connection?`,
     force: false,
   };
 }
@@ -418,7 +418,7 @@ function ExchangeForm({ entry }: { entry: CatalogEntry }) {
   const labelMissing = label.trim().length === 0;
   const canSubmit = !labelMissing && missingRequired.length === 0;
   const disabledReason = labelMissing
-    ? "Hesap etiketi gerekli."
+    ? "Account label required."
     : missingRequired.length
       ? `Zorunlu alanlar eksik: ${missingRequired.join(", ")}`
       : undefined;
@@ -435,11 +435,11 @@ function ExchangeForm({ entry }: { entry: CatalogEntry }) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-      <h3>{entry.display_name} bağlantıları</h3>
+      <h3>{entry.display_name} connections</h3>
       {myCreds.length === 0 && (
         <Empty
-          title="Henüz bağlantı yok"
-          body={`${entry.display_name} için kayıtlı bir API anahtarı yok. Aşağıdan ekle.`}
+          title="No connections yet"
+          body={`No API key registered for ${entry.display_name}. Add one below.`}
         />
       )}
       {myCreds.map((rec) => (
@@ -453,7 +453,7 @@ function ExchangeForm({ entry }: { entry: CatalogEntry }) {
         />
       ))}
 
-      <h4>Yeni bağlantı ekle</h4>
+      <h4>Add new connection</h4>
       <form
         onSubmit={async (e) => {
           // Round 24 CRITICAL 5 — Enter in any input fires `submit`. The
@@ -510,9 +510,9 @@ function ExchangeForm({ entry }: { entry: CatalogEntry }) {
                 {secret && (
                   <button
                     type="button"
-                    aria-label={`${shown ? "Gizle" : "Göster"}: ${field}`}
+                    aria-label={`${shown ? "Hide" : "Show"}: ${field}`}
                     aria-pressed={shown}
-                    title={shown ? "Gizle" : "Göster"}
+                    title={shown ? "Hide" : "Show"}
                     onClick={() =>
                       setRevealed((r) => ({ ...r, [field]: !r[field] }))
                     }
@@ -531,13 +531,13 @@ function ExchangeForm({ entry }: { entry: CatalogEntry }) {
             checked={permsTrade}
             onChange={(e) => setPermsTrade(e.target.checked)}
           />
-          Okuma + işlem (trade) izni
+          Read + trade permission
         </label>
         {permsTrade && (
           <div className="u-text-negative">
-            Dikkat: bu kimlik bilgisi gerçek hesapta emir gönderebilir. Borsa tarafında da
-            "trading" scope'unu gerçekten verdiğinden ve API anahtarını IP'ye bağladığından
-            emin ol.
+            Caution: this credential can place orders on the real account. Make sure the
+            exchange actually grants the "trading" scope and that you have IP-restricted
+            the API key.
           </div>
         )}
         <button
@@ -548,7 +548,7 @@ function ExchangeForm({ entry }: { entry: CatalogEntry }) {
             submitting || storeSaving ? "Kaydediliyor…" : disabledReason
           }
         >
-          {(submitting || storeSaving) ? "..." : "Bağlan"}
+          {(submitting || storeSaving) ? "..." : "Connect"}
         </button>
         {/* F2 — add-form error region (announced). */}
         <div
@@ -568,7 +568,7 @@ function ExchangeForm({ entry }: { entry: CatalogEntry }) {
         open={pendingDelete !== null}
         title={pendingDelete?.plan.title ?? ""}
         body={pendingDelete?.plan.body}
-        confirmLabel="Sil"
+        confirmLabel="Delete"
         destructive
         busy={pendingDelete ? deleting.has(pendingDelete.id) : false}
         onConfirm={() => {
@@ -656,10 +656,10 @@ export function CONNPane() {
     <div style={{ display: "grid", gridTemplateColumns: "minmax(280px, 1fr) 2fr", gap: 16, height: "100%" }}>
       <div style={{ display: "flex", flexDirection: "column", gap: 8, overflow: "hidden" }}>
         <input
-          placeholder="Borsa ara…"
+          placeholder="Search exchanges…"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          aria-label="Borsa ara"
+          aria-label="Search exchanges"
         />
         <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
           {visibleAssetClasses.map((a) => (
@@ -668,7 +668,7 @@ export function CONNPane() {
               onClick={toggle(assetClasses, setAssetClasses, a)}
               aria-pressed={assetClasses.includes(a)}
               aria-label={a}
-              title={`Varlık sınıfı filtresi: ${a}`}
+              title={`Asset class filter: ${a}`}
               style={{
                 opacity: assetClasses.includes(a) ? 1 : 0.55,
                 fontSize: 11,
@@ -685,7 +685,7 @@ export function CONNPane() {
               onClick={toggle(regions, setRegions, r)}
               aria-pressed={regions.includes(r)}
               aria-label={r}
-              title={`Bölge filtresi: ${r}`}
+              title={`Region filter: ${r}`}
               style={{
                 opacity: regions.includes(r) ? 1 : 0.55,
                 fontSize: 11,
@@ -732,7 +732,7 @@ export function CONNPane() {
                 </div>
                 {credCount(e.id) > 0 && (
                   <span className="u-text-positive" style={{ fontSize: 11 }}>
-                    Bağlı: {credCount(e.id)}
+                    Connected: {credCount(e.id)}
                   </span>
                 )}
               </button>
@@ -740,8 +740,8 @@ export function CONNPane() {
           })}
           {!loading && filtered.length === 0 && (
             <Empty
-              title="Eşleşen borsa yok"
-              body="Arama veya filtreleri gevşetmeyi dene."
+              title="No matching exchange"
+              body="Try loosening the search or filters."
             />
           )}
         </div>
@@ -751,7 +751,7 @@ export function CONNPane() {
           <ExchangeForm key={selected.id} entry={selected} />
         ) : (
           <div style={{ color: "var(--text-primary)" }}>
-            Soldan bir borsa seç.
+            Select an exchange on the left.
           </div>
         )}
       </div>

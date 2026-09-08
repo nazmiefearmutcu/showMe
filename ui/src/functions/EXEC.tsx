@@ -24,6 +24,7 @@ import {
   StatusDivider,
   StatusSection,
 } from "@/design-system";
+import { formatNumberFixed } from "@/lib/format";
 import { useFunction } from "@/lib/useFunction";
 import { defaultSymbolForFunction } from "@/lib/symbols";
 import {
@@ -405,10 +406,7 @@ function fmtHm(tsMs: number | null | undefined): string {
 
 function fmtNum(v: number | null | undefined, digits: number): string {
   if (v == null || !Number.isFinite(v)) return "—";
-  return v.toLocaleString("en-US", {
-    minimumFractionDigits: digits,
-    maximumFractionDigits: digits,
-  });
+  return formatNumberFixed(v, digits);
 }
 
 function fmtBps(v: number | null | undefined): string {

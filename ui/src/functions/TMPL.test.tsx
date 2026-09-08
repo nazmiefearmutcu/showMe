@@ -40,13 +40,13 @@ describe("TMPL pane", () => {
     expect(adInput.value).toBe("RSI MR");
   });
 
-  it("Oluştur button calls instantiate", async () => {
+  it("Create button calls instantiate", async () => {
     const spy = vi.spyOn(useTemplateStore.getState(), "instantiate")
       .mockResolvedValue({ template_id: "rsi-mean-revert", strategy: { id: "abc" } as never });
     render(<TMPLPane />);
     fireEvent.click(screen.getByText("RSI MR"));
     fireEvent.click(screen.getByRole("button", { name: /kullan/i }));
-    fireEvent.click(screen.getByRole("button", { name: /oluştur/i }));
+    fireEvent.click(screen.getByRole("button", { name: /create/i }));
     // Wait a tick for the promise to resolve
     await new Promise(resolve => setTimeout(resolve, 0));
     expect(spy).toHaveBeenCalled();
@@ -57,7 +57,7 @@ describe("TMPL pane", () => {
     render(<TMPLPane />);
     fireEvent.click(screen.getByText("RSI MR"));
     fireEvent.click(screen.getByRole("button", { name: /kullan/i }));
-    fireEvent.click(screen.getByRole("button", { name: /kapat/i }));
+    fireEvent.click(screen.getByRole("button", { name: /close/i }));
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 });

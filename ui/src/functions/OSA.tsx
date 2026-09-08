@@ -26,6 +26,7 @@ import {
   StatusDivider,
   StatusSection,
 } from "@/design-system";
+import { formatNumber } from "@/lib/format";
 import { useFunction } from "@/lib/useFunction";
 import {
   FunctionControlGroup,
@@ -769,7 +770,7 @@ function computeBreakevens(curve: OsaCurvePoint[]): number[] {
 function fmtNum(v: number | null | undefined, digits = 2): string {
   const n = num(v);
   if (n == null) return "—";
-  return n.toLocaleString("en-US", { maximumFractionDigits: digits });
+  return formatNumber(n, digits);
 }
 
 function fmtSigned(v: number | null | undefined): string {

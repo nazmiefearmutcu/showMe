@@ -30,8 +30,8 @@ describe("BOTS pane", () => {
   it("shows zero KPIs + empty placeholders", () => {
     render(<BOTSPane />);
     expect(screen.getByText(/toplam bot/i)).toBeInTheDocument();
-    expect(screen.getByText(/henüz bot yok/i)).toBeInTheDocument();
-    expect(screen.getByText(/henüz sinyal yok/i)).toBeInTheDocument();
+    expect(screen.getByText(/no bots yet/i)).toBeInTheDocument();
+    expect(screen.getByText(/no signals yet/i)).toBeInTheDocument();
   });
 
   it("renders bot table rows", () => {
@@ -133,7 +133,7 @@ describe("BOTS pane", () => {
     render(<BOTSPane />);
     const cell = screen.getByTestId("bots-signal-count-a");
     expect(cell.textContent).toBe("2");
-    expect(cell.getAttribute("title")).toMatch(/son 2 sinyal/);
+    expect(cell.getAttribute("title")).toMatch(/last 2 signals/);
   });
 
   // ─── BUG #6 (timezone) ────────────────────────────────────────────────
@@ -203,7 +203,7 @@ describe("BOTS pane", () => {
     useBotsSupervisionStore.setState({ loadAll: spy } as never);
     render(<BOTSPane />);
     const btn = screen.getByTestId("bots-refresh-all");
-    expect(btn.textContent).toContain("Tümünü yenile");
+    expect(btn.textContent).toContain("Refresh all");
     await act(async () => {
       btn.click();
     });

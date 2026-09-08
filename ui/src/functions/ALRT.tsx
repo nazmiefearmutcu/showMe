@@ -175,16 +175,16 @@ export function ALRTPane({ code }: FunctionPaneProps) {
     // "" instead of silently coercing to a non-finite number.
     const parsed = parseDecimalSafe(threshold);
     if (!sym) {
-      toast.error("Sembol gerekli");
+      toast.error("Symbol required");
       return;
     }
     if (!parsed.ok) {
       toast.error(
         parsed.reason === "empty"
-          ? "Threshold gerekli"
+          ? "Threshold required"
           : parsed.reason === "not_finite"
-            ? "Threshold sonlu bir sayı olmalı (Infinity reddedildi)"
-            : "Threshold geçerli bir sayı değil",
+            ? "Threshold must be a finite number (Infinity rejected)"
+            : "Threshold is not a valid number",
       );
       return;
     }
@@ -609,8 +609,8 @@ export function ALRTPane({ code }: FunctionPaneProps) {
               {thresholdParsed.ok
                 ? "Threshold 0 olamaz."
                 : thresholdParsed.reason === "not_finite"
-                  ? "Sonlu bir sayı gir (Infinity reddedildi)."
-                  : "Geçerli bir sayı gir."}
+                  ? "Enter a finite number (Infinity rejected)."
+                  : "Enter a valid number."}
             </div>
           )}
           <div style={previewStyle}>

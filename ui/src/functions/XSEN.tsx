@@ -155,7 +155,7 @@ export function XSENPane({ code, symbol }: FunctionPaneProps) {
   // of the last spoken message so re-renders (hover, expand) don't re-announce.
   useEffect(() => {
     if (state !== "ok" || !data) return;
-    const msg = `${data.post_count ?? 0} gönderi yüklendi, ruh hali ${data.mood ?? "—"}`;
+    const msg = `${data.post_count ?? 0} posts loaded, mood ${data.mood ?? "—"}`;
     if (lastAnnouncedRef.current === msg) return;
     lastAnnouncedRef.current = msg;
     setAnnouncement(msg);
@@ -280,10 +280,10 @@ export function XSENPane({ code, symbol }: FunctionPaneProps) {
               fetched_at. Distinct from the analysis-duration field below. */}
           <span
             data-testid="xsen-fetched-at"
-            title="Veri alındı: bu sonucun sunulduğu (analizin tamamlandığı) an. Arama sonuçları sorgu başına ~30 dk'ya kadar önbelleğe alınmış olabilir."
+            title="Data fetched: when this result was served (analysis completed). Search results may be cached for up to ~30 min per query."
           >
             <StatusSection
-              label="VERİ ALINDI"
+              label="DATA FETCHED"
               value={
                 data?.fetched_at
                   ? (relativeTimeLabel(data.fetched_at) ?? "—")
@@ -295,9 +295,9 @@ export function XSENPane({ code, symbol }: FunctionPaneProps) {
           <StatusDivider />
           {/* F1: relabel scrape_seconds — it is processing duration (how long
               scrape+classify took), NOT data freshness. */}
-          <span title="Analiz süresi: kazıma + sınıflandırma kaç saniye sürdü. Verinin tazeliği DEĞİL — bunun için 'VERİ ALINDI'ya bakın.">
+          <span title="Analysis time: how long scraping + classification took. NOT data freshness — see 'DATA FETCHED' for that.">
             <StatusSection
-              label="ANALİZ SÜRESİ"
+              label="ANALYSIS TIME"
               value={data?.scrape_seconds != null ? `${data.scrape_seconds}s` : "—"}
               tone="neutral"
             />
@@ -378,8 +378,8 @@ export function XSENPane({ code, symbol }: FunctionPaneProps) {
             onClick={run}
             disabled={state === "loading"}
             aria-busy={state === "loading"}
-            aria-label={state === "loading" ? "X analizi çalışıyor" : "X analizini çalıştır"}
-            title={state === "loading" ? "Analiz çalışıyor — bitince yeniden çalıştırabilirsiniz" : undefined}
+            aria-label={state === "loading" ? "X analysis running" : "Run X analysis"}
+            title={state === "loading" ? "Analysis running — you can re-run it when it finishes" : undefined}
           >
             {state === "loading" ? "Working…" : "Run"}
           </button>
@@ -531,10 +531,10 @@ export function XSENPane({ code, symbol }: FunctionPaneProps) {
         <PaneFooter>
           <span>scraper · {scrapeSource}</span>
           <span>device · {data?.device ?? "—"}</span>
-          <span title="Veri alındı: bu sonucun sunulduğu an (arama listesi ~30 dk'ya kadar önbellekli olabilir)">
-            alındı · {data?.fetched_at ? (relativeTimeLabel(data.fetched_at) ?? "—") : "—"}
+          <span title="Data fetched: when this result was served (the search list may be cached for up to ~30 min)">
+            fetched · {data?.fetched_at ? (relativeTimeLabel(data.fetched_at) ?? "—") : "—"}
           </span>
-          <span title="Analiz süresi (kazıma + sınıflandırma), tazelik değil">
+          <span title="Analysis time (scraping + classification), not freshness">
             analiz · {data?.scrape_seconds != null ? `${data.scrape_seconds}s` : "—"}
           </span>
           <span>
@@ -559,12 +559,12 @@ function ScoringDisclosure({ fetchedAt }: { fetchedAt?: string }) {
   const fresh = fetchedAt ? relativeTimeLabel(fetchedAt) : null;
   return (
     <p data-testid="xsen-scoring-note" style={scoringNoteStyle}>
-      Duygu skoru, yerel çalışan ince ayarlı bir <strong className="u-text-primary">RoBERTa</strong>{" "}
-      modeliyle (<code>showme_x_v1</code>, 3 görev başlığı) üretilir — LLM ya da anahtar-kelime
-      sezgiseli değildir. Arama sonuçları sorgu başına ~30 dakikaya kadar önbelleğe alınmış olabilir;
-      her gönderinin etkileşimi (beğeni/RT) her çalıştırmada tazelenir — yani akış gerçek zamanlıya
-      yakındır, garantili canlı değildir.
-      {fresh ? <span className="u-text-mute"> Veri alındı: {fresh}.</span> : null}
+      The sentiment score is produced by a locally served fine-tuned <strong className="u-text-primary">RoBERTa</strong>{" "}
+      model (<code>showme_x_v1</code>, 3 task heads) — not an LLM or a keyword
+      heuristic. Search results may be cached for up to ~30 minutes per query;
+      each post's engagement (likes/RTs) is refreshed on every run — so the feed is
+      near-real-time, not guaranteed live.
+      {fresh ? <span className="u-text-mute"> Data fetched: {fresh}.</span> : null}
     </p>
   );
 }
@@ -654,7 +654,7 @@ function BullishGauge({ score }: { score: number }) {
     <div
       className="xsen-gauge"
       role="meter"
-      aria-label="Yükseliş skoru"
+      aria-label="Bullish score"
       aria-valuenow={clamped}
       aria-valuemin={-1}
       aria-valuemax={1}
@@ -727,10 +727,10 @@ function DistributionCard({
   // positive %67, neutral %20, negative %13"). The visual bars carry the same
   // information sighted users see.
   const ariaLabel = entries.length
-    ? `${title} dağılımı: ${entries
+    ? `${title} breakdown: ${entries
         .map(([label, value]) => `${label} ${formatPercent(value, { digits: 0 })}`)
         .join(", ")}`
-    : `${title} dağılımı: veri yok`;
+    : `${title} breakdown: no data`;
   return (
     <Card>
       <CardHeader trailing={`${entries.length}`}>{title}</CardHeader>
@@ -837,10 +837,10 @@ function ExamplesSection({
                           </span>
                           <span
                             className="u-text-mute u-text-10"
-                            title={item.date || "tarih yok"}
+                            title={item.date || "no date"}
                             data-testid="xsen-tweet-date"
                           >
-                            · {ago ?? "tarih yok"}
+                            · {ago ?? "no date"}
                           </span>
                           <span className="u-flex-1" />
                           <button
@@ -848,7 +848,7 @@ function ExamplesSection({
                             onClick={() => onToggle(key)}
                             className="btn btn--ghost xsen-tweet__toggle"
                             aria-expanded={isExpanded}
-                            aria-label={isExpanded ? "gerekçeyi kapat" : "gerekçeyi aç"}
+                            aria-label={isExpanded ? "collapse rationale" : "expand rationale"}
                           >
                             {isExpanded ? "−" : "+"}
                           </button>
@@ -867,7 +867,7 @@ function ExamplesSection({
                               target="_blank"
                               rel="noopener noreferrer"
                               className="xsen-tweet__open"
-                              aria-label={`@${item.user || "x"} gönderisini aç`}
+                              aria-label={`Open @${item.user || "x"} post`}
                             >
                               open ↗
                             </a>
@@ -875,10 +875,10 @@ function ExamplesSection({
                         </div>
                         {isExpanded ? (
                           <div style={tweetRationaleStyle}>
-                            <strong className="xsen-tweet__rationale-title">RoBERTa sınıflandırması</strong>
+                            <strong className="xsen-tweet__rationale-title">RoBERTa classification</strong>
                             <p className="xsen-tweet__rationale">
-                              RoBERTa modeli <strong className="u-text-primary">{kind}</strong> · duygu <strong className="u-text-primary">{item.emotion}</strong> · tema <strong className="u-text-primary">{item.topic}</strong> olarak sınıflandırdı.
-                              Etkileşim-ağırlıklı skor {item.score?.toFixed?.(3) ?? "—"} (beğeni: {formatNumber(item.likes ?? 0)}, RT: {formatNumber(item.retweets ?? 0)}).
+                              The RoBERTa model classified this as <strong className="u-text-primary">{kind}</strong> · sentiment <strong className="u-text-primary">{item.emotion}</strong> · topic <strong className="u-text-primary">{item.topic}</strong>.
+                              Engagement-weighted score {item.score?.toFixed?.(3) ?? "—"} (likes: {formatNumber(item.likes ?? 0)}, RTs: {formatNumber(item.retweets ?? 0)}).
                             </p>
                           </div>
                         ) : null}
@@ -910,10 +910,10 @@ function SentimentDotInline({ sentiment }: { sentiment: string }) {
   // A4: color is not the sole signal — label the dot for screen readers.
   const label =
     tone === "positive"
-      ? "olumlu gönderi"
+      ? "positive post"
       : tone === "negative"
-        ? "olumsuz gönderi"
-        : "nötr gönderi";
+        ? "negative post"
+        : "neutral post";
   return (
     <span
       className="xsen-sent-dot"

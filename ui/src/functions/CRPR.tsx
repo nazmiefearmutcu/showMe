@@ -596,21 +596,21 @@ export function CRPRPane({ code, symbol }: FunctionPaneProps) {
                           // No marked bucket → a meter without aria-valuenow is
                           // invalid ARIA; degrade to a labelled group.
                           role: "group",
-                          "aria-label": "Kredi notu merdiveni (işaretli kova yok)",
+                          "aria-label": "Credit rating ladder (no binned grades)",
                         })}
                   >
                     {visibleLadder.map((r) => {
                       const marked = !!r.marker || r.grade === impliedRating;
                       const isIG = r.tone === "ig";
                       const gradeKind = isIG
-                        ? "yatırım yapılabilir"
-                        : "spekülatif";
+                        ? "investment grade"
+                        : "speculative";
                       return (
                         <div
                           key={r.grade}
                           aria-label={
                             marked
-                              ? `${r.grade} — işaretli kredi notu kovası (${gradeKind})`
+                              ? `${r.grade} — binned credit grade (${gradeKind})`
                               : `${r.grade} (${gradeKind})`
                           }
                           style={{
@@ -661,14 +661,14 @@ export function CRPRPane({ code, symbol }: FunctionPaneProps) {
                   <dl style={legendStyle}>
                     <dd
                       role="img"
-                      aria-label="Yatırım yapılabilir (investment grade)"
+                      aria-label="Investment grade"
                       style={{ margin: 0, color: "var(--positive)" }}
                     >
                       <span aria-hidden>●</span> Investment
                     </dd>
                     <dd
                       role="img"
-                      aria-label="Spekülatif (speculative grade)"
+                      aria-label="Speculative grade"
                       style={{ margin: 0, color: "var(--negative)" }}
                     >
                       <span aria-hidden>●</span> Speculative

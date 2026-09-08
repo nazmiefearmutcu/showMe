@@ -147,10 +147,10 @@ export function OrderTicket({ credentialId, brokerName, accountLabel }: Props) {
       ? "BTC-PERP"
       : "BTC/USDT";
   const symbolHint = EQUITY_EXCHANGE_IDS.has(exchangeId.toLowerCase())
-    ? "Beklenen format: TICKER (örn. AAPL, BRK.B)."
+    ? "Expected format: TICKER (e.g. AAPL, BRK.B)."
     : PERP_EXCHANGE_IDS.has(exchangeId.toLowerCase())
-      ? "Beklenen format: BASE-PERP veya BASE/QUOTE:QUOTE."
-      : "Beklenen format: BASE/QUOTE veya BASE/QUOTE:QUOTE.";
+      ? "Expected format: BASE-PERP or BASE/QUOTE:QUOTE."
+      : "Expected format: BASE/QUOTE or BASE/QUOTE:QUOTE.";
   const qtyValid = !qtyErr && Number.isFinite(t.quantity) && t.quantity > 0;
   const limitValid = !showLimit || (!limitErr && t.limitPrice != null && t.limitPrice > 0);
   const stopValid = !showStop || (!stopErr && t.stopPrice != null && t.stopPrice > 0);
@@ -159,8 +159,8 @@ export function OrderTicket({ credentialId, brokerName, accountLabel }: Props) {
   return (
     <div className="order-ticket">
       <div className="order-ticket__head">
-        <strong>Yeni emir — {brokerName}</strong>
-        <button type="button" onClick={close} className="btn btn--ghost order-ticket__close" aria-label="Kapat">×</button>
+        <strong>New order — {brokerName}</strong>
+        <button type="button" onClick={close} className="btn btn--ghost order-ticket__close" aria-label="Close">×</button>
       </div>
 
       <div className="order-ticket__grid">
@@ -232,7 +232,7 @@ export function OrderTicket({ credentialId, brokerName, accountLabel }: Props) {
               data-testid="order-ticket-quantity-err"
               className="order-ticket__error"
             >
-              Geçerli pozitif sayı girin.
+              Enter a valid positive number.
             </div>
           )}
         </label>
@@ -260,7 +260,7 @@ export function OrderTicket({ credentialId, brokerName, accountLabel }: Props) {
                 data-testid="order-ticket-limit-err"
                 className="order-ticket__error"
               >
-                Limit fiyatı pozitif olmalı.
+                Limit price must be positive.
               </div>
             )}
           </label>
@@ -289,7 +289,7 @@ export function OrderTicket({ credentialId, brokerName, accountLabel }: Props) {
                 data-testid="order-ticket-stop-err"
                 className="order-ticket__error"
               >
-                Stop fiyatı pozitif olmalı.
+                Stop price must be positive.
               </div>
             )}
           </label>
@@ -322,8 +322,8 @@ export function OrderTicket({ credentialId, brokerName, accountLabel }: Props) {
           className={`order-ticket__result${lastResult.ok ? " order-ticket__result--ok" : " order-ticket__result--err"}`}
         >
           {lastResult.ok
-            ? `Emir gönderildi (id ${lastResult.orderId ?? "?"})`
-            : `Hata: ${lastResult.error ?? "bilinmiyor"}`}
+            ? `Order submitted (id ${lastResult.orderId ?? "?"})`
+            : `Error: ${lastResult.error ?? "unknown"}`}
         </div>
       )}
 
@@ -358,8 +358,8 @@ function ConfirmModal({ accountLabel }: { accountLabel: string }) {
 
   if (!pending) return null;
 
-  const verb = pending.kind === "close" ? "kapatma" :
-               pending.kind === "cancel" ? "iptal" : "emir";
+  const verb = pending.kind === "close" ? "close a position" :
+               pending.kind === "cancel" ? "cancel an order" : "place an order";
   // Source-of-truth for the expected label is the pendingConfirm itself —
   // the prop is just a hint that may lag behind on rapid state changes.
   const expected = pending.accountLabel || accountLabel;
@@ -385,12 +385,12 @@ function ConfirmModal({ accountLabel }: { accountLabel: string }) {
         <div className="order-confirm__copy">
           {expected ? (
             <>
-              Gerçek hesapta {verb} işlemi yapılacak.
-              Devam etmek için bağlantının <strong>account_label</strong>'ını yaz: <code>{expected}</code>
+              This will {verb} on the real account.
+              Type the connection's <strong>account_label</strong> to continue: <code>{expected}</code>
             </>
           ) : (
             <span className="order-ticket__error">
-              Aktif hesap seçilmedi (account_label boş). İşlem reddedilecek.
+              No active account selected (account_label empty). The order will be rejected.
             </span>
           )}
         </div>
@@ -405,7 +405,7 @@ function ConfirmModal({ accountLabel }: { accountLabel: string }) {
         </pre>
         <div className="order-confirm__actions">
           <button type="button" className="btn btn--ghost" onClick={dismiss} disabled={submitting}
-                  data-testid="confirm-modal-cancel-btn">İptal</button>
+                  data-testid="confirm-modal-cancel-btn">Cancel</button>
           <button type="button" className="btn btn--accent order-confirm__danger" onClick={() => {
                     // Round 24 CRITICAL (REAL MONEY) — local short-circuit
                     // is the cheapest layer: hardware double-clicks fire
@@ -422,7 +422,7 @@ function ConfirmModal({ accountLabel }: { accountLabel: string }) {
                   }}
                   disabled={!okLabel || submitting}
                   data-testid="confirm-modal-confirm-btn">
-            {submitting ? "…" : "Gönder"}
+            {submitting ? "…" : "Submit"}
           </button>
         </div>
       </div>

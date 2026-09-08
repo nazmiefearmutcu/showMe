@@ -192,7 +192,7 @@ describe("TOP honesty", () => {
 
     // The normal headline's VF pill must NOT carry a disclosure marker. Scope
     // to the row <li> (the title button is no longer the row wrapper).
-    const list = screen.getByRole("list", { name: /başlıklar/i });
+    const list = screen.getByRole("list", { name: /headlines/i });
     const normalTitle = within(list).getByRole("button", { name: /Fed officials signal patience/i });
     const normalRow = normalTitle.closest("li");
     expect(normalRow).not.toBeNull();
@@ -217,10 +217,10 @@ describe("TOP honesty", () => {
     useFunctionMock.mockReturnValue(okEnvelope([ARTICLE_FIXTURE]));
     render(<TOPPane code="TOP" />);
     const sort = screen.getByTestId("top-sort-label");
-    expect(sort.textContent).toMatch(/ÖNEM/);
+    expect(sort.textContent).toMatch(/IMPORTANCE/);
     expect(sort.textContent).not.toMatch(/RECENT FIRST/i);
     // Tooltip discloses the composite ranking (importance, then publish time).
-    expect(sort.getAttribute("title")).toMatch(/önem/i);
+    expect(sort.getAttribute("title")).toMatch(/importance/i);
   });
 });
 
@@ -230,7 +230,7 @@ describe("TOP accessibility", () => {
     render(<TOPPane code="TOP" />);
     await flushVeryfinder();
 
-    const list = screen.getByRole("list", { name: /başlıklar/i });
+    const list = screen.getByRole("list", { name: /headlines/i });
     expect(list.tagName.toLowerCase()).toBe("ul");
 
     // The title is the activator <button> carrying the full-title aria-label.
@@ -257,7 +257,7 @@ describe("TOP accessibility", () => {
     render(<TOPPane code="TOP" />);
     await flushVeryfinder();
 
-    const list = screen.getByRole("list", { name: /başlıklar/i });
+    const list = screen.getByRole("list", { name: /headlines/i });
     const titleBtn = within(list).getByRole("button", { name: ARTICLE_FIXTURE.title });
     fireEvent.click(titleBtn);
     expect(openSpy).toHaveBeenCalledWith(ARTICLE_FIXTURE.url, "_blank", "noopener,noreferrer");
@@ -270,7 +270,7 @@ describe("TOP accessibility", () => {
     render(<TOPPane code="TOP" />);
     await flushVeryfinder();
 
-    const list = screen.getByRole("list", { name: /başlıklar/i });
+    const list = screen.getByRole("list", { name: /headlines/i });
     const titleBtn = within(list).getByRole("button", { name: ARTICLE_FIXTURE.title });
     // A native <button> activates on Enter via a synthesized click; jsdom does
     // not synthesize it, so we assert the click handler (the same `openSource`)
@@ -292,16 +292,16 @@ describe("TOP accessibility", () => {
     render(<TOPPane code="TOP" />);
     await flushVeryfinder();
 
-    const list = screen.getByRole("list", { name: /başlıklar/i });
-    expect(within(list).getByRole("link", { name: /reuters.*haberi aç/i })).toBeTruthy();
-    expect(within(list).getByRole("button", { name: /BTC detayına git/i })).toBeTruthy();
+    const list = screen.getByRole("list", { name: /headlines/i });
+    expect(within(list).getByRole("link", { name: /reuters.*open the story/i })).toBeTruthy();
+    expect(within(list).getByRole("button", { name: /go to BTC details/i })).toBeTruthy();
   });
 
   it("A4 — sentiment is conveyed by explicit text, not color alone", async () => {
     useFunctionMock.mockReturnValue(okEnvelope([ARTICLE_FIXTURE, ARTICLE_NORMAL]));
     render(<TOPPane code="TOP" />);
     await flushVeryfinder();
-    expect(screen.getByText("POZİTİF")).toBeTruthy();
-    expect(screen.getByText("NEGATİF")).toBeTruthy();
+    expect(screen.getByText("POSITIVE")).toBeTruthy();
+    expect(screen.getByText("NEGATIVE")).toBeTruthy();
   });
 });

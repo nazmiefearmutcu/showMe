@@ -81,7 +81,7 @@ export function WBPane({ code }: FunctionPaneProps) {
 
   const { state, data, error, refetch } = useFunction<unknown>({
     code,
-    params: { live_bonds: live === "on", live: live === "on", tick },
+    params: { reference: live !== "on", tick },
   });
 
   const payload = useMemo<WBPayload>(

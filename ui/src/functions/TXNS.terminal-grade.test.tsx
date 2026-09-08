@@ -7,10 +7,10 @@
  *   H2 — each row's `source` shows in the grid.
  *   H3 — the `mode` cell carries the clarifying title / accessible label and
  *        never implies live trading.
- *   B-UI — "Son güncelleme" shows when generated_at is present.
+ *   B-UI — "Last updated" shows when generated_at is present.
  *   D1/D2 — numbers come from format.ts (a price rendered adaptively, not a
  *        bespoke truncation).
- *   A1 — DataGrid gets the ariaLabel "İşlem defteri".
+ *   A1 — DataGrid gets the ariaLabel "Trade blotter".
  *   A2 — error state is an announced role=status region.
  *   A3 — clicking a sortable header fires onSort and toggles aria-sort,
  *        reordering rows.
@@ -76,7 +76,7 @@ function trades(rows: StateTrade[], over: Partial<StateRead<StateTrade>> = {}) {
 async function renderWith(payload: StateRead<StateTrade>) {
   listTradesMock.mockResolvedValue(payload);
   const utils = render(<TXNSPane code="TXNS" symbol="" />);
-  await screen.findByLabelText("İşlem defteri");
+  await screen.findByLabelText("Trade blotter");
   return utils;
 }
 
@@ -95,8 +95,8 @@ describe("TXNS terminal-grade", () => {
     expect(note).toBeInTheDocument();
     const text = note.textContent ?? "";
     expect(text).toMatch(/portfolio\.db/);
-    expect(text).toMatch(/içe aktarıl/i); // "imported"
-    expect(text).toMatch(/değildir/i); // "...is NOT (live/bot)"
+    expect(text).toMatch(/imported/i); // "imported"
+    expect(text).toMatch(/not/); // "...is NOT (live/bot)"
     // The db source path the API returned is surfaced.
     expect(text).toContain("/Users/x/.showme/portfolio.db");
   });
@@ -115,20 +115,20 @@ describe("TXNS terminal-grade", () => {
     // record flag, NOT a live trade.
     expect(modeCells[0]).toHaveAttribute(
       "title",
-      expect.stringContaining("canlı işlem anlamına gelmez"),
+      expect.stringContaining("does not imply a live trade"),
     );
     expect(modeCells[1].getAttribute("aria-label")).toMatch(/writable/);
     expect(modeCells[1].getAttribute("aria-label")).toMatch(
-      /canlı işlem anlamına gelmez/,
+      /does not imply a live trade/,
     );
   });
 
-  it("B-UI: shows a 'Son güncelleme' freshness indicator (UTC-labelled) when generated_at is present", async () => {
+  it("B-UI: shows a 'Last updated' freshness indicator (UTC-labelled) when generated_at is present", async () => {
     await renderWith(trades(SAMPLE));
     const fresh = screen.getByTestId("txns-last-updated");
-    expect(fresh.textContent).toMatch(/Son güncelleme:/);
+    expect(fresh.textContent).toMatch(/Last updated:/);
     // A real clock value, not the missing-sentinel em-dash.
-    expect(fresh.textContent).not.toMatch(/Son güncelleme:\s*—/);
+    expect(fresh.textContent).not.toMatch(/Last updated:\s*—/);
     // generated_at is UTC, so the clock is rendered in UTC with an explicit
     // suffix (honest, TZ-independent) — 12:34Z -> "12:34 UTC".
     expect(fresh.textContent).toMatch(/12:34 UTC/);
@@ -137,7 +137,7 @@ describe("TXNS terminal-grade", () => {
   it("B-UI: freshness falls back to '—' when generated_at is absent", async () => {
     await renderWith(trades(SAMPLE, { generated_at: undefined }));
     expect(screen.getByTestId("txns-last-updated").textContent).toMatch(
-      /Son güncelleme:\s*—/,
+      /Last updated:\s*—/,
     );
   });
 
@@ -154,13 +154,13 @@ describe("TXNS terminal-grade", () => {
 
   it("A1: passes ariaLabel to the DataGrid", async () => {
     await renderWith(trades(SAMPLE));
-    expect(screen.getByLabelText("İşlem defteri")).toBeInTheDocument();
+    expect(screen.getByLabelText("Trade blotter")).toBeInTheDocument();
   });
 
   it("A1: symbol button has a descriptive aria-label", async () => {
     await renderWith(trades(SAMPLE));
     expect(
-      screen.getByRole("button", { name: "AAPL detayları" }),
+      screen.getByRole("button", { name: "AAPL details" }),
     ).toBeInTheDocument();
   });
 
@@ -195,7 +195,7 @@ describe("TXNS terminal-grade", () => {
 
   it("A3: clicking a sortable header fires onSort, sets aria-sort, and reorders rows", async () => {
     await renderWith(trades(SAMPLE));
-    const grid = screen.getByLabelText("İşlem defteri");
+    const grid = screen.getByLabelText("Trade blotter");
     const symbolsNow = () =>
       Array.from(grid.querySelectorAll("tbody .u-symbol-link")).map(
         (el) => el.textContent,
@@ -221,15 +221,15 @@ describe("TXNS terminal-grade", () => {
     // Empty db: 0 total rows. The grid never renders, so wait on the message.
     listTradesMock.mockResolvedValue(trades([], { total: 0 }));
     const { unmount } = render(<TXNSPane code="TXNS" symbol="" />);
-    expect(await screen.findByText(/portfolio\.db boş/i)).toBeInTheDocument();
+    expect(await screen.findByText(/portfolio\.db is empty/i)).toBeInTheDocument();
     unmount();
 
     // Rows exist but the current filter matched none.
     listTradesMock.mockResolvedValue(trades([], { total: 7 }));
     render(<TXNSPane code="TXNS" symbol="" />);
     expect(
-      await screen.findByText(/Filtreyle eşleşen yok/i),
+      await screen.findByText(/No matches for the filter/i),
     ).toBeInTheDocument();
-    expect(screen.getByText(/7 kayıt var/)).toBeInTheDocument();
+    expect(screen.getByText(/has 7 records/)).toBeInTheDocument();
   });
 });

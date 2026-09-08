@@ -77,7 +77,7 @@ describe("BOT pane fixes2", () => {
     expect(screen.getByTestId("bot-strategy-orphan-option")).toBeInTheDocument();
     expect(screen.getByTestId("bot-field-err-strategy-orphan")).toBeInTheDocument();
     // Save must be disabled even though the field is "non-empty".
-    const kaydet = screen.getByRole("button", { name: /^kaydet$/i }) as HTMLButtonElement;
+    const kaydet = screen.getByRole("button", { name: /^save$/i }) as HTMLButtonElement;
     expect(kaydet.disabled).toBe(true);
   });
 
@@ -103,10 +103,10 @@ describe("BOT pane fixes2", () => {
     render(<BOTPane />);
     fireEvent.click(screen.getAllByRole("button", { name: /^\+ yeni bot$/i })[0]);
     fireEvent.change(screen.getByLabelText(/strateji/i), { target: { value: "s1" } });
-    fireEvent.change(screen.getByLabelText(/bağlantı/i), { target: { value: "c1" } });
+    fireEvent.change(screen.getByLabelText(/connection/i), { target: { value: "c1" } });
     fireEvent.change(screen.getByLabelText(/^symbol$/i), { target: { value: "BTC-USDT" } });
     expect(screen.getByTestId("bot-field-err-symbol").textContent).toMatch(/BASE\/QUOTE/);
-    const kaydet = screen.getByRole("button", { name: /^kaydet$/i }) as HTMLButtonElement;
+    const kaydet = screen.getByRole("button", { name: /^save$/i }) as HTMLButtonElement;
     expect(kaydet.disabled).toBe(true);
   });
 
@@ -170,7 +170,7 @@ describe("BOT pane fixes2", () => {
     const confirmInput = screen.getByTestId("bot-save-confirm-label") as HTMLInputElement;
     fireEvent.change(confirmInput, { target: { value: "main" } });
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: /^kaydet$/i }));
+      fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
     });
     // After the save settled the persisted mode is live and dirty=false.
     // The pane should NOT keep flagging a shadow→live transition for the
@@ -197,7 +197,7 @@ describe("BOT pane fixes2", () => {
     const confirmInput = screen.getByTestId("bot-save-confirm-label") as HTMLInputElement;
     fireEvent.change(confirmInput, { target: { value: "main" } });
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: /^kaydet$/i }));
+      fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
     });
     // After save, Etkinleştir bar's confirm input (live mode) should be
     // empty — no pre-filled stale label.
@@ -214,7 +214,7 @@ describe("BOT pane fixes2", () => {
       toggling: true,
     });
     render(<BOTPane />);
-    const btn = screen.getByRole("button", { name: /etkinleştir|^\.\.\.$/i }) as HTMLButtonElement;
+    const btn = screen.getByRole("button", { name: /enable|^\.\.\.$/i }) as HTMLButtonElement;
     expect(btn.disabled).toBe(true);
   });
 
@@ -236,7 +236,7 @@ describe("BOT pane fixes2", () => {
     render(<BOTPane />);
     expect(screen.getByTestId("bot-timeframe-unknown-option")).toBeInTheDocument();
     expect(screen.getByTestId("bot-field-err-timeframe")).toBeInTheDocument();
-    const kaydet = screen.getByRole("button", { name: /^kaydet$/i }) as HTMLButtonElement;
+    const kaydet = screen.getByRole("button", { name: /^save$/i }) as HTMLButtonElement;
     expect(kaydet.disabled).toBe(true);
   });
 

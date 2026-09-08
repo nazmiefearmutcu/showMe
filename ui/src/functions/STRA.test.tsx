@@ -24,34 +24,34 @@ describe("STRA pane", () => {
     render(<STRAPane />);
     // "Yeni strateji" appears in BOTH the left-pane button and the
     // right-pane empty-state copy (<strong> inside the helper text).
-    expect(screen.getAllByText(/yeni strateji/i).length).toBeGreaterThanOrEqual(2);
+    expect(screen.getAllByText(/new strategy/i).length).toBeGreaterThanOrEqual(2);
   });
 
   it("Yeni strateji opens a blank draft", () => {
     render(<STRAPane />);
-    fireEvent.click(screen.getByRole("button", { name: /^\+ yeni strateji$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^\+ new strategy$/i }));
     expect(useStrategyStore.getState().draft).not.toBeNull();
-    expect(screen.getByLabelText(/^ad$/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/^name$/i)).toBeInTheDocument();
   });
 
   it("setting name marks dirty + reflects in title", () => {
     render(<STRAPane />);
-    fireEvent.click(screen.getByRole("button", { name: /^\+ yeni strateji$/i }));
-    fireEvent.change(screen.getByLabelText(/^ad$/i), { target: { value: "MyStrat" } });
+    fireEvent.click(screen.getByRole("button", { name: /^\+ new strategy$/i }));
+    fireEvent.change(screen.getByLabelText(/^name$/i), { target: { value: "MyStrat" } });
     expect(useStrategyStore.getState().dirty).toBe(true);
     expect(screen.getByText(/MyStrat/)).toBeInTheDocument();
   });
 
-  it("Indikatör ekle appends an entry", () => {
+  it("Add indicator appends an entry", () => {
     render(<STRAPane />);
-    fireEvent.click(screen.getByRole("button", { name: /^\+ yeni strateji$/i }));
-    fireEvent.click(screen.getByRole("button", { name: /indikat.*ekle/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^\+ new strategy$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /add indicator/i }));
     expect((useStrategyStore.getState().draft?.indicators ?? []).length).toBe(1);
   });
 
   it("Kural ekle in entry rules appends a rule", () => {
     render(<STRAPane />);
-    fireEvent.click(screen.getByRole("button", { name: /^\+ yeni strateji$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^\+ new strategy$/i }));
     const allKuralButtons = screen.getAllByRole("button", { name: /kural ekle/i });
     fireEvent.click(allKuralButtons[0]);
     expect((useStrategyStore.getState().draft?.entry_rules ?? []).length).toBe(1);

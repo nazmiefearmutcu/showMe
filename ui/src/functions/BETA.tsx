@@ -28,6 +28,7 @@ import {
   StatusDivider,
   StatusSection,
 } from "@/design-system";
+import { formatNumberPlain } from "@/lib/format";
 import { useFunction } from "@/lib/useFunction";
 import { defaultSymbolForFunction } from "@/lib/symbols";
 import {
@@ -374,7 +375,7 @@ function WindowTable({ rows }: { rows: BetaWindowRow[] }) {
 
 function fmtNum(v: number, digits: number): string {
   if (!Number.isFinite(v)) return "—";
-  return v.toFixed(digits);
+  return formatNumberPlain(v, digits);
 }
 
 function fmtPct(v: unknown): string {

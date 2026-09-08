@@ -53,11 +53,11 @@ function SignalLog({ entries }: { entries: SignalEntry[] }) {
   return (
     <table
       className="terminal-grid-numeric"
-      aria-label="Sinyal kayıtları"
+      aria-label="Signal log"
       style={{ width: "100%", fontSize: 11 }}
     >
       <caption className="u-sr-only">
-        Botun ürettiği sinyaller — zaman, tür, fiyat, aksiyon ve detay.
+        Signals produced by the bot — time, type, price, action and detail.
       </caption>
       <thead>
         <tr className="u-text-secondary">
@@ -90,7 +90,7 @@ function SignalLog({ entries }: { entries: SignalEntry[] }) {
                 {isFallback && (
                   <span
                     data-testid="bot-signal-fallback-equity"
-                    title="Bu canlı emir gerçek broker bakiyesi yerine yedek ($10k) bakiye ile boyutlandırıldı."
+                    title="This live order was sized with the fallback ($10k) balance instead of the real broker balance."
                     style={{ marginLeft: 6, display: "inline-block" }}
                   >
                     <Pill tone="warn" variant="soft" withDot={false}>
@@ -228,13 +228,13 @@ export function BOTPane() {
   const saveDisabledReason: string | undefined = (() => {
     if (!saveDisabled && !liveConfirmMissing) return undefined;
     if (saving) return "Kaydediliyor…";
-    if (missingStrategy) return "Strateji seçilmeli.";
-    if (missingCredential) return "Bağlantı seçilmeli.";
-    if (missingSymbol) return "Geçerli bir sembol gerekli.";
-    if (timeframeUnknown) return "Geçerli bir timeframe seç.";
-    if (liveConfirmMissing) return "Live moda geçiş için account_label onayı gerekli.";
-    if (!dirty) return "Değişiklik yok.";
-    return "Strateji, bağlantı ve sembol gerekli.";
+    if (missingStrategy) return "A strategy must be selected.";
+    if (missingCredential) return "A connection must be selected.";
+    if (missingSymbol) return "A valid symbol is required.";
+    if (timeframeUnknown) return "Select a valid timeframe.";
+    if (liveConfirmMissing) return "Account_label confirmation is required to switch to live mode.";
+    if (!dirty) return "No changes.";
+    return "Strategy, connection and symbol are required.";
   })();
 
   // Round 24 — replace blocking window.confirm with ConfirmDialog.
@@ -321,7 +321,7 @@ export function BOTPane() {
         {/* F5 — design-system Empty when the load finished with no bots. */}
         {!loading && list.length === 0 && (
           <div data-testid="bot-list-empty">
-            <Empty title="Henüz bot yok" body="Bir strateji + bağlantı seçip yeni bot oluştur." />
+            <Empty title="No bots yet" body="Pick a strategy + connection and create a new bot." />
           </div>
         )}
       </div>
@@ -341,13 +341,13 @@ export function BOTPane() {
         )}
         {!draft && (
           <div className="u-text-secondary">
-            Soldan bir bot seç ya da <strong>+ Yeni bot</strong>.
+            Select a bot on the left or <strong>+ New bot</strong>.
           </div>
         )}
         {draft && (
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             <h3 style={{ margin: 0 }}>
-              {draft.symbol || "(yeni bot)"} {dirty && <em className="u-text-warn">*</em>}
+              {draft.symbol || "(new bot)"} {dirty && <em className="u-text-warn">*</em>}
               {draft.id && <span style={{ marginLeft: 8 }}><StatusPill rec={draft as BotRecord} /></span>}
             </h3>
             <label htmlFor="bot-strategy-select">
@@ -360,12 +360,12 @@ export function BOTPane() {
                       }
                       value={draft.strategy_id ?? ""}
                       onChange={(e) => setField("strategy_id", e.target.value)}>
-                <option value="">— seç —</option>
+                <option value="">— select —</option>
                 {/* C-UI-1 — keep orphan id in dropdown so user knows what's wrong. */}
                 {strategyOrphan && draft.strategy_id && (
                   <option value={draft.strategy_id}
                           data-testid="bot-strategy-orphan-option">
-                    [silinmiş] {draft.strategy_id.slice(0, 8)}
+                    [deleted] {draft.strategy_id.slice(0, 8)}
                   </option>
                 )}
                 {strategies.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
@@ -375,18 +375,18 @@ export function BOTPane() {
               <div id="bot-field-err-strategy-orphan"
                    data-testid="bot-field-err-strategy-orphan"
                    className="u-text-negative" style={{ fontSize: 11 }}>
-                Seçili strateji silinmiş. Listeden başka bir strateji seç.
+                The selected strategy was deleted. Pick another one from the list.
               </div>
             )}
             {missingStrategy && !strategyOrphan && (
               <div id="bot-field-err-strategy"
                    data-testid="bot-field-err-strategy"
                    className="u-text-negative" style={{ fontSize: 11 }}>
-                Bir strateji seçmelisin.
+                You must select a strategy.
               </div>
             )}
             <label htmlFor="bot-credential-select">
-              Bağlantı
+              Connection
               <select id="bot-credential-select"
                       aria-describedby={
                         credentialOrphan ? "bot-field-err-credential-orphan"
@@ -406,12 +406,12 @@ export function BOTPane() {
                           setField("exchange_id", "");
                         }
                       }}>
-                <option value="">— seç —</option>
+                <option value="">— select —</option>
                 {/* C-UI-1 — keep orphan id in dropdown. */}
                 {credentialOrphan && draft.credential_id && (
                   <option value={draft.credential_id}
                           data-testid="bot-credential-orphan-option">
-                    [silinmiş] {draft.credential_id.slice(0, 8)}
+                    [deleted] {draft.credential_id.slice(0, 8)}
                   </option>
                 )}
                 {credentials.map((c) => (
@@ -425,14 +425,14 @@ export function BOTPane() {
               <div id="bot-field-err-credential-orphan"
                    data-testid="bot-field-err-credential-orphan"
                    className="u-text-negative" style={{ fontSize: 11 }}>
-                Seçili bağlantı silinmiş. Listeden başka bir bağlantı seç.
+                The selected connection was deleted. Pick another one from the list.
               </div>
             )}
             {missingCredential && !credentialOrphan && (
               <div id="bot-field-err-credential"
                    data-testid="bot-field-err-credential"
                    className="u-text-negative" style={{ fontSize: 11 }}>
-                Bir bağlantı seçmelisin.
+                You must select a connection.
               </div>
             )}
             <label htmlFor="bot-symbol-input">
@@ -478,7 +478,7 @@ export function BOTPane() {
               <div id="bot-field-err-timeframe"
                    data-testid="bot-field-err-timeframe"
                    className="u-text-negative" style={{ fontSize: 11 }}>
-                Bilinmeyen timeframe: "{draft.timeframe}". Listeden seç.
+                Unknown timeframe: "{draft.timeframe}". Pick one from the list.
               </div>
             )}
             <label htmlFor="bot-tick-input">
@@ -500,7 +500,7 @@ export function BOTPane() {
               <label htmlFor="bot-mode-live" className="u-text-negative">
                 <input id="bot-mode-live" type="radio" checked={draft.mode === "live"}
                        onChange={() => setField("mode", "live")} />
-                Live (gerçek emir)
+                Live (real orders)
               </label>
             </fieldset>
 
@@ -509,7 +509,7 @@ export function BOTPane() {
                 never permanently visible in shadow mode. */}
             {transitioningToLive && (
               <label htmlFor="bot-save-confirm-label">
-                Live moda geçiş onayı — account_label tekrar yaz
+                Live mode switch confirmation — re-type account_label
                 <input
                   id="bot-save-confirm-label"
                   data-testid="bot-save-confirm-label"
@@ -523,7 +523,7 @@ export function BOTPane() {
                   <div id="bot-field-err-confirm-label"
                        data-testid="bot-field-err-confirm-label"
                        className="u-text-negative" style={{ fontSize: 11 }}>
-                    account_label "{credential?.account_label ?? "?"}" ile eşleşmeli.
+                    Must match account_label "{credential?.account_label ?? "?"}".
                   </div>
                 )}
               </label>
@@ -536,7 +536,7 @@ export function BOTPane() {
                 disabled={saveDisabled || liveConfirmMissing}
                 title={saveDisabledReason}
               >
-                {saving ? "Kaydediliyor..." : "Kaydet"}
+                {saving ? "Saving..." : "Save"}
               </button>
               {draft.id && !draft.enabled && (
                 <>
@@ -558,7 +558,7 @@ export function BOTPane() {
                     dirty || toggling ||
                     (draft.mode === "live" && confirmLabel !== credential?.account_label)
                   }>
-                    {toggling ? "..." : "Etkinleştir"}
+                    {toggling ? "..." : "Enable"}
                   </button>
                 </>
               )}
@@ -586,7 +586,7 @@ export function BOTPane() {
             <SignalLog entries={draft.signal_log ?? []} />
             {(draft.signal_log ?? []).length > 20 && (
               <div className="u-text-secondary" style={{ fontSize: 11 }}>
-                Son 20 sinyal gösteriliyor — toplam {(draft.signal_log ?? []).length}.
+                Showing the last 20 signals — {(draft.signal_log ?? []).length} total.
               </div>
             )}
           </div>
@@ -597,9 +597,9 @@ export function BOTPane() {
           only one switch can be pending at a time. */}
       <ConfirmDialog
         open={dirtySwitchTarget !== null}
-        title="Kaydedilmemiş değişiklikler"
-        body="Kaydetmediğin değişiklikler kaybolacak. Devam mı?"
-        confirmLabel="Devam et"
+        title="Unsaved changes"
+        body="Unsaved changes will be lost. Continue?"
+        confirmLabel="Continue"
         onConfirm={() => {
           if (dirtySwitchTarget === "new") openNew();
           else if (dirtySwitchTarget) openExisting(dirtySwitchTarget);
@@ -610,9 +610,9 @@ export function BOTPane() {
 
       <ConfirmDialog
         open={pendingDeleteBotId !== null}
-        title="Botu sil"
-        body="Botu silmek istediğine emin misin? Bu işlem geri alınamaz."
-        confirmLabel="Sil"
+        title="Delete bot"
+        body="Are you sure you want to delete this bot? This cannot be undone."
+        confirmLabel="Delete"
         destructive
         busy={loading}
         onConfirm={() => {
@@ -627,9 +627,9 @@ export function BOTPane() {
       {/* F6 — confirm before stopping a (possibly live) running bot. */}
       <ConfirmDialog
         open={pendingDisableId !== null}
-        title="Botu durdur"
-        body="Bu bot çalışıyor (canlı modda gerçek emir verebilir). Durdurmak istediğine emin misin?"
-        confirmLabel="Durdur"
+        title="Stop bot"
+        body="This bot is running (live mode can place real orders). Are you sure you want to stop it?"
+        confirmLabel="Stop"
         destructive
         busy={toggling}
         onConfirm={() => {

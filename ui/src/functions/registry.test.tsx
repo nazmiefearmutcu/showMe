@@ -3,24 +3,75 @@ import { listNativeCodes, mergeNativeFunctionIndex, resolvePane } from "./regist
 import { STATIC_FUNCTION_INDEX } from "./static-index";
 
 describe("function pane registry", () => {
-  it("includes Rounds 14/17/19 + Round-23/24/25 panes", () => {
-    expect(listNativeCodes()).toEqual(
-      expect.arrayContaining([
-        "DES", "FA", "GP", "EQS", "PORT", "SCAN", "ASK",
-        "TOP", "ECO", "WATCH", "ALRT", "ANR",
-        "NI", "CN", "MOST", "WEI", "HP",
-        "WCRS", "GLCO", "BTMM", "AGENT",
-        "MAP", "SECT", "BIO", "CORR",
-        // FN-WAVE wave-1 + wave-2 bespoke panes
-        "OMON", "TAUC", "TECH", "TRAN",
-        "SRSK", "FRD", "FXH", "YAS", "GMM", "SECF", "ISIN", "DAPI",
-        "FORM4", "MOSS", "ONCH", "BRIEF", "DDM", "DCFS", "BETA", "GREEKS",
-        "EXEC", "DDIS", "BQL", "NALRT", "HDS", "HFS", "RV", "CACT",
-        "TLDR", "FTS", "TRDH", "COUN", "OSA", "OVME", "HVT", "DARK",
-        "CRVF", "GC3D", "ALLQ", "DCF", "CSRC", "FSRC", "SRCH", "ICX",
-        "PIB", "LITM", "SPLC", "APPL", "NSE", "READ", "REGM", "FRH",
-      ]),
-    );
+  // The COMPLETE native pane set, generated from registry.tsx's PANES map
+  // (158 codes). This is an EXACT pin: deleting any registry entry fails CI
+  // (the earlier pin stopped at wave-4's FRH, so deleting wave-5 codes such
+  // as AV/BGAS/FXGO passed CI silently). Wave-6 must extend this list.
+  const EXPECTED_PANE_CODES = [
+    // A
+    "ACCT", "AGENT", "AIM", "ALLQ", "ALRT", "ANR", "APPL", "ASK", "AV",
+    // B
+    "BBGT", "BDA", "BETA", "BGAS", "BIO", "BLAK", "BMC", "BMTX", "BOIL",
+    "BOT", "BOTS", "BQL", "BQUANT", "BRIEF", "BTFW", "BTMM", "BTUNE",
+    // C
+    "CACT", "CDE", "CHGS", "CN", "CONN", "CORR", "COUN", "CPF", "CRPR",
+    "CRVF", "CSRC",
+    // D
+    "DAPI", "DARK", "DCF", "DCFS", "DDM", "DDIS", "DEBT", "DINE", "DES",
+    "DPF", "DVD",
+    // E
+    "ECFC", "ECST", "ECO", "EE", "EMSX", "EQS", "EREV", "ESG", "EVTS",
+    "EXEC",
+    // F
+    "FA", "FLDS", "FLW", "FLY", "FORM4", "FRD", "FRH", "FTS", "FSRC",
+    "FXFC", "FXGO", "FXH", "FXIP",
+    // G
+    "GC3D", "GEX", "GLCO", "GMM", "GP", "GRAB", "GREEKS",
+    // H
+    "HDS", "HFS", "HP", "HVT",
+    // I
+    "ICX", "INDX", "INSTANT", "ISIN", "IVOL",
+    // L
+    "LANG", "LITM", "LOTS",
+    // M
+    "MAP", "MARS", "MEET", "MGN", "MICRO", "MIS", "MLSIG", "MOSS", "MOST",
+    // N
+    "NALRT", "NGAS", "NI", "NSE",
+    // O
+    "OMON", "ONCH", "OSA", "OVME", "OVDV",
+    // P
+    "PCAS", "PEOP", "PERF", "PFA", "PIB", "POLY", "PORT", "PORT_OPT",
+    "PORT_WHATIF", "PSC", "PVAR",
+    // R
+    "READ", "REBA", "REGM", "RPAR", "RV",
+    // S
+    "SAT", "SCAN", "SECF", "SECT", "SPLC", "SOSC", "SRSK", "SRCH", "STRA",
+    "STRS",
+    // T
+    "TAUC", "TCA", "TECH", "TLDR", "TLH", "TMPL", "TOP", "TRA", "TRAN",
+    "TRDH", "TRQA", "TSAR", "TSOX", "TXNS",
+    // W / X / Y
+    "WACC", "WATCH", "WB", "WCRS", "WEI", "WETR", "WHAL", "WIRP",
+    "XSEN", "YAS",
+  ];
+
+  it("registers the COMPLETE native pane set (exact pin — deletions fail CI)", () => {
+    const registered = listNativeCodes();
+    expect(registered).toHaveLength(EXPECTED_PANE_CODES.length);
+    expect(registered).toEqual([...EXPECTED_PANE_CODES].sort());
+  });
+
+  it("every registered pane resolves and is React.lazy (round-2b contract)", () => {
+    const REACT_LAZY = Symbol.for("react.lazy");
+    expect(EXPECTED_PANE_CODES.length).toBeGreaterThan(150);
+    for (const code of EXPECTED_PANE_CODES) {
+      const pane = resolvePane(code);
+      expect(pane, `pane ${code} missing from the PANES map`).not.toBeNull();
+      expect(
+        (pane as unknown as { $$typeof?: symbol }).$$typeof,
+        `pane ${code} is not a React.lazy component`,
+      ).toBe(REACT_LAZY);
+    }
   });
 
   it("resolves canonical and lower-case codes", () => {

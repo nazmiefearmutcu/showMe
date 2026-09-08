@@ -212,8 +212,8 @@ export function DEBTPane({ code, symbol }: FunctionPaneProps) {
             <span
               style={refBadgeStyle}
               role="img"
-              aria-label="Yayınlanmış referans (canlı seri değil)"
-              title="Yayınlanmış referans — canlı World Bank serisi değil"
+              aria-label="Published reference (not a live series)"
+              title="Published reference — not a live World Bank series"
             >
               referans
             </span>
@@ -226,7 +226,7 @@ export function DEBTPane({ code, symbol }: FunctionPaneProps) {
       },
       {
         key: "year",
-        header: "Veri yılı",
+        header: "Data year",
         numeric: true,
         sortable: true,
         width: 80,
@@ -345,7 +345,7 @@ export function DEBTPane({ code, symbol }: FunctionPaneProps) {
         <div style={tabBarStyle}>
           <Tabs
             variant="segmented"
-            ariaLabel="Bölge filtresi"
+            ariaLabel="Region filter"
             items={REGIONS.map((r) => ({ id: r.id, label: r.label }))}
             active={region}
             onChange={(id) => setRegion(id as RegionId)}
@@ -384,11 +384,11 @@ export function DEBTPane({ code, symbol }: FunctionPaneProps) {
                   data-testid="debt-portfolio-note"
                   style={macroNoteStyle}
                 >
-                  <strong className="u-text-secondary">Sadece makro</strong>
+                  <strong className="u-text-secondary">Macro view only</strong>
                   <span className="u-text-mute">
-                    Portföy bağlı değil — bu tablo ülke bazında makro borç
-                    görünümüdür, gerçek pozisyonlarınız değildir. Portföy ağırlığı
-                    her satırda 0&apos;a sabitlenmiştir.
+                    No portfolio connected — this table is a country-level
+                    macro debt view, not your actual positions. Portfolio weight
+                    is pinned to 0 on every row.
                   </span>
                 </section>
               ) : null}
@@ -444,17 +444,17 @@ export function DEBTPane({ code, symbol }: FunctionPaneProps) {
                     <LegendDot
                       color="var(--positive)"
                       label="< 60%"
-                      ariaLabel="Düşük borç/GSYİH: %60 altı"
+                      ariaLabel="Low debt/GDP: below 60%"
                     />
                     <LegendDot
                       color="var(--accent)"
                       label="60–100%"
-                      ariaLabel="Orta borç/GSYİH: %60–100"
+                      ariaLabel="Medium debt/GDP: 60–100%"
                     />
                     <LegendDot
                       color="var(--negative)"
                       label="> 100%"
-                      ariaLabel="Yüksek borç/GSYİH: %100 üstü"
+                      ariaLabel="High debt/GDP: above 100%"
                     />
                     <span style={legendScaleStyle}>
                       scaled to {scaleMax.toFixed(0)}%
@@ -477,14 +477,14 @@ export function DEBTPane({ code, symbol }: FunctionPaneProps) {
                 rows={rows}
                 rowKey={(r, i) => `${r.country ?? r.name ?? "row"}-${i}`}
                 density="compact"
-                ariaLabel="Ülke bazında devlet borcu"
+                ariaLabel="Country-level government debt"
               />
 
               <p style={refFootnoteStyle}>
-                <strong>Local ccy</strong> sütunu yayınlanmış bir{" "}
-                <em>referans</em>tır, canlı World Bank serisi değildir.{" "}
-                <strong>Veri yılı</strong> gözlem vintage&apos;ini gösterir —{" "}
-                <code>as of</code> ise getirme zamanıdır.
+                The <strong>Local ccy</strong> column is a published{" "}
+                <em>reference</em>, not a live World Bank series.{" "}
+                <strong>Data year</strong> shows the observation vintage —{" "}
+                <code>as of</code> is the fetch time.
               </p>
 
               {methodology ? (
@@ -536,7 +536,7 @@ function DebtBar({ row, scaleMax }: { row: DebtRow; scaleMax: number }) {
     row.country && row.name && row.country !== row.name
       ? `${row.country} ${row.name}`
       : label;
-  const ariaLabel = `${accName}: borç/GSYİH ${
+  const ariaLabel = `${accName}: debt/GDP ${
     hasValue ? fmtPct(v) : formatMissing
   }${change != null ? `, 5Y Δ ${fmtPct(change)}` : ""}`;
   return (

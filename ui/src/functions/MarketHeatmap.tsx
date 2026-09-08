@@ -478,7 +478,7 @@ function SectorHeatGrid({
         })}
       </section>
       <p style={sizingNoteStyle} data-testid="map-sizing-note">
-        Kutu boyutu = % değişim büyüklüğü (piyasa değeri DEĞİL).
+        Tile size = magnitude of % change (NOT market cap).
       </p>
     </div>
   );
@@ -642,12 +642,12 @@ function ModelDataBadge() {
       className="wei-model-badge"
       role="status"
       data-testid="map-model-badge"
-      aria-label="Model veri — canlı piyasa değil"
+      aria-label="Model data — not a live market"
     >
       <span className="wei-model-badge__dot" aria-hidden />
-      <strong>MODEL VERİ — canlı piyasa değil</strong>
+      <strong>MODEL DATA — not a live market</strong>
       <span className="u-text-secondary">
-        Bu kutular deterministik bir ETF modeli, canlı piyasa kotasyonu değil.
+        These tiles are a deterministic ETF model, not live market quotes.
       </span>
     </div>
   );
@@ -676,11 +676,11 @@ function PeriodMismatchNotice({
     >
       <span className="wei-model-badge__dot" aria-hidden />
       <strong>
-        Canlı modda yalnız günlük ({delivered}) değişim var
+        Live mode delivers daily ({delivered}) change only
       </strong>
       <span className="u-text-secondary">
-        Seçilen {requested} için geçmiş veri gerekir; gösterilen değerler{" "}
-        {delivered} değişimidir.
+        The selected {requested} period needs history; the values shown are
+        the {delivered} change.
       </span>
       {warnings.map((w, i) => (
         <span key={i} className="u-text-secondary">

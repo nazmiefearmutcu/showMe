@@ -27,9 +27,9 @@ import { MISPane } from "./MIS";
 afterEach(() => cleanup());
 
 describe("MIS smoke", () => {
-  it("mounts and renders the Sonuçlar (Results) tab", () => {
+  it("mounts and renders the Results tab", () => {
     render(<MISPane code="MIS" />);
-    // The tab strip ships "Sonuçlar" + "Ayarlar"; either confirms mount.
-    expect(screen.getAllByText(/Sonu[çc]lar/i).length).toBeGreaterThanOrEqual(1);
+    // The tab strip ships "Results" + "Settings"; either confirms mount.
+    expect(screen.getAllByText(/results/i).length).toBeGreaterThanOrEqual(1);
   });
 });

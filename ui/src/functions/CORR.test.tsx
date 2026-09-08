@@ -178,8 +178,8 @@ describe("CORR — synthetic-data honesty (H1/H2)", () => {
     // Names the synthetic symbol specifically.
     expect(within(banner).getByText(/BTCUSDT/)).toBeInTheDocument();
     // States it is not real market data.
-    expect(banner.textContent).toMatch(/sentetik/i);
-    expect(banner.textContent).toMatch(/gerçek piyasa/i);
+    expect(banner.textContent).toMatch(/synthetic/i);
+    expect(banner.textContent).toMatch(/real market/i);
     // A purely-live symbol is NOT named as synthetic in the banner.
     expect(banner.textContent).not.toMatch(/EURUSD/);
   });
@@ -222,14 +222,14 @@ describe("CORR — per-pair sample size + honest cell labels (H3)", () => {
     const liveCell = screen.getByLabelText(/AAPL–EURUSD Pearson: —, n=240/);
     expect(liveCell).toBeInTheDocument();
     // No synthetic-leg note for a fully-live pair.
-    expect(liveCell.getAttribute("aria-label")).not.toMatch(/sentetik leg/);
+    expect(liveCell.getAttribute("aria-label")).not.toMatch(/synthetic leg/);
   });
 
-  it("appends (sentetik leg) when a pair touches a synthetic symbol", () => {
+  it("appends (synthetic leg) when a pair touches a synthetic symbol", () => {
     setOk();
     render(<CORRPane code="CORR" />);
     const synthCell = screen.getByLabelText(
-      /AAPL–BTCUSDT Pearson: .+, n=10 \(sentetik leg\)/,
+      /AAPL–BTCUSDT Pearson: .+, n=10 \(synthetic leg\)/,
     );
     expect(synthCell).toBeInTheDocument();
   });
@@ -242,8 +242,8 @@ describe("CORR — low-n honesty (H4)", () => {
     const warn = screen.getByTestId("corr-low-n-warning");
     expect(warn).toBeInTheDocument();
     // Exactly one pair (AAPL–BTCUSDT, n=10) is below the threshold.
-    expect(warn.textContent).toMatch(/1 çift/);
-    expect(warn.textContent).toMatch(/güvenilmez/i);
+    expect(warn.textContent).toMatch(/1 pairs/);
+    expect(warn.textContent).toMatch(/unreliable/i);
   });
 
   it("does NOT render the low-n warning when all pairs are well-sampled", () => {
@@ -263,7 +263,7 @@ describe("CORR — accessibility (A1/A2/A3)", () => {
     const { container } = render(<CORRPane code="CORR" />);
     const caption = container.querySelector("table caption");
     expect(caption).not.toBeNull();
-    expect(caption?.textContent).toMatch(/korelasyon matrisi/i);
+    expect(caption?.textContent).toMatch(/correlation matrix/i);
     // Column + row scoped headers exist.
     expect(container.querySelector('th[scope="col"]')).not.toBeNull();
     expect(container.querySelector('th[scope="row"]')).not.toBeNull();

@@ -189,8 +189,7 @@
 }
 
 /* Actions menu — flat surface + hairline (no drop shadow, radius-sm). */
-.pane-chrome .pane-chrome__menu,
-.pane-chrome .pane-chrome__link-picker {
+.pane-chrome .pane-chrome__menu {
   background: var(--surface-2);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);

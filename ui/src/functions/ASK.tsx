@@ -61,11 +61,11 @@ const COST_CAP_USD = 1.0;
 // from real function outputs — it is NOT AI-written. Only the PLAN step may
 // call an LLM (and only a small Haiku/4o-mini model, gated on API keys + a
 // daily cap). When no LLM is used the plan is rule-based and costs $0.00.
-const DETERMINISTIC_PLAN_LABEL = "kural-tabanlı plan";
+const DETERMINISTIC_PLAN_LABEL = "rule-based plan";
 const ANSWER_DISCLOSURE =
-  "Yanıt (özet + öne çıkanlar) gerçek fonksiyon çıktılarından DETERMİNİSTİK " +
-  "olarak derlenir — yapay zekâ tarafından yazılmaz. Yalnızca PLAN adımı, " +
-  "API anahtarları ve günlük bütçe uygunsa bir LLM kullanabilir.";
+  "The answer (summary + highlights) is compiled DETERMINISTICALLY from " +
+  "real function outputs \u2014 it is not AI-written. Only the PLAN step may " +
+  "use an LLM, and only if API keys and the daily budget allow.";
 
 /** Honest model label for the header/status pills. */
 function modelLabel(result: AskResponse | null): string {
@@ -191,7 +191,7 @@ export function ASKPane({ code }: FunctionPaneProps) {
           subtitle={
             lastResult
               ? lastResult.plan.intent
-              : "Planla · Ara · Derle (deterministik) · Görselleştir"
+              : "Plan · Search · Compile (deterministic) · Visualize"
           }
           trailing={
             <div style={headerTrailing}>
@@ -211,7 +211,7 @@ export function ASKPane({ code }: FunctionPaneProps) {
                 variant="soft"
                 withDot={running}
               >
-                {running ? "çalışıyor" : "hazır"}
+                {running ? "running" : "ready"}
               </Pill>
             </div>
           }
@@ -297,7 +297,7 @@ export function ASKPane({ code }: FunctionPaneProps) {
           >
             {/* A1 — visually-hidden but programmatically bound label. */}
             <label htmlFor="ask-composer-input" className="u-sr-only">
-              Sorgunuzu yazın
+              Type your query
             </label>
             <textarea
               id="ask-composer-input"
@@ -329,7 +329,7 @@ export function ASKPane({ code }: FunctionPaneProps) {
                 + Attach
               </button>
               <span className="ask-run-hint">
-                <span className="kbd">⌘↵</span> çalıştır · <span className="kbd">Esc</span> durdur
+                <span className="kbd">⌘↵</span> run · <span className="kbd">Esc</span> stop
               </span>
               {running ? (
                 // U2 — visible Stop affordance mirrors the Esc cancel.
@@ -352,21 +352,21 @@ export function ASKPane({ code }: FunctionPaneProps) {
                 aria-busy={running}
                 aria-label={
                   running
-                    ? "Sorgu çalışıyor"
+                    ? "Query running"
                     : !draft.trim()
-                      ? "Çalıştırmak için önce bir sorgu yazın"
-                      : "Sorguyu çalıştır"
+                      ? "Type a query first to run"
+                      : "Run query"
                 }
                 title={
                   running
-                    ? "Sorgu çalışıyor…"
+                    ? "Query running…"
                     : !draft.trim()
-                      ? "Çalıştırmak için önce bir sorgu yazın"
-                      : "Sorguyu çalıştır (⌘↵)"
+                      ? "Type a query first to run"
+                      : "Run query (⌘↵)"
                 }
                 style={composerRun}
               >
-                {running ? "Çalışıyor…" : "Run"}
+                {running ? "Running…" : "Run"}
               </button>
             </div>
           </form>
@@ -392,9 +392,9 @@ function EmptyAskState() {
       <div className="ask-empty-eyebrow">Conversational query</div>
       <h2 className="ask-empty-h2">What can I help you with?</h2>
       <p className="ask-empty-body">
-        Bir soru yazın ya da bir öneri seçin. Sorgu planlanır, ilgili fonksiyonlar
-        çalıştırılır ve yanıt bu çıktılardan DETERMİNİSTİK olarak derlenir
-        (yapay zekâ yazımı değil); ardından derine inmek için bir panel önerilir.
+        Type a question or pick a suggestion. The query is planned, the relevant
+        functions run, and the answer is compiled DETERMINISTICALLY from those
+        outputs (not AI-written); a pane is then suggested for drilling deeper.
       </p>
     </div>
   );
@@ -408,7 +408,7 @@ function ThinkingBubble() {
         <span style={dotPulse} />
         <span style={dotPulse} />
         <span className="ask-thinking-meta">
-          planlanıyor · aranıyor · derleniyor
+          planning · searching · compiling
         </span>
       </div>
     </div>
@@ -460,7 +460,7 @@ function ChatBubble({
               variant="soft"
               withDot={false}
             >
-              {llmPlanned ? `Plan: AI (${r.model_used})` : "Plan: kural-tabanlı"}
+              {llmPlanned ? `Plan: AI (${r.model_used})` : "Plan: rule-based"}
             </Pill>
           </span>
           <Pill tone="accent" variant="soft" withDot={false}>
@@ -594,8 +594,8 @@ function HighlightWithCitation({
           type="button"
           style={citationButton}
           onClick={() => onOpen!(code!)}
-          aria-label={`Kaynak [${index}] — ${code} panelini aç`}
-          title={`Kaynak [${index}] · ${code} panelini aç`}
+          aria-label={`Source [${index}] — open ${code} pane`}
+          title={`Source [${index}] · open ${code} pane`}
         >
           [{index}]
         </button>
@@ -696,8 +696,8 @@ function EvidenceTable({
                 type="button"
                 style={citationButton}
                 onClick={() => onOpen!(code!)}
-                aria-label={`Kaynak [${index + 1}] — ${code} panelini aç`}
-                title={`Kaynak [${index + 1}] · ${code} panelini aç`}
+                aria-label={`Source [${index + 1}] — open ${code} pane`}
+                title={`Source [${index + 1}] · open ${code} pane`}
               >
                 [{index + 1}]
               </button>
@@ -715,8 +715,8 @@ function EvidenceTable({
                 className="ask-evidence-code"
                 style={evidenceCodeButton}
                 onClick={() => onOpen!(code!)}
-                aria-label={`${code} panelini aç`}
-                title={`${code} panelini aç`}
+                aria-label={`Open ${code} pane`}
+                title={`Open ${code} pane`}
               >
                 {code}
               </button>

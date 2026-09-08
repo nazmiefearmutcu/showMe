@@ -57,7 +57,7 @@ describe("CONN pane", () => {
 
   it("search filters the list", () => {
     render(<CONNPane />);
-    fireEvent.change(screen.getByPlaceholderText(/borsa ara/i), {
+    fireEvent.change(screen.getByPlaceholderText(/search exchanges/i), {
       target: { value: "krak" },
     });
     expect(screen.queryByText("Binance")).toBeNull();
@@ -84,10 +84,10 @@ describe("CONN pane", () => {
   it("read-only is the default; trade toggle shows red warning copy", () => {
     render(<CONNPane />);
     fireEvent.click(screen.getByText("Binance"));
-    const tradeToggle = screen.getByRole("checkbox", { name: /işlem/i });
+    const tradeToggle = screen.getByRole("checkbox", { name: /trade/i });
     expect(tradeToggle).not.toBeChecked();
     fireEvent.click(tradeToggle);
-    expect(screen.getByText(/dikkat/i)).toBeInTheDocument();
+    expect(screen.getByText(/caution/i)).toBeInTheDocument();
   });
 
   it("submitting a form calls saveCredential", async () => {
@@ -98,7 +98,7 @@ describe("CONN pane", () => {
     fireEvent.change(screen.getByLabelText(/account label/i), { target: { value: "main" } });
     fireEvent.change(screen.getByLabelText(/api_key/i, { selector: "input" }), { target: { value: "k" } });
     fireEvent.change(screen.getByLabelText(/api_secret/i, { selector: "input" }), { target: { value: "s" } });
-    fireEvent.click(screen.getByRole("button", { name: /bağlan/i }));
+    fireEvent.click(screen.getByRole("button", { name: /connect/i }));
     await waitFor(() => expect(save).toHaveBeenCalled());
     const call = save.mock.calls[0][0];
     expect(call.exchange_id).toBe("binance");
@@ -131,7 +131,7 @@ describe("CONN pane", () => {
       credential_id: "abc", bot_count: 3, bot_ids: ["b1", "b2", "b3"],
     });
     expect(plan.title).toMatch(/3 bot/);
-    expect(plan.body).toMatch(/3 bota bağlı/);
+    expect(plan.body).toMatch(/used by 3 bots/);
     expect(plan.force).toBe(true);
   });
 
@@ -142,9 +142,9 @@ describe("CONN pane", () => {
     expect(plan.force).toBe(false);
   });
 
-  it("resolveDeletePlan: null deps (lookup failed) → force=true + doğrulanamadı", () => {
+  it("resolveDeletePlan: null deps (lookup failed) → force=true + could-not-verify", () => {
     const plan = resolveDeletePlan("main", null);
-    expect(plan.title).toMatch(/doğrulanamadı/i);
+    expect(plan.title).toMatch(/could not be verified/i);
     expect(plan.force).toBe(true);
   });
 
@@ -164,7 +164,7 @@ describe("CONN pane", () => {
       expect(screen.getByTestId("confirm-dialog-body")).toBeInTheDocument(),
     );
     expect(screen.getByText(/3 bot etkilenecek/)).toBeInTheDocument();
-    expect(screen.getByText(/3 bota bağlı/)).toBeInTheDocument();
+    expect(screen.getByText(/used by 3 bots/)).toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId("confirm-dialog-confirm"));
     await waitFor(() => expect(del).toHaveBeenCalledWith("abc", { force: true }));

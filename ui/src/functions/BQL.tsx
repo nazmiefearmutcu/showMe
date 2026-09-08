@@ -9,7 +9,7 @@
  * warnings verbatim, and client-side parse notes when the query omits
  * get(...)/for(...) blocks (the parser silently defaults those).
  */
-import { useEffect, useMemo, useState, type CSSProperties, type FormEvent } from "react";
+import { useMemo, useState, type CSSProperties, type FormEvent } from "react";
 import {
   DataGrid,
   type DataGridColumn,
@@ -24,6 +24,7 @@ import {
   StatusDivider,
   StatusSection,
 } from "@/design-system";
+import { usePersistentString } from "./function-control-state";
 import { useFunction } from "@/lib/useFunction";
 import { defaultSymbolForFunction } from "@/lib/symbols";
 import {
@@ -62,22 +63,9 @@ interface BQLData {
 const QUERY_KEY = "showme.bql.last";
 const DEFAULT_QUERY = "get(close, volume) for(['AAPL','MSFT']) with(period='1mo') by(date)";
 
-function readLastQuery(): string {
-  if (typeof localStorage === "undefined") return DEFAULT_QUERY;
-  const raw = localStorage.getItem(QUERY_KEY);
-  return raw != null && raw.trim() !== "" ? raw : DEFAULT_QUERY;
-}
-
 export function BQLPane({ code, symbol }: FunctionPaneProps) {
-  const [input, setInput] = useState<string>(readLastQuery);
-  const [query, setQuery] = useState<string>(readLastQuery);
-
-  // Persist the last committed query.
-  useEffect(() => {
-    if (typeof localStorage !== "undefined") {
-      localStorage.setItem(QUERY_KEY, query);
-    }
-  }, [query]);
+  const [query, setQuery] = usePersistentString(QUERY_KEY, DEFAULT_QUERY);
+  const [input, setInput] = useState<string>(query);
 
   const effectiveSymbol = symbol || defaultSymbolForFunction(code, ["EQUITY", "ETF", "CRYPTO", "INDEX"]);
   // live:true is mandatory honesty here — the backend's offline branch is a

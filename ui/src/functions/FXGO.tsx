@@ -32,6 +32,7 @@ import {
   StatusDivider,
   StatusSection,
 } from "@/design-system";
+import { formatNumberPlain } from "@/lib/format";
 import { useFunction } from "@/lib/useFunction";
 import {
   FunctionControlGroup,
@@ -348,7 +349,7 @@ function fmtFx(v: number | null | undefined): string {
 
 function fmtNum(v: number | null | undefined, digits: number): string {
   if (v == null || !Number.isFinite(v)) return "—";
-  return v.toFixed(digits);
+  return formatNumberPlain(v, digits);
 }
 
 function fmtSigned(v: number | null | undefined, digits: number): string {

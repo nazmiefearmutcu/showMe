@@ -16,7 +16,7 @@
  * verbatim; per-position failures (rows with `error`) are surfaced as
  * text, never as zero greeks.
  */
-import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
+import { useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import {
   DataGrid,
   type DataGridColumn,
@@ -31,6 +31,8 @@ import {
   StatusDivider,
   StatusSection,
 } from "@/design-system";
+import { usePersistentString } from "./function-control-state";
+import { formatNumber } from "@/lib/format";
 import { useFunction } from "@/lib/useFunction";
 import { FunctionControlGroup, LoadStatePill, RefreshButton } from "./function-controls";
 import type { FunctionPaneProps } from "./registry-types";
@@ -104,29 +106,17 @@ function parseBook(json: string): { positions?: PositionInput[]; error?: string 
   return { positions: parsed as PositionInput[] };
 }
 
-function readStoredDraft(): string {
-  if (typeof localStorage === "undefined") return "";
-  return localStorage.getItem(BOOK_KEY) ?? "";
-}
-
 export function GreeksPane({ code }: FunctionPaneProps) {
-  const [draft, setDraft] = useState<string>(() => {
-    const stored = readStoredDraft();
-    return stored.trim() !== "" ? stored : JSON.stringify(DEFAULT_BOOK, null, 2);
-  });
+  const [draft, setDraft] = usePersistentString(
+    BOOK_KEY, JSON.stringify(DEFAULT_BOOK, null, 2),
+  );
   const [book, setBook] = useState<PositionInput[]>(() => {
-    const stored = readStoredDraft();
-    if (stored.trim() === "") return DEFAULT_BOOK;
-    const parsed = parseBook(stored);
+    if (draft.trim() === "") return DEFAULT_BOOK;
+    const parsed = parseBook(draft);
     return parsed.positions ?? DEFAULT_BOOK;
   });
   const [parseError, setParseError] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (typeof localStorage !== "undefined") {
-      localStorage.setItem(BOOK_KEY, draft);
-    }
-  }, [draft]);
 
   const applyBook = () => {
     const parsed = parseBook(draft);
@@ -442,7 +432,7 @@ function BookEditor({
 function fmtNum(v: unknown): string {
   const n = typeof v === "number" ? v : Number(v);
   if (!Number.isFinite(n)) return "—";
-  return n.toLocaleString("en-US", { maximumFractionDigits: 2 });
+  return formatNumber(n, 2);
 }
 
 function SectionTitle({ children }: { children: ReactNode }) {

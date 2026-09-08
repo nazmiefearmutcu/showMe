@@ -15,7 +15,7 @@
  *   - renders the empty state
  *   - submit disabled when empty; aria-busy while running; bound textarea label
  *   - model pill shows the REAL model_used when was_llm_called, the honest
- *     "kural-tabanlı" label otherwise (never "claude-sonnet-4.6")
+ *     "rule-based" label otherwise (never "claude-sonnet-4.6")
  *   - cost reflects response.cost_usd (deterministic → $0.00, no fake minimum)
  *   - plan-method badge renders AI vs rule-based correctly
  *   - answer turn wrapped in role=status; error turn announced
@@ -91,7 +91,7 @@ async function submitQuery(text = "find crypto opportunities") {
     "ask-composer-input",
   ) as HTMLTextAreaElement;
   fireEvent.change(ta, { target: { value: text } });
-  fireEvent.click(screen.getByRole("button", { name: /sorguyu çalıştır/i }));
+  fireEvent.click(screen.getByRole("button", { name: /run query/i }));
 }
 
 beforeEach(() => {
@@ -118,7 +118,7 @@ describe("ASK pane — empty state + composer a11y", () => {
     expect(ta?.tagName).toBe("TEXTAREA");
     // The bound label is queryable as a labelled element.
     expect(
-      screen.getByLabelText(/sorgunuzu yazın/i),
+      screen.getByLabelText(/type your query/i),
     ).toBe(ta);
   });
 
@@ -126,7 +126,7 @@ describe("ASK pane — empty state + composer a11y", () => {
     vi.spyOn(askLib, "ask").mockResolvedValue(makeResponse());
     render(<ASKPane code="ASK" />);
     expect(
-      screen.getByRole("button", { name: /önce bir sorgu yazın/i }),
+      screen.getByRole("button", { name: /type a query first/i }),
     ).toBeDisabled();
   });
 
@@ -141,7 +141,7 @@ describe("ASK pane — empty state + composer a11y", () => {
     await submitQuery();
     await waitFor(() => {
       expect(
-        screen.getByRole("button", { name: /sorgu çalışıyor/i }),
+        screen.getByRole("button", { name: /query running/i }),
       ).toHaveAttribute("aria-busy", "true");
     });
     resolve(makeResponse());
@@ -149,7 +149,7 @@ describe("ASK pane — empty state + composer a11y", () => {
     // accessible name reflects the empty-draft disabled reason.
     await waitFor(() =>
       expect(
-        screen.getByRole("button", { name: /önce bir sorgu yazın/i }),
+        screen.getByRole("button", { name: /type a query first/i }),
       ).toHaveAttribute("aria-busy", "false"),
     );
   });
@@ -163,7 +163,7 @@ describe("ASK pane — honest model + cost (F1/F2)", () => {
     expect(screen.queryByText(/claude-sonnet-4\.6/i)).not.toBeInTheDocument();
     // The honest rule-based label is present (header + status strip).
     expect(
-      screen.getAllByText(/kural-tabanlı plan/i).length,
+      screen.getAllByText(/rule-based plan/i).length,
     ).toBeGreaterThanOrEqual(1);
   });
 
@@ -204,7 +204,7 @@ describe("ASK pane — plan-method badge (F3)", () => {
     render(<ASKPane code="ASK" />);
     await submitQuery();
     const badge = await screen.findByTestId("ask-plan-method");
-    expect(badge).toHaveTextContent(/plan: kural-tabanlı/i);
+    expect(badge).toHaveTextContent(/plan: rule-based/i);
   });
 
   it("renders the AI plan badge with the real model when the LLM planned", async () => {
@@ -220,7 +220,7 @@ describe("ASK pane — plan-method badge (F3)", () => {
     render(<ASKPane code="ASK" />);
     const disc = screen.getByTestId("ask-disclosure");
     expect(disc.textContent ?? "").toMatch(/determ/i);
-    expect(disc.textContent ?? "").toMatch(/yapay zekâ/i);
+    expect(disc.textContent ?? "").toMatch(/not AI-written/i);
   });
 });
 
@@ -253,7 +253,7 @@ describe("ASK pane — actionable citations (A4)", () => {
     await submitQuery();
     await screen.findByText(/deterministic narrative/i);
     const cite = await screen.findByRole("button", {
-      name: /kaynak \[1\] — scan panelini aç/i,
+      name: /source \[1\] — open scan pane/i,
     });
     fireEvent.click(cite);
     expect(router.navigate).toHaveBeenCalledWith("/fn/SCAN");
@@ -266,7 +266,7 @@ describe("ASK pane — actionable citations (A4)", () => {
     // Expand the reasoning trace to reveal the evidence table.
     fireEvent.click(await screen.findByRole("button", { name: /show reasoning trace/i }));
     const codeBtn = await screen.findByRole("button", {
-      name: /^scan panelini aç/i,
+      name: /^open scan pane/i,
     });
     fireEvent.click(codeBtn);
     expect(router.navigate).toHaveBeenCalledWith("/fn/SCAN");
@@ -306,7 +306,7 @@ describe("ASK pane — usability (U1)", () => {
     // Cancelling restores the ready state (submit no longer aria-busy).
     await waitFor(() =>
       expect(
-        screen.getByRole("button", { name: /sorguyu çalıştır|önce bir sorgu/i }),
+        screen.getByRole("button", { name: /run query|type a query/i }),
       ).toHaveAttribute("aria-busy", "false"),
     );
     resolve(makeResponse());
@@ -333,7 +333,7 @@ describe("ASK pane — usability (U1)", () => {
       expect(screen.queryByTestId("ask-stop")).not.toBeInTheDocument(),
     );
     expect(
-      screen.getByRole("button", { name: /sorguyu çalıştır|önce bir sorgu/i }),
+      screen.getByRole("button", { name: /run query|type a query/i }),
     ).toHaveAttribute("aria-busy", "false");
     resolve(makeResponse());
   });

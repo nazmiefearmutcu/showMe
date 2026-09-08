@@ -43,7 +43,7 @@ describe("BDA F1 — de-overclaim + supported indicators", () => {
     render(<BDAPane />);
     const help = screen.getByTestId("bda-help");
     expect(help).toBeInTheDocument();
-    expect(help.textContent).toMatch(/gerçek NLP değil/i);
+    expect(help.textContent).toMatch(/not real NLP/i);
   });
 
   it("help caption lists supported indicators", () => {

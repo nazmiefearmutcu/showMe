@@ -52,7 +52,7 @@ describe("OrderTicket", () => {
     expect(screen.getByRole("dialog")).toBeInTheDocument();
   });
 
-  it("Gönder button enables only with matching account_label", () => {
+  it("Submit button enables only with matching account_label", () => {
     useTradingStore.setState({
       pendingConfirm: {
         kind: "submit", brokerName: "binance:abc", accountLabel: "main",
@@ -65,7 +65,7 @@ describe("OrderTicket", () => {
                 limitPrice: null, stopPrice: null, tif: "gtc", notes: "" },
     });
     render(<OrderTicket {...BASE_PROPS} />);
-    const send = screen.getByRole("button", { name: /gönder/i }) as HTMLButtonElement;
+    const send = screen.getByRole("button", { name: /submit/i }) as HTMLButtonElement;
     expect(send.disabled).toBe(true);
     const input = screen.getByPlaceholderText("main") as HTMLInputElement;
     fireEvent.change(input, { target: { value: "wrong" } });

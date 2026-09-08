@@ -32,7 +32,7 @@ describe("TMPL pane fixes", () => {
     render(<TMPLPane />);
     fireEvent.click(screen.getByText("RSI MR"));
     fireEvent.click(screen.getByRole("button", { name: /kullan/i }));
-    fireEvent.click(screen.getByRole("button", { name: /oluştur/i }));
+    fireEvent.click(screen.getByRole("button", { name: /create/i }));
 
     // While in-flight, Kapat must be disabled.
     const kapat = screen.getByTestId("tmpl-kapat-button") as HTMLButtonElement;
@@ -47,7 +47,7 @@ describe("TMPL pane fixes", () => {
     expect(kapat.disabled).toBe(false);
   });
 
-  it("kapat_enabled_pre_create — Kapat enabled before user hits Oluştur", () => {
+  it("close_enabled_pre_create — Close enabled before user hits Create", () => {
     render(<TMPLPane />);
     fireEvent.click(screen.getByText("RSI MR"));
     fireEvent.click(screen.getByRole("button", { name: /kullan/i }));

@@ -91,7 +91,7 @@ function renderWithCredential() {
 }
 
 describe("delete plan — A12 bots_unknown warning", () => {
-  it("resolveDeletePlan: bots_unknown=true → doğrulanamadı copy + force=true", () => {
+  it("resolveDeletePlan: bots_unknown=true → could-not-verify copy + force=true", () => {
     // P2-1 — deps are pre-fetched and passed in directly (no second lookup).
     const plan = resolveDeletePlan("main", {
       credential_id: "abc",
@@ -99,8 +99,8 @@ describe("delete plan — A12 bots_unknown warning", () => {
       bot_ids: [],
       bots_unknown: true,
     });
-    expect(plan.title).toMatch(/doğrulanamadı/i);
-    expect(plan.body).toMatch(/doğrulanamadı/i);
+    expect(plan.title).toMatch(/could not be verified/i);
+    expect(plan.body).toMatch(/could not be verified/i);
     // Defensive cascade.
     expect(plan.force).toBe(true);
   });
@@ -112,12 +112,12 @@ describe("delete plan — A12 bots_unknown warning", () => {
       bot_ids: [],
       bots_unknown: false,
     });
-    expect(plan.title).toBe("Bağlantıyı sil");
-    expect(plan.body).not.toMatch(/doğrulanamadı/i);
+    expect(plan.title).toBe("Delete connection");
+    expect(plan.body).not.toMatch(/could not be verified/i);
     expect(plan.force).toBe(false);
   });
 
-  it("Sil → in-app dialog surfaces the 'doğrulanamadı' warning, confirm forces", async () => {
+  it("Delete → in-app dialog surfaces the 'could-not-verify' warning, confirm forces", async () => {
     vi.spyOn(useExchangeStore.getState(), "dependentBots").mockResolvedValue({
       credential_id: "abc",
       bot_count: 0,
@@ -133,8 +133,8 @@ describe("delete plan — A12 bots_unknown warning", () => {
     await waitFor(() =>
       expect(screen.getByTestId("confirm-dialog-body")).toBeInTheDocument(),
     );
-    // Both the title and body carry the "doğrulanamadı" warning copy.
-    expect(screen.getByTestId("confirm-dialog-body-text")).toHaveTextContent(/doğrulanamadı/i);
+    // Both the title and body carry the "could not be verified" warning copy.
+    expect(screen.getByTestId("confirm-dialog-body-text")).toHaveTextContent(/could not be verified/i);
 
     fireEvent.click(screen.getByTestId("confirm-dialog-confirm"));
     await waitFor(() => expect(del).toHaveBeenCalledWith("abc", { force: true }));

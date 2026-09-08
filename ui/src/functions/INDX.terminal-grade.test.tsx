@@ -51,31 +51,31 @@ beforeEach(() => {
 });
 
 describe("INDX H1 — subjective confidence disclosure", () => {
-  it("shows a list-level subjective-confidence legend (backtest değil)", () => {
+  it("shows a list-level subjective-confidence legend (not a backtest)", () => {
     render(<INDXPane />);
-    expect(screen.getByText(/öznel editör değerlendirmesi \(backtest değil\)/i)).toBeInTheDocument();
+    expect(screen.getByText(/subjective editor assessment \(not a backtest\)/i)).toBeInTheDocument();
   });
 
   it("confidence element has a subjective title tooltip", () => {
     render(<INDXPane />);
     const meters = screen.getAllByRole("meter");
     expect(meters.length).toBeGreaterThanOrEqual(1);
-    expect(meters[0].getAttribute("title")).toMatch(/öznel/i);
+    expect(meters[0].getAttribute("title")).toMatch(/subjective/i);
   });
 
   it("detail rationale heading reads honestly (öznel)", () => {
     render(<INDXPane />);
     fireEvent.click(screen.getByText("RSI"));
-    expect(screen.getByText(/Değerlendirme gerekçesi \(öznel\)/i)).toBeInTheDocument();
+    expect(screen.getByText(/Confidence rationale \(subjective\)/i)).toBeInTheDocument();
   });
 });
 
 describe("INDX H2 — suggested strategy labelled illustrative", () => {
-  it("suggested-strategy heading says doğrulanmamış / illustrative", () => {
+  it("suggested-strategy heading says unverified / illustrative", () => {
     render(<INDXPane />);
     fireEvent.click(screen.getByText("RSI"));
-    expect(screen.getByText(/Örnek strateji \(illüstratif — doğrulanmamış\)/i)).toBeInTheDocument();
-    expect(screen.getByText(/backtest edilmemiş, doğrulanmamıştır/i)).toBeInTheDocument();
+    expect(screen.getByText(/Example strategy \(illustrative — unverified\)/i)).toBeInTheDocument();
+    expect(screen.getByText(/not backtested, not verified/i)).toBeInTheDocument();
   });
 });
 
@@ -95,7 +95,7 @@ describe("INDX D2 — accessible confidence meter (not color-only)", () => {
     expect(detailMeter).toBeTruthy();
     expect(detailMeter!.getAttribute("aria-valuemin")).toBe("0");
     expect(detailMeter!.getAttribute("aria-valuemax")).toBe("10");
-    expect(detailMeter!.getAttribute("aria-label")).toMatch(/öznel/i);
+    expect(detailMeter!.getAttribute("aria-label")).toMatch(/subjective/i);
     expect(detailMeter!.textContent).toMatch(/9\/10/);
   });
 });
@@ -121,7 +121,7 @@ describe("INDX S2 — error state", () => {
 describe("INDX S3 — no-results empty state", () => {
   it("renders design-system Empty when search has no matches", () => {
     render(<INDXPane />);
-    fireEvent.change(screen.getByLabelText("Indikatör ara"), { target: { value: "xyzzy" } });
+    fireEvent.change(screen.getByLabelText("Search indicators"), { target: { value: "xyzzy" } });
     expect(screen.getByTestId("indx-empty")).toBeInTheDocument();
   });
 });
@@ -129,7 +129,7 @@ describe("INDX S3 — no-results empty state", () => {
 describe("INDX A1/A2 — input + family a11y", () => {
   it("search input is reachable by its bound label", () => {
     render(<INDXPane />);
-    const input = screen.getByLabelText("Indikatör ara");
+    const input = screen.getByLabelText("Search indicators");
     expect(input).toBeInTheDocument();
     expect(input.tagName).toBe("INPUT");
   });
@@ -146,7 +146,7 @@ describe("INDX A3 — parameter table semantics", () => {
     render(<INDXPane />);
     fireEvent.click(screen.getByText("RSI"));
     const table = screen.getByText(/period/i).closest("table")!;
-    expect(within(table).getByText(/İndikatör parametreleri/i)).toBeInTheDocument();
+    expect(within(table).getByText(/Indicator parameters/i)).toBeInTheDocument();
     const ths = table.querySelectorAll("th");
     expect(ths.length).toBeGreaterThanOrEqual(1);
     ths.forEach((th) => expect(th.getAttribute("scope")).toBe("col"));
@@ -159,7 +159,7 @@ describe("INDX A4 — detail pane is a labelled region", () => {
       entries: FIXTURES, loading: false, error: null, selectedId: "rsi", loadCatalog: noopLoad,
     });
     render(<INDXPane />);
-    const region = screen.getByRole("region", { name: /indikatör detayları/i });
+    const region = screen.getByRole("region", { name: /indicator details/i });
     expect(region).toBeInTheDocument();
     // The selected indicator's detail actually renders inside that region.
     expect(within(region).getByText("RSI")).toBeInTheDocument();
@@ -169,9 +169,9 @@ describe("INDX A4 — detail pane is a labelled region", () => {
 describe("INDX A5 — result count is role=status", () => {
   it("announces the count and updates on search", () => {
     render(<INDXPane />);
-    const status = screen.getByText(/^2 indikatör$/);
+    const status = screen.getByText(/^2 indicators$/);
     expect(status.getAttribute("role")).toBe("status");
-    fireEvent.change(screen.getByLabelText("Indikatör ara"), { target: { value: "rsi" } });
-    expect(screen.getByText(/^1 indikatör$/)).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Search indicators"), { target: { value: "rsi" } });
+    expect(screen.getByText(/^1 indicators$/)).toBeInTheDocument();
   });
 });

@@ -139,8 +139,8 @@ describe("MarketHeatmap — sizing honesty (H1)", () => {
     render(<MarketHeatmapPane code="MAP" />);
     const note = screen.getByTestId("map-sizing-note");
     expect(note).toBeInTheDocument();
-    expect(note.textContent).toMatch(/değişim/i);
-    expect(note.textContent).toMatch(/piyasa değeri DEĞİL/i);
+    expect(note.textContent).toMatch(/change/i);
+    expect(note.textContent).toMatch(/NOT market cap/i);
   });
 });
 
@@ -221,7 +221,7 @@ describe("MarketHeatmap — model/fallback badge (H3)", () => {
     expect(badge).toBeInTheDocument();
     expect(badge.getAttribute("role")).toBe("status");
     expect(badge.textContent?.toLowerCase()).toMatch(/model/);
-    expect(badge.textContent?.toLowerCase()).toMatch(/canlı/);
+    expect(badge.textContent?.toLowerCase()).toMatch(/live/);
   });
 
   it("renders the model badge when every row is quote_type model (no metadata flag)", () => {

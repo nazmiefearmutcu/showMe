@@ -83,7 +83,7 @@ export function EEPane({ code, symbol }: FunctionPaneProps) {
   const { state, data, error, refetch } = useFunction<EEData>({
     code,
     symbol: effectiveSymbol,
-    params: { history, live_earnings: mode === "live", live: mode === "live" },
+    params: { history, reference: mode !== "live" },
     enabled: !!effectiveSymbol,
   });
 

@@ -193,10 +193,10 @@ export function ECOPane({ code }: FunctionPaneProps) {
                 {events.length} ev
               </Pill>
               <Pill tone="accent" variant="soft" withDot={false}>
-                {`Veri: ${utcStamp === formatMissing ? formatMissing : `${utcStamp} UTC`}`}
+                {`Data: ${utcStamp === formatMissing ? formatMissing : `${utcStamp} UTC`}`}
               </Pill>
               <Pill tone={isModel ? "warn" : isLive ? "positive" : "warn"} variant="soft">
-                {isModel ? "örnek" : isLive ? "live" : state}
+                {isModel ? "sample" : isLive ? "live" : state}
               </Pill>
               <SegmentedControl
                 label="COUNTRY"
@@ -207,14 +207,14 @@ export function ECOPane({ code }: FunctionPaneProps) {
               />
               <SegmentedControl
                 label="IMP"
-                title="Önem filtresi"
+                title="Importance filter"
                 value={importance}
                 options={IMPORTANCE}
                 onChange={setImportance}
               />
               <Tabs
                 variant="segmented"
-                ariaLabel="Zaman aralığı"
+                ariaLabel="Time range"
                 items={RANGES.map((r) => ({ id: r.id, label: r.label }))}
                 active={range}
                 onChange={(id) => setRange(id as RangeId)}
@@ -224,7 +224,7 @@ export function ECOPane({ code }: FunctionPaneProps) {
                 loading={state === "loading"}
                 busy={state === "loading" || state === "refreshing"}
                 onClick={refetch}
-                title="Takvimi yenile"
+                title="Refresh the calendar"
               />
             </FunctionControlGroup>
           }
@@ -515,11 +515,11 @@ function importanceBadge(value: string | number | undefined): ReactNode {
   // a11y: never rely on colour alone. Keep the word AND add a non-colour
   // triangle cue + an explicit aria-label, so screen-reader / colour-blind
   // users still get the impact level.
-  const level = high ? "yüksek" : med ? "orta" : "düşük";
+  const level = high ? "high" : med ? "medium" : "low";
   const cue = high ? "▲▲▲" : med ? "▲▲" : "▲";
   const label = high ? "high" : med ? "med" : "low";
   return (
-    <Pill tone={tone} variant="soft" withDot={false} aria-label={`önem: ${level}`}>
+    <Pill tone={tone} variant="soft" withDot={false} aria-label={`importance: ${level}`}>
       <span aria-hidden style={impCueStyle}>
         {cue}
       </span>
@@ -584,7 +584,7 @@ function formatSourceLabel(sources: string[] | undefined): string {
   if (!sources || sources.length === 0) return "";
   return sources
     .map((s) =>
-      s === "calendar_feed_model" ? "Örnek takvim (canlı değil)" : s,
+      s === "calendar_feed_model" ? "Sample calendar (not live)" : s,
     )
     .join(", ");
 }
@@ -596,13 +596,13 @@ function ModelCalendarBadge() {
       className="wei-model-badge"
       role="status"
       data-testid="eco-model-badge"
-      aria-label="Örnek takvim — canlı veri yok"
+      aria-label="Sample calendar — no live data"
     >
       <span className="wei-model-badge__dot" aria-hidden />
-      <strong>ÖRNEK TAKVİM — canlı veri yok</strong>
+      <strong>SAMPLE CALENDAR — no live data</strong>
       <span className="u-text-secondary">
-        Bu takvimdeki olaylar ve değerler illüstratif örnek veridir; gerçek
-        (canlı) ekonomik açıklamalar değildir.
+        Events and values in this calendar are illustrative sample data, not
+        real (live) economic releases.
       </span>
     </div>
   );

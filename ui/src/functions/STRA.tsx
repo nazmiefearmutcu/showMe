@@ -99,7 +99,7 @@ export function STRAPane() {
           }
           openNew();
         }} style={{ width: "100%", marginBottom: 8 }}>
-          + Yeni strateji
+          + New strategy
         </button>
         {list.map((m) => (
           <button key={m.id} onClick={() => handleSidebarClick(m.id)}
@@ -128,8 +128,8 @@ export function STRAPane() {
         {!loading && list.length === 0 && (
           <div data-testid="stra-list-empty">
             <Empty
-              title="Henüz strateji yok"
-              body="Yukarıdaki + Yeni strateji ile ilk stratejini oluştur."
+              title="No strategies yet"
+              body="Create your first strategy with + New strategy above."
             />
           </div>
         )}
@@ -138,20 +138,20 @@ export function STRAPane() {
       <div style={{ overflowY: "auto", padding: 16 }}>
         {!draft && (
           <div style={{ color: "var(--text-secondary)" }}>
-            Soldan bir strateji seç ya da <strong>+ Yeni strateji</strong>.
+            Select a strategy on the left or <strong>+ New strategy</strong>.
           </div>
         )}
         {draft && (
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             <h3 style={{ margin: 0 }}>
-              {draft.name || "(yeni strateji)"} {dirty && <em style={{ color: "var(--warn)" }}>*</em>}
+              {draft.name || "(new strategy)"} {dirty && <em style={{ color: "var(--warn)" }}>*</em>}
             </h3>
             <label>
-              Ad
+              Name
               <input value={draft.name ?? ""} onChange={(e) => setField("name", e.target.value)} />
             </label>
             <label>
-              Açıklama
+              Description
               <input value={draft.description ?? ""} onChange={(e) => setField("description", e.target.value)} />
             </label>
             <label>
@@ -171,17 +171,17 @@ export function STRAPane() {
             {timeframeUnknown && (
               <div data-testid="stra-field-err-timeframe"
                    style={{ color: "var(--negative)", fontSize: 11 }}>
-                Bilinmeyen timeframe: "{draft.timeframe}". Listeden seç.
+                Unknown timeframe: "{draft.timeframe}". Pick one from the list.
               </div>
             )}
 
-            <h4>Indikatörler</h4>
+            <h4>Indicators</h4>
             <button onClick={() => {
               const id = catalogEntries[0]?.id ?? "rsi";
               const refs: IndicatorRef[] = [...(draft.indicators ?? []),
                 { alias: `${id}_${(draft.indicators?.length ?? 0) + 1}`, id, params: {} }];
               setField("indicators", refs);
-            }}>+ Indikatör ekle</button>
+            }}>+ Add indicator</button>
             {(draft.indicators ?? []).map((r, idx) => {
               const isDup = aliasDupIndices.has(idx);
               return (
@@ -195,7 +195,7 @@ export function STRAPane() {
                       width: 100,
                       border: isDup ? "1px solid var(--negative)" : undefined,
                     }}
-                    title={isDup ? "Alias başka bir indikatörde de kullanılıyor — benzersiz olmalı." : undefined}
+                    title={isDup ? "Alias is already used by another indicator — it must be unique." : undefined}
                     data-testid={`stra-indicator-alias-${idx}`}
                     data-dup={isDup ? "1" : undefined}
                     aria-label={`indicator-alias-${idx}`} />
@@ -218,19 +218,19 @@ export function STRAPane() {
             {aliasDupIndices.size > 0 && (
               <div data-testid="stra-field-err-alias-dup"
                    style={{ color: "var(--negative)", fontSize: 11 }}>
-                Indikatör alias'ları benzersiz olmalı.
+                Indicator aliases must be unique.
               </div>
             )}
 
             {/* P4 DISPLAY — group Entry rules in a bordered panel so it is
                 clear which rules + which logic selector belong together. */}
             <section data-testid="stra-entry-group" style={RULE_GROUP_STYLE}>
-              <h4 style={{ margin: "0 0 6px" }}>Entry kuralları (logic:{" "}
+              <h4 style={{ margin: "0 0 6px" }}>Entry rules (logic:{" "}
                 <select value={draft.entry_logic ?? "all"}
                         aria-label="Entry logic"
                         onChange={(e) => setField("entry_logic", e.target.value as "all" | "any")}>
-                  <option value="all">tümü</option>
-                  <option value="any">herhangi</option>
+                  <option value="all">all</option>
+                  <option value="any">any</option>
                 </select>)
               </h4>
               <RulesEditor
@@ -243,12 +243,12 @@ export function STRAPane() {
 
             {/* P4 DISPLAY — Exit rules in their own bordered panel. */}
             <section data-testid="stra-exit-group" style={RULE_GROUP_STYLE}>
-              <h4 style={{ margin: "0 0 6px" }}>Exit kuralları (logic:{" "}
+              <h4 style={{ margin: "0 0 6px" }}>Exit rules (logic:{" "}
                 <select value={draft.exit_logic ?? "any"}
                         aria-label="Exit logic"
                         onChange={(e) => setField("exit_logic", e.target.value as "all" | "any")}>
-                  <option value="all">tümü</option>
-                  <option value="any">herhangi</option>
+                  <option value="all">all</option>
+                  <option value="any">any</option>
                 </select>)
               </h4>
               <RulesEditor
@@ -275,26 +275,26 @@ export function STRAPane() {
                 // invalid timeframe / no unsaved changes / save in flight).
                 title={
                   saving
-                    ? "Kaydediliyor…"
+                    ? "Saving…"
                     : aliasDupIndices.size > 0
-                      ? "Indikatör alias'ları benzersiz olmalı."
+                      ? "Indicator aliases must be unique."
                       : timeframeUnknown
-                        ? "Geçersiz timeframe — listeden seç."
+                        ? "Invalid timeframe — pick one from the list."
                         : !dirty
-                          ? "Kaydedilecek değişiklik yok."
+                          ? "No changes to save."
                           : undefined
                 }>
-                {saving ? "Kaydediliyor..." : "Kaydet"}
+                {saving ? "Saving..." : "Save"}
               </button>
               {(() => {
                 // Round 24 HIGH 13 — disable Preview while one is in flight.
                 const previewDisabled = !draft.id || dirty || previewing;
                 const previewTitle = previewDisabled
                   ? !draft.id
-                    ? "Preview için önce stratejiyi kaydet."
+                    ? "Save the strategy before previewing."
                     : dirty
-                      ? "Kaydedilmemiş değişiklikler var — önce Kaydet."
-                      : "Preview zaten çalışıyor…"
+                      ? "Unsaved changes — save first."
+                      : "Preview is already running…"
                   : undefined;
                 return (
                   <span title={previewTitle}>
@@ -306,7 +306,7 @@ export function STRAPane() {
                       }}
                       disabled={previewDisabled}
                       data-testid="stra-preview-button">
-                      {previewing ? "Yükleniyor…" : "Preview"}
+                      {previewing ? "Loading…" : "Preview"}
                     </button>
                   </span>
                 );
@@ -314,7 +314,7 @@ export function STRAPane() {
               {(!draft.id || dirty) && (
                 <span data-testid="stra-preview-hint"
                       style={{ fontSize: 11, color: "var(--text-secondary)", alignSelf: "center" }}>
-                  {!draft.id ? "(Preview için önce kaydet)" : "(Önce kaydet)"}
+                  {!draft.id ? "(save before preview)" : "(save first)"}
                 </span>
               )}
             {draft.id && (
@@ -330,7 +330,7 @@ export function STRAPane() {
                     setPendingConfirm({ kind: "delete", id: draft.id! });
                   }}
                   style={{ marginLeft: "auto", color: "var(--negative)" }}>
-                  {removing ? "Siliniyor..." : "Sil"}
+                  {removing ? "Deleting..." : "Delete"}
                 </button>
               )}
             </div>
@@ -386,12 +386,12 @@ export function STRAPane() {
       <ConfirmDialog
         open={pendingConfirm !== null}
         title={pendingConfirm?.kind === "delete"
-          ? "Stratejiyi sil"
-          : "Kaydedilmemiş değişiklikler"}
+          ? "Delete strategy"
+          : "Unsaved changes"}
         body={pendingConfirm?.kind === "delete"
-          ? "Stratejiyi silmek istediğinden emin misin? Bu stratejiye bağlı bot'lar etkilenebilir."
-          : "Kaydetmediğin değişiklikler kaybolacak. Devam mı?"}
-        confirmLabel={pendingConfirm?.kind === "delete" ? "Sil" : "Devam et"}
+          ? "Are you sure you want to delete this strategy? Bots attached to it may be affected."
+          : "Unsaved changes will be lost. Continue?"}
+        confirmLabel={pendingConfirm?.kind === "delete" ? "Delete" : "Continue"}
         destructive={pendingConfirm?.kind === "delete"}
         busy={removing}
         onConfirm={() => {
@@ -527,7 +527,7 @@ function RulesEditor({
       {rules.some((r) => validateOperand(r.right, operandOptions)) && (
         <div data-testid={testIdPrefix ? `${testIdPrefix}-operand-hint` : undefined}
              style={{ color: "var(--negative)", fontSize: 11, marginTop: 4 }}>
-          Sayılar için "literal:" öneki kullan (ör. literal:30).
+          Use a "literal:" prefix for numbers (e.g. literal:30).
         </div>
       )}
     </div>

@@ -110,8 +110,8 @@ function EquityCurve({
     return (
       <div data-testid="perf-equity-empty">
         <Empty
-          title="Yeterli trade verisi yok"
-          body={`Equity eğrisi için en az 2 kapanmış işlem gerekli (simüle başlangıç ${formatCurrency(startingEquity)}).`}
+          title="Not enough trade data"
+          body={`At least 2 closed trades are needed for the equity curve (simulated start ${formatCurrency(startingEquity)}).`}
         />
       </div>
     );
@@ -132,9 +132,9 @@ function EquityCurve({
   // F4 — full accessible description so a screen-reader user gets the shape of
   // the curve without seeing the SVG.
   const summary =
-    `Simüle equity eğrisi — başlangıç ${formatCurrency(start)}, ` +
-    `bitiş ${formatCurrency(end)}, en düşük ${formatCurrency(min)}, ` +
-    `en yüksek ${formatCurrency(max)}.`;
+    `Simulated equity curve — start ${formatCurrency(start)}, ` +
+    `end ${formatCurrency(end)}, low ${formatCurrency(min)}, ` +
+    `high ${formatCurrency(max)}.`;
   return (
     <>
       <svg
@@ -214,7 +214,7 @@ function RiskMetrics({ metrics }: { metrics: PerformanceMetrics }) {
   const n = metrics.trade_count;
   const lowN = n < MIN_RELIABLE_N;
   const caveat = lowN
-    ? `Küçük örneklem (N=${n}); bu oranlar istatistiksel olarak güvenilmez.`
+    ? `Small sample (N=${n}); these ratios are statistically unreliable.`
     : undefined;
   const ratioCls = lowN ? "u-text-secondary" : undefined;
   return (
@@ -243,8 +243,8 @@ function RiskMetrics({ metrics }: { metrics: PerformanceMetrics }) {
         style={{ width: "100%", fontSize: 11 }}
       >
         <caption className="u-sr-only">
-          Hesaplanan risk oranları — Sharpe, Sortino, profit factor, expectancy
-          ve ardışık zarar; örneklem boyutu N={n}.
+          Computed risk ratios — Sharpe, Sortino, profit factor, expectancy
+          and consecutive losses; sample size N={n}.
         </caption>
         <thead>
           <tr className="u-text-secondary">
@@ -252,7 +252,7 @@ function RiskMetrics({ metrics }: { metrics: PerformanceMetrics }) {
             <th scope="col" align="left">Sortino</th>
             <th scope="col" align="left">Profit factor</th>
             <th scope="col" align="left">Expectancy</th>
-            <th scope="col" align="left">Maks. ardışık zarar</th>
+            <th scope="col" align="left">Max consecutive losses</th>
           </tr>
         </thead>
         <tbody>
@@ -313,8 +313,8 @@ export function PERFPane() {
   // F4 — single announced summary; gated inside PerfSummaryLive so the poll
   // doesn't re-announce.
   const summary =
-    `${formatNumber(leaderboard.length)} bot, toplam PnL ${formatSignedCurrency(totalPnL)}` +
-    (selected ? `, seçili: ${selected.symbol}` : "");
+    `${formatNumber(leaderboard.length)} bots, total PnL ${formatSignedCurrency(totalPnL)}` +
+    (selected ? `, selected: ${selected.symbol}` : "");
 
   // F1 — the simulated baseline disclosed near the curve; honest fallback to
   // the documented $10k when an older payload omits starting_equity.
@@ -328,7 +328,7 @@ export function PERFPane() {
       <div style={{ display: "flex", gap: 24, alignItems: "center", padding: "8px 16px",
                     borderBottom: "1px solid var(--border-card)" }}>
         <KPI label="Toplam PnL" value={totalPnL} fmt={(v) => formatSignedCurrency(v)} />
-        <KPI label="Bot sayısı" value={leaderboard.length} fmt={(v) => formatNumber(v)} />
+        <KPI label="Bot count" value={leaderboard.length} fmt={(v) => formatNumber(v)} />
         <BotPill
           label="Lider"
           entry={topPerformer}
@@ -362,8 +362,8 @@ export function PERFPane() {
           style={{ marginLeft: "auto", fontSize: 11 }}
         >
           {generatedAt
-            ? `Son güncelleme: ${new Date(generatedAt).toLocaleTimeString()}`
-            : `Son güncelleme: ${formatMissing}`}
+            ? `Last updated: ${new Date(generatedAt).toLocaleTimeString()}`
+            : `Last updated: ${formatMissing}`}
         </span>
         <button
           data-testid="perf-refresh"
@@ -372,7 +372,7 @@ export function PERFPane() {
           disabled={loading}
           onClick={() => loadLeaderboard()}
         >
-          {loading ? "Yenileniyor…" : "Yenile"}
+          {loading ? "Refreshing…" : "Refresh"}
         </button>
       </div>
 
@@ -403,19 +403,19 @@ export function PERFPane() {
           ) : leaderboard.length === 0 ? (
             <div data-testid="perf-empty">
               <Empty
-                title="Henüz performans verisi yok"
-                body="Bir bot tick atıp işlem kapatınca leaderboard burada dolar."
+                title="No performance data yet"
+                body="The leaderboard fills here once a bot ticks and closes a trade."
               />
             </div>
           ) : (
             <table
               className="terminal-grid-numeric"
-              aria-label="Performans leaderboard"
+              aria-label="Performance leaderboard"
               style={{ width: "100%", fontSize: 12 }}
             >
               <caption className="u-sr-only">
-                Tüm botların kümülatif performansı — sembol, işlem sayısı, kazanma
-                oranı, toplam PnL ve maksimum düşüş. Bir satıra basınca detay açılır.
+                Cumulative performance across all bots — symbol, trade count,
+                win rate, total PnL and max drawdown. Click a row for details.
               </caption>
               <thead>
                 <tr className="u-text-secondary">
@@ -439,7 +439,7 @@ export function PERFPane() {
                       role="button"
                       tabIndex={0}
                       aria-selected={isSelected}
-                      aria-label={`${e.symbol} performans detayını aç`}
+                      aria-label={`${e.symbol} open performance details`}
                       onClick={() => loadBot(e.bot_id)}
                       onKeyDown={(ev) => {
                         if (ev.key === "Enter" || ev.key === " ") {
@@ -480,10 +480,10 @@ export function PERFPane() {
               <h4 style={{ margin: 0 }}>{selected.symbol}</h4>
               <button
                 onClick={clearSelected}
-                aria-label={`${selected.symbol} detayını kapat`}
+                aria-label={`${selected.symbol} close details`}
                 style={{ marginLeft: "auto" }}
               >
-                Kapat
+                Close
               </button>
             </div>
             <div style={{ display: "flex", gap: 16, margin: "8px 0", flexWrap: "wrap" }}>
@@ -511,18 +511,18 @@ export function PERFPane() {
               className="u-text-secondary"
               style={{ fontSize: 11, marginBottom: 4 }}
             >
-              Simüle ({formatCurrency(startingEquity)} başlangıç) — net PnL'i
-              biriktiren göreli eğri; gerçek hesap bakiyesi değildir.
+              Simulated ({formatCurrency(startingEquity)} start) — a relative
+              curve accumulating net PnL; not the real account balance.
             </div>
             {/* F1 — fallback-equity warn marker, mirroring BOT/BOTS. */}
             {isFallbackEquity && (
               <div
                 data-testid="perf-equity-fallback-warning"
-                title="Bu canlı botun emirleri gerçek broker bakiyesi yerine yedek ($10k) bakiye ile boyutlandırıldı; PnL bu yedeğe dayanıyor."
+                title="This live bot's orders were sized with the fallback ($10k) balance instead of the real broker balance; PnL is based on that fallback."
                 style={{ marginBottom: 4, display: "inline-block" }}
               >
                 <Pill tone="warn" variant="soft" withDot={false}>
-                  ⚠ yedek $10k equity
+                  ⚠ fallback $10k equity
                 </Pill>
               </div>
             )}
@@ -531,12 +531,12 @@ export function PERFPane() {
             <h4 style={{ margin: "8px 0 4px" }}>Trades ({formatNumber(selected.trades.length)})</h4>
             <table
               className="terminal-grid-numeric"
-              aria-label="Son işlemler"
+              aria-label="Recent trades"
               style={{ width: "100%", fontSize: 11 }}
             >
               <caption className="u-sr-only">
-                Botun son işlemleri, en yeni üstte — giriş/çıkış zamanı ve fiyatı,
-                PnL ve yüzde getiri.
+                The bot's recent trades, newest first — entry/exit time and price,
+                PnL and percentage return.
               </caption>
               <thead>
                 <tr className="u-text-secondary">

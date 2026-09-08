@@ -22,9 +22,9 @@ const SUPPORTED_INDICATORS =
   "Williams %R, VWAP, Ichimoku, PSAR, KDJ";
 
 const HELP_CAPTION =
-  "Anahtar-kelime tabanlı yardımcı — gerçek NLP değil. Tanınan göstergeler: " +
+  "Keyword-based assistant \u2014 not real NLP. Recognized indicators: " +
   SUPPORTED_INDICATORS +
-  ". Karmaşık ifadeler (divergence, çoklu-gösterge, risk boyutlandırma) yok sayılır.";
+  ". Complex expressions (divergence, multi-indicator, risk sizing) are ignored.";
 
 type NoteTone = "warn" | "info" | "negative" | "neutral";
 
@@ -95,14 +95,14 @@ export function BDAPane() {
 
   const hasText = text.trim().length > 0;
   const generateTitle = !hasText
-    ? "Strateji metni gerekli."
+    ? "Strategy text required."
     : loadingGenerate
-      ? "Strateji üretiliyor…"
+      ? "Generating strategy…"
       : undefined;
   const explainTitle = !selectedStrategy
-    ? "Strateji seçilmeli."
+    ? "A strategy must be selected."
     : loadingExplain
-      ? "Açıklama yükleniyor…"
+      ? "Loading explanation…"
       : undefined;
 
   // F2/F3 — Cmd/Ctrl+Enter triggers generate from the textarea.
@@ -121,7 +121,7 @@ export function BDAPane() {
                   overflow: "hidden" }}>
       <div style={{ padding: 16, borderBottom: "1px solid var(--border-card)",
                     overflowY: "auto" }}>
-        <h3 style={{ margin: "0 0 4px" }}>Strateji yardımcısı</h3>
+        <h3 style={{ margin: "0 0 4px" }}>Strategy assistant</h3>
         <p id="bda-help" data-testid="bda-help"
            style={{ color: "var(--text-secondary)", fontSize: "var(--font-size-xs)",
                     lineHeight: 1.5, margin: "0 0 8px" }}>
@@ -130,7 +130,7 @@ export function BDAPane() {
 
         <label htmlFor="bda-text" className="ds-field__label"
                style={{ display: "block", marginBottom: 4 }}>
-          Strateji isteği
+          Strategy request
         </label>
         <textarea id="bda-text"
                   value={text}
@@ -139,7 +139,7 @@ export function BDAPane() {
                   rows={4}
                   style={{ width: "100%", fontFamily: "var(--font-mono)",
                            fontSize: "var(--font-size-sm)" }}
-                  placeholder='Örn: "RSI 30 altında alım, 70 üstünde satım, BTC/USDT 1h"'
+                  placeholder='e.g. "buy RSI below 30, sell above 70, BTC/USDT 1h"'
                   aria-describedby={error ? "bda-help bda-error" : "bda-help"} />
 
         <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
@@ -150,7 +150,7 @@ export function BDAPane() {
                   aria-busy={loadingGenerate}
                   title={generateTitle}
                   disabled={!hasText || loadingGenerate}>
-            {loadingGenerate ? "…" : "Strateji öner"}
+            {loadingGenerate ? "…" : "Suggest strategy"}
           </button>
           <button onClick={() => generate(true)}
                   data-testid="bda-generate-save-button"
@@ -158,7 +158,7 @@ export function BDAPane() {
                   title={generateTitle}
                   disabled={!hasText || loadingGenerate}
                   style={{ background: "var(--positive)", color: "var(--accent-on)" }}>
-            {loadingGenerate ? "…" : "Strateji öner + kaydet"}
+            {loadingGenerate ? "…" : "Suggest + save strategy"}
           </button>
         </div>
 
@@ -175,8 +175,8 @@ export function BDAPane() {
         {showEmpty && (
           <div data-testid="bda-empty" style={{ marginTop: 12 }}>
             <Empty
-              title="Henüz bir strateji üretilmedi"
-              body="Yukarıya bir gösterge + koşul yaz, sonra Strateji öner'e bas (veya ⌘/Ctrl+Enter)."
+              title="No strategy generated yet"
+              body="Type an indicator + condition above, then press Suggest strategy (or ⌘/Ctrl+Enter)."
             />
           </div>
         )}
@@ -192,9 +192,9 @@ export function BDAPane() {
         )}
 
         {result && (
-          <div role="region" aria-label="Strateji üretim sonucu" aria-live="polite"
+          <div role="region" aria-label="Strategy generation result" aria-live="polite"
                data-testid="bda-result" style={{ marginTop: 12 }}>
-            <h4 style={{ margin: "0 0 4px" }}>Notlar</h4>
+            <h4 style={{ margin: "0 0 4px" }}>Notes</h4>
             <ul style={{ fontSize: "var(--font-size-sm)", margin: 0, paddingLeft: 18,
                          display: "flex", flexDirection: "column", gap: 2 }}>
               {result.notes.map((n, i) => {
@@ -214,7 +214,7 @@ export function BDAPane() {
             {result.saved_id && (
               <div data-testid="bda-saved-indicator" style={{ marginTop: 8 }}>
                 <Pill tone="positive">
-                  Kaydedildi: {result.saved_id.slice(0, 8)} — STRA panelinde düzenleyebilirsin
+                  Saved: {result.saved_id.slice(0, 8)} — edit it in the STRA pane
                 </Pill>
               </div>
             )}
@@ -223,7 +223,7 @@ export function BDAPane() {
               <details style={{ marginTop: 8 }}>
                 <summary style={{ fontSize: "var(--font-size-xs)",
                                   color: "var(--text-secondary)" }}>
-                  Spec JSON (hata ayıklama)
+                  Spec JSON (debug)
                 </summary>
                 <pre style={{ background: "var(--surface-2)", padding: 8,
                               fontFamily: "var(--font-mono)",
@@ -238,24 +238,24 @@ export function BDAPane() {
       </div>
 
       <div style={{ padding: 16, overflowY: "auto" }}>
-        <h3 style={{ margin: "0 0 4px" }}>Strateji açıkla</h3>
+        <h3 style={{ margin: "0 0 4px" }}>Explain strategy</h3>
         <p id="bda-explain-help"
            style={{ color: "var(--text-secondary)", fontSize: "var(--font-size-xs)",
                     lineHeight: 1.5, margin: "0 0 8px" }}>
-          Kayıtlı bir stratejinin kural-tabanlı TR özetini gör — şablondan
-          üretilir, yapay zeka yazımı değildir.
+          See a rule-based plain-English summary of a saved strategy —
+          generated from the template, not AI-written.
         </p>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <label htmlFor="bda-strategy-select"
                  style={{ fontSize: "var(--font-size-xs)",
                           color: "var(--text-secondary)" }}>
-            Strateji:
+            Strategy:
           </label>
           <select id="bda-strategy-select"
-                  aria-label="Açıklanacak strateji"
+                  aria-label="Strategy to explain"
                   value={selectedStrategy}
                   onChange={(e) => setSelectedStrategy(e.target.value)}>
-            <option value="">— seç —</option>
+            <option value="">— select —</option>
             {strategies.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
           </select>
           <button onClick={() => selectedStrategy && explainStrategy(selectedStrategy)}
@@ -263,7 +263,7 @@ export function BDAPane() {
                   aria-busy={loadingExplain}
                   title={explainTitle}
                   disabled={!selectedStrategy || loadingExplain}>
-            {loadingExplain ? "…" : "Açıkla"}
+            {loadingExplain ? "…" : "Explain"}
           </button>
         </div>
         {explanation && (

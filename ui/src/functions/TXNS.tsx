@@ -64,7 +64,7 @@ const REFRESH_MS = 60_000;
 // H3 — honest tooltip: `mode` is a DB-edit-permission flag, NOT a live vs
 // shadow trading mode. Spelled out so "writable" never reads as "live".
 const MODE_TOOLTIP =
-  "writable = DB'de düzenlenebilir kayıt; canlı işlem anlamına gelmez";
+  "writable = record editable in the DB; does not imply a live trade";
 
 type SortKey =
   | "closed_at"
@@ -199,7 +199,7 @@ export function TXNSPane({ code, symbol }: FunctionPaneProps) {
         render: (r) => (
           <button
             type="button"
-            aria-label={`${r.symbol} detayları`}
+            aria-label={`${r.symbol} details`}
             onClick={() => {
               setFocusedTarget("DES", r.symbol);
               navigate(`/symbol/${r.symbol}/DES`);
@@ -293,14 +293,14 @@ export function TXNSPane({ code, symbol }: FunctionPaneProps) {
         // live-trading mode. The pill carries an accessible label + title
         // tooltip spelling out what "writable" actually means.
         key: "mode",
-        header: "Kayıt",
+        header: "Record",
         width: 96,
         render: (r) => (
           // Pill is a closed-prop design-system primitive, so the accessible
           // label + tooltip live on a wrapper element it renders inside.
           <span
             title={MODE_TOOLTIP}
-            aria-label={`Kayıt: ${r.mode ?? formatMissing} — ${MODE_TOOLTIP}`}
+            aria-label={`Record: ${r.mode ?? formatMissing} — ${MODE_TOOLTIP}`}
             data-testid="txns-mode-cell"
           >
             <Pill
@@ -371,10 +371,10 @@ export function TXNSPane({ code, symbol }: FunctionPaneProps) {
                   Wrapper carries the testid/title since Pill is closed-prop. */}
               <span
                 data-testid="txns-last-updated"
-                title="Bu yanıtın sunulduğu zaman (içe aktarma zamanı değil)"
+                title="When this response was served (not the import time)"
               >
                 <Pill tone="muted" variant="soft" withDot={false}>
-                  Son güncelleme: {lastUpdated}
+                  Last updated: {lastUpdated}
                 </Pill>
               </span>
               <RowLimitControl
@@ -396,8 +396,8 @@ export function TXNSPane({ code, symbol }: FunctionPaneProps) {
                 disabled={!rows?.length}
                 aria-label={
                   rows?.length
-                    ? `${rows.length} işlemi CSV olarak indir`
-                    : "İndirilecek işlem yok"
+                    ? `Download ${rows.length} trades as CSV`
+                    : "No trades to download"
                 }
                 onClick={() => rows && downloadCsv(filter || "all", rows)}
                 title="Download CSV"
@@ -413,15 +413,15 @@ export function TXNSPane({ code, symbol }: FunctionPaneProps) {
           className="txns-provenance u-text-secondary"
           data-testid="txns-provenance"
         >
-          Bu kayıtlar yerel <code>portfolio.db</code>
+          These records are a trade history <strong>imported into</strong> the
+          local <code>portfolio.db</code>
           {source ? (
             <>
               {" "}(<code>{source}</code>)
             </>
           ) : null}{" "}
-          içine <strong>içe aktarılmış</strong> işlem geçmişidir — tarihsel bir
-          anlık görüntü; canlı broker emirleri veya ShowMe bot işlemleri{" "}
-          <strong>değildir</strong>.
+          — a historical snapshot; they are{" "}
+          <strong>not</strong> live broker orders or ShowMe bot trades.
         </div>
         <div className="most-tab-strip">
           <FieldRow>
@@ -446,11 +446,11 @@ export function TXNSPane({ code, symbol }: FunctionPaneProps) {
           ) : sortedRows && sortedRows.length === 0 ? (
             // A5 — empty-db vs filtered-empty are different stories.
             <Empty
-              title={emptyDb ? "portfolio.db boş" : "Filtreyle eşleşen yok"}
+              title={emptyDb ? "portfolio.db is empty" : "No matches for the filter"}
               body={
                 emptyDb
-                  ? "İçe aktarılmış işlem kaydı yok. portfolio.db'ye işlem aktarıldığında burada listelenir."
-                  : `portfolio.db'de ${total} kayıt var ama hiçbiri geçerli filtreyle eşleşmiyor.`
+                  ? "No imported trade records yet. Trades will be listed here once imported into portfolio.db."
+                  : `portfolio.db has ${total} records but none match the current filter.`
               }
             />
           ) : (
@@ -532,7 +532,7 @@ export function TXNSPane({ code, symbol }: FunctionPaneProps) {
                 rows={sortedRows ?? []}
                 rowKey={(r) => r.trade_id ?? `${r.symbol}-${r.id}`}
                 density="compact"
-                ariaLabel="İşlem defteri"
+                ariaLabel="Trade blotter"
                 sortBy={sortBy}
                 sortDir={sortDir}
                 onSort={onSort}

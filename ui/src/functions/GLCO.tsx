@@ -23,6 +23,7 @@ import {
   StatusSection,
   Tabs,
 } from "@/design-system";
+import { formatNumber } from "@/lib/format";
 import { useFunction } from "@/lib/useFunction";
 import { useUtcStamp } from "@/lib/useUtcStamp";
 import { useVisibilityTick } from "@/lib/useVisibilityTick";
@@ -532,10 +533,7 @@ function matchesSector(r: CommodityRow, sector: string): boolean {
 
 function fmtNum(v: number | undefined | null): string {
   if (v == null || !Number.isFinite(v)) return "—";
-  return v.toLocaleString("en-US", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 4,
-  });
+  return formatNumber(v, 4, { minimumFractionDigits: 2 });
 }
 
 function fmtCompact(v: number | undefined | null): string {

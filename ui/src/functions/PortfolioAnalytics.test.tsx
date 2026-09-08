@@ -76,7 +76,7 @@ describe("PORTX shared data-quality badge (H1)", () => {
     const badge = screen.getByTestId("portx-data-badge");
     expect(badge).toBeTruthy();
     expect(badge.getAttribute("role")).toBe("status");
-    expect(badge.textContent?.toLowerCase()).toContain("canlı piyasa değil");
+    expect(badge.textContent?.toLowerCase()).toContain("not a live market");
   });
 
   it("fires for data_mode: modeled", () => {
@@ -246,7 +246,7 @@ describe("PORTX a11y (A2)", () => {
   it("DataGrid carries an ariaLabel naming the code", () => {
     mockOk({ status: "ok", rows: LIVE_ROWS });
     render(<PortfolioAnalyticsPane code="PORT" symbol="" />);
-    expect(screen.getByLabelText(/PORT portföy analitiği/i)).toBeTruthy();
+    expect(screen.getByLabelText(/PORT portfolio analytics/i)).toBeTruthy();
   });
 
   it("warnings strip is a role=status live region", () => {

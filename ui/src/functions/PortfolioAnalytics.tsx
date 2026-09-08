@@ -637,7 +637,7 @@ function PortfolioAnalyticsView({
             rows={rows}
             rowKey={(row, idx) => row.symbol ? `${String(row.symbol)}-${idx}` : idx}
             density="compact"
-            ariaLabel={`${code} portföy analitiği`}
+            ariaLabel={`${code} portfolio analytics`}
           />
         </section>
 
@@ -1139,10 +1139,10 @@ function portfolioDataMode(
 function PortfolioDataBadge({ quality }: { quality: PortfolioDataQuality }) {
   if (quality.mode === "live") return null;
   const degraded = quality.mode === "degraded";
-  const headline = degraded ? "KISMİ CANLI VERİ" : "ÖRNEK/MODEL VERİ";
+  const headline = degraded ? "PARTIAL LIVE DATA" : "SAMPLE/MODEL DATA";
   const detail = degraded
-    ? "bazı değerler canlı sağlayıcıdan gelmiyor — eksik/gecikmeli olabilir."
-    : "canlı piyasa değil; değerler illüstratiftir.";
+    ? "some values are not from the live provider — they may be missing or delayed."
+    : "not a live market; values are illustrative.";
   const title = quality.reason ? `${headline} — ${quality.reason}` : headline;
   return (
     <div

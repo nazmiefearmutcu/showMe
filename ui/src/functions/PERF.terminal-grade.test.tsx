@@ -84,9 +84,9 @@ describe("PERF F1 — equity-curve honesty", () => {
     seedSelected({ starting_equity: 10000 });
     render(<PERFPane />);
     const d = screen.getByTestId("perf-equity-disclaimer");
-    expect(d.textContent).toMatch(/Simüle/i);
+    expect(d.textContent).toMatch(/Simulated/i);
     expect(d.textContent).toMatch(/10,?000/);
-    expect(d.textContent).toMatch(/gerçek hesap bakiyesi değildir/i);
+    expect(d.textContent).toMatch(/not the real account balance/i);
   });
 
   it("shows the fallback-equity warn marker ONLY when equity_source === fallback_10k", () => {
@@ -128,7 +128,7 @@ describe("PERF F2 — risk metrics + sample size", () => {
     seedSelected({ metrics: _metrics({ trade_count: 4 }) });
     render(<PERFPane />);
     const warn = screen.getByTestId("perf-low-sample-warning");
-    expect(warn.textContent).toMatch(/Küçük örneklem/i);
+    expect(warn.textContent).toMatch(/Small sample/i);
     expect(warn.textContent).toMatch(/N=4/);
     // ratios de-emphasised
     expect(screen.getByTestId("perf-sharpe").className).toMatch(/u-text-secondary/);
@@ -190,7 +190,7 @@ describe("PERF F4 — a11y", () => {
   it("trades table has caption + scope columns + aria-label", () => {
     seedSelected();
     render(<PERFPane />);
-    const table = screen.getByRole("table", { name: /son işlemler/i });
+    const table = screen.getByRole("table", { name: /recent trades/i });
     expect(table.querySelector("caption")).not.toBeNull();
     expect(table.querySelectorAll("th[scope='col']").length).toBe(6);
   });
@@ -200,8 +200,8 @@ describe("PERF F4 — a11y", () => {
     render(<PERFPane />);
     const svg = screen.getByTestId("perf-equity-svg");
     expect(svg.getAttribute("role")).toBe("img");
-    expect(svg.getAttribute("aria-label")).toMatch(/Simüle equity eğrisi/i);
-    expect(svg.getAttribute("aria-label")).toMatch(/başlangıç/i);
+    expect(svg.getAttribute("aria-label")).toMatch(/Simulated equity curve/i);
+    expect(svg.getAttribute("aria-label")).toMatch(/start/i);
   });
 
   it("refresh button has aria-label, aria-busy + disabled while loading", () => {
@@ -229,7 +229,7 @@ describe("PERF F4 — a11y", () => {
       loadBot,
     } as never);
     render(<PERFPane />);
-    const row = screen.getByRole("button", { name: /BTC\/USDT performans detayını aç/i });
+    const row = screen.getByRole("button", { name: /BTC\/USDT open performance details/i });
     expect(row.getAttribute("tabindex")).toBe("0");
     expect(row.getAttribute("aria-selected")).toBe("true");
     fireEvent.keyDown(row, { key: "Enter" });
@@ -249,7 +249,7 @@ describe("PERF F4 — a11y", () => {
   it("close button has an aria-label", () => {
     seedSelected();
     render(<PERFPane />);
-    expect(screen.getByLabelText(/BTC\/USDT detayını kapat/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/BTC\/USDT close details/i)).toBeInTheDocument();
   });
 
   it("error region is role=status with no redundant aria-live", () => {
@@ -289,7 +289,7 @@ describe("PERF F5 — states + freshness", () => {
       generatedAt: "2026-06-08T11:59:30Z",
     });
     render(<PERFPane />);
-    expect(screen.getByTestId("perf-last-updated").textContent).toMatch(/Son güncelleme:/);
+    expect(screen.getByTestId("perf-last-updated").textContent).toMatch(/Last updated:/);
     // honest non-em-dash when present
     expect(screen.getByTestId("perf-last-updated").textContent).not.toMatch(/—/);
   });

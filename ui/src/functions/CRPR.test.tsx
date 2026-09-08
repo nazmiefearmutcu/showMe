@@ -314,7 +314,7 @@ describe("CRPR pane — A1 accessible rating ladder meter", () => {
   it("gives the marked bucket row an aria-label naming the bucket", () => {
     setMockFn({ state: "ok", ...corporatePayload() });
     render(<CRPRPane code="CRPR" />);
-    const marked = screen.getByLabelText(/BBB.*işaretli|işaretli.*BBB/i);
+    const marked = screen.getByLabelText(/BBB.*binned|binned.*BBB/i);
     expect(marked).toBeInTheDocument();
   });
 
@@ -322,15 +322,15 @@ describe("CRPR pane — A1 accessible rating ladder meter", () => {
     // Regression: the IG floor must be relative to the rendered scale. A coarse
     // 7-rung backend scale (…BBB,BB,B,CCC) once reused the canonical "BBB-"=9
     // index, marking EVERY rung as investment grade — visually mislabelling
-    // speculative credits. Each speculative rung must read "(spekülatif)".
+    // speculative credits. Each speculative rung must read "(speculative)".
     setMockFn({ state: "ok", ...corporatePayload() });
     render(<CRPRPane code="CRPR" />);
-    expect(screen.getByLabelText(/^BB \(spekülatif\)$/)).toBeInTheDocument();
-    expect(screen.getByLabelText(/^B \(spekülatif\)$/)).toBeInTheDocument();
-    expect(screen.getByLabelText(/^CCC \(spekülatif\)$/)).toBeInTheDocument();
+    expect(screen.getByLabelText(/^BB \(speculative\)$/)).toBeInTheDocument();
+    expect(screen.getByLabelText(/^B \(speculative\)$/)).toBeInTheDocument();
+    expect(screen.getByLabelText(/^CCC \(speculative\)$/)).toBeInTheDocument();
     // …and an investment-grade rung still reads IG (no over-correction).
     expect(
-      screen.getByLabelText(/^A \(yatırım yapılabilir\)$/),
+      screen.getByLabelText(/^A \(investment grade\)$/),
     ).toBeInTheDocument();
   });
 
@@ -340,10 +340,10 @@ describe("CRPR pane — A1 accessible rating ladder meter", () => {
     // Legend dots carry the explicit "(investment/speculative grade)" suffix
     // that ladder-row labels do not, so these resolve to the legend only.
     expect(
-      screen.getByLabelText(/yatırım yapılabilir \(investment grade\)/i),
+      screen.getByLabelText(/^investment grade$/i),
     ).toBeInTheDocument();
     expect(
-      screen.getByLabelText(/spekülatif \(speculative grade\)/i),
+      screen.getByLabelText(/^speculative grade$/i),
     ).toBeInTheDocument();
   });
 });

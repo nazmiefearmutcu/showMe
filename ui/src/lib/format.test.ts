@@ -4,6 +4,8 @@ import {
   formatCurrency,
   formatMissing,
   formatNumber,
+  formatNumberFixed,
+  formatNumberPlain,
   formatPercent,
   formatPrice,
   formatSignedCurrency,
@@ -175,5 +177,37 @@ describe("formatNumber", () => {
 
   it("returns em-dash for non-finite", () => {
     expect(formatNumber(undefined)).toBe(formatMissing);
+  });
+});
+
+describe("formatNumberFixed", () => {
+  it("groups thousands and pins min=max decimals", () => {
+    expect(formatNumberFixed(1234567.891, 2)).toBe("1,234,567.89");
+    expect(formatNumberFixed(0.98, 2)).toBe("0.98");
+    expect(formatNumberFixed(42, 2)).toBe("42.00");
+    expect(formatNumberFixed(-1234.5, 2)).toBe("-1,234.50");
+  });
+
+  it("supports other digit counts", () => {
+    expect(formatNumberFixed(1.5, 4)).toBe("1.5000");
+    expect(formatNumberFixed(0, 0)).toBe("0");
+  });
+
+  it("returns em-dash for non-finite", () => {
+    expect(formatNumberFixed(Number.NaN, 2)).toBe(formatMissing);
+    expect(formatNumberFixed(Number.POSITIVE_INFINITY, 2)).toBe(formatMissing);
+  });
+});
+
+describe("formatNumberPlain", () => {
+  it("matches toFixed parity without grouping", () => {
+    expect(formatNumberPlain(1234567.891, 2)).toBe("1234567.89");
+    expect(formatNumberPlain(1.23456, 4)).toBe("1.2346"); // rounds
+    expect(formatNumberPlain(-0.5, 2)).toBe("-0.50");
+    expect(formatNumberPlain(0, 2)).toBe("0.00");
+  });
+
+  it("returns em-dash for non-finite", () => {
+    expect(formatNumberPlain(Number.NaN, 2)).toBe(formatMissing);
   });
 });

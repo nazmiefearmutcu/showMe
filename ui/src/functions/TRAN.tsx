@@ -7,7 +7,7 @@
  * speakers, and jump-to-section anchors. Data honesty: when the provider is
  * unavailable / not configured the pane says so explicitly — never fake text.
  */
-import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import { useMemo, type CSSProperties } from "react";
 import {
   Empty,
   Pane,
@@ -19,6 +19,7 @@ import {
   StatusDivider,
   StatusSection,
 } from "@/design-system";
+import { usePersistentString } from "./function-control-state";
 import { useFunction } from "@/lib/useFunction";
 import { defaultSymbolForFunction } from "@/lib/symbols";
 import {
@@ -95,16 +96,7 @@ function formatTimestamp(seconds: number | null | undefined): string | null {
  * the stored choice before the payload loads).
  */
 function usePersistedSpeaker(): readonly [string, (v: string) => void] {
-  const [speaker, setSpeaker] = useState<string>(() => {
-    if (typeof localStorage === "undefined") return "all";
-    return localStorage.getItem(SPEAKER_KEY) ?? "all";
-  });
-  useEffect(() => {
-    if (typeof localStorage !== "undefined") {
-      localStorage.setItem(SPEAKER_KEY, speaker);
-    }
-  }, [speaker]);
-  return [speaker, setSpeaker] as const;
+  return usePersistentString(SPEAKER_KEY, "all");
 }
 
 interface TranSection {

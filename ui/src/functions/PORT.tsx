@@ -168,7 +168,7 @@ function PortfolioOnboarding() {
     <section className="port-empty-terminal port-empty-terminal--action">
       <div className="port-empty-terminal__copy">
         <strong>Connect Exchange</strong>
-        <span>Bağlı borsa yok. /CONN üzerinden read-only veya trade izinli bağlantı ekle.</span>
+        <span>No connected exchange. Add a read-only or trade-enabled connection via /CONN.</span>
       </div>
       <button type="button" className="btn btn--accent" onClick={() => navigate("/fn/CONN")}>
         Open CONN
@@ -286,7 +286,7 @@ function SourceFilter() {
         onClick={() => setIncludeOrders(!includeOrders)}
         aria-pressed={includeOrders}
         data-testid="port-include-orders-toggle"
-        title="Açık emirleri de portföy fetch'ine dahil et"
+        title="Include open orders in the portfolio fetch"
         className={`port-source-chip${includeOrders ? " port-source-chip--active" : ""}`}
       >
         {includeOrders ? "Orders included" : "Orders hidden"}
@@ -315,13 +315,13 @@ function useTradingResultToasts() {
       if (r.ok) {
         const title =
           r.kind === "close"
-            ? `Pozisyon kapatıldı${r.symbol ? `: ${r.symbol}` : ""}`
-            : `Emir iptal edildi${r.symbol ? `: ${r.symbol}` : r.orderId ? ` (${r.orderId})` : ""}`;
+            ? `Position closed${r.symbol ? `: ${r.symbol}` : ""}`
+            : `Order cancelled${r.symbol ? `: ${r.symbol}` : r.orderId ? ` (${r.orderId})` : ""}`;
         toast.success(title);
       } else {
         const title =
-          r.kind === "close" ? "Pozisyon kapatılamadı" : "Emir iptal edilemedi";
-        toast.error(title, r.error ?? "Bilinmeyen hata");
+          r.kind === "close" ? "Failed to close position" : "Failed to cancel order";
+        toast.error(title, r.error ?? "Unknown error");
       }
     };
     // Fire immediately for any pre-existing state, then subscribe.
@@ -336,7 +336,7 @@ function useTradingResultToasts() {
 /**
  * BUG #12 — mirror of the backend `_STABLE_TO_USD` allowlist.  Balances in
  * any currency NOT in this set are excluded from the aggregate USD total;
- * the UI surfaces this with a "USD'ye dönüştürülmedi" badge so users don't
+ * the UI surfaces this with a "not converted to USD" badge so users don't
  * mistakenly think a EUR/GBP/TRY group is being counted.
  */
 const STABLE_USD_CURRENCIES = new Set([
@@ -352,10 +352,10 @@ function NonStableCurrencyBadge({ currency }: { currency: string }) {
   return (
     <span
       data-testid="port-non-stable-badge"
-      title="Bu hesabın bakiyesi toplam USD'ye eklenmedi."
+      title="This account's balance is not included in the total USD."
       className="port-non-stable-badge"
     >
-      {currency} (USD'ye dönüştürülmedi)
+      {currency} (not converted to USD)
     </span>
   );
 }
@@ -452,7 +452,7 @@ function CredentialGroup({ g }: { g: PortfolioGroup }) {
                         g.account_label,
                       )}
                       data-testid={`port-broker-close-${p.symbol}`}
-                      title="Gerçek brokerda pozisyonu kapatır (irreversible)"
+                      title="Closes the position at the real broker (irreversible)"
                       className="btn btn--ghost port-danger-btn"
                     >
                       Close
@@ -467,7 +467,7 @@ function CredentialGroup({ g }: { g: PortfolioGroup }) {
       )}
       {g.orders.length > 0 && (
         <details className="port-orders-panel">
-          <summary>Açık emirler ({g.orders.length})</summary>
+          <summary>Open orders ({g.orders.length})</summary>
           <table className="port-broker-table">
             <thead>
               <tr>
@@ -494,7 +494,7 @@ function CredentialGroup({ g }: { g: PortfolioGroup }) {
                           o.symbol != null ? String(o.symbol) : undefined,
                         )}
                         data-testid={`port-order-cancel-${String(o.id ?? "")}`}
-                        title="Emri iptal eder — onay gerekli"
+                        title="Cancels the order — confirmation required"
                         className="btn btn--ghost port-danger-btn"
                       >
                         Cancel

@@ -300,12 +300,12 @@ export function AIMPane({ code, symbol }: FunctionPaneProps) {
               </Pill>
               {/* H3 — freshness derived from server as_of (falls back to client). */}
               <Pill tone="accent" variant="soft" withDot={false}>
-                {`Veri: ${asOfStamp} UTC`}
+                {`Data: ${asOfStamp} UTC`}
               </Pill>
               <Pill
                 tone={isLive ? "positive" : isDegraded ? "negative" : "warn"}
                 variant="soft"
-                aria-label={`Veri modu: ${dataModeExplanation(dataMode)}`}
+                aria-label={`Data mode: ${dataModeExplanation(dataMode)}`}
               >
                 {dataMode}
               </Pill>
@@ -502,7 +502,7 @@ function SideChip({ side }: { side?: string | null }) {
       tone={tone}
       variant="soft"
       withDot={false}
-      aria-label={`yön: ${s === "buy" ? "alış" : s === "sell" ? "satış" : s}`}
+      aria-label={`direction: ${s === "buy" ? "long" : s === "sell" ? "short" : s}`}
     >
       {s.toUpperCase()}
     </Pill>
@@ -530,7 +530,7 @@ function StatusPill({ status }: { status?: string | null }) {
       tone={tone}
       variant="soft"
       withDot={false}
-      aria-label={s ? `durum: ${s.replace(/_/g, " ")}` : "durum: yok"}
+      aria-label={s ? `status: ${s.replace(/_/g, " ")}` : "status: none"}
     >
       {text}
     </Pill>
@@ -575,14 +575,14 @@ function extractAsOfHHMM(raw: string | null | undefined): string | undefined {
 function dataModeTitle(mode: string): string {
   switch (mode) {
     case "live_exchange":
-      return "Canlı";
+      return "Live";
     case "cached_snapshot":
-      return "Önbellek anlık görüntüsü";
+      return "Cached snapshot";
     case "not_configured":
-      return "Broker yapılandırılmamış";
+      return "Broker not configured";
     case "provider_unavailable":
     case "degraded":
-      return "Brokerlara ulaşılamıyor";
+      return "Brokers unreachable";
     default:
       return "Referans defteri";
   }
@@ -591,16 +591,16 @@ function dataModeTitle(mode: string): string {
 function dataModeExplanation(mode: string): string {
   switch (mode) {
     case "live_exchange":
-      return "Canlı broker emir akışı.";
+      return "Live broker order flow.";
     case "cached_snapshot":
-      return "Canlı broker bağlantısı yok — son anlık görüntü gösteriliyor.";
+      return "No live broker connection — showing the last snapshot.";
     case "not_configured":
-      return "Broker yapılandırılmamış.";
+      return "Broker not configured.";
     case "provider_unavailable":
     case "degraded":
-      return "Brokerlara ulaşılamıyor — kayıtlı emir geçmişi gösteriliyor.";
+      return "Brokers unreachable — showing the recorded order history.";
     default:
-      return "Canlı broker emir akışı yok. Defter etiketlendi ve hiçbir gerçekleşme uydurulmuyor.";
+      return "No live broker order flow. The book is labeled and no fills are fabricated.";
   }
 }
 

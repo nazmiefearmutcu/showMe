@@ -27,7 +27,7 @@ describe("INDX pane", () => {
 
   it("search narrows results", () => {
     render(<INDXPane />);
-    fireEvent.change(screen.getByPlaceholderText(/indikat/i), { target: { value: "rsi" } });
+    fireEvent.change(screen.getByPlaceholderText(/search indicators/i), { target: { value: "rsi" } });
     expect(screen.getByText("RSI")).toBeInTheDocument();
     expect(screen.queryByText("EMA")).toBeNull();
   });
@@ -54,7 +54,7 @@ describe("INDX pane", () => {
 
   it("empty filter shows fallback copy", () => {
     render(<INDXPane />);
-    fireEvent.change(screen.getByPlaceholderText(/indikat/i), { target: { value: "xyzzy" } });
-    expect(screen.getByText(/eşleşen indikat/i)).toBeInTheDocument();
+    fireEvent.change(screen.getByPlaceholderText(/search indicators/i), { target: { value: "xyzzy" } });
+    expect(screen.getByText(/no matching indicator/i)).toBeInTheDocument();
   });
 });

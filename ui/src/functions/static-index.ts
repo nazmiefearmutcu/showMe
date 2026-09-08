@@ -29,7 +29,7 @@ export const STATIC_FUNCTION_INDEX: FunctionEntry[] = [
     "code": "ANR",
     "name": "Analyst Recommendations",
     "category": "equity",
-    "description": "Strong Buy/Buy/Hold/Sell/Strong Sell dağılımı + 12-ay fiyat hedefi (mean/median/min/max)."
+    "description": "Strong Buy/Buy/Hold/Sell/Strong Sell distribution + 12-month price target (mean/median/min/max)."
   },
   {
     "code": "APPL",
@@ -53,7 +53,7 @@ export const STATIC_FUNCTION_INDEX: FunctionEntry[] = [
     "code": "BETA",
     "name": "CAPM Beta",
     "category": "equity",
-    "description": "Hedef vs benchmark β = cov(r_i, r_m) / var(r_m). Çoklu pencere ve benchmark."
+    "description": "Target vs benchmark β = cov(r_i, r_m) / var(r_m). Multiple windows and benchmarks."
   },
   {
     "code": "BGAS",
@@ -233,7 +233,7 @@ export const STATIC_FUNCTION_INDEX: FunctionEntry[] = [
     "code": "DES",
     "name": "Description",
     "category": "equity",
-    "description": "Şirket özeti — sektör, market cap, çalışan sayısı, IPO tarihi, kısa açıklama."
+    "description": "Company summary — sector, market cap, employee count, IPO date, short description."
   },
   {
     "code": "DINE",
@@ -275,7 +275,7 @@ export const STATIC_FUNCTION_INDEX: FunctionEntry[] = [
     "code": "EE",
     "name": "Earnings & Estimates",
     "category": "equity",
-    "description": "Geçmiş kazançlar (actual vs consensus) + sürpriz % + sonraki tahmin tarihi."
+    "description": "Historical earnings (actual vs consensus) + surprise % + next report date."
   },
   {
     "code": "EMSX",
@@ -287,7 +287,7 @@ export const STATIC_FUNCTION_INDEX: FunctionEntry[] = [
     "code": "EQS",
     "name": "Equity Screener",
     "category": "screen",
-    "description": "DSL-based equity screener. Örnek: marketCap > 1000000000 AND pe < 15 AND sector = \"Technology\""
+    "description": "DSL-based equity screener. Example: marketCap > 1000000000 AND pe < 15 AND sector = \"Technology\""
   },
   {
     "code": "EREV",
@@ -317,7 +317,7 @@ export const STATIC_FUNCTION_INDEX: FunctionEntry[] = [
     "code": "FA",
     "name": "Financial Analysis",
     "category": "equity",
-    "description": "Income statement + balance sheet + cash flow, son 5 yıl trendi."
+    "description": "Income statement + balance sheet + cash flow, 5-year trend."
   },
   {
     "code": "FLDS",

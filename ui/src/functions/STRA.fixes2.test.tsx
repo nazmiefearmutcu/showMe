@@ -72,7 +72,7 @@ describe("STRA pane fixes2", () => {
       dirty: true,
     });
     render(<STRAPane />);
-    const kaydet = screen.getByRole("button", { name: /^kaydet$/i }) as HTMLButtonElement;
+    const kaydet = screen.getByRole("button", { name: /^save$/i }) as HTMLButtonElement;
     expect(kaydet.disabled).toBe(true);
   });
 
@@ -87,7 +87,7 @@ describe("STRA pane fixes2", () => {
   it("duplicate_alias_blocks_save", () => {
     useStrategyStore.setState({ dirty: true });
     render(<STRAPane />);
-    const kaydet = screen.getByRole("button", { name: /^kaydet$/i }) as HTMLButtonElement;
+    const kaydet = screen.getByRole("button", { name: /^save$/i }) as HTMLButtonElement;
     expect(kaydet.disabled).toBe(true);
   });
 
@@ -106,7 +106,7 @@ describe("STRA pane fixes2", () => {
     render(<STRAPane />);
     const preview = screen.getByTestId("stra-preview-button") as HTMLButtonElement;
     expect(preview.disabled).toBe(true);
-    expect(screen.getByTestId("stra-preview-hint").textContent).toMatch(/kaydet/i);
+    expect(screen.getByTestId("stra-preview-hint").textContent).toMatch(/save/i);
   });
 
   it("preview_button_disabled_when_no_id_with_hint", () => {
@@ -126,7 +126,7 @@ describe("STRA pane fixes2", () => {
     render(<STRAPane />);
     const sil = screen.getByTestId("stra-sil-button") as HTMLButtonElement;
     expect(sil.disabled).toBe(true);
-    expect(sil.textContent).toMatch(/Siliniyor/i);
+    expect(sil.textContent).toMatch(/Deleting/i);
   });
 
   // ─── LOW Pydantic detail ─────────────────────────────────────────────

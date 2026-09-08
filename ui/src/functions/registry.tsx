@@ -366,7 +366,7 @@ const NATIVE_FUNCTION_ENTRIES: FunctionEntry[] = [
     name: "Bot Dev Assistant",
     category: "screen",
     description:
-      "Sub-system J: rule-based NL → strategy spec parser + saved-strategy explainer. Type a request like \"RSI 30 altında, 70 üstünde, BTC/USDT 1h\" and get a draft StrategySpec (optionally persisted); below, pick any saved strategy for a TR-dili rule-based explanation.",
+      "Sub-system J: rule-based NL → strategy spec parser + saved-strategy explainer. Type a request like \"RSI below 30, above 70, BTC/USDT 1h\" and get a draft StrategySpec (optionally persisted); below, pick any saved strategy for a plain-English rule-based explanation.",
   },
   {
     code: "BOT",
@@ -413,7 +413,7 @@ const NATIVE_FUNCTION_ENTRIES: FunctionEntry[] = [
     name: "Multi Indicator Scan",
     category: "screen",
     description:
-      "23 indikatörlü konsensüs ile tüm piyasalarda (kripto, hisse, ETF, FX, emtia, tahvil) yüksek skorlu sembol taraması. Sonuçlardan + butonu ile WATCH listesine ekleme. Her piyasa için ayrı kalibrasyon sekmesi.",
+      "High-score symbol scan across every market (crypto, equities, ETF, FX, commodities, bonds) using a 23-indicator consensus. Add results to the WATCH list with the + button; each market gets its own calibration tab.",
   },
   {
     code: "INDX",

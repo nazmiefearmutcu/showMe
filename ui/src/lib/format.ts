@@ -175,3 +175,27 @@ export function formatNumber(
     minimumFractionDigits,
   }).format(n);
 }
+
+/**
+ * Grouped en-US number with FIXED decimals (minimum = maximum = digits), so
+ * grid columns keep a stable width ("1,234.50", "0.98"). Replaces the
+ * per-pane `n.toLocaleString("en-US", { minimumFractionDigits: d,
+ * maximumFractionDigits: d })` re-implementations.
+ */
+export function formatNumberFixed(n: number, digits: number): string {
+  if (!isFiniteNumber(n)) return formatMissing;
+  return new Intl.NumberFormat("en-US", {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  }).format(n);
+}
+
+/**
+ * Fixed decimals WITHOUT thousands grouping (`toFixed` parity) for contexts
+ * whose existing visible output never grouped (FX rates, ratios). Callers
+ * keep their own null/finite guards; non-finite input returns the sentinel.
+ */
+export function formatNumberPlain(n: number, digits: number): string {
+  if (!isFiniteNumber(n)) return formatMissing;
+  return n.toFixed(digits);
+}

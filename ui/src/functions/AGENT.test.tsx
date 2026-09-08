@@ -105,7 +105,7 @@ describe("AGENT pane — render + Run button", () => {
   it("renders with default candidates and a styled, labelled Run button", () => {
     vi.spyOn(agent, "runBestSymbolAgent").mockResolvedValue(makeResult());
     const { container } = render(<AGENTPane code="AGENT" />);
-    const runBtn = screen.getByRole("button", { name: /sıralamayı çalıştır/i });
+    const runBtn = screen.getByRole("button", { name: /run ranking/i });
     expect(runBtn).toBeInTheDocument();
     // D1: the btn classes are on the BUTTON itself now (was on the wrapper).
     expect(runBtn).toHaveClass("btn", "btn--accent");
@@ -125,7 +125,7 @@ describe("AGENT pane — render + Run button", () => {
     ) as HTMLTextAreaElement;
     fireEvent.change(ta, { target: { value: "" } });
     expect(
-      screen.getByRole("button", { name: /sıralamayı çalıştır/i }),
+      screen.getByRole("button", { name: /run ranking/i }),
     ).toBeDisabled();
   });
 
@@ -137,7 +137,7 @@ describe("AGENT pane — render + Run button", () => {
       }),
     );
     render(<AGENTPane code="AGENT" />);
-    const runBtn = screen.getByRole("button", { name: /sıralamayı çalıştır/i });
+    const runBtn = screen.getByRole("button", { name: /run ranking/i });
     fireEvent.click(runBtn);
     await waitFor(() => expect(runBtn).toHaveAttribute("aria-busy", "true"));
     // Loading skeleton is shown in the results area.
@@ -156,7 +156,7 @@ describe("AGENT pane — methodology / method disclosure (H1)", () => {
     expect(disclosure.textContent ?? "").toMatch(/determ/i);
     // "SENTETİK" uses the Turkish dotted-İ which does not case-fold to ASCII
     // 'i'; match the case-stable "SENTET" stem instead.
-    expect(disclosure.textContent ?? "").toMatch(/sentet/i);
+    expect(disclosure.textContent ?? "").toMatch(/synthetic/i);
     // Honest about NOT being an AI/LLM.
     expect(disclosure.textContent ?? "").toMatch(/yapay zekâ|llm/i);
   });
@@ -164,7 +164,7 @@ describe("AGENT pane — methodology / method disclosure (H1)", () => {
   it("surfaces the backend method + methodology after a run", async () => {
     vi.spyOn(agent, "runBestSymbolAgent").mockResolvedValue(makeResult());
     render(<AGENTPane code="AGENT" />);
-    fireEvent.click(screen.getByRole("button", { name: /sıralamayı çalıştır/i }));
+    fireEvent.click(screen.getByRole("button", { name: /run ranking/i }));
     await screen.findByText(/aggregating scored evidence rows/i);
     const disclosure = screen.getByTestId("agent-methodology");
     expect(disclosure.textContent ?? "").toMatch(
@@ -177,10 +177,10 @@ describe("AGENT pane — honest confidence relabel (H2)", () => {
   it("labels the evidence metric as signal density, not confidence", async () => {
     vi.spyOn(agent, "runBestSymbolAgent").mockResolvedValue(makeResult());
     render(<AGENTPane code="AGENT" />);
-    fireEvent.click(screen.getByRole("button", { name: /sıralamayı çalıştır/i }));
-    await screen.findByText(/sinyal yoğ\./i);
+    fireEvent.click(screen.getByRole("button", { name: /run ranking/i }));
+    await screen.findByText(/signal dens\./i);
     // The honest label is present and the misleading "conf" header is gone.
-    expect(screen.getByText(/sinyal yoğ\./i)).toBeInTheDocument();
+    expect(screen.getByText(/signal dens\./i)).toBeInTheDocument();
     expect(screen.queryByText(/^conf$/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/uncertainty/i)).not.toBeInTheDocument();
   });
@@ -192,7 +192,7 @@ describe("AGENT pane — live/probe mode toggle (H3)", () => {
       .spyOn(agent, "runBestSymbolAgent")
       .mockResolvedValue(makeResult());
     render(<AGENTPane code="AGENT" />);
-    fireEvent.click(screen.getByRole("button", { name: /sıralamayı çalıştır/i }));
+    fireEvent.click(screen.getByRole("button", { name: /run ranking/i }));
     await waitFor(() => expect(spy).toHaveBeenCalled());
     expect(spy).toHaveBeenLastCalledWith(
       expect.objectContaining({ execute_functions: false }),
@@ -209,14 +209,14 @@ describe("AGENT pane — live/probe mode toggle (H3)", () => {
     render(<AGENTPane code="AGENT" />);
     const toggle = screen.getByRole("checkbox");
     fireEvent.click(toggle);
-    fireEvent.click(screen.getByRole("button", { name: /sıralamayı çalıştır/i }));
+    fireEvent.click(screen.getByRole("button", { name: /run ranking/i }));
     await waitFor(() => expect(spy).toHaveBeenCalled());
     expect(spy).toHaveBeenLastCalledWith(
       expect.objectContaining({ execute_functions: true }),
       expect.anything(),
     );
     // The displayed mode reflects the live method.
-    await screen.findByText(/canlı yürütme/i);
+    await screen.findByText(/live execution/i);
   });
 });
 
@@ -229,9 +229,9 @@ describe("AGENT pane — actionable rows (U1)", () => {
       }),
     );
     render(<AGENTPane code="AGENT" />);
-    fireEvent.click(screen.getByRole("button", { name: /sıralamayı çalıştır/i }));
+    fireEvent.click(screen.getByRole("button", { name: /run ranking/i }));
     const symBtn = await screen.findByRole("button", {
-      name: /solusdt des'te aç/i,
+      name: /open solusdt in des/i,
     });
     fireEvent.click(symBtn);
     expect(router.navigate).toHaveBeenCalledWith("/symbol/SOLUSDT/DES");
@@ -245,9 +245,9 @@ describe("AGENT pane — actionable rows (U1)", () => {
       }),
     );
     render(<AGENTPane code="AGENT" />);
-    fireEvent.click(screen.getByRole("button", { name: /sıralamayı çalıştır/i }));
+    fireEvent.click(screen.getByRole("button", { name: /run ranking/i }));
     const symBtn = await screen.findByRole("button", {
-      name: /ethusdt des'te aç/i,
+      name: /open ethusdt in des/i,
     });
     fireEvent.keyDown(symBtn, { key: "Enter" });
     expect(router.navigate).toHaveBeenCalledWith("/symbol/ETHUSDT/DES");
@@ -266,9 +266,9 @@ describe("AGENT pane — result summary (U2)", () => {
       }),
     );
     render(<AGENTPane code="AGENT" />);
-    fireEvent.click(screen.getByRole("button", { name: /sıralamayı çalıştır/i }));
-    const summary = await screen.findByText(/2 aday sıralandı/i);
-    expect(summary).toHaveTextContent(/en iyi: BTCUSDT/);
+    fireEvent.click(screen.getByRole("button", { name: /run ranking/i }));
+    const summary = await screen.findByText(/2 candidates ranked/i);
+    expect(summary).toHaveTextContent(/best: BTCUSDT/);
     expect(summary).toHaveAttribute("role", "status");
   });
 });
@@ -277,14 +277,14 @@ describe("AGENT pane — DataGrid a11y (DI2)", () => {
   it("gives both grids an aria-label", async () => {
     vi.spyOn(agent, "runBestSymbolAgent").mockResolvedValue(makeResult());
     render(<AGENTPane code="AGENT" />);
-    fireEvent.click(screen.getByRole("button", { name: /sıralamayı çalıştır/i }));
-    await screen.findByRole("table", { name: /sıralanan adaylar/i });
+    fireEvent.click(screen.getByRole("button", { name: /run ranking/i }));
+    await screen.findByRole("table", { name: /ranked candidates/i });
     expect(
-      screen.getByRole("table", { name: /sıralanan adaylar/i }),
+      screen.getByRole("table", { name: /ranked candidates/i }),
     ).toBeInTheDocument();
     expect(
       screen.getByRole("table", {
-        name: /en iyi aday için fonksiyon kanıtları/i,
+        name: /function evidence for the best candidate/i,
       }),
     ).toBeInTheDocument();
   });
@@ -292,8 +292,8 @@ describe("AGENT pane — DataGrid a11y (DI2)", () => {
   it("renders score and signal-density as meters (not bare text)", async () => {
     vi.spyOn(agent, "runBestSymbolAgent").mockResolvedValue(makeResult());
     render(<AGENTPane code="AGENT" />);
-    fireEvent.click(screen.getByRole("button", { name: /sıralamayı çalıştır/i }));
-    await screen.findByRole("table", { name: /sıralanan adaylar/i });
+    fireEvent.click(screen.getByRole("button", { name: /run ranking/i }));
+    await screen.findByRole("table", { name: /ranked candidates/i });
     // At least one role=meter exists (score meter + density meter).
     expect(screen.getAllByRole("meter").length).toBeGreaterThanOrEqual(1);
   });
@@ -311,8 +311,8 @@ describe("AGENT pane — DataGrid a11y (DI2)", () => {
       }),
     );
     render(<AGENTPane code="AGENT" />);
-    fireEvent.click(screen.getByRole("button", { name: /sıralamayı çalıştır/i }));
-    await screen.findByRole("table", { name: /sıralanan adaylar/i });
+    fireEvent.click(screen.getByRole("button", { name: /run ranking/i }));
+    await screen.findByRole("table", { name: /ranked candidates/i });
 
     // Score meters are labelled with a "score" prefix; density meters are not.
     const scoreMeters = screen
@@ -342,7 +342,7 @@ describe("AGENT pane — error region (D2)", () => {
   it("renders the error inside a role=status live region", async () => {
     vi.spyOn(agent, "runBestSymbolAgent").mockRejectedValue(new Error("boom"));
     render(<AGENTPane code="AGENT" />);
-    fireEvent.click(screen.getByRole("button", { name: /sıralamayı çalıştır/i }));
+    fireEvent.click(screen.getByRole("button", { name: /run ranking/i }));
     const err = await screen.findByTestId("agent-error");
     expect(err).toHaveAttribute("role", "status");
     expect(err).toHaveAttribute("aria-live", "polite");
@@ -359,10 +359,10 @@ describe("AGENT pane — data honesty", () => {
       }),
     );
     render(<AGENTPane code="AGENT" />);
-    fireEvent.click(screen.getByRole("button", { name: /sıralamayı çalıştır/i }));
-    const grid = await screen.findByRole("table", { name: /sıralanan adaylar/i });
+    fireEvent.click(screen.getByRole("button", { name: /run ranking/i }));
+    const grid = await screen.findByRole("table", { name: /ranked candidates/i });
     // Exactly one symbol launch affordance for the one mocked row.
-    expect(within(grid).getAllByRole("button", { name: /des'te aç/i })).toHaveLength(
+    expect(within(grid).getAllByRole("button", { name: /in des/i })).toHaveLength(
       1,
     );
   });

@@ -26,6 +26,7 @@ import {
   StatusDivider,
   StatusSection,
 } from "@/design-system";
+import { formatNumberFixed } from "@/lib/format";
 import { useFunction } from "@/lib/useFunction";
 import { defaultSymbolForFunction } from "@/lib/symbols";
 import { FunctionControlGroup, LoadStatePill, RefreshButton } from "./function-controls";
@@ -545,7 +546,7 @@ function formatParams(p: Record<string, number>): string {
 function fmtNum(v: unknown): string {
   const n = num(v);
   if (n == null) return "—";
-  return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return formatNumberFixed(n, 2);
 }
 
 function fmtCompact(v: unknown): string {

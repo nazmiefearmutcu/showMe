@@ -25,6 +25,7 @@ import {
   StatusDivider,
   StatusSection,
 } from "@/design-system";
+import { formatNumber } from "@/lib/format";
 import { useFunction } from "@/lib/useFunction";
 import { defaultSymbolForFunction } from "@/lib/symbols";
 import {
@@ -472,7 +473,7 @@ function fmtNum(v: unknown, digits = 2): string {
   if (v == null) return "—";
   const n = typeof v === "number" ? v : Number(v);
   if (!Number.isFinite(n)) return "—";
-  return n.toLocaleString("en-US", { maximumFractionDigits: digits });
+  return formatNumber(n, digits);
 }
 
 function fmtInt(v: unknown): string {

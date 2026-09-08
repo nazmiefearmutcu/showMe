@@ -117,7 +117,7 @@ describe("BOT F2 — signal table semantics + display", () => {
       } as never,
     });
     render(<BOTPane />);
-    const table = screen.getByRole("table", { name: /sinyal/i });
+    const table = screen.getByRole("table", { name: /signal/i });
     expect(table.querySelector("caption")).not.toBeNull();
     const ths = table.querySelectorAll("th[scope='col']");
     expect(ths.length).toBe(5);
@@ -191,7 +191,7 @@ describe("BOT F3 — form control labels", () => {
     useBotStore.setState({ draft: { ...PERSISTED_DRAFT } as never });
     render(<BOTPane />);
     expect(screen.getByLabelText(/strateji/i)).toBeInTheDocument();
-    expect(screen.getByLabelText(/bağlantı/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/connection/i)).toBeInTheDocument();
     expect(screen.getByLabelText(/^symbol$/i)).toBeInTheDocument();
     expect(screen.getByLabelText(/timeframe/i)).toBeInTheDocument();
     expect(screen.getByLabelText(/tick interval/i)).toBeInTheDocument();
@@ -273,7 +273,7 @@ describe("BOT F6 — disable confirm + disabled-Save title", () => {
     // Not dirty → Save disabled and must explain why.
     useBotStore.setState({ draft: { ...PERSISTED_DRAFT } as never, dirty: false });
     render(<BOTPane />);
-    const save = screen.getByRole("button", { name: /^kaydet$/i }) as HTMLButtonElement;
+    const save = screen.getByRole("button", { name: /^save$/i }) as HTMLButtonElement;
     expect(save.disabled).toBe(true);
     expect(save.getAttribute("title")).toBeTruthy();
   });

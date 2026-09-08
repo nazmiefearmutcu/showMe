@@ -26,6 +26,7 @@ import {
   StatusDivider,
   StatusSection,
 } from "@/design-system";
+import { formatNumberFixed } from "@/lib/format";
 import { useFunction } from "@/lib/useFunction";
 import {
   FunctionControlGroup,
@@ -554,7 +555,7 @@ function thetaTone(v: unknown): "negative" | "neutral" {
 function fmtNum(v: unknown, digits = 2): string {
   const n = num(v);
   if (n == null) return "—";
-  return n.toLocaleString("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits });
+  return formatNumberFixed(n, digits);
 }
 
 /* ── styles (design tokens only) ───────────────────────────────────── */

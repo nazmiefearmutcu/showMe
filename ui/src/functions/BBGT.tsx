@@ -41,7 +41,7 @@ import {
   RefreshButton,
   SegmentedControl,
 } from "./function-controls";
-import { usePersistentOption } from "./function-control-state";
+import { usePersistentOption, usePersistentString } from "./function-control-state";
 import type { FunctionPaneProps } from "./registry-types";
 
 const ASSET_CLASSES = [
@@ -107,11 +107,6 @@ interface BBGTData {
   next_actions?: string[];
 }
 
-function readStoredSymbol(): string {
-  if (typeof localStorage === "undefined") return "";
-  return localStorage.getItem("showme.bbgt.symbol") ?? "";
-}
-
 export function BBGTPane({ code }: FunctionPaneProps) {
   const sidecarPort = useAppStore((s) => s.sidecarPort);
   const sidecarReady = sidecarPort != null;
@@ -129,7 +124,9 @@ export function BBGTPane({ code }: FunctionPaneProps) {
   );
   const [tif, setTif] = usePersistentOption<Tif>("showme.bbgt.tif", TIF_IDS, "GTC");
 
-  const [symbol, setSymbol] = useState<string>(readStoredSymbol);
+  // Committed (last run) symbol persists; the draft edits freely.
+  const [lastSymbol, setLastSymbol] = usePersistentString("showme.bbgt.symbol", "");
+  const [symbol, setSymbol] = useState<string>(lastSymbol);
   const [quantity, setQuantity] = useState("");
   const [price, setPrice] = useState("");
   const [leverage, setLeverage] = useState("");
@@ -197,9 +194,7 @@ export function BBGTPane({ code }: FunctionPaneProps) {
         signal: controller.signal,
       });
       setResult(res);
-      if (typeof localStorage !== "undefined") {
-        localStorage.setItem("showme.bbgt.symbol", trimmedSymbol);
-      }
+      setLastSymbol(trimmedSymbol);
     } catch (err) {
       if (controller.signal.aborted) return;
       setError(

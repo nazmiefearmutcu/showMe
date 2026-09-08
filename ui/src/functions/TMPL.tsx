@@ -113,7 +113,7 @@ export function TMPLPane() {
     <div style={{ display: "grid", gridTemplateColumns: "320px 1fr", height: "100%",
                   overflow: "hidden" }}>
       <div style={{ borderRight: "1px solid var(--border-card)", padding: 8, overflowY: "auto" }}>
-        <h4>Template kütüphanesi ({entries.length})</h4>
+        <h4>Template library ({entries.length})</h4>
         {/* P5 — loading skeleton while the catalog is still in flight and we
             have nothing to show yet. */}
         {loading && entries.length === 0 && (
@@ -125,7 +125,7 @@ export function TMPLPane() {
         )}
         {/* P5 — empty catalog (load finished, nothing came back). */}
         {!loading && entries.length === 0 && (
-          <Empty title="Template yok" body="Katalog boş ya da yüklenemedi." />
+          <Empty title="No templates" body="The catalog is empty or failed to load." />
         )}
         {entries.map((e) => {
           const isSelected = selectedId === e.id;
@@ -151,7 +151,7 @@ export function TMPLPane() {
       <div style={{ overflowY: "auto", padding: 16 }}>
         {/* P5 — use the design-system Empty for the no-selection state. */}
         {!selected && (
-          <Empty title="Template seçilmedi" body="Soldan bir template seç." />
+          <Empty title="No template selected" body="Select a template on the left." />
         )}
         {selected && (
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -161,7 +161,7 @@ export function TMPLPane() {
               <p>{selected.description}</p>
             </div>
             <div>
-              <h4>Açıklama</h4>
+              <h4>Description</h4>
               <p style={{ whiteSpace: "pre-wrap" }}>{selected.natural_language_explanation}</p>
             </div>
             <details>
@@ -174,7 +174,7 @@ export function TMPLPane() {
               <p style={{ color: "var(--text-secondary)" }}>{selected.applicability}</p>
             </div>
             <div>
-              <h4>Önerilen ayarlar</h4>
+              <h4>Recommended settings</h4>
               <p>Timeframe: <code>{selected.recommended_timeframe}</code></p>
               <p>Semboller: {selected.recommended_symbols.join(", ") || "(serbest)"}</p>
             </div>
@@ -216,7 +216,7 @@ export function TMPLPane() {
                  data-testid="tmpl-modal-body"
                  style={{ background: "var(--surface-1)", padding: 16, minWidth: 360,
                           border: "1px solid var(--border-card)" }}>
-              <h3 id="tmpl-modal-title" style={{ marginTop: 0 }}>Strateji oluştur</h3>
+              <h3 id="tmpl-modal-title" style={{ marginTop: 0 }}>Create strategy</h3>
               <label htmlFor="tmpl-name-input">
                 Ad
                 <input
@@ -244,13 +244,13 @@ export function TMPLPane() {
                 {creating && (
                   <div data-testid="tmpl-creating-indicator"
                        style={{ color: "var(--warn)", marginTop: 8 }}>
-                    Oluşturuluyor...
+                    Creating...
                   </div>
                 )}
                 {createdId && (
                   <div data-testid="tmpl-created-indicator"
                        style={{ color: "var(--positive)", marginTop: 8 }}>
-                    Oluşturuldu (id: {createdId.slice(0, 8)}). STRA paneline gidip düzenleyebilirsin.
+                    Created (id: {createdId.slice(0, 8)}). Edit it in the STRA pane.
                   </div>
                 )}
                 {instantiateError && !creating && (
@@ -274,7 +274,7 @@ export function TMPLPane() {
                   data-testid="tmpl-kapat-button"
                   disabled={creating || instantiatingInFlight}
                   onClick={requestClose}>
-                  Kapat
+                  Close
                 </button>
                 <button
                   data-testid="tmpl-olustur-button"
@@ -309,16 +309,16 @@ export function TMPLPane() {
                       setInstantiateError(error ?? "instantiate_failed");
                     }
                   }}>
-                  {creating ? "..." : "Oluştur"}
+                  {creating ? "..." : "Create"}
                 </button>
               </div>
             </div>
             {/* Round 24 HIGH 11 — unsaved-overrides secondary confirm. */}
             <ConfirmDialog
               open={pendingClose}
-              title="Değişiklikler kaybolacak"
-              body="Yaptığın override'lar (ad / sembol) kaybolacak. Yine de kapatılsın mı?"
-              confirmLabel="Kapat"
+              title="Changes will be lost"
+              body="Your overrides (name / symbol) will be lost. Close anyway?"
+              confirmLabel="Close"
               destructive
               onConfirm={closeModal}
               onCancel={() => setPendingClose(false)}

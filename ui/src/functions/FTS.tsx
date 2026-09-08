@@ -26,6 +26,7 @@ import {
   StatusDivider,
   StatusSection,
 } from "@/design-system";
+import { usePersistentString } from "./function-control-state";
 import { useFunction } from "@/lib/useFunction";
 import {
   FunctionControlGroup,
@@ -59,20 +60,11 @@ const QUERY_STORAGE_KEY = "showme.fts.last";
 const FORMS_STORAGE_KEY = "showme.fts.forms";
 const DEFAULT_QUERY = "risk factors";
 
-function readPersisted(key: string): string {
-  if (typeof localStorage === "undefined") return "";
-  return localStorage.getItem(key) ?? "";
-}
-
 export function FTSPane({ code }: FunctionPaneProps) {
-  const [draftQuery, setDraftQuery] = useState<string>(
-    () => readPersisted(QUERY_STORAGE_KEY) || DEFAULT_QUERY,
-  );
-  const [query, setQuery] = useState<string>(
-    () => readPersisted(QUERY_STORAGE_KEY) || DEFAULT_QUERY,
-  );
-  const [draftForms, setDraftForms] = useState<string>(() => readPersisted(FORMS_STORAGE_KEY));
-  const [forms, setForms] = useState<string>(() => readPersisted(FORMS_STORAGE_KEY));
+  const [query, setQuery] = usePersistentString(QUERY_STORAGE_KEY, DEFAULT_QUERY);
+  const [draftQuery, setDraftQuery] = useState<string>(query);
+  const [forms, setForms] = usePersistentString(FORMS_STORAGE_KEY, "");
+  const [draftForms, setDraftForms] = useState<string>(forms);
 
   const { state, data, error, refetch } = useFunction<FTSData>({
     code,
@@ -95,10 +87,6 @@ export function FTSPane({ code }: FunctionPaneProps) {
     const nextForms = draftForms.trim().toUpperCase();
     setQuery(nextQuery || DEFAULT_QUERY);
     setForms(nextForms);
-    if (typeof localStorage !== "undefined") {
-      localStorage.setItem(QUERY_STORAGE_KEY, nextQuery || DEFAULT_QUERY);
-      localStorage.setItem(FORMS_STORAGE_KEY, nextForms);
-    }
   }
 
   const COLS: DataGridColumn<FTSRow>[] = useMemo(

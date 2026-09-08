@@ -29,6 +29,8 @@ import {
   StatusDivider,
   StatusSection,
 } from "@/design-system";
+import { usePersistentString } from "./function-control-state";
+import { formatNumber } from "@/lib/format";
 import { useFunction } from "@/lib/useFunction";
 import {
   FunctionControlGroup,
@@ -66,21 +68,14 @@ interface TLDRData {
 
 const SYMBOLS_STORAGE_KEY = "showme.tldr.symbols";
 
-function readPersistedSymbols(): string | null {
-  if (typeof localStorage === "undefined") return null;
-  return localStorage.getItem(SYMBOLS_STORAGE_KEY);
-}
-
 export function TLDRPane({ code, symbol }: FunctionPaneProps) {
   // Free-text scope: persisted last value wins; a freshly opened symbol
   // prefills the box only when nothing was persisted yet. Empty scope =
   // server-side portfolio + watchlist mode.
-  const [draft, setDraft] = useState<string>(
-    () => readPersistedSymbols() ?? (symbol ? symbol.toUpperCase() : ""),
+  const [applied, setApplied] = usePersistentString(
+    SYMBOLS_STORAGE_KEY, symbol ? symbol.toUpperCase() : "",
   );
-  const [applied, setApplied] = useState<string>(
-    () => readPersistedSymbols() ?? (symbol ? symbol.toUpperCase() : ""),
-  );
+  const [draft, setDraft] = useState<string>(applied);
 
   const { state, data, error, refetch } = useFunction<TLDRData>({
     code,
@@ -109,9 +104,6 @@ export function TLDRPane({ code, symbol }: FunctionPaneProps) {
     const next = draft.trim().toUpperCase();
     setDraft(next);
     setApplied(next);
-    if (typeof localStorage !== "undefined") {
-      localStorage.setItem(SYMBOLS_STORAGE_KEY, next);
-    }
   }
 
   const QUOTE_COLS: DataGridColumn<TLDRQuote>[] = useMemo(
@@ -331,10 +323,7 @@ function fmtNum(v: unknown): string {
   if (!Number.isFinite(n)) return "—";
   const abs = Math.abs(n);
   const digits = abs >= 1000 ? 2 : abs >= 1 ? 2 : 4;
-  return n.toLocaleString("en-US", {
-    maximumFractionDigits: digits,
-    minimumFractionDigits: 0,
-  });
+  return formatNumber(n, digits);
 }
 
 const kpiGridStyle: CSSProperties = {

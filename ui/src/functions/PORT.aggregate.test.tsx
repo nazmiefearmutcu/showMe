@@ -142,7 +142,7 @@ describe("PORT aggregate header", () => {
     render(<PORTPane code="PORT" />);
     const badge = screen.getByTestId("port-non-stable-badge");
     expect(badge.textContent).toMatch(/EUR/);
-    expect(badge.getAttribute("title")).toMatch(/USD'ye eklenmedi/);
+    expect(badge.getAttribute("title")).toMatch(/not included in the total USD/i);
   });
 
   it("does NOT render non-stable badge for USDT (stable)", () => {

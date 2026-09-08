@@ -77,7 +77,7 @@ export function EVTSPane({ code, symbol }: FunctionPaneProps) {
   const { state, data, error, refetch } = useFunction<EVTSData>({
     code,
     symbol: effectiveSymbol,
-    params: { live_events: provider === "yfinance" },
+    params: { reference: provider !== "yfinance" },
     enabled: !!effectiveSymbol,
   });
 

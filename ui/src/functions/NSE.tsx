@@ -33,7 +33,7 @@ import {
   RefreshButton,
   SegmentedControl,
 } from "./function-controls";
-import { usePersistentOption, NEWS_LIMITS, type NewsLimit } from "./function-control-state";
+import { usePersistentOption, usePersistentString, NEWS_LIMITS, type NewsLimit } from "./function-control-state";
 import type { FunctionPaneProps } from "./registry-types";
 
 interface NSEResult {
@@ -75,18 +75,9 @@ const DEEP_OPTIONS: { value: DeepToggle; label: string }[] = [
   { value: "on", label: "Deep" },
 ];
 
-function readPersisted(key: string): string {
-  if (typeof localStorage === "undefined") return "";
-  return localStorage.getItem(key) ?? "";
-}
-
 export function NSEPane({ code, symbol }: FunctionPaneProps) {
-  const [draftQuery, setDraftQuery] = useState<string>(
-    () => readPersisted(QUERY_STORAGE_KEY) || DEFAULT_QUERY,
-  );
-  const [query, setQuery] = useState<string>(
-    () => readPersisted(QUERY_STORAGE_KEY) || DEFAULT_QUERY,
-  );
+  const [query, setQuery] = usePersistentString(QUERY_STORAGE_KEY, DEFAULT_QUERY);
+  const [draftQuery, setDraftQuery] = useState<string>(query);
   const [limit, setLimit] = usePersistentOption<NewsLimit>(
     "showme.nse.limit",
     NEWS_LIMITS,
@@ -133,9 +124,6 @@ export function NSEPane({ code, symbol }: FunctionPaneProps) {
     event.preventDefault();
     const nextQuery = draftQuery.trim();
     setQuery(nextQuery || DEFAULT_QUERY);
-    if (typeof localStorage !== "undefined") {
-      localStorage.setItem(QUERY_STORAGE_KEY, nextQuery || DEFAULT_QUERY);
-    }
   }
 
   const body =

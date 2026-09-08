@@ -194,11 +194,11 @@ export function TOPPane({ code }: FunctionPaneProps) {
   const veryfinderLastAnnounced = useRef("");
   const veryfinderLiveMessage =
     veryfinderState === "loading"
-      ? "Veryfinder sosyal sinyal hesaplanıyor"
+      ? "Computing Veryfinder social signal"
       : veryfinderState === "ok"
-        ? `Veryfinder ${veryfinderScoredCount} başlık için sosyal sinyal hesaplandı${allVeryfinderFixture ? " (demo verisi)" : ""}`
+        ? `Veryfinder social signal computed for ${veryfinderScoredCount} headlines${allVeryfinderFixture ? " (demo data)" : ""}`
         : veryfinderState === "error"
-          ? "Veryfinder sosyal sinyal alınamadı"
+          ? "Veryfinder social signal unavailable"
           : "";
   const veryfinderAnnounce =
     veryfinderLiveMessage && veryfinderLiveMessage !== veryfinderLastAnnounced.current
@@ -325,11 +325,11 @@ export function TOPPane({ code }: FunctionPaneProps) {
                 (no arrow, no click affordance).
               */}
               <span
-                title="Sıralama: önem puanı (yüksekten düşüğe), eşitlikte yayın zamanı (yeniden eskiye). Her başlıkta önem gerekçeleri gösterilir."
+                title="Sort: importance score (high to low), ties broken by publish time (newest first). Importance rationales are shown per headline."
                 data-testid="top-sort-label"
               >
                 <Pill tone="muted" variant="soft" withDot={false}>
-                  ÖNEM → YENİ
+                  IMPORTANCE → NEWEST
                 </Pill>
               </span>
               <NewsLimitControl value={limit} onChange={setLimit} disabled={state === "loading"} />
@@ -564,7 +564,7 @@ export function TOPPane({ code }: FunctionPaneProps) {
                     <ul
                       className="top-news-list"
                       role="list"
-                      aria-label="Başlıklar"
+                      aria-label="Headlines"
                       aria-busy={veryfinderState === "loading"}
                       style={{ display: "flex", flexDirection: "column", gap: 8, margin: 0, padding: 0, listStyle: "none" }}
                     >
@@ -671,16 +671,17 @@ function NewsRow({
             }
           >
             {/*
-              A4: sentiment is conveyed by TEXT (POZİTİF / NEGATİF / NÖTR)
-              plus the arrow glyph, never color alone. We normalize the
-              backend label to a Turkish word so colorblind / SR users get
-              the direction without relying on the pill tint.
+              A4: sentiment is conveyed by TEXT (POSITIVE / NEGATIVE /
+              NEUTRAL) plus the arrow glyph, never color alone. We normalize
+              the backend label (which may arrive in either language) to an
+              English word so colorblind / SR users get the direction without
+              relying on the pill tint.
             */}
             {sentimentText(a.sentiment)}
           </Pill>
         )}
         {a.importance_score != null && (
-          <span title="Önem puanı: ilgililik + kritiklik + kaynak + tazelik bileşeninden hesaplanan deterministik skor. Gerekçeler aşağıda listelenir.">
+          <span title="Importance score: a deterministic score combined from relevance + criticality + source + freshness. Rationales are listed below.">
             <Pill
               tone={a.severity === "critical" || a.severity === "high" ? "negative" : "muted"}
               variant="soft"
@@ -720,7 +721,7 @@ function NewsRow({
             key={s}
             type="button"
             className="btn btn--ghost top-news-card__sym"
-            aria-label={`${s} detayına git`}
+            aria-label={`Go to ${s} details`}
             onClick={() => onJumpDES(s)}
           >
             {s}
@@ -743,7 +744,7 @@ function NewsRow({
             target="_blank"
             rel="noopener noreferrer"
             className="top-news-card__source"
-            aria-label={`${sourceLabel} — haberi aç (yeni sekme)`}
+            aria-label={`${sourceLabel} — open the story (new tab)`}
           >
             source ↗
           </a>
@@ -760,9 +761,9 @@ function NewsRow({
  */
 function sentimentText(sentiment: string): string {
   const s = sentiment.toLowerCase();
-  if (s.startsWith("pos")) return "POZİTİF";
-  if (s.startsWith("neg")) return "NEGATİF";
-  if (s.startsWith("neu") || s.startsWith("nöt") || s.startsWith("not")) return "NÖTR";
+  if (s.startsWith("pos")) return "POSITIVE";
+  if (s.startsWith("neg")) return "NEGATIVE";
+  if (s.startsWith("neu") || s.startsWith("nöt") || s.startsWith("not")) return "NEUTRAL";
   return sentiment.toUpperCase();
 }
 
@@ -926,17 +927,17 @@ function veryfinderProvenance(
   if (overlay.fixture_mode === true) {
     const reason =
       overlay.model_notes?.[0] ??
-      "Demo/fixture sosyal verisi — gerçek X/Twitter verisi değildir.";
-    return { marker: "[DEMO]", title: `Veryfinder demo verisi · ${reason}` };
+      "Demo/fixture social data — not real X/Twitter data.";
+    return { marker: "[DEMO]", title: `Veryfinder demo data · ${reason}` };
   }
   const fallback = overlay.fallback_mode || overlay.source_fallback_from;
   if (fallback) {
     const reason =
       overlay.model_notes?.[0] ??
       (overlay.source_fallback_from
-        ? `${overlay.source_fallback_from} kaynağından yedeğe düşüldü`
+        ? `fell back from the ${overlay.source_fallback_from} source`
         : String(fallback));
-    return { marker: "[YEDEK]", title: `Veryfinder yedek kaynak · ${reason}` };
+    return { marker: "[FALLBACK]", title: `Veryfinder fallback source · ${reason}` };
   }
   return null;
 }

@@ -855,9 +855,9 @@ function MatrixHeatmap({
         }}
       >
         <caption className="u-sr-only">
-          {symbols.length}×{symbols.length} {metricLabel} korelasyon matrisi.
-          Köşegen yıllık volatiliteyi gösterir. "~" ile işaretli semboller
-          sentetik referans serisidir.
+          {symbols.length}×{symbols.length} {metricLabel} correlation matrix.
+          The diagonal shows annualized volatility. Symbols marked "~" use a
+          synthetic reference series.
         </caption>
         <thead>
           <tr>
@@ -870,7 +870,7 @@ function MatrixHeatmap({
                   scope="col"
                   title={
                     synthetic
-                      ? `${symbol} · ${marketBySymbol.get(symbol) ?? ""} · sentetik referans serisi`
+                      ? `${symbol} · ${marketBySymbol.get(symbol) ?? ""} · synthetic reference series`
                       : `${symbol} · ${marketBySymbol.get(symbol) ?? ""}`
                   }
                   style={matrixHeaderStyle}
@@ -896,7 +896,7 @@ function MatrixHeatmap({
                   scope="row"
                   title={
                     rowSynthetic
-                      ? `${rowSymbol} · ${marketBySymbol.get(rowSymbol) ?? ""} · sentetik referans serisi`
+                      ? `${rowSymbol} · ${marketBySymbol.get(rowSymbol) ?? ""} · synthetic reference series`
                       : `${rowSymbol} · ${marketBySymbol.get(rowSymbol) ?? ""}`
                   }
                   style={{
@@ -932,7 +932,7 @@ function MatrixHeatmap({
                           value={0}
                           diagonal
                           size={32}
-                          ariaLabel={`${rowSymbol} köşegen: yıllık volatilite ${formatPct(vol)}`}
+                          ariaLabel={`${rowSymbol} diagonal: annualized volatility ${formatPct(vol)}`}
                           label={
                             <span style={diagonalLabelStyle}>
                               σ {formatPct(vol)}
@@ -947,7 +947,7 @@ function MatrixHeatmap({
                   const syntheticLeg =
                     syntheticSymbols.has(rowSymbol) ||
                     syntheticSymbols.has(colSymbol);
-                  const synthNote = syntheticLeg ? " (sentetik leg)" : "";
+                  const synthNote = syntheticLeg ? " (synthetic leg)" : "";
                   const nText = obs == null ? "?" : String(obs);
                   const cellTitle = `${rowSymbol} (${marketBySymbol.get(rowSymbol) ?? "?"}) / ${colSymbol} (${marketBySymbol.get(colSymbol) ?? "?"}) · ${metricLabel} ${formatCorr(value)} · n=${nText}${synthNote}`;
                   const ariaLabel = `${rowSymbol}–${colSymbol} ${metricLabel}: ${formatCorr(value)}, n=${nText}${synthNote}`;
@@ -986,8 +986,8 @@ function MatrixHeatmap({
 function SyntheticMark() {
   return (
     <sup
-      title="sentetik referans serisi"
-      aria-label="sentetik referans serisi"
+      title="synthetic reference series"
+      aria-label="synthetic reference series"
       style={syntheticMarkStyle}
     >
       ~
@@ -1011,14 +1011,14 @@ function SyntheticWarning({
       style={syntheticWarningStyle}
     >
       <strong style={syntheticWarningTitleStyle}>
-        ⚠ Sentetik veri kullanıldı — gerçek piyasa verisi değil
+        ⚠ Synthetic data — not real market data
       </strong>
       <span style={syntheticWarningBodyStyle}>
-        Şu sembol(ler) canlı çekilemedi ve deterministik bir referans serisiyle
-        ikame edildi: <strong>{names}</strong>. Bu sembolleri içeren tüm{" "}
-        {metricLabel} korelasyonları sentetik bir seriden hesaplanmıştır; gerçek
-        piyasa fiyatlarını yansıtmaz ve içlerinde önceden gömülü çapraz-piyasa
-        korelasyonu olabilir.
+        These symbols could not be fetched live and were substituted with a
+        deterministic reference series: <strong>{names}</strong>. All{" "}
+        {metricLabel} correlations involving them are computed from a synthetic
+        series; they do not reflect real market prices and may embed pre-baked
+        cross-market correlations.
       </span>
     </div>
   );
@@ -1038,10 +1038,10 @@ function LowNWarning({
       role="status"
       style={lowNWarningStyle}
     >
-      <strong style={syntheticWarningTitleStyle}>⚠ Düşük örneklem</strong>
+      <strong style={syntheticWarningTitleStyle}>⚠ Low sample size</strong>
       <span style={syntheticWarningBodyStyle}>
-        {count} çift {threshold}&apos;den az gözlemle hesaplandı — güvenilmez.
-        Küçük n korelasyonlarını kesin sonuç gibi okumayın.
+        {count} pairs computed with fewer than {threshold} observations —
+        unreliable. Do not read small-n correlations as settled results.
       </span>
     </div>
   );

@@ -152,10 +152,10 @@ async function mountReady() {
   return utils;
 }
 
-/** Select all markets, click Tara, wait for the result grid. */
+/** Select all markets, click Scan, wait for the result grid. */
 async function runScan() {
-  fireEvent.click(screen.getByRole("button", { name: /tümünü seç/i }));
-  fireEvent.click(screen.getByRole("button", { name: /^Tara$/ }));
+  fireEvent.click(screen.getByRole("button", { name: /^select all$/i }));
+  fireEvent.click(screen.getByRole("button", { name: /^Scan$/ }));
   await waitFor(() => expect(runMisScanMock).toHaveBeenCalled());
   await screen.findByText("BTCUSDT");
 }
@@ -164,19 +164,19 @@ describe("MIS terminal-grade", () => {
   it("P1: running a scan with no markets selected shows an inline error (not just a toast)", async () => {
     await mountReady();
     // Deselect everything first.
-    fireEvent.click(screen.getByRole("button", { name: /temizle/i }));
-    // The header Tara button disables at 0 markets, so trigger validation via
+    fireEvent.click(screen.getByRole("button", { name: /clear/i }));
+    // The header Scan button disables at 0 markets, so trigger validation via
     // the inline run affordance / the disabled state must surface guidance.
     const inlineRun = screen.getByTestId("mis-run-inline");
     fireEvent.click(inlineRun);
     const alert = await screen.findByRole("alert");
-    expect(alert.textContent ?? "").toMatch(/piyasa/i);
+    expect(alert.textContent ?? "").toMatch(/market/i);
     expect(runMisScanMock).not.toHaveBeenCalled();
   });
 
   it("P1: the idle empty state offers a Select-all affordance", async () => {
     await mountReady();
-    fireEvent.click(screen.getByRole("button", { name: /temizle/i }));
+    fireEvent.click(screen.getByRole("button", { name: /clear/i }));
     expect(screen.getByTestId("mis-empty-select-all")).toBeInTheDocument();
   });
 
@@ -196,8 +196,8 @@ describe("MIS terminal-grade", () => {
 
   it("P1: progress indicator + scan-started cue render immediately on Run", async () => {
     await mountReady();
-    fireEvent.click(screen.getByRole("button", { name: /tümünü seç/i }));
-    fireEvent.click(screen.getByRole("button", { name: /^Tara$/ }));
+    fireEvent.click(screen.getByRole("button", { name: /^select all$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^Scan$/ }));
     // Before the POST resolves, the progressbar must already be on screen.
     expect(screen.getByRole("progressbar")).toBeInTheDocument();
     await waitFor(() => expect(runMisScanMock).toHaveBeenCalled());

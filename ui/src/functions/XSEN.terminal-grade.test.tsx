@@ -2,9 +2,9 @@
  * XSEN terminal-grade / honesty-first regression tests.
  *
  * Pins the freshness-honesty + a11y upgrade:
- *  - F1: a real "Veri alındı" freshness indicator renders from `fetched_at`
+ *  - F1: a real "Data fetched" freshness indicator renders from `fetched_at`
  *    (data-testid=xsen-fetched-at), and the `scrape_seconds` display is
- *    relabeled to "ANALİZ SÜRESİ" (processing duration, NOT freshness).
+ *    relabeled to "ANALYSIS TIME" (processing duration, NOT freshness).
  *  - F3: per-tweet age renders as a relative-time label, with an honest
  *    "tarih yok" fallback when the date is missing/unparseable (never "now").
  *  - F4: a scoring disclosure (data-testid=xsen-scoring-note) names the local
@@ -122,13 +122,13 @@ describe("XSEN F1 — honest freshness", () => {
     vi.useRealTimers();
   });
 
-  it("renders a 'Veri alındı' freshness indicator from fetched_at", async () => {
+  it("renders a 'Data fetched' freshness indicator from fetched_at", async () => {
     const container = await renderWithData();
     const fresh = container.querySelector('[data-testid="xsen-fetched-at"]');
     expect(fresh).not.toBeNull();
     // fetched_at is exactly 4 min before FROZEN_NOW → exact label.
     expect(fresh!.textContent ?? "").toMatch(/4 dakika önce/);
-    expect(fresh!.textContent ?? "").toMatch(/VERİ ALINDI/i);
+    expect(fresh!.textContent ?? "").toMatch(/DATA FETCHED/i);
   });
 
   it("shows honest '—' for freshness when fetched_at is absent", async () => {
@@ -141,11 +141,11 @@ describe("XSEN F1 — honest freshness", () => {
 
   it("relabels scrape_seconds as analysis duration, not freshness", async () => {
     const container = await renderWithData();
-    // The processing-duration field is present and labeled "ANALİZ SÜRESİ".
-    expect(container.textContent ?? "").toMatch(/ANALİZ SÜRESİ/);
+    // The processing-duration field is present and labeled "ANALYSIS TIME".
+    expect(container.textContent ?? "").toMatch(/ANALYSIS TIME/);
     // It must NOT be the thing labeled as freshness ("VERİ ALINDI").
     const fresh = container.querySelector('[data-testid="xsen-fetched-at"]');
-    expect(fresh!.textContent ?? "").not.toMatch(/ANALİZ SÜRESİ/);
+    expect(fresh!.textContent ?? "").not.toMatch(/ANALYSIS TIME/);
   });
 });
 
@@ -171,12 +171,12 @@ describe("XSEN F3 — per-tweet date", () => {
     expect(dates.some((t) => /10 dakika önce/.test(t))).toBe(true);
   });
 
-  it("shows honest 'tarih yok' (not 'now') for missing dates", async () => {
+  it("shows honest 'no date' (not 'now') for missing dates", async () => {
     const container = await renderWithData();
     const dates = Array.from(
       container.querySelectorAll('[data-testid="xsen-tweet-date"]'),
     ).map((el) => el.textContent ?? "");
-    expect(dates.some((t) => /tarih yok/.test(t))).toBe(true);
+    expect(dates.some((t) => /no date/.test(t))).toBe(true);
     // Must not fabricate "az önce" (now) for the dateless post.
     expect(dates.filter((t) => /az önce/.test(t)).length).toBe(0);
   });
@@ -195,14 +195,14 @@ describe("XSEN F4 — scoring disclosure", () => {
     const container = await renderWithData();
     // Expand the first tweet's rationale.
     const toggle = container.querySelector<HTMLButtonElement>(
-      'button[aria-label="gerekçeyi aç"]',
+      'button[aria-label="expand rationale"]',
     );
     expect(toggle).not.toBeNull();
     await act(async () => {
       toggle!.click();
     });
     await waitFor(() =>
-      expect(container.textContent ?? "").toMatch(/RoBERTa sınıflandırması/),
+      expect(container.textContent ?? "").toMatch(/RoBERTa classification/),
     );
     expect(container.textContent ?? "").not.toMatch(/AI rationale/);
   });
@@ -211,7 +211,7 @@ describe("XSEN F4 — scoring disclosure", () => {
 describe("XSEN A1 — gauge meter", () => {
   it("BullishGauge exposes role=meter with aria-valuenow in [-1, 1]", async () => {
     const container = await renderWithData();
-    const meter = container.querySelector('[role="meter"][aria-label="Yükseliş skoru"]');
+    const meter = container.querySelector('[role="meter"][aria-label="Bullish score"]');
     expect(meter).not.toBeNull();
     const now = Number(meter!.getAttribute("aria-valuenow"));
     expect(Number.isFinite(now)).toBe(true);
@@ -250,18 +250,18 @@ describe("XSEN A4/A5 — labels", () => {
   it("tweet open link, sentiment dot, toggle and distribution card carry aria-labels", async () => {
     const container = await renderWithData();
     // A4: open link.
-    const open = container.querySelector('a[aria-label="@alice gönderisini aç"]');
+    const open = container.querySelector('a[aria-label="Open @alice post"]');
     expect(open).not.toBeNull();
     // A4: sentiment dot.
     const dot = container.querySelector('.xsen-sent-dot[role="img"]');
     expect(dot).not.toBeNull();
-    expect(dot!.getAttribute("aria-label") ?? "").toMatch(/gönderi/);
+    expect(dot!.getAttribute("aria-label") ?? "").toMatch(/post/);
     // A4: rationale toggle.
-    expect(container.querySelector('button[aria-label="gerekçeyi aç"]')).not.toBeNull();
+    expect(container.querySelector('button[aria-label="expand rationale"]')).not.toBeNull();
     // A5: distribution card full-breakdown aria-label.
-    const distImgs = Array.from(container.querySelectorAll('[role="img"][aria-label*="dağılımı"]'));
+    const distImgs = Array.from(container.querySelectorAll('[role="img"][aria-label*="breakdown"]'));
     const sentiment = distImgs.find((el) =>
-      /Sentiment dağılımı/.test(el.getAttribute("aria-label") ?? ""),
+      /Sentiment breakdown/.test(el.getAttribute("aria-label") ?? ""),
     );
     expect(sentiment).toBeTruthy();
     const label = sentiment!.getAttribute("aria-label") ?? "";
@@ -281,7 +281,7 @@ describe("XSEN A6 — load announcement", () => {
         Array.from(container.querySelectorAll('[role="status"][aria-live="polite"]'))
           .map((el) => el.textContent ?? "")
           .join(" "),
-      ).toMatch(/6 gönderi yüklendi, ruh hali bullish/),
+      ).toMatch(/6 posts loaded, mood bullish/),
     );
   });
 });

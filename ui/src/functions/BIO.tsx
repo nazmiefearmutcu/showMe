@@ -118,7 +118,7 @@ export function BIOPane({ code }: FunctionPaneProps) {
     // D2 — honest freshness via the shared relativeTimeLabel; no fabricated time.
     const lastLabel = lastTs
       ? relativeTimeLabel(new Date(lastTs).toISOString()) ?? formatMissing
-      : "henüz yok";
+      : "no data yet";
     const total = verifyCount.allowed + verifyCount.denied;
     const winRate = total > 0 ? Math.round((verifyCount.allowed / total) * 100) : null;
     const allowedCount = formatNumber(verifyCount.allowed);
@@ -127,7 +127,7 @@ export function BIOPane({ code }: FunctionPaneProps) {
     const biometryLabel = biometryKindLabel(caps.biometry_kind);
     const biometrySub = caps.biometry_available
       ? "available"
-      : "Biyometri yalnızca masaüstü uygulamada kullanılabilir";
+      : "Biometry is only available in the desktop app";
     const lastResultText = result
       ? result.allowed
         ? "ALLOWED"
@@ -141,7 +141,7 @@ export function BIOPane({ code }: FunctionPaneProps) {
         sub: biometrySub,
         tone: caps.biometry_available ? "positive" : "muted",
         icon: "◉",
-        ariaLabel: `Biometry: ${biometryLabel} — ${caps.biometry_available ? "kullanılabilir" : "kullanılamıyor"}`,
+        ariaLabel: `Biometry: ${biometryLabel} — ${caps.biometry_available ? "available" : "unavailable"}`,
       },
       {
         key: "passcode",
@@ -212,8 +212,8 @@ export function BIOPane({ code }: FunctionPaneProps) {
                 onClick={verify}
                 disabled={loading || !caps}
                 aria-busy={loading}
-                aria-label="Biyometrik doğrulama iste"
-                title={!caps ? "Yetenekler yükleniyor…" : undefined}
+                aria-label="Request biometric verification"
+                title={!caps ? "Loading capabilities…" : undefined}
               >
                 {loading ? "Verifying…" : "Verify"}
               </button>
@@ -355,7 +355,7 @@ function viaLabel(via: BioVia): string {
       return "Reddedildi";
     case "unavailable":
     case "stub":
-      return "Kullanılamıyor";
+      return "Unavailable";
     default:
       return via;
   }

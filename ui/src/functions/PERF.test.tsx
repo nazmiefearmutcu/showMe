@@ -31,7 +31,7 @@ afterEach(() => {
 describe("PERF pane", () => {
   it("shows empty state when no leaderboard", () => {
     render(<PERFPane />);
-    expect(screen.getByText(/henüz performans/i)).toBeInTheDocument();
+    expect(screen.getByText(/no performance/i)).toBeInTheDocument();
   });
 
   it("renders leaderboard rows", () => {
@@ -73,8 +73,8 @@ describe("PERF pane", () => {
       },
     });
     render(<PERFPane />);
-    expect(screen.getByText(/equity curve/i)).toBeInTheDocument();
-    expect(screen.getByText(/^Kapat$/)).toBeInTheDocument();
+    expect(screen.getAllByText(/equity curve/i).length).toBeGreaterThan(0);
+    expect(screen.getByText(/^Close$/)).toBeInTheDocument();
   });
 
   // ─── H-SUP-1 — KPI strip semantic ────────────────────────────────────
@@ -149,8 +149,8 @@ describe("PERF pane", () => {
     });
     render(<PERFPane />);
     const disclaimer = screen.getByTestId("perf-equity-disclaimer");
-    expect(disclaimer.textContent).toMatch(/Simüle/i);
+    expect(disclaimer.textContent).toMatch(/Simulated/i);
     expect(disclaimer.textContent).toMatch(/10,?000/);
-    expect(disclaimer.textContent).toMatch(/gerçek hesap bakiyesi değildir/i);
+    expect(disclaimer.textContent).toMatch(/not the real account balance/i);
   });
 });

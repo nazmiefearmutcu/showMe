@@ -18,7 +18,7 @@ import { Empty, Pill, Skeleton } from "@/design-system";
 
 const FAMILIES = ["all", "momentum", "trend", "volatility", "volume"] as const;
 
-const CONFIDENCE_TITLE = "Güven = öznel editör değerlendirmesi (backtest değil)";
+const CONFIDENCE_TITLE = "Confidence = subjective editor assessment (not a backtest)";
 
 /**
  * Confidence rendered as a meter — NOT color-only. The numeric "c/10" text is
@@ -30,7 +30,7 @@ function ConfidenceMeter({ c }: { c: number }) {
   return (
     <span
       role="meter"
-      aria-label={`Güven: ${c}/10 (öznel)`}
+      aria-label={`Confidence: ${c}/10 (subjective)`}
       aria-valuenow={c}
       aria-valuemin={0}
       aria-valuemax={10}
@@ -72,7 +72,7 @@ function ParameterTable({ params }: { params: IndicatorParam[] }) {
   if (params.length === 0) return <div style={{ color: "var(--text-secondary)" }}>(parametre yok)</div>;
   return (
     <table style={{ width: "100%", fontSize: 12 }}>
-      <caption className="u-sr-only">İndikatör parametreleri ve etkileri</caption>
+      <caption className="u-sr-only">Indicator parameters and effects</caption>
       <thead>
         <tr style={{ color: "var(--text-secondary)", textAlign: "left" }}>
           <th scope="col">Param</th>
@@ -118,15 +118,15 @@ function IndicatorDetail({ entry }: { entry: IndicatorEntry }) {
                      display: "block", fontSize: 11 }}>{entry.formula}</code>
       <h4>Parameters</h4>
       <ParameterTable params={entry.parameters} />
-      <h4 title={CONFIDENCE_TITLE}>Değerlendirme gerekçesi (öznel) — {entry.confidence}/10</h4>
+      <h4 title={CONFIDENCE_TITLE}>Confidence rationale (subjective) — {entry.confidence}/10</h4>
       <p style={{ fontSize: 11, color: "var(--text-secondary)", margin: "0 0 6px" }}>
-        Güven skoru ve gerekçesi öznel editör değerlendirmesidir — backtest veya
-        doğrulanmış bir performans ölçütü değildir.
+        The confidence score and its rationale are a subjective editor
+        assessment — not a backtest or a verified performance metric.
       </p>
       <p style={{ color: "var(--text-secondary)" }}>{entry.confidence_rationale}</p>
-      <h4>Örnek strateji (illüstratif — doğrulanmamış): {ss.name ?? "—"}</h4>
+      <h4>Example strategy (illustrative — unverified): {ss.name ?? "—"}</h4>
       <p style={{ fontSize: 11, color: "var(--text-secondary)", margin: "0 0 6px" }}>
-        Bu strateji yalnızca bir örnektir — backtest edilmemiş, doğrulanmamıştır.
+        This strategy is an example only — not backtested, not verified.
       </p>
       <p>{ss.summary}</p>
       {ss.rules && ss.rules.length > 0 && (
@@ -179,10 +179,10 @@ export function INDXPane() {
                   height: "100%", overflow: "hidden" }}>
       <div style={{ display: "flex", flexDirection: "column", gap: 8, padding: 8,
                     borderRight: "1px solid var(--border-1)", overflow: "hidden" }}>
-        <label htmlFor="indx-search" className="u-sr-only">Indikatör ara</label>
+        <label htmlFor="indx-search" className="u-sr-only">Search indicators</label>
         <input id="indx-search" value={query} onChange={(e) => setQuery(e.target.value)}
-               placeholder="Indikatör ara…" />
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }} role="group" aria-label="Aile filtresi">
+               placeholder="Search indicators…" />
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }} role="group" aria-label="Family filter">
           {FAMILIES.map((f) => (
             <button key={f} onClick={() => setFamily(f)}
                     aria-pressed={family === f}
@@ -194,13 +194,13 @@ export function INDXPane() {
         </div>
         <div role="status" aria-live="polite"
              style={{ fontSize: 10, color: "var(--text-secondary)" }}>
-          {visible.length} indikatör
+          {visible.length} indicators
         </div>
         <p
           title={CONFIDENCE_TITLE}
           style={{ fontSize: 10, color: "var(--text-secondary)", margin: 0 }}
         >
-          Güven = öznel editör değerlendirmesi (backtest değil)
+          Confidence = subjective editor assessment (not a backtest)
         </p>
         <div style={{ overflowY: "auto", flex: 1, minHeight: 0 }}>
           {loading && entries.length === 0 && (
@@ -214,7 +214,7 @@ export function INDXPane() {
           {error && (
             <div data-testid="indx-error" role="alert"
                  style={{ padding: 12, color: "var(--accent-err)", fontSize: 12 }}>
-              Katalog yüklenemedi: {error}
+              Failed to load catalog: {error}
             </div>
           )}
           {!loading && !error && visible.map((e) => (
@@ -237,23 +237,23 @@ export function INDXPane() {
           {!loading && !error && visible.length === 0 && (
             <div data-testid="indx-empty" style={{ padding: 12 }}>
               {hasActiveFilter ? (
-                <Empty title="Eşleşen indikatör yok."
-                       body="Aramayı veya aile filtresini değiştir." />
+                <Empty title="No matching indicators."
+                       body="Change the search or the family filter." />
               ) : (
-                <Empty title="Katalogda indikatör yok."
-                       body="Henüz indikatör yok." />
+                <Empty title="Catalog has no indicators."
+                       body="There are no indicators yet." />
               )}
             </div>
           )}
         </div>
       </div>
-      <div role="region" aria-label="Indikatör detayları" style={{ overflowY: "auto" }}>
+      <div role="region" aria-label="Indicator details" style={{ overflowY: "auto" }}>
         <span role="status" className="u-sr-only">
-          {selected ? `Seçili indikatör: ${selected.display_name}` : ""}
+          {selected ? `Selected indicator: ${selected.display_name}` : ""}
         </span>
         {selected ? <IndicatorDetail entry={selected} /> : (
           <div style={{ padding: 24, color: "var(--text-secondary)" }}>
-            Soldan bir indikatör seç.
+            Select an indicator on the left.
           </div>
         )}
       </div>

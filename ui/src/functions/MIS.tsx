@@ -68,7 +68,7 @@ const TOP_N_OPTIONS: number[] = [25, 50, 100, 200, 500];
 type TabId = "results" | "settings";
 
 const TABS = [
-  { id: "results" as TabId, label: "Sonuçlar" },
+  { id: "results" as TabId, label: "Results" },
   { id: "settings" as TabId, label: "Ayarlar" },
 ];
 
@@ -253,14 +253,14 @@ export function MISPane({ code }: FunctionPaneProps) {
       // Inline ``role="alert"`` (rendered next to the market selector) is the
       // single immediate announcement here — no toast, otherwise screen readers
       // announce the same message twice.
-      setMarketError("En az bir piyasa seçmelisiniz");
+      setMarketError("Select at least one market");
       return;
     }
     setMarketError(null);
     setRunning(true);
     setError(null);
     setProgressNote(
-      `${selected.size} piyasa × ~${totalUniverse} sembol taranıyor — birkaç saniye / dakika sürebilir`,
+      `${selected.size} markets × ~${totalUniverse} symbols scanning — may take seconds to minutes`,
     );
     // Seed an optimistic snapshot so the bar appears at 0% the instant
     // the user clicks "Tara" — the first real poll lands ~250ms later.
@@ -315,13 +315,13 @@ export function MISPane({ code }: FunctionPaneProps) {
         0,
       );
       toast.success(
-        "MIS tamamlandı",
-        `${totalProcessed} sembol tarandı · ${r.rows.length} eşleşme`,
+        "MIS completed",
+        `${totalProcessed} symbols scanned · ${r.rows.length} matches`,
       );
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setError(msg);
-      toast.error("MIS başarısız", msg);
+      toast.error("MIS failed", msg);
     } finally {
       setRunning(false);
       setProgressNote("");
@@ -343,12 +343,12 @@ export function MISPane({ code }: FunctionPaneProps) {
     try {
       const next = await addSymbol(sym);
       toast.success(
-        "Watchlist'e eklendi",
-        `${sym} → ${next.length} sembol`,
+        "Added to watchlist",
+        `${sym} → ${next.length} symbols`,
       );
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      toast.error("Eklenemedi", msg);
+      toast.error("Could not add", msg);
     }
   }, []);
 
@@ -403,7 +403,7 @@ export function MISPane({ code }: FunctionPaneProps) {
               e.stopPropagation();
               jumpToDES(r.symbol);
             }}
-            title="DES paneline aç"
+            title="Open in the DES pane"
           >
             {r.symbol}
           </button>
@@ -421,7 +421,7 @@ export function MISPane({ code }: FunctionPaneProps) {
       },
       {
         key: "direction",
-        header: "Yön",
+        header: "Direction",
         width: 84,
         render: (r) => (
           <Pill
@@ -455,14 +455,14 @@ export function MISPane({ code }: FunctionPaneProps) {
       },
       {
         key: "confidence",
-        header: "Güven %",
+        header: "Confidence %",
         width: 90,
         numeric: true,
         render: (r) => <ConfidenceBar value={r.confidence} />,
       },
       {
         key: "score",
-        header: "Skor",
+        header: "Score",
         width: 84,
         numeric: true,
         // Show the TF-count-invariant normalized score (range [-1, +1]).
@@ -506,12 +506,12 @@ export function MISPane({ code }: FunctionPaneProps) {
       },
       {
         key: "per_tf",
-        header: "TF Konsensüs",
+        header: "TF Consensus",
         render: (r) => <PerTfStrip row={r} />,
       },
       {
         key: "top",
-        header: "İlk 3 Indikatör",
+        header: "Top 3 Indicators",
         render: (r) => (
           <span className="u-inline-flex u-gap-4 u-flex-wrap">
             {r.top_indicators.map((t, i) =>
@@ -682,10 +682,10 @@ export function MISPane({ code }: FunctionPaneProps) {
       const saved = await saveMisConfig(config);
       setConfig(saved);
       setConfigDirty(false);
-      toast.success("Ayarlar kaydedildi", `${MIS_MARKET_LABELS[configMarket]} kalibrasyonu güncellendi`);
+      toast.success("Settings saved", `${MIS_MARKET_LABELS[configMarket]} calibration updated`);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      toast.error("Kayıt başarısız", msg);
+      toast.error("Save failed", msg);
     } finally {
       setSavingConfig(false);
     }
@@ -707,10 +707,10 @@ export function MISPane({ code }: FunctionPaneProps) {
       });
       setConfig(fresh);
       setConfigDirty(false);
-      toast.success("Sıfırlandı", "Tüm piyasalar varsayılan kalibrasyona alındı");
+      toast.success("Reset", "All markets restored to the default calibration");
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      toast.error("Sıfırlama başarısız", msg);
+      toast.error("Reset failed", msg);
     } finally {
       setSavingConfig(false);
     }
@@ -729,10 +729,10 @@ export function MISPane({ code }: FunctionPaneProps) {
             <div className="fn-help-grid fn-help-grid__hint fn-help-grid__hint-mute">
               <strong>MIS · Multi Indicator Scan</strong>
               <span>
-                23 indikatörlü konsensüs ile seçtiğin piyasalarda tarama yapar. Tabloda + butonuyla sembolü WATCH listesine ekleyebilirsin.
+                Scans your selected markets with a 23-indicator consensus. Add a symbol to the WATCH list with the + button in the table.
               </span>
               <span>
-                "Ayarlar" sekmesinden her piyasa için indikatör ağırlıklarını, eşiklerini ve konsensüs sınırlarını ayrı ayrı kalibre edebilirsin.
+                In the "Settings" tab you can calibrate indicator weights, thresholds and consensus limits per market.
               </span>
             </div>
           }
@@ -742,7 +742,7 @@ export function MISPane({ code }: FunctionPaneProps) {
                 EVREN ≈ {totalUniverse}
               </Pill>
               <Pill tone={running ? "warn" : result ? "positive" : "muted"} variant="soft" withDot>
-                {running ? "TARANIYOR" : result ? "HAZIR" : "HAZIR"}
+                {running ? "SCANNING" : result ? "READY" : "READY"}
               </Pill>
               <LoadStatePill state={running ? "loading" : error ? "error" : result ? "ok" : "idle"} />
               <button
@@ -751,7 +751,7 @@ export function MISPane({ code }: FunctionPaneProps) {
                 onClick={run}
                 disabled={running || selected.size === 0}
               >
-                {running ? "Taranıyor…" : "Tara"}
+                {running ? "Scanning…" : "Scan"}
               </button>
             </FunctionControlGroup>
           }
@@ -824,12 +824,12 @@ export function MISPane({ code }: FunctionPaneProps) {
           )}
         </PaneBody>
         <PaneFooter>
-          <span>indikatör · 23</span>
-          <span>piyasa · {selected.size}/{MIS_MARKETS.length}</span>
-          {result && <span>tarandı · {completed}</span>}
-          {result && skipped > 0 && <span>atlanan · {skipped}</span>}
-          {result && <span>süre · {Math.round(result.elapsed_ms)} ms</span>}
-          <span>{running ? "yürütülüyor…" : configDirty ? "kayıt bekliyor" : "hazır"}</span>
+          <span>indicators · 23</span>
+          <span>markets · {selected.size}/{MIS_MARKETS.length}</span>
+          {result && <span>scanned · {completed}</span>}
+          {result && skipped > 0 && <span>skipped · {skipped}</span>}
+          {result && <span>elapsed · {Math.round(result.elapsed_ms)} ms</span>}
+          <span>{running ? "running…" : configDirty ? "unsaved" : "ready"}</span>
         </PaneFooter>
       </Pane>
     </div>
@@ -914,10 +914,10 @@ function ResultsTab(props: {
           trailing={
             <span className="u-inline-flex u-gap-6">
               <button type="button" className="btn btn--ghost u-btn-mini" onClick={allOn}>
-                Tümünü seç
+                Select all
               </button>
               <button type="button" className="btn btn--ghost u-btn-mini" onClick={noneOn}>
-                Temizle
+                Clear
               </button>
               <button
                 type="button"
@@ -927,7 +927,7 @@ function ResultsTab(props: {
                 disabled={running}
                 aria-describedby={marketError ? "mis-market-error" : undefined}
               >
-                {running ? "Taranıyor…" : "Şimdi tara"}
+                {running ? "Scanning…" : "Scan now"}
               </button>
             </span>
           }
@@ -1024,7 +1024,7 @@ function ResultsTab(props: {
                       cursor: checked ? undefined : "not-allowed",
                     }}
                     disabled={!checked}
-                    title={`ZAK ağırlıkları: ${allTfs.map((t) => `${t}=${meta?.tf_weights?.[t] ?? 50}`).join(" · ")}`}
+                    title={`TF weights: ${allTfs.map((t) => `${t}=${meta?.tf_weights?.[t] ?? 50}`).join(" · ")}`}
                   >
                     {allTfs.map((tf) => {
                       const on = activeSet.has(tf);
@@ -1049,7 +1049,7 @@ function ResultsTab(props: {
                       onClick={allOnThis}
                       style={{ marginLeft: 4 }}
                       aria-label={`Enable all timeframes for ${m}`}
-                      title="Tümünü aç"
+                      title="Enable all"
                     >
                       hepsi
                     </button>
@@ -1058,9 +1058,9 @@ function ResultsTab(props: {
                       className="btn btn--ghost u-btn-mini"
                       onClick={allOffThis}
                       aria-label={`Disable all timeframes for ${m}`}
-                      title="Tümünü kapat"
+                      title="Disable all"
                     >
-                      hiçbiri
+                      none
                     </button>
                   </fieldset>
                 </div>
@@ -1070,7 +1070,7 @@ function ResultsTab(props: {
 
           <div style={{ display: "flex", gap: 12, marginTop: 12, flexWrap: "wrap" }}>
             <label style={fieldStyle}>
-              <span style={fieldLabelStyle}>Üst sıra</span>
+              <span style={fieldLabelStyle}>Top rows</span>
               <select
                 value={topN}
                 onChange={(e) => setTopN(Number(e.target.value))}
@@ -1085,7 +1085,7 @@ function ResultsTab(props: {
             </label>
 
             <label style={fieldStyle}>
-              <span style={fieldLabelStyle}>Min güven %</span>
+              <span style={fieldLabelStyle}>Min confidence %</span>
               <input
                 type="number"
                 value={minConfidence}
@@ -1098,11 +1098,11 @@ function ResultsTab(props: {
             </label>
 
             <label style={fieldStyle}>
-              <span style={fieldLabelStyle}>Piyasa başı max</span>
+              <span style={fieldLabelStyle}>Max per market</span>
               <input
                 type="number"
                 value={maxPerMarket ?? ""}
-                placeholder="hepsi"
+                placeholder="all"
                 min={1}
                 onChange={(e) =>
                   setMaxPerMarket(e.target.value ? Number(e.target.value) : null)
@@ -1123,7 +1123,7 @@ function ResultsTab(props: {
         </CardBody>
       </Card>
 
-      {error && <Empty title="Tarama hatası" body={error} icon="!" />}
+      {error && <Empty title="Scan error" body={error} icon="!" />}
 
       {running && (
         <Card>
@@ -1140,17 +1140,17 @@ function ResultsTab(props: {
         <>
           <div style={kpiStripStyle}>
             <StatCard
-              label="Eşleşme / Tarama"
+              label="Matches / Scanned"
               value={
                 <span className="terminal-grid-numeric">
                   {rows.length} / {completed + skipped}
                 </span>
               }
-              caption={`${completed} başarılı · ${skipped} atlandı`}
+              caption={`${completed} succeeded · ${skipped} skipped`}
               tone="neutral"
             />
             <StatCard
-              label="Median güven"
+              label="Median confidence"
               value={
                 <span className="terminal-grid-numeric">
                   {formatPercent(medianConfidence, { digits: 1 })}
@@ -1160,13 +1160,13 @@ function ResultsTab(props: {
               tone={medianConfidence != null && medianConfidence >= 50 ? "positive" : "neutral"}
             />
             <StatCard
-              label="Median skor"
+              label="Median score"
               value={
                 <span className="terminal-grid-numeric">
                   {formatNumber(medianScore, 3)}
                 </span>
               }
-              caption={`süre ${formatNumber(Math.round(result.elapsed_ms))} ms`}
+              caption={`elapsed ${formatNumber(Math.round(result.elapsed_ms))} ms`}
               tone="neutral"
             />
             <StatCard
@@ -1194,19 +1194,19 @@ function ResultsTab(props: {
                   ))}
                   {result.warnings.length > 0 && (
                     <Pill tone="warn" variant="soft" withDot>
-                      {result.warnings.length} uyarı
+                      {result.warnings.length} warnings
                     </Pill>
                   )}
                 </span>
               }
             >
-              Tarama sonuçları
+              Scan results
             </CardHeader>
             <CardBody>
               {rows.length === 0 ? (
                 <Empty
-                  title="Eşleşme yok"
-                  body="Mevcut filtrelerle eşleşen sembol bulunamadı. Min. güveni düşürmeyi veya NEUTRAL'ları göstermeyi deneyin."
+                  title="No matches"
+                  body="No symbol matched the current filters. Try lowering the min confidence or showing NEUTRALs."
                 />
               ) : (
                 <>
@@ -1234,8 +1234,8 @@ function ResultsTab(props: {
 
       {!result && !running && !error && (
         <Empty
-          title="Hazır"
-          body="Piyasaları seçin ve 'Tara' butonuna basın. Tüm seçili piyasalardaki her sembol 23-indikatör konsensüsünden geçirilir."
+          title="Ready"
+          body="Select markets and press 'Scan'. Every symbol in each selected market goes through the 23-indicator consensus."
           action={
             <button
               type="button"
@@ -1243,7 +1243,7 @@ function ResultsTab(props: {
               data-testid="mis-empty-select-all"
               onClick={allOn}
             >
-              Tüm piyasaları seç
+              Select all markets
             </button>
           }
         />
@@ -1308,9 +1308,9 @@ function SettingsTab(props: {
                 className="btn btn--ghost u-btn-mini"
                 onClick={resetConfig}
                 disabled={savingConfig}
-                title="Tüm piyasalar için varsayılana dön"
+                title="Restore the default for all markets"
               >
-                Sıfırla
+                Reset
               </button>
               <button
                 type="button"
@@ -1318,7 +1318,7 @@ function SettingsTab(props: {
                 onClick={saveConfig}
                 disabled={!configDirty || savingConfig}
               >
-                {savingConfig ? "Kaydediliyor…" : configDirty ? "Kaydet" : "Kayıtlı"}
+                {savingConfig ? "Saving…" : configDirty ? "Save" : "Saved"}
               </button>
             </span>
           }
@@ -1353,11 +1353,11 @@ function SettingsTab(props: {
       />
 
       <Card>
-        <CardHeader>Konsensüs eşikleri — {MIS_MARKET_LABELS[configMarket]}</CardHeader>
+        <CardHeader>Consensus thresholds — {MIS_MARKET_LABELS[configMarket]}</CardHeader>
         <CardBody>
           <div style={consensusGridStyle}>
             <NumberField
-              label="Güçlü Al"
+              label="Strong Buy"
               value={cfg.consensus.strong_buy_threshold}
               step={0.05}
               onChange={(v) => updateConsensus("strong_buy_threshold", v)}
@@ -1375,13 +1375,13 @@ function SettingsTab(props: {
               onChange={(v) => updateConsensus("sell_threshold", v)}
             />
             <NumberField
-              label="Güçlü Sat"
+              label="Strong Sell"
               value={cfg.consensus.strong_sell_threshold}
               step={0.05}
               onChange={(v) => updateConsensus("strong_sell_threshold", v)}
             />
             <NumberField
-              label="Çakışma oranı"
+              label="Conflict ratio"
               value={cfg.consensus.conflict_ratio_threshold}
               step={0.05}
               onChange={(v) => updateConsensus("conflict_ratio_threshold", v)}
@@ -1400,11 +1400,11 @@ function SettingsTab(props: {
         <CardHeader
           trailing={
             <Pill tone="muted" variant="soft" withDot={false}>
-              {indicators.length} indikatör
+              {indicators.length} indicators
             </Pill>
           }
         >
-          İndikatör ağırlıkları ve eşikleri
+          Indicator weights and thresholds
         </CardHeader>
         <CardBody>
           <div style={indicatorListStyle}>
@@ -1426,21 +1426,21 @@ function SettingsTab(props: {
         <CardHeader
           trailing={
             <Pill tone="muted" variant="soft" withDot={false}>
-              {cfg.universe_override.length || "varsayılan"}
+              {cfg.universe_override.length || "default"}
             </Pill>
           }
         >
-          Evren geçersiz kıl — {MIS_MARKET_LABELS[configMarket]}
+          Universe override — {MIS_MARKET_LABELS[configMarket]}
         </CardHeader>
         <CardBody>
           <span style={{ ...fieldLabelStyle, display: "block", marginBottom: 6 }}>
-            Boş bırakırsanız varsayılan evren kullanılır. Aksi halde virgülle/boşlukla ayrılmış semboller (örn. <code>BTCUSDT ETHUSDT SOLUSDT</code>).
+            Leave empty to use the default universe; otherwise comma/space-separated symbols (e.g. <code>BTCUSDT ETHUSDT SOLUSDT</code>).
           </span>
           <textarea
             value={cfg.universe_override.join(" ")}
             onChange={(e) => updateUniverseOverride(e.target.value)}
             rows={3}
-            placeholder="boş → varsayılan evren"
+            placeholder="empty → default universe"
             spellCheck={false}
             style={textareaStyle}
           />
@@ -1489,7 +1489,7 @@ function IndicatorBreakdownPanel({ row }: { row: MisScanRow }) {
           {row.direction}
         </Pill>
         <span style={fieldLabelStyle}>
-          {breakdown.length} indikatör · {row.tf_count_with_signal}/{row.tf_count_scanned} TF sinyalli
+          {breakdown.length} indicators · {row.tf_count_with_signal}/{row.tf_count_scanned} TFs signaling
         </span>
       </div>
       {breakdown.length === 0 ? (
@@ -1504,10 +1504,10 @@ function IndicatorBreakdownPanel({ row }: { row: MisScanRow }) {
             fontFamily: "JetBrains Mono, monospace",
           }}
         >
-          <span style={fieldLabelStyle}>İndikatör</span>
+          <span style={fieldLabelStyle}>Indicator</span>
           <span style={fieldLabelStyle}>Sinyal</span>
           <span style={{ ...fieldLabelStyle, textAlign: "right" }}>Skor</span>
-          <span style={fieldLabelStyle}>Gerekçe</span>
+          <span style={fieldLabelStyle}>Rationale</span>
           {breakdown.map((ind, i) => {
             const tone = SIGNAL_TONE[ind.signal] ?? "muted";
             return [
@@ -1561,8 +1561,8 @@ function PerTfStrip({ row }: { row: MisScanRow }) {
                 ? "negative"
                 : "neutral";
         const title = skipped
-          ? `${t.tf} · atlandı (${t.skipped})`
-          : `${t.tf} · ${t.direction} · güven=${t.confidence.toFixed(0)} · ZAK=${t.weight} · katkı=${t.contribution.toFixed(3)}`;
+          ? `${t.tf} · skipped (${t.skipped})`
+          : `${t.tf} · ${t.direction} · conf=${t.confidence.toFixed(0)} · weight=${t.weight} · contrib=${t.contribution.toFixed(3)}`;
         const bg =
           tone === "positive"
             ? "color-mix(in srgb, var(--positive) 18%, transparent)"
@@ -1630,17 +1630,17 @@ function TfCalibrationCard({
       <CardHeader
         trailing={
           <Pill tone="muted" variant="soft" withDot={false}>
-            {activeSet.size}/{allTfs.length} aktif · ZAK
+            {activeSet.size}/{allTfs.length} active · TF
           </Pill>
         }
       >
-        Zaman dilimleri ve ZAK ağırlıkları — {MIS_MARKET_LABELS[market]}
+        Timeframes and TF weights — {MIS_MARKET_LABELS[market]}
       </CardHeader>
       <CardBody>
         <div style={{ fontSize: 10, color: "var(--text-mute)", marginBottom: 8 }}>
-          Her sembol seçili TF'lerde ayrı ayrı 23-indikatör konsensüsünden geçer. Final
-          skor = Σ (yön × güven% × ZAK%). ZAK ağırlığı arttıkça o TF'nin etkisi artar.
-          (TBV3 ile aynı agregasyon.)
+          Each symbol passes the 23-indicator consensus separately on the selected
+          timeframes. Final score = Σ (direction × confidence% × TF-weight%). A higher
+          TF weight increases that timeframe's influence. (Same aggregation as TBV3.)
         </div>
         <div
           style={{
@@ -1733,7 +1733,7 @@ function ExpandToggle({
       className="btn btn--ghost u-btn-mini"
       aria-expanded={open}
       aria-label={`Show indicator breakdown for ${symbol}`}
-      title={`${symbol} · ${count} indikatör detayı`}
+      title={`${symbol} · ${count}-indicator detail`}
       disabled={count === 0}
       onClick={(e) => {
         e.stopPropagation();
@@ -1791,8 +1791,8 @@ function ScanProgressPanel({
   // the user gets a stable final % to look at while the POST resolves.
   const headline =
     total > 0
-      ? `${formatNumber(completed)} / ${formatNumber(total)} sembol tarandı`
-      : "Tarama hazırlanıyor…";
+      ? `${formatNumber(completed)} / ${formatNumber(total)} symbols scanned`
+      : "Preparing scan…";
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -1824,9 +1824,9 @@ function ScanProgressPanel({
       >
         <span>{headline}</span>
         <span>
-          {inFlight > 0 && <span style={{ marginRight: 10 }}>uçuşta {inFlight}</span>}
+          {inFlight > 0 && <span style={{ marginRight: 10 }}>in flight {inFlight}</span>}
           {skippedSoFar > 0 && (
-            <span style={{ marginRight: 10 }}>atlanan {skippedSoFar}</span>
+            <span style={{ marginRight: 10 }}>skipped {skippedSoFar}</span>
           )}
           {elapsedSec != null && elapsedSec > 0 && <span>{elapsedSec.toFixed(1)}s</span>}
         </span>
@@ -1882,7 +1882,7 @@ function IndicatorRow({
           {name}
         </strong>
         <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <span style={fieldLabelStyle}>Ağırlık</span>
+          <span style={fieldLabelStyle}>Weight</span>
           <input
             type="number"
             value={weight}
@@ -1899,7 +1899,7 @@ function IndicatorRow({
             onClick={() => setOpen((o) => !o)}
             style={{ marginLeft: "auto" }}
           >
-            {open ? "Eşikleri gizle" : `Eşikler (${keys.length})`}
+            {open ? "Hide thresholds" : `Thresholds (${keys.length})`}
           </button>
         )}
       </div>
