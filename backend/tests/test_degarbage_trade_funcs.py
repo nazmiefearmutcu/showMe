@@ -233,6 +233,29 @@ def test_fxgo_default_board_ok_with_stub(monkeypatch):
     assert isinstance(data.get("cards"), dict) and "as_of" in data["cards"]
 
 
+def test_fxgo_partial_board_survival_is_labelled_degraded(monkeypatch):
+    """FN-WAVE survey honesty defect: the board claimed live_exchange while
+    most pairs 404'd upstream. Partial survival must be labelled
+    delayed_reference with an explicit degraded-board warning."""
+    from showme.engine.functions.trade._funcs import FXGOFunction
+
+    def flaky_spot(self, pair):
+        if pair.upper().startswith("EUR") or pair.upper().startswith("GBP"):
+            return (1.10, None)
+        raise RuntimeError("simulated 404")
+
+    monkeypatch.setattr(FXGOFunction, "_fetch_fx_spot", flaky_spot)
+    h = _mk_handler(FXGOFunction, deps=None)
+    res = _run(h.execute(pairs="EURUSD,GBPUSD,USDJPY,AUDUSD,USDCAD"))
+    data = res.data
+    assert data["status"] == "ok"
+    assert data["data_mode"] == "delayed_reference"
+    assert data["cards"]["data_mode"] == "delayed_reference"
+    assert any("Board degraded" in w for w in (res.warnings or []))
+    assert res.metadata["requested_count"] == 5
+    assert res.metadata["row_count"] == 2
+
+
 def test_fxgo_board_via_injected_spot(monkeypatch):
     """With a stubbed FX spot, the board computes a real bid/ask/spread."""
     from showme.engine.functions.trade._funcs import FXGOFunction

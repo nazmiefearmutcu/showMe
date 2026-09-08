@@ -235,6 +235,13 @@ def _row_freshness(row: dict[str, Any]) -> str:
 def _country_cards(country: str, profile: dict[str, Any], policy_row: dict[str, Any] | None, indicators: list[dict[str, Any]]) -> list[dict[str, Any]]:
     cards = list(profile.get("cards") or [])
     if policy_row:
+        # The reference profile also carries a static "Policy rate" card;
+        # keep only the LIVE BTMM value or the UI shows two conflicting
+        # policy rates side by side (FN-WAVE survey defect).
+        cards = [
+            c for c in cards
+            if str(c.get("label", "")).strip().lower() != "policy rate"
+        ]
         cards = [{"label": "Country", "value": country}, {"label": "Policy rate", "value": policy_row.get("policy_rate")}] + cards
     for row in indicators[:3]:
         cards.append({"label": row.get("metric"), "value": row.get("value")})

@@ -586,6 +586,20 @@ class FXGOFunction(EMSXFunction):
                 metadata={"fallback": True, "provider_errors": provider_errors},
             )
 
+        # Honesty: the board's data_mode reflects how much of the requested
+        # board actually survived the provider calls. Claiming live_exchange
+        # while most pairs 404'd is exactly the false-labelling defect the
+        # FN-WAVE survey caught.
+        total_requested = len(rows) + len(provider_errors)
+        if provider_errors and len(rows) < total_requested:
+            board_mode = "delayed_reference"
+            board_warnings.append(
+                f"Board degraded: {len(rows)}/{total_requested} pairs returned "
+                "quotes; the rest failed upstream and are NOT shown."
+            )
+        else:
+            board_mode = "live_exchange"
+
         # Card summary mirrors the EMSX/manifest card slots while reflecting the
         # live board: show the top pair's indicative two-way quote.
         top = rows[0]
@@ -599,7 +613,7 @@ class FXGOFunction(EMSXFunction):
             "tif": "RT",
             "price": top["mid"],
             "as_of": as_of,
-            "data_mode": "live_exchange",
+            "data_mode": board_mode,
         }
         warnings = board_warnings + (
             [f"errors: {provider_errors}"] if provider_errors else []
@@ -617,7 +631,7 @@ class FXGOFunction(EMSXFunction):
                 "tif": "RT",
                 "rows": rows,
                 "cards": cards,
-                "data_mode": "live_exchange",
+                "data_mode": board_mode,
                 "as_of": as_of,
                 "methodology": self._BOARD_METHODOLOGY,
                 "field_dictionary": self._BOARD_FIELD_DICTIONARY,
@@ -627,7 +641,11 @@ class FXGOFunction(EMSXFunction):
             },
             sources=["yfinance"],
             warnings=warnings,
-            metadata={"row_count": len(rows), "provider_errors": provider_errors},
+            metadata={
+                "row_count": len(rows),
+                "requested_count": total_requested,
+                "provider_errors": provider_errors,
+            },
         )
 
 

@@ -36,6 +36,12 @@ class TRDHFunction(BaseFunction):
         exchanges = _parse_exchanges(params.get("exchanges") or params.get("exchange") or _DEFAULT_EXCHANGES)
         rows: list[dict[str, Any]] = []
         now = datetime.now(timezone.utc)
+        warnings: list[str] = []
+        unknown = [code for code in exchanges if code not in EXCHANGES]
+        if unknown:
+            warnings.append(
+                "Unknown exchange codes skipped: " + ", ".join(unknown)
+            )
         for code in exchanges:
             ex = EXCHANGES.get(code)
             if ex is None:
@@ -106,6 +112,7 @@ class TRDHFunction(BaseFunction):
             data=data,
             sources=["exchange_calendars"],
             metadata={"now_utc": now.isoformat(), "exchanges": exchanges},
+            warnings=warnings,
         )
 
 
