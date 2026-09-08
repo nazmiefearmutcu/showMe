@@ -217,30 +217,37 @@ function CriticalMissingPane({ code }: { code: string }) {
       role="alert"
       aria-live="assertive"
       style={{
-        padding: "16px 18px",
-        margin: 12,
-        border: "1px solid var(--negative)",
-        background: "color-mix(in srgb, var(--negative) 8%, var(--surface-2))",
-        borderRadius: "var(--radius-md)",
+        padding: "var(--space-4) var(--space-5)",
+        margin: "var(--space-4)",
+        border: "1px solid var(--border-card)",
+        borderLeft: "2px solid var(--negative)",
+        background: "var(--surface-1)",
+        borderRadius: "var(--radius-sm)",
         color: "var(--text-primary)",
-        fontFamily: "JetBrains Mono, monospace",
+        fontFamily: "var(--font-mono, monospace)",
         display: "grid",
-        gap: 8,
+        gap: "var(--space-2)",
       }}
     >
-      <strong style={{ fontSize: 13, letterSpacing: "0.04em", color: "var(--negative)" }}>
+      <strong
+        style={{
+          fontSize: "var(--font-size-md)",
+          letterSpacing: "0.02em",
+          color: "var(--negative)",
+        }}
+      >
         Critical pane unavailable — {code.toUpperCase()}
       </strong>
-      <span style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.5 }}>
+      <span style={{ fontSize: "var(--font-size-md)", color: "var(--text-secondary)", lineHeight: 1.5 }}>
         This pane is on the S05 critical list (GP, HP, DES, WATCH, SCAN,
         PORT, TOP, NI, CN, MIS) and its native React component is not
         registered. ShowMe will not silently fall back to a template or
         the generic stub for these codes because they back real positions
         and live market data.
       </span>
-      <span style={{ fontSize: 11, color: "var(--text-mute)" }}>
+      <span style={{ fontSize: "var(--font-size-sm)", color: "var(--text-mute)" }}>
         Fix: register the native pane in
-        <code style={{ marginLeft: 6, fontFamily: "JetBrains Mono, monospace" }}>
+        <code style={{ marginLeft: 6, fontFamily: "var(--font-mono, monospace)" }}>
           ui/src/functions/registry.tsx
         </code>{" "}
         and rebuild.

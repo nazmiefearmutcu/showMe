@@ -1,0 +1,314 @@
+/*
+ * Shell chrome polish — DESIGN-BRIEF.md "Desk Instrument" pass (Lane A).
+ *
+ * Scope: the persistent frame — Titlebar, Sidebar, Statusbar, SymbolBar,
+ * PresetMenu, ToastHost. This file is imported by index.css BEFORE
+ * components.css/index rules, so every override here uses a higher-
+ * specificity selector (zone-root element + class, e.g. `header.titlebar`)
+ * to win on the cascade without touching another lane's file.
+ *
+ * Laws applied (see DESIGN-BRIEF.md):
+ *   1. Numbers first   — tabular-nums on every numeric run (port, FN count,
+ *                        sidebar counter, preset dates, symbol input).
+ *   2. Flat + hairline — accent-tinted frame borders → --line ladder;
+ *                        container glows/shadows removed; depth comes from
+ *                        the surface ladder only.
+ *   3. Crisp geometry  — data surfaces/controls pinned to --radius-sm;
+ *                        popup radius flattened to 0.
+ *   4. Accent discipline— accent only on interactive/focus/selection
+ *                        (active nav item, active sidebar edge bar, drag
+ *                        states). Section headers, hint glyphs and frame
+ *                        borders demoted to the text/line ladder.
+ *   5. Motion = 90ms   — state-change transitions only, all declared inside
+ *                        `@media (prefers-reduced-motion: no-preference)`.
+ *                        Entrance animations (toast fade, drag-ghost lift)
+ *                        are neutralised.
+ *   6. Density         — one space-step tighter on titlebar/header padding;
+ *                        interactive targets lifted to the 24px floor.
+ *   7. A11y floor      — :focus-visible rings re-asserted on inputs that
+ *                        kill the global outline; no aria removed.
+ */
+
+/* ============================================================
+ * Focus — re-assert the accent ring where index.css sets
+ * `outline: none` on the element itself (tokens.css ships the
+ * global :focus-visible ring; these inputs opt out today).
+ * ============================================================ */
+div.symbol-bar-host .symbol-bar-host__input:focus-visible,
+aside.sidebar .sidebar__search-input:focus-visible,
+div.preset-menu .preset-menu__input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ============================================================
+ * Titlebar — trim + flatten the instrument bezel.
+ * ============================================================ */
+header.titlebar {
+  /* One space-step tighter on the right; left stays 88px for the
+     macOS traffic-light inset (functional, untouched). */
+  padding-right: var(--space-4);
+  border-bottom-color: var(--line);
+}
+
+/* Nav + quick-function buttons: lift to the 24px hit-target floor. */
+header.titlebar .titlebar__market-nav-btn,
+header.titlebar .titlebar__quick-action {
+  height: 24px;
+}
+
+/* Accent discipline: the first nav item is not permanently lit;
+   only the routed-active item carries accent (selection). */
+header.titlebar .titlebar__market-nav-btn:first-child {
+  color: var(--text-secondary);
+}
+header.titlebar .titlebar__market-nav-btn--active {
+  color: var(--text-display);
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+/* Command strip: hairline instead of accent-tinted border; the ticker
+   chip is data, not chrome — neutral surface + display ink. */
+header.titlebar .titlebar__command-strip {
+  border-color: var(--line);
+}
+header.titlebar .titlebar__command-strip strong {
+  color: var(--text-primary);
+}
+header.titlebar .titlebar__ticker-chip {
+  background: var(--surface-3);
+  border-color: var(--line);
+  color: var(--text-display);
+}
+
+/* Quick-function tiles: hairline edge, not accent bleed. */
+header.titlebar .titlebar__quick-action {
+  border-color: var(--line);
+}
+
+/* Numbers first: sidecar port + registered-FN counters align. */
+header.titlebar .titlebar__pill-row-extra,
+header.titlebar .titlebar__pill-row-extra--tracking {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ============================================================
+ * Statusbar — mono digits, dim labels, semantic state dot.
+ * ============================================================ */
+footer.statusbar {
+  border-top-color: var(--line);
+}
+
+/* Law 2: the state dot is a flat semaphore — no glow halo. */
+footer.statusbar .ds-status__dot {
+  box-shadow: none;
+}
+
+/* ============================================================
+ * Sidebar — dense instrument rail.
+ * ============================================================ */
+
+/* Frame: hairline instead of accent-tinted edge. */
+aside.sidebar {
+  border-right-color: var(--line);
+}
+
+/* Popup variant (peek): flat surface + strong hairline; radius 0. */
+aside.sidebar--popup {
+  background: var(--sidebar-popup-bg);
+  border: 1px solid var(--line-strong);
+  border-left-color: var(--line-strong);
+  border-radius: 0;
+  box-shadow: none;
+}
+.sidebar-slot div.sidebar-popover {
+  filter: none; /* drop-shadow → hairline + surface (law 2) */
+}
+
+/* Header: flat bg + hairline; one space-step tighter. */
+aside.sidebar .sidebar__header {
+  background: var(--bg);
+  border-bottom-color: var(--line);
+  padding: var(--space-3) var(--space-4) var(--space-3);
+}
+
+/* Search host: hairline edge; accent only on focus (below). */
+aside.sidebar .sidebar__search-host {
+  border-color: var(--line);
+}
+aside.sidebar .sidebar__search-host:focus-within {
+  border-color: var(--line-strong);
+}
+/* The "/" hint glyph is chrome, not an action — demote from accent. */
+aside.sidebar .sidebar__search-slash {
+  color: var(--text-mute);
+}
+
+/* Toggle buttons: 24px hit-target floor. */
+aside.sidebar .sidebar-toggle-button {
+  width: 24px;
+  height: 24px;
+}
+
+/* Numbers first: the "filtered / total" counter aligns. */
+aside.sidebar .sidebar__count {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Section headers: tight + dim (accent is not a heading color). */
+aside.sidebar .sidebar__group-head {
+  color: var(--text-mute);
+}
+aside.sidebar .sidebar__group {
+  padding: var(--space-2) 0 var(--space-4);
+}
+aside.sidebar .sidebar-shortcut-group {
+  padding: var(--space-1) 0 var(--space-3);
+}
+aside.sidebar .sidebar-shortcuts {
+  border-bottom-color: var(--line);
+}
+
+/* Shortcut rows: hover = hairline brighten; active = accent left-edge
+   bar + surface-2 lift (law 4: accent only marks the selection). */
+aside.sidebar .sidebar-shortcut-row:hover {
+  background: var(--scrim-low);
+  border-left-color: var(--line-strong);
+  color: var(--text-primary);
+}
+aside.sidebar .sidebar-shortcut-row:hover .sidebar-shortcut__dot {
+  background: var(--text-secondary);
+}
+aside.sidebar .sidebar-shortcut-row--active {
+  background: var(--surface-2);
+  border-left-color: var(--accent);
+}
+aside.sidebar .sidebar-shortcut-row--active:hover {
+  background: var(--surface-2);
+  border-left-color: var(--accent);
+}
+
+/* Unpin button: 24px floor. */
+aside.sidebar .sidebar-shortcut__remove {
+  width: 20px;
+  height: 24px;
+  margin-right: var(--space-1);
+}
+
+/* Function-code list rows: same grammar as shortcut rows. Index.css
+   pins hover with !important (`.sidebar-function:hover`), so match
+   importance at higher specificity. */
+aside.sidebar .sidebar-function-link:hover {
+  background: var(--scrim-low) !important;
+  border-left-color: var(--line-strong);
+  color: var(--text-primary);
+}
+aside.sidebar .sidebar-function-link--active {
+  background: var(--surface-2);
+  border-left-color: var(--accent);
+}
+aside.sidebar .sidebar-function-link--active:hover {
+  background: var(--surface-2) !important;
+  border-left-color: var(--accent);
+}
+
+/* Pin drag ghost: a drag state, not a parade — flat surface, accent
+   hairline, no rotation/lift entrance animation, no glow shadow. */
+.sidebar-slot .pin-drag-ghost {
+  animation: none;
+  transform: none;
+  box-shadow: none;
+  background: var(--surface-3);
+  border-color: var(--accent);
+}
+.sidebar-slot .pin-drag-ghost--over-pin {
+  box-shadow: none;
+}
+
+/* ============================================================
+ * SymbolBar — flat control strip.
+ * ============================================================ */
+div.symbol-bar-host {
+  padding: var(--space-3) var(--space-4);
+}
+div.symbol-bar-host .symbol-bar-host__form {
+  border-color: var(--line);
+  border-radius: var(--radius-sm);
+}
+div.symbol-bar-host .symbol-bar-host__form:focus-within {
+  border-color: var(--line-strong);
+}
+div.symbol-bar-host .symbol-bar-host__input {
+  font-variant-numeric: tabular-nums;
+}
+div.symbol-bar-host .symbol-bar-chip__btn,
+div.symbol-bar-host .symbol-bar-chip__remove {
+  height: 24px; /* hit-target floor */
+}
+
+/* ============================================================
+ * PresetMenu — hairline dropdown, no float shadow.
+ * ============================================================ */
+div.preset-menu {
+  background: var(--surface-3);
+  border-color: var(--line-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: none;
+  font-variant-numeric: tabular-nums; /* saved-at dates align */
+}
+div.preset-menu .preset-menu__row-btn:hover {
+  background: var(--scrim-low);
+}
+div.preset-menu .preset-menu__delete {
+  min-width: 24px;
+  min-height: 24px;
+}
+div.preset-menu .preset-menu__delete:hover {
+  color: var(--negative);
+}
+
+/* ============================================================
+ * ToastHost — flat notice card; no entrance animation (anti-slop),
+ * no float shadow. Tone still reads via the 3px left edge.
+ * ============================================================ */
+div.toast-host .toast-host__card {
+  animation: none;
+  box-shadow: none;
+  border-radius: var(--radius-sm);
+}
+div.toast-host .toast-host__dismiss {
+  min-width: 24px;
+  min-height: 24px;
+}
+div.toast-host .toast-host__dismiss:hover {
+  color: var(--text-primary);
+}
+
+/* ============================================================
+ * Motion — 90ms ease-out on STATE CHANGE only. Everything above
+ * is instant for reduced-motion users (global reduce kill in
+ * tokens.css also stands).
+ * ============================================================ */
+@media (prefers-reduced-motion: no-preference) {
+  header.titlebar .titlebar__market-nav-btn,
+  header.titlebar .titlebar__quick-action,
+  footer.statusbar .ds-status__dot,
+  aside.sidebar .sidebar-toggle-button,
+  aside.sidebar .sidebar-shortcut__remove,
+  aside.sidebar .sidebar-shortcut-row,
+  aside.sidebar .sidebar-shortcut,
+  aside.sidebar .sidebar-function-link,
+  aside.sidebar .sidebar__search-host,
+  div.symbol-bar-host .symbol-bar-chip__btn,
+  div.symbol-bar-host .symbol-bar-chip__remove,
+  div.symbol-bar-host .symbol-bar-host__form,
+  div.preset-menu .preset-menu__row-btn,
+  div.preset-menu .preset-menu__delete,
+  div.toast-host .toast-host__dismiss {
+    transition:
+      background-color 90ms ease-out,
+      border-color 90ms ease-out,
+      color 90ms ease-out;
+  }
+}

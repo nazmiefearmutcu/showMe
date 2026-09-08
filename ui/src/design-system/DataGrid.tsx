@@ -58,9 +58,11 @@ interface DataGridProps<T> {
   onSort?: (key: string) => void;
 }
 
+// Desk-instrument density (DESIGN-BRIEF law 6): rows live in the 24-26px
+// band; never below 24px so interactive rows keep a legal hit target.
 const ROW_HEIGHT: Record<"compact" | "comfortable", number> = {
-  compact: 22,
-  comfortable: 28,
+  compact: 24,
+  comfortable: 26,
 };
 
 const VIRTUAL_THRESHOLD = 100;
@@ -111,7 +113,8 @@ function DataGridImpl<T>({
       minWidth: 0,
       maxWidth: "100%",
       border: "1px solid var(--border-subtle)",
-      borderRadius: "var(--radius-md)",
+      // Data surface geometry (DESIGN-BRIEF law 3): radius-sm max.
+      borderRadius: "var(--radius-sm)",
       background: "var(--scrim-low)",
       contain: "layout style paint",
     }),

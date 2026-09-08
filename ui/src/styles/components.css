@@ -1,0 +1,196 @@
+/*
+ * Design-system component polish (Lane B) — ShowMe "Desk Instrument" pass.
+ * See DESIGN-BRIEF.md at repo root. Consumes tokens.css tokens only.
+ *
+ * Import order (index.css): tokens → motion → shell → components →
+ * workspace → body rules. Because index.css body rules come later at equal
+ * specificity, every override below uses one-notch-higher specificity
+ * (doubled class or element-prefixed selector) so it wins deterministically.
+ *
+ * Motion (law 5): NEW transitions live inside a
+ * `prefers-reduced-motion: no-preference` block and consume Lane C's
+ * --motion-fast (90ms) / --motion-base (140ms), which tokens.css already
+ * zeroes under `prefers-reduced-motion: reduce`.
+ */
+
+/* ============================================================
+ * Card — surface + hairline + radius-sm ONLY (laws 2 + 3).
+ * ============================================================ */
+.ds-card.ds-card {
+  border-color: var(--line);
+  border-radius: var(--radius-sm);
+  box-shadow: none;
+}
+/* Accent discipline (law 4): accent is for interactive/focus/selection.
+   Card titles are static headers -> full-contrast text, not accent. */
+.ds-card .ds-card__title {
+  color: var(--text-primary);
+}
+
+/* ============================================================
+ * Pill — outline (ghost) by default: hairline + tone text, no
+ * fill. Padding = --space-1 x --space-3. Fully-rounded silhouette
+ * kept (law 3 allows pills). soft/filled variants keep their fills.
+ * ============================================================ */
+.ds-pill.ds-pill {
+  padding: var(--space-1) var(--space-3);
+  height: auto;
+  min-height: 18px;
+}
+.ds-pill--ghost.ds-pill--ghost {
+  background: transparent;
+  border: 1px solid var(--line);
+}
+
+/* ============================================================
+ * StatCard — flat surface-2 + hairline, radius-sm (laws 2 + 3).
+ * Label is dimmed (index.css --text-mute, kept); value stays mono
+ * tabular (index.css). Delta chip aligns right, semantic color.
+ * ============================================================ */
+.stat-card.stat-card {
+  background: var(--surface-2);
+  border-color: var(--line);
+  border-radius: var(--radius-sm);
+  box-shadow: none;
+  /* No lift, no shadow transition — the card is flat (law 2). */
+  transition: none;
+}
+.stat-card .stat-card__meta > [role="status"] {
+  /* DeltaChip (renders role="status") -> far right of the meta row. */
+  order: 2;
+  margin-left: auto;
+}
+
+/* ============================================================
+ * Tabs — inactive = mute, active = 2px accent underline + full
+ * contrast; hairline rail; 140ms ease-out color transition.
+ * ============================================================ */
+.tabs__under.tabs__under {
+  color: var(--text-mute);
+}
+.tabs__under.tabs__under--active {
+  color: var(--text-display);
+}
+.tabs__seg.tabs__seg--active {
+  color: var(--text-display);
+}
+.tabs--underline.tabs--underline {
+  border-bottom-color: var(--line-thin);
+}
+.tabs--segmented.tabs--segmented {
+  border-radius: var(--radius-sm);
+}
+
+/* ============================================================
+ * StatusSection — kill the dot glow (law 2: no glows).
+ * ============================================================ */
+span.ds-status__dot {
+  box-shadow: none;
+}
+
+/* ============================================================
+ * LogStream — timestamps align like numbers (law 1).
+ * ============================================================ */
+.ds-logstream__row.ds-logstream__row {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ============================================================
+ * Field — hairline + radius-sm row; the row's accent border is
+ * the focus indicator (the input itself sits flush inside it).
+ * ============================================================ */
+.ds-field__row.ds-field__row {
+  border-color: var(--line);
+  border-radius: var(--radius-sm);
+}
+.ds-field__row.ds-field__row:focus-within {
+  border-color: var(--accent);
+}
+.ds-field__input:focus-visible {
+  /* Ring on the input would double with the row's accent border. */
+  box-shadow: none;
+}
+
+/* ============================================================
+ * Crumb — link/button crumbs are interactive: pointer cursor,
+ * hover feedback, 90ms color transition (law 5).
+ * ============================================================ */
+a.ds-crumb,
+button.ds-crumb {
+  cursor: pointer;
+}
+a.ds-crumb:hover,
+button.ds-crumb:hover {
+  color: var(--text-primary);
+}
+
+/* ============================================================
+ * CommandTile — radius-sm (law 3); no hover lift (anti-slop):
+ * hover feedback = surface-3 fill, 90ms (laws 2 + 5).
+ * ============================================================ */
+.ds-command-tile.ds-command-tile {
+  border-radius: var(--radius-sm);
+}
+button.showme-command-tile--interactive:hover {
+  transform: none;
+  background: var(--surface-3);
+}
+
+/* ============================================================
+ * DataGrid rows — hover = surface-2; standardized Lane C focus
+ * ring replaces the legacy outline (law 7; --focus-ring token).
+ * Row separators/header are already hairline via the --border-row
+ * / --border-strong aliases of --line-thin / --line-strong.
+ * ============================================================ */
+tr.showme-data-row--interactive:hover {
+  background: var(--surface-2);
+}
+tr.showme-data-row--interactive:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+/* ============================================================
+ * Skeleton — flat surface-3 block + hairline (law 2), 1.2s opacity
+ * pulse wrapped in the reduced-motion guard (law 5). The component
+ * renders `<span class="ds-skeleton" aria-busy="true">`.
+ * ============================================================ */
+.ds-skeleton {
+  display: inline-block;
+  background: var(--surface-3);
+  border: 1px solid var(--line-thin);
+  border-radius: var(--radius-sm);
+}
+
+/* ============================================================
+ * New motion — feedback on state change only (law 5).
+ * ============================================================ */
+@media (prefers-reduced-motion: no-preference) {
+  .tabs__under.tabs__under {
+    transition:
+      color var(--motion-base),
+      border-color var(--motion-base);
+  }
+  a.ds-crumb,
+  button.ds-crumb {
+    transition: color var(--motion-fast);
+  }
+  .ds-command-tile.ds-command-tile {
+    transition:
+      background var(--motion-fast),
+      border-color var(--motion-fast);
+  }
+  .ds-skeleton {
+    animation: ds-skeleton-pulse 1.2s ease-in-out infinite;
+  }
+}
+
+@keyframes ds-skeleton-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}

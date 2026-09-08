@@ -411,6 +411,10 @@ export function Welcome() {
   const engineRoot = useAppStore((s) => s.engineRoot);
   const port = useAppStore((s) => s.sidecarPort);
   const index = useAppStore((s) => s.functionIndex);
+  // Command entry is the hero affordance of the landing pane: the global
+  // ⌘K palette already exists, so the masthead surfaces it as a clickable
+  // hairline field instead of building a second input to keep in sync.
+  const openPalette = useAppStore((s) => s.togglePalette);
   const nativeCodes = useMemo(() => new Set(index.map((e) => e.code)), [index]);
   const functionByCode = useMemo(
     () => new Map(index.map((entry) => [entry.code, entry])),
@@ -622,6 +626,21 @@ export function Welcome() {
           <p className="terminal-home__eyebrow">
             OVERVIEW / {dateStamp} / {localTime} {tzLabel.toUpperCase()} / {session.toUpperCase()}
           </p>
+          <button
+            type="button"
+            className="terminal-command-entry"
+            aria-label="Open command palette"
+            title="Open the command palette (⌘K)"
+            onClick={() => openPalette(true)}
+          >
+            <span className="terminal-command-entry__glyph" aria-hidden>
+              &gt;_
+            </span>
+            <span className="terminal-command-entry__text">
+              Type a function code or company name…
+            </span>
+            <kbd className="terminal-command-entry__kbd">⌘K</kbd>
+          </button>
         </div>
         <div className="terminal-home__runtime">
           <Pill tone={status === "healthy" ? "positive" : "warn"} variant="soft">

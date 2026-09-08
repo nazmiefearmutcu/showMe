@@ -127,22 +127,28 @@ export class AppErrorBoundary extends Component<Props, State> {
         style={{
           position: "fixed",
           inset: 0,
-          background: "var(--bg-1)",
-          color: "var(--fg-1)",
+          background: "var(--bg)",
+          color: "var(--text-primary)",
           display: "grid",
           placeItems: "center",
-          padding: 24,
+          padding: "var(--space-6)",
           fontFamily:
             "-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', sans-serif",
           zIndex: 99999,
         }}
       >
-        <div style={{ maxWidth: 640, width: "100%", display: "grid", gap: 16 }}>
-          <div style={{ display: "grid", gap: 4 }}>
-            <strong style={{ fontSize: 20, color: "var(--accent-err)" }}>
+        <div style={{ maxWidth: 560, width: "100%", display: "grid", gap: "var(--space-5)" }}>
+          <div style={{ display: "grid", gap: "var(--space-2)" }}>
+            <strong
+              style={{
+                fontSize: "var(--font-size-xl)",
+                color: "var(--accent-err)",
+                letterSpacing: "0.01em",
+              }}
+            >
               Something went wrong
             </strong>
-            <span style={{ fontSize: 13, color: "var(--fg-2)" }}>
+            <span style={{ fontSize: "var(--font-size-lg)", color: "var(--fg-2)" }}>
               showMe hit an unrecoverable render error. Your data is safe — the
               Python sidecar keeps running in the background.
             </span>
@@ -151,10 +157,12 @@ export class AppErrorBoundary extends Component<Props, State> {
             style={{
               background: "var(--surface-1)",
               border: "1px solid var(--border-1)",
-              borderRadius: 8,
-              padding: 12,
+              borderTop: "2px solid var(--accent-err)",
+              borderRadius: "var(--radius-sm)",
+              padding: "var(--space-4)",
               fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-              fontSize: 12,
+              fontSize: "var(--font-size-md)",
+              fontVariantNumeric: "tabular-nums",
               maxHeight: 140,
               overflow: "auto",
               whiteSpace: "pre-wrap",
@@ -165,7 +173,7 @@ export class AppErrorBoundary extends Component<Props, State> {
             {error.stack ? "\n\n" + error.stack : ""}
             {componentStack ? "\n\nComponent stack:" + componentStack : ""}
           </div>
-          <div style={{ display: "flex", gap: 8 }}>
+          <div style={{ display: "flex", gap: "var(--space-2)" }}>
             <button
               type="button"
               data-testid="app-error-reload"
@@ -173,11 +181,11 @@ export class AppErrorBoundary extends Component<Props, State> {
               style={{
                 appearance: "none",
                 background: "var(--accent)",
-                color: "var(--bg-1)",
-                border: "0",
-                borderRadius: 6,
-                padding: "8px 14px",
-                fontSize: 13,
+                color: "var(--accent-on)",
+                border: "1px solid var(--accent)",
+                borderRadius: "var(--radius-xs)",
+                padding: "var(--space-3) var(--space-4)",
+                fontSize: "var(--font-size-lg)",
                 fontWeight: 600,
                 cursor: "pointer",
               }}
@@ -191,11 +199,11 @@ export class AppErrorBoundary extends Component<Props, State> {
               style={{
                 appearance: "none",
                 background: "transparent",
-                color: "var(--fg-1)",
+                color: "var(--text-primary)",
                 border: "1px solid var(--border-1)",
-                borderRadius: 6,
-                padding: "8px 14px",
-                fontSize: 13,
+                borderRadius: "var(--radius-xs)",
+                padding: "var(--space-3) var(--space-4)",
+                fontSize: "var(--font-size-lg)",
                 cursor: "pointer",
               }}
             >

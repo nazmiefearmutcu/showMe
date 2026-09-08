@@ -30,7 +30,7 @@ function CommandTileImpl({
       type="button"
       onClick={onClick}
       className={
-        `showme-command-tile ds-command-tile${interactive ? " showme-command-tile--interactive ds-command-tile--interactive" : ""}${active ? " ds-command-tile--active" : ""}`
+        `showme-command-tile ds-command-tile focus-ring${interactive ? " showme-command-tile--interactive ds-command-tile--interactive" : ""}${active ? " ds-command-tile--active" : ""}`
       }
       aria-pressed={active}
     >

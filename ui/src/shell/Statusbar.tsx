@@ -96,7 +96,9 @@ export function Statusbar() {
         {/* aria-hidden on the clock — sighted users see the time, but a
             screen reader doesn't need it announced once per second. */}
         <span aria-hidden>
-          <StatusSection value={clock} tone="accent" />
+          {/* Law 4 (accent discipline): the clock is data, not chrome —
+              full-contrast display ink instead of accent. */}
+          <StatusSection value={clock} />
         </span>
       </span>
     </footer>

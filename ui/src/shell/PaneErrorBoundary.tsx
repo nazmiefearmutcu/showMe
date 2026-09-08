@@ -64,37 +64,53 @@ export class PaneErrorBoundary extends Component<Props, State> {
         role="alert"
         data-testid="pane-error-boundary"
         style={{
-          padding: 16,
+          padding: "var(--space-4) var(--space-5)",
           height: "100%",
           overflow: "auto",
           display: "grid",
-          gap: 12,
+          gap: "var(--space-3)",
           alignContent: "start",
-          background: "var(--surface)",
+          background: "var(--surface-1)",
+          borderTop: "2px solid var(--negative)",
           color: "var(--text-primary)",
         }}
       >
-        <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
-          <strong style={{ color: "var(--negative)" }}>
+        <div style={{ display: "flex", alignItems: "baseline", gap: "var(--space-3)" }}>
+          <strong
+            style={{
+              color: "var(--negative)",
+              fontFamily: "var(--font-mono, monospace)",
+              fontSize: "var(--font-size-md)",
+              letterSpacing: "0.02em",
+            }}
+          >
             {this.props.code} · pane render failed
           </strong>
           <button type="button" className="btn btn--ghost u-btn-mini" onClick={this.handleRetry}>
             Retry
           </button>
         </div>
-        <div style={{ fontFamily: "var(--font-mono, monospace)", fontSize: 12 }}>
+        <div
+          style={{
+            fontFamily: "var(--font-mono, monospace)",
+            fontSize: "var(--font-size-md)",
+            fontVariantNumeric: "tabular-nums",
+          }}
+        >
           {error.message || error.name || "Unknown render error"}
         </div>
         {error.stack ? (
           <pre
             style={{
               fontFamily: "var(--font-mono, monospace)",
-              fontSize: 11,
+              fontSize: "var(--font-size-sm)",
               color: "var(--text-mute)",
               whiteSpace: "pre-wrap",
               maxHeight: 220,
               overflow: "auto",
               margin: 0,
+              borderTop: "1px solid var(--border-subtle)",
+              paddingTop: "var(--space-2)",
             }}
           >
             {error.stack}
@@ -104,12 +120,14 @@ export class PaneErrorBoundary extends Component<Props, State> {
           <pre
             style={{
               fontFamily: "var(--font-mono, monospace)",
-              fontSize: 11,
+              fontSize: "var(--font-size-sm)",
               color: "var(--text-mute)",
               whiteSpace: "pre-wrap",
               maxHeight: 200,
               overflow: "auto",
               margin: 0,
+              borderTop: "1px solid var(--border-subtle)",
+              paddingTop: "var(--space-2)",
             }}
           >
             {componentStack}

@@ -1,0 +1,50 @@
+/*
+ * Motion system (Lane C): state-change-only transitions,
+ * prefers-reduced-motion honored. See DESIGN-BRIEF.md.
+ *
+ * Ownership split (single-owner rule):
+ *   - tokens.css owns the timing/easing tokens themselves:
+ *     --dur-fast: 90ms, --dur-base: 140ms, --ease-out (plus the legacy
+ *     --motion-fast/--motion-base/--motion-flash aliases).
+ *   - THIS file owns only (a) bare-element transition defaults and
+ *     (b) the reduced-motion wildcard guard. It loads right after
+ *     tokens.css and BEFORE shell/components/workspace, so any lane's
+ *     class-scoped transition rule wins over these defaults.
+ *   - No entrance/fade/slide animations anywhere (brief law 5): motion
+ *     is feedback on STATE CHANGE only, 90ms micro / 140ms panel.
+ */
+
+/* Bare-element sensible defaults for interactive primitives. Class-level
+   rules in the lanes' stylesheets (higher specificity, later source
+   order) override these freely — this only fills the gaps so hover /
+   press feedback never snaps. Deliberately minimal: color, background,
+   border, opacity at --dur-fast only; no transform/entrance motion. */
+@media (prefers-reduced-motion: no-preference) {
+  a,
+  button,
+  input,
+  select,
+  textarea,
+  [role="button"] {
+    transition:
+      color var(--dur-fast) var(--ease-out),
+      background-color var(--dur-fast) var(--ease-out),
+      border-color var(--dur-fast) var(--ease-out),
+      opacity var(--dur-fast) var(--ease-out);
+  }
+}
+
+/* Reduced-motion wildcard guard (mirrors the guard in tokens.css, which
+   additionally zeroes the motion TOKENS; kept here as the canonical
+   element-level guard for everything, including legacy inline styles
+   via the !important resets). tokens.test.ts pins the tokens.css copy. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

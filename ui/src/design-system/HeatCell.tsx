@@ -54,7 +54,11 @@ function HeatCellImpl({
     <button
       type="button"
       onClick={onClick}
-      className={interactive ? "showme-heat-cell showme-heat-cell--interactive" : "showme-heat-cell"}
+      // `focus-ring` re-arms the global :focus-visible ring: this element's
+      // inline `all: unset` would otherwise swallow it (Lane C utility).
+      className={
+        `showme-heat-cell focus-ring${interactive ? " showme-heat-cell--interactive" : ""}`
+      }
       aria-label={ariaLabel ?? `value ${sign}${value.toFixed(fractionDigits)}`}
       style={{
         all: "unset",

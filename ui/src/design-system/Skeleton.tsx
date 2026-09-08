@@ -1,31 +1,13 @@
 /**
- * Skeleton — loading placeholder. CSS-only shimmer; no `<motion>` needed.
- * The plan's UI standards forbid spring/bounce — shimmer is a flat sweep.
+ * Skeleton — loading placeholder.
+ *
+ * Desk-instrument styling (DESIGN-BRIEF laws 2 + 5): a flat surface-3 block
+ * with a hairline edge and a 1.2s opacity pulse — no gradient sweep. The
+ * pulse animation is declared in `styles/components.css` and wrapped in a
+ * `prefers-reduced-motion: no-preference` guard, so reduced-motion users
+ * get a static block. No runtime `<style>` injection anymore.
  */
 import type { CSSProperties } from "react";
-
-const shimmerStyle: CSSProperties = {
-  background:
-    "linear-gradient(90deg, var(--bg-elev-2) 25%, var(--bg-elev-3) 37%, var(--bg-elev-2) 63%)",
-  backgroundSize: "400% 100%",
-  animation: "skeleton-shimmer 1400ms linear infinite",
-  borderRadius: "var(--radius-sm)",
-};
-
-const css = `@keyframes skeleton-shimmer {
-  0%   { background-position: 100% 0; }
-  100% { background-position: 0 0; }
-}`;
-
-let injected = false;
-function injectKeyframes() {
-  if (injected || typeof document === "undefined") return;
-  const tag = document.createElement("style");
-  tag.dataset.scope = "showme-skeleton";
-  tag.textContent = css;
-  document.head.appendChild(tag);
-  injected = true;
-}
 
 export function Skeleton({
   width = "100%",
@@ -36,19 +18,9 @@ export function Skeleton({
   height?: number | string;
   radius?: number | string;
 }) {
-  injectKeyframes();
-  return (
-    <span
-      aria-busy="true"
-      style={{
-        display: "inline-block",
-        width,
-        height,
-        borderRadius: radius ?? shimmerStyle.borderRadius,
-        ...shimmerStyle,
-      }}
-    />
-  );
+  const style: CSSProperties = { width, height };
+  if (radius != null) style.borderRadius = radius;
+  return <span aria-busy="true" className="ds-skeleton" style={style} />;
 }
 
 export function SkeletonRow({ columns = 4 }: { columns?: number }) {

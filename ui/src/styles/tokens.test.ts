@@ -75,8 +75,10 @@ describe("design tokens", () => {
     const parts = css.split('[data-preset="papyrus"]');
     const block = parts.slice(2).join('[data-preset="papyrus"]');
     // Darker mint and rose so P&L on cream surface clears WCAG AA.
+    // (Negative #c43250→#992140 in the Lane C pass: deuteranopia ΔL*
+    // separation vs positive + higher contrast on cream.)
     expect(block).toMatch(/--positive:\s*#117a44/);
-    expect(block).toMatch(/--negative:\s*#c43250/);
+    expect(block).toMatch(/--negative:\s*#992140/);
   });
 
   it("ships the ShowMe // Future Matrix theme token block (v3 canvas)", () => {
@@ -134,6 +136,64 @@ describe("design tokens", () => {
     expect(slotBlock).not.toMatch(/--text-faint:\s*#5b5447/);
     const contrast = computeContrastFromCss("#9d917a", "#0b0907");
     expect(contrast).toBeGreaterThanOrEqual(4.5);
+  });
+
+  /* ────────────────────────────────────────────────────────────────────
+   * Lane C "Desk Instrument" pass (2026-09-08) — system tokens, radius
+   * discipline, focus ring, and the AA lifts on the dim text slots.
+   * ──────────────────────────────────────────────────────────────────── */
+  it("defines the motion + focus system tokens (Lane C)", () => {
+    expect(css).toMatch(/--dur-fast:\s*90ms/);
+    expect(css).toMatch(/--dur-base:\s*140ms/);
+    expect(css).toMatch(/--ease-out:\s*cubic-bezier\(0\.2,\s*0,\s*0,\s*1\)/);
+    expect(css).toMatch(
+      /--focus-ring:\s*0 0 0 2px var\(--bg\), 0 0 0 4px var\(--accent\)/,
+    );
+  });
+
+  it("keeps the radius ladder at 2/4/6/8 + pill — nothing above lg (Lane C)", () => {
+    expect(css).toMatch(/--radius-sm:\s*4px/);
+    expect(css).toMatch(/--radius-md:\s*6px/);
+    expect(css).toMatch(/--radius-lg:\s*8px/);
+    expect(css).not.toMatch(/--radius-(xl|2xl|3xl):/);
+  });
+
+  it("draws the focus ring via box-shadow + ships the .focus-ring utility (Lane C)", () => {
+    expect(css).toMatch(
+      /:focus-visible\s*\{[^}]*box-shadow:\s*var\(--focus-ring\)/,
+    );
+    expect(css).toMatch(/\.focus-ring:focus-visible/);
+  });
+
+  it("lifts the dimmest text slot to AA on each preset's worst surface (Lane C)", () => {
+    // surface-3 is the lightest dark surface (dark presets) / darkest
+    // cream (papyrus) — the worst-case background for the lowest slot.
+    const cases: Array<[string, string, string]> = [
+      ["midnight faint", "#9d917a", "#2c271e"],
+      ["iced faint", "#7d9fc0", "#163457"],
+      ["iced secondary", "#86aacb", "#163457"],
+      ["amber faint", "#a7895e", "#311f0f"],
+      ["neon faint", "#9080c8", "#270d52"],
+      ["papyrus faint", "#6b634e", "#e6e1d1"],
+    ];
+    for (const [label, fg, bg] of cases) {
+      expect(computeContrastFromCss(fg, bg), label).toBeGreaterThanOrEqual(4.5);
+    }
+  });
+
+  it("separates papyrus positive/negative by lightness for deuteranopia (Lane C)", () => {
+    const lStar = (hex: string): number => {
+      const m = hex.replace(/^#/, "");
+      const chan = [0, 2, 4].map((i) => parseInt(m.slice(i, i + 2), 16) / 255);
+      const lin = chan.map((c) =>
+        c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4),
+      );
+      const y = 0.2126 * lin[0]! + 0.7152 * lin[1]! + 0.0722 * lin[2]!;
+      return y <= 0.008856 ? y * 903.3 : 116 * Math.pow(y, 1 / 3) - 16;
+    };
+    // #117a44 vs #992140 — was ΔL* 0.2 (#c43250), indistinguishable
+    // without hue; must stay ≥ 10 L* points apart.
+    expect(Math.abs(lStar("#117a44") - lStar("#992140"))).toBeGreaterThanOrEqual(10);
   });
 });
 

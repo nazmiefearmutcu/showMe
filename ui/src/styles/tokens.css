@@ -21,6 +21,22 @@
  *   - --grid-color / --scanline / --crosshair (chart aesthetics)
  *   - per-preset font stacks (matrix → Share Tech Mono)
  *   - matrix scanline overlay rule (body::after)
+ *
+ * v4 "Desk Instrument" pass (Lane C — tokens & themes, 2026-09-08):
+ *   - SYSTEM TOKENS: --dur-fast (90ms) / --dur-base (140ms) /
+ *     --ease-out cubic-bezier(0.2,0,0,1); --focus-ring double ring
+ *     (bg gap + accent) resolving per preset via var(--bg)/var(--accent).
+ *   - :focus-visible now draws the ring via box-shadow (was outline);
+ *     `.focus-ring:focus-visible` utility for box-shadow-owning components.
+ *   - Radius discipline: --radius-lg 10px→8px; ladder = 2/4/6/8 + pill.
+ *   - WCAG AA lifts on the dim text slots of iced/amber/neon/midnight
+ *     (per-preset ratio tables in comments below).
+ *   - Midnight text-ladder inversion fixed (--text-secondary was dimmer
+ *     than --text-mute).
+ *   - Deuteranopia: positive/negative now separate by LIGHTNESS in all
+ *     six presets (papyrus ΔL* was 0.2 — indistinguishable without hue).
+ *   - motion.css owns the reduced-motion wildcard + bare-element
+ *     transition defaults; tokens.css owns the timing/easing tokens.
  */
 
 :root,
@@ -46,26 +62,33 @@
   --line: rgba(255, 200, 150, 0.10);
   --line-strong: rgba(255, 200, 150, 0.18);
 
-  /* Text ladder (canvas-pinned). --text-faint lifted from #5b5447 (2.65:1)
-     to #9d917a (≈6.4:1 on #0b0907) for WCAG 2.1 AA on body-text. The mid
-     mute slot stays #8e8472 (5.39:1) so the descending ladder ordering
-     is preserved while the lowest slot still clears AA. */
+  /* Text ladder (canvas-pinned). Ratios vs the four surfaces
+     (bg #0b0907 / s1 #1b1813 / s2 #221e18 / s3 #2c271e):
+     display #f6efe4 17.4→13.0 | text #ddd3c0 13.4→10.0
+     secondary #a89c85 7.3→5.5 (Lane C lift: was #8e8472, 5.4→4.0 —
+       failed AA on surface-3 AND sat DIMMER than --text-faint, inverting
+       the ladder; both fixed)
+     mute #9d917a 6.4→4.8 (AA lift from #5b5447 2.65:1, kept) */
   --text-display-hex: #f6efe4;
   --text-hex: #ddd3c0;
-  --text-mute-hex: #8e8472;
+  --text-mute-hex: #a89c85;
   --text-faint: #9d917a;
 
-  /* Accent family (canvas-pinned) */
+  /* Accent family (canvas-pinned). Glow softened 0.45→0.35 (Lane C:
+     accent-glow must stay a subtle halo, not a neon bloom). */
   --accent-2: #e88c5e;
   --accent-soft-hex: rgba(201, 100, 66, 0.16);
-  --accent-glow: rgba(201, 100, 66, 0.45);
+  --accent-glow: rgba(201, 100, 66, 0.35);
   --accent-on-hex: #0b0907;
 
-  /* Semantic (canvas-pinned) */
-  --positive-hex: #5db978;
-  --positive-soft-hex: rgba(93, 185, 120, 0.14);
-  --negative-hex: #e25c5c;
-  --negative-soft-hex: rgba(226, 92, 92, 0.14);
+  /* Semantic (canvas-pinned). Deuteranopia pair separation by LIGHTNESS
+     (Lane C): positive #5db978→#68c585 (L* 68.3→72.6), negative
+     #e25c5c→#e96a6a (L* 56.7→60.5, also fixes 4.18:1 on surface-3).
+     ΔL* = 12.1 (was 11.6) so up/down stay distinguishable without hue. */
+  --positive-hex: #68c585;
+  --positive-soft-hex: rgba(104, 197, 133, 0.14);
+  --negative-hex: #e96a6a;
+  --negative-soft-hex: rgba(233, 106, 106, 0.14);
   --warn-hex: #e8a04a;
   --warn-soft-hex: rgba(232, 160, 74, 0.14);
 
@@ -112,6 +135,11 @@
   --warn-hex: #d6ff00;
   --warn-soft-hex: rgba(214, 255, 0, 0.14);
 
+  /* Scanline AA check (Lane C): the overlay paints rgba(0,255,65,0.05)
+     stripes at 0.6 opacity via screen blend ≈ +3% green per striped row.
+     Worst case is the dimmest slot on the lightest surface:
+     --text-faint #3aa856 on surface-3 #0a1d10 is 5.78:1, dropping only to
+     ≈5.3:1 on scanline rows — still above the 4.5 AA floor. */
   --grid-color: rgba(0, 255, 65, 0.07);
   --scanline: rgba(0, 255, 65, 0.05);
   --crosshair: rgba(0, 255, 65, 0.5);
@@ -129,18 +157,23 @@
   --surface-2-hex: #112b46;
   --surface-3-hex: #163457;
 
-  --line-thin: rgba(180, 225, 255, 0.05);
+  --line-thin: rgba(180, 225, 255, 0.07);
   --line: rgba(180, 225, 255, 0.12);
   --line-strong: rgba(180, 225, 255, 0.22);
 
+  /* Text ladder ratios vs surfaces (bg #04101c / s1 #0c2238 / s2 #112b46 /
+     s3 #163457): display 17.5→11.5 | text 13.9→9.1
+     secondary #86aacb 7.6→5.2 (Lane C lift from #7a9fc0 6.9→4.5)
+     mute #7d9fc0 6.5→4.6 (Lane C lift from #4d6e8c 3.6→2.4 — failed AA
+     on every surface) */
   --text-display-hex: #eaf6ff;
   --text-hex: #c9deef;
-  --text-mute-hex: #7a9fc0;
-  --text-faint: #4d6e8c;
+  --text-mute-hex: #86aacb;
+  --text-faint: #7d9fc0;
 
   --accent-2: #a8e0f6;
   --accent-soft-hex: rgba(91, 192, 235, 0.16);
-  --accent-glow: rgba(91, 192, 235, 0.5);
+  --accent-glow: rgba(91, 192, 235, 0.35);
   --accent-on-hex: #04101c;
 
   --positive-hex: #3edca0;
@@ -167,14 +200,18 @@
   --line: rgba(255, 200, 120, 0.13);
   --line-strong: rgba(255, 200, 120, 0.25);
 
+  /* Text ladder ratios vs surfaces (bg #0a0703 / s1 #1c1208 / s2 #25190d /
+     s3 #311f0f): display 18.2→14.2 | text 14.5→11.3
+     secondary #b29362 6.9→5.4 | mute #a7895e 5.6→4.8 (Lane C lift from
+     #74603f 3.3→2.6 — failed AA on every surface) */
   --text-display-hex: #fff2dc;
   --text-hex: #f0d8a9;
   --text-mute-hex: #b29362;
-  --text-faint: #74603f;
+  --text-faint: #a7895e;
 
   --accent-2: #ffd07a;
   --accent-soft-hex: rgba(255, 181, 71, 0.16);
-  --accent-glow: rgba(255, 181, 71, 0.5);
+  --accent-glow: rgba(255, 181, 71, 0.35);
   --accent-on-hex: #0a0703;
 
   --positive-hex: #58d97f;
@@ -203,24 +240,34 @@
   --surface-2-hex: #f2ead2;
   --surface-3-hex: #e8dec0;
 
-  --line-thin: rgba(80, 60, 30, 0.09);
+  --line-thin: rgba(80, 60, 30, 0.12);
   --line: rgba(80, 60, 30, 0.16);
   --line-strong: rgba(80, 60, 30, 0.30);
 
+  /* Light preset: "dimmer" = lighter. Ratios vs surfaces
+     (bg #ece6d6 / s1 #faf5e3 / s2 #f0ebda / s3 #e6e1d1):
+     display/text #1a1612* 14.4→13.8 (override block) | secondary 7.7→7.4
+     mute #645d52 5.2→5.0 | faint #6b634e 4.8→4.6 (Lane C lift from
+     #998b6e 2.7→2.6 — failed AA; now sits just below mute so the
+     dimming ladder still descends on cream) */
   --text-display-hex: #1c1610;
   --text-hex: #2e261c;
   --text-mute-hex: #6a5e47;
-  --text-faint: #998b6e;
+  --text-faint: #6b634e;
 
   --accent-2: #b1813a;
   --accent-soft-hex: rgba(122, 78, 26, 0.14);
   --accent-glow: rgba(122, 78, 26, 0.20);
   --accent-on-hex: #faf4e1;
 
+  /* Deuteranopia: negative darkened (Lane C) so the pair separates by
+     LIGHTNESS: positive #117a44 L*=44.9 vs negative #992140 L*=34.5
+     (was #c43250 L*=45.1 — ΔL* 0.2, indistinguishable without hue).
+     Darker rose also RAISES contrast: 4.3→6.4 on cream bg. */
   --positive-hex: #117a44;
   --positive-soft-hex: rgba(17, 122, 68, 0.16);
-  --negative-hex: #c43250;
-  --negative-soft-hex: rgba(196, 50, 80, 0.16);
+  --negative-hex: #992140;
+  --negative-soft-hex: rgba(153, 33, 64, 0.16);
   --warn-hex: #8a5a06;
   --warn-soft-hex: rgba(138, 90, 6, 0.16);
 
@@ -242,10 +289,15 @@
   --line: rgba(0, 229, 255, 0.16);
   --line-strong: rgba(255, 43, 214, 0.28);
 
+  /* Text ladder ratios vs surfaces (bg #05000b / s1 #160426 / s2 #1d093a /
+     s3 #270d52): display 19.2→15.3 | text 16.1→12.9
+     secondary #a496d8 7.9→6.3 (Lane C lift from #8b77bf 5.4→4.3)
+     mute #9080c8 6.0→4.8 (Lane C lift from #6f5b9c 3.6→2.9 — failed AA
+     on every surface) */
   --text-display-hex: #fff2ff;
   --text-hex: #f7d9ff;
-  --text-mute-hex: #91dfff;
-  --text-faint: #6f5b9c;
+  --text-mute-hex: #a496d8;
+  --text-faint: #9080c8;
 
   --accent-2: #00e5ff;
   --accent-soft-hex: rgba(255, 43, 214, 0.16);
@@ -395,11 +447,12 @@
   --shadow-elev-3: 0 8px 24px rgba(0, 0, 0, 0.45);
   --hover-lift: translateY(-1px);
 
-  /* Radii */
+  /* Radii (Lane C radius discipline: sm=4 md=6 lg=8, nothing above lg
+     except the pill; --radius-lg was 10px). */
   --radius-xs: 2px;
   --radius-sm: 4px;
   --radius-md: 6px;
-  --radius-lg: 10px;
+  --radius-lg: 8px;
   --radius-pill: 999px;
 
   /* z-index ladder (replaces ad-hoc 50/1000/1100/8500/9500) */
@@ -413,10 +466,27 @@
   --z-confirm: 9500;
   --z-splash: 9999;
 
-  /* Motion */
-  --motion-fast: 80ms cubic-bezier(0.2, 0.8, 0.2, 1);
-  --motion-base: 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
-  --motion-flash: 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  /* Motion system (Lane C, canonical owner). 90ms micro (hover/press),
+     140ms panel/expand, state changes only — see DESIGN-BRIEF.md law 5.
+     motion.css holds only the reduced-motion guard + bare-element
+     transition defaults. */
+  --dur-fast: 90ms;
+  --dur-base: 140ms;
+  --ease-out: cubic-bezier(0.2, 0, 0, 1);
+
+  /* Legacy motion aliases — retuned onto the system tokens (was
+     80ms/180ms on cubic-bezier(0.2,0.8,0.2,1)). */
+  --motion-fast: var(--dur-fast) var(--ease-out);
+  --motion-base: var(--dur-base) var(--ease-out);
+  --motion-flash: 220ms var(--ease-out);
+
+  /* Focus ring (Lane C). Double ring: a --bg-colored gap (2px) so the
+     accent ring stays readable on every surface, then 2px accent.
+     Resolves per preset automatically via --bg/--accent.
+     Computed accent-vs-worst-surface: midnight 3.8, matrix 12.9,
+     iced 6.1, amber 9.0, papyrus 4.5, neon 5.2 — all ≥ 3:1 (WCAG
+     non-text UI), and the bg gap adds a lightness boundary on top. */
+  --focus-ring: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent);
 }
 
 /* ============================================================
@@ -454,7 +524,7 @@
   --text-display: #fff2ff;
   --text-primary: #f7d9ff;
   --text-secondary: #91dfff;
-  --text-mute: #8b77bf;
+  --text-mute: #9080c8;          /* Lane C AA lift from #8b77bf (4.3→4.8 on surface-3) */
   --border-subtle: rgba(255, 43, 214, 0.10);
   --border-strong: rgba(0, 229, 255, 0.24);
   --border-row: rgba(0, 229, 255, 0.08);
@@ -488,10 +558,13 @@
   --text-primary: #1a1612;
   --text-secondary: #4a4439;
   --text-mute: #645d52;          /* lifted from #7a7468 → ≥4.5 on cream surface */
-  --border-subtle: rgba(0, 0, 0, 0.06);
-  --border-strong: rgba(0, 0, 0, 0.14);
-  --border-row: rgba(0, 0, 0, 0.045);
-  --border-card: rgba(0, 0, 0, 0.06);
+  /* Hairlines darkened (Lane C): rgba(0,0,0,0.045/0.06) blends to a
+     ~1.10:1 whisper on cream — below the visible-but-quiet bar. Row
+     0.045→0.07, subtle/card 0.06→0.08, strong 0.14→0.16. */
+  --border-subtle: rgba(0, 0, 0, 0.08);
+  --border-strong: rgba(0, 0, 0, 0.16);
+  --border-row: rgba(0, 0, 0, 0.07);
+  --border-card: rgba(0, 0, 0, 0.08);
   --shadow-elev: 0 8px 24px rgba(0, 0, 0, 0.08);
   --shadow-elev-1: 0 1px 2px rgba(0, 0, 0, 0.06);
   --shadow-elev-2: 0 4px 12px rgba(0, 0, 0, 0.10);
@@ -509,11 +582,13 @@
   --scrim-modal: rgba(60, 50, 40, 0.40);
   --sidebar-bg: color-mix(in srgb, var(--surface) 92%, transparent);
   --sidebar-popup-bg: color-mix(in srgb, var(--surface) 98%, transparent);
-  /* Semantic colors darkened so P&L pills/text pass ≥3:1 on cream */
+  /* Semantic colors darkened so P&L pills/text pass ≥3:1 on cream.
+     Negative #c43250→#992140 (Lane C deuteranopia fix: ΔL* vs positive
+     0.2→10.4; contrast on cream bg 4.3→6.4). */
   --positive: #117a44;
   --positive-soft: rgba(17, 122, 68, 0.16);
-  --negative: #c43250;
-  --negative-soft: rgba(196, 50, 80, 0.16);
+  --negative: #992140;
+  --negative-soft: rgba(153, 33, 64, 0.16);
   --warn: #8a5a06;
   --warn-soft: rgba(138, 90, 6, 0.16);
   --neutral: #5a5e66;
@@ -523,11 +598,11 @@
   --heat-pos-3: rgba(17, 122, 68, 0.38);
   --heat-pos-4: rgba(17, 122, 68, 0.50);
   --heat-pos-5: rgba(17, 122, 68, 0.62);
-  --heat-neg-1: rgba(196, 50, 80, 0.16);
-  --heat-neg-2: rgba(196, 50, 80, 0.26);
-  --heat-neg-3: rgba(196, 50, 80, 0.38);
-  --heat-neg-4: rgba(196, 50, 80, 0.50);
-  --heat-neg-5: rgba(196, 50, 80, 0.62);
+  --heat-neg-1: rgba(153, 33, 64, 0.16);
+  --heat-neg-2: rgba(153, 33, 64, 0.26);
+  --heat-neg-3: rgba(153, 33, 64, 0.38);
+  --heat-neg-4: rgba(153, 33, 64, 0.50);
+  --heat-neg-5: rgba(153, 33, 64, 0.62);
 }
 
 /* Density */
@@ -642,14 +717,25 @@ textarea,
   background-color: var(--text-mute);
 }
 
-/* Kill default focus ring; we ship a tighter one in components. */
+/* Kill default focus ring; we ship the instrument ring (Lane C): a
+   --bg-colored gap + 2px accent halo via --focus-ring, readable on every
+   surface. box-shadow follows each element's own radius (the old rule
+   force-mutated border-radius — dropped). */
 :focus {
   outline: none;
 }
 :focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-  border-radius: var(--radius-sm);
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+/* Utility for elements whose own box-shadow (set at higher specificity or
+   in a later stylesheet) would swallow the global ring above. !important
+   is deliberate: a focus utility that can lose to `.card { box-shadow }`
+   is not a focus utility. Compose as `.focus-ring:focus-visible` or apply
+   the class directly for programmatic selection highlights. Note: unlike
+   outline, box-shadow clips inside `overflow: hidden` ancestors. */
+.focus-ring:focus-visible {
+  box-shadow: var(--focus-ring) !important;
 }
 
 /* Tabular numerics everywhere a price might land. */
@@ -694,6 +780,8 @@ td,
  * ============================================================ */
 @media (prefers-reduced-motion: reduce) {
   :root {
+    --dur-fast: 0ms;
+    --dur-base: 0ms;
     --motion-fast: 0ms linear;
     --motion-base: 0ms linear;
     --motion-flash: 0ms linear;

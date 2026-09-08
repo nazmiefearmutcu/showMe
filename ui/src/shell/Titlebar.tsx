@@ -242,7 +242,9 @@ export function Titlebar() {
           <strong>US Equity</strong>
           <span>Type a function - OMON - GEX - DES - MENU - / to focus</span>
         </button>
-        <div className="interactive titlebar__quick-actions" aria-label="Quick functions">
+        {/* role="group" makes the pre-existing aria-label actually exposed
+            to assistive tech (a plain div ignores aria-label). */}
+        <div className="interactive titlebar__quick-actions" role="group" aria-label="Quick functions">
           {QUICK_CODES.map((code) => (
             <button
               key={code}
@@ -257,7 +259,7 @@ export function Titlebar() {
       </TopbarSegment>
 
       <TopbarSegment caption="cockpit" withDivider>
-        <div className="interactive titlebar__btn-group">
+        <div className="interactive titlebar__btn-group" role="group" aria-label="Pane actions">
           <button
             type="button"
             className={`btn btn--ghost ${sidebarVisible ? "titlebar__home-btn--accent-sidebar" : ""}`}

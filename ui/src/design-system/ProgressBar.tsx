@@ -80,7 +80,7 @@ export function ProgressBar({
           inset: "0 auto 0 0",
           width: `${pct}%`,
           background: "var(--accent, #5b9cf0)",
-          transition: "width 200ms ease-out",
+          transition: "width var(--motion-base, 140ms ease-out)",
         }}
       />
 
@@ -106,7 +106,7 @@ export function ProgressBar({
               ...labelBaseStyle(fontSize),
               color: "var(--accent-contrast, var(--surface-1, #0b1018))",
               clipPath: `inset(0 ${100 - pct}% 0 0)`,
-              transition: "clip-path 200ms ease-out",
+              transition: "clip-path var(--motion-base, 140ms ease-out)",
             }}
           >
             {text}
@@ -124,7 +124,7 @@ function labelBaseStyle(fontSize: number): CSSProperties {
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
-    fontFamily: "JetBrains Mono, ui-monospace, monospace",
+    fontFamily: "var(--font-mono, 'JetBrains Mono', ui-monospace, monospace)",
     fontSize,
     fontWeight: 600,
     letterSpacing: "0.04em",

@@ -114,12 +114,13 @@ export function ConfirmDialog({
         data-testid="confirm-dialog-body"
         style={{
           background: "var(--surface-1)",
-          border: "1px solid var(--border-1)",
-          borderRadius: "var(--radius-md, 8px)",
+          // Flat + hairline (DESIGN-BRIEF law 2): surface + 1px line, no
+          // box-shadow — the scrim carries the depth. Law 3: radius-sm.
+          border: "1px solid var(--line, var(--border-1))",
+          borderRadius: "var(--radius-sm, 4px)",
           padding: 18,
           minWidth: 320,
           maxWidth: 480,
-          boxShadow: "var(--shadow-elev, 0 10px 30px rgba(0,0,0,0.35))",
           display: "flex", flexDirection: "column", gap: 12,
         }}
       >
