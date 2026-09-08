@@ -276,6 +276,12 @@ def test_banded_boot_backfill_survives_realistic_price(offline):
         hello = msgs[0]
         assert isinstance(hello, events.Hello)
         assert hello.capability.get("history") == "reconstructed"
+        # REGRESSION (review L-8): pin FeedHub._grid_for's actual wiring —
+        # the crypto grid uses the FIXED 0.5 sim tick and 2048 rows. A revert
+        # to the venue tickSize (or any other geometry) must fail here, not
+        # only the grid-level math test above.
+        assert hello.epoch_params.tick == 0.5
+        assert hello.epoch_params.rows == 2048
         # Anchored frame: p0 near the realistic mid, coarse frozen multiple.
         ep = hello.epoch_params
         assert ep.tick_multiple > 1
