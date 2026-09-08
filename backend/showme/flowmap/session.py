@@ -61,8 +61,11 @@ _TAPE_CAP = 500           # tape depth kept for capability honesty (not replayed
 _T_MAX = 2**63 - 1
 _NAN = float("nan")
 
-# Grid geometry (contract): linear scale, 1024 rows, 250 ms columns, f16 ring.
-GRID_ROWS = 1024
+# Grid geometry: linear scale, 2048 rows (upstream _SIM_ROWS parity — at the
+# 0.5 crypto tick this gives a ~$1024 span so the legacy central-70% window
+# is +-~$360 at BTC, matching upstream's storm behavior), 250 ms columns,
+# f16 ring.
+GRID_ROWS = 2048
 GRID_DT_NS = 250_000_000
 RING_COLUMNS = 4096
 _NOMINAL_P0 = 100.0  # re-anchored to the real mid on the first book
@@ -106,15 +109,26 @@ class ClientTx:
 
     def __init__(self, *, cap: int = _TX_QUEUE_CAP) -> None:
         self._q: deque[bytes] = deque()
+        self._protected: deque[bool] = deque()
         self._cap = max(1, cap)
 
     def __len__(self) -> int:
         return len(self._q)
 
     def offer(self, frame: bytes, *, protected: bool = False) -> None:
-        if not protected and len(self._q) >= self._cap:
-            self._q.popleft()  # drop-oldest; HistoryRequest can recover
+        if len(self._q) >= self._cap and not protected:
+            # Drop-oldest, but NEVER a protected frame: a resumed client that
+            # lost its Hello cannot recover (HistoryRequest only covers
+            # columns). Evict the oldest non-protected frame instead; if the
+            # queue is all protected (snapshot larger than the cap) let it
+            # overflow — the handshake is finite.
+            for i, is_protected in enumerate(self._protected):
+                if not is_protected:
+                    del self._q[i]
+                    del self._protected[i]
+                    break
         self._q.append(frame)
+        self._protected.append(protected)
 
     def drain(self, max_bytes: int) -> list[bytes]:
         out: list[bytes] = []
@@ -124,6 +138,7 @@ class ClientTx:
             if out and total + len(frame) > max_bytes:
                 break
             out.append(self._q.popleft())
+            self._protected.popleft()
             total += len(frame)
         return out
 
@@ -511,6 +526,12 @@ class FeedHub:
         self._wall_clock = wall_clock
         self._max_sessions = max(1, max_sessions)
         self._sessions: dict[tuple[str, str], FlowSession] = {}
+        # Serializes the limit-check -> registry-insert section of
+        # subscribe(): both are separated by network awaits (grid
+        # setup, kline backfill), so concurrent first-subscribes could
+        # otherwise oversubscribe past max_sessions or double-create a
+        # key.
+        self._create_lock = asyncio.Lock()
 
     @property
     def live_feed_count(self) -> int:
@@ -520,20 +541,19 @@ class FeedHub:
         return self._sessions.get((symbol, canonical_band(band)))
 
     async def _grid_for(self, symbol: str, band: str) -> Grid:
+        # Upstream parity: the crypto grid uses the FIXED 0.5 sim tick with a
+        # nominal $100 p0 for every band — the venue tickSize is never
+        # consulted. With the exchange cent tick the legacy band's span was
+        # ~$10 at BTC prices, so the central-70% rule re-anchored on every
+        # wiggle (321 epochs per 2000 books); at 0.5 the span is ~$512 and a
+        # re-anchor needs a real ~$150+ move. Banded grids re-anchor the
+        # frame to the real mid anyway (percentage frame + ratio trip).
         spec = BANDS[canonical_band(band)]
-        tick = 0.01
-        if self._tick_fn is not None:
-            try:
-                tick = float(await self._tick_fn(symbol))
-            except Exception:  # noqa: BLE001 — grid falls back below
-                tick = 0.01
-        if not (math.isfinite(tick) and tick > 0.0):
-            tick = 0.01
-        step = tick * 1  # nominal placeholder frame; the real mid anchors it
+        step = 0.5  # nominal placeholder frame; the real mid anchors it
         span = GRID_ROWS * step
         p0 = round((_NOMINAL_P0 - span / 2.0) / step) * step
         return Grid(GridCfg(
-            tick=tick, tick_multiple=1, dt_ns=GRID_DT_NS,
+            tick=0.5, tick_multiple=1, dt_ns=GRID_DT_NS,
             p0=p0, rows=GRID_ROWS, ring_columns=RING_COLUMNS, mode=events.MODE_L2,
             band_up=spec[0] if spec else None,
             band_down=spec[1] if spec else None,
@@ -551,36 +571,44 @@ class FeedHub:
             raise ValueError("empty symbol")
         band = canonical_band(sub.band)
         key = (symbol, band)
-        session = self._sessions.get(key)
-        if session is None:
-            if len(self._sessions) >= self._max_sessions:
-                raise SessionLimitError(
-                    f"feed limit reached ({self._max_sessions}); cannot open {key!r}"
+        # The limit check, registry insert and session boot all happen under
+        # one lock: they are separated by network awaits (grid setup, kline
+        # backfill), so concurrent first-subscribes could otherwise oversub-
+        # scribe past max_sessions or double-create the same key.
+        async with self._create_lock:
+            session = self._sessions.get(key)
+            if session is None:
+                if len(self._sessions) >= self._max_sessions:
+                    raise SessionLimitError(
+                        f"feed limit reached ({self._max_sessions}); cannot open {key!r}"
+                    )
+                feed = self._feed_factory(symbol)
+                grid = await self._grid_for(symbol, band)
+                session = FlowSession(
+                    f"flw:{symbol}:{band}:{uuid.uuid4().hex[:12]}",
+                    symbol=symbol, band=band, feed=feed, grid=grid,
+                    clock=self._clock, wall_clock=self._wall_clock,
+                    on_teardown=self._make_remover(key),
                 )
-            feed = self._feed_factory(symbol)
-            grid = await self._grid_for(symbol, band)
-            session = FlowSession(
-                f"flw:{symbol}:{band}:{uuid.uuid4().hex[:12]}",
-                symbol=symbol, band=band, feed=feed, grid=grid,
-                clock=self._clock, wall_clock=self._wall_clock,
-                on_teardown=self._make_remover(key),
-            )
-            session.set_backfill(self._backfill_fn, self._backfill_max_cols)
-            self._sessions[key] = session
-        try:
-            await session.start()
-            frames = session.attach(client)
-        except Exception:
-            # A session that failed to start (or was torn down mid-boot) must
-            # not stay registered as a live feed.
-            if self._sessions.get(key) is session and session.client_count == 0:
-                self._sessions.pop(key, None)
-                session.stop()
-            raise
-        for frame in frames:
-            # Snapshot frames are protected: cap eviction must never drop Hello.
-            client.offer(frame, protected=True)
-        return session
+                session.set_backfill(self._backfill_fn, self._backfill_max_cols)
+                # Reserve the registry slot BEFORE any further await so a
+                # concurrent subscribe sees the session (and the limit).
+                self._sessions[key] = session
+            try:
+                await session.start()
+                frames = session.attach(client)
+            except Exception:
+                # A session that failed to start (or was torn down mid-boot)
+                # must not stay registered as a live feed.
+                if self._sessions.get(key) is session and session.client_count == 0:
+                    self._sessions.pop(key, None)
+                    session.stop()
+                raise
+            for frame in frames:
+                # Snapshot frames are protected: cap eviction must never drop
+                # Hello.
+                client.offer(frame, protected=True)
+            return session
 
     async def unsubscribe(self, session: FlowSession, client: ClientTx) -> None:
         session.detach(client)

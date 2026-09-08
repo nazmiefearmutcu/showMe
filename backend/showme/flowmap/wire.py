@@ -104,7 +104,10 @@ def _frame(msg_type: int, payload: bytes, flags: int = 0) -> bytes:
 def _json_bytes(payload: dict) -> bytes:
     """Compact UTF-8 JSON, byte-identical to upstream's msgspec.json output:
     no spaces, insertion-ordered keys, shortest-roundtrip float repr."""
-    return json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    # allow_nan=False: msgspec fail-fast parity — a NaN reaching a cold
+    # payload must raise here, never emit invalid JSON on the wire.
+    return json.dumps(payload, separators=(",", ":"), ensure_ascii=False,
+                      allow_nan=False).encode("utf-8")
 
 
 def _json_decode(payload: bytes) -> dict:

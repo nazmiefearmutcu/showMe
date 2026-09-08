@@ -57,7 +57,7 @@ def test_banded_wiggles_never_storm_epochs():
     g.anchor_banded(79_800.0)
     fired = 0
     for i in range(2000):
-        mid = 79_800.0 + (i % 37) * 7.5  # +-~$140 wiggle, far inside +-25%
+        mid = 79_800.0 + ((i % 37) - 18) * 7.5  # +- ~$135 symmetric wiggle
         if g.maybe_reanchor(mid) is not None:
             fired += 1
     assert fired == 0
@@ -97,6 +97,67 @@ def test_first_banded_anchor_mid_live_keeps_feed_alive():
     assert g.maybe_reanchor(100.0) is not None  # first live anchor
     g.on_book(t0 + 250_000_000, 99.0, 1.0, 101.0, 1.0)  # used to raise
     g.on_book(t0 + 500_000_000, 99.0, 1.0, 101.0, 1.0)
+
+
+def test_native_legacy_band_no_epoch_storm_at_real_price():
+    """REGRESSION (review H2): the legacy fixed-span grid at a real BTC price
+    with the exchange cent tick re-anchored on every wiggle (321 per 2000
+    books). Upstream parity: crypto grids use the FIXED 0.5 tick — a ~$512
+    span needs a real ~$150+ move to trip the central-70% rule."""
+    g = Grid(GridCfg(
+        tick=0.5, tick_multiple=1, dt_ns=250_000_000, p0=79.52,
+        rows=2048, ring_columns=4096,
+    ))
+    t = 1_800_000_000_000_000_000
+    fired = 0
+    for i in range(2000):
+        mid = 79_800.0 + ((i % 37) - 18) * 7.5  # +- ~$135 symmetric wiggle
+        g.on_book(t + i * 250_000_000, mid - 1.0, 1.0, mid + 1.0, 1.0)
+        if g.maybe_reanchor(mid) is not None:
+            fired += 1
+    # Exactly one legit re-anchor: the nominal-p0 -> real-mid jump on the
+    # first book (upstream does the same). Pre-fix this was dozens.
+    assert fired == 1
+
+
+def test_banded_first_anchor_snapped_frame_covers_hi():
+    """REGRESSION (review H3): rounding p0 onto the step grid could uncover
+    the top of the requested band — the snapped frame must provably cover
+    mid*(1+band_up)."""
+    g = Grid(GridCfg(
+        tick=0.01, tick_multiple=1, dt_ns=250_000_000, p0=79.52,
+        rows=1024, ring_columns=4096, band_up=10.0, band_down=1.0,
+    ))
+    params = g.anchor_banded(79_800.0)
+    assert params is not None
+    span = params.rows * params.tick * params.tick_multiple
+    assert params.p0 + span >= 79_800.0 * (1.0 + 10.0)  # covers hi exactly
+
+
+def test_client_tx_never_evicts_protected_frames():
+    """REGRESSION (review H1): under backpressure the drop-oldest scan could
+    evict the protected Hello/snapshot frames at the queue head."""
+    from showme.flowmap.session import ClientTx
+    tx = ClientTx(cap=4)
+    tx.offer(b"hello", protected=True)
+    tx.offer(b"ep", protected=True)
+    for i in range(10):
+        tx.offer(b"junk", protected=False)
+    frames = tx.drain(1 << 20)
+    assert b"hello" in frames and b"ep" in frames
+
+
+def test_wire_cold_encode_rejects_nan():
+    """REGRESSION (review M3): a NaN reaching a cold payload must raise
+    (msgspec fail-fast parity) instead of emitting invalid JSON."""
+    import pytest
+    from showme.flowmap import events, wire
+    bad = events.EpochParams(
+        epoch=1, tick=float("nan"), tick_multiple=1,
+        dt_ns=250_000_000, p0=100.0, rows=1024,
+    )
+    with pytest.raises(ValueError):
+        wire.encode(events.EpochStart(epoch=1, epoch_params=bad))
 
 
 def test_anchor_banded_ignores_legacy_and_bad_mids():
@@ -219,7 +280,10 @@ def test_banded_boot_backfill_survives_realistic_price(offline):
         ep = hello.epoch_params
         assert ep.tick_multiple > 1
         span = ep.rows * ep.tick * ep.tick_multiple
-        assert abs((ep.p0 + span / 2.0) - _MID) <= ep.tick * ep.tick_multiple
+        # Coverage guarantee (snapped re-check): the frame covers the whole
+        # requested +-50% band around the reference mid.
+        assert ep.p0 + span >= _MID * 1.5 - ep.tick * ep.tick_multiple
+        assert ep.p0 <= _MID
 
         depths = [m for m in msgs if isinstance(m, events.DepthColumn)]
         bars = [m for m in msgs if isinstance(m, events.BarColumn)]

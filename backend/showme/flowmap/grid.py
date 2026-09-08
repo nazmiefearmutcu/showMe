@@ -555,12 +555,21 @@ class Grid:
             # First anchor: derive the multiple from the percentage band and
             # FREEZE it — recomputing it later would change step mid-session
             # and redraw every resident column at wrong prices.
-            span = mid * (cfg.band_up + cfg.band_down) * BAND_MARGIN
+            lo = mid * (1.0 - cfg.band_down)
+            hi = mid * (1.0 + cfg.band_up)
+            span = (hi - lo) * BAND_MARGIN
             if not math.isfinite(span) or span <= 0.0:
                 return None
             tm = max(1, math.ceil(span / (cfg.rows * cfg.tick)))
             step = cfg.tick * tm
             new_p0 = round((mid - span / 2.0) / step) * step
+            # Snapped re-check (upstream band_frame): rounding p0 onto the
+            # step grid can uncover the top of the requested band — widen
+            # until the frame provably covers it.
+            while new_p0 + cfg.rows * step < hi and tm < (1 << 30):
+                tm += 1
+                step = cfg.tick * tm
+                new_p0 = round((mid - span / 2.0) / step) * step
             self._tick_multiple = tm
             self._step = step
             self._anchor_mid = mid
