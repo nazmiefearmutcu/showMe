@@ -4,6 +4,68 @@ import { StatusSection, StatusDivider } from "@/design-system";
 import { PRESET_LABELS, readState, THEME_CHANGE_EVENT, type ThemeState } from "@/lib/theme";
 import { formatTime, timezoneOffsetLabel, useTimezone } from "@/lib/timezone";
 import { describeNyseMarketState, getNyseMarketState } from "@/lib/market-state";
+import { useTapeHealth, type TapeHealth } from "@/lib/tape-health";
+
+/**
+ * TapeHealthSection — the one honest "is my tape alive" pill (campaign
+ * 2026-09-08, Lane B / U3). Aggregates the EXISTING quote-layer transport
+ * registry (lib/tape-health.ts, fed by the multiplexer in market-data.ts)
+ * into `LIVE · N sym · <age>` / RECONNECTING / DOWN. No polling loops and no
+ * sockets here: state changes arrive via useSyncExternalStore, and the
+ * staleness figure rides the Statusbar's existing 1 Hz clock re-render.
+ * Hidden entirely when the desk has zero quote subscriptions — no tape, no
+ * claim.
+ */
+const TAPE_LABEL: Record<TapeHealth["state"], string> = {
+  idle: "IDLE",
+  live: "LIVE",
+  reconnecting: "RECONNECTING",
+  down: "DOWN",
+};
+
+function formatTickAge(ms: number): string {
+  if (ms < 1_000) return "<1s";
+  const s = Math.floor(ms / 1_000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  const rest = m % 60;
+  return rest > 0 ? `${h}h ${rest}m` : `${h}h`;
+}
+
+function TapeHealthSection() {
+  const health = useTapeHealth();
+  if (health.totalSymbols === 0) return null;
+  // Visible value: when the tape is down/reconnecting the desk still sees
+  // how many symbols it WANTS ticks for; the tooltip must not call them
+  // "streaming" though — only liveSymbols are actually streaming.
+  const subscribed = health.totalSymbols;
+  const streaming = health.state === "live" ? health.liveSymbols : 0;
+  const ageMs =
+    health.lastTickAt != null ? Math.max(0, Date.now() - health.lastTickAt) : null;
+  const ageLabel = ageMs == null ? "—" : formatTickAge(ageMs);
+  const tone =
+    health.state === "live"
+      ? "positive"
+      : health.state === "reconnecting"
+        ? "warn"
+        : "negative";
+  return (
+    <>
+      <StatusDivider />
+      <span data-testid="tape-health" data-tape-state={health.state}>
+        <StatusSection
+          label="tape"
+          value={`${TAPE_LABEL[health.state]} · ${subscribed} sym · ${ageLabel}`}
+          tone={tone}
+          withDot
+          title={`Market data tape: ${TAPE_LABEL[health.state]} — ${streaming} streaming of ${subscribed} subscribed symbol${subscribed === 1 ? "" : "s"}, freshest tick ${ageLabel} ago`}
+        />
+      </span>
+    </>
+  );
+}
 
 export function Statusbar() {
   const status = useAppStore((s) => s.sidecarStatus);
@@ -66,6 +128,7 @@ export function Statusbar() {
           />
         </span>
         <StatusDivider />
+        <TapeHealthSection />
         <StatusSection label="fn" value={total} />
       </span>
       <span

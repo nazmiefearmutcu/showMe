@@ -43,6 +43,15 @@ import {
   type Tick,
 } from "./stream";
 import { runFunction } from "./functions";
+// Tape-health instrumentation (campaign 2026-09-08, additive only): every
+// multiplexed subscription reports its transport state / ticks into the
+// module-level registry consumed by the Statusbar tape pill. Zero changes to
+// subscribe/reconnect/socket behavior — pure observers.
+import {
+  __tapeRecordTick,
+  __tapeRecordTransport,
+  __tapeRelease,
+} from "./tape-health";
 
 // ---------- public types ----------
 
@@ -410,6 +419,7 @@ export function __resetMultiplexForTests(): void {
     for (const entry of bucket.values()) {
       entry.upstream.close();
       entry.listeners.clear();
+      __tapeRelease(entry.symbol);
     }
     bucket.clear();
   }
@@ -467,6 +477,10 @@ export function subscribeQuoteMultiplexed(
       lastTick: null,
     };
     bucket.set(target, newEntry);
+    // Tape health: a subscription exists from the moment the upstream opens,
+    // before the first status callback arrives (test doubles and slow
+    // sockets included). "connecting" is the honest initial transport.
+    __tapeRecordTransport(target, "connecting");
     // Open the shared upstream subscription. This is the only place where
     // `subscribeQuoteStream` (and thereby the underlying WebSocket) is
     // exercised — all other callers attach to the existing entry.
@@ -475,6 +489,7 @@ export function subscribeQuoteMultiplexed(
       subscriber,
       onTick: (tick) => {
         newEntry.lastTick = tick;
+        __tapeRecordTick(target, tick.ts);
         for (const listener of newEntry.listeners) {
           try {
             listener.onTick(tick);
@@ -486,6 +501,7 @@ export function subscribeQuoteMultiplexed(
       },
       onTransportState: (state, info) => {
         newEntry.lastTransportState = state;
+        __tapeRecordTransport(target, state);
         for (const listener of newEntry.listeners) {
           try {
             listener.onTransportState(state, info);
@@ -535,6 +551,7 @@ export function subscribeQuoteMultiplexed(
       if (live.listeners.size === 0) {
         live.upstream.close();
         bucket.delete(target);
+        __tapeRelease(target);
       }
     },
   };

@@ -3,6 +3,7 @@
 @import "./shell.css";
 @import "./components.css";
 @import "./workspace.css";
+@import "./palette-v2.css";
 
 @tailwind base;
 @tailwind components;

@@ -19,6 +19,8 @@ import {
   usePinnedItems,
   writePinnedDragData,
 } from "@/lib/pins";
+import { useLiveQuote } from "@/lib/market-data";
+import { formatPercent, formatPrice } from "@/lib/format";
 
 interface PaneChromeProps {
   leafId: string;
@@ -154,7 +156,10 @@ export function PaneChrome({ leafId, code, symbol, linkGroup }: PaneChromeProps)
       >
         {code}
       </button>
-      <span className="pane-chrome__symbol">{symbol ?? "—"}</span>
+      <span className="pane-chrome__symbol">
+        {symbol ?? "—"}
+        {symbol && <LiveQuoteChip symbol={symbol} />}
+      </span>
       {isFocused && <span className="pane-chrome__focus">focus</span>}
 
       <div
@@ -285,6 +290,49 @@ export function PaneChrome({ leafId, code, symbol, linkGroup }: PaneChromeProps)
         </div>
       )}
     </header>
+  );
+}
+
+/**
+ * LiveQuoteChip — live price + directional delta inside the pane header
+ * (campaign 2026-09-08, Lane B / U2). Subscribes via the existing
+ * `useLiveQuote` hook so the header breathes with the tape instead of
+ * showing a static symbol string.
+ *
+ * Honesty contract: with no price (WS down, snapshot missing) the chip
+ * renders NOTHING — the plain bound symbol above stays the truth. No fake
+ * price, no optimistic fill-in. A price that can no longer be trusted
+ * (freshness past the stale window, transport offline/error) stays visible
+ * but dims under `--stale`, and the tooltip names the transport state
+ * instead of claiming liveness. Isolated as a child component so only this
+ * chip re-renders per tick, never the whole PaneChrome (UA-CRITICAL-06).
+ */
+function LiveQuoteChip({ symbol }: { symbol: string }) {
+  const quote = useLiveQuote(symbol);
+  if (quote.price == null) return null;
+  const notLive =
+    quote.stale || quote.transportState === "offline" || quote.transportState === "error";
+  const changePct = quote.changePct;
+  const up = changePct != null && changePct >= 0;
+  return (
+    <span
+      className={`pane-chrome__quote${notLive ? " pane-chrome__quote--stale" : ""}`}
+      data-testid="pane-chrome-quote"
+      data-transport={quote.transportState}
+      data-stale={notLive || undefined}
+      title={`Quote · transport ${quote.transportState}${notLive ? " · price may be stale" : ""}`}
+    >
+      <span className="pane-chrome__quote-price">{formatPrice(quote.price)}</span>
+      {changePct != null && (
+        <span
+          className={`pane-chrome__quote-delta pane-chrome__quote-delta--${up ? "up" : "down"}`}
+        >
+          <span aria-hidden>{up ? "▲" : "▼"}</span>
+          <span className="u-sr-only">{up ? "up" : "down"}</span>
+          {formatPercent(changePct, { signed: true })}
+        </span>
+      )}
+    </span>
   );
 }
 

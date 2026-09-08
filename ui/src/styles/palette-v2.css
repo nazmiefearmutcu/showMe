@@ -1,0 +1,83 @@
+/**
+ * palette-v2.css — campaign 2026-09-08, Lane B.
+ *
+ * Styles for the command-palette v2 entry kinds (symbol / action rows and
+ * their recents sub-sections) and the PaneChrome live quote chip. Tokens
+ * only — no raw px, no glow, no new colors. No motion is shipped here, so
+ * prefers-reduced-motion needs no override.
+ */
+
+/* ── Palette v2 ─────────────────────────────────────────────────────────── */
+
+/* Sub-section heads inside the results list (Recent symbols / Recent
+   actions blocks — visually quieter than the top-level Recents head). */
+.palette__section-head--sub {
+  padding-top: var(--space-2);
+  margin-top: var(--space-2);
+  border-top: 1px solid var(--border-subtle);
+}
+
+/* Symbol rows: the ticker chip wears accent-2 so price rows read apart
+   from function-code rows at a glance (law 4: accent-2 is still an accent —
+   used as a hue, never as a glow). */
+.palette__option--symbol .palette__option-code {
+  color: var(--accent-2);
+}
+
+/* Action rows: short verb tag (THEME / LAYOUT / PANE / PREF) in quiet ink —
+   the action's searchable name is the primary content. */
+.palette__option--action .palette__option-code {
+  color: var(--text-mute);
+  letter-spacing: var(--tracking-label);
+}
+.palette__option--action .palette__option-name {
+  color: var(--text-secondary);
+}
+
+/* Footer discovery hint for the new entry kinds. */
+.palette__footer-hint {
+  color: var(--text-mute);
+  font-style: italic;
+}
+
+/* ── PaneChrome live quote chip ─────────────────────────────────────────── */
+
+/* Sits inline after the bound symbol in .pane-chrome__symbol. Price is data,
+   not chrome: display ink + tabular numerals; the delta carries the only
+   semantic color on the header row. */
+.pane-chrome__quote {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  margin-left: var(--space-3);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.pane-chrome__quote-price {
+  color: var(--text-display);
+  font-size: var(--font-size-sm);
+}
+
+.pane-chrome__quote-delta {
+  font-size: var(--font-size-xs);
+}
+
+.pane-chrome__quote-delta--up {
+  color: var(--positive);
+}
+
+.pane-chrome__quote-delta--down {
+  color: var(--negative);
+}
+
+/* Price can no longer be trusted (freshness past the stale window or the
+   transport is offline/error): the last-known price stays visible but dims
+   to mute ink so an outage-age quote is never mistaken for a fresh one. */
+.pane-chrome__quote--stale .pane-chrome__quote-price {
+  color: var(--text-mute);
+}
+
+.pane-chrome__quote--stale .pane-chrome__quote-delta {
+  opacity: 0.55;
+}
