@@ -9,8 +9,10 @@
  *
  * ROUND-2B (PERF-02): every pane (including the three "always-loaded"
  * panes Welcome / Preferences / ManifestPane) is lazy-loaded so the
- * entry chunk only ships the shell + design system. A small Suspense
- * fallback paints a token-coloured shimmer while the chunk arrives.
+ * entry chunk only ships the shell + design system. The Suspense
+ * fallback (U7, 2026-09-08) paints a pane-shaped design-system Skeleton
+ * frame (token-coloured pulse, reduced-motion safe) while the chunk
+ * arrives.
  *
  * 2026-05-24 — production-fakery removal: the legacy FunctionStub +
  * TemplateRenderer lazy imports were dropped from the production path
@@ -36,6 +38,10 @@ import {
   type PaneResolveAdapters,
 } from "@/lib/pane-completeness";
 import { fetchManifests } from "@/manifest/registry";
+// U4/U7 (Lane D, 2026-09-08): pane-focus cycling + skeleton fallback styles.
+import { usePaneFocusCycle } from "@/lib/pane-focus-cycle";
+import { Skeleton } from "@/design-system";
+import "@/styles/workspace-ux.css";
 import { PaneChrome } from "./PaneChrome";
 import { PaneErrorBoundary } from "./PaneErrorBoundary";
 
@@ -47,15 +53,38 @@ const ManifestPane = lazy(() =>
   import("@/manifest/ManifestPane").then((m) => ({ default: m.ManifestPane })),
 );
 
-function PaneFallback() {
+/**
+ * U7 (Lane D, 2026-09-08): pane-shaped skeleton fallback. With 142 lazy
+ * chunks, cold-open is the most frequent transition in the app — a bare
+ * "loading…" word broke the instrument illusion. The frame (header bar +
+ * KPI row + content rows, all design-system Skeleton blocks) sits centered
+ * inside the existing `.pane-fallback` shell (surface-1, see index.css);
+ * layout styles live in styles/workspace-ux.css. The design-system
+ * Skeleton pulse is declared under `prefers-reduced-motion: no-preference`,
+ * so reduced-motion users get static blocks.
+ */
+export function PaneFallback() {
   return (
     <div
       role="status"
       aria-live="polite"
       aria-label="Loading pane"
-      className="pane-fallback"
+      className="pane-fallback pane-fallback--skeleton"
+      data-testid="pane-fallback"
     >
-      loading…
+      <div className="pane-fallback__frame" aria-hidden>
+        <Skeleton height={14} width="38%" />
+        <div className="pane-fallback__kpis">
+          <Skeleton height={30} />
+          <Skeleton height={30} />
+          <Skeleton height={30} />
+        </div>
+        <div className="pane-fallback__rows">
+          <Skeleton height={10} />
+          <Skeleton height={10} width="82%" />
+          <Skeleton height={10} width="64%" />
+        </div>
+      </div>
     </div>
   );
 }
@@ -64,6 +93,12 @@ const HANDLE_PX = 4;
 
 export function Workspace() {
   const tree = useWorkspace((s) => s.tree);
+  // U4 (Lane D, 2026-09-08): keyboard pane-focus cycling (F6 / ⇧F6 /
+  // ⌘⇧] / ⌘⇧[). Mounted once per Workspace; composes with the ⌘K palette
+  // (bails out while it is open) and skips editable targets. See
+  // lib/pane-focus-cycle.ts for the collision analysis against the
+  // App.tsx global handler.
+  usePaneFocusCycle();
   // Populate the manifest registry once at mount so the contract-driven
   // ManifestPane fallback resolves manifests synchronously on first
   // render instead of flashing its own "Loading manifest…" placeholder

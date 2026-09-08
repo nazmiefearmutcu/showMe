@@ -1,12 +1,22 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Pill, Skeleton, Sparkline } from "@/design-system";
 import { navigate } from "@/lib/router";
+import { toast } from "@/lib/toast";
 import { useSentimentStore } from "@/lib/sentiment-store";
 import type { FunctionEntry } from "@/lib/sidecar";
 import { useAppStore } from "@/lib/store";
 import { useFunction } from "@/lib/useFunction";
 import { useVisibilityTick } from "@/lib/useVisibilityTick";
 import { useLiveQuotes, type QuoteView } from "@/lib/market-data";
+import { useWorkspace } from "@/lib/workspace";
+import { BUILTIN_PRESETS, loadBuiltinPreset } from "@/lib/builtinPresets";
+import {
+  isFirstRunDone,
+  isPristineHomeWorkspace,
+  markFirstRunDone,
+  seedStarterWatchlist,
+} from "@/lib/first-run";
+import { useTickFlash } from "@/lib/tick-flash";
 import {
   formatCompactNumber,
   formatCurrency,
@@ -60,6 +70,11 @@ interface MarketTile {
   quoteSymbol?: string;
   label: string;
   value: string;
+  /**
+   * U10 tick-flash source: the raw live price behind `value`. `null`/absent
+   * = no live quote yet (no flash — never flash a placeholder).
+   */
+  price?: number | null;
   /**
    * One-day percent change. `null` = no live quote yet — the tile renders the
    * missing sentinel ("—") instead of a fabricated "0.00%" flat day.
@@ -502,6 +517,16 @@ export function Welcome() {
       : DEFAULT_WATCHLIST;
   const watchEmpty = watchRows.length === 0 && watchlistHydrated && positions.length === 0;
 
+  // U9 first-run desk setup: offer a one-time, dismissible card while the
+  // desk is still the untouched cold-boot default AND the watchlist is
+  // empty. `isFirstRunDone` reads the `showme.firstrun.done` localStorage
+  // flag (storage-broken ⇒ treated as answered — never nag-loop).
+  const workspaceTree = useWorkspace((s) => s.tree);
+  const [firstRunAnswered, setFirstRunAnswered] = useState(() => isFirstRunDone());
+  const showFirstRunCard =
+    !firstRunAnswered && isPristineHomeWorkspace(workspaceTree) && watchEmpty;
+  const onFirstRunAnswered = useCallback(() => setFirstRunAnswered(true), []);
+
   // KPI strip: overlay live data where we have a quoteSymbol.
   const marketTiles = useMemo(
     () => buildMarketTiles(MARKET_STRIP_SEED, liveQuotes),
@@ -667,39 +692,9 @@ export function Welcome() {
           Market strip
         </h3>
         {marketTiles.map((tile) => (
-          <button
-            key={tile.symbol}
-            type="button"
-            className="terminal-market-tile"
-            data-testid={`kpi-tile-${tile.symbol}`}
-            data-demo={tile.demo ? "1" : "0"}
-            aria-label={`View ${tile.label} (${tile.symbol})${
-              tile.demo ? " — demo placeholder" : ""
-            }`}
-            onClick={() => navigate(`/symbol/${tile.symbol}/DES`)}
-          >
-            <span className="terminal-market-tile__top">
-              <strong>{tile.symbol}</strong>
-              <span title={tile.label}>{tile.label}</span>
-            </span>
-            <span className="terminal-market-tile__value terminal-grid-numeric">
-              {tile.value}
-            </span>
-            <span
-              className={`${toneClass("terminal-change", tile.change ?? 0)} terminal-grid-numeric`}
-            >
-              {tile.change == null ? formatMissing : formatPct(tile.change)}
-            </span>
-            {tile.demo && (
-              <span
-                className="terminal-market-tile__demo"
-                data-testid={`kpi-tile-${tile.symbol}-demo`}
-                title="No live quote endpoint — showing demo placeholder"
-              >
-                DEMO
-              </span>
-            )}
-          </button>
+          // U10: per-tile component keyed by symbol so the tick-flash hook
+          // state persists across re-renders without leaking between tiles.
+          <MarketTileButton key={tile.symbol} tile={tile} />
         ))}
       </section>
 
@@ -938,6 +933,12 @@ export function Welcome() {
               data-testid="watchlist-empty-state"
               style={{ padding: 16 }}
             >
+              {showFirstRunCard && (
+                <FirstRunCard
+                  onAnswered={onFirstRunAnswered}
+                  onWatchlistSeeded={setSavedWatchlist}
+                />
+              )}
               <strong>No watchlist symbols yet</strong>
               <span style={{ display: "block", marginBottom: 8, opacity: 0.7 }}>
                 Save symbols in WATCH to see live quotes on the dashboard.
@@ -1113,6 +1114,151 @@ export function Welcome() {
         </aside>
       </section>
     </main>
+  );
+}
+
+/**
+ * U10 (Lane D, 2026-09-08): one KPI tile as its own component so the
+ * tick-flash hook can observe the tile's numeric price across renders.
+ * Identical markup/testids to the previous inline JSX — the only addition
+ * is the `wx-tick-flash--up|down` class on the value cell while a flash is
+ * active (450 ms background pulse; reduced-motion users get no animation —
+ * the keyframes only exist under `prefers-reduced-motion: no-preference`).
+ */
+function MarketTileButton({ tile }: { tile: MarketTile }) {
+  const flash = useTickFlash(tile.price ?? null);
+  const flashClass = flash ? ` wx-tick-flash--${flash}` : "";
+  return (
+    <button
+      type="button"
+      className="terminal-market-tile"
+      data-testid={`kpi-tile-${tile.symbol}`}
+      data-demo={tile.demo ? "1" : "0"}
+      aria-label={`View ${tile.label} (${tile.symbol})${
+        tile.demo ? " — demo placeholder" : ""
+      }`}
+      onClick={() => navigate(`/symbol/${tile.symbol}/DES`)}
+    >
+      <span className="terminal-market-tile__top">
+        <strong>{tile.symbol}</strong>
+        <span title={tile.label}>{tile.label}</span>
+      </span>
+      <span
+        className={`terminal-market-tile__value terminal-grid-numeric${flashClass}`}
+        data-testid={`kpi-tile-${tile.symbol}-value`}
+      >
+        {tile.value}
+      </span>
+      <span
+        className={`${toneClass("terminal-change", tile.change ?? 0)} terminal-grid-numeric`}
+      >
+        {tile.change == null ? formatMissing : formatPct(tile.change)}
+      </span>
+      {tile.demo && (
+        <span
+          className="terminal-market-tile__demo"
+          data-testid={`kpi-tile-${tile.symbol}-demo`}
+          title="No live quote endpoint — showing demo placeholder"
+        >
+          DEMO
+        </span>
+      )}
+    </button>
+  );
+}
+
+/**
+ * U9 (Lane D, 2026-09-08): one-time first-run desk setup. Compact chooser
+ * over the EXISTING builtin presets (`lib/builtinPresets.ts`) plus a
+ * starter-watchlist seed through the existing serialized `addSymbol`
+ * queue (`lib/first-run.ts`). Every action — including Skip — records the
+ * answer so the card is offered exactly once. No new persistence schema;
+ * the flag is a plain `showme.*` localStorage key.
+ */
+export function FirstRunCard({
+  onAnswered,
+  onWatchlistSeeded,
+}: {
+  onAnswered: () => void;
+  onWatchlistSeeded: (rows: WatchlistRow[]) => void;
+}) {
+  const [seeding, setSeeding] = useState(false);
+  // Markets Overview first — it is the recommended one-click desk.
+  const ordered = useMemo(() => {
+    const primary = BUILTIN_PRESETS.filter((p) => p.id === "markets-overview");
+    const rest = BUILTIN_PRESETS.filter((p) => p.id !== "markets-overview");
+    return [...primary, ...rest];
+  }, []);
+
+  const acceptPreset = (id: string) => {
+    markFirstRunDone();
+    onAnswered();
+    loadBuiltinPreset(id);
+  };
+
+  const seedWatchlist = useCallback(async () => {
+    setSeeding(true);
+    try {
+      const rows = await seedStarterWatchlist();
+      markFirstRunDone();
+      onWatchlistSeeded(rows);
+      onAnswered();
+    } catch (e) {
+      // Seeding failed: surface it and leave the card up so the desk can
+      // retry — the run is NOT marked done on a failed setup action.
+      const msg = e instanceof Error ? e.message : String(e);
+      toast.error("Could not seed the starter watchlist", msg);
+    } finally {
+      setSeeding(false);
+    }
+  }, [onAnswered, onWatchlistSeeded]);
+
+  const skip = () => {
+    markFirstRunDone();
+    onAnswered();
+  };
+
+  return (
+    <div className="wx-firstrun" data-testid="first-run-card">
+      <h4 className="wx-firstrun__title">Set up your desk</h4>
+      <p className="wx-firstrun__body">
+        Load a ready-made multi-pane desk bound to AAPL, seed a starter
+        watchlist, or skip — you can rearrange everything later from the
+        ⌘ Layout menu.
+      </p>
+      <div className="wx-firstrun__actions">
+        {ordered.map((preset) => (
+          <button
+            key={preset.id}
+            type="button"
+            className="wx-firstrun__btn"
+            data-testid={`first-run-preset-${preset.id}`}
+            onClick={() => acceptPreset(preset.id)}
+          >
+            <strong>{preset.label}</strong>
+            <span>{preset.description}</span>
+          </button>
+        ))}
+        <button
+          type="button"
+          className="wx-firstrun__btn"
+          data-testid="first-run-seed"
+          disabled={seeding}
+          onClick={() => void seedWatchlist()}
+        >
+          <strong>{seeding ? "Seeding…" : "Seed starter watchlist"}</strong>
+          <span>AAPL MSFT NVDA SPY QQQ + crypto majors, live quotes</span>
+        </button>
+      </div>
+      <button
+        type="button"
+        className="wx-firstrun__skip"
+        data-testid="first-run-skip"
+        onClick={skip}
+      >
+        Skip — don't ask again
+      </button>
+    </div>
   );
 }
 
@@ -1305,6 +1451,9 @@ export function buildMarketTiles(
     return {
       ...tile,
       value: formatPrice(q.price),
+      // U10: raw price kept alongside the formatted value so the tile
+      // component can flash on real numeric change (not on re-format).
+      price: q.price,
       // Missing changePct stays null (renders "—") rather than faking a
       // flat 0.00% day on a live price.
       change: q.changePct ?? null,

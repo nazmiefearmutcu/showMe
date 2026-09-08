@@ -1,0 +1,169 @@
+/**
+ * workspace-ux.css — Lane D (workspace UX wave, 2026-09-08).
+ *
+ * Owns styling for three Lane-D features ONLY:
+ *   1. U7 — the pane-shaped Skeleton Suspense fallback (`.pane-fallback__*`).
+ *   2. U4 — keyboard pane-focus cycling emphasis (`body.wx-kbd-nav …`).
+ *   3. U9/U10 — first-run desk-setup card (`.wx-firstrun-*`) and the
+ *      Welcome market-tile tick flash (`.wx-tick-flash-*`).
+ *
+ * Rules: design tokens only (no raw px except the token-file convention of
+ * hairline borders), `prefers-reduced-motion` guarded, nothing here may
+ * restyle surfaces owned by tokens/shell/workspace/components/motion.css.
+ * Imported once from `shell/Workspace.tsx`.
+ */
+
+/* ── U7: pane-shaped skeleton fallback ──────────────────────────────────
+   The legacy fallback centered a bare "loading…" word; the frame below
+   keeps the same `.pane-fallback` shell (surface-1, centered — see
+   index.css) but fills it with a quiet pane-shaped skeleton so cold pane
+   opens read as "instant" instead of "broken". */
+
+.pane-fallback--skeleton {
+  padding: var(--space-4);
+}
+
+.pane-fallback__frame {
+  width: min(420px, 86%);
+  display: grid;
+  gap: var(--space-4);
+}
+
+.pane-fallback__kpis {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--space-3);
+}
+
+.pane-fallback__rows {
+  display: grid;
+  gap: var(--space-3);
+}
+
+/* ── U4: keyboard pane-focus emphasis ────────────────────────────────────
+   The workspace's resting focus treatment is the quiet accent edge on the
+   pane chrome (workspace.css). When the user moves focus with the
+   keyboard (F6 / ⌘⇧] / ⌘⇧[), the focused leaf additionally carries the
+   accent outline so the cycled-to pane is unmistakable. The
+   `wx-kbd-nav` body class is added on a keyboard cycle and removed on
+   the next mouse press, so mouse users never see the extra ring. */
+
+body.wx-kbd-nav .ws-leaf--focused.ws-leaf--focused {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+/* ── U10: tick flash on Welcome market tiles ────────────────────────────
+   A 450 ms one-shot background pulse keyed to the tick direction. The
+   animation (and therefore any visual change) only exists under
+   `prefers-reduced-motion: no-preference` — reduced-motion users get the
+   plain value cell with zero motion, matching the global motion clamp. */
+
+.wx-tick-flash--up,
+.wx-tick-flash--down {
+  border-radius: var(--radius-sm);
+  transition: background-color var(--motion-fast);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .wx-tick-flash--up {
+    animation: wx-tick-up 450ms ease-out;
+  }
+  .wx-tick-flash--down {
+    animation: wx-tick-down 450ms ease-out;
+  }
+}
+
+@keyframes wx-tick-up {
+  0% {
+    background-color: var(--positive-soft-hex);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+
+@keyframes wx-tick-down {
+  0% {
+    background-color: var(--negative-soft-hex);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+
+/* ── U9: first-run desk setup card ───────────────────────────────────────
+   Compact one-time chooser rendered inside the Welcome watchlist panel's
+   empty state. Honest copy, token-only styling, no wizard. */
+
+.wx-firstrun {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface-1);
+}
+
+.wx-firstrun__title {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.wx-firstrun__body {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  line-height: 1.5;
+  color: var(--text-mute);
+}
+
+.wx-firstrun__actions {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.wx-firstrun__btn {
+  display: grid;
+  gap: 2px;
+  width: 100%;
+  padding: var(--space-3) var(--space-4);
+  text-align: left;
+  cursor: pointer;
+  background: var(--surface-2);
+  color: var(--text-primary, inherit);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+}
+
+.wx-firstrun__btn:hover {
+  background: var(--surface-3);
+}
+
+.wx-firstrun__btn strong {
+  font-size: var(--font-size-sm);
+  letter-spacing: 0.02em;
+}
+
+.wx-firstrun__btn span {
+  font-size: var(--font-size-sm);
+  color: var(--text-mute);
+}
+
+.wx-firstrun__skip {
+  justify-self: start;
+  padding: 2px var(--space-2);
+  cursor: pointer;
+  background: transparent;
+  color: var(--text-mute);
+  border: none;
+  font-size: var(--font-size-sm);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.wx-firstrun__skip:hover {
+  color: var(--text-secondary);
+}
