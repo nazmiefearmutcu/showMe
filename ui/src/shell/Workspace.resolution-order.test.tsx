@@ -19,18 +19,16 @@ describe("Workspace pane-renderer resolution order", () => {
     expect(choosePaneRenderer("top")).toBe("native");
   });
 
-  it("collapses non-native S13 codes to stub (ManifestPane fallback)", () => {
+  it("collapses unknown non-catalog codes to stub (ManifestPane fallback)", () => {
     // 2026-05-24 rebuild: template tier is no longer in the production
     // resolver. Every non-bespoke non-critical code now falls through to
     // "stub", which Workspace.tsx maps to <ManifestPane>. ManifestPane
     // loads the function manifest and renders the contract-driven shell.
-    // NOTE (de-garbage 2026-06-01): these codes are genuinely paneless —
-    // STRS/TLH/TRA (portfolio-analytics aliases) and TCA (new bespoke
-    // pane) were removed from this list because they DO resolve native.
-    // STRS/TLH/TRA (portfolio-analytics aliases), TCA (2026-06-01 bespoke
-    // pane) and TAUC/TECH/TRAN (FN-WAVE wave-1 bespoke panes) were removed
-    // from this list because they DO resolve native.
-    for (const code of ["AV", "BBGT", "BMC", "EVTS", "FLY"]) {
+    // NOTE (FN-WAVE 2026-09-08): every catalog code now resolves native —
+    // the last generic examples (AV/BBGT/BMC/EVTS/FLY, waves 1-5) were
+    // removed from this list — so the stub path is pinned with a
+    // non-catalog code instead.
+    for (const code of ["ZZZZ", "FAKE1", "NOTACODE"]) {
       expect(choosePaneRenderer(code)).toBe("stub");
     }
   });

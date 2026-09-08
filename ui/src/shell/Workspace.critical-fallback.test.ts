@@ -95,7 +95,7 @@ describe("S05 · non-critical codes keep the precedence ladder", () => {
     // (de-garbage 2026-06-01: STRS resolves native via PortfolioAnalyticsPane;
     // FN-WAVE 2026-09-07: TAUC/TECH/TRAN got bespoke panes too, so DCF — a
     // still-generically-rendered equity code — is used here instead.)
-    expect(choosePaneRenderer("AV")).toBe("stub");
+    expect(choosePaneRenderer("ZZZZ")).toBe("stub");
   });
 
   it("non-critical code with a fully empty resolver falls through to stub", () => {

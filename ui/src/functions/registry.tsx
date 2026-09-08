@@ -152,6 +152,31 @@ const NSEPane = lazy(() => import("./NSE").then((m) => ({ default: m.NSEPane }))
 const READPane = lazy(() => import("./READ").then((m) => ({ default: m.READPane })));
 const REGMPane = lazy(() => import("./REGM").then((m) => ({ default: m.REGMPane })));
 const FRHPane = lazy(() => import("./FRH").then((m) => ({ default: m.FRHPane })));
+// FN-WAVE wave-5 (2026-09-08): tools/api + fx/misc lanes — the last generics.
+const FLDSPane = lazy(() => import("./FLDS").then((m) => ({ default: m.FLDSPane })));
+const FXIPPane = lazy(() => import("./FXIP").then((m) => ({ default: m.FXIPPane })));
+const CDEPane = lazy(() => import("./CDE").then((m) => ({ default: m.CDEPane })));
+const GRABPane = lazy(() => import("./GRAB").then((m) => ({ default: m.GRABPane })));
+const BBGTPane = lazy(() => import("./BBGT").then((m) => ({ default: m.BBGTPane })));
+const BQUANTPane = lazy(() => import("./BQUANT").then((m) => ({ default: m.BQUANTPane })));
+const FXGOPane = lazy(() => import("./FXGO").then((m) => ({ default: m.FXGOPane })));
+const FXFCPane = lazy(() => import("./FXFC").then((m) => ({ default: m.FXFCPane })));
+const DINEPane = lazy(() => import("./DINE").then((m) => ({ default: m.DINEPane })));
+const FLYPane = lazy(() => import("./FLY").then((m) => ({ default: m.FLYPane })));
+const LANGPane = lazy(() => import("./LANG").then((m) => ({ default: m.LANGPane })));
+// FN-WAVE wave-5 (2026-09-08): final lane — social/news/misc.
+const SOSCPane = lazy(() => import("./SOSC").then((m) => ({ default: m.SOSCPane })));
+const EVTSPane = lazy(() => import("./EVTS").then((m) => ({ default: m.EVTSPane })));
+const PEOPPane = lazy(() => import("./PEOP").then((m) => ({ default: m.PEOPPane })));
+const MEETPane = lazy(() => import("./MEET").then((m) => ({ default: m.MEETPane })));
+const AVPane = lazy(() => import("./AV").then((m) => ({ default: m.AVPane })));
+const BMCPane = lazy(() => import("./BMC").then((m) => ({ default: m.BMCPane })));
+// FN-WAVE wave-5 commodity/chart lane.
+const BGASPane = lazy(() => import("./BGAS").then((m) => ({ default: m.BGASPane })));
+const BOILPane = lazy(() => import("./BOIL").then((m) => ({ default: m.BOILPane })));
+const NGASPane = lazy(() => import("./NGAS").then((m) => ({ default: m.NGASPane })));
+const CPFPane = lazy(() => import("./CPF").then((m) => ({ default: m.CPFPane })));
+const CHGSPane = lazy(() => import("./CHGS").then((m) => ({ default: m.CHGSPane })));
 
 const PANES: Record<string, PaneComponent> = {
   AGENT: AGENTPane,
@@ -298,6 +323,29 @@ const PANES: Record<string, PaneComponent> = {
   READ: READPane,
   REGM: REGMPane,
   FRH: FRHPane,
+  SOSC: SOSCPane,
+  EVTS: EVTSPane,
+  PEOP: PEOPPane,
+  MEET: MEETPane,
+  AV: AVPane,
+  BMC: BMCPane,
+  BGAS: BGASPane,
+  BOIL: BOILPane,
+  NGAS: NGASPane,
+  CPF: CPFPane,
+  CHGS: CHGSPane,
+  // FN-WAVE wave-5 tools/api + fx/misc lanes — every catalog code is now native
+  FLDS: FLDSPane,
+  FXIP: FXIPPane,
+  CDE: CDEPane,
+  GRAB: GRABPane,
+  BBGT: BBGTPane,
+  BQUANT: BQUANTPane,
+  FXGO: FXGOPane,
+  FXFC: FXFCPane,
+  DINE: DINEPane,
+  FLY: FLYPane,
+  LANG: LANGPane,
 };
 
 const NATIVE_FUNCTION_ENTRIES: FunctionEntry[] = [
