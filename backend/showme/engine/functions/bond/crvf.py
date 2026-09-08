@@ -8,8 +8,15 @@ from typing import Any
 
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from showme.engine.core.instrument import Instrument
+from showme.engine.functions._fred_csv import fred_with_keyless_fallback
 
 LOG = logging.getLogger("showme.engine.functions.crvf")
+
+
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _curve_model() -> dict[str, float]:
@@ -37,6 +44,23 @@ _TENOR_YEARS = {
     "10Y": 10.0,
     "20Y": 20.0,
     "30Y": 30.0,
+}
+
+# FredAdapter.yield_curve() (and the keyless CSV shim) return raw FRED
+# series ids; _curve_payload filters on tenor labels. Without this mapping
+# every live curve row was silently dropped (rows=[]) — caught while
+# wiring the keyless CSV fallback (2026-09-08).
+_SERIES_TO_TENOR = {
+    "DGS3MO": "3M",
+    "DGS6MO": "6M",
+    "DGS1": "1Y",
+    "DGS2": "2Y",
+    "DGS3": "3Y",
+    "DGS5": "5Y",
+    "DGS7": "7Y",
+    "DGS10": "10Y",
+    "DGS20": "20Y",
+    "DGS30": "30Y",
 }
 
 
@@ -82,7 +106,10 @@ class CRVFFunction(BaseFunction):
         country = (params.get("country") or "US").upper()
         warnings: list[str] = []
         curve: dict[str, float] = {}
-        live = bool(params.get("live_curve") or params.get("live"))
+        # Default-polarity flip (survey S2 c#3): the live curve (keyed
+        # adapter, else keyless fredgraph.csv) is the default; the canned
+        # model curve serves only on ``reference=true`` or labelled failure.
+        live = not _truthy(params.get("reference"))
         if not live:
             curve = _curve_model()
             return FunctionResult(
@@ -91,15 +118,24 @@ class CRVFFunction(BaseFunction):
                 data=_curve_payload(country, curve, "computed_model"),
                 sources=["curve_model"],
                 warnings=[],
-                metadata={"country": country, "mode": "computed_model"},
+                metadata={"country": country, "mode": "computed_model",
+                          "live": False, "data_mode": "modeled"},
             )
         # Live branch: FRED currently only ships the US Treasury curve. Be
         # honest when the requested country is not US, or when the FRED
-        # adapter is missing / failed.
-        if country == "US" and self.deps.fred:
+        # fetch fails. Keyless fallback (survey S2 c#3): without a keyed
+        # adapter the curve still comes live from fredgraph.csv.
+        fred = fred_with_keyless_fallback(
+            self.deps.fred, client=getattr(self, "_http_client", None)
+        )
+        if country == "US":
             try:
-                curve = await self.deps.fred.yield_curve()
-                curve = {k: v for k, v in curve.items() if v is not None and v == v}
+                curve = await fred.yield_curve()
+                curve = {
+                    _SERIES_TO_TENOR.get(k, k): v
+                    for k, v in curve.items()
+                    if v is not None and v == v
+                }
             except Exception as e:
                 # QA-fix: log + propagate reason so the warning is never an
                 # empty "fred: " label.
@@ -111,10 +147,9 @@ class CRVFFunction(BaseFunction):
                 f"live curve for {country} is not wired; using computed_model fallback"
             )
             LOG.info("CRVF non-US country %s: provider_unavailable", country)
-        elif not self.deps.fred:
-            warnings.append("fred adapter unavailable; using computed_model fallback")
-            # QA-fix: log so operators know the FRED adapter is the missing piece.
-            LOG.warning("CRVF: FRED adapter unavailable (likely FRED_API_KEY unset)")
+        if not curve and not warnings:
+            warnings.append("fred curve came back empty; using computed_model fallback")
+            LOG.warning("CRVF: live FRED curve returned no usable tenors")
         source_mode = "fred" if curve and not warnings else "computed_model"
         if not curve:
             curve = _curve_model()
@@ -124,5 +159,7 @@ class CRVFFunction(BaseFunction):
             data=_curve_payload(country, curve, source_mode),
             sources=[source_mode],
             warnings=warnings,
-            metadata={"country": country, "mode": source_mode},
+            metadata={"country": country, "mode": source_mode,
+                      "live": bool(curve) and not warnings,
+                      "data_mode": "live_official" if source_mode == "fred" else "modeled"},
         )

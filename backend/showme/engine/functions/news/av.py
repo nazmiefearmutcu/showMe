@@ -118,7 +118,7 @@ class AVFunction(BaseFunction):
                     ],
                 },
                 sources=["sec_edgar" if symbol else "podcast_rss"],
-                metadata={"provider_errors": [reason], "live": True, "data_mode": "not_configured"},
+                metadata={"provider_errors": [reason], "live": False, "data_mode": "not_configured"},
                 warnings=[reason],
             )
 
@@ -420,7 +420,7 @@ class AVFunction(BaseFunction):
                     ],
                 },
                 sources=["podcast_rss"],
-                metadata={"provider_errors": errors, "live": True, "data_mode": "not_configured"},
+                metadata={"provider_errors": errors, "live": False, "data_mode": "not_configured"},
                 warnings=warnings,
             )
 
@@ -480,7 +480,7 @@ class AVFunction(BaseFunction):
                 ],
             },
             sources=sources,
-            metadata={"provider_errors": errors, "live": True, "data_mode": "not_configured"},
+            metadata={"provider_errors": errors, "live": False, "data_mode": "not_configured"},
         )
 
 

@@ -19,6 +19,7 @@ next_actions — never fabricated numbers presented as live.
 
 from __future__ import annotations
 
+import re
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -88,6 +89,22 @@ def _bond_symbol(instrument: Instrument | None, params: dict[str, Any], fallback
 def _is_sovereign(token: str) -> bool:
     upper = token.upper()
     return any(hint in upper for hint in _SOVEREIGN_HINTS)
+
+
+def _treasury_security_type(symbol: str) -> str | None:
+    """Map a Treasury alias like ``US2Y`` / ``US30Y`` to its FiscalData type.
+
+    H-8: notes cover tenors up to 10Y, bonds beyond. Returns ``None`` when
+    no tenor suffix is parseable, leaving the anchor selection unchanged.
+    """
+    match = re.search(r"(\d{1,2})Y\s*$", str(symbol).upper())
+    if not match:
+        return None
+    try:
+        years = float(match.group(1))
+    except ValueError:
+        return None
+    return "Treasury Bonds" if years > 10.0 else "Treasury Notes"
 
 
 async def _sec_lookup_cik(client: Any, ticker: str) -> str | None:
@@ -370,8 +387,8 @@ class DDISFunction(BaseFunction):
         "(LongTermDebtMaturitiesRepaymentsOfPrincipalInNextTwelveMonths / Year{Two..Five} / "
         "AfterYearFive) and maps them onto the 0-1Y / 1-3Y / 3-5Y / 5Y+ ladder, in USD billions. "
         "Share % = amount / total x 100. When the caller supplies a ``maturities`` schedule it is "
-        "returned verbatim. With no SEC data and no override the rows are a clearly-labelled "
-        "illustrative model, never disguised as a live read."
+        "returned verbatim. With no SEC data and no override the pane stays EMPTY (H-5 fix "
+        "2026-09-08: the old fabricated illustrative ladder was removed) and the payload says why."
     )
     _FIELD_DICT = {
         "bucket": "Remaining-maturity bucket.",
@@ -417,33 +434,37 @@ class DDISFunction(BaseFunction):
                 metadata={"data_mode": "user_input", "as_of": _as_of()},
             )
 
-        def _illustrative(reason: str, *, status: str, source: str, extra_warn: str | None = None, next_actions: list[str] | None = None) -> FunctionResult:
-            rows, total = self._finalize_rows([
-                {"bucket": "0-1Y", "tenor_years": 0.5, "amount_usd_bn": 3.2, "currency": currency},
-                {"bucket": "1-3Y", "tenor_years": 2.0, "amount_usd_bn": 8.6, "currency": currency},
-                {"bucket": "3-5Y", "tenor_years": 4.0, "amount_usd_bn": 6.4, "currency": currency},
-                {"bucket": "5Y+", "tenor_years": 7.0, "amount_usd_bn": 8.5, "currency": currency},
-            ])
+        # H-5 fix (2026-09-08): the fabricated "illustrative" ladder
+        # (3.2 / 8.6 / 6.4 / 8.5 bn constants at HTTP 200) is gone. Every
+        # no-data path now returns honest empty rows + a reason +
+        # next_actions instead of invented principal amounts.
+        def _empty_schedule(reason: str, next_actions: list[str]) -> FunctionResult:
             data: dict[str, Any] = {
-                "status": status,
-                "rows": rows,
-                "summary": {"issuer": issuer, "total_debt_usd_bn": total, "currency": currency, "source_mode": "illustrative_model"},
+                "status": "empty",
+                "rows": [],
+                "summary": {"issuer": issuer, "total_debt_usd_bn": 0.0, "currency": currency, "source_mode": "no_live_source"},
+                "reason": reason,
+                "next_actions": next_actions,
                 "methodology": self._METHODOLOGY,
                 "field_dictionary": self._FIELD_DICT,
             }
-            if next_actions:
-                data["next_actions"] = next_actions
-            warns = [reason] if reason else []
-            if extra_warn:
-                warns.append(extra_warn)
-            return FunctionResult(code=self.code, instrument=instrument, data=data, sources=[source], warnings=warns, metadata={"data_mode": status, "as_of": _as_of()})
+            return FunctionResult(
+                code=self.code,
+                instrument=instrument,
+                data=data,
+                sources=["no_live_source"],
+                warnings=[reason],
+                metadata={"data_mode": "empty", "as_of": _as_of()},
+            )
 
-        # 2) sovereign issuer -> illustrative (SEC corporate ladder N/A)
+        # 2) sovereign issuer -> honest empty (SEC corporate ladder N/A)
         if _is_sovereign(issuer) or issuer == "UNSPECIFIED_ISSUER":
-            return _illustrative(
-                "Sovereign/unspecified issuer: SEC corporate maturity schedule does not apply; showing a labelled illustrative model.",
-                status="illustrative",
-                source="illustrative_model",
+            return _empty_schedule(
+                "Sovereign/unspecified issuer: SEC corporate maturity schedule does not apply; no debt ladder is shown.",
+                next_actions=[
+                    "Pass an explicit ``maturities`` schedule for this issuer.",
+                    "Pick a tickerable US corporate issuer to read the SEC EDGAR maturity ladder.",
+                ],
             )
 
         # 3) corporate -> SEC EDGAR maturity concepts
@@ -453,10 +474,8 @@ class DDISFunction(BaseFunction):
             client = await get_client()
             cik = await _sec_lookup_cik(client, ticker)
             if not cik:
-                return _illustrative(
-                    f"No SEC CIK for ticker {ticker!r}; falling back to a labelled illustrative ladder.",
-                    status="illustrative",
-                    source="illustrative_model",
+                return _empty_schedule(
+                    f"No SEC CIK for ticker {ticker!r}; no maturity ladder can be derived.",
                     next_actions=[f"Use a tickerable US issuer or pass an explicit ``maturities`` schedule for {ticker!r}."],
                 )
             r = await client.get(_SEC_FACTS_URL.format(cik=cik), headers={"User-Agent": _SEC_UA})
@@ -497,10 +516,12 @@ class DDISFunction(BaseFunction):
         b_5p = _bn(beyond)
 
         if (b_0_1 + b_1_3 + b_3_5 + b_5p) <= 0:
-            return _illustrative(
-                f"SEC companyfacts for CIK {cik} did not expose long-term-debt maturity concepts; showing a labelled illustrative ladder.",
-                status="illustrative",
-                source="illustrative_model",
+            return _empty_schedule(
+                f"SEC companyfacts for CIK {cik} did not expose long-term-debt maturity concepts; no maturity ladder is shown.",
+                next_actions=[
+                    f"Pass an explicit ``maturities`` schedule for {ticker!r}.",
+                    "Retry after the issuer's latest 10-K/10-Q posts companyfacts maturity concepts.",
+                ],
             )
 
         rows, total = self._finalize_rows([
@@ -707,7 +728,15 @@ class ALLQFunction(BaseFunction):
     }
 
     async def _treasury_anchor(self, symbol: str) -> tuple[float, str, str] | None:
-        """Return (clean_price, source, ref_note) anchored to a real Treasury yield."""
+        """Return (clean_price, source, ref_note) anchored to a real Treasury yield.
+
+        H-8 fix (2026-09-08): tenor-aware security selection. FiscalData
+        publishes the AVERAGE interest rate per security TYPE (notes vs
+        bonds), not per tenor, so the anchor now selects the type matching
+        the requested tenor (<=10Y notes, >10Y bonds) and the ref_note
+        explicitly flags that it is a type-average, never a per-tenor
+        yield.
+        """
         client = await get_client()
         r = await client.get(
             _FISCALDATA_AVG_RATES,
@@ -721,6 +750,11 @@ class ALLQFunction(BaseFunction):
         r.raise_for_status()
         payload = r.json()
         data_rows = payload.get("data", []) if isinstance(payload, dict) else []
+        wanted_type = _treasury_security_type(symbol)
+        if wanted_type:
+            typed = [rec for rec in data_rows if str(rec.get("security_desc") or "") == wanted_type]
+            if typed:
+                data_rows = typed
         if not data_rows:
             return None
         rec = data_rows[0]
@@ -733,7 +767,11 @@ class ALLQFunction(BaseFunction):
         years = 10.0
         price = 100.0 * (1.0 + (ref_yield - yld) / 100.0 * years / (1.0 + ref_yield / 100.0))
         price = round(max(50.0, min(150.0, price)), 4)
-        return (price, "treasury_fiscaldata", f"avg Treasury coupon {yld:.3f}% on {rec.get('record_date')}")
+        note = (
+            f"avg {rec.get('security_desc')} coupon {yld:.3f}% on {rec.get('record_date')}"
+            + (" (type-average anchor, not a per-tenor yield)" if wanted_type else "")
+        )
+        return (price, "treasury_fiscaldata", note)
 
     async def _yfinance_anchor(self, symbol: str) -> tuple[float, str, str] | None:
         adapter = getattr(self.deps, "yfinance", None) or getattr(self.deps, "quotes", None)
@@ -824,6 +862,14 @@ class ALLQFunction(BaseFunction):
                 )
 
         quotes = self._build_ladder(symbol, anchor, spread, size, ref_note)
+        warnings = [
+            "ALLQ rows are INDICATIVE composite quotes anchored to a real reference price, not executable dealer prices."
+        ]
+        if "not a per-tenor yield" in ref_note:
+            warnings.append(
+                f"Treasury anchor for {symbol} is the FiscalData security-type average "
+                "(no per-tenor yield in that dataset); it is not a live quote for this specific tenor."
+            )
         return FunctionResult(
             code=self.code,
             instrument=instrument,
@@ -843,7 +889,7 @@ class ALLQFunction(BaseFunction):
                 "field_dictionary": self._FIELD_DICT,
             },
             sources=[source],
-            warnings=["ALLQ rows are INDICATIVE composite quotes anchored to a real reference price, not executable dealer prices."],
+            warnings=warnings,
             metadata={"latency_ms": latency_ms, "data_mode": "live_official" if source != "user_input" else "user_input", "as_of": _as_of()},
         )
 

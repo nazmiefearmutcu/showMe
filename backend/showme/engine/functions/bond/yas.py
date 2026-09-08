@@ -8,6 +8,7 @@ from typing import Any
 
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from showme.engine.core.instrument import AssetClass, Instrument
+from showme.engine.functions._fred_csv import fred_with_keyless_fallback
 
 
 def _bond_pv(face: float, c: float, y: float, n_periods: int) -> float:
@@ -152,18 +153,42 @@ class YASFunction(BaseFunction):
         benchmark = _rate_decimal(params.get("benchmark_rate", params.get("ust10y")),
                                   0.0445, assume_decimal=assume_dec)
         sources = ["yield_spread_model"]
-        if (params.get("live_benchmark") or params.get("live")) and self.deps.fred:
+        warnings: list[str] = []
+        metadata: dict[str, Any] = {
+            "note": "closed-form yield analytics; set live_benchmark=true for FRED"
+        }
+        # Keyless FRED CSV (survey S2 c#3): the 10Y benchmark anchor is
+        # attempted live by default — keyed adapter when wired, otherwise
+        # the keyless fredgraph.csv endpoint. The static 0.0445 assumption
+        # above only survives as a labelled fallback when FRED is
+        # unreachable (an explicit benchmark_rate still wins).
+        if not params.get("benchmark_rate") and not params.get("ust10y"):
+            fred = fred_with_keyless_fallback(
+                self.deps.fred, client=getattr(self, "_http_client", None)
+            )
             try:
                 df = await asyncio.wait_for(
-                    self.deps.fred.series("DGS10", frequency="d"),
-                    timeout=float(params.get("fred_timeout", 5)),
+                    fred.series("DGS10", frequency="d"),
+                    timeout=float(params.get("fred_timeout", 8)),
                 )
                 bench = float(df["value"].iloc[-1]) / 100 if not df.empty else None
                 if bench is not None:
                     benchmark = bench
                     sources = ["fred"]
+                else:
+                    warnings.append(
+                        "FRED returned no 10Y observations; spread uses the "
+                        "static 4.45% benchmark assumption."
+                    )
+                    metadata["data_mode"] = "modeled"
             except Exception:
-                pass
+                # R2 M-3: the static anchor survives, but it must say so —
+                # an unlabelled 2024-era benchmark poisons every spread row.
+                warnings.append(
+                    "Live 10Y benchmark unavailable; spread uses the static "
+                    "4.45% benchmark assumption."
+                )
+                metadata["data_mode"] = "modeled"
         spread = metrics["ytm"] - benchmark
         curve = []
         for offset_bps in [-100, -50, -25, 0, 25, 50, 100]:
@@ -215,5 +240,6 @@ class YASFunction(BaseFunction):
                 },
             },
             sources=sources,
-            metadata={"note": "closed-form yield analytics; set live_benchmark=true for FRED"},
+            warnings=warnings,
+            metadata=metadata,
         )

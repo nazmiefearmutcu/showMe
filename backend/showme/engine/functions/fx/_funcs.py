@@ -26,6 +26,12 @@ _MAJOR_PAIRS = [
     "GBPJPY",
 ]
 _DEFAULT_CURRENCIES = ["USD", "EUR", "GBP", "JPY", "TRY", "CHF"]
+# H-4 honesty (2026-09-08): _REFERENCE_RATES / _REFERENCE_SPOTS /
+# _seed_usd_value are 2024-era constants used ONLY as a labelled fallback
+# when every live spot provider fails. The vintage is stamped into the
+# fallback payloads (``reference_as_of``) so the UI can show
+# "reference (2024-06)" instead of implying a current market level.
+_REFERENCE_AS_OF = "2024-06"
 _REFERENCE_RATES = {
     "USD": 0.045,
     "EUR": 0.035,
@@ -134,7 +140,16 @@ class FXFCFunction(BaseFunction):
             sources=[spot_source, "covered_interest_parity_formula"],
             # Only warn when the spot came from the static reference template
             # — manual_input and any live_* source mode are real values.
-            warnings=[] if source_mode != "reference_model" else ["live spot unavailable; using labelled reference spot"],
+            warnings=(
+                []
+                if source_mode != "reference_model"
+                else [f"live spot unavailable; using labelled reference spot (vintage {_REFERENCE_AS_OF})"]
+            ),
+            metadata=(
+                {"data_mode": "delayed_reference", "reference_as_of": _REFERENCE_AS_OF}
+                if source_mode == "reference_model"
+                else {"data_mode": source_mode}
+            ),
         )
 
 
@@ -198,7 +213,16 @@ class FXIPFunction(BaseFunction):
             sources=_unique(sources),
             # manual_input + any live_* counts as a real spot; warn only for
             # the static reference_model fallback.
-            warnings=[] if source_mode != "reference_model" else ["live spot unavailable; using labelled reference spot"],
+            warnings=(
+                []
+                if source_mode != "reference_model"
+                else [f"live spot unavailable; using labelled reference spot (vintage {_REFERENCE_AS_OF})"]
+            ),
+            metadata=(
+                {"data_mode": "delayed_reference", "reference_as_of": _REFERENCE_AS_OF}
+                if source_mode == "reference_model"
+                else {"data_mode": source_mode}
+            ),
         )
 
 
@@ -256,13 +280,22 @@ class WCRSFunction(BaseFunction):
                 "source_mode": "live_exchangerate_host or reference_cross_rate_matrix.",
             },
         }
-        warnings = [] if source_mode == "live_exchangerate_host" else ["live cross-rate provider unavailable; using labelled reference matrix"]
+        warnings = (
+            []
+            if source_mode == "live_exchangerate_host"
+            else [f"live cross-rate provider unavailable; using labelled reference matrix (vintage {_REFERENCE_AS_OF})"]
+        )
         return FunctionResult(
             code=self.code,
             instrument=None,
             data=data,
             sources=sources,
             warnings=warnings,
+            metadata=(
+                {"data_mode": "delayed_reference", "reference_as_of": _REFERENCE_AS_OF}
+                if source_mode != "live_exchangerate_host"
+                else {"data_mode": source_mode}
+            ),
         )
 
 
@@ -327,7 +360,20 @@ class FRDFunction(BaseFunction):
             instrument=instrument or Instrument(symbol=pair, asset_class=AssetClass.FX),
             data=data,
             sources=[spot_source, "covered_interest_parity_formula", "reference_policy_rate"],
-            warnings=[] if source_mode == "live_yfinance_quote" else ["live spot unavailable; using labelled reference spot"],
+            warnings=(
+                []
+                if source_mode == "live_yfinance_quote"
+                else [
+                    f"live spot unavailable; using labelled reference spot (vintage {_REFERENCE_AS_OF})"
+                    if source_mode == "reference_model"
+                    else f"spot is {source_mode}, not a live exchange quote"
+                ]
+            ),
+            metadata=(
+                {"data_mode": "delayed_reference", "reference_as_of": _REFERENCE_AS_OF}
+                if source_mode == "reference_model"
+                else {"data_mode": source_mode}
+            ),
         )
 
 
@@ -460,7 +506,7 @@ class OVDVFunction(BaseFunction):
                 "risk_reversal_25d_pct": "25D call vol minus 25D put vol, in percent.",
                 "butterfly_25d_pct": "Average 25D wing premium versus ATM, in percent.",
                 "vol_source": "live_realized_vol (yfinance) or reference_fx_vol_model.",
-                "data_mode": "DELAYED_REFERENCE when anchored to yfinance realized vol; MODELED on fallback.",
+                "data_mode": "delayed_reference when anchored to yfinance realized vol; modeled on fallback.",
             },
             "next_actions": [
                 "Override atm_vol / risk_reversal_25d / butterfly_25d to quote a desk surface.",
@@ -570,7 +616,7 @@ async def _atm_term_structure(
         # honour the historical reference-model term slope so an explicit ATM
         # still produces a non-flat surface.
         curve = [max(0.0001, atm + i * 0.0015) for i in range(len(tenors))]
-        return curve, "user_inputs", "MODELED", None, None
+        return curve, "user_inputs", "modeled", None, None
 
     closes = await _close_series(fn, pair, params)
     returns = _log_returns(closes)
@@ -583,7 +629,7 @@ async def _atm_term_structure(
             win = returns[-window:] if len(returns) >= window else returns
             atm = _annualized_vol(win)
             curve.append(atm if atm and atm > 0 else _reference_atm_vol(pair))
-        return curve, "live_realized_vol", "DELAYED_REFERENCE", "yfinance", None
+        return curve, "live_realized_vol", "delayed_reference", "yfinance", None
 
     # Fallback: no usable history — labelled reference vol with a term slope.
     ref = _reference_atm_vol(pair)
@@ -591,9 +637,9 @@ async def _atm_term_structure(
     return (
         curve,
         "reference_fx_vol_model",
-        "MODELED",
+        "modeled",
         None,
-        "live realized-vol history unavailable; using labelled reference FX vol",
+        f"live realized-vol history unavailable; using labelled reference FX vol (vintage {_REFERENCE_AS_OF})",
     )
 
 

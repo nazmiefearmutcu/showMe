@@ -357,7 +357,8 @@ class TECHFunction(BaseFunction):
         return FunctionResult(
             code=self.code, instrument=instrument,
             data=results, sources=["yfinance"],
-            metadata={"interval": params.get("interval", "1d"), "days": days, "tail": tail},
+            metadata={"live": True, "data_mode": "live_yfinance",
+                      "interval": params.get("interval", "1d"), "days": days, "tail": tail},
         )
 
 

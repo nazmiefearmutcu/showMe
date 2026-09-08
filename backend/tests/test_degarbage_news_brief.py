@@ -74,8 +74,10 @@ def test_default_path_is_live_and_well_formed():
     for bad in _FORBIDDEN:
         assert bad not in md, f"fabricated template string leaked: {bad!r}"
 
-    # metadata reports live mode.
-    assert res.metadata.get("live") is True
+    # metadata's live claim follows the payload (R2 H-1): true only when
+    # live articles actually landed, false on the provider_unavailable
+    # envelope this test also hits when offline.
+    assert res.metadata.get("live") is (data["article_count"] > 0)
 
 
 def test_live_articles_are_real_with_evidence_links():

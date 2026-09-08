@@ -240,7 +240,11 @@ class GEXFunction(BaseFunction):
         )
         return FunctionResult(code=self.code, instrument=instrument,
                               data=shaped,
-                              sources=["yfinance_options" if used_live_chain else "black_scholes_gamma_formula"])
+                              sources=["yfinance_options" if used_live_chain else "black_scholes_gamma_formula"],
+                              metadata={
+                                  "live": bool(used_live_chain),
+                                  "data_mode": "live_yfinance" if used_live_chain else "modeled",
+                              })
 
 
 def _truthy(value: Any) -> bool:

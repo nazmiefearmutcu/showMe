@@ -12,6 +12,12 @@ from showme.engine.core.base_function import BaseFunction, FunctionRegistry, Fun
 from showme.engine.core.instrument import AssetClass, Instrument
 
 
+# H-7 honesty (2026-09-08): the model_* fallback prices baked into
+# COMMODITY_CONTRACTS are 2024-era reference levels. Outage rows stamp this
+# vintage (reference_vintage / as_of) so the UI can show "reference
+# (2024-06)" instead of implying a current market print.
+_MODEL_PRICES_VINTAGE = "2024-06"
+
 COMMODITY_CONTRACTS: dict[str, dict[str, Any]] = {
     "CL=F": {
         "name": "WTI Crude Oil",
@@ -271,7 +277,11 @@ def _model_row(symbol: str) -> dict[str, Any]:
         "volume": None,
         "source": "commodity_reference_model",
         "source_mode": "model",
-        "as_of": datetime.now(timezone.utc).date().isoformat(),
+        # H-7: as_of is the REFERENCE VINTAGE of the hardcoded price, not
+        # the render date — stamping today's date on a 2024-era constant
+        # disguised stale data as fresh.
+        "as_of": _MODEL_PRICES_VINTAGE,
+        "reference_vintage": _MODEL_PRICES_VINTAGE,
     }
 
 
@@ -931,6 +941,7 @@ class GLCOFunction(BaseFunction):
                     "status": "provider_unavailable",
                     "reason": "Commodity futures quote provider returned no usable live rows; table is a labelled reference model.",
                     "source_mode": "model",
+                    "reference_vintage": _MODEL_PRICES_VINTAGE,
                     "rows": rows,
                     "methodology": "GLCO ranks a commodity futures universe by percent change. Live mode uses Yahoo futures quotes; if no live rows return, model rows are labelled and not treated as live quotes.",
                     "field_dictionary": _commodity_field_dictionary(),
@@ -941,7 +952,11 @@ class GLCOFunction(BaseFunction):
                 },
                 sources=["yfinance", "commodity_reference_model"],
                 warnings=provider_errors,
-                metadata={"provider_errors": provider_errors or ["yfinance commodity futures unavailable"]},
+                metadata={
+                    "provider_errors": provider_errors or ["yfinance commodity futures unavailable"],
+                    "reference_vintage": _MODEL_PRICES_VINTAGE,
+                    "data_mode": "reference",
+                },
             )
         rows = _filter_sector(rows, params.get("sector"))
         rows.sort(key=lambda row: abs(float(row.get("change_pct") or 0)), reverse=True)

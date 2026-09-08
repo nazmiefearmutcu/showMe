@@ -463,7 +463,8 @@ class HVTFunction(BaseFunction):
             "field_dictionary": _HVT_FIELDS,
         }
         return FunctionResult(code=self.code, instrument=instrument, data=out,
-                              sources=["yfinance"])
+                              sources=["yfinance"],
+                              metadata={"live": True, "data_mode": "live_yfinance"})
 
 
 @FunctionRegistry.register
@@ -499,6 +500,7 @@ class IVOLFunction(BaseFunction):
             data.update(extra)
         metadata = {
             "fallback": True,
+            "data_mode": "modeled",
             "spot_source": spot_state,
             "calls": len(synthetic["calls_grid"]),
             "puts": len(synthetic["puts_grid"]),
@@ -656,5 +658,6 @@ class IVOLFunction(BaseFunction):
                                     "methodology": "Live implied volatility surface from option-chain impliedVolatility by expiry, strike, and option type.",
                                     "field_dictionary": _IVOL_FIELDS},
                               sources=["yfinance"],
-                              metadata={"calls": sum(1 for row in surface_rows if row["option_type"] == "CALL"),
+                              metadata={"live": True, "data_mode": "live_yfinance",
+                                        "calls": sum(1 for row in surface_rows if row["option_type"] == "CALL"),
                                         "puts": sum(1 for row in surface_rows if row["option_type"] == "PUT")})

@@ -78,14 +78,14 @@ def test_ovdv_atm_anchored_to_live_realized_vol_not_constant():
 
     if _is_reference_fallback(result):
         # Honest, clearly-labelled outage path.
-        assert data["data_mode"] == "MODELED"
+        assert data["data_mode"] == "modeled"  # H-9: lowercase vocabulary
         assert result.warnings, "reference fallback must carry a warning"
         assert data.get("next_actions")
         pytest.skip("yfinance history unavailable - validated labelled reference fallback")
 
     # Live path: anchored to yfinance realized vol.
     assert data["vol_source"] == "live_realized_vol"
-    assert data["data_mode"] == "DELAYED_REFERENCE"
+    assert data["data_mode"] == "delayed_reference"  # H-9: lowercase vocabulary
     assert "yfinance" in result.sources
 
     atm = _atm_vols_pct(data["surface"])

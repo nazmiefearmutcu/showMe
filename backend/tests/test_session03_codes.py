@@ -150,15 +150,68 @@ def test_crvf_non_us_live_admits_fallback(deps):
 
 
 def test_crvf_us_live_without_fred_admits_fallback(deps):
-    res = _run(CRVFFunction(deps).execute(country="US", live=True))
+    """Keyless-CSV era: without a keyed adapter CRVF still ATTEMPTS live via
+    fredgraph.csv; when that fetch fails the failure is admitted with a
+    warning and the computed_model fallback (offline-deterministic via the
+    ``_http_client`` injection seam)."""
+    fn = CRVFFunction(deps)
+
+    class _BoomClient:
+        async def get(self, url, timeout=None):
+            raise RuntimeError("offline")
+
+    fn._http_client = _BoomClient()
+    res = _run(fn.execute(country="US", live=True))
     assert res.sources == ["computed_model"]
     assert any("fred" in w.lower() for w in res.warnings)
 
 
 def test_crvf_no_live_uses_curve_model(deps):
-    res = _run(CRVFFunction(deps).execute(country="US"))
+    """``reference=true`` is the explicit opt-out into the canned curve."""
+    res = _run(CRVFFunction(deps).execute(country="US", reference=True))
     assert res.sources == ["curve_model"]
     assert res.data["summary"]["source_mode"] == "computed_model"
+    assert res.metadata.get("live") is False
+
+
+def test_crvf_us_keyless_csv_success_is_live(deps):
+    """Without a keyed FRED adapter, the keyless fredgraph.csv endpoint
+    feeds a live curve (offline-deterministic via the injected client)."""
+    fn = CRVFFunction(deps)
+
+    class _FakeResp:
+        def raise_for_status(self):
+            return None
+
+        @property
+        def text(self):
+            return (
+                "observation_date,value\n"
+                "2026-09-04,4.30\n"
+                "2026-09-05,.\n"
+            )
+
+    class _Client:
+        async def get(self, url, timeout=None):
+            return _FakeResp()
+
+    fn._http_client = _Client()
+    res = _run(fn.execute(country="US"))
+    assert res.data["summary"]["source_mode"] == "fred"
+    assert "fred" in res.sources
+    rows = res.data["curve"]
+    assert rows, "curve must carry parsed CSV rows"
+    assert all(row["yield"] == 4.30 for row in rows)
+    assert res.metadata.get("live") is True
+
+
+@pytest.fixture(autouse=True)
+def _reset_fred_csv_cache():
+    """Keep the module-level keyless-CSV TTL cache out of test ordering."""
+    from showme.engine.functions._fred_csv import reset_fred_csv_cache
+    reset_fred_csv_cache()
+    yield
+    reset_fred_csv_cache()
 
 
 # ── COUN unknown country warning ─────────────────────────────────────

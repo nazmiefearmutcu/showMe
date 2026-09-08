@@ -16,6 +16,7 @@ from typing import Any
 
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from showme.engine.core.instrument import AssetClass, Instrument
+from showme.engine.functions._fred_csv import fred_with_keyless_fallback
 from showme.engine.functions.equity.beta import BetaFunction
 
 
@@ -63,14 +64,18 @@ class WACCFunction(BaseFunction):
         erp = float(erp)
         # Risk-free
         rf = float(params.get("rf")) if params.get("rf") not in (None, "") else float("nan")
+        # Keyless FRED CSV fallback (S2 c#3): the risk-free anchor is
+        # attempted even without a keyed adapter.
         try:
-            if self.deps.fred:
-                df = await asyncio.wait_for(
-                    self.deps.fred.series("DGS10", frequency="d"),
-                    timeout=float(params.get("fred_timeout", 8)),
-                )
-                rf = float(df["value"].iloc[-1]) / 100.0 if not df.empty else 0.04
-                sources.append("fred")
+            fred = fred_with_keyless_fallback(
+                self.deps.fred, client=getattr(self, "_http_client", None)
+            )
+            df = await asyncio.wait_for(
+                fred.series("DGS10", frequency="d"),
+                timeout=float(params.get("fred_timeout", 8)),
+            )
+            rf = float(df["value"].iloc[-1]) / 100.0 if not df.empty else 0.04
+            sources.append("fred")
         except Exception as e:
             warnings.append(f"fred: {e}")
             rf = 0.04
@@ -157,27 +162,33 @@ class WACCFunction(BaseFunction):
             except Exception as e:
                 warnings.append(f"yfinance implied rd: {e}")
         if rd is None:
+            # Keyless FRED CSV fallback (S2 c#3): attempt without a key too.
             try:
-                if self.deps.fred:
-                    df = await asyncio.wait_for(
-                        self.deps.fred.series("BAMLC0A4CBBB", frequency="d"),
-                        timeout=float(params.get("fred_timeout", 8)),
-                    )
-                    if not df.empty:
-                        rd = float(df["value"].iloc[-1]) / 100.0
-                        rd_source = "fred_bbb"
+                fred = fred_with_keyless_fallback(
+                self.deps.fred, client=getattr(self, "_http_client", None)
+            )
+                df = await asyncio.wait_for(
+                    fred.series("BAMLC0A4CBBB", frequency="d"),
+                    timeout=float(params.get("fred_timeout", 8)),
+                )
+                if not df.empty:
+                    rd = float(df["value"].iloc[-1]) / 100.0
+                    rd_source = "fred_bbb"
             except Exception as e:
                 warnings.append(f"fred BBB: {e}")
         if rd is None:
+            # Keyless FRED CSV fallback (S2 c#3): attempt without a key too.
             try:
-                if self.deps.fred:
-                    df = await asyncio.wait_for(
-                        self.deps.fred.series("AAA", frequency="d"),
-                        timeout=float(params.get("fred_timeout", 8)),
-                    )
-                    if not df.empty:
-                        rd = float(df["value"].iloc[-1]) / 100.0
-                        rd_source = "fred_aaa"
+                fred = fred_with_keyless_fallback(
+                self.deps.fred, client=getattr(self, "_http_client", None)
+            )
+                df = await asyncio.wait_for(
+                    fred.series("AAA", frequency="d"),
+                    timeout=float(params.get("fred_timeout", 8)),
+                )
+                if not df.empty:
+                    rd = float(df["value"].iloc[-1]) / 100.0
+                    rd_source = "fred_aaa"
             except Exception as e:
                 warnings.append(f"fred AAA: {e}")
         if rd is None:

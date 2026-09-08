@@ -8,6 +8,13 @@ from typing import Any
 
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from showme.engine.core.instrument import Instrument
+from showme.engine.functions._fred_csv import fred_with_keyless_fallback
+
+
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 _FRED_TENORS = [
@@ -84,22 +91,26 @@ class GC3DFunctionLive(BaseFunction):
         except (TypeError, ValueError):
             requested_days = 365
         days = max(7, min(requested_days, 3650))
-        if not (params.get("live_curve") or params.get("live")):
+        # Default-polarity flip + keyless FRED CSV (survey S2 c#3, item 4):
+        # GC3D now pulls the live curve by default — via the keyed FRED
+        # adapter when wired, otherwise the keyless fredgraph.csv endpoint —
+        # and serves the labelled template only behind ``reference=true``.
+        if _truthy(params.get("reference")):
             return FunctionResult(code=self.code, instrument=None,
                                   data=_surface_template(),
                                   sources=["yield_curve_model"])
-        if not self.deps.fred:
-            return FunctionResult(code=self.code, instrument=None,
-                                  data=_surface_template(),
-                                  sources=["yield_curve_model"])
+        fred = fred_with_keyless_fallback(
+            self.deps.fred, client=getattr(self, "_http_client", None)
+        )
+
         async def _one(tenor, sid):
             try:
                 df = await asyncio.wait_for(
-                    self.deps.fred.series(
+                    fred.series(
                         sid,
                         start=(datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d"),
                     ),
-                    timeout=float(params.get("fred_timeout", 5)),
+                    timeout=float(params.get("fred_timeout", 8)),
                 )
                 return tenor, df
             except Exception:
@@ -125,7 +136,8 @@ class GC3DFunctionLive(BaseFunction):
         if not surface:
             return FunctionResult(code=self.code, instrument=None,
                                   data=_surface_template(),
-                                  sources=["yield_curve_model"])
+                                  sources=["yield_curve_model"],
+                                  warnings=["Live FRED curve unavailable (keyed adapter or keyless CSV); showing the labelled reference template."])
         return FunctionResult(code=self.code, instrument=None,
                               data=_surface_payload(
                                   surface,
@@ -134,4 +146,5 @@ class GC3DFunctionLive(BaseFunction):
                                   "fred",
                                   days,
                               ),
-                              sources=["fred"])
+                              sources=["fred"],
+                              metadata={"live": True, "data_mode": "live_official"})

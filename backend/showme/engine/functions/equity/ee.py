@@ -22,13 +22,15 @@ class EEFunction(BaseFunction):
         if instrument is None:
             raise ValueError("EE requires instrument")
         history = int(params.get("history", 8))
-        if not _truthy(params.get("live_earnings") or params.get("live")):
+        # Default-polarity flip (2026-09-08): EE pulls live earnings by
+        # default; ``reference=true`` serves the labelled template.
+        if _truthy(params.get("reference")):
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
                 data=_earnings_template(instrument, history),
                 sources=["earnings_calendar_model"],
-                metadata={"live": False},
+                metadata={"live": False, "data_mode": "modeled"},
             )
         warnings: list[str] = []
         sources: list[str] = []
@@ -55,17 +57,26 @@ class EEFunction(BaseFunction):
                 sources.append("yfinance")
         except Exception as e:
             warnings.append(f"yfinance: {e}")
-        if not finnhub_data and not yf_data:
-            finnhub_data = [{
-                "period": "latest",
-                "actual": None,
-                "estimate": None,
-                "surprisePercent": None,
-            }]
+        placeholder = not finnhub_data and not yf_data
+        if placeholder:
             sources.append("earnings_calendar_model")
-            warnings = []
+            # Honesty (2026-09-08): never wipe provider errors on the
+            # fallback — the placeholder row must be visibly labelled, not
+            # passed off as reported figures.
+            warnings.append(
+                "No live earnings provider responded; rows are labelled "
+                "unavailable rather than reported figures."
+            )
         elif finnhub_data or yf_data:
             warnings = []
+        metadata = (
+            {"live": False, "fallback": True, "data_mode": "modeled"}
+            if placeholder
+            else {
+                "live": True,
+                "data_mode": "live_official" if finnhub_data else "live_yfinance",
+            }
+        )
         return FunctionResult(
             code=self.code, instrument=instrument,
             data={
@@ -82,7 +93,7 @@ class EEFunction(BaseFunction):
                     "next_report": "Next known earnings date or provider calendar item.",
                 },
             },
-            sources=sources, warnings=warnings, metadata={"live": True},
+            sources=sources, warnings=warnings, metadata=metadata,
         )
 
 

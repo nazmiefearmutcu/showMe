@@ -319,7 +319,11 @@ def test_sanitizer_summary_stamped_on_every_payload() -> None:
         "reference": 0,
         "model": 0,
     }
-    assert payload["data_state"] == "live"
+    # H-1 fix (2026-09-08): an empty source list cannot prove liveness,
+    # so the payload must NOT earn a LIVE pill. With no fallback/degraded
+    # markers and no explicit live claim it downgrades to "reference".
+    assert payload["data_state"] == "reference"
+    assert payload["metadata"]["data_state"] == "reference"
 
 
 # ─── 10. Bond pane reference rows now flow through ─────────────────────

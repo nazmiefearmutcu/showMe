@@ -169,6 +169,7 @@ class BetaFunction(BaseFunction):
                 },
             },
             sources=sources, warnings=warnings,
+            metadata={"live": True, "data_mode": "live_yfinance"},
         )
 
 

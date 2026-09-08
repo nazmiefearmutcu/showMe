@@ -106,8 +106,9 @@ def test_ddis_corporate_real_or_labelled_fallback():
         total = res.data["summary"]["total_debt_usd_bn"]
         assert total > 0
     else:
-        # labelled illustrative or honest outage — never canned-as-live
-        assert res.data["summary"]["source_mode"] in {"illustrative_model", "sec_edgar"}
+        # honest empty/outage — never canned-as-live (H-5: illustrative
+        # ladder removed, no-data paths now report no_live_source)
+        assert res.data["summary"]["source_mode"] in {"illustrative_model", "sec_edgar", "no_live_source"}
 
 
 def test_ddis_pct_sums_to_100_when_rows_present():

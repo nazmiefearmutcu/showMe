@@ -27,26 +27,30 @@ class FTSFunction(BaseFunction):
         if not query:
             return FunctionResult(code=self.code, instrument=instrument, data={},
                                   warnings=["empty query"])
-        live = _truthy(params.get("live_search") or params.get("live_filings") or params.get("live"))
+        # Default-polarity flip (2026-09-08): FTS searches live SEC EDGAR
+        # full-text by default; ``reference=true`` skips the provider.
+        live = not _truthy(params.get("reference"))
         if not live or sec is None or (instrument and instrument.asset_class.value != "EQUITY"):
-            reason = (
-                "SEC EDGAR full-text search adapter is not configured for this asset class."
-                if instrument and instrument.asset_class.value != "EQUITY"
-                else "SEC EDGAR full-text search is offline; enable live=true with a configured sec_efts adapter."
-            )
+            if instrument and instrument.asset_class.value != "EQUITY":
+                reason = "SEC EDGAR full-text search is not applicable for this asset class."
+            elif sec is None:
+                reason = "SEC EDGAR full-text search adapter (sec_efts) is not configured; no live filing hits can be served."
+            else:
+                reason = "reference=true; live SEC full-text search skipped."
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
-                data={"status": "provider_unavailable", "rows": [], "query": query,
+                data={"status": "provider_unavailable" if live else "empty", "rows": [], "query": query,
                       "reason": reason,
                       "next_actions": [
-                          "Set live_search=true (or live=true) once the SEC EDGAR adapter is configured.",
+                          "Configure the sec_efts adapter to enable live EDGAR full-text search.",
                           "Verify the symbol is an EQUITY before requesting full-text search.",
                       ],
                       "methodology": "FTS searches SEC full-text filings by query, optional form list, and date range. Query is symbol-scoped when a symbol is open.",
                       "field_dictionary": {"score": "Provider relevance score when available.", "snippet": "Matched filing text excerpt.", "form": "SEC form type."}},
                 sources=["no_live_source"],
-                metadata={"query": query, "live": False},
+                metadata={"query": query, "live": False, "fallback": True,
+                          "data_mode": "empty" if not live else "provider_unavailable"},
             )
         forms = _parse_forms(params.get("forms")) or None
         try:
@@ -80,7 +84,8 @@ class FTSFunction(BaseFunction):
                               "field_dictionary": {"score": "Provider relevance score when available.", "snippet": "Matched filing text excerpt.", "form": "SEC form type."}},
                               sources=["sec_efts"],
                               metadata={"query": query, "forms": forms,
-                                         "count": len(rows)})
+                                         "count": len(rows),
+                                         "live": True, "data_mode": "live_official"})
 
 
 def _normalise_hits(hits: Any, instrument: Instrument | None) -> list[dict[str, Any]]:

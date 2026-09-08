@@ -405,5 +405,7 @@ class OMONFunction(BaseFunction):
                 "expiry": expiry,
                 "as_of": date.today().isoformat(),
                 "strike_count": len(rows),
+                "live": True,
+                "data_mode": "live_yfinance",
             },
         )

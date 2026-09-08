@@ -26,6 +26,10 @@ class SRCHFunction(BaseFunction):
         query = str(params.get("query") or "yield >= 4 AND duration <= 10")
         universe = _symbol_filter(params.get("universe"))
         rows = _filter_universe(_bond_reference_rows(), universe)
+        # H-6 honesty fix (2026-09-08): the bond universe is a STATIC
+        # reference table (2024-era yields) with no live path yet, so a
+        # matched filter must never report status "ok" as if these were
+        # current market levels. The payload is labelled "reference".
         return _screen_result(
             self.code,
             rows,
@@ -33,6 +37,7 @@ class SRCHFunction(BaseFunction):
             limit=_int_param(params, "limit", 50),
             sources=["showme_bond_reference_universe"],
             field_dictionary=_BOND_FIELDS,
+            reference=True,
         )
 
 
@@ -425,6 +430,7 @@ def _screen_result(
     sources: list[str],
     field_dictionary: list[dict[str, str]],
     warnings: list[str] | None = None,
+    reference: bool = False,
 ) -> FunctionResult:
     rewritten = _rewrite_screen_query(query)
     scanned = len(rows)
@@ -448,7 +454,7 @@ def _screen_result(
     if parse_error:
         status = "unsupported_predicate" if unsupported else "input_error"
     elif limited:
-        status = "ok"
+        status = "reference" if reference else "ok"
     else:
         status = "empty"
     reason = None
@@ -488,9 +494,16 @@ def _screen_result(
             "scanned": scanned,
             "limit": limit,
             "unsupported_columns": unsupported,
+            **({"data_mode": "reference"} if reference else {}),
         },
         sources=sources,
-        warnings=warnings or [],
+        warnings=(
+            (warnings or [])
+            + ([
+                "Static reference bond universe: yields and durations are curated "
+                "reference values, not live market quotes."
+            ] if reference and limited else [])
+        ),
     )
 
 

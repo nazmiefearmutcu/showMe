@@ -3,11 +3,25 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from showme.engine.core.instrument import Instrument
+
+_FOREX_FACTORY_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
+# ForexFactory publishes a weekly snapshot; 30 minutes keeps us polite and
+# fresh enough for a calendar pane without hammering the keyless endpoint.
+_FOREX_FACTORY_TTL_S = 1800.0
+_ff_cache: dict[str, Any] = {"fetched_at": 0.0, "rows": []}
+
+# ForexFactory tags rows by currency; the calendar's canonical country
+# tokens (see _COUNTRY_ALIASES below) use ISO-ish region codes.
+_CURRENCY_TO_COUNTRY: dict[str, str] = {
+    "USD": "US", "EUR": "EU", "GBP": "UK", "JPY": "JP", "CHF": "CH",
+    "CAD": "CA", "AUD": "AU", "NZD": "NZ", "CNY": "CN", "TRY": "TR",
+}
 
 
 @FunctionRegistry.register
@@ -22,48 +36,108 @@ class ECOFunction(BaseFunction):
         days = _int_param(params.get("days"), default=30, floor=1, ceiling=180)
         events: list = []
         provider_errors: list[str] = []
-        live = _truthy(params.get("live_calendar") or params.get("live"))
+        # Default-polarity flip (2026-09-08): ECO serves real calendar
+        # feeds by default (tradingeconomics → finnhub → keyless
+        # ForexFactory weekly JSON). ``reference=true`` serves the
+        # labelled illustrative schedule template. When every live
+        # provider fails the payload is an honest empty/error state — the
+        # invented calendar is NEVER shown at HTTP 200 unlabelled.
+        reference = _truthy(params.get("reference"))
         source_mode = "calendar_feed_model"
 
-        if live:
-            if self.deps.tradingeconomics:
-                try:
-                    events = await asyncio.wait_for(
-                        self.deps.tradingeconomics.calendar(
-                            country=country,
-                            importance=importance,
-                        ),
-                        timeout=float(params.get("timeout", 8)),
-                    )
-                    if events:
-                        source_mode = "tradingeconomics"
-                except Exception as exc:
-                    provider_errors.append(f"tradingeconomics: {exc}")
-
-            if not events and self.deps.finnhub:
-                try:
-                    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-                    end_str = (datetime.now(timezone.utc) + timedelta(days=days)).strftime("%Y-%m-%d")
-                    events = await asyncio.wait_for(
-                        self.deps.finnhub.economic_calendar(
-                            start=today_str,
-                            end=end_str,
-                        ),
-                        timeout=float(params.get("timeout", 8)),
-                    )
-                    if events:
-                        source_mode = "finnhub"
-                except Exception as exc:
-                    provider_errors.append(f"finnhub: {exc}")
-
-        if not events:
+        if reference:
             events = _calendar_feed_model(country, importance)
-            source_mode = "calendar_feed_model"
-            # Honesty: surface the fallback prominently. The synthetic calendar
-            # is illustrative — its schedule and values are NOT live releases.
-            provider_errors.append(
-                "Canlı takvim sağlayıcıları kullanılamadı — örnek (sentetik) "
-                "takvim gösteriliyor; değerler illüstratiftir."
+
+        if not reference and self.deps.tradingeconomics:
+            try:
+                events = await asyncio.wait_for(
+                    self.deps.tradingeconomics.calendar(
+                        country=country,
+                        importance=importance,
+                    ),
+                    timeout=float(params.get("timeout", 8)),
+                )
+                if events:
+                    source_mode = "tradingeconomics"
+            except Exception as exc:
+                provider_errors.append(f"tradingeconomics: {exc}")
+
+        if not reference and not events and self.deps.finnhub:
+            try:
+                today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                end_str = (datetime.now(timezone.utc) + timedelta(days=days)).strftime("%Y-%m-%d")
+                events = await asyncio.wait_for(
+                    self.deps.finnhub.economic_calendar(
+                        start=today_str,
+                        end=end_str,
+                    ),
+                    timeout=float(params.get("timeout", 8)),
+                )
+                if events:
+                    source_mode = "finnhub"
+            except Exception as exc:
+                provider_errors.append(f"finnhub: {exc}")
+
+        if not reference and not events:
+            try:
+                ff_events = await _forex_factory_events(
+                    client=await self._client(),
+                    timeout=max(2.0, min(float(params.get("timeout", 8)), 12.0)),
+                )
+                if ff_events:
+                    events = ff_events
+                    source_mode = "forex_factory"
+            except Exception as exc:  # noqa: BLE001 - provider error is surfaced in warnings
+                provider_errors.append(f"forex_factory: {exc}")
+
+        if not events and not reference:
+            # H-3 honesty fix: no invented calendar at HTTP 200. Every
+            # live provider failed, so the pane gets an honest
+            # provider_unavailable envelope instead of synthetic rows.
+            reason = "No economic-calendar provider responded (tradingeconomics, finnhub, forex_factory)."
+            return FunctionResult(
+                code=self.code,
+                instrument=None,
+                data={
+                    "status": "provider_unavailable",
+                    "reason": reason,
+                    "events": [],
+                    "rows": [],
+                    "surface": [],
+                    "cards": [
+                        {"label": "Events", "value": 0},
+                        {"label": "Country", "value": country or "ALL"},
+                        {"label": "Importance", "value": importance or "ALL"},
+                    ],
+                    "next_actions": [
+                        "Retry once the network or calendar providers recover.",
+                        "Set TRADINGECONOMICS_API_KEY or FINNHUB_API_KEY for the keyed calendar feeds.",
+                        "Pass reference=true to inspect the labelled illustrative schedule template.",
+                    ],
+                    "methodology": (
+                        "ECO filters economic calendar events by country, importance, and forward date window. "
+                        "When no live calendar provider responds, no schedule is shown at all rather than an "
+                        "invented one."
+                    ),
+                    "field_dictionary": {
+                        "date": "Scheduled event date.",
+                        "importance": "Provider impact bucket.",
+                        "forecast": "Consensus estimate when available.",
+                        "actual": "Released value when available.",
+                        "surprise": "Actual minus forecast.",
+                    },
+                    "source_mode": "provider_unavailable",
+                    "as_of": datetime.now(timezone.utc).isoformat(),
+                },
+                sources=["no_live_source"],
+                warnings=provider_errors + [reason],
+                metadata={"country": country, "importance": importance, "days": days,
+                          # R2 C-1: a failed live ATTEMPT is not a live claim.
+                          # ``live=True`` here used to ride the sanitizer's
+                          # metadata voucher to a LIVE pill on an empty
+                          # provider_unavailable envelope.
+                          "live": False, "fallback": True,
+                          "data_mode": "provider_unavailable"},
             )
 
         rows = _normalize_events(events, country=country, importance=importance, days=days)
@@ -73,6 +147,7 @@ class ECOFunction(BaseFunction):
             code=self.code,
             instrument=None,
             data={
+                "status": "ok",
                 "events": rows,
                 "rows": rows,
                 "surface": _importance_surface(rows),
@@ -100,8 +175,81 @@ class ECOFunction(BaseFunction):
             },
             sources=[source_mode],
             warnings=provider_errors,
-            metadata={"country": country, "importance": importance, "days": days, "live": live},
+            metadata={
+                "country": country,
+                "importance": importance,
+                "days": days,
+                "live": not reference,
+                "data_mode": "modeled" if reference else f"live_{source_mode}",
+            },
         )
+
+    async def _client(self) -> Any:
+        """Resolve an httpx-like async client (shared keyless pool).
+
+        Resolution order: an explicitly injected ``self._http_client``
+        (used by tests), then ``self.deps.http`` if a host wired one,
+        then the shared keyless httpx pool.
+        """
+        injected = getattr(self, "_http_client", None)
+        if injected is not None:
+            return injected
+        deps = getattr(self, "deps", None)
+        http = getattr(deps, "http", None) if deps is not None else None
+        if http is not None:
+            return http
+        from showme.providers._http import get_client
+
+        return await get_client()
+
+
+async def _forex_factory_events(*, client: Any, timeout: float) -> list[dict[str, Any]]:
+    """Fetch the keyless ForexFactory weekly calendar JSON (with TTL cache).
+
+    The endpoint returns a JSON array of that week's events with
+    country/impact/actual/forecast/prior fields. Rows are normalized into
+    the calendar schema used by ``_normalize_events``.
+    """
+    now = time.monotonic()
+    cached = _ff_cache.get("rows") or []
+    if cached and (now - float(_ff_cache.get("fetched_at") or 0.0)) < _FOREX_FACTORY_TTL_S:
+        return list(cached)
+    try:
+        resp = await client.get(_FOREX_FACTORY_URL, timeout=timeout)
+    except TypeError:
+        # Minimal test fakes may not accept a per-request timeout.
+        resp = await client.get(_FOREX_FACTORY_URL)
+    resp.raise_for_status()
+    raw = resp.json()
+    rows = _normalize_ff_rows(raw)
+    _ff_cache["fetched_at"] = now
+    _ff_cache["rows"] = list(rows)
+    return list(rows)
+
+
+def _normalize_ff_rows(raw: Any) -> list[dict[str, Any]]:
+    """Normalize the ForexFactory weekly JSON into calendar-event dicts."""
+    if not isinstance(raw, list):
+        return []
+    rows: list[dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title") or "").strip()
+        if not title:
+            continue
+        currency = str(item.get("country") or "").strip().upper()
+        rows.append({
+            "country": _CURRENCY_TO_COUNTRY.get(currency, currency),
+            "event": title,
+            "date": str(item.get("date") or "").strip(),
+            "importance": str(item.get("impact") or "medium").strip().lower() or "medium",
+            "forecast": item.get("forecast") or None,
+            "actual": item.get("actual") or None,
+            "previous": item.get("previous") or None,
+            "unit": "",
+        })
+    return rows
 
 
 def _truthy(value: Any) -> bool:

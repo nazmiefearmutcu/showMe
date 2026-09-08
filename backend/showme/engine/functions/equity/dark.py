@@ -189,19 +189,33 @@ class DARKFunction(BaseFunction):
             })
 
         # Stale guard: a months-old latest week should not masquerade as current.
+        # 2026-09-08 honesty fix: when the guard fires, the payload must honor
+        # its own documented contract — provider_unavailable with EMPTY venue
+        # rows + next_actions — instead of shipping the stale rows alongside a
+        # failure status (which made the degarbage contract self-contradictory
+        # and showed old weeks under an error pill).
         stale = _stale_reason(latest_week)
         status = "provider_unavailable" if stale else "ok"
         warnings: list[str] = []
+        next_actions: list[str] = []
+        visible_records: list[dict[str, Any]] = venue_records
+        visible_weeks: list[dict[str, Any]] = week_records
         if stale:
             warnings.append(stale)
+            next_actions = [
+                "Retry once FINRA publishes a current weekly ATS file for this symbol.",
+                "DARK shows no venue rows while the only available data is stale.",
+            ]
+            visible_records = []
+            visible_weeks = []
 
         latest_dark_pct = week_records[0]["dark_pool_pct"] if week_records else None
         top_venue_share = venue_records[0]["share_of_ats_pct"] if venue_records else None
 
         cards = {
-            "latest_dark_pool_pct": latest_dark_pct,
-            "latest_ats_volume": week_records[0]["ats_share_volume"] if week_records else None,
-            "venue_count": len(venue_records),
+            "latest_dark_pool_pct": None if stale else latest_dark_pct,
+            "latest_ats_volume": None if stale else (week_records[0]["ats_share_volume"] if week_records else None),
+            "venue_count": 0 if stale else len(venue_records),
             "data_mode": "delayed_reference" if status == "ok" else "provider_unavailable",
             "as_of": latest_week,
         }
@@ -214,17 +228,18 @@ class DARKFunction(BaseFunction):
                 "symbol": sym,
                 "n_rows": int(len(df)),
                 "total_shares_off_exchange": round(float(df["ats_share_volume"].sum() or 0.0)),
-                "top_venue_share_pct": top_venue_share,
-                "rows": venue_records,
-                "venues": venue_records,
-                "by_venue": venue_records,
-                "by_week": week_records,
-                "history": week_records,
+                "top_venue_share_pct": None if stale else top_venue_share,
+                "rows": visible_records,
+                "venues": visible_records,
+                "by_venue": visible_records,
+                "by_week": visible_weeks,
+                "history": visible_weeks,
+                **({} if not stale else {"next_actions": next_actions}),
                 "cards": cards,
                 "summary": {
                     "latest_week": latest_week,
-                    "latest_dark_pool_pct": latest_dark_pct,
-                    "venue_count": len(venue_records),
+                    "latest_dark_pool_pct": None if stale else latest_dark_pct,
+                    "venue_count": 0 if stale else len(venue_records),
                 },
                 "methodology": _METHODOLOGY,
                 "field_dictionary": {

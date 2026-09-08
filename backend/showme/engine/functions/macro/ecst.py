@@ -9,6 +9,7 @@ import pandas as pd
 
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from showme.engine.core.instrument import AssetClass, Instrument
+from showme.engine.functions._fred_csv import fred_with_keyless_fallback
 
 
 _SERIES_CATALOG: dict[str, dict[str, str]] = {
@@ -52,10 +53,16 @@ class ECSTFunction(BaseFunction):
         # 1. Try fetching from FRED
         series_info = {}
         compare_info = {}
-        if self.deps.fred:
+        # Keyless FRED CSV (survey S2 c#3): without a keyed adapter the
+        # series still comes live from fredgraph.csv (info() is keyed-only
+        # and is skipped by the existing except guard).
+        fred = fred_with_keyless_fallback(
+            self.deps.fred, client=getattr(self, "_http_client", None)
+        )
+        if fred:
             try:
                 df = await asyncio.wait_for(
-                    self.deps.fred.series(
+                    fred.series(
                         sid, 
                         start=start_date, 
                         frequency=params.get("frequency"),
@@ -65,7 +72,7 @@ class ECSTFunction(BaseFunction):
                 )
                 sources.append("fred")
                 try:
-                    series_info = await self.deps.fred.info(sid)
+                    series_info = await fred.info(sid)
                 except Exception:
                     pass
             except Exception as e:
@@ -74,7 +81,7 @@ class ECSTFunction(BaseFunction):
             if compare_sid:
                 try:
                     compare_df = await asyncio.wait_for(
-                        self.deps.fred.series(
+                        fred.series(
                             compare_sid, 
                             start=start_date, 
                             frequency=params.get("frequency"),
@@ -85,7 +92,7 @@ class ECSTFunction(BaseFunction):
                     if not compare_df.empty:
                         sources.append("fred")
                         try:
-                            compare_info = await self.deps.fred.info(compare_sid)
+                            compare_info = await fred.info(compare_sid)
                         except Exception:
                             pass
                 except Exception as e:

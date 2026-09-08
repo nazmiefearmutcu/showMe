@@ -114,11 +114,17 @@ class TRAFunction(BaseFunction):
         if instrument is None:
             raise ValueError("TRA requires instrument")
         years = int(params.get("years", 5))
-        live = _truthy(params.get("live_return") or params.get("live"))
+        # Default-polarity flip (2026-09-08): TRA computes from the live
+        # price feed by default; ``reference=true`` opts into the labelled
+        # template history. A live-feed failure may still fall back to the
+        # template, but only WITH an explicit warning + honest data_mode.
+        live = not _truthy(params.get("reference"))
+        warnings: list[str] = []
+        metadata: dict[str, Any] = {"live": False, "data_mode": "modeled"}
         if live:
             try:
                 if not self.deps.yfinance:
-                    raise RuntimeError("no yfinance")
+                    raise RuntimeError("yfinance adapter unavailable")
                 import asyncio
                 df = await asyncio.wait_for(
                     self.deps.yfinance.fetch(DataRequest(
@@ -129,10 +135,16 @@ class TRAFunction(BaseFunction):
                     timeout=float(params.get("quote_timeout", 8)),
                 )
                 sources = ["yfinance"]
-            except Exception:
+                metadata = {"live": True, "data_mode": "live_yfinance"}
+            except Exception as exc:
                 from showme.engine.functions.portfolio.btfw import _template_history
                 df = _template_history(365 * years)
                 sources = ["total_return_model"]
+                metadata = {"live": False, "fallback": True, "data_mode": "modeled"}
+                warnings.append(
+                    "TRA fell back to the labelled template history after the live "
+                    f"price feed failed: {exc}"
+                )
         else:
             from showme.engine.functions.portfolio.btfw import _template_history
             df = _template_history(365 * years)
@@ -141,6 +153,12 @@ class TRAFunction(BaseFunction):
             from showme.engine.functions.portfolio.btfw import _template_history
             df = _template_history(365 * years)
             sources = ["total_return_model"]
+            metadata = {"live": False, "fallback": True, "data_mode": "modeled"}
+            if live:
+                warnings.append(
+                    "Live price feed returned no usable observations; showing the "
+                    "labelled template history instead."
+                )
         close = df["close"]
         divs = df["dividends"] if "dividends" in df.columns else pd.Series(dtype=float)
         price_ret = float(close.iloc[-1] / close.iloc[0] - 1)
@@ -208,6 +226,8 @@ class TRAFunction(BaseFunction):
                 },
             },
             sources=sources,
+            warnings=warnings,
+            metadata=metadata,
         )
 
 
@@ -219,9 +239,8 @@ class MARSFunction(BaseFunction):
     category = "portfolio"
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
-        # Build factor returns from ETF proxies only when explicitly requested.
-        # The default path is a local multi-asset template so MARS works for
-        # equity, crypto, FX, and commodity symbols without blocking the app.
+        # Build factor returns from live ETF proxies by default. Only
+        # ``reference=true`` serves the local multi-asset template series.
         proxies = {
             "MKT": "SPY",      # market
             "SMB": "IWM",      # small-cap
@@ -232,7 +251,10 @@ class MARSFunction(BaseFunction):
         }
         years = int(params.get("years", 3))
         days = 365 * years
-        live = _truthy(params.get("live_risk") or params.get("live") or params.get("deep"))
+        # Default-polarity flip (2026-09-08): MARS regresses on live ETF
+        # factor proxies by default; ``reference=true`` opts into the
+        # labelled template series.
+        live = not _truthy(params.get("reference"))
 
         symbols = params.get("symbols") or []
         if isinstance(symbols, str):
@@ -253,6 +275,7 @@ class MARSFunction(BaseFunction):
                 factors=factors,
                 port_series=port_series,
                 sources=["multi_asset_risk_model"],
+                metadata={"live": False, "data_mode": "modeled"},
             )
 
         async def _ret(sym):
@@ -281,9 +304,16 @@ class MARSFunction(BaseFunction):
         rs = await asyncio.gather(*(_ret_with_timeout(s) for s in proxies.values())) if self.deps.yfinance else []
         # Audit Q3 #7: pairwise covariance for factor regression universe.
         factors = align_return_series(zip(proxies.keys(), rs), policy="pairwise")
+        warnings: list[str] = []
+        metadata: dict[str, Any] = {"live": True, "data_mode": "live_yfinance"}
         if factors.empty:
             from showme.engine.functions.portfolio.rpar import _template_returns
             factors = _template_returns(list(proxies.keys()), days)
+            metadata = {"live": False, "fallback": True, "data_mode": "modeled"}
+            warnings.append(
+                "Live ETF factor proxies were unavailable; factor loadings are "
+                "computed against the labelled template factor series."
+            )
         # Build return series from explicit symbols or the saved ShowMe portfolio.
         if not symbols:
             portfolio = PortfolioState()
@@ -298,6 +328,12 @@ class MARSFunction(BaseFunction):
         if port_ret.empty:
             from showme.engine.functions.portfolio.rpar import _template_returns
             port_ret = _template_returns([str(s) for s in symbols], days)
+            if "fallback" not in metadata:
+                metadata = {"live": False, "fallback": True, "data_mode": "modeled"}
+            warnings.append(
+                "Live symbol return series were unavailable; portfolio legs use "
+                "the labelled template series."
+            )
         weights = np.ones(port_ret.shape[1]) / max(port_ret.shape[1], 1)
         port_series = (port_ret * weights).sum(axis=1)
         return _mars_result(
@@ -305,7 +341,9 @@ class MARSFunction(BaseFunction):
             instrument=instrument,
             factors=factors,
             port_series=port_series,
-            sources=["yfinance"],
+            sources=["yfinance"] if metadata.get("live") else ["multi_asset_risk_model"],
+            warnings=warnings,
+            metadata=metadata,
         )
 
 
@@ -324,14 +362,31 @@ def _mars_result(
     factors: pd.DataFrame,
     port_series: pd.Series,
     sources: list[str],
+    warnings: list[str] | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> FunctionResult:
     factors = _tz_naive_frame(factors)
     port_series = _tz_naive_series(port_series)
+    warnings = list(warnings or [])
+    metadata = dict(metadata or {})
     joined = pd.concat([port_series.rename("portfolio"), factors], axis=1).dropna()
     if joined.empty:
+        # R2 H-2: when the live legs have zero overlapping dates the
+        # regression silently ran on template rows while wearing the
+        # caller's live metadata. The template injection is now labelled:
+        # warning + fallback metadata + model source, so a disjoint-
+        # calendar payload can never wear a LIVE pill.
         from showme.engine.functions.portfolio.rpar import _template_returns
         fallback = _template_returns(["portfolio", "MKT", "SMB", "HML", "MOM", "QMJ", "BAB"], 252)
         joined = fallback
+        warnings.append(
+            "Live factor and portfolio series had no overlapping dates; "
+            "regression output uses the labelled template series."
+        )
+        metadata["live"] = False
+        metadata["fallback"] = True
+        metadata["data_mode"] = "modeled"
+        sources = ["multi_asset_risk_model"]
     port_series = joined["portfolio"]
     y = joined["portfolio"].values
     X = joined.drop(columns="portfolio").values
@@ -407,6 +462,8 @@ def _mars_result(
             },
         },
         sources=sources,
+        warnings=warnings or [],
+        metadata=metadata or {},
     )
 
 

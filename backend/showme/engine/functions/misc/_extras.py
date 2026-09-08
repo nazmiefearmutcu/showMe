@@ -223,25 +223,42 @@ class FLYFunction(BaseFunction):
         callsign_filter = str(params.get("callsign") or params.get("flight") or "").strip().upper()
         country_filter = str(params.get("country") or "").strip().lower()
         limit = max(1, min(int(params.get("limit") or 25), 100))
-        if not _truthy(params.get("live_flight") or params.get("live")) or not self.deps.opensky:
-            return FunctionResult(
-                code=self.code,
-                instrument=None,
-                data=_flight_unavailable(callsign_filter, country_filter),
-                sources=["opensky"],
-            )
+        # Default-polarity flip (2026-09-08): FLY polls the live OpenSky
+        # feed by default; ``reference=true`` skips the provider and every
+        # failure path stays honest (no sample aircraft, ever).
+        if _truthy(params.get("reference")):
+            payload = _flight_unavailable(callsign_filter, country_filter)
+            payload["status"] = "empty"
+            payload["reason"] = "reference=true; live OpenSky tracking skipped. No sample aircraft are shown."
+            return FunctionResult(code=self.code, instrument=None, data=payload,
+                                  sources=["no_live_source"],
+                                  metadata={"live": False, "data_mode": "empty"})
+        if not self.deps.opensky:
+            payload = _flight_unavailable(callsign_filter, country_filter)
+            payload["reason"] = "OpenSky adapter is not configured; no sample aircraft are shown."
+            return FunctionResult(code=self.code, instrument=None, data=payload,
+                                  sources=["no_live_source"],
+                                  metadata={"live": False, "fallback": True,
+                                            "data_mode": "provider_unavailable"})
         try:
             timeout = max(1.0, min(float(params.get("flight_timeout", params.get("timeout", 3))), 5.0))
             data = await asyncio.wait_for(self.deps.opensky.fetch(None), timeout=timeout)
         except Exception as exc:
             payload = _flight_unavailable(callsign_filter, country_filter)
             payload["reason"] = f"OpenSky request failed: {exc}"
-            return FunctionResult(code=self.code, instrument=None, data=payload, sources=["opensky"])
+            return FunctionResult(code=self.code, instrument=None, data=payload,
+                                  sources=["no_live_source"],
+                                  metadata={"live": False, "fallback": True,
+                                            "data_mode": "provider_unavailable",
+                                            "provider_errors": [f"opensky: {exc}"]})
         rows = _normalize_opensky(data, callsign_filter, country_filter, limit)
         if not rows:
             payload = _flight_unavailable(callsign_filter, country_filter)
+            payload["status"] = "empty"
             payload["reason"] = "OpenSky returned no matching live aircraft for the selected filter."
-            return FunctionResult(code=self.code, instrument=None, data=payload, sources=["opensky"])
+            return FunctionResult(code=self.code, instrument=None, data=payload,
+                                  sources=["opensky"],
+                                  metadata={"live": True, "data_mode": "live_official"})
         return FunctionResult(
             code=self.code,
             instrument=None,
@@ -275,6 +292,7 @@ class FLYFunction(BaseFunction):
                 },
             },
             sources=["opensky"],
+            metadata={"live": True, "data_mode": "live_official"},
         )
 
 
@@ -418,12 +436,12 @@ def _bmc_lessons() -> list[dict[str, str]]:
 def _flight_unavailable(callsign_filter: str, country_filter: str) -> dict[str, Any]:
     return {
         "status": "provider_unavailable",
-        "reason": "OpenSky live tracking is unavailable or live_flight is disabled; no sample aircraft are shown.",
+        "reason": "OpenSky live tracking is unavailable; no sample aircraft are shown.",
         "callsign": callsign_filter or None,
         "country": country_filter or None,
         "rows": [],
         "next_actions": [
-            "Set live_flight=true and rerun.",
+            "Retry once the OpenSky service or network recovers.",
             "Use a callsign or origin-country filter to reduce the public OpenSky response.",
             "Set OPENSKY_USERNAME/OPENSKY_PASSWORD for higher public API reliability.",
         ],

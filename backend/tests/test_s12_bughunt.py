@@ -267,5 +267,8 @@ def test_srch_dsl_with_known_column_still_passes() -> None:
     from showme.engine.functions.screen._funcs import SRCHFunction
 
     out = asyncio.run(SRCHFunction().execute(query="yield >= 4 AND duration <= 10"))
-    assert out.data["status"] == "ok"
+    # H-6 (2026-09-08): SRCH is a STATIC reference universe, so matched
+    # rows are labelled "reference" (not "ok") with a top-level warning.
+    assert out.data["status"] == "reference"
+    assert out.warnings, "reference universe must warn it is not live"
     assert out.data["rows"]

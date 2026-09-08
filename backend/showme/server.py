@@ -1314,10 +1314,12 @@ def _classify_source_state(source: Any) -> str:
     ``reference_*_model`` is treated as reference, the higher-fidelity
     label), and explicit synthetic markers win over a generic ``_model``
     suffix only for the strings already enumerated above.
+    An absent or ``no_live_source`` sentinel source proves nothing about
+    liveness, so it classifies as ``synthetic`` (H-1 fix 2026-09-08).
     """
     text = str(source or "").lower().strip()
     if not text or text == "no_live_source":
-        return "live" if not text else "synthetic"
+        return "synthetic"
     if any(marker in text for marker in _REFERENCE_SOURCE_MARKERS):
         return "reference"
     if any(marker in text for marker in _OTHER_SYNTHETIC_MARKERS):
@@ -1330,14 +1332,52 @@ def _classify_source_state(source: Any) -> str:
 def _summarize_source_states(sources: list[Any]) -> dict[str, int]:
     summary: dict[str, int] = {"live": 0, "synthetic": 0, "reference": 0, "model": 0}
     for source in sources:
-        state = _classify_source_state(source)
-        # Sources marked ``no_live_source`` with empty text return "live"
-        # by accident; the explicit check above redirects truly-empty to
-        # "live", but treat the literal sentinel as a non-counter.
+        # The literal ``no_live_source`` sentinel is a non-counter: it
+        # carries no provenance, so it must not tip the summary toward
+        # any state (the fallback envelope uses it).
         if str(source or "").strip().lower() == "no_live_source":
             continue
+        # R2 M-1: dict-shaped sources ({"name": ...}) used to stringify to
+        # an unclassifiable blob; unwrap the identifying key first so the
+        # sentinel/markers inside still classify.
+        if isinstance(source, dict):
+            source = source.get("name") or source.get("source") or source
+        state = _classify_source_state(source)
         summary[state] = summary.get(state, 0) + 1
     return summary
+
+
+_FAILURE_DATA_MODES = {"provider_unavailable", "not_configured", "empty"}
+
+
+def _metadata_proves_live(metadata: dict[str, Any]) -> bool:
+    """True when the payload metadata explicitly vouches for a live feed.
+
+    A payload whose source list carries no classifiable provenance may
+    only keep the LIVE pill when the function itself stamped a live
+    claim: a truthy ``metadata.live`` or a ``live_*`` data_mode /
+    source_mode / mode string (the codebase convention, e.g.
+    ``live_official``, ``live_yfinance``, ``live_exchange``).
+
+    R2 C-1/H-1 defense in depth: a self-declared fallback/degraded
+    envelope (or a failure data_mode) can never carry that voucher — an
+    engine that stamps ``live=True`` on its own failure path (as ECO's
+    all-providers-failed envelope and av/brief not-configured envelopes
+    did) must not buy a LIVE pill for an empty error payload.
+    """
+    if _truthy_value(metadata.get("fallback")) or _truthy_value(metadata.get("degraded")):
+        return False
+    for key in ("data_mode", "source_mode", "mode", "compatibility_mode"):
+        value = str(metadata.get(key) or "").strip().lower()
+        if value in _FAILURE_DATA_MODES:
+            return False
+    if _truthy_value(metadata.get("live")):
+        return True
+    for key in ("data_mode", "source_mode", "mode", "compatibility_mode"):
+        value = str(metadata.get(key) or "").strip().lower()
+        if value.startswith("live"):
+            return True
+    return False
 
 
 def enforce_live_or_label_synthetic(
@@ -1390,6 +1430,10 @@ def enforce_live_or_label_synthetic(
     metadata_synthetic = bool(metadata.get("synthetic")) or (
         bool(metadata_mode) and _classify_source_state(metadata_mode) != "live"
     )
+    # R2 M-4 (GEX): an explicit falsy ``metadata.live`` is an engine veto
+    # against liveness — model paths that keep formula-named sources (no
+    # marker) must not ride the source-name summary to a LIVE pill.
+    declares_not_live = ("live" in metadata) and not _truthy_value(metadata.get("live"))
 
     # Dominant data_state: reference > model > synthetic > live.
     if summary["reference"] > 0:
@@ -1398,8 +1442,22 @@ def enforce_live_or_label_synthetic(
         data_state = "model"
     elif summary["synthetic"] > 0 or metadata_synthetic:
         data_state = "synthetic"
-    else:
+    elif not declares_not_live and (
+        summary["live"] > 0 or _metadata_proves_live(metadata)
+    ):
         data_state = "live"
+    else:
+        # H-1 fix (2026-09-08): an empty / all-sentinel source summary
+        # cannot prove liveness. HVT/IVOL provider-failure templates
+        # (template rows, ``sources=[]``, ``metadata.fallback``) used to
+        # earn a LIVE pill here. Downgrade to an honest non-live state:
+        # explicit fallback/degraded markers make it synthetic; anything
+        # else unproven becomes a reference (delayed) state.
+        data_state = (
+            "synthetic"
+            if _truthy_value(metadata.get("fallback")) or _truthy_value(metadata.get("degraded"))
+            else "reference"
+        )
 
     is_synthetic_like = data_state != "live"
 

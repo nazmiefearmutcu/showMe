@@ -30,12 +30,23 @@ class LITMFunction(BaseFunction):
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         if instrument is None:
             raise ValueError("LITM requires an instrument symbol")
-        live = _truthy(params.get("live_litigation") or params.get("live_filings") or params.get("live"))
+        # Default-polarity flip (2026-09-08): LITM now hits the live SEC
+        # EDGAR feed by default; ``reference=true`` opts back into the
+        # labelled local model template.
+        live = not _truthy(params.get("reference"))
         if not live or instrument.asset_class.value != "EQUITY" or not self.deps.sec_edgar:
+            reason = (
+                "LITM live SEC EDGAR feed is not applicable for this asset class."
+                if instrument.asset_class.value != "EQUITY"
+                else "SEC EDGAR adapter unavailable; litigation monitor is showing its labelled local model."
+            )
+            warnings = [reason] if live else []
             return FunctionResult(code=self.code, instrument=instrument,
                                   data=_fallback_litm(instrument),
                                   sources=["litigation_monitor_model"],
-                                  metadata={"live": False})
+                                  warnings=warnings,
+                                  metadata={"live": False, "fallback": True,
+                                            "data_mode": "modeled"})
         from showme.engine.functions.equity.cact import CACTFunction
         cact = CACTFunction(self.deps)
         timeout = max(1.0, min(float(params.get("sec_timeout", 3)), 5.0))
@@ -125,14 +136,17 @@ class MOSSFunction(BaseFunction):
         symbols = list(dict.fromkeys(str(s).upper() for s in symbols if str(s).strip()))
         days = max(20, min(int(params.get("days", 90) or 90), 365 * 3))
         limit = max(1, min(int(params.get("limit", len(symbols)) or len(symbols)), 200))
-        if not _truthy(params.get("live_screen") or params.get("live")):
+        # Default-polarity flip (2026-09-08): the realized-vol screen is
+        # live by default; ``reference=true`` serves the labelled template.
+        if _truthy(params.get("reference")):
             rows = _moss_template(symbols, days)
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
                 data=_moss_payload(rows[:limit], [], symbols, days, live=False),
                 sources=["volatility_model"],
-                metadata={"universe_size": len(symbols), "days": days, "live": False},
+                metadata={"universe_size": len(symbols), "days": days,
+                          "live": False, "data_mode": "modeled"},
             )
         if not self.deps.yfinance:
             return FunctionResult(
@@ -191,12 +205,25 @@ class MOSSFunction(BaseFunction):
         rows = [r["row"] for r in good]
         rows.sort(key=lambda x: x["vol_annualized"], reverse=True)
         if not rows:
+            # R2 M-2: mirror the no-adapter fallback envelope — the
+            # zero-rows failure path must carry fallback/live markers and
+            # surface the provider errors as warnings, not metadata-only.
+            reason = "no symbols returned usable price history"
+            envelope = _moss_unavailable(symbols, days, reason)
             return FunctionResult(
                 code=self.code,
                 instrument=None,
-                data=_moss_unavailable(symbols, days, "no symbols returned usable price history"),
+                data=envelope,
                 sources=["no_live_source"],
-                metadata={"universe_size": len(symbols), "days": days, "provider_errors": provider_errors},
+                metadata={
+                    "universe_size": len(symbols),
+                    "days": days,
+                    "provider_errors": provider_errors,
+                    "live": False,
+                    "fallback": True,
+                    "data_mode": "provider_unavailable",
+                },
+                warnings=[reason, *provider_errors[:10]],
             )
         histories = {r["row"]["symbol"]: r.get("history", []) for r in good}
         top_symbol = rows[0]["symbol"]
@@ -235,12 +262,17 @@ class CHGSFunction(BaseFunction):
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         if instrument is None:
             raise ValueError("CHGS requires an instrument symbol")
-        if not _truthy(params.get("live_chart") or params.get("live")):
+        # Default-polarity flip (2026-09-08): CHGS defers to the live TECH
+        # studies by default; ``reference=true`` serves the labelled
+        # synthetic chart template.
+        if _truthy(params.get("reference")):
             rows = _chart_template(instrument.symbol)
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
                 data={
+                    "status": "reference",
+                    "data_mode": "modeled",
                     "symbol": instrument.symbol,
                     "last": rows[-1]["close"],
                     "rows": rows,
@@ -248,7 +280,7 @@ class CHGSFunction(BaseFunction):
                     "sma_20": rows[-1]["close"] * 0.985,
                     "sma_50": rows[-1]["close"] * 0.962,
                 },
-                metadata={"alias_of": "TECH", "live": False},
+                metadata={"alias_of": "TECH", "live": False, "data_mode": "modeled"},
                 sources=["showme_chart_model"],
             )
         from showme.engine.functions.chart.tech import TECHFunction
@@ -275,20 +307,25 @@ class APPLFunction(BaseFunction):
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         if instrument is None:
             raise ValueError("APPL requires an instrument symbol")
-        live = _truthy(params.get("live_refdata") or params.get("live"))
+        # Default-polarity flip (2026-09-08): APPL resolves the live
+        # provider taxonomy by default; ``reference=true`` serves the
+        # bundled crosswalk.
+        live = not _truthy(params.get("reference"))
         if not live or not self.deps.yfinance:
             reason = (
                 "yfinance adapter not configured; taxonomy fell back to bundled defaults"
                 if not self.deps.yfinance
-                else "live=false; serving bundled taxonomy crosswalk"
+                else "reference=true; serving bundled taxonomy crosswalk"
             )
-            warnings = [reason] if not self.deps.yfinance else []
+            warnings = [reason] if (live and not self.deps.yfinance) else []
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
                 data=_taxonomy_template(instrument),
                 sources=["taxonomy_model"],
-                metadata={"live": False, "provider_errors": [reason]},
+                metadata={"live": False, "fallback": True,
+                          "data_mode": "reference",
+                          "provider_errors": [reason]},
                 warnings=warnings,
             )
         timeout = max(1.0, min(float(params.get("yfinance_timeout", 4)), 6.0))
@@ -307,7 +344,8 @@ class APPLFunction(BaseFunction):
                 instrument=instrument,
                 data=_taxonomy_template(instrument),
                 sources=["taxonomy_model"],
-                metadata={"live": False, "provider_errors": [f"yfinance: {exc}"]},
+                metadata={"live": False, "fallback": True, "data_mode": "reference",
+                          "provider_errors": [f"yfinance: {exc}"]},
             )
         profile = reference_profile(instrument.symbol)
         rows = _taxonomy_rows(instrument, rd.sector, rd.industry, rd.country, rd.currency, rd.exchange, profile)
@@ -326,7 +364,7 @@ class APPLFunction(BaseFunction):
                                          "source_mode": "live_yfinance or labelled reference taxonomy crosswalk.",
                                      }},
                               sources=["yfinance"],
-                              metadata={"live": True})
+                              metadata={"live": True, "data_mode": "live_yfinance"})
 
 
 def _taxonomy_template(instrument: Instrument) -> dict[str, Any]:
@@ -424,6 +462,8 @@ def _moss_payload(
 ) -> dict[str, Any]:
     top_symbol = rows[0]["symbol"] if rows else None
     return {
+        "status": "ok" if live else "reference",
+        "data_mode": "live_yfinance" if live else "modeled",
         "rows": rows,
         "history": history,
         "universe": symbols,

@@ -194,9 +194,11 @@ def test_gc3d_template_dates_are_rolling_not_hardcoded():
     """Was: _surface_template used the literal strings '2026-04-01',
     '2026-04-15', '2026-05-01' which read as stale weeks after the file
     was written.
-    Now: dates are rolling offsets from today."""
+    Now: dates are rolling offsets from today. (Since the 2026-09-08
+    default-polarity flip, GC3D is live by default — ``reference=true``
+    deterministically serves the template without touching the network.)"""
     fn = GC3DFunctionLive()
-    result = _run(fn.execute())  # no live_curve → falls back to template
+    result = _run(fn.execute(reference=True))
     data = result.data
     dates = data["dates"]
     today = datetime.now(timezone.utc).date()
@@ -214,8 +216,14 @@ def test_gc3d_days_param_is_clamped():
     days=999999 would have ballooned the FRED query.
     Now: clamped to [7, 3650]."""
     fn = GC3DFunctionLive()
-    # We can't easily inspect the clamped value without hitting the live
-    # branch, but the template branch should still respond cleanly.
+
+    class _BoomClient:
+        async def get(self, url, timeout=None):
+            raise RuntimeError("offline")
+
+    fn._http_client = _BoomClient()
+    # The live attempt fails fast (offline), and the labelled template
+    # branch should still respond cleanly.
     result = _run(fn.execute(days=999_999_999))
     assert result.data["summary"]["points"] > 0
 

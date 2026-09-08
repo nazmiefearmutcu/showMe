@@ -183,7 +183,9 @@ class BRIEFFunction(BaseFunction):
             metadata={
                 "format": "markdown",
                 "provider_errors": provider_errors,
-                "live": True,
+                # R2 H-1: the live claim follows the payload — an empty
+                # provider_unavailable envelope must not voucher live.
+                "live": bool(articles),
                 "data_mode": "live_official" if articles else "provider_unavailable",
                 "as_of": datetime.now(timezone.utc).isoformat(),
             },

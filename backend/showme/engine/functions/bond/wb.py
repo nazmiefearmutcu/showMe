@@ -8,6 +8,13 @@ from typing import Any
 
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from showme.engine.core.instrument import Instrument
+from showme.engine.functions._fred_csv import fred_with_keyless_fallback
+
+
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 _SOVEREIGN_FRED_IDS = {
@@ -71,19 +78,23 @@ class WBFunction(BaseFunction):
             for country, fred_id in _SOVEREIGN_FRED_IDS.items()
             if not country_filter or country in country_filter
         }
-        if not (params.get("live_bonds") or params.get("live")):
+        # Default-polarity flip + keyless FRED CSV (survey S2 c#3, item 4):
+        # WB pulls live sovereign yields by default — keyed adapter when
+        # wired, otherwise the keyless fredgraph.csv endpoint — and serves
+        # the labelled template only behind ``reference=true``.
+        if _truthy(params.get("reference")):
             data = {country: value for country, value in _world_bond_template().items() if not country_filter or country in country_filter}
             return FunctionResult(code=self.code, instrument=None, data=_rows_from_yields(data, "sovereign_yield_model"),
-                                  sources=["sovereign_yield_model"])
-        if not self.deps.fred:
-            data = {country: value for country, value in _world_bond_template().items() if not country_filter or country in country_filter}
-            return FunctionResult(code=self.code, instrument=None, data=_rows_from_yields(data, "sovereign_yield_model"),
-                                  sources=["sovereign_yield_model"])
+                                  sources=["sovereign_yield_model"],
+                                  warnings=["reference=true; serving the labelled sovereign yield template."])
+        fred = fred_with_keyless_fallback(
+            self.deps.fred, client=getattr(self, "_http_client", None)
+        )
         out: dict[str, float] = {}
-        timeout = float(params.get("fred_timeout", 5))
+        timeout = float(params.get("fred_timeout", 8))
         async def _one(country, fred_id):
             try:
-                df = await asyncio.wait_for(self.deps.fred.series(fred_id), timeout=timeout)
+                df = await asyncio.wait_for(fred.series(fred_id), timeout=timeout)
                 return country, float(df["value"].iloc[-1])
             except Exception:
                 return country, float("nan")
@@ -95,5 +106,7 @@ class WBFunction(BaseFunction):
         out = {c: y for c, y in out.items() if y == y}
         if not out:
             out = _world_bond_template()
-            return FunctionResult(code=self.code, instrument=None, data=_rows_from_yields(out, "sovereign_yield_model"), sources=["sovereign_yield_model"])
-        return FunctionResult(code=self.code, instrument=None, data=_rows_from_yields(out, "fred"), sources=["fred"])
+            return FunctionResult(code=self.code, instrument=None, data=_rows_from_yields(out, "sovereign_yield_model"), sources=["sovereign_yield_model"],
+                                  warnings=["Live sovereign yields unavailable (keyed FRED adapter or keyless CSV); showing the labelled reference template."])
+        return FunctionResult(code=self.code, instrument=None, data=_rows_from_yields(out, "fred"), sources=["fred"],
+                              metadata={"live": True, "data_mode": "live_official"})

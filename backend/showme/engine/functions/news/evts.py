@@ -36,8 +36,12 @@ class EVTSFunction(BaseFunction):
             raise ValueError
         events: dict[str, Any] = {}
         warnings: list[str] = []
-        live = _truthy(params.get("live_events") or params.get("live"))
-        if live and self.deps.yfinance:
+        # Default-polarity flip (2026-09-08): EVTS fetches the live
+        # corporate-events feed by default; ``reference=true`` opts out
+        # (returning the honest empty envelope).
+        live = not _truthy(params.get("reference"))
+        live_attempted = live and bool(self.deps.yfinance)
+        if live_attempted:
             try:
                 timeout = max(1.0, min(float(params.get("yfinance_timeout", 4)), 6.0))
                 events = await asyncio.wait_for(
@@ -57,7 +61,7 @@ class EVTSFunction(BaseFunction):
                 code=self.code,
                 instrument=instrument,
                 data={
-                    "status": "provider_unavailable" if live else "empty",
+                    "status": "provider_unavailable" if live_attempted else "empty",
                     "reason": reason,
                     "rows": [],
                     "symbol": instrument.symbol,
@@ -66,8 +70,13 @@ class EVTSFunction(BaseFunction):
                         "Open Raw function payload to inspect event provider errors.",
                     ],
                 },
-                sources=["yfinance" if live and self.deps.yfinance else "no_live_source"],
-                metadata={"live": live, "provider_errors": warnings or [reason]},
+                sources=["yfinance" if live_attempted else "no_live_source"],
+                metadata={
+                    "live": bool(live_attempted),
+                    "fallback": not live_attempted,
+                    "provider_errors": warnings or [reason],
+                    "data_mode": "live_yfinance" if live_attempted else "empty",
+                },
             )
         return FunctionResult(
             code=self.code,
@@ -78,8 +87,12 @@ class EVTSFunction(BaseFunction):
                 "symbol": instrument.symbol,
                 "event_count": len(rows),
             },
-            sources=["yfinance" if live and self.deps.yfinance else "corporate_events_model"],
-            metadata={"live": live, "provider_errors": warnings},
+            sources=["yfinance" if live_attempted else "corporate_events_model"],
+            metadata={
+                "live": bool(live_attempted),
+                "provider_errors": warnings,
+                "data_mode": "live_yfinance" if live_attempted else "modeled",
+            },
         )
 
 

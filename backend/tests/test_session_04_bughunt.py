@@ -180,9 +180,11 @@ def test_ddis_uses_instrument_symbol_not_aapl_when_issuer_missing() -> None:
     result = asyncio.run(fn.execute(_bond_instrument("US10Y")))
     summary = result.data["summary"]
     assert summary["issuer"] == "US10Y", f"Expected issuer=US10Y, got {summary['issuer']!r}"
-    assert result.data.get("status") == "illustrative", (
-        "Default debt ladder must be labelled illustrative, not 'ok' live data."
+    assert result.data.get("status") == "empty", (
+        "Sovereign/unspecified issuer must stay honest-empty (H-5: the "
+        "fabricated illustrative ladder was removed), never 'ok' live data."
     )
+    assert result.data.get("rows") == []
 
 
 def test_ddis_user_provided_maturities_get_ok_status() -> None:
