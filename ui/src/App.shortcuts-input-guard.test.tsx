@@ -59,6 +59,33 @@ describe("isEditableTarget", () => {
     expect(isEditableTarget(makeEvent(span))).toBe(true);
   });
 
+  it("returns true when the target is programmatically contenteditable (isContentEditable, no matchable attribute)", () => {
+    const div = document.createElement("div");
+    document.body.appendChild(div);
+    // `el.contentEditable = "true"` via script leaves no attribute value
+    // the closest() selector can match — only the property saves us.
+    Object.defineProperty(div, "isContentEditable", {
+      value: true,
+      configurable: true,
+    });
+    expect(isEditableTarget(makeEvent(div))).toBe(true);
+  });
+
+  it("returns true for an editable descendant (real browsers report it via isContentEditable)", () => {
+    const host = document.createElement("div");
+    const span = document.createElement("span");
+    host.appendChild(span);
+    document.body.appendChild(host);
+    // In a real browser span.isContentEditable computes true inside an
+    // editable host; jsdom does not compute it, so pin the property the
+    // guard actually reads.
+    Object.defineProperty(span, "isContentEditable", {
+      value: true,
+      configurable: true,
+    });
+    expect(isEditableTarget(makeEvent(span))).toBe(true);
+  });
+
   it("returns true when target is inside a nested input wrapper", () => {
     const form = document.createElement("form");
     const wrap = document.createElement("div");

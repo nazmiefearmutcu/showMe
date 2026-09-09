@@ -12,9 +12,13 @@
  *     workspace tree is still the pristine single-HOME default. The tree
  *     check keeps the card away from users whose workspace restored from
  *     disk (they already have a desk) even if localStorage was cleared.
- *   - ANY card action (preset, seed, or Skip) stores the flag → the card
- *     is never shown again. Storage failures degrade to "treated as
- *     answered" so a broken localStorage can never nag-loop.
+ *   - ANY card action (preset, seed, or Skip) attempts to store the flag.
+ *     Write-failure degradation (real behavior, R1-L): `markFirstRunDone`
+ *     swallows quota / private-mode write errors, so a PERSISTENTLY broken
+ *     localStorage means the card can re-offer on the next boot (it stays
+ *     dismissible every time). Within a session it never nag-loops: the
+ *     read side treats storage-broken reads as "answered", and the card's
+ *     own `answered` component state removes it immediately on any action.
  *   - The workspace persistence schema is NOT touched: presets build
  *     normal trees and the flag lives in its own localStorage key,
  *     following the existing `showme.*` convention

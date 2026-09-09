@@ -85,6 +85,11 @@ function shouldSuppressPaletteEvent(currentOpen: boolean): boolean {
 // (XSEN search, BDA prompt). Reaches the activeElement first because
 // `e.target` may be the wrapping form, not the editable child.
 //
+// Lane F (2026-09-09): also honors `node.isContentEditable === true` —
+// the attribute selectors below miss hosts made editable PROGRAMMATICALLY
+// (`el.contentEditable = "true"` without a literal attribute value the
+// selector can match) and `contenteditable="plaintext-only"` hosts.
+//
 // Exported for regression testing — see App.shortcuts-input-guard.test.tsx.
 export function isEditableTarget(e: KeyboardEvent): boolean {
   const candidates: (Element | null | undefined)[] = [
@@ -96,6 +101,9 @@ export function isEditableTarget(e: KeyboardEvent): boolean {
     if (node.closest('input,textarea,select,[contenteditable="true"],[contenteditable=""]')) {
       return true;
     }
+    // `Element` typings in this repo's TS lib predate `isContentEditable`;
+    // the property exists on every Element at runtime.
+    if ((node as HTMLElement).isContentEditable) return true;
   }
   return false;
 }

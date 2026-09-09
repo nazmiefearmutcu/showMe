@@ -4,7 +4,7 @@ import { StatusSection, StatusDivider } from "@/design-system";
 import { PRESET_LABELS, readState, THEME_CHANGE_EVENT, type ThemeState } from "@/lib/theme";
 import { formatTime, timezoneOffsetLabel, useTimezone } from "@/lib/timezone";
 import { describeNyseMarketState, getNyseMarketState } from "@/lib/market-state";
-import { useTapeHealth, type TapeHealth } from "@/lib/tape-health";
+import { useTapeHealth, TAPE_LABEL, formatTickAge } from "@/lib/tape-health";
 
 /**
  * TapeHealthSection — the one honest "is my tape alive" pill (campaign
@@ -14,25 +14,9 @@ import { useTapeHealth, type TapeHealth } from "@/lib/tape-health";
  * sockets here: state changes arrive via useSyncExternalStore, and the
  * staleness figure rides the Statusbar's existing 1 Hz clock re-render.
  * Hidden entirely when the desk has zero quote subscriptions — no tape, no
- * claim.
+ * claim. Labels + age format are single-sourced in lib/tape-health.ts so
+ * this pill and the Titlebar mini-tape can never drift (R3 L-2).
  */
-const TAPE_LABEL: Record<TapeHealth["state"], string> = {
-  idle: "IDLE",
-  live: "LIVE",
-  reconnecting: "RECONNECTING",
-  down: "DOWN",
-};
-
-function formatTickAge(ms: number): string {
-  if (ms < 1_000) return "<1s";
-  const s = Math.floor(ms / 1_000);
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m`;
-  const h = Math.floor(m / 60);
-  const rest = m % 60;
-  return rest > 0 ? `${h}h ${rest}m` : `${h}h`;
-}
 
 function TapeHealthSection() {
   const health = useTapeHealth();

@@ -127,6 +127,43 @@ describe("isTextTarget", () => {
       div.remove();
     }
   });
+
+  it("skips a programmatically contenteditable host (isContentEditable, no matchable attribute)", () => {
+    const div = document.createElement("div");
+    document.body.appendChild(div);
+    // `el.contentEditable = "true"` via script leaves no attribute value
+    // the closest() selector can match — only the property saves us.
+    Object.defineProperty(div, "isContentEditable", {
+      value: true,
+      configurable: true,
+    });
+    try {
+      expect(isTextTarget(kb({ key: "F6", target: div }))).toBe(true);
+    } finally {
+      div.remove();
+    }
+  });
+
+  it("skips when the ACTIVE element is programmatically contenteditable", () => {
+    const wrap = document.createElement("div");
+    const editor = document.createElement("div");
+    wrap.appendChild(editor);
+    document.body.appendChild(wrap);
+    Object.defineProperty(editor, "isContentEditable", {
+      value: true,
+      configurable: true,
+    });
+    editor.tabIndex = 0;
+    editor.focus();
+    try {
+      // Target is the non-editable wrapper; the guard must still catch the
+      // editable activeElement via the property check.
+      expect(isTextTarget(kb({ key: "F6", target: wrap }))).toBe(true);
+    } finally {
+      editor.blur();
+      wrap.remove();
+    }
+  });
 });
 
 /** Minimal KeyboardEvent stand-in (jsdom constructors are enough for most cases). */

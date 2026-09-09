@@ -76,6 +76,19 @@ export const BUILTIN_PRESETS: BuiltinPreset[] = [
     description: "WEI + WCRS + GLCO + ECO (cross-asset macro grid)",
     build: macroTree,
   },
+  {
+    // Canonical default/HOME desk (UI-finish wave F, 2026-09-09): the
+    // pristine cold-boot single HOME leaf that first-run.ts treats as
+    // "no desk yet". Registered HERE — kept last so markets-overview
+    // stays the first-listed preset everywhere — so "reset to default"
+    // surfaces (⌘ Layout menu) and the palette share one canonical id
+    // through the existing loadBuiltinPreset path (reset subscribers +
+    // id remap included) instead of hand-rolling a tree.
+    id: "home",
+    label: "Default Desk",
+    description: "Cold-boot desk — a single HOME leaf",
+    build: () => leaf("HOME"),
+  },
 ];
 
 export function loadBuiltinPreset(id: string, symbol?: string): boolean {

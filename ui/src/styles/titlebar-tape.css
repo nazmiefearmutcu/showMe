@@ -1,0 +1,55 @@
+/**
+ * Titlebar mini-tape (campaign UI-finish wave F, 2026-09-09).
+ *
+ * Compact tape readout beside the quick-actions group: `LIVE · 3 · 2s` /
+ * `RECONNECTING` / `DOWN`, mirroring the Statusbar pill's vocabulary
+ * (lib/tape-health.ts owns the words and the age format). Instrument
+ * discipline:
+ *   - flat + hairline only — no shadow, no pill chrome, no motion at all
+ *     (so prefers-reduced-motion needs no override);
+ *   - mono + tabular numerics so the symbol count and tick age hold width;
+ *   - semantic color ONLY on the state word — count and age stay neutral
+ *     display ink (Law 4: they are data, not chrome);
+ *   - tokens exclusively, no raw px (the 1px hairline is the sanctioned
+ *     hairline exception).
+ * Hidden entirely by the component when totalSymbols === 0 — no tape, no
+ * claim.
+ */
+
+/* Hairline-separated inline instrument that sits level with the 24px
+   quick-action hit targets. */
+header.titlebar .titlebar-tape {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-1);
+  margin-left: var(--space-3);
+  padding-left: var(--space-3);
+  border-left: 1px solid var(--line);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  letter-spacing: var(--tracking-label);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  color: var(--text-secondary);
+  vertical-align: middle;
+}
+
+/* The state word is the only semantically tinted token. */
+header.titlebar .titlebar-tape__state {
+  color: var(--text-secondary);
+  font-weight: var(--font-weight-semibold, 600);
+}
+header.titlebar .titlebar-tape[data-tape-state="live"] .titlebar-tape__state {
+  color: var(--positive-hex);
+}
+header.titlebar .titlebar-tape[data-tape-state="reconnecting"] .titlebar-tape__state {
+  color: var(--warn-hex);
+}
+header.titlebar .titlebar-tape[data-tape-state="down"] .titlebar-tape__state {
+  color: var(--negative-hex);
+}
+
+/* Count + age: neutral display ink (data, not chrome). */
+header.titlebar .titlebar-tape__value {
+  color: var(--text-display);
+}

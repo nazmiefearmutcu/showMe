@@ -18,10 +18,16 @@
  * New rows use `t(key, "English fallback")`: the i18n contract has zero
  * English-catalog fallback, so the literal second argument is the shipped
  * copy until the 12 locale catalogs add the keys.
+ *
+ * Open state lives in the app store (`shortcutsOpen` / `showShortcuts` /
+ * `hideShortcuts`, lane F 2026-09-09) so the ⌘K command palette can open
+ * the same overlay ("Shortcuts help" action) — the component keeps only
+ * the `?` toggle wiring; rendering is unchanged.
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { t, useLocale } from "@/i18n";
 import { useEscape, useFocusTrap } from "@/lib/a11y";
+import { useAppStore } from "@/lib/store";
 
 interface Group {
   title: string;
@@ -122,7 +128,10 @@ export function ShortcutsHelp() {
   // hooks must run unconditionally) so the cheat-sheet copy re-renders when
   // the user switches language while the overlay is open.
   useLocale();
-  const [open, setOpen] = useState(false);
+  // Store-owned open state: the palette action and the `?` key both flip
+  // the same flag, so there is exactly one truth for "overlay is open".
+  const open = useAppStore((s) => s.shortcutsOpen);
+  const hideShortcuts = useAppStore((s) => s.hideShortcuts);
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -134,21 +143,25 @@ export function ShortcutsHelp() {
         tag === "input" || tag === "textarea" || target?.isContentEditable === true;
       if (event.key === "?" && !isText) {
         event.preventDefault();
-        setOpen((prev) => !prev);
+        if (useAppStore.getState().shortcutsOpen) {
+          useAppStore.getState().hideShortcuts();
+        } else {
+          useAppStore.getState().showShortcuts();
+        }
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, []);
 
-  useEscape(open, () => setOpen(false));
+  useEscape(open, hideShortcuts);
   useFocusTrap(ref, open);
 
   if (!open) return null;
   const groups = buildGroups();
 
   return (
-    <div className="shortcuts-help__backdrop" onClick={() => setOpen(false)}>
+    <div className="shortcuts-help__backdrop" onClick={hideShortcuts}>
       <div
         ref={ref}
         role="dialog"
@@ -162,7 +175,7 @@ export function ShortcutsHelp() {
           <button
             type="button"
             aria-label={t("common.close")}
-            onClick={() => setOpen(false)}
+            onClick={hideShortcuts}
             className="btn btn--ghost"
           >
             ✕

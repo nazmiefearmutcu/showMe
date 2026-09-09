@@ -61,6 +61,11 @@ export function nextFocusedLeafId(
  * Same editable-surface guard semantics as App.tsx `isEditableTarget`
  * (HIGH #5): checks BOTH the event target and the active element because
  * `e.target` may be a wrapping form, not the editable child.
+ *
+ * Lane F (2026-09-09): also honors `node.isContentEditable === true` —
+ * the attribute selectors miss hosts made editable programmatically
+ * (`el.contentEditable = "true"` with no literal attribute value the
+ * selector can match) and `contenteditable="plaintext-only"` hosts.
  */
 export function isTextTarget(e: KeyboardEvent): boolean {
   const candidates: (Element | null | undefined)[] = [
@@ -72,6 +77,9 @@ export function isTextTarget(e: KeyboardEvent): boolean {
     if (node.closest('input,textarea,select,[contenteditable="true"],[contenteditable=""]')) {
       return true;
     }
+    // `Element` typings in this repo's TS lib predate `isContentEditable`;
+    // the property exists on every Element at runtime.
+    if ((node as HTMLElement).isContentEditable) return true;
   }
   return false;
 }

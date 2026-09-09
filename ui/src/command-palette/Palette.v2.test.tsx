@@ -47,7 +47,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
-  useAppStore.setState({ paletteOpen: false });
+  useAppStore.setState({ paletteOpen: false, shortcutsOpen: false });
   localStorage.clear();
   document.documentElement.removeAttribute("data-preset");
 });
@@ -158,5 +158,19 @@ describe("CommandPalette v2 — actions", () => {
     expect(
       screen.getByRole("option", { name: /Switch theme to Matrix/ }),
     ).toBeTruthy();
+  });
+
+  it("the 'Shortcuts help' action opens the cheat sheet via the store and closes the palette", () => {
+    expect(useAppStore.getState().shortcutsOpen).toBe(false);
+    render(<CommandPalette />);
+    const input = screen.getByRole("combobox") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "shortcuts" } });
+    const option = screen.getByRole("option", { name: /Shortcuts help/ });
+    expect(option).toBeTruthy();
+    fireEvent.click(option);
+    // The overlay reads `shortcutsOpen` from the store (same flag the `?`
+    // key flips), and running any action closes the palette.
+    expect(useAppStore.getState().shortcutsOpen).toBe(true);
+    expect(useAppStore.getState().paletteOpen).toBe(false);
   });
 });

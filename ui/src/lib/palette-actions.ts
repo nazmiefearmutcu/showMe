@@ -186,6 +186,16 @@ export function listPaletteActions(userPresetNames: string[] = []): PaletteActio
       setDensity(readState().density === "compact" ? "comfortable" : "compact");
     },
   });
+  actions.push({
+    id: "prefs.shortcuts-help",
+    tag: "PREF",
+    name: "Shortcuts help",
+    group: "preferences",
+    run: () => {
+      // Same overlay the `?` key toggles — one store flag, one truth.
+      useAppStore.getState().showShortcuts();
+    },
+  });
 
   return actions;
 }

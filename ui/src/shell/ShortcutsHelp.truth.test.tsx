@@ -10,12 +10,19 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { cleanup, fireEvent, render } from "@testing-library/react";
 import { ShortcutsHelp } from "./ShortcutsHelp";
+import { useAppStore } from "@/lib/store";
 
 beforeEach(() => {
   localStorage.clear();
+  // Open state lives in the app store (lane F) — reset it so each test
+  // starts with the overlay closed regardless of the previous test.
+  useAppStore.setState({ shortcutsOpen: false, paletteOpen: false });
 });
 
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  useAppStore.setState({ shortcutsOpen: false, paletteOpen: false });
+});
 
 function openHelp() {
   const utils = render(<ShortcutsHelp />);

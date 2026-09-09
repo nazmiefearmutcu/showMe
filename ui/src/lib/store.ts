@@ -32,6 +32,8 @@ interface AppStateShape {
   engineRoot: string | null;
   functionIndex: FunctionEntry[];
   paletteOpen: boolean;
+  /** Shortcuts cheat-sheet overlay (ShortcutsHelp) — single source of truth so the palette can open it too. */
+  shortcutsOpen: boolean;
   sidebarVisible: boolean;
   setSidecarStatus: (s: SidecarStatus) => void;
   setSidecarPort: (p: number | null) => void;
@@ -39,6 +41,8 @@ interface AppStateShape {
   setFunctionIndex: (idx: FunctionEntry[]) => void;
   togglePalette: (force?: boolean) => void;
   toggleSidebar: (force?: boolean) => void;
+  showShortcuts: () => void;
+  hideShortcuts: () => void;
 }
 
 export const useAppStore = create<AppStateShape>((set) => ({
@@ -47,6 +51,7 @@ export const useAppStore = create<AppStateShape>((set) => ({
   engineRoot: null,
   functionIndex: [],
   paletteOpen: false,
+  shortcutsOpen: false,
   sidebarVisible: readSidebarVisible(),
   setSidecarStatus: (sidecarStatus) => set({ sidecarStatus }),
   setSidecarPort: (sidecarPort) => set({ sidecarPort }),
@@ -63,6 +68,8 @@ export const useAppStore = create<AppStateShape>((set) => ({
       writeSidebarVisible(sidebarVisible);
       return { sidebarVisible };
     }),
+  showShortcuts: () => set({ shortcutsOpen: true }),
+  hideShortcuts: () => set({ shortcutsOpen: false }),
 }));
 
 // Bundle D / MULTITAB-02. Cross-tab sidebar visibility sync. Toggling the

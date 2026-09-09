@@ -11,10 +11,14 @@ import {
 } from "@/lib/theme";
 import { useWorkspace } from "@/lib/workspace";
 import { loadBuiltinPreset } from "@/lib/builtinPresets";
+import { formatTickAge, TAPE_LABEL, useTapeHealth } from "@/lib/tape-health";
 import { OrbitMark, Pill, TopbarSegment } from "@/design-system";
 import { t, useLocale } from "@/i18n";
 import { PresetMenu } from "./PresetMenu";
 import { toast } from "@/lib/toast";
+// Mini-tape styles ride a JS import (same pattern as Workspace.tsx →
+// workspace-ux.css); styles/index.css is left untouched.
+import "@/styles/titlebar-tape.css";
 
 /**
  * QA-2026-05-23: top-nav links are no longer visual decoration. Each
@@ -75,6 +79,62 @@ const MARKET_NAV: MarketNavLink[] = [
 ];
 
 const QUICK_CODES = ["OMON", "GEX", "FA", "BTMM"];
+
+/**
+ * TitlebarTape — compact tape readout beside the quick-actions group
+ * (UI-finish wave F, 2026-09-09). Same honest registry as the Statusbar
+ * pill (lib/tape-health.ts): `LIVE · N · <age>` / `RECONNECTING` / `DOWN`,
+ * labels + age format single-sourced via TAPE_LABEL / formatTickAge.
+ *   - Hidden entirely at zero subscriptions — no tape, no claim.
+ *   - Age only while LIVE: tape-health coalesces tick commits to ~1/s so
+ *     the figure stays fresh; when nothing is live the commits stop and a
+ *     frozen age would silently go stale, so non-live states show the
+ *     state word alone.
+ *   - Semantic color rides data-tape-state in styles/titlebar-tape.css and
+ *     touches only the state word.
+ */
+function TitlebarTape() {
+  const health = useTapeHealth();
+  // R3 M-2: unlike the Statusbar there is no 1 Hz heartbeat here, and the
+  // tape-health throttle coalesces tick-only commits — so during a silent
+  // stall while still "live" (half-open socket) a computed age would freeze
+  // at a young value and lie. A 1 Hz re-render while an age is on screen
+  // keeps the figure counting up honestly (Statusbar parity).
+  const [, setClockTick] = useState(0);
+  useEffect(() => {
+    if (!(health.state === "live" && health.lastTickAt != null)) return;
+    const id = setInterval(() => setClockTick((t) => t + 1), 1000);
+    return () => clearInterval(id);
+  }, [health.state, health.lastTickAt]);
+  if (health.totalSymbols === 0) return null;
+  const stateLabel = TAPE_LABEL[health.state];
+  // Vocabulary per state: `LIVE · N · <age>` / `RECONNECTING` / `DOWN`.
+  // Age only while LIVE — tape-health coalesces tick commits to ~1/s so the
+  // figure stays fresh; when nothing is live the commits stop and a frozen
+  // age would silently go stale, so other states stay word-only.
+  const ageMs =
+    health.state === "live" && health.lastTickAt != null
+      ? Math.max(0, Date.now() - health.lastTickAt)
+      : null;
+  const ageLabel = ageMs == null ? null : formatTickAge(ageMs);
+  const streaming = health.state === "live" ? health.liveSymbols : 0;
+  const hint = `Market data tape: ${stateLabel}${health.state === "live" ? ` — ${streaming} of ${health.totalSymbols} subscribed symbols streaming` : ""}${ageLabel == null ? "" : `, freshest tick ${ageLabel} ago`}`;
+  return (
+    <span
+      className="titlebar-tape"
+      data-tape-state={health.state}
+      data-testid="titlebar-tape"
+      title={hint}
+      aria-label={hint}
+    >
+      <span className="titlebar-tape__state">{stateLabel}</span>
+      {health.state === "live" && (
+        <span className="titlebar-tape__value">· {health.totalSymbols}</span>
+      )}
+      {ageLabel && <span className="titlebar-tape__value">· {ageLabel}</span>}
+    </span>
+  );
+}
 
 function isMarketNavActive(
   item: MarketNavLink,
@@ -256,6 +316,7 @@ export function Titlebar() {
             </button>
           ))}
         </div>
+        <TitlebarTape />
       </TopbarSegment>
 
       <TopbarSegment caption="cockpit" withDivider>

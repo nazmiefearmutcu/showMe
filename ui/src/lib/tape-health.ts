@@ -21,11 +21,39 @@
  *
  * `lastTickAt` is the freshest tick timestamp across all subscribed symbols
  * so the Statusbar can show honest staleness ("2s") instead of a bare dot.
+ *
+ * R1-L fix (2026-09-09, lane F): `commit()` used to fire on EVERY tick, and
+ * every commit handed useSyncExternalStore a fresh snapshot object — so the
+ * Statusbar re-rendered far above its designed 1 Hz heartbeat on a lively
+ * crypto desk. Two cheap guards now sit in front of the notify fan-out:
+ *   1. Skip entirely when nothing observable changed (state + counters +
+ *      lastTickAt all identical).
+ *   2. Coalesce tick-only churn (state/counters unchanged) to at most one
+ *      commit per TAPE_COMMIT_MIN_MS (~1/s). Transport-structure changes
+ *      (subscribe / release / state transitions) always commit immediately —
+ *      LIVE→DOWN honesty must never wait on a throttle. A deferred tick
+ *      commit loses nothing: the next allowed commit recomputes straight
+ *      from the entries map, so `lastTickAt` trails by at most one window.
  */
 import { useSyncExternalStore } from "react";
 import type { TransportState } from "./market-data";
 
 export type TapeState = "idle" | "live" | "reconnecting" | "down";
+
+/**
+ * Shared state-word vocabulary for every tape readout (Statusbar pill,
+ * Titlebar mini-tape). Single-sourced here so the two surfaces can never
+ * drift into different words for the same transport truth.
+ */
+export const TAPE_LABEL: Record<TapeState, string> = {
+  idle: "IDLE",
+  live: "LIVE",
+  reconnecting: "RECONNECTING",
+  down: "DOWN",
+};
+
+/** Minimum spacing between two tick-only commits (R1-L throttle window). */
+const TAPE_COMMIT_MIN_MS = 900;
 
 export interface TapeHealth {
   state: TapeState;
@@ -45,6 +73,11 @@ interface TapeEntry {
 const entries = new Map<string, TapeEntry>();
 const listeners = new Set<() => void>();
 let snapshot: TapeHealth = computeSnapshot();
+// R1-L throttle bookkeeping: signature of the last COMMITTED structure
+// (state + counters) and when it was committed. `lastCommitAt === 0` means
+// "nothing committed since reset" so the first commit always fires.
+let lastCommittedSig = `${snapshot.state}|${snapshot.liveSymbols}|${snapshot.totalSymbols}`;
+let lastCommitAt = 0;
 
 function computeSnapshot(): TapeHealth {
   let live = 0;
@@ -67,14 +100,25 @@ function computeSnapshot(): TapeHealth {
 }
 
 function commit(): void {
-  snapshot = computeSnapshot();
-  for (const notify of listeners) {
-    try {
-      notify();
-    } catch {
-      // One bad listener must never break the rest of the fan-out.
-    }
+  const next = computeSnapshot();
+  const sig = `${next.state}|${next.liveSymbols}|${next.totalSymbols}`;
+  const structureChanged = sig !== lastCommittedSig;
+  if (!structureChanged) {
+    if (next.lastTickAt === snapshot.lastTickAt) return; // nothing observable moved
+    // The FIRST tick (age figure "—" → a number) is a visible state change
+    // for every readout — commit it like a transition. Later tick-only
+    // churn coalesces to ~1/s. Transport honesty (LIVE/DOWN transitions)
+    // never waits — that path took the `structureChanged` branch. A
+    // deferred tick is not lost: the next allowed commit recomputes from
+    // the entries map, so `lastTickAt` trails by at most one
+    // TAPE_COMMIT_MIN_MS window.
+    const firstTick = snapshot.lastTickAt === null && next.lastTickAt !== null;
+    if (!firstTick && Date.now() - lastCommitAt < TAPE_COMMIT_MIN_MS) return;
   }
+  lastCommittedSig = sig;
+  lastCommitAt = Date.now();
+  snapshot = next;
+  notifyAll();
 }
 
 // ---------- instrumentation surface (called from market-data.ts) ----------
@@ -136,7 +180,38 @@ export function useTapeHealth(): TapeHealth {
 
 // ---------- tests ----------
 
+function notifyAll(): void {
+  for (const notify of listeners) {
+    try {
+      notify();
+    } catch {
+      // One bad listener must never break the rest of the fan-out.
+    }
+  }
+}
+
 export function __resetTapeHealthForTests(): void {
   entries.clear();
-  commit();
+  snapshot = computeSnapshot();
+  lastCommittedSig = `${snapshot.state}|${snapshot.liveSymbols}|${snapshot.totalSymbols}`;
+  lastCommitAt = 0;
+  // Reset always notifies (bypasses the throttle — it is test-only and
+  // must leave subscribed components consistent with the cleared registry).
+  notifyAll();
+}
+
+/**
+ * Shared age formatter for tape readouts (Statusbar pill + Titlebar
+ * mini-tape): "<1s" / "12s" / "3m" / "2h 14m". Single-sourced so both
+ * surfaces render the same staleness vocabulary.
+ */
+export function formatTickAge(ms: number): string {
+  if (ms < 1_000) return "<1s";
+  const s = Math.floor(ms / 1_000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  const rest = m % 60;
+  return rest > 0 ? `${h}h ${rest}m` : `${h}h`;
 }
