@@ -15,6 +15,14 @@ LOG = logging.getLogger("showme.server_routes.bots")
 # 400 instead of being silently coerced to "shadow" on create.
 _VALID_MODES = ("shadow", "live")
 
+# KAOS multibot (2026-09-09): engine-kind allowlist + venue vocabularies.
+# Records persisted before the ``engine`` field carry no key and default to
+# "spec" at the model layer (zero regression); unknown engine ids are
+# rejected here with a 400.
+_VALID_ENGINES = ("kaos", "spec")
+_VALID_VENUE_MARKETS = ("crypto-futures", "us-equities")
+_VALID_RISK_PROFILES = ("crypto", "equity")
+
 
 # C-API-3 / FIX_CONTRACT.md C8 — PUT /api/bots/{id} MUST NOT accept these
 # fields from the request body. They're either server-controlled runtime
@@ -129,6 +137,140 @@ def register(app: FastAPI, deps: AppDeps) -> None:
         if not _exchange_in_catalog(eid):
             raise HTTPException(400, detail="exchange_id not in catalog")
 
+    def _validate_engine_and_venues(payload: dict[str, Any]) -> None:
+        """KAOS multibot (2026-09-09): engine + venues validation.
+
+        * ``engine`` must be a known engine id (or absent → model default
+          "spec").
+        * Each venue must be a well-formed object whose ``exchange_id`` is
+          a known factory/catalog exchange and whose ``market`` /
+          ``risk_profile`` use the frozen vocabulary, with a non-empty
+          unique symbol list and unique venue ids.
+        * A kaos bot must carry at least one venue.
+        """
+        engine = payload.get("engine")
+        if engine is None:
+            return
+        if engine not in _VALID_ENGINES:
+            raise HTTPException(
+                400,
+                detail=f"invalid engine {engine!r}; must be one of {_VALID_ENGINES}",
+            )
+        venues = payload.get("venues")
+        if venues is None:
+            payload["venues"] = []
+            venues = []
+        if not isinstance(venues, list):
+            raise HTTPException(400, detail="venues must be a list")
+        seen_ids: set[str] = set()
+        for v in venues:
+            if not isinstance(v, dict):
+                raise HTTPException(400, detail="each venue must be an object")
+            vid = v.get("id")
+            eid = v.get("exchange_id")
+            market = v.get("market")
+            symbols = v.get("symbols")
+            profile = v.get("risk_profile")
+            if not isinstance(vid, str) or not vid.strip():
+                raise HTTPException(400, detail="venue.id is required")
+            if vid in seen_ids:
+                raise HTTPException(400, detail=f"duplicate venue id: {vid}")
+            seen_ids.add(vid)
+            if not isinstance(eid, str) or not eid.strip():
+                raise HTTPException(400, detail=f"venue {vid}: exchange_id is required")
+            if not _exchange_in_catalog(eid):
+                raise HTTPException(
+                    400,
+                    detail=f"venue {vid}: exchange_id {eid!r} not in catalog",
+                )
+            if market not in _VALID_VENUE_MARKETS:
+                raise HTTPException(
+                    400,
+                    detail=(
+                        f"venue {vid}: market {market!r} must be one of "
+                        f"{_VALID_VENUE_MARKETS}"
+                    ),
+                )
+            if profile is None:
+                profile = "equity" if market == "us-equities" else "crypto"
+            if profile not in _VALID_RISK_PROFILES:
+                raise HTTPException(
+                    400,
+                    detail=(
+                        f"venue {vid}: risk_profile {profile!r} must be one of "
+                        f"{_VALID_RISK_PROFILES}"
+                    ),
+                )
+            expected = "equity" if market == "us-equities" else "crypto"
+            if profile != expected:
+                raise HTTPException(
+                    400,
+                    detail=(
+                        f"venue {vid}: risk_profile {profile!r} does not match "
+                        f"market {market!r} (expected {expected!r})"
+                    ),
+                )
+            if (not isinstance(symbols, list) or not symbols
+                    or not all(isinstance(s, str) and s.strip() for s in symbols)):
+                raise HTTPException(
+                    400,
+                    detail=(
+                        f"venue {vid}: symbols must be a non-empty list of "
+                        "non-empty strings"
+                    ),
+                )
+        if engine == "kaos" and not venues:
+            raise HTTPException(
+                400, detail="engine='kaos' requires at least one venue",
+            )
+
+    def _credential_is_alpaca(credential_id: str) -> bool:
+        """True iff the vault credential was created for the Alpaca exchange.
+
+        Used by the equities live gate: a NASDAQ venue may only go live
+        when a REAL alpaca credential (not a crypto key) is attached.
+        """
+        try:
+            from showme.brokers import CredentialStore
+            rec, _ = CredentialStore.fresh().get(credential_id)
+            return rec.exchange_id == "alpaca"
+        except Exception as exc:  # noqa: BLE001
+            LOG.debug("alpaca credential lookup failed for %s: %s",
+                      credential_id, exc)
+            return False
+
+    def _enforce_equities_live_gate(payload: dict[str, Any], default_mode: str) -> None:
+        """Equity venues live only with a real Alpaca trade credential.
+
+        The generic live gates (trade perm + confirm_account_label) stay
+        untouched; this adds the venue-specific honesty rule: a bot with a
+        ``us-equities`` venue may only run ``mode="live"`` when the request
+        explicitly asks for live AND the attached credential is a real
+        Alpaca credential with trade permission. Otherwise → 400 (the
+        client keeps the shadow default).
+        """
+        mode = payload.get("mode", default_mode)
+        if mode != "live":
+            return
+        venues = payload.get("venues") or []
+        has_equities = any(
+            isinstance(v, dict) and v.get("market") == "us-equities"
+            for v in venues
+        )
+        if not has_equities:
+            return
+        cid = payload.get("credential_id")
+        has_trade, _label = _credential_perm(cid if isinstance(cid, str) else "")
+        if not (has_trade and cid and _credential_is_alpaca(cid)):
+            raise HTTPException(
+                400,
+                detail=(
+                    "live mode with a us-equities venue requires a real "
+                    "Alpaca credential with 'trade' permission; the venue "
+                    "stays shadow otherwise"
+                ),
+            )
+
     @router.get("/api/bots")
     async def list_bots() -> dict[str, Any]:
         """List bots with per-bot supervision health fields.
@@ -223,6 +365,9 @@ def register(app: FastAPI, deps: AppDeps) -> None:
         payload["enabled"] = False
         # Faz 2 / S5 — refuse to persist orphan / fake FKs.
         _validate_fks(payload)
+        # KAOS multibot: engine id + venue schema validation (equity venues
+        # can never flip live on POST — mode was just forced to shadow).
+        _validate_engine_and_venues(payload)
         try:
             rec = BotRecord(**payload)
         except Exception as exc:  # noqa: BLE001
@@ -259,7 +404,9 @@ def register(app: FastAPI, deps: AppDeps) -> None:
             for entry in rec.signal_log:
                 d = entry.model_dump()
                 d["bot_id"] = rec.id
-                d["bot_symbol"] = rec.symbol
+                # KAOS multibot entries carry per-decision symbol provenance;
+                # spec-bot entries fall back to the record's single symbol.
+                d["bot_symbol"] = getattr(entry, "symbol", None) or rec.symbol
                 d["bot_strategy_id"] = rec.strategy_id
                 d["bot_exchange_id"] = rec.exchange_id
                 d["bot_mode"] = rec.mode
@@ -384,12 +531,32 @@ def register(app: FastAPI, deps: AppDeps) -> None:
     async def get_bot(bot_id: str) -> dict[str, Any]:
         from showme.bots.store import UnknownBot
         try:
-            return _store().get(bot_id).model_dump()
+            d = _store().get(bot_id).model_dump()
         except UnknownBot:
             raise HTTPException(404, detail=f"unknown bot: {bot_id}")
         except ValueError:
             # Faz 2 / S7 — invalid id shape → 400, not 404 or 5xx.
             raise HTTPException(400, detail="invalid bot id")
+        # KAOS multibot status: per-venue rows {venue_id, market, bars_age,
+        # last_eval, decisions, lane_status}. lane_status is honest by
+        # construction — a NASDAQ venue without an Alpaca broker reports
+        # "PAPER (no Alpaca keys)" and is never evaluated on fake bars.
+        if d.get("engine") == "kaos":
+            try:
+                runner = _runner()
+                d["venue_rows"] = runner.kaos_lane_rows(bot_id, d.get("venues") or [])
+            except Exception as exc:  # noqa: BLE001
+                LOG.debug("venue_rows lookup failed for %s: %s", bot_id, exc)
+                d["venue_rows"] = [
+                    {
+                        "venue_id": (v.get("id") if isinstance(v, dict) else "?"),
+                        "market": (v.get("market") if isinstance(v, dict) else ""),
+                        "bars_age": None, "last_eval": None,
+                        "decisions": 0, "lane_status": "idle",
+                    }
+                    for v in (d.get("venues") or [])
+                ]
+        return d
 
     @router.put("/api/bots/{bot_id}")
     async def update_bot(bot_id: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -421,6 +588,13 @@ def register(app: FastAPI, deps: AppDeps) -> None:
             if existing.last_processed_event else None
         )
         payload["enabled"] = existing.enabled
+        # KAOS multibot: engine/venues are user-owned, but a partial PUT
+        # that omits them must not silently downgrade an existing kaos bot
+        # to a spec bot (the model defaults would kick in). Re-attach.
+        if "engine" not in payload:
+            payload["engine"] = existing.engine
+        if "venues" not in payload:
+            payload["venues"] = [v.model_dump() for v in existing.venues]
 
         # Faz 2 / M-1 — same explicit mode allowlist as POST.
         mode = payload.get("mode", existing.mode)
@@ -433,6 +607,11 @@ def register(app: FastAPI, deps: AppDeps) -> None:
         # ``strategy_id``/``credential_id`` (C-H5) and stale references
         # now 400 instead of being silently persisted.
         _validate_fks(payload)
+        # KAOS multibot: engine id + venue schema validation, then the
+        # venue-specific live gate (us-equities venue ⇒ real Alpaca trade
+        # credential, on top of the generic live gates below).
+        _validate_engine_and_venues(payload)
+        _enforce_equities_live_gate(payload, default_mode=existing.mode)
 
         # Live-mode gate: trade-perm + account_label confirmation.
         # Faz 2 / H-6 — drop the ``existing.mode != "live"`` short-circuit;

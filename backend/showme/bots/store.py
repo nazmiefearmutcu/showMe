@@ -47,6 +47,9 @@ class BotMeta:
     enabled: bool
     created_at: str
     updated_at: str
+    # KAOS multibot delegate: records persisted before the field default to
+    # "spec" (the exact pre-campaign runner path).
+    engine: str = "spec"
 
     def to_dict(self) -> dict[str, str | bool]:
         return {
@@ -55,6 +58,7 @@ class BotMeta:
             "symbol": self.symbol, "timeframe": self.timeframe,
             "mode": self.mode, "enabled": self.enabled,
             "created_at": self.created_at, "updated_at": self.updated_at,
+            "engine": self.engine,
         }
 
 
@@ -104,6 +108,7 @@ class BotStore:
                 enabled=bool(d.get("enabled", False)),
                 created_at=d.get("created_at") or "",
                 updated_at=d.get("updated_at") or "",
+                engine=d.get("engine") or "spec",
             ))
         return sorted(out, key=lambda m: m.updated_at, reverse=True)
 

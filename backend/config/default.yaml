@@ -196,3 +196,69 @@ data_pipeline:
   ccxt_failover_enabled: false
   ccxt_outage_threshold_seconds: 180
 
+
+# ── Bot system defaults (2026-09-09 KAOS MULTIBOT campaign) ─────────────
+# The bots subsystem (showme/bots) is file-persisted (SHOWME_HOME/bots);
+# this section declares the DEFAULTS every new-bot surface uses. KAOS is
+# THE default engine: the lifespan seed, templates and new-bot drafts all
+# mint engine="kaos" records with BOTH venues. Records persisted before the
+# engine field default to "spec" (zero regression for spec-rule bots).
+bots:
+  default_engine: kaos
+  default_name: KAOS Multibot
+  default_mode: shadow          # live stays an explicit user flip
+  forced_shadow_on_create: true # POST /api/bots clamps mode + enabled
+  default_timeframe: 15m
+  default_tick_interval_seconds: 60
+  default_strategy_id: kaos-multibot
+  venues:
+    - id: crypto
+      exchange_id: binanceusdm
+      market: crypto-futures
+      risk_profile: crypto
+      symbols:
+        - BTC/USDT:USDT
+        - ETH/USDT:USDT
+        - SOL/USDT:USDT
+        - BNB/USDT:USDT
+        - XRP/USDT:USDT
+        - DOGE/USDT:USDT
+        - ADA/USDT:USDT
+        - LINK/USDT:USDT
+        - AVAX/USDT:USDT
+        - SUI/USDT:USDT
+        - NEAR/USDT:USDT
+        - ENA/USDT:USDT
+        - LTC/USDT:USDT
+        - DOT/USDT:USDT
+        - APT/USDT:USDT
+        - ARB/USDT:USDT
+        - OP/USDT:USDT
+        - ATOM/USDT:USDT
+        - FIL/USDT:USDT
+        - SEI/USDT:USDT
+    - id: nasdaq
+      exchange_id: alpaca
+      market: us-equities
+      risk_profile: equity
+      symbols:
+        - SPY
+        - QQQ
+        - IWM
+        - AAPL
+        - MSFT
+        - NVDA
+        - AMZN
+        - GOOGL
+        - META
+        - AVGO
+        - TSLA
+        - BRKB
+        - LLY
+        - AMD
+        - INTC
+        - MU
+        - QCOM
+        - TXN
+        - ASML
+        - AMAT

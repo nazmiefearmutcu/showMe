@@ -183,6 +183,11 @@ def register(app: FastAPI, deps: AppDeps) -> None:
         return {
             "template_id": template_id,
             "strategy": saved.model_dump(),
+            # KAOS multibot templates carry an engine id + venue list so the
+            # client can create the bot record directly. Spec-rule templates
+            # return engine="spec" / venues=[] (additive, backward-safe).
+            "engine": getattr(entry, "engine", "spec"),
+            "venues": [dict(v) for v in getattr(entry, "venues", ())],
         }
 
     app.include_router(router)

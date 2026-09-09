@@ -28,6 +28,11 @@ class TemplateEntry:
     math: str
     spec_template: dict[str, Any]
     family: str = ""
+    # KAOS multibot (2026-09-09): engine-kind templates carry an engine id
+    # and venue list alongside the (sizing-only) spec template. Spec-rule
+    # templates keep the "spec" default — byte-compatible payloads.
+    engine: str = "spec"
+    venues: tuple[dict[str, Any], ...] = field(default_factory=tuple)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -40,6 +45,8 @@ class TemplateEntry:
             "math": self.math,
             "spec_template": dict(self.spec_template),
             "family": self.family,
+            "engine": self.engine,
+            "venues": [dict(v) for v in self.venues],
         }
 
     def matches_query(self, q: str) -> bool:
@@ -94,6 +101,8 @@ def _coerce_entry(raw: dict[str, Any]) -> TemplateEntry:
         math=str(raw.get("math") or ""),
         spec_template=dict(raw["spec_template"]),
         family=str(raw.get("family") or ""),
+        engine=str(raw.get("engine") or "spec"),
+        venues=tuple(dict(v) for v in (raw.get("venues") or [])),
     )
 
 

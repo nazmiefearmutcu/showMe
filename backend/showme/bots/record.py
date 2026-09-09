@@ -87,6 +87,15 @@ class SignalEntry(BaseModel):
     # pre-date this field. The UI flags ``fallback_10k`` so a user knows a
     # live order was sized on the fallback, not real broker equity.
     equity_source: str | None = None
+    # KAOS multibot provenance (2026-09-09 campaign): which venue symbol a
+    # decision belongs to. Always None for spec-rule bots (one bot = one
+    # symbol — the record's ``symbol`` field is the provenance there).
+    symbol: str | None = None
+    venue_id: str | None = None
+    # Direction the decision opened/closed ("long" | "short"). KAOS emits
+    # both directions per symbol; spec bots leave None (spec.position.side
+    # is the direction there).
+    side: str | None = None
 
 
 class ClosedTrade(BaseModel):
@@ -119,6 +128,57 @@ class ClosedTrade(BaseModel):
     exit_reason: str | None = None
 
 
+class VenueSpec(BaseModel):
+    """One trading venue of a KAOS multibot record (frozen CONTRACT schema).
+
+    ``{id, exchange_id, market, symbols[], risk_profile}`` — ``market`` is
+    ``"crypto-futures"`` (ccxt linear perps) or ``"us-equities"`` (Alpaca);
+    ``risk_profile`` selects the honest defaults for the venue (equities:
+    leverage 1, shadow-only until a real Alpaca credential with trade perm
+    is attached and the user explicitly flips live).
+    """
+
+    id: str = Field(..., min_length=1, max_length=64)
+    exchange_id: str = Field(..., min_length=1, max_length=64)
+    market: Literal["crypto-futures", "us-equities"] = "crypto-futures"
+    symbols: list[str] = Field(default_factory=list)
+    risk_profile: Literal["crypto", "equity"] = "crypto"
+
+    @field_validator("id", "exchange_id")
+    @classmethod
+    def _strip_ids(cls, v: str) -> str:
+        if not isinstance(v, str):
+            raise ValueError("venue id/exchange_id must be strings")
+        trimmed = v.strip()
+        if not trimmed:
+            raise ValueError("venue id/exchange_id must not be empty")
+        return trimmed
+
+    @field_validator("symbols")
+    @classmethod
+    def _validate_symbols(cls, v: list[str]) -> list[str]:
+        if not v:
+            raise ValueError("venue symbols must not be empty")
+        cleaned: list[str] = []
+        for s in v:
+            if not isinstance(s, str) or not s.strip():
+                raise ValueError("venue symbols must be non-empty strings")
+            cleaned.append(s.strip())
+        if len(cleaned) != len(set(cleaned)):
+            raise ValueError("venue symbols must be unique")
+        return cleaned
+
+    @model_validator(mode="after")
+    def _validate_profile_matches_market(self) -> "VenueSpec":
+        expected = "equity" if self.market == "us-equities" else "crypto"
+        if self.risk_profile != expected:
+            raise ValueError(
+                f"risk_profile={self.risk_profile!r} does not match "
+                f"market={self.market!r} (expected {expected!r})",
+            )
+        return self
+
+
 class BotRecord(BaseModel):
     id: str = Field(default_factory=_new_id)
     strategy_id: str
@@ -147,6 +207,13 @@ class BotRecord(BaseModel):
     cumulative_funding_pnl: float = 0.0
     created_at: str = Field(default_factory=_now_iso)
     updated_at: str = Field(default_factory=_now_iso)
+    # KAOS multibot delegate (2026-09-09 campaign). ``"spec"`` is the model
+    # default so every record persisted BEFORE this field exists keeps the
+    # exact spec-rule runner path (zero regression); KAOS is applied at the
+    # DEFAULT surfaces (lifespan seed, templates, config, new-bot drafts)
+    # which mint records with ``engine="kaos"`` + ``venues`` populated.
+    engine: Literal["kaos", "spec"] = "spec"
+    venues: list[VenueSpec] = Field(default_factory=list)
 
     @field_validator("symbol")
     @classmethod
@@ -218,6 +285,32 @@ class BotRecord(BaseModel):
                 f"for timeframe={self.timeframe}; rate-limit-ban risk. "
                 f"Minimum recommended is 30s on 4h+ timeframes."
             )
+        return self
+
+    @model_validator(mode="after")
+    def _check_engine_and_venues(self) -> "BotRecord":
+        """KAOS multibot config sanity (2026-09-09 campaign).
+
+        * A KAOS bot must carry at least one venue — a multibot with an
+          empty universe would tick forever as an honest no-op, which is a
+          config error better refused at the model boundary.
+        * Venue ids must be unique within a record.
+        * Equity venues always carry the "equity" risk profile and crypto
+          venues the "crypto" one (the frozen schema keeps the fields
+          separate so a venue's market is readable without a lookup).
+        """
+        if self.engine == "kaos" and not self.venues:
+            raise ValueError("engine='kaos' requires at least one venue")
+        ids = [v.id for v in self.venues]
+        if len(ids) != len(set(ids)):
+            raise ValueError("venue ids must be unique within a bot record")
+        for v in self.venues:
+            expected = "equity" if v.market == "us-equities" else "crypto"
+            if v.risk_profile != expected:
+                raise ValueError(
+                    f"venue {v.id!r}: risk_profile={v.risk_profile!r} does not "
+                    f"match market={v.market!r} (expected {expected!r})",
+                )
         return self
 
     def append_signal(self, entry: SignalEntry) -> "BotRecord":

@@ -86,11 +86,78 @@ def _on_credential_deleted(credential_id: str) -> None:
             )
 
 
+def _seed_default_kaos_bot(store: "BotStore") -> "BotRecord | None":
+    """First-run default: seed ONE "KAOS Multibot" bot (frozen CONTRACT).
+
+    Fires only when the bot store is EMPTY — an existing deployment keeps
+    every record byte-identical. The seed is honest by construction:
+
+    * ``mode="shadow"`` and ``enabled=False`` (same clamps as POST /api/bots;
+      going live stays an explicit user action with a trade-perm credential).
+    * ``engine="kaos"`` with both default venues (crypto 20 USD-M majors on
+      binanceusdm + NASDAQ 20 majors on alpaca), tick 60s.
+    * The bound strategy spec ("kaos-multibot") carries sizing only — the
+      KAOS engine evaluates, the spec positions it.
+    """
+    try:
+        if store.list():
+            return None
+    except Exception as exc:  # noqa: BLE001
+        LOG.warning("default-bot seed: store listing failed: %s", exc)
+        return None
+    try:
+        from showme.bots.kaos.config import (
+            DEFAULT_KAOS_BOT_NAME,
+            DEFAULT_KAOS_SPEC_ID,
+            DEFAULT_KAOS_TICK_SECONDS,
+            DEFAULT_KAOS_TIMEFRAME,
+            DEFAULT_VENUES,
+        )
+        from showme.bots.record import BotRecord, VenueSpec
+        from showme.strategies.spec import StrategySpec
+        from showme.strategies.store import StrategyStore, UnknownStrategy
+
+        sstore = StrategyStore.fresh()
+        try:
+            sstore.get(DEFAULT_KAOS_SPEC_ID)
+        except (UnknownStrategy, ValueError):
+            sstore.save(StrategySpec(
+                id=DEFAULT_KAOS_SPEC_ID,
+                name=DEFAULT_KAOS_BOT_NAME,
+                description=(
+                    "KAOS engine consensus (vendored, s20 config) — the "
+                    "default multibot strategy. Evaluates every venue "
+                    "universe per tick; this spec carries sizing only."
+                ),
+                timeframe=DEFAULT_KAOS_TIMEFRAME,
+            ))
+        rec = BotRecord(
+            strategy_id=DEFAULT_KAOS_SPEC_ID,
+            credential_id="kaos-local",
+            exchange_id="binanceusdm",
+            symbol="BTC/USDT",
+            timeframe=DEFAULT_KAOS_TIMEFRAME,
+            tick_interval_seconds=DEFAULT_KAOS_TICK_SECONDS,
+            mode="shadow",
+            enabled=False,
+            engine="kaos",
+            venues=[VenueSpec(**v) for v in DEFAULT_VENUES],
+        )
+        saved = store.save(rec)
+        LOG.info("default bot seeded: %s (engine=kaos, shadow, %d venues)",
+                 DEFAULT_KAOS_BOT_NAME, len(DEFAULT_VENUES))
+        return saved
+    except Exception as exc:  # noqa: BLE001
+        LOG.warning("default KAOS bot seed failed: %s", exc)
+        return None
+
+
 async def startup() -> None:
     """Called from server.py lifespan. Replay enabled bots.
 
     C3 fix: also registers ``_on_credential_deleted`` with the broker
     factory so a credential DELETE cascades into bot disable.
+    2026-09-09: seeds the default "KAOS Multibot" bot on first run.
     """
     runner = get_runner()
     try:
@@ -105,6 +172,7 @@ async def startup() -> None:
 
     try:
         store = BotStore.fresh()
+        _seed_default_kaos_bot(store)
         await runner.start_all(store)
         LOG.info("bot runner: started")
     except Exception as exc:  # noqa: BLE001

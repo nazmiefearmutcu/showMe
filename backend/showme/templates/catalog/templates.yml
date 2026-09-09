@@ -1,5 +1,56 @@
 # showMe template bot library — Sub-system G.
 # Each entry is a starter StrategySpec the user can instantiate.
+# The FIRST entry is the DEFAULT bot the terminal ships with (KAOS Multibot).
+
+- id: kaos-multibot
+  name: "KAOS Multibot"
+  family: kaos
+  description: "KAOS engine consensus (s20) scanning crypto AND NASDAQ venues simultaneously. Default bot."
+  uses_indicators: []
+  recommended_timeframe: "15m"
+  recommended_symbols: ["BTC/USDT:USDT", "AAPL"]
+  applicability: "All regimes — regime-aware vote mapping (trend/range) with cost-aware entry gates and 20-sigma/4-sigma barriers. One bot, both venues."
+  natural_language_explanation: |
+    KAOS is a multi-indicator consensus engine (EMA cross, MACD, RSI, Bollinger %B)
+    with a regime-aware vote mapping: oscillators answer the mean-reversion question
+    while ranging and the momentum question while trending. Entries need a weighted
+    consensus above threshold, a tradeable regime, cost gates, a higher-timeframe
+    slope agreement and 2 confirming bars; exits use a 30% trail after a 5-bar
+    minimum hold (time stop after 192 bars). The same brain scans 20 crypto perps
+    (binanceusdm) and 20 NASDAQ majors (Alpaca) simultaneously. The NASDAQ venue
+    stays PAPER until a real Alpaca credential is connected — never fake bars,
+    never silent live.
+  math: |
+    score = sum(w_i * vote_i) / total_weight  in [-1, 1]; entry iff |score| >= 0.5
+    votes: EMA9 vs EMA21 (+/-1), sign(MACD(12,26,9) hist), RSI14 momentum read
+    (>55 long / <45 short in trend mode), Bollinger %B(20, 2.0) momentum read.
+    Regime: move = mean|per-bar return| > 0.0003 to trade; Kaufman ER >= 0.35 = trend.
+    stop = entry -/+ 20 * sigma, take-profit = entry +/- 4 * sigma (sigma = per-bar
+    return RMS at the entry bar; the locked A2 baseline).
+    stop_loss_pct/take_profit_pct fields are derived from sigma at signal time.
+  engine: kaos
+  venues:
+    - id: crypto
+      exchange_id: binanceusdm
+      market: crypto-futures
+      risk_profile: crypto
+      symbols: ["BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT", "BNB/USDT:USDT", "XRP/USDT:USDT", "DOGE/USDT:USDT", "ADA/USDT:USDT", "LINK/USDT:USDT", "AVAX/USDT:USDT", "SUI/USDT:USDT", "NEAR/USDT:USDT", "ENA/USDT:USDT", "LTC/USDT:USDT", "DOT/USDT:USDT", "APT/USDT:USDT", "ARB/USDT:USDT", "OP/USDT:USDT", "ATOM/USDT:USDT", "FIL/USDT:USDT", "SEI/USDT:USDT"]
+    - id: nasdaq
+      exchange_id: alpaca
+      market: us-equities
+      risk_profile: equity
+      symbols: ["SPY", "QQQ", "IWM", "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "AVGO", "TSLA", "BRKB", "LLY", "AMD", "INTC", "MU", "QCOM", "TXN", "ASML", "AMAT"]
+  recommended_tick_interval_seconds: 60
+  spec_template:
+    name: "KAOS Multibot"
+    description: "KAOS consensus (s20) — sizing-only spec; the engine decides"
+    timeframe: "15m"
+    indicators: []
+    entry_rules: []
+    entry_logic: all
+    exit_rules: []
+    exit_logic: any
+    position: {side: long, sizing_kind: fixed_quote, sizing_value: 100}
 
 - id: rsi-mean-revert
   name: "RSI Mean Reversion (klasik)"

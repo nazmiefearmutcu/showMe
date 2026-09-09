@@ -389,6 +389,11 @@ class BotRunner:
         # both observe ``is_running == False`` and spawn duplicate loops.
         self._start_all_lock: asyncio.Lock = asyncio.Lock()
         self._stopped = False
+        # KAOS multibot (2026-09-09): per-bot lane status rows keyed by
+        # bot id — {updated_at, rows: [{venue_id, market, bars_age,
+        # last_eval, decisions, lane_status}]}. Surfaced by the bot status
+        # route via ``kaos_lane_rows``; only ever written by ``_tick_kaos``.
+        self._kaos_lanes: dict[str, dict[str, Any]] = {}
 
     def _get_lock(self, bot_id: str) -> asyncio.Lock:
         """Return the per-bot async lock, creating it on first access."""
@@ -467,6 +472,7 @@ class BotRunner:
                 await task
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
+        self._kaos_lanes.pop(bot_id, None)
         async with self._get_lock(bot_id):
             try:
                 rec = store.get(bot_id)
@@ -542,6 +548,14 @@ class BotRunner:
                     return None
                 store.save(fresh.append_signal(entry))
                 return entry
+
+            # KAOS multibot delegate (2026-09-09): records persisted before
+            # the ``engine`` field default to "spec" and keep the EXACT
+            # spec-rule path below, untouched. KAOS bots evaluate every
+            # configured venue's universe per tick and route each decision
+            # through the same dispatch/guards as spec events.
+            if (getattr(rec, "engine", "spec") or "spec") == "kaos":
+                return await self._tick_kaos(bot_id=bot_id, store=store, rec=rec)
 
             # Resolve broker.
             from showme.brokers import factory as factory_mod
@@ -759,84 +773,13 @@ class BotRunner:
                             return None
                         store.save(fresh.append_signal(entry))
                         return entry
-                try:
-                    order = await self._dispatch_live_order(
-                        bot_id=bot_id,
-                        broker=broker,
-                        spec=spec,
-                        rec=rec,
-                        event=last_event,
-                        df=df,
-                        equity_override=equity_for_sizing,
+                action, order_id, error, filled_qty, avg_fill_price = (
+                    await self._submit_live_and_audit(
+                        bot_id=bot_id, broker=broker, spec=spec, rec=rec,
+                        event=last_event, df=df,
+                        equity_for_sizing=equity_for_sizing,
                     )
-                    order_id = order.id if hasattr(order, "id") else str(order)
-                    # H-RT-1 partial-fill audit. If the broker came back
-                    # with ``filled_quantity`` strictly smaller than the
-                    # requested ``quantity``, report the signal as
-                    # ``placed`` (the order DID go through) but stash the
-                    # diagnostic in the ``error`` field so PERF / UI can
-                    # surface it. A fully-rejected IOC (``filled=0``)
-                    # downgrades to ``skipped``.
-                    fq = getattr(order, "filled_quantity", None)
-                    rq = getattr(order, "quantity", None)
-                    if fq is not None:
-                        filled_qty = float(fq)
-                    if avg := getattr(order, "avg_fill_price", None):
-                        avg_fill_price = float(avg)
-                    if filled_qty is not None and rq is not None:
-                        if float(filled_qty) <= 0:
-                            from showme.brokers import OrderType, TimeInForce
-                            otype = getattr(order, "order_type", None)
-                            tif = getattr(order, "time_in_force", None)
-                            if otype == OrderType.LIMIT and tif == TimeInForce.GTC:
-                                # F3/H4 fix: the limit path submits GTC — a
-                                # zero-fill leaves a REAL resting order on
-                                # the exchange. Attempt a cancel; if the
-                                # cancel fails or the broker can't cancel,
-                                # the possibly-resting order must stay
-                                # VISIBLE: classify ``error`` (not
-                                # ``skipped``). Downstream state checks
-                                # treat the non-skipped entry as position-
-                                # affecting, so no new entry resubmits on
-                                # top of the unknown order.
-                                cancel_fn = getattr(broker, "cancel_order", None)
-                                cancelled = False
-                                if cancel_fn is not None and order_id:
-                                    try:
-                                        cancelled = bool(
-                                            await cancel_fn(str(order_id)),
-                                        )
-                                    except Exception as canc_exc:  # noqa: BLE001
-                                        LOG.warning(
-                                            "bot %s: cancel of unfilled GTC "
-                                            "limit %s failed: %s",
-                                            bot_id, order_id, canc_exc,
-                                        )
-                                if cancelled:
-                                    action = "skipped"
-                                    error = "GTC unfilled — cancelled"
-                                else:
-                                    action = "error"
-                                    error = (
-                                        "GTC limit zero-fill; cancel failed or "
-                                        "unavailable — order may rest on "
-                                        f"exchange (id={order_id})"
-                                    )
-                            else:
-                                action = "skipped"
-                                error = f"IOC unfilled (filled=0 of {float(rq)})"
-                        elif float(filled_qty) + 1e-9 < float(rq):
-                            action = "placed"
-                            error = (
-                                f"partial fill: {float(filled_qty)} of {float(rq)}"
-                            )
-                        else:
-                            action = "placed"
-                    else:
-                        action = "placed"
-                except Exception as exc:  # noqa: BLE001
-                    action = "skipped"
-                    error = f"submit failed: {exc}"
+                )
 
             # Resolve quote price for closed-trade pairing. In shadow mode
             # the qty is the strategy's spec qty (so PnL reads end-to-end);
@@ -972,6 +915,563 @@ class BotRunner:
             store.save(new_rec)
             return entry
 
+    async def _submit_live_and_audit(
+        self,
+        *,
+        bot_id: str,
+        broker: Any,
+        spec: Any,
+        rec: BotRecord,
+        event: Any,
+        df: Any,
+        equity_for_sizing: float | None = None,
+    ) -> tuple[str, str | None, str | None, float | None, float | None]:
+        """Submit the live-mode order for ``event`` and audit the fill.
+
+        Shared by the spec path (``tick``) and the KAOS delegate
+        (``_tick_kaos``) so BOTH engines flow through the SAME dispatch and
+        the same H-RT-1 partial-fill / F3 GTC zero-fill-cancel guards.
+
+        Returns ``(action, order_id, error, filled_qty, avg_fill_price)``.
+        """
+        action = "placed"
+        order_id: str | None = None
+        error: str | None = None
+        filled_qty: float | None = None
+        avg_fill_price: float | None = None
+        try:
+            order = await self._dispatch_live_order(
+                bot_id=bot_id,
+                broker=broker,
+                spec=spec,
+                rec=rec,
+                event=event,
+                df=df,
+                equity_override=equity_for_sizing,
+            )
+            order_id = order.id if hasattr(order, "id") else str(order)
+            # H-RT-1 partial-fill audit. If the broker came back
+            # with ``filled_quantity`` strictly smaller than the
+            # requested ``quantity``, report the signal as
+            # ``placed`` (the order DID go through) but stash the
+            # diagnostic in the ``error`` field so PERF / UI can
+            # surface it. A fully-rejected IOC (``filled=0``)
+            # downgrades to ``skipped``.
+            fq = getattr(order, "filled_quantity", None)
+            rq = getattr(order, "quantity", None)
+            if fq is not None:
+                filled_qty = float(fq)
+            if avg := getattr(order, "avg_fill_price", None):
+                avg_fill_price = float(avg)
+            if filled_qty is not None and rq is not None:
+                if float(filled_qty) <= 0:
+                    from showme.brokers import OrderType, TimeInForce
+                    otype = getattr(order, "order_type", None)
+                    tif = getattr(order, "time_in_force", None)
+                    if otype == OrderType.LIMIT and tif == TimeInForce.GTC:
+                        # F3/H4 fix: the limit path submits GTC — a
+                        # zero-fill leaves a REAL resting order on
+                        # the exchange. Attempt a cancel; if the
+                        # cancel fails or the broker can't cancel,
+                        # the possibly-resting order must stay
+                        # VISIBLE: classify ``error`` (not
+                        # ``skipped``). Downstream state checks
+                        # treat the non-skipped entry as position-
+                        # affecting, so no new entry resubmits on
+                        # top of the unknown order.
+                        cancel_fn = getattr(broker, "cancel_order", None)
+                        cancelled = False
+                        if cancel_fn is not None and order_id:
+                            try:
+                                cancelled = bool(
+                                    await cancel_fn(str(order_id)),
+                                )
+                            except Exception as canc_exc:  # noqa: BLE001
+                                LOG.warning(
+                                    "bot %s: cancel of unfilled GTC "
+                                    "limit %s failed: %s",
+                                    bot_id, order_id, canc_exc,
+                                )
+                        if cancelled:
+                            action = "skipped"
+                            error = "GTC unfilled — cancelled"
+                        else:
+                            action = "error"
+                            error = (
+                                "GTC limit zero-fill; cancel failed or "
+                                "unavailable — order may rest on "
+                                f"exchange (id={order_id})"
+                            )
+                    else:
+                        action = "skipped"
+                        error = f"IOC unfilled (filled=0 of {float(rq)})"
+                elif float(filled_qty) + 1e-9 < float(rq):
+                    action = "placed"
+                    error = (
+                        f"partial fill: {float(filled_qty)} of {float(rq)}"
+                    )
+                else:
+                    action = "placed"
+            else:
+                action = "placed"
+        except Exception as exc:  # noqa: BLE001
+            action = "skipped"
+            error = f"submit failed: {exc}"
+        return action, order_id, error, filled_qty, avg_fill_price
+
+    # ---- KAOS multibot delegate (2026-09-09 campaign) -------------------
+
+    def kaos_lane_rows(self, bot_id: str, venues: Any) -> list[dict[str, Any]]:
+        """Per-venue status rows for a KAOS bot's status payload.
+
+        Merges the latest tick's lane state with the record's configured
+        venues; a venue never evaluated yet reports ``lane_status="idle"``
+        (honest: the runner has nothing measured for it).
+        """
+        state = self._kaos_lanes.get(bot_id) or {}
+        latest = {r.get("venue_id"): dict(r) for r in state.get("rows", [])}
+        out: list[dict[str, Any]] = []
+        for v in venues or []:
+            vid = v.get("id") if isinstance(v, dict) else getattr(v, "id", "?")
+            market = (
+                v.get("market") if isinstance(v, dict)
+                else getattr(v, "market", "")
+            )
+            row = latest.get(vid)
+            if row is None:
+                row = {
+                    "venue_id": vid, "market": market, "bars_age": None,
+                    "last_eval": None, "decisions": 0, "lane_status": "idle",
+                }
+            out.append(row)
+        return out
+
+    @staticmethod
+    def _kaos_position_state(rec: BotRecord) -> dict[str, dict[str, Any]]:
+        """Per-symbol open-position state from the signal log (KAOS bots).
+
+        Mirrors the spec path convention: the last non-skipped event per
+        symbol decides state — an ``entry`` opens a position (remembering
+        its side/price/qty), an ``exit`` (or a SKIPPED exit being retried,
+        F4) keeps it until a non-skipped exit lands.
+        """
+        out: dict[str, dict[str, Any]] = {}
+        for s in rec.signal_log:
+            if s.action == "skipped" or not s.symbol:
+                continue
+            if s.kind == "entry":
+                out[s.symbol] = {
+                    "entry": s,
+                    "side": s.side or "long",
+                }
+            elif s.kind == "exit":
+                out.pop(s.symbol, None)
+        return out
+
+    async def _tick_kaos(
+        self, *, bot_id: str, store: BotStore, rec: BotRecord,
+    ) -> SignalEntry | None:
+        """Single KAOS iteration: evaluate every venue's universe, route
+        each decision through the EXISTING dispatch.
+
+        Per-venue isolation: one venue failing (broker missing, bar fetch
+        error, evaluation error) can never block the other venue — each
+        stage is guarded and the lane status row records the honest state.
+        """
+        from showme.bots.kaos.adapter import evaluate as kaos_evaluate
+        from showme.bots.kaos.config import default_config as kaos_default_config
+
+        # Sizing source: the bound strategy spec (same sizing semantics as
+        # spec bots — fixed_quote etc. through the shared sizing module).
+        from showme.strategies.store import StrategyStore, UnknownStrategy
+        try:
+            spec = StrategyStore.fresh().get(rec.strategy_id)
+        except UnknownStrategy as exc:
+            LOG.warning("bot %s: strategy %s missing", bot_id, rec.strategy_id)
+            entry = SignalEntry(bar_index=-1, bar_time="", kind="entry",
+                                price=0.0, action="skipped",
+                                error=f"strategy unavailable: {exc}")
+            store.save(rec.append_signal(entry))
+            return entry
+        except ValueError as exc:
+            entry = SignalEntry(bar_index=-1, bar_time="", kind="entry",
+                                price=0.0, action="skipped",
+                                error=f"strategy unavailable: {exc}")
+            store.save(rec.append_signal(entry))
+            return entry
+
+        venues = list(rec.venues or [])
+        if not venues:
+            entry = SignalEntry(bar_index=-1, bar_time="", kind="entry",
+                                price=0.0, action="skipped",
+                                error="kaos bot has no venues configured")
+            store.save(rec.append_signal(entry))
+            return entry
+
+        from datetime import datetime, timezone
+        from showme.brokers import factory as factory_mod
+
+        cfg = kaos_default_config()
+        pos_state = self._kaos_position_state(rec)
+        lane_rows: list[dict[str, Any]] = []
+        last_entry: SignalEntry | None = None
+
+        # F5 parity: funding accrues on ANY in-position tick for perp
+        # symbols (spot / Alpaca brokers return 0.0 — honest no-op). The
+        # side comes from the held entry so shorts accrue sign-correct.
+        for sym, st in list(pos_state.items()):
+            held_entry: SignalEntry | None = st.get("entry")
+            venue_id = getattr(held_entry, "venue_id", None)
+            held_venue = next(
+                (v for v in venues if getattr(v, "id", None) == venue_id),
+                None,
+            )
+            if held_venue is None or held_entry is None:
+                continue
+            if not held_entry.qty or held_entry.qty <= 0:
+                continue
+            try:
+                held_broker = factory_mod.get_broker(
+                    f"{held_venue.exchange_id}:{rec.credential_id}",
+                )
+            except KeyError:
+                continue
+            funding_rate = await _fetch_funding_rate(held_broker, sym)
+            if funding_rate == 0.0:
+                continue
+            notional = float(held_entry.fill_price or held_entry.price) * float(held_entry.qty)
+            delta = compute_funding_delta(
+                position_notional=notional,
+                funding_rate=funding_rate,
+                dt_seconds=float(rec.tick_interval_seconds),
+                side=st.get("side") or "long",
+            )
+            if delta != 0.0:
+                try:
+                    fresh_f = store.get(bot_id)
+                except UnknownBot:
+                    return None
+                store.save(fresh_f.model_copy(update={
+                    "cumulative_funding_pnl":
+                        float(fresh_f.cumulative_funding_pnl) + delta,
+                }))
+
+        for venue in venues:
+            row: dict[str, Any] = {
+                "venue_id": venue.id, "market": venue.market,
+                "bars_age": None, "last_eval": None, "decisions": 0,
+                "lane_status": rec.mode,
+            }
+            broker_name = f"{venue.exchange_id}:{rec.credential_id}"
+            try:
+                broker = factory_mod.get_broker(broker_name)
+            except KeyError as exc:
+                LOG.debug("bot %s: venue %s broker %s missing: %s",
+                          bot_id, venue.id, broker_name, exc)
+                row["lane_status"] = (
+                    "PAPER (no Alpaca keys)" if venue.market == "us-equities"
+                    else "broker unavailable"
+                )
+                lane_rows.append(row)
+                continue
+
+            bars_by_symbol: dict[str, Any] = {}
+            newest_bar_ms = 0
+            held_symbols = set(pos_state or ())
+            for sym in venue.symbols:
+                try:
+                    # R2 M-1 fix: 512 bars (vs 200) so a held symbol's entry
+                    # bar stays inside the evaluation window across a multi-
+                    # hour outage; the honest "held-unresolved" note below
+                    # covers anything that still falls outside it.
+                    df = await fetch_ohlcv(broker, sym, rec.timeframe, limit=512)
+                except BotRunnerError as exc:
+                    LOG.debug("bot %s: venue %s bar fetch failed for %s: %s",
+                              bot_id, venue.id, sym, exc)
+                    continue
+                if df.empty:
+                    continue
+                bars_by_symbol[sym] = df
+                try:
+                    bar_ms = int(df.index[-1].value // 1_000_000)
+                except Exception:  # noqa: BLE001
+                    bar_ms = 0
+                newest_bar_ms = max(newest_bar_ms, bar_ms)
+
+            if not bars_by_symbol:
+                row["lane_status"] = (
+                    "PAPER (no Alpaca keys) — bars unavailable"
+                    if venue.market == "us-equities" else "bars unavailable"
+                )
+                lane_rows.append(row)
+                continue
+
+            # R2 M-1 fix (honesty): a HELD symbol whose bars never arrived
+            # cannot be exited by the evaluator this tick — say so instead
+            # of silently skipping it.
+            unresolved = sorted(held_symbols - set(bars_by_symbol))
+            held_note = ""
+            if unresolved:
+                held_note = (
+                    f" — held-unresolved ({', '.join(unresolved[:5])}"
+                    + ("…" if len(unresolved) > 5 else "") + ")"
+                )
+                row["lane_status"] = held_note.strip(" —")
+
+            try:
+                decisions = kaos_evaluate(
+                    bars_by_symbol, venue, cfg,
+                    in_position_by_symbol=pos_state,
+                )
+            except Exception as exc:  # noqa: BLE001
+                LOG.warning("bot %s: venue %s evaluation failed: %s",
+                            bot_id, venue.id, exc)
+                row["lane_status"] = "evaluation error"
+                lane_rows.append(row)
+                continue
+
+            now = time.time()
+            row["decisions"] = len(decisions)
+            row["last_eval"] = datetime.now(tz=timezone.utc).isoformat()
+            if newest_bar_ms:
+                row["bars_age"] = max(0.0, now * 1000.0 - newest_bar_ms) / 1000.0
+            if venue.market == "us-equities" and rec.mode != "live":
+                # Keys ARE attached (a broker resolved), but the bot has
+                # never been user-flipped to live: the equity lane is a
+                # shadow evaluation on real bars, never a real order.
+                row["lane_status"] = "shadow (paper fills)" + held_note
+            elif held_note:
+                row["lane_status"] = row["lane_status"] + held_note
+            lane_rows.append(row)
+
+            for dec in decisions:
+                dec_df = bars_by_symbol.get(dec.symbol)
+                if dec_df is None:
+                    # Defensive: an evaluation returning a decision for a
+                    # symbol it was given no bars for is a contract
+                    # violation — skip it, never route blind.
+                    LOG.warning(
+                        "bot %s: venue %s decision for %s has no bars; skipped",
+                        bot_id, venue.id, dec.symbol,
+                    )
+                    continue
+                last_entry = await self._route_kaos_decision(
+                    bot_id=bot_id, store=store, rec=rec, spec=spec,
+                    broker=broker, dec=dec, df=dec_df,
+                    pos_state=pos_state,
+                )
+                if last_entry is not None:
+                    try:
+                        rec = store.get(bot_id)
+                    except UnknownBot:
+                        return last_entry
+
+        self._kaos_lanes[bot_id] = {"updated_at": datetime.now(
+            tz=timezone.utc).isoformat(), "rows": lane_rows}
+        return last_entry
+
+    async def _route_kaos_decision(
+        self,
+        *,
+        bot_id: str,
+        store: BotStore,
+        rec: BotRecord,
+        spec: Any,
+        broker: Any,
+        dec: Any,
+        df: Any,
+        pos_state: dict[str, dict[str, Any]],
+    ) -> SignalEntry | None:
+        """Route ONE KAOS decision through the existing dispatch.
+
+        Same guards as the spec path: same-bar dedup against the last
+        processed event, F1 live fail-closed sizing, the shared
+        ``_submit_live_and_audit`` dispatch, per-entry qty persistence and
+        closed-trade pairing. Symbol provenance (``symbol`` / ``venue_id`` /
+        ``side``) rides on the SignalEntry so feed/PERF stay honest.
+        """
+        held = pos_state.get(dec.symbol)
+        if dec.kind == "entry" and held is not None:
+            return None
+        if dec.kind == "exit" and held is None:
+            return None
+
+        # Same-bar dedup: the same decision (bar_time + kind + symbol) is
+        # never double-processed, matching the spec path's idempotency rule
+        # (failed exits retry; failed entries stay deduped).
+        lpe = rec.last_processed_event
+        if (lpe is not None and lpe.symbol == dec.symbol
+                and lpe.bar_time == dec.bar_time and lpe.kind == dec.kind
+                and (lpe.action != "skipped" or dec.kind == "entry")):
+            return None
+
+        action = "shadow"
+        order_id: str | None = None
+        error: str | None = None
+        filled_qty: float | None = None
+        avg_fill_price: float | None = None
+        equity_source: str | None = None
+        equity_for_sizing: float | None = None
+
+        # Per-symbol record view so the SHARED dispatch submits the
+        # decision's symbol (the record's own symbol is only a placeholder
+        # for multibot records). model_copy skips validators on purpose:
+        # ccxt perp symbols ("BTC/USDT:USDT") carry a colon.
+        # R2 M-2 fix: RegT equity venues are NEVER levered — force
+        # leverage=1.0 on the copy so BOTH the live order sizing and the
+        # qty persistence below read 1.0 for "equity" risk profiles.
+        _dec_venue = next(
+            (v for v in (rec.venues or [])
+             if getattr(v, "id", None) == getattr(dec, "venue_id", None)),
+            None,
+        )
+        _kaos_updates: dict[str, Any] = {"symbol": dec.symbol}
+        if getattr(_dec_venue, "risk_profile", "") == "equity":
+            _kaos_updates["leverage"] = 1.0
+        rec_for_symbol = rec.model_copy(update=_kaos_updates)
+        event = _KaosEventView(dec)
+
+        if rec.mode == "live":
+            if spec.position.sizing_kind in ("risk_pct", "risk_per_trade"):
+                try:
+                    equity_for_sizing, equity_source = (
+                        await _resolve_equity_with_source(
+                            broker, symbol=dec.symbol,
+                        )
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    LOG.debug("equity source resolve failed: %s", exc)
+                    equity_source = None
+                    equity_for_sizing = None
+                # F1 (fail-closed): no real equity — no live entry. Exits
+                # are not gated (a close must never strand a position).
+                if equity_source != "broker" and dec.kind == "entry":
+                    entry = SignalEntry(
+                        bar_index=dec.bar_index, bar_time=dec.bar_time,
+                        kind=dec.kind, price=dec.price, action="skipped",
+                        error=(
+                            "live sizing refused: broker equity unavailable "
+                            f"(equity_source={equity_source})"
+                        ),
+                        bar_close_time=bar_close_time(dec.bar_time, rec.timeframe),
+                        reason=dec.reason,
+                        equity_source=equity_source,
+                        symbol=dec.symbol, venue_id=dec.venue_id, side=dec.side,
+                    )
+                    try:
+                        fresh = store.get(bot_id)
+                    except UnknownBot:
+                        return None
+                    store.save(fresh.append_signal(entry))
+                    return entry
+            action, order_id, error, filled_qty, avg_fill_price = (
+                await self._submit_live_and_audit(
+                    bot_id=bot_id, broker=broker, spec=spec,
+                    rec=rec_for_symbol, event=event, df=df,
+                    equity_for_sizing=equity_for_sizing,
+                )
+            )
+
+        # Persist entry qty (shadow: spec sizing; live: actual fill when
+        # available) so exit pairing reads the entry-time qty (H17).
+        persisted_qty: float | None = None
+        if dec.kind == "entry":
+            if filled_qty is not None and filled_qty > 0:
+                persisted_qty = float(filled_qty)
+            else:
+                try:
+                    # R2 M-2 fix: size on the per-symbol view (equity venues
+                    # carry leverage=1.0 there — never the record's default).
+                    persisted_qty = await _resolve_quantity_async(
+                        spec, df, broker,
+                        leverage=float(rec_for_symbol.leverage),
+                        equity_override=equity_for_sizing,
+                        symbol=dec.symbol,
+                    )
+                except (BotRunnerError, Exception):  # noqa: BLE001
+                    persisted_qty = None
+
+        entry = SignalEntry(
+            bar_index=dec.bar_index,
+            bar_time=dec.bar_time,
+            kind=dec.kind,
+            price=dec.price,
+            action=action,
+            order_id=order_id,
+            error=error,
+            fill_price=avg_fill_price,
+            qty=persisted_qty,
+            bar_close_time=bar_close_time(dec.bar_time, rec.timeframe),
+            reason=dec.reason,
+            equity_source=equity_source,
+            symbol=dec.symbol,
+            venue_id=dec.venue_id,
+            side=dec.side,
+        )
+
+        try:
+            fresh = store.get(bot_id)
+        except UnknownBot:
+            return None
+        new_rec = fresh.append_signal(entry)
+
+        # Closed-trade pairing on a non-skipped exit (same-symbol entry).
+        if dec.kind == "exit" and held is not None and entry.action != "skipped":
+            new_rec = new_rec.model_copy(
+                update={"cumulative_funding_pnl": 0.0},
+            )
+            matching_entry = None
+            for s in reversed(fresh.signal_log):
+                if (s.kind == "entry" and s.action != "skipped"
+                        and s.symbol == dec.symbol):
+                    matching_entry = s
+                    break
+            if matching_entry is not None and matching_entry.price > 0:
+                side: Side = dec.side  # decision truth: the held side
+                if filled_qty is not None and filled_qty > 0:
+                    qty = float(filled_qty)
+                elif matching_entry.qty is not None and matching_entry.qty > 0:
+                    qty = float(matching_entry.qty)
+                else:
+                    qty = 0.0
+                entry_px_pnl = float(matching_entry.fill_price or matching_entry.price)
+                exit_px_pnl = float(entry.fill_price or entry.price)
+                pnl = compute_pnl(
+                    entry_price=entry_px_pnl, exit_price=exit_px_pnl,
+                    side=side, entry_qty=qty,
+                )
+                commission = compute_commission(
+                    entry_price=entry_px_pnl, exit_price=exit_px_pnl,
+                    qty=qty, commission_rate=float(rec.commission_rate),
+                )
+                funding = float(fresh.cumulative_funding_pnl)
+                net = float(pnl) - commission - funding
+                closed = ClosedTrade(
+                    entry_timestamp=matching_entry.bar_time or matching_entry.timestamp,
+                    exit_timestamp=entry.bar_time or entry.timestamp,
+                    entry_price=entry_px_pnl,
+                    exit_price=exit_px_pnl,
+                    qty=float(qty),
+                    side=side,
+                    pnl=float(pnl),
+                    bar_index_entry=int(matching_entry.bar_index),
+                    bar_index_exit=int(entry.bar_index),
+                    commission_paid=float(commission),
+                    funding_paid=float(funding),
+                    net_pnl=float(net),
+                    exit_reason=dec.reason or "kaos_exit",
+                )
+                new_rec = new_rec.append_closed_trade(closed)
+
+        store.save(new_rec)
+
+        # Keep the per-symbol position book coherent for the rest of tick.
+        if dec.kind == "entry":
+            pos_state[dec.symbol] = {"entry": entry, "side": dec.side}
+        else:
+            pos_state.pop(dec.symbol, None)
+        return entry
+
     async def _dispatch_live_order(
         self,
         *,
@@ -1086,6 +1586,25 @@ class BotRunner:
             time_in_force=TimeInForce.IOC,
             notes=f"bot:{bot_id}",
         )
+
+
+class _KaosEventView:
+    """Minimal Event-like view over a KAOS decision for the shared dispatch.
+
+    Exposes exactly the attributes ``_dispatch_live_order`` reads (``kind``,
+    ``side``; plus ``price`` / ``bar_time`` for diagnostics). KAOS decisions
+    therefore flow through the EXISTING dispatch unchanged.
+    """
+
+    __slots__ = ("kind", "side", "price", "bar_index", "bar_time", "reason")
+
+    def __init__(self, dec: Any) -> None:
+        self.kind = dec.kind
+        self.side = dec.side
+        self.price = dec.price
+        self.bar_index = dec.bar_index
+        self.bar_time = dec.bar_time
+        self.reason = dec.reason
 
 
 def _last_non_skipped_entry(signal_log: list[SignalEntry]) -> SignalEntry | None:
