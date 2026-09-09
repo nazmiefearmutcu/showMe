@@ -26,6 +26,9 @@
  */
 import { addSymbol, type WatchlistRow } from "./watchlist";
 import type { WorkspaceNode } from "./workspace";
+import { useWorkspace } from "./workspace";
+import { useBotStore } from "./bot-store";
+import { isKaosRecord } from "./kaos-venues";
 
 export const FIRST_RUN_DONE_KEY = "showme.firstrun.done";
 
@@ -83,4 +86,39 @@ export async function seedStarterWatchlist(): Promise<WatchlistRow[]> {
     rows = await addSymbol(symbol);
   }
   return rows;
+}
+
+/**
+ * KAOS Multibot first-run action (frozen contract §D). Opens the saved
+ * KAOS bot when one exists, otherwise opens a NEW draft preseeded by the
+ * bot store's KAOS defaults (engine "kaos", crypto + NASDAQ venues, shadow
+ * mode) — through the EXISTING bot-store create flow only. Never enables
+ * or flips modes programmatically; saving/enabling stays a user action in
+ * the BOT pane.
+ *
+ * Navigates the focused workspace leaf to the BOT pane in both branches.
+ * A sidecar failure degrades honestly: the list comes back empty and the
+ * user still lands on a KAOS draft they can complete once the sidecar is
+ * up.
+ */
+export type KaosStartOutcome = "opened-existing" | "new-draft";
+
+export async function startKaosBot(): Promise<KaosStartOutcome> {
+  const store = useBotStore.getState();
+  // Refresh the list first so an already-saved KAOS Multibot is reopened
+  // instead of duplicated as a second draft.
+  await store.loadList();
+  const { bots, openExisting, openNew } = useBotStore.getState();
+  // R2 L-3 fix: isKaosRecord is the real predicate (engine/name/spec-id) —
+  // the old `strategy_id === KAOS_BOT_NAME` arm compared an id to a display
+  // name and could never match a saved record.
+  const existing = bots.find((b) => isKaosRecord(b));
+  if (existing) {
+    await openExisting(existing.id);
+    useWorkspace.getState().setFocusedTarget("BOT");
+    return "opened-existing";
+  }
+  openNew();
+  useWorkspace.getState().setFocusedTarget("BOT");
+  return "new-draft";
 }

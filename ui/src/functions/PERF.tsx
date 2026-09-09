@@ -42,6 +42,8 @@ import {
   formatMissing,
 } from "@/lib/format";
 import { maxOf, minOf } from "@/lib/maxOf";
+import { isKaosRecord } from "@/lib/kaos-venues";
+import { KaosEngineBadge } from "@/functions/KaosBadges";
 import { Empty, Pill, SkeletonRow } from "@/design-system";
 
 // Sentinel the backend stamps onto a SignalEntry whose live order was sized on
@@ -453,7 +455,10 @@ export function PERFPane() {
                         borderBottom: "1px solid var(--border-card)",
                       }}
                     >
-                      <td>{e.symbol}</td>
+                      <td>
+                        {e.symbol}
+                        {isKaosRecord(e) && <KaosEngineBadge />}
+                      </td>
                       <td align="right">{formatNumber(e.trade_count)}</td>
                       <td align="right">{formatPercent(e.win_rate, { fromFraction: true, digits: 0 })}</td>
                       <td align="right" className={_pnlClass(e.total_pnl)}>

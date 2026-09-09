@@ -142,6 +142,15 @@ body.wx-kbd-nav .ws-leaf--focused.ws-leaf--focused {
   background: var(--surface-3);
 }
 
+/* Primary card action ("Start KAOS") — same geometry, accent hairline. */
+.wx-firstrun__btn--primary {
+  border-color: var(--accent);
+}
+
+.wx-firstrun__btn--primary strong {
+  color: var(--accent);
+}
+
 .wx-firstrun__btn strong {
   font-size: var(--font-size-sm);
   letter-spacing: 0.02em;

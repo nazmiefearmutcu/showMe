@@ -30,13 +30,11 @@
  *        shows an at-a-glance Stuck/Degraded count.
  */
 import { useMemo, useRef } from "react";
-import {
-  useBotsSupervisionStore,
-  type FeedSignal,
-  type SupervisedBot,
-} from "@/lib/bots-supervision-store";
+import { useBotsSupervisionStore, type FeedSignal, type SupervisedBot } from "@/lib/bots-supervision-store";
 import { useBotEcosystemPolling } from "@/lib/useBotEcosystemPolling";
 import { formatPrice } from "@/lib/format";
+import { isKaosRecord } from "@/lib/kaos-venues";
+import { KaosEngineBadge, VenueBadges } from "@/functions/KaosBadges";
 import { Empty, Pill, SkeletonRow } from "@/design-system";
 
 // Sentinel the backend stamps onto a SignalEntry whose live order was sized
@@ -284,6 +282,7 @@ function BotTable() {
       <thead>
         <tr className="u-text-secondary">
           <th scope="col" align="left">Symbol</th>
+          <th scope="col">Venues</th>
           <th scope="col">TF</th>
           <th scope="col">Durum</th>
           <th scope="col" align="right">Sinyaller</th>
@@ -292,7 +291,11 @@ function BotTable() {
         </tr>
       </thead>
       <tbody>
-        {bots.map((b) => {
+        {/* KAOS Multibot pinned first (stable) — the default bot leads the
+            supervision table; every other row keeps payload order. */}
+        {[...bots]
+          .sort((a, b) => Number(isKaosRecord(b)) - Number(isKaosRecord(a)))
+          .map((b) => {
           const sig = byBot[b.id]?.[0];
           const sigCount = resolveSignalCount(b, byBot[b.id]);
           const age = relativeTickAge(b.last_event_at, now);
@@ -300,7 +303,14 @@ function BotTable() {
             <tr key={b.id} style={{ borderBottom: "1px solid var(--border-card)" }}>
               <td>
                 <strong>{b.symbol}</strong>
+                {isKaosRecord(b) && <KaosEngineBadge />}
                 {b.permission_revoked && <PermRevokedBadge />}
+              </td>
+              <td align="center">
+                {/* Venue chips render only when the payload carries venues
+                    (the list payload currently does not) — hidden otherwise,
+                    never faked. */}
+                <VenueBadges venues={b.venues} />
               </td>
               <td align="center">{b.timeframe}</td>
               <td align="center"><StatusPill bot={b} /></td>
@@ -470,7 +480,7 @@ export function BOTSPane() {
         {firstLoad ? (
           <div data-testid="bots-loading" aria-busy="true">
             {Array.from({ length: 5 }).map((_, i) => (
-              <SkeletonRow key={i} columns={6} />
+              <SkeletonRow key={i} columns={7} />
             ))}
           </div>
         ) : (

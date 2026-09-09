@@ -251,7 +251,9 @@ describe("BOTS F5 — table semantics", () => {
     render(<BOTSPane />);
     const table = screen.getByRole("table", { name: /denetim tablosu/i });
     expect(table.querySelector("caption")).not.toBeNull();
-    expect(table.querySelectorAll("th[scope='col']").length).toBe(6);
+    // 7 columns since Lane D (KAOS multibot): Symbol, Venues, TF, Durum,
+    // Sinyaller, Son tick, Son sinyal.
+    expect(table.querySelectorAll("th[scope='col']").length).toBe(7);
   });
 
   it("feed table has a caption and scope columns", () => {

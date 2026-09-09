@@ -15,6 +15,7 @@ import {
   isPristineHomeWorkspace,
   markFirstRunDone,
   seedStarterWatchlist,
+  startKaosBot,
 } from "@/lib/first-run";
 import { useTickFlash } from "@/lib/tick-flash";
 import {
@@ -1183,6 +1184,7 @@ export function FirstRunCard({
   onWatchlistSeeded: (rows: WatchlistRow[]) => void;
 }) {
   const [seeding, setSeeding] = useState(false);
+  const [startingKaos, setStartingKaos] = useState(false);
   // Markets Overview first — it is the recommended one-click desk.
   const ordered = useMemo(() => {
     const primary = BUILTIN_PRESETS.filter((p) => p.id === "markets-overview");
@@ -1195,6 +1197,31 @@ export function FirstRunCard({
     onAnswered();
     loadBuiltinPreset(id);
   };
+
+  // KAOS Multibot is THE default bot (frozen contract §D). The action runs
+  // through the EXISTING bot-store create flow only (startKaosBot): it
+  // reopens the saved KAOS Multibot when one exists, otherwise opens a new
+  // draft preseeded with engine "kaos" + crypto/NASDAQ venues in shadow
+  // mode. Enabling and going live stay explicit user actions in BOT.
+  const startKaos = useCallback(async () => {
+    setStartingKaos(true);
+    try {
+      const outcome = await startKaosBot();
+      markFirstRunDone();
+      onAnswered();
+      toast.success(
+        outcome === "opened-existing"
+          ? "KAOS Multibot opened"
+          : "New KAOS Multibot draft",
+        "Scans crypto + NASDAQ venues. Shadow mode until you enable live.",
+      );
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      toast.error("Could not open KAOS Multibot", msg);
+    } finally {
+      setStartingKaos(false);
+    }
+  }, [onAnswered]);
 
   const seedWatchlist = useCallback(async () => {
     setSeeding(true);
@@ -1222,11 +1249,24 @@ export function FirstRunCard({
     <div className="wx-firstrun" data-testid="first-run-card">
       <h4 className="wx-firstrun__title">Set up your desk</h4>
       <p className="wx-firstrun__body">
-        Load a ready-made multi-pane desk bound to AAPL, seed a starter
-        watchlist, or skip — you can rearrange everything later from the
-        ⌘ Layout menu.
+        Start KAOS — the default bot that scans crypto and NASDAQ venues —
+        load a ready-made multi-pane desk, seed a starter watchlist, or skip;
+        you can rearrange everything later from the ⌘ Layout menu.
       </p>
       <div className="wx-firstrun__actions">
+        <button
+          type="button"
+          className="wx-firstrun__btn wx-firstrun__btn--primary"
+          data-testid="first-run-start-kaos"
+          disabled={startingKaos}
+          onClick={() => void startKaos()}
+        >
+          <strong>{startingKaos ? "Opening…" : "Start KAOS"}</strong>
+          <span>
+            KAOS Multibot — scans crypto + NASDAQ. Shadow mode until you
+            enable live.
+          </span>
+        </button>
         {ordered.map((preset) => (
           <button
             key={preset.id}

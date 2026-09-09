@@ -3,6 +3,13 @@
  */
 import { create } from "zustand";
 import { sidecarFetch } from "./sidecar";
+import {
+  KAOS_BOT_NAME,
+  KAOS_ENGINE_ID,
+  kaosDefaultVenues,
+  type BotVenue,
+  type KaosLaneRow,
+} from "./kaos-venues";
 
 export interface SignalEntry {
   bar_index: number;
@@ -36,6 +43,21 @@ export interface BotRecord {
   signal_log: SignalEntry[];
   created_at: string;
   updated_at: string;
+  /**
+   * KAOS Multibot (frozen contract §D) — additive, optional fields the
+   * backend stamps on bot records. Old payloads without them render
+   * exactly as before.
+   */
+  name?: string;
+  engine?: string;
+  venues?: BotVenue[];
+  /**
+   * Raw per-venue lane rows from the backend get-bot status payload
+   * (`venue_rows: [{venue_id, market, bars_age, last_eval, decisions,
+   * lane_status}]`). Defensive: absent for spec bots and older payloads —
+   * renderers must hide, never fake.
+   */
+  venue_rows?: KaosLaneRow[];
 }
 
 export interface BotMeta {
@@ -49,15 +71,30 @@ export interface BotMeta {
   enabled: boolean;
   created_at: string;
   updated_at: string;
+  /** Mirrors the additive BotRecord fields when the backend ships them. */
+  name?: string;
+  engine?: string;
+  venues?: BotVenue[];
+  venue_rows?: KaosLaneRow[];
 }
 
+/**
+ * New-bot draft defaults. KAOS Multibot is THE default bot (frozen contract
+ * §D): engine "kaos", both venues preseeded (crypto 20 majors on
+ * binanceusdm + NASDAQ 20 majors on alpaca), shadow mode, 60s tick. The
+ * strategy/credential/symbol stay user-selected — the backend still
+ * validates those FKs on POST.
+ */
 const _BLANK_BOT = (): Omit<BotRecord, "id" | "created_at" | "updated_at" | "last_processed_event" | "signal_log" | "enabled" | "mode"> => ({
   strategy_id: "",
   credential_id: "",
   exchange_id: "",
   symbol: "",
-  timeframe: "1h",
+  timeframe: "15m", // KAOS engine is a 15m strategy (matches seed/template defaults)
   tick_interval_seconds: 60,
+  name: KAOS_BOT_NAME,
+  engine: KAOS_ENGINE_ID,
+  venues: kaosDefaultVenues(),
 });
 
 interface BotStoreShape {

@@ -366,21 +366,21 @@ const NATIVE_FUNCTION_ENTRIES: FunctionEntry[] = [
     name: "Bot Dev Assistant",
     category: "screen",
     description:
-      "Sub-system J: rule-based NL → strategy spec parser + saved-strategy explainer. Type a request like \"RSI below 30, above 70, BTC/USDT 1h\" and get a draft StrategySpec (optionally persisted); below, pick any saved strategy for a plain-English rule-based explanation.",
+      "Sub-system J: rule-based NL → strategy spec parser + saved-strategy explainer. Type a request like \"RSI below 30, above 70, BTC/USDT 1h\" and get a draft StrategySpec (optionally persisted); below, pick any saved strategy for a plain-English rule-based explanation. KAOS Multibot — the default engine — runs without a rule spec; BDA is for the classic rule engine.",
   },
   {
     code: "BOT",
     name: "Bot Manager",
     category: "screen",
     description:
-      "Sub-system D user surface: list saved bots with status pills (OFF/SHADOW/LIVE), edit strategy+credential+symbol+timeframe+tick, switch shadow/live mode, enable/disable with re-typed-label confirmation, and view the signal log.",
+      "Sub-system D user surface: list saved bots with status pills (OFF/SHADOW/LIVE), edit strategy+credential+symbol+timeframe+tick, switch shadow/live mode, enable/disable with re-typed-label confirmation, and view the signal log. New drafts default to KAOS Multibot — the default engine — with crypto + NASDAQ venues preseeded in shadow mode.",
   },
   {
     code: "BOTS",
     name: "Bot Supervision",
     category: "screen",
     description:
-      "Sub-system H supervisor: aggregate KPI strip (total/enabled/live/signals today), per-bot table with mode pill and last-signal column, and unified signal feed across every saved bot. Auto-refreshes every 10s.",
+      "Sub-system H supervisor: aggregate KPI strip (total/enabled/live/signals today), per-bot table with mode pill and last-signal column, and unified signal feed across every saved bot. Auto-refreshes every 10s. KAOS Multibot — the default engine — is supervised here like every bot; venue badges show its crypto + NASDAQ lanes.",
   },
   {
     code: "FLW",
@@ -433,21 +433,21 @@ const NATIVE_FUNCTION_ENTRIES: FunctionEntry[] = [
     name: "Performance",
     category: "screen",
     description:
-      "Sub-system I: cumulative bot performance leaderboard (total PnL desc) + per-bot detail with metrics, trade list, and equity curve. Pure-aggregation from each bot's signal_log; auto-refreshes every 15s.",
+      "Sub-system I: cumulative bot performance leaderboard (total PnL desc) + per-bot detail with metrics, trade list, and equity curve. Pure-aggregation from each bot's signal_log; auto-refreshes every 15s. KAOS Multibot — the default engine — is ranked here like every bot.",
   },
   {
     code: "STRA",
     name: "Strategy Editor",
     category: "screen",
     description:
-      "Sub-system E user surface: list saved strategies, edit indicators, entry/exit rules, timeframe, and position sizing. Save via /api/strategies, run server-side preview against synthetic bars.",
+      "Sub-system E user surface: list saved strategies, edit indicators, entry/exit rules, timeframe, and position sizing. Save via /api/strategies, run server-side preview against synthetic bars. KAOS Multibot — the default engine — needs no rule strategy; this editor stays for rule-based specs.",
   },
   {
     code: "TMPL",
     name: "Strategy Templates",
     category: "screen",
     description:
-      "Sub-system G user surface: browse the curated bot template library (RSI mean-revert, EMA crossover, etc.) with natural-language explanation, math, and applicability notes. One click instantiates a new strategy via /api/templates/{id}/instantiate.",
+      "Sub-system G user surface: browse the curated bot template library (KAOS Multibot pinned first, then RSI mean-revert, EMA crossover, etc.) with natural-language explanation, math, and applicability notes. One click instantiates a new strategy via /api/templates/{id}/instantiate.",
   },
   {
     code: "XSEN",

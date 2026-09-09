@@ -4,10 +4,11 @@
  * Left: grid of template cards. Right: detail with NL explanation,
  * math, applicability, "Use" button → modal that creates a strategy.
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTemplateStore } from "@/lib/template-store";
 import { useFocusTrap } from "@/lib/a11y";
-import { ConfirmDialog, Empty, SkeletonRow } from "@/design-system";
+import { pinKaosTemplatesFirst, KAOS_SPEC_ID } from "@/lib/kaos-venues";
+import { ConfirmDialog, Empty, Pill, SkeletonRow } from "@/design-system";
 
 export function TMPLPane() {
   const entries = useTemplateStore((s) => s.entries);
@@ -47,6 +48,10 @@ export function TMPLPane() {
   const instantiatingInFlight = useTemplateStore((s) => s.instantiating);
 
   useEffect(() => { if (entries.length === 0) loadCatalog(); }, [entries.length, loadCatalog]);
+
+  // KAOS Multibot pinned first (stable) — the default bot template leads
+  // the library even if a cached catalog arrives in another order.
+  const ordered = useMemo(() => pinKaosTemplatesFirst(entries), [entries]);
 
   const closeModal = () => {
     setUseModal(null);
@@ -127,8 +132,9 @@ export function TMPLPane() {
         {!loading && entries.length === 0 && (
           <Empty title="No templates" body="The catalog is empty or failed to load." />
         )}
-        {entries.map((e) => {
+        {ordered.map((e) => {
           const isSelected = selectedId === e.id;
+          const isDefault = e.id === KAOS_SPEC_ID;
           return (
           <button key={e.id} onClick={() => setSelected(e.id)}
                   // A11Y — announce the active selection to assistive tech.
@@ -139,7 +145,14 @@ export function TMPLPane() {
                     background: isSelected ? "var(--surface-2)" : "transparent",
                     border: "none", cursor: "pointer",
                   }}>
-            <div><strong>{e.name}</strong></div>
+            <div>
+              <strong>{e.name}</strong>
+              {isDefault && (
+                <span style={{ marginLeft: 6, display: "inline-block" }}>
+                  <Pill tone="accent" variant="soft" withDot={false}>DEFAULT</Pill>
+                </span>
+              )}
+            </div>
             <div style={{ fontSize: 10, color: "var(--text-secondary)" }}>
               {e.family} · {e.uses_indicators.join(", ")}
             </div>

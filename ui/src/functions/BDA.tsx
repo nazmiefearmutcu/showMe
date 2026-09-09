@@ -24,7 +24,9 @@ const SUPPORTED_INDICATORS =
 const HELP_CAPTION =
   "Keyword-based assistant \u2014 not real NLP. Recognized indicators: " +
   SUPPORTED_INDICATORS +
-  ". Complex expressions (divergence, multi-indicator, risk sizing) are ignored.";
+  ". Complex expressions (divergence, multi-indicator, risk sizing) are ignored. " +
+  "KAOS Multibot — the default engine — runs without a rule spec; this assistant " +
+  "is for the classic rule engine.";
 
 type NoteTone = "warn" | "info" | "negative" | "neutral";
 

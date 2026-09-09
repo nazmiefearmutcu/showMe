@@ -12,6 +12,9 @@
  * therefore must only ever contain function codes).
  */
 import { BUILTIN_PRESETS, loadBuiltinPreset } from "./builtinPresets";
+import { useBotStore } from "./bot-store";
+import { isKaosRecord } from "./kaos-venues";
+import { startKaosBot } from "./first-run";
 import { loadPreset, savePreset } from "./presets";
 import { useAppStore } from "./store";
 import { readState, setDensity, setPreset, toggleTheme, type Preset } from "./theme";
@@ -19,7 +22,7 @@ import { toast } from "./toast";
 import { useWorkspace } from "./workspace";
 import { safeReadLocal, safeWriteLocal } from "./safe-storage";
 
-export type ActionGroup = "theme" | "layout" | "workspace" | "preferences";
+export type ActionGroup = "theme" | "layout" | "workspace" | "bot" | "preferences";
 
 export interface PaletteAction {
   /** Stable unique id — doubles as the fuzzy/recents key ("theme.midnight"). */
@@ -165,6 +168,53 @@ export function listPaletteActions(userPresetNames: string[] = []): PaletteActio
     group: "workspace",
     run: () => {
       useWorkspace.getState().closeFocused();
+    },
+  });
+
+  actions.push({
+    id: "bot.start-kaos",
+    tag: "KAOS",
+    name: "Start KAOS bot",
+    group: "bot",
+    run: () => {
+      // Same flow as the first-run card: reopens the saved KAOS Multibot,
+      // or opens a new preseeded draft (engine "kaos", crypto + NASDAQ
+      // venues, shadow). Never enables or flips modes programmatically.
+      void startKaosBot()
+        .then((outcome) => {
+          toast.success(
+            outcome === "opened-existing"
+              ? "KAOS Multibot opened"
+              : "New KAOS Multibot draft",
+            "Scans crypto + NASDAQ. Shadow mode until you enable live.",
+          );
+        })
+        .catch((err: unknown) => toast.error("KAOS bot failed to open", String(err)));
+    },
+  });
+  actions.push({
+    id: "bot.open-kaos",
+    tag: "KAOS",
+    name: "Open KAOS bot",
+    group: "bot",
+    run: () => {
+      const store = useBotStore.getState();
+      void store
+        .loadList()
+        .then(() => {
+          const { bots, openExisting } = useBotStore.getState();
+          const existing = bots.find((b) => isKaosRecord(b));
+          if (existing) {
+            void openExisting(existing.id);
+          } else {
+            toast.error(
+              "No KAOS bot saved yet",
+              "Run 'Start KAOS bot' to create the KAOS Multibot draft.",
+            );
+          }
+          useWorkspace.getState().setFocusedTarget("BOT");
+        })
+        .catch((err: unknown) => toast.error("KAOS bot failed to open", String(err)));
     },
   });
 

@@ -20,6 +20,8 @@ import {
 } from "@/lib/validators";
 import { ConfirmDialog, Empty, Pill, SkeletonRow } from "@/design-system";
 import { formatPrice } from "@/lib/format";
+import { isKaosRecord } from "@/lib/kaos-venues";
+import { KaosEngineBadge, KaosLaneBanner, VenueBadges } from "@/functions/KaosBadges";
 
 // Sentinel the backend stamps onto a SignalEntry whose live order was sized
 // on the fallback equity ($10k) rather than real broker equity.
@@ -290,7 +292,11 @@ export function BOTPane() {
         }} style={{ width: "100%", marginBottom: 8 }}>
           + Yeni bot
         </button>
-        {list.map((b) => (
+        {/* KAOS Multibot pinned first (stable) — the default bot leads the
+            rail; everything else keeps its updated_at order. */}
+        {[...list]
+          .sort((a, b) => Number(isKaosRecord(b)) - Number(isKaosRecord(a)))
+          .map((b) => (
           <button key={b.id} onClick={() => handleSidebarClick(b.id)}
                   style={{
                     display: "grid", gridTemplateColumns: "1fr auto",
@@ -301,7 +307,10 @@ export function BOTPane() {
                     cursor: "pointer",
                   }}>
             <div>
-              <div><strong>{b.symbol}</strong></div>
+              <div>
+                <strong>{b.symbol}</strong>
+                {isKaosRecord(b) && <KaosEngineBadge />}
+              </div>
               <div className="u-text-secondary" style={{ fontSize: 10 }}>
                 {b.exchange_id} · {b.timeframe}
               </div>
@@ -348,8 +357,16 @@ export function BOTPane() {
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             <h3 style={{ margin: 0 }}>
               {draft.symbol || "(new bot)"} {dirty && <em className="u-text-warn">*</em>}
+              {isKaosRecord(draft) && <KaosEngineBadge />}
+              {/* KAOS Multibot venue chips — only from payload data; hidden
+                  for spec bots and older payloads (hide, never fake). */}
+              <VenueBadges venues={draft.venues} />
               {draft.id && <span style={{ marginLeft: 8 }}><StatusPill rec={draft as BotRecord} /></span>}
             </h3>
+            {/* KAOS Multibot lane honesty: the backend's own venue_rows
+                lane_status, verbatim, only when it proves the NASDAQ lane
+                is paper. Hidden entirely otherwise (never faked). */}
+            <KaosLaneBanner venueRows={draft.venue_rows} />
             <label htmlFor="bot-strategy-select">
               Strateji
               <select id="bot-strategy-select"
