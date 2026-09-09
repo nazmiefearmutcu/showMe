@@ -11,6 +11,7 @@ import numpy as np
 from showme.engine.core.base_data_source import DataKind, DataRequest
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from showme.engine.core.instrument import AssetClass, Instrument
+from showme.engine.functions._fred_csv import fred_with_keyless_fallback
 from showme.engine.services import regime_classifier as rgm
 
 
@@ -49,6 +50,30 @@ class REGMFunction(BaseFunction):
                         if hasattr(t2.data, "iloc") else None
                     if val10 is not None and val2 is not None:
                         spread_bp = (val10 - val2) * 100  # in basis points
+            except Exception:
+                spread_bp = None
+        if spread_bp is None:
+            # Keyless FRED CSV fallback (2026-09-09 REGM wiring): the curve
+            # component no longer dies just because no keyed FRED adapter is
+            # configured — fredgraph.csv serves DGS10/DGS2 with no key.
+            # Failure keeps the honest UNKNOWN + warning path untouched.
+            try:
+                fred = fred_with_keyless_fallback(
+                    self.deps.fred, client=getattr(self, "_http_client", None)
+                )
+                d10, d2 = await asyncio.gather(
+                    asyncio.wait_for(fred.series("DGS10", frequency="d"), timeout=timeout),
+                    asyncio.wait_for(fred.series("DGS2", frequency="d"), timeout=timeout),
+                    return_exceptions=True,
+                )
+                if (
+                    not isinstance(d10, Exception)
+                    and not isinstance(d2, Exception)
+                    and d10 is not None and not d10.empty
+                    and d2 is not None and not d2.empty
+                ):
+                    spread_bp = (float(d10["value"].iloc[-1])
+                                 - float(d2["value"].iloc[-1])) * 100
             except Exception:
                 spread_bp = None
         # Pull benchmark OHLCV
@@ -142,7 +167,10 @@ class REGMFunction(BaseFunction):
                     "source_mode": ",".join(sources),
                 },
                 sources=sources,
-                warnings=[] if "fred" in sources and current.get("curve") != "UNKNOWN" else ["FRED curve spread unavailable; curve component is UNKNOWN"],
+                # Warn only on actual curve unavailability — the keyless
+                # FRED CSV fallback (and the keyed adapter) set curve data
+                # without necessarily adding "fred" to the source list.
+                warnings=[] if current.get("curve") != "UNKNOWN" else ["FRED curve spread unavailable; curve component is UNKNOWN"],
             )
         # action == "history": classify rolling window + cluster
         window = int(params.get("window", 60))

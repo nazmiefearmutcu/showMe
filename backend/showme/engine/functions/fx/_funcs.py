@@ -10,6 +10,7 @@ from typing import Any
 from showme.engine.core.base_data_source import DataKind, DataRequest
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from showme.engine.core.instrument import AssetClass, Instrument
+from showme.engine.functions.fx._frankfurter import fetch_frankfurter_rate, fetch_frankfurter_rates
 
 
 _MAJOR_PAIRS = [
@@ -269,20 +270,21 @@ class WCRSFunction(BaseFunction):
             "surface": heatmap,
             "source_mode": source_mode,
             "methodology": (
-                "WCRS builds a cross-rate matrix from live exchangerate.host quotes when available. "
-                "If the provider fails, it falls back to a labelled reference matrix; bid/ask are display spreads around the mid."
+                "WCRS builds a cross-rate matrix from live exchangerate.host quotes when available, "
+                "else from keyless ECB reference rates (Frankfurter). "
+                "If both fail, it falls back to a labelled reference matrix; bid/ask are display spreads around the mid."
             ),
             "field_dictionary": {
                 "rate": "Mid cross rate: quote currency units per one base currency unit.",
                 "bid": "Display bid calculated as mid * 0.9999.",
                 "ask": "Display ask calculated as mid * 1.0001.",
                 "spread_pips": "Ask-bid spread converted to pips using JPY-aware pip sizing.",
-                "source_mode": "live_exchangerate_host or reference_cross_rate_matrix.",
+                "source_mode": "live_exchangerate_host, live_official (Frankfurter/ECB), or reference_cross_rate_matrix.",
             },
         }
         warnings = (
             []
-            if source_mode == "live_exchangerate_host"
+            if source_mode.startswith("live_")
             else [f"live cross-rate provider unavailable; using labelled reference matrix (vintage {_REFERENCE_AS_OF})"]
         )
         return FunctionResult(
@@ -293,7 +295,7 @@ class WCRSFunction(BaseFunction):
             warnings=warnings,
             metadata=(
                 {"data_mode": "delayed_reference", "reference_as_of": _REFERENCE_AS_OF}
-                if source_mode != "live_exchangerate_host"
+                if not source_mode.startswith("live_")
                 else {"data_mode": source_mode}
             ),
         )
@@ -591,6 +593,18 @@ async def _resolve_spot(fn: BaseFunction, pair: str, params: dict[str, Any]) -> 
                 return float(df["value"].iloc[-1]), "ecb", "live_ecb_reference"
         except Exception:
             pass
+    # H-4 de-staling (2026-09-09): keyless ECB-published reference rates
+    # (Frankfurter) bridge the gap between the keyed providers above and
+    # the stamped 2024-06 reference spots below. Any failure keeps the
+    # honest labelled reference fallback untouched.
+    # R3 L-4: same gate expression as the cross-matrix tier — `live=false`
+    # turns the tier off, `live_fx=true` alone opts in, default on.
+    if _truthy(params.get("live_fx") or params.get("live", True)):
+        rate = await fetch_frankfurter_rate(
+            pair[:3], pair[3:6], client=getattr(fn, "_http_client", None)
+        )
+        if rate is not None:
+            return float(rate), "frankfurter_ecb", "live_official"
     return _template_spot(pair), "reference_fx_spot", "reference_model"
 
 
@@ -877,6 +891,41 @@ async def _cross_matrix(
         live_rows = {base: row for base, row in results if row}
         if len(live_rows) == len(bases):
             return live_rows, "live_exchangerate_host", ["exchangerate_host"]
+    # H-4 de-staling (2026-09-09): keyless ECB reference rates (Frankfurter)
+    # bridge the gap between the keyed exchangerate.host tier and the
+    # stamped reference matrix. All-or-nothing across bases AND quotes — a
+    # currency Frankfurter does not carry disables the tier, so no cell can
+    # mix live and seeded levels under a live label.
+    # R3 L-4: same gate expression as the spot tier — `live=false` turns the
+    # tier off, `live_fx=true` alone opts in, default on.
+    if _truthy(params.get("live_fx") or params.get("live", True)):
+        timeout = float(params.get("timeout", 4))
+
+        async def fetch_base_frankfurter(base: str) -> tuple[str, dict[str, float] | None]:
+            try:
+                rates = await asyncio.wait_for(
+                    fetch_frankfurter_rates(
+                        base,
+                        quotes,
+                        timeout=timeout,
+                        client=getattr(fn, "_http_client", None),
+                    ),
+                    timeout=timeout + 1,
+                )
+            except Exception:
+                return base, None
+            if not rates:
+                return base, None
+            if any(q != base and q not in rates for q in quotes):
+                return base, None  # partial coverage is not live coverage
+            row = {q: float(rates[q]) for q in quotes if q != base}
+            row[base] = 1.0
+            return base, row
+
+        results = await asyncio.gather(*(fetch_base_frankfurter(base) for base in bases))
+        live_rows = {base: row for base, row in results if row}
+        if len(live_rows) == len(bases):
+            return live_rows, "live_official", ["frankfurter_ecb"]
     seed = {ccy: _seed_usd_value(ccy) for ccy in _unique([*bases, *quotes])}
     matrix = {
         base: {

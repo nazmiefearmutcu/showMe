@@ -273,3 +273,60 @@ def test_explicit_live_false_vetoes_unmarked_source_names() -> None:
         },
     )
     assert payload["data_state"] != "live"
+
+
+# ---------------------------------------------------------------------------
+# R2 L-1 regression: dummy/mock/placeholder-style source names must never
+# classify as live. Before the blocklist these all earned a LIVE pill.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "dummy_feed",
+        "mock_provider",
+        "stub_chain",
+        "fake_quotes",
+        "demo_data",
+        "test_universe",
+        "estimated_levels",
+        "illustrative_curve",
+        "hardcoded_px",
+        "sample_rows",
+        "placeholder_rates",
+        "template_book",
+        "synthetic_ladder",
+    ],
+)
+def test_blocklisted_source_names_classify_non_live(source: str) -> None:
+    assert server._classify_source_state(source) == "synthetic"
+
+
+def test_blocklisted_source_payload_is_not_live() -> None:
+    """End-to-end: a payload whose only source is a dummy name cannot keep
+    a LIVE pill even with a live data_mode claim."""
+    payload = _run(
+        "GP",
+        {
+            "code": "GP",
+            "instrument": {"symbol": "AAPL", "asset_class": "EQUITY"},
+            "data": {"status": "ok", "rows": [{"px": 1.0}]},
+            "metadata": {"data_mode": "live_yfinance"},
+            "sources": ["dummy_feed"],
+            "warnings": [],
+        },
+    )
+    assert payload["data_state"] == "synthetic"
+
+
+def test_blocklist_does_not_swallow_real_providers_or_model_names() -> None:
+    """Non-regression: real provider names stay live, and plain ``_model``
+    names without blocklist substrings keep their (non-live) model label —
+    including ``local_backtest_model``, whose 'test' substring now maps it
+    to synthetic instead of model (still non-live either way)."""
+    assert server._classify_source_state("yfinance") == "live"
+    assert server._classify_source_state("binance") == "live"
+    assert server._classify_source_state("fred") == "live"
+    assert server._classify_source_state("position_sizing_model") == "model"
+    assert server._classify_source_state("local_backtest_model") == "synthetic"

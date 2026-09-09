@@ -127,8 +127,11 @@ class FREDAdapter(BaseDataSource):
 
     # Convenience presets for hot series ↓
     async def yield_curve(self) -> dict[str, float]:
-        ids = ["DGS3MO", "DGS6MO", "DGS1", "DGS2", "DGS3", "DGS5", "DGS7",
-               "DGS10", "DGS20", "DGS30"]
+        # R3 L-1 (2026-09-09): the monthly bill ids feed CRVF's mapped
+        # short end (DGS1MO/2MO/4MO -> fractional years); absent ids come
+        # back NaN per-tenor and are filtered downstream.
+        ids = ["DGS1MO", "DGS2MO", "DGS4MO", "DGS3MO", "DGS6MO", "DGS1",
+               "DGS2", "DGS3", "DGS5", "DGS7", "DGS10", "DGS20", "DGS30"]
         out: dict[str, float] = {}
         for sid in ids:
             try:

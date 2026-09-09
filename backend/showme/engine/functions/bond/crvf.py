@@ -34,6 +34,8 @@ def _curve_model() -> dict[str, float]:
 
 _TENOR_YEARS = {
     "1M": 1 / 12,
+    "2M": 2 / 12,
+    "4M": 4 / 12,
     "3M": 0.25,
     "6M": 0.5,
     "1Y": 1.0,
@@ -49,8 +51,14 @@ _TENOR_YEARS = {
 # FredAdapter.yield_curve() (and the keyless CSV shim) return raw FRED
 # series ids; _curve_payload filters on tenor labels. Without this mapping
 # every live curve row was silently dropped (rows=[]) — caught while
-# wiring the keyless CSV fallback (2026-09-08).
+# wiring the keyless CSV fallback (2026-09-08). R2 L-2: the monthly bill
+# ids (DGS1MO/DGS2MO/DGS4MO, served by the keyed adapter path) used to
+# fall through the _TENOR_YEARS filter and silently drop as well; they now
+# map to fractional years end-to-end.
 _SERIES_TO_TENOR = {
+    "DGS1MO": "1M",
+    "DGS2MO": "2M",
+    "DGS4MO": "4M",
     "DGS3MO": "3M",
     "DGS6MO": "6M",
     "DGS1": "1Y",

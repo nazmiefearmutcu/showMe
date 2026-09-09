@@ -149,8 +149,10 @@ class _KeylessFredCSV:
     """
 
     _CURVE_IDS: tuple[str, ...] = (
-        "DGS3MO", "DGS6MO", "DGS1", "DGS2", "DGS3", "DGS5", "DGS7",
-        "DGS10", "DGS20", "DGS30",
+        # R3 L-1: monthly bill ids included so the keyless tier can feed
+        # CRVF's mapped short end (absent series stay NaN per-tenor).
+        "DGS1MO", "DGS2MO", "DGS4MO", "DGS3MO", "DGS6MO", "DGS1", "DGS2",
+        "DGS3", "DGS5", "DGS7", "DGS10", "DGS20", "DGS30",
     )
 
     def __init__(self, client: Any = None) -> None:

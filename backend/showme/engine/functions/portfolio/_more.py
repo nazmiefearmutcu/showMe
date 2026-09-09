@@ -305,6 +305,14 @@ class MARSFunction(BaseFunction):
         # Audit Q3 #7: pairwise covariance for factor regression universe.
         factors = align_return_series(zip(proxies.keys(), rs), policy="pairwise")
         warnings: list[str] = []
+        # R2 M-6: ``align_return_series(policy="pairwise")`` silently drops
+        # empty proxy series, so when only SOME of the six ETF factors
+        # answer, the regression used to run on the survivors while wearing
+        # full-live metadata with no warning. Compare the surviving columns
+        # against the expected proxy set: full coverage keeps the live
+        # labels; any shortfall downgrades to the labelled fallback.
+        loaded_proxies = [str(c) for c in factors.columns]
+        missing_proxies = sorted(set(proxies) - set(loaded_proxies))
         metadata: dict[str, Any] = {"live": True, "data_mode": "live_yfinance"}
         if factors.empty:
             from showme.engine.functions.portfolio.rpar import _template_returns
@@ -314,6 +322,16 @@ class MARSFunction(BaseFunction):
                 "Live ETF factor proxies were unavailable; factor loadings are "
                 "computed against the labelled template factor series."
             )
+        elif missing_proxies:
+            metadata = {"live": False, "fallback": True, "data_mode": "modeled"}
+            warnings.append(
+                "Live ETF factor proxy data was unavailable for: "
+                + ", ".join(missing_proxies)
+                + f"; the factor regression ran on {len(loaded_proxies)}/"
+                + f"{len(proxies)} loaded proxies ("
+                + ", ".join(loaded_proxies) + ") only."
+            )
+        metadata["factor_proxies_loaded"] = loaded_proxies
         # Build return series from explicit symbols or the saved ShowMe portfolio.
         if not symbols:
             portfolio = PortfolioState()

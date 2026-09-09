@@ -1303,6 +1303,24 @@ _OTHER_SYNTHETIC_MARKERS = (
     "briefing_model",
     "deterministic_tldr",
 )
+# R2 L-1 (2026-09-09): dummy/placeholder-style source names must never
+# classify as live. None of these substrings appears in any real provider
+# name used at an engine ``sources=[...]`` call site (grep-verified), while
+# several were confirmed to classify as live before this hardening. The
+# check sits after ``reference`` but before the enumerated synthetic and
+# ``_model`` markers, so a name like ``local_backtest_model`` (contains
+# "test") degrades honestly to synthetic instead of silently to live.
+_NON_LIVE_BLOCKLIST_MARKERS = (
+    "dummy",
+    "mock",
+    "stub",
+    "fake",
+    "demo",
+    "test",
+    "estimated",
+    "illustrative",
+    "hardcoded",
+)
 
 
 def _classify_source_state(source: Any) -> str:
@@ -1313,7 +1331,9 @@ def _classify_source_state(source: Any) -> str:
     Order matters: ``reference`` is checked before ``model`` (so
     ``reference_*_model`` is treated as reference, the higher-fidelity
     label), and explicit synthetic markers win over a generic ``_model``
-    suffix only for the strings already enumerated above.
+    suffix only for the strings already enumerated above. R2 L-1: a
+    dummy/mock/placeholder-style blocklist (``_NON_LIVE_BLOCKLIST_MARKERS``)
+    sits between them so fabricated-source names can never classify live.
     An absent or ``no_live_source`` sentinel source proves nothing about
     liveness, so it classifies as ``synthetic`` (H-1 fix 2026-09-08).
     """
@@ -1322,6 +1342,8 @@ def _classify_source_state(source: Any) -> str:
         return "synthetic"
     if any(marker in text for marker in _REFERENCE_SOURCE_MARKERS):
         return "reference"
+    if any(marker in text for marker in _NON_LIVE_BLOCKLIST_MARKERS):
+        return "synthetic"
     if any(marker in text for marker in _OTHER_SYNTHETIC_MARKERS):
         return "synthetic"
     if any(marker in text for marker in _MODEL_SOURCE_MARKERS):
