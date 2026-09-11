@@ -60,7 +60,7 @@ def test_strategy_from_text_unknown_indicator(client):
 
 def test_strategy_from_text_catalog_invalid_not_persisted(client, monkeypatch):
     """B6 — a spec referencing a non-catalog indicator returns a
-    ``katalog doğrulaması`` note, ``saved_id is None``, and is NOT persisted
+    ``catalog validation failed`` note, ``saved_id is None``, and is NOT persisted
     (even with save=True). The keyword parser cannot emit a bogus indicator,
     so we monkeypatch ``parse_request`` to exercise the validation path."""
     bogus_spec = {
@@ -74,7 +74,7 @@ def test_strategy_from_text_catalog_invalid_not_persisted(client, monkeypatch):
     }
 
     def fake_parse(text):
-        return bogus_spec, ["Tanınan indikatör: not_a_real_indicator"]
+        return bogus_spec, ["Recognized indicator: not_a_real_indicator"]
 
     import showme.assistant.parser as parser_mod
     monkeypatch.setattr(parser_mod, "parse_request", fake_parse)
@@ -85,7 +85,7 @@ def test_strategy_from_text_catalog_invalid_not_persisted(client, monkeypatch):
     assert r.status_code == 200
     body = r.json()
     assert body["saved_id"] is None
-    assert any("katalog doğrulaması" in n for n in body["notes"])
+    assert any("catalog validation failed" in n for n in body["notes"])
     # Not persisted despite save=True.
     after = client.get("/api/strategies").json()["records"]
     assert len(after) == len(before)
@@ -96,7 +96,7 @@ def test_strategy_from_text_empty_catalog_skips_validation(client, monkeypatch):
     ``_indicator_catalog_ids`` returns an EMPTY set. The route MUST treat
     that as "catalog unavailable → skip validation", NOT validate against an
     empty set (which rejects every indicator). A valid MACD strategy with
-    save=True must still be saved, with NO ``katalog doğrulaması`` note."""
+    save=True must still be saved, with NO ``catalog validation failed`` note."""
     import showme.server_routes.assistant as assistant_mod
     monkeypatch.setattr(assistant_mod, "_indicator_catalog_ids", lambda: set())
 
@@ -107,7 +107,7 @@ def test_strategy_from_text_empty_catalog_skips_validation(client, monkeypatch):
     body = r.json()
     # Validation skipped, not failed-for-all → strategy IS saved.
     assert body["saved_id"] is not None
-    assert not any("katalog doğrulaması" in n for n in body["notes"])
+    assert not any("catalog validation failed" in n for n in body["notes"])
     # Actually persisted.
     after = client.get("/api/strategies").json()["records"]
     ids = {rec["id"] for rec in after}

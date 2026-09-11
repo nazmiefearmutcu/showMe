@@ -183,8 +183,9 @@ def hp() -> FunctionManifest:
             "HP is the deep-history alias: server.py:_execute_price_history_alias races the configured "
             "OHLCV adapters per asset class (binance/coingecko for CRYPTO, then yfinance) and returns "
             "the longest, oldest-first-bar history. Compare overlays normalize to 100 at the first "
-            "visible bar. Key levels (52w high/low, ATH, prior close) are computed on the returned "
-            "series. Pan/zoom is preserved across refresh via the first-seed-focus pattern."
+            "visible bar. Key levels use provider 52-week meta when the winning source supplies it and "
+            "fall back to the selected range's high/low (labelled as range extremes) otherwise. "
+            "Pan/zoom is preserved across refresh via the first-seed-focus pattern."
         ),
         formula_dict={
             "change_pct": Formula(

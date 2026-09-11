@@ -37,7 +37,10 @@ class ECSTFunction(BaseFunction):
         date_range = params.get("date_range") or "10Y"
         if date_range != "MAX":
             import datetime
-            today = datetime.date(2026, 6, 7) # Match system date
+            # F4 fix: the window must track the real system date. A pinned
+            # "today" silently skews the 10Y start and drifts further every
+            # session.
+            today = datetime.date.today()
             try:
                 years = int(date_range[:-1])
                 start_date = today.replace(year=today.year - years).strftime("%Y-%m-%d")

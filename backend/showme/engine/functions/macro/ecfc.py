@@ -71,6 +71,10 @@ def _provider_unavailable(country: str, indicators: list[str], reason: str) -> d
         "data_state": "provider_unavailable",
         "vintage": "imf_weo",
         "source_mode": "provider_unavailable",
+        # Machine-readable cause (joined per-indicator fetch errors or the
+        # no-rows note) so the pane can render WHY the forecast is missing
+        # instead of a generic empty table.
+        "reason": reason,
         "methodology": (
             "ECFC pulls live IMF World Economic Outlook forecasts from the keyless "
             "IMF DataMapper API. The upstream request failed for this run "

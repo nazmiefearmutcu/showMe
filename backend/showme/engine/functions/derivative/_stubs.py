@@ -129,15 +129,22 @@ def _surface_template(spot: float) -> dict[str, Any]:
             calls.append({"expiry": expiry, "strike": strike, "iv": round(0.32 + skew + e_idx * 0.015, 4), "volume": 0})
             puts.append({"expiry": expiry, "strike": strike, "iv": round(0.35 + skew + e_idx * 0.018, 4), "volume": 0})
     surface = _surface_rows(calls, puts, spot=spot)
+    stats, series = _ivol_atm_term_and_skew(surface)
     return {
         "status": "reference",
         "spot": spot,
         "expiries": expiries,
         "rows": surface,
         "surface": surface,
+        "series": series,
         "calls_grid": calls,
         "puts_grid": puts,
-        "summary": {"contracts": len(surface), "expiries": len(expiries), "source_mode": "reference"},
+        "summary": {
+            "contracts": len(surface),
+            "expiries": len(expiries),
+            "source_mode": "reference",
+            **stats,
+        },
         "methodology": "Reference surface generated from Black-Scholes-style skew assumptions when live chains are not requested.",
         "field_dictionary": _IVOL_FIELDS,
     }
@@ -184,6 +191,68 @@ def _surface_rows(calls: list[dict[str, Any]], puts: list[dict[str, Any]], *, sp
                 "open_interest": open_interest,
             })
     return rows
+
+
+def _ivol_atm_term_and_skew(
+    rows: list[dict[str, Any]],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Derive the ATM term structure + front-expiry skew from real surface rows.
+
+    The pane's KPI ribbon (ATM IV front / Skew 90-110 / Term slope) used to be
+    permanently "—" because no handler branch emitted those fields. This is the
+    single honest source of truth for them: every value is read off the shipped
+    surface cells (no constants, nothing invented). Any expiry without usable
+    cells is skipped rather than fabricated.
+
+    Returns ``(stats, series)`` where stats are DECIMALS (front/back ATM IV,
+    ``iv(90%) - iv(110%)`` skew, ``back - front`` slope) and ``series`` is the
+    per-expiry ATM IV term structure consumed by the pane sparkline.
+    """
+    by_expiry: dict[str, list[tuple[float, float]]] = {}
+    order: list[str] = []
+    for row in rows:
+        expiry = str(row.get("expiry") or "")
+        vol = _finite(row.get("vol") if row.get("vol") is not None else row.get("iv"))
+        moneyness = _finite(row.get("moneyness"))
+        if not expiry or vol is None or moneyness is None:
+            continue
+        if expiry not in by_expiry:
+            by_expiry[expiry] = []
+            order.append(expiry)
+        by_expiry[expiry].append((moneyness, vol))
+
+    def _closest(cells: list[tuple[float, float]] | None, target: float) -> float | None:
+        best: tuple[float, float] | None = None
+        for moneyness, vol in cells or []:
+            distance = abs(moneyness - target)
+            if best is None or distance < best[0]:
+                best = (distance, vol)
+        return best[1] if best else None
+
+    series: list[dict[str, Any]] = []
+    for expiry in order:
+        atm = _closest(by_expiry[expiry], 1.0)
+        if atm is not None:
+            series.append({"t": expiry, "v": round(atm, 6)})
+    front = series[0]["v"] if series else None
+    back = series[-1]["v"] if series else None
+    skew: float | None = None
+    if series:
+        front_cells = by_expiry.get(str(series[0]["t"]))
+        iv_90 = _closest(front_cells, 0.90)
+        iv_110 = _closest(front_cells, 1.10)
+        if iv_90 is not None and iv_110 is not None:
+            skew = round(iv_90 - iv_110, 6)
+    term_slope: float | None = None
+    if front is not None and back is not None:
+        term_slope = round(back - front, 6)
+    stats = {
+        "atm_iv_front": front,
+        "atm_iv_back": back,
+        "skew": skew,
+        "term_slope": term_slope,
+    }
+    return stats, series
 
 
 def _vol_rows_from_returns(rets: Any, windows: list[int]) -> list[dict[str, Any]]:
@@ -642,18 +711,23 @@ class IVOLFunction(BaseFunction):
                 available_expiry_count=len(targets),
                 available_expiry_preview=", ".join(map(str, targets[:6])),
             )
+        stats, series = _ivol_atm_term_and_skew(surface_rows)
         return FunctionResult(code=self.code, instrument=instrument,
                               data={"status": "ok",
                                     "symbol": instrument.symbol,
                                     "spot": spot,
+                                    "source_mode": "live_yfinance",
                                     "expiries": targets,
                                     "rows": surface_rows,
                                     "surface": surface_rows,
+                                    "series": series,
                                     "summary": {
                                         "contracts": len(surface_rows),
                                         "expiries": len(set(row["expiry"] for row in surface_rows)),
                                         "calls": sum(1 for row in surface_rows if row["option_type"] == "CALL"),
                                         "puts": sum(1 for row in surface_rows if row["option_type"] == "PUT"),
+                                        "source_mode": "live_yfinance",
+                                        **stats,
                                     },
                                     "methodology": "Live implied volatility surface from option-chain impliedVolatility by expiry, strike, and option type.",
                                     "field_dictionary": _IVOL_FIELDS},

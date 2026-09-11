@@ -41,7 +41,17 @@ class MGNFunction(BaseFunction):
         refresh_prices = bool(params.get("refresh_prices") or params.get("live_prices"))
         include_saved = bool(params.get("include_saved") or params.get("saved_portfolio"))
         if not refresh_prices and not include_saved:
-            positions = params.get("positions") or _sample_margin_positions(instrument, params)
+            supplied_positions = params.get("positions")
+            if supplied_positions:
+                positions = supplied_positions
+                sample_mode = False
+            else:
+                # No positions supplied: compute a SAMPLE book so the pane has
+                # a shape, but label it on every level (status/source_mode/
+                # sources/metadata) so no consumer can mistake the fabricated
+                # 0.25 BTC @ 65000 numbers for account-specific margin truth.
+                positions = _sample_margin_positions(instrument, params)
+                sample_mode = True
             cfg = {
                 "accounts": {
                     "paper": {
@@ -61,14 +71,37 @@ class MGNFunction(BaseFunction):
                 "excess_initial": account["excess_initial"],
                 "maintenance_cushion_pct": account["maintenance_cushion_pct"],
             }
+            data: dict[str, Any] = {
+                "accounts": [account],
+                "rows": [_account_row(account)],
+                "total": total,
+                "methodology": _methodology(),
+                "field_dictionary": _field_dictionary(),
+            }
+            sources = ["margin_engine"]
+            warnings: list[str] = []
+            metadata: dict[str, Any] = {"live": False}
+            if sample_mode:
+                data.update({
+                    "status": "sample",
+                    "source_mode": "sample_margin_positions",
+                    "is_sample": True,
+                    "disclaimer": (
+                        "No positions were supplied — these margin figures are "
+                        "computed for an illustrative SAMPLE position, not your "
+                        "account. Pass positions=[...] for real margin numbers."
+                    ),
+                })
+                sources = ["margin_engine", "sample_margin_positions"]
+                warnings = [str(data["disclaimer"])]
+                metadata = {"live": False, "is_sample": True}
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
-                data={"accounts": [account], "rows": [_account_row(account)], "total": total,
-                      "methodology": _methodology(),
-                      "field_dictionary": _field_dictionary()},
-                sources=["margin_engine"],
-                metadata={"live": False},
+                data=data,
+                sources=sources,
+                warnings=warnings,
+                metadata=metadata,
             )
 
         from showme.engine.portfolio.state import PortfolioState

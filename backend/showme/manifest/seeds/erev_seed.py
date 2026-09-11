@@ -1,9 +1,12 @@
 """EREV — Earnings Revisions.
 
-Counts analyst upgrades / downgrades per month from finnhub recommendation
-buckets, computes a 4-week revision velocity (net upgrades − downgrades),
-and ranks revisions chronologically. Used to spot when consensus is moving
-ahead of price.
+Converts Finnhub analyst recommendation buckets (`/stock/recommendation`)
+into a weighted per-period score (Strong Buy=+2 … Strong Sell=−2),
+computes the net upgrade/downgrade deltas per period, and reports the
+latest average-score change as revision velocity. Resynced to the
+shipped handler (``engine/functions/equity/erev.py``) by fix lane F14 —
+the previous seed claimed a yfinance primary and a 4-week rolling
+velocity the handler never implemented.
 """
 from __future__ import annotations
 
@@ -38,8 +41,8 @@ def erev() -> FunctionManifest:
         name="Earnings Revisions",
         category=Category.EQUITIES,
         intent=(
-            "Count analyst upgrades/downgrades per month and compute revision velocity so the "
-            "operator can spot when consensus is moving ahead of price."
+            "Score analyst recommendation buckets per period and compute the revision "
+            "velocity so the operator can spot when consensus is moving ahead of price."
         ),
         asset_classes=[AssetClass.EQUITY],
         inputs=[
@@ -48,38 +51,16 @@ def erev() -> FunctionManifest:
                 label="Symbol",
                 control=ControlKind.SYMBOL_PICKER,
                 required=True,
-                description="Equity ticker.",
-            ),
-            InputSpec(
-                name="months",
-                label="History (months)",
-                control=ControlKind.NUMBER,
-                required=False,
-                description="Lookback for the revision history.",
-                min=3,
-                max=24,
-                step=1,
-                unit="months",
-            ),
-            InputSpec(
-                name="provider_mode",
-                label="Data mode",
-                control=ControlKind.PROVIDER_MODE,
-                required=False,
-                description="Preferred provider mode; chain may downgrade and report it.",
-                options=[
-                    DataMode.DELAYED_REFERENCE.value,
-                    DataMode.CACHED_SNAPSHOT.value,
-                ],
+                description="Equity ticker whose Finnhub recommendation buckets to score.",
             ),
         ],
-        defaults={"months": 12, "provider_mode": DataMode.DELAYED_REFERENCE.value},
+        defaults={},
         provider_chain=ProviderChain(
-            primary="yfinance",
-            fallbacks=["finnhub", "cached_snapshot"],
+            primary="finnhub",
+            fallbacks=["cached_snapshot"],
             acceptable_modes=[
-                DataMode.DELAYED_REFERENCE,
-                DataMode.CACHED_SNAPSHOT,
+                DataMode.LIVE_OFFICIAL,
+                DataMode.NOT_CONFIGURED,
                 DataMode.PROVIDER_UNAVAILABLE,
             ],
         ),
@@ -101,45 +82,53 @@ def erev() -> FunctionManifest:
                 ColumnSpec(key="sell", label="Sell", kind="number"),
                 ColumnSpec(key="strongSell", label="Str. Sell", kind="number"),
                 ColumnSpec(key="score", label="Score", kind="number", format="%.2f"),
+                ColumnSpec(key="avg", label="Avg", kind="number", format="%.4f"),
             ],
             sortable=True,
             filterable=False,
         ),
         card_schema=CardSchema(
             slots=[
-                CardSlot(key="current_score_value", label="Avg score", kind="big_number"),
-                CardSlot(key="velocity_avg", label="Velocity (4w)", kind="kpi"),
-                CardSlot(key="net_upgrades", label="Net upgrades", kind="trend_pill"),
-                CardSlot(key="analyst_count", label="Analysts", kind="kpi"),
+                CardSlot(key="velocity_avg", label="Velocity", kind="big_number"),
+                CardSlot(key="current_score", label="Current", kind="kpi"),
                 CardSlot(key="data_mode", label="Mode", kind="mode_pill"),
                 CardSlot(key="as_of", label="As of", kind="timestamp"),
             ],
         ),
         methodology=(
-            "EREV reads finnhub recommendation_trends month-by-month for the lookback window. "
-            "Each row's score is sum(weight × count) where strongBuy=+2, buy=+1, hold=0, sell=−1, "
-            "strongSell=−2. The revisions table records per-month net change (upgrades minus "
-            "downgrades, scoring deltas). Velocity is the trailing 4-week average of net positive "
-            "minus net negative changes."
+            "EREV reads Finnhub analyst recommendation buckets (strongBuy/buy/hold/sell/"
+            "strongSell per period), sorts them oldest → newest, and converts each period "
+            "to a weighted score: strongBuy=+2, buy=+1, hold=0, sell=−1, strongSell=−2 "
+            "(avg = score / analyst count). Revisions are the period-over-period deltas "
+            "(net_pos_change = Δ(strongBuy+buy), net_neg_change = Δ(sell+strongSell), "
+            "delta_avg = period avg − prior avg). Velocity is the latest average-score "
+            "change versus the prior period. When Finnhub is absent or returns no buckets "
+            "for the symbol, the handler returns status=provider_unavailable with empty "
+            "trend/revisions and a reason — it never substitutes hard-coded buckets."
         ),
         formula_dict={
             "BucketScore": Formula(
                 expression=r"score = 2 \cdot sb + 1 \cdot b + 0 \cdot h - 1 \cdot s - 2 \cdot ss",
                 variables={"sb": "strongBuy", "b": "buy", "h": "hold", "s": "sell", "ss": "strongSell"},
-                notes="Weighted analyst sentiment index.",
+                notes="Weighted analyst sentiment index per period.",
+            ),
+            "Average": Formula(
+                expression=r"avg = score / n, \quad n = sb + b + h + s + ss",
+                variables={},
             ),
             "Velocity": Formula(
-                expression=r"velocity = \frac{1}{4} \sum_{t=now-4w}^{now} (upgrades_t - downgrades_t)",
-                variables={"upgrades_t": "Net positive bucket moves", "downgrades_t": "Net negative bucket moves"},
+                expression=r"velocity = avg_{latest} - avg_{previous}",
+                variables={},
+                notes="Approximated from the two most recent periods in the bucket series.",
             ),
         },
         field_dict={
-            "symbol": FieldDef(description="Equity ticker.", source="instrument"),
-            "trend": FieldDef(description="Per-month bucket counts + weighted score.", source="finnhub"),
-            "revisions": FieldDef(description="Per-month net upgrade / downgrade deltas.", source="computed"),
-            "velocity_avg": FieldDef(description="4-week rolling revision velocity.", source="computed"),
-            "current_score_value": FieldDef(description="Most-recent month's weighted score.", source="computed"),
-            "analyst_count": FieldDef(description="Sum of bucket counts in the latest month.", source="finnhub"),
+            "trend[].score": FieldDef(description="Weighted recommendation score for the period.", source="finnhub"),
+            "trend[].avg": FieldDef(description="Score divided by analyst count.", source="computed"),
+            "revisions[].net_pos_change": FieldDef(description="Change in Strong Buy + Buy count vs prior period.", source="computed"),
+            "revisions[].net_neg_change": FieldDef(description="Change in Sell + Strong Sell count vs prior period.", source="computed"),
+            "velocity_avg": FieldDef(description="Latest average-score change vs previous period.", source="computed"),
+            "current_score": FieldDef(description="Most recent period's bucket row.", source="computed"),
         },
         provenance=ProvenanceSpec(
             require_source_list=True,
@@ -150,10 +139,10 @@ def erev() -> FunctionManifest:
         semantic_tests=[
             SemanticTest(
                 name="erev_aapl_returns_trend_and_velocity",
-                description="EREV for AAPL returns at least one trend row + numeric velocity_avg.",
-                inputs={"symbol": "AAPL", "months": 12},
+                description="With a wired Finnhub provider, EREV returns trend rows and a numeric velocity_avg.",
+                inputs={"symbol": "AAPL"},
                 assertions=[
-                    "status_in_ok_set",
+                    "status_equals_ok",
                     "trend_non_empty",
                     "velocity_avg_is_finite_number",
                 ],
@@ -168,11 +157,13 @@ def erev() -> FunctionManifest:
             ),
             SemanticTest(
                 name="erev_provider_outage_returns_unavailable",
-                description="When finnhub is unreachable, status=provider_unavailable; no fake trend.",
+                description="When Finnhub is absent or errors, status=provider_unavailable with empty trend/revisions and no fake buckets.",
                 inputs={"symbol": "ZZZZZZ"},
                 assertions=[
                     "status_equals_provider_unavailable",
                     "trend_is_empty_array",
+                    "revisions_is_empty_array",
+                    "sources_is_empty_list",
                 ],
             ),
         ],

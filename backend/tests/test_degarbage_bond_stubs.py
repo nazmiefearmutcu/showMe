@@ -108,7 +108,24 @@ def test_ddis_corporate_real_or_labelled_fallback():
     else:
         # honest empty/outage — never canned-as-live (H-5: illustrative
         # ladder removed, no-data paths now report no_live_source)
-        assert res.data["summary"]["source_mode"] in {"illustrative_model", "sec_edgar", "no_live_source"}
+        assert res.data["summary"]["source_mode"] in {"sec_edgar", "no_live_source"}
+
+
+def test_ddis_seed_matches_empty_schedule_contract():
+    """Seed truth (A2 fix 2026-09-11): the manifest must describe the shipped
+    H-5 empty-schedule contract — no 'illustrative_model' vocabulary left."""
+    from showme.manifest import REGISTRY, load_seeds
+
+    load_seeds()
+    entry = REGISTRY.get("DDIS")
+    blob = entry.methodology + " " + " ".join(
+        f"{t.name} {' '.join(t.assertions)}" for t in entry.semantic_tests
+    )
+    assert "illustrative_model" not in blob.lower(), blob
+    assert "source_mode=illustrative" not in blob.lower()
+    assert "empty" in blob.lower()
+    assert "reason_present" in blob
+    assert "next_actions_present" in blob
 
 
 def test_ddis_pct_sums_to_100_when_rows_present():

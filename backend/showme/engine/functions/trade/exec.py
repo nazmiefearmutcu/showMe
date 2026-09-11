@@ -76,6 +76,7 @@ _FIELD_DICTIONARY = {
     "slip_bps": "(bar_close - benchmark_px)/benchmark_px * 1e4, in basis points.",
     "is_bps": "Implementation shortfall vs arrival for this slice, side-signed bps.",
     "pace_pct": "Cumulative scheduled qty / target_qty * 100.",
+    "execution_mode": "'planned' — a hypothetical schedule over live interval bars; no order was sent.",
 }
 
 
@@ -495,6 +496,11 @@ class EXECFunction(BaseFunction):
                     "avg_is_bps": avg_is_bps,
                     "worst_slippage_bps": worst_slip,
                     "data_mode": "live_exchange",
+                    # F9 [M]: the plan path executes NOTHING — the IS/slip/avg
+                    # numbers are hypothetical against historical interval
+                    # bars. Stamp the lifecycle so the pane (and any consumer)
+                    # can label plan vs actual honestly; keep output additive.
+                    "execution_mode": "planned",
                     "as_of": rows[-1]["ts_ms"] if rows else None,
                 },
                 "methodology": self._plan_methodology(),

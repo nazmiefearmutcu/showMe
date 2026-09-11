@@ -464,6 +464,30 @@ def test_csrc_reference_true_skips_quotes() -> None:
     assert all(row.get("quote_state") is None for row in result.data["rows"])
 
 
+def test_csrc_live_rows_flag_open_interest_as_reference() -> None:
+    """A live-quoted commodity row must not present curated OI as live data.
+
+    The quote provider (yfinance) never returns open interest, so the merge
+    keeps the curated static value but stamps ``open_interest_state``.
+    """
+    from showme.engine.functions.screen._funcs import CSRCFunction
+
+    quotes = {"CL=F": _quote("CL=F", 78.5, 77.9)}
+    provider = _FakeQuoteProvider(quotes)
+    result = asyncio.run(
+        CSRCFunction(FunctionDeps(yfinance=provider)).execute(query='sector = "Energy"')
+    )
+    by_symbol = {row["symbol"]: row for row in result.data["rows"]}
+    live = by_symbol["CL=F"]
+    assert live["quote_state"] == "live"
+    assert isinstance(live.get("open_interest"), (int, float))
+    assert live.get("open_interest_state") == "reference"
+    # Rows without a quote keep the same honest flag.
+    ref = by_symbol["NG=F"]
+    assert ref["quote_state"] == "reference"
+    assert ref.get("open_interest_state") == "reference"
+
+
 # ─────────────────────────────────────────────────────────────────────────
 # SECF — security finder defaults to live quotes with reference identity
 # ─────────────────────────────────────────────────────────────────────────

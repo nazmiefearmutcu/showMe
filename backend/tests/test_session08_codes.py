@@ -57,7 +57,38 @@ def test_greeks_empty_positions_returns_input_required() -> None:
     fn = GREEKSFunction(_DummyDeps())
     res = asyncio.run(fn.execute(positions=[]))
     assert res.data["status"] == "input_required"
-    assert res.data["positions"] == 0
+    # Regression (F8 campaign): the empty-book envelope used to ship
+    # ``positions: 0`` (a scalar) while the pane spreads the field as an
+    # array -> ``[...0]`` TypeError. The wire contract is ALWAYS a list.
+    assert isinstance(res.data["positions"], list)
+    assert res.data["positions"] == []
+    assert res.data["n"] == 0
+    assert res.data["rows"] == []
+
+
+def test_greeks_ok_payload_positions_is_a_list_of_service_rows() -> None:
+    """Regression pin for the crash fix: the success envelope's `positions`
+    is the greeks-bearing service rows array (never a scalar count)."""
+    from showme.engine.functions.portfolio.greeks import GREEKSFunction
+
+    fn = GREEKSFunction(_DummyDeps())
+    res = asyncio.run(fn.execute(positions=[
+        {"symbol": "AAPL 240C", "kind": "call", "quantity": 1, "contract_size": 100,
+         "spot": 250, "strike": 240, "vol": 0.28, "T": 0.5, "r": 0.04},
+    ]))
+    # The success envelope deliberately carries no `status` (the pane derives
+    # ok from `totals`); it must still ship a list of greeks-bearing rows.
+    assert "status" not in res.data
+    assert isinstance(res.data.get("totals"), dict)
+    positions = res.data["positions"]
+    assert isinstance(positions, list) and len(positions) == 1
+    row = positions[0]
+    assert row["kind"] == "call"
+    assert isinstance(row["delta"], float)
+    assert isinstance(res.data["n"], int)
+    # The dead input-echo `rows` key is gone: the pane (and the shared
+    # envelope extractor) reads `positions`.
+    assert "rows" not in res.data
 
 
 # ---------- HVT / IVOL ----------

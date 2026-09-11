@@ -16,7 +16,7 @@ class EEFunction(BaseFunction):
     name = "Earnings & Estimates"
     asset_classes = (AssetClass.EQUITY,)
     category = "equity"
-    description = "Geçmiş kazançlar (actual vs consensus) + sürpriz % + sonraki tahmin tarihi."
+    description = "Historical earnings (actual vs consensus) + surprise % + next report date."
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         if instrument is None:

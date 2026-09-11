@@ -1,8 +1,10 @@
 """SPLC — Supply Chain (10-K text-mining stub).
 
-Plan §7.7: ücretsiz iyi veri yok; 10-K text mining ile yaklaşımsal.
-Bu sürüm sadece SEC EDGAR'dan son 10-K'yı çeker, customer/supplier extraction'ı
-``agents/code.py`` Phase 7'de bağlanır. Şimdilik filing URL listesi döner.
+Plan §7.7: no good free relationship feed exists; this is approximate
+10-K text mining. This version fetches the latest 10-K from SEC EDGAR
+and mines customer/supplier concentration language plus the debt-maturity
+section; reference rows are clearly labelled when extraction finds
+nothing.
 """
 
 from __future__ import annotations

@@ -1,11 +1,14 @@
-"""SECT — Sector rotation view.
+"""SECT — Sector heatmap (S&P 500 sector ETF performance).
 
-Bloomberg ``SECT<GO>`` analogue. Aggregates equity sector performance
-(by SPDR sector ETFs and constituent breadth) and ranks them across
-multiple horizons (1D/5D/MTD/QTD/YTD) so an operator can read
-rotation signals. UI hangs off the same MarketHeatmapPane as MAP but
-the manifest grammar is BAR_LADDER (ranked horizontal bars) to make
-the rotation explicit.
+Bloomberg ``SECT<GO>`` analogue: the eleven SPDR sector ETFs rendered as a
+ranked heat grid colored by the delivered change, with 1D/MTD/QTD/YTD
+window controls and an explicit live-vs-model source mode. UI hangs off
+the shared MarketHeatmapPane (same component as MAP). Live mode only
+delivers intraday 1D quotes from the quote provider, so the handler
+stamps ``change_pct_period`` and emits a warning when the requested
+window differs — the pane labels every change value with the delivered
+period. ``chart_grammar.kind`` stays BAR_LADDER per the wave-2 contract
+(ranked sector return ladder over the same rows).
 """
 from __future__ import annotations
 
@@ -39,53 +42,34 @@ from ..spec import (
 def sect() -> FunctionManifest:
     return FunctionManifest(
         code="SECT",
-        name="Sector Rotation",
+        name="Sector Heatmap",
         category=Category.SCREENING,
         intent=(
-            "Rank equity sectors by performance across multiple horizons (1D/5D/MTD/QTD/YTD) and "
-            "breadth metrics so an operator can read rotation signals, with one-click drill-down to "
-            "constituent screens per sector."
+            "Rank the eleven S&P 500 sector ETFs (XLK, XLF, XLE, XLV, XLI, XLP, XLY, XLU, XLB, "
+            "XLRE, XLC) by performance over the selected 1D/MTD/QTD/YTD window so an operator can "
+            "read sector rotation at a glance. Live mode uses intraday quote changes only and "
+            "discloses the delivered period; model mode returns a deterministic, labelled sector "
+            "template — never a fabricated live print."
         ),
         asset_classes=[AssetClass.EQUITY, AssetClass.ETF],
         inputs=[
             InputSpec(
-                name="universe",
-                label="Universe",
-                control=ControlKind.SELECT,
-                required=True,
-                description="Reference universe whose constituent breadth feeds the rank.",
-                options=["SP500", "NDX", "STOXX600"],
-            ),
-            InputSpec(
                 name="period",
-                label="Period",
+                label="Window",
                 control=ControlKind.SELECT,
-                required=True,
-                description="Performance horizon driving the rank.",
-                options=["1D", "5D", "MTD", "QTD", "YTD", "1Y"],
+                required=False,
+                description="Requested performance horizon (live mode delivers 1D only).",
+                options=["1D", "MTD", "QTD", "YTD"],
             ),
             InputSpec(
-                name="metric",
-                label="Metric",
-                control=ControlKind.SELECT,
-                required=True,
-                description="What to rank by.",
-                options=["return_pct", "weighted_return_pct", "advancers_ratio", "median_return_pct"],
-            ),
-            InputSpec(
-                name="show_breadth",
-                label="Breadth chips",
+                name="live",
+                label="Live quotes",
                 control=ControlKind.BOOLEAN,
                 required=False,
-                description="Show advancers/decliners breadth chip per sector.",
-            ),
-            InputSpec(
-                name="saved_screen",
-                label="Saved screen",
-                control=ControlKind.SELECT,
-                required=False,
-                description="Load a previously saved sector view.",
-                options=["SPDR-1D", "SPDR-YTD", "STOXX-MTD"],
+                description=(
+                    "True = quote-provider sector ETF changes (default); False = explicitly "
+                    "labelled deterministic sector model."
+                ),
             ),
             InputSpec(
                 name="provider_mode",
@@ -94,40 +78,41 @@ def sect() -> FunctionManifest:
                 required=False,
                 description="Preferred mode; provider may downgrade and report it.",
                 options=[
-                    DataMode.LIVE_OFFICIAL.value,
+                    DataMode.LIVE_EXCHANGE.value,
                     DataMode.DELAYED_REFERENCE.value,
-                    DataMode.CACHED_SNAPSHOT.value,
+                    DataMode.MODELED.value,
                 ],
             ),
         ],
         defaults={
-            "universe": "SP500",
             "period": "1D",
-            "metric": "return_pct",
-            "show_breadth": True,
-            "provider_mode": DataMode.DELAYED_REFERENCE.value,
+            "live": True,
+            "provider_mode": DataMode.LIVE_EXCHANGE.value,
         },
         provider_chain=ProviderChain(
             primary="yfinance",
-            fallbacks=["cached_snapshot"],
+            fallbacks=["cached_snapshot", "internal"],
             acceptable_modes=[
-                DataMode.LIVE_OFFICIAL,
+                DataMode.LIVE_EXCHANGE,
                 DataMode.DELAYED_REFERENCE,
+                DataMode.MODELED,
                 DataMode.CACHED_SNAPSHOT,
             ],
         ),
         caching=CachingPolicy(ttl_seconds=120, scope="per_input", persist=True),
         output_contract=OutputContract(
-            must_have=["as_of", "rows", "period", "metric", "data_mode"],
+            must_have=["rows", "period"],
             rows=True,
             series=False,
             cards=True,
             warnings=True,
             next_actions=True,
         ),
+        # Ranked sector ladder — the pane renders the heat grid plus a
+        # best/worst legend rail over these same rows.
         chart_grammar=ChartGrammar(
             kind=ChartKind.BAR_LADDER,
-            x_axis=AxisSpec(type="numeric", unit="%", label="Return"),
+            x_axis=AxisSpec(type="numeric", unit="%", label="Change"),
             y_axis=AxisSpec(type="category", unit="", label="Sector"),
             panes=[],
             overlay_support=False,
@@ -136,49 +121,44 @@ def sect() -> FunctionManifest:
         table_schema=TableSchema(
             columns=[
                 ColumnSpec(key="sector", label="Sector", kind="text"),
-                ColumnSpec(key="etf_symbol", label="ETF", kind="tag"),
-                ColumnSpec(key="weight", label="Weight", kind="percent", format="%.2f"),
-                ColumnSpec(key="return_pct", label="Return", kind="percent", format="%.2f"),
-                ColumnSpec(key="advancers", label="Up", kind="number", format="%d"),
-                ColumnSpec(key="decliners", label="Down", kind="number", format="%d"),
-                ColumnSpec(key="advancers_ratio", label="A/D", kind="percent", format="%.1f"),
-                ColumnSpec(key="median_return_pct", label="Median Δ", kind="percent", format="%.2f"),
-                ColumnSpec(key="actions", label="", kind="action"),
+                ColumnSpec(key="etf", label="ETF", kind="tag"),
+                ColumnSpec(key="last", label="Last", kind="currency", format="%.2f"),
+                ColumnSpec(key="change_pct", label="Change", kind="percent", format="%.2f"),
+                ColumnSpec(key="change_pct_period", label="Δ period", kind="tag"),
+                ColumnSpec(key="period", label="Requested", kind="tag"),
+                ColumnSpec(key="quote_type", label="Source", kind="tag"),
             ],
             sortable=True,
             filterable=True,
         ),
         card_schema=CardSchema(
             slots=[
-                CardSlot(key="leader", label="Leader", kind="badge"),
-                CardSlot(key="laggard", label="Laggard", kind="badge"),
-                CardSlot(key="dispersion", label="Dispersion", kind="kpi", unit="%"),
-                CardSlot(key="rotation_score", label="Rotation", kind="kpi"),
-                CardSlot(key="data_mode", label="Mode", kind="mode_pill"),
-                CardSlot(key="as_of", label="As of", kind="timestamp"),
+                CardSlot(key="best", label="Best", kind="trend_pill", unit="%"),
+                CardSlot(key="worst", label="Worst", kind="trend_pill", unit="%"),
+                CardSlot(key="breadth", label="Breadth", kind="kpi"),
+                CardSlot(key="change_pct_period", label="Delivered", kind="badge"),
+                CardSlot(key="quote_type", label="Source", kind="mode_pill"),
             ],
         ),
         methodology=(
-            "SECT joins two data feeds. (1) SPDR sector ETF tape — XLF, XLK, XLE, XLV, XLI, XLP, "
-            "XLY, XLU, XLB, XLRE, XLC — gives the canonical per-sector return at each period via "
-            "yfinance history. (2) Constituent breadth — for the chosen universe SECT classifies "
-            "each ticker by its GICS sector and aggregates advancers/decliners + median_return_pct "
-            "for that period. The two views are joined on sector key and ranked by `metric`. "
-            "rotation_score = dispersion-normalized z-score of returns across sectors (higher → "
-            "more rotation). Cap-weighted return uses constituent market_cap from yfinance. Visual "
-            "is a horizontal BAR_LADDER ranked by `metric`. Next actions: open_sector_constituents "
-            "(launches EQS with sector predicate), open_in_gp on ETF, save_screen, export_csv."
+            "SECT maps the canonical GICS sector set to its SPDR sector ETF (XLK, XLF, XLE, XLV, "
+            "XLI, XLP, XLY, XLU, XLB, XLRE, XLC). In live mode each ETF is quoted through the "
+            "provider and the intraday change_pct is computed from last vs previous close; the "
+            "handler stamps change_pct_period='1D' and, when the requested `period` differs, emits "
+            "a warning so the values are never relabelled as MTD/QTD/YTD. In model mode (or when "
+            "every live quote fails) rows carry quote_type='model' + status='model' and the pane "
+            "shows a prominent MODEL banner. Rows are ranked by change_pct and the pane derives "
+            "breadth and best/worst from finite changes only — a missing change renders as an "
+            "explicit em-dash, never 0.00%."
         ),
         field_dict={
             "rows[].sector": FieldDef(description="GICS sector name.", source="curated"),
-            "rows[].etf_symbol": FieldDef(description="SPDR sector ETF ticker (XLF, XLK, …).", source="curated"),
-            "rows[].weight": FieldDef(unit="%", description="Sector cap weight within the universe.", source="computed"),
-            "rows[].return_pct": FieldDef(unit="%", description="Sector ETF return over period.", source="yfinance"),
-            "rows[].advancers": FieldDef(unit="count", description="Constituents with positive return over period.", source="computed"),
-            "rows[].decliners": FieldDef(unit="count", description="Constituents with negative return over period.", source="computed"),
-            "rows[].advancers_ratio": FieldDef(unit="%", description="advancers / (advancers + decliners) * 100.", source="computed"),
-            "rows[].median_return_pct": FieldDef(unit="%", description="Median constituent return over period.", source="computed"),
-            "rotation_score": FieldDef(description="Cross-sector dispersion z-score.", source="computed"),
+            "rows[].etf": FieldDef(description="SPDR sector ETF ticker (XLK, XLF, …).", source="curated"),
+            "rows[].last": FieldDef(unit="quote_ccy", description="Latest quoted ETF price.", source="yfinance"),
+            "rows[].change_pct": FieldDef(unit="%", description="Change over the delivered period; null when unavailable.", source="yfinance"),
+            "rows[].change_pct_period": FieldDef(description="Period the live change actually covers (live mode = 1D).", source="computed"),
+            "rows[].period": FieldDef(description="Window the caller requested.", source="config"),
+            "rows[].quote_type": FieldDef(description="live | model | unavailable provenance flag.", source="computed"),
         },
         provenance=ProvenanceSpec(
             require_source_list=True,
@@ -189,40 +169,36 @@ def sect() -> FunctionManifest:
         semantic_tests=[
             SemanticTest(
                 name="sect_chart_grammar_is_bar_ladder",
-                description="SECT manifest pins chart_grammar.kind to bar_ladder (ranked sector return ladder).",
+                description="SECT manifest pins chart_grammar.kind to bar_ladder (ranked sector change ladder).",
                 inputs={},
                 assertions=["manifest.chart_grammar.kind == 'bar_ladder'"],
             ),
             SemanticTest(
-                name="sect_metric_return_pct_sort_is_monotonic",
-                description="With metric=return_pct the rows are monotonically non-increasing in return_pct.",
-                inputs={"metric": "return_pct"},
-                assertions=["rows_monotonically_non_increasing_in_return_pct"],
-            ),
-            SemanticTest(
-                name="sect_breadth_advancers_plus_decliners_le_universe_size",
-                description="advancers + decliners per row is <= the universe constituent count classified into that sector.",
-                inputs={},
-                assertions=["per_row_advancers_plus_decliners_le_sector_size"],
-            ),
-            SemanticTest(
-                name="sect_next_actions_include_save_export_and_open_gp",
-                description="next_actions list always contains save_screen, export_csv, and open_in_gp entries.",
-                inputs={},
+                name="sect_live_period_mismatch_is_disclosed",
+                description=(
+                    "When the requested period differs from the delivered live period, the payload "
+                    "carries a warning naming both — the values are never relabelled as the request."
+                ),
+                inputs={"period": "MTD", "live": True},
                 assertions=[
-                    "next_actions_contains_save_screen",
-                    "next_actions_contains_export_csv",
-                    "next_actions_contains_open_in_gp",
+                    "change_pct_period == '1D'",
+                    "warning_mentions_requested_period",
                 ],
             ),
             SemanticTest(
-                name="sect_provider_unavailable_returns_warning_not_synthetic_zeros",
-                description="When yfinance is down, missing-return rows surface as warnings rather than return_pct=0.",
-                inputs={},
+                name="sect_model_fallback_is_labelled_not_live",
+                description="Model mode / all-quotes-failed rows carry quote_type='model' (or status model/provider_unavailable) and never claim a live print.",
+                inputs={"live": False},
                 assertions=[
-                    "missing_row_return_pct_is_null_not_zero",
-                    "warning_emitted_for_failed_rows",
+                    "rows_quote_type_model",
+                    "status_in_model_or_provider_unavailable",
                 ],
+            ),
+            SemanticTest(
+                name="sect_missing_change_is_null_not_zero",
+                description="A failed live ETF quote surfaces change_pct=null (rendered '—'), never a fabricated 0.00% flat move.",
+                inputs={},
+                assertions=["missing_change_pct_is_null_not_zero"],
             ),
         ],
     )

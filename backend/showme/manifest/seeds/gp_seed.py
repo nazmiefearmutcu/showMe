@@ -197,8 +197,10 @@ def gp() -> FunctionManifest:
         ),
         methodology=(
             "GP fetches OHLCV bars from the primary provider for the chosen interval and range. "
-            "Overlays are computed client-side from the returned candle series (SMA/EMA/BB/VWAP/Ichimoku "
-            "are O(n) deterministic). Sub-pane studies share the same series (RSI uses Wilder's smoothing; "
+            "Overlays are computed from the returned candle series by the price-history alias and shipped "
+            "as `indicators` (SMA 20/50, EMA 20, Bollinger 20±2 are O(n) deterministic); the pane draws "
+            "them and lists them in the INDICATORS legend. Sub-pane studies share the same series (RSI uses "
+            "Wilder's smoothing; "
             "MACD uses 12/26/9 EMA; ATR uses Wilder; STOCH uses %K=14 %D=3 SMA; ADX uses 14-period DMI; "
             "OBV uses signed-volume cumsum). Compare mode normalizes both series to 100 at the first "
             "visible candle. The pane respects user pan/zoom across data refresh (first-seed-focus pattern). "

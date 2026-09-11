@@ -105,7 +105,14 @@ def list_trades(
         )
         params.append(int(limit))
         rows = [_decode_row(r) for r in conn.execute(sql, params).fetchall()]
-        total = conn.execute("SELECT COUNT(*) FROM trades").fetchone()[0]
+        # F12: the total must respect the same symbol filter as the rows —
+        # the pane shows "N shown · filtered" and a DB-wide COUNT(*) lied.
+        count_sql = "SELECT COUNT(*) FROM trades"
+        count_params: list[Any] = []
+        if symbol:
+            count_sql += " WHERE symbol = ?"
+            count_params.append(symbol.upper())
+        total = conn.execute(count_sql, count_params).fetchone()[0]
     finally:
         conn.close()
     return StateRead(rows=rows, total=int(total), source=str(target))

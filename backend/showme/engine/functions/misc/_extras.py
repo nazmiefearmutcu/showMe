@@ -76,7 +76,7 @@ class GRABFunction(BaseFunction):
 
 @FunctionRegistry.register
 class LANGFunction(BaseFunction):
-    """LANG — i18n switcher (12 dil)."""
+    """LANG — i18n switcher (12 languages)."""
     code = "LANG"
     name = "Language Switch"
     category = "misc"

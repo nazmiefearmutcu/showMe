@@ -64,6 +64,16 @@ class EMSXFunction(BaseFunction):
         order_type = str(params.get("type", params.get("order_type", "MARKET"))).upper()
         tif = str(params.get("tif", params.get("time_in_force", "GTC"))).upper()
         submit = _truthy(params.get("submit"))
+        # BBGT/C + EMSX guard (campaign 2026-09-11 F9): the manifests declare
+        # ``paper_mode`` as a REQUIRED boolean defaulting True ("safe-by-default
+        # rebuild contract"), but the engine never read the parameter — an API
+        # or agent caller passing ``submit=true`` went straight to a live
+        # broker order. Enforce it here at the single shared boundary:
+        #   * paper_mode absent / True / any non-explicit-false value → paper;
+        #   * only an explicit False arms the submit path, and even then a
+        #     broker adapter must exist or we refuse (provider_unavailable).
+        paper_mode = _paper_mode_enabled(params.get("paper_mode"))
+        live_armed = submit and not paper_mode
         if quantity <= 0:
             return FunctionResult(
                 code=self.code,
@@ -88,7 +98,7 @@ class EMSXFunction(BaseFunction):
                 metadata={"preview_only": True},
             )
         broker = _select_broker(self.deps, instrument.asset_class)
-        if broker is None and submit:
+        if broker is None and live_armed:
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
@@ -119,7 +129,7 @@ class EMSXFunction(BaseFunction):
                     ],
                 },
             )
-        if broker is None or not submit:
+        if broker is None or not live_armed:
             # Session-14 fix: preview used to drop the user-supplied limit
             # price and leverage entirely. The UI then showed an empty
             # "Price: —" row, hiding the fact that the value the user typed
@@ -131,6 +141,7 @@ class EMSXFunction(BaseFunction):
                 "broker": "paper",
                 "status": "preview",
                 "submit": False,
+                "paper_mode": paper_mode,
                 "broker_available": broker is not None,
                 "symbol": instrument.symbol,
                 "asset_class": instrument.asset_class.value,
@@ -146,6 +157,18 @@ class EMSXFunction(BaseFunction):
                     "Use the broker order endpoint or Advanced submit=true only after confirming the trade.",
                 ],
             }
+            if submit and not live_armed:
+                # Honest signal: the caller asked for submit but the safe
+                # paper_mode guard blocked it. Say so instead of silently
+                # returning the normal preview.
+                preview["reason"] = (
+                    "paper_mode is on (safe default) — submit=true was ignored; "
+                    "returning a paper preview."
+                )
+                preview["next_actions"] = [
+                    "Review the ticket values.",
+                    "To arm a live order set paper_mode=false in addition to submit=true (the UI does this only after the confirm gate).",
+                ]
             return FunctionResult(code=self.code, instrument=instrument, data=preview,
                                   sources=["paper_ticket"], metadata={"preview_only": True})
         order = BrokerOrder(
@@ -181,8 +204,35 @@ class EMSXFunction(BaseFunction):
                 instrument.symbol,
             )
             raise
-        return FunctionResult(code=self.code, instrument=instrument,
-                              data={"order_id": order_id, "broker": broker.name})
+        return FunctionResult(
+            code=self.code,
+            instrument=instrument,
+            data={
+                # F9 [H]: the old success payload was only {order_id, broker},
+                # so the pane's "submitted/filled" branch was unreachable and a
+                # real order rendered as a preview. Echo the ticket back with
+                # an honest lifecycle status ("submitted" — the broker accepted
+                # the order; ``place_order`` does not report fills).
+                "status": "submitted",
+                "broker": broker.name,
+                "order_id": str(order_id),
+                "symbol": instrument.symbol,
+                "asset_class": instrument.asset_class.value,
+                "side": side,
+                "quantity": quantity,
+                "order_type": order_type,
+                "time_in_force": tif,
+                "tif": tif,
+                "price": params.get("price"),
+                "leverage": params.get("leverage"),
+                "next_actions": [
+                    "Track the working order in AIM (broker + order_id).",
+                    "A fill will appear in the AIM ledger once the broker reports it.",
+                ],
+            },
+            sources=[broker.name],
+            metadata={"preview_only": False, "submitted": True},
+        )
 
 
 @FunctionRegistry.register
@@ -674,3 +724,20 @@ def _truthy(value: Any) -> bool:
     if value is None:
         return False
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _paper_mode_enabled(value: Any) -> bool:
+    """Safe-default parser for the ticket ``paper_mode`` guard (F9/C).
+
+    Fail CLOSED: only an explicit falsy literal (``False`` / ``"false"`` /
+    ``"0"`` / ``"no"`` / ``"off"``) disarms paper mode. Absent, ``None`` and
+    any unrecognised value keep the ticket in paper mode, so a malformed API
+    or agent call can never reach a live broker by accident.
+    """
+    if value is None:
+        return True
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return str(value).strip().lower() not in {"0", "false", "no", "off"}

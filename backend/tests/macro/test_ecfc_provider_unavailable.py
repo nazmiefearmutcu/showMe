@@ -91,3 +91,15 @@ def test_ecfc_methodology_explains_provider_unavailable() -> None:
     methodology = result.data["methodology"].lower()
     assert "imf" in methodology or "oecd" in methodology
     assert "provider_unavailable" in methodology or "no provider" in methodology
+
+
+def test_ecfc_unavailable_envelope_carries_reason() -> None:
+    """The failure envelope must expose WHY it is empty (F16 / verify-2 #5).
+
+    The pane renders `payload.reason` in its honest outage state; a missing
+    reason forces a generic body while the actual cause is hidden.
+    """
+    result = asyncio.run(_make_unavailable_handler().execute(country="USA"))
+    reason = result.data.get("reason")
+    assert isinstance(reason, str) and reason.strip()
+    assert "imf datamapper unreachable" in reason or "ConnectError" in reason

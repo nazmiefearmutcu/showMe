@@ -10,6 +10,13 @@ from showme.engine.core.base_function import BaseFunction, FunctionRegistry, Fun
 from showme.engine.core.instrument import AssetClass, Instrument
 from showme.engine.services.fx_hedge import FXExposure, forward_rate, hedge_book
 
+# Illustrative-book defaults. The pane exposes explicit inputs for all three;
+# these remain for API callers and are echoed as ``assumed_defaults`` so a
+# synthetic $1M book is never presented as the caller's own exposure.
+DEFAULT_NOTIONAL = 1_000_000.0
+DEFAULT_BASE_RATE = 0.035
+DEFAULT_HOME_RATE = 0.045
+
 
 @FunctionRegistry.register
 class FXHFunction(BaseFunction):
@@ -30,6 +37,7 @@ class FXHFunction(BaseFunction):
         ratio = float(params.get("hedge_ratio", 0.75))
         shock = float(params.get("usd_shock_pct", 0.05))
         source_mode = "manual_exposure"
+        assumed_defaults: list[str] = []
         # explicit exposures override manual defaults; portfolio state is only
         # used when explicitly requested so crypto/stablecoin positions do not
         # masquerade as an FX hedge book.
@@ -39,12 +47,22 @@ class FXHFunction(BaseFunction):
                 exposures = await self._derive_exposures(home)
                 source_mode = "portfolio_state"
             else:
+                raw_notional = params.get("notional", params.get("exposure_notional"))
+                if raw_notional in (None, ""):
+                    assumed_defaults.append("notional")
+                    notional = DEFAULT_NOTIONAL
+                else:
+                    notional = float(raw_notional)
+                if params.get("base_rate") in (None, ""):
+                    assumed_defaults.append("base_rate")
+                if params.get("home_rate") in (None, ""):
+                    assumed_defaults.append("home_rate")
                 exposures = [{
                     "currency": (params.get("currency") or pair_base or "EUR").upper(),
-                    "notional": float(params.get("notional", 1_000_000)),
+                    "notional": notional,
                     "spot_rate": params.get("spot_rate") or params.get("spot"),
-                    "base_rate": params.get("base_rate", 0.035),
-                    "home_rate": params.get("home_rate", 0.045),
+                    "base_rate": params.get("base_rate", DEFAULT_BASE_RATE),
+                    "home_rate": params.get("home_rate", DEFAULT_HOME_RATE),
                 }]
         # Resolve spot rates if missing. _fill_spots returns the list of
         # currencies whose spot could NOT be resolved live and were not
@@ -95,30 +113,33 @@ class FXHFunction(BaseFunction):
             {effective_source, *(["yfinance"] if fetched_live else [])}
         )
         if action == "forward":
+            forward_data = {
+                "forwards": [{
+                    "pair": f"{e.currency}/{home}",
+                    "spot": e.spot_rate,
+                    "forward": forward_rate(
+                        spot=e.spot_rate,
+                        home_rate=e.home_rate,
+                        base_rate=e.base_rate, days=days,
+                    ),
+                    "days": days,
+                } for e in objs],
+                "source_mode": effective_source,
+                "assumed_defaults": assumed_defaults,
+                "methodology": (
+                    "FXH forward branch returns covered-interest-parity forward rates "
+                    "F = S * (1 + home_rate*T) / (1 + base_rate*T) for each exposure pair."
+                ),
+                "field_dictionary": {
+                    "spot": "Live or supplied spot rate in home currency units per foreign unit.",
+                    "forward": "Covered-interest-parity forward rate for the selected maturity.",
+                    "days": "Maturity (days) used for the forward calculation.",
+                },
+            }
+            _attach_assumed_values(forward_data, assumed_defaults)
             return FunctionResult(
                 code=self.code, instrument=None,
-                data={
-                    "forwards": [{
-                        "pair": f"{e.currency}/{home}",
-                        "spot": e.spot_rate,
-                        "forward": forward_rate(
-                            spot=e.spot_rate,
-                            home_rate=e.home_rate,
-                            base_rate=e.base_rate, days=days,
-                        ),
-                        "days": days,
-                    } for e in objs],
-                    "source_mode": effective_source,
-                    "methodology": (
-                        "FXH forward branch returns covered-interest-parity forward rates "
-                        "F = S * (1 + home_rate*T) / (1 + base_rate*T) for each exposure pair."
-                    ),
-                    "field_dictionary": {
-                        "spot": "Live or supplied spot rate in home currency units per foreign unit.",
-                        "forward": "Covered-interest-parity forward rate for the selected maturity.",
-                        "days": "Maturity (days) used for the forward calculation.",
-                    },
-                },
+                data=forward_data,
                 sources=sources_used,
                 warnings=warnings,
             )
@@ -126,6 +147,8 @@ class FXHFunction(BaseFunction):
         out["rows"] = list(out.get("exposures") or [])
         out["curve"] = _scenario_curve(objs, ratio, days)
         out["source_mode"] = effective_source
+        out["assumed_defaults"] = assumed_defaults
+        _attach_assumed_values(out, assumed_defaults)
         out["methodology"] = (
             "FXH computes a forward overlay for foreign-currency exposure. "
             "Forward rate uses covered interest parity: F = S * (1 + home_rate*T) / (1 + base_rate*T). "
@@ -202,6 +225,27 @@ def _normalize_pair(raw: str) -> str:
     if len(value) >= 6 and value[:3].isalpha() and value[3:6].isalpha():
         return value[:6]
     return "EURUSD"
+
+
+def _attach_assumed_values(
+    data: dict[str, Any], assumed_defaults: list[str],
+) -> None:
+    """Echo the concrete default values behind ``assumed_defaults``.
+
+    The assumptions list names which inputs fell back to the engine default;
+    this adds the actual numbers so any UI/API caller can label them without
+    duplicating the constants.
+    """
+    if not assumed_defaults:
+        return
+    values: dict[str, float] = {}
+    if "notional" in assumed_defaults:
+        values["notional"] = DEFAULT_NOTIONAL
+    if "base_rate" in assumed_defaults:
+        values["base_rate"] = DEFAULT_BASE_RATE
+    if "home_rate" in assumed_defaults:
+        values["home_rate"] = DEFAULT_HOME_RATE
+    data["assumed_values"] = values
 
 
 def _truthy(value: Any) -> bool:

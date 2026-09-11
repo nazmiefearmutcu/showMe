@@ -344,3 +344,47 @@ def test_veryfinder_batch_still_runs_when_runtime_is_present(
     body = r.json()
     assert body["ok"] is True
     assert called["item_count"] == 1
+
+
+# ── F16: symbol_chip must carry the language-appropriate `summary` ─────────
+
+
+def test_symbol_chip_returns_language_appropriate_summary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """XSenChip prefers `chip.summary ?? chip.summary_tr` (XSenChip.tsx:72).
+
+    The backend used to return ONLY `summary_tr`, so an English run's chip
+    tooltip still showed Turkish. The full analysis already computes the
+    language-picked `summary` (x_analysis.py:468) — the chip must expose it.
+    """
+    from showme import x_analysis
+
+    analyzer = x_analysis.XAnalyzer()
+    full = {
+        "query": "AAPL",
+        "post_count": 12,
+        "mood": "bullish",
+        "summary": "For 'AAPL', the dominant view across the latest 12 posts is bullish.",
+        "summary_tr": "'AAPL' için son 12 paylaşımda baskın görüş yükseliş.",
+        "scores": {
+            "bullish_score_avg": 0.4,
+            "bullish_score_engagement_weighted": 0.42,
+            "confidence": 0.8,
+        },
+        "dominant": {"sentiment": "bullish", "emotion": "joy", "topic": "markets"},
+        "distributions": {
+            "sentiment_pct": {"bullish": 60},
+            "emotion_pct": {},
+            "topic_pct": {},
+        },
+        "examples": [],
+    }
+    monkeypatch.setattr(analyzer, "analyze_topic", lambda **kw: full)
+
+    chip = analyzer.symbol_chip("AAPL", lang="en")
+    assert chip["ok"] is True
+    assert chip["summary"] == full["summary"]
+    assert chip["summary_tr"] == full["summary_tr"]
+    # The English chip summary must not leak the Turkish one.
+    assert "yükseliş" not in chip["summary"]

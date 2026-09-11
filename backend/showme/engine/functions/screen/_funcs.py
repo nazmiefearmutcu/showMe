@@ -484,6 +484,8 @@ _COMMODITY_FIELDS = [
     {"field": "last", "meaning": "Latest available futures price when live quotes are available."},
     {"field": "change_pct", "meaning": "Percent move versus prior close when live quotes are available."},
     {"field": "volume", "meaning": "Latest session volume from the quote provider when available."},
+    {"field": "open_interest", "meaning": "Curated reference open interest — the quote provider does not publish OI."},
+    {"field": "open_interest_state", "meaning": "\"reference\" — open interest comes from the curated universe, never the live quote."},
     {"field": "contract_unit", "meaning": "Contract unit used to understand scale."},
 ]
 
@@ -697,10 +699,18 @@ def _merge_quote_rows(
     out: list[dict[str, Any]] = []
     for row in reference_rows:
         quote = quote_by_symbol.get(str(row.get("symbol") or "").upper())
+        # The quote provider never fills open interest, so a row that carries
+        # a curated ``open_interest`` must stay flagged as reference even when
+        # the rest of the row is quote_state="live" (CSRC honesty fix).
+        oi_state = (
+            {"open_interest_state": "reference"}
+            if row.get("open_interest") is not None
+            else {}
+        )
         if quote:
-            out.append({**row, **quote, "quote_state": "live"})
+            out.append({**row, **quote, **oi_state, "quote_state": "live"})
         else:
-            out.append({**row, "quote_state": "reference"})
+            out.append({**row, **oi_state, "quote_state": "reference"})
     return out
 
 

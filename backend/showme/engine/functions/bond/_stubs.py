@@ -380,7 +380,7 @@ class CRPRFunction(BaseFunction):
             },
             sources=["sec_edgar"],
             warnings=["CRPR rating is MODEL-IMPLIED from SEC financials, not a paid agency rating."],
-            metadata={"latency_ms": latency_ms, "data_mode": "live_official", "as_of": fin_date},
+            metadata={"latency_ms": latency_ms, "data_mode": "modeled", "as_of": fin_date},
         )
 
 

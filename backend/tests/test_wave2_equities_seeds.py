@@ -22,15 +22,14 @@ import re
 import pytest
 
 from showme.manifest import (
+    REGISTRY,
     AssetClass,
     Category,
     ChartKind,
     ControlKind,
     DataMode,
-    REGISTRY,
     load_seeds,
 )
-
 
 WAVE2_EQUITIES_CODES: tuple[str, ...] = (
     "ANR",
@@ -62,8 +61,13 @@ SEC_EDGAR_PRIMARY: frozenset[str] = frozenset(
     {"FORM4", "FTS", "HDS", "HFS", "CACT", "SPLC", "LITM"}
 )
 YFINANCE_PRIMARY: frozenset[str] = frozenset(
-    {"APPL", "PIB", "DPF", "DVD", "ANR", "EE", "EREV", "RV", "DARK"}
+    {"APPL", "PIB", "DPF", "DVD", "ANR", "RV", "DARK"}
 )
+# F14 seed-truth resync: EE (Finnhub historical earnings, Yahoo calendar as
+# fallback) and EREV (Finnhub recommendation buckets only) were listed under
+# YFINANCE_PRIMARY, but the shipped handlers read Finnhub as their primary
+# provider. Reclassified deliberately — the seeds now match the code.
+FINNHUB_PRIMARY: frozenset[str] = frozenset({"EE", "EREV"})
 INTERNAL_PRIMARY: frozenset[str] = frozenset(
     {"BETA", "WACC", "DCF", "DCFS", "DDM", "ESG"}
 )
@@ -131,6 +135,16 @@ def test_yfinance_primary_chain(code: str) -> None:
     entry = REGISTRY.get(code)
     assert entry.provider_chain.primary == "yfinance", (
         f"{code} must declare primary=yfinance (yfinance-backed group), "
+        f"got primary={entry.provider_chain.primary!r}"
+    )
+
+
+@pytest.mark.parametrize("code", sorted(FINNHUB_PRIMARY))
+def test_finnhub_primary_chain(code: str) -> None:
+    """EE/EREV read Finnhub as the primary provider (F14 truth resync)."""
+    entry = REGISTRY.get(code)
+    assert entry.provider_chain.primary == "finnhub", (
+        f"{code} must declare primary=finnhub (handler reads Finnhub first), "
         f"got primary={entry.provider_chain.primary!r}"
     )
 

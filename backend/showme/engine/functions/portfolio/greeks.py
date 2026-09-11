@@ -35,7 +35,7 @@ class GREEKSFunction(BaseFunction):
         if not positions:
             return FunctionResult(code=self.code, instrument=None,
                                   data={"delta": 0, "gamma": 0, "vega": 0, "theta": 0,
-                                        "rho": 0, "positions": 0,
+                                        "rho": 0, "positions": [], "n": 0,
                                         "rows": [],
                                         "status": "input_required",
                                         "reason": "No option positions were supplied or found in the local option book.",
@@ -62,10 +62,11 @@ class GREEKSFunction(BaseFunction):
                 },
                 warnings=[f"aggregate: {e}"],
             )
-        rows = _rows_from_positions(positions)
+        # NOTE: no separate input-echo `rows` key — the payload's `positions`
+        # are the greeks-bearing service rows the pane renders; the shared
+        # function envelope extracts them as the contract `rows`.
         data = {
             **agg,
-            "rows": rows,
             "summary": {
                 "positions": len(positions),
                 "delta": agg.get("delta"),
@@ -79,17 +80,6 @@ class GREEKSFunction(BaseFunction):
         }
         return FunctionResult(code=self.code, instrument=None, data=data,
                               sources=["greeks"])
-
-
-def _rows_from_positions(positions: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    for idx, pos in enumerate(positions, start=1):
-        row = dict(pos)
-        row.setdefault("label", f"{row.get('symbol', 'OPT')} #{idx}")
-        row.setdefault("quantity", row.get("qty", row.get("quantity", 1)))
-        row.setdefault("contract_size", row.get("multiplier", row.get("contract_size", 100)))
-        rows.append(row)
-    return rows
 
 
 def _methodology() -> str:

@@ -1,9 +1,12 @@
-"""LANG — Locale switcher (en / tr).
+"""LANG — Language Switch (runtime i18n preference).
 
-LANG is an internal preference primitive: it owns the active UI locale
-(en / tr) and persists the choice across launches. No external provider
-is involved; LANG only writes to local preference storage and broadcasts
-the change to subscribers via the i18n bus.
+Internal preference primitive: persists the selected runtime language
+(`runtime/lang.txt`) and reports the 12 supported locales with their
+label / selected / coverage / requires_reload flags. No external
+provider. Resynced to the shipped handler
+(``engine/functions/misc/_extras.py::LANGFunction``) by fix lane F14 —
+the previous seed described a two-locale "Locale Switcher" that the
+handler never implemented.
 """
 from __future__ import annotations
 
@@ -31,26 +34,29 @@ from ..spec import (
 def lang() -> FunctionManifest:
     return FunctionManifest(
         code="LANG",
-        name="Locale Switcher",
+        name="Language Switch",
         category=Category.MISC,
         intent=(
-            "Local i18n preference primitive that owns the active UI locale (en / tr), "
-            "persists the choice across launches, and broadcasts the change to subscribers — "
-            "no external provider, no network calls."
+            "Own the runtime i18n preference: persist the selected language and report the "
+            "12 supported locales with coverage + reload flags — no external provider, no "
+            "network calls."
         ),
         asset_classes=[],
         inputs=[
             InputSpec(
-                name="locale",
-                label="Locale",
+                name="lang",
+                label="Language",
                 control=ControlKind.SELECT,
                 required=True,
-                description="Active UI locale code.",
-                options=["en", "tr"],
+                description="Runtime language code persisted to runtime/lang.txt.",
+                options=[
+                    "tr", "en", "de", "fr", "es", "it",
+                    "pt", "ru", "zh", "ja", "ko", "ar",
+                ],
             ),
         ],
         defaults={
-            "locale": "en",
+            "lang": "tr",
         },
         provider_chain=ProviderChain(
             primary="internal",
@@ -62,60 +68,66 @@ def lang() -> FunctionManifest:
         ),
         caching=CachingPolicy(ttl_seconds=0, scope="global", persist=True),
         output_contract=OutputContract(
-            must_have=["locale"],
-            rows=False,
+            must_have=["status", "lang", "rows"],
+            rows=True,
             series=False,
             cards=True,
-            warnings=False,
+            warnings=True,
             next_actions=False,
         ),
         card_schema=CardSchema(
             slots=[
-                CardSlot(key="locale", label="Locale", kind="badge"),
-                CardSlot(key="locale_name", label="Name", kind="badge"),
+                CardSlot(key="lang", label="Selected", kind="badge"),
+                CardSlot(key="languages", label="Languages", kind="kpi"),
             ],
         ),
         methodology=(
-            "LANG owns the i18n state. The locale code is stored in local preference storage "
-            "(Round 16 preset filesystem on Tauri / localStorage in browser) and emitted on the "
-            "i18n bus that ShowMe components subscribe to for label translations. The only "
-            "supported locales today are 'en' and 'tr'; an unknown code falls back to 'en' with "
-            "an explicit warning rather than rendering raw keys. There is no external "
-            "translation service — strings live in the bundled message catalog."
+            "LANG is the runtime i18n preference primitive. The selected language code is "
+            "written to runtime/lang.txt; the response echoes it and returns one row per "
+            "supported locale (12 today: tr, en, de, fr, es, it, pt, ru, zh, ja, ko, ar) with "
+            "the human label, selected flag, current coverage tier, and whether a pane "
+            "reload is required for the switch to render. An unsupported code returns "
+            "status=input_error with the supported list and an explicit warning instead of "
+            "silently falling back. Shell-wide text still depends on preference-aware "
+            "surfaces reading the saved value."
         ),
         field_dict={
-            "locale": FieldDef(description="Active locale code (en / tr).", source="preference_store"),
-            "locale_name": FieldDef(description="Human-readable locale label (English / Türkçe).", source="catalog"),
+            "lang": FieldDef(description="IETF-style language code.", source="preference_store"),
+            "rows[].label": FieldDef(description="Human-readable language name.", source="catalog"),
+            "rows[].selected": FieldDef(description="True for the persisted language.", source="computed"),
+            "coverage": FieldDef(description="Translation coverage currently available in ShowMe (core_labels).", source="catalog"),
+            "requires_reload": FieldDef(description="Whether the selected preference needs a pane reload to become visible.", source="computed"),
         },
         provenance=ProvenanceSpec(
             require_source_list=False,
-            require_as_of=True,
+            require_as_of=False,
             require_latency_ms=False,
         ),
         alerting=None,
         semantic_tests=[
             SemanticTest(
-                name="lang_default_is_english",
-                description="With no prior preference stored, locale resolves to 'en'.",
+                name="lang_reports_all_12_supported_locales",
+                description="The rows list exactly the 12 handler-supported locales and no others.",
                 inputs={},
-                assertions=["locale_equals_en"],
+                assertions=["rows_len_equals_12", "row_codes_match_supported_set"],
             ),
             SemanticTest(
-                name="lang_switch_to_tr_persists",
-                description="Switching to 'tr' persists the choice so reload returns 'tr' without re-prompt.",
-                inputs={"locale": "tr"},
+                name="lang_selection_is_flagged_in_rows",
+                description="Exactly one row carries selected=true and it matches the requested code.",
+                inputs={"lang": "de"},
                 assertions=[
-                    "locale_equals_tr_after_set",
-                    "locale_equals_tr_after_reload",
+                    "exactly_one_selected_row",
+                    "selected_row_lang_equals_de",
                 ],
             ),
             SemanticTest(
-                name="lang_unknown_locale_falls_back_with_warning",
-                description="An unsupported locale code falls back to 'en' and surfaces a warning, never renders raw keys.",
-                inputs={"locale": "zz"},
+                name="lang_unsupported_code_returns_input_error_with_warning",
+                description="An unsupported code returns status=input_error + the supported list + a warning — never a silent fallback.",
+                inputs={"lang": "zz"},
                 assertions=[
-                    "locale_equals_en_after_unknown",
-                    "warning_mentions_unsupported_locale",
+                    "status_equals_input_error",
+                    "supported_list_present",
+                    "warning_mentions_unsupported_language",
                 ],
             ),
         ],

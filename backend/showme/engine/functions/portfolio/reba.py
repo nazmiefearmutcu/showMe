@@ -32,6 +32,29 @@ class REBAFunction(BaseFunction):
             return FunctionResult(code=self.code, instrument=None, data={},
                                   warnings=["targets dict required: {SYM: weight_fraction}"])
         s = sum(targets.values())
+        if s <= 0:
+            # "QQQ:0"-style full-exit instructions must be kept (never silently
+            # dropped), but an all-zero book has nothing to normalize against —
+            # previously `v / s` raised ZeroDivisionError and 500'd the request.
+            return FunctionResult(
+                code=self.code,
+                instrument=None,
+                data={
+                    "status": "input_error",
+                    "rows": [],
+                    "orders": [],
+                    "liquidations": [],
+                    "reason": (
+                        "Target weights must sum to a positive value; "
+                        "at least one symbol needs a weight above 0."
+                    ),
+                    "next_actions": [
+                        "Provide targets like SPY:60, QQQ:0, or a positive capital.",
+                    ],
+                },
+                sources=[],
+                warnings=["REBA: target weights sum to zero — nothing to rebalance or liquidate."],
+            )
         if abs(s - 1.0) > 0.01:
             # Auto-normalize
             targets = {k: v / s for k, v in targets.items()}

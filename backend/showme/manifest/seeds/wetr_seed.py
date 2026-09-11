@@ -3,9 +3,11 @@
 Surfaces daily weather observations + forecasts for commodity-
 relevant regions (US northeast for heating, US Gulf for hurricanes,
 EU NW / Asia East for cooling demand) with HDD/CDD and a curated
-commodity-impact label. When no OpenWeather key is configured the
-handler returns ``provider_unavailable`` with a labelled seasonal-
-model fallback — never a fabricated live forecast.
+commodity-impact label. Provider chain: keyed OpenWeatherMap when
+configured, otherwise the KEYLESS Open-Meteo adapter (the default) —
+so rows are genuinely live. Only ``reference=true`` or a provider
+outage serves the labelled seasonal-model fallback — never a
+fabricated live forecast.
 """
 from __future__ import annotations
 
@@ -86,11 +88,13 @@ def wetr() -> FunctionManifest:
             "days": "10",
             "provider_mode": DataMode.LIVE_OFFICIAL.value,
         },
-        # NOTE: openweathermap is the canonical adapter; when no API key is
-        # configured the chain downgrades to the in-process seasonal model.
+        # NOTE: openweathermap is the canonical keyed adapter; when no API
+        # key is configured the chain serves KEYLESS Open-Meteo live rows,
+        # and only degrades to the in-process seasonal model on request or
+        # provider outage.
         provider_chain=ProviderChain(
             primary="openweathermap",
-            fallbacks=["seasonal_weather_model", "cached_snapshot"],
+            fallbacks=["open_meteo", "seasonal_weather_model", "cached_snapshot"],
             acceptable_modes=[
                 DataMode.LIVE_OFFICIAL,
                 DataMode.MODELED,
@@ -142,15 +146,17 @@ def wetr() -> FunctionManifest:
         methodology=(
             "WETR pulls a daily forecast (temp, precip) for the chosen "
             "region from OpenWeather One Call when an API key is "
-            "configured. HDD = max(0, 18°C - temp) and CDD = max(0, "
-            "temp - 18°C) per UK Met Office convention. Each region carries "
-            "a curated commodity_context (US_NORTHEAST → NatGas heating, "
-            "US_GULF → refined-product hurricane risk, BRAZIL_SE → coffee/"
-            "sugar). If no key is set the chain downgrades to "
-            "seasonal_weather_model — a labelled climatological average — "
-            "and source_mode flips so consumers can render the seasonal-"
-            "model banner. There is no synthesized 'live' forecast: the "
-            "handler refuses to fake openweathermap output."
+            "configured, otherwise from the keyless Open-Meteo adapter — "
+            "both are live forecast sources. HDD = max(0, 18°C - temp) and "
+            "CDD = max(0, temp - 18°C) per UK Met Office convention. Each "
+            "region carries a curated commodity_context (US_NORTHEAST → "
+            "NatGas heating, US_GULF → refined-product hurricane risk, "
+            "BRAZIL_SE → coffee/sugar). Only reference=true or a provider "
+            "outage downgrades the chain to seasonal_weather_model — a "
+            "labelled climatological average — and source_mode flips so "
+            "consumers can render the seasonal-model banner. There is no "
+            "synthesized 'live' forecast: the handler refuses to fake "
+            "live provider output."
         ),
         formula_dict={
             "hdd": Formula(
@@ -173,7 +179,7 @@ def wetr() -> FunctionManifest:
             "rows[].cdd": FieldDef(description="Cooling degree days (18°C base).", source="computed"),
             "rows[].risk_flag": FieldDef(description="severe | hot | cold | normal.", source="rules"),
             "rows[].commodity_impact": FieldDef(description="Human-readable impact note (e.g. 'bullish NatGas').", source="rules"),
-            "source_mode": FieldDef(description="live_openweathermap | seasonal_model | cached.", source="envelope"),
+            "source_mode": FieldDef(description="live_openweathermap | live_open_meteo | seasonal_model | cached.", source="envelope"),
         },
         provenance=ProvenanceSpec(
             require_source_list=True,
@@ -195,10 +201,11 @@ def wetr() -> FunctionManifest:
             SemanticTest(
                 name="explicit_provider_unavailable_when_no_weather_key",
                 description=(
-                    "Without an OpenWeather API key configured, WETR returns "
-                    "status=provider_unavailable (or downgrades to labelled "
-                    "source_mode=seasonal_model) — never a fabricated "
-                    "openweathermap response."
+                    "When NO weather provider can serve (no OpenWeather key "
+                    "AND the keyless Open-Meteo adapter is unwired or fails), "
+                    "WETR returns status=provider_unavailable with labelled "
+                    "source_mode=seasonal_model — never a fabricated live "
+                    "forecast."
                 ),
                 inputs={"location": "US_NORTHEAST", "_mock": "no_openweather_key"},
                 assertions=[

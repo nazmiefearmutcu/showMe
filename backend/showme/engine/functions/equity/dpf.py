@@ -60,15 +60,17 @@ def _fallback_rows(symbol: str, weeks: int, reason: str | None) -> list[dict[str
 
     The shape model has no real total-volume denominator, so the ratio
     (``dark_pool_pct``) and its estimate are nulled instead of fabricated;
-    only the labelled volume shape survives. ``reason`` marks a stale/timeout
-    source mode and attaches the data warning.
+    only the labelled volume shape survives. When ``reason`` marks a
+    timeout/degraded fetch, the row keeps an explicit shape-model token
+    (``shape_model_timeout``) — NEVER ``finra_ats_weekly_stale``, which
+    would imply real FINRA rows were received and are merely old.
     """
     rows = recent_week_rows(symbol, weeks, source_mode="labelled_current_shape_model")
     for row in rows:
         row["dark_pool_pct"] = None
         row["estimated_total_volume"] = None
         if reason:
-            row["source_mode"] = "finra_ats_weekly_stale"
+            row["source_mode"] = "shape_model_timeout"
             row["data_warning"] = reason
     return rows
 

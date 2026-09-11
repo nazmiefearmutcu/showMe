@@ -78,6 +78,7 @@ from showme.crypto_aliases import (
 )
 from showme.chart_history import (
     DEFAULT_BARS as DEFAULT_HISTORY_BARS,
+    compute_chart_indicators,
     fetch_longest_history,
     normalize_history_interval,
     parse_history_bars,
@@ -537,6 +538,19 @@ async def _execute_price_history_alias(
                     "bar_count": len(history.rows),
                     "deep_history": True,
                     "winner": history.source,
+                    # Identity + 52-week reference levels the header strip /
+                    # key-level rail read (source: Yahoo chart meta when the
+                    # winner carries it, otherwise absent = honest unknown).
+                    "long_name": history.metadata.get("long_name"),
+                    "short_name": history.metadata.get("short_name"),
+                    "exchange": history.metadata.get("exchange")
+                    or history.metadata.get("full_exchange_name"),
+                    "fifty_two_week_high": history.metadata.get(
+                        "fifty_two_week_high"
+                    ),
+                    "fifty_two_week_low": history.metadata.get(
+                        "fifty_two_week_low"
+                    ),
                     "sources_considered": history.metadata.get(
                         "sources_considered", []
                     ),
@@ -546,6 +560,7 @@ async def _execute_price_history_alias(
                     "winner_first_ts_ms": history.metadata.get(
                         "winner_first_ts_ms"
                     ),
+                    **_price_history_overlays(code, history.rows),
                 },
                 sources=[history.source],
                 warnings=history.warnings,
@@ -582,9 +597,15 @@ async def _execute_price_history_alias(
             "bars": rows,
             "rows": rows,
             "winner": source_name or None,
+            "long_name": None,
+            "short_name": None,
+            "exchange": None,
+            "fifty_two_week_high": None,
+            "fifty_two_week_low": None,
             "sources_considered": [],
             "selection_reason": "adapter_fallback",
             "winner_first_ts_ms": None,
+            **_price_history_overlays(code, rows),
         },
         sources=[source_name] if source_name else [],
         warnings=warnings,
@@ -598,6 +619,19 @@ async def _execute_price_history_alias(
             "selection_reason": "adapter_fallback",
         },
     )
+
+
+def _price_history_overlays(code: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Overlay series for the chart aliases.
+
+    GP's pane renders ``data.indicators`` as same-scale overlay lines and
+    lists them in the INDICATORS legend; HP draws its studies client-side
+    from the toggle menu, so only GP needs the server-side bundle.
+    """
+    if str(code).upper() != "GP" or not rows:
+        return {}
+    indicators = compute_chart_indicators(rows)
+    return {"indicators": indicators} if indicators else {}
 
 
 def _history_days_from_params(params: dict[str, Any]) -> int:

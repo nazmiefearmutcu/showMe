@@ -7,13 +7,13 @@ from showme.assistant.parser import parse_request
 def test_empty_returns_none():
     spec, notes = parse_request("")
     assert spec is None
-    assert any("Boş" in n or "boş" in n for n in notes)
+    assert any("Empty request" in n for n in notes)
 
 
 def test_no_indicator_returns_none():
     spec, notes = parse_request("merhaba dünya")
     assert spec is None
-    assert any("indikatör" in n.lower() for n in notes)
+    assert any("No recognized indicator" in n for n in notes)
 
 
 def test_rsi_with_thresholds():
@@ -79,31 +79,31 @@ def test_unknown_indicator_generic_fallback():
 def test_divergence_is_echoed_as_ignored():
     spec, notes = parse_request("RSI divergence strategy")
     assert spec is not None
-    assert any("divergence" in n and "yok sayıldı" in n for n in notes)
+    assert any("divergence" in n and "ignored" in n for n in notes)
 
 
 def test_stop_loss_phrase_is_echoed_as_ignored():
     spec, notes = parse_request("RSI 30 altında al, stop loss %2 koy")
     assert spec is not None
-    assert any("stop-loss" in n and "yok sayıldı" in n for n in notes)
+    assert any("stop-loss" in n and "ignored" in n for n in notes)
 
 
 def test_risk_sizing_phrase_is_echoed_as_ignored():
     spec, notes = parse_request("MACD strateji, risk yönetimi ile pozisyon büyüklüğü ayarla")
     assert spec is not None
-    assert any("boyutlandırma" in n and "yok sayıldı" in n for n in notes)
+    assert any("position sizing" in n and "ignored" in n for n in notes)
 
 
 def test_trailing_phrase_is_echoed_as_ignored():
     spec, notes = parse_request("EMA crossover with trailing stop")
     assert spec is not None
-    assert any("trailing" in n.lower() and "yok sayıldı" in n for n in notes)
+    assert any("trailing" in n.lower() and "ignored" in n for n in notes)
 
 
 def test_pattern_word_is_echoed_as_ignored():
     spec, notes = parse_request("RSI engulfing breakout strategy")
     assert spec is not None
-    assert any("formasyon" in n and "yok sayıldı" in n for n in notes)
+    assert any("price pattern" in n and "ignored" in n for n in notes)
 
 
 def test_multi_indicator_notes_only_first_used():
@@ -111,7 +111,7 @@ def test_multi_indicator_notes_only_first_used():
     assert spec is not None
     # First keyword in the table wins; only one indicator is wired.
     assert spec["indicators"][0]["id"] == "rsi"
-    assert any("Yalnızca ilk gösterge" in n and "yok sayıldı" in n for n in notes)
+    assert any("Only the first indicator" in n and "ignored" in n for n in notes)
     assert any("macd" in n for n in notes)
 
 
@@ -120,11 +120,11 @@ def test_multi_indicator_notes_only_first_used():
 # tokenised word-set), NOT substrings, to avoid false positives. These tests
 # prove the guard: each short token must NOT fire when it only appears as a
 # substring of an otherwise-normal word. The ignored-concept note format is
-# "⚠ '<label>' desteklenmiyor — yok sayıldı", so we assert no "yok sayıldı"
+# "⚠ '<label>' is not supported — ignored", so we assert no "ignored"
 # note carries the relevant label.
 def _ignored_labels(notes: list[str]) -> list[str]:
     """Labels echoed as ignored/unsupported concepts."""
-    return [n for n in notes if "yok sayıldı" in n and "desteklenmiyor" in n]
+    return [n for n in notes if "ignored" in n and "not supported" in n]
 
 
 def test_sl_token_does_not_fire_inside_words():
@@ -138,14 +138,14 @@ def test_risk_token_does_not_fire_inside_risksiz():
     # "risk" is a substring of "risksiz" — must NOT trigger the sizing note.
     spec, notes = parse_request("RSI risksiz yaklaşım")
     assert spec is not None
-    assert not any("boyutlandırma" in n for n in _ignored_labels(notes))
+    assert not any("position sizing" in n for n in _ignored_labels(notes))
 
 
 def test_mum_token_does_not_fire_inside_momentum():
     # "mum" is a substring of "momentum"/"maximum" — no candlestick note.
     spec, notes = parse_request("MACD momentum maximum")
     assert spec is not None
-    assert not any("formasyon" in n for n in _ignored_labels(notes))
+    assert not any("price pattern" in n for n in _ignored_labels(notes))
 
 
 def test_tp_token_does_not_fire_inside_http():
@@ -167,24 +167,24 @@ def test_sl_token_DOES_fire_as_whole_word_positive_control():
 def test_timeframe_defaulted_note_when_not_specified():
     spec, notes = parse_request("RSI strateji")
     assert spec is not None
-    assert any(n == "Timeframe: 1h (varsayılan — belirtilmedi)" for n in notes)
+    assert any(n == "Timeframe: 1h (default — not specified)" for n in notes)
 
 
 def test_timeframe_parsed_note_when_specified():
     spec, notes = parse_request("RSI 4h strateji")
     assert spec is not None
     assert any(n == "Timeframe: 4h" for n in notes)
-    assert not any("varsayılan — belirtilmedi" in n for n in notes)
+    assert not any("default — not specified" in n for n in notes)
 
 
 def test_position_defaults_are_disclosed():
     spec, notes = parse_request("RSI strateji")
     assert spec is not None
     assert any(
-        "Varsayılan: pozisyon long" in n
+        "Defaults: position long" in n
         and "fixed_quote 100" in n
-        and "stop-loss %2.0" in n
-        and "talep edilmedi" in n
+        and "stop-loss 2.0%" in n
+        and "not requested" in n
         for n in notes
     )
 
@@ -197,7 +197,7 @@ def test_ema_two_numbers_use_both_periods():
     assert len(inds) == 2
     assert inds[0]["params"]["period"] == 20
     assert inds[1]["params"]["period"] == 50  # NOT 60 (period*3)
-    assert any("girişten alındı" in n for n in notes)
+    assert any("taken from input" in n for n in notes)
 
 
 def test_ema_single_number_keeps_3x_long():

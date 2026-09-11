@@ -1,10 +1,11 @@
-"""CDE — Code editor / custom data entry.
+"""CDE — Custom Data Fields (user-defined formulas).
 
-CDE is an in-app text / code / structured-data editor for power users
-who need to author strategy snippets, JSON config blobs, or quick CSV
-inputs without leaving the cockpit. It is purely internal — no upstream
-provider, no network calls; persistence rides the Round 16 preset
-filesystem (localStorage fallback).
+Stores named custom data-field formulas in `runtime/cde_fields.json`
+and evaluates them against a supplied row object with the same safe DSL
+parser EQS uses. Never executes arbitrary Python. Resynced to the
+shipped handler (``engine/functions/misc/cde.py``) by fix lane F14 —
+the previous seed described an unimplemented document/format text
+editor and a `count` field that no longer matches the wire.
 """
 from __future__ import annotations
 
@@ -18,6 +19,7 @@ from ..spec import (
     CachingPolicy,
     CardSchema,
     CardSlot,
+    ColumnSpec,
     FieldDef,
     FunctionManifest,
     InputSpec,
@@ -25,6 +27,7 @@ from ..spec import (
     ProvenanceSpec,
     ProviderChain,
     SemanticTest,
+    TableSchema,
 )
 
 
@@ -32,41 +35,47 @@ from ..spec import (
 def cde() -> FunctionManifest:
     return FunctionManifest(
         code="CDE",
-        name="Code / Data Editor",
+        name="Custom Data Fields",
         category=Category.MISC,
         intent=(
-            "In-app text / code / structured-data editor for authoring strategy snippets, "
-            "JSON config, or CSV inputs without leaving the cockpit — fully internal, "
-            "no upstream provider, no network calls."
+            "Create, list, remove and evaluate named custom data-field formulas against a "
+            "row object using the safe EQS DSL — purely local persistence, no provider, "
+            "no arbitrary code execution."
         ),
         asset_classes=[],
         inputs=[
             InputSpec(
-                name="format",
-                label="Format",
+                name="action",
+                label="Action",
                 control=ControlKind.SELECT,
                 required=True,
-                description="Editor mode and validation grammar.",
-                options=["plain", "json", "yaml", "csv", "python"],
+                description="Store operation.",
+                options=["list", "add", "remove", "evaluate"],
             ),
             InputSpec(
-                name="document_id",
-                label="Document",
-                control=ControlKind.SELECT,
-                required=False,
-                description="Stored document slot (defaults to scratch).",
-            ),
-            InputSpec(
-                name="initial_value",
-                label="Initial value",
+                name="name",
+                label="Field name",
                 control=ControlKind.TEXT,
                 required=False,
-                description="Seed contents for new documents.",
+                description="Custom field identifier (required for add / remove / evaluate).",
+            ),
+            InputSpec(
+                name="formula",
+                label="Formula",
+                control=ControlKind.TEXT,
+                required=False,
+                description="Safe ShowMe DSL expression validated by the EQS parser on add.",
+            ),
+            InputSpec(
+                name="row",
+                label="Row JSON",
+                control=ControlKind.TEXT,
+                required=False,
+                description="Row object the evaluate action runs the formula against.",
             ),
         ],
         defaults={
-            "format": "plain",
-            "document_id": "scratch",
+            "action": "list",
         },
         provider_chain=ProviderChain(
             primary="internal",
@@ -78,63 +87,95 @@ def cde() -> FunctionManifest:
         ),
         caching=CachingPolicy(ttl_seconds=0, scope="per_input", persist=True),
         output_contract=OutputContract(
-            must_have=["document_id", "format"],
-            rows=False,
+            must_have=["status", "rows", "count", "actions", "methodology"],
+            rows=True,
             series=False,
             cards=True,
             warnings=True,
-            next_actions=False,
+            next_actions=True,
+        ),
+        table_schema=TableSchema(
+            columns=[
+                ColumnSpec(key="name", label="Field", kind="text"),
+                ColumnSpec(key="formula", label="Formula", kind="text"),
+                ColumnSpec(key="operation", label="Operation", kind="tag"),
+                ColumnSpec(key="source_mode", label="Source", kind="tag"),
+            ],
+            sortable=True,
+            filterable=False,
         ),
         card_schema=CardSchema(
             slots=[
-                CardSlot(key="document_id", label="Doc", kind="badge"),
-                CardSlot(key="format", label="Format", kind="badge"),
-                CardSlot(key="size_bytes", label="Size", kind="kpi", unit="B"),
-                CardSlot(key="modified_at", label="Modified", kind="timestamp"),
+                CardSlot(key="count", label="Stored fields", kind="kpi"),
+                CardSlot(key="status", label="Status", kind="badge"),
+                CardSlot(key="evaluation", label="Last evaluation", kind="badge"),
             ],
         ),
         methodology=(
-            "CDE is a purely local editor. Documents are persisted in the Round 16 preset "
-            "filesystem on Tauri (localStorage fallback in the browser); there is no upstream "
-            "provider, no autosave to a remote service, no telemetry. Format-aware validation "
-            "runs in-process on save: JSON / YAML are parsed and rejected on syntax errors; "
-            "CSV is sanity-checked for row-count consistency; Python is linted for parse-"
-            "errors only (no execution). CDE never executes user code — execution belongs to "
-            "STRA / BOT, which read from CDE's stored documents by id."
+            "CDE keeps named custom data-field formulas in runtime/cde_fields.json (atomic "
+            "temp-file replace on every save). add requires both name and formula and "
+            "validates the expression through the same parse_dsl used by EQS — a parse "
+            "error returns status=input_error and nothing is stored. list returns the "
+            "stored fields (or two labelled example rows when the store is empty); "
+            "evaluate parses the named formula, runs it against the supplied row JSON, "
+            "and returns the boolean result under `evaluation` while keeping `rows` and "
+            "`count` equal to the store truth (count == number of stored fields, exactly "
+            "the F14 fix to the old count==1 repurposing). remove deletes by name. User "
+            "code is never executed: the DSL is parsed to an AST, not run through eval()."
         ),
         field_dict={
-            "document_id": FieldDef(description="Storage slot identifier.", source="store"),
-            "format": FieldDef(description="Format echoed back from the request.", source="store"),
-            "size_bytes": FieldDef(unit="bytes", description="Document byte length.", source="computed"),
-            "modified_at": FieldDef(unit="iso8601", description="Last modification time.", source="store"),
+            "rows[].name": FieldDef(description="Custom field name.", source="store"),
+            "rows[].formula": FieldDef(description="Safe ShowMe DSL expression.", source="store"),
+            "rows[].operation": FieldDef(description="custom_field for stored rows, example for the empty-store samples.", source="store"),
+            "rows[].source_mode": FieldDef(description="local_cde_store for stored rows.", source="store"),
+            "count": FieldDef(description="Number of stored custom fields — not the returned row count.", source="store"),
+            "evaluation.value": FieldDef(description="Boolean result of the evaluate action.", source="computed"),
+            "evaluation.row": FieldDef(description="Row object the formula was evaluated against.", source="input"),
         },
         provenance=ProvenanceSpec(
             require_source_list=False,
-            require_as_of=True,
+            require_as_of=False,
             require_latency_ms=False,
         ),
         alerting=None,
         semantic_tests=[
             SemanticTest(
-                name="cde_save_then_load_round_trip",
-                description="Saving a document by id and loading it back returns the identical bytes.",
-                inputs={"document_id": "test_doc", "initial_value": "hello world"},
-                assertions=["loaded_value_equals_saved"],
+                name="cde_invalid_formula_rejected_without_storing",
+                description="add with a formula the DSL parser rejects returns input_error and does not persist the field.",
+                inputs={"action": "add", "name": "bad", "formula": "{not_a_dsl"},
+                assertions=[
+                    "status_equals_input_error",
+                    "store_unchanged",
+                    "warning_describes_formula_parse_error",
+                ],
             ),
             SemanticTest(
-                name="cde_invalid_json_rejected_with_message",
-                description="Saving a document with format='json' and invalid syntax is rejected with a parse-error warning — never silently stored.",
-                inputs={"format": "json", "initial_value": "{not_json"},
+                name="cde_evaluate_keeps_stored_count_and_rows_truth",
+                description="evaluate keeps `count` == number of stored fields and `rows` == stored fields; the boolean result lives under `evaluation` (regression for the old count→1 repurposing).",
+                inputs={"action": "evaluate", "name": "large_cap_tech", "row": {"sector": "Technology", "marketCap": 90000000000}},
                 assertions=[
-                    "save_rejected",
-                    "warning_describes_parse_error",
+                    "count_equals_len_store",
+                    "rows_include_stored_fields",
+                    "evaluation_has_value_and_row",
                 ],
             ),
             SemanticTest(
                 name="cde_never_executes_user_code",
-                description="Saving a python document with potentially destructive code does NOT execute the code — CDE is editor-only and never spawns a subprocess.",
-                inputs={"format": "python", "initial_value": "print('hello')"},
-                assertions=["no_subprocess_spawned", "document_saved_unchanged"],
+                description="Formulas are parsed to an AST by the shared EQS parser; evaluate never calls python eval()/exec() or spawns a subprocess.",
+                inputs={"action": "evaluate", "name": "x", "row": {}},
+                assertions=[
+                    "no_eval_exec_used",
+                    "no_subprocess_spawned",
+                ],
+            ),
+            SemanticTest(
+                name="cde_remove_only_touches_named_field",
+                description="remove deletes exactly the named field and leaves the rest of the store intact.",
+                inputs={"action": "remove", "name": "large_cap_tech"},
+                assertions=[
+                    "named_field_removed",
+                    "other_fields_preserved",
+                ],
             ),
         ],
     )

@@ -482,6 +482,38 @@ def test_dpf_degradation_is_labelled_and_ratio_is_null() -> None:
     )
 
 
+def test_dpf_timeout_fallback_is_shape_model_not_finra_stale(monkeypatch) -> None:
+    """Fabricated shape rows must never claim a real (stale) FINRA feed.
+
+    The timeout path never touched FINRA, so the honest token is
+    ``shape_model_timeout``; ``finra_ats_weekly_stale`` is reserved for real
+    FINRA rows that aged out.
+    """
+    from showme.engine.functions.equity import dpf as dpf_mod
+    from showme.engine.functions.equity.dpf import DPFFunction
+
+    async def _boom(self, instrument, **params):  # noqa: ANN001
+        raise asyncio.TimeoutError("dpf slow")
+
+    monkeypatch.setattr(dpf_mod.DPFFunction, "_execute_inner", _boom)
+    result = _run(
+        DPFFunction(deps=FunctionDeps()).execute(
+            instrument=Instrument(symbol="AAPL", asset_class=AssetClass.EQUITY)
+        )
+    )
+    data = result.data
+    assert data["status"] == "provider_unavailable"
+    assert "timed out" in data["reason"]
+    assert data["rows"]
+    assert all(row.get("source_mode") == "shape_model_timeout" for row in data["rows"])
+    assert all(row.get("data_warning") == data["reason"] for row in data["rows"])
+    assert all(row.get("dark_pool_pct") is None for row in data["rows"])
+    assert all(row.get("estimated_total_volume") is None for row in data["rows"])
+    assert not any(
+        row.get("source_mode") == "finra_ats_weekly_stale" for row in data["rows"]
+    )
+
+
 # ─────────────────────────────────────────────────────────────────────────
 # ONCH optional keyless companion tiers
 # ─────────────────────────────────────────────────────────────────────────

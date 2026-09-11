@@ -209,6 +209,12 @@ class TECHFunction(BaseFunction):
                     "rows": [],
                     "ohlcv": [],
                     "summary": {"symbol": instrument.symbol, "days": days},
+                    # CHGS/TECH panes branch on `status` for the honest outage
+                    # state; a reason string keeps that branch informative.
+                    "reason": (
+                        f"provider returned no price history for {instrument.symbol} "
+                        f"({days}d, interval {params.get('interval', '1d')})"
+                    ),
                     "next_actions": [
                         "Try another supported listed symbol.",
                         "Reduce the range or use an interval supported by the quote provider.",

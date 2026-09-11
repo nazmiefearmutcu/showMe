@@ -90,7 +90,7 @@ def register(app: FastAPI, deps: AppDeps) -> None:
             except ValueError as err:
                 return {
                     "spec": spec_dict,
-                    "notes": notes + [f"katalog doğrulaması başarısız: {err}"],
+                    "notes": notes + [f"catalog validation failed: {err}"],
                     "saved_id": None,
                 }
 

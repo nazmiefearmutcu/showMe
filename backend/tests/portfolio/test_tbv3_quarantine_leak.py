@@ -127,6 +127,9 @@ def test_port_function_empty_state_when_legacy_off(
     totals = result.data["totals"]
     assert totals == {
         "market_value": 0.0,
+        # F13 (audit A5 PORT H): the empty book now carries a real cost basis
+        # so the "Cost basis" tile shows $0.00 instead of a permanent em-dash.
+        "cost_basis": 0.0,
         "n_positions": 0,
         "unrealized_pnl": 0.0,
     }

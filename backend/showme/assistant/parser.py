@@ -43,12 +43,12 @@ _IGNORED_CONCEPTS: list[tuple[str, tuple[str, ...]]] = [
         "stop loss", "stop-loss", "stoploss", "take profit", "take-profit",
         "takeprofit", "kar al", "zarar durdur",
     )),
-    ("risk / pozisyon boyutlandırma", (
+    ("risk / position sizing", (
         "% risk", "per trade", "sizing", "pozisyon büyüklüğü",
         "pozisyon buyuklugu", "kelly", "risk yönetimi", "risk yonetimi",
     )),
     ("trailing stop", ("trailing", "iz süren", "iz suren")),
-    ("mum / fiyat formasyonu", (
+    ("candle / price pattern", (
         "pattern", "engulfing", "breakout", "kırılım", "kirilim",
         "candlestick", "mum formasyonu",
     )),
@@ -59,8 +59,8 @@ _IGNORED_CONCEPTS: list[tuple[str, tuple[str, ...]]] = [
 # Matched against tokenised words instead of raw substring.
 _IGNORED_CONCEPTS_WORDS: list[tuple[str, tuple[str, ...]]] = [
     ("stop-loss / take-profit", ("sl", "tp")),
-    ("risk / pozisyon boyutlandırma", ("risk",)),
-    ("mum / fiyat formasyonu", ("mum",)),
+    ("risk / position sizing", ("risk",)),
+    ("candle / price pattern", ("mum",)),
 ]
 
 
@@ -141,13 +141,13 @@ def parse_request(text: str) -> tuple[dict[str, Any] | None, list[str]]:
     """
     notes: list[str] = []
     if not text or not text.strip():
-        return None, ["Boş istek. Bir indikatör adı (RSI, MACD, EMA, ...) + koşullar yaz."]
+        return None, ["Empty request. Add an indicator name (RSI, MACD, EMA, ...) + conditions."]
     text_low = text.lower()
 
     ind = _find_indicator(text_low)
     if ind is None:
         return None, [
-            "Tanınan bir indikatör bulunamadı. Mesajına şu indikatörlerden birini ekle:",
+            "No recognized indicator found. Add one of these indicators to your message:",
             "RSI, MACD, EMA, SMA, Bollinger, Stochastic, ATR, ADX, CCI, OBV, Williams, VWAP, Ichimoku, PSAR, KDJ",
         ]
     ind_id, alias = ind
@@ -216,13 +216,13 @@ def parse_request(text: str) -> tuple[dict[str, Any] | None, list[str]]:
                 "kind": "crosses_below", "left": alias,
                 "right": f"literal:{entry_threshold}",
             })
-            notes.append(f"Entry: {alias} {entry_threshold} altına düşünce")
+            notes.append(f"Entry: {alias} crosses below {entry_threshold}")
         if exit_threshold is not None:
             spec["exit_rules"].append({
                 "kind": "crosses_above", "left": alias,
                 "right": f"literal:{exit_threshold}",
             })
-            notes.append(f"Exit: {alias} {exit_threshold} üstüne çıkınca")
+            notes.append(f"Exit: {alias} crosses above {exit_threshold}")
         if not spec["entry_rules"]:
             # Provide a default suggestion
             spec["entry_rules"].append({
@@ -231,7 +231,7 @@ def parse_request(text: str) -> tuple[dict[str, Any] | None, list[str]]:
             spec["exit_rules"].append({
                 "kind": "crosses_above", "left": alias, "right": "literal:70",
             })
-            notes.append("Eşik bulunamadı — varsayılan 30/70 kullanıldı")
+            notes.append("No threshold found — defaulted to 30/70")
 
     elif ind_id == "macd":
         spec["indicators"][0]["params"] = {
@@ -243,7 +243,7 @@ def parse_request(text: str) -> tuple[dict[str, Any] | None, list[str]]:
         spec["exit_rules"].append({
             "kind": "crosses_below", "left": alias, "right": "literal:0",
         })
-        notes.append("MACD sıfır çizgisi cross — klasik trend giriş/çıkış")
+        notes.append("MACD zero-line cross — classic trend entry/exit")
 
     elif ind_id == "ema":
         # B3 — two-number EMA fix. Previously the second number ("EMA 20 50")
@@ -272,9 +272,9 @@ def parse_request(text: str) -> tuple[dict[str, Any] | None, list[str]]:
             "kind": "crosses_below", "left": "ema_short", "right": "ema_long",
         })
         if ema_from_input:
-            notes.append(f"EMA({short_p}) ve EMA({long_p}) crossover (her iki periyot da girişten alındı)")
+            notes.append(f"EMA({short_p}) and EMA({long_p}) crossover (both periods taken from input)")
         else:
-            notes.append(f"EMA({short_p}) ve EMA({long_p}) crossover (uzun periyot varsayıldı)")
+            notes.append(f"EMA({short_p}) and EMA({long_p}) crossover (long period defaulted)")
 
     else:
         # Generic: just use the indicator without strong rules
@@ -284,15 +284,15 @@ def parse_request(text: str) -> tuple[dict[str, Any] | None, list[str]]:
         spec["exit_rules"].append({
             "kind": "less_than", "left": "close", "right": alias,
         })
-        notes.append(f"Genel kalıp: close > {alias} ile alım, < ile çıkış — STRA panelinde özelleştir")
+        notes.append(f"Generic pattern: close > {alias} to enter, close < {alias} to exit — customize in the STRA pane")
 
-    notes.insert(0, f"Tanınan indikatör: {ind_id} (alias={alias})")
+    notes.insert(0, f"Recognized indicator: {ind_id} (alias={alias})")
     if symbols:
-        notes.append(f"Tanınan sembol(ler): {', '.join(symbols)}")
+        notes.append(f"Recognized symbol(s): {', '.join(symbols)}")
 
     # B2 — honest timeframe note: distinguish parsed vs defaulted.
     if timeframe_defaulted:
-        notes.append(f"Timeframe: {timeframe} (varsayılan — belirtilmedi)")
+        notes.append(f"Timeframe: {timeframe} (default — not specified)")
     else:
         notes.append(f"Timeframe: {timeframe}")
 
@@ -300,8 +300,8 @@ def parse_request(text: str) -> tuple[dict[str, Any] | None, list[str]]:
     # they were not requested. Match the actual values in ``spec["position"]``.
     pos = spec["position"]
     notes.append(
-        f"Varsayılan: pozisyon {pos['side']}, {pos['sizing_kind']} "
-        f"{pos['sizing_value']}, stop-loss %{pos['stop_loss_pct']} (talep edilmedi)"
+        f"Defaults: position {pos['side']}, {pos['sizing_kind']} "
+        f"{pos['sizing_value']}, stop-loss {pos['stop_loss_pct']}% (not requested)"
     )
 
     # B1 — echo a second indicator that the user mentioned but we did NOT wire
@@ -311,12 +311,12 @@ def parse_request(text: str) -> tuple[dict[str, Any] | None, list[str]]:
     if len(matched_ids) > 1:
         extra = ", ".join(matched_ids[1:])
         notes.append(
-            f"⚠ Yalnızca ilk gösterge ({ind_id}) kullanıldı — diğerleri "
-            f"({extra}) yok sayıldı"
+            f"⚠ Only the first indicator ({ind_id}) was used — others "
+            f"({extra}) were ignored"
         )
 
     # B1 — echo every known-but-unsupported concept detected in the input.
     for label in _detect_ignored(text_low):
-        notes.append(f"⚠ '{label}' desteklenmiyor — yok sayıldı")
+        notes.append(f"⚠ '{label}' is not supported — ignored")
 
     return spec, notes

@@ -1,10 +1,10 @@
 """POLY — Polymarket-style prediction markets.
 
 POLY surfaces prediction-market prices on real-world events (elections,
-policy, crypto milestones). The actual Polymarket REST / Gamma API
-requires a registered key; without one configured, POLY declares
-NOT_CONFIGURED and renders an explicit unavailable card rather than
-seeding mock probability curves.
+policy, crypto milestones) from the KEYLESS public Polymarket Gamma
+/markets endpoint. No credential is required; `data_mode='not_configured'`
+is the explicit provider_unavailable state for a real network outage —
+never a reason to fabricate mock probability curves.
 """
 from __future__ import annotations
 
@@ -38,8 +38,8 @@ def poly() -> FunctionManifest:
         category=Category.MISC,
         intent=(
             "Surface prediction-market prices on real-world events (elections, policy, "
-            "crypto milestones); declares unavailable when no Polymarket / Gamma API "
-            "credential is configured."
+            "crypto milestones) from the KEYLESS public Polymarket Gamma feed; declares "
+            "provider_unavailable (data_mode='not_configured') only on a real network outage."
         ),
         asset_classes=[],
         inputs=[
@@ -113,13 +113,14 @@ def poly() -> FunctionManifest:
             ],
         ),
         methodology=(
-            "POLY expects a Polymarket / Gamma API credential in the keyring before any "
-            "market is queried. With no credential configured the handler returns "
-            "data_mode='not_configured' with rows=[] and a card-level notice — no "
-            "synthetic probability curves, no fabricated liquidity figures, no fake question "
-            "text. When the credential is present, the chain pulls active markets matching "
-            "the topic query, filters by min_liquidity_usd, and returns one row per outcome "
-            "with the on-chain mid price and the implied probability (price * 100)."
+            "POLY reads the keyless public Polymarket Gamma /markets endpoint — no credential "
+            "is required. Rows are per-outcome with the on-chain mid price and the implied "
+            "probability (price * 100), filtered by status and min_liquidity_usd. Live results "
+            "carry data_mode='delayed_reference' (Gamma is delayed); an empty result is "
+            "'cached_snapshot'. When the Gamma endpoint is unreachable POLY returns "
+            "data_mode='not_configured' with rows=[] and a warning naming the network outage — "
+            "no synthetic probability curves, no fabricated liquidity figures, no fake question "
+            "text."
         ),
         field_dict={
             "data_mode": FieldDef(description="not_configured | cached_snapshot | delayed_reference.", source="envelope"),
@@ -138,7 +139,7 @@ def poly() -> FunctionManifest:
         semantic_tests=[
             SemanticTest(
                 name="poly_explicit_unavailable_when_not_configured",
-                description="With no Polymarket / Gamma credential, POLY returns data_mode='not_configured', rows=[], and a warning naming the missing credential — never a synthetic market.",
+                description="When the keyless Gamma endpoint is unreachable, POLY returns data_mode='not_configured', rows=[], and a warning naming the network outage — never a synthetic market.",
                 inputs={"_env": "no_polymarket_key"},
                 assertions=[
                     "data_mode_equals_not_configured",

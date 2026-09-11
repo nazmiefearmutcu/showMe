@@ -529,6 +529,10 @@ class XAnalyzer:
             "ok": True,
             "post_count": analysis["post_count"],
             "mood": analysis["mood"],
+            # Language-appropriate summary (analysis["summary"] is already
+            # picked by lang at x_analysis.py:468) plus the legacy Turkish
+            # one; XSenChip prefers `summary` so an en run never shows TR.
+            "summary": analysis["summary"],
             "summary_tr": analysis["summary_tr"],
             "bullish_score": analysis["scores"]["bullish_score_engagement_weighted"],
             "confidence": analysis["scores"]["confidence"],

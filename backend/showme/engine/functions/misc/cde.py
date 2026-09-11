@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from typing import Any
 
 from showme.app_paths import runtime_path
@@ -24,8 +25,13 @@ def _load() -> dict[str, str]:
 
 
 def _save(data: dict[str, str]) -> None:
-    _store().parent.mkdir(parents=True, exist_ok=True)
-    _store().write_text(json.dumps(data, indent=2))
+    # F6 [L]: write-temp + atomic replace so a crash mid-write cannot leave a
+    # truncated store behind (the old plain write_text could corrupt it).
+    path = _store()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2))
+    os.replace(tmp, path)
 
 
 @FunctionRegistry.register
@@ -73,17 +79,12 @@ class CDEFunction(BaseFunction):
             try:
                 ast = parse_dsl(store[name])
                 result = _eval(ast, row)
-                evaluation_row = {
-                    "name": name,
-                    "formula": store[name],
-                    "operation": "evaluation",
-                    "evaluation": bool(result),
-                    "row_json": json.dumps(row, sort_keys=True),
-                    "source_mode": "local_cde_store",
-                }
+                # F6 fix: the evaluate branch used to repurpose `count` to 1
+                # and replace `rows` with only the evaluation row — the
+                # "Stored fields" KPI lied and the grid hid every stored
+                # field. Keep the store truth (count + stored/example rows)
+                # and expose the evaluation separately.
                 payload = _payload(store, status="ready")
-                payload["rows"] = [evaluation_row]
-                payload["count"] = 1
                 return FunctionResult(code=self.code, instrument=None,
                                       data={
                                           **payload,

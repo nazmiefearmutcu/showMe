@@ -80,17 +80,6 @@ def chgs() -> FunctionManifest:
                 options=["candles", "line"],
             ),
             InputSpec(
-                name="live_chart",
-                label="Live",
-                control=ControlKind.BOOLEAN,
-                required=False,
-                description=(
-                    "When true the pane aliases TECH on yfinance/binance; when false"
-                    " a labelled showme_chart_model template is returned so the pane"
-                    " still renders without a data adapter."
-                ),
-            ),
-            InputSpec(
                 name="provider_mode",
                 label="Data mode",
                 control=ControlKind.PROVIDER_MODE,
@@ -108,7 +97,6 @@ def chgs() -> FunctionManifest:
             "symbol": "AAPL",
             "interval": "1d",
             "chart_kind": "candles",
-            "live_chart": False,
             "provider_mode": DataMode.DELAYED_REFERENCE.value,
         },
         provider_chain=ProviderChain(
@@ -167,16 +155,15 @@ def chgs() -> FunctionManifest:
         ),
         methodology=(
             "CHGS is a quick-launch alias for TECH with a fixed preset of overlays (SMA20/SMA50) and"
-            " a single RSI(14) sub-pane. When ``live_chart=true`` the handler forwards the call to"
-            " TECHFunction and returns the live response with ``metadata.alias_of=TECH``; when false"
-            " the response is a labelled ``showme_chart_model`` template with synthetic SMA/RSI values"
-            " derived from the last close so the pane still renders without a data adapter. The"
+            " a single RSI(14) sub-pane. The handler defers to the live TECH path by default"
+            " (``metadata.alias_of=TECH``); when the provider is unavailable it returns an explicit"
+            " ``no_price_history`` status with a reason — never a synthetic chart template. The"
             " chart_grammar pins ``TIME_SERIES_CANDLES`` with a 70/30 price/RSI split."
         ),
         formula_dict={},
         field_dict={
             "symbol": FieldDef(description="Instrument symbol echoed from the request.", source="adapter"),
-            "last": FieldDef(unit="quote_ccy", description="Last close price (or template value when offline).", source="adapter"),
+            "last": FieldDef(unit="quote_ccy", description="Last close price (from the live TECH alias).", source="adapter"),
             "rsi_14": FieldDef(description="Wilder RSI(14) reading at last close.", source="computed"),
             "sma_20": FieldDef(unit="quote_ccy", description="Simple 20-period close average.", source="computed"),
             "sma_50": FieldDef(unit="quote_ccy", description="Simple 50-period close average.", source="computed"),
@@ -192,21 +179,21 @@ def chgs() -> FunctionManifest:
         ),
         semantic_tests=[
             SemanticTest(
-                name="chgs_offline_returns_labelled_template",
+                name="chgs_default_defers_to_live_tech",
                 description=(
-                    "With live_chart=false the response is marked source_mode=showme_chart_model and"
-                    " carries metadata.alias_of=TECH so it is never confused for a live read."
+                    "The default path forwards to TECHFunction (metadata.alias_of=TECH); with no"
+                    " provider it returns an explicit no_price_history status and a reason, never a"
+                    " chart template."
                 ),
-                inputs={"symbol": "AAPL", "live_chart": False},
+                inputs={"symbol": "AAPL"},
                 assertions=[
-                    "source_mode_equals_showme_chart_model",
                     "metadata_alias_of_equals_TECH",
                 ],
             ),
             SemanticTest(
                 name="chgs_live_aliases_tech",
-                description="With live_chart=true the live path forwards to TECHFunction and inherits its sources.",
-                inputs={"symbol": "AAPL", "live_chart": True},
+                description="The live path forwards to TECHFunction and inherits its sources.",
+                inputs={"symbol": "AAPL"},
                 assertions=[
                     "metadata_alias_of_equals_TECH",
                     "sources_include_yfinance_or_binance",

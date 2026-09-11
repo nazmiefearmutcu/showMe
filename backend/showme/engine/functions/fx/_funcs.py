@@ -117,6 +117,7 @@ class FXFCFunction(BaseFunction):
             "base_rate": r_base,
             "quote_rate": r_quote,
             "vol_annualized": vol,
+            "source_mode": source_mode,
             "forecast": rows,
             "curve": rows,
             "methodology": (

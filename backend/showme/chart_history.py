@@ -630,7 +630,7 @@ async def fetch_yahoo_history(
     provider_symbol = _yahoo_symbol(symbol, asset_class)
     provider_interval = YAHOO_INTERVALS.get(normalize_history_interval(interval), "1d")
     clamped_days, clamp_warning = _clamp_yahoo_days(interval, days)
-    end = datetime.now(tz=timezone.utc)
+    end = datetime.now(timezone.utc)
     start = end - timedelta(days=clamped_days)
     params = {
         "period1": int(start.timestamp()),
@@ -647,7 +647,9 @@ async def fetch_yahoo_history(
     ) as client:
         response = await client.get(f"/v8/finance/chart/{provider_symbol}", params=params)
         response.raise_for_status()
-        rows = _rows_from_yahoo_chart(response.json())
+        payload = response.json()
+        rows = _rows_from_yahoo_chart(payload)
+        meta = _meta_from_yahoo_chart(payload)
     rows = _dedupe_sort_trim(rows, bars)
     if not rows:
         raise RuntimeError(f"no Yahoo chart history for {provider_symbol}")
@@ -663,6 +665,11 @@ async def fetch_yahoo_history(
             "bars_requested": bars,
             "bars_returned": len(rows),
             "deep_history": True,
+            # Identity / 52-week reference fields the HP·GP header strip and
+            # key-level rail read. Absent for provider payloads that don't
+            # carry a chart meta block (Binance/Stooq), so consumers must
+            # treat missing keys as "unknown", not zero.
+            **meta,
         },
     )
 
@@ -838,6 +845,39 @@ def _rows_from_yahoo_chart(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
+def _meta_from_yahoo_chart(payload: dict[str, Any]) -> dict[str, Any]:
+    """Extract the chart meta block (company identity + 52-week levels).
+
+    The HP/GP alias payload historically dropped Yahoo's ``meta`` object, so
+    the panes' name/exchange pills and "52w high/low" rows could never
+    populate. Values are only copied when present and well-typed — absent
+    keys stay absent so consumers can render an honest "unknown".
+    """
+    result = (((payload.get("chart") or {}).get("result") or [None])[0]) or {}
+    meta = result.get("meta")
+    if not isinstance(meta, dict):
+        return {}
+    out: dict[str, Any] = {}
+    for source_key, out_key in (
+        ("longName", "long_name"),
+        ("shortName", "short_name"),
+        ("exchangeName", "exchange"),
+        ("fullExchangeName", "full_exchange_name"),
+        ("currency", "currency"),
+    ):
+        value = meta.get(source_key)
+        if isinstance(value, str) and value.strip():
+            out[out_key] = value.strip()
+    for source_key, out_key in (
+        ("fiftyTwoWeekHigh", "fifty_two_week_high"),
+        ("fiftyTwoWeekLow", "fifty_two_week_low"),
+    ):
+        value = _num(meta.get(source_key))
+        if value is not None:
+            out[out_key] = value
+    return out
+
+
 def _dedupe_sort_trim(rows: list[dict[str, Any]], bars: int) -> list[dict[str, Any]]:
     by_time: dict[int, dict[str, Any]] = {}
     for row in rows:
@@ -875,3 +915,114 @@ def _num(value: Any) -> float | None:
     except Exception:
         return None
     return number if math.isfinite(number) else None
+
+
+# ---------------------------------------------------------------------------
+# Chart overlays (GP)
+# ---------------------------------------------------------------------------
+
+
+def _sma_series(values: list[float], period: int) -> list[float | None]:
+    out: list[float | None] = [None] * len(values)
+    if period <= 0:
+        return out
+    window = 0.0
+    for idx, value in enumerate(values):
+        window += value
+        if idx >= period:
+            window -= values[idx - period]
+        if idx >= period - 1:
+            out[idx] = window / period
+    return out
+
+
+def _ema_series(values: list[float], period: int) -> list[float | None]:
+    # Matches the TECH function's ``pandas ewm(span=period, adjust=False)``:
+    # alpha = 2/(period+1) seeded on the first observation.
+    out: list[float | None] = [None] * len(values)
+    if period <= 0 or not values:
+        return out
+    alpha = 2.0 / (period + 1.0)
+    previous: float | None = None
+    for idx, value in enumerate(values):
+        previous = value if previous is None else alpha * value + (1.0 - alpha) * previous
+        out[idx] = previous
+    return out
+
+
+def _bollinger_series(
+    values: list[float], period: int = 20, mult: float = 2.0
+) -> tuple[list[float | None], list[float | None], list[float | None]]:
+    mid = _sma_series(values, period)
+    upper: list[float | None] = [None] * len(values)
+    lower: list[float | None] = [None] * len(values)
+    if period <= 0:
+        return upper, mid, lower
+    for idx in range(period - 1, len(values)):
+        mean = mid[idx]
+        if mean is None:
+            continue
+        variance = 0.0
+        for j in range(idx - period + 1, idx + 1):
+            diff = values[j] - mean
+            variance += diff * diff
+        deviation = math.sqrt(variance / period)
+        upper[idx] = mean + mult * deviation
+        lower[idx] = mean - mult * deviation
+    return upper, mid, lower
+
+
+def _indicator_points(
+    rows: list[dict[str, Any]], values: list[float | None]
+) -> list[dict[str, Any]]:
+    points: list[dict[str, Any]] = []
+    for row, value in zip(rows, values):
+        if value is None or not math.isfinite(value):
+            continue
+        time_value: Any = None
+        try:
+            time_value = int(float(row.get("time")))
+        except Exception:
+            time_value = None
+        if time_value is None:
+            time_value = row.get("date")
+        points.append({"time": time_value, "value": round(float(value), 4)})
+    return points
+
+
+def compute_chart_indicators(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    """Compute price-scale overlay series for a chart payload.
+
+    GP's INDICATORS legend + overlay lines read ``data.indicators``; the
+    alias never emitted it, so the whole surface was dead. This computes
+    the standard overlay bundle (SMA 20/50, EMA 20, Bollinger 20±2) from
+    the same OHLCV rows the pane receives — pure Python, no pandas import
+    on the hot path. Oscillators (RSI/MACD/Stochastic) are NOT emitted
+    here because GP renders every key as a same-scale line overlay.
+    """
+    usable: list[dict[str, Any]] = []
+    closes: list[float] = []
+    for row in rows:
+        value = _num(row.get("close"))
+        if value is None:
+            continue
+        usable.append(row)
+        closes.append(value)
+    if len(closes) < 20:
+        return {}
+    series: dict[str, list[float | None]] = {
+        "sma_20": _sma_series(closes, 20),
+        "ema_20": _ema_series(closes, 20),
+    }
+    if len(closes) >= 50:
+        series["sma_50"] = _sma_series(closes, 50)
+    upper, mid, lower = _bollinger_series(closes, 20, 2.0)
+    series["bb_upper"] = upper
+    series["bb_mid"] = mid
+    series["bb_lower"] = lower
+    out: dict[str, list[dict[str, Any]]] = {}
+    for name, values in series.items():
+        points = _indicator_points(usable, values)
+        if points:
+            out[name] = points
+    return out

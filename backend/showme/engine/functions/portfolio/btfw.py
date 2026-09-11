@@ -86,6 +86,8 @@ class BTFWFunction(BaseFunction):
         allow_short = bool(params.get("allow_short", True))
         cash = float(params.get("initial_cash", 10_000))
         sources = ["yfinance"]
+        warnings: list[str] = []
+        synthetic_history = False
         if strategy_name not in STRATEGY_REGISTRY:
             return FunctionResult(code=self.code, instrument=instrument, data={},
                                   warnings=[f"unknown strategy {strategy_name}",
@@ -116,6 +118,14 @@ class BTFWFunction(BaseFunction):
         if df.empty:
             df = _template_history(days)
             sources = ["local_backtest_model"]
+            synthetic_history = True
+            # Be explicit about the substitution: the walk-forward below is a
+            # real fit, but it runs on a synthetic sine ramp, not market data.
+            warnings.append(
+                "Live OHLCV was unavailable — walk-forward metrics below were "
+                "computed on a synthetic placeholder history (sine ramp), not "
+                "market data."
+            )
         walk_steps = int(params.get("walk_steps", params.get("n_splits", 5)))
         train_pct = float(params.get("train_pct", 0.7))
         walk_mode = str(params.get("walk_mode", "anchored"))
@@ -134,7 +144,8 @@ class BTFWFunction(BaseFunction):
                 sources=["local_backtest_model"],
                 warnings=[f"walk-forward could not run on this history: {exc}"],
                 metadata={"days": days, "fee_bps": fee_bps,
-                          "allow_short": allow_short, "live": False},
+                          "allow_short": allow_short, "live": False,
+                          "is_placeholder": True},
             )
 
         eq = res.oos_equity_curve
@@ -200,9 +211,10 @@ class BTFWFunction(BaseFunction):
                 },
             },
             sources=sources,
+            warnings=warnings,
             metadata={"days": days, "fee_bps": fee_bps, "allow_short": allow_short,
                       "walk_steps": res.summary["n_splits"], "walk_mode": walk_mode,
-                      "in_sample": False},
+                      "in_sample": False, "synthetic_history": synthetic_history},
         )
 
 

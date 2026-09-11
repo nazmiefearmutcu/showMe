@@ -254,6 +254,18 @@ def test_ivol_default_path_returns_live_surface():
         assert row["moneyness"] is not None
     assert "implied volatility surface" in data["methodology"].lower()
     assert data["field_dictionary"]
+    # A7 fix (2026-09-11): the live path must stamp its source mode and the
+    # derived KPI fields the pane ribbon reads. Missing source_mode made a
+    # live yfinance surface render an amber "reference" pill; missing
+    # atm_iv_front/skew/term_slope left the KPI ribbon permanently "—".
+    assert data["source_mode"] == "live_yfinance"
+    summary = data["summary"]
+    assert summary["source_mode"] == "live_yfinance"
+    for key in ("atm_iv_front", "atm_iv_back", "skew", "term_slope"):
+        value = summary[key]
+        assert value is not None and math.isfinite(value), (key, value)
+    assert data["series"], "ATM term series must ship with the live surface"
+    assert {point["t"] for point in data["series"]} <= set(data["expiries"])
 
 
 def test_ivol_reference_flag_still_available():
@@ -261,6 +273,13 @@ def test_ivol_reference_flag_still_available():
     result = asyncio.run(handler.execute(_instrument("AAPL"), reference=True))
     assert result.data["status"] == "reference"
     assert result.metadata.get("mode") == "reference"
+    # Reference cells feed the same derived stats (no constants): the pane
+    # KPI ribbon renders computed values with the reference label, not "—".
+    summary = result.data["summary"]
+    assert summary["source_mode"] == "reference"
+    assert summary["atm_iv_front"] is not None
+    assert summary["atm_iv_back"] is not None
+    assert result.data["series"]
 
 
 def test_ivol_no_adapter_falls_back_gracefully():

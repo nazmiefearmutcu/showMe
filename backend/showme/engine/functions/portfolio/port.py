@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 import numpy as np
@@ -10,6 +11,45 @@ import pandas as pd
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from showme.engine.core.instrument import Instrument
 from showme.engine.portfolio.state import PortfolioState
+
+# Mirror of ``portfolio_aggregate._STABLE_TO_USD``: only stable-USD cash may be
+# summed into the USD ``totals.cash`` figure. Anything else stays in the
+# per-currency map so the terminal never converts by assumption.
+_STABLE_USD_CURRENCIES = {"USD", "USDT", "USDC", "DAI", "BUSD", "TUSD"}
+
+
+def _cash_totals(cash: Any) -> tuple[float | None, dict[str, float]]:
+    """Return ``(stable_usd_cash | None, per_currency_cash)``.
+
+    ``None`` means the book does not track cash at all — the pane renders the
+    shared em-dash instead of a confident $0.00 (audit A5 PORT H).
+    """
+    if not isinstance(cash, dict):
+        return None, {}
+    per_currency: dict[str, float] = {}
+    for ccy, amount in cash.items():
+        if isinstance(amount, bool):
+            continue
+        try:
+            value = float(amount)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(value):
+            continue
+        per_currency[str(ccy).upper()] = value
+    if not per_currency:
+        return None, {}
+    stable = sum(v for k, v in per_currency.items() if k in _STABLE_USD_CURRENCIES)
+    return stable, per_currency
+
+
+def _cash_fields(cash_usd: float | None, cash_by_currency: dict[str, float]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    if cash_usd is not None:
+        out["cash"] = cash_usd
+    if cash_by_currency:
+        out["cash_by_currency"] = cash_by_currency
+    return out
 
 
 def historical_var(returns: pd.Series, alpha: float = 0.05) -> float:
@@ -65,6 +105,7 @@ class PORTFunction(BaseFunction):
         portfolio: PortfolioState = params.get("_portfolio_override") or PortfolioState()
         if params.get("_portfolio_override") is None:
             portfolio.import_legacy_crypto()
+        cash_usd, cash_by_currency = _cash_totals(getattr(portfolio, "cash", None))
         if not portfolio.positions:
             rows = params.get("positions") or []
             if not rows:
@@ -77,8 +118,10 @@ class PORTFunction(BaseFunction):
                         "positions": [],
                         "totals": {
                             "market_value": 0.0,
+                            "cost_basis": 0.0,
                             "n_positions": 0,
                             "unrealized_pnl": 0.0,
+                            **_cash_fields(cash_usd, cash_by_currency),
                         },
                         "by_asset_class": {},
                         "next_actions": [
@@ -90,10 +133,13 @@ class PORTFunction(BaseFunction):
                     metadata={"empty": True, "requires_positions": True},
                 )
             total_mv = 0.0
+            total_cost = 0.0
             out_rows = []
             for row in rows:
+                cost = float(row["avg_cost"])
                 mv = float(row["quantity"]) * float(row.get("last", row["avg_cost"]))
                 total_mv += mv
+                total_cost += cost * float(row["quantity"])
                 out_rows.append({**row, "market_value": mv,
                                  "unrealized_pnl": (float(row.get("last", row["avg_cost"])) -
                                                     float(row["avg_cost"])) * float(row["quantity"])})
@@ -102,8 +148,10 @@ class PORTFunction(BaseFunction):
             return FunctionResult(code=self.code, instrument=None,
                                   data={"positions": out_rows,
                                         "totals": {"market_value": total_mv,
+                                                   "cost_basis": total_cost,
                                                    "n_positions": len(out_rows),
-                                                   "unrealized_pnl": sum(r["unrealized_pnl"] for r in out_rows)}},
+                                                   "unrealized_pnl": sum(r["unrealized_pnl"] for r in out_rows),
+                                                   **_cash_fields(cash_usd, cash_by_currency)}},
                                   sources=["user_positions"])
         # Best-effort: get live last prices via yfinance for *all* asset classes
         # (crypto included — see note below), falling back to the runtime last
@@ -140,6 +188,7 @@ class PORTFunction(BaseFunction):
             })
         df = pd.DataFrame(rows)
         total_mv = float(df["market_value"].sum() or 0)
+        total_cost = float((df["quantity"] * df["avg_cost"]).sum() or 0)
         if total_mv:
             df["weight_pct"] = df["market_value"] / total_mv * 100
         # VaR / ETL on (legacy) returns from state.json trade_history if available
@@ -149,8 +198,10 @@ class PORTFunction(BaseFunction):
                 "positions": df.to_dict(orient="records"),
                 "totals": {
                     "market_value": total_mv,
+                    "cost_basis": total_cost,
                     "unrealized_pnl": float(df["unrealized_pnl"].sum() or 0),
                     "n_positions": int(len(df)),
+                    **_cash_fields(cash_usd, cash_by_currency),
                 },
                 "by_asset_class": df.groupby("asset_class")["market_value"].sum().to_dict(),
             },

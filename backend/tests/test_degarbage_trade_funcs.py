@@ -337,12 +337,16 @@ def test_fxgo_ticket_intent_preserves_emsx_preview():
 
 def test_fxgo_live_submit_without_broker_is_safe():
     """Arming live submit with no FX broker must NOT silently trade — it
-    returns provider_unavailable per the EMSX safe-by-default contract."""
+    returns provider_unavailable per the EMSX safe-by-default contract.
+
+    F9 update: live intent now additionally requires the explicit
+    ``paper_mode=False`` arm (the engine ignores submit=True while
+    paper_mode defaults True)."""
     from showme.engine.functions.trade._funcs import FXGOFunction
 
     h = _mk_handler(FXGOFunction, deps=None)
     inst = Instrument(symbol="USDJPY", asset_class=AssetClass.FX)
-    res = _run(h.execute(instrument=inst, side="BUY", quantity=100000, submit=True))
+    res = _run(h.execute(instrument=inst, side="BUY", quantity=100000, submit=True, paper_mode=False))
     data = res.data
     assert data["status"] == "provider_unavailable"
     assert data.get("broker") in {None, "paper"}

@@ -1,10 +1,10 @@
 """EQS — Equity Screener.
 
-Plan §7.5: SQL benzeri DSL kabul eder, DuckDB üzerinden çalışır.
-Bu sürüm pyparsing kullanmaz; küçük bir kendi yazdığım recursive-descent
-parser kullanır (Spec açıkça "Coder geliştirsin" dediği yerlerden biri).
+Plan §7.5: accepts a SQL-like DSL and runs it over the universe. This version
+does not use pyparsing; it uses a small hand-written recursive-descent parser
+(one of the places the spec explicitly left to the coder).
 
-DSL örnekleri:
+DSL examples:
     marketCap > 1000000000 AND pe < 15 AND sector = "Technology"
     rsi(14) < 30 AND volume > 1000000
 """
@@ -168,8 +168,9 @@ class EQSFunction(BaseFunction):
         # response payload reflects what we actually scanned.
         universe_param = params.get("universe")
         universe, universe_label = _resolve_universe(universe_param)
+        template_mode = not live
         rows: list[dict[str, Any]] = []
-        if not live:
+        if template_mode:
             rows = _screen_template_rows(instrument, universe)
         elif self.deps.yfinance:
             import asyncio
@@ -215,11 +216,48 @@ class EQSFunction(BaseFunction):
                     "beta": raw.get("beta") or 0,
                     "country": r.country or raw.get("country"),
                 })
-            if len(rows) < 3:
-                rows = _screen_template_rows(instrument, universe)
+        # F6 honesty fix: the live_screen=True path must never substitute the
+        # 5-row template stub. Previously `rows < 3` silently loaded template
+        # rows and still attributed them to `sources=["yfinance"]`. The
+        # manifest's own semantic test
+        # (eqs_provider_unavailable_returns_empty_rows_not_synthetic) requires
+        # an honest provider_unavailable envelope with no fabricated rows.
+        if live and not rows:
+            reason = (
+                "Live screen produced no symbol rows; the template stub is "
+                "not substituted on the live path."
+            )
+            return FunctionResult(
+                code=self.code,
+                instrument=None,
+                data={
+                    "status": "provider_unavailable",
+                    "rows": [],
+                    "query": query,
+                    "matched": 0,
+                    "scanned": len(universe),
+                    "reason": reason,
+                    "next_actions": [
+                        "Retry the screen, or shrink the universe so live rows can complete in time.",
+                        "Verify the yfinance provider connection.",
+                    ],
+                },
+                sources=[],
+                warnings=[reason],
+                metadata={
+                    "query": query,
+                    "matched": 0,
+                    "scanned": len(universe),
+                    "live": False,
+                    "fallback": True,
+                    "data_mode": "provider_unavailable",
+                    "universe": universe_label,
+                    "universe_size": len(universe),
+                },
+            )
+        if not rows:
+            rows = _screen_template_rows(instrument, universe)
         df = pd.DataFrame(rows)
-        if df.empty:
-            df = pd.DataFrame(_screen_template_rows(instrument, universe))
         try:
             filtered = filter_dataframe(df, query)
         except Exception as e:
@@ -240,21 +278,61 @@ class EQSFunction(BaseFunction):
                     "scanned": int(len(df)),
                 },
                 warnings=[f"DSL parse error: {e}"],
+                metadata={
+                    "query": query,
+                    "matched": 0,
+                    "scanned": int(len(df)),
+                    "live": live,
+                    "universe": universe_label,
+                    "universe_size": len(universe),
+                },
             )
         if filtered.empty:
-            filtered = df.head(3)
+            # F6 honesty fix: previously `filtered = df.head(3)` shipped rows
+            # that do NOT satisfy the query and reported them as MATCHED 3.
+            # A screener must never present non-matching rows as matches.
+            return FunctionResult(
+                code=self.code,
+                instrument=None,
+                data={
+                    "status": "no_matches",
+                    "rows": [],
+                    "query": query,
+                    "matched": 0,
+                    "scanned": int(len(df)),
+                },
+                sources=["yfinance"] if live else ["equity_screener_model"],
+                metadata={
+                    "query": query,
+                    "matched": 0,
+                    "scanned": int(len(df)),
+                    "live": live,
+                    "template": template_mode,
+                    "data_mode": "delayed_reference" if live else "modeled",
+                    "universe": universe_label,
+                    "universe_size": len(universe),
+                },
+            )
         # S05 BUGHUNT B6: surface the actual universe label + size so the UI
         # cannot continue to claim "SP500" coverage when only the mega-cap
         # stub was scanned. `universe_label` flows up untouched.
+        warnings: list[str] = []
+        if template_mode:
+            warnings.append(
+                "Template mode: rows are model fixtures, not live market data."
+            )
         return FunctionResult(
             code=self.code, instrument=None,
             data=filtered.reset_index(drop=True),
-            sources=["yfinance" if live and self.deps.yfinance else "equity_screener_model"],
+            sources=["yfinance"] if live else ["equity_screener_model"],
+            warnings=warnings,
             metadata={
                 "query": query,
                 "matched": int(len(filtered)),
                 "scanned": int(len(df)),
                 "live": live,
+                "template": template_mode,
+                "data_mode": "delayed_reference" if live else "modeled",
                 "universe": universe_label,
                 "universe_size": len(universe),
             },

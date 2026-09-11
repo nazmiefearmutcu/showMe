@@ -18,6 +18,7 @@ def _truthy(value: Any) -> bool:
 
 
 _SOVEREIGN_FRED_IDS = {
+    # Developed markets.
     "US": "DGS10",
     "DE": "IRLTLT01DEM156N",
     "JP": "IRLTLT01JPM156N",
@@ -27,35 +28,66 @@ _SOVEREIGN_FRED_IDS = {
     "IT": "IRLTLT01ITM156N",
     "ES": "IRLTLT01ESM156N",
     "AU": "IRLTLT01AUM156N",
+    # Emerging markets — the exact roster the WB pane's EM tab filters on
+    # (OECD long-term 10Y benchmark series on FRED).
+    "TR": "IRLTLT01TRM156N",
+    "BR": "IRLTLT01BRM156N",
+    "MX": "IRLTLT01MXM156N",
+    "ZA": "IRLTLT01ZAM156N",
+    "IN": "IRLTLT01INM156N",
+    "CN": "IRLTLT01CNM156N",
+    "RU": "IRLTLT01RUM156N",
+    "ID": "IRLTLT01IDM156N",
 }
+
+# F4 fix: the labelled template is a static reference snapshot, so its rows
+# must carry the model vintage — not "today", which would claim the levels
+# were observed on the request date.
+_MODEL_TEMPLATE_VINTAGE = "2025-12-31"
 
 
 def _world_bond_template() -> dict[str, float]:
-    return {"US": 4.45, "DE": 2.58, "JP": 0.92, "GB": 4.18, "FR": 3.02,
-            "IT": 3.86, "ES": 3.24, "AU": 4.12}
+    # Static reference levels (labelled sovereign_yield_model, NOT live).
+    return {
+        "US": 4.45, "DE": 2.58, "JP": 0.92, "GB": 4.18, "CA": 3.35,
+        "FR": 3.02, "IT": 3.86, "ES": 3.24, "AU": 4.12,
+        "TR": 28.50, "BR": 12.80, "MX": 9.10, "ZA": 10.20,
+        "IN": 6.85, "CN": 2.05, "RU": 13.40, "ID": 6.65,
+    }
 
 
 def _rows_from_yields(values: dict[str, float], source_mode: str, tenor: str = "10Y") -> dict[str, Any]:
+    is_template = source_mode == "sovereign_yield_model"
+    as_of = (
+        _MODEL_TEMPLATE_VINTAGE
+        if is_template
+        else datetime.now(timezone.utc).date().isoformat()
+    )
     rows = [
         {
             "country": country,
             "tenor": tenor,
             "yield": float(yield_pct),
-            "as_of": datetime.now(timezone.utc).date().isoformat(),
+            "as_of": as_of,
             "source_mode": source_mode,
+            **({"reference_vintage": _MODEL_TEMPLATE_VINTAGE} if is_template else {}),
         }
         for country, yield_pct in values.items()
     ]
     rows.sort(key=lambda row: str(row["country"]))
+    summary: dict[str, Any] = {"countries": len(rows), "tenor": tenor, "source_mode": source_mode}
+    if is_template:
+        summary["reference_vintage"] = _MODEL_TEMPLATE_VINTAGE
     return {
         "rows": rows,
-        "summary": {"countries": len(rows), "tenor": tenor, "source_mode": source_mode},
+        "summary": summary,
         "methodology": "WB shows sovereign benchmark yields by country. The bundled default is a 10Y comparison; each row labels country, tenor, yield, source mode, and snapshot date.",
         "field_dictionary": {
             "country": "ISO-style country code.",
             "tenor": "Benchmark maturity used for comparison.",
             "yield": "Annualized sovereign yield percentage.",
             "source_mode": "fred when live data is available, otherwise sovereign_yield_model.",
+            "as_of": "Observation date for live rows; the model vintage for template rows.",
         },
     }
 

@@ -81,9 +81,22 @@ class EIAAdapter(BaseDataSource):
         df = await self.series_data(route, facets=facets, limit=request.limit or 1000)
         if request.kind == DataKind.QUOTE:
             from showme.engine.core.quote import Quote, utcnow
+            last: float | None = None
+            if not df.empty and "value" in df:
+                values = df["value"].dropna()
+                if not values.empty:
+                    # ``series_data`` sorts the EIA frame ascending by period,
+                    # so the NEWEST observation is the LAST row. The previous
+                    # ``iloc[0]`` served the oldest value in the window as a
+                    # live `last`. When the frame carries no period index the
+                    # API rows arrive newest-first, so keep iloc[0].
+                    if isinstance(values.index, pd.DatetimeIndex):
+                        last = float(values.sort_index().iloc[-1])
+                    else:
+                        last = float(values.iloc[0])
             return Quote(
                 symbol=sym, timestamp=utcnow(),
-                last=float(df["value"].iloc[0]) if not df.empty and "value" in df else None,
+                last=last,
                 source=self.name,
             )
         return df

@@ -32,19 +32,55 @@ class EREVFunction(BaseFunction):
         if not sym:
             return FunctionResult(code=self.code, instrument=None, data={},
                                   warnings=["symbol required"])
+        recs: list[dict[str, Any]] | None = None
+        provider_error: str | None = None
         if not self.deps.finnhub:
-            recs = []
+            provider_error = "finnhub provider not wired (no API key configured)"
         else:
             try:
                 recs = await self.deps.finnhub.recommendations(sym)
-            except Exception:
-                recs = []
+            except Exception as exc:
+                provider_error = f"finnhub: {exc}"
         if not recs:
-            recs = [
-                {"period": "2026-02", "strongBuy": 7, "buy": 16, "hold": 12, "sell": 2, "strongSell": 0},
-                {"period": "2026-03", "strongBuy": 8, "buy": 17, "hold": 11, "sell": 2, "strongSell": 0},
-                {"period": "2026-04", "strongBuy": 8, "buy": 18, "hold": 12, "sell": 2, "strongSell": 0},
-            ]
+            # F6 honesty fix: previously three hard-coded analyst buckets were
+            # substituted and still returned status=ok with sources=["finnhub"]
+            # when the provider was absent/failed — every keyless install
+            # rendered fabricated months as "live". The manifest's own
+            # semantic test (erev_provider_outage_returns_unavailable) requires
+            # status=provider_unavailable with an empty trend and no fake rows.
+            reason = provider_error or (
+                f"finnhub returned no recommendation buckets for {sym}"
+            )
+            return FunctionResult(
+                code=self.code, instrument=instrument,
+                data={
+                    "status": "provider_unavailable",
+                    "symbol": sym,
+                    "rows": [],
+                    "trend": [],
+                    "revisions": [],
+                    "velocity_avg": None,
+                    "current_score": None,
+                    "reason": reason,
+                    "next_actions": [
+                        "Configure a Finnhub API key so analyst recommendation buckets can load.",
+                        "Retry later if the provider was rate-limited.",
+                    ],
+                    "methodology": _METHODOLOGY,
+                    "field_dictionary": _FIELD_DICTIONARY,
+                },
+                sources=[],
+                warnings=[reason],
+                metadata={
+                    "live": False,
+                    "fallback": True,
+                    "data_mode": (
+                        "not_configured" if not self.deps.finnhub
+                        else "provider_unavailable"
+                    ),
+                    "provider_errors": [reason],
+                },
+            )
         # Sort by period ascending (oldest first)
         rs = sorted(recs, key=lambda r: r.get("period", ""))
         trend: list[dict[str, Any]] = []
@@ -82,13 +118,23 @@ class EREVFunction(BaseFunction):
                 "revisions": revs,
                 "velocity_avg": velocity,
                 "current_score": trend[-1] if trend else None,
-                "methodology": "EREV converts analyst recommendation buckets into a weighted score: Strong Buy=+2, Buy=+1, Hold=0, Sell=-1, Strong Sell=-2. Velocity is the latest average-score change vs the prior period.",
-                "field_dictionary": {
-                    "score": "Weighted recommendation score for the period.",
-                    "avg": "Score divided by analyst count.",
-                    "velocity_avg": "Latest average-score change vs previous period.",
-                    "net_pos_change": "Change in Strong Buy + Buy count.",
-                },
+                "methodology": _METHODOLOGY,
+                "field_dictionary": _FIELD_DICTIONARY,
             },
-            sources=["finnhub" if self.deps.finnhub else "revision_model"],
+            sources=["finnhub"],
+            metadata={"live": True, "data_mode": "live_official"},
         )
+
+
+_METHODOLOGY = (
+    "EREV converts analyst recommendation buckets into a weighted score: "
+    "Strong Buy=+2, Buy=+1, Hold=0, Sell=-1, Strong Sell=-2. Velocity is the "
+    "latest average-score change vs the prior period."
+)
+
+_FIELD_DICTIONARY = {
+    "score": "Weighted recommendation score for the period.",
+    "avg": "Score divided by analyst count.",
+    "velocity_avg": "Latest average-score change vs previous period.",
+    "net_pos_change": "Change in Strong Buy + Buy count.",
+}

@@ -124,7 +124,14 @@ class DAPIFunction(BaseFunction):
                     "base_url": "http://127.0.0.1:<sidecar-port>",
                     "endpoints": len(rows),
                     "total_routes": len(endpoints),
-                    "state_changing": sum(1 for row in rows if str(row.get("mutates_state", "")).startswith("yes")),
+                    # F9 [L]: the pane's "mutating" filter also counts
+                    # "depends ..." rows, so the summary must agree with the
+                    # filter it labels (yes + depends), not just "yes".
+                    "state_changing": sum(
+                        1 for row in rows
+                        if str(row.get("mutates_state", "")).strip().lower()
+                        .startswith(("yes", "depends"))
+                    ),
                     "filter": query or "all",
                     "source_mode": source_mode,
                 },
@@ -139,7 +146,7 @@ class DAPIFunction(BaseFunction):
                     "SHOWME_AUTH_TOKEN is set; /api/health and the sidecar info endpoints stay open."
                 ),
                 "field_dictionary": {
-                    "method": "HTTP verb (comma-joined when a single path accepts multiple verbs).",
+                    "method": "HTTP verb; slash-joined when a single path accepts multiple verbs.",
                     "path": "Mounted sidecar route.",
                     "purpose": "User-facing action exposed by the route.",
                     "request_body": "JSON body shape when required.",

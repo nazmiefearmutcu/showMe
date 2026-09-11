@@ -173,11 +173,16 @@ def test_beta_returns_provider_unavailable_when_no_yfinance() -> None:
 
 def test_bbgt_returns_provider_unavailable_when_submit_without_broker() -> None:
     """Bug-hunt S01: submit=true with no broker previously silently
-    downgraded to a paper preview. Now surface provider_unavailable."""
+    downgraded to a paper preview. Now surface provider_unavailable.
+
+    F9 update: the manifest's ``paper_mode`` safe-guard now defaults to True
+    in the engine, so an explicitly ARMED live call must also pass
+    ``paper_mode=False`` — otherwise the ticket stays in preview (see
+    ``test_fix_f9_trade.py`` for the guard proof)."""
     fn = BBGTFunction()
     fn.deps = FunctionDeps()  # no broker adapters wired
     inst = Instrument(symbol="AAPL", asset_class=AssetClass.EQUITY)
-    result = _run(fn.execute(instrument=inst, quantity=1, submit=True))
+    result = _run(fn.execute(instrument=inst, quantity=1, submit=True, paper_mode=False))
     assert result.data["status"] == "provider_unavailable"
     assert result.data["broker"] is None
     assert result.sources == ["no_live_source"]

@@ -377,6 +377,75 @@ def _model_row(symbol: str) -> dict[str, Any]:
     }
 
 
+_EIA_SERIES_META: dict[str, dict[str, Any]] = {
+    "HENRYHUB": {
+        "name": "Henry Hub Natural Gas",
+        "sector": "energy",
+        "contract": "EIA Henry Hub Natural Gas spot price (daily)",
+        "unit": "USD/MMBtu",
+        "exchange": "EIA",
+    },
+}
+
+
+def _eia_spot_rows(
+    df: Any, symbol: str = "HENRYHUB",
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Normalize an EIA price series into the shared commodity SpotRow shape.
+
+    ``eia_adapter.series_data`` returns a frame indexed by ``period`` with
+    ``value``/``series``/``units`` columns. The shared commodity pane
+    (BGAS/NGAS/BOIL) reads ``last``/``as_of``/``change_pct``, so serving the
+    raw records made every EIA row invisible in the grid while the pill still
+    claimed a live quote (audit A3-H). Returns the row set plus the ascending
+    close history for the pane chart. Never fabricates a point: periods
+    without a finite value are skipped, and an empty result stays empty.
+    """
+    meta = _EIA_SERIES_META.get(symbol, _EIA_SERIES_META["HENRYHUB"])
+    rows: list[dict[str, Any]] = []
+    history: list[dict[str, Any]] = []
+    if df is None or getattr(df, "empty", True) or not hasattr(df, "iterrows"):
+        return rows, history
+    try:
+        frame = df.sort_index()  # oldest → newest, whatever order the API sent
+    except Exception:  # noqa: BLE001 — defensive: keep the caller's order
+        frame = df
+    for idx, record in frame.iterrows():
+        value = _finite(record.get("value")) if hasattr(record, "get") else None
+        if value is None:
+            continue
+        history.append({"date": _date_label(idx), "symbol": symbol, "close": value})
+    if not history:
+        return rows, history
+    last = history[-1]["close"]
+    prev = history[-2]["close"] if len(history) >= 2 else None
+    unit = None
+    try:
+        unit = str(frame.iloc[-1].get("units") or "").strip() or None
+    except Exception:  # noqa: BLE001 — units is metadata, never fatal
+        unit = None
+    rows.append({
+        "symbol": symbol,
+        "name": meta["name"],
+        "sector": meta["sector"],
+        "contract": meta["contract"],
+        "unit": unit or meta["unit"],
+        "exchange": meta["exchange"],
+        "last": last,
+        "prev": prev,
+        "change": last - prev if prev not in (None, 0) else None,
+        "change_pct": (last / prev - 1) * 100 if prev not in (None, 0) else None,
+        "open": None,
+        "high": None,
+        "low": None,
+        "volume": None,
+        "source": "eia",
+        "source_mode": "live_eia",
+        "as_of": history[-1]["date"],
+    })
+    return rows, history
+
+
 async def _contract_snapshot(
     yfinance: Any,
     symbol: str,
@@ -484,15 +553,24 @@ class BOILFunction(BaseFunction):
         timeout = max(1.0, min(float(params.get("quote_timeout", params.get("yfinance_timeout", 4))), 8.0))
         live = _truthy(params.get("live", True))
         selector = str(params.get("benchmark") or params.get("contract") or "").strip().upper()
-        requested = instrument.symbol.upper() if instrument and instrument.symbol in {"CL=F", "BZ=F"} else ""
-        if requested:
-            symbols = [requested]
-        elif selector in {"WTI", "CL", "CL=F"}:
+        requested = (
+            instrument.symbol.strip().upper()
+            if instrument and instrument.symbol
+            and instrument.symbol.strip().upper() in {"CL=F", "BZ=F"}
+            else ""
+        )
+        # Audit A8-H: the workspace default for BOIL is CL=F (symbols.ts:217)
+        # and treating it as the SOLE leg made the advertised Brent−WTI spread
+        # card unreachable. The pane's identity is the PAIR: always fetch both
+        # legs and use the requested instrument only for ROW ORDER. An explicit
+        # benchmark/contract selector (API consumers only) still narrows to a
+        # single leg.
+        if selector in {"WTI", "CL", "CL=F"}:
             symbols = ["CL=F"]
         elif selector in {"BRENT", "BZ", "BZ=F"}:
             symbols = ["BZ=F"]
         else:
-            symbols = ["CL=F", "BZ=F"]
+            symbols = ["BZ=F", "CL=F"] if requested == "BZ=F" else ["CL=F", "BZ=F"]
 
         rows: list[dict[str, Any]] = []
         chart_history: list[dict[str, Any]] = []
@@ -594,18 +672,31 @@ class BGASFunction(BaseFunction):
             if self.deps.eia:
                 df = await self.deps.eia.fetch(DataRequest(
                     kind=DataKind.ECON_SERIES, symbols=["HENRYHUB"]))
-                return FunctionResult(
-                    code=self.code,
-                    instrument=None,
-                    data={
-                        "status": "ok",
-                        "symbol": "HENRYHUB",
-                        "source_mode": "live_eia",
-                        "rows": df.to_dict("records") if hasattr(df, "to_dict") else df,
-                        "methodology": "BGAS reads Henry Hub natural gas spot data from EIA when configured.",
-                        "field_dictionary": _commodity_field_dictionary(),
-                    },
-                    sources=["eia"],
+                eia_rows, eia_history = _eia_spot_rows(df, "HENRYHUB")
+                if eia_rows:
+                    return FunctionResult(
+                        code=self.code,
+                        instrument=None,
+                        data={
+                            "status": "ok",
+                            "symbol": "HENRYHUB",
+                            "source_mode": "live_eia",
+                            "rows": eia_rows,
+                            "history": eia_history,
+                            "methodology": (
+                                "BGAS reads Henry Hub natural gas spot data from EIA "
+                                "when configured. Change % is (last / previous period "
+                                "- 1) * 100; history is the daily EIA spot series."
+                            ),
+                            "field_dictionary": _commodity_field_dictionary(),
+                        },
+                        sources=["eia"],
+                    )
+                # Audit A3-H: an empty/unusable EIA series must NOT be served as
+                # an "ok" envelope with zero rows — fall through to yfinance and
+                # keep the reason visible in provider_errors.
+                provider_errors.append(
+                    "eia: no usable Henry Hub rows in the series response"
                 )
         except Exception as exc:  # noqa: BLE001
             # BUG-HUNT S01: previously `except Exception: pass` hid EIA

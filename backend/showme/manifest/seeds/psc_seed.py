@@ -1,8 +1,12 @@
-"""PSC — Price Scenario Center.
+"""PSC — Position Sizing Calculator.
 
-Single-symbol what-if. Pick a symbol, define a price/return shock, see
-the linear P&L effect on every position that holds that symbol (or any
-correlated symbol if propagate=True). Lightweight cousin of STRS.
+Risk-based sizing from account size, per-trade risk fraction, entry,
+stop and target: risk budget = account × risk_pct; unit risk =
+|entry − stop|; shares = risk budget / unit risk; R multiple and a
+simple Kelly fraction from win-rate assumptions. Resynced to the
+shipped handler (``engine/functions/portfolio/psc.py``) by fix lane
+F14 — the previous seed described an unimplemented "Price Scenario
+Center" shock-propagation contract.
 """
 from __future__ import annotations
 
@@ -37,13 +41,12 @@ from ..spec import (
 def psc() -> FunctionManifest:
     return FunctionManifest(
         code="PSC",
-        name="Price Scenario Center",
+        name="Position Sizing Calculator",
         category=Category.PORTFOLIO,
         intent=(
-            "Single-symbol what-if. Pick a symbol, apply a price or return "
-            "shock, and see the P&L impact across the portfolio — direct "
-            "effect on the named symbol plus optional correlation-implied "
-            "spillover to correlated holdings."
+            "Size a trade from account equity, per-trade risk, entry, stop and target — "
+            "returning the risk budget, share count, notional, R multiple and a simple "
+            "Kelly fraction so the operator can compare fixed-risk versus Kelly sizing."
         ),
         asset_classes=[
             AssetClass.EQUITY,
@@ -58,171 +61,188 @@ def psc() -> FunctionManifest:
         ],
         inputs=[
             InputSpec(
-                name="symbol",
-                label="Symbol",
-                control=ControlKind.SYMBOL_PICKER,
-                required=True,
-                description="Instrument whose price you want to shock.",
-            ),
-            InputSpec(
-                name="shock_type",
-                label="Shock type",
-                control=ControlKind.SELECT,
-                required=True,
-                description="How the shock is expressed.",
-                options=["absolute_price", "pct_change", "sigma"],
-            ),
-            InputSpec(
-                name="shock_magnitude",
-                label="Magnitude",
+                name="account",
+                label="Account size",
                 control=ControlKind.NUMBER,
-                required=True,
-                description=(
-                    "Shock magnitude. Sign convention: negative = down. "
-                    "Units depend on shock_type."
-                ),
-                min=-1000000.0,
-                max=1000000.0,
+                required=False,
+                description="Equity used for the risk budget.",
+                min=1.0,
+                step=100.0,
+            ),
+            InputSpec(
+                name="risk_pct",
+                label="Risk per trade",
+                control=ControlKind.NUMBER,
+                required=False,
+                description="Fraction of account equity risked if the stop is hit (0.01 = 1%).",
+                min=0.0,
+                max=1.0,
+                step=0.001,
+            ),
+            InputSpec(
+                name="entry",
+                label="Entry",
+                control=ControlKind.NUMBER,
+                required=False,
+                description="Planned entry price.",
+                min=0.0,
                 step=0.01,
             ),
             InputSpec(
-                name="propagate",
-                label="Propagate via correlations",
-                control=ControlKind.BOOLEAN,
+                name="stop",
+                label="Stop",
+                control=ControlKind.NUMBER,
                 required=False,
-                description=(
-                    "When true, also shock correlated holdings using the "
-                    "historical correlation matrix from PORT's window."
-                ),
+                description="Stop price; unit risk = |entry − stop|.",
+                min=0.0,
+                step=0.01,
             ),
             InputSpec(
-                name="lookback_window",
-                label="Lookback (for ρ)",
+                name="target",
+                label="Target",
+                control=ControlKind.NUMBER,
+                required=False,
+                description="Target price; reward per share = |target − entry|.",
+                min=0.0,
+                step=0.01,
+            ),
+            InputSpec(
+                name="win_rate",
+                label="Win rate (Kelly)",
+                control=ControlKind.MODEL_ASSUMPTION,
+                required=False,
+                description="Assumed win probability used by the simple Kelly fraction.",
+                min=0.0,
+                max=1.0,
+                step=0.01,
+            ),
+            InputSpec(
+                name="side",
+                label="Side",
                 control=ControlKind.SELECT,
                 required=False,
-                description="Window used for the correlation matrix when propagate=true.",
-                options=["30d", "90d", "180d", "1Y"],
-                depends_on=["propagate"],
+                description="Trade direction echoed into the summary.",
+                options=["LONG", "SHORT"],
             ),
             InputSpec(
                 name="paper_mode",
                 label="Paper mode (safe)",
                 control=ControlKind.BOOLEAN,
                 required=True,
-                description="Research-only; no live execution path.",
-            ),
-            InputSpec(
-                name="provider_mode",
-                label="Data mode",
-                control=ControlKind.PROVIDER_MODE,
-                required=False,
-                description="Preferred data mode for price + correlation history.",
-                options=[
-                    DataMode.DELAYED_REFERENCE.value,
-                    DataMode.CACHED_SNAPSHOT.value,
-                ],
+                description="Research-only: PSC is compute-only and never fires a live order.",
             ),
         ],
         defaults={
-            "shock_type": "pct_change",
-            "shock_magnitude": -0.05,
-            "propagate": False,
-            "lookback_window": "90d",
+            "account": 10000.0,
+            "risk_pct": 0.01,
+            "entry": 100.0,
+            "stop": 95.0,
+            "target": 115.0,
+            "win_rate": 0.55,
+            "side": "LONG",
             "paper_mode": True,
-            "provider_mode": DataMode.DELAYED_REFERENCE.value,
         },
         provider_chain=ProviderChain(
             primary="internal",
-            fallbacks=["yfinance", "binance", "cached_snapshot"],
+            fallbacks=["cached_snapshot"],
             acceptable_modes=[
-                DataMode.DELAYED_REFERENCE,
-                DataMode.MODELED,
                 DataMode.CACHED_SNAPSHOT,
+                DataMode.MODELED,
+                DataMode.NOT_CONFIGURED,
             ],
         ),
-        caching=CachingPolicy(ttl_seconds=120, scope="per_input", persist=False),
+        caching=CachingPolicy(ttl_seconds=0, scope="per_input", persist=False),
         output_contract=OutputContract(
             must_have=[
-                "as_of",
-                "symbol",
-                "shock_applied",
-                "direct_impact",
-                "total_impact",
-                "affected_positions",
-                "data_mode",
+                "side",
+                "account",
+                "risk_pct",
+                "risk_dollars",
+                "entry",
+                "stop",
+                "target",
+                "per_share_risk",
+                "shares",
+                "notional",
+                "r_multiple",
+                "kelly_fraction",
+                "rows",
+                "summary",
+                "methodology",
             ],
             rows=True,
             series=False,
             cards=True,
             warnings=True,
-            next_actions=True,
+            next_actions=False,
         ),
         chart_grammar=ChartGrammar(
             kind=ChartKind.BAR_LADDER,
-            x_axis=AxisSpec(type="category", unit="", label="Position"),
-            y_axis=AxisSpec(type="numeric", unit="ccy", label="P&L Δ"),
+            x_axis=AxisSpec(type="category", unit="", label="Metric"),
+            y_axis=AxisSpec(type="numeric", unit="", label="Value"),
             panes=[],
             overlay_support=False,
             compare_support=False,
         ),
         table_schema=TableSchema(
             columns=[
-                ColumnSpec(key="position_symbol", label="Symbol", kind="text"),
-                ColumnSpec(key="qty", label="Qty", kind="number", format="%.4g"),
-                ColumnSpec(key="implied_price_change", label="Implied Δp", kind="percent", unit="%", format="%.2f"),
-                ColumnSpec(key="impact_value", label="P&L Δ", kind="currency", unit="ccy", format="%.0f"),
-                ColumnSpec(key="impact_pct", label="P&L Δ%", kind="percent", unit="%", format="%.2f"),
-                ColumnSpec(key="source", label="Source", kind="tag"),
+                ColumnSpec(key="metric", label="Metric", kind="text"),
+                ColumnSpec(key="value", label="Value", kind="number", format="%.4g"),
+                ColumnSpec(key="meaning", label="Meaning", kind="text"),
             ],
             sortable=True,
-            filterable=True,
+            filterable=False,
         ),
         card_schema=CardSchema(
             slots=[
-                CardSlot(key="total_impact", label="Total Δ", kind="big_number", unit="ccy"),
-                CardSlot(key="direct_impact", label="Direct", kind="kpi", unit="ccy"),
-                CardSlot(key="spillover_impact", label="Spillover", kind="kpi", unit="ccy"),
-                CardSlot(key="affected_count", label="Positions", kind="kpi"),
+                CardSlot(key="shares", label="Shares", kind="big_number"),
+                CardSlot(key="risk_dollars", label="Risk $", kind="kpi", unit="ccy"),
+                CardSlot(key="notional", label="Notional", kind="kpi", unit="ccy"),
+                CardSlot(key="r_multiple", label="R multiple", kind="kpi"),
+                CardSlot(key="kelly_fraction", label="Kelly", kind="kpi", unit="%"),
+                CardSlot(key="leverage_implied", label="Leverage (implied)", kind="kpi", unit="x"),
                 CardSlot(key="paper_mode", label="Mode", kind="badge"),
-                CardSlot(key="data_mode", label="Data", kind="mode_pill"),
-                CardSlot(key="as_of", label="As of", kind="timestamp"),
             ],
         ),
         methodology=(
-            "PSC applies the requested shock to the named symbol and "
-            "computes the linear P&L effect across the portfolio. Direct "
-            "impact: any position holding the named symbol gets Δp × qty. "
-            "If propagate=true, the historical correlation matrix from the "
-            "selected window maps the named symbol's return shock to "
-            "implied returns on every correlated holding (Δr_j ≈ ρ_jk × Δr_k "
-            "× σ_j/σ_k); the implied per-position P&L is then qty_j × p_j × "
-            "Δr_j. Total impact = direct + spillover. Shock types: "
-            "absolute_price replaces last with the supplied number; "
-            "pct_change multiplies; sigma multiplies by daily realized σ. "
-            "Linear approximation only — does not capture convexity (option "
-            "gamma, bond convexity); use STRS or GREEKS for non-linear "
-            "stress."
+            "PSC is pure computation over operator-supplied inputs — no provider call. "
+            "risk budget = account × risk_pct; unit risk = |entry − stop|; shares = risk "
+            "budget / unit risk; notional = shares × entry; implied leverage = notional / "
+            "account. R multiple = |target − entry| / unit risk. The simple Kelly fraction "
+            "= max(0, (win_rate × R − (1 − win_rate)) / R) using the same R multiple. When "
+            "entry == stop the handler returns an empty payload with a 'can't size' warning "
+            "instead of dividing by zero. paper_mode defaults true: PSC never executes."
         ),
         formula_dict={
-            "DirectImpact": Formula(
-                expression=r"\Delta_{direct} = qty \cdot \Delta p",
-                variables={"qty": "Position size in named symbol"},
+            "RiskBudget": Formula(
+                expression=r"risk\_dollars = account \times risk\_pct",
+                variables={"account": "Account equity", "risk_pct": "Fraction risked"},
             ),
-            "Spillover": Formula(
-                expression=r"\Delta r_j = \rho_{jk} \cdot \Delta r_k \cdot \sigma_j / \sigma_k",
-                variables={"ρ_jk": "Pair correlation", "σ": "Per-asset volatility"},
+            "Shares": Formula(
+                expression=r"shares = \frac{risk\_dollars}{|entry - stop|}",
+                variables={"entry": "Planned entry", "stop": "Stop price"},
             ),
-            "TotalImpact": Formula(
-                expression=r"\Delta_{total} = \Delta_{direct} + \sum_j qty_j \cdot p_j \cdot \Delta r_j",
+            "RMultiple": Formula(
+                expression=r"R = \frac{|target - entry|}{|entry - stop|}",
                 variables={},
+            ),
+            "Kelly": Formula(
+                expression=r"kelly = \max\left(0, \frac{w \cdot R - (1 - w)}{R}\right)",
+                variables={"w": "Assumed win rate", "R": "R multiple"},
             ),
         },
         field_dict={
-            "shock_applied": FieldDef(unit="", description="Echo of the input shock for traceability.", source="input"),
-            "direct_impact": FieldDef(unit="ccy", description="P&L change on positions in the named symbol.", source="computed"),
-            "spillover_impact": FieldDef(unit="ccy", description="P&L change from correlation-implied moves.", source="computed"),
-            "total_impact": FieldDef(unit="ccy", description="direct + spillover.", source="computed"),
-            "affected_positions[]": FieldDef(unit="", description="Per-position breakdown with source tag.", source="computed"),
+            "risk_pct": FieldDef(description="Fraction of account equity risked if the stop is hit.", source="input"),
+            "risk_dollars": FieldDef(unit="ccy", description="account × risk_pct.", source="computed"),
+            "per_share_risk": FieldDef(description="Absolute distance between entry and stop.", source="computed"),
+            "reward_per_share": FieldDef(description="Absolute distance between target and entry.", source="computed"),
+            "r_multiple": FieldDef(description="Reward divided by risk per unit.", source="computed"),
+            "shares": FieldDef(description="risk_dollars / unit risk.", source="computed"),
+            "notional": FieldDef(unit="ccy", description="shares × entry.", source="computed"),
+            "leverage_implied": FieldDef(unit="x", description="notional / account.", source="computed"),
+            "kelly_fraction": FieldDef(unit="fraction", description="Simple Kelly from win-rate and R multiple.", source="computed"),
+            "kelly_dollars": FieldDef(unit="ccy", description="account × kelly_fraction.", source="computed"),
+            "kelly_shares": FieldDef(description="kelly_dollars / entry.", source="computed"),
         },
         provenance=ProvenanceSpec(
             require_source_list=True,
@@ -232,28 +252,34 @@ def psc() -> FunctionManifest:
         alerting=None,
         semantic_tests=[
             SemanticTest(
-                name="psc_paper_mode_defaults_true",
-                description="Research surface is paper-safe by default.",
+                name="psc_shares_match_risk_budget_over_unit_risk",
+                description="shares == (account × risk_pct) / |entry − stop| within tolerance.",
+                inputs={"account": 10000, "risk_pct": 0.01, "entry": 100, "stop": 95},
+                assertions=["shares_equals_risk_dollars_over_unit_risk"],
+            ),
+            SemanticTest(
+                name="psc_entry_equals_stop_refuses_with_warning",
+                description="entry == stop returns an empty payload with a 'can't size' warning — never a divide-by-zero size.",
+                inputs={"entry": 100, "stop": 100},
+                assertions=[
+                    "payload_empty",
+                    "warning_mentions_cant_size",
+                ],
+            ),
+            SemanticTest(
+                name="psc_kelly_is_never_negative",
+                description="kelly_fraction is clamped at 0 when the win-rate × R edge is negative.",
+                inputs={"win_rate": 0.2, "target": 101},
+                assertions=["kelly_fraction_gte_0"],
+            ),
+            SemanticTest(
+                name="psc_paper_mode_is_declared_safe",
+                description="PSC declares paper_mode=true by default and has no order-execution path.",
                 inputs={},
-                assertions=["defaults.paper_mode == True"],
-            ),
-            SemanticTest(
-                name="psc_no_propagate_means_only_direct",
-                description="With propagate=false, total_impact == direct_impact.",
-                inputs={"propagate": False},
-                assertions=["total_impact == direct_impact"],
-            ),
-            SemanticTest(
-                name="psc_symbol_not_held_returns_zero_direct",
-                description="If the named symbol is not in the portfolio, direct_impact = 0.",
-                inputs={},
-                assertions=["direct_impact == 0 when symbol_not_held"],
-            ),
-            SemanticTest(
-                name="psc_zero_shock_is_zero_impact",
-                description="shock_magnitude=0 → total_impact=0 exactly.",
-                inputs={"shock_magnitude": 0.0},
-                assertions=["total_impact == 0.0"],
+                assertions=[
+                    "defaults.paper_mode == True",
+                    "no_orders_emitted",
+                ],
             ),
         ],
     )

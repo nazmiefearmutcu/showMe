@@ -2,9 +2,10 @@
 
 Buckets an issuer's outstanding debt principal by remaining maturity and
 renders it as a bar ladder (0-1Y / 1-3Y / 3-5Y / 5Y+) with the share of
-total visible debt. Without a filings/debt-schedule adapter the rows are
-explicitly labelled as an ``illustrative_model`` so the pane never sells
-template data as live issuer numbers.
+total visible debt. With no SEC filings data and no user-supplied schedule
+the handler returns an honest EMPTY payload (status "empty", zero rows,
+reason + next_actions) — the old four-bucket illustrative ladder was
+removed; template data is never sold as live issuer numbers.
 """
 from __future__ import annotations
 
@@ -145,11 +146,11 @@ def ddis() -> FunctionManifest:
         methodology=(
             "DDIS buckets the issuer's outstanding debt principal by remaining maturity. When the"
             " caller supplies an explicit ``maturities`` schedule the pane returns it verbatim and"
-            " marks the response ``source_mode=user_input``. With no schedule and no live filings"
-            " adapter the pane returns a four-bucket illustrative model (0-1Y / 1-3Y / 3-5Y / 5Y+)"
-            " marked ``source_mode=illustrative_model`` — labelled, never disguised as a live read."
-            " Share % is computed client-side as amount_usd_bn / total × 100 so the ladder bars stay"
-            " consistent with the table even when filters trim rows."
+            " marks the response ``source_mode=user_input``. Otherwise it reads the latest SEC EDGAR"
+            " companyfacts long-term-debt maturity concepts (``source_mode=sec_edgar``). With no SEC"
+            " data and no override the handler stays EMPTY (H-5 fix 2026-09-08: the fabricated"
+            " four-bucket illustrative ladder was removed) and the payload carries ``status=empty``,"
+            " ``rows=[]``, a ``reason``, and ``next_actions``. Share % = amount / total × 100."
         ),
         formula_dict={
             "bucket_share": Formula(
@@ -164,6 +165,8 @@ def ddis() -> FunctionManifest:
             "rows[].amount_usd_bn": FieldDef(unit="USD bn", description="Principal amount in USD billions.", source="filings_or_user"),
             "rows[].currency": FieldDef(description="Currency of the underlying issuance.", source="filings_or_user"),
             "rows[].pct": FieldDef(unit="%", description="Share of total visible debt schedule.", source="computed"),
+            "reason": FieldDef(description="Why the ladder is empty when no SEC data applies (status=empty).", source="handler"),
+            "next_actions": FieldDef(description="Concrete recovery steps (pass a maturities schedule, retry after the next filing).", source="handler"),
         },
         provenance=ProvenanceSpec(
             require_source_list=True,
@@ -182,15 +185,18 @@ def ddis() -> FunctionManifest:
                 assertions=["sum_pct_within_99_5_and_100_5"],
             ),
             SemanticTest(
-                name="ddis_illustrative_model_is_labelled",
+                name="ddis_empty_schedule_is_honest",
                 description=(
-                    "With no live adapter and no user-supplied maturities, rows are returned with"
-                    " source_mode=illustrative_model and a warning flagging the model fallback."
+                    "With no live SEC data and no user-supplied maturities the handler returns"
+                    " status=empty with rows=[], a reason, and next_actions — never a fabricated"
+                    " illustrative ladder."
                 ),
                 inputs={"issuer": "GENERIC_ISSUER"},
                 assertions=[
-                    "source_mode_equals_illustrative_model",
-                    "warning_mentions_illustrative_or_model",
+                    "status_equals_empty",
+                    "rows_is_empty_array",
+                    "reason_present",
+                    "next_actions_present",
                 ],
             ),
             SemanticTest(
