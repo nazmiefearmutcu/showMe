@@ -52,6 +52,15 @@ class ECSTFunction(BaseFunction):
         sources: list[str] = []
         provider_errors: list[str] = []
         timeout = float(params.get("timeout", 8))
+        # Track the MAIN series' mode separately from any compare series —
+        # `sources[-1]` used to flip the main `source_mode` when the compare
+        # fetch succeeded (e.g. main from worldbank, compare from fred).
+        source_mode: str | None = None
+        compare_source_mode: str | None = None
+
+        def _note_source(provider: str) -> None:
+            if provider not in sources:
+                sources.append(provider)
         
         # 1. Try fetching from FRED
         series_info = {}
@@ -74,6 +83,7 @@ class ECSTFunction(BaseFunction):
                     timeout=timeout,
                 )
                 sources.append("fred")
+                source_mode = "fred"
                 try:
                     series_info = await fred.info(sid)
                 except Exception:
@@ -93,7 +103,8 @@ class ECSTFunction(BaseFunction):
                         timeout=timeout,
                     )
                     if not compare_df.empty:
-                        sources.append("fred")
+                        _note_source("fred")
+                        compare_source_mode = "fred"
                         try:
                             compare_info = await fred.info(compare_sid)
                         except Exception:
@@ -120,6 +131,7 @@ class ECSTFunction(BaseFunction):
                     if sid == "GDPC1" and not df.empty:
                         df["value"] = df["value"] / 1_000_000_000
                     sources.append("worldbank")
+                    source_mode = "worldbank"
                 except Exception as e:
                     provider_errors.append(f"worldbank: {e}")
                     
@@ -134,20 +146,27 @@ class ECSTFunction(BaseFunction):
                         if compare_sid == "GDPC1" and not compare_df.empty:
                             compare_df["value"] = compare_df["value"] / 1_000_000_000
                         if not compare_df.empty:
-                            sources.append("worldbank")
+                            _note_source("worldbank")
+                            compare_source_mode = "worldbank"
                     except Exception as e:
                         provider_errors.append(f"worldbank (compare): {e}")
 
-        source_mode = sources[-1] if sources else "macro_series_baseline"
+        if source_mode is None:
+            source_mode = sources[-1] if sources else "macro_series_baseline"
         
         # 3. Fall back to robust baseline if still empty
         if df.empty:
             df = pd.DataFrame(_baseline_rows_for_series(sid))
-            sources.append("macro_series_baseline")
+            _note_source("macro_series_baseline")
             source_mode = "macro_series_baseline"
             
         if compare_sid and compare_df.empty:
+            # The compare overlay must stay honest: the baseline is labelled
+            # via compare_source_mode (+ a warning), never passed off as the
+            # provider the main series used.
             compare_df = pd.DataFrame(_baseline_rows_for_series(compare_sid))
+            _note_source("macro_series_baseline")
+            compare_source_mode = "macro_series_baseline"
 
         # Standardize and merge dataframes
         if not df.empty:
@@ -189,7 +208,14 @@ class ECSTFunction(BaseFunction):
         unit = series_info.get("units") or catalog["unit"]
         frequency = series_info.get("frequency") or catalog["frequency"]
         
-        warnings = provider_errors if source_mode == "macro_series_baseline" else []
+        warnings: list[str] = []
+        if source_mode == "macro_series_baseline":
+            warnings.extend(provider_errors)
+        if compare_sid and compare_source_mode == "macro_series_baseline":
+            warnings.append(
+                f"{compare_sid} compare series was unavailable from the providers — "
+                "the labelled macro_series_baseline is shown for the overlay."
+            )
         
         data_res = {
             "series_id": sid,
@@ -214,6 +240,7 @@ class ECSTFunction(BaseFunction):
                 "series_id": "Provider series code.",
                 "series_name": "Human-readable series label.",
                 "value": "Observation value in the displayed unit.",
+                "compare_value": "Compare series' value on the same observation date (present only when compare_with is set).",
                 "source_mode": "Provider or fallback used for the row.",
             },
             "source_mode": source_mode,
@@ -225,6 +252,7 @@ class ECSTFunction(BaseFunction):
             data_res["cards"].append({"label": f"vs {compare_sid}", "value": latest.get("compare_value")})
             data_res["compare_series_id"] = compare_sid
             data_res["compare_series_name"] = compare_label
+            data_res["compare_source_mode"] = compare_source_mode or "macro_series_baseline"
 
         return FunctionResult(
             code=self.code,

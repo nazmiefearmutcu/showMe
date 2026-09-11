@@ -1,7 +1,7 @@
 """PSC — Position Sizing Calculator.
 
-Verilen account_size + risk_per_trade + entry + stop'tan optimal pozisyon
-boyutunu (Kelly opsiyonel) hesaplar. Çoklu hedef + R-multiple raporu.
+From account_size + risk_per_trade + entry + stop, computes the optimal
+position size (Kelly optional). Multi-target + R-multiple report.
 """
 
 from __future__ import annotations

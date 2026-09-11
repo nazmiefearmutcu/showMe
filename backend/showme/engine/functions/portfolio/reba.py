@@ -1,7 +1,7 @@
 """REBA — Position Rebalancer.
 
-Verilen target weights ({sym: pct}) için portföyü ve mevcut fiyatları
-çekip "her sembol için kaç adet AL/SAT" emir listesi üretir.
+Given target weights ({sym: pct}), reads the portfolio and current prices and
+produces a per-symbol BUY/SELL order preview:
 
 Out: list of {symbol, action, quantity, notional, current_weight, target_weight}
 """
@@ -94,12 +94,40 @@ class REBAFunction(BaseFunction):
                 return sym, 0.0
         for sym, px in await asyncio.gather(*(_px(s) for s in all_syms)):
             prices[sym] = px
-        # Total equity
+        # Total equity. A quote of 0.0 means "unavailable" (see `_px`), so
+        # fall back to average cost per position instead of valuing the book
+        # at $0. An empty (or all-zero) book has no basis to rebalance
+        # against — the old `or 1.0` silently produced $1-notional orders.
         cur_value: dict[str, float] = {}
         for p in portfolio.positions:
             sym = p.instrument.symbol.upper()
-            cur_value[sym] = cur_value.get(sym, 0) + p.quantity * prices.get(sym, p.avg_cost)
-        total = sum(cur_value.values()) or 1.0
+            px = prices.get(sym) or p.avg_cost
+            cur_value[sym] = cur_value.get(sym, 0) + p.quantity * px
+        total = sum(cur_value.values())
+        if total <= 0:
+            return FunctionResult(
+                code=self.code,
+                instrument=None,
+                data={
+                    "status": "ready_no_positions",
+                    "rows": [],
+                    "orders": [],
+                    "liquidations": [],
+                    "reason": (
+                        "live_portfolio found no positions (or only zero-value "
+                        "positions) to rebalance — nothing to compute orders against."
+                    ),
+                    "next_actions": [
+                        (
+                            "Add positions to the portfolio state, or run the model mode "
+                            "(live_portfolio=false) against the supplied capital."
+                        ),
+                    ],
+                },
+                sources=["portfolio_state"],
+                metadata={"live": True, "empty": True},
+                warnings=["REBA: live portfolio is empty — no order preview."],
+            )
         if cash_cap:
             total = min(total, float(cash_cap))
         cur_weights = {s: v / total for s, v in cur_value.items()}

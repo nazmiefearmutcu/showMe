@@ -165,7 +165,11 @@ async def _crypto_whales(
                             {"label": "Provider", "value": f"Binance {venue}"},
                             {"label": "Rows", "value": len(rows)},
                             {"label": "Threshold hits", "value": threshold_hits},
-                            {"label": "24h quote volume", "value": _to_float(ticker.get("quoteVolume"))},
+                            {
+                                "label": "24h quote volume",
+                                "value": _to_float(ticker.get("quoteVolume")),
+                                "unit": _quote_currency(pair),
+                            },
                         ],
                         "summary": (
                             f"{pair} latest Binance {venue} aggregate trades. "
@@ -648,6 +652,21 @@ def _binance_pair(symbol: str, chain: str) -> str:
     if clean in {"BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"} or clean.endswith(("USDT", "USDC", "FDUSD")):
         return clean
     return f"{chain.upper()}USDT"
+
+
+def _quote_currency(pair: str) -> str | None:
+    """Quote asset of a resolved Binance pair, for the 24h-volume card.
+
+    ``quoteVolume`` is denominated in the pair's quote asset (USDT/USDC/FDUSD
+    for everything the Binance path resolves). Returning ``None`` — instead of
+    guessing a currency — lets the pane render the bare number rather than an
+    unearned unit label.
+    """
+    clean = str(pair or "").upper()
+    for quote in ("USDT", "USDC", "FDUSD"):
+        if clean.endswith(quote) and len(clean) > len(quote):
+            return quote
+    return None
 
 
 def _yahoo_symbol(symbol: str, market: str) -> str:

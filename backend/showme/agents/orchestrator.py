@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import inspect
 import logging
 import time
 from dataclasses import asdict, dataclass, field
@@ -27,10 +28,63 @@ from ..llm import CostEntry, build_default_providers, plan_for_smart
 
 LOG = logging.getLogger("showme.agents.orchestrator")
 
+# History plumbing (G4 OPP wave): the pane may send the session's previous
+# Q/A turns for multi-turn context. The wire is capped and sanitized here so
+# a malformed/hostile body can never bloat the request.
+MAX_HISTORY_TURNS = 12
+MAX_HISTORY_CHARS = 2000
+_HISTORY_ROLE_ALIASES = {"assistant": "agent"}
+
 
 @dataclass
 class AskRequest:
     query: str = ""
+    history: list[dict[str, str]] = field(default_factory=list)
+
+
+def normalize_history(raw: Any) -> list[dict[str, str]]:
+    """Sanitize an incoming conversation history for the ask request.
+
+    Accepts the wire shape the pane sends (``[{role, content}]``), keeps the
+    LAST ``MAX_HISTORY_TURNS`` well-formed turns, maps ``assistant`` to
+    ``agent``, and clips each turn to ``MAX_HISTORY_CHARS``. Junk entries are
+    dropped rather than repaired. The LIST is carried on the request; whether
+    the planner consumes it is decided in :func:`ask` (capability-gated, so
+    the deterministic planner stays untouched today).
+    """
+    if not isinstance(raw, list):
+        return []
+    out: list[dict[str, str]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get("role") or "").strip().lower()
+        role = _HISTORY_ROLE_ALIASES.get(role, role)
+        if role not in {"user", "agent"}:
+            continue
+        content = item.get("content")
+        if not isinstance(content, str):
+            continue
+        content = content.strip()
+        if not content:
+            continue
+        out.append({"role": role, "content": content[:MAX_HISTORY_CHARS]})
+    return out[-MAX_HISTORY_TURNS:]
+
+
+def _planner_accepts_history() -> bool:
+    """True when ``plan_for_smart`` advertises a ``history`` parameter.
+
+    Capability gate (not a hard-coded assumption): today's LLM planner has
+    no conversation-context parameter, so the session history is carried on
+    the request and reported as ``context_turns`` — it never silently
+    changes planning. If the planner grows the parameter, the orchestrator
+    threads the turns through automatically.
+    """
+    try:
+        return "history" in inspect.signature(plan_for_smart).parameters
+    except (TypeError, ValueError):
+        return False
 
 
 @dataclass
@@ -72,6 +126,8 @@ class AskResponse:
 async def ask(req: AskRequest, deps: Any) -> AskResponse:
     started = time.perf_counter()
     function_codes = _function_codes()
+    # History plumbing (G4): sanitize once, thread only where it is consumed.
+    history = normalize_history(req.history)
 
     # Phase 1 — Planner. LLM-augmented when API keys are configured AND
     # the daily cost cap hasn't been reached; otherwise the deterministic
@@ -89,10 +145,14 @@ async def ask(req: AskRequest, deps: Any) -> AskResponse:
     cost_entry: CostEntry | None = None
     if providers:
         try:
+            plan_kwargs: dict[str, Any] = {}
+            if history and _planner_accepts_history():
+                plan_kwargs["history"] = history
             plan, cost_entry = await plan_for_smart(
                 req.query,
                 function_codes=function_codes,
                 providers=providers,
+                **plan_kwargs,
             )
         except Exception:  # noqa: BLE001 — never let a planner fault break the ask
             LOG.exception("planner crashed; falling back to deterministic plan")
@@ -115,7 +175,7 @@ async def ask(req: AskRequest, deps: Any) -> AskResponse:
         elapsed_ms=(time.perf_counter() - p_started) * 1000,
         output={"intent": plan.intent, "agents": plan.agents,
                 "args": plan.args, "rationale": plan.rationale,
-                "method": plan_method},
+                "method": plan_method, "context_turns": len(history)},
     )
 
     phases: list[AskPhase] = [plan_phase]
