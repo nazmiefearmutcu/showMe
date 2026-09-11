@@ -98,13 +98,30 @@ export interface AskResponse {
   was_llm_called?: boolean;
 }
 
-export async function ask(query: string, signal?: AbortSignal): Promise<AskResponse> {
+/**
+ * One prior conversation turn sent for multi-turn context (G4 OPP wave).
+ * The backend sanitizes/caps the list; the planner consumes it only when it
+ * advertises a `history` parameter (today's deterministic planner ignores
+ * it, so the pane's session thread is the working memory).
+ */
+export interface AskHistoryTurn {
+  role: "user" | "agent";
+  content: string;
+}
+
+export async function ask(
+  query: string,
+  signal?: AbortSignal,
+  history?: AskHistoryTurn[],
+): Promise<AskResponse> {
   // Routed through sidecarFetch so the auth token + port-discovery layer
   // both apply. See ARCH-05 P2 in the quality audit.
+  const body: { query: string; history?: AskHistoryTurn[] } = { query };
+  if (history && history.length) body.history = history;
   return sidecarFetch<AskResponse>("/api/ask", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ query }),
+    body: JSON.stringify(body),
     signal,
   });
 }

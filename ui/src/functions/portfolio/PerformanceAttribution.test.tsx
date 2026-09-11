@@ -8,10 +8,18 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const mockReturn: { current: unknown } = { current: null };
-vi.mock("@/lib/useFunction", () => ({ useFunction: () => mockReturn.current }));
+const mockArgs: {
+  current: { code?: string; params?: Record<string, unknown> } | null;
+} = { current: null };
+vi.mock("@/lib/useFunction", () => ({
+  useFunction: (args: unknown) => {
+    mockArgs.current = args as (typeof mockArgs)["current"];
+    return mockReturn.current;
+  },
+}));
 vi.mock("@/lib/router", () => ({ navigate: vi.fn() }));
 
-import { PerformanceAttributionPane } from "./PerformanceAttribution";
+import { PerformanceAttributionPane, parseSectorMap } from "./PerformanceAttribution";
 
 function ok(
   payload: Record<string, unknown>,
@@ -37,6 +45,7 @@ function ok(
 afterEach(() => {
   cleanup();
   mockReturn.current = null;
+  mockArgs.current = null;
 });
 
 const SAMPLE_PAYLOAD = {
@@ -115,5 +124,83 @@ describe("PFA Performance Attribution pane", () => {
     ok(SAMPLE_PAYLOAD);
     render(<PerformanceAttributionPane code="PFA" />);
     expect(screen.getByTestId("portx-data-badge")).toBeInTheDocument();
+  });
+});
+
+describe("PFA custom weights editor (G3)", () => {
+  const fillAll = () => {
+    fireEvent.change(screen.getByLabelText("Port weights"), {
+      target: { value: "Technology: 45, Financials: 20" },
+    });
+    fireEvent.change(screen.getByLabelText("Port returns"), {
+      target: { value: "Technology: 18, Financials: 5" },
+    });
+    fireEvent.change(screen.getByLabelText("Bench weights"), {
+      target: { value: "Technology: 30, Financials: 18" },
+    });
+    fireEvent.change(screen.getByLabelText("Bench returns"), {
+      target: { value: "Technology: 12, Financials: 4" },
+    });
+  };
+
+  it("sends no params until the editor is applied (default sample preserved)", () => {
+    ok(SAMPLE_PAYLOAD);
+    render(<PerformanceAttributionPane code="PFA" />);
+    expect(mockArgs.current?.code).toBe("PFA");
+    expect(mockArgs.current?.params).toBeUndefined();
+  });
+
+  it("applies all four maps converted from percent to fraction", () => {
+    ok(SAMPLE_PAYLOAD);
+    render(<PerformanceAttributionPane code="PFA" />);
+    fireEvent.click(screen.getByTestId("pfa-editor-toggle"));
+    fillAll();
+    fireEvent.click(screen.getByTestId("pfa-editor-apply"));
+    expect(mockArgs.current?.params).toEqual({
+      port_weights: { Technology: 0.45, Financials: 0.2 },
+      port_returns: { Technology: 0.18, Financials: 0.05 },
+      bench_weights: { Technology: 0.3, Financials: 0.18 },
+      bench_returns: { Technology: 0.12, Financials: 0.04 },
+    });
+    // Applied state is disclosed in the editor head.
+    expect(screen.getByText(/custom inputs applied/i)).toBeInTheDocument();
+  });
+
+  it("keeps Apply disabled until all four maps parse", () => {
+    ok(SAMPLE_PAYLOAD);
+    render(<PerformanceAttributionPane code="PFA" />);
+    fireEvent.click(screen.getByTestId("pfa-editor-toggle"));
+    const apply = screen.getByTestId("pfa-editor-apply");
+    expect(apply).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Port weights"), { target: { value: "Technology: 45" } });
+    fireEvent.change(screen.getByLabelText("Port returns"), { target: { value: "Technology: 18" } });
+    fireEvent.change(screen.getByLabelText("Bench weights"), { target: { value: "Technology: 30" } });
+    expect(apply).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Bench returns"), { target: { value: "Technology: 12" } });
+    expect(apply).toBeEnabled();
+    // Garbage-only input never counts as a complete map.
+    fireEvent.change(screen.getByLabelText("Bench returns"), { target: { value: "not a map" } });
+    expect(apply).toBeDisabled();
+  });
+
+  it("Reset returns to the backend sample (params undefined)", () => {
+    ok(SAMPLE_PAYLOAD);
+    render(<PerformanceAttributionPane code="PFA" />);
+    fireEvent.click(screen.getByTestId("pfa-editor-toggle"));
+    fillAll();
+    fireEvent.click(screen.getByTestId("pfa-editor-apply"));
+    expect(mockArgs.current?.params).toBeDefined();
+    fireEvent.click(screen.getByTestId("pfa-editor-reset"));
+    expect(mockArgs.current?.params).toBeUndefined();
+    expect(screen.getByText(/sample runs until applied/i)).toBeInTheDocument();
+  });
+
+  it("parseSectorMap skips unparseable fragments and converts percents", () => {
+    expect(parseSectorMap("Tech: 45, nope, Energy:-4\nHealth: 1.5")).toEqual({
+      Tech: 0.45,
+      Energy: -0.04,
+      Health: 0.015,
+    });
+    expect(parseSectorMap("")).toEqual({});
   });
 });

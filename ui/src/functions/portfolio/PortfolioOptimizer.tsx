@@ -24,6 +24,7 @@ import {
   RefreshButton,
   SegmentedControl,
 } from "../function-controls";
+import { usePersistentNumber } from "../function-control-state";
 import type { FunctionPaneProps } from "../registry-types";
 import {
   asRecord,
@@ -74,6 +75,12 @@ export function PortfolioOptimizerPane({ code }: FunctionPaneProps) {
   const [symbolsInput, setSymbolsInput] = useState("SPY,QQQ,IWM,TLT,GLD,EFA,EEM");
   const [mode, setMode] = useState<"all" | "frontier">("all");
   const [live, setLive] = useState(true);
+  // Backend param `risk_free` is a FRACTION (port_opt.py:38 default 0.04);
+  // the control is percent-persisted and converted on the wire.
+  const [riskFreePct, setRiskFreePct] = usePersistentNumber(
+    "showme.port_opt.risk_free",
+    4,
+  );
 
   const symbols = useMemo(
     () =>
@@ -84,8 +91,14 @@ export function PortfolioOptimizerPane({ code }: FunctionPaneProps) {
     [symbolsInput],
   );
   const params = useMemo(
-    () => ({ symbols, mode, live, days: 756 }),
-    [symbols, mode, live],
+    () => ({
+      symbols,
+      mode,
+      live,
+      days: 756,
+      risk_free: riskFreePct / 100,
+    }),
+    [symbols, mode, live, riskFreePct],
   );
   const { state, data, error, refetch } = useFunction<PortOptPayload>({ code, params });
   const payload = data?.data;
@@ -306,6 +319,26 @@ export function PortfolioOptimizerPane({ code }: FunctionPaneProps) {
                 ]}
                 onChange={setMode}
               />
+              <label
+                className="portfolio-control-field"
+                htmlFor={`popt-${code}-rf`}
+              >
+                <span>RF %</span>
+                <input
+                  id={`popt-${code}-rf`}
+                  type="number"
+                  min={0}
+                  max={100}
+                  step={0.25}
+                  value={riskFreePct}
+                  onChange={(event) => {
+                    const next = Number(event.target.value);
+                    if (!Number.isFinite(next)) return;
+                    setRiskFreePct(Math.min(Math.max(next, 0), 100));
+                  }}
+                  title="Annualized risk-free rate used by the Sharpe ratio (percent)"
+                />
+              </label>
               <button
                 type="button"
                 className={`btn btn--ghost portfolio-analytics-live${live ? " portfolio-analytics-live--on" : ""}`}
@@ -329,6 +362,7 @@ export function PortfolioOptimizerPane({ code }: FunctionPaneProps) {
           <span>elapsed · {data?.elapsed_ms?.toFixed(0) ?? "—"} ms</span>
           <span>sources · {data?.sources?.join(", ") || "—"}</span>
           <span>symbols · {weightCells.length}</span>
+          <span>rf · {riskFreePct.toFixed(2)}%</span>
           {warnings.length ? <span>{warnings.length} warn</span> : null}
         </PaneFooter>
       </Pane>

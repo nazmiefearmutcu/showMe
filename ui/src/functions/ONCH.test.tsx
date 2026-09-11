@@ -195,6 +195,49 @@ describe("ONCH pane — live payload", () => {
   });
 });
 
+describe("ONCH pane — difficulty epoch progress", () => {
+  function payloadWithDifficulty(context: string) {
+    const payload = livePayload();
+    payload.data.data.rows = [
+      ...payload.data.data.rows,
+      {
+        metric: "Difficulty Change",
+        value: "1.02",
+        unit: "%",
+        source: "mempool",
+        context,
+      },
+    ];
+    return payload;
+  }
+
+  it("renders the epoch progress bar from the fetched progress/remaining context", () => {
+    setMockFn({
+      state: "ok",
+      ...payloadWithDifficulty("36.4% through epoch, 1,234 blocks left"),
+    });
+    render(<ONCHPane code="ONCH" />);
+    const section = screen.getByLabelText("Difficulty epoch progress");
+    expect(section).toHaveTextContent("36% through epoch");
+    expect(section).toHaveTextContent("1,234 blocks remaining");
+    const bar = screen.getByRole("progressbar", {
+      name: /Difficulty epoch 36.4 percent complete, 1234 blocks remaining/i,
+    });
+    expect(bar).toHaveAttribute("aria-valuenow", "36");
+  });
+
+  it("renders an honest note (no bar) when the epoch context is unparsable", () => {
+    setMockFn({ state: "ok", ...payloadWithDifficulty("—") });
+    render(<ONCHPane code="ONCH" />);
+    expect(
+      screen.getByText(/Difficulty epoch progress unavailable in this snapshot/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("progressbar", { name: /Difficulty epoch/i }),
+    ).toBeNull();
+  });
+});
+
 describe("ONCH pane — controls", () => {
   it("switches the AUTO cadence back off", () => {
     vi.useFakeTimers();

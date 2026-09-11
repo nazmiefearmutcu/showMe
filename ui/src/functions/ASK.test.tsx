@@ -28,6 +28,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ASKPane } from "./ASK";
@@ -108,6 +109,8 @@ async function submitQuery(text = "find crypto opportunities") {
 
 beforeEach(() => {
   vi.spyOn(router, "navigate").mockImplementation(() => undefined);
+  // The pane persists its thread per session (sessionStorage); isolate tests.
+  sessionStorage.clear();
   // Pending forever by default: no state update fires outside act() for the
   // tests that don't care about the ledger. Ledger tests override per-call.
   sidecarMock.mockImplementation(() => new Promise(() => {}));
@@ -351,6 +354,69 @@ describe("ASK pane — usability (U1)", () => {
       screen.getByRole("button", { name: /run query|type a query/i }),
     ).toHaveAttribute("aria-busy", "false");
     resolve(makeResponse());
+  });
+});
+
+describe("ASK pane - session thread + multi-turn history (G4 OPP wave)", () => {
+  it("renders the compact thread strip and reuses a previous query", async () => {
+    vi.spyOn(askLib, "ask").mockResolvedValue(makeResponse());
+    render(<ASKPane code="ASK" />);
+    expect(screen.queryByTestId("ask-thread-strip")).toBeNull();
+    await submitQuery("first question");
+    await screen.findByText(/deterministic narrative/i);
+    const strip = await screen.findByTestId("ask-thread-strip");
+    const chip = within(strip).getByRole("button", { name: /first question/i });
+    fireEvent.click(chip);
+    const ta = document.getElementById(
+      "ask-composer-input",
+    ) as HTMLTextAreaElement;
+    expect(ta.value).toBe("first question");
+  });
+
+  it("restores the thread from sessionStorage when the pane remounts in the same session", async () => {
+    vi.spyOn(askLib, "ask").mockResolvedValue(makeResponse());
+    const first = render(<ASKPane code="ASK" />);
+    await submitQuery("persist me");
+    await screen.findByText(/deterministic narrative/i);
+    first.unmount();
+    render(<ASKPane code="ASK" />);
+    expect(screen.getByText("persist me")).toBeInTheDocument();
+    expect(screen.getByText(/deterministic narrative/i)).toBeInTheDocument();
+  });
+
+  it("sends the trailing Q/A turns as history on the next ask", async () => {
+    const spy = vi.spyOn(askLib, "ask").mockResolvedValue(makeResponse());
+    render(<ASKPane code="ASK" />);
+    await submitQuery("first question");
+    await screen.findByText(/deterministic narrative/i);
+    await submitQuery("second question");
+    await waitFor(() => expect(spy).toHaveBeenCalledTimes(2));
+    const secondCall = spy.mock.calls[1] as unknown as [
+      string,
+      AbortSignal | undefined,
+      Array<{ role: string; content: string }> | undefined,
+    ];
+    expect(secondCall[0]).toBe("second question");
+    expect(secondCall[2]).toEqual([
+      { role: "user", content: "first question" },
+      {
+        role: "agent",
+        content: "Deterministic narrative built from real function outputs.",
+      },
+    ]);
+  });
+
+  it("clears the session thread (and the persisted copy) on Clear", async () => {
+    vi.spyOn(askLib, "ask").mockResolvedValue(makeResponse());
+    render(<ASKPane code="ASK" />);
+    await submitQuery("clear me");
+    await screen.findByText(/deterministic narrative/i);
+    fireEvent.click(
+      screen.getByRole("button", { name: /clear session thread/i }),
+    );
+    expect(screen.queryByTestId("ask-thread-strip")).toBeNull();
+    expect(screen.getByText(/what can i help you with/i)).toBeInTheDocument();
+    expect(sessionStorage.getItem("showme.ask.thread.v1")).toBe("[]");
   });
 });
 

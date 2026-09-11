@@ -23,6 +23,28 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BOTSPane, buildBotsCsv, buildFeedCsv } from "./BOTS";
 import { useBotsSupervisionStore } from "@/lib/bots-supervision-store";
 import { usePerformanceStore } from "@/lib/performance-store";
+import { useBotStore } from "@/lib/bot-store";
+import { useStrategyStore } from "@/lib/strategy-store";
+
+// G3 jump-through: hoisted spies so the module mocks below can reference
+// them before the component import runs.
+const { setFocusedTargetSpy, navigateSpy } = vi.hoisted(() => ({
+  setFocusedTargetSpy: vi.fn(),
+  navigateSpy: vi.fn(),
+}));
+vi.mock("@/lib/router", () => ({ navigate: navigateSpy }));
+vi.mock("@/lib/workspace", async (importOriginal) => {
+  // Partial mock: the store modules loaded by the real BOTS imports call
+  // other workspace exports (e.g. `onWorkspaceReset`), so keep the actual
+  // module and override only the selector hook used for the jump-through.
+  const actual = await importOriginal<typeof import("@/lib/workspace")>();
+  return {
+    ...actual,
+    useWorkspace: (
+      selector: (s: { setFocusedTarget: typeof setFocusedTargetSpy }) => unknown,
+    ) => selector({ setFocusedTarget: setFocusedTargetSpy }),
+  };
+});
 
 // Freeze the clock so the F2 relative-age assertions are deterministic on
 // any machine (relativeTickAge derives from Date.now()).
@@ -32,7 +54,8 @@ type BotOverrides = Partial<{
   id: string; symbol: string; timeframe: string; mode: string;
   enabled: boolean; is_running: boolean;
   last_event_at: string | null; last_action: string | null;
-  permission_revoked: boolean; signal_count: number;
+  permission_revoked: boolean; signal_count: number; created_at: string;
+  strategy_id: string;
 }>;
 
 function bot(o: BotOverrides = {}) {
@@ -56,6 +79,8 @@ function seedBots(bots: ReturnType<typeof bot>[], feed: unknown[] = []) {
 beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(FROZEN_NOW);
+  setFocusedTargetSpy.mockReset();
+  navigateSpy.mockReset();
   useBotsSupervisionStore.setState({
     stats: { total: 0, enabled: 0, live: 0, signals_today: 0 },
     bots: [], feed: [], generatedAt: null, loading: false, error: null,
@@ -252,9 +277,9 @@ describe("BOTS F5 — table semantics", () => {
     const table = screen.getByRole("table", { name: /supervision table/i });
     // DataGrid carries the accessible name via aria-label (no <caption>).
     expect(table.getAttribute("aria-label")).toBe("Bot supervision table");
-    // 7 columns since Lane D (KAOS multibot): Symbol, Venues, TF, Status,
-    // Signals, Last tick, Last signal.
-    expect(table.querySelectorAll("th[scope='col']").length).toBe(7);
+    // 8 columns since lane G3: Symbol, Venues, TF, Status, Signals, Last
+    // tick, Last signal, Open.
+    expect(table.querySelectorAll("th[scope='col']").length).toBe(8);
   });
 
   it("feed table has an aria-label and scope columns (DataGrid)", () => {
@@ -378,5 +403,78 @@ describe("BOTS F10 — authoritative signal count + CSV exports", () => {
     expect(feedCsv).not.toBeDisabled();
     botsCsv.click();
     feedCsv.click();
+  });
+});
+
+// ─── G3 (OPP wave) — row-level silence alert + pane jump-through ──────────
+describe("BOTS G3 — row-level silence alert (N cadences)", () => {
+  const hoursAgo = (h: number) => new Date(FROZEN_NOW.getTime() - h * 3_600_000).toISOString();
+
+  it("flags an enabled bot with no signal for more than 3 cadences", () => {
+    seedBots([
+      bot({ id: "a", timeframe: "1h", is_running: true, last_action: "shadow", last_event_at: hoursAgo(4) }),
+    ]);
+    render(<BOTSPane />);
+    const alert = screen.getByTestId("bots-silence-a");
+    expect(alert.textContent).toMatch(/SILENT/);
+    expect(alert.getAttribute("title")).toMatch(/3 × 1h/);
+    expect(alert.getAttribute("aria-label")).toMatch(/3 cadences/);
+  });
+
+  it("does NOT flag a bot that ticked inside the cadence budget", () => {
+    seedBots([bot({ id: "a", timeframe: "1h", is_running: true, last_event_at: hoursAgo(2) })]);
+    render(<BOTSPane />);
+    expect(screen.queryByTestId("bots-silence-a")).toBeNull();
+  });
+
+  it("measures a never-ticked bot from created_at", () => {
+    seedBots([
+      bot({ id: "a", timeframe: "1d", is_running: true, last_event_at: null, created_at: hoursAgo(24 * 4) }),
+    ]);
+    render(<BOTSPane />);
+    expect(screen.getByTestId("bots-silence-a")).toBeInTheDocument();
+  });
+
+  it("does not judge a fresh never-ticked bot, a disabled bot, or an unknown timeframe", () => {
+    seedBots([
+      // Fresh creation (1h old, 1d cadence) — no honest silence verdict yet.
+      bot({ id: "fresh", timeframe: "1d", is_running: true, last_event_at: null, created_at: hoursAgo(1) }),
+      bot({ id: "off", timeframe: "1h", enabled: false, last_event_at: hoursAgo(48) }),
+      bot({ id: "weird", timeframe: "7m", last_event_at: hoursAgo(48) }),
+    ]);
+    render(<BOTSPane />);
+    expect(screen.queryByTestId("bots-silence-fresh")).toBeNull();
+    expect(screen.queryByTestId("bots-silence-off")).toBeNull();
+    expect(screen.queryByTestId("bots-silence-weird")).toBeNull();
+  });
+});
+
+describe("BOTS G3 — jump-through to BOT / STRA", () => {
+  it("opens the bot draft and focuses BOT", () => {
+    const openBot = vi.fn(async () => {});
+    useBotStore.setState({ openExisting: openBot } as never);
+    seedBots([bot({ id: "a", strategy_id: "strat-1" })]);
+    render(<BOTSPane />);
+    screen.getByTestId("bots-open-bot-a").click();
+    expect(openBot).toHaveBeenCalledWith("a");
+    expect(setFocusedTargetSpy).toHaveBeenCalledWith("BOT");
+    expect(navigateSpy).toHaveBeenCalledWith("/fn/BOT");
+  });
+
+  it("opens the strategy and focuses STRA", () => {
+    const openStrategy = vi.fn(async () => {});
+    useStrategyStore.setState({ openExisting: openStrategy } as never);
+    seedBots([bot({ id: "a", strategy_id: "strat-1" })]);
+    render(<BOTSPane />);
+    screen.getByTestId("bots-open-stra-a").click();
+    expect(openStrategy).toHaveBeenCalledWith("strat-1");
+    expect(setFocusedTargetSpy).toHaveBeenCalledWith("STRA");
+    expect(navigateSpy).toHaveBeenCalledWith("/fn/STRA");
+  });
+
+  it("disables the STRA jump when the bot has no strategy id", () => {
+    seedBots([bot({ id: "a", strategy_id: "" })]);
+    render(<BOTSPane />);
+    expect(screen.getByTestId("bots-open-stra-a")).toBeDisabled();
   });
 });

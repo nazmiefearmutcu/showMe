@@ -124,6 +124,48 @@ describe("WHAL pane — market tab / symbol consistency", () => {
   });
 });
 
+describe("WHAL pane — 24h volume unit (OPP wave)", () => {
+  it("renders the quote-currency unit from the backend on the volume card", () => {
+    setMockFn({
+      state: "ok",
+      data: {
+        data: {
+          status: "ok",
+          provider: "binance_spot",
+          market: "CRYPTO",
+          rows: [],
+          cards: [
+            { label: "24h quote volume", value: 2_500_000_000, unit: "USDT" },
+          ],
+          summary: "no alerts",
+        },
+      },
+    });
+    render(<WHALPane code="WHAL" symbol="BTCUSDT" />);
+    expect(screen.getByText("24h quote volume")).toBeInTheDocument();
+    expect(screen.getByText("2.50B USDT")).toBeInTheDocument();
+  });
+
+  it("renders the bare number when the backend cannot prove the quote asset", () => {
+    setMockFn({
+      state: "ok",
+      data: {
+        data: {
+          status: "ok",
+          provider: "binance_spot",
+          market: "CRYPTO",
+          rows: [],
+          cards: [{ label: "24h quote volume", value: 1234 }],
+          summary: "no alerts",
+        },
+      },
+    });
+    render(<WHALPane code="WHAL" symbol="BTCUSDT" />);
+    expect(screen.getByText("1.2k")).toBeInTheDocument();
+    expect(screen.queryByText(/1\.2k USDT/)).toBeNull();
+  });
+});
+
 describe("WHAL pane — visibility poll (live adoption)", () => {
   it("refetches on a visibility tick but not on mount", () => {
     const refetch = vi.fn();

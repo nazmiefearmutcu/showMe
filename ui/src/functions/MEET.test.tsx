@@ -12,6 +12,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { MEETPane } from "./MEET";
+import * as router from "@/lib/router";
 
 /* ── useFunction mock ──────────────────────────────────────────────── */
 
@@ -35,6 +36,16 @@ vi.mock("@/lib/useFunction", () => ({
     data: mockFn.data,
     error: mockFn.error,
     refetch: vi.fn(),
+  }),
+}));
+
+// Deterministic live mark for the portfolio mark-to-market P&L.
+vi.mock("@/lib/market-data", () => ({
+  useLiveQuote: () => ({
+    price: 150,
+    loading: false,
+    stale: false,
+    transportState: "ok",
   }),
 }));
 
@@ -98,9 +109,11 @@ function okPayload() {
 beforeEach(() => {
   localStorage.clear();
   setMockFn({ state: "idle", data: undefined });
+  vi.spyOn(router, "navigate").mockImplementation(() => undefined);
 });
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
 });
 
 describe("MEET pane — load states", () => {
@@ -154,5 +167,60 @@ describe("MEET pane — topic interaction", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "Brief" }));
     expect(container.textContent).toContain("Nvidia");
+  });
+});
+
+/* ── linked position mark-to-market (audit A3 MEET OPP) ────────────── */
+
+function linkedPositionPayload(
+  overrides: { avg_cost?: number | null } = {},
+) {
+  const avgCost = overrides.avg_cost === undefined ? 100 : overrides.avg_cost;
+  const base = okPayload();
+  return {
+    ...base,
+    portfolio_position: {
+      symbol: "AAPL",
+      quantity: 10,
+      avg_cost: avgCost,
+      currency: "USD",
+    },
+    rows: [
+      ...base.rows.filter((r) => r.section !== "portfolio"),
+      {
+        section: "portfolio",
+        symbol: "AAPL",
+        quantity: 10,
+        avg_cost: avgCost,
+        currency: "USD",
+        status: "linked",
+      },
+    ],
+  };
+}
+
+describe("MEET pane — linked position mark-to-market (audit A3 OPP)", () => {
+  it("renders the live mark-to-market P&L from avg_cost x quantity", () => {
+    setMockFn({ state: "ok", data: { data: linkedPositionPayload() } });
+    const { container } = render(<MEETPane code="MEET" symbol="AAPL" />);
+    // (150 − 100) × 10 = +500.00 USD, +50.0% (quote mocked at 150).
+    expect(container.textContent).toContain("mark P&L +500.00 USD (+50.0%)");
+  });
+
+  it("links the portfolio symbol to DES", () => {
+    setMockFn({ state: "ok", data: { data: linkedPositionPayload() } });
+    render(<MEETPane code="MEET" symbol="AAPL" />);
+    fireEvent.click(screen.getByRole("button", { name: "View AAPL details" }));
+    expect(router.navigate).toHaveBeenCalledWith("/symbol/AAPL/DES");
+  });
+
+  it("renders an em-dash for a missing cost basis (never fabricates a P&L)", () => {
+    setMockFn({
+      state: "ok",
+      data: { data: linkedPositionPayload({ avg_cost: null }) },
+    });
+    const { container } = render(<MEETPane code="MEET" symbol="AAPL" />);
+    expect(container.textContent).toContain("mark P&L —");
+    expect(container.textContent).not.toContain("+500.00");
   });
 });

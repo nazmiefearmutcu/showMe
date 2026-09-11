@@ -23,6 +23,9 @@ import {
   StatusSection,
 } from "@/design-system";
 import { useFunction } from "@/lib/useFunction";
+import { useLiveQuote } from "@/lib/market-data";
+import { navigate } from "@/lib/router";
+import { useWorkspace } from "@/lib/workspace";
 import { defaultSymbolForFunction } from "@/lib/symbols";
 import {
   FunctionControlGroup,
@@ -98,6 +101,43 @@ export function MEETPane({ code, symbol }: FunctionPaneProps) {
   );
   const status = payload?.status ?? "—";
 
+  // Audit A3 MEET [OPP]: the linked portfolio position's mark-to-market P&L.
+  // Position legs come from the payload's own `portfolio_position` (or the
+  // portfolio row that spreads it); the mark is a live quote. Any missing leg
+  // renders an em-dash — the pane never fabricates a P&L.
+  const position = useMemo(() => {
+    const direct = payload?.portfolio_position;
+    if (direct?.symbol) return direct;
+    const row = allRows.find((r) => r.section === "portfolio" && r.symbol);
+    return row
+      ? {
+          symbol: row.symbol,
+          quantity: row.quantity,
+          avg_cost: row.avg_cost,
+          currency: row.currency,
+        }
+      : null;
+  }, [payload, allRows]);
+  const positionQuote = useLiveQuote(position?.symbol ?? null);
+  const positionMark = useMemo(() => {
+    const qty = position?.quantity;
+    const cost = position?.avg_cost;
+    const price = positionQuote.price;
+    if (typeof qty !== "number" || !Number.isFinite(qty) || qty === 0) return null;
+    if (typeof cost !== "number" || !Number.isFinite(cost) || cost <= 0) return null;
+    if (typeof price !== "number" || !Number.isFinite(price) || price <= 0) return null;
+    return {
+      pnl: (price - cost) * qty,
+      pct: ((price - cost) / cost) * 100,
+    };
+  }, [position, positionQuote.price]);
+
+  const setFocusedTarget = useWorkspace((s) => s.setFocusedTarget);
+  const openSymbol = (sym: string) => {
+    setFocusedTarget("DES", sym);
+    navigate(`/symbol/${sym}/DES`);
+  };
+
   const commit = () => setTopic(draft.trim());
 
   const sectionChips: { value: string; label: string }[] = [
@@ -130,7 +170,20 @@ export function MEETPane({ code, symbol }: FunctionPaneProps) {
             </Pill>
             <div style={contentStyle}>
               <div style={titleStyle}>
-                {r.name ?? r.title ?? (r.symbol ? `${r.symbol} position` : "—")}
+                {r.section === "portfolio" && r.symbol ? (
+                  <button
+                    type="button"
+                    className="btn btn--ghost u-btn-mini"
+                    style={symbolLinkStyle}
+                    title={`Open ${r.symbol} in DES`}
+                    aria-label={`View ${r.symbol} details`}
+                    onClick={() => openSymbol(r.symbol as string)}
+                  >
+                    {r.symbol}
+                  </button>
+                ) : (
+                  r.name ?? r.title ?? (r.symbol ? `${r.symbol} position` : "—")
+                )}
                 {r.status ? (
                   <Pill
                     tone={sectionStatusTone(r.status)}
@@ -148,6 +201,13 @@ export function MEETPane({ code, symbol }: FunctionPaneProps) {
                   r.source,
                   typeof r.quantity === "number" ? `qty ${r.quantity}` : "",
                   r.published_at ? String(r.published_at).slice(0, 10) : "",
+                  r.section === "portfolio" && r.symbol === position?.symbol
+                    ? positionMark
+                      ? `mark P&L ${fmtPnl(positionMark.pnl, position?.currency)} (${
+                          positionMark.pct >= 0 ? "+" : ""
+                        }${positionMark.pct.toFixed(1)}%)`
+                      : "mark P&L —"
+                    : "",
                 ]
                   .filter(Boolean)
                   .join(" · ")}
@@ -431,3 +491,20 @@ const linkStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
   fontSize: "var(--font-size-sm)",
 };
+
+const symbolLinkStyle: CSSProperties = {
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: "var(--font-size-sm)",
+  color: "var(--accent)",
+  letterSpacing: "0.04em",
+};
+
+/** Signed P&L amount with the payload's own currency tag (never guessed). */
+function fmtPnl(value: number, currency?: string): string {
+  if (!Number.isFinite(value)) return "—";
+  const amount = value.toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+  return `${value >= 0 ? "+" : ""}${amount}${currency ? ` ${currency}` : ""}`;
+}

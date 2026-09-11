@@ -96,9 +96,11 @@ export function WEIPane({ code }: FunctionPaneProps) {
 
   // P4: local sort state for the grid (DataGrid is presentation-only —
   // we own the ordering and pass sortBy/sortDir/onSort through).
+  // Default = Δ vs previous close descending (world-index board ordering);
+  // the first header click cycles descending → ascending → natural.
   const [sort, setSort] = useState<{ key: SortKey; dir: SortDir }>({
     key: "change_pct",
-    dir: "none",
+    dir: "descending",
   });
 
   const baseRows = useMemo(() => {
@@ -206,12 +208,12 @@ export function WEIPane({ code }: FunctionPaneProps) {
       },
       {
         key: "change_pct",
-        header: "Δ %",
+        header: "Δ prev close %",
         numeric: true,
         sortable: true,
-        width: 92,
+        width: 118,
         render: (r) => {
-          const v = r.change_pct ?? r.changePercent;
+          const v = rowChangePct(r);
           if (v == null) return formatMissing;
           return (
             <span className="terminal-grid-numeric">
@@ -629,10 +631,26 @@ function rowChange(r: WEIRow): number | undefined {
   return last - prev;
 }
 
+/**
+ * Δ vs previous close in PERCENT. Prefers the provider's `change_pct`
+ * (already computed against the previous close in the backend) and falls
+ * back to deriving it from `last`/`prev_close` only when the payload omits
+ * it but carries both ends — never invented, `—` otherwise.
+ */
+function rowChangePct(r: WEIRow): number | undefined {
+  const direct = r.change_pct ?? r.changePercent;
+  if (direct != null && Number.isFinite(direct)) return direct;
+  const last = r.last ?? r.price;
+  const prev = r.prev_close;
+  if (last == null || prev == null || prev === 0) return undefined;
+  if (!Number.isFinite(last) || !Number.isFinite(prev)) return undefined;
+  return (last / prev - 1) * 100;
+}
+
 function sortValue(r: WEIRow, key: SortKey): number | undefined {
   if (key === "last") return r.last ?? r.price;
   if (key === "change") return rowChange(r);
-  return r.change_pct ?? r.changePercent;
+  return rowChangePct(r);
 }
 
 function sortRows(rows: WEIRow[], key: SortKey, dir: SortDir): WEIRow[] {

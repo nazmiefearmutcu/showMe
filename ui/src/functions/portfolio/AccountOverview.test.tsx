@@ -5,7 +5,7 @@
  * honesty badge surviving an empty payload, using the repo's standard
  * mutable-holder useFunction mock.
  */
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const mockReturn: { current: unknown } = { current: null };
@@ -18,7 +18,17 @@ vi.mock("@/lib/useFunction", () => ({
     return mockReturn.current;
   },
 }));
-vi.mock("@/lib/router", () => ({ navigate: vi.fn() }));
+// G3 — CONN jump spies (hoisted so the module mocks can close over them).
+const { setFocusedTargetSpy, navigateSpy } = vi.hoisted(() => ({
+  setFocusedTargetSpy: vi.fn(),
+  navigateSpy: vi.fn(),
+}));
+vi.mock("@/lib/router", () => ({ navigate: navigateSpy }));
+vi.mock("@/lib/workspace", () => ({
+  useWorkspace: (
+    selector: (s: { setFocusedTarget: typeof setFocusedTargetSpy }) => unknown,
+  ) => selector({ setFocusedTarget: setFocusedTargetSpy }),
+}));
 
 import { AccountOverviewPane } from "./AccountOverview";
 
@@ -47,6 +57,8 @@ afterEach(() => {
   cleanup();
   mockReturn.current = null;
   mockArgs.current = null;
+  setFocusedTargetSpy.mockReset();
+  navigateSpy.mockReset();
   vi.useRealTimers();
 });
 
@@ -175,5 +187,39 @@ describe("ACCT Account Overview pane", () => {
     // params would wipe the table to a skeleton every cycle.
     expect(mockArgs.current?.code).toBe("ACCT");
     expect(mockArgs.current?.params).toBeUndefined();
+  });
+});
+
+describe("ACCT G3 — CONN jump + honest cash/margin gating", () => {
+  it("jumps from an account row to CONN (focus + route)", () => {
+    ok(LIVE_COMPOSITE);
+    render(<AccountOverviewPane code="ACCT" />);
+    fireEvent.click(screen.getByTestId("acct-open-main"));
+    expect(setFocusedTargetSpy).toHaveBeenCalledWith("CONN");
+    expect(navigateSpy).toHaveBeenCalledWith("/fn/CONN");
+  });
+
+  it("hides cash/margin and shows the 'not in payload' note for the shipped acct.py payload", () => {
+    ok(LIVE_COMPOSITE);
+    render(<AccountOverviewPane code="ACCT" />);
+    // acct.py emits no cash/margin — honest note, no fabricated columns.
+    expect(screen.getByTestId("acct-cash-margin-note")).toBeInTheDocument();
+    const table = screen.getByRole("table", { name: "ACCT account roll-up" });
+    expect(within(table).queryByText("Cash")).toBeNull();
+    expect(within(table).queryByText("Margin")).toBeNull();
+  });
+
+  it("renders cash/margin columns when a payload actually carries them", () => {
+    ok({
+      ...LIVE_COMPOSITE,
+      rows: [{ ...LIVE_COMPOSITE.rows[0], cash: 25000, margin: 12000 }],
+    });
+    render(<AccountOverviewPane code="ACCT" />);
+    expect(screen.queryByTestId("acct-cash-margin-note")).toBeNull();
+    const table = screen.getByRole("table", { name: "ACCT account roll-up" });
+    expect(within(table).getByText("Cash")).toBeInTheDocument();
+    expect(within(table).getByText("Margin")).toBeInTheDocument();
+    expect(within(table).getByText("$25,000")).toBeInTheDocument();
+    expect(within(table).getByText("$12,000")).toBeInTheDocument();
   });
 });

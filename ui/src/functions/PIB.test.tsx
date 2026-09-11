@@ -62,6 +62,7 @@ function okPayload() {
             filingDate: "2026-09-03",
             reportDate: "2026-09-01",
             accession: "0001140361-26-035636",
+            url: "https://www.sec.gov/Archives/edgar/data/320193/000114036126035636/xslF345X06/form4.xml",
             source_mode: "sec_edgar_filing_metadata",
           },
           {
@@ -71,6 +72,9 @@ function okPayload() {
             filingDate: "2026-07-31",
             reportDate: "2026-06-27",
             accession: "0000320193-26-000020",
+            // EDGAR primaryDocument arrives as a RELATIVE stub — must never
+            // be rendered as an <a>.
+            url: "xslF345X06/form4.xml",
             source_mode: "sec_edgar_filing_metadata",
           },
           {
@@ -193,6 +197,24 @@ describe("PIB pane — section map + filings table", () => {
     expect(screen.getByRole("grid")).toBeInTheDocument();
     const firstRow = container.querySelector("tbody tr");
     expect(firstRow?.textContent).toContain("2026-09-03");
+  });
+});
+
+describe("PIB pane — filing links (audit A3 OPP)", () => {
+  it("renders the payload url as a safe SEC link and refuses relative stubs", () => {
+    setMockFn({ state: "ok", ...okPayload() });
+    render(<PIBPane code="PIB" symbol="AAPL" />);
+    // Exactly one absolute URL exists in the fixture; the relative stub and
+    // the url-less row must stay unlinked (FORM4 absolute-URL guard).
+    const links = screen.getAllByRole("link");
+    expect(links).toHaveLength(1);
+    expect(links[0]).toHaveAttribute(
+      "href",
+      "https://www.sec.gov/Archives/edgar/data/320193/000114036126035636/xslF345X06/form4.xml",
+    );
+    expect(links[0]).toHaveAttribute("target", "_blank");
+    expect(links[0]).toHaveAttribute("rel", "noopener noreferrer");
+    expect(links[0]).toHaveTextContent("SEC ↗");
   });
 });
 

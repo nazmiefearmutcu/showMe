@@ -26,6 +26,8 @@ import {
   StatusSection,
 } from "@/design-system";
 import { useFunction } from "@/lib/useFunction";
+import { navigate } from "@/lib/router";
+import { useWorkspace } from "@/lib/workspace";
 import {
   FunctionControlGroup,
   LoadStatePill,
@@ -49,6 +51,9 @@ interface NSEResult {
   relevance_score?: number | null;
   severity?: string | null;
   matched_terms?: string[];
+  /** Some feeds stamp the instrument directly on the row (defensive). */
+  symbol?: string | null;
+  symbols?: string[] | null;
 }
 
 interface NSEUnavailable {
@@ -99,6 +104,7 @@ export function NSEPane({ code, symbol }: FunctionPaneProps) {
       ...(deep === "on" ? { include_gdelt: true } : {}),
     },
   });
+  const setFocusedTarget = useWorkspace((s) => s.setFocusedTarget);
 
   const payload = data?.data as NSEPayload;
   const envelopeStatus = data?.status;
@@ -183,7 +189,15 @@ export function NSEPane({ code, symbol }: FunctionPaneProps) {
         )}
         <ul style={listStyle} aria-label="News search results">
           {results.map((r, i) => (
-            <ResultItem key={`${r.url ?? r.link ?? r.title ?? "row"}-${i}`} row={r} />
+            <ResultItem
+              key={`${r.url ?? r.link ?? r.title ?? "row"}-${i}`}
+              row={r}
+              boundSymbol={symbol ?? null}
+              onOpenSymbol={(sym) => {
+                setFocusedTarget("DES", sym);
+                navigate(`/symbol/${sym}/DES`);
+              }}
+            />
           ))}
         </ul>
       </div>
@@ -259,14 +273,25 @@ export function NSEPane({ code, symbol }: FunctionPaneProps) {
  * One search hit: the headline links out ONLY from the payload's own
  * absolute URL (`url` first, `link` fallback); otherwise the headline stays
  * unlinked with an honest "no link provided" note (BRIEF convention).
+ * Matched symbols (audit A3 NSE OPP) become DES click-through chips — the
+ * WEI pattern — but only when the row/payload actually identifies one.
  */
-function ResultItem({ row }: { row: NSEResult }) {
+function ResultItem({
+  row,
+  boundSymbol,
+  onOpenSymbol,
+}: {
+  row: NSEResult;
+  boundSymbol: string | null;
+  onOpenSymbol: (symbol: string) => void;
+}) {
   const raw = [row.url, row.link].find(
     (c): c is string => typeof c === "string" && /^https?:\/\//.test(c.trim()),
   );
   const href = raw ? raw.trim() : null;
   const title = row.title?.trim() || "Untitled result";
   const severity = (row.severity ?? "").toLowerCase();
+  const symbols = matchedSymbols(row, boundSymbol);
   return (
     <li style={rowStyle}>
       {severity === "critical" && (
@@ -313,9 +338,54 @@ function ResultItem({ row }: { row: NSEResult }) {
             .filter(Boolean)
             .join(" · ")}
         </div>
+        {symbols.length > 0 && (
+          <div style={symbolRowStyle} aria-label="Matched symbols">
+            <span className="u-text-mute" style={symbolLabelStyle}>
+              symbols
+            </span>
+            {symbols.map((sym) => (
+              <button
+                key={sym}
+                type="button"
+                className="btn btn--ghost u-btn-mini"
+                style={symbolChipStyle}
+                title={`Open ${sym} in DES`}
+                aria-label={`View ${sym} details`}
+                onClick={() => onOpenSymbol(sym)}
+              >
+                {sym} ↗
+              </button>
+            ))}
+          </div>
+        )}
       </div>
     </li>
   );
+}
+
+/**
+ * Symbols this result can honestly click through to. Allowed sources:
+ *  - a row-level `symbol` / `symbols` field stamped by the feed, or
+ *  - the pane's own bound symbol, and only when the backend's
+ *    `matched_terms` actually matched it.
+ * No identification → no chip (a topic word is never invented into a ticker).
+ */
+function matchedSymbols(row: NSEResult, boundSymbol: string | null): string[] {
+  const out: string[] = [];
+  const direct = typeof row.symbol === "string" ? row.symbol.trim().toUpperCase() : "";
+  if (direct) out.push(direct);
+  for (const candidate of row.symbols ?? []) {
+    const sym = String(candidate ?? "").trim().toUpperCase();
+    if (sym && !out.includes(sym)) out.push(sym);
+  }
+  const bound = (boundSymbol ?? "").trim().toUpperCase();
+  if (bound) {
+    const terms = (row.matched_terms ?? []).map((t) =>
+      String(t ?? "").trim().toLowerCase(),
+    );
+    if (terms.includes(bound.toLowerCase()) && !out.includes(bound)) out.push(bound);
+  }
+  return out;
 }
 
 function fmtAge(minutes: number): string {
@@ -418,4 +488,23 @@ const metaStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
   fontSize: "var(--font-size-2xs)",
   color: "var(--text-mute)",
+};
+
+const symbolRowStyle: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 6,
+  marginTop: 2,
+  flexWrap: "wrap",
+};
+
+const symbolLabelStyle: CSSProperties = {
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: "var(--font-size-2xs)",
+  letterSpacing: "0.06em",
+};
+
+const symbolChipStyle: CSSProperties = {
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: "var(--font-size-2xs)",
 };

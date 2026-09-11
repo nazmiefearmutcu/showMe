@@ -22,6 +22,7 @@ import {
   PaneHeader,
   Pill,
   Skeleton,
+  StatCard,
   StatusDivider,
   StatusSection,
 } from "@/design-system";
@@ -103,6 +104,19 @@ export function BRIEFPane({ code }: FunctionPaneProps) {
     return fmtStamp(raw);
   }, [payload, data]);
 
+  // Audit A3 BRIEF [OPP]: the payload's `cards` already carry the
+  // authoritative counts; render them in a KPI ribbon, but ONLY when the
+  // card is actually present (missing card → no tile, never a fake zero).
+  const articleCountCard = useMemo(
+    () => cardNumeric(payload?.cards, "article_count"),
+    [payload],
+  );
+  const watchlistSizeCard = useMemo(
+    () => cardNumeric(payload?.cards, "watchlist_size"),
+    [payload],
+  );
+  const hasKpi = articleCountCard != null || watchlistSizeCard != null;
+
   const groups = useMemo(() => {
     const wanted =
       section === "all"
@@ -156,6 +170,26 @@ export function BRIEFPane({ code }: FunctionPaneProps) {
     />
   ) : (
     <div className="u-grid-gap-14">
+      {hasKpi && (
+        <section style={kpiGridStyle} aria-label="BRIEF KPI ribbon">
+          {articleCountCard != null && (
+            <StatCard
+              label="Stories"
+              value={String(articleCountCard)}
+              caption="PAYLOAD CARD · ARTICLE_COUNT"
+              tone="neutral"
+            />
+          )}
+          {watchlistSizeCard != null && (
+            <StatCard
+              label="Watchlist"
+              value={String(watchlistSizeCard)}
+              caption="PAYLOAD CARD · WATCHLIST_SIZE"
+              tone="neutral"
+            />
+          )}
+        </section>
+      )}
       {watchlist.length > 0 && (
         <span className="u-text-mute" style={watchlistStyle}>
           Watchlist: {watchlist.join(", ")}
@@ -292,6 +326,23 @@ function ArticleItem({ article }: { article: BRIEFArticle }) {
 }
 
 /**
+ * Read a numeric card value by key. Returns null when the card is missing or
+ * carries a non-finite value — the caller must not render a fabricated 0.
+ */
+function cardNumeric(cards: BRIEFCard[] | undefined, key: string): number | null {
+  const card = (cards ?? []).find((c) => c.key === key);
+  const value = card?.value;
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : null;
+  }
+  if (typeof value === "string" && value.trim() !== "") {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
+/**
  * "2026-09-05T09:25:00+00:00" → "2026-09-05 09:25 UTC". The backend stamps
  * UTC ISO strings; slicing (not Date parsing) keeps the exact payload value
  * on screen with no timezone re-interpretation. Blank input → "—".
@@ -303,6 +354,11 @@ function fmtStamp(iso: string): string {
 }
 
 const watchlistStyle: CSSProperties = { fontSize: "var(--font-size-md)" };
+const kpiGridStyle: CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+  gap: 10,
+};
 const sectionTitleStyle: CSSProperties = {
   fontSize: "var(--font-size-sm)",
   fontWeight: 600,

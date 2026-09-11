@@ -14,7 +14,7 @@
  *  - the SECTION filter chips actually filter sections.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { BRIEFPane } from "./BRIEF";
 
 /* ── useFunction mock ──────────────────────────────────────────────── */
@@ -105,6 +105,7 @@ function livePayload() {
         article_count: 3,
         cards: [
           { key: "article_count", label: "Stories", value: 3 },
+          { key: "watchlist_size", label: "Watchlist", value: 3 },
           { key: "as_of", label: "As of", value: "2026-09-07T00:52:36.206135+00:00" },
         ],
       },
@@ -201,6 +202,29 @@ describe("BRIEF pane — live payload", () => {
     expect(screen.getByText("medium")).toBeInTheDocument();
     // "low" severity gets no pill (only medium/high are signalled).
     expect(screen.queryByText("low")).toBeNull();
+  });
+});
+
+describe("BRIEF pane — KPI ribbon (audit A3 OPP)", () => {
+  it("renders the payload's article_count / watchlist_size cards as a KPI ribbon", () => {
+    setMockFn({ state: "ok", ...livePayload() });
+    render(<BRIEFPane code="BRIEF" />);
+    const ribbon = screen.getByLabelText("BRIEF KPI ribbon");
+    expect(within(ribbon).getByText("Stories")).toBeInTheDocument();
+    expect(within(ribbon).getByText("PAYLOAD CARD · ARTICLE_COUNT")).toBeInTheDocument();
+    expect(within(ribbon).getByText("Watchlist")).toBeInTheDocument();
+    expect(within(ribbon).getByText("PAYLOAD CARD · WATCHLIST_SIZE")).toBeInTheDocument();
+    // Both card values are 3 in the fixture (3 stories / 3 watchlist symbols).
+    expect(within(ribbon).getAllByText("3")).toHaveLength(2);
+  });
+
+  it("renders no ribbon when the payload carries no count cards (never fake a 0)", () => {
+    const payload = livePayload();
+    const inner = payload.data.data as { cards?: unknown };
+    delete inner.cards;
+    setMockFn({ state: "ok", ...payload });
+    render(<BRIEFPane code="BRIEF" />);
+    expect(screen.queryByLabelText("BRIEF KPI ribbon")).toBeNull();
   });
 });
 

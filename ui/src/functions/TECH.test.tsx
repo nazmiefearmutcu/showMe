@@ -15,14 +15,22 @@
  *  - degraded payloads (envelope warnings) surface a visible pill.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { TECHPane } from "./TECH";
 
 /* ── useFunction mock ──────────────────────────────────────────────── */
 
 interface MockFnState {
   state: "idle" | "loading" | "ok" | "error" | "refreshing";
-  data?: { data?: unknown } | undefined;
+  data?:
+    | {
+        data?: unknown;
+        data_state?: string;
+        sources?: string[];
+        elapsed_ms?: number;
+        warnings?: string[];
+      }
+    | undefined;
   error?: Error | null;
 }
 
@@ -255,6 +263,57 @@ describe("TECH pane — sparkline + honesty", () => {
     render(<TECHPane code="TECH" symbol="AAPL" />);
     expect(screen.getByText(/Degraded:/i)).toBeInTheDocument();
     expect(screen.getByText(/partial history/i)).toBeInTheDocument();
+  });
+});
+
+describe("TECH pane — study sub-panes (OPP wave)", () => {
+  it("renders the RSI(14) sub-pane from per-bar values and hides it with the RSI chip", () => {
+    setMockFn({ state: "ok", ...okPayload() });
+    render(<TECHPane code="TECH" symbol="AAPL" />);
+    const study = screen.getByTestId("tech-study-rsi");
+    expect(within(study).getByText("RSI(14)")).toBeInTheDocument();
+    // Honest last-value + zone readout, derived from the last real bar (53.91).
+    expect(within(study).getByText(/LAST 53\.91/)).toBeInTheDocument();
+    expect(within(study).getByText(/NEUTRAL 30–70/)).toBeInTheDocument();
+    expect(within(study).getByRole("img", { name: /RSI\(14\) study/i })).toBeInTheDocument();
+    // The same family chip drives both the card and the study.
+    fireEvent.click(screen.getByRole("button", { name: "RSI" }));
+    expect(screen.queryByTestId("tech-study-rsi")).toBeNull();
+  });
+
+  it("renders the MACD study with line/signal/histogram and hides it with the MACD chip", () => {
+    setMockFn({ state: "ok", ...okPayload() });
+    render(<TECHPane code="TECH" symbol="AAPL" />);
+    const study = screen.getByTestId("tech-study-macd");
+    expect(within(study).getByText("MACD 12/26/9")).toBeInTheDocument();
+    // Last per-bar readings: macd 2.56 / signal 0.98 / hist -0.42.
+    expect(within(study).getByText(/MACD 2\.56 · SIGNAL 0\.98 · HIST -0\.42/)).toBeInTheDocument();
+    const chart = within(study).getByRole("img", { name: /MACD\(12\/26\/9\) study/i });
+    // Line + signal + at least one histogram rect.
+    expect(chart.querySelectorAll("path").length).toBe(2);
+    expect(chart.querySelectorAll("rect").length).toBeGreaterThanOrEqual(1);
+    fireEvent.click(screen.getByRole("button", { name: "MACD" }));
+    expect(screen.queryByTestId("tech-study-macd")).toBeNull();
+  });
+
+  it("does not fabricate a study pane when bars carry no per-bar study series", () => {
+    const bare = [
+      { date: "2026-09-01T13:30:00+00:00", open: 99, high: 101, low: 98, close: 100, volume: 1000 },
+      { date: "2026-09-01T13:31:00+00:00", open: 100, high: 102, low: 99, close: 101, volume: 900 },
+    ];
+    setMockFn({
+      state: "ok",
+      data: {
+        data: { status: "ok", rows: bare, summary: { last_price: 101, rsi: 55 } },
+        data_state: "live",
+      },
+    });
+    render(<TECHPane code="TECH" symbol="AAPL" />);
+    // The RSI card still renders from summary — but no per-bar study series
+    // exists, so no RSI/MACD sub-pane is offered (never a fabricated line).
+    expect(screen.getByText("55.00")).toBeInTheDocument();
+    expect(screen.queryByTestId("tech-study-rsi")).toBeNull();
+    expect(screen.queryByTestId("tech-study-macd")).toBeNull();
   });
 });
 

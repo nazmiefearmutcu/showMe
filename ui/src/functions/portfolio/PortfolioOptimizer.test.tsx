@@ -2,13 +2,21 @@
  * PORT_OPT — specialized Portfolio Optimizer pane tests.
  *
  * Pins the four render states, the frontier chart, the weight matrix built
- * from max-Sharpe / min-vol / risk-parity results, and the mode control.
+ * from max-Sharpe / min-vol / risk-parity results, the mode control, and
+ * the persisted risk-free control mapped onto the backend `risk_free`
+ * fraction parameter.
  */
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const mockReturn: { current: unknown } = { current: null };
-vi.mock("@/lib/useFunction", () => ({ useFunction: () => mockReturn.current }));
+let lastFnArgs: Record<string, unknown> | undefined;
+vi.mock("@/lib/useFunction", () => ({
+  useFunction: (args: Record<string, unknown>) => {
+    lastFnArgs = args;
+    return mockReturn.current;
+  },
+}));
 vi.mock("@/lib/router", () => ({ navigate: vi.fn() }));
 
 import { PortfolioOptimizerPane } from "./PortfolioOptimizer";
@@ -37,6 +45,12 @@ function ok(
 afterEach(() => {
   cleanup();
   mockReturn.current = null;
+  lastFnArgs = undefined;
+  try {
+    localStorage.clear();
+  } catch {
+    /* jsdom may not expose localStorage in every config */
+  }
 });
 
 const LIVE_PAYLOAD = {
@@ -104,5 +118,20 @@ describe("PORT_OPT Portfolio Optimizer pane", () => {
     expect(frontier).not.toBeDisabled();
     fireEvent.click(frontier);
     expect(screen.getByRole("button", { name: "FRONTIER" })).toBeDisabled();
+  });
+
+  it("sends the backend risk_free fraction and persists the percent control", () => {
+    ok(LIVE_PAYLOAD);
+    render(<PortfolioOptimizerPane code="PORT_OPT" />);
+    const params = lastFnArgs?.params as Record<string, unknown>;
+    // Default 4% → fractional 0.04 on the wire (port_opt.py:38 contract).
+    expect(params.risk_free).toBeCloseTo(0.04, 10);
+
+    const input = screen.getByLabelText("RF %");
+    fireEvent.change(input, { target: { value: "2.5" } });
+    expect(
+      (lastFnArgs?.params as Record<string, unknown>).risk_free,
+    ).toBeCloseTo(0.025, 10);
+    expect(localStorage.getItem("showme.port_opt.risk_free")).toBe("2.5");
   });
 });

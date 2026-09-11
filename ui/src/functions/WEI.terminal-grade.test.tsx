@@ -112,17 +112,28 @@ describe("WEI terminal-grade", () => {
     expect(btn.tagName).toBe("BUTTON");
   });
 
-  it("sorting by Δ% reorders the rows", () => {
+  it("default-sorts by Δ vs previous close and cycles on header click", () => {
     mockOk([
       makeRow({ symbol: "^A", name: "A", change_pct: -1.5 }),
       makeRow({ symbol: "^B", name: "B", change_pct: 2.5 }),
       makeRow({ symbol: "^C", name: "C", change_pct: 0.5 }),
     ]);
     const { container } = render(<WEIPane code="WEI" />);
-    expect(gridSymbols(container).slice(0, 3)).toEqual(["^A", "^B", "^C"]);
-    // Click the Δ % column header once → descending.
-    fireEvent.click(screen.getByRole("columnheader", { name: /Δ %/ }));
+    // Default sort = Δ prev close descending (the board reads leaders first).
     expect(gridSymbols(container).slice(0, 3)).toEqual(["^B", "^C", "^A"]);
+    // First header click cycles descending → ascending.
+    fireEvent.click(screen.getByRole("columnheader", { name: /Δ prev close %/ }));
+    expect(gridSymbols(container).slice(0, 3)).toEqual(["^A", "^C", "^B"]);
+  });
+
+  it("derives Δ vs previous close % from last/prev_close when change_pct is absent", () => {
+    mockOk([
+      makeRow({ symbol: "^D", name: "Derived", change_pct: undefined, change: undefined, last: 102, prev_close: 100 }),
+    ]);
+    render(<WEIPane code="WEI" />);
+    // (102/100 − 1)×100 = +2.00% rendered by the shared DeltaChip (cell +
+    // stripped/KPI derivations reuse the same value).
+    expect(screen.getAllByText("+2.00%").length).toBeGreaterThan(0);
   });
 
   it("shows a prominent model badge when data is model/fallback", () => {

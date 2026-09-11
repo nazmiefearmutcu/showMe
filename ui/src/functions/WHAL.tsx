@@ -58,6 +58,8 @@ interface WHALRow {
 interface WHALCard {
   label?: string;
   value?: number | string | null;
+  /** Quote asset the value is denominated in (e.g. "USDT"), when known. */
+  unit?: string;
 }
 
 interface WHALPayload {
@@ -338,7 +340,7 @@ export function WHALPane({ code, symbol }: FunctionPaneProps) {
                     <StatCard
                       key={i}
                       label={card.label ?? `Card ${i + 1}`}
-                      value={formatCardValue(card.value)}
+                      value={formatCardValue(card.value, card.unit)}
                       caption={`AS OF ${utcStamp} UTC`}
                       tone="neutral"
                     />
@@ -431,12 +433,14 @@ function formatLargeNumber(n: number): string {
   return n.toLocaleString("en-US", { maximumFractionDigits: 2 });
 }
 
-function formatCardValue(value: unknown): string {
+function formatCardValue(value: unknown, unit?: string): string {
   if (value == null) return "—";
   if (typeof value === "number") {
-    return formatLargeNumber(value);
+    const formatted = formatLargeNumber(value);
+    return unit ? `${formatted} ${unit}` : formatted;
   }
-  return String(value);
+  const text = String(value);
+  return unit && !text.includes(unit) ? `${text} ${unit}` : text;
 }
 
 const tabBarStyle: CSSProperties = {

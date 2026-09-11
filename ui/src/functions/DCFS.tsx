@@ -36,6 +36,12 @@ import {
   RefreshButton,
   SegmentedControl,
 } from "./function-controls";
+import {
+  buildGridCsv,
+  downloadGridCsv,
+  gridCsvFilename,
+  type GridCsvColumn,
+} from "@/design-system/grid-csv";
 import { usePersistentNumber, usePersistentOption } from "./function-control-state";
 import { NumberField } from "./DDM";
 import type { FunctionPaneProps } from "./registry-types";
@@ -116,6 +122,39 @@ export function DCFSPane({ code, symbol }: FunctionPaneProps) {
       ? ((payload!.base_fair_value as number) - price) / price * 100
       : null;
   const warnings = data?.warnings ?? [];
+
+  // Audit A3 DCFS [OPP]: CSV export of the sensitivity grid. Exporters get
+  // the RAW payload numbers (spreadsheets should not receive "$1,234.50").
+  const gridRows: DCFSGridCell[] = useMemo(
+    () => payload?.grid ?? payload?.surface ?? [],
+    [payload],
+  );
+  const csvColumns = useMemo<GridCsvColumn<DCFSGridCell>[]>(
+    () => [
+      { key: "wacc", header: "WACC", value: (r) => r.wacc ?? "" },
+      {
+        key: "g_terminal",
+        header: "Terminal growth",
+        value: (r) => r.g_terminal ?? "",
+      },
+      {
+        key: "fair_value_per_share",
+        header: "Fair value / share",
+        value: (r) => r.fair_value_per_share ?? "",
+      },
+      {
+        key: "equity_value",
+        header: "Equity value",
+        value: (r) => r.equity_value ?? "",
+      },
+      { key: "bucket", header: "Bucket", value: (r) => r.bucket ?? "" },
+    ],
+    [],
+  );
+  const exportCsv = () => {
+    const csv = buildGridCsv(csvColumns, gridRows);
+    downloadGridCsv(gridCsvFilename(`dcfs-${effectiveSymbol || "grid"}`), csv);
+  };
 
   const body = !effectiveSymbol ? (
     <Empty title="Pick a symbol" body="DCFS needs an equity ticker." icon="⌖" />
@@ -226,6 +265,16 @@ export function DCFSPane({ code, symbol }: FunctionPaneProps) {
                 onChange={setYears}
                 title="Explicit forecast years"
               />
+              <button
+                type="button"
+                className="btn"
+                onClick={exportCsv}
+                disabled={gridRows.length === 0}
+                title="Download CSV"
+                aria-label={`Download ${gridRows.length} sensitivity cells as CSV`}
+              >
+                CSV
+              </button>
               <LoadStatePill state={state} status={status} />
               <RefreshButton
                 loading={state === "loading"}

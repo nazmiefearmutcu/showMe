@@ -143,3 +143,65 @@ describe("IVOL pane — live vs reference honesty", () => {
     expect(screen.getAllByText("reference").length).toBeGreaterThanOrEqual(1);
   });
 });
+
+describe("IVOL pane — per-side skew ladder (OPP wave)", () => {
+  it("renders per-side CALL/PUT IV curves and the strike ladder from real surface rows", () => {
+    mockFn.state = "ok";
+    mockFn.data = livePayload();
+    render(<IVOLPane code="IVOL" symbol="AAPL" />);
+    const section = screen.getByLabelText("IV skew by strike");
+    expect(within(section).getByText("CALL IV")).toBeInTheDocument();
+    expect(within(section).getByText("PUT IV")).toBeInTheDocument();
+    // Per-side last values from the fixture: call 0.31 (K=190), put 0.34 (K=200).
+    expect(within(section).getByText(/last 31\.00%/i)).toBeInTheDocument();
+    expect(within(section).getByText(/last 34\.00%/i)).toBeInTheDocument();
+    // The ladder grid keeps the sides in separate labelled columns.
+    expect(
+      within(section).getByLabelText(/call vs put iv by strike/i),
+    ).toBeInTheDocument();
+    expect(within(section).getByText("180.00")).toBeInTheDocument();
+    expect(within(section).getByText("200.00")).toBeInTheDocument();
+  });
+
+  it("labels the skew strip with the reference surface mode", () => {
+    mockFn.state = "ok";
+    mockFn.data = {
+      data: {
+        status: "reference",
+        symbol: "AAPL",
+        spot: 190,
+        surface: [
+          { expiry: "30d", strike: 180, moneyness: 0.95, iv: 0.33, option_type: "CALL" },
+          { expiry: "30d", strike: 200, moneyness: 1.05, iv: 0.37, option_type: "PUT" },
+        ],
+        summary: { contracts: 2, expiries: 1, source_mode: "reference" },
+      },
+      sources: ["black_scholes_reference_formula"],
+      elapsed_ms: 3,
+    };
+    render(<IVOLPane code="IVOL" symbol="AAPL" />);
+    expect(screen.getByTestId("ivol-skew-mode").textContent).toMatch(
+      /reference surface/i,
+    );
+  });
+
+  it("does not render a skew strip when cells carry no usable side/strike", () => {
+    mockFn.state = "ok";
+    mockFn.data = {
+      data: {
+        status: "ok",
+        symbol: "AAPL",
+        spot: 190,
+        source_mode: "live_yfinance",
+        surface: [
+          { expiry: "2026-06-19", iv: 0.3 },
+          { expiry: "2026-06-19", iv: 0.4 },
+        ],
+        summary: { contracts: 2, expiries: 1, source_mode: "live_yfinance" },
+      },
+      sources: ["yfinance"],
+    };
+    render(<IVOLPane code="IVOL" symbol="AAPL" />);
+    expect(screen.queryByLabelText("IV skew by strike")).toBeNull();
+  });
+});

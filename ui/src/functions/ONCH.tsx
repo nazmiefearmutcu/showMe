@@ -24,6 +24,7 @@ import {
   PaneFooter,
   PaneHeader,
   Pill,
+  ProgressBar,
   Skeleton,
   StatCard,
   StatusDivider,
@@ -211,6 +212,7 @@ export function ONCHPane({ code }: FunctionPaneProps) {
           ))}
         </section>
       )}
+      <DifficultyEpochProgress rows={rows} />
       {series.length > 0 && <MempoolBars series={series} />}
       <DataGrid
         columns={COLS}
@@ -294,6 +296,59 @@ export function ONCHPane({ code }: FunctionPaneProps) {
 }
 
 /**
+ * Difficulty-epoch progress. mempool.space's difficulty-adjustment payload
+ * supplies `progressPercent` / `remainingBlocks`, which the backend folds
+ * into the "Difficulty Change" row's context string (onch.py:200-203); we
+ * parse that verbatim display string — no re-derivation, no invented
+ * numbers. Unparsable context renders an honest note instead of a bar.
+ */
+function difficultyEpochFromRows(
+  rows: ONCHRow[],
+): { progressPercent: number; remainingBlocks: number } | null {
+  const row = rows.find((r) => r.metric === "Difficulty Change");
+  if (!row?.context) return null;
+  const match = /([\d.]+)% through epoch,\s*([\d,]+) blocks left/.exec(
+    row.context,
+  );
+  if (!match) return null;
+  const progressPercent = Number(match[1]);
+  const remainingBlocks = Number(match[2].replace(/,/g, ""));
+  if (!Number.isFinite(progressPercent) || !Number.isFinite(remainingBlocks)) {
+    return null;
+  }
+  return { progressPercent, remainingBlocks };
+}
+
+function DifficultyEpochProgress({ rows }: { rows: ONCHRow[] }) {
+  const hasRow = rows.some((r) => r.metric === "Difficulty Change");
+  if (!hasRow) return null;
+  const epoch = difficultyEpochFromRows(rows);
+  if (!epoch) {
+    return (
+      <span className="u-text-mute" style={epochNoteStyle}>
+        Difficulty epoch progress unavailable in this snapshot.
+      </span>
+    );
+  }
+  return (
+    <section aria-label="Difficulty epoch progress" style={epochPanelStyle}>
+      <div style={epochHeadStyle}>
+        <span style={chartTitleStyle}>Difficulty epoch</span>
+        <span className="u-text-mute" style={epochMetaStyle}>
+          {`${Math.round(epoch.progressPercent)}% through epoch · ${epoch.remainingBlocks.toLocaleString("en-US")} blocks remaining`}
+        </span>
+      </div>
+      <ProgressBar
+        value={epoch.progressPercent}
+        height={12}
+        label={`${epoch.progressPercent.toFixed(1)}%`}
+        ariaLabel={`Difficulty epoch ${epoch.progressPercent.toFixed(1)} percent complete, ${epoch.remainingBlocks} blocks remaining`}
+      />
+    </section>
+  );
+}
+
+/**
  * Projected mempool blocks — inline SVG bars, one per upcoming block
  * bucket ("Block +1" … "+N"), transaction count above each bar.
  */
@@ -369,6 +424,29 @@ function MempoolBars({ series }: { series: ONCHSeriesPoint[] }) {
 }
 
 const summaryStyle: CSSProperties = { fontSize: "var(--font-size-md)" };
+const epochPanelStyle: CSSProperties = {
+  display: "grid",
+  gap: 6,
+  padding: "8px 10px",
+  border: "1px solid var(--border-subtle)",
+  borderRadius: "var(--radius-sm)",
+  background: "var(--surface-2)",
+};
+const epochHeadStyle: CSSProperties = {
+  display: "flex",
+  alignItems: "baseline",
+  justifyContent: "space-between",
+  gap: 8,
+  flexWrap: "wrap",
+};
+const epochMetaStyle: CSSProperties = {
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: "var(--font-size-2xs)",
+};
+const epochNoteStyle: CSSProperties = {
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: "var(--font-size-2xs)",
+};
 const chartTitleStyle: CSSProperties = {
   fontSize: "var(--font-size-sm)",
   color: "var(--text-mute)",

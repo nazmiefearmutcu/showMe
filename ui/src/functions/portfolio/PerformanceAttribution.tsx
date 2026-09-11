@@ -10,7 +10,7 @@
  * passed, so the shared data-quality badge must stay visible — the pane never
  * drops or restyles it.
  */
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import {
   DataGrid,
   type DataGridColumn,
@@ -52,6 +52,70 @@ interface PfaPayload {
   summary?: Row;
   methodology?: string;
   [key: string]: unknown;
+}
+
+/**
+ * G3: editable Brinson inputs. The backend (`portfolio/pfa.py`) already
+ * accepts `port_weights / port_returns / bench_weights / bench_returns`; the
+ * pane previously never sent them, so it was permanently the default sample.
+ *
+ * Fields are `Sector: value` pairs entered as PERCENTAGES (e.g. "Technology:
+ * 45") and converted to fractions for the backend, which computes in
+ * fractions (the pane formats with `fromFraction`).
+ */
+export interface PfaEditorFields {
+  portWeights: string;
+  portReturns: string;
+  benchWeights: string;
+  benchReturns: string;
+}
+
+export const EMPTY_PFA_FIELDS: PfaEditorFields = {
+  portWeights: "",
+  portReturns: "",
+  benchWeights: "",
+  benchReturns: "",
+};
+
+/**
+ * Parse `Sector: value, Sector: value` (comma or newline separated) into a
+ * `{sector: fraction}` map. Percent inputs are divided by 100; unparseable
+ * fragments are skipped (never guessed). Returns `{}` for an empty input.
+ */
+export function parseSectorMap(raw: string): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const part of raw.split(/[,\n]+/)) {
+    const trimmed = part.trim();
+    if (!trimmed) continue;
+    const [sector, value] = trimmed.split(":");
+    if (!sector || value == null) continue;
+    const pct = Number(value.trim());
+    if (!Number.isFinite(pct)) continue;
+    out[sector.trim()] = pct / 100;
+  }
+  return out;
+}
+
+/** All four maps are required — the backend silently falls back otherwise. */
+function pfaParamsFor(fields: PfaEditorFields): Record<string, unknown> | undefined {
+  const portWeights = parseSectorMap(fields.portWeights);
+  const portReturns = parseSectorMap(fields.portReturns);
+  const benchWeights = parseSectorMap(fields.benchWeights);
+  const benchReturns = parseSectorMap(fields.benchReturns);
+  if (
+    Object.keys(portWeights).length === 0 ||
+    Object.keys(portReturns).length === 0 ||
+    Object.keys(benchWeights).length === 0 ||
+    Object.keys(benchReturns).length === 0
+  ) {
+    return undefined;
+  }
+  return {
+    port_weights: portWeights,
+    port_returns: portReturns,
+    bench_weights: benchWeights,
+    bench_returns: benchReturns,
+  };
 }
 
 const SECTOR_COLUMNS: DataGridColumn<Row>[] = [
@@ -152,7 +216,14 @@ const SECTOR_COLUMNS: DataGridColumn<Row>[] = [
 ];
 
 export function PerformanceAttributionPane({ code }: FunctionPaneProps) {
-  const { state, data, error, refetch } = useFunction<PfaPayload>({ code });
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [fields, setFields] = useState<PfaEditorFields>(EMPTY_PFA_FIELDS);
+  const [applied, setApplied] = useState<PfaEditorFields | null>(null);
+  // Params stay `undefined` until the user applies a COMPLETE editor, so the
+  // untouched pane keeps the backend's labelled default SAMPLE unchanged.
+  const params = useMemo(() => (applied ? pfaParamsFor(applied) : undefined), [applied]);
+  const canApply = useMemo(() => pfaParamsFor(fields) !== undefined, [fields]);
+  const { state, data, error, refetch } = useFunction<PfaPayload>({ code, params });
   const payload = data?.data;
   const rows = useMemo(() => sortByField(asRows(payload?.rows), "total_effect"), [payload]);
   const totals = useMemo(() => asRecord(payload?.totals), [payload]);
@@ -332,7 +403,22 @@ export function PerformanceAttributionPane({ code }: FunctionPaneProps) {
             </FunctionControlGroup>
           }
         />
-        <PaneBody className="portfolio-analytics-body">{body}</PaneBody>
+        <PaneBody className="portfolio-analytics-body">
+          <PfaEditor
+            open={editorOpen}
+            onToggle={() => setEditorOpen((v) => !v)}
+            fields={fields}
+            onChange={(next) => setFields(next)}
+            canApply={canApply}
+            applied={applied !== null}
+            onApply={() => setApplied({ ...fields })}
+            onReset={() => {
+              setFields(EMPTY_PFA_FIELDS);
+              setApplied(null);
+            }}
+          />
+          {body}
+        </PaneBody>
         <PaneFooter>
           <span>elapsed · {data?.elapsed_ms?.toFixed(0) ?? "—"} ms</span>
           <span>sources · {data?.sources?.join(", ") || "—"}</span>
@@ -341,6 +427,113 @@ export function PerformanceAttributionPane({ code }: FunctionPaneProps) {
         </PaneFooter>
       </Pane>
     </div>
+  );
+}
+
+/**
+ * G3: compact editor over the backend's existing `port_weights /
+ * port_returns / bench_weights / bench_returns` params. Apply is disabled
+ * until all four maps parse — the backend silently serves the sample when
+ * any map is missing, so a partial send would look like "my data is wrong".
+ */
+function PfaEditor({
+  open,
+  onToggle,
+  fields,
+  onChange,
+  canApply,
+  applied,
+  onApply,
+  onReset,
+}: {
+  open: boolean;
+  onToggle: () => void;
+  fields: PfaEditorFields;
+  onChange: (next: PfaEditorFields) => void;
+  canApply: boolean;
+  applied: boolean;
+  onApply: () => void;
+  onReset: () => void;
+}) {
+  const fid = (name: string) => `pfa-${name}`;
+  const input = (
+    key: keyof PfaEditorFields,
+    label: string,
+    placeholder: string,
+  ) => (
+    <label
+      className="portfolio-control-field portfolio-control-field--wide"
+      htmlFor={fid(key)}
+      key={key}
+    >
+      <span>{label}</span>
+      <input
+        id={fid(key)}
+        value={fields[key]}
+        spellCheck={false}
+        onChange={(e) => onChange({ ...fields, [key]: e.target.value })}
+        placeholder={placeholder}
+      />
+    </label>
+  );
+  return (
+    <section className="portfolio-method-panel" data-testid="pfa-editor">
+      <header className="port-section-head">
+        <div>
+          <h3>Custom weights &amp; returns</h3>
+          <span>
+            {applied
+              ? "custom inputs applied"
+              : "optional — the backend sample runs until applied"}
+          </span>
+        </div>
+        <button
+          type="button"
+          className="btn btn--ghost"
+          onClick={onToggle}
+          aria-expanded={open}
+          data-testid="pfa-editor-toggle"
+        >
+          {open ? "Hide editor" : "Edit weights"}
+        </button>
+      </header>
+      {open ? (
+        <div className="u-flex-col u-gap-5 u-mt-4">
+          {input("portWeights", "Port weights", "Technology: 45, Financials: 20")}
+          {input("portReturns", "Port returns", "Technology: 18, Financials: 5")}
+          {input("benchWeights", "Bench weights", "Technology: 30, Financials: 18")}
+          {input("benchReturns", "Bench returns", "Technology: 12, Financials: 4")}
+          <div className="u-flex u-gap-8">
+            <button
+              type="button"
+              className="btn btn--accent"
+              disabled={!canApply}
+              onClick={onApply}
+              data-testid="pfa-editor-apply"
+              title={
+                canApply
+                  ? "Send these weights/returns and re-run the attribution"
+                  : "All four maps are required (Sector: percent pairs)"
+              }
+            >
+              Apply
+            </button>
+            <button
+              type="button"
+              className="btn"
+              onClick={onReset}
+              data-testid="pfa-editor-reset"
+            >
+              Reset to sample
+            </button>
+          </div>
+          <span className="u-text-secondary">
+            Enter percentages as “Sector: value” pairs; the backend falls back to
+            the sample when any of the four maps is missing.
+          </span>
+        </div>
+      ) : null}
+    </section>
   );
 }
 

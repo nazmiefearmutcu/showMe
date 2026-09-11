@@ -29,6 +29,7 @@ import {
   type AskEvidence,
   type AskFanoutBranch,
   type AskHighlight,
+  type AskHistoryTurn,
   type AskResponse,
 } from "@/lib/ask";
 import { useAbortableFetch } from "@/lib/useAbortableFetch";
@@ -47,6 +48,17 @@ const SUGGESTION_CHIPS = [
   "Open FA on MSFT",
 ];
 
+/**
+ * Session thread (G4 OPP wave) — the Q/A pairs live in sessionStorage so a
+ * pane remount within the same session restores the conversation, while an
+ * app restart starts clean ("persist per session only"). Bounded so a long
+ * session cannot grow the replayed payload without limit.
+ */
+const THREAD_STORAGE_KEY = "showme.ask.thread.v1";
+const COST_STORAGE_KEY = "showme.ask.cost.v1";
+const MAX_PERSISTED_TURNS = 8;
+const MAX_HISTORY_TURNS = 6;
+
 interface ChatTurn {
   id: string;
   role: "user" | "agent";
@@ -54,6 +66,51 @@ interface ChatTurn {
   result?: AskResponse;
   error?: string;
   ts: number;
+}
+
+/** Structural check for a rehydrated turn — a corrupted blob is dropped. */
+function isChatTurn(value: unknown): value is ChatTurn {
+  if (!value || typeof value !== "object") return false;
+  const turn = value as Record<string, unknown>;
+  if (typeof turn.id !== "string" || typeof turn.ts !== "number") return false;
+  if (turn.role === "user") return typeof turn.query === "string" && turn.query.length > 0;
+  if (turn.role === "agent") {
+    if (typeof turn.error === "string") return true;
+    const result = turn.result as AskResponse | undefined;
+    return Boolean(
+      result &&
+        typeof result === "object" &&
+        Array.isArray(result.phases) &&
+        result.search &&
+        typeof result.search === "object",
+    );
+  }
+  return false;
+}
+
+function loadSessionThread(): ChatTurn[] {
+  if (typeof sessionStorage === "undefined") return [];
+  try {
+    const raw = sessionStorage.getItem(THREAD_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(isChatTurn).slice(-MAX_PERSISTED_TURNS);
+  } catch {
+    return [];
+  }
+}
+
+function loadSessionCost(): number {
+  if (typeof sessionStorage === "undefined") return 0;
+  try {
+    const raw = sessionStorage.getItem(COST_STORAGE_KEY);
+    if (raw == null || raw.trim() === "") return 0;
+    const value = Number(raw);
+    return Number.isFinite(value) && value >= 0 ? value : 0;
+  } catch {
+    return 0;
+  }
 }
 
 /**
@@ -88,14 +145,41 @@ function modelLabel(result: AskResponse | null): string {
 export function ASKPane({ code }: FunctionPaneProps) {
   const [draft, setDraft] = useState("");
   const [running, setRunning] = useState(false);
-  const [thread, setThread] = useState<ChatTurn[]>([]);
-  const [costSpentUsd, setCostSpentUsd] = useState(0);
+  // Session thread: hydrated from sessionStorage so switching panes and back
+  // keeps the conversation for this session only (never across restarts).
+  const [thread, setThread] = useState<ChatTurn[]>(loadSessionThread);
+  const [costSpentUsd, setCostSpentUsd] = useState<number>(loadSessionCost);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const setFocusedTarget = useWorkspace((s) => s.setFocusedTarget);
   const threadRef = useRef<HTMLDivElement>(null);
   // Bundle D / ABORT-01. Aborts the in-flight `ask()` if the user navigates
   // away or fires another query before the previous one resolves.
   const askFetch = useAbortableFetch();
+
+  // Persist the (bounded) thread per session. Storage is a convenience: a
+  // quota/blocked write must never break the ask flow.
+  useEffect(() => {
+    if (typeof sessionStorage === "undefined") return;
+    try {
+      sessionStorage.setItem(
+        THREAD_STORAGE_KEY,
+        JSON.stringify(thread.slice(-MAX_PERSISTED_TURNS)),
+      );
+    } catch {
+      /* session storage unavailable — the in-memory thread still works */
+    }
+  }, [thread]);
+
+  // The session cost total survives a pane remount alongside the thread, so
+  // the restored footers/pills cannot disagree with the restored turns.
+  useEffect(() => {
+    if (typeof sessionStorage === "undefined") return;
+    try {
+      sessionStorage.setItem(COST_STORAGE_KEY, String(costSpentUsd));
+    } catch {
+      /* session storage unavailable — the in-memory total still works */
+    }
+  }, [costSpentUsd]);
 
   // Audit A8 M: the cost pill reads the REAL daily ledger (all callers, real
   // env cap). When the ledger route is unreachable the pane degrades to an
@@ -127,6 +211,21 @@ export function ASKPane({ code }: FunctionPaneProps) {
     el.scrollTop = el.scrollHeight;
   }, [thread.length, running]);
 
+  // Multi-turn history payload (G4 OPP wave): the trailing user/agent pairs,
+  // bounded — the backend sanitizes and caps again. The current question is
+  // not included (this closure predates the user turn being appended).
+  const historyForRequest = useCallback((): AskHistoryTurn[] => {
+    const turns: AskHistoryTurn[] = [];
+    for (const turn of thread) {
+      if (turn.role === "user" && turn.query) {
+        turns.push({ role: "user", content: turn.query });
+      } else if (turn.role === "agent" && turn.result?.narrative) {
+        turns.push({ role: "agent", content: turn.result.narrative });
+      }
+    }
+    return turns.slice(-MAX_HISTORY_TURNS);
+  }, [thread]);
+
   const run = async () => {
     // Round 24 MEDIUM 19 — Enter+Enter stale-closure used to spawn two
     // ChatTurns because the second Enter handler captured `running=false`
@@ -145,7 +244,7 @@ export function ASKPane({ code }: FunctionPaneProps) {
     setDraft("");
     setRunning(true);
     try {
-      const r = await askFetch.run((signal) => ask(q, signal));
+      const r = await askFetch.run((signal) => ask(q, signal, historyForRequest()));
       if (!askFetch.isMounted()) return;
       const agentTurn: ChatTurn = {
         id: `a-${Date.now()}`,
@@ -213,6 +312,15 @@ export function ASKPane({ code }: FunctionPaneProps) {
     }
     return null;
   }, [thread]);
+
+  // Compact thread strip source: previous questions only (the answers live in
+  // the thread bubbles below). Clicking a chip drops the query back into the
+  // composer for reuse/edit.
+  const userTurns = useMemo(
+    () => thread.filter((t) => t.role === "user" && t.query),
+    [thread],
+  );
+  const recentUserTurns = userTurns.slice(-MAX_HISTORY_TURNS);
 
   const ledgerPct =
     llmCost && llmCost.cap_usd > 0
@@ -339,6 +447,45 @@ export function ASKPane({ code }: FunctionPaneProps) {
           <p style={disclosureRow} data-testid="ask-disclosure">
             {ANSWER_DISCLOSURE}
           </p>
+
+          {/* Compact session thread strip (G4): previous Q/A pairs are in the
+              thread above; this strip makes them reusable/clearable and shows
+              the strip survives a pane remount within the session. */}
+          {userTurns.length > 0 ? (
+            <div
+              style={historyStrip}
+              role="group"
+              aria-label="Session thread"
+              data-testid="ask-thread-strip"
+            >
+              <span className="u-text-mute" style={historyStripLabel}>
+                SESSION THREAD
+              </span>
+              {recentUserTurns.map((turn, i) => (
+                <button
+                  key={turn.id}
+                  type="button"
+                  style={historyChip}
+                  title={`Reuse query: ${turn.query}`}
+                  onClick={() => setDraft(turn.query ?? "")}
+                  disabled={running}
+                >
+                  {`Q${userTurns.length - recentUserTurns.length + i + 1} · ${turn.query}`}
+                </button>
+              ))}
+              <span className="u-flex-1" />
+              <button
+                type="button"
+                style={historyClear}
+                onClick={() => setThread([])}
+                disabled={running}
+                aria-label="Clear session thread"
+                title="Clear session thread"
+              >
+                Clear
+              </button>
+            </div>
+          ) : null}
 
           {/* Suggestion chips above composer — U1: disabled while a query is
               in flight so a click can't silently overwrite the running draft. */}
@@ -1225,6 +1372,50 @@ const disclosureRow: CSSProperties = {
   color: "var(--text-mute)",
   fontSize: "var(--font-size-2xs)",
   lineHeight: 1.45,
+};
+
+const historyStrip: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  flexWrap: "wrap",
+  gap: 6,
+  padding: "6px 14px",
+  borderTop: "1px solid var(--border-subtle)",
+  background: "var(--surface-1)",
+};
+
+const historyStripLabel: CSSProperties = {
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: "var(--font-size-2xs)",
+  letterSpacing: "0.08em",
+};
+
+const historyChip: CSSProperties = {
+  maxWidth: 220,
+  height: 22,
+  padding: "0 8px",
+  borderRadius: 11,
+  border: "1px solid var(--border-subtle)",
+  background: "var(--surface-2)",
+  color: "var(--text-secondary)",
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: "var(--font-size-2xs)",
+  cursor: "pointer",
+  whiteSpace: "nowrap",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+};
+
+const historyClear: CSSProperties = {
+  height: 22,
+  padding: "0 10px",
+  borderRadius: 11,
+  border: "1px solid var(--border-subtle)",
+  background: "transparent",
+  color: "var(--text-mute)",
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: "var(--font-size-2xs)",
+  cursor: "pointer",
 };
 
 const suggestionRow: CSSProperties = {

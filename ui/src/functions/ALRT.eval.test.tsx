@@ -244,6 +244,50 @@ describe("ALRT evaluation loop", () => {
   });
 });
 
+describe("ALRT last-evaluated age chip (audit A5 OPP)", () => {
+  it("stamps the real per-row evaluation age and flags a stalled poll edge", async () => {
+    await seed({ symbol: "AAPL", direction: "above", threshold: 200 });
+    const fq = fetchQuote as ReturnType<typeof vi.fn>;
+    fq.mockResolvedValue(quote("AAPL", 210));
+
+    await mountPane();
+    await advancePoll(); // successful evaluation at T
+
+    const age = screen.getByTestId("alrt-eval-age");
+    expect(age.dataset.stalled).toBe("false");
+    expect(age.textContent).toMatch(/^\d+s$/);
+    expect(screen.getByTestId("alrt-eval-status")).toHaveAttribute(
+      "data-stalled",
+      "false",
+    );
+
+    // Quote provider goes down: the age keeps growing past 3× POLL_MS.
+    fq.mockRejectedValue(new Error("quote unavailable"));
+    await advancePoll();
+    await advancePoll();
+    await advancePoll();
+    await advancePoll();
+    expect(screen.getByTestId("alrt-eval-status")).toHaveAttribute(
+      "data-stalled",
+      "true",
+    );
+    expect(
+      screen.getByTestId("alrt-eval-status").getAttribute("title"),
+    ).toMatch(/stalled/i);
+    expect(screen.getByTestId("alrt-eval-age").dataset.stalled).toBe("true");
+  });
+
+  it("renders no age chip when no quote was ever evaluated (nothing fabricated)", async () => {
+    await seed({ symbol: "MSFT", direction: "above", threshold: 500 });
+    const fq = fetchQuote as ReturnType<typeof vi.fn>;
+    fq.mockRejectedValue(new Error("quote unavailable"));
+
+    await mountPane();
+    await advancePoll();
+    expect(screen.queryByTestId("alrt-eval-age")).toBeNull();
+  });
+});
+
 describe("ALRT threshold validation (i18n)", () => {
   it("shows the English zero-threshold error, never the Turkish string", async () => {
     await mountPane();

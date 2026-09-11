@@ -11,6 +11,13 @@
  * latest-values card grid with honest tones (RSI/Stoch overbought-oversold,
  * MACD histogram sign, ADX trend strength). Empty / error / degraded
  * (warnings) states are explicit — never fake numbers.
+ *
+ * Study sub-panes (OPP wave 2026-09-11): the SAME family chips drive two
+ * inline sub-panes — RSI(14) on a fixed 0–100 domain (true 70/30 guides) and
+ * MACD (line + signal + sign-coloured histogram) — mirroring the HP study
+ * pattern. A sub-pane is offered only when the payload actually carries
+ * per-bar values for that study; a missing series renders nothing rather
+ * than a fabricated line.
  */
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import {
@@ -187,6 +194,30 @@ export function TECHPane({ code, symbol }: FunctionPaneProps) {
   const isLive = envelope?.data_state === "live";
   const warnings = envelope?.warnings ?? [];
 
+  // Per-bar study series for the RSI/MACD sub-panes (OPP wave). Values are
+  // filtered to finite numbers and windowed to the most recent STUDY_MAX_BARS
+  // so the 280px strip stays readable (and cheap); a series with fewer than
+  // two real points never opens a pane (no fabricated lines).
+  const rsiStudy = useMemo(
+    () => seriesFromBars(bars, (b) => b.rsi).slice(-STUDY_MAX_BARS),
+    [bars],
+  );
+  const macdLineStudy = useMemo(
+    () => seriesFromBars(bars, (b) => b.macd).slice(-STUDY_MAX_BARS),
+    [bars],
+  );
+  const macdSignalStudy = useMemo(
+    () => seriesFromBars(bars, (b) => b.macd_signal).slice(-STUDY_MAX_BARS),
+    [bars],
+  );
+  const macdHistStudy = useMemo(
+    () => seriesFromBars(bars, (b) => b.macd_hist).slice(-STUDY_MAX_BARS),
+    [bars],
+  );
+  const showRsiStudy = !hidden.has("rsi") && rsiStudy.length >= 2;
+  const showMacdStudy =
+    !hidden.has("macd") && (macdLineStudy.length >= 2 || macdHistStudy.length >= 2);
+
   const cards = useMemo(
     () => buildCards({ summary, lastBar, indicators, params, closes }),
     [summary, lastBar, indicators, params, closes],
@@ -266,6 +297,19 @@ export function TECHPane({ code, symbol }: FunctionPaneProps) {
           ariaLabel={`Close price, ${closes.length} bars, last ${fmtNum(summary?.last_price ?? lastBar?.close)}`}
         />
       </section>
+      {showRsiStudy ? (
+        <RsiStudyPane values={rsiStudy} period={params.rsi_period ?? 14} />
+      ) : null}
+      {showMacdStudy ? (
+        <MacdStudyPane
+          macd={macdLineStudy}
+          signal={macdSignalStudy}
+          hist={macdHistStudy}
+          fast={params.macd_fast ?? 12}
+          slow={params.macd_slow ?? 26}
+          signalPeriod={params.macd_signal ?? 9}
+        />
+      ) : null}
       {warnings.length > 0 ? (
         <Pill tone="warn" variant="soft">
           {`Degraded: ${warnings[0]}`}
@@ -333,6 +377,187 @@ export function TECHPane({ code, symbol }: FunctionPaneProps) {
         </PaneFooter>
       </Pane>
     </div>
+  );
+}
+
+/* ── study sub-panes (OPP wave) ────────────────────────────────────── */
+
+const STUDY_WIDTH = 280;
+/** Study panes window the most recent bars so the strip stays readable. */
+const STUDY_MAX_BARS = 240;
+
+/**
+ * RSI(14) sub-pane — fixed 0–100 domain so the 70/30 guide lines sit at
+ * their TRUE positions instead of being re-scaled to the data range. Only
+ * real per-bar RSI values are plotted (the caller filters warm-up gaps).
+ */
+function RsiStudyPane({ values, period }: { values: number[]; period: number }) {
+  const height = 56;
+  const last = values[values.length - 1] as number;
+  const step = values.length > 1 ? STUDY_WIDTH / (values.length - 1) : 0;
+  const y = (v: number) => {
+    const clamped = Math.min(100, Math.max(0, v));
+    return height - (clamped / 100) * (height - 4) - 2;
+  };
+  const line = values
+    .map((v, i) => `${i === 0 ? "M" : "L"}${(i * step).toFixed(1)},${y(v).toFixed(1)}`)
+    .join(" ");
+  const stroke =
+    last >= 70 ? "var(--negative)" : last <= 30 ? "var(--positive)" : "var(--accent)";
+  const zone =
+    last >= 70 ? "OVERBOUGHT ≥ 70" : last <= 30 ? "OVERSOLD ≤ 30" : "NEUTRAL 30–70";
+  return (
+    <section style={studyPaneStyle} data-testid="tech-study-rsi" aria-label={`RSI(${period}) study`}>
+      <div style={studyHeadStyle}>
+        <span style={studyTitleStyle}>{`RSI(${period})`}</span>
+        <span className="u-text-mute" style={paramsStyle}>
+          {`LAST ${fmtNum(last)} · ${zone} · ${values.length} BARS`}
+        </span>
+      </div>
+      <svg
+        width={STUDY_WIDTH}
+        height={height}
+        viewBox={`0 0 ${STUDY_WIDTH} ${height}`}
+        role="img"
+        aria-label={`RSI(${period}) study, ${values.length} bars, last ${fmtNum(last)}`}
+        className="u-block"
+      >
+        <line
+          x1={0}
+          x2={STUDY_WIDTH}
+          y1={y(70)}
+          y2={y(70)}
+          stroke="var(--grid-color)"
+          strokeDasharray="3 3"
+        />
+        <line
+          x1={0}
+          x2={STUDY_WIDTH}
+          y1={y(30)}
+          y2={y(30)}
+          stroke="var(--grid-color)"
+          strokeDasharray="3 3"
+        />
+        <text x={2} y={Math.max(8, y(70) - 2)} fontSize={8} fill="var(--text-mute)">
+          70
+        </text>
+        <text x={2} y={Math.min(height - 1, y(30) + 9)} fontSize={8} fill="var(--text-mute)">
+          30
+        </text>
+        <path
+          d={line}
+          fill="none"
+          stroke={stroke}
+          strokeWidth={1.25}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
+    </section>
+  );
+}
+
+/**
+ * MACD(12/26/9) sub-pane — line + signal + sign-coloured histogram on a
+ * shared zero-anchored domain (the standard MACD read). Series are the real
+ * per-bar fields from the payload; missing series simply don't draw.
+ */
+function MacdStudyPane({
+  macd,
+  signal,
+  hist,
+  fast,
+  slow,
+  signalPeriod,
+}: {
+  macd: number[];
+  signal: number[];
+  hist: number[];
+  fast: number;
+  slow: number;
+  signalPeriod: number;
+}) {
+  const height = 64;
+  const length = Math.max(macd.length, signal.length, hist.length, 2);
+  let min = 0;
+  let max = 0;
+  for (const series of [macd, signal, hist]) {
+    for (const v of series) {
+      if (v < min) min = v;
+      if (v > max) max = v;
+    }
+  }
+  const span = max - min || 1;
+  const x = (i: number) => (i / (length - 1)) * STUDY_WIDTH;
+  const y = (v: number) => height - ((v - min) / span) * (height - 6) - 3;
+  const path = (values: number[]) =>
+    values
+      .map((v, i) => `${i === 0 ? "M" : "L"}${x(i).toFixed(1)},${y(v).toFixed(1)}`)
+      .join(" ");
+  const barWidth = Math.max(1, (STUDY_WIDTH / length) * 0.6);
+  const lastOf = (values: number[]) =>
+    values.length ? (values[values.length - 1] as number) : null;
+  const lastMacd = lastOf(macd);
+  const lastSignal = lastOf(signal);
+  const lastHist = lastOf(hist);
+  return (
+    <section
+      style={studyPaneStyle}
+      data-testid="tech-study-macd"
+      aria-label={`MACD(${fast}/${slow}/${signalPeriod}) study`}
+    >
+      <div style={studyHeadStyle}>
+        <span style={studyTitleStyle}>{`MACD ${fast}/${slow}/${signalPeriod}`}</span>
+        <span className="u-text-mute" style={paramsStyle}>
+          {`MACD ${fmtNum(lastMacd)} · SIGNAL ${fmtNum(lastSignal)} · HIST ${fmtNum(lastHist)} · ${length} BARS`}
+        </span>
+      </div>
+      <svg
+        width={STUDY_WIDTH}
+        height={height}
+        viewBox={`0 0 ${STUDY_WIDTH} ${height}`}
+        role="img"
+        aria-label={`MACD(${fast}/${slow}/${signalPeriod}) study, line ${fmtNum(lastMacd)}, signal ${fmtNum(lastSignal)}, histogram ${fmtNum(lastHist)}`}
+        className="u-block"
+      >
+        <line x1={0} x2={STUDY_WIDTH} y1={y(0)} y2={y(0)} stroke="var(--grid-color)" />
+        {hist.map((v, i) => {
+          const zero = y(0);
+          const top = v >= 0 ? y(v) : zero;
+          return (
+            <rect
+              key={`h-${i}`}
+              x={x(i) - barWidth / 2}
+              y={top}
+              width={barWidth}
+              height={Math.max(0.5, Math.abs(y(v) - zero))}
+              fill={v >= 0 ? "var(--positive-soft)" : "var(--negative-soft)"}
+            />
+          );
+        })}
+        {macd.length > 1 ? (
+          <path
+            d={path(macd)}
+            fill="none"
+            stroke="var(--accent)"
+            strokeWidth={1.25}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        ) : null}
+        {signal.length > 1 ? (
+          <path
+            d={path(signal)}
+            fill="none"
+            stroke="var(--text-secondary)"
+            strokeWidth={1.25}
+            strokeDasharray="3 2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        ) : null}
+      </svg>
+    </section>
   );
 }
 
@@ -525,6 +750,16 @@ function num(v: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+/** Finite per-bar study values (warm-up nulls/NaN are dropped, not filled). */
+function seriesFromBars(bars: TechBar[], pick: (b: TechBar) => unknown): number[] {
+  const out: number[] = [];
+  for (const bar of bars) {
+    const value = num(pick(bar));
+    if (value != null) out.push(value);
+  }
+  return out;
+}
+
 function seriesLast(points?: TechPoint[]): number | null {
   if (!points || !points.length) return null;
   return num(points[points.length - 1]?.value);
@@ -609,6 +844,32 @@ const sparkHeadStyle: CSSProperties = {
   justifyContent: "space-between",
   alignItems: "baseline",
   gap: 12,
+};
+
+const studyPaneStyle: CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  gap: 6,
+  padding: "8px 12px 10px",
+  border: "1px solid var(--border)",
+  borderRadius: 8,
+  background: "var(--bg-raised, transparent)",
+};
+
+const studyHeadStyle: CSSProperties = {
+  display: "flex",
+  justifyContent: "space-between",
+  alignItems: "baseline",
+  gap: 12,
+  flexWrap: "wrap",
+};
+
+const studyTitleStyle: CSSProperties = {
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: "var(--font-size-2xs)",
+  letterSpacing: "0.08em",
+  color: "var(--accent)",
+  fontWeight: 600,
 };
 
 const cardGridStyle: CSSProperties = {

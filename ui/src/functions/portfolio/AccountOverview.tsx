@@ -19,6 +19,7 @@ import {
 import { useFunction } from "@/lib/useFunction";
 import { useVisibilityTick } from "@/lib/useVisibilityTick";
 import { navigate } from "@/lib/router";
+import { useWorkspace } from "@/lib/workspace";
 import { formatCurrency, formatMissing, formatNumber, formatPrice } from "@/lib/format";
 import { FunctionControlGroup, LoadStatePill, RefreshButton } from "../function-controls";
 import type { FunctionPaneProps } from "../registry-types";
@@ -52,7 +53,7 @@ interface AcctPayload {
   [key: string]: unknown;
 }
 
-const ACCOUNT_COLUMNS: DataGridColumn<Row>[] = [
+const ACCOUNT_BASE_COLUMNS: DataGridColumn<Row>[] = [
   {
     key: "account",
     header: "Account",
@@ -89,13 +90,73 @@ const ACCOUNT_COLUMNS: DataGridColumn<Row>[] = [
       </span>
     ),
   },
-  {
-    key: "top_asset_class",
-    header: "Top Class",
-    width: 100,
-    render: (row) => str(row.top_asset_class) ?? formatMissing,
-  },
 ];
+
+/**
+ * G3: cash/margin are rendered ONLY when the payload actually carries them.
+ * `acct.py` currently emits market value / unrealized P&L / exposure only —
+ * the columns stay hidden (never fabricated as $0) and the section head
+ * carries an explicit "not in payload" tooltip instead. The "Open" column
+ * jumps each account row into the CONN broker-connection surface.
+ */
+function buildAccountColumns(
+  rows: Row[],
+  onOpenConn: () => void,
+): { columns: DataGridColumn<Row>[]; hasCash: boolean; hasMargin: boolean } {
+  const hasCash = rows.some((row) => numLoose(row.cash) != null);
+  const hasMargin = rows.some((row) => numLoose(row.margin) != null);
+  const columns: DataGridColumn<Row>[] = [...ACCOUNT_BASE_COLUMNS];
+  if (hasCash) {
+    columns.push({
+      key: "cash",
+      header: "Cash",
+      width: 110,
+      align: "right",
+      numeric: true,
+      render: (row) => <span className="portfolio-analytics-num">{fmtMoney(row.cash)}</span>,
+    });
+  }
+  if (hasMargin) {
+    columns.push({
+      key: "margin",
+      header: "Margin",
+      width: 110,
+      align: "right",
+      numeric: true,
+      render: (row) => <span className="portfolio-analytics-num">{fmtMoney(row.margin)}</span>,
+    });
+  }
+  columns.push(
+    {
+      key: "top_asset_class",
+      header: "Top Class",
+      width: 100,
+      render: (row) => str(row.top_asset_class) ?? formatMissing,
+    },
+    {
+      key: "open",
+      header: "Open",
+      width: 78,
+      align: "center",
+      render: (row) => {
+        const account = str(row.account);
+        return (
+          <button
+            type="button"
+            className="btn btn--ghost"
+            data-testid={`acct-open-${account ?? "row"}`}
+            aria-label={`Open ${account ?? "account"} broker connection in CONN`}
+            title="Open broker connections (CONN)"
+            onClick={onOpenConn}
+          >
+            CONN
+          </button>
+        );
+      },
+    },
+  );
+  return { columns, hasCash, hasMargin };
+}
 
 const POSITION_COLUMNS: DataGridColumn<Row>[] = [
   {
@@ -194,6 +255,15 @@ export function AccountOverviewPane({ code }: FunctionPaneProps) {
   const payload = data?.data;
   const accounts = useMemo(() => asRows(payload?.accounts), [payload]);
   const accountRows = useMemo(() => asRows(payload?.rows), [payload]);
+  const setFocusedTarget = useWorkspace((s) => s.setFocusedTarget);
+  const accountTable = useMemo(
+    () =>
+      buildAccountColumns(accountRows, () => {
+        setFocusedTarget("CONN");
+        navigate("/fn/CONN");
+      }),
+    [accountRows, setFocusedTarget],
+  );
   const cross = useMemo(() => asRecord(payload?.cross), [payload]);
   const summary = useMemo(() => asRecord(payload?.summary), [payload]);
 
@@ -340,9 +410,25 @@ export function AccountOverviewPane({ code }: FunctionPaneProps) {
           <div className="portfolio-analytics-grid">
             <div className="u-flex-col u-gap-5">
               <section className="portfolio-table-panel">
-                <SectionHead title="Accounts" meta={`${accountRows.length} account(s)`} />
+                <SectionHead
+                  title="Accounts"
+                  meta={
+                    <>
+                      {accountRows.length} account(s)
+                      {!accountTable.hasCash && !accountTable.hasMargin ? (
+                        <span
+                          data-testid="acct-cash-margin-note"
+                          className="u-text-secondary"
+                          title="The ACCT payload (acct.py) emits market value / unrealized P&L / exposure only; cash and margin columns stay hidden rather than showing fabricated zeros."
+                        >
+                          {" · cash/margin not in payload"}
+                        </span>
+                      ) : null}
+                    </>
+                  }
+                />
                 <DataGrid
-                  columns={ACCOUNT_COLUMNS}
+                  columns={accountTable.columns}
                   rows={accountRows}
                   rowKey={(row, idx) => `${String(row.account ?? "acct")}-${idx}`}
                   density="compact"

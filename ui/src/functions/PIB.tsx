@@ -181,6 +181,32 @@ export function PIBPane({ code, symbol }: FunctionPaneProps) {
         ),
       },
       {
+        // Audit A3 PIB [OPP]: the payload's `url` was emitted but never
+        // rendered. FORM4 guard pattern — link out ONLY from an absolute
+        // http(s) primary-document URL (EDGAR relative stubs stay unlinked).
+        key: "url",
+        header: "Filing",
+        width: 76,
+        render: (r) => {
+          const raw = typeof r.url === "string" ? r.url.trim() : "";
+          const href = /^https?:\/\//.test(raw) ? raw : null;
+          return href ? (
+            <a
+              href={href}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="btn btn--ghost fn-refresh-btn--labeled"
+              title="Open SEC filing document"
+              aria-label={`Open SEC filing document for ${r.form ?? "filing"}`}
+            >
+              SEC ↗
+            </a>
+          ) : (
+            <span className="u-text-mute">—</span>
+          );
+        },
+      },
+      {
         key: "source_mode",
         header: "Source",
         width: 232,

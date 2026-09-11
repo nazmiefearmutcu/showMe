@@ -14,6 +14,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { NSEPane } from "./NSE";
+import * as router from "@/lib/router";
+import { useWorkspace } from "@/lib/workspace";
 
 /* ── useFunction mock ──────────────────────────────────────────────── */
 
@@ -65,7 +67,8 @@ function okPayload(): Partial<MockFnState> {
           age_minutes: 42,
           relevance_score: 91.5,
           severity: "high",
-          matched_terms: ["apple"],
+          // Backend `symbol_terms` emits the RAW symbol first (plus aliases).
+          matched_terms: ["AAPL", "apple"],
         },
         {
           title: "Supplier chain note moves the tape",
@@ -110,10 +113,12 @@ function unavailablePayload(): Partial<MockFnState> {
 beforeEach(() => {
   localStorage.clear();
   setMockFn({ state: "idle", data: undefined });
+  vi.spyOn(router, "navigate").mockImplementation(() => undefined);
 });
 
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
 });
 
 describe("NSE pane — load states", () => {
@@ -179,6 +184,51 @@ describe("NSE pane — link honesty", () => {
       "https://example.com/b",
     ]);
     expect(screen.getByText(/no link provided/i)).toBeInTheDocument();
+  });
+});
+
+describe("NSE pane — matched-symbol click-through (audit A3 OPP)", () => {
+  it("offers a DES click-through for the bound symbol when matched_terms contain it", () => {
+    setMockFn(okPayload());
+    const focused = vi.spyOn(useWorkspace.getState(), "setFocusedTarget");
+    render(<NSEPane code="NSE" symbol="AAPL" />);
+    const chip = screen.getByRole("button", { name: "View AAPL details" });
+    fireEvent.click(chip);
+    expect(focused).toHaveBeenCalledWith("DES", "AAPL");
+    expect(router.navigate).toHaveBeenCalledWith("/symbol/AAPL/DES");
+  });
+
+  it("never invents a ticker chip from topic terms alone (no bound symbol)", () => {
+    setMockFn(okPayload());
+    render(<NSEPane code="NSE" />);
+    // "apple" is a topic term, not an identified symbol → no chip, no link.
+    expect(
+      screen.queryByRole("button", { name: /View .* details/i }),
+    ).toBeNull();
+  });
+
+  it("uses a row-level symbol field when the feed stamps one", () => {
+    setMockFn({
+      state: "ok",
+      data: {
+        status: "ok",
+        sources: ["rss"],
+        metadata: { query: "nvidia" },
+        data: [
+          {
+            title: "Tagged row",
+            source: "rss",
+            url: "https://example.com/nvda",
+            symbol: "NVDA",
+            matched_terms: ["nvidia"],
+          },
+        ],
+      },
+    });
+    render(<NSEPane code="NSE" />);
+    const chip = screen.getByRole("button", { name: "View NVDA details" });
+    fireEvent.click(chip);
+    expect(router.navigate).toHaveBeenCalledWith("/symbol/NVDA/DES");
   });
 });
 

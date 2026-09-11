@@ -34,9 +34,13 @@
  *        supervision tables migrated to the DataGrid kit with full CSV
  *        exports.
  */
-import { useMemo, useRef } from "react";
+import { useCallback, useMemo, useRef } from "react";
 import { useBotsSupervisionStore, type FeedSignal, type SupervisedBot } from "@/lib/bots-supervision-store";
 import { useBotEcosystemPolling } from "@/lib/useBotEcosystemPolling";
+import { useBotStore } from "@/lib/bot-store";
+import { useStrategyStore } from "@/lib/strategy-store";
+import { useWorkspace } from "@/lib/workspace";
+import { navigate } from "@/lib/router";
 import { formatPrice } from "@/lib/format";
 import { isKaosRecord } from "@/lib/kaos-venues";
 import { KaosEngineBadge, VenueBadges } from "@/functions/KaosBadges";
@@ -64,6 +68,58 @@ const STALE_THRESHOLD_MS = 15 * 60 * 1000;
 // The feed limit the store requests (loadAll's default). Disclosed in the
 // feed heading so the supervisor knows the window size.
 const FEED_WINDOW = 50;
+
+// G3 — row-level silence alert. The list payload carries the real per-bot
+// cadence as `timeframe` (the finer-grained `tick_interval_seconds` lives on
+// the record payload, not on `/api/bots` records). A bot that has produced
+// no signal for more than N cadences — measured from its last event, or from
+// `created_at` when it has never ticked — is flagged SILENT. An unknown
+// timeframe makes no judgment (never guessed).
+const SILENCE_CADENCES = 3;
+const TIMEFRAME_MS: Record<string, number> = {
+  "1m": 60_000,
+  "5m": 300_000,
+  "15m": 900_000,
+  "1h": 3_600_000,
+  "4h": 14_400_000,
+  "1d": 86_400_000,
+};
+
+/**
+ * Silence verdict for a bot row. Exported for tests. Returns `null` when no
+ * honest judgment is possible (disabled bot, unknown timeframe, unparseable
+ * timestamps); otherwise `{silent, cadenceMs}` where `silent` means the age
+ * exceeds `SILENCE_CADENCES` cadences.
+ */
+export function silenceState(
+  bot: SupervisedBot,
+  now: number,
+): { silent: boolean; cadenceMs: number } | null {
+  if (!bot.enabled) return null;
+  const cadenceMs = TIMEFRAME_MS[bot.timeframe];
+  if (!cadenceMs) return null;
+  const reference = bot.last_event_at ?? bot.created_at;
+  if (!reference) return null;
+  const t = new Date(reference).getTime();
+  if (Number.isNaN(t)) return null;
+  return { silent: now - t > cadenceMs * SILENCE_CADENCES, cadenceMs };
+}
+
+function SilencePill({ bot, now }: { bot: SupervisedBot; now: number }) {
+  const state = silenceState(bot, now);
+  if (!state?.silent) return null;
+  return (
+    <span
+      data-testid={`bots-silence-${bot.id}`}
+      title={`No signal for more than ${SILENCE_CADENCES} × ${bot.timeframe} cadences.`}
+      aria-label={`Silence alert: no ${bot.timeframe} signal for more than ${SILENCE_CADENCES} cadences`}
+    >
+      <Pill tone="warn" variant="soft" withDot={false}>
+        SILENT
+      </Pill>
+    </span>
+  );
+}
 
 type HealthTone = "negative" | "warn" | "muted";
 
@@ -339,6 +395,26 @@ function BotTable() {
     return acc;
   }, [feed]);
   const rows = useMemo(() => sortBotsForDisplay(bots), [bots]);
+  const setFocusedTarget = useWorkspace((s) => s.setFocusedTarget);
+  // G3 — jump-through helpers: open the bot draft / strategy (getState avoids
+  // extra subscriptions), focus the target pane in the workspace, then route
+  // there so single-pane mode follows too.
+  const jumpToBot = useCallback(
+    (bot: SupervisedBot) => {
+      void useBotStore.getState().openExisting(bot.id);
+      setFocusedTarget("BOT");
+      navigate("/fn/BOT");
+    },
+    [setFocusedTarget],
+  );
+  const jumpToStrategy = useCallback(
+    (bot: SupervisedBot) => {
+      if (bot.strategy_id) void useStrategyStore.getState().openExisting(bot.strategy_id);
+      setFocusedTarget("STRA");
+      navigate("/fn/STRA");
+    },
+    [setFocusedTarget],
+  );
   // F10 (audit A10) — DataGrid kit: sortable columns + keyboard-reachable
   // headers + clipboard support (the table previously had none of these).
   const columns = useMemo<DataGridColumn<SupervisedBot>[]>(() => [
@@ -381,7 +457,14 @@ function BotTable() {
       align: "center",
       sortable: true,
       sortValue: (b) => deriveHealth(b).label,
-      render: (b) => <StatusPill bot={b} />,
+      render: (b) => (
+        // G3: the silence alert rides beside the health pill — a bot can be
+        // RUNNING but silent (no signal for > N cadences).
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+          <StatusPill bot={b} />
+          <SilencePill bot={b} now={now} />
+        </span>
+      ),
     },
     {
       key: "signals",
@@ -439,7 +522,40 @@ function BotTable() {
         );
       },
     },
-  ], [byBot, now]);
+    {
+      // G3 — jump-through: open this bot's draft in BOT, or its strategy in
+      // STRA. Buttons are labelled per row for screen readers.
+      key: "open",
+      header: "Open",
+      width: 104,
+      align: "center",
+      render: (b) => (
+        <span style={{ display: "inline-flex", gap: 4 }}>
+          <button
+            type="button"
+            className="btn btn--ghost"
+            data-testid={`bots-open-bot-${b.id}`}
+            aria-label={`Open ${b.symbol} in the BOT pane`}
+            title="Open the bot in BOT"
+            onClick={() => jumpToBot(b)}
+          >
+            BOT
+          </button>
+          <button
+            type="button"
+            className="btn btn--ghost"
+            data-testid={`bots-open-stra-${b.id}`}
+            aria-label={`Open strategy ${b.strategy_id} in STRA`}
+            title="Open the strategy in STRA"
+            disabled={!b.strategy_id}
+            onClick={() => jumpToStrategy(b)}
+          >
+            STRA
+          </button>
+        </span>
+      ),
+    },
+  ], [byBot, now, jumpToBot, jumpToStrategy]);
   if (bots.length === 0) {
     return (
       <div data-testid="bots-empty">

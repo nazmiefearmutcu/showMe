@@ -8,7 +8,7 @@
  *  - the SERIES segmented control drives the fetch params.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { ECSTPane } from "./ECST";
 
 interface MockFnState {
@@ -72,6 +72,28 @@ function seriesPayload(sourceMode: string) {
   };
 }
 
+/** Compare overlay fixture: paired rows + the top-level compare metadata. */
+function comparePayload(compareSourceMode = "fred") {
+  const base = seriesPayload("fred");
+  return {
+    ...base,
+    data: {
+      ...base.data,
+      data: {
+        ...(base.data.data as Record<string, unknown>),
+        compare_series_id: "GDPC1",
+        compare_series_name: "US real GDP",
+        compare_source_mode: compareSourceMode,
+        rows: [
+          { date: "2026-04-01", value: 310.1, compare_value: 23000.0, source_mode: "fred" },
+          { date: "2026-05-01", value: 311.4, compare_value: 23150.0, source_mode: "fred" },
+          { date: "2026-06-01", value: 312.2, compare_value: 23220.0, source_mode: "fred" },
+        ],
+      },
+    },
+  };
+}
+
 beforeEach(() => {
   localStorage.clear();
   lastFnArgs = undefined;
@@ -119,7 +141,53 @@ describe("ECST pane — series control", () => {
     setMockFn({ state: "ok", ...seriesPayload("fred") });
     render(<ECSTPane code="ECST" />);
     expect(lastFnArgs?.params).toEqual({ series_id: "CPIAUCSL" });
-    fireEvent.click(screen.getByRole("button", { name: "GDP" }));
+    const seriesGroup = screen.getByLabelText("SERIES");
+    fireEvent.click(within(seriesGroup).getByRole("button", { name: "GDP" }));
     expect(lastFnArgs?.params).toEqual({ series_id: "GDPC1" });
+  });
+});
+
+describe("ECST pane — compare_with control", () => {
+  it("sends compare_with once a compare series is picked and passes it back off", () => {
+    setMockFn({ state: "ok", ...seriesPayload("fred") });
+    render(<ECSTPane code="ECST" />);
+    // Default: no compare param on the wire.
+    expect(lastFnArgs?.params).toEqual({ series_id: "CPIAUCSL" });
+
+    const compareGroup = screen.getByLabelText("Compare with another series");
+    fireEvent.click(within(compareGroup).getByRole("button", { name: "GDP" }));
+    expect(lastFnArgs?.params).toEqual({
+      series_id: "CPIAUCSL",
+      compare_with: "GDPC1",
+    });
+    expect(localStorage.getItem("showme.ecst.compare")).toBe("GDPC1");
+
+    // Back to "off" — the param disappears instead of sending compare_with:"".
+    fireEvent.click(within(compareGroup).getByRole("button", { name: "—" }));
+    expect(lastFnArgs?.params).toEqual({ series_id: "CPIAUCSL" });
+  });
+
+  it("renders the dual indexed overlay + legend from the compare payload", () => {
+    setMockFn({ state: "ok", ...comparePayload("fred") });
+    render(<ECSTPane code="ECST" />);
+    expect(screen.getByTestId("ecst-compare-pill").textContent).toContain(
+      "vs US real GDP",
+    );
+    // Legend names both series and discloses the 100-rebasing.
+    expect(screen.getAllByText(/US real GDP/).length).toBeGreaterThan(0);
+    expect(screen.getByText(/both indexed to 100 at 2026-04-01/)).toBeInTheDocument();
+    const svg = screen.getByRole("img", {
+      name: /versus US real GDP/i,
+    });
+    // Two series → two paths.
+    expect(svg.querySelectorAll("path").length).toBe(2);
+  });
+
+  it("labels a baseline compare series honestly (warn pill + baseline note)", () => {
+    setMockFn({ state: "ok", ...comparePayload("macro_series_baseline") });
+    render(<ECSTPane code="ECST" />);
+    const pill = screen.getByTestId("ecst-compare-pill");
+    expect(pill.textContent).toContain("baseline");
+    expect(screen.getByText(/labelled baseline \(not live\)/)).toBeInTheDocument();
   });
 });

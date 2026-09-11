@@ -140,6 +140,11 @@ export function ALRTPane({ code }: FunctionPaneProps) {
 
   // Latest quote per unique symbol, populated by the client-side eval loop.
   const [quotes, setQuotes] = useState<Record<string, QuoteSnapshot>>({});
+  // Audit A5 ALRT [OPP]: the eval loop's OWN real evaluation timestamps per
+  // symbol. Alerts are client-side only (no backend payload carries an eval
+  // timestamp — verified against `lib/alerts.ts`), so a row renders the age
+  // chip only after this pane genuinely fetched its quote; never fabricated.
+  const [evalStamps, setEvalStamps] = useState<Record<string, number>>({});
   // Previous observed value per alert id, for cross detection + above/below
   // edge tracking. A ref (not state) so updating it never re-triggers render.
   const prevValuesRef = useRef<Map<string, number>>(new Map());
@@ -281,6 +286,15 @@ export function ALRTPane({ code }: FunctionPaneProps) {
       setQuotes((prev) => ({ ...prev, ...fresh }));
 
       const now = Date.now();
+      // Record this pass as the pane's own "last evaluated" stamp for every
+      // symbol that actually returned a quote (audit A5 ALRT OPP).
+      setEvalStamps((prev) => {
+        const next = { ...prev };
+        for (const sym of uniqueSymbols) {
+          if (fresh[sym]) next[sym] = now;
+        }
+        return next;
+      });
       for (const row of activeRows) {
         const snap = fresh[row.symbol];
         if (!snap) continue;
@@ -445,10 +459,44 @@ export function ALRTPane({ code }: FunctionPaneProps) {
           if (status === "none") {
             return <span style={{ color: "var(--text-mute)" }}>{formatMissing}</span>;
           }
+          // Audit A5 ALRT [OPP]: stalled-poll edge state — the pane's own
+          // last successful evaluation age surfaces on the row; nothing is
+          // shown until this pane has actually evaluated the symbol.
+          const evaluatedAt = evalStamps[r.symbol];
+          const ageMs =
+            typeof evaluatedAt === "number" ? Date.now() - evaluatedAt : null;
+          const stalled = ageMs != null && ageMs > POLL_MS * 3;
           return (
-            <Pill tone={status === "triggered" ? "warn" : "muted"} withDot>
-              {status}
-            </Pill>
+            <span
+              className="u-flex"
+              style={statusCellStyle}
+              data-testid="alrt-eval-status"
+              data-stalled={stalled ? "true" : "false"}
+              title={
+                stalled
+                  ? `Evaluation stalled — last quote ${fmtAge(ageMs ?? 0)} ago`
+                  : undefined
+              }
+            >
+              <Pill
+                tone={status === "triggered" || stalled ? "warn" : "muted"}
+                withDot
+              >
+                {status}
+              </Pill>
+              {ageMs != null && (
+                <span
+                  data-testid="alrt-eval-age"
+                  data-stalled={stalled ? "true" : "false"}
+                  style={{
+                    ...evalAgeStyle,
+                    ...(stalled ? evalAgeStalledStyle : null),
+                  }}
+                >
+                  {fmtAge(ageMs)}
+                </span>
+              )}
+            </span>
           );
         },
       },
@@ -496,10 +544,11 @@ export function ALRTPane({ code }: FunctionPaneProps) {
         ),
       },
     ],
-    // `quotes` drives the live Current + Status columns; the handler closures
-    // recreated each render ride along.
+    // `quotes` drives the live Current + Status columns; `evalStamps` drives
+    // the per-row "last evaluated" age; the handler closures recreated each
+    // render ride along.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [quotes],
+    [quotes, evalStamps],
   );
 
   const activeCount = rows?.filter((r) => r.active).length ?? 0;
@@ -742,6 +791,33 @@ const numericCellStyle: React.CSSProperties = {
   display: "block",
   textAlign: "right",
 };
+
+const statusCellStyle: React.CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 6,
+};
+
+const evalAgeStyle: React.CSSProperties = {
+  fontFamily: "var(--font-mono)",
+  fontSize: "var(--font-size-2xs)",
+  color: "var(--text-mute)",
+  fontVariantNumeric: "tabular-nums",
+};
+
+const evalAgeStalledStyle: React.CSSProperties = {
+  color: "var(--warn, #f6c350)",
+};
+
+/** Compact age label for the per-row "last evaluated" chip. */
+function fmtAge(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return "—";
+  const seconds = Math.floor(ms / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  return `${Math.floor(minutes / 60)}h`;
+}
 
 function quoteValue(quote: QuoteSnapshot, field: AlertRow["field"]): number | null {
   if (field === "price") return quote.price ?? quote.last ?? null;

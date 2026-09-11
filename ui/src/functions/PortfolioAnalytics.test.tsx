@@ -36,7 +36,7 @@ vi.mock("@/lib/useFunction", () => ({
 // Router navigate is a side-effect we don't need to drive here.
 vi.mock("@/lib/router", () => ({ navigate: vi.fn() }));
 
-import { PortfolioAnalyticsPane } from "./PortfolioAnalytics";
+import { PortfolioAnalyticsPane, buildRebaOrdersCsv } from "./PortfolioAnalytics";
 
 /**
  * Build a useFunction "ok" result. `payload` is the inner `data.data`
@@ -460,5 +460,60 @@ describe("PORTX toolbar discoverability (U1)", () => {
     for (const code of expected) {
       expect(distinct.has(code)).toBe(true);
     }
+  });
+});
+
+describe("PORTX REBA live book + order CSV (G3)", () => {
+  it("defaults to the model book and toggles live_portfolio", () => {
+    mockOk({ status: "ok", rows: [{ symbol: "SPY", action: "BUY", target_weight_pct: 100 }] });
+    render(<PortfolioAnalyticsPane code="REBA" symbol="" />);
+    // Untouched default: the model path (explicit false, not omitted).
+    expect(mockArgs.current?.params?.live_portfolio).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "MODEL" }));
+    expect(mockArgs.current?.params?.live_portfolio).toBe(true);
+    // The existing capital + zero-target contract is untouched.
+    expect(mockArgs.current?.params?.max_notional).toBe(100000);
+  });
+
+  it("builds the order-list CSV from the broker-shaped fields", () => {
+    const csv = buildRebaOrdersCsv([
+      {
+        symbol: "SPY", action: "BUY", quantity: 10, price: 100,
+        notional_delta: 1000, current_weight_pct: 0, target_weight_pct: 50, drift_pct: 50,
+      },
+      {
+        symbol: "QQQ", action: "SELL", quantity: 4, price: 250,
+        notional_delta: -1000, current_weight_pct: 50, target_weight_pct: 0, drift_pct: -50,
+      },
+    ]);
+    const lines = csv.split("\n");
+    expect(lines.length).toBe(3);
+    expect(lines[0]).toContain("Symbol");
+    expect(lines[0]).toContain("Notional delta");
+    expect(lines[1]).toBe("SPY,BUY,10,100,1000,0,50,50");
+    expect(lines[2]).toBe("QQQ,SELL,4,250,-1000,50,0,-50");
+  });
+
+  it("shows the CSV export control for REBA only", () => {
+    mockOk({
+      status: "ok",
+      rows: [{ symbol: "SPY", action: "BUY", quantity: 10, price: 100, notional_delta: 1000 }],
+    });
+    const { unmount } = render(<PortfolioAnalyticsPane code="REBA" symbol="" />);
+    expect(screen.getByTestId("portx-reba-export-csv")).toBeEnabled();
+    unmount();
+    mockOk({ status: "ok", rows: LIVE_ROWS });
+    render(<PortfolioAnalyticsPane code="PORT" symbol="" />);
+    expect(screen.queryByTestId("portx-reba-export-csv")).toBeNull();
+  });
+
+  it("removes the dead PSC Symbol control but keeps the sizing inputs", () => {
+    mockOk({ status: "ok", rows: [{ metric: "shares", value: 100 }] });
+    render(<PortfolioAnalyticsPane code="PSC" symbol="" />);
+    expect(screen.queryByLabelText("Symbol")).toBeNull();
+    expect(screen.getByLabelText("Account")).toBeInTheDocument();
+    expect(screen.getByLabelText("Entry")).toBeInTheDocument();
+    expect(screen.getByLabelText("Stop")).toBeInTheDocument();
+    expect(screen.getByLabelText("Target")).toBeInTheDocument();
   });
 });

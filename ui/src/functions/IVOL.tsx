@@ -124,6 +124,15 @@ interface GridRow {
   cells: Map<string, GridCell>; // mny-bucket → cell
 }
 
+// Per-side skew ladder row (OPP wave 2026-09-11): the heatmap merges calls
+// and puts per moneyness bucket, so the CALL vs PUT read is lost there. This
+// row keeps the sides separate for the active expiry.
+interface SideSkewRow {
+  strike: number;
+  call_iv?: number;
+  put_iv?: number;
+}
+
 const REFRESH_MS = 60_000;
 
 const mnyKey = (m: number): string => m.toFixed(2);
@@ -327,6 +336,53 @@ export function IVOLPane({ code, symbol }: FunctionPaneProps) {
     ? activeExpiry
     : (expiries[0] ?? "");
 
+  // Per-side skew source (OPP wave 2026-09-11): real CALL/PUT IV per strike
+  // for the active expiry, straight off the shipped surface cells (no
+  // interpolation, no merging — the heatmap above merges the sides).
+  const sideCurves = useMemo<{
+    calls: Array<{ strike: number; iv: number }>;
+    puts: Array<{ strike: number; iv: number }>;
+  }>(() => {
+    const calls: Array<{ strike: number; iv: number }> = [];
+    const puts: Array<{ strike: number; iv: number }> = [];
+    if (!effectiveExpiry) return { calls, puts };
+    for (const c of surfaceRaw) {
+      if (String(c.expiry ?? "") !== effectiveExpiry) continue;
+      if (typeof c.iv !== "number" || !Number.isFinite(c.iv)) continue;
+      if (typeof c.strike !== "number" || !Number.isFinite(c.strike)) continue;
+      const side = String(c.option_type ?? c.type ?? "").toUpperCase();
+      if (side === "CALL" || side === "C") calls.push({ strike: c.strike, iv: c.iv });
+      else if (side === "PUT" || side === "P") puts.push({ strike: c.strike, iv: c.iv });
+    }
+    calls.sort((a, b) => a.strike - b.strike);
+    puts.sort((a, b) => a.strike - b.strike);
+    return { calls, puts };
+  }, [surfaceRaw, effectiveExpiry]);
+
+  // Shared strike ladder for the active expiry (±20% around spot when the
+  // spot is known, so the strip stays compact; all strikes otherwise).
+  const sideSkewRows = useMemo<SideSkewRow[]>(() => {
+    const byStrike = new Map<number, SideSkewRow>();
+    for (const p of sideCurves.calls) {
+      const row = byStrike.get(p.strike) ?? { strike: p.strike };
+      row.call_iv = p.iv;
+      byStrike.set(p.strike, row);
+    }
+    for (const p of sideCurves.puts) {
+      const row = byStrike.get(p.strike) ?? { strike: p.strike };
+      row.put_iv = p.iv;
+      byStrike.set(p.strike, row);
+    }
+    const rows = [...byStrike.values()].sort((a, b) => a.strike - b.strike);
+    if (spot && spot > 0) {
+      const near = rows.filter((r) => Math.abs(r.strike / spot - 1) <= 0.2);
+      if (near.length >= 2) return near;
+    }
+    return rows;
+  }, [sideCurves, spot]);
+
+  const sideSkewCount = sideCurves.calls.length + sideCurves.puts.length;
+
   const sourceMode =
     payload.source_mode ?? summary.source_mode ?? "reference";
   // LIVE requires an explicit live_* mode (backend live path stamps
@@ -399,6 +455,51 @@ export function IVOLPane({ code, symbol }: FunctionPaneProps) {
         numeric: true,
         width: 96,
         render: (r) => <span style={mutedNum}>{pct(r.put_skew)}</span>,
+      },
+    ],
+    [],
+  );
+
+  // Per-side skew ladder columns — keeps CALL IV and PUT IV in separate,
+  // explicitly-labelled columns for the active expiry.
+  const skewCols = useMemo<DataGridColumn<SideSkewRow>[]>(
+    () => [
+      {
+        key: "strike",
+        header: "Strike",
+        numeric: true,
+        width: 90,
+        render: (r) => <span style={primaryNum}>{numFmt(r.strike, 2)}</span>,
+      },
+      {
+        key: "call_iv",
+        header: "Call IV",
+        numeric: true,
+        width: 90,
+        render: (r) => <span style={mutedNum}>{pct(r.call_iv)}</span>,
+      },
+      {
+        key: "put_iv",
+        header: "Put IV",
+        numeric: true,
+        width: 90,
+        render: (r) => <span style={mutedNum}>{pct(r.put_iv)}</span>,
+      },
+      {
+        key: "skew",
+        header: "Put − Call",
+        numeric: true,
+        width: 100,
+        render: (r) =>
+          typeof r.call_iv === "number" && typeof r.put_iv === "number" ? (
+            <DeltaChip
+              value={(r.put_iv - r.call_iv) * 100}
+              format="raw"
+              fractionDigits={2}
+            />
+          ) : (
+            "—"
+          ),
       },
     ],
     [],
@@ -643,6 +744,70 @@ export function IVOLPane({ code, symbol }: FunctionPaneProps) {
                 </section>
               ) : null}
 
+              {/* Per-side skew ladder (OPP): CALL vs PUT IV by strike for the
+                  active expiry — the merged moneyness heatmap cannot show it. */}
+              {sideSkewCount >= 2 && sideSkewRows.length > 0 ? (
+                <section aria-label="IV skew by strike">
+                  <div style={sectionLabelRow}>
+                    <span style={sectionLabel}>
+                      IV skew · call vs put by strike
+                    </span>
+                    <span
+                      className="u-text-mute"
+                      style={tinyMeta}
+                      data-testid="ivol-skew-mode"
+                    >
+                      {`${effectiveExpiry || "—"} · ${
+                        isReference ? "reference surface" : "live surface"
+                      }`}
+                    </span>
+                  </div>
+                  <div style={skewStripStyle}>
+                    <div style={skewCurveColStyle}>
+                      <span style={sideLabelStyle}>CALL IV</span>
+                      <Sparkline
+                        values={sideCurves.calls.map((p) => p.iv * 100)}
+                        width={220}
+                        height={38}
+                        tone="accent"
+                        ariaLabel={`Call IV by strike, ${sideCurves.calls.length} strikes, last ${pct(
+                          sideCurves.calls[sideCurves.calls.length - 1]?.iv,
+                        )}`}
+                      />
+                      <span className="u-text-mute" style={tinyMeta}>
+                        {`${sideCurves.calls.length} strikes · last ${pct(
+                          sideCurves.calls[sideCurves.calls.length - 1]?.iv,
+                        )}`}
+                      </span>
+                    </div>
+                    <div style={skewCurveColStyle}>
+                      <span style={sideLabelStyle}>PUT IV</span>
+                      <Sparkline
+                        values={sideCurves.puts.map((p) => p.iv * 100)}
+                        width={220}
+                        height={38}
+                        tone="negative"
+                        ariaLabel={`Put IV by strike, ${sideCurves.puts.length} strikes, last ${pct(
+                          sideCurves.puts[sideCurves.puts.length - 1]?.iv,
+                        )}`}
+                      />
+                      <span className="u-text-mute" style={tinyMeta}>
+                        {`${sideCurves.puts.length} strikes · last ${pct(
+                          sideCurves.puts[sideCurves.puts.length - 1]?.iv,
+                        )}`}
+                      </span>
+                    </div>
+                  </div>
+                  <DataGrid
+                    columns={skewCols}
+                    rows={sideSkewRows}
+                    rowKey={(r) => String(r.strike)}
+                    density="compact"
+                    ariaLabel="IV skew ladder — call vs put IV by strike"
+                  />
+                </section>
+              ) : null}
+
               {/* Per-expiry skew detail (real rows). */}
               {skewRows.length > 0 ? (
                 <section>
@@ -847,6 +1012,30 @@ const swatch = (bg: string): CSSProperties => ({
   background: bg,
   border: "1px solid var(--grid-color)",
 });
+
+const skewStripStyle: CSSProperties = {
+  display: "flex",
+  flexWrap: "wrap",
+  gap: 14,
+  marginBottom: 8,
+};
+
+const skewCurveColStyle: CSSProperties = {
+  display: "grid",
+  gap: 3,
+  padding: "6px 8px",
+  border: "1px solid var(--border-card)",
+  borderRadius: "var(--radius-md)",
+  background: "var(--surface-2)",
+};
+
+const sideLabelStyle: CSSProperties = {
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: "var(--font-size-2xs)",
+  letterSpacing: "0.08em",
+  color: "var(--text-secondary)",
+  fontWeight: 600,
+};
 
 const expiryCell: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",

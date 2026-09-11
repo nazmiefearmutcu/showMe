@@ -2,9 +2,11 @@
  * ECST — Economic statistics.
  *
  * Single FRED-series time-series viewer. Header SegmentedControl picks the
- * series_id (CPIAUCSL / GDPC1 / UNRATE / DGS10 / DGS2); body shows a KPI
- * ribbon from the backend's `cards` array, a Sparkline of the value path
- * across ascending dates, and a dense DataGrid of (date, value, source).
+ * series_id (CPIAUCSL / GDPC1 / UNRATE / DGS10 / DGS2) and an optional
+ * compare series (`compare_with`); body shows a KPI ribbon from the
+ * backend's `cards` array, a Sparkline of the value path across ascending
+ * dates (a dual indexed overlay when a compare series is active), and a
+ * dense DataGrid of (date, value, source).
  */
 import { useMemo, type CSSProperties } from "react";
 import {
@@ -41,6 +43,19 @@ const SERIES = [
 ] as const;
 const SERIES_IDS = SERIES.map((s) => s.value);
 
+// `compare_with` is the backend's exact param (ecst.py:33). "off" = no
+// compare series sent; every other value is a FRED series id.
+const COMPARE_OFF = "off";
+const COMPARE_OPTIONS: { value: string; label: string; title: string }[] = [
+  { value: COMPARE_OFF, label: "—", title: "No compare series" },
+  ...SERIES.map((s) => ({
+    value: s.value,
+    label: s.label,
+    title: `Compare with ${s.label} (${s.value})`,
+  })),
+];
+const COMPARE_IDS = COMPARE_OPTIONS.map((o) => o.value);
+
 interface EcstRow {
   date?: string;
   series_id?: string;
@@ -49,6 +64,7 @@ interface EcstRow {
   unit?: string;
   frequency?: string;
   source_mode?: string;
+  compare_value?: number | string | null;
 }
 
 interface EcstCard {
@@ -67,6 +83,9 @@ interface EcstPayload {
   methodology?: string;
   field_dictionary?: Record<string, string>;
   source_mode?: string;
+  compare_series_id?: string;
+  compare_series_name?: string;
+  compare_source_mode?: string;
 }
 
 export function ECSTPane({ code }: FunctionPaneProps) {
@@ -75,10 +94,23 @@ export function ECSTPane({ code }: FunctionPaneProps) {
     SERIES_IDS,
     "CPIAUCSL",
   );
+  const [compareWith, setCompareWith] = usePersistentOption<string>(
+    "showme.ecst.compare",
+    COMPARE_IDS,
+    COMPARE_OFF,
+  );
+
+  const params = useMemo(
+    () => ({
+      series_id: seriesId,
+      ...(compareWith !== COMPARE_OFF ? { compare_with: compareWith } : {}),
+    }),
+    [seriesId, compareWith],
+  );
 
   const { state, data, error, refetch } = useFunction<EcstPayload>({
     code,
-    params: { series_id: seriesId },
+    params,
   });
 
   const payload = data?.data ?? {};
@@ -113,6 +145,29 @@ export function ECSTPane({ code }: FunctionPaneProps) {
   const frequency = payload.frequency ?? rows[0]?.frequency ?? "—";
   const seriesName = payload.series_name ?? seriesId;
   const sourceMode = payload.source_mode ?? data?.sources?.[0] ?? "—";
+  const compareName = payload.compare_series_name ?? null;
+  const compareMode = payload.compare_source_mode ?? null;
+  // The backend only emits compare fields when the pane sent `compare_with`,
+  // so the payload is the source of truth for what is on screen.
+  const compareActive = payload.compare_series_id != null;
+
+  // Paired (date, value, compare_value) observations for the overlay —
+  // only rows carrying BOTH values, so the two lines share one x-axis.
+  const comparePairs = useMemo(() => {
+    if (!compareActive) return [];
+    const pairs: { date: string; value: number; compare: number }[] = [];
+    for (const row of sortedRows) {
+      const v = numeric(row.value);
+      const c = numeric(row.compare_value);
+      if (v == null || c == null) continue;
+      pairs.push({
+        date: String(row.date ?? "").slice(0, 10),
+        value: v,
+        compare: c,
+      });
+    }
+    return pairs;
+  }, [sortedRows, compareActive]);
 
   const trend = useMemo(() => deriveTrendTone(values), [values]);
   // F4 fix (A1-ECST-M): the backend can serve the labelled
@@ -192,11 +247,35 @@ export function ECSTPane({ code }: FunctionPaneProps) {
                   {isLive ? "live" : state === "ok" ? "reference" : state}
                 </Pill>
               </span>
+              {compareActive ? (
+                <span data-testid="ecst-compare-pill">
+                  <Pill
+                    tone={
+                      compareMode === "macro_series_baseline" ? "warn" : "muted"
+                    }
+                    variant="soft"
+                    withDot={false}
+                  >
+                    {`vs ${compareName ?? compareWith}${
+                      compareMode === "macro_series_baseline"
+                        ? " · baseline"
+                        : ""
+                    }`}
+                  </Pill>
+                </span>
+              ) : null}
               <SegmentedControl
                 label="SERIES"
                 value={seriesId}
                 options={SERIES}
                 onChange={setSeriesId}
+              />
+              <SegmentedControl
+                label="COMPARE"
+                value={compareWith}
+                options={COMPARE_OPTIONS}
+                onChange={(next) => setCompareWith(next)}
+                title="Compare with another series"
               />
               <LoadStatePill state={state} />
               <RefreshButton
@@ -238,12 +317,21 @@ export function ECSTPane({ code }: FunctionPaneProps) {
           ) : (
             <div className="u-grid-gap-14">
               <KPIRibbon cards={cards} seriesId={seriesId} frequency={frequency} />
-              <SeriesChart
-                values={values}
-                seriesName={seriesName}
-                tone={trend.tone}
-                summary={trend.summary}
-              />
+              {comparePairs.length >= 2 ? (
+                <CompareOverlay
+                  seriesName={seriesName}
+                  compareName={compareName ?? compareWith}
+                  pairs={comparePairs}
+                  compareMode={compareMode}
+                />
+              ) : (
+                <SeriesChart
+                  values={values}
+                  seriesName={seriesName}
+                  tone={trend.tone}
+                  summary={trend.summary}
+                />
+              )}
               <DataGrid
                 columns={COLS}
                 rows={sortedRows}
@@ -361,11 +449,153 @@ function SeriesChart({
   );
 }
 
+/**
+ * Dual-series overlay for `compare_with`. Both series are indexed to 100 at
+ * the first paired observation so a level series (CPI ~311) and a rate
+ * series (10Y ~4.2) share one honest scale; the legend states the rebasing
+ * explicitly. A baseline compare series is labelled as such — never drawn
+ * as if it were a live provider feed.
+ */
+function CompareOverlay({
+  seriesName,
+  compareName,
+  pairs,
+  compareMode,
+}: {
+  seriesName: string;
+  compareName: string;
+  pairs: { date: string; value: number; compare: number }[];
+  compareMode: string | null;
+}) {
+  const WIDTH = 920;
+  const HEIGHT = 140;
+  const PAD = 6;
+
+  const chart = useMemo(() => {
+    if (pairs.length < 2) return null;
+    const baseV = pairs[0].value;
+    const baseC = pairs[0].compare;
+    if (!baseV || !baseC) return null;
+    const indexedV = pairs.map((p) => (p.value / baseV) * 100);
+    const indexedC = pairs.map((p) => (p.compare / baseC) * 100);
+    let min = indexedV[0];
+    let max = indexedV[0];
+    for (const v of indexedV) {
+      if (v < min) min = v;
+      if (v > max) max = v;
+    }
+    for (const v of indexedC) {
+      if (v < min) min = v;
+      if (v > max) max = v;
+    }
+    const span = max - min || 1;
+    const step = (WIDTH - PAD * 2) / (pairs.length - 1);
+    const toPath = (series: number[]) =>
+      series
+        .map((v, i) => {
+          const x = PAD + i * step;
+          const y = HEIGHT - PAD - ((v - min) / span) * (HEIGHT - PAD * 2);
+          return `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`;
+        })
+        .join(" ");
+    return {
+      pathV: toPath(indexedV),
+      pathC: toPath(indexedC),
+      min,
+      max,
+    };
+  }, [pairs]);
+
+  if (!chart) {
+    return (
+      <div style={chartFrameStyle}>
+        <div style={chartHeaderStyle}>
+          <span style={chartTitleStyle}>
+            {seriesName} vs {compareName}
+          </span>
+          <span style={chartHintStyle}>
+            compare series returned no overlapping observations
+          </span>
+        </div>
+      </div>
+    );
+  }
+
+  const baseline = compareMode === "macro_series_baseline";
+  const firstDate = pairs[0]?.date || "—";
+
+  return (
+    <div style={chartFrameStyle}>
+      <div style={chartHeaderStyle}>
+        <span style={chartTitleStyle}>
+          {seriesName} vs {compareName}
+        </span>
+        <span style={chartHintStyle}>
+          {`${pairs.length} paired obs · both indexed to 100 at ${firstDate}`}
+          {baseline ? " · compare: labelled baseline (not live)" : ""}
+        </span>
+      </div>
+      <div style={chartCanvasStyle}>
+        <svg
+          width="100%"
+          viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
+          role="img"
+          aria-label={`${seriesName} versus ${compareName}, both indexed to 100 at ${firstDate}`}
+          preserveAspectRatio="none"
+          style={{ display: "block", width: "100%", height: HEIGHT }}
+        >
+          <path
+            d={chart.pathV}
+            fill="none"
+            stroke="var(--accent)"
+            strokeWidth={1.6}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            vectorEffect="non-scaling-stroke"
+          />
+          <path
+            d={chart.pathC}
+            fill="none"
+            stroke="var(--accent-2, var(--accent))"
+            strokeWidth={1.6}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeDasharray="5 3"
+            vectorEffect="non-scaling-stroke"
+          />
+        </svg>
+      </div>
+      <div style={compareLegendStyle}>
+        <span style={legendItemStyle}>
+          <span
+            aria-hidden
+            style={{ ...legendDotStyle, background: "var(--accent)" }}
+          />
+          {seriesName}
+        </span>
+        <span style={legendItemStyle}>
+          <span
+            aria-hidden
+            style={{
+              ...legendDotStyle,
+              background: "var(--accent-2, var(--accent))",
+            }}
+          />
+          {compareName}
+          {baseline ? " (baseline)" : ""}
+        </span>
+        <span style={chartHintStyle}>
+          {`index 100 = ${pairs[0].value.toLocaleString("en-US", { maximumFractionDigits: 4 })} / ${pairs[0].compare.toLocaleString("en-US", { maximumFractionDigits: 4 })}`}
+        </span>
+      </div>
+    </div>
+  );
+}
+
 function deriveTrendTone(values: number[]): {
   tone: "positive" | "negative" | "neutral";
   summary: string;
-} {
-  if (values.length < 2) {
+} {  if (values.length < 2) {
     return { tone: "neutral", summary: "no trend" };
   }
   const first = values[0];
@@ -458,4 +688,27 @@ const unitStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
   fontSize: "var(--font-size-2xs)",
   color: "var(--text-mute)",
+};
+
+const compareLegendStyle: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 14,
+  flexWrap: "wrap",
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: "var(--font-size-2xs)",
+  color: "var(--text-secondary)",
+};
+
+const legendItemStyle: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 6,
+};
+
+const legendDotStyle: CSSProperties = {
+  width: 8,
+  height: 3,
+  borderRadius: 2,
+  display: "inline-block",
 };

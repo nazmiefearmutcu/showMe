@@ -2,6 +2,9 @@ import { useMemo, useState } from "react";
 import {
   DataGrid,
   type DataGridColumn,
+  buildGridCsv,
+  downloadGridCsv,
+  gridCsvFilename,
   Empty,
   Pane,
   PaneBody,
@@ -9,6 +12,7 @@ import {
   PaneHeader,
   Pill,
   Skeleton,
+  type GridCsvColumn,
 } from "@/design-system";
 import { useFunction } from "@/lib/useFunction";
 import { navigate } from "@/lib/router";
@@ -172,10 +176,11 @@ const TOOL_CONFIG: Record<string, ToolConfig> = {
     usesSymbol: true,
   },
   PSC: {
+    // G3 residual: the Symbol control was dead — `buildParams` never sent it
+    // and psc.py computes purely from account/entry/stop/target params. It is
+    // removed rather than left as a control that changes nothing.
     title: "Position Sizing",
     subtitle: "Risk budget, R multiple, and Kelly sizing",
-    defaultSymbol: "AAPL",
-    usesSymbol: true,
   },
   PVAR: {
     title: "Position VaR",
@@ -185,6 +190,10 @@ const TOOL_CONFIG: Record<string, ToolConfig> = {
   REBA: {
     title: "Rebalancer",
     subtitle: "Target weights, drift, and estimated order deltas",
+    // G3: surfaces reba.py's existing live_portfolio mode — MODEL computes
+    // the order preview against the Capital input, LIVE derives current
+    // weights from the real portfolio book (portfolio_state).
+    supportsLive: true,
   },
   RPAR: {
     title: "Risk Parity",
@@ -317,7 +326,11 @@ export function PortfolioAnalyticsPane({ code, symbol }: FunctionPaneProps) {
                   className={`btn btn--ghost portfolio-analytics-live${live ? " portfolio-analytics-live--on" : ""}`}
                   onClick={() => setLive((v) => !v)}
                   aria-pressed={live}
-                  title="Toggle live provider mode"
+                  title={
+                    upper === "REBA"
+                      ? "Use the live portfolio book (live_portfolio) instead of the model sample"
+                      : "Toggle live provider mode"
+                  }
                 >
                   {live ? "LIVE" : "MODEL"}
                 </button>
@@ -663,6 +676,24 @@ function PortfolioAnalyticsView({
               <h3>Matrix</h3>
               <span>{rows.length} row(s)</span>
             </div>
+            {/* G3: REBA order list (BUY/SELL preview + liquidations) exports
+                through the shared CSV kit. Only REBA ships a broker-shaped
+                order list, so the control stays scoped to it. */}
+            {code === "REBA" ? (
+              <button
+                type="button"
+                className="btn btn--ghost"
+                data-testid="portx-reba-export-csv"
+                aria-label="Download the rebalance order list as CSV"
+                title="Download CSV"
+                disabled={rows.length === 0}
+                onClick={() =>
+                  downloadGridCsv(gridCsvFilename("reba-orders"), buildRebaOrdersCsv(rows))
+                }
+              >
+                CSV
+              </button>
+            ) : null}
           </header>
           <DataGrid
             columns={columns}
@@ -950,7 +981,13 @@ function buildParams(
     case "RPAR":
       return { symbols, method: state.mode, live_risk: state.live, model: !state.live };
     case "REBA":
-      return { targets: parseTargets(state.targetText), max_notional: num(state.capital, 100000) };
+      return {
+        targets: parseTargets(state.targetText),
+        max_notional: num(state.capital, 100000),
+        // G3: wire the MODEL/LIVE toggle to reba.py's live_portfolio mode.
+        // Explicit `false` keeps the model path (unchanged default).
+        live_portfolio: state.live,
+      };
     case "STRS":
       return { action: state.mode, refresh_prices: state.live };
     case "PVAR":
@@ -995,6 +1032,25 @@ function parseTargets(raw: string): Record<string, number> {
     if (Number.isFinite(pct) && pct >= 0) out[symbol.toUpperCase()] = pct / 100;
   }
   return out;
+}
+
+// G3: REBA order-list export columns — the exact broker-shaped fields
+// reba.py emits for both the model and live_portfolio paths. Rows are
+// `orders + liquidations` (the shared Matrix rows), so both are covered.
+const REBA_ORDER_CSV_COLUMNS: GridCsvColumn<Row>[] = [
+  { key: "symbol", header: "Symbol", value: (row) => row.symbol },
+  { key: "action", header: "Action", value: (row) => row.action },
+  { key: "quantity", header: "Quantity", value: (row) => row.quantity },
+  { key: "price", header: "Price", value: (row) => row.price },
+  { key: "notional_delta", header: "Notional delta", value: (row) => row.notional_delta },
+  { key: "current_weight_pct", header: "Current weight %", value: (row) => row.current_weight_pct },
+  { key: "target_weight_pct", header: "Target weight %", value: (row) => row.target_weight_pct },
+  { key: "drift_pct", header: "Drift %", value: (row) => row.drift_pct },
+];
+
+/** CSV of the REBA order preview (BUY/SELL deltas + liquidations). */
+export function buildRebaOrdersCsv(rows: Row[]): string {
+  return buildGridCsv(REBA_ORDER_CSV_COLUMNS, rows);
 }
 
 // Flagship metrics for the hero KPI, most meaningful first. The backend
