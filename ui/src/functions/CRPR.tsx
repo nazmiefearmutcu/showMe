@@ -650,7 +650,7 @@ export function CRPRPane({ code, symbol }: FunctionPaneProps) {
                           {marked ? (
                             <span style={ladderMarkerStyle}>◀ ISSUER</span>
                           ) : r.label ? (
-                            <span className="u-text-mute" style={{ fontSize: 10 }}>
+                            <span className="u-text-mute" style={{ fontSize: "var(--font-size-2xs)" }}>
                               {r.label}
                             </span>
                           ) : null}
@@ -875,7 +875,7 @@ function coverageTone(n: number | null | undefined): string {
 
 const scaleToggleStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   letterSpacing: "0.02em",
   padding: "2px 8px",
   borderRadius: "var(--radius-sm)",
@@ -888,7 +888,7 @@ const scaleToggleStyle: CSSProperties = {
 const summaryStyle: CSSProperties = {
   margin: 0,
   color: "var(--text-secondary)",
-  fontSize: 13,
+  fontSize: "var(--font-size-lg)",
   lineHeight: 1.5,
 };
 
@@ -934,7 +934,7 @@ const ladderRowStyle: CSSProperties = {
   gap: 8,
   padding: "3px 8px",
   borderRadius: "var(--radius-sm)",
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   fontFamily: "JetBrains Mono, monospace",
   fontVariantNumeric: "tabular-nums",
 };
@@ -947,7 +947,7 @@ const ladderDotStyle: CSSProperties = {
 };
 
 const ladderMarkerStyle: CSSProperties = {
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   letterSpacing: "0.05em",
   fontWeight: 700,
 };
@@ -955,7 +955,7 @@ const ladderMarkerStyle: CSSProperties = {
 const legendStyle: CSSProperties = {
   display: "flex",
   gap: 12,
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   letterSpacing: "0.04em",
   color: "var(--text-mute)",
 };
@@ -983,7 +983,7 @@ const rationaleCellStyle: CSSProperties = {
   textOverflow: "ellipsis",
   whiteSpace: "nowrap",
   maxWidth: 320,
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
 };
 
 const noticeStyle: CSSProperties = {
@@ -993,7 +993,7 @@ const noticeStyle: CSSProperties = {
   padding: "9px 10px",
   display: "grid",
   gap: 4,
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
 };
 
 const warningBox: CSSProperties = {
@@ -1021,7 +1021,7 @@ const methodPanel: CSSProperties = {
 const metaLabel: CSSProperties = {
   color: "var(--text-mute)",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   textTransform: "uppercase",
   letterSpacing: "0.08em",
   marginBottom: 6,
@@ -1031,5 +1031,5 @@ const methodText: CSSProperties = {
   margin: 0,
   color: "var(--text-secondary)",
   lineHeight: 1.5,
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
 };

@@ -60,8 +60,8 @@ export function providerLabel(value?: string): string {
     public_search: "Public web/news/social search",
     expanded_public_search: "Expanded public search",
     search_exhausted: "Search exhausted",
-    article_context: "Makale bağlamı",
-    unavailable: "Kullanılamıyor",
+    article_context: "Article context",
+    unavailable: "Unavailable",
   };
   return labels[value] ?? value.replaceAll("_", " ");
 }

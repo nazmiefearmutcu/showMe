@@ -12,7 +12,7 @@
  *   5. External links (website / github) carry descriptive aria-labels and
  *      open in a new tab safely.
  */
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TransportState } from "@/lib/market-data";
 import { DESPane } from "./DES";
@@ -127,6 +127,36 @@ describe("DES market cap — format.ts source of truth", () => {
     render(<DESPane code="DES" symbol="AAPL" />);
     // 1.8e12 → "$1.8T" via formatCurrency({compact:true}).
     expect(screen.getByText("$1.8T")).toBeTruthy();
+  });
+});
+
+describe("DES quote header — themed flash (live adoption)", () => {
+  it("flashes the last-price span with the shared classes and never on first render", () => {
+    vi.useFakeTimers();
+    try {
+      const { rerender } = render(<DESPane code="DES" symbol="AAPL" />);
+      const priceEl = () => screen.getByTestId("des-last-price");
+      // First render: nothing to compare against → no flash.
+      expect(priceEl().className).not.toMatch(/flash/);
+
+      useFunctionMock.mockReturnValue(
+        equityPayload({ regularMarketPrice: 303.5 }),
+      );
+      rerender(<DESPane code="DES" symbol="AAPL" />);
+      expect(priceEl().className).toContain("flash-pos");
+      act(() => {
+        vi.advanceTimersByTime(600);
+      });
+      expect(priceEl().className).not.toMatch(/flash/);
+
+      useFunctionMock.mockReturnValue(
+        equityPayload({ regularMarketPrice: 300.25 }),
+      );
+      rerender(<DESPane code="DES" symbol="AAPL" />);
+      expect(priceEl().className).toContain("flash-neg");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

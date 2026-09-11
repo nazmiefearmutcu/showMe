@@ -8,7 +8,7 @@
  * calendar provider returns nothing the pane renders the backend's honest
  * reason — events are never invented.
  */
-import { useMemo, type CSSProperties } from "react";
+import { useMemo, useState, type CSSProperties } from "react";
 import {
   DataGrid,
   type DataGridColumn,
@@ -18,11 +18,17 @@ import {
   PaneFooter,
   PaneHeader,
   Pill,
-  Skeleton,
   StatCard,
   StatusDivider,
   StatusSection,
 } from "@/design-system";
+import { PaneState } from "@/design-system/PaneState";
+import {
+  buildGridCsv,
+  downloadGridCsv,
+  gridCsvFilename,
+  type GridCsvColumn,
+} from "@/design-system/grid-csv";
 import { useFunction } from "@/lib/useFunction";
 import { defaultSymbolForFunction } from "@/lib/symbols";
 import {
@@ -73,6 +79,7 @@ export function EVTSPane({ code, symbol }: FunctionPaneProps) {
     PROVIDER_IDS,
     "yfinance",
   );
+  const [section, setSection] = useState("ALL");
   const effectiveSymbol = symbol || defaultSymbolForFunction(code, ["EQUITY", "ETF"]);
   const { state, data, error, refetch } = useFunction<EVTSData>({
     code,
@@ -86,12 +93,27 @@ export function EVTSPane({ code, symbol }: FunctionPaneProps) {
   const status = payload?.status ?? "—";
   const unavailable = status === "provider_unavailable";
 
+  const sections = useMemo(() => {
+    const set = new Set<string>();
+    for (const row of rows) {
+      if (row.source_section) set.add(row.source_section);
+    }
+    return ["ALL", ...Array.from(set).sort()];
+  }, [rows]);
+
+  const visible = useMemo(
+    () => (section === "ALL" ? rows : rows.filter((r) => r.source_section === section)),
+    [rows, section],
+  );
+
   const COLS: DataGridColumn<EVTSRow>[] = useMemo(
     () => [
       {
         key: "date",
         header: "Date",
         width: 130,
+        sortable: true,
+        sortValue: (r) => r.date ?? "",
         render: (r) => (
           <span style={monoPrimaryStyle}>{fmtDate(r.date)}</span>
         ),
@@ -100,6 +122,8 @@ export function EVTSPane({ code, symbol }: FunctionPaneProps) {
         key: "type",
         header: "Type",
         width: 110,
+        sortable: true,
+        sortValue: (r) => r.source_section ?? "",
         render: (r) => (
           <Pill tone={chipTone(r.source_section)} variant="soft" withDot={false}>
             {r.source_section ?? "event"}
@@ -110,6 +134,8 @@ export function EVTSPane({ code, symbol }: FunctionPaneProps) {
         key: "event",
         header: "Event",
         width: 240,
+        sortable: true,
+        sortValue: (r) => r.event ?? "",
         render: (r) => <span style={titleStyle}>{r.event ?? "—"}</span>,
       },
       {
@@ -117,85 +143,104 @@ export function EVTSPane({ code, symbol }: FunctionPaneProps) {
         header: "Value",
         numeric: true,
         width: 200,
+        sortable: true,
+        sortValue: (r) => sortableValue(r.value),
         render: (r) => <span style={monoMutedStyle}>{fmtValue(r.value)}</span>,
       },
     ],
     [],
   );
 
+  const csvColumns = useMemo<GridCsvColumn<EVTSRow>[]>(
+    () => [
+      { key: "date", header: "Date", value: (r) => fmtDate(r.date) },
+      { key: "type", header: "Type", value: (r) => r.source_section ?? "" },
+      { key: "event", header: "Event", value: (r) => r.event ?? "" },
+      {
+        key: "value",
+        header: "Value",
+        value: (r) => (Array.isArray(r.value) ? r.value.join(" / ") : r.value),
+      },
+    ],
+    [],
+  );
+
+  const exportCsv = () => {
+    const csv = buildGridCsv(csvColumns, visible);
+    downloadGridCsv(gridCsvFilename(`evts-${effectiveSymbol || "events"}`), csv);
+  };
+
   const body = !effectiveSymbol ? (
     <Empty title="Pick a symbol" body="EVTS needs an equity / ETF ticker." icon="⌖" />
-  ) : state === "loading" || state === "idle" ? (
-    <div className="u-grid-gap-8">
-      <Skeleton height={56} />
-      <Skeleton height={20} />
-      <Skeleton height={20} />
-      <Skeleton height={20} width="80%" />
-    </div>
-  ) : state === "error" ? (
-    <Empty
-      title="Function error"
-      body={error?.message ?? "—"}
-      icon="!"
-      action={
-        <button onClick={refetch} className="btn">
-          Retry
-        </button>
-      }
-    />
-  ) : unavailable ? (
-    <Empty
-      title="Events provider unavailable"
-      body={payload?.reason ?? "The corporate-events provider returned nothing — no events are fabricated."}
-      icon="!"
-      action={
-        <button onClick={refetch} className="btn">
-          Retry
-        </button>
-      }
-    />
-  ) : rows.length === 0 ? (
-    <Empty
-      title="No corporate events returned"
-      body={`The ${provider} events provider returned no dated events for ${effectiveSymbol}.`}
-      action={
-        <button onClick={refetch} className="btn">
-          Retry
-        </button>
-      }
-    />
   ) : (
-    <div className="u-grid-gap-14">
-      <section style={kpiGridStyle} aria-label="EVTS summary">
-        <StatCard
-          label="Events"
-          value={String(payload?.event_count ?? rows.length)}
-          caption={`PROVIDER ${provider.toUpperCase()} · NEWEST FIRST`}
-          tone="neutral"
+    <PaneState
+      state={state}
+      error={error}
+      empty={unavailable || rows.length === 0}
+      emptyTitle={
+        unavailable ? "Events provider unavailable" : "No corporate events returned"
+      }
+      emptyBody={
+        unavailable
+          ? (payload?.reason ??
+            "The corporate-events provider returned nothing — no events are fabricated.")
+          : `The ${provider} events provider returned no dated events for ${effectiveSymbol}.`
+      }
+      emptyIcon={unavailable ? "!" : "∅"}
+      onRetry={refetch}
+    >
+      <div className="u-grid-gap-14">
+        <section style={kpiGridStyle} aria-label="EVTS summary">
+          <StatCard
+            label="Events"
+            value={String(payload?.event_count ?? rows.length)}
+            caption={`PROVIDER ${provider.toUpperCase()} · NEWEST FIRST`}
+            tone="neutral"
+          />
+          <StatCard
+            label="Earnings rows"
+            value={String(rows.filter((r) => r.source_section === "earnings").length)}
+            caption="REPORT / ESTIMATE DATES"
+            tone="neutral"
+          />
+          <StatCard
+            label="Dividends + splits"
+            value={String(
+              rows.filter((r) => r.source_section === "dividends" || r.source_section === "splits").length,
+            )}
+            caption="DISTRIBUTION EVENTS"
+            tone="neutral"
+          />
+        </section>
+        <div style={chipRowStyle} role="group" aria-label="Event type filter">
+          {sections.map((sec) => {
+            const active = section === sec;
+            return (
+              <button
+                key={sec}
+                type="button"
+                className={`fn-segmented__opt${active ? " fn-segmented__opt--active" : ""}`}
+                aria-pressed={active}
+                onClick={() => setSection(sec)}
+                title={`Filter event type ${sec}`}
+              >
+                {sec}
+              </button>
+            );
+          })}
+        </div>
+        <DataGrid
+          columns={COLS}
+          rows={visible}
+          rowKey={(r, i) => `${r.date ?? ""}-${r.event ?? ""}-${i}`}
+          density="compact"
+          ariaLabel="EVTS corporate events"
+          defaultSortKey="date"
+          defaultSortDir="descending"
+          empty="No events match this type filter"
         />
-        <StatCard
-          label="Earnings rows"
-          value={String(rows.filter((r) => r.source_section === "earnings").length)}
-          caption="REPORT / ESTIMATE DATES"
-          tone="neutral"
-        />
-        <StatCard
-          label="Dividends + splits"
-          value={String(
-            rows.filter((r) => r.source_section === "dividends" || r.source_section === "splits").length,
-          )}
-          caption="DISTRIBUTION EVENTS"
-          tone="neutral"
-        />
-      </section>
-      <DataGrid
-        columns={COLS}
-        rows={rows}
-        rowKey={(r, i) => `${r.date ?? ""}-${r.event ?? ""}-${i}`}
-        density="compact"
-        ariaLabel="EVTS corporate events"
-      />
-    </div>
+      </div>
+    </PaneState>
   );
 
   return (
@@ -208,8 +253,18 @@ export function EVTSPane({ code, symbol }: FunctionPaneProps) {
           trailing={
             <FunctionControlGroup>
               <Pill tone="muted" variant="soft" withDot={false}>
-                {rows.length} rows
+                {visible.length}/{rows.length} rows
               </Pill>
+              <button
+                type="button"
+                className="btn"
+                onClick={exportCsv}
+                disabled={visible.length === 0}
+                title="Download CSV"
+                aria-label={`Download ${visible.length} events as CSV`}
+              >
+                CSV
+              </button>
               <SegmentedControl
                 label="PROVIDER"
                 value={provider}
@@ -263,10 +318,28 @@ function fmtValue(v: EVTSRow["value"]): string {
   return s || "—";
 }
 
+/** Sort accessor for the mixed value payload (numbers first, else text). */
+function sortableValue(v: EVTSRow["value"]): string | number {
+  if (v == null) return "";
+  if (Array.isArray(v)) return v.length > 0 ? sortableValue(v[0]) : "";
+  if (typeof v === "number") return Number.isFinite(v) ? v : "";
+  const s = String(v).trim();
+  if (!s) return "";
+  const n = Number(s);
+  return Number.isFinite(n) ? n : s;
+}
+
 const kpiGridStyle: CSSProperties = {
   display: "grid",
   gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
   gap: 10,
+};
+
+const chipRowStyle: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 6,
+  flexWrap: "wrap",
 };
 
 const monoPrimaryStyle: CSSProperties = {
@@ -282,6 +355,6 @@ const monoMutedStyle: CSSProperties = {
 };
 
 const titleStyle: CSSProperties = {
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   color: "var(--text-primary)",
 };

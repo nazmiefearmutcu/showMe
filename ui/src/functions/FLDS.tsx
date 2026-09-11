@@ -11,17 +11,16 @@ import { useMemo, useState, type CSSProperties, type FormEvent } from "react";
 import {
   DataGrid,
   type DataGridColumn,
-  Empty,
   Pane,
   PaneBody,
   PaneFooter,
   PaneHeader,
   Pill,
-  Skeleton,
   StatCard,
   StatusDivider,
   StatusSection,
 } from "@/design-system";
+import { PaneState } from "@/design-system/PaneState";
 import { useFunction } from "@/lib/useFunction";
 import {
   FunctionControlGroup,
@@ -78,6 +77,7 @@ export function FLDSPane({ code }: FunctionPaneProps) {
   );
   const [prefix, setPrefix] = usePersistentString(PREFIX_KEY, "");
   const [draft, setDraft] = useState<string>(prefix);
+  const [descFilter, setDescFilter] = useState("");
 
   const { state, data, error, refetch } = useFunction<FLDSData>({
     code,
@@ -88,13 +88,18 @@ export function FLDSPane({ code }: FunctionPaneProps) {
   const status = payload?.status ?? "—";
   const summary = payload?.summary;
   const allRows = useMemo(() => payload?.rows ?? [], [payload]);
-  const rows = useMemo(
-    () =>
-      category === "all"
-        ? allRows
-        : allRows.filter((r) => (r.category ?? "") === category),
-    [allRows, category],
-  );
+  const rows = useMemo(() => {
+    const needle = descFilter.trim().toLowerCase();
+    return allRows.filter((r) => {
+      if (category !== "all" && (r.category ?? "") !== category) return false;
+      if (!needle) return true;
+      return (
+        (r.field ?? "").toLowerCase().includes(needle) ||
+        (r.description ?? "").toLowerCase().includes(needle) ||
+        (r.example ?? "").toLowerCase().includes(needle)
+      );
+    });
+  }, [allRows, category, descFilter]);
 
   function submit(event: FormEvent) {
     event.preventDefault();
@@ -109,6 +114,8 @@ export function FLDSPane({ code }: FunctionPaneProps) {
         key: "field",
         header: "Field",
         width: 170,
+        sortable: true,
+        sortValue: (r) => r.field ?? "",
         render: (r) => (
           <span style={monoStrongStyle}>{r.field ?? "—"}</span>
         ),
@@ -117,6 +124,8 @@ export function FLDSPane({ code }: FunctionPaneProps) {
         key: "category",
         header: "Category",
         width: 120,
+        sortable: true,
+        sortValue: (r) => r.category ?? "",
         render: (r) => (
           <Pill tone="muted" variant="soft" withDot={false}>
             {r.category ?? "general"}
@@ -126,12 +135,16 @@ export function FLDSPane({ code }: FunctionPaneProps) {
       {
         key: "description",
         header: "Description",
+        sortable: true,
+        sortValue: (r) => r.description ?? "",
         render: (r) => <span style={bodyStyle}>{r.description ?? "—"}</span>,
       },
       {
         key: "example",
         header: "Where it is used",
         width: 320,
+        sortable: true,
+        sortValue: (r) => r.example ?? "",
         render: (r) => (
           <span style={monoMutedStyle}>{r.example ?? "—"}</span>
         ),
@@ -140,73 +153,69 @@ export function FLDSPane({ code }: FunctionPaneProps) {
     [],
   );
 
-  const body = state === "loading" || state === "idle" ? (
-    <div className="u-grid-gap-8">
-      <Skeleton height={56} />
-      <Skeleton height={20} />
-      <Skeleton height={20} />
-      <Skeleton height={20} width="80%" />
-    </div>
-  ) : state === "error" ? (
-    <Empty
-      title="Function error"
-      body={error?.message ?? "—"}
-      icon="!"
-      action={
-        <button onClick={refetch} className="btn">
-          Retry
-        </button>
-      }
-    />
-  ) : rows.length === 0 ? (
-    <Empty
-      title="No fields match"
-      body={
+  const body = (
+    <PaneState
+      state={state}
+      error={error}
+      empty={rows.length === 0}
+      emptyTitle="No fields match"
+      emptyBody={
         summary?.query && summary.query !== "all"
           ? `The local catalog has no field matching "${summary.query}" in the ${category === "all" ? "any" : category} category.`
           : "The local catalog returned no fields for this filter."
       }
-      icon="∅"
-      action={
-        <button onClick={refetch} className="btn">
-          Retry
-        </button>
-      }
-    />
-  ) : (
-    <div className="u-grid-gap-14">
-      <section style={kpiGridStyle} aria-label="FLDS catalog summary">
-        <StatCard
-          label="Catalog fields"
-          value={String(summary?.catalog_fields ?? "—")}
-          caption="LOCAL SHOWME CATALOG"
-          tone="neutral"
+      onRetry={refetch}
+    >
+      <div className="u-grid-gap-14">
+        <section style={kpiGridStyle} aria-label="FLDS catalog summary">
+          <StatCard
+            label="Catalog fields"
+            value={String(summary?.catalog_fields ?? "—")}
+            caption="LOCAL SHOWME CATALOG"
+            tone="neutral"
+          />
+          <StatCard
+            label="Matched"
+            value={String(summary?.matched ?? allRows.length)}
+            caption={`QUERY "${summary?.query ?? (prefix || "all")}"`}
+            tone="neutral"
+          />
+          <StatCard
+            label="Shown"
+            value={String(summary?.shown ?? rows.length)}
+            caption={`${rows.length} AFTER CATEGORY FILTER`}
+            tone="neutral"
+          />
+        </section>
+        <div role="note" style={noteStyle} aria-label="FLDS scope note">
+          Field catalog lookup only — these names feed BQL get(...), screen
+          filters, and analytics params. FLDS does not fetch live values.
+        </div>
+        <div style={filterRowStyle}>
+          <input
+            type="search"
+            aria-label="Filter descriptions"
+            value={descFilter}
+            onChange={(event) => setDescFilter(event.target.value)}
+            placeholder="filter field / description…"
+            title="Filter the returned catalog locally"
+            style={filterInputStyle}
+          />
+          <span className="u-text-mute" style={filterCountStyle}>
+            {rows.length} shown
+          </span>
+        </div>
+        <DataGrid
+          columns={COLS}
+          rows={rows}
+          rowKey={(r, i) => `${r.field ?? "f"}-${i}`}
+          density="compact"
+          ariaLabel="FLDS field catalog"
+          defaultSortKey="field"
+          defaultSortDir="none"
         />
-        <StatCard
-          label="Matched"
-          value={String(summary?.matched ?? allRows.length)}
-          caption={`QUERY "${summary?.query ?? (prefix || "all")}"`}
-          tone="neutral"
-        />
-        <StatCard
-          label="Shown"
-          value={String(summary?.shown ?? rows.length)}
-          caption={`${rows.length} AFTER CATEGORY FILTER`}
-          tone="neutral"
-        />
-      </section>
-      <div role="note" style={noteStyle} aria-label="FLDS scope note">
-        Field catalog lookup only — these names feed BQL get(...), screen
-        filters, and analytics params. FLDS does not fetch live values.
       </div>
-      <DataGrid
-        columns={COLS}
-        rows={rows}
-        rowKey={(r, i) => `${r.field ?? "f"}-${i}`}
-        density="compact"
-        ariaLabel="FLDS field catalog"
-      />
-    </div>
+    </PaneState>
   );
 
   return (
@@ -289,7 +298,7 @@ const inputStyle: CSSProperties = {
   borderRadius: "var(--radius-sm)",
   color: "var(--text-primary)",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   height: 24,
   padding: "0 6px",
   width: 140,
@@ -305,8 +314,31 @@ const noteStyle: CSSProperties = {
   border: "1px solid var(--border-subtle)",
   borderRadius: 6,
   padding: "8px 10px",
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   color: "var(--text-mute)",
+};
+
+const filterRowStyle: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 8,
+};
+
+const filterInputStyle: CSSProperties = {
+  background: "var(--surface-2)",
+  border: "1px solid var(--border-subtle)",
+  borderRadius: "var(--radius-sm)",
+  color: "var(--text-primary)",
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: "var(--font-size-md)",
+  height: 24,
+  padding: "0 6px",
+  width: 260,
+};
+
+const filterCountStyle: CSSProperties = {
+  fontSize: "var(--font-size-sm)",
+  fontFamily: "JetBrains Mono, monospace",
 };
 
 const bodyStyle: CSSProperties = {

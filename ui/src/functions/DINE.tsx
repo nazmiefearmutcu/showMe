@@ -340,7 +340,7 @@ const kpiGridStyle: CSSProperties = {
 const noteStyle: CSSProperties = {
   border: "1px solid var(--border, var(--text-mute))",
   color: "var(--text-secondary)",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   padding: "6px 8px",
   fontFamily: "JetBrains Mono, monospace",
 };
@@ -371,12 +371,12 @@ const nameStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
   fontWeight: 600,
   color: "var(--text-primary)",
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
 };
 
 const addrStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   color: "var(--text-mute)",
   overflowWrap: "anywhere",
 };
@@ -389,7 +389,7 @@ const metaRowStyle: CSSProperties = {
 
 const metaStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   color: "var(--text-secondary)",
 };
 
@@ -399,7 +399,7 @@ const inputStyle: CSSProperties = {
   borderRadius: "var(--radius-sm)",
   color: "var(--text-primary)",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   height: 24,
   padding: "0 6px",
   width: 150,

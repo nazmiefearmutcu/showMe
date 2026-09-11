@@ -16,9 +16,9 @@
  * and reset to "en" after every test.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { LANGPane } from "./LANG";
-import { listLocales, locale, setLocale } from "@/i18n";
+import { isLocaleComplete, listLocales, locale, setLocale } from "@/i18n";
 
 /* ── useFunction mock ──────────────────────────────────────────────── */
 
@@ -111,11 +111,12 @@ describe("LANG pane — load states", () => {
     expect(screen.getByText(/sidecar exploded/i)).toBeInTheDocument();
   });
 
-  it("renders the locale list when the registry answers", () => {
+  it("renders the locale grid when the registry answers", () => {
     setMockFn({ state: "ok", data: registryPayload("en") });
     const { container } = render(<LANGPane code="LANG" />);
-    const list = screen.getByRole("list", { name: /locale options/i });
-    expect(list.children.length).toBe(listLocales().length);
+    const grid = screen.getByRole("grid", { name: /locale options/i });
+    expect(grid).toBeTruthy();
+    expect(container.querySelectorAll("tbody tr").length).toBe(listLocales().length);
     expect(container.textContent).toContain("Turkish");
     expect(container.textContent).toContain("German");
   });
@@ -150,21 +151,59 @@ describe("LANG pane — honesty", () => {
 });
 
 describe("LANG pane — interaction (applies through @/i18n)", () => {
-  it("switches the UI locale via the real setLocale mechanism", () => {
+  it("switches the UI locale when a locale row is clicked", () => {
     setMockFn({ state: "ok", data: registryPayload("en") });
     render(<LANGPane code="LANG" />);
     expect(locale()).toBe("en");
-    // Click the German row (button titled with the enriched label).
+    // The locale code cell carries the actionable title; the click bubbles
+    // to the row's onRowClick.
     fireEvent.click(screen.getByTitle("Switch UI language to German"));
     // The real i18n module applied the change to the document.
     expect(locale()).toBe("de");
     expect(document.documentElement.getAttribute("lang")).toBe("de");
-    // aria-pressed moved to the German row.
+    // The active column now marks German.
     expect(
-      screen.getByTitle("Switch UI language to German"),
-    ).toHaveAttribute("aria-pressed", "true");
-    expect(
-      screen.getByTitle("Switch UI language to English"),
-    ).toHaveAttribute("aria-pressed", "false");
+      within(screen.getByRole("grid", { name: /locale options/i })).getByText("active"),
+    ).toBeInTheDocument();
+  });
+});
+
+describe("LANG pane — grid upgrade (L7)", () => {
+  it("filters the locale grid from the search box", () => {
+    setMockFn({ state: "ok", data: registryPayload("en") });
+    const { container } = render(<LANGPane code="LANG" />);
+    fireEvent.change(screen.getByLabelText("Filter locales"), {
+      target: { value: "german" },
+    });
+    expect(container.querySelectorAll("tbody tr").length).toBe(1);
+    expect(container.textContent).toContain("German");
+    // Clearing restores the full set.
+    fireEvent.change(screen.getByLabelText("Filter locales"), {
+      target: { value: "" },
+    });
+    expect(container.querySelectorAll("tbody tr").length).toBe(listLocales().length);
+  });
+
+  it("sorts the coverage matrix from the header", () => {
+    setMockFn({ state: "ok", data: registryPayload("en") });
+    const { container } = render(<LANGPane code="LANG" />);
+    const complete = listLocales().find((l) => isLocaleComplete(l));
+    expect(complete).toBeTruthy();
+    fireEvent.click(screen.getByRole("columnheader", { name: /Coverage/i }));
+    // Shell-complete locales rank above shell-labels-only locales.
+    expect(container.querySelector("tbody tr")?.textContent).toContain(
+      String(complete).toUpperCase(),
+    );
+  });
+
+  it("shows the honest empty state when the filter matches nothing", () => {
+    setMockFn({ state: "ok", data: registryPayload("en") });
+    render(<LANGPane code="LANG" />);
+    fireEvent.change(screen.getByLabelText("Filter locales"), {
+      target: { value: "zzzz" },
+    });
+    expect(screen.getByText(/No locales match/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Clear filter" }));
+    expect(screen.queryByText(/No locales match/i)).toBeNull();
   });
 });

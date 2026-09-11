@@ -604,7 +604,7 @@ export function ALRTPane({ code }: FunctionPaneProps) {
               id="alrt-threshold-error"
               data-testid="alrt-threshold-error"
               role="alert"
-              style={{ color: "var(--negative)", fontSize: 11, marginTop: 4 }}
+              style={{ color: "var(--negative)", fontSize: "var(--font-size-sm)", marginTop: 4 }}
             >
               {thresholdParsed.ok
                 ? "Threshold 0 olamaz."
@@ -704,13 +704,13 @@ const selectStyle: React.CSSProperties = {
   borderRadius: "var(--radius-md)",
   color: "var(--text-primary)",
   font: "inherit",
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   height: 28,
   padding: "0 8px",
 };
 
 const dtStyle: React.CSSProperties = {
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   letterSpacing: "0.06em",
   textTransform: "uppercase",
   color: "var(--text-mute)",
@@ -726,7 +726,7 @@ const previewStyle: React.CSSProperties = {
   border: "1px solid var(--border-subtle)",
   borderRadius: "var(--radius-md)",
   color: "var(--text-secondary)",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   fontFamily: "var(--font-mono)",
   lineHeight: 1.6,
 };

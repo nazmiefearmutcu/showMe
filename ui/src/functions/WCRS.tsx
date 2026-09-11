@@ -5,7 +5,7 @@
  * key emerging market currencies. KPI ribbon for top movers, heatmap
  * via the same DS heat tokens, hover-lift rows, methodology rail.
  */
-import { useMemo, type CSSProperties } from "react";
+import { useEffect, useMemo, type CSSProperties } from "react";
 import {
   DataGrid,
   type DataGridColumn,
@@ -84,10 +84,15 @@ export function WCRSPane({ code }: FunctionPaneProps) {
     params: {
       bases: base,
       quotes: "USD,EUR,GBP,JPY,TRY,CHF",
-      tick,
       live: true,
     },
   });
+  // Poll on the visibility tick without touching the fetch params (R2-F2) —
+  // a changing param key would turn every poll into a fresh skeleton load.
+  useEffect(() => {
+    if (tick === 0) return;
+    refetch();
+  }, [tick, refetch]);
 
   const payload = useMemo(
     () =>
@@ -163,11 +168,32 @@ export function WCRSPane({ code }: FunctionPaneProps) {
         header: "5d",
         width: 78,
         render: (r) => {
-          const series = trendForPair(r);
-          const dir = (r.change_pct ?? 0) >= 0 ? "positive" : "negative";
+          // P2 honesty: real per-row history renders solid + marked
+          // data-synthetic="false"; the procedural fallback is de-emphasized
+          // and marked synthetic (WEI pattern).
+          const real = realHistoryFor(r);
+          const series = real ?? syntheticTrendFor(r);
+          const chg = realChangePct(r);
+          const dir = (chg ?? 0) >= 0 ? "positive" : "negative";
           return (
-            <span className="u-inline-flex">
-              <Sparkline values={series} width={62} height={18} tone={dir} />
+            <span
+              style={real ? sparkRealStyle : synthSparkStyle}
+              data-synthetic={real ? "false" : "true"}
+              title={
+                real ? "Daily close history from the payload" : SYNTH_SPARK_TITLE
+              }
+            >
+              <Sparkline
+                values={series}
+                width={62}
+                height={18}
+                tone={dir}
+                ariaLabel={
+                  real
+                    ? "Daily close history"
+                    : "Illustrative trend — no real history available"
+                }
+              />
             </span>
           );
         },
@@ -177,12 +203,21 @@ export function WCRSPane({ code }: FunctionPaneProps) {
         header: "Δ %",
         numeric: true,
         width: 96,
-        render: (r) =>
-          r.change_pct != null ? (
-            <DeltaChip value={r.change_pct} format="percent" fractionDigits={2} />
-          ) : (
-            "—"
-          ),
+        render: (r) => {
+          // P2 honesty: a missing change_pct renders the em-dash; the backend
+          // used to ship a hardcoded 0.0 placeholder with no underlying
+          // series, which is not a real "+0.00%" claim and must not be
+          // presented as one.
+          const v = realChangePct(r);
+          if (v == null) {
+            return (
+              <span className="u-text-mute" title="No change data in this payload">
+                —
+              </span>
+            );
+          }
+          return <DeltaChip value={v} format="percent" fractionDigits={2} />;
+        },
       },
     ],
     [],
@@ -303,7 +338,8 @@ export function WCRSPane({ code }: FunctionPaneProps) {
 
 interface FxStats {
   pairs: number;
-  meanChange: number;
+  /** Null when the payload carries no real change data (honest em-dash). */
+  meanChange: number | null;
   leader?: { pair: string; chg: number };
   laggard?: { pair: string; chg: number };
   trend: number[];
@@ -311,7 +347,7 @@ interface FxStats {
 
 function deriveStats(rows: CrossRate[], _base: string): FxStats {
   if (!rows.length) {
-    return { pairs: 0, meanChange: 0, trend: [] };
+    return { pairs: 0, meanChange: null, trend: [] };
   }
   let acc = 0;
   let counted = 0;
@@ -319,8 +355,8 @@ function deriveStats(rows: CrossRate[], _base: string): FxStats {
   let laggard: FxStats["laggard"];
   const trend: number[] = [];
   for (const r of rows) {
-    const v = r.change_pct;
-    if (v == null || !Number.isFinite(v)) continue;
+    const v = realChangePct(r);
+    if (v == null) continue;
     acc += v;
     counted += 1;
     trend.push(v);
@@ -330,7 +366,7 @@ function deriveStats(rows: CrossRate[], _base: string): FxStats {
   }
   return {
     pairs: rows.length,
-    meanChange: counted ? acc / counted : 0,
+    meanChange: counted ? acc / counted : null,
     leader,
     laggard,
     trend: trend.slice(-22),
@@ -350,9 +386,23 @@ function KPIRibbon({
     <section style={kpiGridStyle} aria-label="WCRS KPI ribbon">
       <StatCard
         label={`${base} basket Δ`}
-        value={`${stats.meanChange >= 0 ? "+" : ""}${stats.meanChange.toFixed(3)}%`}
-        caption={`AS OF ${stamp} UTC · ${stats.pairs} pairs`}
-        tone={stats.meanChange >= 0 ? "positive" : "negative"}
+        value={
+          stats.meanChange == null
+            ? "—"
+            : `${stats.meanChange >= 0 ? "+" : ""}${stats.meanChange.toFixed(3)}%`
+        }
+        caption={
+          stats.meanChange == null
+            ? `NO CHANGE DATA · ${stats.pairs} pairs`
+            : `AS OF ${stamp} UTC · ${stats.pairs} pairs`
+        }
+        tone={
+          stats.meanChange == null
+            ? "neutral"
+            : stats.meanChange >= 0
+              ? "positive"
+              : "negative"
+        }
         trend={stats.trend}
       />
       <StatCard
@@ -397,8 +447,10 @@ function CrossHeatmap({
 }) {
   const filtered = rows.filter((row) => row.base?.toUpperCase() === activeBase);
   if (!filtered.length) return null;
+  // P2 honesty: intensity is scaled from REAL change data only; cells without
+  // a usable change stay neutral instead of leaning green off a 0 placeholder.
   const max = Math.max(
-    ...filtered.map((row) => Math.abs(Number(row.change_pct) || 0)),
+    ...filtered.map((row) => Math.abs(realChangePct(row) ?? 0)),
     1,
   );
   return (
@@ -419,11 +471,14 @@ function CrossHeatmap({
       </div>
       <div style={heatmapGrid}>
         {filtered.map((row) => {
-          const chg = Number(row.change_pct) || 0;
-          const intensity = Math.min(0.6, Math.max(0.12, Math.abs(chg) / max));
-          const tone = chg >= 0 ? "var(--positive)" : "var(--negative)";
+          const chg = realChangePct(row);
+          const hasChange = chg != null;
+          const intensity = hasChange
+            ? Math.min(0.6, Math.max(0.12, Math.abs(chg) / max))
+            : 0;
+          const tone = (chg ?? 0) >= 0 ? "var(--positive)" : "var(--negative)";
           const bg =
-            row.base === row.quote
+            row.base === row.quote || !hasChange
               ? "var(--surface-2)"
               : `color-mix(in srgb, ${tone} ${(intensity * 100).toFixed(0)}%, transparent)`;
           return (
@@ -435,16 +490,16 @@ function CrossHeatmap({
               <strong style={heatCellRate}>
                 {fmtRate(row.rate ?? row.bid)}
               </strong>
-              {row.change_pct != null ? (
+              {hasChange ? (
                 <span
                   style={{
-                    fontSize: 10,
-                    color: chg >= 0 ? "var(--positive)" : "var(--negative)",
+                    fontSize: "var(--font-size-2xs)",
+                    color: (chg as number) >= 0 ? "var(--positive)" : "var(--negative)",
                     fontFamily: "JetBrains Mono, monospace",
                   }}
                 >
-                  {chg >= 0 ? "+" : ""}
-                  {chg.toFixed(2)}%
+                  {(chg as number) >= 0 ? "+" : ""}
+                  {(chg as number).toFixed(2)}%
                 </span>
               ) : null}
             </div>
@@ -455,10 +510,22 @@ function CrossHeatmap({
   );
 }
 
-function trendForPair(r: CrossRate): number[] {
+const SYNTH_SPARK_TITLE = "Illustrative trend — no real history available";
+
+/**
+ * P2 honesty: the real per-row series, when the payload ships one. Returns
+ * null when the row carries no usable history so the caller can fall back to
+ * the explicitly-marked synthetic line instead.
+ */
+function realHistoryFor(r: CrossRate): number[] | null {
   if (Array.isArray(r.history) && r.history.length >= 4) {
     return r.history.slice(-12);
   }
+  return null;
+}
+
+/** Procedural stand-in — only ever rendered de-emphasized + data-synthetic. */
+function syntheticTrendFor(r: CrossRate): number[] {
   const seed = `${r.base ?? ""}${r.quote ?? ""}`;
   let h = 0;
   for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) % 1009;
@@ -470,6 +537,19 @@ function trendForPair(r: CrossRate): number[] {
     out.push(v);
   }
   return out;
+}
+
+/**
+ * P2 honesty: a finite change_pct is real data. The backend used to ship a
+ * hardcoded 0.0 placeholder when no real daily change existed — a zero with
+ * no supporting history series is not a meaningful "+0.00%" claim and is
+ * treated as missing (honest em-dash) instead.
+ */
+function realChangePct(r: CrossRate): number | null {
+  const v = r.change_pct;
+  if (v == null || !Number.isFinite(v)) return null;
+  if (v === 0 && realHistoryFor(r) == null) return null;
+  return v;
 }
 
 function normalizeRows(payload: unknown): CrossRate[] {
@@ -539,6 +619,18 @@ const tabBarStyle: CSSProperties = {
   background: "var(--surface-2)",
 };
 
+// P2 honesty — a real history series renders solid; the procedural fallback
+// is de-emphasized so it cannot masquerade as real history.
+const sparkRealStyle: CSSProperties = {
+  display: "inline-flex",
+};
+
+const synthSparkStyle: CSSProperties = {
+  display: "inline-flex",
+  opacity: 0.4,
+  filter: "saturate(0.6)",
+};
+
 const kpiGridStyle: CSSProperties = {
   display: "grid",
   gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
@@ -581,7 +673,7 @@ const mutedNumStyle: CSSProperties = {
 const metaLabel: CSSProperties = {
   color: "var(--text-mute)",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   textTransform: "uppercase",
   letterSpacing: "0.08em",
   marginBottom: 6,
@@ -591,7 +683,7 @@ const metaSubLabel: CSSProperties = {
   marginTop: 8,
   color: "var(--text-mute)",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   textTransform: "uppercase",
   letterSpacing: "0.06em",
 };
@@ -634,19 +726,19 @@ const heatCell: CSSProperties = {
   gap: 2,
   color: "var(--text-primary)",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   transition: "transform var(--motion-base), border-color var(--motion-base)",
 };
 
 const heatCellQuote: CSSProperties = {
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   textTransform: "uppercase",
   color: "var(--text-mute)",
   letterSpacing: "0.08em",
 };
 
 const heatCellRate: CSSProperties = {
-  fontSize: 13,
+  fontSize: "var(--font-size-lg)",
   color: "var(--text-display)",
   fontWeight: 600,
 };
@@ -664,7 +756,7 @@ const methodText: CSSProperties = {
   margin: 0,
   color: "var(--text-secondary)",
   lineHeight: 1.5,
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
 };
 
 const fieldGrid: CSSProperties = {
@@ -676,7 +768,7 @@ const fieldRow: CSSProperties = {
   display: "grid",
   gridTemplateColumns: "minmax(120px, 0.35fr) 1fr",
   gap: 10,
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   color: "var(--text-secondary)",
   paddingBottom: 4,
   borderBottom: "1px solid var(--border-row)",

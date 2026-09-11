@@ -190,7 +190,7 @@ export function ECOPane({ code }: FunctionPaneProps) {
           trailing={
             <FunctionControlGroup>
               <Pill tone="muted" variant="soft" withDot={false}>
-                {events.length} ev
+                {events.length} events
               </Pill>
               <Pill tone="accent" variant="soft" withDot={false}>
                 {`Data: ${utcStamp === formatMissing ? formatMissing : `${utcStamp} UTC`}`}
@@ -200,7 +200,7 @@ export function ECOPane({ code }: FunctionPaneProps) {
               </Pill>
               <SegmentedControl
                 label="COUNTRY"
-                title="Ülke filtresi"
+                title="Country filter"
                 value={country}
                 options={COUNTRIES}
                 onChange={setCountry}
@@ -264,9 +264,9 @@ export function ECOPane({ code }: FunctionPaneProps) {
                     rows={events}
                     rowKey={(e, i) => `${e.date ?? e.ts ?? ""}-${i}`}
                     density="compact"
-                    ariaLabel="Ekonomik takvim"
+                    ariaLabel="Economic calendar"
                   />
-                  <span style={tzNoteStyle}>Zamanlar UTC</span>
+                  <span style={tzNoteStyle}>Times UTC</span>
                 </div>
                 <NextPrintsRail events={events} />
               </div>
@@ -633,14 +633,14 @@ const kpiGridStyle: CSSProperties = {
 
 const tzNoteStyle: CSSProperties = {
   color: "var(--text-mute)",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   letterSpacing: "0.06em",
   textTransform: "uppercase",
   fontFamily: "JetBrains Mono, monospace",
 };
 
 const impCueStyle: CSSProperties = {
-  fontSize: 9,
+  fontSize: "var(--font-size-xs)",
   marginRight: 3,
   letterSpacing: "-0.06em",
 };
@@ -671,7 +671,7 @@ const railHeaderStyle: CSSProperties = {
 const sectionTitleStyle: CSSProperties = {
   textTransform: "uppercase",
   letterSpacing: "0.08em",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   color: "var(--text-mute)",
   fontFamily: "JetBrains Mono, monospace",
 };
@@ -700,12 +700,12 @@ const railCountdownStyle: CSSProperties = {
 
 const railTimeStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   color: "var(--text-secondary)",
 };
 
 const railEventStyle: CSSProperties = {
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   color: "var(--text-primary)",
 };
 
@@ -718,7 +718,7 @@ const railMetaStyle: CSSProperties = {
 
 const railCaptionStyle: CSSProperties = {
   color: "var(--text-mute)",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   letterSpacing: "0.04em",
 };
 
@@ -737,7 +737,7 @@ const whenDateStyle: CSSProperties = {
 
 const whenTimeStyle: CSSProperties = {
   color: "var(--text-mute)",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
 };
 
 const countryChipStyle: CSSProperties = {
@@ -748,7 +748,7 @@ const countryChipStyle: CSSProperties = {
   height: 18,
   borderRadius: 9,
   background: "var(--surface-3)",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   fontFamily: "JetBrains Mono, monospace",
   fontWeight: 600,
   letterSpacing: "0.06em",

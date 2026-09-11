@@ -80,7 +80,7 @@ function KPI({ label, value, fmt }: {
 }) {
   return (
     <div>
-      <div style={{ fontSize: 10 }} className="u-text-secondary">{label}</div>
+      <div style={{ fontSize: "var(--font-size-2xs)" }} className="u-text-secondary">{label}</div>
       <div style={{ fontSize: 20, fontWeight: 600 }} className={_pnlClass(value)}>
         {fmt(value)}
       </div>
@@ -184,7 +184,7 @@ function BotPill({
   const accessibleName = `${label}: ${entry.symbol} ${valueText}`;
   return (
     <div data-testid={testId} aria-label={accessibleName}>
-      <div style={{ fontSize: 10 }} className="u-text-secondary">{label}</div>
+      <div style={{ fontSize: "var(--font-size-2xs)" }} className="u-text-secondary">{label}</div>
       <div className={cls}>
         {entry.symbol}: {valueText}
       </div>
@@ -222,7 +222,7 @@ function RiskMetrics({ metrics }: { metrics: PerformanceMetrics }) {
   return (
     <div data-testid="perf-risk-metrics" style={{ margin: "8px 0" }}>
       <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
-        <h4 style={{ margin: "8px 0 4px" }}>Risk metrikleri</h4>
+        <h4 style={{ margin: "8px 0 4px" }}>Risk metrics</h4>
         {/* F2 — N shown prominently next to the ratios; warn-toned when low. */}
         <span data-testid="perf-sample-size">
           <Pill tone={lowN ? "warn" : "muted"} variant="soft" withDot={false}>
@@ -234,15 +234,15 @@ function RiskMetrics({ metrics }: { metrics: PerformanceMetrics }) {
         <div
           data-testid="perf-low-sample-warning"
           className="u-text-warn"
-          style={{ fontSize: 11, marginBottom: 4 }}
+          style={{ fontSize: "var(--font-size-sm)", marginBottom: 4 }}
         >
           ⚠ {caveat}
         </div>
       )}
       <table
         className="terminal-grid-numeric"
-        aria-label="Bot risk metrikleri"
-        style={{ width: "100%", fontSize: 11 }}
+        aria-label="Bot risk metrics"
+        style={{ width: "100%", fontSize: "var(--font-size-sm)" }}
       >
         <caption className="u-sr-only">
           Computed risk ratios — Sharpe, Sortino, profit factor, expectancy
@@ -329,29 +329,29 @@ export function PERFPane() {
       <PerfSummaryLive summary={summary} />
       <div style={{ display: "flex", gap: 24, alignItems: "center", padding: "8px 16px",
                     borderBottom: "1px solid var(--border-card)" }}>
-        <KPI label="Toplam PnL" value={totalPnL} fmt={(v) => formatSignedCurrency(v)} />
+        <KPI label="Total PnL" value={totalPnL} fmt={(v) => formatSignedCurrency(v)} />
         <KPI label="Bot count" value={leaderboard.length} fmt={(v) => formatNumber(v)} />
         <BotPill
-          label="Lider"
+          label="Leader"
           entry={topPerformer}
           tone={topPerformer && topPerformer.total_pnl >= 0 ? "ok" : "err"}
           testId="perf-kpi-lider"
         />
         <BotPill
-          label="En karli"
+          label="Top gainer"
           entry={positiveBest}
           tone="ok"
           signPrefix="+"
           testId="perf-kpi-en-karli"
         />
         <BotPill
-          label="Geride kalan"
+          label="Laggard"
           entry={bottomPerformer}
           tone={bottomPerformer && bottomPerformer.total_pnl >= 0 ? "mute" : "err"}
           testId="perf-kpi-geride-kalan"
         />
         <BotPill
-          label="En zararli"
+          label="Top loser"
           entry={negativeWorst}
           tone="err"
           testId="perf-kpi-en-zararli"
@@ -361,7 +361,7 @@ export function PERFPane() {
         <span
           data-testid="perf-last-updated"
           className="u-text-secondary"
-          style={{ marginLeft: "auto", fontSize: 11 }}
+          style={{ marginLeft: "auto", fontSize: "var(--font-size-sm)" }}
         >
           {generatedAt
             ? `Last updated: ${new Date(generatedAt).toLocaleTimeString()}`
@@ -369,7 +369,7 @@ export function PERFPane() {
         </span>
         <button
           data-testid="perf-refresh"
-          aria-label="Performans verisini yenile"
+          aria-label="Refresh performance data"
           aria-busy={loading}
           disabled={loading}
           onClick={() => loadLeaderboard()}
@@ -413,7 +413,7 @@ export function PERFPane() {
             <table
               className="terminal-grid-numeric"
               aria-label="Performance leaderboard"
-              style={{ width: "100%", fontSize: 12 }}
+              style={{ width: "100%", fontSize: "var(--font-size-md)" }}
             >
               <caption className="u-sr-only">
                 Cumulative performance across all bots — symbol, trade count,
@@ -514,7 +514,7 @@ export function PERFPane() {
             <div
               data-testid="perf-equity-disclaimer"
               className="u-text-secondary"
-              style={{ fontSize: 11, marginBottom: 4 }}
+              style={{ fontSize: "var(--font-size-sm)", marginBottom: 4 }}
             >
               Simulated ({formatCurrency(startingEquity)} start) — a relative
               curve accumulating net PnL; not the real account balance.
@@ -537,7 +537,7 @@ export function PERFPane() {
             <table
               className="terminal-grid-numeric"
               aria-label="Recent trades"
-              style={{ width: "100%", fontSize: 11 }}
+              style={{ width: "100%", fontSize: "var(--font-size-sm)" }}
             >
               <caption className="u-sr-only">
                 The bot's recent trades, newest first — entry/exit time and price,

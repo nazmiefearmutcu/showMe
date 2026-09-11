@@ -355,7 +355,7 @@ const factCardStyle: CSSProperties = {
 
 const factLabelStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 9,
+  fontSize: "var(--font-size-xs)",
   letterSpacing: "0.08em",
   color: "var(--text-mute)",
 };

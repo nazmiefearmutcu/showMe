@@ -362,7 +362,7 @@ const kpiGridStyle: CSSProperties = {
 const noteStyle: CSSProperties = {
   border: "1px solid var(--border, var(--text-mute))",
   color: "var(--text-secondary)",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   padding: "6px 8px",
   fontFamily: "JetBrains Mono, monospace",
 };
@@ -392,7 +392,7 @@ const inputStyle: CSSProperties = {
   borderRadius: "var(--radius-sm)",
   color: "var(--text-primary)",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   height: 24,
   padding: "0 6px",
   width: 150,

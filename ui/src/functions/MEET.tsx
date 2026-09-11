@@ -385,7 +385,7 @@ const contentStyle: CSSProperties = {
 };
 
 const titleStyle: CSSProperties = {
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   color: "var(--text-primary)",
   overflowWrap: "anywhere",
   display: "flex",
@@ -395,13 +395,13 @@ const titleStyle: CSSProperties = {
 
 const metaStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   color: "var(--text-mute)",
 };
 
 const stripLabelStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 9,
+  fontSize: "var(--font-size-xs)",
   letterSpacing: "0.06em",
   color: "var(--text-mute)",
 };
@@ -417,7 +417,7 @@ const agendaStyle: CSSProperties = {
 };
 
 const questionStyle: CSSProperties = {
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   color: "var(--text-primary)",
 };
 
@@ -429,5 +429,5 @@ const linkStyle: CSSProperties = {
   color: "var(--accent)",
   textDecoration: "none",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
 };

@@ -695,12 +695,12 @@ const noticeStyle: CSSProperties = {
   padding: "9px 10px",
   display: "grid",
   gap: 4,
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
 };
 
 const sectionLabel: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   letterSpacing: "0.08em",
   textTransform: "uppercase",
   color: "var(--text-mute)",
@@ -716,7 +716,7 @@ const sectionLabelRow: CSSProperties = {
 const tinyMeta: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
   fontVariantNumeric: "tabular-nums",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
 };
 
 const termBlock: CSSProperties = {
@@ -733,7 +733,7 @@ const termHead: CSSProperties = {
 const termRange: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
   fontVariantNumeric: "tabular-nums",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   color: "var(--text-secondary)",
 };
 
@@ -748,7 +748,7 @@ const surfaceTable: CSSProperties = {
   borderCollapse: "separate",
   borderSpacing: 0,
   width: "100%",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   fontFamily: "JetBrains Mono, monospace",
   fontVariantNumeric: "tabular-nums",
 };
@@ -762,7 +762,7 @@ const cornerTh: CSSProperties = {
   textAlign: "left",
   padding: "4px 8px",
   fontWeight: 600,
-  fontSize: 9,
+  fontSize: "var(--font-size-xs)",
   letterSpacing: "0.04em",
 };
 
@@ -771,7 +771,7 @@ const colTh: CSSProperties = {
   color: "var(--text-secondary)",
   fontWeight: 600,
   textAlign: "center",
-  fontSize: 9,
+  fontSize: "var(--font-size-xs)",
   whiteSpace: "nowrap",
 };
 
@@ -823,7 +823,7 @@ const legendRow: CSSProperties = {
   display: "flex",
   gap: 8,
   alignItems: "center",
-  fontSize: 9,
+  fontSize: "var(--font-size-xs)",
   marginTop: 6,
 };
 
@@ -863,7 +863,7 @@ const methodPanel: CSSProperties = {
 const metaLabel: CSSProperties = {
   color: "var(--text-mute)",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   textTransform: "uppercase",
   letterSpacing: "0.08em",
   marginBottom: 6,
@@ -873,7 +873,7 @@ const methodText: CSSProperties = {
   margin: 0,
   color: "var(--text-secondary)",
   lineHeight: 1.5,
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
 };
 
 export default IVOLPane;

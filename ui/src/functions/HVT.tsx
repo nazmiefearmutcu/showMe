@@ -237,7 +237,7 @@ export function HVTPane({ code, symbol }: FunctionPaneProps) {
                 </td>
                 <td style={tdNumStyle}>{fmtPct(r.realized_vol_pct)}</td>
                 <td style={tdNumStyle}>{r.samples ?? "—"}</td>
-                <td style={{ ...tdStyle, color: "var(--text-mute)", fontSize: 10 }}>
+                <td style={{ ...tdStyle, color: "var(--text-mute)", fontSize: "var(--font-size-2xs)" }}>
                   {r.formula ?? "stdev(daily close returns) * sqrt(252)"}
                 </td>
               </tr>
@@ -376,7 +376,7 @@ const tableStyle: CSSProperties = {
   tableLayout: "fixed",
   fontFamily: "JetBrains Mono, monospace",
   fontVariantNumeric: "tabular-nums",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
 };
 
 const thStyle: CSSProperties = {
@@ -384,7 +384,7 @@ const thStyle: CSSProperties = {
   color: "var(--text-mute)",
   fontWeight: 500,
   letterSpacing: "0.06em",
-  fontSize: 9,
+  fontSize: "var(--font-size-xs)",
   textTransform: "uppercase",
   borderBottom: "1px solid var(--border-subtle)",
 };
@@ -401,7 +401,7 @@ const tdNumStyle: CSSProperties = {
 };
 
 const noteTextStyle: CSSProperties = {
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   fontFamily: "JetBrains Mono, monospace",
   letterSpacing: "0.05em",
 };
@@ -420,6 +420,6 @@ const refNoteStyle: CSSProperties = {
   border: "1px solid var(--border-subtle)",
   background: "var(--scrim-low)",
   color: "var(--text-primary)",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   fontFamily: "JetBrains Mono, monospace",
 };

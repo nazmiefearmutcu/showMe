@@ -25,26 +25,26 @@ beforeEach(() => {
 describe("BOT pane", () => {
   it("shows empty-state copy when no draft", () => {
     render(<BOTPane />);
-    expect(screen.getAllByText(/yeni bot/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/new bot/i).length).toBeGreaterThan(0);
   });
 
   it("Yeni bot opens a blank draft", () => {
     render(<BOTPane />);
-    fireEvent.click(screen.getAllByRole("button", { name: /^\+ yeni bot$/i })[0]);
+    fireEvent.click(screen.getAllByRole("button", { name: /^\+ new bot$/i })[0]);
     expect(useBotStore.getState().draft).not.toBeNull();
-    expect(screen.getByLabelText(/strateji/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/strategy/i)).toBeInTheDocument();
   });
 
   it("renders strategy and credential dropdowns", () => {
     render(<BOTPane />);
-    fireEvent.click(screen.getAllByRole("button", { name: /^\+ yeni bot$/i })[0]);
+    fireEvent.click(screen.getAllByRole("button", { name: /^\+ new bot$/i })[0]);
     expect(screen.getByText("RSI-rev")).toBeInTheDocument();
     expect(screen.getByText(/binance:main/)).toBeInTheDocument();
   });
 
   it("setting symbol marks dirty", () => {
     render(<BOTPane />);
-    fireEvent.click(screen.getAllByRole("button", { name: /^\+ yeni bot$/i })[0]);
+    fireEvent.click(screen.getAllByRole("button", { name: /^\+ new bot$/i })[0]);
     fireEvent.change(screen.getByLabelText(/symbol/i), { target: { value: "btc/usdt" } });
     expect(useBotStore.getState().dirty).toBe(true);
     // Symbol coerces to upper:

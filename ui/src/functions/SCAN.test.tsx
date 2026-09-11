@@ -315,4 +315,26 @@ describe("SCAN pane — data honesty", () => {
     const headerCells = container.querySelectorAll("thead th");
     expect(headerCells.length).toBe(8);
   });
+
+  it("labels the procedural KPI sparklines as SYNTH (no unlabeled fake series)", async () => {
+    vi.spyOn(scanner, "runScan").mockResolvedValue(makeResult([makeRow()]));
+    const { container } = render(<SCANPane code="SCAN" />);
+    fireEvent.click(
+      screen.getByRole("button", { name: /run scan with current filters/i }),
+    );
+    await screen.findByText("BTCUSDT");
+    // Four KPI cards → four procedural sparklines, each explicitly labeled.
+    expect(screen.getAllByText("SYNTH")).toHaveLength(4);
+    const synthetic = container.querySelectorAll('[data-synthetic="true"]');
+    expect(synthetic.length).toBe(4);
+    synthetic.forEach((el) => {
+      expect(el.getAttribute("title")).toBe(
+        "Illustrative trend — no real history available",
+      );
+      expect(el.querySelector("svg")).not.toBeNull();
+    });
+    expect(screen.getByTestId("scan-kpi-synth-note")).toHaveTextContent(
+      /illustrative/i,
+    );
+  });
 });

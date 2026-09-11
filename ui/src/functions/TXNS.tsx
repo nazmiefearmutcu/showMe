@@ -317,7 +317,7 @@ export function TXNSPane({ code, symbol }: FunctionPaneProps) {
         // H2 — per-row provenance. Honest "—" when absent; CSV exports the
         // same field so the export stays consistent with the grid.
         key: "source",
-        header: "Kaynak",
+        header: "Source",
         width: 120,
         render: (r) => (
           <span className="u-text-secondary" data-testid="txns-source-cell">

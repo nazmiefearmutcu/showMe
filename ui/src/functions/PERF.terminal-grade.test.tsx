@@ -218,7 +218,7 @@ describe("PERF F4 — a11y", () => {
       leaderboard: [_entry({ bot_id: "a", symbol: "BTC/USDT", total_pnl: 50 })],
     });
     render(<PERFPane />);
-    expect(screen.getByLabelText(/Lider: BTC\/USDT/)).toBeInTheDocument();
+    expect(screen.getByLabelText(/Leader: BTC\/USDT/)).toBeInTheDocument();
   });
 
   it("leaderboard rows are keyboard-operable and mark aria-selected", () => {

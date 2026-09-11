@@ -546,7 +546,7 @@ function formatMs(value: number): string {
 
 const labelStyle: CSSProperties = {
   color: "var(--text-mute)",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   letterSpacing: "0.06em",
   textTransform: "uppercase",
 };
@@ -560,7 +560,7 @@ const textareaStyle: CSSProperties = {
   borderRadius: "var(--radius-md)",
   color: "var(--text-primary)",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   lineHeight: 1.45,
   padding: 10,
 };
@@ -595,6 +595,6 @@ const excludedRow: CSSProperties = {
   gap: 8,
   color: "var(--text-mute)",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   lineHeight: 1.35,
 };

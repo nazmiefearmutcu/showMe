@@ -381,7 +381,7 @@ function ConfirmModal({ accountLabel }: { accountLabel: string }) {
         data-testid="confirm-modal-body"
         className="order-confirm"
       >
-        <h3>Onay gerekli — {verb}</h3>
+        <h3>Confirmation required — {verb}</h3>
         <div className="order-confirm__copy">
           {expected ? (
             <>

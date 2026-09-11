@@ -405,7 +405,7 @@ describe("CRPR pane — Di2 as_of formatting", () => {
     render(<CRPRPane code="CRPR" />);
     const asOf = screen.getByTestId("crpr-as-of");
     // Either a Turkish relative label or the raw ISO date — never empty.
-    expect(asOf.textContent ?? "").toMatch(/önce|2026-03-31/);
+    expect(asOf.textContent ?? "").toMatch(/ago|just now|2026-03-31/);
   });
 
   it("shows the em-dash when as_of is absent (no fabricated client date)", () => {

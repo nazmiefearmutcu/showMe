@@ -142,7 +142,7 @@ describe("ANR pane — A1 Veryfinder source select accessible name", () => {
   it("labels the Veryfinder source <select> (getByLabelText)", () => {
     setMockFn({ state: "ok", ...okPayload() });
     render(<ANRPane code="ANR" symbol="AMZN" />);
-    const select = screen.getByLabelText("Veryfinder kaynağı");
+    const select = screen.getByLabelText("Veryfinder source");
     expect(select.tagName).toBe("SELECT");
   });
 });
@@ -220,13 +220,13 @@ describe("ANR pane — A4 RefreshButton aria-busy", () => {
 describe("ANR pane — A5 consensus rating aria-label", () => {
   it("labels the ConsensusCard rating pill with a consensus aria-label", () => {
     render(<ConsensusCard summary={{ label: "Buy", consensus_score: 3.8 }} symbol="AMZN" />);
-    expect(screen.getByLabelText(/konsensüs: Buy/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/Consensus: Buy/i)).toBeInTheDocument();
   });
 
   it("labels the header consensus pill in the full pane", () => {
     setMockFn({ state: "ok", ...okPayload() });
     render(<ANRPane code="ANR" symbol="AMZN" />);
-    expect(screen.getByLabelText(/konsensüs: BUY-LEANING/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/Consensus: BUY-LEANING/i)).toBeInTheDocument();
   });
 });
 
@@ -242,25 +242,25 @@ describe("ANR pane — D1 surface backend data_notes", () => {
       }),
     });
     render(<ANRPane code="ANR" symbol="AMZN" />);
-    expect(screen.getByText(/Veri notları/i)).toBeInTheDocument();
+    expect(screen.getByText(/Data notes/i)).toBeInTheDocument();
     expect(
       screen.getByText(/Derived target-price ranges are display references/i),
     ).toBeInTheDocument();
   });
 
-  it("does NOT render a Veri notları section when data_notes is empty", () => {
+  it("does NOT render a Data notes section when data_notes is empty", () => {
     setMockFn({ state: "ok", ...okPayload({ data_notes: [] }) });
     render(<ANRPane code="ANR" symbol="AMZN" />);
-    expect(screen.queryByText(/Veri notları/i)).toBeNull();
+    expect(screen.queryByText(/Data notes/i)).toBeNull();
   });
 });
 
 describe("ANR pane — D2 providerLabel coverage", () => {
   it("labels article_context and unavailable (not raw snake_case)", () => {
     expect(providerLabel("article_context")).not.toBe("article_context");
-    expect(providerLabel("article_context")).toBe("Makale bağlamı");
+    expect(providerLabel("article_context")).toBe("Article context");
     expect(providerLabel("unavailable")).not.toBe("unavailable");
-    expect(providerLabel("unavailable")).toBe("Kullanılamıyor");
+    expect(providerLabel("unavailable")).toBe("Unavailable");
   });
 
   it("keeps existing labels intact", () => {

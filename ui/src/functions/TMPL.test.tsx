@@ -34,10 +34,10 @@ describe("TMPL pane", () => {
   it("Use button opens modal with default name", () => {
     render(<TMPLPane />);
     fireEvent.click(screen.getByText("RSI MR"));
-    fireEvent.click(screen.getByRole("button", { name: /kullan/i }));
+    fireEvent.click(screen.getByRole("button", { name: /use this template/i }));
     expect(screen.getByRole("dialog")).toBeInTheDocument();
-    const adInput = screen.getByLabelText(/^ad$/i) as HTMLInputElement;
-    expect(adInput.value).toBe("RSI MR");
+    const nameInput = screen.getByLabelText(/^name$/i) as HTMLInputElement;
+    expect(nameInput.value).toBe("RSI MR");
   });
 
   it("Create button calls instantiate", async () => {
@@ -45,7 +45,7 @@ describe("TMPL pane", () => {
       .mockResolvedValue({ template_id: "rsi-mean-revert", strategy: { id: "abc" } as never });
     render(<TMPLPane />);
     fireEvent.click(screen.getByText("RSI MR"));
-    fireEvent.click(screen.getByRole("button", { name: /kullan/i }));
+    fireEvent.click(screen.getByRole("button", { name: /use this template/i }));
     fireEvent.click(screen.getByRole("button", { name: /create/i }));
     // Wait a tick for the promise to resolve
     await new Promise(resolve => setTimeout(resolve, 0));
@@ -53,10 +53,10 @@ describe("TMPL pane", () => {
     expect(spy.mock.calls[0][0]).toBe("rsi-mean-revert");
   });
 
-  it("Kapat closes modal", () => {
+  it("Close button closes modal", () => {
     render(<TMPLPane />);
     fireEvent.click(screen.getByText("RSI MR"));
-    fireEvent.click(screen.getByRole("button", { name: /kullan/i }));
+    fireEvent.click(screen.getByRole("button", { name: /use this template/i }));
     fireEvent.click(screen.getByRole("button", { name: /close/i }));
     expect(screen.queryByRole("dialog")).toBeNull();
   });

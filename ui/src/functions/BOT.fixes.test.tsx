@@ -86,15 +86,15 @@ describe("BOT pane fixes", () => {
   // ─── B-C2 ────────────────────────────────────────────────────────────
   it("save_disabled_when_empty — Kaydet disabled while strategy/credential/symbol blank", () => {
     render(<BOTPane />);
-    fireEvent.click(screen.getAllByRole("button", { name: /^\+ yeni bot$/i })[0]);
+    fireEvent.click(screen.getAllByRole("button", { name: /^\+ new bot$/i })[0]);
     const kaydet = screen.getByRole("button", { name: /^save$/i }) as HTMLButtonElement;
     expect(kaydet.disabled).toBe(true);
   });
 
   it("save_disabled_until_all_fields_filled — fill 2/3 still disabled", () => {
     render(<BOTPane />);
-    fireEvent.click(screen.getAllByRole("button", { name: /^\+ yeni bot$/i })[0]);
-    fireEvent.change(screen.getByLabelText(/strateji/i), { target: { value: "s1" } });
+    fireEvent.click(screen.getAllByRole("button", { name: /^\+ new bot$/i })[0]);
+    fireEvent.change(screen.getByLabelText(/strategy/i), { target: { value: "s1" } });
     fireEvent.change(screen.getByLabelText(/^symbol$/i), { target: { value: "btc/usdt" } });
     const kaydet = screen.getByRole("button", { name: /^save$/i }) as HTMLButtonElement;
     expect(kaydet.disabled).toBe(true);
@@ -103,8 +103,8 @@ describe("BOT pane fixes", () => {
 
   it("save_enabled_when_all_fields_filled", () => {
     render(<BOTPane />);
-    fireEvent.click(screen.getAllByRole("button", { name: /^\+ yeni bot$/i })[0]);
-    fireEvent.change(screen.getByLabelText(/strateji/i), { target: { value: "s1" } });
+    fireEvent.click(screen.getAllByRole("button", { name: /^\+ new bot$/i })[0]);
+    fireEvent.change(screen.getByLabelText(/strategy/i), { target: { value: "s1" } });
     fireEvent.change(screen.getByLabelText(/connection/i), { target: { value: "c1" } });
     fireEvent.change(screen.getByLabelText(/^symbol$/i), { target: { value: "btc/usdt" } });
     const kaydet = screen.getByRole("button", { name: /^save$/i }) as HTMLButtonElement;
@@ -113,7 +113,7 @@ describe("BOT pane fixes", () => {
 
   it("save_shows_inline_errors_for_each_empty_field", () => {
     render(<BOTPane />);
-    fireEvent.click(screen.getAllByRole("button", { name: /^\+ yeni bot$/i })[0]);
+    fireEvent.click(screen.getAllByRole("button", { name: /^\+ new bot$/i })[0]);
     expect(screen.getByTestId("bot-field-err-strategy")).toBeInTheDocument();
     expect(screen.getByTestId("bot-field-err-credential")).toBeInTheDocument();
     expect(screen.getByTestId("bot-field-err-symbol")).toBeInTheDocument();
@@ -183,8 +183,8 @@ describe("BOT pane fixes", () => {
     useBotStore.setState({ save: saveSpy as never });
 
     render(<BOTPane />);
-    fireEvent.click(screen.getAllByRole("button", { name: /^\+ yeni bot$/i })[0]);
-    fireEvent.change(screen.getByLabelText(/strateji/i), { target: { value: "s1" } });
+    fireEvent.click(screen.getAllByRole("button", { name: /^\+ new bot$/i })[0]);
+    fireEvent.change(screen.getByLabelText(/strategy/i), { target: { value: "s1" } });
     fireEvent.change(screen.getByLabelText(/connection/i), { target: { value: "c1" } });
     fireEvent.change(screen.getByLabelText(/^symbol$/i), { target: { value: "BTC/USDT" } });
 

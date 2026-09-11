@@ -1,4 +1,4 @@
-import { useMemo, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import {
   DataGrid,
   type DataGridColumn,
@@ -15,6 +15,8 @@ import {
   StatusDivider,
 } from "@/design-system";
 import { useFunction } from "@/lib/useFunction";
+import { useVisibilityTick } from "@/lib/useVisibilityTick";
+import { tickFlashClass, useTickFlash } from "@/lib/tick-flash";
 import { formatMissing, formatPercent, formatPrice } from "@/lib/format";
 import { maxAbsOf } from "@/lib/maxOf";
 import { navigate } from "@/lib/router";
@@ -28,6 +30,9 @@ import type { FunctionPaneProps } from "./registry-types";
 
 type HeatmapMode = "live" | "model";
 type HeatmapPeriod = "1D" | "MTD" | "QTD" | "YTD";
+
+/** Live adoption: visibility-paused 60s poll (campaign 2026-09-11). */
+const REFRESH_MS = 60_000;
 
 interface HeatmapRow {
   country?: string;
@@ -70,6 +75,16 @@ export function MarketHeatmapPane({ code }: FunctionPaneProps) {
       screen_timeout: 5,
     },
   });
+
+  // Live adoption (campaign 2026-09-11): visibility-paused 60s refetch. The
+  // tick drives `refetch()` only — never a param, or the fetch key changes
+  // every cycle and the grid skeleton re-flashes (UA-HIGH-16).
+  const tick = useVisibilityTick(REFRESH_MS);
+  useEffect(() => {
+    if (tick === 0) return; // initial mount is useFunction's own load
+    refetch();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- tick is the trigger
+  }, [tick]);
 
   const rows = useMemo(() => normalizeHeatmapRows(data?.data), [data]);
   const payloadStatus = payloadStatusLabel(data?.data, data?.metadata);
@@ -424,63 +439,96 @@ function SectorHeatGrid({
   return (
     <div className="u-grid-gap-6">
       <section style={heatGridStyle} aria-label="ETF performance heatmap">
-        {rows.map((row, idx) => {
-          const value = numericChange(row);
-          const cellSize = sizeForValue(value, maxAbs);
-          const tone =
-            value === 0
-              ? "neutral"
-              : value > 0
-                ? "positive"
-                : "negative";
-          const sym = row.etf ?? row.symbol;
-          const synthetic =
-            isModel ||
-            String(row.quote_type ?? "").toLowerCase() === "model";
-          // DI1: ratio-driven contrast (mirror HeatCell) — high-intensity
-          // tiles use the bright display color so green/red text stays legible
-          // on a saturated same-tone background; low-intensity uses secondary.
-          const fg = textColorForCell(value, maxAbs);
-          const pct = formatPercent(value, { digits: 2, signed: true });
-          return (
-            <button
-              key={`${labelForRow(row)}-${idx}`}
-              type="button"
-              className="mh-heat-cell"
-              onClick={() => onPick(sym)}
-              disabled={!sym}
-              aria-label={`${labelForRow(row)} (${sym ?? "—"}) ${pct} ${deliveredPeriod}${synthetic ? " (model)" : ""}`}
-              style={{
-                ...heatCellWrapStyle,
-                gridColumn: `span ${cellSize}`,
-                background: intensityToken(value, maxAbs),
-                borderColor:
-                  tone === "positive"
-                    ? "color-mix(in srgb, var(--positive) 32%, transparent)"
-                    : tone === "negative"
-                      ? "color-mix(in srgb, var(--negative) 32%, transparent)"
-                      : "var(--border-subtle)",
-              }}
-              title={`${labelForRow(row)} · ${pct} ${deliveredPeriod} (${isSector ? "sector" : "country"})`}
-            >
-              <div style={heatCellTopRowStyle}>
-                <strong style={{ ...heatCellLabelStyle, color: fg }}>
-                  {labelForRow(row)}
-                </strong>
-                <span style={heatCellTickerStyle}>{sym ?? "—"}</span>
-              </div>
-              <div style={heatCellValueRowStyle}>
-                <span style={{ ...heatCellValueStyle, color: fg }}>{pct}</span>
-                <span style={heatCellLastStyle}>{fmtNum(row.last)}</span>
-              </div>
-            </button>
-          );
-        })}
+        {rows.map((row, idx) => (
+          <HeatCell
+            key={`${labelForRow(row)}-${idx}`}
+            row={row}
+            isSector={isSector}
+            deliveredPeriod={deliveredPeriod}
+            isModel={isModel}
+            maxAbs={maxAbs}
+            onPick={onPick}
+          />
+        ))}
       </section>
       <p style={sizingNoteStyle} data-testid="map-sizing-note">
         Tile size = magnitude of % change (NOT market cap).
       </p>
     </div>
+  );
+}
+
+/**
+ * One heatmap tile. Extracted so `useTickFlash` can watch the tile's own
+ * change value across poll cycles: a cell whose % change moved gets the
+ * shared up/down flash class on the stable button node (no remount, no
+ * first-render flash).
+ */
+function HeatCell({
+  row,
+  isSector,
+  deliveredPeriod,
+  isModel,
+  maxAbs,
+  onPick,
+}: {
+  row: HeatmapRow;
+  isSector: boolean;
+  deliveredPeriod: string;
+  isModel: boolean;
+  maxAbs: number;
+  onPick: (sym?: string) => void;
+}) {
+  const value = numericChange(row);
+  const flash = useTickFlash(value);
+  const flashClass = tickFlashClass(flash);
+  const cellSize = sizeForValue(value, maxAbs);
+  const tone =
+    value === 0
+      ? "neutral"
+      : value > 0
+        ? "positive"
+        : "negative";
+  const sym = row.etf ?? row.symbol;
+  const synthetic =
+    isModel ||
+    String(row.quote_type ?? "").toLowerCase() === "model";
+  // DI1: ratio-driven contrast (mirror HeatCell) — high-intensity
+  // tiles use the bright display color so green/red text stays legible
+  // on a saturated same-tone background; low-intensity uses secondary.
+  const fg = textColorForCell(value, maxAbs);
+  const pct = formatPercent(value, { digits: 2, signed: true });
+  return (
+    <button
+      type="button"
+      className={`mh-heat-cell${flashClass ? ` ${flashClass}` : ""}`}
+      onClick={() => onPick(sym)}
+      disabled={!sym}
+      aria-label={`${labelForRow(row)} (${sym ?? "—"}) ${pct} ${deliveredPeriod}${synthetic ? " (model)" : ""}`}
+      style={{
+        ...heatCellWrapStyle,
+        gridColumn: `span ${cellSize}`,
+        background: intensityToken(value, maxAbs),
+        borderColor:
+          tone === "positive"
+            ? "color-mix(in srgb, var(--positive) 32%, transparent)"
+            : tone === "negative"
+              ? "color-mix(in srgb, var(--negative) 32%, transparent)"
+              : "var(--border-subtle)",
+      }}
+      title={`${labelForRow(row)} · ${pct} ${deliveredPeriod} (${isSector ? "sector" : "country"})`}
+    >
+      <div style={heatCellTopRowStyle}>
+        <strong style={{ ...heatCellLabelStyle, color: fg }}>
+          {labelForRow(row)}
+        </strong>
+        <span style={heatCellTickerStyle}>{sym ?? "—"}</span>
+      </div>
+      <div style={heatCellValueRowStyle}>
+        <span style={{ ...heatCellValueStyle, color: fg }}>{pct}</span>
+        <span style={heatCellLastStyle}>{fmtNum(row.last)}</span>
+      </div>
+    </button>
   );
 }
 
@@ -606,7 +654,7 @@ function RankRow({
           display: "inline-flex",
           alignItems: "center",
           justifyContent: "center",
-          fontSize: 9,
+          fontSize: "var(--font-size-xs)",
           fontFamily: "JetBrains Mono, monospace",
           fontVariantNumeric: "tabular-nums",
           color: textColorForCell(value, 5),
@@ -966,7 +1014,7 @@ const toolbarSegmentStyle: CSSProperties = {
 
 const toolbarLabelStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 9,
+  fontSize: "var(--font-size-xs)",
   color: "var(--text-mute)",
   letterSpacing: "0.08em",
   textTransform: "uppercase",
@@ -986,7 +1034,7 @@ const pillButtonStyle: CSSProperties = {
   padding: "3px 10px",
   borderRadius: "var(--radius-sm)",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   cursor: "pointer",
   letterSpacing: "0.04em",
   transition: "background var(--motion-fast), color var(--motion-fast)",
@@ -995,7 +1043,7 @@ const pillButtonStyle: CSSProperties = {
 const sizingNoteStyle: CSSProperties = {
   margin: 0,
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 9,
+  fontSize: "var(--font-size-xs)",
   color: "var(--text-mute)",
   letterSpacing: "0.04em",
 };
@@ -1018,7 +1066,7 @@ const statCardStyle: CSSProperties = {
 
 const statLabelStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 9,
+  fontSize: "var(--font-size-xs)",
   color: "var(--text-mute)",
   letterSpacing: "0.08em",
   textTransform: "uppercase",
@@ -1037,7 +1085,7 @@ const statValueStyle: CSSProperties = {
 
 const statSubStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   color: "var(--text-mute)",
   letterSpacing: "0.06em",
   display: "flex",
@@ -1055,7 +1103,7 @@ const breadthRowStyle: CSSProperties = {
   display: "flex",
   gap: 6,
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   fontWeight: 600,
 };
 
@@ -1092,7 +1140,7 @@ const heatCellTopRowStyle: CSSProperties = {
 };
 
 const heatCellLabelStyle: CSSProperties = {
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   color: "var(--text-display)",
   letterSpacing: "0.02em",
   overflow: "hidden",
@@ -1101,7 +1149,7 @@ const heatCellLabelStyle: CSSProperties = {
 };
 
 const heatCellTickerStyle: CSSProperties = {
-  fontSize: 9,
+  fontSize: "var(--font-size-xs)",
   color: "var(--text-mute)",
   letterSpacing: "0.06em",
 };
@@ -1119,7 +1167,7 @@ const heatCellValueStyle: CSSProperties = {
 };
 
 const heatCellLastStyle: CSSProperties = {
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   color: "var(--text-secondary)",
 };
 
@@ -1140,7 +1188,7 @@ const railSectionStyle: CSSProperties = {
 
 const railSectionTitleStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 9,
+  fontSize: "var(--font-size-xs)",
   color: "var(--text-mute)",
   letterSpacing: "0.1em",
   textTransform: "uppercase",
@@ -1159,7 +1207,7 @@ const gradientLegendTicksStyle: CSSProperties = {
   display: "flex",
   justifyContent: "space-between",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 9,
+  fontSize: "var(--font-size-xs)",
   color: "var(--text-mute)",
   letterSpacing: "0.04em",
 };
@@ -1180,7 +1228,7 @@ const rankColumnStyle: CSSProperties = {
 };
 
 const rankLabelStyle: CSSProperties = {
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   color: "var(--text-primary)",
   overflow: "hidden",
   textOverflow: "ellipsis",
@@ -1189,14 +1237,14 @@ const rankLabelStyle: CSSProperties = {
 
 const rankTickerStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 9,
+  fontSize: "var(--font-size-xs)",
   color: "var(--text-mute)",
   letterSpacing: "0.06em",
 };
 
 const rankValueStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   fontWeight: 600,
   fontVariantNumeric: "tabular-nums",
 };

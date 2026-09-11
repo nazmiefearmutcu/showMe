@@ -369,7 +369,7 @@ const fillStyle: CSSProperties = {
 const noteStyle: CSSProperties = {
   margin: 0,
   color: "var(--text-mute)",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   fontFamily: "JetBrains Mono, monospace",
 };
 

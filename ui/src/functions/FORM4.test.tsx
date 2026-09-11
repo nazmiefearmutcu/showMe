@@ -40,13 +40,23 @@ function setMockFn(next: Partial<MockFnState>) {
   if (next.refetch) mockFn.refetch = next.refetch;
 }
 
+const mockTick = { current: 0 };
+let lastFnArgs: Record<string, unknown> | undefined;
+
 vi.mock("@/lib/useFunction", () => ({
-  useFunction: () => ({
-    state: mockFn.state,
-    data: mockFn.data,
-    error: mockFn.error,
-    refetch: mockFn.refetch,
-  }),
+  useFunction: (args: Record<string, unknown>) => {
+    lastFnArgs = args;
+    return {
+      state: mockFn.state,
+      data: mockFn.data,
+      error: mockFn.error,
+      refetch: mockFn.refetch,
+    };
+  },
+}));
+
+vi.mock("@/lib/useVisibilityTick", () => ({
+  useVisibilityTick: () => mockTick.current,
 }));
 
 vi.mock("@/shell/SymbolBar", () => ({
@@ -108,6 +118,8 @@ function livePayload() {
 }
 
 beforeEach(() => {
+  mockTick.current = 0;
+  lastFnArgs = undefined;
   setMockFn({ state: "idle", data: undefined, refetch: vi.fn() });
 });
 afterEach(() => {
@@ -220,5 +232,58 @@ describe("FORM4 pane — controls", () => {
     fireEvent.click(m12);
     // The newly selected option becomes the active (disabled) one.
     expect(screen.getByRole("button", { name: "12m" })).toBeDisabled();
+  });
+});
+
+describe("FORM4 pane — visibility poll (live adoption)", () => {
+  it("refetches on a visibility tick but not on mount", () => {
+    const refetch = vi.fn();
+    setMockFn({ state: "ok", ...livePayload(), refetch });
+    const { rerender } = render(<FORM4Pane code="FORM4" symbol="AAPL" />);
+    expect(refetch).not.toHaveBeenCalled();
+
+    mockTick.current = 1;
+    rerender(<FORM4Pane code="FORM4" symbol="AAPL" />);
+    expect(refetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the window params stable across ticks (no tick key)", () => {
+    setMockFn({ state: "ok", ...livePayload() });
+    const { rerender } = render(<FORM4Pane code="FORM4" symbol="AAPL" />);
+    const before = JSON.stringify(lastFnArgs?.params ?? null);
+    expect(before).not.toContain("tick");
+
+    mockTick.current = 4;
+    rerender(<FORM4Pane code="FORM4" symbol="AAPL" />);
+    expect(JSON.stringify(lastFnArgs?.params ?? null)).toBe(before);
+  });
+});
+
+describe("FORM4 pane — new filings badge (live adoption)", () => {
+  it("shows no badge on the first payload, then +N when the count grows", () => {
+    setMockFn({ state: "ok", ...livePayload() });
+    const { rerender } = render(<FORM4Pane code="FORM4" symbol="AAPL" />);
+    expect(screen.queryByTestId("form4-new-filings")).toBeNull();
+
+    const grown = livePayload();
+    grown.data.data.n = 5;
+    setMockFn({ state: "ok", ...grown });
+    mockTick.current = 1;
+    rerender(<FORM4Pane code="FORM4" symbol="AAPL" />);
+    const badge = screen.getByTestId("form4-new-filings");
+    expect(badge.textContent).toMatch(/\+2 new filings since last poll/);
+    expect(badge.getAttribute("aria-live")).toBe("polite");
+  });
+
+  it("re-baselines on a WINDOW change instead of reporting phantom new filings", () => {
+    setMockFn({ state: "ok", ...livePayload() });
+    render(<FORM4Pane code="FORM4" symbol="AAPL" />);
+
+    const bigger = livePayload();
+    bigger.data.data.n = 9;
+    setMockFn({ state: "ok", ...bigger });
+    fireEvent.click(screen.getByRole("button", { name: "12m" }));
+    // New (symbol, window) key → the count difference is a window artefact.
+    expect(screen.queryByTestId("form4-new-filings")).toBeNull();
   });
 });

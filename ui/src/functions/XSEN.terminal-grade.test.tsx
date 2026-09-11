@@ -42,7 +42,7 @@ function fullResponse(overrides: Partial<XAnalysisResponse> = {}): XAnalysisResp
     query: "AAPL",
     post_count: 6,
     scrape_seconds: 0.5,
-    // 4 min before FROZEN_NOW (2026-06-09T12:00:00Z) → "4 dakika önce".
+    // 4 min before FROZEN_NOW (2026-06-09T12:00:00Z) → "4 minutes ago".
     fetched_at: "2026-06-09T11:56:00.000Z",
     device: "cpu",
     mood: "bullish",
@@ -70,7 +70,7 @@ function fullResponse(overrides: Partial<XAnalysisResponse> = {}): XAnalysisResp
           score: 0.91,
           emotion: "joy",
           topic: "stocks",
-          // 10 min before FROZEN_NOW (2026-06-09T12:00:00Z) → "10 dakika önce".
+          // 10 min before FROZEN_NOW (2026-06-09T12:00:00Z) → "10 minutes ago".
           date: "2026-06-09T11:50:00.000Z",
         },
         {
@@ -127,7 +127,7 @@ describe("XSEN F1 — honest freshness", () => {
     const fresh = container.querySelector('[data-testid="xsen-fetched-at"]');
     expect(fresh).not.toBeNull();
     // fetched_at is exactly 4 min before FROZEN_NOW → exact label.
-    expect(fresh!.textContent ?? "").toMatch(/4 dakika önce/);
+    expect(fresh!.textContent ?? "").toMatch(/4 minutes ago/);
     expect(fresh!.textContent ?? "").toMatch(/DATA FETCHED/i);
   });
 
@@ -136,14 +136,14 @@ describe("XSEN F1 — honest freshness", () => {
     const fresh = container.querySelector('[data-testid="xsen-fetched-at"]');
     expect(fresh).not.toBeNull();
     expect(fresh!.textContent ?? "").toMatch(/—/);
-    expect(fresh!.textContent ?? "").not.toMatch(/dakika önce/);
+    expect(fresh!.textContent ?? "").not.toMatch(/minutes ago/);
   });
 
   it("relabels scrape_seconds as analysis duration, not freshness", async () => {
     const container = await renderWithData();
     // The processing-duration field is present and labeled "ANALYSIS TIME".
     expect(container.textContent ?? "").toMatch(/ANALYSIS TIME/);
-    // It must NOT be the thing labeled as freshness ("VERİ ALINDI").
+    // It must NOT be the thing labeled as freshness ("fetched").
     const fresh = container.querySelector('[data-testid="xsen-fetched-at"]');
     expect(fresh!.textContent ?? "").not.toMatch(/ANALYSIS TIME/);
   });
@@ -168,7 +168,7 @@ describe("XSEN F3 — per-tweet date", () => {
       container.querySelectorAll('[data-testid="xsen-tweet-date"]'),
     ).map((el) => el.textContent ?? "");
     // First example is exactly 10 min before FROZEN_NOW → exact label.
-    expect(dates.some((t) => /10 dakika önce/.test(t))).toBe(true);
+    expect(dates.some((t) => /10 minutes ago/.test(t))).toBe(true);
   });
 
   it("shows honest 'no date' (not 'now') for missing dates", async () => {
@@ -177,8 +177,8 @@ describe("XSEN F3 — per-tweet date", () => {
       container.querySelectorAll('[data-testid="xsen-tweet-date"]'),
     ).map((el) => el.textContent ?? "");
     expect(dates.some((t) => /no date/.test(t))).toBe(true);
-    // Must not fabricate "az önce" (now) for the dateless post.
-    expect(dates.filter((t) => /az önce/.test(t)).length).toBe(0);
+    // Must not fabricate "just now" (now) for the dateless post.
+    expect(dates.filter((t) => /just now/.test(t)).length).toBe(0);
   });
 });
 

@@ -28,8 +28,16 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 // Each test installs its own useFunction return via this mutable holder.
 const mockReturn: { current: unknown } = { current: null };
+const mockArgs: { current: Record<string, unknown> | null } = { current: null };
+const mockTick = { current: 0 };
 vi.mock("@/lib/useFunction", () => ({
-  useFunction: () => mockReturn.current,
+  useFunction: (args: Record<string, unknown>) => {
+    mockArgs.current = args;
+    return mockReturn.current;
+  },
+}));
+vi.mock("@/lib/useVisibilityTick", () => ({
+  useVisibilityTick: () => mockTick.current,
 }));
 vi.mock("@/lib/router", () => ({ navigate: vi.fn() }));
 
@@ -82,11 +90,57 @@ function mockState(
 afterEach(() => {
   cleanup();
   mockReturn.current = null;
+  mockArgs.current = null;
+  mockTick.current = 0;
   try {
     localStorage.clear();
   } catch {
     /* jsdom may not expose localStorage in every config */
   }
+});
+
+describe("MOST — visibility poll (live adoption)", () => {
+  it("refetches on a visibility tick but not on mount", () => {
+    mockState("ok", [makeRow()]);
+    const refetch = (mockReturn.current as { refetch: ReturnType<typeof vi.fn> }).refetch;
+    const { rerender } = render(<MOSTPane code="MOST" />);
+    expect(refetch).not.toHaveBeenCalled();
+
+    mockTick.current = 1;
+    rerender(<MOSTPane code="MOST" />);
+    expect(refetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the fetch params stable across ticks (tick never becomes a param)", () => {
+    mockState("ok", [makeRow()]);
+    const { rerender } = render(<MOSTPane code="MOST" />);
+    const before = JSON.stringify(mockArgs.current?.params ?? null);
+    expect(before).not.toContain("tick");
+
+    mockTick.current = 2;
+    rerender(<MOSTPane code="MOST" />);
+    const after = JSON.stringify(mockArgs.current?.params ?? null);
+    expect(after).toBe(before);
+    expect(after).not.toContain("tick");
+  });
+
+  it("flashes a numeric cell when a row value moves", () => {
+    vi.useFakeTimers();
+    try {
+      mockState("ok", [makeRow({ last: 198.45, change_pct: 2.1 })]);
+      const { rerender } = render(<MOSTPane code="MOST" />);
+      const cells = screen.getAllByTestId("flash-value");
+      expect(cells.some((el) => /flash/.test(el.className))).toBe(false);
+
+      mockState("ok", [makeRow({ last: 201.5, change_pct: 2.1 })]);
+      rerender(<MOSTPane code="MOST" />);
+      expect(
+        screen.getAllByTestId("flash-value").some((el) => el.className.includes("flash-pos")),
+      ).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("MOST — render + a11y", () => {

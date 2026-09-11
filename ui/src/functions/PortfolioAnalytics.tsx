@@ -1039,7 +1039,10 @@ function isLowSignalKey(key: string): boolean {
 
 type PortfolioDataModeKind = "live" | "modeled" | "sample" | "degraded";
 
-interface PortfolioDataQuality {
+// L8: exported so the specialized `functions/portfolio/*` panes share the
+// exact same classifier + badge (single source of truth). Behavior of this
+// pane is unchanged.
+export interface PortfolioDataQuality {
   mode: PortfolioDataModeKind;
   /** Short human reason (fallback_reason / source_mode / status) if known. */
   reason?: string;
@@ -1073,7 +1076,7 @@ const SYNTHETIC_SOURCE_RE = /model|template|synthetic|sample/i;
  * else non-live is "modeled", with "degraded" for partial-live (provider
  * unavailable / metadata-degraded but no explicit model signal).
  */
-function portfolioDataMode(
+export function portfolioDataMode(
   payload: PortfolioPayload | undefined,
   metadata: Record<string, unknown> | undefined,
   sources: string[] | undefined,
@@ -1136,7 +1139,7 @@ function portfolioDataMode(
  * Silent when the data is genuinely live; otherwise warns that the figures
  * are illustrative (modeled / sample) or only partially live (degraded).
  */
-function PortfolioDataBadge({ quality }: { quality: PortfolioDataQuality }) {
+export function PortfolioDataBadge({ quality }: { quality: PortfolioDataQuality }) {
   if (quality.mode === "live") return null;
   const degraded = quality.mode === "degraded";
   const headline = degraded ? "PARTIAL LIVE DATA" : "SAMPLE/MODEL DATA";

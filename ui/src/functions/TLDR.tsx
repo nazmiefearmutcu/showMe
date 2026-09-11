@@ -338,7 +338,7 @@ const proseSectionStyle: CSSProperties = {
 };
 
 const sectionTitleStyle: CSSProperties = {
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   letterSpacing: 1,
   color: "var(--text-mute)",
 };
@@ -346,7 +346,7 @@ const sectionTitleStyle: CSSProperties = {
 const proseStyle: CSSProperties = {
   whiteSpace: "pre-wrap",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   lineHeight: 1.55,
   color: "var(--text-primary)",
   background: "var(--surface-1)",
@@ -362,7 +362,7 @@ const bulletListStyle: CSSProperties = {
   paddingLeft: 18,
   display: "grid",
   gap: 4,
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   color: "var(--text-primary)",
 };
 
@@ -381,7 +381,7 @@ const scopeLabelStyle: CSSProperties = {
   alignItems: "center",
   gap: 5,
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 9,
+  fontSize: "var(--font-size-xs)",
   color: "var(--text-mute)",
   letterSpacing: "0.06em",
 };

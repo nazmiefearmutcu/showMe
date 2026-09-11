@@ -448,7 +448,7 @@ const noteStyle: CSSProperties = {
   border: "1px solid var(--grid-color)",
   borderLeft: "3px solid var(--accent)",
   padding: "8px 10px",
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   color: "var(--text-mute)",
 };
 
@@ -460,14 +460,14 @@ const chipRowStyle: CSSProperties = {
 };
 
 const chipLabelStyle: CSSProperties = {
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   letterSpacing: 1,
   color: "var(--text-mute)",
 };
 
 function chipStyle(active: boolean): CSSProperties {
   return {
-    fontSize: 11,
+    fontSize: "var(--font-size-sm)",
     fontFamily: "JetBrains Mono, monospace",
     fontVariantNumeric: "tabular-nums",
     padding: "2px 8px",
@@ -485,7 +485,7 @@ const totalsStyle: CSSProperties = {
   gap: 10,
   borderTop: "1px solid var(--grid-color)",
   paddingTop: 8,
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   fontFamily: "JetBrains Mono, monospace",
   fontVariantNumeric: "tabular-nums",
   color: "var(--text-mute)",

@@ -3,25 +3,31 @@
  *
  * Surfaces the sidecar's REST manifest (backend api/dapi.py via the
  * standard /api/fn/DAPI route): one row per route with method, path,
- * purpose and an honest mutates_state badge. Client-side filter box
- * over method+path+purpose; expanding a row reveals the request-body
- * shape, response shape, and an example path so Excel/external
- * clients can wire against the same contract the engine serves.
- * source_mode is surfaced verbatim: curated_manifest vs
- * live_router_introspection.
+ * purpose and an honest mutates_state badge. Client-side filters over
+ * method / state-changing / free text; selecting a row reveals the
+ * request-body shape, response shape, an example path, and a one-click
+ * "copy as cURL" so Excel/external clients can wire against the same
+ * contract the engine serves. source_mode is surfaced verbatim:
+ * curated_manifest vs live_router_introspection.
+ *
+ * L7: converted from an inert <ul> to the shared DataGrid (sortable
+ * method/path/purpose columns, keyboard cell navigation) with row
+ * expand-on-click and the method/state filter chips.
  */
 import { useMemo, useState, type CSSProperties } from "react";
 import {
-  Empty,
+  DataGrid,
+  type DataGridColumn,
   Pane,
   PaneBody,
   PaneFooter,
   PaneHeader,
   Pill,
-  Skeleton,
   StatusDivider,
   StatusSection,
 } from "@/design-system";
+import { PaneState } from "@/design-system/PaneState";
+import { copyTextToClipboard } from "@/design-system/clipboard";
 import { useFunction } from "@/lib/useFunction";
 import {
   FunctionControlGroup,
@@ -70,8 +76,12 @@ function mutatesBadge(state: string): { label: string; tone: "negative" | "warn"
   return { label: state, tone: "warn" };
 }
 
+type StateFilter = "all" | "read" | "mutating";
+
 export function DAPIPane({ code }: FunctionPaneProps) {
   const [filter, setFilter] = useState("");
+  const [methodFilter, setMethodFilter] = useState("ALL");
+  const [stateFilter, setStateFilter] = useState<StateFilter>("all");
   const [expanded, setExpanded] = useState<string | null>(null);
   const { state, data, error, refetch } = useFunction<DAPIData>({ code });
 
@@ -79,108 +89,216 @@ export function DAPIPane({ code }: FunctionPaneProps) {
   const routes: DAPIRoute[] = useMemo(() => payload?.rows ?? [], [payload]);
   const summary = payload?.summary;
 
+  const methods = useMemo(() => {
+    const set = new Set<string>();
+    for (const route of routes) {
+      if (route.method) set.add(route.method.toUpperCase());
+    }
+    return ["ALL", ...Array.from(set).sort()];
+  }, [routes]);
+
   const visible = useMemo(() => {
     const needle = filter.trim().toLowerCase();
-    if (!needle) return routes;
-    return routes.filter((route) =>
-      `${route.method ?? ""} ${route.path ?? ""} ${route.purpose ?? ""}`
+    return routes.filter((route) => {
+      if (methodFilter !== "ALL" && (route.method ?? "").toUpperCase() !== methodFilter) {
+        return false;
+      }
+      if (stateFilter !== "all") {
+        const mutates = (route.mutates_state ?? "").trim().toLowerCase().startsWith("yes") ||
+          (route.mutates_state ?? "").trim().toLowerCase().startsWith("depends");
+        if (stateFilter === "mutating" && !mutates) return false;
+        if (stateFilter === "read" && mutates) return false;
+      }
+      if (!needle) return true;
+      return `${route.method ?? ""} ${route.path ?? ""} ${route.purpose ?? ""}`
         .toLowerCase()
-        .includes(needle),
-    );
-  }, [routes, filter]);
+        .includes(needle);
+    });
+  }, [routes, filter, methodFilter, stateFilter]);
 
   const isLive =
     (summary?.source_mode ?? "") === "live_router_introspection";
+  const baseUrl = summary?.base_url ?? "http://127.0.0.1:<sidecar-port>";
 
-  const body = state === "loading" || state === "idle" ? (
-    <div className="u-grid-gap-8">
-      <Skeleton height={24} />
-      <Skeleton height={24} />
-      <Skeleton height={24} />
-      <Skeleton height={24} width="80%" />
-    </div>
-  ) : state === "error" ? (
-    <Empty
-      title="Function error"
-      body={error?.message ?? "—"}
-      icon="!"
-      action={
-        <button onClick={refetch} className="btn">
-          Retry
-        </button>
-      }
-    />
-  ) : routes.length === 0 ? (
-    <Empty
-      title="No API routes returned"
-      body="The sidecar route manifest is empty — the engine may still be attaching."
-      action={
-        <button onClick={refetch} className="btn">
-          Retry
-        </button>
-      }
-    />
-  ) : visible.length === 0 ? (
-    <Empty
-      title={`No routes match "${filter}"`}
-      body="Filter matches method, path, or purpose text. Clear it to see all routes."
-      action={
-        <button onClick={() => setFilter("")} className="btn">
-          Clear filter
-        </button>
-      }
-    />
-  ) : (
-    <ul style={listStyle} aria-label="Sidecar REST routes">
-      {visible.map((route) => {
-        const key = `${route.method ?? ""} ${route.path ?? ""}`;
-        const isOpen = expanded === key;
-        const badge = mutatesBadge(route.mutates_state ?? "");
-        return (
-          <li key={key} style={itemStyle}>
-            <button
-              type="button"
-              className="dapi-route-row"
-              style={rowStyle}
-              aria-expanded={isOpen}
-              onClick={() => setExpanded(isOpen ? null : key)}
-              title={isOpen ? "Collapse route details" : "Expand route details"}
-            >
-              <Pill tone={methodTone(route.method ?? "")} variant="soft" withDot={false}>
-                {route.method ?? "—"}
-              </Pill>
-              <span style={pathStyle}>{route.path ?? "—"}</span>
-              <span style={purposeStyle}>{route.purpose ?? ""}</span>
-              {badge ? (
-                <Pill tone={badge.tone} variant="soft" withDot={false}>
-                  {badge.label}
-                </Pill>
-              ) : null}
-            </button>
-            {isOpen ? (
-              <dl style={detailStyle} aria-label={`Route details for ${route.path ?? "route"}`}>
-                <div style={detailRowStyle}>
-                  <dt style={dtStyle}>Request body</dt>
-                  <dd style={ddStyle}>{route.request_body ?? "—"}</dd>
-                </div>
-                <div style={detailRowStyle}>
-                  <dt style={dtStyle}>Response</dt>
-                  <dd style={ddStyle}>{route.response_shape ?? "—"}</dd>
-                </div>
-                <div style={detailRowStyle}>
-                  <dt style={dtStyle}>Example</dt>
-                  <dd style={ddStyle}>{route.example ?? "—"}</dd>
-                </div>
-                <div style={detailRowStyle}>
-                  <dt style={dtStyle}>Base URL</dt>
-                  <dd style={ddStyle}>{summary?.base_url ?? "http://127.0.0.1:<sidecar-port>"}</dd>
-                </div>
-              </dl>
-            ) : null}
-          </li>
-        );
-      })}
-    </ul>
+  const COLS: DataGridColumn<DAPIRoute>[] = useMemo(
+    () => [
+      {
+        key: "method",
+        header: "Method",
+        width: 96,
+        sortable: true,
+        sortValue: (r) => r.method ?? "",
+        render: (r) => (
+          <Pill tone={methodTone(r.method ?? "")} variant="soft" withDot={false}>
+            {r.method ?? "—"}
+          </Pill>
+        ),
+      },
+      {
+        key: "path",
+        header: "Path",
+        width: 280,
+        sortable: true,
+        sortValue: (r) => r.path ?? "",
+        render: (r) => <span style={pathStyle}>{r.path ?? "—"}</span>,
+      },
+      {
+        key: "purpose",
+        header: "Purpose",
+        sortable: true,
+        sortValue: (r) => r.purpose ?? "",
+        render: (r) => <span style={purposeStyle}>{r.purpose ?? ""}</span>,
+      },
+      {
+        key: "state",
+        header: "State",
+        width: 130,
+        render: (r) => {
+          const badge = mutatesBadge(r.mutates_state ?? "");
+          return badge ? (
+            <Pill tone={badge.tone} variant="soft" withDot={false}>
+              {badge.label}
+            </Pill>
+          ) : (
+            <span className="u-text-mute">read-only</span>
+          );
+        },
+      },
+    ],
+    [],
+  );
+
+  const expandedRoute = useMemo(
+    () => routes.find((r) => `${r.method ?? ""} ${r.path ?? ""}` === expanded),
+    [routes, expanded],
+  );
+
+  const copyAsCurl = (route: DAPIRoute) => {
+    const url = `${baseUrl.replace(/\/$/, "")}${route.path ?? ""}`;
+    const body =
+      route.request_body && route.request_body !== "-"
+        ? ` \\\n  -H "Content-Type: application/json" \\\n  -d '${route.request_body.replace(/'/g, "'\\''")}'`
+        : "";
+    copyTextToClipboard(`curl -X ${route.method ?? "GET"} "${url}"${body}`);
+  };
+
+  const body = (
+    <PaneState
+      state={state}
+      error={error}
+      empty={routes.length === 0}
+      emptyTitle="No API routes returned"
+      emptyBody="The sidecar route manifest is empty — the engine may still be attaching."
+      onRetry={refetch}
+    >
+      <div className="u-grid-gap-14">
+        <div style={chipRowStyle} role="group" aria-label="Method filter">
+          {methods.map((m) => {
+            const active = methodFilter === m;
+            return (
+              <button
+                key={m}
+                type="button"
+                className={`fn-segmented__opt${active ? " fn-segmented__opt--active" : ""}`}
+                aria-pressed={active}
+                onClick={() => setMethodFilter(m)}
+                title={`Filter method ${m}`}
+              >
+                {m}
+              </button>
+            );
+          })}
+        </div>
+        <div style={chipRowStyle} role="group" aria-label="State filter">
+          {(["all", "read", "mutating"] as StateFilter[]).map((s) => {
+            const active = stateFilter === s;
+            return (
+              <button
+                key={s}
+                type="button"
+                className={`fn-segmented__opt${active ? " fn-segmented__opt--active" : ""}`}
+                aria-pressed={active}
+                onClick={() => setStateFilter(s)}
+                title={`Filter state ${s}`}
+              >
+                {s}
+              </button>
+            );
+          })}
+        </div>
+        {visible.length === 0 ? (
+          <PaneState
+            state="ok"
+            empty
+            emptyTitle={`No routes match the current filters`}
+            emptyBody="Clear the filter box or chips to see all routes."
+            emptyAction={
+              <button
+                type="button"
+                className="btn"
+                onClick={() => {
+                  setFilter("");
+                  setMethodFilter("ALL");
+                  setStateFilter("all");
+                }}
+              >
+                Clear filters
+              </button>
+            }
+          />
+        ) : (
+          <DataGrid
+            columns={COLS}
+            rows={visible}
+            rowKey={(r) => `${r.method ?? ""} ${r.path ?? ""}`}
+            density="compact"
+            ariaLabel="Sidecar REST routes"
+            defaultSortKey="path"
+            defaultSortDir="none"
+            keyboardNavigable
+            onRowClick={(route) => {
+              const key = `${route.method ?? ""} ${route.path ?? ""}`;
+              setExpanded((prev) => (prev === key ? null : key));
+            }}
+          />
+        )}
+        {expandedRoute ? (
+          <dl
+            style={detailStyle}
+            aria-label={`Route details for ${expandedRoute.path ?? "route"}`}
+          >
+            <div style={detailHeaderRowStyle}>
+              <span style={sectionTitleStyle}>Route contract</span>
+              <button
+                type="button"
+                className="btn"
+                title="Copy as cURL"
+                aria-label={`Copy ${expandedRoute.method ?? "GET"} ${expandedRoute.path ?? ""} as cURL`}
+                onClick={() => copyAsCurl(expandedRoute)}
+              >
+                ⧉ copy as cURL
+              </button>
+            </div>
+            <div style={detailRowStyle}>
+              <dt style={dtStyle}>Request body</dt>
+              <dd style={ddStyle}>{expandedRoute.request_body ?? "—"}</dd>
+            </div>
+            <div style={detailRowStyle}>
+              <dt style={dtStyle}>Response</dt>
+              <dd style={ddStyle}>{expandedRoute.response_shape ?? "—"}</dd>
+            </div>
+            <div style={detailRowStyle}>
+              <dt style={dtStyle}>Example</dt>
+              <dd style={ddStyle}>{expandedRoute.example ?? "—"}</dd>
+            </div>
+            <div style={detailRowStyle}>
+              <dt style={dtStyle}>Base URL</dt>
+              <dd style={ddStyle}>{baseUrl}</dd>
+            </div>
+          </dl>
+        ) : null}
+      </div>
+    </PaneState>
   );
 
   return (
@@ -239,54 +357,37 @@ export function DAPIPane({ code }: FunctionPaneProps) {
   );
 }
 
-const listStyle: CSSProperties = {
-  listStyle: "none",
-  margin: 0,
-  padding: 0,
-  display: "grid",
-  gap: 4,
-};
-
-const itemStyle: CSSProperties = {
-  borderBottom: "1px solid var(--border-row)",
-  paddingBottom: 4,
-};
-
-const rowStyle: CSSProperties = {
-  all: "unset",
-  cursor: "pointer",
-  display: "flex",
-  alignItems: "center",
-  gap: 8,
-  width: "100%",
-  padding: "3px 2px",
-  boxSizing: "border-box",
-};
-
 const pathStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   color: "var(--text-primary)",
   whiteSpace: "nowrap",
 };
 
 const purposeStyle: CSSProperties = {
   color: "var(--text-mute)",
-  fontSize: 11,
-  flex: 1,
+  fontSize: "var(--font-size-sm)",
   overflow: "hidden",
   textOverflow: "ellipsis",
   whiteSpace: "nowrap",
-  textAlign: "left",
 };
 
 const detailStyle: CSSProperties = {
   margin: 0,
-  padding: "4px 8px 8px 8px",
+  padding: "8px 10px",
   display: "grid",
   gap: 3,
   background: "var(--surface-1)",
   borderRadius: "var(--radius-sm)",
+  border: "1px solid var(--border-subtle)",
+};
+
+const detailHeaderRowStyle: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  gap: 8,
+  marginBottom: 2,
 };
 
 const detailRowStyle: CSSProperties = {
@@ -297,7 +398,7 @@ const detailRowStyle: CSSProperties = {
 
 const dtStyle: CSSProperties = {
   color: "var(--text-mute)",
-  fontSize: 9,
+  fontSize: "var(--font-size-xs)",
   fontFamily: "JetBrains Mono, monospace",
   letterSpacing: "0.06em",
   textTransform: "uppercase",
@@ -308,9 +409,24 @@ const dtStyle: CSSProperties = {
 const ddStyle: CSSProperties = {
   margin: 0,
   color: "var(--text-primary)",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   fontFamily: "JetBrains Mono, monospace",
   overflowWrap: "anywhere",
+};
+
+const sectionTitleStyle: CSSProperties = {
+  textTransform: "uppercase",
+  letterSpacing: "0.08em",
+  fontSize: "var(--font-size-2xs)",
+  color: "var(--text-mute)",
+  fontFamily: "JetBrains Mono, monospace",
+};
+
+const chipRowStyle: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 6,
+  flexWrap: "wrap",
 };
 
 const inputStyle: CSSProperties = {
@@ -319,7 +435,7 @@ const inputStyle: CSSProperties = {
   borderRadius: "var(--radius-sm)",
   color: "var(--text-primary)",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   height: 24,
   padding: "0 6px",
   width: 170,

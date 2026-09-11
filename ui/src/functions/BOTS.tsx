@@ -6,15 +6,15 @@
  * aligned (BUG #10 fix).  Legacy 10s setInterval was removed.
  *
  * Bug fixes shipped here:
- *   H-SUP-2 — "Sinyaller" column reads bot.signal_count (Agent 2 field) when
- *             present, with a feed-derived fallback that tooltips "(son N)".
- *   H-SUP-4 — bot.permission_revoked renders a red "izin iptal" badge so
- *             users see a stale live bot before clicking through.
+ *   H-SUP-2 — "Signals" column reads bot.signal_count (Agent 2 field) when
+ *             present, with a feed-derived fallback that tooltips "(last N)".
+ *   H-SUP-4 — bot.permission_revoked renders a red "permission revoked" badge
+ *             so users see a stale live bot before clicking through.
  *   BUG #6  — timestamps render in the user's local timezone instead of a
  *             UTC ISO slice; KPI bucket logic (_localDateOf) already does
  *             this, so the table matches.
  *   BUG #11 — KPI refresh button moved next to the table heading and
- *             relabeled "Tümünü yenile".
+ *             relabeled "Refresh all".
  *
  * Terminal-grade pass (real supervision health, honesty, a11y, states):
  *   F1 — health-aware status Pill: OFF / STUCK / DEGRADED / LIVE / SHADOW,
@@ -96,14 +96,14 @@ function isUnhealthy(bot: SupervisedBot): boolean {
 function StatusPill({ bot }: { bot: SupervisedBot }) {
   const { tone, label, withDot } = deriveHealth(bot);
   // F1 — Pill carries the visible label; the wrapper gives it an accessible
-  // name so screen readers + keyboard users get "Durum: STUCK/DEGRADED/LIVE/…".
+  // name so screen readers + keyboard users get "Status: STUCK/DEGRADED/LIVE/…".
   //
   // P2-A — this is a plain labelled <span>, NOT role="status". With N rows and
   // a 10s poll that re-renders the table, a per-row live region re-announces
   // every status on every cycle (SR-spam). The single pane-level summary live
   // region (SupervisionSummaryLive) carries the only announcement instead.
   return (
-    <span aria-label={`Durum: ${label}`}>
+    <span aria-label={`Status: ${label}`}>
       <Pill tone={tone} variant="soft" withDot={withDot}>
         {label}
       </Pill>
@@ -188,8 +188,8 @@ function KPIStrip({ unhealthy }: { unhealthy: number }) {
   return (
     <div style={{ display: "flex", gap: 24, alignItems: "center", padding: "8px 16px",
                   borderBottom: "1px solid var(--border-card)" }}>
-      <KPI label="Toplam bot" value={stats.total} />
-      <KPI label="Etkin" value={stats.enabled} />
+      <KPI label="Total bots" value={stats.total} />
+      <KPI label="Enabled" value={stats.enabled} />
       <KPI label="Live" value={stats.live} highlight={stats.live > 0 ? "negative" : undefined} />
       <KPI label="Signals today" value={stats.signals_today} />
       {/* F6 — at-a-glance unhealthy count so a supervisor sees problems
@@ -201,7 +201,7 @@ function KPIStrip({ unhealthy }: { unhealthy: number }) {
           highlight={unhealthy > 0 ? "warn" : undefined}
         />
       </div>
-      <div style={{ marginLeft: "auto", fontSize: 11 }} className="u-text-secondary">
+      <div style={{ marginLeft: "auto", fontSize: "var(--font-size-sm)" }} className="u-text-secondary">
         {generatedAt ? `Last: ${new Date(generatedAt).toLocaleTimeString()}` : ""}
       </div>
     </div>
@@ -218,8 +218,8 @@ function KPI({ label, value, highlight }: {
       : undefined;
   return (
     <div>
-      <div style={{ fontSize: 10 }} className="u-text-secondary">{label}</div>
-      <div style={{ fontSize: 22, fontWeight: 600 }} className={cls}>
+      <div style={{ fontSize: "var(--font-size-2xs)" }} className="u-text-secondary">{label}</div>
+      <div style={{ fontSize: "var(--font-size-3xl)", fontWeight: 600 }} className={cls}>
         {value}
       </div>
     </div>
@@ -230,7 +230,7 @@ function KPI({ label, value, highlight }: {
  * Resolve the per-bot signal count.  Prefer Agent 2's authoritative
  * `signal_count` field (total entries in signal_log; not feed-limited).
  * Fall back to counting feed rows when missing, but the cell title makes
- * clear that the fallback is constrained to "son N" (the feed limit).
+ * clear that the fallback is constrained to "last N" (the feed limit).
  */
 function resolveSignalCount(
   bot: SupervisedBot,
@@ -272,8 +272,8 @@ function BotTable() {
   return (
     <table
       className="terminal-grid-numeric"
-      aria-label="Bot denetim tablosu"
-      style={{ width: "100%", fontSize: 12, marginTop: 8 }}
+      aria-label="Bot supervision table"
+      style={{ width: "100%", fontSize: "var(--font-size-md)", marginTop: 8 }}
     >
       <caption className="u-sr-only">
         Audit summary across all bots — symbol, timeframe, health, signal
@@ -284,10 +284,10 @@ function BotTable() {
           <th scope="col" align="left">Symbol</th>
           <th scope="col">Venues</th>
           <th scope="col">TF</th>
-          <th scope="col">Durum</th>
-          <th scope="col" align="right">Sinyaller</th>
-          <th scope="col" align="left">Son tick</th>
-          <th scope="col" align="left">Son sinyal</th>
+          <th scope="col">Status</th>
+          <th scope="col" align="right">Signals</th>
+          <th scope="col" align="left">Last tick</th>
+          <th scope="col" align="left">Last signal</th>
         </tr>
       </thead>
       <tbody>
@@ -361,7 +361,7 @@ function SignalFeed() {
     <table
       className="terminal-grid-numeric"
       aria-label="Unified signal feed"
-      style={{ width: "100%", fontSize: 11, marginTop: 8 }}
+      style={{ width: "100%", fontSize: "var(--font-size-sm)", marginTop: 8 }}
     >
       <caption className="u-sr-only">
         Latest signals from all bots, newest first — time, bot, type,
@@ -465,7 +465,7 @@ export function BOTSPane() {
         {/* BUG #11 — refresh control sits next to the table heading; the
             label spells out that it refreshes the WHOLE supervisor view. */}
         <div style={{ display: "flex", alignItems: "center", margin: "12px 0 4px" }}>
-          <h4 style={{ margin: 0 }}>Botlar</h4>
+          <h4 style={{ margin: 0 }}>Bots</h4>
           <button
             data-testid="bots-refresh-all"
             aria-label="Refresh the full audit view"

@@ -18,17 +18,16 @@ import { useMemo, type CSSProperties } from "react";
 import {
   DataGrid,
   type DataGridColumn,
-  Empty,
   Pane,
   PaneBody,
   PaneFooter,
   PaneHeader,
   Pill,
-  Skeleton,
   StatCard,
   StatusDivider,
   StatusSection,
 } from "@/design-system";
+import { PaneState } from "@/design-system/PaneState";
 import { useFunction } from "@/lib/useFunction";
 import {
   FunctionControlGroup,
@@ -116,6 +115,8 @@ export function COUNPane({ code }: FunctionPaneProps) {
         key: "metric",
         header: "Metric",
         width: 210,
+        sortable: true,
+        sortValue: (r) => r.metric ?? "",
         render: (r) => (
           <span>
             <span style={monoStrongStyle}>{r.metric || "—"}</span>
@@ -128,6 +129,13 @@ export function COUNPane({ code }: FunctionPaneProps) {
         header: "Value",
         numeric: true,
         width: 150,
+        sortable: true,
+        sortValue: (r) => {
+          if (r.value == null) return null;
+          if (typeof r.value === "number") return r.value;
+          const n = Number(r.value);
+          return Number.isFinite(n) ? n : String(r.value);
+        },
         render: (r) => (
           <span style={monoPrimaryStyle}>
             {fmtValue(r.value)}
@@ -139,6 +147,8 @@ export function COUNPane({ code }: FunctionPaneProps) {
         key: "as_of",
         header: "As of",
         width: 110,
+        sortable: true,
+        sortValue: (r) => r.as_of ?? "",
         render: (r) => (
           <span style={monoMutedStyle}>
             {r.as_of ? String(r.as_of).slice(0, 10) : "—"}
@@ -149,6 +159,8 @@ export function COUNPane({ code }: FunctionPaneProps) {
         key: "source_mode",
         header: "Source",
         width: 210,
+        sortable: true,
+        sortValue: (r) => r.source_mode ?? "",
         render: (r) =>
           r.source_mode ? (
             <Pill
@@ -166,36 +178,16 @@ export function COUNPane({ code }: FunctionPaneProps) {
     [],
   );
 
-  const body =
-    state === "loading" || state === "idle" ? (
-      <div className="u-grid-gap-8">
-        <Skeleton height={56} />
-        <Skeleton height={20} />
-        <Skeleton height={20} width="80%" />
-      </div>
-    ) : state === "error" ? (
-      <Empty
-        title="Function error"
-        body={error?.message ?? "—"}
-        icon="!"
-        action={
-          <button onClick={refetch} className="btn">
-            Retry
-          </button>
-        }
-      />
-    ) : rows.length === 0 ? (
-      <Empty
-        title="No country metrics returned"
-        body={`No profile or live macro rows came back for ${country}.`}
-        icon="⚑"
-        action={
-          <button onClick={refetch} className="btn">
-            Retry
-          </button>
-        }
-      />
-    ) : (
+  const body = (
+    <PaneState
+      state={state}
+      error={error}
+      empty={rows.length === 0}
+      emptyTitle="No country metrics returned"
+      emptyBody={`No profile or live macro rows came back for ${country}.`}
+      emptyIcon="⚑"
+      onRetry={refetch}
+    >
       <div className="u-grid-gap-14">
         <section style={kpiGridStyle} aria-label="COUN indicator cards">
           {cards.slice(0, 5).map((card) => (
@@ -214,9 +206,12 @@ export function COUNPane({ code }: FunctionPaneProps) {
           rowKey={(r, i) => `${r.section ?? ""}-${r.metric ?? ""}-${i}`}
           density="compact"
           ariaLabel="Country guide metrics"
+          defaultSortKey="metric"
+          defaultSortDir="none"
         />
       </div>
-    );
+    </PaneState>
+  );
 
   return (
     <div className="u-pane-host">
@@ -304,7 +299,7 @@ const monoMutedStyle: CSSProperties = {
 
 const sectionSubStyle: CSSProperties = {
   display: "block",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   color: "var(--text-mute)",
   fontFamily: "JetBrains Mono, monospace",
 };

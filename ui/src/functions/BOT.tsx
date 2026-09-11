@@ -40,9 +40,9 @@ function statusToneAndLabel(rec: { mode: string; enabled: boolean }):
 function StatusPill({ rec }: { rec: { mode: string; enabled: boolean } }) {
   const { tone, label } = statusToneAndLabel(rec);
   // F1 — Pill carries the visible label; the wrapper gives it an accessible
-  // name so screen readers announce "Durum: LIVE/SHADOW/OFF".
+  // name so screen readers announce "Status: LIVE/SHADOW/OFF".
   return (
-    <span role="status" aria-label={`Durum: ${label}`}>
+    <span role="status" aria-label={`Status: ${label}`}>
       <Pill tone={tone} variant="soft" withDot>
         {label}
       </Pill>
@@ -56,7 +56,7 @@ function SignalLog({ entries }: { entries: SignalEntry[] }) {
     <table
       className="terminal-grid-numeric"
       aria-label="Signal log"
-      style={{ width: "100%", fontSize: 11 }}
+      style={{ width: "100%", fontSize: "var(--font-size-sm)" }}
     >
       <caption className="u-sr-only">
         Signals produced by the bot — time, type, price, action and detail.
@@ -229,7 +229,7 @@ export function BOTPane() {
   // Returns undefined when Save is enabled so the button has no stale title.
   const saveDisabledReason: string | undefined = (() => {
     if (!saveDisabled && !liveConfirmMissing) return undefined;
-    if (saving) return "Kaydediliyor…";
+    if (saving) return "Saving…";
     if (missingStrategy) return "A strategy must be selected.";
     if (missingCredential) return "A connection must be selected.";
     if (missingSymbol) return "A valid symbol is required.";
@@ -290,7 +290,7 @@ export function BOTPane() {
           }
           openNew();
         }} style={{ width: "100%", marginBottom: 8 }}>
-          + Yeni bot
+          + New bot
         </button>
         {/* KAOS Multibot pinned first (stable) — the default bot leads the
             rail; everything else keeps its updated_at order. */}
@@ -311,7 +311,7 @@ export function BOTPane() {
                 <strong>{b.symbol}</strong>
                 {isKaosRecord(b) && <KaosEngineBadge />}
               </div>
-              <div className="u-text-secondary" style={{ fontSize: 10 }}>
+              <div className="u-text-secondary" style={{ fontSize: "var(--font-size-2xs)" }}>
                 {b.exchange_id} · {b.timeframe}
               </div>
             </div>
@@ -368,7 +368,7 @@ export function BOTPane() {
                 is paper. Hidden entirely otherwise (never faked). */}
             <KaosLaneBanner venueRows={draft.venue_rows} />
             <label htmlFor="bot-strategy-select">
-              Strateji
+              Strategy
               <select id="bot-strategy-select"
                       aria-describedby={
                         strategyOrphan ? "bot-field-err-strategy-orphan"
@@ -391,14 +391,14 @@ export function BOTPane() {
             {strategyOrphan && (
               <div id="bot-field-err-strategy-orphan"
                    data-testid="bot-field-err-strategy-orphan"
-                   className="u-text-negative" style={{ fontSize: 11 }}>
+                   className="u-text-negative" style={{ fontSize: "var(--font-size-sm)" }}>
                 The selected strategy was deleted. Pick another one from the list.
               </div>
             )}
             {missingStrategy && !strategyOrphan && (
               <div id="bot-field-err-strategy"
                    data-testid="bot-field-err-strategy"
-                   className="u-text-negative" style={{ fontSize: 11 }}>
+                   className="u-text-negative" style={{ fontSize: "var(--font-size-sm)" }}>
                 You must select a strategy.
               </div>
             )}
@@ -441,14 +441,14 @@ export function BOTPane() {
             {credentialOrphan && (
               <div id="bot-field-err-credential-orphan"
                    data-testid="bot-field-err-credential-orphan"
-                   className="u-text-negative" style={{ fontSize: 11 }}>
+                   className="u-text-negative" style={{ fontSize: "var(--font-size-sm)" }}>
                 The selected connection was deleted. Pick another one from the list.
               </div>
             )}
             {missingCredential && !credentialOrphan && (
               <div id="bot-field-err-credential"
                    data-testid="bot-field-err-credential"
-                   className="u-text-negative" style={{ fontSize: 11 }}>
+                   className="u-text-negative" style={{ fontSize: "var(--font-size-sm)" }}>
                 You must select a connection.
               </div>
             )}
@@ -471,7 +471,7 @@ export function BOTPane() {
             {symbolError && (
               <div id="bot-field-err-symbol"
                    data-testid="bot-field-err-symbol"
-                   className="u-text-negative" style={{ fontSize: 11 }}>
+                   className="u-text-negative" style={{ fontSize: "var(--font-size-sm)" }}>
                 {symbolError}
               </div>
             )}
@@ -485,7 +485,7 @@ export function BOTPane() {
                 {timeframeUnknown && draft.timeframe && (
                   <option value={draft.timeframe}
                           data-testid="bot-timeframe-unknown-option">
-                    [bilinmeyen] {draft.timeframe}
+                    [unknown] {draft.timeframe}
                   </option>
                 )}
                 {TIMEFRAMES.map((t) => <option key={t} value={t}>{t}</option>)}
@@ -494,12 +494,12 @@ export function BOTPane() {
             {timeframeUnknown && (
               <div id="bot-field-err-timeframe"
                    data-testid="bot-field-err-timeframe"
-                   className="u-text-negative" style={{ fontSize: 11 }}>
+                   className="u-text-negative" style={{ fontSize: "var(--font-size-sm)" }}>
                 Unknown timeframe: "{draft.timeframe}". Pick one from the list.
               </div>
             )}
             <label htmlFor="bot-tick-input">
-              Tick interval (saniye)
+              Tick interval (seconds)
               <input id="bot-tick-input" type="number" min={5} max={3600}
                      value={tickInputRaw}
                      onChange={(e) => setTickInputRaw(e.target.value)}
@@ -511,7 +511,7 @@ export function BOTPane() {
               <label htmlFor="bot-mode-shadow">
                 <input id="bot-mode-shadow" type="radio" checked={draft.mode === "shadow"}
                        onChange={() => setField("mode", "shadow")} />
-                Shadow (sadece signal log)
+                Shadow (signal log only)
               </label>
               <br />
               <label htmlFor="bot-mode-live" className="u-text-negative">
@@ -539,7 +539,7 @@ export function BOTPane() {
                 {liveConfirmMissing && (
                   <div id="bot-field-err-confirm-label"
                        data-testid="bot-field-err-confirm-label"
-                       className="u-text-negative" style={{ fontSize: 11 }}>
+                       className="u-text-negative" style={{ fontSize: "var(--font-size-sm)" }}>
                     Must match account_label "{credential?.account_label ?? "?"}".
                   </div>
                 )}
@@ -558,7 +558,7 @@ export function BOTPane() {
               {draft.id && !draft.enabled && (
                 <>
                   {draft.mode === "live" && !transitioningToLive && (
-                    <input placeholder={`account_label tekrar yaz`}
+                    <input placeholder={`re-type account_label`}
                            value={confirmLabel}
                            onChange={(e) => setConfirmLabel(e.target.value)}
                            style={{ width: 160 }} />
@@ -584,7 +584,7 @@ export function BOTPane() {
                   data-testid="bot-durdur-button"
                   onClick={() => setPendingDisableId(draft.id!)}
                   disabled={toggling || pendingDisableId !== null}>
-                  {toggling ? "..." : "Durdur"}
+                  {toggling ? "..." : "Stop"}
                 </button>
               )}
             {draft.id && (
@@ -594,7 +594,7 @@ export function BOTPane() {
                 disabled={loading || pendingDeleteBotId !== null}
                 className="u-text-negative"
                 style={{ marginLeft: "auto" }}>
-                Sil
+                Delete
               </button>
             )}
             </div>
@@ -602,7 +602,7 @@ export function BOTPane() {
             <h4>Signal log ({(draft.signal_log ?? []).length})</h4>
             <SignalLog entries={draft.signal_log ?? []} />
             {(draft.signal_log ?? []).length > 20 && (
-              <div className="u-text-secondary" style={{ fontSize: 11 }}>
+              <div className="u-text-secondary" style={{ fontSize: "var(--font-size-sm)" }}>
                 Showing the last 20 signals — {(draft.signal_log ?? []).length} total.
               </div>
             )}
@@ -617,6 +617,7 @@ export function BOTPane() {
         title="Unsaved changes"
         body="Unsaved changes will be lost. Continue?"
         confirmLabel="Continue"
+        cancelLabel="Cancel"
         onConfirm={() => {
           if (dirtySwitchTarget === "new") openNew();
           else if (dirtySwitchTarget) openExisting(dirtySwitchTarget);
@@ -630,6 +631,7 @@ export function BOTPane() {
         title="Delete bot"
         body="Are you sure you want to delete this bot? This cannot be undone."
         confirmLabel="Delete"
+        cancelLabel="Cancel"
         destructive
         busy={loading}
         onConfirm={() => {
@@ -647,6 +649,7 @@ export function BOTPane() {
         title="Stop bot"
         body="This bot is running (live mode can place real orders). Are you sure you want to stop it?"
         confirmLabel="Stop"
+        cancelLabel="Cancel"
         destructive
         busy={toggling}
         onConfirm={() => {

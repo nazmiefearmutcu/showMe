@@ -9,11 +9,11 @@
  *
  *  - a SYNTHETIC payload renders a prominent model badge ("SAMPLE CALENDAR")
  *    with role=status, and the footer source label reads the honest
- *    "Örnek takvim (canlı değil)" text;
+ *    "Sample calendar (not live)" text;
  *  - a LIVE payload does NOT render that badge and shows the raw provider;
  *  - the importance badge carries a non-color cue (▲) + aria-label;
  *  - missing actual → "—" (formatMissing) and surprise "—" (no fake number);
- *  - the freshness "Veri" indicator uses the server `as_of`, not client time;
+ *  - the freshness "Data" indicator uses the server `as_of`, not client time;
  *  - the DataGrid exposes an aria-label; the error state is role=status.
  *
  * `useFunction` is mocked via mutable shared state so each test drives the
@@ -199,7 +199,7 @@ describe("ECO pane — accessibility", () => {
   it("gives the DataGrid an aria-label", () => {
     setMockFn({ state: "ok", ...syntheticPayload() });
     const { container } = render(<ECOPane code="ECO" />);
-    const grid = container.querySelector('[aria-label="Ekonomik takvim"]');
+    const grid = container.querySelector('[aria-label="Economic calendar"]');
     expect(grid).not.toBeNull();
   });
 
@@ -235,6 +235,6 @@ describe("ECO pane — display honesty", () => {
   it("labels the event timezone as UTC", () => {
     setMockFn({ state: "ok", ...syntheticPayload() });
     render(<ECOPane code="ECO" />);
-    expect(screen.getByText(/Zamanlar UTC/i)).toBeInTheDocument();
+    expect(screen.getByText(/Times UTC/i)).toBeInTheDocument();
   });
 });

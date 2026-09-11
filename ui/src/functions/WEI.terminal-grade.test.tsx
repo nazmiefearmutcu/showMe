@@ -145,6 +145,28 @@ describe("WEI terminal-grade", () => {
     expect(real.length).toBe(1);
   });
 
+  it("KPI ribbon never paints unlabeled procedural trends (R2-F1)", () => {
+    mockOk([
+      makeRow({ symbol: "^AAA", change_pct: 0.4 }),
+      makeRow({ symbol: "^BBB", change_pct: -0.3 }),
+    ]);
+    const { container } = render(<WEIPane code="WEI" />);
+    const ribbon = container.querySelector('[aria-label="WEI KPI ribbon"]');
+    expect(ribbon).toBeTruthy();
+    // No row carries history → the ribbon must not draw ANY sparkline.
+    expect(ribbon!.querySelectorAll("svg").length).toBe(0);
+
+    mockOk([
+      makeRow({ symbol: "^AAA", change_pct: 0.4, history: [1, 2, 3, 4, 5, 6] }),
+      makeRow({ symbol: "^BBB", change_pct: -0.3, history: [6, 5, 4, 3, 2, 1] }),
+    ]);
+    const second = render(<WEIPane code="WEI" />);
+    const ribbon2 = second.container.querySelector('[aria-label="WEI KPI ribbon"]');
+    expect(ribbon2!.querySelectorAll("svg").length).toBeGreaterThan(0);
+    // Every KPI spark is real history — nothing synthetic inside the ribbon.
+    expect(ribbon2!.querySelectorAll('[data-synthetic="true"]').length).toBe(0);
+  });
+
   it("renders real data freshness from payload as_of in the header", () => {
     mockOk([makeRow()], { as_of: "2026-06-08T10:11:28.250007+00:00" });
     render(<WEIPane code="WEI" />);

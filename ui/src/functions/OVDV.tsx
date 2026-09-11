@@ -617,7 +617,7 @@ const legendLabel: CSSProperties = {
   color: "var(--text-mute)",
   fontFamily: "JetBrains Mono, monospace",
   fontVariantNumeric: "tabular-nums",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   letterSpacing: "0.04em",
   flex: "0 0 auto",
 };
@@ -641,14 +641,14 @@ const termRow: CSSProperties = {
   gridTemplateColumns: "64px minmax(0, 1fr) 72px",
   alignItems: "center",
   gap: 10,
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
 };
 
 const termTenor: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
   color: "var(--text-display)",
   fontWeight: 600,
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
 };
 
 const termTrack: CSSProperties = {
@@ -680,7 +680,7 @@ const noticeStyle: CSSProperties = {
   padding: "9px 10px",
   display: "grid",
   gap: 4,
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
 };
 
 const warningBox: CSSProperties = {
@@ -708,7 +708,7 @@ const methodPanel: CSSProperties = {
 const metaLabel: CSSProperties = {
   color: "var(--text-mute)",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   textTransform: "uppercase",
   letterSpacing: "0.08em",
 };
@@ -717,5 +717,5 @@ const methodText: CSSProperties = {
   margin: "6px 0 0",
   color: "var(--text-secondary)",
   lineHeight: 1.5,
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
 };

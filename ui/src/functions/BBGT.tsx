@@ -604,7 +604,7 @@ const previewCardStyle: CSSProperties = {
 const sectionTitleStyle: CSSProperties = {
   textTransform: "uppercase",
   letterSpacing: "0.08em",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   color: "var(--text-mute)",
   fontFamily: "JetBrains Mono, monospace",
 };
@@ -628,7 +628,7 @@ const confirmLabelStyle: CSSProperties = {
   display: "inline-flex",
   alignItems: "center",
   gap: 8,
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   color: "var(--text-primary)",
   cursor: "default",
 };
@@ -636,7 +636,7 @@ const confirmLabelStyle: CSSProperties = {
 const liveWarningStyle: CSSProperties = {
   margin: 0,
   color: "var(--text-mute)",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   lineHeight: 1.5,
 };
 
@@ -653,7 +653,7 @@ const quoteNoteStyle: CSSProperties = {
   border: "1px solid var(--negative, var(--text-mute))",
   borderRadius: 6,
   padding: "8px 10px",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   lineHeight: 1.6,
   color: "var(--text-primary)",
 };
@@ -675,19 +675,19 @@ const summaryRowStyle: CSSProperties = {
 const summaryLabelStyle: CSSProperties = {
   textTransform: "uppercase",
   letterSpacing: "0.06em",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   color: "var(--text-mute)",
   fontFamily: "JetBrains Mono, monospace",
 };
 
 const summaryValueStyle: CSSProperties = {
   color: "var(--text-primary)",
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
 };
 
 const reasonStyle: CSSProperties = {
   color: "var(--text-mute)",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   lineHeight: 1.6,
   paddingTop: 6,
 };
@@ -703,7 +703,7 @@ const nextActionsListStyle: CSSProperties = {
   margin: 0,
   paddingLeft: 18,
   color: "var(--text-mute)",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   lineHeight: 1.6,
 };
 

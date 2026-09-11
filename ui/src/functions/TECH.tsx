@@ -12,9 +12,10 @@
  * MACD histogram sign, ADX trend strength). Empty / error / degraded
  * (warnings) states are explicit — never fake numbers.
  */
-import { useMemo, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import {
   Empty,
+  FlashValue,
   Pane,
   PaneBody,
   PaneFooter,
@@ -28,6 +29,7 @@ import {
 } from "@/design-system";
 import { formatNumberFixed } from "@/lib/format";
 import { useFunction } from "@/lib/useFunction";
+import { useVisibilityTick } from "@/lib/useVisibilityTick";
 import { defaultSymbolForFunction } from "@/lib/symbols";
 import { FunctionControlGroup, LoadStatePill, RefreshButton } from "./function-controls";
 import type { FunctionPaneProps } from "./registry-types";
@@ -112,6 +114,9 @@ type FamilyId = (typeof FAMILIES)[number]["id"];
 const FAMILY_IDS: readonly string[] = FAMILIES.map((f) => f.id);
 const FAMILIES_KEY = "showme.tech.families";
 
+/** Live adoption: visibility-paused 30s poll (campaign 2026-09-11). */
+const REFRESH_MS = 30_000;
+
 /**
  * Persisted hidden-family set. Stores the DISABLED ids as a CSV under
  * `showme.tech.families`; an absent/empty value means "show every family".
@@ -152,6 +157,16 @@ export function TECHPane({ code, symbol }: FunctionPaneProps) {
     symbol: effectiveSymbol,
     enabled: !!effectiveSymbol,
   });
+
+  // Live adoption (campaign 2026-09-11): visibility-paused 30s refetch. The
+  // tick only triggers `refetch()`; it must never enter `params` because
+  // `useFunction` fingerprints params into the fetch key (UA-HIGH-16).
+  const tick = useVisibilityTick(REFRESH_MS);
+  useEffect(() => {
+    if (tick === 0) return; // initial mount is useFunction's own load
+    refetch();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- tick is the trigger
+  }, [tick]);
 
   const envelope = data as unknown as TechEnvelope | undefined;
   const payload = envelope?.data;
@@ -237,7 +252,11 @@ export function TECHPane({ code, symbol }: FunctionPaneProps) {
           <span className="u-text-mute" style={paramsStyle}>
             CLOSE · {bars.length} BARS · {(payload?.resolution ?? "—").toUpperCase()}
           </span>
-          <span style={monoStrongStyle}>{fmtNum(summary?.last_price ?? lastBar?.close)}</span>
+          <FlashValue value={num(summary?.last_price ?? lastBar?.close)}>
+            <span style={monoStrongStyle}>
+              {fmtNum(summary?.last_price ?? lastBar?.close)}
+            </span>
+          </FlashValue>
         </div>
         <Sparkline
           values={closes}
@@ -571,7 +590,7 @@ const chipRowStyle: CSSProperties = {
 
 const paramsStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   letterSpacing: "0.05em",
 };
 

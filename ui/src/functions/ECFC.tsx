@@ -380,7 +380,7 @@ const metricNameStyle: CSSProperties = {
 
 const metricCodeStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   color: "var(--text-mute)",
   letterSpacing: "0.04em",
 };
@@ -410,6 +410,6 @@ const deltaCellStyle: CSSProperties = {
 
 const unitStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   color: "var(--text-mute)",
 };

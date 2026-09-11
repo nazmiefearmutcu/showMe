@@ -12,12 +12,13 @@
  * offline / error` transport states, and tears sockets/timers down cleanly on
  * symbol change. Sparkline fetch stays local — S03 owns the chart contract.
  */
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   DataGrid,
   type DataGridColumn,
   DeltaChip,
   Empty,
+  FlashValue,
   Pane,
   PaneBody,
   PaneFooter,
@@ -300,15 +301,17 @@ export function WATCHPane({ code }: FunctionPaneProps) {
           const tone = (view.changePct ?? 0) >= 0 ? "positive" : "negative";
           // Row-level DOM stability is guaranteed by rowKey={(r)=>r.symbol} on
           // the DataGrid (a per-tick React key here would force a remount and
-          // flicker the column). <LiveValue> keeps the SAME node across ticks
-          // and restarts the pulse animation on it (FIX 1) so the cell flashes
-          // on each price update without jitter. Tone drives the red/green
-          // direction via className.
+          // flicker the column). FlashValue keeps the SAME node across ticks
+          // and paints the shared themed pulse (.flash-pos/.flash-neg) on it,
+          // so the cell flashes on each price update without jitter. Tone
+          // drives the red/green color via className.
           return (
-            <LiveValue
-              value={formatPrice(view.price)}
+            <FlashValue
+              value={view.price}
               className={`${liveCellClass(tone)} terminal-grid-numeric`}
-            />
+            >
+              {formatPrice(view.price)}
+            </FlashValue>
           );
         },
       },
@@ -322,14 +325,13 @@ export function WATCHPane({ code }: FunctionPaneProps) {
           if (c == null || !Number.isFinite(c))
             return <span className="u-text-mute">{formatMissing}</span>;
           // Row identity is anchored by rowKey={(r)=>r.symbol} on the DataGrid;
-          // <LiveValue> restarts the pulse on the stable node keyed on the
-          // changePct value (FIX 1) so the chip flashes per tick without a
-          // remount. `flashKey` drives the animation restart; children render
-          // the DeltaChip unchanged.
+          // <FlashValue> pulses the themed class on the stable node keyed on
+          // the changePct value so the chip flashes per tick without a
+          // remount. children render the DeltaChip unchanged.
           return (
-            <LiveValue className="terminal-grid-numeric" flashKey={c}>
+            <FlashValue value={c} className="terminal-grid-numeric">
               <DeltaChip value={c} format="percent" fractionDigits={2} />
-            </LiveValue>
+            </FlashValue>
           );
         },
       },
@@ -779,67 +781,15 @@ function sparkMotionKey(points: SparkPoint[]): string {
 }
 
 /**
- * A live grid cell that flashes the `.showme-live-value` pulse on every value
- * change WITHOUT remounting (so the column never jitters).
- *
- * Why a component: row-level DOM identity is held stable by the DataGrid
- * (`rowKey={(r)=>r.symbol}`), so this span persists across ticks. A CSS
- * animation does NOT restart just because the rendered text changes, so we
- * explicitly restart the pulse on the SAME node via a `useEffect` keyed on the
- * displayed value. (The old `key="last"`/`key="chg"` props were no-ops — React
- * only honours `key` on array siblings — and never re-fired the flash.)
- *
- * `value` mode renders the text directly and keys the flash off it; `flashKey`
- * mode renders arbitrary `children` (e.g. a DeltaChip) and keys the flash off
- * the supplied scalar instead.
+ * Tone class set for the live "Last" cell. Deliberately does NOT carry the
+ * legacy `showme-live-value` pulse animation class: the themed flash comes
+ * from `FlashValue`'s `.flash-pos` / `.flash-neg` (single animation source,
+ * one shared keyframe pair), while these classes keep the per-row red/green
+ * color and compact metrics.
  */
-function LiveValue({
-  value,
-  flashKey,
-  children,
-  className,
-}: {
-  value?: string;
-  flashKey?: string | number | null | undefined;
-  children?: ReactNode;
-  className?: string;
-}) {
-  const ref = useRef<HTMLSpanElement>(null);
-  const restartKey = flashKey !== undefined ? flashKey : value;
-
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    // Web Animations API path (real browser); guarded for jsdom which lacks it.
-    if (typeof el.getAnimations === "function") {
-      const anims = el.getAnimations();
-      if (anims.length) {
-        anims.forEach((a) => {
-          a.cancel();
-          a.play();
-        });
-        return;
-      }
-    }
-    // Fallback: reflow trick to restart the CSS animation on the same node.
-    el.style.animation = "none";
-    // force reflow
-    void el.offsetWidth;
-    el.style.animation = "";
-  }, [restartKey]);
-
-  return (
-    <span ref={ref} className={className}>
-      {children ?? value}
-    </span>
-  );
-}
-
 function liveCellClass(tone: "positive" | "negative", compact = false): string {
   return [
-    "showme-live-value",
     "showme-live-cell",
-    "is-showme-updated",
     compact ? "showme-live-value--compact" : "",
     `showme-live-value--${tone}`,
     `showme-live-cell--${tone === "positive" ? "up" : "down"}`,

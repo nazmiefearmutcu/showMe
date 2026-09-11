@@ -307,7 +307,7 @@ export function ANRPane({ code, symbol }: FunctionPaneProps) {
                 tone={headerTone}
                 variant="soft"
                 withDot={headerTone !== "muted"}
-                aria-label={`konsensüs: ${headerPillLabel}`}
+                aria-label={`Consensus: ${headerPillLabel}`}
               >
                 {headerPillLabel}
               </Pill>
@@ -334,7 +334,7 @@ export function ANRPane({ code, symbol }: FunctionPaneProps) {
                 onChange={(event) => setVeryfinderSource(event.target.value)}
                 disabled={!veryfinderEnabled}
                 title="Veryfinder source"
-                aria-label="Veryfinder kaynağı"
+                aria-label="Veryfinder source"
                 style={miniSelectStyle}
               >
                 <option value="auto">auto</option>

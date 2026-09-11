@@ -2002,14 +2002,14 @@ const symbolStripStyle: CSSProperties = {
 
 const symbolTickerStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 18,
+  fontSize: "var(--font-size-2xl)",
   fontWeight: 700,
   letterSpacing: "0.04em",
   color: "var(--text-display)",
 };
 
 const symbolNameStyle: CSSProperties = {
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   color: "var(--text-secondary)",
   maxWidth: 280,
   overflow: "hidden",
@@ -2019,7 +2019,7 @@ const symbolNameStyle: CSSProperties = {
 
 const lastPriceStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 22,
+  fontSize: "var(--font-size-3xl)",
   fontWeight: 600,
   color: "var(--text-display)",
   fontVariantNumeric: "tabular-nums",
@@ -2027,7 +2027,7 @@ const lastPriceStyle: CSSProperties = {
 
 const changeAbsStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   color: "var(--text-secondary)",
   fontVariantNumeric: "tabular-nums",
 };
@@ -2040,7 +2040,7 @@ const ohlcMiniStyle: CSSProperties = {
   border: "1px solid var(--border-subtle)",
   borderRadius: "var(--radius-sm)",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   color: "var(--text-secondary)",
   fontVariantNumeric: "tabular-nums",
 };
@@ -2063,7 +2063,7 @@ const toolbarSegmentStyle: CSSProperties = {
 
 const toolbarLabelStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 9,
+  fontSize: "var(--font-size-xs)",
   color: "var(--text-mute)",
   letterSpacing: "0.08em",
   textTransform: "uppercase",
@@ -2083,7 +2083,7 @@ const pillButtonStyle: CSSProperties = {
   padding: "3px 8px",
   borderRadius: "var(--radius-sm)",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   cursor: "default",
   transition: "background var(--motion-fast), color var(--motion-fast)",
   letterSpacing: "0.04em",
@@ -2097,7 +2097,7 @@ const toolbarButtonStyle: CSSProperties = {
   borderRadius: "var(--radius-sm)",
   color: "var(--text-secondary)",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   letterSpacing: "0.06em",
   textTransform: "uppercase",
   cursor: "default",
@@ -2107,7 +2107,7 @@ const toolbarIconButtonStyle: CSSProperties = {
   ...toolbarButtonStyle,
   width: 28,
   padding: 0,
-  fontSize: 13,
+  fontSize: "var(--font-size-lg)",
 };
 
 const indicatorMenuStyle: CSSProperties = {
@@ -2133,7 +2133,7 @@ const indicatorMenuItemStyle: CSSProperties = {
   border: "none",
   borderRadius: "var(--radius-sm)",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   cursor: "default",
   textAlign: "left",
 };
@@ -2158,7 +2158,7 @@ const comparePopupHeaderStyle: CSSProperties = {
   justifyContent: "space-between",
   alignItems: "center",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 9,
+  fontSize: "var(--font-size-xs)",
   color: "var(--text-mute)",
   letterSpacing: "0.08em",
   textTransform: "uppercase",
@@ -2171,7 +2171,7 @@ const comparePopupHintStyle: CSSProperties = {
 
 const comparePopupSubLabelStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 9,
+  fontSize: "var(--font-size-xs)",
   color: "var(--text-mute)",
   letterSpacing: "0.08em",
   textTransform: "uppercase",
@@ -2193,7 +2193,7 @@ const compareChipStyle: CSSProperties = {
   border: "1px solid var(--border-subtle)",
   borderRadius: "var(--radius-sm)",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   color: "var(--text-primary)",
 };
 
@@ -2208,7 +2208,7 @@ const compareChipRemoveStyle: CSSProperties = {
   border: "none",
   background: "transparent",
   color: "var(--text-mute)",
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   lineHeight: 1,
   padding: 0,
   marginLeft: 2,
@@ -2229,7 +2229,7 @@ const compareInputStyle: CSSProperties = {
   borderRadius: "var(--radius-sm)",
   color: "var(--text-primary)",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   textTransform: "uppercase",
 };
 
@@ -2241,7 +2241,7 @@ const compareAddBtnStyle: CSSProperties = {
   border: "none",
   borderRadius: "var(--radius-sm)",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   fontWeight: 600,
   letterSpacing: "0.06em",
   textTransform: "uppercase",
@@ -2262,7 +2262,7 @@ const compareSuggestionBtnStyle: CSSProperties = {
   borderRadius: "var(--radius-sm)",
   color: "var(--text-secondary)",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   letterSpacing: "0.04em",
   cursor: "default",
 };
@@ -2313,7 +2313,7 @@ const chartFitToolbarStyle: CSSProperties = {
   gap: 8,
   pointerEvents: "none",
   color: "var(--text-mute)",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   textTransform: "uppercase",
   letterSpacing: "0.06em",
 };
@@ -2343,7 +2343,7 @@ const crosshairRowStyle: CSSProperties = {
 
 const crosshairLabelStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 9,
+  fontSize: "var(--font-size-xs)",
   color: "var(--text-mute)",
   textTransform: "uppercase",
   letterSpacing: "0.08em",
@@ -2351,7 +2351,7 @@ const crosshairLabelStyle: CSSProperties = {
 
 const crosshairValueStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   color: "var(--text-display)",
   fontVariantNumeric: "tabular-nums",
 };
@@ -2373,7 +2373,7 @@ const railSectionStyle: CSSProperties = {
 
 const railSectionTitleStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 9,
+  fontSize: "var(--font-size-xs)",
   color: "var(--text-mute)",
   letterSpacing: "0.1em",
   textTransform: "uppercase",
@@ -2388,13 +2388,13 @@ const railKvRowStyle: CSSProperties = {
 };
 
 const railKvLabelStyle: CSSProperties = {
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   color: "var(--text-secondary)",
 };
 
 const railKvValueStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   fontWeight: 600,
   fontVariantNumeric: "tabular-nums",
 };
@@ -2414,14 +2414,14 @@ const newsEmptyStyle: CSSProperties = {
 
 const newsEmptyTitleStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   letterSpacing: "0.08em",
   textTransform: "uppercase",
   color: "var(--text-mute)",
 };
 
 const newsEmptyBodyStyle: CSSProperties = {
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   color: "var(--text-secondary)",
   lineHeight: 1.4,
 };

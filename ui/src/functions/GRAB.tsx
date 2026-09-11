@@ -341,7 +341,7 @@ const planCardStyle: CSSProperties = {
 const sectionTitleStyle: CSSProperties = {
   textTransform: "uppercase",
   letterSpacing: "0.08em",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   color: "var(--text-mute)",
   fontFamily: "JetBrains Mono, monospace",
 };
@@ -354,7 +354,7 @@ const actionsRowStyle: CSSProperties = {
 
 const noticeStyle: CSSProperties = {
   margin: 0,
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   lineHeight: 1.6,
   color: "var(--text-mute)",
   border: "1px solid var(--warn, var(--text-mute))",
@@ -380,7 +380,7 @@ const warnBoxStyle: CSSProperties = {
   border: "1px solid var(--warn, var(--text-mute))",
   borderRadius: 6,
   padding: "8px 10px",
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   color: "var(--text-primary)",
 };
 
@@ -395,24 +395,24 @@ const nextActionsListStyle: CSSProperties = {
   margin: 0,
   paddingLeft: 18,
   color: "var(--text-mute)",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   lineHeight: 1.6,
 };
 
 const bodyStyle: CSSProperties = {
   color: "var(--text-primary)",
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
 };
 
 const monoStrongStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
   color: "var(--text-primary)",
   fontWeight: 600,
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
 };
 
 const monoMutedStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
   color: "var(--text-mute)",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
 };

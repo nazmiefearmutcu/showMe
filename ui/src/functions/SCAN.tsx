@@ -112,6 +112,42 @@ function deterministicTrend(seed: string, n = 22): number[] {
   return out;
 }
 
+const SYNTH_SPARK_TITLE = "Illustrative trend — no real history available";
+
+/**
+ * P2 honesty: the scanner payload carries ranked rows only — no history
+ * series — so KPI "trend" lines are procedural. They render de-emphasized,
+ * tagged SYNTH and marked data-synthetic with an explanatory title so they
+ * can never masquerade as real history (WEI pattern).
+ */
+function SyntheticTrendSpark({
+  seed,
+  tone,
+}: {
+  seed: string;
+  tone: "neutral" | "positive" | "negative";
+}) {
+  return (
+    <span
+      className="scan-synth-spark"
+      data-synthetic="true"
+      title={SYNTH_SPARK_TITLE}
+      style={synthSparkStyle}
+    >
+      <span aria-hidden style={synthTagStyle}>
+        SYNTH
+      </span>
+      <Sparkline
+        values={deterministicTrend(seed)}
+        width={44}
+        height={16}
+        tone={tone}
+        ariaLabel="Illustrative trend — no real history available"
+      />
+    </span>
+  );
+}
+
 function buildColumns(
   sortKey: SortKey,
   setSortKey: (k: SortKey) => void,
@@ -701,21 +737,26 @@ export function SCANPane({ code }: FunctionPaneProps) {
                     label="Matched / Universe"
                     value={`${matchedTotal} / ${universeTotal}`}
                     caption={`UNIVERSE ${result.universe_key}`}
-                    trend={deterministicTrend(`m-${result.universe_key}-${matchedTotal}`)}
+                    rightSlot={<SyntheticTrendSpark seed={`m-${result.universe_key}-${matchedTotal}`} tone="neutral" />}
                     tone="neutral"
                   />
                   <StatCard
                     label="Median confidence"
                     value={medianConfidence != null ? `${medianConfidence.toFixed(1)}%` : "—"}
                     caption={`SORT ${sortKey.toUpperCase()}`}
-                    trend={deterministicTrend(`c-${sortKey}-${matchedTotal}`)}
+                    rightSlot={<SyntheticTrendSpark seed={`c-${sortKey}-${matchedTotal}`} tone="neutral" />}
                     tone="neutral"
                   />
                   <StatCard
                     label="Median Δ today"
                     value={medianChange != null ? `${medianChange >= 0 ? "+" : ""}${medianChange.toFixed(2)}%` : "—"}
                     caption={`PHASES ${phasesLabel}`}
-                    trend={deterministicTrend(`d-${matchedTotal}-${phasesLabel}`)}
+                    rightSlot={
+                      <SyntheticTrendSpark
+                        seed={`d-${matchedTotal}-${phasesLabel}`}
+                        tone={medianChange == null ? "neutral" : medianChange >= 0 ? "positive" : "negative"}
+                      />
+                    }
                     tone={medianChange == null ? "neutral" : medianChange >= 0 ? "positive" : "negative"}
                   />
                   <StatCard
@@ -728,10 +769,13 @@ export function SCANPane({ code }: FunctionPaneProps) {
                       </span>
                     }
                     caption={`ELAPSED ${Math.round(result.elapsed_ms)}MS`}
-                    trend={deterministicTrend(`ls-${longs}-${shorts}`)}
+                    rightSlot={<SyntheticTrendSpark seed={`ls-${longs}-${shorts}`} tone="neutral" />}
                     tone="neutral"
                   />
                 </div>
+                <p className="u-text-mute u-text-10" data-testid="scan-kpi-synth-note">
+                  SYNTH sparklines are illustrative — this scanner payload carries no history series.
+                </p>
 
                 <Card>
                   <CardHeader
@@ -1069,7 +1113,7 @@ function Drawer({
 
 const H4: CSSProperties = {
   margin: "0 0 6px 0",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   letterSpacing: "0.06em",
   textTransform: "uppercase",
   color: "var(--text-mute)",
@@ -1127,7 +1171,7 @@ function ContribTable({
 const CTH: CSSProperties = {
   padding: "4px 6px",
   textAlign: "left",
-  fontSize: 9,
+  fontSize: "var(--font-size-xs)",
   letterSpacing: "0.04em",
   textTransform: "uppercase",
   fontWeight: 500,
@@ -1158,7 +1202,7 @@ const textareaStyle: CSSProperties = {
   border: "1px solid var(--border-subtle)",
   borderRadius: "var(--radius-md)",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   padding: 8,
   outline: "none",
 };
@@ -1182,7 +1226,7 @@ const selectStyle: CSSProperties = {
   borderRadius: "var(--radius-md)",
   color: "var(--text-primary)",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   height: 28,
   padding: "0 8px",
 };
@@ -1191,4 +1235,21 @@ const kpiStripStyle: CSSProperties = {
   display: "grid",
   gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
   gap: 10,
+};
+
+// P2 honesty — procedural KPI sparklines are de-emphasized and carry a
+// visible SYNTH tag so they read as illustrative, never as real history.
+const synthSparkStyle: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 4,
+  opacity: 0.45,
+  filter: "saturate(0.6)",
+};
+
+const synthTagStyle: CSSProperties = {
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: "var(--font-size-2xs)",
+  letterSpacing: "0.08em",
+  color: "var(--text-mute)",
 };

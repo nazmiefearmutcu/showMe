@@ -620,7 +620,7 @@ function NewsRow({
   const key = articleKey(a, index);
   const fullTitle = a.title || a.headline || "(untitled)";
   const href = a.url ?? a.link;
-  const sourceLabel = a.source ?? "kaynak";
+  const sourceLabel = a.source ?? "source";
   const reasonsTitle =
     Array.isArray(a.importance_reasons) && a.importance_reasons.length > 0
       ? a.importance_reasons.join(" · ")
@@ -1057,7 +1057,7 @@ const filterChipStyle: CSSProperties = {
   border: "1px solid var(--border-subtle)",
   borderRadius: 11,
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   letterSpacing: "0.06em",
   color: "var(--text-secondary)",
 };
@@ -1072,7 +1072,7 @@ const filterChipCloseStyle: CSSProperties = {
   justifyContent: "center",
   borderRadius: "50%",
   color: "var(--text-mute)",
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   lineHeight: 1,
 };
 
@@ -1087,7 +1087,7 @@ const vfInsightStyle: CSSProperties = {
   borderRadius: "var(--radius-sm)",
   background: "var(--warn-soft)",
   color: "var(--text-secondary)",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
 };
 
 const vfInsightLoadingStyle: CSSProperties = {

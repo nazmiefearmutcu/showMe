@@ -156,14 +156,14 @@ describe("BIO pane — a11y + display (loaded)", () => {
     expect(before.textContent ?? "").toMatch(/click verify to open OS prompt/i);
     expect(before.textContent ?? "").not.toMatch(/ago/i);
 
-    // After a verify, the freshness is a shared relative label ("az önce"),
+    // After a verify, the freshness is a shared relative label ("just now"),
     // not the old hand-rolled "Ns ago" / "never".
     const btn = screen.getByRole("button", {
       name: /Request biometric verification/i,
     });
     fireEvent.click(btn);
     const after = await screen.findByLabelText(/Last verify: DENIED/i);
-    expect(after.textContent ?? "").toMatch(/az önce/i);
+    expect(after.textContent ?? "").toMatch(/just now/i);
     expect(after.textContent ?? "").not.toMatch(/ago/i);
     expect(after.textContent ?? "").not.toMatch(/never/i);
   });

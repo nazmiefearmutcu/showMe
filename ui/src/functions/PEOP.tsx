@@ -18,11 +18,12 @@ import {
   PaneFooter,
   PaneHeader,
   Pill,
-  Skeleton,
   StatCard,
   StatusDivider,
   StatusSection,
 } from "@/design-system";
+import { PaneState } from "@/design-system/PaneState";
+import { buildTsvRow, copyTextToClipboard } from "@/design-system/clipboard";
 import { useFunction } from "@/lib/useFunction";
 import {
   FunctionControlGroup,
@@ -79,24 +80,32 @@ export function PEOPPane({ code }: FunctionPaneProps) {
         key: "full_name",
         header: "Name",
         width: 170,
+        sortable: true,
+        sortValue: (r) => r.full_name ?? "",
         render: (r) => <span style={monoStrongStyle}>{r.full_name ?? "—"}</span>,
       },
       {
         key: "role",
         header: "Role / title",
         width: 320,
+        sortable: true,
+        sortValue: (r) => r.role ?? "",
         render: (r) => <span style={titleStyle}>{r.role ?? "—"}</span>,
       },
       {
         key: "company",
         header: "Firm",
         width: 120,
+        sortable: true,
+        sortValue: (r) => r.company ?? "",
         render: (r) => <span style={titleStyle}>{r.company ?? "—"}</span>,
       },
       {
         key: "contact_status",
         header: "Contact",
         width: 170,
+        sortable: true,
+        sortValue: (r) => r.contact_status ?? "",
         render: (r) =>
           r.contact_status ? (
             <Pill
@@ -129,6 +138,33 @@ export function PEOPPane({ code }: FunctionPaneProps) {
             <span style={monoMutedStyle}>{r.source ?? "—"}</span>
           ),
       },
+      {
+        key: "copy",
+        header: "",
+        width: 74,
+        render: (r) => (
+          <button
+            type="button"
+            className="btn"
+            title={`Copy ${r.full_name ?? "person"} contact row`}
+            aria-label={`Copy ${r.full_name ?? "person"} contact row`}
+            onClick={() =>
+              copyTextToClipboard(
+                buildTsvRow([
+                  r.full_name,
+                  r.role,
+                  r.company,
+                  r.contact_status,
+                  r.source_url ?? r.source,
+                ]),
+              )
+            }
+            style={copyButtonStyle}
+          >
+            ⧉ copy
+          </button>
+        ),
+      },
     ],
     [],
   );
@@ -139,67 +175,50 @@ export function PEOPPane({ code }: FunctionPaneProps) {
       body="Type a name, company, or role and press Search — the local directory is checked first, then the public-reference set."
       icon="⌕"
     />
-  ) : state === "loading" || state === "idle" ? (
-    <div className="u-grid-gap-8">
-      <Skeleton height={56} />
-      <Skeleton height={20} />
-      <Skeleton height={20} />
-      <Skeleton height={20} width="80%" />
-    </div>
-  ) : state === "error" ? (
-    <Empty
-      title="Function error"
-      body={error?.message ?? "—"}
-      icon="!"
-      action={
-        <button onClick={refetch} className="btn">
-          Retry
-        </button>
-      }
-    />
-  ) : items.length === 0 ? (
-    <Empty
-      title="No people matched"
-      body={
+  ) : (
+    <PaneState
+      state={state}
+      error={error}
+      empty={items.length === 0}
+      emptyTitle="No people matched"
+      emptyBody={
         payload?.next_actions?.[0] ??
         `The local directory and public-reference set returned nothing for "${query}".`
       }
-      action={
-        <button onClick={refetch} className="btn">
-          Retry
-        </button>
-      }
-    />
-  ) : (
-    <div className="u-grid-gap-14">
-      <section style={kpiGridStyle} aria-label="PEOP summary">
-        <StatCard
-          label="Matches"
-          value={String(items.length)}
-          caption={`QUERY "${query.toUpperCase()}"`}
-          tone="neutral"
+      onRetry={refetch}
+    >
+      <div className="u-grid-gap-14">
+        <section style={kpiGridStyle} aria-label="PEOP summary">
+          <StatCard
+            label="Matches"
+            value={String(items.length)}
+            caption={`QUERY "${query.toUpperCase()}"`}
+            tone="neutral"
+          />
+          <StatCard
+            label="Result source"
+            value={payload?.source_mode ?? "—"}
+            caption="LOCAL DIRECTORY FIRST, THEN PUBLIC REFERENCE"
+            tone="neutral"
+          />
+          <StatCard
+            label="Top match"
+            value={items[0]?.full_name ?? "—"}
+            caption={items[0]?.company ?? ""}
+            tone="neutral"
+          />
+        </section>
+        <DataGrid
+          columns={COLS}
+          rows={items}
+          rowKey={(r, i) => `${r.full_name ?? "person"}-${i}`}
+          density="compact"
+          ariaLabel="PEOP people results"
+          defaultSortKey="full_name"
+          defaultSortDir="none"
         />
-        <StatCard
-          label="Result source"
-          value={payload?.source_mode ?? "—"}
-          caption="LOCAL DIRECTORY FIRST, THEN PUBLIC REFERENCE"
-          tone="neutral"
-        />
-        <StatCard
-          label="Top match"
-          value={items[0]?.full_name ?? "—"}
-          caption={items[0]?.company ?? ""}
-          tone="neutral"
-        />
-      </section>
-      <DataGrid
-        columns={COLS}
-        rows={items}
-        rowKey={(r, i) => `${r.full_name ?? "person"}-${i}`}
-        density="compact"
-        ariaLabel="PEOP people results"
-      />
-    </div>
+      </div>
+    </PaneState>
   );
 
   return (
@@ -282,6 +301,14 @@ const inputStyle: CSSProperties = {
   width: 180,
 };
 
+const copyButtonStyle: CSSProperties = {
+  fontSize: "var(--font-size-xs)",
+  padding: "0 6px",
+  height: 20,
+  lineHeight: "20px",
+  whiteSpace: "nowrap",
+};
+
 const monoStrongStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
   fontVariantNumeric: "tabular-nums",
@@ -296,7 +323,7 @@ const monoMutedStyle: CSSProperties = {
 };
 
 const titleStyle: CSSProperties = {
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   color: "var(--text-primary)",
 };
 
@@ -304,5 +331,5 @@ const linkStyle: CSSProperties = {
   color: "var(--accent)",
   textDecoration: "none",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
 };

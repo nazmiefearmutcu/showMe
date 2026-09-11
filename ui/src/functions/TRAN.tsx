@@ -346,7 +346,7 @@ const jumpNavStyle: CSSProperties = {
 };
 
 const jumpNavLabelStyle: CSSProperties = {
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   letterSpacing: 1,
   color: "var(--text-mute)",
 };
@@ -358,7 +358,7 @@ const sectionStyle: CSSProperties = {
 
 const sectionHeadingStyle: CSSProperties = {
   margin: 0,
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   letterSpacing: 1.2,
   textTransform: "uppercase",
   color: "var(--accent, var(--text-primary))",
@@ -368,7 +368,7 @@ const sectionHeadingStyle: CSSProperties = {
 };
 
 const sectionCountStyle: CSSProperties = {
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   color: "var(--text-mute)",
   textTransform: "none",
   letterSpacing: 0.5,
@@ -391,13 +391,13 @@ const utteranceHeadStyle: CSSProperties = {
 const speakerStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
   fontWeight: 600,
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   color: "var(--text-primary)",
 };
 
 const tsStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   color: "var(--text-mute)",
 };
 

@@ -202,3 +202,13 @@ describe("COUN pane — country interaction", () => {
     expect(localStorage.getItem("showme.coun.country")).toBe("TR");
   });
 });
+
+describe("COUN pane — grid upgrade (L7)", () => {
+  it("sorts metrics by value from the header", () => {
+    setMockFn(livePayload());
+    const { container } = render(<COUNPane code="COUN" />);
+    // Values: Policy rate 37, Inflation 55, Real GDP 1 → ascending promotes GDP.
+    fireEvent.click(screen.getByRole("columnheader", { name: /Value/i }));
+    expect(container.querySelector("tbody tr")?.textContent).toContain("Real GDP");
+  });
+});

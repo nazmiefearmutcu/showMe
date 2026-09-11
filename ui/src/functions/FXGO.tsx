@@ -375,7 +375,7 @@ const kpiGridStyle: CSSProperties = {
 const indicativeStripStyle: CSSProperties = {
   border: "1px solid var(--border, var(--text-mute))",
   color: "var(--text-secondary)",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   padding: "6px 8px",
   fontFamily: "JetBrains Mono, monospace",
 };

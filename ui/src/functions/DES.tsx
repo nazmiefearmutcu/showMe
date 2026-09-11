@@ -4,7 +4,7 @@
  * Bloomberg-grade company detail with a chart-led header strip and
  * description-first body. Profile data via yfinance + finnhub feeds.
  */
-import { type CSSProperties, useEffect, useRef, useState } from "react";
+import { type CSSProperties, useState } from "react";
 import {
   Card,
   CardBody,
@@ -21,6 +21,8 @@ import {
   StatusDivider,
 } from "@/design-system";
 import { useFunction } from "@/lib/useFunction";
+import { useTickFlash } from "@/design-system";
+import { tickFlashClass } from "@/lib/tick-flash";
 import { defaultSymbolForFunction } from "@/lib/symbols";
 import { useLiveQuote, type TransportState } from "@/lib/market-data";
 import { SymbolBar } from "@/shell/SymbolBar";
@@ -345,11 +347,12 @@ function TransportPill({
 }
 
 /**
- * Quote-header price + change cluster. The price flashes (reusing the shared
- * `.flash-pos` / `.flash-neg` keyframes) on each tick via a ref + effect keyed
- * on the value — the DOM node is stable (no remount) so the strip never
- * jitters. Price and absolute change carry `terminal-grid-numeric` (monospace
- * tabular figures) and the change is sign-coloured like the percent chip.
+ * Quote-header price + change cluster. The price pulses with the shared
+ * themed flash classes (`useTickFlash` → `.flash-pos` / `.flash-neg`) on each
+ * tick — no first-render flash, no flash on unchanged values, no extra DOM
+ * wrapper (the stable span keeps its testid + tabular-numerics class).
+ * Price and absolute change carry `terminal-grid-numeric` (monospace tabular
+ * figures) and the change is sign-coloured like the percent chip.
  */
 function QuoteHeaderValues({
   last,
@@ -362,22 +365,8 @@ function QuoteHeaderValues({
   changePct: number | null;
   currency?: string;
 }) {
-  const priceRef = useRef<HTMLSpanElement>(null);
-  const prevPriceRef = useRef<number | null>(null);
-
-  useEffect(() => {
-    const el = priceRef.current;
-    if (!el || last == null) return;
-    const prev = prevPriceRef.current;
-    prevPriceRef.current = last;
-    // No flash on the first paint or when the price is unchanged.
-    if (prev == null || prev === last) return;
-    const cls = last >= prev ? "flash-pos" : "flash-neg";
-    el.classList.remove("flash-pos", "flash-neg");
-    // Force reflow so the animation restarts on the same stable node.
-    void el.offsetWidth;
-    el.classList.add(cls);
-  }, [last]);
+  const flash = useTickFlash(last);
+  const flashClass = tickFlashClass(flash);
 
   const changeColor =
     change == null
@@ -392,9 +381,8 @@ function QuoteHeaderValues({
     <div className="u-flex u-items-center u-gap-14">
       {last != null && (
         <span
-          ref={priceRef}
           data-testid="des-last-price"
-          className="terminal-grid-numeric"
+          className={`terminal-grid-numeric${flashClass ? ` ${flashClass}` : ""}`}
           style={lastPriceStyle}
         >
           {fmtCurrency(last, currency)}
@@ -765,14 +753,14 @@ const symbolStripStyle: CSSProperties = {
 
 const tickerStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 18,
+  fontSize: "var(--font-size-2xl)",
   fontWeight: 700,
   letterSpacing: "0.04em",
   color: "var(--text-display)",
 };
 
 const nameStyle: CSSProperties = {
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   color: "var(--text-secondary)",
   maxWidth: 320,
   overflow: "hidden",
@@ -782,7 +770,7 @@ const nameStyle: CSSProperties = {
 
 const lastPriceStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 22,
+  fontSize: "var(--font-size-3xl)",
   fontWeight: 600,
   color: "var(--text-display)",
   fontVariantNumeric: "tabular-nums",
@@ -790,7 +778,7 @@ const lastPriceStyle: CSSProperties = {
 
 const changeAbsStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   color: "var(--text-secondary)",
   fontVariantNumeric: "tabular-nums",
 };
@@ -813,7 +801,7 @@ const snapshotMetricStyle: CSSProperties = {
 
 const snapshotLabelStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 9,
+  fontSize: "var(--font-size-xs)",
   color: "var(--text-mute)",
   letterSpacing: "0.08em",
   textTransform: "uppercase",
@@ -834,7 +822,7 @@ const mainGridStyle: CSSProperties = {
 
 const summaryParagraphStyle: CSSProperties = {
   margin: 0,
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   lineHeight: 1.6,
   color: "var(--text-secondary)",
   whiteSpace: "pre-line",
@@ -858,7 +846,7 @@ const summaryToggleStyle: CSSProperties = {
   cursor: "pointer",
   color: "var(--accent)",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   letterSpacing: "0.04em",
 };
 
@@ -873,7 +861,7 @@ const websiteRowStyle: CSSProperties = {
 
 const websiteLabelStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 9,
+  fontSize: "var(--font-size-xs)",
   color: "var(--text-mute)",
   letterSpacing: "0.08em",
   textTransform: "uppercase",
@@ -881,7 +869,7 @@ const websiteLabelStyle: CSSProperties = {
 
 const websiteLinkStyle: CSSProperties = {
   color: "var(--accent)",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   fontFamily: "JetBrains Mono, monospace",
   textDecoration: "none",
 };
@@ -899,7 +887,7 @@ const dlStyle: CSSProperties = {
   display: "grid",
   gridTemplateColumns: "120px 1fr",
   gap: "6px 12px",
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   margin: 0,
 };
 
@@ -917,12 +905,12 @@ const actionPillStyle: CSSProperties = {
   borderRadius: "var(--radius-sm)",
   color: "var(--text-secondary)",
   padding: "4px 7px",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
 };
 
 const providerErrorsStyle: CSSProperties = {
   marginTop: 4,
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   color: "var(--text-secondary)",
 };
 
@@ -930,7 +918,7 @@ const providerErrorsSummaryStyle: CSSProperties = {
   cursor: "pointer",
   color: "var(--text-mute)",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   letterSpacing: "0.06em",
   textTransform: "uppercase",
 };
@@ -942,7 +930,7 @@ const providerErrorsListStyle: CSSProperties = {
 
 const providerErrorsItemStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   color: "var(--text-mute)",
   lineHeight: 1.5,
 };

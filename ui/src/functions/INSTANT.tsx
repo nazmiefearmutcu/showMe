@@ -1231,7 +1231,7 @@ const toggleLabel: CSSProperties = {
   display: "inline-flex",
   alignItems: "center",
   gap: 6,
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   color: "var(--text-secondary)",
 };
 
@@ -1239,7 +1239,7 @@ const rangeLabel: CSSProperties = {
   display: "inline-flex",
   alignItems: "center",
   gap: 6,
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   color: "var(--text-secondary)",
 };
 
@@ -1271,7 +1271,7 @@ const filterGroup: CSSProperties = {
 
 const filterLabel: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 9,
+  fontSize: "var(--font-size-xs)",
   color: "var(--text-mute)",
   textTransform: "uppercase",
   letterSpacing: "0.08em",
@@ -1284,7 +1284,7 @@ const chipButton: CSSProperties = {
   borderRadius: 11,
   border: "1px solid var(--border-subtle)",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   letterSpacing: "0.04em",
   cursor: "pointer",
   whiteSpace: "nowrap",
@@ -1325,7 +1325,7 @@ const titleLine: CSSProperties = {
 
 const titleLink: CSSProperties = {
   color: "var(--text-primary)",
-  fontSize: 13,
+  fontSize: "var(--font-size-lg)",
   fontWeight: 700,
   textDecoration: "none",
   overflowWrap: "anywhere",
@@ -1334,7 +1334,7 @@ const titleLink: CSSProperties = {
 const summary: CSSProperties = {
   margin: "7px 0 6px",
   color: "var(--text-secondary)",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   lineHeight: 1.45,
   overflowWrap: "anywhere",
 };
@@ -1345,7 +1345,7 @@ const metaLine: CSSProperties = {
   gap: 6,
   alignItems: "center",
   color: "var(--text-mute)",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
 };
 
 const metaCell: CSSProperties = {
@@ -1363,7 +1363,7 @@ const metaCellMute: CSSProperties = {
 const metaLink: CSSProperties = {
   color: "var(--accent)",
   textDecoration: "none",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
 };
 
 const keywordRow: CSSProperties = {
@@ -1379,7 +1379,7 @@ const keywordChip: CSSProperties = {
   background: "var(--accent-soft)",
   color: "var(--accent)",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 9,
+  fontSize: "var(--font-size-xs)",
   letterSpacing: "0.06em",
   textTransform: "uppercase",
 };
@@ -1392,7 +1392,7 @@ const panel: CSSProperties = {
 const panelTitle: CSSProperties = {
   marginBottom: 8,
   color: "var(--text-mute)",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   fontWeight: 800,
   textTransform: "uppercase",
   letterSpacing: "0.08em",
@@ -1424,7 +1424,7 @@ const kvRowSlim: CSSProperties = {
   gap: 12,
   padding: "3px 0",
   color: "var(--text-secondary)",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
 };
 
 const kvValue: CSSProperties = {
@@ -1435,13 +1435,13 @@ const kvValue: CSSProperties = {
 const codeMono: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
   color: "var(--text-mute)",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
 };
 
 const warningText: CSSProperties = {
   margin: "8px 0 0",
   color: "var(--warn)",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   lineHeight: 1.4,
   overflowWrap: "anywhere",
 };
@@ -1459,7 +1459,7 @@ const chip: CSSProperties = {
   background: "var(--surface-2)",
   color: "var(--text-secondary)",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   overflowWrap: "anywhere",
   cursor: "default",
 };
@@ -1492,26 +1492,26 @@ const sourceDetail: CSSProperties = {
 const sourceName: CSSProperties = {
   display: "block",
   color: "var(--text-primary)",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   overflowWrap: "anywhere",
 };
 
 const sourceMeta: CSSProperties = {
   display: "block",
   color: "var(--text-mute)",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   overflowWrap: "anywhere",
 };
 
 const mutedText: CSSProperties = {
   color: "var(--text-mute)",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
 };
 
 const mutedNote: CSSProperties = {
   margin: "6px 0 0",
   color: "var(--text-mute)",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   lineHeight: 1.4,
 };
 
@@ -1519,7 +1519,7 @@ const speedupCaption: CSSProperties = {
   marginBottom: 6,
   color: "var(--text-mute)",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 9,
+  fontSize: "var(--font-size-xs)",
   textTransform: "uppercase",
   letterSpacing: "0.06em",
 };
@@ -1536,7 +1536,7 @@ const xInjectStrip: CSSProperties = {
 
 const xInjectLabel: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 9,
+  fontSize: "var(--font-size-xs)",
   color: "var(--accent)",
   textTransform: "uppercase",
   letterSpacing: "0.08em",
@@ -1551,7 +1551,7 @@ const xInjectInput: CSSProperties = {
   borderRadius: "var(--radius-md)",
   color: "var(--text-primary)",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   outline: "none",
   flex: "1 1 240px",
   maxWidth: 320,

@@ -166,3 +166,27 @@ describe("FLDS pane — interactions", () => {
     expect(screen.getByText("ytm")).toBeInTheDocument();
   });
 });
+
+describe("FLDS pane — grid upgrade (L7)", () => {
+  it("filters returned rows client-side by description text", () => {
+    setMockFn({ state: "ok", ...okPayload() });
+    const { container } = render(<FLDSPane code="FLDS" />);
+    expect(container.querySelectorAll("tbody tr").length).toBe(3);
+    fireEvent.change(screen.getByLabelText("Filter descriptions"), {
+      target: { value: "forward" },
+    });
+    expect(container.querySelectorAll("tbody tr").length).toBe(1);
+    expect(container.textContent).toContain("fwd_pe");
+    expect(container.textContent).not.toContain("Session open");
+  });
+
+  it("sorts the catalog from a header", () => {
+    setMockFn({ state: "ok", ...okPayload() });
+    const { container } = render(<FLDSPane code="FLDS" />);
+    // Original backend order: pe, fwd_pe, open.
+    expect(container.querySelector("tbody tr")?.textContent).toContain("pe");
+    fireEvent.click(screen.getByRole("columnheader", { name: /Description/i }));
+    // Ascending description: "Forward P/E" first.
+    expect(container.querySelector("tbody tr")?.textContent).toContain("fwd_pe");
+  });
+});

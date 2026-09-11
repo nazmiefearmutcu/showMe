@@ -8,26 +8,31 @@
  * same choice is sent to the backend LANG function, which persists
  * runtime/lang.txt for sidecar-side consumers.
  *
- * Honesty: the backend feed only reports its own 12-language registry;
- * the switcher list is built from @/i18n `listLocales()` so it keeps
- * working when the sidecar is down (labels are enriched from the payload
- * when it answers). Coverage pills are computed with
- * `isLocaleComplete()` — only shell chrome is translated; function panes
- * hardcode English. Arabic additionally flips the document to RTL.
+ * L7 upgrade: the locale grid is a real DataGrid (sortable locale / label /
+ * coverage / active columns, keyboard cell navigation, roving tabindex)
+ * with a client-side filter box. Row click applies the locale; the whole
+ * switcher still works when the sidecar is down because the list is built
+ * from @/i18n `listLocales()`.
+ *
+ * Honesty: coverage pills are computed with `isLocaleComplete()` — only
+ * shell chrome is translated; function panes hardcode English. Arabic
+ * additionally flips the document to RTL. The sidecar-persisted value is
+ * shown separately and never conflated with the active UI locale.
  */
 import { useMemo, useState, type CSSProperties } from "react";
 import {
-  Empty,
+  DataGrid,
+  type DataGridColumn,
   Pane,
   PaneBody,
   PaneFooter,
   PaneHeader,
   Pill,
-  Skeleton,
   StatCard,
   StatusDivider,
   StatusSection,
 } from "@/design-system";
+import { PaneState } from "@/design-system/PaneState";
 import { useFunction } from "@/lib/useFunction";
 import {
   isLocaleComplete,
@@ -59,11 +64,19 @@ interface LANGData {
   methodology?: string;
 }
 
+interface LangViewRow {
+  loc: Locale;
+  label: string;
+  complete: boolean;
+  active: boolean;
+}
+
 export function LANGPane({ code }: FunctionPaneProps) {
   // The UI locale is the source of truth for what is rendered; the
   // applied value mirrors it into the backend LANG call.
   const activeLocale = useLocale();
   const [appliedLang, setAppliedLang] = useState<Locale>(() => locale());
+  const [search, setSearch] = useState("");
 
   const { state, data, error, refetch } = useFunction<LANGData>({
     code,
@@ -91,29 +104,98 @@ export function LANGPane({ code }: FunctionPaneProps) {
 
   const locales = useMemo(() => listLocales(), []);
 
-  const body =
-    state === "loading" || state === "idle" ? (
-      <div className="u-grid-gap-8">
-        <Skeleton height={56} />
-        <Skeleton height={20} />
-        <Skeleton height={20} />
-        <Skeleton height={20} width="80%" />
-      </div>
-    ) : state === "error" ? (
-      <Empty
-        title="Backend registry unavailable"
-        body={
-          error?.message ??
-          "The LANG registry call failed. The switcher below still works — it drives the UI locale directly."
-        }
-        icon="!"
-        action={
-          <button onClick={refetch} className="btn">
-            Retry
+  const viewRows: LangViewRow[] = useMemo(() => {
+    const needle = search.trim().toLowerCase();
+    return locales
+      .map((loc) => ({
+        loc,
+        label: labelByLang.get(loc) ?? loc,
+        complete: isLocaleComplete(loc),
+        active: loc === activeLocale,
+      }))
+      .filter(
+        (row) =>
+          !needle ||
+          row.loc.toLowerCase().includes(needle) ||
+          row.label.toLowerCase().includes(needle),
+      );
+  }, [locales, labelByLang, activeLocale, search]);
+
+  const COLS: DataGridColumn<LangViewRow>[] = useMemo(
+    () => [
+      {
+        key: "loc",
+        header: "Locale",
+        width: 90,
+        sortable: true,
+        sortValue: (r) => r.loc,
+        render: (r) => (
+          <span
+            style={codeStyle}
+            title={`Switch UI language to ${r.label}`}
+          >
+            {r.loc.toUpperCase()}
+          </span>
+        ),
+      },
+      {
+        key: "label",
+        header: "Label",
+        sortable: true,
+        sortValue: (r) => r.label,
+        render: (r) => <span style={labelStyle}>{r.label}</span>,
+      },
+      {
+        key: "complete",
+        header: "Coverage",
+        width: 150,
+        sortable: true,
+        sortValue: (r) => (r.complete ? 1 : 0),
+        render: (r) => (
+          <Pill
+            tone={r.active ? "accent" : r.complete ? "positive" : "muted"}
+            variant="soft"
+            withDot={false}
+          >
+            {r.complete ? "shell complete" : "shell labels"}
+          </Pill>
+        ),
+      },
+      {
+        key: "active",
+        header: "Active",
+        width: 96,
+        sortable: true,
+        sortValue: (r) => (r.active ? 1 : 0),
+        render: (r) =>
+          r.active ? (
+            <Pill tone="accent" variant="soft" withDot={false}>
+              active
+            </Pill>
+          ) : (
+            <span className="u-text-mute">—</span>
+          ),
+      },
+    ],
+    [],
+  );
+
+  const body = (
+    <PaneState
+      state={state}
+      error={error}
+      empty={viewRows.length === 0}
+      emptyTitle={`No locales match "${search}"`}
+      emptyBody="Clear the filter to see all 12 terminal locales."
+      emptyAction={
+        search ? (
+          <button type="button" className="btn" onClick={() => setSearch("")}>
+            Clear filter
           </button>
-        }
-      />
-    ) : (
+        ) : undefined
+      }
+      onRetry={refetch}
+    >
       <div className="u-grid-gap-14">
         <div role="status" style={noteStyle} aria-label="Translation coverage note">
           Only shell chrome is translated; function panes hardcode English.
@@ -140,39 +222,20 @@ export function LANGPane({ code }: FunctionPaneProps) {
             tone="neutral"
           />
         </section>
-        <ul style={listStyle} aria-label="Locale options">
-          {locales.map((loc) => {
-            const isActive = loc === activeLocale;
-            const complete = isLocaleComplete(loc);
-            return (
-              <li key={loc}>
-                <button
-                  type="button"
-                  className="btn"
-                  aria-pressed={isActive}
-                  onClick={() => applyLocale(loc)}
-                  style={isActive ? rowActiveStyle : rowStyle}
-                  title={`Switch UI language to ${labelByLang.get(loc) ?? loc}`}
-                >
-                  <span style={codeStyle}>{loc.toUpperCase()}</span>
-                  <span style={labelStyle}>
-                    {labelByLang.get(loc) ?? loc}
-                  </span>
-                  <span style={spacerStyle} />
-                  <Pill
-                    tone={isActive ? "accent" : complete ? "positive" : "muted"}
-                    variant="soft"
-                    withDot={false}
-                  >
-                    {isActive ? "active" : complete ? "shell complete" : "shell labels"}
-                  </Pill>
-                </button>
-              </li>
-            );
-          })}
-        </ul>
+        <DataGrid
+          columns={COLS}
+          rows={viewRows}
+          rowKey={(r) => r.loc}
+          density="compact"
+          ariaLabel="Locale options"
+          keyboardNavigable
+          defaultSortKey="loc"
+          defaultSortDir="ascending"
+          onRowClick={(row) => applyLocale(row.loc)}
+        />
       </div>
-    );
+    </PaneState>
+  );
 
   return (
     <div className="u-pane-host">
@@ -180,9 +243,18 @@ export function LANGPane({ code }: FunctionPaneProps) {
         <PaneHeader
           code={code}
           title="Language Switch"
-          subtitle={`${locales.length} locales · active ${activeLocale}`}
+          subtitle={`${viewRows.length}/${locales.length} locales · active ${activeLocale}`}
           trailing={
             <FunctionControlGroup>
+              <input
+                type="search"
+                aria-label="Filter locales"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="filter locales"
+                title="Filter locales"
+                style={searchStyle}
+              />
               <Pill tone="muted" variant="soft" withDot={false}>
                 {activeLocale.toUpperCase()}
               </Pill>
@@ -229,47 +301,33 @@ const kpiGridStyle: CSSProperties = {
 const noteStyle: CSSProperties = {
   border: "1px solid var(--border, var(--text-mute))",
   color: "var(--text-secondary)",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   padding: "6px 8px",
   fontFamily: "JetBrains Mono, monospace",
 };
 
-const listStyle: CSSProperties = {
-  listStyle: "none",
-  margin: 0,
-  padding: 0,
-  display: "grid",
-  gap: 6,
-  gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))",
-};
-
-const rowStyle: CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  gap: 8,
-  width: "100%",
-  textAlign: "left",
-};
-
-const rowActiveStyle: CSSProperties = {
-  ...rowStyle,
-  border: "1px solid var(--accent, var(--text-primary))",
+const searchStyle: CSSProperties = {
+  background: "var(--surface-2)",
+  border: "1px solid var(--border-subtle)",
+  borderRadius: "var(--radius-sm)",
+  color: "var(--text-primary)",
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: "var(--font-size-md)",
+  height: 24,
+  padding: "0 6px",
+  width: 140,
 };
 
 const codeStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
   fontWeight: 600,
   color: "var(--text-primary)",
-  fontSize: 11,
-  minWidth: 28,
+  fontSize: "var(--font-size-sm)",
+  cursor: "pointer",
 };
 
 const labelStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
   color: "var(--text-secondary)",
-  fontSize: 11,
-};
-
-const spacerStyle: CSSProperties = {
-  flex: 1,
+  fontSize: "var(--font-size-sm)",
 };

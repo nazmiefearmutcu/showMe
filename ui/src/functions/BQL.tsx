@@ -324,7 +324,7 @@ const inputStyle: CSSProperties = {
   borderRadius: "var(--radius-sm)",
   color: "var(--text-primary)",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   height: 24,
   padding: "0 6px",
   width: 260,
@@ -334,7 +334,7 @@ const notesStyle: CSSProperties = {
   border: "1px solid var(--border-subtle)",
   borderRadius: 6,
   padding: "8px 10px",
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   fontFamily: "JetBrains Mono, monospace",
   color: "var(--text-mute)",
 };
@@ -343,7 +343,7 @@ const warnStyle: CSSProperties = {
   border: "1px solid var(--warn, var(--text-mute))",
   borderRadius: 6,
   padding: "8px 10px",
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   fontFamily: "JetBrains Mono, monospace",
   color: "var(--text-primary)",
 };
@@ -357,7 +357,7 @@ const planStyle: CSSProperties = {
 const planSummaryStyle: CSSProperties = {
   cursor: "pointer",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   letterSpacing: "0.06em",
   color: "var(--text-mute)",
 };
@@ -365,7 +365,7 @@ const planSummaryStyle: CSSProperties = {
 const planListStyle: CSSProperties = {
   margin: "6px 0 4px",
   paddingLeft: 18,
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   color: "var(--text-primary)",
 };
 

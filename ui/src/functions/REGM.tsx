@@ -328,7 +328,7 @@ const cardStyle: CSSProperties = {
 
 const cardLabelStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 9,
+  fontSize: "var(--font-size-xs)",
   letterSpacing: "0.06em",
   color: "var(--text-mute)",
   textTransform: "uppercase",
@@ -353,13 +353,13 @@ const stateStripStyle: CSSProperties = {
 const tableStyle: CSSProperties = {
   width: "100%",
   borderCollapse: "collapse",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
 };
 
 const thStyle: CSSProperties = {
   textAlign: "left",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 9,
+  fontSize: "var(--font-size-xs)",
   letterSpacing: "0.06em",
   textTransform: "uppercase",
   color: "var(--text-mute)",
@@ -375,7 +375,7 @@ const tdStyle: CSSProperties = {
 };
 
 const methodologyStyle: CSSProperties = {
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   fontFamily: "JetBrains Mono, monospace",
   color: "var(--text-mute)",
   border: "1px dashed var(--border-subtle)",
@@ -384,6 +384,6 @@ const methodologyStyle: CSSProperties = {
 };
 
 const muteTextStyle: CSSProperties = {
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   color: "var(--text-mute)",
 };

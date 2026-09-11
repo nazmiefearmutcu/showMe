@@ -177,7 +177,7 @@ function normalizeOption<T extends PrimitiveControlValue>(
 const controlLabelStyle: CSSProperties = {
   padding: "0 5px",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 9,
+  fontSize: "var(--font-size-xs)",
   color: "var(--text-mute)",
   letterSpacing: "0.06em",
   whiteSpace: "nowrap",

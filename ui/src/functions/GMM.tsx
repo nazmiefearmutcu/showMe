@@ -350,7 +350,7 @@ const tableScrollStyle: CSSProperties = { overflowX: "auto" };
 const tableStyle: CSSProperties = {
   borderCollapse: "collapse",
   width: "100%",
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
 };
 
 const thStyle: CSSProperties = {
@@ -359,7 +359,7 @@ const thStyle: CSSProperties = {
   borderBottom: "1px solid var(--border-row)",
   color: "var(--text-mute)",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 9,
+  fontSize: "var(--font-size-xs)",
   letterSpacing: "0.06em",
   textTransform: "uppercase",
   whiteSpace: "nowrap",
@@ -385,14 +385,14 @@ const tdCountryStyle: CSSProperties = {
 
 const ccStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 9,
+  fontSize: "var(--font-size-xs)",
   color: "var(--text-mute)",
 };
 
 const yearStyle: CSSProperties = {
   marginLeft: 6,
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 9,
+  fontSize: "var(--font-size-xs)",
   color: "var(--text-mute)",
 };
 
@@ -403,7 +403,7 @@ const noteStyle: CSSProperties = {
   flexWrap: "wrap",
   margin: 0,
   color: "var(--text-mute)",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
 };
 
 const monoStrongStyle: CSSProperties = {

@@ -12,16 +12,16 @@ import { useMemo, useState, type CSSProperties, type FormEvent } from "react";
 import {
   DataGrid,
   type DataGridColumn,
-  Empty,
   Pane,
   PaneBody,
   PaneFooter,
   PaneHeader,
   Pill,
-  Skeleton,
   StatusDivider,
   StatusSection,
 } from "@/design-system";
+import { PaneState } from "@/design-system/PaneState";
+import { navigate } from "@/lib/router";
 import { useFunction } from "@/lib/useFunction";
 import {
   FunctionControlGroup,
@@ -100,17 +100,43 @@ export function SECFPane({ code }: FunctionPaneProps) {
         key: "symbol",
         header: "Symbol",
         width: 120,
-        render: (r) => <span style={monoStrongStyle}>{r.symbol ?? "—"}</span>,
+        sortable: true,
+        sortValue: (r) => r.symbol ?? "",
+        render: (r) => {
+          const sym = r.symbol ?? "—";
+          const goDES = () => navigate(`/symbol/${String(r.symbol)}/DES`);
+          return (
+            <button
+              type="button"
+              onClick={goDES}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  goDES();
+                }
+              }}
+              className="scan-symbol"
+              title="Open DES"
+              aria-label={`Open ${sym} in DES`}
+            >
+              {sym}
+            </button>
+          );
+        },
       },
       {
         key: "name",
         header: "Name",
+        sortable: true,
+        sortValue: (r) => r.name ?? "",
         render: (r) => <span style={monoPrimaryStyle}>{r.name ?? "—"}</span>,
       },
       {
         key: "exchange",
         header: "Exchange",
         width: 130,
+        sortable: true,
+        sortValue: (r) => r.exchange ?? "",
         render: (r) => (
           <span style={monoMutedStyle}>{r.exchange ?? "—"}</span>
         ),
@@ -153,76 +179,59 @@ export function SECFPane({ code }: FunctionPaneProps) {
     source.includes("security_master"),
   );
 
-  const body = state === "loading" || state === "idle" ? (
-    <div className="u-grid-gap-8">
-      <Skeleton height={28} />
-      <Skeleton height={20} />
-      <Skeleton height={20} />
-      <Skeleton height={20} width="80%" />
-    </div>
-  ) : state === "error" ? (
-    <Empty
-      title="Function error"
-      body={error?.message ?? "—"}
-      icon="!"
-      action={
-        <button onClick={refetch} className="btn">
-          Retry
-        </button>
-      }
-    />
-  ) : status === "empty" || rows.length === 0 ? (
-    <Empty
-      title={`No securities matched "${payload?.query ?? query}"`}
-      body={
+  const body = (
+    <PaneState
+      state={state}
+      error={error}
+      empty={status === "empty" || rows.length === 0}
+      emptyTitle={`No securities matched "${payload?.query ?? query}"`}
+      emptyBody={
         payload?.next_actions?.[0] ??
         "Try a broader symbol, company name, asset class, or tag."
       }
-      action={
-        <button onClick={refetch} className="btn">
-          Retry
-        </button>
-      }
-    />
-  ) : (
-    <div className="u-grid-gap-14">
-      <div
-        style={chipRowStyle}
-        role="group"
-        aria-label="Asset class filter"
-      >
-        {classes.map((cls) => {
-          const active = assetClass === cls;
-          return (
-            <button
-              key={cls}
-              type="button"
-              className={`fn-segmented__opt${active ? " fn-segmented__opt--active" : ""}`}
-              aria-pressed={active}
-              onClick={() => setAssetClass(cls)}
-              title={`Filter asset class ${cls}`}
-            >
-              {cls}
-            </button>
-          );
-        })}
+      onRetry={refetch}
+    >
+      <div className="u-grid-gap-14">
+        <div
+          style={chipRowStyle}
+          role="group"
+          aria-label="Asset class filter"
+        >
+          {classes.map((cls) => {
+            const active = assetClass === cls;
+            return (
+              <button
+                key={cls}
+                type="button"
+                className={`fn-segmented__opt${active ? " fn-segmented__opt--active" : ""}`}
+                aria-pressed={active}
+                onClick={() => setAssetClass(cls)}
+                title={`Filter asset class ${cls}`}
+              >
+                {cls}
+              </button>
+            );
+          })}
+        </div>
+        <DataGrid
+          columns={COLS}
+          rows={visible}
+          rowKey={(r, i) => `${r.symbol ?? ""}-${i}`}
+          density="compact"
+          ariaLabel="Security finder results"
+          defaultSortKey="symbol"
+          defaultSortDir="none"
+        />
+        <p style={noteStyle} aria-label="Match count note">
+          {visible.length} of {payload?.matched ?? rows.length} matched
+          {" · "}
+          {payload?.scanned ?? "—"} scanned
+          {" · "}
+          query "{payload?.query ?? query}"
+          {assetClass !== "ALL" ? ` · filtered to ${assetClass}` : ""}
+        </p>
       </div>
-      <DataGrid
-        columns={COLS}
-        rows={visible}
-        rowKey={(r, i) => `${r.symbol ?? ""}-${i}`}
-        density="compact"
-        ariaLabel="Security finder results"
-      />
-      <p style={noteStyle} aria-label="Match count note">
-        {visible.length} of {payload?.matched ?? rows.length} matched
-        {" · "}
-        {payload?.scanned ?? "—"} scanned
-        {" · "}
-        query "{payload?.query ?? query}"
-        {assetClass !== "ALL" ? ` · filtered to ${assetClass}` : ""}
-      </p>
-    </div>
+    </PaneState>
   );
 
   return (
@@ -296,7 +305,7 @@ const inputStyle: CSSProperties = {
   borderRadius: "var(--radius-sm)",
   color: "var(--text-primary)",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   height: 24,
   padding: "0 6px",
   width: 150,
@@ -312,14 +321,8 @@ const chipRowStyle: CSSProperties = {
 const noteStyle: CSSProperties = {
   margin: 0,
   color: "var(--text-mute)",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   fontFamily: "JetBrains Mono, monospace",
-};
-
-const monoStrongStyle: CSSProperties = {
-  fontFamily: "JetBrains Mono, monospace",
-  color: "var(--text-primary)",
-  fontWeight: 600,
 };
 
 const monoPrimaryStyle: CSSProperties = {

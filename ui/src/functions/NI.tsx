@@ -1124,7 +1124,7 @@ const feedRowDot: CSSProperties = {
 };
 
 const feedRowIndex: CSSProperties = {
-  fontSize: 9,
+  fontSize: "var(--font-size-xs)",
   color: "var(--text-mute)",
   fontFamily: "JetBrains Mono, monospace",
   letterSpacing: "0.04em",
@@ -1148,21 +1148,21 @@ const articleMeta: CSSProperties = {
 
 const summaryStyle: CSSProperties = {
   margin: "0 0 4px",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   color: "var(--text-secondary)",
   lineHeight: 1.5,
 };
 
 const symbolButton: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   padding: "1px 6px",
   height: 18,
   color: "var(--accent)",
 };
 
 const tinyMute: CSSProperties = {
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   color: "var(--text-mute)",
 };
 
@@ -1177,21 +1177,21 @@ const selectedSummaryStyle: CSSProperties = {
 
 const selectedKickerStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 9,
+  fontSize: "var(--font-size-xs)",
   letterSpacing: "0.08em",
   textTransform: "uppercase",
   color: "var(--accent)",
 };
 
 const selectedTitleStyle: CSSProperties = {
-  fontSize: 13,
+  fontSize: "var(--font-size-lg)",
   color: "var(--text-primary)",
   lineHeight: 1.4,
 };
 
 const selectedExcerptStyle: CSSProperties = {
   margin: 0,
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   lineHeight: 1.5,
   color: "var(--text-secondary)",
 };
@@ -1206,7 +1206,7 @@ const synthSectionHeader: CSSProperties = {
 
 const synthEmpty: CSSProperties = {
   margin: 0,
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   color: "var(--text-mute)",
   fontStyle: "italic",
 };
@@ -1225,7 +1225,7 @@ const synthListItem: CSSProperties = {
   gridTemplateColumns: "auto 1fr",
   gap: 6,
   alignItems: "start",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   color: "var(--text-primary)",
   lineHeight: 1.5,
 };
@@ -1241,7 +1241,7 @@ const citationChipStyle: CSSProperties = {
   background: "var(--accent-soft)",
   color: "var(--accent)",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 9,
+  fontSize: "var(--font-size-xs)",
   fontWeight: 600,
 };
 
@@ -1262,7 +1262,7 @@ const timelineHeader: CSSProperties = {
 
 const timelineLabel: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 9,
+  fontSize: "var(--font-size-xs)",
   color: "var(--text-mute)",
   textTransform: "uppercase",
   letterSpacing: "0.08em",
@@ -1278,7 +1278,7 @@ const timelineBars: CSSProperties = {
 const timelineAxis: CSSProperties = {
   display: "flex",
   justifyContent: "space-between",
-  fontSize: 9,
+  fontSize: "var(--font-size-xs)",
   color: "var(--text-mute)",
   fontFamily: "JetBrains Mono, monospace",
   letterSpacing: "0.04em",
@@ -1312,14 +1312,14 @@ const newsLoadHeader: CSSProperties = {
 const newsLoadTitle: CSSProperties = {
   display: "block",
   color: "var(--text-primary)",
-  fontSize: 15,
+  fontSize: "var(--font-size-xl)",
   letterSpacing: 0,
 };
 
 const newsLoadText: CSSProperties = {
   margin: "4px 0 0",
   color: "var(--text-secondary)",
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   lineHeight: 1.5,
 };
 

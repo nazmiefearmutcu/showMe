@@ -736,7 +736,7 @@ const legendRowStyle: CSSProperties = {
   display: "flex",
   alignItems: "center",
   gap: 16,
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   color: "var(--text-secondary)",
 };
 
@@ -756,7 +756,7 @@ const legendSwatchStyle: CSSProperties = {
 const legendScaleStyle: CSSProperties = {
   marginLeft: "auto",
   color: "var(--text-mute)",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   letterSpacing: "0.04em",
 };
 
@@ -774,7 +774,7 @@ const barRowStyle: CSSProperties = {
 };
 
 const barLabelStyle: CSSProperties = {
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   fontWeight: 600,
   color: "var(--text-display)",
   fontFamily: "JetBrains Mono, monospace",
@@ -803,7 +803,7 @@ const barValueStyle: CSSProperties = {
   justifyContent: "flex-end",
   gap: 8,
   fontVariantNumeric: "tabular-nums",
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   fontFamily: "JetBrains Mono, monospace",
 };
 
@@ -820,7 +820,7 @@ const isoStyle: CSSProperties = {
 };
 
 const countryNameStyle: CSSProperties = {
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   color: "var(--text-secondary)",
   overflow: "hidden",
   textOverflow: "ellipsis",
@@ -839,7 +839,7 @@ const mutedNum: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
   fontVariantNumeric: "tabular-nums",
   color: "var(--text-secondary)",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
 };
 
 const ccyWrapStyle: CSSProperties = {
@@ -869,7 +869,7 @@ const toggleStyle: CSSProperties = {
   display: "inline-flex",
   alignItems: "center",
   gap: 5,
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   color: "var(--text-secondary)",
 };
 
@@ -895,7 +895,7 @@ const macroNoteStyle: CSSProperties = {
   padding: "8px 10px",
   display: "grid",
   gap: 3,
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
 };
 
 const refHeaderStyle: CSSProperties = {
@@ -905,7 +905,7 @@ const refHeaderStyle: CSSProperties = {
 };
 
 const refBadgeStyle: CSSProperties = {
-  fontSize: 9,
+  fontSize: "var(--font-size-xs)",
   fontWeight: 700,
   letterSpacing: "0.04em",
   textTransform: "uppercase",
@@ -919,7 +919,7 @@ const refBadgeStyle: CSSProperties = {
 const refFootnoteStyle: CSSProperties = {
   margin: 0,
   color: "var(--text-mute)",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   lineHeight: 1.5,
 };
 
@@ -933,7 +933,7 @@ const methodPanelStyle: CSSProperties = {
 const metaLabelStyle: CSSProperties = {
   color: "var(--text-mute)",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   textTransform: "uppercase",
   letterSpacing: "0.08em",
   marginBottom: 6,
@@ -943,5 +943,5 @@ const methodTextStyle: CSSProperties = {
   margin: 0,
   color: "var(--text-secondary)",
   lineHeight: 1.5,
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
 };

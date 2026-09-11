@@ -344,7 +344,7 @@ const feedStripStyle: CSSProperties = {
 
 const feedStripLabelStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 9,
+  fontSize: "var(--font-size-xs)",
   letterSpacing: "0.06em",
   color: "var(--text-mute)",
 };
@@ -369,7 +369,7 @@ const rowStyle: CSSProperties = {
 const scoreStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
   fontVariantNumeric: "tabular-nums",
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   fontWeight: 600,
   color: "var(--text-primary)",
   minWidth: 36,
@@ -383,13 +383,13 @@ const contentStyle: CSSProperties = {
 };
 
 const titleStyle: CSSProperties = {
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   color: "var(--text-primary)",
   overflowWrap: "anywhere",
 };
 
 const metaStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   color: "var(--text-mute)",
 };

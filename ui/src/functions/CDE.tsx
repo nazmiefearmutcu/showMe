@@ -402,7 +402,7 @@ const formCardStyle: CSSProperties = {
 const sectionTitleStyle: CSSProperties = {
   textTransform: "uppercase",
   letterSpacing: "0.08em",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   color: "var(--text-mute)",
   fontFamily: "JetBrains Mono, monospace",
 };
@@ -415,7 +415,7 @@ const fieldRowStyle: CSSProperties = {
 
 const fieldLabelStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 9,
+  fontSize: "var(--font-size-xs)",
   color: "var(--text-mute)",
   letterSpacing: "0.06em",
 };
@@ -426,7 +426,7 @@ const textInputStyle: CSSProperties = {
   borderRadius: 3,
   color: "var(--text-primary)",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   height: 24,
   padding: "0 6px",
   width: "100%",
@@ -457,7 +457,7 @@ const noteStyle: CSSProperties = {
   border: "1px solid var(--border-subtle)",
   borderRadius: 6,
   padding: "8px 10px",
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   color: "var(--text-mute)",
 };
 
@@ -465,7 +465,7 @@ const errorNoteStyle: CSSProperties = {
   border: "1px solid var(--negative, var(--text-mute))",
   borderRadius: 6,
   padding: "8px 10px",
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   color: "var(--text-primary)",
 };
 

@@ -135,8 +135,8 @@ describe("SOSC pane — sentiment payload", () => {
     expect(screen.getByText("reuters.com")).toBeInTheDocument();
     expect(screen.getByText("cnbc.com")).toBeInTheDocument();
     expect(screen.getAllByText("bullish").length).toBeGreaterThanOrEqual(2);
-    expect(screen.getByText("bearish")).toBeInTheDocument();
-    expect(screen.getByText("flat")).toBeInTheDocument();
+    expect(screen.getAllByText("bearish").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText("flat").length).toBeGreaterThanOrEqual(1);
     expect(container.textContent).toContain("+0.24");
     expect(container.textContent).toContain("-0.31");
   });
@@ -176,5 +176,27 @@ describe("SOSC pane — controls", () => {
     expect(wide).toBeDisabled();
     expect(wide.className).toContain("fn-segmented__opt--active");
     expect(localStorage.getItem("showme.sosc.days")).toBe("14");
+  });
+});
+
+describe("SOSC pane — grid upgrade (L7)", () => {
+  it("filters outlets by sentiment trend chip", () => {
+    setMockFn({ state: "ok", data: { data: okPayload() } });
+    const { container } = render(<SOSCPane code="SOSC" symbol="AAPL" />);
+    expect(container.querySelectorAll("tbody tr").length).toBe(3);
+    fireEvent.click(screen.getByTitle("Filter trend bearish"));
+    expect(container.querySelectorAll("tbody tr").length).toBe(1);
+    expect(container.textContent).toContain("cnbc.com");
+    expect(container.textContent).not.toContain("reuters.com");
+  });
+
+  it("sorts outlets by mentions (default descending)", () => {
+    setMockFn({ state: "ok", data: { data: okPayload() } });
+    const { container } = render(<SOSCPane code="SOSC" symbol="AAPL" />);
+    expect(container.querySelector("tbody tr")?.textContent).toContain("reuters.com");
+    fireEvent.click(screen.getByRole("columnheader", { name: /Mentions/i }));
+    // descending → none → ascending: fewest mentions first.
+    fireEvent.click(screen.getByRole("columnheader", { name: /Mentions/i }));
+    expect(container.querySelector("tbody tr")?.textContent).toContain("forums.stocktwits");
   });
 });

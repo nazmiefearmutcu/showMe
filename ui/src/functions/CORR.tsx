@@ -1640,7 +1640,7 @@ const toolbarSegmentStyle: CSSProperties = {
 
 const toolbarLabelStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 9,
+  fontSize: "var(--font-size-xs)",
   color: "var(--text-mute)",
   letterSpacing: "0.08em",
   textTransform: "uppercase",
@@ -1660,7 +1660,7 @@ const pillButtonStyle: CSSProperties = {
   padding: "3px 10px",
   borderRadius: "var(--radius-sm)",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   cursor: "default",
   letterSpacing: "0.04em",
 };
@@ -1683,7 +1683,7 @@ const statCardStyle: CSSProperties = {
 
 const statLabelStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 9,
+  fontSize: "var(--font-size-xs)",
   color: "var(--text-mute)",
   letterSpacing: "0.08em",
   textTransform: "uppercase",
@@ -1709,7 +1709,7 @@ const formulaStripStyle: CSSProperties = {
   background: "var(--accent-soft)",
   padding: "8px 10px",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   color: "var(--text-secondary)",
 };
 
@@ -1741,7 +1741,7 @@ const lowNWarningStyle: CSSProperties = {
 
 const syntheticWarningTitleStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   fontWeight: 700,
   color: "var(--warn)",
   letterSpacing: "0.02em",
@@ -1749,7 +1749,7 @@ const syntheticWarningTitleStyle: CSSProperties = {
 
 const syntheticWarningBodyStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   color: "var(--text-secondary)",
   lineHeight: 1.5,
 };
@@ -1778,7 +1778,7 @@ const matrixHeaderStyle: CSSProperties = {
   borderBottom: "1px solid var(--border-strong)",
   color: "var(--text-mute)",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   fontWeight: 700,
   letterSpacing: "0.06em",
   textTransform: "uppercase",
@@ -1795,7 +1795,7 @@ const headerCellInnerStyle: CSSProperties = {
 
 const diagonalLabelStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 9,
+  fontSize: "var(--font-size-xs)",
   color: "var(--text-mute)",
   letterSpacing: "0.04em",
 };
@@ -1812,7 +1812,7 @@ const legendTicksStyle: CSSProperties = {
   display: "flex",
   justifyContent: "space-between",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 9,
+  fontSize: "var(--font-size-xs)",
   color: "var(--text-mute)",
   letterSpacing: "0.04em",
 };
@@ -1834,7 +1834,7 @@ const pairColStyle: CSSProperties = {
 
 const pairSymbolsStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   color: "var(--text-primary)",
   fontWeight: 700,
   overflow: "hidden",
@@ -1844,7 +1844,7 @@ const pairSymbolsStyle: CSSProperties = {
 
 const pairMarketStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 9,
+  fontSize: "var(--font-size-xs)",
   color: "var(--text-mute)",
   letterSpacing: "0.04em",
 };
@@ -1857,7 +1857,7 @@ const pairValuesStyle: CSSProperties = {
 
 const pairValueStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   fontWeight: 700,
   fontVariantNumeric: "tabular-nums",
 };
@@ -1871,14 +1871,14 @@ const pairChipStyle: CSSProperties = {
   background: "var(--surface-2)",
   border: "1px solid var(--border-subtle)",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   fontWeight: 700,
   color: "var(--text-primary)",
 };
 
 const pairChipMarketStyle: CSSProperties = {
   color: "var(--text-mute)",
-  fontSize: 9,
+  fontSize: "var(--font-size-xs)",
   fontWeight: 500,
   textTransform: "uppercase",
 };
@@ -1892,7 +1892,7 @@ const pairKvStyle: CSSProperties = {
 
 const pairKvValueStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   color: "var(--text-primary)",
   fontWeight: 600,
   fontVariantNumeric: "tabular-nums",
@@ -1900,7 +1900,7 @@ const pairKvValueStyle: CSSProperties = {
 
 const diversTickerStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   fontWeight: 700,
 };
 
@@ -1926,14 +1926,14 @@ const diversValuesStyle: CSSProperties = {
   display: "flex",
   gap: 10,
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   color: "var(--text-mute)",
   whiteSpace: "nowrap",
 };
 
 const controlLabelStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   color: "var(--text-mute)",
   letterSpacing: "0.06em",
   textTransform: "uppercase",
@@ -1950,6 +1950,6 @@ const textareaStyle: CSSProperties = {
   color: "var(--text-primary)",
   padding: "7px 9px",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   outline: "none",
 };

@@ -57,7 +57,7 @@ describe("TMPL modal a11y (focus trap + Esc)", () => {
   it("modal body element exists and carries the trap-container testid", () => {
     render(<TMPLPane />);
     fireEvent.click(screen.getByText("RSI MR"));
-    fireEvent.click(screen.getByRole("button", { name: /kullan/i }));
+    fireEvent.click(screen.getByRole("button", { name: /use this template/i }));
     const body = screen.getByTestId("tmpl-modal-body");
     expect(body).toBeInTheDocument();
     // role="dialog" + aria-modal still on the backdrop wrapper.
@@ -70,7 +70,7 @@ describe("TMPL modal a11y (focus trap + Esc)", () => {
   it("Esc closes the modal (was already shipped, kept as regression guard)", () => {
     render(<TMPLPane />);
     fireEvent.click(screen.getByText("RSI MR"));
-    fireEvent.click(screen.getByRole("button", { name: /kullan/i }));
+    fireEvent.click(screen.getByRole("button", { name: /use this template/i }));
     expect(screen.getByTestId("tmpl-modal-backdrop")).toBeInTheDocument();
     fireEvent.keyDown(window, { key: "Escape" });
     expect(screen.queryByTestId("tmpl-modal-backdrop")).toBeNull();

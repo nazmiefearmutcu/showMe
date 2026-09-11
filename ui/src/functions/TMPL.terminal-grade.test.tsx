@@ -68,7 +68,7 @@ describe("TMPL P3 — a11y on modal + status + list", () => {
   function openModal() {
     render(<TMPLPane />);
     fireEvent.click(screen.getByText("RSI MR"));
-    fireEvent.click(screen.getByRole("button", { name: /kullan/i }));
+    fireEvent.click(screen.getByRole("button", { name: /use this template/i }));
   }
 
   it("status region has aria-live polite and an alert role for errors", () => {
@@ -97,9 +97,9 @@ describe("TMPL P3 — a11y on modal + status + list", () => {
 
   it("name + symbol inputs are label-associated text inputs", () => {
     openModal();
-    const adInput = screen.getByLabelText(/^ad$/i) as HTMLInputElement;
-    expect(adInput.type).toBe("text");
-    const symInput = screen.getByLabelText(/sembol/i) as HTMLInputElement;
+    const nameInput = screen.getByLabelText(/^name$/i) as HTMLInputElement;
+    expect(nameInput.type).toBe("text");
+    const symInput = screen.getByLabelText(/symbol/i) as HTMLInputElement;
     expect(symInput.type).toBe("text");
   });
 });

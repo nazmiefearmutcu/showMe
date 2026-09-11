@@ -11,7 +11,7 @@
  * that inline instead of inventing numbers, and links out to the SEC primary
  * document only when an absolute URL is present in the payload.
  */
-import { useMemo, type CSSProperties } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import {
   DataGrid,
   type DataGridColumn,
@@ -27,6 +27,7 @@ import {
 } from "@/design-system";
 import { formatNumberFixed } from "@/lib/format";
 import { useFunction } from "@/lib/useFunction";
+import { useVisibilityTick } from "@/lib/useVisibilityTick";
 import { defaultSymbolForFunction } from "@/lib/symbols";
 import {
   FunctionControlGroup,
@@ -84,6 +85,15 @@ const MONTHS_IDS = MONTHS_OPTIONS.map((o) => o.value);
 
 const TABLE_CAP = 25;
 
+/** Live adoption: visibility-paused 120s poll (campaign 2026-09-11). */
+const REFRESH_MS = 120_000;
+
+function numOrNull(v: unknown): number | null {
+  if (v == null) return null;
+  const n = typeof v === "number" ? v : Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
 export function FORM4Pane({ code, symbol }: FunctionPaneProps) {
   const [months, setMonths] = usePersistentOption<number>(
     "showme.form4.months",
@@ -100,6 +110,41 @@ export function FORM4Pane({ code, symbol }: FunctionPaneProps) {
 
   const payload = data?.data;
   const rows: FORM4Row[] = useMemo(() => payload?.rows ?? [], [payload]);
+
+  // Live adoption (campaign 2026-09-11): visibility-paused 120s refetch.
+  // The tick only drives `refetch()`; keeping it out of `params` is what
+  // prevents a fresh fetch key (and skeleton flash) on every poll (UA-HIGH-16).
+  const tick = useVisibilityTick(REFRESH_MS);
+  useEffect(() => {
+    if (tick === 0) return; // initial mount is useFunction's own load
+    refetch();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- tick is the trigger
+  }, [tick]);
+
+  // New-filings-since-last-poll badge. Honest by construction: the count is
+  // only compared within the SAME (symbol, window) request, so a WINDOW change
+  // re-baselines instead of masquerading as fresh filings. The first payload
+  // is always a baseline (no badge).
+  const countKey = `${effectiveSymbol}|${months}`;
+  const countRef = useRef<{ key: string; count: number | null }>({
+    key: "",
+    count: null,
+  });
+  const [newSinceLastPoll, setNewSinceLastPoll] = useState(0);
+  useEffect(() => {
+    const count = numOrNull(
+      payload?.filing_count ?? payload?.n ?? rows.length,
+    );
+    if (count == null) return;
+    const prev = countRef.current;
+    if (prev.key !== countKey || prev.count == null) {
+      countRef.current = { key: countKey, count };
+      setNewSinceLastPoll(0);
+      return;
+    }
+    countRef.current = { key: countKey, count };
+    setNewSinceLastPoll(count > prev.count ? count - prev.count : 0);
+  }, [payload, rows.length, countKey]);
   const filings: FORM4Filing[] = useMemo(
     () => payload?.filings ?? [],
     [payload],
@@ -273,6 +318,18 @@ export function FORM4Pane({ code, symbol }: FunctionPaneProps) {
     />
   ) : (
     <div className="u-grid-gap-14">
+      {newSinceLastPoll > 0 && (
+        <div
+          role="status"
+          aria-live="polite"
+          data-testid="form4-new-filings"
+          style={noteStyle}
+        >
+          <Pill tone="accent" variant="soft" withDot={false}>
+            {`+${newSinceLastPoll} new filing${newSinceLastPoll === 1 ? "" : "s"} since last poll`}
+          </Pill>
+        </div>
+      )}
       <section aria-label="FORM4 monthly filing histogram">
         <MonthlyHistogram byMonth={byMonth} />
       </section>
@@ -439,7 +496,7 @@ function fmtNum(v: unknown, digits: number): string {
   return formatNumberFixed(n, digits);
 }
 
-const noteStyle: CSSProperties = { fontSize: 11 };
+const noteStyle: CSSProperties = { fontSize: "var(--font-size-sm)" };
 const monoStrongStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
   fontVariantNumeric: "tabular-nums",

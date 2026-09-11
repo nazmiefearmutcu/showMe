@@ -153,3 +153,35 @@ describe("PORT terminal-grade", () => {
     expect(symbolsNow()).toEqual(originalOrder);
   });
 });
+
+describe("PORT hero — themed flash (live adoption)", () => {
+  it("flashes the equity hero when a poll moves it, never on first render", () => {
+    mockFunction(READY_WITH_POSITIONS);
+    const { container, rerender } = render(<PORTPane code="PORT" />);
+    const hero = () =>
+      container.querySelector(
+        ".port-terminal-summary__primary strong",
+      ) as HTMLElement;
+    expect(hero().className).not.toMatch(/flash/);
+
+    vi.useFakeTimers();
+    try {
+      const moved = {
+        ...READY_WITH_POSITIONS,
+        data: {
+          ...READY_WITH_POSITIONS.data,
+          totals: {
+            ...READY_WITH_POSITIONS.data.totals,
+            market_value: 2100,
+            unrealized_pnl: 100,
+          },
+        },
+      };
+      mockFunction(moved);
+      rerender(<PORTPane code="PORT" />);
+      expect(hero().className).toContain("flash-pos");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

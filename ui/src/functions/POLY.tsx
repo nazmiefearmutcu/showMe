@@ -616,7 +616,7 @@ const sortBarStyle: CSSProperties = {
 const sortLabelStyle: CSSProperties = {
   color: "var(--text-mute)",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   textTransform: "uppercase",
   letterSpacing: "0.08em",
 };
@@ -667,7 +667,7 @@ const oddsLabelStyle: CSSProperties = {
   alignItems: "center",
   justifyContent: "space-between",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   fontWeight: 700,
   textTransform: "uppercase",
   letterSpacing: "0.06em",
@@ -698,7 +698,7 @@ const metaRowStyle: CSSProperties = {
   gap: 8,
   fontFamily: "JetBrains Mono, monospace",
   fontVariantNumeric: "tabular-nums",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   color: "var(--text-mute)",
   letterSpacing: "0.02em",
 };
@@ -750,7 +750,7 @@ const mutedNumStyle: CSSProperties = {
 
 const daysTagStyle: CSSProperties = {
   color: "var(--text-mute)",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   letterSpacing: "0.04em",
 };
 
@@ -761,7 +761,7 @@ const noticeStyle: CSSProperties = {
   padding: "9px 10px",
   display: "grid",
   gap: 4,
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
 };
 
 const warningBox: CSSProperties = {
@@ -789,7 +789,7 @@ const methodPanel: CSSProperties = {
 const metaLabel: CSSProperties = {
   color: "var(--text-mute)",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   textTransform: "uppercase",
   letterSpacing: "0.08em",
   marginBottom: 6,
@@ -799,5 +799,5 @@ const methodText: CSSProperties = {
   margin: 0,
   color: "var(--text-secondary)",
   lineHeight: 1.5,
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
 };

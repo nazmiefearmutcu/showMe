@@ -10,7 +10,7 @@
  * crypto, fx) and surface the top movers by volume / |%Δ| / dollar
  * volume. Sortable DataGrid; symbol click jumps into DES.
  */
-import { useMemo, type CSSProperties } from "react";
+import { useEffect, useMemo, type CSSProperties } from "react";
 import {
   Card,
   CardBody,
@@ -20,6 +20,7 @@ import {
   type DataGridColumn,
   DeltaChip,
   Empty,
+  FlashValue,
   Pane,
   PaneBody,
   PaneFooter,
@@ -30,6 +31,7 @@ import {
   Tabs,
 } from "@/design-system";
 import { useFunction } from "@/lib/useFunction";
+import { useVisibilityTick } from "@/lib/useVisibilityTick";
 import { useWorkspace } from "@/lib/workspace";
 import { maxOf } from "@/lib/maxOf";
 import { navigate } from "@/lib/router";
@@ -109,6 +111,15 @@ const PRESET_TILES: Array<{
   { code: "FX-MOV", description: "FX · |Δ%|", tab: "fx", sort: "abs_change" },
 ];
 
+/** Live adoption: visibility-paused 30s poll (campaign 2026-09-11). */
+const REFRESH_MS = 30_000;
+
+function numOrNull(v: unknown): number | null {
+  if (v == null) return null;
+  const n = typeof v === "number" ? v : Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
 function median(values: number[]): number | null {
   if (!values.length) return null;
   const sorted = [...values].sort((a, b) => a - b);
@@ -141,6 +152,16 @@ export function MOSTPane({ code }: FunctionPaneProps) {
     code,
     params: { asset_class: assetClass, limit, sort, live_screen: true },
   });
+
+  // Live adoption (campaign 2026-09-11): visibility-paused 30s refetch. The
+  // tick drives `refetch()` only — putting it in `params` would change the
+  // useFunction fetch key every cycle and flash the skeleton (UA-HIGH-16).
+  const tick = useVisibilityTick(REFRESH_MS);
+  useEffect(() => {
+    if (tick === 0) return; // initial mount is useFunction's own load
+    refetch();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- tick is the trigger
+  }, [tick]);
 
   const payload = useMemo(() => normalizePayload(data?.data), [data]);
   const rows = useMemo(() => {
@@ -259,9 +280,12 @@ export function MOSTPane({ code }: FunctionPaneProps) {
         numeric: true,
         width: 96,
         render: (r) => (
-          <span className="most-price-cell terminal-grid-numeric">
+          <FlashValue
+            value={numOrNull(r.last ?? r.price)}
+            className="most-price-cell terminal-grid-numeric"
+          >
             {formatPrice(r.last ?? r.price)}
-          </span>
+          </FlashValue>
         ),
       },
       {
@@ -278,9 +302,9 @@ export function MOSTPane({ code }: FunctionPaneProps) {
               </span>
             );
           return (
-            <span className="terminal-grid-numeric">
+            <FlashValue value={numOrNull(v)} className="terminal-grid-numeric">
               <DeltaChip value={Number(v)} format="percent" fractionDigits={2} />
-            </span>
+            </FlashValue>
           );
         },
       },
@@ -293,10 +317,12 @@ export function MOSTPane({ code }: FunctionPaneProps) {
           const v = Number(r.volume ?? 0);
           const ratio = maxVolume > 0 ? v / maxVolume : 0;
           return (
-            <NumericBar
-              value={formatCompactNumber(r.volume, { fixedDigits: 2 })}
-              ratio={ratio}
-            />
+            <FlashValue value={numOrNull(r.volume)} className="u-block">
+              <NumericBar
+                value={formatCompactNumber(r.volume, { fixedDigits: 2 })}
+                ratio={ratio}
+              />
+            </FlashValue>
           );
         },
       },
@@ -309,10 +335,12 @@ export function MOSTPane({ code }: FunctionPaneProps) {
           const dollar = r.dollar_volume ?? estimateDollar(r);
           const ratio = maxDollarVolume > 0 ? dollar / maxDollarVolume : 0;
           return (
-            <NumericBar
-              value={formatCompactNumber(dollar, { fixedDigits: 2 })}
-              ratio={ratio}
-            />
+            <FlashValue value={numOrNull(r.dollar_volume ?? dollar)} className="u-block">
+              <NumericBar
+                value={formatCompactNumber(dollar, { fixedDigits: 2 })}
+                ratio={ratio}
+              />
+            </FlashValue>
           );
         },
       },
@@ -764,7 +792,7 @@ const filterChipStyle: CSSProperties = {
   border: "1px solid var(--border-subtle)",
   borderRadius: 11,
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   letterSpacing: "0.06em",
   color: "var(--text-secondary)",
 };
@@ -779,7 +807,7 @@ const filterChipCloseStyle: CSSProperties = {
   justifyContent: "center",
   borderRadius: "50%",
   color: "var(--text-mute)",
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   lineHeight: 1,
 };
 

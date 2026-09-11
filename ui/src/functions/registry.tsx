@@ -27,6 +27,15 @@ const PORTPane = lazy(() => import("./PORT").then((m) => ({ default: m.PORTPane 
 const PortfolioAnalyticsPane = lazy(() =>
   import("./PortfolioAnalytics").then((m) => ({ default: m.PortfolioAnalyticsPane })),
 );
+// L8 portfolio family — purpose-built panes (campaign 2026-09-11).
+const AcctPane = lazy(() => import("./portfolio/AccountOverview").then((m) => ({ default: m.AccountOverviewPane })));
+const TotalReturnPane = lazy(() => import("./portfolio/TotalReturn").then((m) => ({ default: m.TotalReturnPane })));
+const PerformanceAttributionPane = lazy(() => import("./portfolio/PerformanceAttribution").then((m) => ({ default: m.PerformanceAttributionPane })));
+const PositionVarPane = lazy(() => import("./portfolio/PositionVar").then((m) => ({ default: m.PositionVarPane })));
+const PcaStressPane = lazy(() => import("./portfolio/PcaStress").then((m) => ({ default: m.PcaStressPane })));
+const PortfolioOptimizerPane = lazy(() => import("./portfolio/PortfolioOptimizer").then((m) => ({ default: m.PortfolioOptimizerPane })));
+const MultiAssetRiskPane = lazy(() => import("./portfolio/MultiAssetRisk").then((m) => ({ default: m.MultiAssetRiskPane })));
+const TaxLossHarvestPane = lazy(() => import("./portfolio/TaxLossHarvest").then((m) => ({ default: m.TaxLossHarvestPane })));
 const SCANPane = lazy(() => import("./SCAN").then((m) => ({ default: m.SCANPane })));
 const MISPane = lazy(() => import("./MIS").then((m) => ({ default: m.MISPane })));
 const ASKPane = lazy(() => import("./ASK").then((m) => ({ default: m.ASKPane })));
@@ -186,26 +195,26 @@ const PANES: Record<string, PaneComponent> = {
   GP: GPPane,
   EQS: EQSPane,
   PORT: PORTPane,
-  ACCT: PortfolioAnalyticsPane,
+  ACCT: AcctPane,
   BLAK: PortfolioAnalyticsPane,
   BMTX: PortfolioAnalyticsPane,
   BTFW: PortfolioAnalyticsPane,
   BTUNE: PortfolioAnalyticsPane,
   LOTS: PortfolioAnalyticsPane,
-  MARS: PortfolioAnalyticsPane,
+  MARS: MultiAssetRiskPane,
   MGN: PortfolioAnalyticsPane,
   MLSIG: PortfolioAnalyticsPane,
-  PCAS: PortfolioAnalyticsPane,
-  PFA: PortfolioAnalyticsPane,
-  PORT_OPT: PortfolioAnalyticsPane,
+  PCAS: PcaStressPane,
+  PFA: PerformanceAttributionPane,
+  PORT_OPT: PortfolioOptimizerPane,
   PORT_WHATIF: PortfolioAnalyticsPane,
   PSC: PortfolioAnalyticsPane,
-  PVAR: PortfolioAnalyticsPane,
+  PVAR: PositionVarPane,
   REBA: PortfolioAnalyticsPane,
   RPAR: PortfolioAnalyticsPane,
   STRS: PortfolioAnalyticsPane,
-  TLH: PortfolioAnalyticsPane,
-  TRA: PortfolioAnalyticsPane,
+  TLH: TaxLossHarvestPane,
+  TRA: TotalReturnPane,
   SCAN: SCANPane,
   MIS: MISPane,
   ASK: ASKPane,

@@ -319,14 +319,14 @@ const contentStyle: CSSProperties = {
 };
 
 const titleStyle: CSSProperties = {
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   color: "var(--text-primary)",
   overflowWrap: "anywhere",
 };
 
 const metaStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   color: "var(--text-mute)",
 };
 
@@ -338,5 +338,5 @@ const linkStyle: CSSProperties = {
   color: "var(--accent)",
   textDecoration: "none",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
 };

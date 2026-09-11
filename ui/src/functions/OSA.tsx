@@ -816,7 +816,7 @@ const legendItemStyle: CSSProperties = {
   display: "inline-flex",
   alignItems: "center",
   gap: 6,
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   color: "var(--text-mute)",
   fontFamily: "JetBrains Mono, monospace",
 };
@@ -829,7 +829,7 @@ const tableStyle: CSSProperties = {
   tableLayout: "fixed",
   fontFamily: "JetBrains Mono, monospace",
   fontVariantNumeric: "tabular-nums",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
 };
 
 const thStyle: CSSProperties = {
@@ -837,7 +837,7 @@ const thStyle: CSSProperties = {
   color: "var(--text-mute)",
   fontWeight: 500,
   letterSpacing: "0.06em",
-  fontSize: 9,
+  fontSize: "var(--font-size-xs)",
   textTransform: "uppercase",
   borderBottom: "1px solid var(--border-subtle)",
 };
@@ -861,7 +861,7 @@ const editorNoteStyle: CSSProperties = {
 };
 
 const noteTextStyle: CSSProperties = {
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   fontFamily: "JetBrains Mono, monospace",
   letterSpacing: "0.05em",
 };
@@ -877,7 +877,7 @@ const inputLabelStyle: CSSProperties = {
   display: "flex",
   flexDirection: "column",
   gap: 3,
-  fontSize: 9,
+  fontSize: "var(--font-size-xs)",
   fontFamily: "JetBrains Mono, monospace",
   letterSpacing: "0.06em",
 };
@@ -891,7 +891,7 @@ const numInputStyle: CSSProperties = {
   color: "var(--text-primary)",
   fontFamily: "JetBrains Mono, monospace",
   fontVariantNumeric: "tabular-nums",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
 };
 
 const monoStrongStyle: CSSProperties = {
@@ -908,5 +908,5 @@ const miniToggleStyle: CSSProperties = {
 
 const miniToggleBtnStyle: CSSProperties = {
   padding: "1px 6px",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
 };

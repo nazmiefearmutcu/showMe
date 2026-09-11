@@ -535,7 +535,7 @@ export function XSENPane({ code, symbol }: FunctionPaneProps) {
             fetched · {data?.fetched_at ? (relativeTimeLabel(data.fetched_at) ?? "—") : "—"}
           </span>
           <span title="Analysis time (scraping + classification), not freshness">
-            analiz · {data?.scrape_seconds != null ? `${data.scrape_seconds}s` : "—"}
+            analysis · {data?.scrape_seconds != null ? `${data.scrape_seconds}s` : "—"}
           </span>
           <span>
             conf ·{" "}
@@ -776,7 +776,7 @@ function SummaryProse({ text }: { text?: string }) {
         borderRadius: "var(--radius-md)",
         background: "var(--accent-soft)",
         padding: "10px 12px",
-        fontSize: 12,
+        fontSize: "var(--font-size-md)",
         lineHeight: 1.55,
         color: "var(--text-secondary)",
       }}
@@ -987,7 +987,7 @@ function XSENHelp({ health }: { health: XHealth | null }) {
       <span className="fn-help-grid__hint">
         Freshness: search-result tweet lists may be cached up to ~30 min per query, while per-post
         engagement (likes/retweets) is refreshed each run — so the feed is near-real-time, not
-        guaranteed live. The "VERİ ALINDI" chip shows when this result was served; "ANALİZ SÜRESİ"
+        guaranteed live. The "fetched" stamp shows when this result was served; "analysis"
         is the scrape+classify processing time, NOT data age.
       </span>
       <span className="fn-help-grid__hint-mute">
@@ -1098,7 +1098,7 @@ const fieldLabel: CSSProperties = {
 
 const fieldHint: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 9,
+  fontSize: "var(--font-size-xs)",
   color: "var(--text-mute)",
   textTransform: "uppercase",
   letterSpacing: "0.06em",
@@ -1112,7 +1112,7 @@ const textInput: CSSProperties = {
   borderRadius: "var(--radius-md)",
   color: "var(--text-primary)",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   outline: "none",
   minWidth: 160,
 };
@@ -1129,7 +1129,7 @@ const chipButton: CSSProperties = {
   borderRadius: 11,
   border: "1px solid var(--border-subtle)",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   cursor: "pointer",
   whiteSpace: "nowrap",
 };
@@ -1140,7 +1140,7 @@ const scoringNoteStyle: CSSProperties = {
   border: "1px solid var(--border-subtle)",
   borderRadius: "var(--radius-md)",
   background: "var(--surface-2)",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   lineHeight: 1.5,
   color: "var(--text-secondary)",
 };
@@ -1173,7 +1173,7 @@ const topicChipsWrap: CSSProperties = {
 
 const topicChipsLabel: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 9,
+  fontSize: "var(--font-size-xs)",
   color: "var(--text-mute)",
   textTransform: "uppercase",
   letterSpacing: "0.08em",
@@ -1188,7 +1188,7 @@ const topicChipBase: CSSProperties = {
   borderRadius: 11,
   border: "1px solid var(--border-subtle)",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   cursor: "default",
 };
 

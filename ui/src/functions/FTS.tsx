@@ -294,7 +294,7 @@ const searchLabelStyle: CSSProperties = {
   alignItems: "center",
   gap: 5,
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 9,
+  fontSize: "var(--font-size-xs)",
   color: "var(--text-mute)",
   letterSpacing: "0.06em",
 };
@@ -312,7 +312,7 @@ const searchInputStyle: CSSProperties = {
 };
 
 const countNoteStyle: CSSProperties = {
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   fontFamily: "JetBrains Mono, monospace",
   color: "var(--text-mute)",
 };
@@ -323,13 +323,13 @@ const snippetSectionStyle: CSSProperties = {
 };
 
 const sectionTitleStyle: CSSProperties = {
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   letterSpacing: 1,
   color: "var(--text-mute)",
 };
 
 const snippetStyle: CSSProperties = {
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   lineHeight: 1.5,
   color: "var(--text-primary)",
   background: "var(--surface-1)",
@@ -342,7 +342,7 @@ const linkStyle: CSSProperties = {
   color: "var(--accent)",
   textDecoration: "none",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
 };
 
 const monoStrongStyle: CSSProperties = {

@@ -382,12 +382,12 @@ const honestyStyle: CSSProperties = {
 };
 
 const honestyTextStyle: CSSProperties = {
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   color: "var(--text-mute)",
 };
 
 const honestyMetaStyle: CSSProperties = {
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   fontFamily: "JetBrains Mono, monospace",
   color: "var(--text-mute)",
   textDecoration: "underline dotted",
@@ -395,7 +395,7 @@ const honestyMetaStyle: CSSProperties = {
 };
 
 const hintStyle: CSSProperties = {
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   color: "var(--text-mute)",
   border: "1px dashed var(--border-subtle)",
   borderRadius: "var(--radius-sm)",
@@ -428,7 +428,7 @@ const contentStyle: CSSProperties = {
 const linkStyle: CSSProperties = {
   color: "var(--accent)",
   fontWeight: 600,
-  fontSize: 13,
+  fontSize: "var(--font-size-lg)",
   textDecoration: "none",
   overflowWrap: "anywhere",
 };
@@ -436,14 +436,14 @@ const linkStyle: CSSProperties = {
 const unlinkedTitleStyle: CSSProperties = {
   color: "var(--text-primary)",
   fontWeight: 600,
-  fontSize: 13,
+  fontSize: "var(--font-size-lg)",
   overflowWrap: "anywhere",
 };
 
-const noLinkStyle: CSSProperties = { fontSize: 11, marginLeft: 6 };
+const noLinkStyle: CSSProperties = { fontSize: "var(--font-size-sm)", marginLeft: 6 };
 
 const metaStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   color: "var(--text-mute)",
 };

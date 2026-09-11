@@ -40,7 +40,7 @@ export function TMPLPane() {
   // (the warning sits on top of the template modal).
   const [pendingClose, setPendingClose] = useState(false);
   // A11Y: trap Tab inside the open modal, restore focus to the trigger
-  // (the "Bu template'i kullan" button) on close. Reuses the shared
+  // (the "Use this template" button) on close. Reuses the shared
   // `useFocusTrap` primitive that ShortcutsHelp + Palette already use.
   const modalRef = useRef<HTMLDivElement>(null);
   // Round 24 CRITICAL 4 — read store-level guard so a double-click
@@ -153,7 +153,7 @@ export function TMPLPane() {
                 </span>
               )}
             </div>
-            <div style={{ fontSize: 10, color: "var(--text-secondary)" }}>
+            <div style={{ fontSize: "var(--font-size-2xs)", color: "var(--text-secondary)" }}>
               {e.family} · {e.uses_indicators.join(", ")}
             </div>
           </button>
@@ -179,17 +179,17 @@ export function TMPLPane() {
             </div>
             <details>
               <summary>Math</summary>
-              <pre style={{ background: "var(--surface-2)", padding: 8, fontSize: 11,
+              <pre style={{ background: "var(--surface-2)", padding: 8, fontSize: "var(--font-size-sm)",
                             whiteSpace: "pre-wrap" }}>{selected.math}</pre>
             </details>
             <div>
-              <h4>Uygulanabilirlik</h4>
+              <h4>Applicability</h4>
               <p style={{ color: "var(--text-secondary)" }}>{selected.applicability}</p>
             </div>
             <div>
               <h4>Recommended settings</h4>
               <p>Timeframe: <code>{selected.recommended_timeframe}</code></p>
-              <p>Semboller: {selected.recommended_symbols.join(", ") || "(serbest)"}</p>
+              <p>Symbols: {selected.recommended_symbols.join(", ") || "(any)"}</p>
             </div>
             <button onClick={() => {
               setUseModal(selected.id);
@@ -199,7 +199,7 @@ export function TMPLPane() {
               setAutoDismissAt(null);
               setInstantiateError(null);
               setOverridesDirty(false);
-            }}>Bu template'i kullan</button>
+            }}>Use this template</button>
             {/* A11Y — store-level errors are announced as an alert. */}
             {error && (
               <div role="alert" aria-live="assertive"
@@ -231,7 +231,7 @@ export function TMPLPane() {
                           border: "1px solid var(--border-card)" }}>
               <h3 id="tmpl-modal-title" style={{ marginTop: 0 }}>Create strategy</h3>
               <label htmlFor="tmpl-name-input">
-                Ad
+                Name
                 <input
                   id="tmpl-name-input"
                   type="text"
@@ -241,7 +241,7 @@ export function TMPLPane() {
               </label>
               <br />
               <label htmlFor="tmpl-symbol-input">
-                Sembol (opsiyonel)
+                Symbol (optional)
                 <input
                   id="tmpl-symbol-input"
                   type="text"
@@ -270,7 +270,7 @@ export function TMPLPane() {
                   <div data-testid="tmpl-error-indicator"
                        role="alert"
                        style={{ color: "var(--negative)", marginTop: 8 }}>
-                    Hata: {instantiateError}
+                    Error: {instantiateError}
                   </div>
                 )}
               </div>
@@ -280,7 +280,7 @@ export function TMPLPane() {
                     data-testid="tmpl-retry-button"
                     onClick={() => setInstantiateError(null)}
                     style={{ marginRight: "auto" }}>
-                    Yeniden dene
+                    Retry
                   </button>
                 )}
                 <button
@@ -332,6 +332,7 @@ export function TMPLPane() {
               title="Changes will be lost"
               body="Your overrides (name / symbol) will be lost. Close anyway?"
               confirmLabel="Close"
+              cancelLabel="Cancel"
               destructive
               onConfirm={closeModal}
               onCancel={() => setPendingClose(false)}

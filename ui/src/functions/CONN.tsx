@@ -190,7 +190,7 @@ function CredentialRow({
           <PermissionPill canTrade={canTrade} />
           <StatusPill status={status} />
         </div>
-        <span style={{ fontSize: 11, color: "var(--fg-2)" }}>
+        <span style={{ fontSize: "var(--font-size-sm)", color: "var(--fg-2)" }}>
           {verifiedLabel
             ? `Last verified: ${verifiedLabel}`
             : "Last verified: — (Never tested)"}
@@ -264,7 +264,7 @@ function CredentialRow({
           data-testid={`conn-bots-unknown-${rec.id}`}
           title="Bot dependencies could not be verified — check before deleting."
           style={{
-            fontSize: 11,
+            fontSize: "var(--font-size-sm)",
             color: "var(--accent-warn)",
             background: "color-mix(in srgb, var(--accent-warn) 12%, transparent)",
             border: "1px solid var(--accent-warn)",
@@ -671,7 +671,7 @@ export function CONNPane() {
               title={`Asset class filter: ${a}`}
               style={{
                 opacity: assetClasses.includes(a) ? 1 : 0.55,
-                fontSize: 11,
+                fontSize: "var(--font-size-sm)",
               }}
             >
               {a}
@@ -688,7 +688,7 @@ export function CONNPane() {
               title={`Region filter: ${r}`}
               style={{
                 opacity: regions.includes(r) ? 1 : 0.55,
-                fontSize: 11,
+                fontSize: "var(--font-size-sm)",
               }}
             >
               {r}
@@ -726,12 +726,12 @@ export function CONNPane() {
                 />
                 <div>
                   <div>{e.display_name}{labelSuffix}</div>
-                  <div style={{ fontSize: 10, color: "var(--fg-2)" }}>
+                  <div style={{ fontSize: "var(--font-size-2xs)", color: "var(--fg-2)" }}>
                     {e.asset_classes.join(" · ")}
                   </div>
                 </div>
                 {credCount(e.id) > 0 && (
-                  <span className="u-text-positive" style={{ fontSize: 11 }}>
+                  <span className="u-text-positive" style={{ fontSize: "var(--font-size-sm)" }}>
                     Connected: {credCount(e.id)}
                   </span>
                 )}

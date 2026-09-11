@@ -331,7 +331,7 @@ const legendStyle: CSSProperties = {
   padding: "6px 10px",
   pointerEvents: "none",
   fontFamily: "var(--font-mono)",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   letterSpacing: "0.04em",
   color: "var(--text-faint)",
 };

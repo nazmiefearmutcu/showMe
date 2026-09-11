@@ -19,18 +19,19 @@ import { useMemo, useState, type CSSProperties } from "react";
 import {
   DataGrid,
   type DataGridColumn,
-  Empty,
   Pane,
   PaneBody,
   PaneFooter,
   PaneHeader,
   Pill,
-  Skeleton,
   Sparkline,
   StatusDivider,
   StatusSection,
 } from "@/design-system";
+import { PaneState } from "@/design-system/PaneState";
+import { compareGridValues } from "@/design-system/DataGrid";
 import { formatNumberFixed } from "@/lib/format";
+import { navigate } from "@/lib/router";
 import { useFunction } from "@/lib/useFunction";
 import {
   FunctionControlGroup,
@@ -79,7 +80,7 @@ interface MOSSData {
   next_actions?: string[];
 }
 
-type SortMetric = "vol" | "samples" | "close";
+type SortDir = "ascending" | "descending";
 
 const DAYS_OPTIONS = [
   { value: 30, label: "30d" },
@@ -89,15 +90,17 @@ const DAYS_OPTIONS = [
 ] as const;
 const DAYS_IDS: readonly number[] = DAYS_OPTIONS.map((o) => o.value);
 
-const SORT_OPTIONS: { value: SortMetric; label: string }[] = [
-  { value: "vol", label: "Vol" },
-  { value: "samples", label: "Samples" },
-  { value: "close", label: "Close" },
-];
-
 // Backend hard-caps `limit` at 200; we always ask for the full ranking and
 // apply the user's TOP-N cap client-side so the showing-note stays honest.
 const SERVER_LIMIT = 200;
+
+function metricFor(r: MOSSRow, key: string): unknown {
+  if (key === "samples") return r.samples ?? null;
+  if (key === "last_close") return r.last_close ?? null;
+  if (key === "symbol") return r.symbol ?? null;
+  if (key === "asset_class") return r.asset_class ?? null;
+  return r.vol_pct ?? r.vol ?? r.vol_annualized ?? null;
+}
 
 export function MOSSPane({ code }: FunctionPaneProps) {
   const [days, setDays] = usePersistentOption<number>(
@@ -110,7 +113,8 @@ export function MOSSPane({ code }: FunctionPaneProps) {
     TOP_N_LIMITS,
     10,
   );
-  const [sort, setSort] = useState<SortMetric>("vol");
+  const [sortBy, setSortBy] = useState<string | null>("vol_pct");
+  const [sortDir, setSortDir] = useState<SortDir>("descending");
 
   const { state, data, error, refetch } = useFunction<MOSSData>({
     code,
@@ -122,16 +126,35 @@ export function MOSSPane({ code }: FunctionPaneProps) {
   const status = payload?.status ?? "—";
   const isLive = payload?.live === true;
 
+  const onSort = (key: string) => {
+    if (sortBy !== key) {
+      setSortBy(key);
+      setSortDir("descending");
+    } else if (sortDir === "descending") {
+      setSortDir("ascending");
+    } else {
+      setSortBy(null);
+    }
+  };
+
   const sorted = useMemo(() => {
-    const copy = [...rows];
-    const metric = (r: MOSSRow): number => {
-      if (sort === "samples") return r.samples ?? -1;
-      if (sort === "close") return r.last_close ?? -1;
-      return r.vol_pct ?? r.vol ?? r.vol_annualized ?? -1;
-    };
-    copy.sort((a, b) => metric(b) - metric(a));
-    return copy;
-  }, [rows, sort]);
+    if (!sortBy) return rows;
+    const mul = sortDir === "ascending" ? 1 : -1;
+    return [...rows]
+      .map((row, index) => ({ row, index }))
+      .sort((a, b) => {
+        const av = metricFor(a.row, sortBy);
+        const bv = metricFor(b.row, sortBy);
+        if (av == null && bv == null) return a.index - b.index;
+        // Nullish values sink regardless of direction (matches DataGrid).
+        if (av == null) return 1;
+        if (bv == null) return -1;
+        const cmp = compareGridValues(av, bv);
+        if (cmp !== 0) return mul * cmp;
+        return a.index - b.index;
+      })
+      .map((entry) => entry.row);
+  }, [rows, sortBy, sortDir]);
 
   const shown = sorted.slice(0, topN);
 
@@ -150,14 +173,32 @@ export function MOSSPane({ code }: FunctionPaneProps) {
         key: "symbol",
         header: "Symbol",
         width: 130,
+        sortable: true,
         render: (r) => (
-          <span style={monoStrongStyle}>{r.symbol ?? "—"}</span>
+          <button
+            type="button"
+            className="scan-symbol"
+            title="Open DES"
+            aria-label={`Open ${r.symbol ?? "symbol"} in DES`}
+            onClick={() => {
+              if (r.symbol) navigate(`/symbol/${r.symbol}/DES`);
+            }}
+            onKeyDown={(e) => {
+              if ((e.key === "Enter" || e.key === " ") && r.symbol) {
+                e.preventDefault();
+                navigate(`/symbol/${r.symbol}/DES`);
+              }
+            }}
+          >
+            {r.symbol ?? "—"}
+          </button>
         ),
       },
       {
         key: "asset_class",
         header: "Class",
         width: 96,
+        sortable: true,
         render: (r) => (
           <span style={monoMutedStyle}>{r.asset_class ?? "—"}</span>
         ),
@@ -167,6 +208,7 @@ export function MOSSPane({ code }: FunctionPaneProps) {
         header: "Vol % (ann.)",
         numeric: true,
         width: 130,
+        sortable: true,
         render: (r) => (
           <span style={monoPrimaryStyle}>{fmtPct(r.vol_pct)}</span>
         ),
@@ -176,6 +218,7 @@ export function MOSSPane({ code }: FunctionPaneProps) {
         header: "Samples",
         numeric: true,
         width: 100,
+        sortable: true,
         render: (r) => (
           <span style={monoMutedStyle}>{fmtNum(r.samples, 0)}</span>
         ),
@@ -185,6 +228,7 @@ export function MOSSPane({ code }: FunctionPaneProps) {
         header: "Last close",
         numeric: true,
         width: 120,
+        sortable: true,
         render: (r) => (
           <span style={monoMutedStyle}>{fmtNum(r.last_close, 2)}</span>
         ),
@@ -203,76 +247,60 @@ export function MOSSPane({ code }: FunctionPaneProps) {
     [],
   );
 
-  const body = state === "loading" || state === "idle" ? (
-    <div className="u-grid-gap-8">
-      <Skeleton height={56} />
-      <Skeleton height={20} />
-      <Skeleton height={20} />
-      <Skeleton height={20} width="85%" />
-    </div>
-  ) : state === "error" ? (
-    <Empty
-      title="Function error"
-      body={error?.message ?? "—"}
-      icon="!"
-      action={
-        <button onClick={refetch} className="btn">
-          Retry
-        </button>
-      }
-    />
-  ) : rows.length === 0 ? (
-    <Empty
-      title="No volatility rows returned"
-      body={
+  const body = (
+    <PaneState
+      state={state}
+      error={error}
+      empty={rows.length === 0}
+      emptyTitle="No volatility rows returned"
+      emptyBody={
         payload?.next_actions?.[0] ??
         payload?.reason ??
         "The provider returned no ranked rows."
       }
-      action={
-        <button onClick={refetch} className="btn">
-          Retry
-        </button>
-      }
-    />
-  ) : (
-    <div className="u-grid-gap-14">
-      {historyValues.length > 1 && topSymbol ? (
-        <section
-          aria-label="Top symbol volatility history"
-          style={historyCardStyle}
-        >
-          <div>
-            <div style={historyTitleStyle}>
-              Top vol — <span style={monoStrongStyle}>{topSymbol}</span>
+      onRetry={refetch}
+    >
+      <div className="u-grid-gap-14">
+        {historyValues.length > 1 && topSymbol ? (
+          <section
+            aria-label="Top symbol volatility history"
+            style={historyCardStyle}
+          >
+            <div>
+              <div style={historyTitleStyle}>
+                Top vol — <span style={monoStrongStyle}>{topSymbol}</span>
+              </div>
+              <div style={historyMetaStyle}>
+                Rolling 20-session annualized volatility · latest{" "}
+                {fmtPct(historyValues[historyValues.length - 1])}
+              </div>
             </div>
-            <div style={historyMetaStyle}>
-              Rolling 20-session annualized volatility · latest{" "}
-              {fmtPct(historyValues[historyValues.length - 1])}
-            </div>
-          </div>
-          <Sparkline
-            values={historyValues}
-            width={180}
-            height={40}
-            tone="accent"
-            ariaLabel={`Rolling volatility history for ${topSymbol}`}
-          />
-        </section>
-      ) : null}
-      <DataGrid
-        columns={COLS}
-        rows={shown}
-        rowKey={(r, i) => `${r.symbol ?? ""}-${i}`}
-        density="compact"
-        ariaLabel="MOSS volatility leaderboard"
-      />
-      {sorted.length > shown.length && (
-        <span className="u-text-mute" style={noteStyle}>
-          Showing {shown.length} of {sorted.length} rows (TOP cap).
-        </span>
-      )}
-    </div>
+            <Sparkline
+              values={historyValues}
+              width={180}
+              height={40}
+              tone="accent"
+              ariaLabel={`Rolling volatility history for ${topSymbol}`}
+            />
+          </section>
+        ) : null}
+        <DataGrid
+          columns={COLS}
+          rows={shown}
+          rowKey={(r, i) => `${r.symbol ?? ""}-${i}`}
+          density="compact"
+          ariaLabel="MOSS volatility leaderboard"
+          sortBy={sortBy ?? undefined}
+          sortDir={sortBy ? sortDir : "none"}
+          onSort={onSort}
+        />
+        {sorted.length > shown.length && (
+          <span className="u-text-mute" style={noteStyle}>
+            Showing {shown.length} of {sorted.length} rows (TOP cap).
+          </span>
+        )}
+      </div>
+    </PaneState>
   );
 
   return (
@@ -291,12 +319,6 @@ export function MOSSPane({ code }: FunctionPaneProps) {
               >
                 {isLive ? "live" : "reference"}
               </Pill>
-              <SegmentedControl
-                label="SORT"
-                value={sort}
-                options={SORT_OPTIONS}
-                onChange={(next) => setSort(next as SortMetric)}
-              />
               <SegmentedControl
                 label="LOOKBACK"
                 value={days}
@@ -356,7 +378,7 @@ function fmtPct(v: unknown): string {
   return `${n.toFixed(1)}%`;
 }
 
-const noteStyle: CSSProperties = { fontSize: 11 };
+const noteStyle: CSSProperties = { fontSize: "var(--font-size-sm)" };
 const historyCardStyle: CSSProperties = {
   display: "flex",
   alignItems: "center",
@@ -367,12 +389,12 @@ const historyCardStyle: CSSProperties = {
   borderRadius: 6,
 };
 const historyTitleStyle: CSSProperties = {
-  fontSize: 13,
+  fontSize: "var(--font-size-lg)",
   fontWeight: 600,
   color: "var(--text-primary)",
 };
 const historyMetaStyle: CSSProperties = {
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   color: "var(--text-mute)",
   marginTop: 2,
 };

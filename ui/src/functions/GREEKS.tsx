@@ -439,7 +439,7 @@ function SectionTitle({ children }: { children: ReactNode }) {
   return (
     <div
       style={{
-        fontSize: 10,
+        fontSize: "var(--font-size-2xs)",
         letterSpacing: "0.08em",
         color: "var(--text-mute)",
         marginBottom: 6,
@@ -465,13 +465,13 @@ const noteStyle: CSSProperties = {
   border: "1px solid var(--warn-soft)",
   borderRadius: 4,
   color: "var(--text-secondary)",
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
 };
 
 const textareaStyle: CSSProperties = {
   width: "100%",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   fontVariantNumeric: "tabular-nums",
   padding: "6px 8px",
   border: "1px solid var(--border-row)",
@@ -490,7 +490,7 @@ const editorRowStyle: CSSProperties = {
 };
 
 const editorHintStyle: CSSProperties = {
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   color: "var(--text-mute)",
   fontFamily: "JetBrains Mono, monospace",
 };
@@ -528,5 +528,5 @@ const monoMutedStyle: CSSProperties = {
 const errorStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
   color: "var(--negative)",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
 };

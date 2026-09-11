@@ -26,6 +26,7 @@ import {
   PaneHeader,
   Pill,
   Skeleton,
+  Sparkline,
   StatCard,
 } from "@/design-system";
 import {
@@ -97,6 +98,42 @@ function deterministicTrend(seed: string, n = 20): number[] {
     out.push(v);
   }
   return out;
+}
+
+const SYNTH_SPARK_TITLE = "Illustrative trend — no real history available";
+
+/**
+ * P2 honesty: the EQS screener payload carries no history series, so the KPI
+ * "trend" lines are procedural. They render de-emphasized, tagged SYNTH and
+ * marked data-synthetic with an explanatory title so they can never
+ * masquerade as real history (WEI pattern).
+ */
+function SyntheticTrendSpark({
+  seed,
+  tone,
+}: {
+  seed: string;
+  tone: "neutral" | "positive" | "negative";
+}) {
+  return (
+    <span
+      className="eqs-synth-spark"
+      data-synthetic="true"
+      title={SYNTH_SPARK_TITLE}
+      style={synthSparkStyle}
+    >
+      <span aria-hidden style={synthTagStyle}>
+        SYNTH
+      </span>
+      <Sparkline
+        values={deterministicTrend(seed)}
+        width={44}
+        height={16}
+        tone={tone}
+        ariaLabel="Illustrative trend — no real history available"
+      />
+    </span>
+  );
 }
 
 function median(values: number[]): number | null {
@@ -465,31 +502,39 @@ export function EQSPane({ code }: FunctionPaneProps) {
                     label="Matched"
                     value={`${matchedCount}`}
                     caption={scannedCount != null ? `OF ${scannedCount} SCANNED` : "PROVIDER"}
-                    trend={deterministicTrend(`m-${matchedCount}-${universe}`)}
+                    rightSlot={<SyntheticTrendSpark seed={`m-${matchedCount}-${universe}`} tone="neutral" />}
                     tone="neutral"
                   />
                   <StatCard
                     label="Median Δ"
                     value={medianChange != null ? `${medianChange >= 0 ? "+" : ""}${medianChange.toFixed(2)}%` : "—"}
                     caption={changeKey ? `FIELD · ${changeKey}` : "NO Δ FIELD"}
-                    trend={deterministicTrend(`d-${medianChange ?? 0}-${matchedCount}`)}
+                    rightSlot={
+                      <SyntheticTrendSpark
+                        seed={`d-${medianChange ?? 0}-${matchedCount}`}
+                        tone={medianChange == null ? "neutral" : medianChange >= 0 ? "positive" : "negative"}
+                      />
+                    }
                     tone={medianChange == null ? "neutral" : medianChange >= 0 ? "positive" : "negative"}
                   />
                   <StatCard
                     label="Top sector"
                     value={topSector ? topSector[0] : "—"}
                     caption={topSector ? `${topSector[1]} TICKERS` : "NO SECTOR FIELD"}
-                    trend={deterministicTrend(`s-${topSector?.[0] ?? "x"}-${matchedCount}`)}
+                    rightSlot={<SyntheticTrendSpark seed={`s-${topSector?.[0] ?? "x"}-${matchedCount}`} tone="neutral" />}
                     tone="neutral"
                   />
                   <StatCard
                     label="Source"
                     value={(sources.join(", ") || "—").toUpperCase()}
                     caption={`ELAPSED ${elapsed != null ? elapsed.toFixed(0) : "—"}MS`}
-                    trend={deterministicTrend(`x-${sources.join("-")}-${matchedCount}`)}
+                    rightSlot={<SyntheticTrendSpark seed={`x-${sources.join("-")}-${matchedCount}`} tone="neutral" />}
                     tone="neutral"
                   />
                 </div>
+                <p className="u-text-mute u-text-10" data-testid="eqs-kpi-synth-note">
+                  SYNTH sparklines are illustrative — this screener payload carries no history series.
+                </p>
 
                 <Card>
                   <CardHeader
@@ -653,7 +698,7 @@ const filterChipStyle: CSSProperties = {
   border: "1px solid var(--border-subtle)",
   borderRadius: 11,
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   letterSpacing: "0.06em",
   color: "var(--text-secondary)",
 };
@@ -668,7 +713,7 @@ const filterChipCloseStyle: CSSProperties = {
   justifyContent: "center",
   borderRadius: "50%",
   color: "var(--text-mute)",
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   lineHeight: 1,
 };
 
@@ -680,7 +725,7 @@ const textareaStyle: CSSProperties = {
   border: "1px solid var(--border-subtle)",
   borderRadius: "var(--radius-md)",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   padding: 8,
   outline: "none",
 };
@@ -696,4 +741,21 @@ const kpiStripStyle: CSSProperties = {
   display: "grid",
   gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
   gap: 10,
+};
+
+// P2 honesty — procedural KPI sparklines are de-emphasized and carry a
+// visible SYNTH tag so they read as illustrative, never as real history.
+const synthSparkStyle: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 4,
+  opacity: 0.45,
+  filter: "saturate(0.6)",
+};
+
+const synthTagStyle: CSSProperties = {
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: "var(--font-size-2xs)",
+  letterSpacing: "0.08em",
+  color: "var(--text-mute)",
 };

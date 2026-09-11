@@ -21,6 +21,7 @@ import {
 } from "@/design-system";
 import { useFunction } from "@/lib/useFunction";
 import { useVisibilityTick } from "@/lib/useVisibilityTick";
+import { tickFlashClass, useTickFlash } from "@/lib/tick-flash";
 import { subscribeQuote, type StreamStatus } from "@/lib/stream";
 import { navigate } from "@/lib/router";
 import { sidecarFetch } from "@/lib/sidecar";
@@ -967,13 +968,26 @@ function PORTView({
     () => positionColumns({ busySymbol, brokerReadOnly, onPreviewClose, onClosePosition }),
     [busySymbol, brokerReadOnly, onPreviewClose, onClosePosition],
   );
+
+  // Live adoption (campaign 2026-09-11): the hero equity + unrealized P&L
+  // pulse with the shared themed flash when a poll/broker tick moves them.
+  // First render never flashes (nothing to compare against).
+  const equityFlash = useTickFlash(totalMV);
+  const pnlFlash = useTickFlash(totals?.unrealized_pnl ?? null);
+
   return (
     <div className="showme-port__view showme-card-reveal port-view">
       <section className="port-terminal-summary" aria-label="Portfolio summary">
         <div className="port-terminal-summary__primary">
           <span className="port-label">Local analytics equity</span>
-          <strong className="terminal-grid-numeric">{fmt$(totalMV)}</strong>
-          <span className={`port-terminal-summary__pnl port-terminal-summary__pnl--${pnlTone}`}>
+          <strong
+            className={`terminal-grid-numeric${tickFlashClass(equityFlash) ? ` ${tickFlashClass(equityFlash)}` : ""}`}
+          >
+            {fmt$(totalMV)}
+          </strong>
+          <span
+            className={`port-terminal-summary__pnl port-terminal-summary__pnl--${pnlTone}${tickFlashClass(pnlFlash) ? ` ${tickFlashClass(pnlFlash)}` : ""}`}
+          >
             <ChangeText value={totals?.unrealized_pnl ?? 0} prefix="$" digits={0} />
             {pnlPct != null ? <em>{formatPercent(pnlPct, { signed: true })}</em> : null}
           </span>

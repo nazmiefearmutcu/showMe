@@ -636,7 +636,7 @@ const imageOverlay: CSSProperties = {
 };
 
 const imageTitle: CSSProperties = {
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   fontWeight: 700,
   color: "var(--text-display)",
   letterSpacing: "0.02em",
@@ -652,14 +652,14 @@ const imageFallback: CSSProperties = {
   padding: 16,
   textAlign: "center",
   color: "var(--text-mute)",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   minHeight: 210,
   background:
     "repeating-linear-gradient(45deg, color-mix(in srgb, var(--grid-color) 22%, transparent) 0 1px, transparent 1px 9px)",
 };
 
 const fallbackGlyph: CSSProperties = {
-  fontSize: 22,
+  fontSize: "var(--font-size-3xl)",
   opacity: 0.55,
   letterSpacing: "0.2em",
 };
@@ -700,7 +700,7 @@ const summaryLoc: CSSProperties = {
 };
 
 const locNameStyle: CSSProperties = {
-  fontSize: 15,
+  fontSize: "var(--font-size-xl)",
   fontWeight: 700,
   color: "var(--text-display)",
   letterSpacing: "0.01em",
@@ -734,7 +734,7 @@ const condLine: CSSProperties = {
   alignItems: "center",
   flexWrap: "wrap",
   gap: 8,
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   color: "var(--text-secondary)",
 };
 
@@ -791,7 +791,7 @@ const noticeStyle: CSSProperties = {
   padding: "9px 10px",
   display: "grid",
   gap: 4,
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
 };
 
 const warningBox: CSSProperties = {
@@ -810,7 +810,7 @@ const warningList: CSSProperties = {
 };
 
 const degradeLine: CSSProperties = {
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   color: "var(--negative)",
   letterSpacing: "0.02em",
 };
@@ -822,7 +822,7 @@ const methodologyBox: CSSProperties = {
   padding: "10px 12px",
   display: "grid",
   gap: 6,
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
 };
 
 export default SATPane;

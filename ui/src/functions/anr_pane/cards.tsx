@@ -56,7 +56,7 @@ export function ConsensusScoreMeter({
   return (
     <span
       role="meter"
-      aria-label="Konsensüs skoru (0-5)"
+      aria-label="Consensus score (0-5)"
       aria-valuemin={0}
       aria-valuemax={5}
       aria-valuenow={clamped}
@@ -82,7 +82,7 @@ export function ConsensusCard({ summary, symbol }: { summary: ANRSummary; symbol
       <CardHeader
         trailing={
           <div className="u-flex u-gap-6 u-flex-wrap u-justify-end">
-            <Pill tone={tone} variant="soft" aria-label={`konsensüs: ${label}`}>{label}</Pill>
+            <Pill tone={tone} variant="soft" aria-label={`Consensus: ${label}`}>{label}</Pill>
             {summary.not_analyst_target ? <Pill tone="warn" variant="soft">not analyst target</Pill> : null}
           </div>
         }
@@ -148,7 +148,7 @@ export function VeryfinderConsensusCard({
       <CardHeader
         trailing={
           <div className="u-flex u-gap-6 u-flex-wrap u-justify-end">
-            <Pill tone={tone} variant="soft" aria-label={`konsensüs: ${label}`}>{label}</Pill>
+            <Pill tone={tone} variant="soft" aria-label={`Consensus: ${label}`}>{label}</Pill>
             {errored && overlay ? <Pill tone="warn" variant="soft">refresh failed</Pill> : null}
             {overlay?.fixture_mode ? <Pill tone="warn" variant="soft">fixture</Pill> : null}
             {overlay?.fallback_mode ? <Pill tone="warn" variant="soft">{providerLabel(overlay.fallback_mode)}</Pill> : null}
@@ -284,7 +284,7 @@ export function DataNotesCard({ notes }: { notes?: string[] }) {
   return (
     <Card>
       <CardHeader trailing={<Pill tone="muted" variant="soft" withDot={false}>{notes.length}</Pill>}>
-        Veri notları
+        Data notes
       </CardHeader>
       <CardBody>
         <ul className="anr-data-notes u-grid-gap-6">

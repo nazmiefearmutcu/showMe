@@ -29,7 +29,7 @@ afterEach(() => {
 describe("BOTS pane", () => {
   it("shows zero KPIs + empty placeholders", () => {
     render(<BOTSPane />);
-    expect(screen.getByText(/toplam bot/i)).toBeInTheDocument();
+    expect(screen.getByText(/total bots/i)).toBeInTheDocument();
     expect(screen.getByText(/no bots yet/i)).toBeInTheDocument();
     expect(screen.getByText(/no signals yet/i)).toBeInTheDocument();
   });
@@ -198,7 +198,7 @@ describe("BOTS pane", () => {
   });
 
   // ─── BUG #11 (refresh button rename + relocate) ───────────────────────
-  it("Tumunu yenile button lives next to Botlar heading and calls loadAll", async () => {
+  it("Refresh all button lives next to the Bots heading and calls loadAll", async () => {
     const spy = vi.fn(async () => {});
     useBotsSupervisionStore.setState({ loadAll: spy } as never);
     render(<BOTSPane />);

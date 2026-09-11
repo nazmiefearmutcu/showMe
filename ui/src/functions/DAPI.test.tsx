@@ -135,7 +135,7 @@ describe("DAPI pane — route list + honesty badges", () => {
   it("renders one row per route with method pill and path", () => {
     setMockFn({ state: "ok", ...okPayload() });
     const { container } = render(<DAPIPane code="DAPI" />);
-    const rows = container.querySelectorAll(".dapi-route-row");
+    const rows = container.querySelectorAll("tbody tr");
     expect(rows.length).toBe(4);
     expect(screen.getByText("/api/health")).toBeInTheDocument();
     expect(screen.getByText("/api/watchlists/{name}")).toBeInTheDocument();
@@ -163,7 +163,7 @@ describe("DAPI pane — filter + expand interactions", () => {
     fireEvent.change(screen.getByLabelText("Filter routes"), {
       target: { value: "watchlist" },
     });
-    const rows = container.querySelectorAll(".dapi-route-row");
+    const rows = container.querySelectorAll("tbody tr");
     expect(rows.length).toBe(2);
     expect(screen.getByText("/api/watchlists")).toBeInTheDocument();
     expect(screen.queryByText("/api/health")).toBeNull();
@@ -178,7 +178,59 @@ describe("DAPI pane — filter + expand interactions", () => {
     expect(screen.getByText(/Request body/i)).toBeInTheDocument();
     expect(screen.getByText("{ symbols, meta? }")).toBeInTheDocument();
     expect(screen.getByText("Watchlist")).toBeInTheDocument();
-    const row = screen.getByTitle("Collapse route details");
-    expect(row.getAttribute("aria-expanded")).toBe("true");
+    expect(
+      screen.getByLabelText("Route details for /api/watchlists/{name}"),
+    ).toBeInTheDocument();
+    // Clicking the same row again collapses the detail panel.
+    fireEvent.click(screen.getByText("/api/watchlists/{name}"));
+    expect(screen.queryByText(/Request body/i)).toBeNull();
+  });
+});
+
+describe("DAPI pane — grid upgrade (L7)", () => {
+  it("filters by method chip", () => {
+    setMockFn({ state: "ok", ...okPayload() });
+    const { container } = render(<DAPIPane code="DAPI" />);
+    fireEvent.click(screen.getByTitle("Filter method PUT"));
+    expect(container.querySelectorAll("tbody tr").length).toBe(1);
+    expect(container.textContent).toContain("/api/watchlists/{name}");
+    fireEvent.click(screen.getByTitle("Filter method ALL"));
+    expect(container.querySelectorAll("tbody tr").length).toBe(4);
+  });
+
+  it("filters by state chip", () => {
+    setMockFn({ state: "ok", ...okPayload() });
+    const { container } = render(<DAPIPane code="DAPI" />);
+    fireEvent.click(screen.getByTitle("Filter state read"));
+    expect(container.querySelectorAll("tbody tr").length).toBe(2);
+    expect(container.textContent).toContain("/api/health");
+    fireEvent.click(screen.getByTitle("Filter state mutating"));
+    expect(container.querySelectorAll("tbody tr").length).toBe(2);
+    expect(container.textContent).toContain("/api/watchlists/{name}");
+  });
+
+  it("copies an expanded route as cURL", () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+    setMockFn({ state: "ok", ...okPayload() });
+    render(<DAPIPane code="DAPI" />);
+    fireEvent.click(screen.getByText("/api/watchlists/{name}"));
+    fireEvent.click(screen.getByLabelText("Copy PUT /api/watchlists/{name} as cURL"));
+    expect(writeText).toHaveBeenCalledTimes(1);
+    const curl = writeText.mock.calls[0][0] as string;
+    expect(curl).toContain('curl -X PUT "http://127.0.0.1:<sidecar-port>/api/watchlists/{name}"');
+    expect(curl).toContain("-d '{ symbols, meta? }'");
+    Reflect.deleteProperty(navigator, "clipboard");
+  });
+
+  it("sorts the path column from the header", () => {
+    setMockFn({ state: "ok", ...okPayload() });
+    const { container } = render(<DAPIPane code="DAPI" />);
+    fireEvent.click(screen.getByRole("columnheader", { name: /Path/i }));
+    // Ascending path order starts with /api/health.
+    expect(container.querySelector("tbody tr")?.textContent).toContain("/api/health");
   });
 });

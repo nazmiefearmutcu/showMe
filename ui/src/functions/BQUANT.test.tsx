@@ -209,3 +209,28 @@ describe("BQUANT pane — refresh", () => {
     expect(refetch).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("BQUANT pane — readiness grid upgrade (L7)", () => {
+  it("sorts readiness rows by status rank from the header", () => {
+    setMockFn({ state: "ok", ...notConfiguredPayload });
+    const { container } = render(<BQUANTPane code="BQUANT" />);
+    // Original order: route (not_configured), modules (available), examples (missing).
+    expect(container.querySelector("tbody tr")?.textContent).toContain("Notebook route");
+    fireEvent.click(screen.getByRole("columnheader", { name: /Readiness/i }));
+    // Ascending rank promotes the available component to the top.
+    expect(container.querySelector("tbody tr")?.textContent).toContain("Kernel modules");
+  });
+
+  it("copies a readiness value from the per-row copy cell", () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+    setMockFn({ state: "ok", ...notConfiguredPayload });
+    render(<BQUANTPane code="BQUANT" />);
+    fireEvent.click(screen.getByTitle("Copy Notebook route value"));
+    expect(writeText).toHaveBeenCalledWith("/notebook");
+    Reflect.deleteProperty(navigator, "clipboard");
+  });
+});

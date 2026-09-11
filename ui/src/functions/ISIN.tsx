@@ -338,7 +338,7 @@ const inputStyle: CSSProperties = {
   borderRadius: "var(--radius-sm)",
   color: "var(--text-primary)",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   height: 24,
   padding: "0 6px",
   width: 200,
@@ -355,7 +355,7 @@ const historyRowStyle: CSSProperties = {
 const historyLabelStyle: CSSProperties = {
   padding: "0 5px",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 9,
+  fontSize: "var(--font-size-xs)",
   color: "var(--text-mute)",
   letterSpacing: "0.06em",
   whiteSpace: "nowrap",
@@ -393,7 +393,7 @@ const cardTopStyle: CSSProperties = {
 
 const cardNameStyle: CSSProperties = {
   color: "var(--text-secondary)",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
 };
 
 const dlStyle: CSSProperties = {
@@ -411,7 +411,7 @@ const dlRowStyle: CSSProperties = {
 
 const dtStyle: CSSProperties = {
   color: "var(--text-mute)",
-  fontSize: 9,
+  fontSize: "var(--font-size-xs)",
   fontFamily: "JetBrains Mono, monospace",
   letterSpacing: "0.06em",
   textTransform: "uppercase",
@@ -420,7 +420,7 @@ const dtStyle: CSSProperties = {
 const ddStyle: CSSProperties = {
   margin: 0,
   color: "var(--text-primary)",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   fontFamily: "JetBrains Mono, monospace",
   fontVariantNumeric: "tabular-nums",
   overflowWrap: "anywhere",
@@ -435,6 +435,6 @@ const monoStrongStyle: CSSProperties = {
 
 const monoMutedStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   color: "var(--text-mute)",
 };

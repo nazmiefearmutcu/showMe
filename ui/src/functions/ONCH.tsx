@@ -368,9 +368,9 @@ function MempoolBars({ series }: { series: ONCHSeriesPoint[] }) {
   );
 }
 
-const summaryStyle: CSSProperties = { fontSize: 12 };
+const summaryStyle: CSSProperties = { fontSize: "var(--font-size-md)" };
 const chartTitleStyle: CSSProperties = {
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   color: "var(--text-mute)",
   marginBottom: 4,
   letterSpacing: "0.06em",
@@ -378,7 +378,7 @@ const chartTitleStyle: CSSProperties = {
 };
 const unitStyle: CSSProperties = {
   color: "var(--text-mute)",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
 };
 const kpiGridStyle: CSSProperties = {
   display: "grid",

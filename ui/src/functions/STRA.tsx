@@ -112,7 +112,7 @@ export function STRAPane() {
                     cursor: "pointer",
                   }}>
             <div><strong>{m.name || "(unnamed)"}</strong></div>
-            <div style={{ fontSize: 10, color: "var(--text-secondary)" }}>{m.timeframe}</div>
+            <div style={{ fontSize: "var(--font-size-2xs)", color: "var(--text-secondary)" }}>{m.timeframe}</div>
           </button>
         ))}
         {/* P5 — loading placeholder while the list is in flight + still empty. */}
@@ -162,7 +162,7 @@ export function STRAPane() {
                 {timeframeUnknown && draft.timeframe && (
                   <option value={draft.timeframe}
                           data-testid="stra-timeframe-unknown-option">
-                    [bilinmeyen] {draft.timeframe}
+                    [unknown] {draft.timeframe}
                   </option>
                 )}
                 {TIMEFRAMES.map((t) => <option key={t} value={t}>{t}</option>)}
@@ -170,7 +170,7 @@ export function STRAPane() {
             </label>
             {timeframeUnknown && (
               <div data-testid="stra-field-err-timeframe"
-                   style={{ color: "var(--negative)", fontSize: 11 }}>
+                   style={{ color: "var(--negative)", fontSize: "var(--font-size-sm)" }}>
                 Unknown timeframe: "{draft.timeframe}". Pick one from the list.
               </div>
             )}
@@ -217,7 +217,7 @@ export function STRAPane() {
             })}
             {aliasDupIndices.size > 0 && (
               <div data-testid="stra-field-err-alias-dup"
-                   style={{ color: "var(--negative)", fontSize: 11 }}>
+                   style={{ color: "var(--negative)", fontSize: "var(--font-size-sm)" }}>
                 Indicator aliases must be unique.
               </div>
             )}
@@ -313,7 +313,7 @@ export function STRAPane() {
               })()}
               {(!draft.id || dirty) && (
                 <span data-testid="stra-preview-hint"
-                      style={{ fontSize: 11, color: "var(--text-secondary)", alignSelf: "center" }}>
+                      style={{ fontSize: "var(--font-size-sm)", color: "var(--text-secondary)", alignSelf: "center" }}>
                   {!draft.id ? "(save before preview)" : "(save first)"}
                 </span>
               )}
@@ -355,7 +355,7 @@ export function STRAPane() {
                     role="note"
                     style={{
                       color: "var(--text-secondary)",
-                      fontSize: 11,
+                      fontSize: "var(--font-size-sm)",
                       margin: "0 0 6px",
                       padding: "4px 8px",
                       border: "1px solid var(--border-card)",
@@ -366,7 +366,7 @@ export function STRAPane() {
                     whether rules fire, NOT real market performance.
                   </div>
                 )}
-                <ul style={{ fontSize: 12 }}>
+                <ul style={{ fontSize: "var(--font-size-md)" }}>
                   {lastPreview.events.slice(0, 30).map((e, i) => (
                     <li key={i}>
                       [{e.bar_index}] {e.bar_time} <strong>{e.kind}</strong> @ {e.price.toFixed(2)}
@@ -526,7 +526,7 @@ function RulesEditor({
       })}
       {rules.some((r) => validateOperand(r.right, operandOptions)) && (
         <div data-testid={testIdPrefix ? `${testIdPrefix}-operand-hint` : undefined}
-             style={{ color: "var(--negative)", fontSize: 11, marginTop: 4 }}>
+             style={{ color: "var(--negative)", fontSize: "var(--font-size-sm)", marginTop: 4 }}>
           Use a "literal:" prefix for numbers (e.g. literal:30).
         </div>
       )}

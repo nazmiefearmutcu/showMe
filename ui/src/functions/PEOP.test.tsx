@@ -151,3 +151,40 @@ describe("PEOP pane — search interaction", () => {
     expect(container.textContent).toContain("2 matches");
   });
 });
+
+describe("PEOP pane — grid upgrade (L7)", () => {
+  it("sorts people by name from the header", () => {
+    setMockFn({ state: "ok", data: { data: okPayload() } });
+    const { container } = render(<PEOPPane code="PEOP" />);
+    fireEvent.change(screen.getByLabelText(/People search query/i), {
+      target: { value: "apple" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+    // Original order: Tim Cook, John Ternus.
+    expect(container.querySelector("tbody tr")?.textContent).toContain("Tim Cook");
+    fireEvent.click(screen.getByRole("columnheader", { name: /^Name/ }));
+    // Ascending: John Ternus sorts first.
+    expect(container.querySelector("tbody tr")?.textContent).toContain("John Ternus");
+  });
+
+  it("copies a contact row as TSV from the row copy button", () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+    setMockFn({ state: "ok", data: { data: okPayload() } });
+    render(<PEOPPane code="PEOP" />);
+    fireEvent.change(screen.getByLabelText(/People search query/i), {
+      target: { value: "apple" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+    fireEvent.click(screen.getByTitle("Copy Tim Cook contact row"));
+    expect(writeText).toHaveBeenCalledTimes(1);
+    const payload = writeText.mock.calls[0][0] as string;
+    expect(payload.split("\t")[0]).toBe("Tim Cook");
+    expect(payload).toContain("Apple");
+    expect(payload).toContain("https://www.apple.com/newsroom");
+    Reflect.deleteProperty(navigator, "clipboard");
+  });
+});

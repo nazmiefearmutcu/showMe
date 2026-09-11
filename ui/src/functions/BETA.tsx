@@ -388,7 +388,7 @@ function SectionTitle({ children }: { children: string }) {
   return (
     <div
       style={{
-        fontSize: 10,
+        fontSize: "var(--font-size-2xs)",
         letterSpacing: "0.08em",
         color: "var(--text-mute)",
         marginBottom: 6,
@@ -414,7 +414,7 @@ const noteStyle: CSSProperties = {
   border: "1px solid var(--warn-soft)",
   borderRadius: 4,
   color: "var(--text-secondary)",
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
 };
 
 const sparkWrapStyle: CSSProperties = {
@@ -424,7 +424,7 @@ const sparkWrapStyle: CSSProperties = {
 };
 
 const sparkMetaStyle: CSSProperties = {
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   fontFamily: "JetBrains Mono, monospace",
   fontVariantNumeric: "tabular-nums",
 };

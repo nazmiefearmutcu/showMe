@@ -33,6 +33,8 @@ function setMockFn(next: MockFnState) {
 }
 
 let lastParams: Record<string, unknown> | undefined;
+const refetchMock = vi.fn();
+const mockTick = { current: 0 };
 
 vi.mock("@/lib/useFunction", () => ({
   useFunction: (args: { params?: Record<string, unknown> }) => {
@@ -41,9 +43,13 @@ vi.mock("@/lib/useFunction", () => ({
       state: mockFn.state,
       data: mockFn.data,
       error: mockFn.error,
-      refetch: vi.fn(),
+      refetch: refetchMock,
     };
   },
+}));
+
+vi.mock("@/lib/useVisibilityTick", () => ({
+  useVisibilityTick: () => mockTick.current,
 }));
 
 // SymbolBar pulls router/symbol-resolver side effects we don't need here.
@@ -100,6 +106,8 @@ function okPayload() {
 beforeEach(() => {
   localStorage.clear();
   lastParams = undefined;
+  mockTick.current = 0;
+  refetchMock.mockClear();
   setMockFn({ state: "idle", data: undefined });
 });
 afterEach(() => {
@@ -218,5 +226,47 @@ describe("OMON pane — accessibility", () => {
     const { container } = render(<OMONPane code="OMON" symbol="AAPL" />);
     const table = container.querySelector("table");
     expect(table?.getAttribute("aria-label")).toMatch(/chain/i);
+  });
+});
+
+describe("OMON pane — visibility poll + spot flash (live adoption)", () => {
+  it("refetches on a visibility tick but not on mount", () => {
+    setMockFn({ state: "ok", ...okPayload() });
+    const { rerender } = render(<OMONPane code="OMON" symbol="AAPL" />);
+    expect(refetchMock).not.toHaveBeenCalled();
+
+    mockTick.current = 1;
+    rerender(<OMONPane code="OMON" symbol="AAPL" />);
+    expect(refetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the expiry params stable across ticks (no tick key)", () => {
+    setMockFn({ state: "ok", ...okPayload() });
+    const { rerender } = render(<OMONPane code="OMON" symbol="AAPL" />);
+    const before = JSON.stringify(lastParams ?? null);
+    expect(before).not.toContain("tick");
+
+    mockTick.current = 3;
+    rerender(<OMONPane code="OMON" symbol="AAPL" />);
+    expect(JSON.stringify(lastParams ?? null)).toBe(before);
+  });
+
+  it("flashes the spot cell when the spot moves", () => {
+    vi.useFakeTimers();
+    try {
+      setMockFn({ state: "ok", ...okPayload() });
+      const { rerender } = render(<OMONPane code="OMON" symbol="AAPL" />);
+      const cell = screen.getByTestId("flash-value");
+      expect(cell.className).not.toMatch(/flash/);
+
+      const payload = okPayload();
+      payload.data.data.summary.spot = 101.4;
+      (payload.data.data as { spot?: number }).spot = 101.4;
+      setMockFn({ state: "ok", ...payload });
+      rerender(<OMONPane code="OMON" symbol="AAPL" />);
+      expect(screen.getByTestId("flash-value").className).toContain("flash-pos");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

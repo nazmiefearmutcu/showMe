@@ -411,7 +411,7 @@ const chartHeaderStyle: CSSProperties = {
 };
 
 const chartTitleStyle: CSSProperties = {
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   fontWeight: 600,
   color: "var(--text-primary)",
   letterSpacing: "0.02em",
@@ -419,7 +419,7 @@ const chartTitleStyle: CSSProperties = {
 
 const chartHintStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   color: "var(--text-mute)",
   letterSpacing: "0.04em",
 };
@@ -449,6 +449,6 @@ const primaryNumStyle: CSSProperties = {
 
 const unitStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   color: "var(--text-mute)",
 };

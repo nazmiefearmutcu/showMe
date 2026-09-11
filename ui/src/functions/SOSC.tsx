@@ -8,7 +8,7 @@
  * trend chip). GDELT outages render the backend's honest
  * `provider_unavailable` reason — no fabricated numbers, ever.
  */
-import { useMemo, type CSSProperties } from "react";
+import { useMemo, useState, type CSSProperties } from "react";
 import {
   DataGrid,
   type DataGridColumn,
@@ -18,11 +18,11 @@ import {
   PaneFooter,
   PaneHeader,
   Pill,
-  Skeleton,
   StatCard,
   StatusDivider,
   StatusSection,
 } from "@/design-system";
+import { PaneState } from "@/design-system/PaneState";
 import { useFunction } from "@/lib/useFunction";
 import { defaultSymbolForFunction } from "@/lib/symbols";
 import {
@@ -77,6 +77,7 @@ export function SOSCPane({ code, symbol }: FunctionPaneProps) {
     DAYS_IDS,
     3,
   );
+  const [trendFilter, setTrendFilter] = useState("ALL");
   const effectiveSymbol = symbol || defaultSymbolForFunction(code, ["EQUITY", "ETF", "CRYPTO"]);
   const { state, data, error, refetch } = useFunction<SOSCData>({
     code,
@@ -91,6 +92,22 @@ export function SOSCPane({ code, symbol }: FunctionPaneProps) {
   const status = payload?.status ?? "—";
   const isUnavailable = status === "provider_unavailable";
 
+  const trends = useMemo(() => {
+    const set = new Set<string>();
+    for (const row of rows) {
+      if (row.trend) set.add(row.trend.toLowerCase());
+    }
+    return ["ALL", ...Array.from(set).sort()];
+  }, [rows]);
+
+  const visible = useMemo(
+    () =>
+      trendFilter === "ALL"
+        ? rows
+        : rows.filter((r) => (r.trend ?? "").toLowerCase() === trendFilter),
+    [rows, trendFilter],
+  );
+
   const net = summary?.net_sentiment ?? null;
   const read = summary?.label ?? sentimentLabel(net);
 
@@ -100,6 +117,8 @@ export function SOSCPane({ code, symbol }: FunctionPaneProps) {
         key: "platform",
         header: "Outlet / platform",
         width: 260,
+        sortable: true,
+        sortValue: (r) => r.platform ?? "",
         render: (r) => <span style={monoPrimaryStyle}>{r.platform ?? "—"}</span>,
       },
       {
@@ -107,6 +126,8 @@ export function SOSCPane({ code, symbol }: FunctionPaneProps) {
         header: "Mentions",
         numeric: true,
         width: 100,
+        sortable: true,
+        sortValue: (r) => r.mentions ?? null,
         render: (r) => <span style={monoStrongStyle}>{fmtInt(r.mentions)}</span>,
       },
       {
@@ -114,6 +135,8 @@ export function SOSCPane({ code, symbol }: FunctionPaneProps) {
         header: "Mean tone",
         numeric: true,
         width: 110,
+        sortable: true,
+        sortValue: (r) => r.sentiment ?? null,
         render: (r) => (
           <span
             style={{
@@ -129,6 +152,8 @@ export function SOSCPane({ code, symbol }: FunctionPaneProps) {
         key: "trend",
         header: "Trend",
         width: 110,
+        sortable: true,
+        sortValue: (r) => r.trend ?? "",
         render: (r) =>
           r.trend ? (
             <Pill
@@ -154,81 +179,77 @@ export function SOSCPane({ code, symbol }: FunctionPaneProps) {
 
   const body = !effectiveSymbol ? (
     <Empty title="Pick a symbol" body="SOSC needs an equity or crypto ticker." icon="⌖" />
-  ) : state === "loading" || state === "idle" ? (
-    <div className="u-grid-gap-8">
-      <Skeleton height={56} />
-      <Skeleton height={20} />
-      <Skeleton height={20} />
-      <Skeleton height={20} width="80%" />
-    </div>
-  ) : state === "error" ? (
-    <Empty
-      title="Function error"
-      body={error?.message ?? "—"}
-      icon="!"
-      action={
-        <button onClick={refetch} className="btn">
-          Retry
-        </button>
-      }
-    />
-  ) : isUnavailable ? (
-    <Empty
-      title="Sentiment provider unavailable"
-      body={payload?.reason ?? "GDELT is unreachable — no sentiment is shown rather than a fabricated read."}
-      icon="!"
-      action={
-        <button onClick={refetch} className="btn">
-          Retry
-        </button>
-      }
-    />
-  ) : rows.length === 0 ? (
-    <Empty
-      title="No recent coverage"
-      body={`No GDELT articles matched ${effectiveSymbol} in the last ${summary?.window ?? `${days}d`} — nothing is fabricated while coverage is quiet.`}
-      action={
-        <button onClick={refetch} className="btn">
-          Retry
-        </button>
-      }
-    />
   ) : (
-    <div className="u-grid-gap-14">
-      <section style={kpiGridStyle} aria-label="SOSC sentiment summary">
-        <StatCard
-          label="Net sentiment"
-          value={fmtSigned(net)}
-          caption={`${(summary?.window ?? `${days}d`).toUpperCase()} WINDOW · ${read.toUpperCase()}`}
-          tone={sentimentTone(net)}
+    <PaneState
+      state={state}
+      error={error}
+      empty={isUnavailable || rows.length === 0}
+      emptyTitle={isUnavailable ? "Sentiment provider unavailable" : "No recent coverage"}
+      emptyBody={
+        isUnavailable
+          ? (payload?.reason ??
+            "GDELT is unreachable — no sentiment is shown rather than a fabricated read.")
+          : `No GDELT articles matched ${effectiveSymbol} in the last ${summary?.window ?? `${days}d`} — nothing is fabricated while coverage is quiet.`
+      }
+      emptyIcon={isUnavailable ? "!" : "∅"}
+      onRetry={refetch}
+    >
+      <div className="u-grid-gap-14">
+        <section style={kpiGridStyle} aria-label="SOSC sentiment summary">
+          <StatCard
+            label="Net sentiment"
+            value={fmtSigned(net)}
+            caption={`${(summary?.window ?? `${days}d`).toUpperCase()} WINDOW · ${read.toUpperCase()}`}
+            tone={sentimentTone(net)}
+          />
+          <StatCard
+            label="Read"
+            value={read}
+            caption={`SOURCE ${summary?.source_mode ?? "—"}`}
+            tone={sentimentTone(net)}
+          />
+          <StatCard
+            label="Articles"
+            value={fmtInt(summary?.total_mentions)}
+            caption={`${fmtInt(summary?.outlets)} OUTLETS`}
+            tone="neutral"
+          />
+          <StatCard
+            label="GDELT tone"
+            value={fmtSigned(summary?.gdelt_tone)}
+            caption={`FINBERT ${fmtSigned(summary?.finbert_headline_sentiment)}`}
+            tone={sentimentTone(summary?.gdelt_tone)}
+          />
+        </section>
+        <div style={chipRowStyle} role="group" aria-label="Trend filter">
+          {trends.map((t) => {
+            const active = trendFilter === t;
+            return (
+              <button
+                key={t}
+                type="button"
+                className={`fn-segmented__opt${active ? " fn-segmented__opt--active" : ""}`}
+                aria-pressed={active}
+                onClick={() => setTrendFilter(t)}
+                title={`Filter trend ${t}`}
+              >
+                {t}
+              </button>
+            );
+          })}
+        </div>
+        <DataGrid
+          columns={COLS}
+          rows={visible}
+          rowKey={(r, i) => `${r.platform ?? "outlet"}-${i}`}
+          density="compact"
+          ariaLabel="SOSC per-outlet sentiment"
+          defaultSortKey="mentions"
+          defaultSortDir="descending"
+          empty="No outlets match this trend filter"
         />
-        <StatCard
-          label="Read"
-          value={read}
-          caption={`SOURCE ${summary?.source_mode ?? "—"}`}
-          tone={sentimentTone(net)}
-        />
-        <StatCard
-          label="Articles"
-          value={fmtInt(summary?.total_mentions)}
-          caption={`${fmtInt(summary?.outlets)} OUTLETS`}
-          tone="neutral"
-        />
-        <StatCard
-          label="GDELT tone"
-          value={fmtSigned(summary?.gdelt_tone)}
-          caption={`FINBERT ${fmtSigned(summary?.finbert_headline_sentiment)}`}
-          tone={sentimentTone(summary?.gdelt_tone)}
-        />
-      </section>
-      <DataGrid
-        columns={COLS}
-        rows={rows}
-        rowKey={(r, i) => `${r.platform ?? "outlet"}-${i}`}
-        density="compact"
-        ariaLabel="SOSC per-outlet sentiment"
-      />
-    </div>
+      </div>
+    </PaneState>
   );
 
   return (
@@ -311,6 +332,13 @@ const kpiGridStyle: CSSProperties = {
   display: "grid",
   gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
   gap: 10,
+};
+
+const chipRowStyle: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 6,
+  flexWrap: "wrap",
 };
 
 const monoStrongStyle: CSSProperties = {

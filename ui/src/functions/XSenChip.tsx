@@ -116,7 +116,7 @@ const wrapper: CSSProperties = {
   background: "transparent",
   color: "var(--text-secondary)",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
 };
 
 const dot: CSSProperties = {
@@ -130,11 +130,11 @@ const dot: CSSProperties = {
 const scoreText: CSSProperties = {
   fontWeight: 700,
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   color: "var(--text-primary)",
 };
 
 const hint: CSSProperties = {
   color: "var(--text-mute)",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
 };

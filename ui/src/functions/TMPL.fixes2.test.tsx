@@ -44,7 +44,7 @@ describe("TMPL pane fixes2", () => {
       });
     render(<TMPLPane />);
     fireEvent.click(screen.getByText("RSI MR"));
-    fireEvent.click(screen.getByRole("button", { name: /kullan/i }));
+    fireEvent.click(screen.getByRole("button", { name: /use this template/i }));
     await act(async () => {
       fireEvent.click(screen.getByTestId("tmpl-olustur-button"));
     });
@@ -72,7 +72,7 @@ describe("TMPL pane fixes2", () => {
       });
     render(<TMPLPane />);
     fireEvent.click(screen.getByText("RSI MR"));
-    fireEvent.click(screen.getByRole("button", { name: /kullan/i }));
+    fireEvent.click(screen.getByRole("button", { name: /use this template/i }));
     await act(async () => {
       fireEvent.click(screen.getByTestId("tmpl-olustur-button"));
     });
@@ -87,7 +87,7 @@ describe("TMPL pane fixes2", () => {
       });
     render(<TMPLPane />);
     fireEvent.click(screen.getByText("RSI MR"));
-    fireEvent.click(screen.getByRole("button", { name: /kullan/i }));
+    fireEvent.click(screen.getByRole("button", { name: /use this template/i }));
     await act(async () => {
       fireEvent.click(screen.getByTestId("tmpl-olustur-button"));
     });
@@ -99,7 +99,7 @@ describe("TMPL pane fixes2", () => {
   it("escape_closes_modal_when_not_creating", () => {
     render(<TMPLPane />);
     fireEvent.click(screen.getByText("RSI MR"));
-    fireEvent.click(screen.getByRole("button", { name: /kullan/i }));
+    fireEvent.click(screen.getByRole("button", { name: /use this template/i }));
     expect(screen.getByRole("dialog")).toBeInTheDocument();
     fireEvent.keyDown(window, { key: "Escape" });
     expect(screen.queryByRole("dialog")).toBeNull();
@@ -112,7 +112,7 @@ describe("TMPL pane fixes2", () => {
       .mockImplementation((() => pending) as never);
     render(<TMPLPane />);
     fireEvent.click(screen.getByText("RSI MR"));
-    fireEvent.click(screen.getByRole("button", { name: /kullan/i }));
+    fireEvent.click(screen.getByRole("button", { name: /use this template/i }));
     fireEvent.click(screen.getByTestId("tmpl-olustur-button"));
     fireEvent.keyDown(window, { key: "Escape" });
     // Modal should still be open mid-create.
@@ -127,7 +127,7 @@ describe("TMPL pane fixes2", () => {
   it("backdrop_click_closes_modal_when_not_creating", () => {
     render(<TMPLPane />);
     fireEvent.click(screen.getByText("RSI MR"));
-    fireEvent.click(screen.getByRole("button", { name: /kullan/i }));
+    fireEvent.click(screen.getByRole("button", { name: /use this template/i }));
     const backdrop = screen.getByTestId("tmpl-modal-backdrop");
     fireEvent.click(backdrop);
     expect(screen.queryByRole("dialog")).toBeNull();

@@ -41,7 +41,6 @@ import {
 import {
   MIS_FALLBACK_TFS,
   MIS_MARKETS,
-  MIS_MARKET_LABELS,
   fetchMisConfig,
   fetchMisIndicators,
   fetchMisMarkets,
@@ -69,7 +68,7 @@ type TabId = "results" | "settings";
 
 const TABS = [
   { id: "results" as TabId, label: "Results" },
-  { id: "settings" as TabId, label: "Ayarlar" },
+  { id: "settings" as TabId, label: "Settings" },
 ];
 
 const SIGNAL_TONE: Record<string, "positive" | "negative" | "warn" | "muted"> = {
@@ -78,6 +77,18 @@ const SIGNAL_TONE: Record<string, "positive" | "negative" | "warn" | "muted"> = 
   STRONG_SELL: "negative",
   SELL: "negative",
   NEUTRAL: "muted",
+};
+
+// English market labels for THIS pane. The shared market-label map in
+// `@/lib/mis` still carries Turkish copy; MIS is its only consumer, so the
+// pane-local map keeps the UI English without editing the lib (owner follow-up).
+const MARKET_LABELS: Record<MisMarket, string> = {
+  CRYPTO: "Crypto",
+  EQUITY: "Equity",
+  ETF: "ETF",
+  FX: "FX",
+  COMMODITY: "Commodities",
+  BOND: "Bonds",
 };
 
 function dirTone(dir: string): "positive" | "negative" | "muted" {
@@ -385,7 +396,7 @@ export function MISPane({ code }: FunctionPaneProps) {
               e.stopPropagation();
               handleAddToWatch(r.symbol);
             }}
-            style={{ width: 22, height: 22, padding: 0, fontSize: 13, lineHeight: 1 }}
+            style={{ width: 22, height: 22, padding: 0, fontSize: "var(--font-size-lg)", lineHeight: 1 }}
           >
             +
           </button>
@@ -393,7 +404,7 @@ export function MISPane({ code }: FunctionPaneProps) {
       },
       {
         key: "symbol",
-        header: "Sembol",
+        header: "Symbol",
         width: 120,
         render: (r) => (
           <button
@@ -411,11 +422,11 @@ export function MISPane({ code }: FunctionPaneProps) {
       },
       {
         key: "market",
-        header: "Piyasa",
+        header: "Market",
         width: 86,
         render: (r) => (
           <Pill tone="muted" variant="soft" withDot={false}>
-            {MIS_MARKET_LABELS[r.market] ?? r.market}
+            {MARKET_LABELS[r.market] ?? r.market}
           </Pill>
         ),
       },
@@ -442,7 +453,7 @@ export function MISPane({ code }: FunctionPaneProps) {
       },
       {
         key: "signal",
-        header: "Sinyal",
+        header: "Signal",
         width: 110,
         render: (r) => {
           const tone = SIGNAL_TONE[r.final_signal] ?? "muted";
@@ -494,7 +505,7 @@ export function MISPane({ code }: FunctionPaneProps) {
       },
       {
         key: "last",
-        header: "Son",
+        header: "Last",
         width: 96,
         numeric: true,
         render: (r) =>
@@ -682,7 +693,7 @@ export function MISPane({ code }: FunctionPaneProps) {
       const saved = await saveMisConfig(config);
       setConfig(saved);
       setConfigDirty(false);
-      toast.success("Settings saved", `${MIS_MARKET_LABELS[configMarket]} calibration updated`);
+      toast.success("Settings saved", `${MARKET_LABELS[configMarket]} calibration updated`);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       toast.error("Save failed", msg);
@@ -724,7 +735,7 @@ export function MISPane({ code }: FunctionPaneProps) {
         <PaneHeader
           code={code}
           title="Multi Indicator Scan"
-          subtitle={`${selected.size}/${MIS_MARKETS.length} piyasa · TOP ${topN}`}
+          subtitle={`${selected.size}/${MIS_MARKETS.length} markets · TOP ${topN}`}
           help={
             <div className="fn-help-grid fn-help-grid__hint fn-help-grid__hint-mute">
               <strong>MIS · Multi Indicator Scan</strong>
@@ -932,7 +943,7 @@ function ResultsTab(props: {
             </span>
           }
         >
-          Piyasa filtresi
+          Market filter
         </CardHeader>
         <CardBody>
           {marketError && (
@@ -946,7 +957,7 @@ function ResultsTab(props: {
                 border: "1px solid var(--negative)",
                 background: "color-mix(in srgb, var(--negative) 12%, transparent)",
                 color: "var(--negative)",
-                fontSize: 11,
+                fontSize: "var(--font-size-sm)",
                 fontFamily: "JetBrains Mono, monospace",
                 letterSpacing: "0.03em",
               }}
@@ -992,10 +1003,10 @@ function ResultsTab(props: {
                       onChange={() => toggleMarket(m)}
                     />
                     <strong style={{ fontFamily: "JetBrains Mono, monospace" }}>
-                      {MIS_MARKET_LABELS[m]}
+                      {MARKET_LABELS[m]}
                     </strong>
                     <Pill tone="muted" variant="soft" withDot={false}>
-                      {meta?.size ?? "—"} sembol
+                      {meta?.size ?? "—"} symbols
                     </Pill>
                     <span style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
                       <Pill
@@ -1117,7 +1128,7 @@ function ResultsTab(props: {
                 checked={onlySignals}
                 onChange={(e) => setOnlySignals(e.target.checked)}
               />
-              <span style={fieldLabelStyle}>Sadece sinyaller (NEUTRAL gizle)</span>
+              <span style={fieldLabelStyle}>Signals only (hide NEUTRAL)</span>
             </label>
           </div>
         </CardBody>
@@ -1178,7 +1189,7 @@ function ResultsTab(props: {
                   <span className="u-text-negative">{shorts}</span>
                 </span>
               }
-              caption={`piyasa ${result.markets.join(", ")}`}
+              caption={`markets ${result.markets.join(", ")}`}
               tone="neutral"
             />
           </div>
@@ -1189,7 +1200,7 @@ function ResultsTab(props: {
                 <span className="u-inline-flex u-gap-6 u-flex-wrap">
                   {Object.entries(result.per_market_counts).map(([m, c]) => (
                     <Pill key={m} tone="muted" variant="soft" withDot={false}>
-                      {MIS_MARKET_LABELS[m as MisMarket] ?? m} · {c.completed}/{c.requested}
+                      {MARKET_LABELS[m as MisMarket] ?? m} · {c.completed}/{c.requested}
                     </Pill>
                   ))}
                   {result.warnings.length > 0 && (
@@ -1323,7 +1334,7 @@ function SettingsTab(props: {
             </span>
           }
         >
-          Piyasa kalibrasyonu
+          Market calibration
         </CardHeader>
         <CardBody>
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
@@ -1336,7 +1347,7 @@ function SettingsTab(props: {
                   onClick={() => setConfigMarket(m)}
                   className={`btn ${active ? "btn--accent" : "btn--ghost"} u-btn-mini`}
                 >
-                  {MIS_MARKET_LABELS[m]}
+                  {MARKET_LABELS[m]}
                 </button>
               );
             })}
@@ -1353,7 +1364,7 @@ function SettingsTab(props: {
       />
 
       <Card>
-        <CardHeader>Consensus thresholds — {MIS_MARKET_LABELS[configMarket]}</CardHeader>
+        <CardHeader>Consensus thresholds — {MARKET_LABELS[configMarket]}</CardHeader>
         <CardBody>
           <div style={consensusGridStyle}>
             <NumberField
@@ -1387,7 +1398,7 @@ function SettingsTab(props: {
               onChange={(v) => updateConsensus("conflict_ratio_threshold", v)}
             />
             <NumberField
-              label="Min aktif sinyal"
+              label="Min active signals"
               value={cfg.consensus.min_active_signals}
               step={1}
               onChange={(v) => updateConsensus("min_active_signals", v)}
@@ -1430,7 +1441,7 @@ function SettingsTab(props: {
             </Pill>
           }
         >
-          Universe override — {MIS_MARKET_LABELS[configMarket]}
+          Universe override — {MARKET_LABELS[configMarket]}
         </CardHeader>
         <CardBody>
           <span style={{ ...fieldLabelStyle, display: "block", marginBottom: 6 }}>
@@ -1481,7 +1492,7 @@ function IndicatorBreakdownPanel({ row }: { row: MisScanRow }) {
           gap: 8,
           marginBottom: 8,
           fontFamily: "JetBrains Mono, monospace",
-          fontSize: 12,
+          fontSize: "var(--font-size-md)",
         }}
       >
         <strong>{row.symbol}</strong>
@@ -1500,13 +1511,13 @@ function IndicatorBreakdownPanel({ row }: { row: MisScanRow }) {
             display: "grid",
             gridTemplateColumns: "minmax(120px, 0.8fr) 80px 70px minmax(140px, 1.4fr)",
             gap: "2px 12px",
-            fontSize: 11,
+            fontSize: "var(--font-size-sm)",
             fontFamily: "JetBrains Mono, monospace",
           }}
         >
           <span style={fieldLabelStyle}>Indicator</span>
-          <span style={fieldLabelStyle}>Sinyal</span>
-          <span style={{ ...fieldLabelStyle, textAlign: "right" }}>Skor</span>
+          <span style={fieldLabelStyle}>Signal</span>
+          <span style={{ ...fieldLabelStyle, textAlign: "right" }}>Score</span>
           <span style={fieldLabelStyle}>Rationale</span>
           {breakdown.map((ind, i) => {
             const tone = SIGNAL_TONE[ind.signal] ?? "muted";
@@ -1634,10 +1645,10 @@ function TfCalibrationCard({
           </Pill>
         }
       >
-        Timeframes and TF weights — {MIS_MARKET_LABELS[market]}
+        Timeframes and TF weights — {MARKET_LABELS[market]}
       </CardHeader>
       <CardBody>
-        <div style={{ fontSize: 10, color: "var(--text-mute)", marginBottom: 8 }}>
+        <div style={{ fontSize: "var(--font-size-2xs)", color: "var(--text-mute)", marginBottom: 8 }}>
           Each symbol passes the 23-indicator consensus separately on the selected
           timeframes. Final score = Σ (direction × confidence% × TF-weight%). A higher
           TF weight increases that timeframe's influence. (Same aggregation as TBV3.)
@@ -1739,7 +1750,7 @@ function ExpandToggle({
         e.stopPropagation();
         onToggle(rowKey);
       }}
-      style={{ width: 22, height: 22, padding: 0, fontSize: 11, lineHeight: 1 }}
+      style={{ width: 22, height: 22, padding: 0, fontSize: "var(--font-size-sm)", lineHeight: 1 }}
     >
       {open ? "▾" : "▸"}
     </button>
@@ -1799,7 +1810,7 @@ function ScanProgressPanel({
       {progressNote && (
         <span
           style={{
-            fontSize: 11,
+            fontSize: "var(--font-size-sm)",
             color: "var(--text-secondary)",
             fontFamily: "JetBrains Mono, monospace",
             letterSpacing: "0.04em",
@@ -1815,7 +1826,7 @@ function ScanProgressPanel({
           justifyContent: "space-between",
           alignItems: "center",
           gap: 12,
-          fontSize: 10,
+          fontSize: "var(--font-size-2xs)",
           letterSpacing: "0.06em",
           textTransform: "uppercase",
           color: "var(--text-mute)",
@@ -1953,7 +1964,7 @@ function tfChipStyle(on: boolean): CSSProperties {
     height: 20,
     padding: "0 6px",
     fontFamily: "JetBrains Mono, monospace",
-    fontSize: 10,
+    fontSize: "var(--font-size-2xs)",
     letterSpacing: "0.03em",
     borderRadius: 4,
     border: `1px solid ${on ? "var(--accent)" : "var(--border-subtle)"}`,
@@ -1974,7 +1985,7 @@ const chipStyle: CSSProperties = {
   border: "1px solid var(--border-subtle)",
   borderRadius: 4,
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   color: "var(--text-secondary)",
   letterSpacing: "0.03em",
 };
@@ -1993,7 +2004,7 @@ const fieldStyle: CSSProperties = {
 };
 
 const fieldLabelStyle: CSSProperties = {
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   letterSpacing: "0.06em",
   textTransform: "uppercase",
   color: "var(--text-mute)",
@@ -2006,7 +2017,7 @@ const inputStyle: CSSProperties = {
   borderRadius: "var(--radius-sm)",
   color: "var(--text-primary)",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   height: 24,
   padding: "0 6px",
   width: 90,
@@ -2026,7 +2037,7 @@ const textareaStyle: CSSProperties = {
   border: "1px solid var(--border-subtle)",
   borderRadius: "var(--radius-md)",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   padding: 8,
   outline: "none",
 };

@@ -480,7 +480,7 @@ function SectionTitle({ children }: { children: string }) {
   return (
     <div
       style={{
-        fontSize: 10,
+        fontSize: "var(--font-size-2xs)",
         letterSpacing: "0.08em",
         color: "var(--text-mute)",
         marginBottom: 6,
@@ -506,7 +506,7 @@ const noteStyle: CSSProperties = {
   border: "1px solid var(--warn-soft)",
   borderRadius: 4,
   color: "var(--text-secondary)",
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
 };
 
 const surfaceStyle: CSSProperties = {
@@ -517,7 +517,7 @@ const surfaceStyle: CSSProperties = {
 
 const surfaceHeadStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   color: "var(--text-mute)",
   display: "flex",
   alignItems: "center",
@@ -529,7 +529,7 @@ const surfaceHeadStyle: CSSProperties = {
 const surfaceCellStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
   fontVariantNumeric: "tabular-nums",
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   color: "var(--text-primary)",
   display: "flex",
   alignItems: "center",
@@ -554,7 +554,7 @@ const numFieldStyle: CSSProperties = {
 
 const numFieldLabelStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 9,
+  fontSize: "var(--font-size-xs)",
   color: "var(--text-mute)",
   letterSpacing: "0.06em",
 };
@@ -563,7 +563,7 @@ const numInputStyle: CSSProperties = {
   width: 68,
   fontFamily: "JetBrains Mono, monospace",
   fontVariantNumeric: "tabular-nums",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   padding: "2px 4px",
   border: "1px solid var(--border-row)",
   borderRadius: 3,

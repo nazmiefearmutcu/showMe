@@ -444,7 +444,7 @@ const noticeStyle: CSSProperties = {
   border: "1px solid var(--warn, var(--text-mute))",
   borderRadius: 6,
   padding: "8px 10px",
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   color: "var(--text-primary)",
 };
 
@@ -458,7 +458,7 @@ const captionStyle: CSSProperties = {
   gap: 12,
   marginTop: 4,
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   color: "var(--text-mute)",
 };
 
@@ -482,7 +482,7 @@ const svgStyle: CSSProperties = {
 
 const axisTextStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 9,
+  fontSize: "var(--font-size-xs)",
   fill: "var(--text-mute)",
 };
 

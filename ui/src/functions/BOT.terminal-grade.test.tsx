@@ -75,7 +75,7 @@ describe("BOT F1 — Pill status with accessible name", () => {
   it("renders an OFF status with an accessible name for a disabled bot", () => {
     render(<BOTPane />);
     // The sidebar row carries the status pill; OFF for the disabled bot.
-    const off = screen.getAllByRole("status", { name: /durum: off/i });
+    const off = screen.getAllByRole("status", { name: /status: off/i });
     expect(off.length).toBeGreaterThanOrEqual(1);
     expect(off[0].textContent).toMatch(/OFF/);
   });
@@ -87,7 +87,7 @@ describe("BOT F1 — Pill status with accessible name", () => {
                mode: "live", enabled: true, created_at: "", updated_at: "" }],
     });
     render(<BOTPane />);
-    const live = screen.getAllByRole("status", { name: /durum: live/i });
+    const live = screen.getAllByRole("status", { name: /status: live/i });
     expect(live.length).toBeGreaterThanOrEqual(1);
     // Pill tone-negative class present on the inner pill.
     expect(live[0].querySelector(".ds-pill--tone-negative")).not.toBeNull();
@@ -100,7 +100,7 @@ describe("BOT F1 — Pill status with accessible name", () => {
                mode: "shadow", enabled: true, created_at: "", updated_at: "" }],
     });
     render(<BOTPane />);
-    const shadow = screen.getAllByRole("status", { name: /durum: shadow/i });
+    const shadow = screen.getAllByRole("status", { name: /status: shadow/i });
     expect(shadow[0].querySelector(".ds-pill--tone-warn")).not.toBeNull();
   });
 });
@@ -190,7 +190,7 @@ describe("BOT F3 — form control labels", () => {
   it("binds strategy / credential / symbol / timeframe / tick labels", () => {
     useBotStore.setState({ draft: { ...PERSISTED_DRAFT } as never });
     render(<BOTPane />);
-    expect(screen.getByLabelText(/strateji/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/strategy/i)).toBeInTheDocument();
     expect(screen.getByLabelText(/connection/i)).toBeInTheDocument();
     expect(screen.getByLabelText(/^symbol$/i)).toBeInTheDocument();
     expect(screen.getByLabelText(/timeframe/i)).toBeInTheDocument();

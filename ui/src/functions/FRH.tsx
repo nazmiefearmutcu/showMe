@@ -338,7 +338,7 @@ const rowGridStyle: CSSProperties = {
 
 const headerCellStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 9,
+  fontSize: "var(--font-size-xs)",
   letterSpacing: "0.06em",
   textTransform: "uppercase",
   color: "var(--text-mute)",
@@ -348,7 +348,7 @@ const headerCellStyle: CSSProperties = {
 
 const cellStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   fontVariantNumeric: "tabular-nums",
   textAlign: "right",
   padding: "4px 6px",
@@ -357,7 +357,7 @@ const cellStyle: CSSProperties = {
 
 const symbolStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   color: "var(--text-primary)",
   padding: "4px 6px",
   textAlign: "left",
@@ -365,7 +365,7 @@ const symbolStyle: CSSProperties = {
 };
 
 const signalStyle: CSSProperties = {
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   color: "var(--text-mute)",
   padding: "4px 6px",
   textAlign: "left",
@@ -381,7 +381,7 @@ const legendStyle: CSSProperties = {
 };
 
 const legendTextStyle: CSSProperties = {
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   color: "var(--text-mute)",
 };
 
@@ -403,12 +403,12 @@ const templateNoteStyle: CSSProperties = {
 };
 
 const templateTextStyle: CSSProperties = {
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   color: "var(--text-mute)",
 };
 
 const methodologyStyle: CSSProperties = {
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   fontFamily: "JetBrains Mono, monospace",
   color: "var(--text-mute)",
   border: "1px dashed var(--border-subtle)",

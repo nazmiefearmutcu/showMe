@@ -11,7 +11,7 @@
  *   - Live-cell stability: the "Last" cell uses a STABLE React key so a new
  *     quote tick updates the value in place instead of remounting (no flicker).
  */
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WATCHPane } from "./WATCH";
 import * as marketData from "@/lib/market-data";
@@ -184,23 +184,58 @@ describe("WATCH — live Last cell stability", () => {
       <WATCHPane code="WATCH" symbol={undefined} />,
     );
     await screen.findByRole("button", { name: "AAPL" });
-    const before = container.querySelector(".showme-live-value");
+    const before = container.querySelector('[data-testid="flash-value"]');
     expect(before?.textContent).toContain("200");
 
     // New tick: price changes, fetchedAt advances. Row identity is anchored by
     // rowKey={(r)=>r.symbol} on the DataGrid, so the SAME DOM node must persist
     // across the tick and only its text content updates (no remount/jitter).
-    // The pulse flash is driven by an animation restart on this stable node
-    // (FIX 1) — that side effect isn't observable in jsdom, so we assert node
-    // identity + value change rather than the animation itself.
+    vi.useFakeTimers();
+    try {
+      spy.mockReturnValue({
+        AAPL: makeView({ symbol: "AAPL", price: 201.5, fetchedAt: 2_000 }),
+      });
+      rerender(<WATCHPane code="WATCH" symbol={undefined} />);
+      const after = container.querySelector('[data-testid="flash-value"]');
+      expect(after?.textContent).toContain("201.50");
+      // Same physical DOM node — value changed in place, no column churn.
+      expect(after).toBe(before);
+      // Let the flash window close deterministically inside act.
+      act(() => {
+        vi.advanceTimersByTime(600);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("paints the themed flash class on the stable Last node when the price ticks", async () => {
+    const spy = vi.spyOn(marketData, "useLiveQuotes");
     spy.mockReturnValue({
-      AAPL: makeView({ symbol: "AAPL", price: 201.5, fetchedAt: 2_000 }),
+      AAPL: makeView({ symbol: "AAPL", price: 200, fetchedAt: 1_000 }),
     });
-    rerender(<WATCHPane code="WATCH" symbol={undefined} />);
-    const after = container.querySelector(".showme-live-value");
-    expect(after?.textContent).toContain("201.50");
-    // Same physical DOM node — value changed in place, no column churn.
-    expect(after).toBe(before);
+    const { container, rerender } = render(
+      <WATCHPane code="WATCH" symbol={undefined} />,
+    );
+    await screen.findByRole("button", { name: "AAPL" });
+    const cell = () =>
+      container.querySelector('[data-testid="flash-value"]') as HTMLElement;
+    expect(cell().className).not.toMatch(/flash/);
+
+    vi.useFakeTimers();
+    try {
+      spy.mockReturnValue({
+        AAPL: makeView({ symbol: "AAPL", price: 202.25, fetchedAt: 2_500 }),
+      });
+      rerender(<WATCHPane code="WATCH" symbol={undefined} />);
+      expect(cell().className).toContain("flash-pos");
+      act(() => {
+        vi.advanceTimersByTime(600);
+      });
+      expect(cell().className).not.toMatch(/flash/);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

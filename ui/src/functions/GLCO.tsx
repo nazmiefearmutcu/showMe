@@ -5,7 +5,7 @@
  * / agriculture / softs. KPI ribbon for sector heroes, mover bars,
  * sparkline column, hover-lift rows, methodology footer.
  */
-import { useMemo, type CSSProperties } from "react";
+import { useEffect, useMemo, type CSSProperties } from "react";
 import {
   DataGrid,
   type DataGridColumn,
@@ -83,8 +83,15 @@ export function GLCOPane({ code }: FunctionPaneProps) {
 
   const { state, data, error, refetch } = useFunction<unknown>({
     code,
-    params: { sector: sector === "all" ? undefined : sector, tick },
+    params: { sector: sector === "all" ? undefined : sector },
   });
+  // Poll on the visibility tick without touching the fetch params: a changing
+  // param key makes useFunction treat every poll as a fresh load (skeleton
+  // flash + cleared data). Canonical WHAL/L10 pattern.
+  useEffect(() => {
+    if (tick === 0) return;
+    refetch();
+  }, [tick, refetch]);
   const payload = useMemo(
     () => (isRecord(data?.data) ? data?.data : null),
     [data],
@@ -179,12 +186,36 @@ export function GLCOPane({ code }: FunctionPaneProps) {
         header: "5d",
         width: 78,
         render: (r) => {
-          const series = trendForRow(r);
+          // P2 honesty: a real per-row history series (r.history, shipped by
+          // the backend's keyless Yahoo chart path as `history_source:
+          // "yfinance_daily"`) renders solid and marked data-synthetic="false";
+          // otherwise the procedural line is de-emphasized + tagged synthetic
+          // so it cannot masquerade as real history (WEI pattern).
+          const real = realHistoryFor(r);
+          const series = real ?? syntheticTrendFor(r);
           const dir =
             (r.change_pct ?? r.changePercent ?? 0) >= 0 ? "positive" : "negative";
           return (
-            <span className="u-inline-flex">
-              <Sparkline values={series} width={62} height={18} tone={dir} />
+            <span
+              style={real ? sparkRealStyle : synthSparkStyle}
+              data-synthetic={real ? "false" : "true"}
+              title={
+                real
+                  ? "Daily close history from the payload"
+                  : SYNTH_SPARK_TITLE
+              }
+            >
+              <Sparkline
+                values={series}
+                width={62}
+                height={18}
+                tone={dir}
+                ariaLabel={
+                  real
+                    ? "Daily close history"
+                    : "Illustrative trend — no real history available"
+                }
+              />
             </span>
           );
         },
@@ -325,14 +356,16 @@ interface CommodityStats {
   weightedChange: number;
   advancers: number;
   decliners: number;
-  leader?: { sym: string; name: string; chg: number; trend: number[] };
-  laggard?: { sym: string; name: string; chg: number; trend: number[] };
+  leader?: { sym: string; name: string; chg: number; trend: number[]; trendReal: boolean };
+  laggard?: { sym: string; name: string; chg: number; trend: number[]; trendReal: boolean };
+  /** Real per-row history only — never a procedural stand-in. */
   trend: number[];
+  trendReal: boolean;
 }
 
 function deriveCommodityStats(rows: CommodityRow[]): CommodityStats {
   if (!rows.length) {
-    return { count: 0, weightedChange: 0, advancers: 0, decliners: 0, trend: [] };
+    return { count: 0, weightedChange: 0, advancers: 0, decliners: 0, trend: [], trendReal: false };
   }
   let advancers = 0;
   let decliners = 0;
@@ -340,8 +373,15 @@ function deriveCommodityStats(rows: CommodityRow[]): CommodityStats {
   let counted = 0;
   let leader: CommodityStats["leader"];
   let laggard: CommodityStats["laggard"];
+  const realTrendPoints: number[] = [];
+  let trendReal = false;
   for (const r of rows) {
     const chg = r.change_pct ?? r.changePercent ?? r.chg_pct;
+    const real = realHistoryFor(r);
+    if (real) {
+      trendReal = true;
+      realTrendPoints.push(...real.slice(-2));
+    }
     if (chg == null || !Number.isFinite(chg)) continue;
     if (chg > 0) advancers += 1;
     else if (chg < 0) decliners += 1;
@@ -349,9 +389,12 @@ function deriveCommodityStats(rows: CommodityRow[]): CommodityStats {
     counted += 1;
     const sym = r.symbol ?? r.ticker ?? "";
     const name = r.name ?? sym;
-    const trend = trendForRow(r);
-    if (!leader || chg > leader.chg) leader = { sym, name, chg, trend };
-    if (!laggard || chg < laggard.chg) laggard = { sym, name, chg, trend };
+    // KPI sparklines only ever carry real history (the synthetic line lives
+    // in the table cell, where it is explicitly marked). A fake KPI trend is
+    // therefore never rendered.
+    const trend = real ?? [];
+    if (!leader || chg > leader.chg) leader = { sym, name, chg, trend, trendReal: real !== null };
+    if (!laggard || chg < laggard.chg) laggard = { sym, name, chg, trend, trendReal: real !== null };
   }
   return {
     count: rows.length,
@@ -360,7 +403,8 @@ function deriveCommodityStats(rows: CommodityRow[]): CommodityStats {
     decliners,
     leader,
     laggard,
-    trend: rows.flatMap((r) => trendForRow(r).slice(-2)).slice(-22),
+    trend: realTrendPoints.slice(-22),
+    trendReal,
   };
 }
 
@@ -384,14 +428,14 @@ function KPIRibbon({
         value={`${stats.weightedChange >= 0 ? "+" : ""}${stats.weightedChange.toFixed(2)}%`}
         caption={`AS OF ${stamp} UTC · ${stats.count} ct`}
         tone={stats.weightedChange >= 0 ? "positive" : "negative"}
-        trend={stats.trend}
+        trend={stats.trendReal ? stats.trend : undefined}
       />
       <StatCard
         label="Breadth"
         value={`${stats.advancers} / ${stats.decliners}`}
         caption={`${breadthPct}% advancers`}
         tone={stats.advancers >= stats.decliners ? "positive" : "negative"}
-        trend={stats.trend}
+        trend={stats.trendReal ? stats.trend : undefined}
       />
       <StatCard
         label="Leader"
@@ -402,7 +446,7 @@ function KPIRibbon({
             : "—"
         }
         tone="positive"
-        trend={stats.leader?.trend ?? []}
+        trend={stats.leader?.trendReal ? stats.leader.trend : undefined}
       />
       <StatCard
         label="Laggard"
@@ -413,7 +457,7 @@ function KPIRibbon({
             : "—"
         }
         tone="negative"
-        trend={stats.laggard?.trend ?? []}
+        trend={stats.laggard?.trendReal ? stats.laggard.trend : undefined}
       />
     </section>
   );
@@ -496,10 +540,24 @@ function SectorChip({ sector }: { sector: string }) {
   );
 }
 
-function trendForRow(r: CommodityRow): number[] {
+const SYNTH_SPARK_TITLE = "Illustrative trend — no real history available";
+
+/**
+ * P2 honesty: the real per-row series, when the payload ships one (backend
+ * keyless Yahoo chart path, `history_source: "yfinance_daily"` — routed
+ * outside the adapter bucket so quote passes are not starved). Returns null
+ * when the row carries no usable history so the caller can fall back to the
+ * explicitly-marked synthetic line instead.
+ */
+function realHistoryFor(r: CommodityRow): number[] | null {
   if (Array.isArray(r.history) && r.history.length >= 4) {
     return r.history.slice(-12);
   }
+  return null;
+}
+
+/** Procedural stand-in — only ever rendered de-emphasized + data-synthetic. */
+function syntheticTrendFor(r: CommodityRow): number[] {
   const seed = (r.symbol ?? r.ticker ?? r.name ?? "row") + (r.sector ?? "");
   let h = 0;
   for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) % 1009;
@@ -564,6 +622,18 @@ const tabBarStyle: CSSProperties = {
   background: "var(--surface-2)",
 };
 
+// P2 honesty — a real history series renders solid; the procedural fallback
+// is de-emphasized so it cannot masquerade as real history.
+const sparkRealStyle: CSSProperties = {
+  display: "inline-flex",
+};
+
+const synthSparkStyle: CSSProperties = {
+  display: "inline-flex",
+  opacity: 0.4,
+  filter: "saturate(0.6)",
+};
+
 const kpiGridStyle: CSSProperties = {
   display: "grid",
   gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
@@ -608,7 +678,7 @@ const mutedNumStyle: CSSProperties = {
 const unitTagStyle: CSSProperties = {
   marginLeft: 4,
   color: "var(--text-mute)",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   letterSpacing: "0.04em",
   textTransform: "uppercase",
 };
@@ -621,7 +691,7 @@ const sectorChipStyle: CSSProperties = {
   height: 18,
   borderRadius: 9,
   background: "var(--surface-3)",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   fontWeight: 600,
   letterSpacing: "0.06em",
   textTransform: "uppercase",
@@ -644,7 +714,7 @@ const noticeStyle: CSSProperties = {
   background: "var(--warn-soft)",
   display: "grid",
   gap: 4,
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
 };
 
 const railStyle: CSSProperties = {
@@ -673,7 +743,7 @@ const moverRowStyle: CSSProperties = {
   gridTemplateColumns: "78px minmax(0, 1fr) 92px",
   alignItems: "center",
   gap: 10,
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   padding: "4px 0",
 };
 
@@ -681,7 +751,7 @@ const moverSymStyle: CSSProperties = {
   color: "var(--text-display)",
   fontFamily: "JetBrains Mono, monospace",
   fontWeight: 600,
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
 };
 
 const moverTrackStyle: CSSProperties = {
@@ -699,7 +769,7 @@ const moverFillStyle: CSSProperties = {
 
 const railCaptionStyle: CSSProperties = {
   color: "var(--text-mute)",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   letterSpacing: "0.04em",
 };
 
@@ -713,7 +783,7 @@ const methodPanel: CSSProperties = {
 const metaLabel: CSSProperties = {
   color: "var(--text-mute)",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   textTransform: "uppercase",
   letterSpacing: "0.08em",
   marginBottom: 6,
@@ -723,5 +793,5 @@ const methodText: CSSProperties = {
   margin: 0,
   color: "var(--text-secondary)",
   lineHeight: 1.5,
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
 };

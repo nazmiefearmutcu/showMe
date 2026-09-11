@@ -625,7 +625,7 @@ const symbolCell: CSSProperties = {
 
 const typeCell: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   letterSpacing: "0.04em",
   color: "var(--text-secondary)",
 };
@@ -645,13 +645,13 @@ const mutedNumStyle: CSSProperties = {
 const fillTagStyle: CSSProperties = {
   marginLeft: 4,
   color: "var(--text-mute)",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   letterSpacing: "0.02em",
 };
 
 const marketTagStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   fontWeight: 600,
   letterSpacing: "0.06em",
   color: "var(--text-mute)",
@@ -664,7 +664,7 @@ const noticeStyle: CSSProperties = {
   padding: "9px 10px",
   display: "grid",
   gap: 4,
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
 };
 
 const warningBox: CSSProperties = {

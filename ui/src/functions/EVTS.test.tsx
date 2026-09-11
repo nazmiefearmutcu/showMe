@@ -104,8 +104,8 @@ describe("EVTS pane — events table", () => {
     expect(container.textContent).toContain("2026-05-12");
     // Type chips per source section ("earnings" appears as chip + event text).
     expect(screen.getAllByText("earnings").length).toBeGreaterThanOrEqual(2);
-    expect(screen.getByText("dividends")).toBeInTheDocument();
-    expect(screen.getByText("calendar")).toBeInTheDocument();
+    expect(screen.getAllByText("dividends").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText("calendar").length).toBeGreaterThanOrEqual(1);
     // Summary cards.
     expect(container.textContent).toContain("YFINANCE");
   });
@@ -143,5 +143,41 @@ describe("EVTS pane — controls", () => {
     expect(off).toBeDisabled();
     expect(off.className).toContain("fn-segmented__opt--active");
     expect(localStorage.getItem("showme.evts.provider")).toBe("off");
+  });
+});
+
+describe("EVTS pane — grid upgrade (L7)", () => {
+  it("sorts the grid by date from the header", () => {
+    setMockFn({ state: "ok", data: { data: okPayload() } });
+    const { container } = render(<EVTSPane code="EVTS" symbol="AAPL" />);
+    // Default sort is newest-first.
+    expect(container.querySelector("tbody tr")?.textContent).toContain("2026-07-30");
+    fireEvent.click(screen.getByRole("columnheader", { name: /Date/i }));
+    // First click flips the default (descending → none), second lands ascending.
+    fireEvent.click(screen.getByRole("columnheader", { name: /Date/i }));
+    expect(container.querySelector("tbody tr")?.textContent).toContain("2026-04-29");
+  });
+
+  it("filters events by source-section chip", () => {
+    setMockFn({ state: "ok", data: { data: okPayload() } });
+    const { container } = render(<EVTSPane code="EVTS" symbol="AAPL" />);
+    expect(container.querySelectorAll("tbody tr").length).toBe(3);
+    fireEvent.click(screen.getByTitle("Filter event type dividends"));
+    expect(container.querySelectorAll("tbody tr").length).toBe(1);
+    expect(container.textContent).toContain("2026-05-12");
+    expect(container.textContent).not.toContain("2026-07-30");
+    fireEvent.click(screen.getByTitle("Filter event type ALL"));
+    expect(container.querySelectorAll("tbody tr").length).toBe(3);
+  });
+
+  it("offers a CSV export button that honors the current filter", () => {
+    setMockFn({ state: "ok", data: { data: okPayload() } });
+    render(<EVTSPane code="EVTS" symbol="AAPL" />);
+    const csv = screen.getByTitle("Download CSV");
+    expect(csv).not.toBeDisabled();
+    // jsdom has no Blob download path — the helper must degrade silently.
+    fireEvent.click(csv);
+    fireEvent.click(screen.getByTitle("Filter event type dividends"));
+    expect(screen.getByLabelText(/Download 1 events as CSV/i)).not.toBeDisabled();
   });
 });

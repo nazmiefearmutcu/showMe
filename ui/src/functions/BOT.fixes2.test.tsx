@@ -101,8 +101,8 @@ describe("BOT pane fixes2", () => {
 
   it("symbol_validation_rejects_bad_format", () => {
     render(<BOTPane />);
-    fireEvent.click(screen.getAllByRole("button", { name: /^\+ yeni bot$/i })[0]);
-    fireEvent.change(screen.getByLabelText(/strateji/i), { target: { value: "s1" } });
+    fireEvent.click(screen.getAllByRole("button", { name: /^\+ new bot$/i })[0]);
+    fireEvent.change(screen.getByLabelText(/strategy/i), { target: { value: "s1" } });
     fireEvent.change(screen.getByLabelText(/connection/i), { target: { value: "c1" } });
     fireEvent.change(screen.getByLabelText(/^symbol$/i), { target: { value: "BTC-USDT" } });
     expect(screen.getByTestId("bot-field-err-symbol").textContent).toMatch(/BASE\/QUOTE/);
@@ -112,7 +112,7 @@ describe("BOT pane fixes2", () => {
 
   it("symbol_normalize_uppercases_on_input", () => {
     render(<BOTPane />);
-    fireEvent.click(screen.getAllByRole("button", { name: /^\+ yeni bot$/i })[0]);
+    fireEvent.click(screen.getAllByRole("button", { name: /^\+ new bot$/i })[0]);
     fireEvent.change(screen.getByLabelText(/^symbol$/i), { target: { value: "btc/usdt" } });
     expect(useBotStore.getState().draft?.symbol).toBe("BTC/USDT");
   });
@@ -201,7 +201,7 @@ describe("BOT pane fixes2", () => {
     });
     // After save, Etkinleştir bar's confirm input (live mode) should be
     // empty — no pre-filled stale label.
-    const labelInput = screen.queryByPlaceholderText(/account_label tekrar yaz/i) as HTMLInputElement | null;
+    const labelInput = screen.queryByPlaceholderText(/re-type account_label/i) as HTMLInputElement | null;
     if (labelInput) {
       expect(labelInput.value).toBe("");
     }
@@ -224,7 +224,7 @@ describe("BOT pane fixes2", () => {
       toggling: true,
     });
     render(<BOTPane />);
-    const btn = screen.getByRole("button", { name: /durdur|^\.\.\.$/i }) as HTMLButtonElement;
+    const btn = screen.getByRole("button", { name: /stop|^\.\.\.$/i }) as HTMLButtonElement;
     expect(btn.disabled).toBe(true);
   });
 

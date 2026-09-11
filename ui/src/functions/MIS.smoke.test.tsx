@@ -4,7 +4,7 @@
  * Catches import/render regressions in `<MISPane/>`. Mocks the
  * `@/lib/mis` boot fetches so the component reaches its initial
  * "results" tab without hitting the network. The contract this file
- * pins: mounting renders the Sonuçlar (Results) tab header.
+ * pins: mounting renders the Results tab header.
  */
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";

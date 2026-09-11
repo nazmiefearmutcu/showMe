@@ -32,8 +32,16 @@ import {
 
 // Each test installs its own useFunction return via this mutable holder.
 const mockReturn: { current: unknown } = { current: null };
+const mockArgs: { current: Record<string, unknown> | null } = { current: null };
+const mockTick = { current: 0 };
 vi.mock("@/lib/useFunction", () => ({
-  useFunction: () => mockReturn.current,
+  useFunction: (args: Record<string, unknown>) => {
+    mockArgs.current = args;
+    return mockReturn.current;
+  },
+}));
+vi.mock("@/lib/useVisibilityTick", () => ({
+  useVisibilityTick: () => mockTick.current,
 }));
 
 // Router navigate + workspace focus are observable side-effects.
@@ -97,6 +105,8 @@ function mockOk(
 afterEach(() => {
   cleanup();
   mockReturn.current = null;
+  mockArgs.current = null;
+  mockTick.current = 0;
   navigateSpy.mockReset();
   setFocusedTargetSpy.mockReset();
 });
@@ -309,5 +319,52 @@ describe("MarketHeatmap — legend movers (A2)", () => {
     fireEvent.click(moverBtn);
     expect(navigateSpy).toHaveBeenCalled();
     expect(navigateSpy.mock.calls[0][0]).toMatch(/\/symbol\/.+\/DES/);
+  });
+});
+
+/* ── Live adoption: visibility poll + per-cell flash ─────────────────── */
+
+describe("MarketHeatmap — visibility poll (live adoption)", () => {
+  it("refetches on a visibility tick but not on mount", () => {
+    mockOk({ period: "1D", rows: [countryRow()] });
+    const refetch = (mockReturn.current as { refetch: ReturnType<typeof vi.fn> })
+      .refetch;
+    const { rerender } = render(<MarketHeatmapPane code="MAP" />);
+    expect(refetch).not.toHaveBeenCalled();
+
+    mockTick.current = 1;
+    rerender(<MarketHeatmapPane code="MAP" />);
+    expect(refetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps fetch params stable across ticks (no tick in params)", () => {
+    mockOk({ period: "1D", rows: [countryRow()] });
+    const { rerender } = render(<MarketHeatmapPane code="MAP" />);
+    const before = JSON.stringify(mockArgs.current?.params ?? null);
+    expect(before).not.toContain("tick");
+
+    mockTick.current = 2;
+    rerender(<MarketHeatmapPane code="MAP" />);
+    expect(JSON.stringify(mockArgs.current?.params ?? null)).toBe(before);
+  });
+});
+
+describe("MarketHeatmap — per-cell flash (live adoption)", () => {
+  it("flashes a tile whose change moved between poll payloads", () => {
+    vi.useFakeTimers();
+    try {
+      mockOk({ period: "1D", rows: [countryRow({ change_pct: 0.84 })] });
+      const { rerender } = render(<MarketHeatmapPane code="MAP" />);
+      const tileNow = () =>
+        within(screen.getByRole("region", { name: /ETF performance heatmap/i }))
+          .getByRole("button", { name: /US \(SPY\)/ });
+      expect(tileNow().className).not.toMatch(/flash/);
+
+      mockOk({ period: "1D", rows: [countryRow({ change_pct: 1.75 })] });
+      rerender(<MarketHeatmapPane code="MAP" />);
+      expect(tileNow().className).toContain("flash-pos");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

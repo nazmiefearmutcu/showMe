@@ -16,6 +16,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { MOSSPane } from "./MOSS";
+import * as router from "@/lib/router";
 
 /* ── useFunction mock ──────────────────────────────────────────────── */
 
@@ -186,16 +187,28 @@ describe("MOSS pane — live payload", () => {
     expect(screen.getByText(/Showing 10 of 12 rows \(TOP cap\)/i)).toBeInTheDocument();
   });
 
-  it("reorders rows when the SORT chip changes", () => {
+  it("reorders rows when a column header is clicked", () => {
     setMockFn({ state: "ok", ...livePayload() });
     const { container } = render(<MOSSPane code="MOSS" />);
-    // Default sort = vol: HIGHVOL (61.2%) ranks first.
+    // Default sort = vol descending: HIGHVOL (61.2%) ranks first.
     const firstRow = () =>
       container.querySelector("tbody tr")?.textContent ?? "";
     expect(firstRow()).toContain("HIGHVOL");
-    fireEvent.click(screen.getByRole("button", { name: "Samples" }));
-    // Sort by samples: MANYPTS (119 samples) ranks first.
+    fireEvent.click(screen.getByRole("columnheader", { name: /Samples/i }));
+    // New key → descending: MANYPTS (119 samples) ranks first.
     expect(firstRow()).toContain("MANYPTS");
+    // A second click flips to ascending: HIGHVOL (90 samples) first again.
+    fireEvent.click(screen.getByRole("columnheader", { name: /Samples/i }));
+    expect(firstRow()).toContain("HIGHVOL");
+  });
+
+  it("navigates to DES when a symbol cell is activated", async () => {
+    setMockFn({ state: "ok", ...livePayload() });
+    render(<MOSSPane code="MOSS" />);
+    const nav = vi.spyOn(router, "navigate").mockImplementation(() => undefined);
+    fireEvent.click(screen.getByLabelText("Open HIGHVOL in DES"));
+    expect(nav).toHaveBeenCalledWith("/symbol/HIGHVOL/DES");
+    nav.mockRestore();
   });
 });
 

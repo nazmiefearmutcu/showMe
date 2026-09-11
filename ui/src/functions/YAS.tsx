@@ -481,7 +481,7 @@ const fieldRowStyle: CSSProperties = {
 
 const fieldLabelStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 9,
+  fontSize: "var(--font-size-xs)",
   color: "var(--text-mute)",
   letterSpacing: "0.06em",
 };
@@ -490,7 +490,7 @@ const numInputStyle: CSSProperties = {
   width: 76,
   fontFamily: "JetBrains Mono, monospace",
   fontVariantNumeric: "tabular-nums",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   padding: "2px 4px",
   border: "1px solid var(--border-row)",
   borderRadius: 3,
@@ -500,7 +500,7 @@ const numInputStyle: CSSProperties = {
 
 const ladderTitleStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   color: "var(--text-mute)",
   letterSpacing: "0.05em",
   marginBottom: 6,

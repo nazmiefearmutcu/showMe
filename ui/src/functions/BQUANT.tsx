@@ -13,16 +13,16 @@ import { useMemo, type CSSProperties } from "react";
 import {
   DataGrid,
   type DataGridColumn,
-  Empty,
   Pane,
   PaneBody,
   PaneFooter,
   PaneHeader,
   Pill,
-  Skeleton,
   StatusDivider,
   StatusSection,
 } from "@/design-system";
+import { PaneState } from "@/design-system/PaneState";
+import { copyTextToClipboard } from "@/design-system/clipboard";
 import { useFunction } from "@/lib/useFunction";
 import {
   FunctionControlGroup,
@@ -70,6 +70,7 @@ export function BQUANTPane({ code }: FunctionPaneProps) {
         key: "component",
         header: "Component",
         width: 170,
+        sortable: true,
         render: (r) => (
           <span style={monoStrongStyle}>{r.component ?? "—"}</span>
         ),
@@ -78,6 +79,8 @@ export function BQUANTPane({ code }: FunctionPaneProps) {
         key: "status",
         header: "Readiness",
         width: 160,
+        sortable: true,
+        sortValue: (r) => readinessRank(r.status),
         render: (r) => {
           const s = r.status ?? "unknown";
           const tone =
@@ -104,73 +107,76 @@ export function BQUANTPane({ code }: FunctionPaneProps) {
         width: 300,
         render: (r) => <span style={bodyStyle}>{r.action ?? "—"}</span>,
       },
+      {
+        key: "copy",
+        header: "",
+        width: 74,
+        render: (r) => (
+          <button
+            type="button"
+            className="btn"
+            title={`Copy ${r.component ?? "component"} value`}
+            aria-label={`Copy ${r.component ?? "component"} value to clipboard`}
+            onClick={() =>
+              copyTextToClipboard(r.value ?? r.action ?? "")
+            }
+            style={copyButtonStyle}
+          >
+            ⧉ copy
+          </button>
+        ),
+      },
     ],
     [],
   );
 
-  const body = state === "loading" || state === "idle" ? (
-    <div className="u-grid-gap-8">
-      <Skeleton height={56} />
-      <Skeleton height={20} />
-      <Skeleton height={20} />
-      <Skeleton height={20} width="80%" />
-    </div>
-  ) : state === "error" ? (
-    <Empty
-      title="Function error"
-      body={error?.message ?? "—"}
-      icon="!"
-      action={
-        <button onClick={refetch} className="btn">
-          Retry
-        </button>
-      }
-    />
-  ) : (payload?.rows ?? []).length === 0 ? (
-    <Empty
-      title="No readiness manifest"
-      body="BQUANT returned no readiness components — the notebook bridge is not installed."
-      icon="∅"
-      action={
-        <button onClick={refetch} className="btn">
-          Retry
-        </button>
-      }
-    />
-  ) : (
-    <div className="u-grid-gap-14">
-      {!configured ? (
-        <div role="note" style={warnStyle} aria-label="BQUANT not-configured notice">
-          <strong>BQuant is not configured.</strong>{" "}
-          {payload?.reason ?? "No mounted Jupyter runtime was detected."} This
-          pane intentionally renders NO notebook surface.
+  const rows = payload?.rows ?? [];
+
+  const body = (
+    <PaneState
+      state={state}
+      error={error}
+      empty={rows.length === 0}
+      emptyTitle="No readiness manifest"
+      emptyBody="BQUANT returned no readiness components — the notebook bridge is not installed."
+      onRetry={refetch}
+    >
+      <div className="u-grid-gap-14">
+        {!configured ? (
+          <div role="note" style={warnStyle} aria-label="BQUANT not-configured notice">
+            <strong>BQuant is not configured.</strong>{" "}
+            {payload?.reason ?? "No mounted Jupyter runtime was detected."} This
+            pane intentionally renders NO notebook surface.
+          </div>
+        ) : null}
+        <div role="note" style={noteStyle} aria-label="BQUANT would-render note">
+          Once a Jupyter server is mounted by the ShowMe launcher, this pane
+          would render a notebook launcher for{" "}
+          {payload?.summary?.notebook_url ?? "/notebook"} with the preloaded
+          kernel modules (showme.data, showme.functions, showme.portfolio) and
+          the example notebooks listed below.
         </div>
-      ) : null}
-      <div role="note" style={noteStyle} aria-label="BQUANT would-render note">
-        Once a Jupyter server is mounted by the ShowMe launcher, this pane
-        would render a notebook launcher for{" "}
-        {payload?.summary?.notebook_url ?? "/notebook"} with the preloaded
-        kernel modules (showme.data, showme.functions, showme.portfolio) and
-        the example notebooks listed below.
+        {(payload?.next_actions ?? []).length > 0 && !configured ? (
+          <div style={actionsBoxStyle} aria-label="BQUANT next actions">
+            <span style={sectionTitleStyle}>To enable BQuant</span>
+            <ul style={actionsListStyle}>
+              {(payload?.next_actions ?? []).map((a, i) => (
+                <li key={i}>{a}</li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+        <DataGrid
+          columns={COLS}
+          rows={rows}
+          rowKey={(r, i) => `${r.component ?? "c"}-${i}`}
+          density="compact"
+          ariaLabel="BQUANT readiness checklist"
+          defaultSortKey="component"
+          defaultSortDir="none"
+        />
       </div>
-      {(payload?.next_actions ?? []).length > 0 && !configured ? (
-        <div style={actionsBoxStyle} aria-label="BQUANT next actions">
-          <span style={sectionTitleStyle}>To enable BQuant</span>
-          <ul style={actionsListStyle}>
-            {(payload?.next_actions ?? []).map((a, i) => (
-              <li key={i}>{a}</li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
-      <DataGrid
-        columns={COLS}
-        rows={payload?.rows ?? []}
-        rowKey={(r, i) => `${r.component ?? "c"}-${i}`}
-        density="compact"
-        ariaLabel="BQUANT readiness checklist"
-      />
-    </div>
+    </PaneState>
   );
 
   return (
@@ -234,11 +240,28 @@ export function BQUANTPane({ code }: FunctionPaneProps) {
 
 /* ── styles ────────────────────────────────────────────────────────── */
 
+function readinessRank(status: string | undefined): number {
+  const s = (status ?? "").toLowerCase();
+  if (s === "configured" || s === "available" || s === "found" || s === "ok" || s === "ready") {
+    return 0;
+  }
+  if (s === "not_configured" || s === "missing") return 1;
+  return 2;
+}
+
+const copyButtonStyle: CSSProperties = {
+  fontSize: "var(--font-size-xs)",
+  padding: "0 6px",
+  height: 20,
+  lineHeight: "20px",
+  whiteSpace: "nowrap",
+};
+
 const warnStyle: CSSProperties = {
   border: "1px solid var(--negative, var(--text-mute))",
   borderRadius: 6,
   padding: "8px 10px",
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   color: "var(--text-primary)",
 };
 
@@ -246,7 +269,7 @@ const noteStyle: CSSProperties = {
   border: "1px solid var(--border-subtle)",
   borderRadius: 6,
   padding: "8px 10px",
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   color: "var(--text-mute)",
 };
 
@@ -261,7 +284,7 @@ const actionsBoxStyle: CSSProperties = {
 const sectionTitleStyle: CSSProperties = {
   textTransform: "uppercase",
   letterSpacing: "0.08em",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   color: "var(--text-mute)",
   fontFamily: "JetBrains Mono, monospace",
 };
@@ -270,7 +293,7 @@ const actionsListStyle: CSSProperties = {
   margin: 0,
   paddingLeft: 18,
   color: "var(--text-primary)",
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   lineHeight: 1.6,
 };
 

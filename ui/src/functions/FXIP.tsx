@@ -357,7 +357,7 @@ const kpiGridStyle: CSSProperties = {
 
 const gridTitleStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   color: "var(--text-mute)",
   letterSpacing: "0.05em",
   marginBottom: 6,
@@ -367,7 +367,7 @@ const warnStyle: CSSProperties = {
   border: "1px solid var(--negative, var(--text-mute))",
   borderRadius: 6,
   padding: "8px 10px",
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   color: "var(--text-primary)",
 };
 

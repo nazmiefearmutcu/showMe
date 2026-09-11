@@ -362,7 +362,7 @@ const bannerStyle: CSSProperties = {
   border: "1px solid var(--border-subtle)",
   background: "var(--scrim-low)",
   color: "var(--text-primary)",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
 };
 
 const sparkCardStyle: CSSProperties = {
@@ -390,7 +390,7 @@ const tableStyle: CSSProperties = {
   tableLayout: "fixed",
   fontFamily: "JetBrains Mono, monospace",
   fontVariantNumeric: "tabular-nums",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
 };
 
 const thStyle: CSSProperties = {
@@ -398,7 +398,7 @@ const thStyle: CSSProperties = {
   color: "var(--text-mute)",
   fontWeight: 500,
   letterSpacing: "0.06em",
-  fontSize: 9,
+  fontSize: "var(--font-size-xs)",
   textTransform: "uppercase",
   borderBottom: "1px solid var(--border-subtle)",
 };
@@ -430,7 +430,7 @@ const tintBarStyle: CSSProperties = {
 };
 
 const noteTextStyle: CSSProperties = {
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   fontFamily: "JetBrains Mono, monospace",
   letterSpacing: "0.05em",
 };

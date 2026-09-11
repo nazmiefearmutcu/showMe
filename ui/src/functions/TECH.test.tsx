@@ -15,7 +15,7 @@
  *  - degraded payloads (envelope warnings) surface a visible pill.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { TECHPane } from "./TECH";
 
 /* ── useFunction mock ──────────────────────────────────────────────── */
@@ -34,13 +34,25 @@ function setMockFn(next: MockFnState) {
   mockFn.error = next.error ?? null;
 }
 
+// Visibility poll controls + useFunction arg recorder (live adoption tests).
+const mockTick = { current: 0 };
+const refetchMock = vi.fn();
+let lastFnArgs: Record<string, unknown> | undefined;
+
 vi.mock("@/lib/useFunction", () => ({
-  useFunction: () => ({
-    state: mockFn.state,
-    data: mockFn.data,
-    error: mockFn.error,
-    refetch: vi.fn(),
-  }),
+  useFunction: (args: Record<string, unknown>) => {
+    lastFnArgs = args;
+    return {
+      state: mockFn.state,
+      data: mockFn.data,
+      error: mockFn.error,
+      refetch: refetchMock,
+    };
+  },
+}));
+
+vi.mock("@/lib/useVisibilityTick", () => ({
+  useVisibilityTick: () => mockTick.current,
 }));
 
 vi.mock("@/shell/SymbolBar", () => ({
@@ -91,7 +103,7 @@ const rows = [
   }),
 ];
 
-function okPayload(warnings: string[] = []) {
+function okPayload(warnings: string[] = [], lastPrice = 102) {
   return {
     data: {
       data: {
@@ -99,7 +111,7 @@ function okPayload(warnings: string[] = []) {
         model: "builtin",
         rows,
         summary: {
-          last_price: 102,
+          last_price: lastPrice,
           rsi: 53.91,
           atr: 1.8,
           adx: 15.4,
@@ -145,6 +157,9 @@ function okPayload(warnings: string[] = []) {
 beforeEach(() => {
   localStorage.clear();
   setMockFn({ state: "idle", data: undefined });
+  mockTick.current = 0;
+  refetchMock.mockClear();
+  lastFnArgs = undefined;
 });
 afterEach(() => {
   cleanup();
@@ -240,5 +255,56 @@ describe("TECH pane — sparkline + honesty", () => {
     render(<TECHPane code="TECH" symbol="AAPL" />);
     expect(screen.getByText(/Degraded:/i)).toBeInTheDocument();
     expect(screen.getByText(/partial history/i)).toBeInTheDocument();
+  });
+});
+
+describe("TECH pane — visibility poll (live adoption)", () => {
+  it("refetches on a visibility tick but not on mount", () => {
+    setMockFn({ state: "ok", ...okPayload() });
+    const { rerender } = render(<TECHPane code="TECH" symbol="AAPL" />);
+    // Mount is useFunction's own initial load — the tick must not double-fetch.
+    expect(refetchMock).not.toHaveBeenCalled();
+
+    mockTick.current = 1;
+    rerender(<TECHPane code="TECH" symbol="AAPL" />);
+    expect(refetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps fetch args stable across ticks (never feeds tick into params)", () => {
+    setMockFn({ state: "ok", ...okPayload() });
+    const { rerender } = render(<TECHPane code="TECH" symbol="AAPL" />);
+    const snapshot = () =>
+      JSON.stringify({
+        code: lastFnArgs?.code,
+        symbol: lastFnArgs?.symbol,
+        params: lastFnArgs?.params ?? null,
+      });
+    const before = snapshot();
+
+    mockTick.current = 3;
+    rerender(<TECHPane code="TECH" symbol="AAPL" />);
+    expect(snapshot()).toBe(before);
+    expect(snapshot()).not.toContain("tick");
+  });
+
+  it("flashes the last-price cell when the price moves (not on first render)", () => {
+    vi.useFakeTimers();
+    try {
+      setMockFn({ state: "ok", ...okPayload([], 102) });
+      const { rerender } = render(<TECHPane code="TECH" symbol="AAPL" />);
+      const cell = screen.getByTestId("flash-value");
+      expect(cell.className).not.toMatch(/flash/);
+
+      setMockFn({ state: "ok", ...okPayload([], 103.5) });
+      rerender(<TECHPane code="TECH" symbol="AAPL" />);
+      expect(screen.getByTestId("flash-value").className).toContain("flash-pos");
+
+      act(() => {
+        vi.advanceTimersByTime(600);
+      });
+      expect(screen.getByTestId("flash-value").className).not.toMatch(/flash/);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

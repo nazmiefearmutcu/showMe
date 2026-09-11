@@ -319,15 +319,6 @@ export function ASKPane({ code }: FunctionPaneProps) {
               style={composerInput}
             />
             <div style={composerActions}>
-              <button
-                type="button"
-                className="btn btn--ghost"
-                style={composerSecondary}
-                title="Attach context (coming soon)"
-                disabled
-              >
-                + Attach
-              </button>
               <span className="ask-run-hint">
                 <span className="kbd">⌘↵</span> run · <span className="kbd">Esc</span> stop
               </span>
@@ -338,11 +329,11 @@ export function ASKPane({ code }: FunctionPaneProps) {
                   className="btn btn--ghost"
                   onClick={cancel}
                   style={composerRun}
-                  aria-label="Sorguyu durdur"
-                  title="Sorguyu durdur (Esc)"
+                  aria-label="Stop query"
+                  title="Stop query (Esc)"
                   data-testid="ask-stop"
                 >
-                  Durdur
+                  Stop
                 </button>
               ) : null}
               <button
@@ -748,14 +739,14 @@ function EvidenceTable({
 const DT: CSSProperties = {
   color: "var(--text-mute)",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   letterSpacing: "0.06em",
   textTransform: "uppercase",
 };
 const DD: CSSProperties = {
   margin: 0,
   color: "var(--text-primary)",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
 };
 
 // ── Fan-out branch render (briefing intent) ──────────────────────────────
@@ -969,7 +960,7 @@ const userBubble: CSSProperties = {
   borderRadius: "var(--radius-lg)",
   borderTopRightRadius: 4,
   color: "var(--text-primary)",
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   lineHeight: 1.5,
   whiteSpace: "pre-wrap",
   overflowWrap: "anywhere",
@@ -1019,7 +1010,7 @@ const planChipRow: CSSProperties = {
 
 const agentNarrative: CSSProperties = {
   margin: 0,
-  fontSize: 13,
+  fontSize: "var(--font-size-lg)",
   lineHeight: 1.55,
   color: "var(--text-primary)",
   whiteSpace: "pre-wrap",
@@ -1044,7 +1035,7 @@ const traceToggle: CSSProperties = {
   borderRadius: "var(--radius-sm)",
   color: "var(--text-secondary)",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   cursor: "pointer",
 };
 
@@ -1089,7 +1080,7 @@ const branchHeader: CSSProperties = {
 
 const branchTitle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   letterSpacing: "0.06em",
   textTransform: "uppercase",
   color: "var(--accent)",
@@ -1097,7 +1088,7 @@ const branchTitle: CSSProperties = {
 
 const branchLine: CSSProperties = {
   margin: 0,
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   lineHeight: 1.45,
   color: "var(--text-secondary)",
 };
@@ -1105,7 +1096,7 @@ const branchLine: CSSProperties = {
 const branchBullets: CSSProperties = {
   margin: 0,
   paddingLeft: 14,
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   color: "var(--text-secondary)",
   display: "flex",
   flexDirection: "column",
@@ -1132,7 +1123,7 @@ const citationChip: CSSProperties = {
   background: "var(--accent-soft)",
   color: "var(--accent)",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 9,
+  fontSize: "var(--font-size-xs)",
   fontWeight: 600,
   letterSpacing: "0.02em",
 };
@@ -1160,7 +1151,7 @@ const disclosureRow: CSSProperties = {
   borderTop: "1px solid var(--border-subtle)",
   background: "var(--surface-1)",
   color: "var(--text-mute)",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   lineHeight: 1.45,
 };
 
@@ -1181,7 +1172,7 @@ const suggestionChip: CSSProperties = {
   background: "var(--surface-1)",
   color: "var(--text-secondary)",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   letterSpacing: "0.03em",
   cursor: "pointer",
   whiteSpace: "nowrap",
@@ -1208,7 +1199,7 @@ const composerInput: CSSProperties = {
   border: "1px solid var(--border-subtle)",
   borderRadius: "var(--radius-md)",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   padding: 10,
   outline: "none",
 };
@@ -1217,12 +1208,6 @@ const composerActions: CSSProperties = {
   display: "flex",
   alignItems: "center",
   gap: 8,
-};
-
-const composerSecondary: CSSProperties = {
-  height: 24,
-  fontSize: 10,
-  fontFamily: "JetBrains Mono, monospace",
 };
 
 const composerRun: CSSProperties = {

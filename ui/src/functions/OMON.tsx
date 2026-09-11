@@ -12,9 +12,10 @@
  * Data honesty: provider_unavailable / empty payloads render an explicit
  * empty state, and backend warnings surface as a degraded pill + footer row.
  */
-import { useCallback, useMemo, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
 import {
   Empty,
+  FlashValue,
   Pane,
   PaneBody,
   PaneFooter,
@@ -27,6 +28,7 @@ import {
 } from "@/design-system";
 import { formatNumber } from "@/lib/format";
 import { useFunction } from "@/lib/useFunction";
+import { useVisibilityTick } from "@/lib/useVisibilityTick";
 import { defaultSymbolForFunction } from "@/lib/symbols";
 import {
   FunctionControlGroup,
@@ -39,6 +41,15 @@ import type { FunctionPaneProps } from "./registry-types";
 const EXPIRY_KEY = "showme.omon.expiry";
 const MAX_STRIKES_PER_SIDE = 10; // ±10 strikes around spot
 const MAX_EXPIRY_SEGMENTS = 4;
+
+/** Live adoption: visibility-paused 30s poll (campaign 2026-09-11). */
+const REFRESH_MS = 30_000;
+
+function numOrNull(v: unknown): number | null {
+  if (v == null) return null;
+  const n = typeof v === "number" ? v : Number(v);
+  return Number.isFinite(n) ? n : null;
+}
 
 interface OmonRow {
   strike?: number;
@@ -129,6 +140,16 @@ export function OMONPane({ code, symbol }: FunctionPaneProps) {
     params: expiryPref ? { expiry: expiryPref } : {},
     enabled: !!effectiveSymbol,
   });
+
+  // Live adoption (campaign 2026-09-11): visibility-paused 30s refetch for
+  // the spot quote; the tick must stay out of `params` (UA-HIGH-16) or every
+  // poll would change the fetch key and re-flash the skeleton.
+  const tick = useVisibilityTick(REFRESH_MS);
+  useEffect(() => {
+    if (tick === 0) return; // initial mount is useFunction's own load
+    refetch();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- tick is the trigger
+  }, [tick]);
 
   const payload = data?.data;
   const warnings: string[] = data?.warnings ?? [];
@@ -230,7 +251,11 @@ export function OMONPane({ code, symbol }: FunctionPaneProps) {
       <section style={kpiGridStyle} aria-label="OMON KPI ribbon">
         <StatCard
           label="Spot"
-          value={fmtNum(payload?.summary?.spot ?? spot)}
+          value={
+            <FlashValue value={numOrNull(payload?.summary?.spot ?? spot)}>
+              {fmtNum(payload?.summary?.spot ?? spot)}
+            </FlashValue>
+          }
           caption={`EXPIRY ${payload?.expiry ?? "—"}`}
           tone="neutral"
         />
@@ -421,7 +446,7 @@ const tableStyle: CSSProperties = {
   tableLayout: "fixed",
   fontFamily: "JetBrains Mono, monospace",
   fontVariantNumeric: "tabular-nums",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
 };
 
 const thStyle: CSSProperties = {
@@ -429,7 +454,7 @@ const thStyle: CSSProperties = {
   color: "var(--text-mute)",
   fontWeight: 500,
   letterSpacing: "0.06em",
-  fontSize: 9,
+  fontSize: "var(--font-size-xs)",
   textTransform: "uppercase",
   borderBottom: "1px solid var(--border-subtle)",
 };
@@ -447,7 +472,7 @@ const tdNumStyle: CSSProperties = {
 
 const noteStyle: CSSProperties = {
   marginTop: 6,
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   color: "var(--text-mute)",
 };
 
@@ -457,7 +482,7 @@ const warningStyle: CSSProperties = {
   border: "1px solid var(--border-subtle)",
   background: "var(--scrim-low)",
   color: "var(--text-primary)",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
 };
 
 function monoStyle(strong: boolean): CSSProperties {

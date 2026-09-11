@@ -684,7 +684,7 @@ const slipCell: CSSProperties = {
 
 const bpUnit: CSSProperties = {
   color: "var(--text-mute)",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   letterSpacing: "0.04em",
 };
 
@@ -712,7 +712,7 @@ const sparkHeader: CSSProperties = {
 
 const sparkCaption: CSSProperties = {
   color: "var(--text-mute)",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   letterSpacing: "0.04em",
 };
 
@@ -736,7 +736,7 @@ const wfRow: CSSProperties = {
   gridTemplateColumns: "184px minmax(0, 1fr) 84px",
   alignItems: "center",
   gap: 10,
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   minHeight: 20,
 };
 
@@ -779,7 +779,7 @@ const noticeStyle: CSSProperties = {
   padding: "9px 10px",
   display: "grid",
   gap: 4,
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
 };
 
 const warningBox: CSSProperties = {
@@ -807,7 +807,7 @@ const methodPanel: CSSProperties = {
 const metaLabel: CSSProperties = {
   color: "var(--text-mute)",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   textTransform: "uppercase",
   letterSpacing: "0.08em",
   marginBottom: 6,
@@ -817,5 +817,5 @@ const methodText: CSSProperties = {
   margin: 0,
   color: "var(--text-secondary)",
   lineHeight: 1.5,
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
 };

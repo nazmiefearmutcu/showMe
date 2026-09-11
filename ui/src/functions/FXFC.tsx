@@ -474,7 +474,7 @@ const curveCaptionStyle: CSSProperties = {
   alignItems: "center",
   marginTop: 6,
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   color: "var(--text-mute)",
 };
 
@@ -501,7 +501,7 @@ const swatchSpotStyle: CSSProperties = {
 const warningStyle: CSSProperties = {
   border: "1px solid var(--warning, var(--text-mute))",
   color: "var(--text-secondary)",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   padding: "6px 8px",
   fontFamily: "JetBrains Mono, monospace",
 };
@@ -509,7 +509,7 @@ const warningStyle: CSSProperties = {
 const modelNoteStyle: CSSProperties = {
   margin: 0,
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   color: "var(--text-mute)",
 };
 

@@ -302,16 +302,16 @@ function fmtStamp(iso: string): string {
   return `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC`;
 }
 
-const watchlistStyle: CSSProperties = { fontSize: 12 };
+const watchlistStyle: CSSProperties = { fontSize: "var(--font-size-md)" };
 const sectionTitleStyle: CSSProperties = {
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   fontWeight: 600,
   color: "var(--text-mute)",
   letterSpacing: "0.08em",
   textTransform: "uppercase",
   marginBottom: 6,
 };
-const noRowsStyle: CSSProperties = { fontSize: 12 };
+const noRowsStyle: CSSProperties = { fontSize: "var(--font-size-md)" };
 const listStyle: CSSProperties = {
   listStyle: "none",
   margin: 0,
@@ -332,22 +332,22 @@ const titleRowStyle: CSSProperties = {
 const linkStyle: CSSProperties = {
   color: "var(--accent)",
   fontWeight: 600,
-  fontSize: 13,
+  fontSize: "var(--font-size-lg)",
   textDecoration: "none",
 };
 const unlinkedTitleStyle: CSSProperties = {
   color: "var(--text-primary)",
   fontWeight: 600,
-  fontSize: 13,
+  fontSize: "var(--font-size-lg)",
 };
-const noLinkStyle: CSSProperties = { fontSize: 11 };
+const noLinkStyle: CSSProperties = { fontSize: "var(--font-size-sm)" };
 const citationStyle: CSSProperties = {
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   marginTop: 2,
   fontFamily: "JetBrains Mono, monospace",
 };
 const summaryStyle: CSSProperties = {
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   margin: "4px 0 0",
   maxWidth: 860,
 };

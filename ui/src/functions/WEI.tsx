@@ -375,9 +375,11 @@ interface DerivedStats {
   decliners: number;
   leader?: { sym: string; name: string; chg: number };
   laggard?: { sym: string; name: string; chg: number };
-  trend: number[];
-  leaderTrend: number[];
-  laggardTrend: number[];
+  /** REAL history only — undefined when no row carries a usable series
+   *  (R2-F1: the KPI ribbon must never paint an unlabeled procedural line). */
+  trend?: number[];
+  leaderTrend?: number[];
+  laggardTrend?: number[];
 }
 
 function deriveStats(rows: WEIRow[]): DerivedStats {
@@ -387,9 +389,6 @@ function deriveStats(rows: WEIRow[]): DerivedStats {
       weightedChange: 0,
       advancers: 0,
       decliners: 0,
-      trend: [],
-      leaderTrend: [],
-      laggardTrend: [],
     };
   }
   let advancers = 0;
@@ -418,10 +417,38 @@ function deriveStats(rows: WEIRow[]): DerivedStats {
     decliners,
     leader,
     laggard,
-    trend: trendForLabel(rows, "agg"),
-    leaderTrend: leader ? trendForLabel(rows, leader.sym) : [],
-    laggardTrend: laggard ? trendForLabel(rows, laggard.sym) : [],
+    trend: aggregateHistory(rows),
+    leaderTrend: leader ? rowHistory(rows, leader.sym) : undefined,
+    laggardTrend: laggard ? rowHistory(rows, laggard.sym) : undefined,
   };
+}
+
+/**
+ * Average the REAL per-row history series (R2-F1). Returns undefined unless
+ * at least two rows carry a usable series, so the KPI ribbon's aggregate
+ * spark either shows real data or nothing at all.
+ */
+function aggregateHistory(rows: WEIRow[]): number[] | undefined {
+  const series = rows
+    .map((r) => (Array.isArray(r.history) && r.history.length >= 4 ? r.history.slice(-22) : null))
+    .filter((s): s is number[] => s !== null);
+  if (series.length < 2) return undefined;
+  const len = Math.min(...series.map((s) => s.length));
+  const out: number[] = [];
+  for (let i = 0; i < len; i += 1) {
+    let sum = 0;
+    for (const s of series) sum += s[s.length - len + i];
+    out.push(sum / series.length);
+  }
+  return out;
+}
+
+/** Real per-symbol history only — undefined when that row carries none. */
+function rowHistory(rows: WEIRow[], seed: string): number[] | undefined {
+  const found = rows.find(
+    (r) => (r.symbol ?? r.ticker) === seed && Array.isArray(r.history) && r.history.length >= 4,
+  );
+  return found?.history ? found.history.slice(-22) : undefined;
 }
 
 function trendForLabel(rows: WEIRow[], seed: string): number[] {
@@ -780,7 +807,7 @@ const regionChip: CSSProperties = {
   height: 18,
   borderRadius: 9,
   background: "var(--surface-3)",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   fontWeight: 600,
   letterSpacing: "0.06em",
   textTransform: "uppercase",
@@ -801,7 +828,7 @@ const rangeWrap: CSSProperties = {
   gap: 6,
   fontFamily: "JetBrains Mono, monospace",
   fontVariantNumeric: "tabular-nums",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   color: "var(--text-mute)",
 };
 

@@ -305,14 +305,14 @@ const lessonBtnActiveStyle: CSSProperties = {
 const lessonNoStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
   fontVariantNumeric: "tabular-nums",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   color: "var(--text-mute)",
   minWidth: 16,
 };
 
 const lessonTitleStyle: CSSProperties = {
   flex: 1,
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   color: "var(--text-primary)",
   overflowWrap: "anywhere",
 };
@@ -333,7 +333,7 @@ const readerHeadStyle: CSSProperties = {
 };
 
 const readerTitleStyle: CSSProperties = {
-  fontSize: 13,
+  fontSize: "var(--font-size-lg)",
   fontWeight: 600,
   color: "var(--text-primary)",
 };
@@ -347,7 +347,7 @@ const dlStyle: CSSProperties = {
 
 const dtStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 9,
+  fontSize: "var(--font-size-xs)",
   letterSpacing: "0.06em",
   color: "var(--text-mute)",
   textTransform: "uppercase",
@@ -356,7 +356,7 @@ const dtStyle: CSSProperties = {
 
 const ddStyle: CSSProperties = {
   margin: 0,
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   color: "var(--text-primary)",
   overflowWrap: "anywhere",
 };

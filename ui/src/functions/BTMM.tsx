@@ -808,7 +808,7 @@ const searchLabelStyle: CSSProperties = {
   display: "grid",
   gap: 3,
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   color: "var(--text-mute)",
   textTransform: "uppercase",
   letterSpacing: "0.06em",
@@ -837,13 +837,13 @@ const countryCodeStyle: CSSProperties = {
   color: "var(--accent)",
   fontFamily: "JetBrains Mono, monospace",
   fontWeight: 700,
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   letterSpacing: "0.06em",
 };
 
 const countryNameStyle: CSSProperties = {
   color: "var(--text-secondary)",
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
 };
 
 const primaryNumStyle: CSSProperties = {
@@ -880,7 +880,7 @@ const chartHeaderStyle: CSSProperties = {
 const chartLatestStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
   fontVariantNumeric: "tabular-nums",
-  fontSize: 22,
+  fontSize: "var(--font-size-3xl)",
   color: "var(--text-display)",
   fontWeight: 600,
   letterSpacing: "-0.01em",
@@ -896,7 +896,7 @@ const chartFooterStyle: CSSProperties = {
   display: "flex",
   gap: 18,
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   letterSpacing: "0.06em",
   textTransform: "uppercase",
   color: "var(--text-mute)",
@@ -907,7 +907,7 @@ const chartFooterStyle: CSSProperties = {
 const metaLabel: CSSProperties = {
   color: "var(--text-mute)",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   textTransform: "uppercase",
   letterSpacing: "0.08em",
 };
@@ -920,5 +920,5 @@ const warnStyle: CSSProperties = {
   display: "grid",
   gap: 4,
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
 };

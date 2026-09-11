@@ -352,7 +352,7 @@ function viaLabel(via: BioVia): string {
     case "password":
       return "Passcode";
     case "denied":
-      return "Reddedildi";
+      return "Denied";
     case "unavailable":
     case "stub":
       return "Unavailable";

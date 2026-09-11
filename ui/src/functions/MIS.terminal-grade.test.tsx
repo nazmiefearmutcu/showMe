@@ -148,7 +148,7 @@ beforeEach(() => {
 /** Mount, wait for the markets boot fetch to resolve so cards render. */
 async function mountReady() {
   const utils = render(<MISPane code="MIS" />);
-  await screen.findAllByText(/Kripto/i);
+  await screen.findAllByText(/Crypto/i);
   return utils;
 }
 

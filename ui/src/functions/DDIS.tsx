@@ -297,7 +297,7 @@ const noticeStyle: CSSProperties = {
   border: "1px solid var(--warn, var(--text-mute))",
   borderRadius: 6,
   padding: "8px 10px",
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   color: "var(--text-primary)",
 };
 
@@ -325,7 +325,7 @@ const shareFillStyle: CSSProperties = {
 const shareLabelStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
   fontVariantNumeric: "tabular-nums",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   color: "var(--text-primary)",
   width: 52,
   textAlign: "right",

@@ -13,6 +13,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { SECFPane } from "./SECF";
+import * as router from "@/lib/router";
 
 /* ── useFunction mock ──────────────────────────────────────────────── */
 
@@ -189,5 +190,27 @@ describe("SECF pane — asset-class chip filter", () => {
     fireEvent.click(screen.getByTitle("Filter asset class ALL"));
     expect(screen.getByText("AAPL")).toBeInTheDocument();
     expect(screen.getByText("SPY")).toBeInTheDocument();
+  });
+});
+
+describe("SECF pane — grid upgrade (L7)", () => {
+  it("navigates to DES when a symbol cell is activated", () => {
+    const nav = vi.spyOn(router, "navigate").mockImplementation(() => undefined);
+    setMockFn({ state: "ok", ...okPayload() });
+    render(<SECFPane code="SECF" symbol="SPY" />);
+    fireEvent.click(screen.getByLabelText("Open AAPL in DES"));
+    expect(nav).toHaveBeenCalledWith("/symbol/AAPL/DES");
+    nav.mockRestore();
+  });
+
+  it("sorts the symbol/name/exchange columns from the header", () => {
+    setMockFn({ state: "ok", ...okPayload() });
+    const { container } = render(<SECFPane code="SECF" symbol="SPY" />);
+    // Default order is backend match order (AAPL first).
+    expect(container.querySelector("tbody tr")?.textContent).toContain("AAPL");
+    const nameHeader = screen.getByRole("columnheader", { name: /^Name/ });
+    fireEvent.click(nameHeader); // ascending (no-op order)
+    fireEvent.click(nameHeader); // descending
+    expect(container.querySelector("tbody tr")?.textContent).toContain("US10Y");
   });
 });

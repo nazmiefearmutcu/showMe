@@ -47,7 +47,7 @@ function ConfidenceMeter({ c }: { c: number }) {
         overflow: "hidden",
         background: "var(--surface-2)",
         border: "1px solid var(--border-1)",
-        fontSize: 11,
+        fontSize: "var(--font-size-sm)",
         fontWeight: 600,
         fontFamily: "var(--font-mono)",
         color: "var(--text-primary)",
@@ -71,7 +71,7 @@ function ConfidenceMeter({ c }: { c: number }) {
 function ParameterTable({ params }: { params: IndicatorParam[] }) {
   if (params.length === 0) return <div style={{ color: "var(--text-secondary)" }}>(parametre yok)</div>;
   return (
-    <table style={{ width: "100%", fontSize: 12 }}>
+    <table style={{ width: "100%", fontSize: "var(--font-size-md)" }}>
       <caption className="u-sr-only">Indicator parameters and effects</caption>
       <thead>
         <tr style={{ color: "var(--text-secondary)", textAlign: "left" }}>
@@ -110,22 +110,22 @@ function IndicatorDetail({ entry }: { entry: IndicatorEntry }) {
       </div>
       <p>{entry.short_description}</p>
       <pre style={{
-        background: "var(--surface-2)", padding: 8, fontSize: 11,
+        background: "var(--surface-2)", padding: 8, fontSize: "var(--font-size-sm)",
         whiteSpace: "pre-wrap", borderRadius: 4,
       }}>{entry.long_description}</pre>
       <h4>Formula</h4>
       <code className="u-mono" style={{ background: "var(--surface-2)", padding: "4px 8px",
-                     display: "block", fontSize: 11 }}>{entry.formula}</code>
+                     display: "block", fontSize: "var(--font-size-sm)" }}>{entry.formula}</code>
       <h4>Parameters</h4>
       <ParameterTable params={entry.parameters} />
       <h4 title={CONFIDENCE_TITLE}>Confidence rationale (subjective) — {entry.confidence}/10</h4>
-      <p style={{ fontSize: 11, color: "var(--text-secondary)", margin: "0 0 6px" }}>
+      <p style={{ fontSize: "var(--font-size-sm)", color: "var(--text-secondary)", margin: "0 0 6px" }}>
         The confidence score and its rationale are a subjective editor
         assessment — not a backtest or a verified performance metric.
       </p>
       <p style={{ color: "var(--text-secondary)" }}>{entry.confidence_rationale}</p>
       <h4>Example strategy (illustrative — unverified): {ss.name ?? "—"}</h4>
-      <p style={{ fontSize: 11, color: "var(--text-secondary)", margin: "0 0 6px" }}>
+      <p style={{ fontSize: "var(--font-size-sm)", color: "var(--text-secondary)", margin: "0 0 6px" }}>
         This strategy is an example only — not backtested, not verified.
       </p>
       <p>{ss.summary}</p>
@@ -137,7 +137,7 @@ function IndicatorDetail({ entry }: { entry: IndicatorEntry }) {
       {entry.references.length > 0 && (
         <>
           <h4>References</h4>
-          <ul style={{ fontSize: 11, color: "var(--text-secondary)" }}>
+          <ul style={{ fontSize: "var(--font-size-sm)", color: "var(--text-secondary)" }}>
             {entry.references.map((r, i) => <li key={i}>{r}</li>)}
           </ul>
         </>
@@ -187,18 +187,18 @@ export function INDXPane() {
             <button key={f} onClick={() => setFamily(f)}
                     aria-pressed={family === f}
                     aria-label={`Aile: ${f}`}
-                    style={{ fontSize: 11, opacity: family === f ? 1 : 0.55 }}>
+                    style={{ fontSize: "var(--font-size-sm)", opacity: family === f ? 1 : 0.55 }}>
               {f}
             </button>
           ))}
         </div>
         <div role="status" aria-live="polite"
-             style={{ fontSize: 10, color: "var(--text-secondary)" }}>
+             style={{ fontSize: "var(--font-size-2xs)", color: "var(--text-secondary)" }}>
           {visible.length} indicators
         </div>
         <p
           title={CONFIDENCE_TITLE}
-          style={{ fontSize: 10, color: "var(--text-secondary)", margin: 0 }}
+          style={{ fontSize: "var(--font-size-2xs)", color: "var(--text-secondary)", margin: 0 }}
         >
           Confidence = subjective editor assessment (not a backtest)
         </p>
@@ -213,7 +213,7 @@ export function INDXPane() {
           )}
           {error && (
             <div data-testid="indx-error" role="alert"
-                 style={{ padding: 12, color: "var(--accent-err)", fontSize: 12 }}>
+                 style={{ padding: 12, color: "var(--accent-err)", fontSize: "var(--font-size-md)" }}>
               Failed to load catalog: {error}
             </div>
           )}
@@ -229,7 +229,7 @@ export function INDXPane() {
                     }}>
               <div>
                 <div><strong>{e.display_name}</strong></div>
-                <div style={{ fontSize: 10, color: "var(--text-secondary)" }}>{e.family}</div>
+                <div style={{ fontSize: "var(--font-size-2xs)", color: "var(--text-secondary)" }}>{e.family}</div>
               </div>
               <ConfidenceMeter c={e.confidence} />
             </button>

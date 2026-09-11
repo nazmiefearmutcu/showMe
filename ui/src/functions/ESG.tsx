@@ -385,7 +385,7 @@ const emptyBodyStyle: CSSProperties = {
 
 const emptyReasonStyle: CSSProperties = {
   color: "var(--text-primary)",
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   lineHeight: 1.5,
 };
 
@@ -393,13 +393,13 @@ const nextActionsStyle: CSSProperties = {
   margin: 0,
   paddingLeft: 18,
   color: "var(--text-mute)",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   lineHeight: 1.6,
 };
 
 const methodologyStyle: CSSProperties = {
   margin: 0,
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   lineHeight: 1.6,
   color: "var(--text-mute)",
   borderTop: "1px solid var(--border-subtle)",

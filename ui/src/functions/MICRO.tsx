@@ -602,7 +602,7 @@ const tabBarStyle: CSSProperties = {
 const tabLabelStyle: CSSProperties = {
   color: "var(--text-mute)",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   letterSpacing: "0.08em",
   textTransform: "uppercase",
 };
@@ -622,7 +622,7 @@ const segBtnStyle: CSSProperties = {
   color: "var(--text-secondary)",
   cursor: "default",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   fontWeight: 600,
   padding: "3px 11px",
   borderRadius: "calc(var(--radius-sm) - 2px)",
@@ -659,7 +659,7 @@ const gaugeHeader: CSSProperties = {
 
 const gaugeAskLabel: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   fontWeight: 700,
   color: "var(--negative)",
   fontVariantNumeric: "tabular-nums",
@@ -667,7 +667,7 @@ const gaugeAskLabel: CSSProperties = {
 
 const gaugeBidLabel: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   fontWeight: 700,
   color: "var(--positive)",
   fontVariantNumeric: "tabular-nums",
@@ -729,7 +729,7 @@ const gaugeMarkerDot: CSSProperties = {
 
 const gaugeCaption: CSSProperties = {
   color: "var(--text-mute)",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   letterSpacing: "0.02em",
   fontFamily: "JetBrains Mono, monospace",
 };
@@ -755,7 +755,7 @@ const ladderHeadRow: CSSProperties = {
 const ladderHeadCell: CSSProperties = {
   color: "var(--text-mute)",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   textTransform: "uppercase",
   letterSpacing: "0.07em",
 };
@@ -783,14 +783,14 @@ const ladderPrice: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
   fontVariantNumeric: "tabular-nums",
   fontWeight: 700,
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
 };
 
 const ladderSize: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
   fontVariantNumeric: "tabular-nums",
   color: "var(--text-secondary)",
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
   textAlign: "right",
 };
 
@@ -812,7 +812,7 @@ const ladderCumLabel: CSSProperties = {
   right: 4,
   fontFamily: "JetBrains Mono, monospace",
   fontVariantNumeric: "tabular-nums",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   color: "var(--text-secondary)",
   pointerEvents: "none",
 };
@@ -840,7 +840,7 @@ const spreadMidStyle: CSSProperties = {
 };
 
 const spreadMidTag: CSSProperties = {
-  fontSize: 9,
+  fontSize: "var(--font-size-xs)",
   fontWeight: 700,
   letterSpacing: "0.1em",
   color: "var(--text-mute)",
@@ -852,7 +852,7 @@ const spreadValStyle: CSSProperties = {
   gap: 8,
   fontFamily: "JetBrains Mono, monospace",
   fontVariantNumeric: "tabular-nums",
-  fontSize: 11,
+  fontSize: "var(--font-size-sm)",
   color: "var(--text-secondary)",
 };
 
@@ -862,7 +862,7 @@ const spreadBpsTag: CSSProperties = {
   background: "var(--surface-1)",
   border: "1px solid var(--border-subtle)",
   color: "var(--accent)",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   fontWeight: 600,
 };
 
@@ -885,7 +885,7 @@ const warningList: CSSProperties = {
 const metaLabel: CSSProperties = {
   color: "var(--text-mute)",
   fontFamily: "JetBrains Mono, monospace",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   textTransform: "uppercase",
   letterSpacing: "0.08em",
 };
@@ -901,5 +901,5 @@ const methodText: CSSProperties = {
   margin: "6px 0 0",
   color: "var(--text-secondary)",
   lineHeight: 1.5,
-  fontSize: 12,
+  fontSize: "var(--font-size-md)",
 };

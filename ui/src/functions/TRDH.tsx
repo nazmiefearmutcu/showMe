@@ -358,14 +358,14 @@ const chipRowStyle: CSSProperties = {
 };
 
 const chipLabelStyle: CSSProperties = {
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   letterSpacing: 1,
   color: "var(--text-mute)",
 };
 
 function chipStyle(active: boolean): CSSProperties {
   return {
-    fontSize: 11,
+    fontSize: "var(--font-size-sm)",
     fontFamily: "JetBrains Mono, monospace",
     fontVariantNumeric: "tabular-nums",
     padding: "2px 8px",
@@ -398,7 +398,7 @@ const monoMutedStyle: CSSProperties = {
 
 const venueSubStyle: CSSProperties = {
   display: "block",
-  fontSize: 10,
+  fontSize: "var(--font-size-2xs)",
   color: "var(--text-mute)",
   fontFamily: "JetBrains Mono, monospace",
 };
