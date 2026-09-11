@@ -7,12 +7,15 @@
  * mode falls back to `localStorage["showme.workspace"]`.
  */
 import {
+  isLinkGroupId,
   loadWorkspace,
   serializeWorkspace,
   useWorkspace,
+  type LeafNode,
   type SerializedWorkspace,
   type WorkspaceNode,
 } from "./workspace";
+import { normalizeSymbolInput } from "./symbols";
 import { invoke, isInTauri } from "./tauri";
 import { toast } from "./toast";
 
@@ -80,6 +83,39 @@ export function isValidPersistedWorkspace(
   if (typeof s.savedAt !== "string") return false;
   if (!s.tree) return false;
   return isValidWorkspaceNode(s.tree);
+}
+
+/**
+ * M9 (campaign 2026-09-11, Lane L3) — leaf meta sanitization.
+ *
+ * The structural validator above guarantees the renderer can walk the tree,
+ * but it deliberately treats leaf `symbol` / `linkGroup` as opaque so a
+ * single malformed value does not nuke the user's ENTIRE layout (the
+ * historical behavior: any validation failure → whole workspace reset).
+ * Instead, meta is sanitized before `loadWorkspace`:
+ *   - `symbol`: must be a non-empty string; normalized via the standard
+ *     symbol resolver; numbers / objects / blank strings → dropped.
+ *   - `linkGroup`: must be exactly "A" | "B" | "C" | "D"; `null`, numbers,
+ *     legacy ids and arbitrary strings → dropped (unlinked).
+ */
+export function sanitizeWorkspaceNode(node: WorkspaceNode): WorkspaceNode {
+  if (node.kind === "leaf") {
+    const next: LeafNode = { ...node };
+    const rawSymbol = next.symbol;
+    if (typeof rawSymbol === "string") {
+      const normalized = normalizeSymbolInput(rawSymbol);
+      next.symbol = normalized || undefined;
+    } else {
+      next.symbol = undefined;
+    }
+    next.linkGroup = isLinkGroupId(next.linkGroup) ? next.linkGroup : undefined;
+    return next;
+  }
+  return { ...node, children: node.children.map(sanitizeWorkspaceNode) };
+}
+
+export function sanitizePersistedWorkspace(state: SerializedWorkspace): SerializedWorkspace {
+  return { ...state, tree: sanitizeWorkspaceNode(state.tree) };
 }
 
 /**
@@ -226,7 +262,7 @@ async function readPersisted(): Promise<SerializedWorkspace | null> {
   if (isInTauri()) {
     try {
       const raw = await invoke<SerializedWorkspace | null>("load_workspace", { label });
-      if (raw && isValidPersistedWorkspace(raw)) return raw;
+      if (raw && isValidPersistedWorkspace(raw)) return sanitizePersistedWorkspace(raw);
       if (raw) {
         // Tauri command returned something that didn't pass shape check.
         console.warn(
@@ -267,7 +303,7 @@ async function readPersisted(): Promise<SerializedWorkspace | null> {
       }
       return null;
     }
-    return parsed;
+    return sanitizePersistedWorkspace(parsed);
   } catch {
     return null;
   }

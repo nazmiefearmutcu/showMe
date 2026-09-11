@@ -1,0 +1,127 @@
+/**
+ * PaneHealth — inline data-health chip + provenance popover.
+ * Campaign 2026-09-11 (Lane L4). Tokens only — every color resolves per
+ * preset so papyrus/matrix/midnight each read correctly.
+ *
+ * Sits inline in the 26px PaneChrome row next to the live-quote chip:
+ *   ● 2s 84ms
+ * The popover is absolute under the chip; the pane-chrome header does not
+ * clip (no overflow:hidden), so it may overhang the pane body.
+ */
+
+.pane-health {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+
+.pane-health__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: 16px;
+  padding: 0 var(--space-2);
+  border: none;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--text-mute);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+  cursor: default;
+}
+
+.pane-health__chip:hover,
+.pane-health__chip[aria-expanded="true"] {
+  background: var(--surface-2);
+  color: var(--text-secondary);
+}
+
+.pane-health__dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--text-mute);
+}
+
+.pane-health__dot--live {
+  background: var(--positive);
+}
+
+.pane-health__dot--degraded {
+  background: var(--warn);
+}
+
+.pane-health__dot--stale {
+  background: var(--negative);
+}
+
+.pane-health__age {
+  color: inherit;
+}
+
+.pane-health__latency {
+  color: var(--text-mute);
+}
+
+.pane-health__popover {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: var(--z-toast);
+  display: grid;
+  gap: 2px;
+  min-width: 200px;
+  max-width: 320px;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-card);
+  border-radius: var(--radius-xs);
+  background: var(--surface-2);
+  box-shadow: var(--shadow-elev-2);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.pane-health__row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.pane-health__row--warn .pane-health__value {
+  color: var(--warn);
+}
+
+.pane-health__key {
+  color: var(--text-mute);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-label);
+  font-size: 9px;
+}
+
+.pane-health__value {
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pane-health__tier {
+  font-weight: var(--font-weight-semibold);
+}
+
+.pane-health__tier--live {
+  color: var(--positive);
+}
+
+.pane-health__tier--degraded {
+  color: var(--warn);
+}
+
+.pane-health__tier--stale {
+  color: var(--negative);
+}

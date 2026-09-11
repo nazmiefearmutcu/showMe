@@ -7,11 +7,13 @@
  * notify the user, and fall back to the in-memory default.
  */
 import { beforeEach, describe, expect, it } from "vitest";
-import { useWorkspace, type SerializedWorkspace } from "./workspace";
+import { useWorkspace, type SerializedWorkspace, type WorkspaceNode } from "./workspace";
 import {
   isValidPersistedWorkspace,
   isValidWorkspaceNode,
   restoreWorkspace,
+  sanitizePersistedWorkspace,
+  sanitizeWorkspaceNode,
 } from "./workspace-persist";
 
 beforeEach(() => {
@@ -225,5 +227,129 @@ describe("restoreWorkspace migrates malformed state to default", () => {
     };
     localStorage.setItem("showme.workspace", JSON.stringify(state));
     expect(await restoreWorkspace()).toBe(true);
+  });
+});
+
+// ---------- M9 (campaign 2026-09-11, L3): leaf meta sanitization ----------
+
+function envelope(tree: unknown): SerializedWorkspace {
+  return {
+    focusedId: "x",
+    savedAt: new Date().toISOString(),
+    tree: tree as WorkspaceNode,
+  };
+}
+
+describe("sanitizeWorkspaceNode — linkGroup (M9)", () => {
+  it("keeps canonical groups A–D", () => {
+    for (const group of ["A", "B", "C", "D"]) {
+      const out = sanitizeWorkspaceNode(
+        { id: "x", kind: "leaf", code: "DES", linkGroup: group },
+      );
+      expect(out.kind === "leaf" && out.linkGroup).toBe(group);
+    }
+  });
+
+  it("drops null, numbers, objects and arbitrary/legacy strings", () => {
+    const bad: unknown[] = [null, 7, true, {}, [], "Z", "a", "A1", "link-a"];
+    for (const value of bad) {
+      const out = sanitizeWorkspaceNode({
+        id: "x",
+        kind: "leaf",
+        code: "DES",
+        linkGroup: value,
+      } as unknown as WorkspaceNode);
+      expect(out.kind === "leaf" && out.linkGroup).toBeUndefined();
+    }
+  });
+});
+
+describe("sanitizeWorkspaceNode — symbol type (M9)", () => {
+  it("normalizes valid strings through the standard symbol resolver", () => {
+    const out = sanitizeWorkspaceNode(
+      { id: "x", kind: "leaf", code: "DES", symbol: "aapl" },
+    );
+    expect(out.kind === "leaf" && out.symbol).toBe("AAPL");
+    const alias = sanitizeWorkspaceNode(
+      { id: "x", kind: "leaf", code: "DES", symbol: "btc" },
+    );
+    expect(alias.kind === "leaf" && alias.symbol).toBe("BTCUSDT");
+  });
+
+  it("drops non-strings and blank strings instead of stringifying them", () => {
+    const bad: unknown[] = [42, {}, ["AAPL"], true, "   ", ""];
+    for (const value of bad) {
+      const out = sanitizeWorkspaceNode({
+        id: "x",
+        kind: "leaf",
+        code: "DES",
+        symbol: value,
+      } as unknown as WorkspaceNode);
+      expect(out.kind === "leaf" && out.symbol).toBeUndefined();
+    }
+  });
+
+  it("sanitizes nested leaves without touching valid siblings", () => {
+    const out = sanitizeWorkspaceNode({
+      id: "s",
+      kind: "split",
+      direction: "h",
+      children: [
+        { id: "a", kind: "leaf", code: "DES", symbol: "btc", linkGroup: "B" },
+        { id: "b", kind: "leaf", code: "GP", symbol: 99, linkGroup: "legacy" },
+      ],
+      sizes: [0.5, 0.5],
+    } as unknown as WorkspaceNode);
+    if (out.kind !== "split") throw new Error("expected split");
+    const [a, b] = out.children;
+    expect(a.kind === "leaf" && a.symbol).toBe("BTCUSDT");
+    expect(a.kind === "leaf" && a.linkGroup).toBe("B");
+    expect(b.kind === "leaf" && b.symbol).toBeUndefined();
+    expect(b.kind === "leaf" && b.linkGroup).toBeUndefined();
+  });
+});
+
+describe("sanitizePersistedWorkspace + restoreWorkspace (M9)", () => {
+  it("sanitizes the tree inside the persisted envelope", () => {
+    const out = sanitizePersistedWorkspace(
+      envelope({ id: "x", kind: "leaf", code: "DES", symbol: 42, linkGroup: "Z" }),
+    );
+    expect(out.tree.kind).toBe("leaf");
+    if (out.tree.kind === "leaf") {
+      expect(out.tree.symbol).toBeUndefined();
+      expect(out.tree.linkGroup).toBeUndefined();
+    }
+  });
+
+  it("restore keeps the workspace but drops malformed meta", async () => {
+    localStorage.setItem(
+      "showme.workspace",
+      JSON.stringify(
+        envelope({ id: "x", kind: "leaf", code: "DES", symbol: 42, linkGroup: "Z" }),
+      ),
+    );
+    expect(await restoreWorkspace()).toBe(true);
+    const tree = useWorkspace.getState().tree;
+    expect(tree.kind).toBe("leaf");
+    if (tree.kind === "leaf") {
+      expect(tree.code).toBe("DES");
+      expect(tree.symbol).toBeUndefined();
+      expect(tree.linkGroup).toBeUndefined();
+    }
+  });
+
+  it("restore keeps a valid linkGroup", async () => {
+    localStorage.setItem(
+      "showme.workspace",
+      JSON.stringify(
+        envelope({ id: "x", kind: "leaf", code: "DES", symbol: "AAPL", linkGroup: "C" }),
+      ),
+    );
+    expect(await restoreWorkspace()).toBe(true);
+    const tree = useWorkspace.getState().tree;
+    if (tree.kind === "leaf") {
+      expect(tree.symbol).toBe("AAPL");
+      expect(tree.linkGroup).toBe("C");
+    }
   });
 });

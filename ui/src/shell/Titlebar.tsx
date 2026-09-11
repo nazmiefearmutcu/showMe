@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useAppStore } from "@/lib/store";
 import { invoke } from "@/lib/tauri";
 import { navigate, useRoute } from "@/lib/router";
@@ -9,10 +9,18 @@ import {
   toggleTheme as toggleThemeLib,
   type ThemeState,
 } from "@/lib/theme";
-import { useWorkspace } from "@/lib/workspace";
+import { findLeaf, useWorkspace } from "@/lib/workspace";
+import { inferAssetClassName, normalizeSymbolInput } from "@/lib/symbols";
+import {
+  setActiveSecurity,
+  useSecurityContext,
+  type ActiveSecurity,
+} from "@/lib/security-context";
+import { describeSessionState, type SessionKind } from "@/lib/market-state";
 import { loadBuiltinPreset } from "@/lib/builtinPresets";
 import { formatTickAge, TAPE_LABEL, useTapeHealth } from "@/lib/tape-health";
 import { OrbitMark, Pill, TopbarSegment } from "@/design-system";
+import { CommandLine } from "./CommandLine";
 import { t, useLocale } from "@/i18n";
 import { PresetMenu } from "./PresetMenu";
 import { toast } from "@/lib/toast";
@@ -136,6 +144,65 @@ function TitlebarTape() {
   );
 }
 
+/**
+ * Asset-class display labels for the titlebar security chip. These are data
+ * labels (not chrome copy): the chip reads "<ticker> · US Equity".
+ */
+const ASSET_CLASS_LABELS: Record<string, string> = {
+  EQUITY: "US Equity",
+  ETF: "ETF",
+  INDEX: "Index",
+  CRYPTO: "Crypto",
+  FX: "FX",
+  COMMODITY: "Commodity",
+  BOND: "Bond",
+};
+
+/**
+ * Map a security's canonical asset class to the session vocabulary.
+ * Equities/ETFs/indices/bonds trade on the NYSE calendar; commodities ride
+ * the CME futures clock (approximated by `describeSessionState`).
+ */
+function sessionKindForAssetClass(assetClass: string): SessionKind {
+  switch (assetClass) {
+    case "CRYPTO":
+      return "crypto";
+    case "FX":
+      return "fx";
+    case "COMMODITY":
+      return "futures";
+    default:
+      return "equity";
+  }
+}
+
+/**
+ * Market session pill — bound to the ACTIVE security's asset class instead
+ * of the old static "MK" string (M1). A 60 s tick keeps the label honest as
+ * sessions open/close; the pill itself is the only thing that re-renders.
+ */
+function MarketSessionPill({ kind }: { kind: SessionKind }) {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setTick((t) => t + 1), 60_000);
+    return () => clearInterval(id);
+  }, []);
+  const session = describeSessionState(kind);
+  const hint = `${session.venue} session: ${session.label}`;
+  return (
+    <span
+      className="titlebar__market-pill"
+      data-testid="titlebar-market-pill"
+      data-session-state={session.state}
+      data-session-kind={kind}
+      aria-label={hint}
+      title={hint}
+    >
+      {session.label}
+    </span>
+  );
+}
+
 function isMarketNavActive(
   item: MarketNavLink,
   route: ReturnType<typeof useRoute>,
@@ -178,6 +245,28 @@ export function Titlebar() {
   const route = useRoute();
   const activeCode =
     route.kind === "function" ? route.code : route.kind === "welcome" ? "HOME" : "PREF";
+  // H2 fix: the titlebar security chip follows the FOCUSED pane live.
+  // Derive ticker + asset class from the focused workspace leaf, push the
+  // value into the desk-wide security context (single source of truth for
+  // other lanes), and fall back to an imperatively-set context when the
+  // focused pane has no symbol of its own.
+  const focusedLeaf = useWorkspace((s) => findLeaf(s.tree, s.focusedId));
+  const focusedSymbol = normalizeSymbolInput(focusedLeaf?.symbol) || null;
+  const derivedSecurity = useMemo<ActiveSecurity | null>(() => {
+    if (!focusedSymbol) return null;
+    const assetClass = inferAssetClassName(focusedSymbol);
+    return {
+      symbol: focusedSymbol,
+      label: ASSET_CLASS_LABELS[assetClass] ?? assetClass,
+      assetClass,
+    };
+  }, [focusedSymbol]);
+  useEffect(() => {
+    setActiveSecurity(derivedSecurity);
+  }, [derivedSecurity]);
+  const { active: contextSecurity } = useSecurityContext();
+  const security = derivedSecurity ?? contextSecurity;
+  const sessionKind = sessionKindForAssetClass(security?.assetClass ?? "EQUITY");
   const [themeState, setThemeState] = useState<ThemeState>(() => readState());
 
   useEffect(() => {
@@ -294,14 +383,18 @@ export function Titlebar() {
         <button
           type="button"
           className="interactive titlebar__command-strip"
+          data-testid="titlebar-security-chip"
           onClick={() => togglePalette()}
           title="Command palette"
           aria-label="Open command palette"
         >
-          <span className="titlebar__ticker-chip">AAPL</span>
-          <strong>US Equity</strong>
-          <span>Type a function - OMON - GEX - DES - MENU - / to focus</span>
+          <span className="titlebar__ticker-chip" data-testid="titlebar-security-symbol">
+            {security?.symbol ?? "—"}
+          </span>
+          <strong data-testid="titlebar-security-class">{security?.label ?? "—"}</strong>
+          <span>{t("shell.palette.placeholder")} · / command · e.g. MSFT GP</span>
         </button>
+        <CommandLine />
         {/* role="group" makes the pre-existing aria-label actually exposed
             to assistive tech (a plain div ignores aria-label). */}
         <div className="interactive titlebar__quick-actions" role="group" aria-label="Quick functions">
@@ -338,7 +431,7 @@ export function Titlebar() {
             aria-label={t("shell.titlebar.split_right")}
             onClick={() => splitFocused("h")}
           >
-            Split R
+            {t("shell.titlebar.split_right")}
           </button>
           <button
             type="button"
@@ -347,7 +440,7 @@ export function Titlebar() {
             aria-label={t("shell.titlebar.split_bottom")}
             onClick={() => splitFocused("v")}
           >
-            Split B
+            {t("shell.titlebar.split_bottom")}
           </button>
           <button
             type="button"
@@ -402,15 +495,10 @@ export function Titlebar() {
             {total} FN
           </span>
         )}
-        {/* UI-INT-06 P2: MK pill now has a tooltip + aria-label so users
-            (and screen readers) know it tracks the market session. */}
-        <span
-          aria-label={t("shell.titlebar.market_pill_hint")}
-          title={t("shell.titlebar.market_pill_hint")}
-          className="titlebar__market-pill"
-        >
-          {t("shell.titlebar.market_pill")}
-        </span>
+        {/* M1 fix: the session pill is bound to the ACTIVE security's venue
+            (NYSE calendar / 24-7 crypto / 24-5 FX / CME-approx futures),
+            never a static "MK" string. */}
+        <MarketSessionPill kind={sessionKind} />
       </TopbarSegment>
 
       <TopbarSegment withDivider>
@@ -421,7 +509,7 @@ export function Titlebar() {
           title={t("shell.titlebar.new_window")}
           aria-label={t("shell.titlebar.new_window")}
         >
-          New
+          {t("shell.titlebar.new_window")}
         </button>
         <button
           type="button"
@@ -439,7 +527,7 @@ export function Titlebar() {
           title={t("shell.preferences")}
           aria-label={t("shell.preferences")}
         >
-          Prefs
+          {t("shell.preferences")}
         </button>
         <button
           type="button"

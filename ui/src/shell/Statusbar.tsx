@@ -5,6 +5,7 @@ import { PRESET_LABELS, readState, THEME_CHANGE_EVENT, type ThemeState } from "@
 import { formatTime, timezoneOffsetLabel, useTimezone } from "@/lib/timezone";
 import { describeNyseMarketState, getNyseMarketState } from "@/lib/market-state";
 import { useTapeHealth, TAPE_LABEL, formatTickAge } from "@/lib/tape-health";
+import { formatLatencyMs, useDeskHealth } from "@/lib/pane-contract-store";
 
 /**
  * TapeHealthSection — the one honest "is my tape alive" pill (campaign
@@ -45,6 +46,50 @@ function TapeHealthSection() {
           tone={tone}
           withDot
           title={`Market data tape: ${TAPE_LABEL[health.state]} — ${streaming} streaming of ${subscribed} subscribed symbol${subscribed === 1 ? "" : "s"}, freshest tick ${ageLabel} ago`}
+        />
+      </span>
+    </>
+  );
+}
+
+/**
+ * DeskHealthSection — desk-level rollup of per-pane contract health
+ * (campaign 2026-09-11, Lane L4). Counts live / degraded / stale contracts
+ * across every recorded pane, plus the worst declared latency and the
+ * freshest update age. Hidden entirely when no pane has recorded a
+ * contract — no data, no claim. The bar's existing 1 Hz clock re-render is
+ * what keeps the staleness classification moving (no extra timers here).
+ */
+function DeskHealthSection() {
+  const health = useDeskHealth();
+  const total = health.live + health.degraded + health.stale;
+  if (total === 0) return null;
+  const parts = [`LIVE ${health.live}`];
+  if (health.degraded > 0) parts.push(`DEGRADED ${health.degraded}`);
+  if (health.stale > 0) parts.push(`STALE ${health.stale}`);
+  if (health.worstLatencyMs != null) {
+    parts.push(formatLatencyMs(health.worstLatencyMs));
+  }
+  const ageLabel =
+    health.lastUpdatedAt != null
+      ? formatTickAge(Math.max(0, Date.now() - health.lastUpdatedAt))
+      : "—";
+  parts.push(ageLabel);
+  const tone =
+    health.stale > 0 ? "negative" : health.degraded > 0 ? "warn" : "positive";
+  return (
+    <>
+      <StatusDivider />
+      <span
+        data-testid="desk-health"
+        data-desk-health={`${health.live}/${health.degraded}/${health.stale}`}
+      >
+        <StatusSection
+          label="panes"
+          value={parts.join(" · ")}
+          tone={tone}
+          withDot
+          title={`Pane data health: ${health.live} live, ${health.degraded} degraded, ${health.stale} stale${health.worstLatencyMs != null ? ` · worst latency ${formatLatencyMs(health.worstLatencyMs)}` : ""} · last update ${ageLabel} ago`}
         />
       </span>
     </>
@@ -113,6 +158,7 @@ export function Statusbar() {
         </span>
         <StatusDivider />
         <TapeHealthSection />
+        <DeskHealthSection />
         <StatusSection label="fn" value={total} />
       </span>
       <span

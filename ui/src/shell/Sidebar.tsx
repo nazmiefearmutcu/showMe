@@ -377,6 +377,10 @@ function SidebarPanel({
   const pinnedDropZoneRef = useRef<HTMLElement | null>(null);
   const suppressNextClickRef = useRef(false);
   const [dragPreview, setDragPreview] = useState<PinDragPreview | null>(null);
+  // L2 (campaign 2026-09-11): keyboard traversal of the filtered function
+  // list. The index addresses `visibleGrouped` flattened in render order;
+  // -1 means "no row highlighted yet".
+  const [activeIndex, setActiveIndex] = useState(-1);
   const shouldSuppressClick = () => suppressNextClickRef.current;
   // REL-04 P11 — symmetric cleanup ref for the sidebar pin-drag handler.
   // If the sidebar collapses or the variant flips mid-drag, the handler
@@ -432,6 +436,58 @@ function SidebarPanel({
         .filter(([, items]) => items.length > 0),
     [grouped, hiddenSourceId, pinnedIds],
   );
+  // Flattened render order of the rows the keyboard can walk.
+  const flatResults = useMemo(
+    () => visibleGrouped.flatMap(([, items]) => items),
+    [visibleGrouped],
+  );
+  const flatIndexByCode = useMemo(() => {
+    const map = new Map<string, number>();
+    flatResults.forEach((item, index) => {
+      if (!map.has(item.code)) map.set(item.code, index);
+    });
+    return map;
+  }, [flatResults]);
+  useEffect(() => {
+    // New query → no row highlighted until the next ArrowDown.
+    setActiveIndex(-1);
+  }, [query]);
+  useEffect(() => {
+    if (activeIndex < 0) return;
+    const node = document.getElementById(`sidebar-opt-${activeIndex}`);
+    if (node && typeof node.scrollIntoView === "function") {
+      node.scrollIntoView({ block: "nearest" });
+    }
+  }, [activeIndex]);
+  const onSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      if (flatResults.length === 0) return;
+      setActiveIndex((index) => Math.min(index + 1, flatResults.length - 1));
+      return;
+    }
+    if (e.key === "ArrowUp") {
+      e.preventDefault();
+      if (flatResults.length === 0) return;
+      setActiveIndex((index) => Math.max(index - 1, 0));
+      return;
+    }
+    if (e.key === "Enter") {
+      const hit = flatResults[activeIndex];
+      if (!hit) return;
+      e.preventDefault();
+      navigate(`/fn/${hit.code}`);
+      return;
+    }
+    if (e.key === "Escape") {
+      e.preventDefault();
+      if (query) {
+        setQuery("");
+      } else if (e.target instanceof HTMLInputElement) {
+        e.target.blur();
+      }
+    }
+  };
   const finishPinDrag = (
     item: PinnedItem,
     source: PinDragSource,
@@ -553,9 +609,15 @@ function SidebarPanel({
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={onSearchKeyDown}
+            aria-activedescendant={
+              activeIndex >= 0 ? `sidebar-opt-${activeIndex}` : undefined
+            }
             placeholder="code, name, category"
             aria-label={t("shell.sidebar.search_label")}
             className="sidebar__search-input"
+            autoComplete="off"
+            spellCheck={false}
           />
         </div>
         <a
@@ -649,9 +711,12 @@ function SidebarPanel({
             const isActive = activeCode === it.code;
             const href = `#/fn/${it.code}`;
             const draggablePin = makePinnedItemForFunctionEntry(it);
+            const flatIndex = flatIndexByCode.get(it.code) ?? -1;
+            const isKbdActive = activeIndex >= 0 && flatIndex === activeIndex;
             return (
               <a
                 key={it.code}
+                id={flatIndex >= 0 ? `sidebar-opt-${flatIndex}` : undefined}
                 href={href}
                 draggable={false}
                 onDragStart={(e) => writePinnedDragData(e.dataTransfer, draggablePin)}
@@ -666,7 +731,7 @@ function SidebarPanel({
                   e.preventDefault();
                   navigate(`/fn/${it.code}`);
                 }}
-                className={`sidebar-function sidebar-function-link ${isActive ? "sidebar-function-link--active" : ""}`}
+                className={`sidebar-function sidebar-function-link ${isActive ? "sidebar-function-link--active" : ""}${isKbdActive ? " sidebar-function-link--kbd-active" : ""}`}
                 aria-current={isActive ? "page" : undefined}
                 title={`${it.name} - drag to Pinned`}
               >

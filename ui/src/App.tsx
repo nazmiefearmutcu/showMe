@@ -28,6 +28,7 @@ import { mergeNativeFunctionIndex } from "./functions/registry";
 import { STATIC_FUNCTION_INDEX } from "./functions/static-index";
 import { restoreWorkspace, startWorkspaceAutosave } from "./lib/workspace-persist";
 import { recordRecentCode } from "./lib/palette-recents";
+import { useCommandLineHotkey } from "./shell/CommandLine";
 
 function staticFunctionIndex() {
   return mergeNativeFunctionIndex(STATIC_FUNCTION_INDEX);
@@ -205,6 +206,8 @@ function RouteSync() {
 }
 
 export default function App() {
+  // Bloomberg-style "/" command line — global focus hotkey (L2 campaign).
+  useCommandLineHotkey();
   const togglePalette = useAppStore((s) => s.togglePalette);
   const sidebarVisible = useAppStore((s) => s.sidebarVisible);
   const [workspaceReady, setWorkspaceReady] = useState(false);

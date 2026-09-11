@@ -315,3 +315,145 @@ div.toast-host .toast-host__dismiss:hover {
       color 90ms ease-out;
   }
 }
+
+/* ============================================================
+ * L2 — command line (campaign 2026-09-11).
+ * Non-modal titlebar command input + suggestion dropdown.
+ * Tokens only; flat surfaces (DESIGN-BRIEF law 2); no motion added.
+ * ============================================================ */
+
+.cmdline {
+  position: relative;
+}
+
+.cmdline__form {
+  align-items: center;
+  background: var(--surface-1);
+  border: 1px solid var(--line);
+  display: flex;
+  gap: var(--space-2);
+  height: var(--space-7);
+  padding: 0 var(--space-2) 0 var(--space-3);
+}
+
+.cmdline__form:focus-within {
+  border-color: var(--line-strong);
+}
+
+.cmdline__prompt {
+  color: var(--text-mute);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+}
+
+.cmdline__input {
+  background: transparent;
+  border: 0;
+  color: var(--text-display);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  min-width: 150px;
+  outline: none;
+  width: clamp(150px, 16vw, 260px);
+}
+
+.cmdline__input::placeholder {
+  color: var(--text-mute);
+}
+
+.cmdline__hint {
+  color: var(--text-mute);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+}
+
+.cmdline__go {
+  background: var(--surface-3);
+  border: 1px solid var(--line);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  height: 20px;
+  padding: 0 var(--space-2);
+}
+
+.cmdline__go:hover {
+  border-color: var(--line-strong);
+  color: var(--text-primary);
+}
+
+.cmdline__menu {
+  background: var(--surface-3);
+  border: 1px solid var(--line-strong);
+  box-shadow: none;
+  left: 0;
+  max-height: 320px;
+  min-width: 340px;
+  overflow-y: auto;
+  position: absolute;
+  top: calc(100% + var(--space-1));
+  z-index: var(--z-dropdown);
+}
+
+.cmdline__option {
+  align-items: baseline;
+  cursor: pointer;
+  display: flex;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+}
+
+.cmdline__option--cursor {
+  background: var(--accent-soft);
+}
+
+.cmdline__option-code {
+  color: var(--accent-2);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  min-width: 48px;
+}
+
+.cmdline__option-label {
+  color: var(--text-primary);
+  flex: 1;
+  font-size: var(--font-size-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cmdline__option-meta {
+  color: var(--text-mute);
+  font-size: var(--font-size-xs);
+  letter-spacing: var(--tracking-label);
+  text-transform: uppercase;
+}
+
+.cmdline__empty {
+  color: var(--text-mute);
+  font-size: var(--font-size-xs);
+  padding: var(--space-3);
+}
+
+/* Sidebar search: keyboard-highlighted row (distinct from the routed
+   active row — accent edge + surface lift, same grammar as hover). */
+aside.sidebar .sidebar-function-link--kbd-active {
+  background: var(--surface-2) !important;
+  border-left-color: var(--accent);
+  color: var(--text-primary);
+  outline: 1px solid var(--line-strong);
+  outline-offset: -1px;
+}
+
+@media (max-width: 1260px) {
+  .cmdline__hint {
+    display: none;
+  }
+  .cmdline__input {
+    min-width: 120px;
+    width: 150px;
+  }
+}

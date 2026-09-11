@@ -247,8 +247,8 @@ export const useStrategyStore = create<StrategyStoreShape>((set, get) => ({
     }
     if (!skipConfirm && deps.bot_count > 0) {
       const ok = window.confirm(
-        `Bu stratejiye ${deps.bot_count} bot bağlı. ` +
-        `Bot'lar otomatik devre dışı bırakılacak. Devam mı?`,
+        `${deps.bot_count} bot(s) are attached to this strategy. ` +
+          `They will be stopped automatically. Continue?`,
       );
       if (!ok) {
         set({ removing: false });

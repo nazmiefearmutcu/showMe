@@ -218,16 +218,6 @@ export async function fetchMisScanProgress(): Promise<MisScanProgress> {
   return sidecarFetch<MisScanProgress>("/api/mis/scan/progress");
 }
 
-/** Friendly Turkish labels used in the UI header chips. */
-export const MIS_MARKET_LABELS: Record<MisMarket, string> = {
-  CRYPTO: "Kripto",
-  EQUITY: "Hisse",
-  ETF: "ETF",
-  FX: "Döviz",
-  COMMODITY: "Emtia",
-  BOND: "Tahvil",
-};
-
 /** Static fallback TF list per market — used only on the very first paint
  * before /api/mis/markets responds. The authoritative list comes from
  * ``MisMarketSummary.default_tfs`` and the active subset from

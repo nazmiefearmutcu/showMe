@@ -25,17 +25,17 @@ describe("validateSymbol", () => {
   });
 
   it("rejects whitespace-only input", () => {
-    expect(validateSymbol("   ")).toBe("Sembol gerekli.");
-    expect(validateSymbol("")).toBe("Sembol gerekli.");
+    expect(validateSymbol("   ")).toBe("Symbol required.");
+    expect(validateSymbol("")).toBe("Symbol required.");
     expect(validateSymbol("\t\n")).not.toBeNull();
   });
 
   it("rejects shape that is not BASE/QUOTE", () => {
-    expect(validateSymbol("BTC-USDT")).toBe("Format: BASE/QUOTE (ör. BTC/USDT).");
-    expect(validateSymbol("BTCUSDT")).toBe("Format: BASE/QUOTE (ör. BTC/USDT).");
-    expect(validateSymbol("BTC")).toBe("Format: BASE/QUOTE (ör. BTC/USDT).");
-    expect(validateSymbol("/USDT")).toBe("Format: BASE/QUOTE (ör. BTC/USDT).");
-    expect(validateSymbol("BTC/")).toBe("Format: BASE/QUOTE (ör. BTC/USDT).");
+    expect(validateSymbol("BTC-USDT")).toBe("Format: BASE/QUOTE (e.g. BTC/USDT).");
+    expect(validateSymbol("BTCUSDT")).toBe("Format: BASE/QUOTE (e.g. BTC/USDT).");
+    expect(validateSymbol("BTC")).toBe("Format: BASE/QUOTE (e.g. BTC/USDT).");
+    expect(validateSymbol("/USDT")).toBe("Format: BASE/QUOTE (e.g. BTC/USDT).");
+    expect(validateSymbol("BTC/")).toBe("Format: BASE/QUOTE (e.g. BTC/USDT).");
   });
 
   it("rejects control characters / newlines", () => {
@@ -137,12 +137,12 @@ describe("validateOperand", () => {
   });
 
   it("rejects unknown alias", () => {
-    expect(validateOperand("unknown_x", aliases)).toMatch(/Bilinmeyen/);
+    expect(validateOperand("unknown_x", aliases)).toMatch(/Unknown/);
   });
 
   it("rejects empty operand", () => {
-    expect(validateOperand("", aliases)).toBe("Operand boş olamaz.");
-    expect(validateOperand("   ", aliases)).toBe("Operand boş olamaz.");
+    expect(validateOperand("", aliases)).toBe("Operand cannot be empty.");
+    expect(validateOperand("   ", aliases)).toBe("Operand cannot be empty.");
   });
 });
 

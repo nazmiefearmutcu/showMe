@@ -34,6 +34,17 @@ export function tickDirection(
 }
 
 /**
+ * CSS class for a flash direction — single-sourced mapping so every
+ * consumer (FlashValue, pane-local flashes) paints with the same global
+ * `.flash-pos` / `.flash-neg` rules in tokens.css.
+ */
+export function tickFlashClass(dir: TickDirection): string | null {
+  if (dir === "up") return "flash-pos";
+  if (dir === "down") return "flash-neg";
+  return null;
+}
+
+/**
  * Emit a one-shot flash direction each time `price` changes to a DIFFERENT
  * finite value. Equal values and first renders (no previous observation)
  * do not flash. The timer is cleaned up on unmount / re-trigger.

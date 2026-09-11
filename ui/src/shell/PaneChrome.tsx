@@ -5,8 +5,8 @@
  * primitive). Round 16 promotes this into a draggable handle for relocating
  * a pane inside the tree.
  */
-import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
-import { useWorkspace } from "@/lib/workspace";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent } from "react";
+import { LINK_GROUP_IDS as LINK_GROUPS, useWorkspace } from "@/lib/workspace";
 import { useAppStore } from "@/lib/store";
 import { t, useLocale } from "@/i18n";
 import { useFocusTrap } from "@/lib/a11y";
@@ -20,6 +20,7 @@ import {
   writePinnedDragData,
 } from "@/lib/pins";
 import { useLiveQuote } from "@/lib/market-data";
+import { PaneHealth } from "./PaneHealth";
 import { formatPercent, formatPrice } from "@/lib/format";
 
 interface PaneChromeProps {
@@ -35,7 +36,22 @@ interface PaneDragPreview {
   overPinned: boolean;
 }
 
-const LINK_GROUPS = ["A", "B", "C", "D"] as const;
+/**
+ * Link-group hues. No dedicated tokens exist yet, so groups borrow the
+ * existing semantic ladder (accent / accent-2 / warn / positive); the
+ * unlinked state is deliberately neutral (text-mute) so "no group" never
+ * reads as a color-coded group.
+ */
+const LINK_GROUP_HUES: Record<string, string> = {
+  A: "var(--accent)",
+  B: "var(--accent-2)",
+  C: "var(--warn, #f6c350)",
+  D: "var(--positive)",
+};
+
+function linkHueFor(group?: string): string {
+  return (group && LINK_GROUP_HUES[group]) || "var(--text-mute)";
+}
 
 export function PaneChrome({ leafId, code, symbol, linkGroup }: PaneChromeProps) {
   // UI-ROBUSTNESS F6: locale subscription so the t() menu items below
@@ -45,6 +61,7 @@ export function PaneChrome({ leafId, code, symbol, linkGroup }: PaneChromeProps)
   const closeFocused = useWorkspace((s) => s.closeFocused);
   const setFocusedTarget = useWorkspace((s) => s.setFocusedTarget);
   const setLeafLinkGroup = useWorkspace((s) => s.setLeafLinkGroup);
+  const setAllLinkGroups = useWorkspace((s) => s.setAllLinkGroups);
   const setFocused = useWorkspace((s) => s.setFocused);
   const tree = useWorkspace((s) => s.tree);
   const focusedId = useWorkspace((s) => s.focusedId);
@@ -54,13 +71,16 @@ export function PaneChrome({ leafId, code, symbol, linkGroup }: PaneChromeProps)
   const pinnedItems = usePinnedItems();
   const [picker, setPicker] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [linkMenuOpen, setLinkMenuOpen] = useState(false);
   const [dragPreview, setDragPreview] = useState<PaneDragPreview | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const linkMenuRef = useRef<HTMLDivElement>(null);
   // A11Y: trap Tab inside the dropdown so screen-reader / keyboard users
   // can't escape into the underlying chrome. Escape handler already wired
   // on the parent action wrapper; this complements it. Restores focus to
   // the trigger on close.
   useFocusTrap(menuRef, menuOpen);
+  useFocusTrap(linkMenuRef, linkMenuOpen);
   const pinTarget = useMemo(
     () => makePinnedItemForPane(code, symbol, idx),
     [code, idx, symbol],
@@ -70,6 +90,14 @@ export function PaneChrome({ leafId, code, symbol, linkGroup }: PaneChromeProps)
     action();
     setMenuOpen(false);
   };
+  const runLinkMenuAction = (action: () => void) => {
+    action();
+    setLinkMenuOpen(false);
+  };
+  // Link-all target: keep the current pane's group when it has one, else
+  // default to A (the menu item shows the resolved target next to the label).
+  const linkAllTarget = linkGroup ?? LINK_GROUPS[0];
+  const linkHue = linkHueFor(linkGroup);
   // REL-04 P11 — track any in-flight drag listeners so an unmount mid-drag
   // can detach them. Without this, dragging a pane chrome while another
   // pane closes (which removes this PaneChrome from the tree) used to
@@ -160,7 +188,129 @@ export function PaneChrome({ leafId, code, symbol, linkGroup }: PaneChromeProps)
         {symbol ?? "—"}
         {symbol && <LiveQuoteChip symbol={symbol} />}
       </span>
+      <PaneHealth leafId={leafId} />
       {isFocused && <span className="pane-chrome__focus">focus</span>}
+
+      {/* Always-visible link-group badge (H2 fix). Link membership used to
+          live only inside the ⋯ menu, so a linked desk was invisible. The
+          badge shows the group letter (or a neutral dash when unlinked) and
+          opens its own small menu with per-pane + desk-wide actions. */}
+      <div
+        className="pane-chrome__link-wrap"
+        style={{ position: "relative", display: "inline-flex" }}
+        onBlur={(e) => {
+          const next = e.relatedTarget;
+          if (next instanceof Node && e.currentTarget.contains(next)) return;
+          setLinkMenuOpen(false);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") setLinkMenuOpen(false);
+        }}
+      >
+        <button
+          type="button"
+          data-testid="pane-chrome-link-badge"
+          data-link-group={linkGroup ?? ""}
+          aria-label={
+            linkGroup
+              ? `Symbol link group ${linkGroup}. Change or clear the link group`
+              : "Not linked to a symbol group. Change link group"
+          }
+          aria-haspopup="menu"
+          aria-expanded={linkMenuOpen}
+          title={
+            linkGroup
+              ? `Symbol link group ${linkGroup} — all linked panes follow one symbol`
+              : "No symbol link — this pane changes independently"
+          }
+          className="interactive pane-chrome__link-badge"
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            minWidth: 14,
+            height: 14,
+            padding: "0 3px",
+            marginLeft: "var(--space-2)",
+            fontFamily: "var(--font-mono)",
+            fontSize: 9,
+            fontWeight: 700,
+            lineHeight: 1,
+            textTransform: "uppercase",
+            color: linkHue,
+            border: `1px solid ${linkHue}`,
+            borderRadius: 3,
+            background: linkGroup
+              ? `color-mix(in srgb, ${linkHue} 14%, transparent)`
+              : "transparent",
+            cursor: "pointer",
+          } as CSSProperties}
+          onClick={() => {
+            setMenuOpen(false);
+            setLinkMenuOpen((open) => !open);
+          }}
+        >
+          {linkGroup ?? "–"}
+        </button>
+        {linkMenuOpen && (
+          <div
+            ref={linkMenuRef}
+            className="pane-chrome__menu"
+            role="menu"
+            aria-label="Symbol link group"
+            data-testid="pane-chrome-link-menu"
+            style={{ right: "auto", left: 0 }}
+          >
+            <div className="pane-chrome__menu-label">Symbol link</div>
+            <div className="pane-chrome__menu-grid" role="group" aria-label="Assign link group">
+              {LINK_GROUPS.map((group) => (
+                <button
+                  key={group}
+                  type="button"
+                  data-link-choice={group}
+                  className={`pane-chrome__menu-mini${linkGroup === group ? " pane-chrome__menu-mini--active" : ""}`}
+                  onClick={() =>
+                    runLinkMenuAction(() =>
+                      setLeafLinkGroup(leafId, linkGroup === group ? undefined : group),
+                    )
+                  }
+                >
+                  {group}
+                </button>
+              ))}
+            </div>
+            <button
+              type="button"
+              role="menuitem"
+              data-testid="pane-chrome-link-unlink"
+              className="pane-chrome__menu-item"
+              onClick={() => runLinkMenuAction(() => setLeafLinkGroup(leafId, undefined))}
+            >
+              <span>Unlink</span>
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              data-testid="pane-chrome-link-all"
+              className="pane-chrome__menu-item"
+              title={`Assign group ${linkAllTarget} to every pane`}
+              onClick={() => runLinkMenuAction(() => setAllLinkGroups(linkAllTarget))}
+            >
+              <span>Link all panes</span>
+              <kbd>{linkAllTarget}</kbd>
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              data-testid="pane-chrome-link-clear"
+              className="pane-chrome__menu-item"
+              onClick={() => runLinkMenuAction(() => setAllLinkGroups(undefined))}
+            >
+              <span>Clear all links</span>
+            </button>
+          </div>
+        )}
+      </div>
 
       <div
         className="pane-chrome__actions"
@@ -180,7 +330,10 @@ export function PaneChrome({ leafId, code, symbol, linkGroup }: PaneChromeProps)
           aria-expanded={menuOpen}
           title="Pane actions"
           className={`pane-chrome__menu-button${currentIsPinned ? " pane-chrome__menu-button--pinned" : ""}`}
-          onClick={() => setMenuOpen((open) => !open)}
+          onClick={() => {
+            setLinkMenuOpen(false);
+            setMenuOpen((open) => !open);
+          }}
         >
           <span aria-hidden>...</span>
         </button>

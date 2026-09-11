@@ -19,8 +19,13 @@ import { loadPreset, savePreset } from "./presets";
 import { useAppStore } from "./store";
 import { readState, setDensity, setPreset, toggleTheme, type Preset } from "./theme";
 import { toast } from "./toast";
-import { useWorkspace } from "./workspace";
+import { findLeaf, firstLeafId, useWorkspace } from "./workspace";
 import { safeReadLocal, safeWriteLocal } from "./safe-storage";
+import { navigate } from "./router";
+import { recordRecentCode } from "./palette-recents";
+import { pushRecentSymbol } from "./symbols";
+import { fuzzyRankDetailed } from "./fuzzy";
+import type { ParsedCommand } from "./command-parse";
 
 export type ActionGroup = "theme" | "layout" | "workspace" | "bot" | "preferences";
 
@@ -248,4 +253,113 @@ export function listPaletteActions(userPresetNames: string[] = []): PaletteActio
   });
 
   return actions;
+}
+
+/* ── L2 command execution (campaign 2026-09-11) ──────────────────────────
+ *
+ * Shared execution path for the titlebar CommandLine and anything else that
+ * parses `ParsedCommand`. The palette keeps its own recents semantics
+ * (function codes and symbols have separate stacks); these helpers are the
+ * canonical "open a function code with an optional symbol" navigation.
+ */
+
+/** Codes that are not symbol-bindable targets — fall back to DES. */
+export const NON_SYMBOL_TARGET_CODES = new Set(["HOME", "PREF", "AGENT"]);
+
+/**
+ * The code a symbol submission should bind to: the focused leaf's code, or
+ * DES when the focused leaf is HOME/PREF/AGENT (or headless). Mirrors the
+ * palette's `symbolTargetCode` computation (Palette.tsx).
+ */
+export function focusedTargetCode(): string {
+  try {
+    const { tree, focusedId } = useWorkspace.getState();
+    const leaf =
+      findLeaf(tree, focusedId) ??
+      (tree.kind === "leaf" ? tree : findLeaf(tree, firstLeafId(tree)));
+    const code = (leaf?.code ?? "DES").toUpperCase();
+    return NON_SYMBOL_TARGET_CODES.has(code) ? "DES" : code;
+  } catch {
+    return "DES";
+  }
+}
+
+/**
+ * Pure navigation: `/symbol/<SYM>/<CODE>` when a symbol is supplied,
+ * `/fn/<CODE>` otherwise. No recents are recorded here — callers decide.
+ */
+export function navigateToFunction(code: string, symbol?: string): void {
+  const upper = code.toUpperCase();
+  if (symbol) {
+    navigate(`/symbol/${symbol}/${upper}`);
+  } else {
+    navigate(`/fn/${upper}`);
+  }
+}
+
+/**
+ * Canonical "open with recents" path for the command line: records the
+ * function code (and the symbol, when present) then navigates.
+ */
+export function openFunctionTarget(code: string, symbol?: string): void {
+  const upper = code.toUpperCase();
+  recordRecentCode(upper);
+  if (symbol) pushRecentSymbol(symbol);
+  navigateToFunction(upper, symbol);
+}
+
+/**
+ * Resolve a lowercase verb token to the best registered action. Fuzzy
+ * scoring runs over the action registry (`listPaletteActions`); a floor of
+ * 400 (substring-level match) keeps a stray word from firing something
+ * unrelated. Returns null when nothing crosses the floor.
+ */
+export function findPaletteActionForVerb(verb: string): PaletteAction | null {
+  const actions = listPaletteActions();
+  if (actions.length === 0) return null;
+  const targets = actions.map((action) => ({
+    code: action.id,
+    name: action.name,
+    category: action.group,
+    action,
+  }));
+  const top = fuzzyRankDetailed(targets, verb, [], 1)[0];
+  if (!top || top.score < 400) return null;
+  return top.item.action;
+}
+
+/** Run the best action for a verb token. Records the action recents stack. */
+export function runPaletteActionByVerb(verb: string): boolean {
+  const action = findPaletteActionForVerb(verb);
+  if (!action) return false;
+  recordRecentActionId(action.id);
+  action.run();
+  return true;
+}
+
+/**
+ * Execute a parsed command. Returns true when the command was handled
+ * (navigated or ran an action); false for `empty` / `unknown` / a verb with
+ * no registered action — the caller decides whether that is an error state.
+ */
+export function executeParsedCommand(parsed: ParsedCommand): boolean {
+  switch (parsed.kind) {
+    case "empty":
+      return false;
+    case "unknown":
+      return false;
+    case "function":
+      openFunctionTarget(parsed.code);
+      return true;
+    case "security":
+      // A bare security binds to the focused pane's function (palette
+      // symbol-row parity), falling back to DES for HOME/PREF/AGENT.
+      openFunctionTarget(focusedTargetCode(), parsed.symbol);
+      return true;
+    case "security-function":
+      openFunctionTarget(parsed.code, parsed.symbol);
+      return true;
+    case "verb":
+      return runPaletteActionByVerb(parsed.verb);
+  }
 }

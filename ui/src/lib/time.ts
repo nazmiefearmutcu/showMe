@@ -2,14 +2,14 @@ export function relativeTimeLabel(value: string | null | undefined, nowMs = Date
   const raw = String(value ?? "").trim();
   if (!raw) return null;
 
-  const normalized = relativeInputToTurkish(raw);
+  const normalized = normalizeRelativeInput(raw);
   if (normalized) return normalized;
 
   const date = parseNewsDate(raw);
   if (date == null) return raw;
 
   const diffMs = Math.max(0, nowMs - date.getTime());
-  return diffMsToTurkish(diffMs);
+  return diffMsToEnglish(diffMs);
 }
 
 export function newsTimestampMs(value: string | null | undefined, nowMs = Date.now()): number | null {
@@ -46,9 +46,9 @@ function parseNewsDate(value: string): Date | null {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
-function relativeInputToTurkish(value: string): string | null {
+function normalizeRelativeInput(value: string): string | null {
   const lowered = value.trim().toLowerCase();
-  if (["now", "just now", "az once", "az önce"].includes(lowered)) return "az önce";
+  if (["now", "just now", "az once", "az önce"].includes(lowered)) return "just now";
 
   const match = lowered.match(
     /^(\d+)\s*(s|sec|secs|second|seconds|sn|m|min|mins|minute|minutes|dk|dakika|h|hr|hrs|hour|hours|saat|d|day|days|gün|gun|w|week|weeks|hafta|mo|month|months|ay|y|yr|year|years|yıl|yil)(?:\s*(ago|once|önce))?$/,
@@ -57,23 +57,23 @@ function relativeInputToTurkish(value: string): string | null {
 
   const amount = Math.max(0, Number(match[1]));
   const unit = match[2];
-  if (["s", "sec", "secs", "second", "seconds", "sn"].includes(unit)) return "az önce";
+  if (["s", "sec", "secs", "second", "seconds", "sn"].includes(unit)) return "just now";
   if (["m", "min", "mins", "minute", "minutes", "dk", "dakika"].includes(unit)) {
-    return `${Math.max(1, amount)} dakika önce`;
+    return `${Math.max(1, amount)} minutes ago`;
   }
   if (["h", "hr", "hrs", "hour", "hours", "saat"].includes(unit)) {
-    return `${Math.max(1, amount)} saat önce`;
+    return `${Math.max(1, amount)} hours ago`;
   }
   if (["d", "day", "days", "gün", "gun"].includes(unit)) {
-    return `${Math.max(1, amount)} gün önce`;
+    return `${Math.max(1, amount)} days ago`;
   }
   if (["w", "week", "weeks", "hafta"].includes(unit)) {
-    return `${Math.max(1, amount)} hafta önce`;
+    return `${Math.max(1, amount)} weeks ago`;
   }
   if (["mo", "month", "months", "ay"].includes(unit)) {
-    return `${Math.max(1, amount)} ay önce`;
+    return `${Math.max(1, amount)} months ago`;
   }
-  return `${Math.max(1, amount)} yıl önce`;
+  return `${Math.max(1, amount)} years ago`;
 }
 
 function relativeInputToMs(value: string, nowMs: number): number | null {
@@ -133,17 +133,17 @@ function relativeInputToMs(value: string, nowMs: number): number | null {
   return nowMs - amount * (multipliers[unit] ?? day);
 }
 
-function diffMsToTurkish(diffMs: number): string {
+function diffMsToEnglish(diffMs: number): string {
   const minute = 60_000;
   const hour = 60 * minute;
   const day = 24 * hour;
   const month = 30 * day;
   const year = 365 * day;
 
-  if (diffMs < minute) return "az önce";
-  if (diffMs < hour) return `${Math.max(1, Math.floor(diffMs / minute))} dakika önce`;
-  if (diffMs < day) return `${Math.max(1, Math.floor(diffMs / hour))} saat önce`;
-  if (diffMs < month) return `${Math.max(1, Math.floor(diffMs / day))} gün önce`;
-  if (diffMs < year) return `${Math.max(1, Math.floor(diffMs / month))} ay önce`;
-  return `${Math.max(1, Math.floor(diffMs / year))} yıl önce`;
+  if (diffMs < minute) return "just now";
+  if (diffMs < hour) return `${Math.max(1, Math.floor(diffMs / minute))} minutes ago`;
+  if (diffMs < day) return `${Math.max(1, Math.floor(diffMs / hour))} hours ago`;
+  if (diffMs < month) return `${Math.max(1, Math.floor(diffMs / day))} days ago`;
+  if (diffMs < year) return `${Math.max(1, Math.floor(diffMs / month))} months ago`;
+  return `${Math.max(1, Math.floor(diffMs / year))} years ago`;
 }

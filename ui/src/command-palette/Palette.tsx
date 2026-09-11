@@ -1,20 +1,27 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useAppStore } from "@/lib/store";
 import { navigate } from "@/lib/router";
 import { t, useLocale } from "@/i18n";
-import { fuzzyRank } from "@/lib/fuzzy";
+import { fuzzyRankDetailed } from "@/lib/fuzzy";
 import { listRecentCodes, recordRecentCode } from "@/lib/palette-recents";
 import {
+  focusedTargetCode,
   listPaletteActions,
   listRecentActionIds,
+  navigateToFunction,
   recordRecentActionId,
   type PaletteAction,
 } from "@/lib/palette-actions";
 import { listPaletteSymbolUniverse } from "@/lib/palette-symbols";
 import { listPresets } from "@/lib/presets";
 import { listRecentSymbols, pushRecentSymbol } from "@/lib/symbols";
-import { findLeaf, firstLeafId, useWorkspace } from "@/lib/workspace";
 import { useFocusTrap } from "@/lib/a11y";
+import { makeCommandPredicates, parseCommandInput } from "@/lib/command-parse";
+import {
+  getCommandHistory,
+  pushCommandHistory,
+  stepCommandHistory,
+} from "@/lib/command-history";
 
 /**
  * Palette v2 (campaign 2026-09-08, Lane B): the ⌘K surface now answers the
@@ -52,7 +59,22 @@ interface ActionPaletteEntry extends PaletteEntryBase {
   action: PaletteAction;
 }
 
-type PaletteEntry = FnPaletteEntry | SymbolPaletteEntry | ActionPaletteEntry;
+/**
+ * L2 (campaign 2026-09-11): a parsed `MSFT GP` command surfaced as a pinned
+ * first row. Executing it opens `/symbol/MSFT/GP` regardless of the focused
+ * pane — the Bloomberg security+function grammar.
+ */
+interface CommandPaletteEntry extends PaletteEntryBase {
+  kind: "command";
+  symbol: string;
+  targetCode: string;
+}
+
+type PaletteEntry =
+  | FnPaletteEntry
+  | SymbolPaletteEntry
+  | ActionPaletteEntry
+  | CommandPaletteEntry;
 
 const STATIC_ENTRIES: FnPaletteEntry[] = [
   {
@@ -73,9 +95,6 @@ const STATIC_ENTRIES: FnPaletteEntry[] = [
   },
 ];
 
-/** Codes that are not symbol-bindable targets — fall back to DES. */
-const NON_SYMBOL_TARGET_CODES = new Set(["HOME", "PREF", "AGENT"]);
-
 const LISTBOX_ID = "showme-palette-listbox";
 const INPUT_ID = "showme-palette-input";
 
@@ -86,6 +105,39 @@ const INPUT_ID = "showme-palette-input";
  * for DOM use; the raw id stays the React key.
  */
 const optionDomId = (entryId: string): string => `palette-opt-${encodeURIComponent(entryId)}`;
+
+/**
+ * L2 / survey-2 M10: paint the characters `fuzzyRankDetailed` reported as
+ * matches. `offset` maps the haystack indices (`code + " " + name`) onto
+ * the individual code / name cell.
+ */
+function HighlightedText({
+  text,
+  matches,
+  offset,
+}: {
+  text: string;
+  matches?: number[];
+  offset: number;
+}) {
+  if (!matches || matches.length === 0) return <>{text}</>;
+  const hits = new Set<number>();
+  for (const match of matches) {
+    if (match >= offset && match < offset + text.length) hits.add(match - offset);
+  }
+  if (hits.size === 0) return <>{text}</>;
+  const parts: ReactNode[] = [];
+  let index = 0;
+  while (index < text.length) {
+    const hit = hits.has(index);
+    let end = index;
+    while (end < text.length && hits.has(end) === hit) end += 1;
+    const chunk = text.slice(index, end);
+    parts.push(hit ? <mark key={index} className="palette__match">{chunk}</mark> : chunk);
+    index = end;
+  }
+  return <>{parts}</>;
+}
 
 /**
  * Label for the palette's modifier key. The app-level shortcut handler
@@ -104,6 +156,8 @@ const MOD_KEY = /\b(Mac|iPhone|iPad|iPod)\b/.test(
 interface PaletteRow {
   head?: string;
   entry: PaletteEntry;
+  /** Fuzzy match indices into `code + " " + name`, for highlighting (M10). */
+  matches?: number[];
 }
 
 export function CommandPalette() {
@@ -118,6 +172,12 @@ export function CommandPalette() {
   const [cursor, setCursor] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
+  // L2: the user's in-progress query is stashed here when they start
+  // stepping session command history with ArrowUp/Down on an empty query.
+  const historyDraftRef = useRef("");
+  // True while the arrows are walking history; any typed edit exits the
+  // mode and returns the arrows to list navigation.
+  const historyModeRef = useRef(false);
   // HIGH #11 (UI-Shell-Bundle UB) — the legacy `useMemo(..., [open])` re-
   // read localStorage every time the palette opened. Replace with a
   // useState seeded from localStorage once + a `storage` event listener
@@ -165,17 +225,7 @@ export function CommandPalette() {
   // Which pane will a symbol entry rebind? Read the focused leaf at open
   // time (non-reactive is fine — the palette is a modal; the desk can't
   // change under it). HOME/PREF/AGENT leaves fall back to DES.
-  const symbolTargetCode = useMemo(() => {
-    if (!open) return "DES";
-    try {
-      const { tree, focusedId } = useWorkspace.getState();
-      const leaf = findLeaf(tree, focusedId) ?? (tree.kind === "leaf" ? tree : findLeaf(tree, firstLeafId(tree)));
-      const code = (leaf?.code ?? "DES").toUpperCase();
-      return NON_SYMBOL_TARGET_CODES.has(code) ? "DES" : code;
-    } catch {
-      return "DES";
-    }
-  }, [open]);
+  const symbolTargetCode = useMemo(() => (open ? focusedTargetCode() : "DES"), [open]);
 
   const actions = useMemo(() => listPaletteActions(userPresetNames), [userPresetNames]);
 
@@ -211,6 +261,37 @@ export function CommandPalette() {
     ],
     [items, actions, symbolTargetCode],
   );
+
+  // L2: parse the typed command against the live catalogs. `MSFT GP` (any
+  // order) becomes a pinned first row; everything else keeps the existing
+  // fuzzy ranking untouched.
+  const commandPredicates = useMemo(() => {
+    const codes = all
+      .filter((e): e is FnPaletteEntry => e.kind === "fn")
+      .map((e) => e.code);
+    const symbols = all
+      .filter((e): e is SymbolPaletteEntry => e.kind === "symbol")
+      .map((e) => e.symbol);
+    return makeCommandPredicates({ codes, symbols });
+  }, [all]);
+
+  const parsed = useMemo(
+    () => parseCommandInput(query, commandPredicates),
+    [query, commandPredicates],
+  );
+
+  const commandEntry: CommandPaletteEntry | null = useMemo(() => {
+    if (parsed.kind !== "security-function") return null;
+    return {
+      id: `cmd.${parsed.code}.${parsed.symbol}`,
+      code: parsed.code,
+      name: `Open ${parsed.code} with ${parsed.symbol}`,
+      category: "command",
+      kind: "command",
+      symbol: parsed.symbol,
+      targetCode: parsed.code,
+    };
+  }, [parsed]);
 
   const rows: PaletteRow[] = useMemo(() => {
     if (!query.trim()) {
@@ -273,10 +354,18 @@ export function CommandPalette() {
     }
     // Ranked mixed search: recency boost applies to fn codes, tickers, and
     // action ids alike (fuzzyRank matches on the entry's code field).
+    // fuzzyRankDetailed keeps the match indices so rows can highlight the
+    // characters that hit (survey-2 M10).
     const recentsAll = [...recents, ...recentSymbols, ...recentActionIds];
-    return fuzzyRank(all, query, recentsAll, 60).map((entry) => ({ entry }));
+    const ranked: PaletteRow[] = fuzzyRankDetailed(all, query, recentsAll, 60).map(
+      (result) => ({ entry: result.item, matches: result.matches }),
+    );
+    if (commandEntry) {
+      ranked.unshift({ entry: commandEntry, matches: [] });
+    }
+    return ranked;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [all, query, recents, recentSymbols, recentActionIds]);
+  }, [all, query, recents, recentSymbols, recentActionIds, commandEntry]);
 
   const filtered = useMemo(() => rows.map((r) => r.entry), [rows]);
 
@@ -284,6 +373,8 @@ export function CommandPalette() {
     if (open) {
       setQuery("");
       setCursor(0);
+      historyDraftRef.current = "";
+      historyModeRef.current = false;
       requestAnimationFrame(() => inputRef.current?.focus());
     }
   }, [open]);
@@ -314,21 +405,62 @@ export function CommandPalette() {
   if (!open) return null;
 
   const choose = (entry: PaletteEntry) => {
-    if (entry.kind === "fn") recordRecentCode(entry.code);
-    if (entry.kind === "symbol") pushRecentSymbol(entry.symbol);
-    if (entry.kind === "action") recordRecentActionId(entry.action.id);
-    if (entry.kind === "fn") navigate(entry.hash);
-    if (entry.kind === "symbol") navigate(`/symbol/${entry.symbol}/${entry.targetCode}`);
+    if (entry.kind === "fn") {
+      recordRecentCode(entry.code);
+      pushCommandHistory(entry.code);
+      navigate(entry.hash);
+    } else if (entry.kind === "symbol") {
+      pushRecentSymbol(entry.symbol);
+      pushCommandHistory(`${entry.symbol} ${entry.targetCode}`);
+      navigateToFunction(entry.targetCode, entry.symbol);
+    } else if (entry.kind === "action") {
+      recordRecentActionId(entry.action.id);
+      pushCommandHistory(entry.action.id);
+    } else {
+      // L2 pinned `MSFT GP` row — open the security in the exact code.
+      pushRecentSymbol(entry.symbol);
+      recordRecentCode(entry.code);
+      pushCommandHistory(`${entry.symbol} ${entry.code}`);
+      navigateToFunction(entry.code, entry.symbol);
+    }
     togglePalette(false);
     if (entry.kind === "action") entry.action.run();
+  };
+
+  // L2: ArrowUp/Down on an empty query walk the session command history
+  // (lib/command-history.ts). Once stepping has started the arrows keep
+  // walking history; the draft is restored when passing the newest entry.
+  // Any typed edit exits history mode back to normal list navigation.
+  const stepHistory = (dir: -1 | 1) => {
+    const history = getCommandHistory();
+    if (dir === -1 && !history.includes(query)) historyDraftRef.current = query;
+    const next = stepCommandHistory(query || null, dir);
+    if (dir === -1) {
+      historyModeRef.current = true;
+    } else if (next === null) {
+      historyModeRef.current = false;
+    }
+    setQuery(next === null ? historyDraftRef.current : next);
   };
 
   const onListKey = (e: React.KeyboardEvent) => {
     if (e.key === "ArrowDown") {
       e.preventDefault();
+      if (historyModeRef.current) {
+        stepHistory(1);
+        return;
+      }
+      if (!query.trim()) {
+        stepHistory(1);
+        return;
+      }
       setCursor((c) => Math.min(c + 1, filtered.length - 1));
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
+      if (historyModeRef.current || !query.trim()) {
+        stepHistory(-1);
+        return;
+      }
       setCursor((c) => Math.max(c - 1, 0));
     } else if (e.key === "Enter") {
       e.preventDefault();
@@ -365,7 +497,10 @@ export function CommandPalette() {
           ref={inputRef}
           id={INPUT_ID}
           value={query}
-          onChange={(e) => setQuery(e.target.value)}
+          onChange={(e) => {
+            historyModeRef.current = false;
+            setQuery(e.target.value);
+          }}
           placeholder={t("shell.palette.placeholder")}
           aria-label={t("shell.palette.aria_label")}
           aria-autocomplete="list"
@@ -422,9 +557,19 @@ export function CommandPalette() {
                   className={`palette__option palette__option--${it.kind}${isCursor ? " palette__option--cursor" : ""}`}
                 >
                   <span className="palette__option-code">
-                    {it.kind === "action" ? it.tag : it.code}
+                    {it.kind === "action" ? (
+                      it.tag
+                    ) : (
+                      <HighlightedText text={it.code} matches={row.matches} offset={0} />
+                    )}
                   </span>
-                  <span className="palette__option-name">{it.name}</span>
+                  <span className="palette__option-name">
+                    <HighlightedText
+                      text={it.name}
+                      matches={row.matches}
+                      offset={it.code.length + 1}
+                    />
+                  </span>
                   <span className="palette__option-meta">
                     {it.category}
                     {recencyHint}
@@ -441,7 +586,7 @@ export function CommandPalette() {
             <span className="kbd">{MOD_KEY}1-9</span> {t("shell.palette.jump")}
           </span>
           <span className="palette__footer-hint">
-            Try a ticker (AAPL) or an action (theme, layout, split)
+            Try a command (MSFT GP), a ticker (AAPL), or an action (theme, split)
           </span>
           <span>
             <span className="kbd">esc</span> {t("shell.palette.close")}

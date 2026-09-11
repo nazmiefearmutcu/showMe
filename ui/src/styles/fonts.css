@@ -1,0 +1,108 @@
+/*
+ * showMe bundled typography — L1 (terminal-grade campaign, 2026-09-11).
+ *
+ * Self-hosted OFL webfonts vendored as latin-subset woff2 under
+ * `ui/public/fonts/` (served from the site root by Vite). Before this
+ * file the declared stacks in tokens.css resolved to Courier New /
+ * Segoe UI on Windows — the type system was declared but never loaded
+ * (survey-2 C1).
+ *
+ * Families / weights:
+ *   JetBrains Mono   400 500 600 700  (--font-mono)
+ *   Inter Tight      400 500 600 700  (--font-display)
+ *   Share Tech Mono  400              (matrix --font-text / --font-mono)
+ *   VT323            400              (matrix --font-display)
+ *
+ * Licensing: all four families ship under the SIL Open Font License 1.1
+ * (JetBrains Mono, Inter Tight, Share Tech Mono, VT323 — fontsource
+ * builds of the upstream releases).
+ *
+ * Loaded FIRST in index.css so the faces are registered before any
+ * token/preset rules evaluate. `font-display: swap` keeps first paint
+ * immediate (FOUC is handled by the local FOUC blocker in index.html).
+ */
+
+/* JetBrains Mono — primary numeric/terminal face (--font-mono). */
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/jetbrains-mono-latin-400-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/fonts/jetbrains-mono-latin-500-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("/fonts/jetbrains-mono-latin-600-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/fonts/jetbrains-mono-latin-700-normal.woff2") format("woff2");
+}
+
+/* Inter Tight — dense display/UI face (--font-display). */
+@font-face {
+  font-family: "Inter Tight";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/inter-tight-latin-400-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Inter Tight";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/fonts/inter-tight-latin-500-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Inter Tight";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("/fonts/inter-tight-latin-600-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Inter Tight";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/fonts/inter-tight-latin-700-normal.woff2") format("woff2");
+}
+
+/* Share Tech Mono — matrix preset body/terminal face. */
+@font-face {
+  font-family: "Share Tech Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/share-tech-mono-latin-400-normal.woff2") format("woff2");
+}
+
+/* VT323 — matrix preset display face. */
+@font-face {
+  font-family: "VT323";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/vt323-latin-400-normal.woff2") format("woff2");
+}
+
+/* Tabular numerals utility — aligned digit columns for quotes, ladders
+   and any right-ranged numeric cell (Bloomberg "numbers first" law). */
+.u-tabular {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}

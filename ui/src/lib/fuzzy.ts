@@ -125,14 +125,19 @@ export function fuzzyScore<T extends FuzzyTarget>(
   };
 }
 
-export function fuzzyRank<T extends FuzzyTarget>(
+/**
+ * Identical ranking to `fuzzyRank`, but keeps the per-item `matches`
+ * indices so callers can highlight the exact characters that matched
+ * (survey-2 M10). `fuzzyRank` is a thin projection of this function.
+ */
+export function fuzzyRankDetailed<T extends FuzzyTarget>(
   items: readonly T[],
   query: string,
   recents: readonly string[] = [],
   limit = 60,
-): T[] {
+): FuzzyResult<T>[] {
   const recentSet = new Set(recents.map((s) => s.toUpperCase()));
-  const ranked: Array<{ item: T; score: number }> = [];
+  const ranked: Array<{ result: FuzzyResult<T>; score: number }> = [];
   for (const item of items) {
     const result = fuzzyScore(item, query);
     if (!result) continue;
@@ -140,10 +145,23 @@ export function fuzzyRank<T extends FuzzyTarget>(
     if (recentSet.has(item.code.toUpperCase())) {
       score += 50;
     }
-    ranked.push({ item, score });
+    ranked.push({ result, score });
   }
   ranked.sort((a, b) => b.score - a.score);
-  return ranked.slice(0, limit).map((entry) => entry.item);
+  return ranked.slice(0, limit).map(({ result, score }) => ({
+    item: result.item,
+    score,
+    matches: result.matches,
+  }));
+}
+
+export function fuzzyRank<T extends FuzzyTarget>(
+  items: readonly T[],
+  query: string,
+  recents: readonly string[] = [],
+  limit = 60,
+): T[] {
+  return fuzzyRankDetailed(items, query, recents, limit).map((entry) => entry.item);
 }
 
 function rangeIndices(start: number, length: number): number[] {

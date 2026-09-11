@@ -205,6 +205,156 @@ export function getNyseMarketState(
 }
 
 /**
+ * Multi-venue session awareness (campaign 2026-09-11, Lane L3).
+ *
+ * The shell historically rendered a single NYSE-only pill, so crypto / FX /
+ * futures desks read a misleading "closed" next to a live tape. This helper
+ * resolves the session for a security's asset class instead. Honesty rules:
+ *   - equity   — the real NYSE calendar (holidays, pre/after-hours).
+ *   - crypto   — always open; labeled "24/7".
+ *   - fx       — the canonical 24/5 week: Sunday 17:00 → Friday 17:00
+ *                America/New_York (DST-aware; 21:00 UTC in EDT, 22:00 UTC in EST).
+ *   - futures  — an explicit 24/5 approximation (CME), labeled/venued as an
+ *                approximation; no daily-maintenance micro-window is invented.
+ */
+export type SessionKind = "equity" | "crypto" | "fx" | "futures";
+
+export interface SessionStateDisplay {
+  label: string;
+  state: "open" | "closed" | "24h" | "pre" | "post";
+  venue: string;
+}
+
+const FX_OPEN_MINUTES = 21 * 60; // 21:00 UTC Sunday open / Friday close
+const FUTURES_OPEN_MINUTES = 22 * 60; // 22:00 UTC Sunday open (CME approx)
+
+/**
+ * Weekly [openDay openTime, closeDay closeTime) window in UTC, where the
+ * window always wraps Sunday → Friday (crypto weekends stay closed for the
+ * traditional venues). Day indexes match `Date.getUTCDay()` (0 = Sunday).
+ */
+function withinWeeklyUtcWindow(
+  now: Date,
+  openDay: number,
+  openMinutes: number,
+  closeDay: number,
+  closeMinutes: number,
+): boolean {
+  const day = now.getUTCDay();
+  const minutes = now.getUTCHours() * 60 + now.getUTCMinutes();
+  if (day > openDay && day < closeDay) return true; // fully-open weekdays
+  if (day === openDay) return minutes >= openMinutes;
+  if (day === closeDay) return minutes < closeMinutes;
+  return false;
+}
+
+/** UTC offset (ms) of a timezone at an instant — DST-aware via Intl. */
+function zoneOffsetMs(utcMs: number, tz: string): number {
+  const parts = getEasternParts(new Date(utcMs), tz);
+  const wallMs = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute);
+  const utcFloorMs = Math.floor(utcMs / 60000) * 60000;
+  return wallMs - utcFloorMs;
+}
+
+/** Convert an America/New_York wall-clock time to a UTC instant (DST-aware). */
+function etWallToUtcMs(
+  year: number,
+  month: number,
+  day: number,
+  hour: number,
+  minute: number,
+): number {
+  const wallMs = Date.UTC(year, month - 1, day, hour, minute);
+  // Fixpoint: the offset depends on the instant we're solving for, so iterate.
+  let guess = wallMs;
+  for (let i = 0; i < 3; i += 1) {
+    const next = wallMs - zoneOffsetMs(guess, "America/New_York");
+    if (next === guess) break;
+    guess = next;
+  }
+  return guess;
+}
+
+/**
+ * Most recent occurrence of `weekday` at `hourEt:00` America/New_York not
+ * after `now` (weekday matches `Date.getUTCDay()`: 0 = Sunday).
+ */
+function lastEtBoundaryMs(now: Date, weekday: number, hourEt: number): number {
+  const parts = getEasternParts(now);
+  const daysBack = (parts.weekday - weekday + 7) % 7;
+  const candidateDate = new Date(Date.UTC(parts.year, parts.month - 1, parts.day - daysBack));
+  const y = candidateDate.getUTCFullYear();
+  const m = candidateDate.getUTCMonth() + 1;
+  const d = candidateDate.getUTCDate();
+  let boundary = etWallToUtcMs(y, m, d, hourEt, 0);
+  if (boundary > now.getTime()) {
+    // The boundary lies later today (ET) — use the previous week's.
+    boundary = etWallToUtcMs(y, m, d - 7, hourEt, 0);
+  }
+  return boundary;
+}
+
+/**
+ * The canonical FX week: opens Sunday 17:00 ET, closes Friday 17:00 ET.
+ * Open iff the Sunday open is more recent than the Friday close — mirrors
+ * the wrap-around semantics of `withinWeeklyUtcWindow`, but pinned to the
+ * ET wall clock so EST/EDT is resolved by the tz database (R1-F2: the old
+ * fixed 21:00 UTC week lied for one hour during US standard time).
+ */
+function withinFxWeek(now: Date): boolean {
+  const open = lastEtBoundaryMs(now, 0, 17);
+  const close = lastEtBoundaryMs(now, 5, 17);
+  return open > close;
+}
+
+/**
+ * Resolve label / coarse state / venue for a session kind. `now` is
+ * injectable so tests can pin weekend + boundary instants (the UI calls it
+ * with the current wall clock).
+ */
+export function describeSessionState(
+  kind: SessionKind,
+  now: Date = new Date(),
+): { label: string; state: "open" | "closed" | "24h" | "pre" | "post"; venue: string } {
+  switch (kind) {
+    case "crypto":
+      return { label: "24/7", state: "24h", venue: "Crypto" };
+    case "fx": {
+      const open = withinFxWeek(now);
+      return {
+        label: open ? "open · 24/5" : "closed · 24/5",
+        state: open ? "open" : "closed",
+        venue: "FX",
+      };
+    }
+    case "futures": {
+      const open = withinWeeklyUtcWindow(now, 0, FUTURES_OPEN_MINUTES, 5, FX_OPEN_MINUTES);
+      return {
+        label: open ? "open · 24/5" : "closed · 24/5",
+        state: open ? "open" : "closed",
+        venue: "CME (approx)",
+      };
+    }
+    case "equity":
+    default: {
+      const nyseState = getNyseMarketState(now);
+      const display = describeNyseMarketState(nyseState);
+      // Coarse bucket for styling; the LABEL carries the honest nuance
+      // (weekend vs holiday vs unknown-calendar) and is what the UI shows.
+      const state: "open" | "closed" | "pre" | "post" =
+        nyseState === "open"
+          ? "open"
+          : nyseState === "pre-open"
+            ? "pre"
+            : nyseState === "after-hours"
+              ? "post"
+              : "closed";
+      return { label: display.label, state, venue: "NYSE" };
+    }
+  }
+}
+
+/**
  * Display copy + pill tone for each NYSE state. The shell consumes this so
  * the status bar reads the same labels every test pins.
  */

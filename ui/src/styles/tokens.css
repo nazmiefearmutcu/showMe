@@ -408,6 +408,8 @@
   /* Type scale (rem-based, 1rem = 14px via :root font-size) */
   --kpi-hero: 32px;
   --kpi-label: 10px;
+  /* 10px slot — the most common inline literal across the function panes. */
+  --font-size-2xs: 0.714rem;      /* 10px */
   --font-size-xs: 0.625rem;       /* 8.75px ≈ 9px */
   --font-size-sm: 0.7857rem;      /* 11px */
   --font-size-md: 0.857rem;       /* 12px (body default) */
@@ -749,7 +751,7 @@ td,
 
 @keyframes flash-pos {
   0% {
-    background: rgba(47, 212, 128, 0.4);
+    background: var(--positive-soft-hex);
   }
   100% {
     background: transparent;
@@ -757,7 +759,7 @@ td,
 }
 @keyframes flash-neg {
   0% {
-    background: rgba(255, 88, 116, 0.4);
+    background: var(--negative-soft-hex);
   }
   100% {
     background: transparent;

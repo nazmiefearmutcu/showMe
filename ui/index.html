@@ -5,6 +5,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
     <meta name="color-scheme" content="dark light" />
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%2307080a'/%3E%3Cpath d='M14 38h10l6-18 8 28 6-16h6' fill='none' stroke='%232fd0ff' stroke-width='5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
+    <!-- L1: preload the two primary faces (mono numerals + display UI)
+         so they are in flight before React paints; the remaining
+         weights/families load lazily via fonts.css (@font-face). -->
+    <link rel="preload" as="font" type="font/woff2" crossorigin href="/fonts/jetbrains-mono-latin-400-normal.woff2" />
+    <link rel="preload" as="font" type="font/woff2" crossorigin href="/fonts/inter-tight-latin-400-normal.woff2" />
     <script>
       // FOUC blocker — applies stored preset before the React bundle paints.
       // Reads `showme.theme.v2` JSON shape `{preset, density}` and falls back

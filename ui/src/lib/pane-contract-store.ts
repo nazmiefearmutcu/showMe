@@ -12,10 +12,11 @@
  * surface the new mode-pill / sources / next-actions affordances without
  * each pane having to opt in explicitly.
  */
+import { useMemo } from "react";
 import { create } from "zustand";
 
 import type { DataMode } from "@/manifest/types";
-import { onWorkspaceReset } from "./workspace";
+import { onWorkspaceReset, useWorkspace, type WorkspaceNode } from "./workspace";
 
 export interface PaneContractSnapshot {
   /** Honest data mode label. */
@@ -105,4 +106,158 @@ export function recordPaneContract(
   snapshot: PaneContractSnapshot,
 ): void {
   usePaneContractStore.getState().record(code, symbol, snapshot);
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+ * Desk-health rollup (campaign 2026-09-11, Lane L4)
+ *
+ * Per-pane provenance (dataMode / asOf / sources / warnings / latencyMs) was
+ * tooltip-only. These pure selectors classify every recorded contract into
+ * exactly one health tier and aggregate the desk-level counts the Statusbar
+ * and PaneHealth chip render.
+ *
+ * Tier semantics (frozen, shared with PaneHealth):
+ *   - stale    : stamp older than PANE_STALE_AFTER_MS (highest precedence —
+ *                age is the strongest evidence that data can't be trusted)
+ *   - degraded : warnings present, OR the declared mode is not a live tier
+ *                (synthetic/reference/modeled/cached/unavailable/unknown — an
+ *                undeclared mode can never claim "live")
+ *   - live     : live_official / live_exchange, fresh, no warnings
+ *
+ * The stamp is the payload's own ISO `asOf` when parseable, falling back to
+ * the client `receivedAt` (a pane whose fetches stopped ages out even when
+ * the provider never stamped the payload).
+ * ────────────────────────────────────────────────────────────────────────── */
+
+/** Canonical shape alias for component props (frozen cross-lane interface). */
+export type PaneContract = PaneContractSnapshot;
+
+export type PaneHealthTier = "live" | "degraded" | "stale";
+
+export interface DeskHealth {
+  live: number;
+  degraded: number;
+  stale: number;
+  /** Max latencyMs across recorded contracts; null when none declared. */
+  worstLatencyMs: number | null;
+  /** Max receivedAt across recorded contracts; null when none recorded. */
+  lastUpdatedAt: number | null;
+}
+
+/**
+ * How old a contract may be before the desk calls it stale. Five minutes is
+ * ~2.5-10x the slowest pane poll (90-120 s) — long enough that a healthy
+ * slow pane never trips it, short enough that a dead feed is named as stale
+ * within the same sitting.
+ */
+export const PANE_STALE_AFTER_MS = 5 * 60_000;
+
+const LIVE_DATA_MODES: ReadonlySet<string> = new Set<string>([
+  "live_official",
+  "live_exchange",
+]);
+
+/** Resolve the timestamp a contract is judged by (asOf, else receivedAt). */
+export function paneStampedAt(snap: PaneContractSnapshot): number {
+  if (typeof snap.asOf === "string") {
+    const parsed = Date.parse(snap.asOf);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return snap.receivedAt;
+}
+
+/** Clamped age of a contract in ms (never negative — clock skew reads 0). */
+export function paneAgeMs(snap: PaneContractSnapshot, now: number): number {
+  return Math.max(0, now - paneStampedAt(snap));
+}
+
+/** Classify a single contract into exactly one tier. */
+export function paneHealthTier(snap: PaneContractSnapshot, now: number): PaneHealthTier {
+  if (paneAgeMs(snap, now) > PANE_STALE_AFTER_MS) return "stale";
+  if ((snap.warnings?.length ?? 0) > 0) return "degraded";
+  const mode = typeof snap.dataMode === "string" ? snap.dataMode : "";
+  return LIVE_DATA_MODES.has(mode) ? "live" : "degraded";
+}
+
+/** Aggregate a byKey map into desk-level health counts. Pure + testable. */
+export function computeDeskHealth(
+  byKey: Record<string, PaneContractSnapshot>,
+  now: number,
+): DeskHealth {
+  let live = 0;
+  let degraded = 0;
+  let stale = 0;
+  let worstLatencyMs: number | null = null;
+  let lastUpdatedAt: number | null = null;
+  for (const key of Object.keys(byKey)) {
+    const snap = byKey[key];
+    if (!snap) continue;
+    const tier = paneHealthTier(snap, now);
+    if (tier === "live") live += 1;
+    else if (tier === "degraded") degraded += 1;
+    else stale += 1;
+    if (
+      typeof snap.latencyMs === "number" &&
+      Number.isFinite(snap.latencyMs) &&
+      (worstLatencyMs == null || snap.latencyMs > worstLatencyMs)
+    ) {
+      worstLatencyMs = snap.latencyMs;
+    }
+    if (lastUpdatedAt == null || snap.receivedAt > lastUpdatedAt) {
+      lastUpdatedAt = snap.receivedAt;
+    }
+  }
+  return { live, degraded, stale, worstLatencyMs, lastUpdatedAt };
+}
+
+/**
+ * Contract cache keys for every leaf currently in the workspace tree.
+ * Desk health counts only ON-SCREEN panes (R1-F3): record() keeps a cache
+ * of every (code, symbol) ever fetched, so aggregating the raw cache let a
+ * retargeted or closed leaf inflate STALE/DEGRADED until the 200-entry cap.
+ */
+export function leafContractKeys(tree: WorkspaceNode): string[] {
+  const out: string[] = [];
+  const walk = (node: WorkspaceNode): void => {
+    if (node.kind === "leaf") {
+      out.push(makeKey(node.code, node.symbol));
+      return;
+    }
+    for (const child of node.children) walk(child);
+  };
+  walk(tree);
+  return out;
+}
+
+/**
+ * Desk-level health over the contracts bound to the CURRENT workspace
+ * leaves. Recomputed on each render of the consuming component (counters
+ * are O(entries ≤ 200)); a consumer that renders on a clock (Statusbar,
+ * 1 Hz) therefore keeps the staleness classification moving without extra
+ * timers in the store.
+ */
+export function useDeskHealth(): DeskHealth {
+  const byKey = usePaneContractStore((s) => s.byKey);
+  const tree = useWorkspace((s) => s.tree);
+  const liveKeys = useMemo(() => new Set(leafContractKeys(tree)), [tree]);
+  const scoped = useMemo(() => {
+    let changed = false;
+    const out: Record<string, PaneContractSnapshot> = {};
+    for (const key of Object.keys(byKey)) {
+      if (liveKeys.has(key)) {
+        out[key] = byKey[key];
+      } else {
+        changed = true;
+      }
+    }
+    return changed ? out : byKey;
+  }, [byKey, liveKeys]);
+  return computeDeskHealth(scoped, Date.now());
+}
+
+/** Compact latency readout: "84ms" under a second, "1.2s" above. */
+export function formatLatencyMs(ms: number): string {
+  const clamped = Math.max(0, ms);
+  if (clamped < 1000) return `${Math.round(clamped)}ms`;
+  return `${(clamped / 1000).toFixed(1)}s`;
 }

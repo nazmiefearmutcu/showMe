@@ -7,6 +7,7 @@ import {
 } from "@/lib/symbols";
 import { resolveSymbolInput } from "@/lib/symbol-resolver";
 import { navigate } from "@/lib/router";
+import { pushCommandHistory } from "@/lib/command-history";
 import { Pill } from "@/design-system";
 
 interface SymbolBarProps {
@@ -66,6 +67,9 @@ export function SymbolBar({ code, symbol }: SymbolBarProps) {
     const next = await resolveSymbolInput(sym);
     if (!next) return;
     pushRecentSymbol(next);
+    // L2 consistency: a GO here is the same command the titlebar command
+    // line records — keep both inputs feeding one session history.
+    pushCommandHistory(`${next} ${code}`);
     navigate(`/symbol/${next}/${code}`);
     setRecent(listRecentSymbols());
   };
@@ -94,8 +98,11 @@ export function SymbolBar({ code, symbol }: SymbolBarProps) {
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           placeholder="AAPL"
+          aria-label="Symbol"
           list={`symbol-bar-options-${code}`}
           className="symbol-bar-host__input"
+          autoComplete="off"
+          spellCheck={false}
         />
         <datalist id={`symbol-bar-options-${code}`}>
           {suggestions.map((item) => (

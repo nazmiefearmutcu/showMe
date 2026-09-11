@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   __setHolidaysForTests,
   describeNyseMarketState,
+  describeSessionState,
   getEasternParts,
   getNyseMarketState,
 } from "./market-state";
@@ -159,5 +160,97 @@ describe("getNyseMarketState — uncovered year flag (F10)", () => {
     expect(getNyseMarketState(goodFriday)).toBe("closed-holiday");
     const regularFriday = new Date("2028-04-21T13:35:00Z");
     expect(getNyseMarketState(regularFriday)).toBe("open");
+  });
+});
+
+// ---------- L3 (campaign 2026-09-11): multi-venue session awareness ----------
+
+describe("describeSessionState — crypto", () => {
+  it("is always open, any day/time, labeled 24/7", () => {
+    const saturday = new Date("2026-05-23T15:00:00Z");
+    expect(describeSessionState("crypto", saturday)).toEqual({
+      label: "24/7",
+      state: "24h",
+      venue: "Crypto",
+    });
+    const mondayNight = new Date("2026-05-25T03:00:00Z");
+    expect(describeSessionState("crypto", mondayNight).state).toBe("24h");
+  });
+});
+
+describe("describeSessionState — equity reuses the NYSE calendar", () => {
+  it("Friday RTH → open / NYSE", () => {
+    const fri = new Date("2026-05-22T13:35:00Z"); // 09:35 ET
+    expect(describeSessionState("equity", fri)).toEqual({
+      label: "open",
+      state: "open",
+      venue: "NYSE",
+    });
+  });
+  it("weekend → closed with the honest weekend label", () => {
+    const sat = new Date("2026-05-23T19:00:00Z");
+    const out = describeSessionState("equity", sat);
+    expect(out.state).toBe("closed");
+    expect(out.label).toContain("weekend");
+  });
+  it("pre-open and after-hours map to pre/post buckets", () => {
+    expect(describeSessionState("equity", new Date("2026-05-22T13:29:00Z")).state).toBe("pre");
+    expect(describeSessionState("equity", new Date("2026-05-22T20:00:00Z")).state).toBe("post");
+  });
+  it("holiday stays closed and says so", () => {
+    const xmas = new Date("2026-12-25T19:00:00Z");
+    const out = describeSessionState("equity", xmas);
+    expect(out.state).toBe("closed");
+    expect(out.label).toContain("holiday");
+  });
+});
+
+describe("describeSessionState — FX 24/5 week boundaries (UTC)", () => {
+  it("closed on Saturday", () => {
+    expect(describeSessionState("fx", new Date("2026-05-23T12:00:00Z"))).toMatchObject({
+      state: "closed",
+      venue: "FX",
+    });
+  });
+  it("closed Sunday 20:59 UTC, open Sunday 21:00 UTC exactly", () => {
+    expect(describeSessionState("fx", new Date("2026-05-24T20:59:00Z")).state).toBe("closed");
+    expect(describeSessionState("fx", new Date("2026-05-24T21:00:00Z")).state).toBe("open");
+  });
+  it("open Friday 20:59 UTC, closed Friday 21:00 UTC exactly", () => {
+    expect(describeSessionState("fx", new Date("2026-05-22T20:59:00Z")).state).toBe("open");
+    expect(describeSessionState("fx", new Date("2026-05-22T21:00:00Z")).state).toBe("closed");
+  });
+  it("winter (EST): the week opens at 22:00 UTC — Sunday 21:30 UTC stays closed", () => {
+    expect(describeSessionState("fx", new Date("2026-01-11T21:30:00Z")).state).toBe("closed");
+    expect(describeSessionState("fx", new Date("2026-01-11T22:30:00Z")).state).toBe("open");
+  });
+  it("winter (EST): the week closes at 22:00 UTC — Friday 21:30 UTC stays open", () => {
+    expect(describeSessionState("fx", new Date("2026-01-09T21:30:00Z")).state).toBe("open");
+    expect(describeSessionState("fx", new Date("2026-01-09T22:30:00Z")).state).toBe("closed");
+  });
+  it("open midweek", () => {
+    expect(describeSessionState("fx", new Date("2026-05-20T03:00:00Z")).state).toBe("open");
+  });
+  it("label says 24/5 in both states — never a bare 'open'", () => {
+    expect(describeSessionState("fx", new Date("2026-05-20T03:00:00Z")).label).toBe("open · 24/5");
+    expect(describeSessionState("fx", new Date("2026-05-23T12:00:00Z")).label).toBe("closed · 24/5");
+  });
+});
+
+describe("describeSessionState — futures honest 24/5 approximation", () => {
+  it("closed Saturday and Sunday before 22:00 UTC", () => {
+    expect(describeSessionState("futures", new Date("2026-05-23T12:00:00Z")).state).toBe("closed");
+    expect(describeSessionState("futures", new Date("2026-05-24T21:59:00Z")).state).toBe("closed");
+  });
+  it("open Sunday at 22:00 UTC exactly", () => {
+    expect(describeSessionState("futures", new Date("2026-05-24T22:00:00Z")).state).toBe("open");
+  });
+  it("closed Friday at 21:00 UTC exactly", () => {
+    expect(describeSessionState("futures", new Date("2026-05-22T21:00:00Z")).state).toBe("closed");
+  });
+  it("venue discloses the approximation instead of claiming CME certainty", () => {
+    const out = describeSessionState("futures", new Date("2026-05-20T12:00:00Z"));
+    expect(out.venue).toContain("approx");
+    expect(out.label).toBe("open · 24/5");
   });
 });

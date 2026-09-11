@@ -81,3 +81,20 @@
 .pane-chrome__quote--stale .pane-chrome__quote-delta {
   opacity: 0.55;
 }
+
+/* ── L2 command line / match highlighting (campaign 2026-09-11) ─────────── */
+
+/* Fuzzy match paint (survey-2 M10): accent ink, no background wash — the
+   matched characters read as emphasis inside the code / name cell. */
+.palette__option-code .palette__match,
+.palette__option-name .palette__match {
+  background: transparent;
+  color: var(--accent);
+  font-weight: var(--font-weight-semibold);
+}
+
+/* Parsed `MSFT GP` pinned row: the function code carries accent so the
+   security+function composite reads apart from plain catalog rows. */
+.palette__option--command .palette__option-code {
+  color: var(--accent);
+}

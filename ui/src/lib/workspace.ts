@@ -18,6 +18,18 @@ import { normalizeSymbolInput } from "./symbols";
 
 export type Direction = "h" | "v";
 
+/**
+ * Canonical symbol-link groups. Link groups are a small, fixed vocabulary
+ * (A–D) so a persisted group id is always verifiable; anything else is
+ * sanitized away on restore (see `isLinkGroupId`).
+ */
+export const LINK_GROUP_IDS = ["A", "B", "C", "D"] as const;
+export type LinkGroupId = (typeof LINK_GROUP_IDS)[number];
+
+export function isLinkGroupId(value: unknown): value is LinkGroupId {
+  return typeof value === "string" && (LINK_GROUP_IDS as readonly string[]).includes(value);
+}
+
 export interface LeafNode {
   id: string;
   kind: "leaf";
@@ -137,6 +149,13 @@ interface WorkspaceState {
   setLeafTarget: (leafId: string, code: string, symbol?: string) => void;
   /** Toggle the symbol-link group on the focused leaf. */
   setLeafLinkGroup: (leafId: string, linkGroup?: string) => void;
+  /**
+   * Assign the same symbol-link group to EVERY leaf ("Link all panes").
+   * `undefined` clears all links ("Clear all links"). No symbol rebinding
+   * happens here — group membership only takes effect on the next symbol
+   * change, matching the existing link semantics.
+   */
+  setAllLinkGroups: (linkGroup?: string) => void;
   /** Split the focused leaf in half along `direction`, opening a new leaf with `code`. */
   splitFocused: (direction: Direction, target?: { code: string; symbol?: string }) => void;
   /** Close the focused leaf; collapses parent split if only 1 sibling remains. */
@@ -188,6 +207,8 @@ export const useWorkspace = create<WorkspaceState>((set, get) => ({
         n.kind === "leaf" ? { ...n, linkGroup: linkGroup || undefined } : n,
       ),
     })),
+  setAllLinkGroups: (linkGroup) =>
+    set((s) => ({ tree: setAllLinkGroupsInTree(s.tree, linkGroup) })),
   splitFocused: (direction, target) => {
     const { tree, focusedId } = get();
     const focused = findLeaf(tree, focusedId);
@@ -278,6 +299,19 @@ function updateLeaf(
     const normalizedSymbol = normalizeSymbolInput(symbol);
     return { ...n, code: code.toUpperCase(), symbol: normalizedSymbol || undefined };
   });
+}
+
+/**
+ * Apply one link group to every leaf in the tree (or clear all groups when
+ * `linkGroup` is falsy). Pure — the store action wraps it. Only touches
+ * `linkGroup`; codes/symbols are left exactly as they are.
+ */
+export function setAllLinkGroupsInTree(
+  node: WorkspaceNode,
+  linkGroup?: string,
+): WorkspaceNode {
+  if (node.kind === "leaf") return { ...node, linkGroup: linkGroup || undefined };
+  return { ...node, children: node.children.map((c) => setAllLinkGroupsInTree(c, linkGroup)) };
 }
 
 /**
@@ -409,7 +443,12 @@ export function loadWorkspace(state: SerializedWorkspace): void {
 function remapIds(node: WorkspaceNode): WorkspaceNode {
   if (node.kind === "leaf") {
     const symbol = normalizeSymbolInput(node.symbol);
-    return { ...node, id: nextId(), symbol: symbol || undefined };
+    // Persisted/imported trees can carry a malformed link group (legacy
+    // id, number, arbitrary string). Only the fixed A–D vocabulary is a
+    // real group; anything else is sanitized away rather than surviving
+    // into linking behavior.
+    const linkGroup = isLinkGroupId(node.linkGroup) ? node.linkGroup : undefined;
+    return { ...node, id: nextId(), symbol: symbol || undefined, linkGroup };
   }
   return {
     ...node,
