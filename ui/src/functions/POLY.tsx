@@ -6,14 +6,16 @@
  * reported volume / liquidity, and a close date. Click a card to open the
  * underlying market.
  *
- * The backend (engine/functions/misc/poly.py) is keyring-gated: with no
- * Polymarket / Gamma API credential configured it returns
- * `data_mode='not_configured'` with `rows=[]` and an explicit warning —
- * never synthetic markets. This pane surfaces that mode honestly: a
- * `not configured` / `cached` pill instead of a fake `live` tape, plus the
- * provider warning, and an Empty state that names the missing credential.
+ * The backend (engine/functions/misc/poly.py) reads the KEYLESS public
+ * Polymarket Gamma /markets endpoint. Live rows carry
+ * `data_mode='delayed_reference'` (the backend never emits `live`); an
+ * empty success is `cached_snapshot`, and a real network outage returns
+ * `status='provider_unavailable'` with `data_mode='not_configured'` and
+ * empty rows — never synthetic markets. This pane surfaces those states
+ * honestly, including the backend `reason` on an outage (no keyring
+ * credential is involved on the keyless path).
  */
-import { useMemo, type CSSProperties } from "react";
+import { useEffect, useMemo, type CSSProperties } from "react";
 import {
   DataGrid,
   type DataGridColumn,
@@ -67,6 +69,8 @@ interface PolyCard {
 }
 
 interface PolyPayload {
+  status?: string;
+  reason?: string;
   data_mode?: string;
   rows?: PolyRow[];
   cards?: PolyCard[];
@@ -123,8 +127,16 @@ export function POLYPane({ code }: FunctionPaneProps) {
 
   const { state, data, error, refetch } = useFunction<unknown>({
     code,
-    params: { status: "open", min_liquidity_usd: 10_000, tick },
+    params: { status: "open", min_liquidity_usd: 10_000 },
   });
+  // Poll on the visibility tick WITHOUT putting `tick` in params: a changing
+  // param key makes useFunction treat every poll as a fresh load (skeleton
+  // flash + cleared data). Canonical GLCO/WHAL pattern.
+  useEffect(() => {
+    if (tick === 0) return;
+    refetch();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- tick is the trigger
+  }, [tick]);
 
   const payload = useMemo<PolyPayload>(
     () =>
@@ -135,8 +147,11 @@ export function POLYPane({ code }: FunctionPaneProps) {
   );
 
   const dataMode = payload.data_mode ?? "not_configured";
-  const isLive = dataMode === "live";
-  const isNotConfigured = dataMode === "not_configured";
+  // The keyless Gamma path labels real live rows "delayed_reference" — the
+  // backend never emits "live". "cached_snapshot" is an empty success state;
+  // "not_configured" + status provider_unavailable is a real network outage.
+  const isDelayedLive = dataMode === "delayed_reference";
+  const isOutage = payload.status === "provider_unavailable";
   const warningsList = useMemo(() => {
     const fromPayload = Array.isArray(payload.warnings) ? payload.warnings : [];
     const fromEnvelope = Array.isArray(data?.warnings) ? data?.warnings : [];
@@ -307,8 +322,8 @@ export function POLYPane({ code }: FunctionPaneProps) {
               <Pill tone="accent" variant="soft" withDot={false}>
                 {utcStamp} UTC
               </Pill>
-              <Pill tone={isLive ? "positive" : "warn"} variant="soft">
-                {isLive ? "live" : dataMode.replace(/_/g, " ")}
+              <Pill tone={isDelayedLive ? "accent" : "warn"} variant="soft">
+                {dataMode.replace(/_/g, " ")}
               </Pill>
               <LoadStatePill state={state} />
               <RefreshButton loading={state === "loading"} onClick={refetch} />
@@ -331,26 +346,30 @@ export function POLYPane({ code }: FunctionPaneProps) {
           ) : markets.length === 0 ? (
             <Empty
               title={
-                isNotConfigured ? "Prediction markets not configured" : "No open markets"
+                isOutage ? "Prediction market feed unavailable" : "No open markets"
               }
               body={
-                isNotConfigured
-                  ? "POLY requires a Polymarket / Gamma API credential in the keyring. No synthetic markets are shown."
-                  : warningsList[0] ?? "No open prediction markets matched the filter."
+                isOutage
+                  ? payload.reason ??
+                    warningsList[0] ??
+                    "The keyless Polymarket Gamma feed is unreachable — no odds are fabricated."
+                  : warningsList[0] ??
+                    "No open prediction markets matched the filter."
               }
               icon="◇"
             />
           ) : (
             <div className="u-grid-gap-14">
-              {!isLive ? (
+              {!isDelayedLive ? (
                 <section style={noticeStyle}>
                   <strong className="u-text-warn">
-                    {dataMode.replace(/_/g, " ")}
+                    {isOutage ? "feed unavailable" : dataMode.replace(/_/g, " ")}
                   </strong>
                   <span className="u-text-secondary">
-                    {isNotConfigured
-                      ? "Polymarket / Gamma credential not configured — values below are a labelled reference snapshot, not a live on-chain tape."
-                      : "Provider returned a labelled fallback mode. Treat odds as delayed reference, not live tape."}
+                    {isOutage
+                      ? payload.reason ??
+                        "Polymarket Gamma feed unreachable — values below are a labelled snapshot, not live odds."
+                      : "Provider returned a labelled snapshot mode. Treat odds as delayed reference, not live tape."}
                   </span>
                 </section>
               ) : null}
@@ -436,7 +455,7 @@ export function POLYPane({ code }: FunctionPaneProps) {
             value={data?.sources?.join(", ") || "polymarket"}
           />
           <StatusDivider />
-          <StatusSection label="mode" value={dataMode} tone={isLive ? "positive" : "warn"} />
+          <StatusSection label="mode" value={dataMode} tone={isDelayedLive ? "accent" : "warn"} />
           <StatusDivider />
           <StatusSection label="poll" value={`${REFRESH_MS / 1000}s`} />
           <StatusDivider />

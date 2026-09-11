@@ -27,7 +27,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import { DEBTPane } from "./DEBT";
 
 /* ── useFunction mock ──────────────────────────────────────────────── */
@@ -40,6 +40,7 @@ interface MockFnState {
 
 const mockFn: MockFnState = { state: "idle", data: undefined, error: null };
 const refetch = vi.fn();
+const recordedCalls: Array<{ params?: Record<string, unknown> }> = [];
 
 function setMockFn(next: MockFnState) {
   mockFn.state = next.state;
@@ -48,12 +49,15 @@ function setMockFn(next: MockFnState) {
 }
 
 vi.mock("@/lib/useFunction", () => ({
-  useFunction: () => ({
-    state: mockFn.state,
-    data: mockFn.data,
-    error: mockFn.error,
-    refetch,
-  }),
+  useFunction: (opts: { params?: Record<string, unknown> }) => {
+    recordedCalls.push(opts);
+    return {
+      state: mockFn.state,
+      data: mockFn.data,
+      error: mockFn.error,
+      refetch,
+    };
+  },
 }));
 
 // Visibility poll is irrelevant to render assertions — return a stable tick.
@@ -136,10 +140,25 @@ function okPayload(extra: Record<string, unknown> = {}, summaryExtra: Record<str
 beforeEach(() => {
   localStorage.clear();
   refetch.mockClear();
+  recordedCalls.length = 0;
   setMockFn({ state: "idle", data: undefined });
 });
 afterEach(() => {
   cleanup();
+});
+
+describe("DEBT pane — poll hygiene", () => {
+  it("polls without putting the visibility tick into the fetch params", () => {
+    // Regression (verify-2 invariant): `params: { tick }` changes the fetch
+    // key every poll → useFunction wipes the board into a skeleton instead of
+    // a silent refresh. The tick must drive refetch() via an effect only.
+    setMockFn({ state: "ok", ...okPayload() });
+    render(<DEBTPane code="DEBT" />);
+    expect(recordedCalls.length).toBeGreaterThan(0);
+    for (const call of recordedCalls) {
+      expect(call.params ?? {}).not.toHaveProperty("tick");
+    }
+  });
 });
 
 describe("DEBT pane — load states (scoped live region)", () => {
@@ -209,8 +228,29 @@ describe("DEBT pane — local-currency REFERENCE disclosure", () => {
   it("labels the local-ccy column as a reference (not a live series)", () => {
     setMockFn({ state: "ok", ...okPayload() });
     render(<DEBTPane code="DEBT" />);
-    // A "ref"/"referans" disclosure must be visible alongside the local-ccy column.
-    expect(screen.getAllByText(/referans/i).length).toBeGreaterThan(0);
+    // A "reference" disclosure must be visible alongside the local-ccy column.
+    // (Renamed from the Turkish "referans" — pinned selector updated.)
+    expect(screen.getAllByText(/reference/i).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/referans/i)).toBeNull();
+  });
+});
+
+describe("DEBT pane — derived KPI fallback math", () => {
+  it("computes max / median / min when summary omits them", () => {
+    // okPayload()'s summary deliberately omits max/median/min.
+    setMockFn({ state: "ok", ...okPayload() });
+    render(<DEBTPane code="DEBT" />);
+    const ribbon = screen.getByLabelText("DEBT KPI ribbon");
+    // JP 255.12 → max, median of [63.4, 125.67, 255.12] = 125.67, DE 63.4 → min.
+    expect(within(ribbon).getByText("255.1%")).toBeInTheDocument();
+    expect(within(ribbon).getByText("125.7%")).toBeInTheDocument();
+    expect(within(ribbon).getByText("63.4%")).toBeInTheDocument();
+  });
+
+  it("scales the bar ranking legend to the global max across regions", () => {
+    setMockFn({ state: "ok", ...okPayload() });
+    render(<DEBTPane code="DEBT" />);
+    expect(screen.getByText(/scaled to 255%/i)).toBeInTheDocument();
   });
 });
 

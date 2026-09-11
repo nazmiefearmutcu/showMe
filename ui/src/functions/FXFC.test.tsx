@@ -161,7 +161,26 @@ describe("FXFC pane — data honesty", () => {
     expect(
       screen.queryByRole("status", { name: /data quality warning/i }),
     ).toBeNull();
-    expect(screen.getAllByText(/live_yfinance_quote/i).length).toBe(4);
+    // 4 per-row source pills + the source-aware KPI caption.
+    expect(screen.getAllByText(/live_yfinance_quote/i).length).toBe(5);
+  });
+
+  it("treats the keyless ECB/Frankfurter tiers as live, not reference", () => {
+    // The default-on keyless spot chain ships live_official (Frankfurter) /
+    // live_ecb_reference; only reference_model is the labelled fallback.
+    const payload = livePayload();
+    payload.data.forecast = payload.data.forecast.map((r) => ({
+      ...r,
+      source_mode: "live_official",
+    }));
+    setMockFn({ state: "ok", data: payload });
+    render(<FXFCPane code="FXFC" symbol="USDJPY" />);
+    expect(screen.getByText("live spot")).toBeInTheDocument();
+    expect(screen.queryByText("reference spot")).toBeNull();
+    expect(
+      screen.queryByRole("status", { name: /data quality warning/i }),
+    ).toBeNull();
+    expect(screen.getByText(/LIVE SPOT · live_official/i)).toBeInTheDocument();
   });
 
   it("downgrades to reference spot + warning banner for reference payloads", () => {
@@ -179,6 +198,19 @@ describe("FXFC pane — data honesty", () => {
     const { container } = render(<FXFCPane code="FXFC" symbol="USDJPY" />);
     // 153.804418 - 154.324 = -0.519582 → "-0.519582" in the F − S column.
     expect(container.textContent).toContain("-0.519582");
+  });
+
+  it("labels the KPI with the ladder slot actually used (no silent 3M fallback)", () => {
+    const payload = livePayload();
+    payload.data.forecast = [
+      forecastRow("1M", 1 / 12, 153.8, "live_yfinance_quote"),
+      forecastRow("6M", 0.5, 151.3, "live_yfinance_quote"),
+    ];
+    setMockFn({ state: "ok", data: payload });
+    render(<FXFCPane code="FXFC" symbol="USDJPY" />);
+    // Without a 3M row the pane used rows[1]; it must say "6M", not "3M".
+    expect(screen.getByText("6M forecast")).toBeInTheDocument();
+    expect(screen.queryByText("3M forecast")).toBeNull();
   });
 
   it("never claims vendor analyst forecasts (model note)", () => {

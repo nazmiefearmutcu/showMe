@@ -80,6 +80,41 @@ describe("STRA P1 — synthetic preview disclosure", () => {
     render(<STRAPane />);
     expect(screen.queryByTestId("stra-preview-synthetic-note")).toBeNull();
   });
+
+  it("discloses truncation when the event list exceeds 30", () => {
+    const events = Array.from({ length: 42 }, (_, i) => ({
+      bar_index: i, bar_time: `12:${String(i).padStart(2, "0")}`,
+      kind: "entry" as const, price: 100 + i, details: {},
+    }));
+    useStrategyStore.setState({
+      lastPreview: {
+        strategy_id: "abc", symbol: "BTC/USDT", timeframe: "1h",
+        bars: 100, events, source: "synthetic_random_walk",
+      },
+    });
+    render(<STRAPane />);
+    const note = screen.getByTestId("stra-preview-truncated");
+    expect(note.textContent).toMatch(/Showing first 30 of 42 events/);
+    // The rendered list itself stays capped at 30 rows.
+    expect(screen.getAllByRole("listitem").filter((li) =>
+      li.textContent?.includes("entry"),
+    ).length).toBe(30);
+  });
+
+  it("shows no truncation note at or below 30 events", () => {
+    const events = Array.from({ length: 30 }, (_, i) => ({
+      bar_index: i, bar_time: `12:${String(i).padStart(2, "0")}`,
+      kind: "entry" as const, price: 100 + i, details: {},
+    }));
+    useStrategyStore.setState({
+      lastPreview: {
+        strategy_id: "abc", symbol: "BTC/USDT", timeframe: "1h",
+        bars: 100, events, source: "synthetic_random_walk",
+      },
+    });
+    render(<STRAPane />);
+    expect(screen.queryByTestId("stra-preview-truncated")).toBeNull();
+  });
 });
 
 describe("STRA P3 — accessibility labels", () => {

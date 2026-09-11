@@ -2,12 +2,13 @@
  * OSA pane — render-contract + interaction tests.
  *
  * The pane is fully parameter-driven (no market feed): the legs editor and
- * strategy presets build the request, the backend returns solved premiums
- * and a 101-point payoff/PnL curve. Tests pin:
+ * strategy presets build the request, the backend returns Black-Scholes
+ * premiums (from the entered IV) and a 101-point payoff/PnL curve. Tests pin:
  *
  *  - the four load states (loading / error / bad-payload / ok) render;
  *  - the ok state renders the stats strip, the payoff SVG and the legs table;
  *  - breakeven markers appear in the chart for a spread payload;
+ *  - the editor note does NOT claim the model solves IV per leg;
  *  - clicking a strategy preset swaps the legs AND persists them;
  *  - editing a leg strike updates the persisted strategy.
  *
@@ -163,6 +164,13 @@ describe("OSA pane — load states", () => {
     expect(screen.getByLabelText(/Leg 1: buy CALL 100/)).toBeInTheDocument();
     expect(screen.getByLabelText(/Leg 2: sell CALL 110/)).toBeInTheDocument();
     expect(screen.getByText("5.54")).toBeInTheDocument();
+  });
+
+  it("does not claim the model solves IV per leg (the entered value prices the leg)", () => {
+    setMockFn({ state: "ok", ...bullCallPayload() });
+    const { container } = render(<OSAPane code="OSA" symbol="SPY" />);
+    expect(container.textContent).toMatch(/IV per leg is the entered value/i);
+    expect(container.textContent).not.toMatch(/IV solved/i);
   });
 });
 

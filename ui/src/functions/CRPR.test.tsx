@@ -35,6 +35,7 @@ interface MockFnState {
 
 const mockFn: MockFnState = { state: "idle", data: undefined, error: null };
 const refetch = vi.fn();
+let lastFnArgs: Record<string, unknown> | undefined;
 
 function setMockFn(next: MockFnState) {
   mockFn.state = next.state;
@@ -43,17 +44,22 @@ function setMockFn(next: MockFnState) {
 }
 
 vi.mock("@/lib/useFunction", () => ({
-  useFunction: () => ({
-    state: mockFn.state,
-    data: mockFn.data,
-    error: mockFn.error,
-    refetch,
-  }),
+  useFunction: (args: Record<string, unknown>) => {
+    lastFnArgs = args;
+    return {
+      state: mockFn.state,
+      data: mockFn.data,
+      error: mockFn.error,
+      refetch,
+    };
+  },
 }));
 
-// Visibility poll is irrelevant to render assertions — return a stable tick.
+// Visibility poll is irrelevant to render assertions — a mutable tick lets
+// the poll-adoption test drive refetch without touching the real interval.
+const mockTick = { current: 0 };
 vi.mock("@/lib/useVisibilityTick", () => ({
-  useVisibilityTick: () => 0,
+  useVisibilityTick: () => mockTick.current,
 }));
 
 /* ── fixtures ──────────────────────────────────────────────────────── */
@@ -182,6 +188,8 @@ beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(NOW);
   localStorage.clear();
+  mockTick.current = 0;
+  lastFnArgs = undefined;
   refetch.mockClear();
   setMockFn({ state: "idle", data: undefined });
 });
@@ -293,7 +301,7 @@ describe("CRPR pane — A1 accessible rating ladder meter", () => {
   it("exposes a role=meter with clamped valuenow + valuetext", () => {
     setMockFn({ state: "ok", ...corporatePayload() });
     render(<CRPRPane code="CRPR" />);
-    const meter = screen.getByRole("meter", { name: /kredi notu merdiveni/i });
+    const meter = screen.getByRole("meter", { name: /credit rating ladder/i });
     expect(meter).toHaveAttribute("aria-valuemin", "0");
     // BBB is index 3 in the 7-rung scale → valuemax 6, valuenow 3.
     expect(meter).toHaveAttribute("aria-valuemax", "6");
@@ -304,7 +312,7 @@ describe("CRPR pane — A1 accessible rating ladder meter", () => {
   it("clamps valuenow into [0, max] even if the marker is off-scale", () => {
     setMockFn({ state: "ok", ...corporatePayload() });
     render(<CRPRPane code="CRPR" />);
-    const meter = screen.getByRole("meter", { name: /kredi notu merdiveni/i });
+    const meter = screen.getByRole("meter", { name: /credit rating ladder/i });
     const now = Number(meter.getAttribute("aria-valuenow"));
     const max = Number(meter.getAttribute("aria-valuemax"));
     expect(now).toBeGreaterThanOrEqual(0);
@@ -431,5 +439,28 @@ describe("CRPR pane — Di3 distinct empty states", () => {
     expect(
       screen.getByText(/returned no implied bucket|model returned no/i),
     ).toBeInTheDocument();
+  });
+});
+
+describe("CRPR pane — visibility poll (tick not in params)", () => {
+  it("refetches on a visibility tick but not on mount", () => {
+    setMockFn({ state: "ok", ...corporatePayload() });
+    const { rerender } = render(<CRPRPane code="CRPR" />);
+    expect(refetch).not.toHaveBeenCalled();
+
+    mockTick.current = 1;
+    rerender(<CRPRPane code="CRPR" />);
+    expect(refetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the request params stable across ticks (no skeleton flash key)", () => {
+    setMockFn({ state: "ok", ...corporatePayload() });
+    const { rerender } = render(<CRPRPane code="CRPR" />);
+    const before = JSON.stringify(lastFnArgs?.params ?? null);
+    expect(before).not.toContain("tick");
+
+    mockTick.current = 3;
+    rerender(<CRPRPane code="CRPR" />);
+    expect(JSON.stringify(lastFnArgs?.params ?? null)).toBe(before);
   });
 });

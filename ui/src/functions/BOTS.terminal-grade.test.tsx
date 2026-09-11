@@ -20,7 +20,7 @@
  */
 import { render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { BOTSPane } from "./BOTS";
+import { BOTSPane, buildBotsCsv, buildFeedCsv } from "./BOTS";
 import { useBotsSupervisionStore } from "@/lib/bots-supervision-store";
 import { usePerformanceStore } from "@/lib/performance-store";
 
@@ -246,17 +246,18 @@ describe("BOTS F4 — states (Empty / Skeleton / error region)", () => {
 });
 
 describe("BOTS F5 — table semantics", () => {
-  it("bot table has a caption and scope columns", () => {
+  it("bot table has an aria-label and scope columns (DataGrid)", () => {
     seedBots([bot()]);
     render(<BOTSPane />);
     const table = screen.getByRole("table", { name: /supervision table/i });
-    expect(table.querySelector("caption")).not.toBeNull();
+    // DataGrid carries the accessible name via aria-label (no <caption>).
+    expect(table.getAttribute("aria-label")).toBe("Bot supervision table");
     // 7 columns since Lane D (KAOS multibot): Symbol, Venues, TF, Status,
     // Signals, Last tick, Last signal.
     expect(table.querySelectorAll("th[scope='col']").length).toBe(7);
   });
 
-  it("feed table has a caption and scope columns", () => {
+  it("feed table has an aria-label and scope columns (DataGrid)", () => {
     seedBots([bot()], [{
       bar_index: 1, bar_time: "2026-05-22T10:00:00Z", kind: "entry", price: 100,
       action: "shadow", timestamp: "2026-05-22T10:00:00Z", bot_id: "a",
@@ -265,7 +266,7 @@ describe("BOTS F5 — table semantics", () => {
     }]);
     render(<BOTSPane />);
     const table = screen.getByRole("table", { name: /signal feed/i });
-    expect(table.querySelector("caption")).not.toBeNull();
+    expect(table.getAttribute("aria-label")).toBe("Unified signal feed");
     expect(table.querySelectorAll("th[scope='col']").length).toBe(5);
   });
 });
@@ -296,5 +297,86 @@ describe("BOTS F6 — KPI unhealthy count", () => {
     seedBots([bot({ id: "a", enabled: true, is_running: true, last_action: "shadow" })]);
     render(<BOTSPane />);
     expect(screen.getByTestId("bots-kpi-unhealthy").textContent).toMatch(/0/);
+  });
+});
+
+// ─── F10 (fix lane, audit A10) — authoritative signals KPI + DataGrid CSV ──
+describe("BOTS F10 — authoritative signal count + CSV exports", () => {
+  it("renders '≥N' with a lower-bound title when the feed window is truncated", () => {
+    useBotsSupervisionStore.setState({
+      stats: {
+        total: 1, enabled: 1, live: 0, signals_today: 2,
+        signals_total: 137, feed_truncated: true,
+      },
+      bots: [bot({ id: "a" })] as never, feed: [], generatedAt: "x",
+    });
+    render(<BOTSPane />);
+    const kpi = screen.getByTestId("bots-kpi-signals-today");
+    // 2 today, but the feed window is proven truncated ⇒ lower bound, not a
+    // silently capped exact count.
+    expect(kpi.textContent).toMatch(/≥2/);
+    expect(kpi.getAttribute("title")).toMatch(/lower bound/i);
+    expect(kpi.getAttribute("title")).toMatch(/137/);
+  });
+
+  it("renders the exact count when the feed covers every known signal", () => {
+    useBotsSupervisionStore.setState({
+      stats: {
+        total: 1, enabled: 1, live: 0, signals_today: 2,
+        signals_total: 2, feed_truncated: false,
+      },
+      bots: [bot({ id: "a" })] as never, feed: [], generatedAt: "x",
+    });
+    render(<BOTSPane />);
+    const kpi = screen.getByTestId("bots-kpi-signals-today");
+    expect(kpi.textContent).toMatch(/2/);
+    expect(kpi.textContent).not.toMatch(/≥/);
+  });
+
+  it("builds the bot CSV from the authoritative counts (all rows, KAOS order)", () => {
+    const csv = buildBotsCsv([
+      bot({ id: "b", symbol: "ETH/USDT", signal_count: 3 }),
+      bot({ id: "a", symbol: "BTC/USDT", signal_count: 42 }),
+    ]);
+    const lines = csv.split("\n");
+    expect(lines.length).toBe(3); // header + 2 bots
+    expect(lines[0]).toContain("Signals");
+    expect(csv).toContain("42");
+    expect(csv).toContain("3");
+  });
+
+  it("builds the feed CSV with raw timestamps + equity provenance", () => {
+    const csv = buildFeedCsv([{
+      bar_index: 1, bar_time: "2026-05-22T10:00:00Z", kind: "entry", price: 100,
+      action: "placed", timestamp: "2026-05-22T10:00:00Z", bot_id: "a",
+      bot_symbol: "BTC/USDT", bot_strategy_id: "s", bot_exchange_id: "binance",
+      bot_mode: "live", equity_source: "fallback_10k",
+    } as never]);
+    const lines = csv.split("\n");
+    expect(lines[0]).toContain("Equity source");
+    expect(lines[1]).toContain("2026-05-22T10:00:00Z");
+    expect(lines[1]).toContain("fallback_10k");
+  });
+
+  it("CSV export buttons exist and disable on empty tables", () => {
+    render(<BOTSPane />);
+    expect(screen.getByTestId("bots-export-csv")).toBeDisabled();
+    expect(screen.getByTestId("bots-feed-export-csv")).toBeDisabled();
+  });
+
+  it("CSV export buttons are enabled with rows and clicking does not crash", () => {
+    seedBots([bot({ id: "a", signal_count: 5 })], [{
+      bar_index: 1, bar_time: "2026-05-22T10:00:00Z", kind: "entry", price: 100,
+      action: "shadow", timestamp: "2026-05-22T10:00:00Z", bot_id: "a",
+      bot_symbol: "BTC/USDT", bot_strategy_id: "s", bot_exchange_id: "binance",
+      bot_mode: "shadow",
+    }]);
+    render(<BOTSPane />);
+    const botsCsv = screen.getByTestId("bots-export-csv");
+    const feedCsv = screen.getByTestId("bots-feed-export-csv");
+    expect(botsCsv).not.toBeDisabled();
+    expect(feedCsv).not.toBeDisabled();
+    botsCsv.click();
+    feedCsv.click();
   });
 });

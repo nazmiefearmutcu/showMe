@@ -194,11 +194,7 @@ export function GPPane({ code, symbol }: FunctionPaneProps) {
       .filter((v) => Number.isFinite(v));
   }, [ohlc]);
 
-  const closeSeries = useMemo(
-    () => ohlc.map((c) => Number(c.close)).filter((v) => Number.isFinite(v)),
-    [ohlc],
-  );
-  const computed = useMemo(() => computeIndicators(closeSeries), [closeSeries]);
+  const computed = useMemo(() => computeIndicators(ohlc), [ohlc]);
   const stats = useMemo(() => {
     if (!ohlc.length) return null;
     const highs = ohlc.map((c) => Number(c.high));
@@ -217,7 +213,31 @@ export function GPPane({ code, symbol }: FunctionPaneProps) {
   const newsItems: { headline: string; ts: string; url?: string }[] = [];
   const newsState: "empty" | "loading" | "ok" = "empty";
   const provider = data?.sources?.[0] ?? "pending";
-  const cached = !!(data as { cached?: boolean } | undefined)?.cached;
+  // GP wire-truth: the alias now emits 52-week provider meta + a
+  // `deep_history` flag; when the winning provider carries neither the rail
+  // labels range extremes honestly and the history chip reads "windowed".
+  const payloadExtras = data?.data as
+    | {
+        deep_history?: boolean;
+        fifty_two_week_high?: number | null;
+        fifty_two_week_low?: number | null;
+      }
+    | undefined;
+  const deepHistory = payloadExtras?.deep_history === true;
+  const week52High =
+    typeof payloadExtras?.fifty_two_week_high === "number" &&
+    Number.isFinite(payloadExtras.fifty_two_week_high)
+      ? payloadExtras.fifty_two_week_high
+      : null;
+  const week52Low =
+    typeof payloadExtras?.fifty_two_week_low === "number" &&
+    Number.isFinite(payloadExtras.fifty_two_week_low)
+      ? payloadExtras.fifty_two_week_low
+      : null;
+  const week52 =
+    week52High != null && week52Low != null
+      ? { high: week52High, low: week52Low }
+      : null;
 
   // S03-R: live tick overlay so the chart's current bar advances without a
   // full refetch and the pane can show a real transport state. The historical
@@ -356,7 +376,7 @@ export function GPPane({ code, symbol }: FunctionPaneProps) {
                     {displayChange != null && (
                       <span style={changeAbsStyle}>
                         {displayChange >= 0 ? "+" : ""}
-                        {displayChange.toFixed(2)}
+                        {fmtNum(displayChange)}
                       </span>
                     )}
                   </>
@@ -541,6 +561,7 @@ export function GPPane({ code, symbol }: FunctionPaneProps) {
               </div>
               <RightRail
                 stats={stats}
+                week52={week52}
                 computed={computed}
                 news={newsItems}
                 newsState={newsState}
@@ -559,9 +580,14 @@ export function GPPane({ code, symbol }: FunctionPaneProps) {
           <StatusSection label="provider" value={provider} tone="muted" />
           <StatusSection
             withDot
-            tone={cached ? "warn" : "positive"}
-            label="cache"
-            value={cached ? "hit" : "live"}
+            tone="muted"
+            label="history"
+            value={deepHistory ? "deep" : "windowed"}
+            title={
+              deepHistory
+                ? "Winner raced against every provider's deepest reach"
+                : "Adapter fallback window (deep race unavailable)"
+            }
           />
           <StatusDivider />
           <StatusSection
@@ -618,12 +644,14 @@ function PillRow({
 
 function RightRail({
   stats,
+  week52,
   computed,
   news,
   newsState,
   symbol,
 }: {
   stats: { high: number; low: number; n: number } | null;
+  week52: { high: number; low: number } | null;
   computed: ReturnType<typeof computeIndicators>;
   news: { headline: string; ts: string; url?: string }[];
   newsState: "empty" | "loading" | "ok";
@@ -631,14 +659,26 @@ function RightRail({
 }) {
   const support = stats ? stats.low + (stats.high - stats.low) * 0.236 : null;
   const resist = stats ? stats.low + (stats.high - stats.low) * 0.786 : null;
+  // True 52-week extremes when the provider meta carried them; otherwise the
+  // label is honest about being the selected range's high/low.
+  const highLabel = week52 ? "52w high" : "Range high";
+  const lowLabel = week52 ? "52w low" : "Range low";
 
   return (
     <aside style={rightRailStyle}>
       <RailSection title="Key levels">
         <RailKv label="Support" value={fmtNum(support)} tone="positive" />
         <RailKv label="Resistance" value={fmtNum(resist)} tone="negative" />
-        <RailKv label="52w high" value={fmtNum(stats?.high)} tone="positive" />
-        <RailKv label="52w low" value={fmtNum(stats?.low)} tone="negative" />
+        <RailKv
+          label={highLabel}
+          value={fmtNum(week52?.high ?? stats?.high)}
+          tone="positive"
+        />
+        <RailKv
+          label={lowLabel}
+          value={fmtNum(week52?.low ?? stats?.low)}
+          tone="negative"
+        />
       </RailSection>
       <RailSection title="Indicators">
         <IndicatorRow
@@ -1131,7 +1171,9 @@ export function ChartView({
           })),
       );
     });
-  }, [indicators, indicatorColors]);
+    // chartStyle is a rebuild trigger (fresh chart instance), so the overlays
+    // must be re-applied to the new instance or they would silently vanish.
+  }, [indicators, indicatorColors, chartStyle]);
 
   // Auto-focus latest bars on first seed only — afterwards we leave the
   // user's scroll/zoom alone.
@@ -1289,7 +1331,89 @@ function ema(values: number[], period: number): (number | null)[] {
   return out;
 }
 
-function computeIndicators(closes: number[]) {
+function lastDefined(values: (number | null)[]): number | null {
+  for (let i = values.length - 1; i >= 0; i--) {
+    const value = values[i];
+    if (value != null && Number.isFinite(value)) return value;
+  }
+  return null;
+}
+
+/** Wilder RSI, aligned to the close series (null before the first value). */
+function rsiSeries(closes: number[], period = 14): (number | null)[] {
+  const out: (number | null)[] = new Array(closes.length).fill(null);
+  if (closes.length <= period) return out;
+  let gains = 0;
+  let losses = 0;
+  for (let i = 1; i < closes.length; i++) {
+    const diff = closes[i] - closes[i - 1];
+    if (i <= period) {
+      if (diff >= 0) gains += diff;
+      else losses -= diff;
+      if (i === period) {
+        const rs = losses === 0 ? 100 : gains / losses;
+        out[i] = 100 - 100 / (1 + rs);
+      }
+    } else {
+      const gain = diff >= 0 ? diff : 0;
+      const loss = diff < 0 ? -diff : 0;
+      gains = (gains * (period - 1) + gain) / period;
+      losses = (losses * (period - 1) + loss) / period;
+      const rs = losses === 0 ? 100 : gains / losses;
+      out[i] = 100 - 100 / (1 + rs);
+    }
+  }
+  return out;
+}
+
+/**
+ * True ATR — Wilder-smoothed average of the true range:
+ *   TR = max(H−L, |H−prevC|, |L−prevC|)
+ * Shared definition with HP and with the backend TECH function (ewm
+ * alpha = 1/period, seeded on the first TR). The pre-fix GP "ATR" was the
+ * mean absolute close change — no high/low, no gaps.
+ */
+function trueAtrSeries(
+  rows: Array<{ high?: number; low?: number; close?: number }>,
+  period = 14,
+): (number | null)[] {
+  const out: (number | null)[] = new Array(rows.length).fill(null);
+  if (rows.length === 0) return out;
+  let previousClose: number | null = null;
+  let atr: number | null = null;
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    const high = row.high;
+    const low = row.low;
+    const close = row.close;
+    if (
+      high == null ||
+      low == null ||
+      !Number.isFinite(high) ||
+      !Number.isFinite(low)
+    ) {
+      if (close != null && Number.isFinite(close)) previousClose = close;
+      continue;
+    }
+    const trueRange =
+      previousClose == null
+        ? high - low
+        : Math.max(
+            high - low,
+            Math.abs(high - previousClose),
+            Math.abs(low - previousClose),
+          );
+    atr = atr == null ? trueRange : ((period - 1) * atr + trueRange) / period;
+    out[i] = atr;
+    if (close != null && Number.isFinite(close)) previousClose = close;
+  }
+  return out;
+}
+
+function computeIndicators(rows: OHLCRow[]) {
+  const closes = rows
+    .map((c) => Number(c.close))
+    .filter((v) => Number.isFinite(v));
   if (closes.length < 15) {
     return {
       rsi: null as number | null,
@@ -1300,29 +1424,7 @@ function computeIndicators(closes: number[]) {
       atrSpark: [] as number[],
     };
   }
-  const rsiSeries: number[] = [];
-  let gains = 0;
-  let losses = 0;
-  for (let i = 1; i < closes.length; i++) {
-    const diff = closes[i] - closes[i - 1];
-    if (i <= 14) {
-      if (diff >= 0) gains += diff;
-      else losses -= diff;
-      if (i === 14) {
-        const rs = losses === 0 ? 100 : gains / losses;
-        rsiSeries.push(100 - 100 / (1 + rs));
-      }
-    } else {
-      const gain = diff >= 0 ? diff : 0;
-      const loss = diff < 0 ? -diff : 0;
-      gains = (gains * 13 + gain) / 14;
-      losses = (losses * 13 + loss) / 14;
-      const rs = losses === 0 ? 100 : gains / losses;
-      rsiSeries.push(100 - 100 / (1 + rs));
-    }
-  }
-  const rsi = rsiSeries.length ? rsiSeries[rsiSeries.length - 1] : null;
-
+  const rsiAll = rsiSeries(closes, 14);
   const ema12 = ema(closes, 12);
   const ema26 = ema(closes, 26);
   const macdSeries = closes.map((_, i) =>
@@ -1330,28 +1432,17 @@ function computeIndicators(closes: number[]) {
       ? (ema12[i] as number) - (ema26[i] as number)
       : null,
   );
-  const macdLast = macdSeries[macdSeries.length - 1];
-  const macd = typeof macdLast === "number" ? macdLast : null;
-
-  const ranges: number[] = [];
-  for (let i = 1; i < closes.length; i++) {
-    ranges.push(Math.abs(closes[i] - closes[i - 1]));
-  }
-  const atrSeries: number[] = [];
-  for (let i = 13; i < ranges.length; i++) {
-    let s = 0;
-    for (let j = i - 13; j <= i; j++) s += ranges[j];
-    atrSeries.push(s / 14);
-  }
-  const atr = atrSeries.length ? atrSeries[atrSeries.length - 1] : null;
+  const atrAll = trueAtrSeries(rows, 14);
 
   return {
-    rsi,
-    macd,
-    atr,
-    rsiSpark: rsiSeries.slice(-24),
-    macdSpark: macdSeries.filter((v): v is number => typeof v === "number").slice(-24),
-    atrSpark: atrSeries.slice(-24),
+    rsi: lastDefined(rsiAll),
+    macd: lastDefined(macdSeries),
+    atr: lastDefined(atrAll),
+    rsiSpark: rsiAll.filter((v): v is number => v != null).slice(-24),
+    macdSpark: macdSeries
+      .filter((v): v is number => typeof v === "number")
+      .slice(-24),
+    atrSpark: atrAll.filter((v): v is number => v != null).slice(-24),
   };
 }
 

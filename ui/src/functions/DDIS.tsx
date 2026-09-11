@@ -5,9 +5,10 @@
  * companyfacts long-term-debt concepts. Header: status pill + refresh.
  * Body: issuer headline cards (total debt, source mode, biggest wall,
  * nearest-bucket share) + ladder table where every % share row carries a
- * token-tinted bar. Sovereign/unspecified issuers get the backend's
- * clearly-labelled illustrative ladder, surfaced with an honesty note —
- * never disguised as a live SEC read.
+ * token-tinted bar. When no SEC schedule and no user-supplied maturities
+ * exist the handler returns an honest EMPTY payload (status "empty" +
+ * reason + next_actions) — no illustrative ladder, and the pane renders
+ * that reason instead of inventing rows.
  */
 import { useMemo, type CSSProperties } from "react";
 import {
@@ -51,6 +52,8 @@ interface DDISData {
     currency?: string;
     source_mode?: string;
   };
+  reason?: string;
+  next_actions?: string[];
   methodology?: string;
 }
 
@@ -67,8 +70,10 @@ export function DDISPane({ code, symbol }: FunctionPaneProps) {
   const summary = payload?.summary;
   const status = payload?.status ?? "—";
   const sourceMode = summary?.source_mode ?? "—";
-  const isIllustrative = sourceMode.includes("illustrative");
-  const isLive = state === "ok" && status === "ok" && !isIllustrative;
+  const nextActions = Array.isArray(payload?.next_actions)
+    ? payload!.next_actions!.filter((a): a is string => typeof a === "string")
+    : [];
+  const isLive = state === "ok" && status === "ok";
 
   const stats = useMemo(() => deriveStats(rows), [rows]);
 
@@ -143,7 +148,21 @@ export function DDISPane({ code, symbol }: FunctionPaneProps) {
   ) : rows.length === 0 ? (
     <Empty
       title="No maturity ladder"
-      body="No debt schedule returned for this issuer — no illustrative filler is shown."
+      body={
+        <>
+          <span>
+            {payload?.reason ??
+              "No debt schedule returned for this issuer — no illustrative filler is shown."}
+          </span>
+          {nextActions.length > 0 ? (
+            <ul style={nextActionsStyle}>
+              {nextActions.slice(0, 3).map((action) => (
+                <li key={action}>{action}</li>
+              ))}
+            </ul>
+          ) : null}
+        </>
+      }
       action={
         <button onClick={refetch} className="btn">
           Retry
@@ -152,13 +171,6 @@ export function DDISPane({ code, symbol }: FunctionPaneProps) {
     />
   ) : (
     <div className="u-grid-gap-14">
-      {isIllustrative ? (
-        <div role="note" style={noticeStyle}>
-          <strong>Illustrative model.</strong> No SEC corporate maturity
-          schedule applies to this issuer — the ladder below is a labelled
-          reference shape, NOT filed debt data.
-        </div>
-      ) : null}
       <section style={kpiGridStyle} aria-label="DDIS issuer headline">
         <StatCard
           label="Total debt"
@@ -212,10 +224,10 @@ export function DDISPane({ code, symbol }: FunctionPaneProps) {
                 {rows.length} buckets
               </Pill>
               <Pill
-                tone={isLive ? "positive" : isIllustrative ? "warn" : "muted"}
+                tone={isLive ? "positive" : "muted"}
                 variant="soft"
               >
-                {isLive ? "SEC live" : isIllustrative ? "illustrative" : status}
+                {isLive ? "SEC live" : status}
               </Pill>
               <LoadStatePill state={state} status={status} />
               <RefreshButton
@@ -293,12 +305,13 @@ const kpiGridStyle: CSSProperties = {
   gap: 10,
 };
 
-const noticeStyle: CSSProperties = {
-  border: "1px solid var(--warn, var(--text-mute))",
-  borderRadius: 6,
-  padding: "8px 10px",
-  fontSize: "var(--font-size-md)",
-  color: "var(--text-primary)",
+const nextActionsStyle: CSSProperties = {
+  margin: "8px 0 0",
+  paddingLeft: 18,
+  display: "grid",
+  gap: 4,
+  color: "var(--text-mute)",
+  fontSize: "var(--font-size-sm)",
 };
 
 const shareWrapStyle: CSSProperties = {

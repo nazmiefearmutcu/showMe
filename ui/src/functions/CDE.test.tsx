@@ -161,6 +161,42 @@ describe("CDE pane — evaluate + forms", () => {
     expect(screen.getByText("TRUE")).toBeInTheDocument();
   });
 
+  it("keeps the stored-field count and rows from an evaluate payload (F6)", () => {
+    setMockFn({
+      state: "ok",
+      data: {
+        data: {
+          status: "ready",
+          rows: [
+            {
+              name: "cheap_quality",
+              formula: "pe < 25 AND beta < 1.2",
+              operation: "custom_field",
+            },
+            {
+              name: "low_beta",
+              formula: "beta < 1.2",
+              operation: "custom_field",
+            },
+          ],
+          // The backend now reports the real store size on evaluate — the
+          // old code repurposed count=1 and hid every stored field.
+          count: 2,
+          evaluation: {
+            name: "cheap_quality",
+            value: true,
+            formula: "pe < 25 AND beta < 1.2",
+          },
+        },
+      },
+    });
+    const { container } = render(<CDEPane code="CDE" />);
+    expect(screen.getByText("TRUE")).toBeInTheDocument();
+    const kpi = screen.getByText("Stored fields").closest(".stat-card");
+    expect(kpi?.textContent).toContain("2");
+    expect(container.textContent).toContain("low_beta");
+  });
+
   it("blocks an empty add submit with client validation", () => {
     setMockFn({
       state: "ok",

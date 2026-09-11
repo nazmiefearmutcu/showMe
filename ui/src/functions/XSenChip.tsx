@@ -69,7 +69,7 @@ export function XSenChip({
       : chip.mood === "bearish"
         ? "negative"
         : "warn";
-  const titleText = chip.summary_tr ?? `X mood for ${chip.symbol}: ${chip.mood ?? "—"}`;
+  const titleText = chip.summary ?? chip.summary_tr ?? `X mood for ${chip.symbol}: ${chip.mood ?? "—"}`;
   const handleClick = () => {
     try {
       navigate(`/symbol/${encodeURIComponent(chip.symbol)}/XSEN`);

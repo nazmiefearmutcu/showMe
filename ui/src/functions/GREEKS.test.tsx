@@ -160,10 +160,16 @@ describe("GREEKS pane — load + error states", () => {
 
   it("renders the empty-book envelope with its reason verbatim", () => {
     mockFn.state = "ok";
+    // REAL wire shape (F8 regression): the empty-book envelope used to ship
+    // `positions: 0` — a scalar, while the pane spreads it as an array.
+    // `[...0]` threw during render (error boundary). This fixture must keep
+    // the scalar so the guard stays pinned; a prior fixture omitted the field
+    // entirely and the bug sailed through.
     mockFn.data = {
       data: {
         status: "input_required",
         reason: "No option positions were supplied or found in the local option book.",
+        positions: 0,
       },
       warnings: [],
     };
@@ -172,6 +178,55 @@ describe("GREEKS pane — load + error states", () => {
     expect(
       screen.getByText(/no option positions were supplied/i),
     ).toBeInTheDocument();
+  });
+
+  it("does not crash when a scalar `positions` smuggles past the wire (defensive guard)", () => {
+    // The crash repro from the audit: render the full input_required payload
+    // with the scalar field plus totals absent — must render, not throw.
+    mockFn.state = "ok";
+    mockFn.data = {
+      data: {
+        status: "input_required",
+        reason: "No option positions were supplied or found in the local option book.",
+        positions: 0,
+        n: 0,
+        rows: [],
+      },
+      warnings: [],
+    };
+    let thrown: unknown = null;
+    try {
+      render(<GreeksPane code="GREEKS" />);
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeNull();
+    expect(screen.getByText("Empty option book")).toBeInTheDocument();
+    // No fabricated NET aggregate row leaks from the malformed payload.
+    expect(screen.queryByText(/NET — book/)).toBeNull();
+  });
+
+  it("treats a non-array positions payload as an empty book on the ok path (no crash)", () => {
+    mockFn.state = "ok";
+    mockFn.data = {
+      data: {
+        status: "ok",
+        positions: 0,
+        totals: { delta: 848, gamma: 17.8, vega: 98.6, theta: -42.7, rho: 20.9 },
+        n: 0,
+        units: {},
+      },
+      warnings: [],
+    };
+    let thrown: unknown = null;
+    try {
+      render(<GreeksPane code="GREEKS" />);
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeNull();
+    // The aggregate row still renders from `totals`; no per-position rows.
+    expect(screen.getByText(/NET — book/)).toBeInTheDocument();
   });
 
   it("renders a calc_error envelope without fabricating totals", () => {

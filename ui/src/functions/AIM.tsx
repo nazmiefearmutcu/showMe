@@ -14,7 +14,7 @@
  * `next_actions` — the pane renders an empty-but-honest blotter and never
  * fakes fills.
  */
-import { useMemo, type CSSProperties } from "react";
+import { useEffect, useMemo, type CSSProperties } from "react";
 import {
   DataGrid,
   type DataGridColumn,
@@ -109,8 +109,18 @@ export function AIMPane({ code, symbol }: FunctionPaneProps) {
   const { state, data, error, refetch } = useFunction<unknown>({
     code,
     symbol,
-    params: { limit: 200, tick },
+    // F9 [M]: `tick` must NOT live in params — a tick inside the params object
+    // changes the fetch key every cycle, so useFunction clears `data` and the
+    // blotter gets wiped to a skeleton every 15s. The tick only drives
+    // `refetch()` below (same pattern as FORM4).
+    params: { limit: 200 },
   });
+
+  useEffect(() => {
+    if (tick === 0) return; // initial mount is useFunction's own load
+    refetch();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- tick is the trigger
+  }, [tick]);
 
   const payload = useMemo<AimPayload>(
     () =>
@@ -166,7 +176,9 @@ export function AIMPane({ code, symbol }: FunctionPaneProps) {
 
   const cards = payload.cards ?? {};
   const openCount = numeric(cards.open_count) ?? openOrders.length;
-  const filledToday = numeric(cards.filled_today) ?? 0;
+  // F9 [L]: a missing `cards` must render the "—" sentinel, not a fabricated
+  // hard 0 that reads like a real "no fills" count.
+  const filledToday = numeric(cards.filled_today);
   const brokersOnline =
     numeric(cards.brokers_online) ??
     (Array.isArray(payload.brokers_online) ? payload.brokers_online.length : 0);
@@ -404,9 +416,9 @@ export function AIMPane({ code, symbol }: FunctionPaneProps) {
                     tail, not just today's. Labelled honestly as "Filled". */}
                 <StatCard
                   label="Filled"
-                  value={String(filledToday)}
+                  value={filledToday == null ? formatMissing : String(filledToday)}
                   caption={`AS OF ${asOfStamp} UTC`}
-                  tone={filledToday > 0 ? "positive" : "neutral"}
+                  tone={filledToday != null && filledToday > 0 ? "positive" : "neutral"}
                 />
                 <StatCard
                   label="Brokers"
@@ -458,6 +470,9 @@ export function AIMPane({ code, symbol }: FunctionPaneProps) {
                   }
                   density="compact"
                   ariaLabel="AIM order blotter"
+                  defaultSortKey="created_at"
+                  defaultSortDir="descending"
+                  keyboardNavigable
                 />
               )}
             </div>
@@ -584,7 +599,7 @@ function dataModeTitle(mode: string): string {
     case "degraded":
       return "Brokers unreachable";
     default:
-      return "Referans defteri";
+      return "Reference ledger";
   }
 }
 

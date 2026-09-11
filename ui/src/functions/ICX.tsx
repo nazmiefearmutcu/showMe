@@ -12,7 +12,7 @@
  * sorted by day change (or alphabetically / curated order) and the tint
  * bars visualize change_pct magnitude — not weights.
  */
-import { useMemo, type CSSProperties } from "react";
+import { useEffect, useMemo, type CSSProperties } from "react";
 import {
   DataGrid,
   type DataGridColumn,
@@ -26,6 +26,7 @@ import {
   StatusSection,
 } from "@/design-system";
 import { useFunction } from "@/lib/useFunction";
+import { useVisibilityTick } from "@/lib/useVisibilityTick";
 import { formatPercent, formatPrice } from "@/lib/format";
 import {
   FunctionControlGroup,
@@ -82,6 +83,9 @@ const SORT_OPTIONS = [
 
 const BAR_MAX_WIDTH = 44;
 
+/** Visibility-paused quote-snapshot refresh (audit A3 ICX M). */
+const REFRESH_MS = 120_000;
+
 export function ICXPane({ code, symbol }: FunctionPaneProps) {
   const [persistedIndex, setIndex] = usePersistentOption<string>(
     "showme.icx.index",
@@ -107,6 +111,17 @@ export function ICXPane({ code, symbol }: FunctionPaneProps) {
     params: { index: effectiveIndex },
   });
 
+  // Audit A3 ICX M: the quote snapshot used to be fetched once per
+  // (index, sort) while the note claimed "quotes live". Refresh on a
+  // visibility-paused tick — the tick must stay out of `params` (a new fetch
+  // key would wipe the table back to a skeleton; FORM4 pattern).
+  const tick = useVisibilityTick(REFRESH_MS);
+  useEffect(() => {
+    if (tick === 0) return; // initial mount is useFunction's own load
+    refetch();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- tick is the trigger
+  }, [tick]);
+
   const payload = data?.data;
   const status = payload?.status ?? "—";
 
@@ -115,7 +130,16 @@ export function ICXPane({ code, symbol }: FunctionPaneProps) {
     if (sortKey === "az") {
       base.sort((a, b) => (a.symbol ?? "").localeCompare(b.symbol ?? ""));
     } else if (sortKey === "change") {
-      base.sort((a, b) => num(b.change_pct) - num(a.change_pct));
+      base.sort((a, b) => {
+        const va = numOrNull(a.change_pct);
+        const vb = numOrNull(b.change_pct);
+        // Audit A3 ICX L: missing quotes sink to the bottom — they must not
+        // sort as a flat 0% (which put no-quote rows above real decliners).
+        if (va == null && vb == null) return 0;
+        if (va == null) return 1;
+        if (vb == null) return -1;
+        return vb - va;
+      });
     }
     return base;
   }, [payload, sortKey]);
@@ -233,7 +257,7 @@ export function ICXPane({ code, symbol }: FunctionPaneProps) {
           {rows.length} constituents · index {payload?.index ?? effectiveIndex}
           {" · "}
           {missingQuotes === 0
-            ? "quotes live"
+            ? `quote snapshot refreshed every ${REFRESH_MS / 1000}s`
             : missingQuotes === rows.length
               ? "live quote snapshot unavailable — showing constituents without prices"
               : `${missingQuotes} without live quote`}
@@ -338,6 +362,12 @@ function ChangeBar({ row, maxAbs }: { row: ICXRow; maxAbs: number }) {
 function num(value: unknown): number {
   const n = typeof value === "number" ? value : Number(value);
   return Number.isFinite(n) ? n : 0;
+}
+
+function numOrNull(value: unknown): number | null {
+  if (value == null) return null;
+  const n = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(n) ? n : null;
 }
 
 const changeCellStyle: CSSProperties = {

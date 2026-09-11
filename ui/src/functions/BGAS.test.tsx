@@ -212,3 +212,60 @@ describe("BGAS pane — interaction", () => {
     expect(opt1y?.className).not.toContain("fn-segmented__opt--active");
   });
 });
+
+describe("commodity-spot shared body — audit fixes (BGAS)", () => {
+  it("stamps the % unit on the change caption (audit A1-M)", () => {
+    setMockFn({ state: "ok", ...livePayload() });
+    const { container } = render(<BGASPane code="BGAS" symbol="NG=F" />);
+    // "-2.459" alone reads as a price change; the backend value is a percent.
+    expect(container.textContent).toContain("-2.459%");
+  });
+
+  it("gives a missing change a neutral tone instead of green (audit A3-L)", () => {
+    const p = livePayload();
+    delete (p.data.data.rows[0] as unknown as Record<string, unknown>).change_pct;
+    setMockFn({ state: "ok", ...p });
+    render(<BGASPane code="BGAS" symbol="NG=F" />);
+    const card = screen.getByText("NG=F").closest(".stat-card");
+    expect(card?.className).toContain("stat-card--neutral");
+    expect(card?.className).not.toContain("stat-card--positive");
+  });
+
+  it("renders EIA value/period rows instead of dropping them (audit A3-H)", () => {
+    setMockFn({
+      state: "ok",
+      data: {
+        data: {
+          status: "ok",
+          symbol: "HENRYHUB",
+          source_mode: "live_eia",
+          rows: [
+            {
+              symbol: "HENRYHUB",
+              name: "Henry Hub Natural Gas",
+              unit: "USD/MMBtu",
+              value: 3.11,
+              period: "2026-09-10",
+              change_pct: 0.65,
+            },
+          ],
+          history: [
+            { date: "2026-09-08", close: 3.05 },
+            { date: "2026-09-09", close: 3.09 },
+            { date: "2026-09-10", close: 3.11 },
+          ],
+        },
+        sources: ["eia"],
+        elapsed_ms: 6,
+      },
+    });
+    render(<BGASPane code="BGAS" symbol="NG=F" />);
+    // The old `last`-only filter dropped every EIA row -> empty grid.
+    expect(screen.queryByText(/No spot rows returned/i)).toBeNull();
+    expect(screen.getAllByText("3.110").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText(/live quote/i)).toBeInTheDocument();
+    expect(screen.getByText(/AS OF 2026-09-10/)).toBeInTheDocument();
+    // The percent caption survived the value/period normalization.
+    expect(screen.getByText(/\+0.650%/)).toBeInTheDocument();
+  });
+});

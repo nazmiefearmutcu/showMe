@@ -79,9 +79,9 @@ const SIGNAL_TONE: Record<string, "positive" | "negative" | "warn" | "muted"> = 
   NEUTRAL: "muted",
 };
 
-// English market labels for THIS pane. The shared market-label map in
-// `@/lib/mis` still carries Turkish copy; MIS is its only consumer, so the
-// pane-local map keeps the UI English without editing the lib (owner follow-up).
+// English market labels for this pane. `@/lib/mis` carries no user-facing
+// label map (types + client only), so this pane-local map is the single
+// source of the tab/header copy.
 const MARKET_LABELS: Record<MisMarket, string> = {
   CRYPTO: "Crypto",
   EQUITY: "Equity",
@@ -1062,7 +1062,7 @@ function ResultsTab(props: {
                       aria-label={`Enable all timeframes for ${m}`}
                       title="Enable all"
                     >
-                      hepsi
+                      All
                     </button>
                     <button
                       type="button"
@@ -1071,7 +1071,7 @@ function ResultsTab(props: {
                       aria-label={`Disable all timeframes for ${m}`}
                       title="Disable all"
                     >
-                      none
+                      None
                     </button>
                   </fieldset>
                 </div>
@@ -1374,13 +1374,13 @@ function SettingsTab(props: {
               onChange={(v) => updateConsensus("strong_buy_threshold", v)}
             />
             <NumberField
-              label="Al"
+              label="Buy"
               value={cfg.consensus.buy_threshold}
               step={0.05}
               onChange={(v) => updateConsensus("buy_threshold", v)}
             />
             <NumberField
-              label="Sat"
+              label="Sell"
               value={cfg.consensus.sell_threshold}
               step={0.05}
               onChange={(v) => updateConsensus("sell_threshold", v)}

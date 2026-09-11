@@ -113,20 +113,22 @@ export function MarketHeatmapPane({ code }: FunctionPaneProps) {
   };
   const best = useMemo(
     () =>
-      rows.reduce<HeatmapRow | null>(
-        (acc, row) =>
-          acc == null || numericChange(row) > numericChange(acc) ? row : acc,
-        null,
-      ),
+      rows.reduce<HeatmapRow | null>((acc, row) => {
+        const v = changeOf(row);
+        if (v == null) return acc; // failed rows are never crowned "best 0.00%"
+        const av = acc == null ? null : changeOf(acc);
+        return av == null || v > av ? row : acc;
+      }, null),
     [rows],
   );
   const worst = useMemo(
     () =>
-      rows.reduce<HeatmapRow | null>(
-        (acc, row) =>
-          acc == null || numericChange(row) < numericChange(acc) ? row : acc,
-        null,
-      ),
+      rows.reduce<HeatmapRow | null>((acc, row) => {
+        const v = changeOf(row);
+        if (v == null) return acc; // failed rows must not suppress the true worst
+        const av = acc == null ? null : changeOf(acc);
+        return av == null || v < av ? row : acc;
+      }, null),
     [rows],
   );
 
@@ -192,8 +194,16 @@ export function MarketHeatmapPane({ code }: FunctionPaneProps) {
     [isSector, mode, deliveredPeriod],
   );
 
-  const totalUp = rows.filter((r) => numericChange(r) > 0).length;
-  const totalDown = rows.filter((r) => numericChange(r) < 0).length;
+  // Breadth counts only rows with a finite change: a null/absent change is
+  // "not reported", not a flat 0 move.
+  const totalUp = rows.filter((r) => {
+    const v = changeOf(r);
+    return v != null && v > 0;
+  }).length;
+  const totalDown = rows.filter((r) => {
+    const v = changeOf(r);
+    return v != null && v < 0;
+  }).length;
   const breadthRatio = rows.length ? totalUp / rows.length : 0;
 
   return (
@@ -346,6 +356,9 @@ export function MarketHeatmapPane({ code }: FunctionPaneProps) {
                   rows={rows}
                   rowKey={(row, idx) => `${labelForRow(row)}-${idx}`}
                   density="compact"
+                  ariaLabel={
+                    isSector ? "Sector heatmap rows" : "Country heatmap rows"
+                  }
                 />
               </>
             )}
@@ -434,8 +447,9 @@ function SectorHeatGrid({
   isModel: boolean;
   onPick: (sym?: string) => void;
 }) {
-  // UA-HIGH-12: stack-safe.
-  const maxAbs = maxAbsOf(rows.map(numericChange), 1);
+  // UA-HIGH-12: stack-safe. A missing change contributes 0 to the scale
+  // (never a fabricated tile size).
+  const maxAbs = maxAbsOf(rows.map((r) => changeOf(r) ?? 0), 1);
   return (
     <div className="u-grid-gap-6">
       <section style={heatGridStyle} aria-label="ETF performance heatmap">
@@ -479,14 +493,15 @@ function HeatCell({
   maxAbs: number;
   onPick: (sym?: string) => void;
 }) {
-  const value = numericChange(row);
+  const change = changeOf(row);
+  const value = change ?? 0;
   const flash = useTickFlash(value);
   const flashClass = tickFlashClass(flash);
   const cellSize = sizeForValue(value, maxAbs);
   const tone =
-    value === 0
+    change == null || change === 0
       ? "neutral"
-      : value > 0
+      : change > 0
         ? "positive"
         : "negative";
   const sym = row.etf ?? row.symbol;
@@ -497,7 +512,10 @@ function HeatCell({
   // tiles use the bright display color so green/red text stays legible
   // on a saturated same-tone background; low-intensity uses secondary.
   const fg = textColorForCell(value, maxAbs);
-  const pct = formatPercent(value, { digits: 2, signed: true });
+  // Missing/failed change is an explicit em-dash — never a fabricated flat
+  // 0.00% (which contradicted the DataGrid's own "—" cell).
+  const pct =
+    change == null ? "—" : formatPercent(change, { digits: 2, signed: true });
   return (
     <button
       type="button"
@@ -543,9 +561,11 @@ function LegendRail({
   isModel: boolean;
   onPick: (sym?: string) => void;
 }) {
-  const sorted = [...rows].sort(
-    (a, b) => numericChange(b) - numericChange(a),
-  );
+  // Only rows with a finite change can be ranked — a null change is "not
+  // reported" and must not occupy a top/bottom mover slot as a fake 0.00%.
+  const sorted = rows
+    .filter((r) => changeOf(r) != null)
+    .sort((a, b) => (changeOf(b) ?? 0) - (changeOf(a) ?? 0));
   const top5 = sorted.slice(0, 5);
   const bottom5 = sorted.slice(-5).reverse();
 
@@ -621,11 +641,13 @@ function RankRow({
   isModel: boolean;
   onPick: (sym?: string) => void;
 }) {
-  const value = numericChange(row);
+  const change = changeOf(row);
+  const value = change ?? 0;
   const sym = row.etf ?? row.symbol;
   const synthetic =
     isModel || String(row.quote_type ?? "").toLowerCase() === "model";
-  const pct = formatPercent(value, { digits: 2, signed: true });
+  const pct =
+    change == null ? "—" : formatPercent(change, { digits: 2, signed: true });
   // DI1: ratio-driven contrast — the mover value uses the bright display
   // color for big moves (legible against any row tint) and the tone color
   // for small ones.
@@ -660,7 +682,7 @@ function RankRow({
           color: textColorForCell(value, 5),
         }}
       >
-        {value.toFixed(1)}
+        {change == null ? "—" : change.toFixed(1)}
       </span>
       <div style={rankColumnStyle}>
         <span style={rankLabelStyle}>{labelForRow(row)}</span>
@@ -785,7 +807,7 @@ function SuperlativeCard({
       </div>
     );
   }
-  const value = numericChange(row);
+  const value = changeOf(row) ?? 0;
   return (
     <div
       style={{
@@ -972,10 +994,14 @@ function textColorForCell(value: number, range: number): string {
   return ratio > 0.5 ? "var(--text-display)" : "var(--text-secondary)";
 }
 
-function numericChange(row: HeatmapRow): number {
+/**
+ * Finite % change or `null` when the backend did not report one. Consumers
+ * distinguish null (not reported → "—", neutral) from a real 0.00% print.
+ */
+function changeOf(row: HeatmapRow): number | null {
   return typeof row.change_pct === "number" && Number.isFinite(row.change_pct)
     ? row.change_pct
-    : 0;
+    : null;
 }
 
 function fmtNum(value: number | undefined | null): string {

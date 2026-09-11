@@ -80,6 +80,16 @@ export function ESGPane({ code, symbol }: FunctionPaneProps) {
   const sourceMode =
     rows.find((r) => r.source_mode)?.source_mode ??
     (isProviderUnavailable ? "vendor_unavailable" : "—");
+  // Proxy rows are SEC EDGAR filing-mention COUNTS, not vendor risk scores.
+  // They must not be captioned or toned like a vendor score (F6).
+  const isProxy = sourceMode === "sec_text_proxy";
+  const warnings = useMemo<string[]>(
+    () =>
+      Array.isArray(payload?.warnings)
+        ? (payload.warnings as unknown[]).map((w) => String(w)).filter(Boolean)
+        : [],
+    [payload?.warnings],
+  );
 
   const cols = useMemo<DataGridColumn<ESGRow>[]>(
     () => [
@@ -115,7 +125,9 @@ export function ESGPane({ code, symbol }: FunctionPaneProps) {
 
   const subtitleMode = isProviderUnavailable
     ? "vendor unavailable"
-    : "vendor scoring";
+    : isProxy
+      ? "SEC filing-mention proxy"
+      : "vendor scoring";
 
   const body = !effectiveSymbol ? (
     <Empty title="Pick a symbol" body="ESG needs an equity or ETF ticker." icon="⌖" />
@@ -144,23 +156,37 @@ export function ESGPane({ code, symbol }: FunctionPaneProps) {
           label="Total"
           score={total}
           unavailable={isProviderUnavailable}
+          proxy={isProxy}
         />
         <KpiCell
           label="Environment"
           score={env}
           unavailable={isProviderUnavailable}
+          proxy={isProxy}
         />
         <KpiCell
           label="Social"
           score={soc}
           unavailable={isProviderUnavailable}
+          proxy={isProxy}
         />
         <KpiCell
           label="Governance"
           score={gov}
           unavailable={isProviderUnavailable}
+          proxy={isProxy}
         />
       </section>
+
+      {warnings.length > 0 && (
+        <div role="note" style={warningNoteStyle} data-testid="esg-warnings">
+          {warnings.map((w, i) => (
+            <p key={i} style={warningTextStyle}>
+              {w}
+            </p>
+          ))}
+        </div>
+      )}
 
       {rows.length === 0 || rows.every((r) => r.score == null) ? (
         <Empty
@@ -216,7 +242,7 @@ export function ESGPane({ code, symbol }: FunctionPaneProps) {
           trailing={
             <FunctionControlGroup>
               <Pill
-                tone={isProviderUnavailable ? "warn" : "muted"}
+                tone={isProviderUnavailable || isProxy ? "warn" : "muted"}
                 variant="soft"
                 withDot={false}
               >
@@ -319,7 +345,7 @@ function SourceModeCell({ mode }: { mode: string }): ReactNode {
   const tone: "positive" | "warn" | "muted" =
     mode === "live_yfinance"
       ? "positive"
-      : mode === "vendor_unavailable"
+      : mode === "vendor_unavailable" || mode === "sec_text_proxy"
         ? "warn"
         : "muted";
   return (
@@ -333,18 +359,33 @@ function KpiCell({
   label,
   score,
   unavailable,
+  proxy,
 }: {
   label: string;
   score: number | null;
   unavailable: boolean;
+  proxy: boolean;
 }) {
   const value =
     score == null
       ? "—"
       : score.toLocaleString("en-US", { maximumFractionDigits: 2 });
-  const caption = unavailable ? "vendor unavailable" : "vendor score";
-  const tone: "neutral" | "positive" | "negative" =
-    score == null ? "neutral" : score >= 50 ? "positive" : "negative";
+  const caption = unavailable
+    ? "vendor unavailable"
+    : proxy
+      ? "SEC filing-mention proxy"
+      : "vendor risk score (lower is better)";
+  // Backend semantics: lower ESG risk score = better. Proxy values are
+  // filing-mention COUNTS with no risk polarity — keep them neutral.
+  const tone: "neutral" | "positive" | "negative" = proxy || score == null
+    ? "neutral"
+    : score <= 25
+      ? "positive"
+      : score <= 40
+        ? "neutral"
+        : score >= 50
+          ? "negative"
+          : "neutral";
   return (
     <StatCard
       label={label}
@@ -404,4 +445,19 @@ const methodologyStyle: CSSProperties = {
   color: "var(--text-mute)",
   borderTop: "1px solid var(--border-subtle)",
   paddingTop: 8,
+};
+
+const warningNoteStyle: CSSProperties = {
+  border: "1px solid var(--warn, var(--border-subtle))",
+  borderRadius: 6,
+  padding: "8px 10px",
+  display: "grid",
+  gap: 4,
+};
+
+const warningTextStyle: CSSProperties = {
+  margin: 0,
+  fontSize: "var(--font-size-sm)",
+  lineHeight: 1.5,
+  color: "var(--text-primary)",
 };

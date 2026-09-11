@@ -374,6 +374,15 @@ export function STRAPane() {
                   ))}
                   {lastPreview.events.length === 0 && <li>(no events)</li>}
                 </ul>
+                {lastPreview.events.length > 30 && (
+                  <div
+                    data-testid="stra-preview-truncated"
+                    className="u-text-mute"
+                    style={{ fontSize: "var(--font-size-sm)", marginTop: 4 }}
+                  >
+                    Showing first 30 of {lastPreview.events.length} events.
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -480,7 +489,7 @@ function RulesEditor({
   return (
     <div>
       <button onClick={() => onChange([...rules, { kind: "greater_than", left: "close", right: "literal:0" }])}>
-        + Kural ekle
+        + Add rule
       </button>
       {rules.map((r, idx) => {
         const rightError = validateOperand(r.right, operandOptions);
@@ -508,7 +517,7 @@ function RulesEditor({
             <input value={r.right} onChange={(e) => {
               const next = [...rules]; next[idx] = { ...next[idx], right: e.target.value };
               onChange(next);
-            }} placeholder="literal:30 ya da alias"
+            }} placeholder="literal:30 or alias"
                    aria-label={`rule-${idx}-right`}
                    title={rightError ?? undefined}
                    data-testid={testIdPrefix ? `${testIdPrefix}-rule-${idx}-right` : undefined}

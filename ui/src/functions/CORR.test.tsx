@@ -308,6 +308,35 @@ describe("CORR — accessibility (A1/A2/A3)", () => {
 
 /* ── DISPLAY (DI1) ────────────────────────────────────────────────── */
 
+describe("CORR — grid naming + diagnostics de-emphasis (A2)", () => {
+  it("names every DataGrid for assistive tech", () => {
+    setOk();
+    const { container } = render(<CORRPane code="CORR" />);
+    // The two A2-flagged grids used to have no accessible name.
+    expect(
+      container.querySelector('table[aria-label="Correlation overlap sample"]'),
+    ).not.toBeNull();
+    expect(
+      container.querySelector('table[aria-label="Market Coverage table"]'),
+    ).not.toBeNull();
+    expect(
+      container.querySelector('table[aria-label="Return Series Summary table"]'),
+    ).not.toBeNull();
+  });
+
+  it("renders the bug table as a collapsed 'Data diagnostics' section", () => {
+    setOk();
+    const { container } = render(<CORRPane code="CORR" />);
+    // The developer QA table must not dominate the trader surface: retitled
+    // and collapsed by default (native <details> keeps it keyboard-reachable).
+    const details = container.querySelector("details");
+    expect(details).not.toBeNull();
+    expect(details?.open).toBe(false);
+    expect(details?.querySelector("summary")?.textContent).toMatch(/Data diagnostics/);
+    expect(container.textContent).not.toContain("Bug Analysis");
+  });
+});
+
 describe("CORR — formatter sentinel (DI1)", () => {
   it("renders the em-dash '—' (NOT 'N/A') for a null coefficient", () => {
     setOk();

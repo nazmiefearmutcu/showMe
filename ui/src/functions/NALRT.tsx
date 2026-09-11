@@ -237,7 +237,7 @@ export function NALRTPane({ code, symbol }: FunctionPaneProps) {
               </Pill>
               <span style={scoreStyle}>{fmtScore(alert.importance_score)}</span>
               <div style={contentStyle}>
-                <div style={titleStyle}>{alert.title ?? "—"}</div>
+                <AlertTitle alert={alert} />
                 <div style={metaStyle}>
                   {[alert.source, fmtAge(alert.age_minutes)].filter(Boolean).join(" · ")}
                   {(alert.matched_terms ?? []).length > 0
@@ -305,6 +305,32 @@ export function NALRTPane({ code, symbol }: FunctionPaneProps) {
         </PaneFooter>
       </Pane>
     </div>
+  );
+}
+
+/**
+ * AUDIT A10 [M]: alerts carry `url`/`link`, but the row rendered the title as
+ * inert text — a trader could not open the story. Follow the BRIEF/READ guard:
+ * only an absolute http(s) URL is linkable (never `javascript:` / `data:` /
+ * relative), and the link opens in a new tab with `rel="noopener noreferrer"`.
+ */
+function AlertTitle({ alert }: { alert: NALRTAlert }) {
+  const raw = [alert.url, alert.link].find(
+    (c): c is string => typeof c === "string" && /^https?:\/\//.test(c.trim()),
+  );
+  const href = raw ? raw.trim() : null;
+  const title = alert.title ?? "—";
+  if (!href) return <div style={titleStyle}>{title}</div>;
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      style={titleLinkStyle}
+      aria-label={`${title} — open the story (new tab)`}
+    >
+      {title}
+    </a>
   );
 }
 
@@ -386,6 +412,13 @@ const titleStyle: CSSProperties = {
   fontSize: "var(--font-size-md)",
   color: "var(--text-primary)",
   overflowWrap: "anywhere",
+};
+
+const titleLinkStyle: CSSProperties = {
+  ...titleStyle,
+  color: "var(--accent)",
+  textDecoration: "underline",
+  textUnderlineOffset: 2,
 };
 
 const metaStyle: CSSProperties = {

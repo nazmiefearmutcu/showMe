@@ -20,9 +20,11 @@ import {
 import {
   type CandlestickData,
   type HistogramData,
+  type HistogramSeriesPartialOptions,
   type IChartApi,
   type ISeriesApi,
   type LineData,
+  type LineSeriesPartialOptions,
   type Time,
   createChart,
   LineSeries,
@@ -362,7 +364,36 @@ export function HPPane({ code, symbol }: FunctionPaneProps) {
   // The previously inlined fake-headline helper was deleted in this patch.
 
   const provider = data?.sources?.[0] ?? "pending";
-  const cached = !!(data as { cached?: boolean } | undefined)?.cached;
+  // HP wire-truth: the alias now emits company identity + 52-week meta from
+  // the winning provider's chart meta (Yahoo). Absent = honest unknown; the
+  // rail falls back to range extremes and the strip simply hides the pill.
+  const payloadData = data?.data as
+    | {
+        deep_history?: boolean;
+        long_name?: string | null;
+        short_name?: string | null;
+        exchange?: string | null;
+        fifty_two_week_high?: number | null;
+        fifty_two_week_low?: number | null;
+      }
+    | undefined;
+  const displayName = payloadData?.long_name ?? payloadData?.short_name ?? undefined;
+  const displayExchange = payloadData?.exchange ?? undefined;
+  const deepHistory = payloadData?.deep_history === true;
+  const week52High =
+    typeof payloadData?.fifty_two_week_high === "number" &&
+    Number.isFinite(payloadData.fifty_two_week_high)
+      ? payloadData.fifty_two_week_high
+      : null;
+  const week52Low =
+    typeof payloadData?.fifty_two_week_low === "number" &&
+    Number.isFinite(payloadData.fifty_two_week_low)
+      ? payloadData.fifty_two_week_low
+      : null;
+  const week52 =
+    week52High != null && week52Low != null
+      ? { high: week52High, low: week52Low }
+      : null;
   const sourcesConsidered = (data?.data as
     | { sources_considered?: Array<{ name: string; ok?: boolean; bars_available?: number; first_ts_ms?: number; error?: string }> }
     | undefined)?.sources_considered ?? [];
@@ -411,8 +442,8 @@ export function HPPane({ code, symbol }: FunctionPaneProps) {
         {/* Symbol header strip */}
         <SymbolHeaderStrip
           symbol={effectiveSymbol}
-          name={(data?.data as { longName?: string; shortName?: string } | undefined)?.longName}
-          exchange={(data?.data as { exchange?: string } | undefined)?.exchange}
+          name={displayName}
+          exchange={displayExchange}
           /*
            * S12 HP truth: prefer the live tick price when the transport
            * is actually live (`isLiveTransport`), otherwise fall back to
@@ -503,6 +534,7 @@ export function HPPane({ code, symbol }: FunctionPaneProps) {
               chartStyle={chartStyle}
               activeIndicators={activeIndicators}
               stats={stats}
+              week52={week52}
               symbol={effectiveSymbol ?? ""}
               comparedSeries={comparedSeries}
               chartApiRef={chartApiRef}
@@ -541,9 +573,14 @@ export function HPPane({ code, symbol }: FunctionPaneProps) {
           />
           <StatusSection
             withDot
-            tone={cached ? "warn" : "positive"}
-            label="cache"
-            value={cached ? "hit" : "live"}
+            tone="muted"
+            label="history"
+            value={deepHistory ? "deep" : "windowed"}
+            title={
+              deepHistory
+                ? "Winner raced against every provider's deepest reach"
+                : "Adapter fallback window (deep race unavailable)"
+            }
           />
           <StatusDivider />
           <StatusSection
@@ -650,7 +687,7 @@ function SymbolHeaderStrip({
         {change != null && (
           <span style={changeAbsStyle}>
             {change >= 0 ? "+" : ""}
-            {change.toFixed(2)}
+            {fmtNum(change)}
           </span>
         )}
         {ohlc && (
@@ -1043,6 +1080,7 @@ function ChartLayout({
   chartStyle,
   activeIndicators,
   stats,
+  week52,
   symbol,
   comparedSeries,
   chartApiRef,
@@ -1054,6 +1092,7 @@ function ChartLayout({
   chartStyle: ChartStyle;
   activeIndicators: string[];
   stats: { high: number; low: number; totalPct: number | null; n: number; last: number; first: number } | null;
+  week52: { high: number; low: number } | null;
   symbol: string;
   comparedSeries: ComparedSeries[];
   chartApiRef: MutableRefObject<IChartApi | null>;
@@ -1094,7 +1133,7 @@ function ChartLayout({
           <CrosshairReadout state={crosshair} />
         </ResizableChartFrame>
       </div>
-      <RightRail stats={stats} rows={rows} symbol={symbol} />
+      <RightRail stats={stats} week52={week52} rows={rows} symbol={symbol} />
     </div>
   );
 }
@@ -1125,31 +1164,38 @@ function CrosshairReadout({ state }: { state: CrosshairState }) {
 
 function RightRail({
   stats,
+  week52,
   rows,
   symbol,
 }: {
   stats: { high: number; low: number; totalPct: number | null; n: number; last: number; first: number } | null;
+  week52: { high: number; low: number } | null;
   rows: Array<HPRow & { _change?: number; _changePct?: number }>;
   symbol: string;
 }) {
-  const closes = useMemo(
-    () =>
-      rows
-        .map((r) => r.close ?? r.adj_close ?? r.adjClose)
-        .filter((v): v is number => v != null),
-    [rows],
-  );
-  const indicators = useMemo(() => computeIndicators(closes), [closes]);
+  const indicators = useMemo(() => computeIndicators(rows), [rows]);
   const support = stats ? stats.low + (stats.high - stats.low) * 0.236 : null;
   const resist = stats ? stats.low + (stats.high - stats.low) * 0.786 : null;
+  // True 52-week extremes when the provider meta carried them; otherwise the
+  // label is honest about being the selected range's high/low.
+  const highLabel = week52 ? "52w high" : "Range high";
+  const lowLabel = week52 ? "52w low" : "Range low";
 
   return (
     <aside style={rightRailStyle}>
       <RailSection title="Key levels">
         <RailKv label="Support" value={fmtNum(support)} tone="positive" />
         <RailKv label="Resistance" value={fmtNum(resist)} tone="negative" />
-        <RailKv label="52w high" value={fmtNum(stats?.high)} tone="positive" />
-        <RailKv label="52w low" value={fmtNum(stats?.low)} tone="negative" />
+        <RailKv
+          label={highLabel}
+          value={fmtNum(week52?.high ?? stats?.high)}
+          tone="positive"
+        />
+        <RailKv
+          label={lowLabel}
+          value={fmtNum(week52?.low ?? stats?.low)}
+          tone="negative"
+        />
       </RailSection>
       <RailSection title="Indicators">
         <IndicatorRow
@@ -1294,6 +1340,18 @@ export interface HPLiveTick {
   ts?: number;
 }
 
+/** Overlay/study series types HP can toggle from the Indicators menu. */
+type HPIndicatorSeries = ISeriesApi<"Line"> | ISeriesApi<"Histogram">;
+
+interface HPIndicatorEntry {
+  key: string;
+  pane: number;
+  color: string;
+  histogram?: boolean;
+  options: Record<string, unknown>;
+  data: Array<LineData | HistogramData>;
+}
+
 /**
  * Mount-only price chart.
  *
@@ -1349,7 +1407,7 @@ export function PriceChart({
     | null
   >(null);
   const volumeSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
-  const indicatorSeriesRef = useRef<Map<string, ISeriesApi<"Line">>>(new Map());
+  const indicatorSeriesRef = useRef<Map<string, HPIndicatorSeries>>(new Map());
   const compareSeriesRef = useRef<Map<string, ISeriesApi<"Line">>>(new Map());
   // Pin the latest crosshair callback so the mount effect doesn't have to
   // depend on its identity. Callers (e.g. ChartLayout) usually pass a new
@@ -1505,15 +1563,30 @@ export function PriceChart({
         });
         return;
       }
-      const seriesValues = Array.from(param.seriesData.values())[0] as
-        | {
-            close?: number;
-            open?: number;
-            high?: number;
-            low?: number;
-            value?: number;
-          }
-        | undefined;
+      // With study panes (RSI/MACD) active, `seriesData` may list an
+      // oscillator series first — the readout must always prefer the main
+      // price series so PRICE/OHLC never shows an RSI number.
+      const mainSeries = mainSeriesRef.current;
+      const seriesValues =
+        (mainSeries &&
+          (param.seriesData.get(mainSeries) as
+            | {
+                close?: number;
+                open?: number;
+                high?: number;
+                low?: number;
+                value?: number;
+              }
+            | undefined)) ||
+        (Array.from(param.seriesData.values())[0] as
+          | {
+              close?: number;
+              open?: number;
+              high?: number;
+              low?: number;
+              value?: number;
+            }
+          | undefined);
       const t = param.time;
       const tStr =
         typeof t === "number"
@@ -1670,8 +1743,16 @@ export function PriceChart({
   }, [chartRows.length, chartStyle, compareMode, interval, paletteKey]);
 
   // ── 3. Indicator effect ───────────────────────────────────────────────
-  // Adds / removes / refreshes the SMA·EMA overlay series without
+  // Adds / removes / refreshes the overlay + study series without
   // recreating the chart. Compare mode hides indicators.
+  //
+  // Standard study rendering (2026-09-11 F7):
+  //   - SMA(n) / EMA(n)  → line overlay on the price pane
+  //   - BB(20,2)         → upper/mid/lower band overlay on the price pane
+  //   - RSI(14)          → Wilder RSI line in its own sub-pane
+  //   - MACD             → MACD + signal lines and a histogram sub-pane
+  // Study panes are stacked after the price pane in activation order
+  // (RSI first, then MACD) so toggling one never leaves an empty pane.
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart || compareMode || chartRows.length < 2) return;
@@ -1682,49 +1763,178 @@ export function PriceChart({
       palette.warn,
       palette.negative,
     ];
-    const wanted = new Set<string>();
+    const rsiActive = activeIndicators.includes("RSI(14)");
+    const macdActive = activeIndicators.includes("MACD");
+    const rsiPane = rsiActive ? 1 : 0;
+    const macdPane = macdActive ? (rsiActive ? 2 : 1) : 0;
+
+    const entries: HPIndicatorEntry[] = [];
     activeIndicators.forEach((name, idx) => {
-      const m = name.match(/(SMA|EMA)\((\d+)\)/);
-      if (!m) return;
-      wanted.add(name);
-      let series = indicatorSeriesRef.current.get(name);
-      if (!series) {
-        const newSeries = chart.addSeries(LineSeries, {
-          color: indicatorColors[idx % indicatorColors.length],
-          lineWidth: 1,
-          priceLineVisible: false,
-          lastValueVisible: false,
+      const color = indicatorColors[idx % indicatorColors.length];
+      const mm = name.match(/(SMA|EMA)\((\d+)\)/);
+      if (mm) {
+        const period = Number(mm[2]);
+        const values = mm[1] === "SMA" ? sma(closes, period) : ema(closes, period);
+        entries.push({
+          key: name,
+          pane: 0,
+          color,
+          options: {
+            color,
+            lineWidth: 1,
+            priceLineVisible: false,
+            lastValueVisible: false,
+          },
+          data: linePoints(chartRows, values),
         });
-        indicatorSeriesRef.current.set(name, newSeries);
-        series = newSeries;
-      } else {
-        series.applyOptions({
-          color: indicatorColors[idx % indicatorColors.length],
-        });
+        return;
       }
-      const period = Number(m[2]);
-      const values = m[1] === "SMA" ? sma(closes, period) : ema(closes, period);
-      series.setData(
-        values
-          .map((v, i) =>
-            v == null
-              ? null
-              : ({
-                  time: chartTime(chartRows[i].date ?? chartRows[i].ts),
-                  value: v,
-                } as LineData),
-          )
-          .filter((p): p is LineData => p !== null),
-      );
+      if (name === "BB(20,2)") {
+        const bands = bollingerBands(closes, 20, 2);
+        entries.push(
+          {
+            key: "BB(20,2):upper",
+            pane: 0,
+            color: indicatorColors[2 % indicatorColors.length],
+            options: {
+              color: indicatorColors[2 % indicatorColors.length],
+              lineWidth: 1,
+              priceLineVisible: false,
+              lastValueVisible: false,
+            },
+            data: linePoints(chartRows, bands.upper),
+          },
+          {
+            key: "BB(20,2):mid",
+            pane: 0,
+            color: indicatorColors[0],
+            options: {
+              color: indicatorColors[0],
+              lineWidth: 1,
+              priceLineVisible: false,
+              lastValueVisible: false,
+            },
+            data: linePoints(chartRows, bands.mid),
+          },
+          {
+            key: "BB(20,2):lower",
+            pane: 0,
+            color: indicatorColors[3],
+            options: {
+              color: indicatorColors[3],
+              lineWidth: 1,
+              priceLineVisible: false,
+              lastValueVisible: false,
+            },
+            data: linePoints(chartRows, bands.lower),
+          },
+        );
+        return;
+      }
+      if (name === "RSI(14)") {
+        entries.push({
+          key: "RSI(14)",
+          pane: rsiPane,
+          color,
+          options: {
+            color,
+            lineWidth: 1,
+            priceLineVisible: false,
+            lastValueVisible: false,
+          },
+          data: linePoints(chartRows, rsiSeries(closes, 14)),
+        });
+        return;
+      }
+      if (name === "MACD") {
+        const bundle = macdBundle(closes);
+        entries.push(
+          {
+            key: "MACD",
+            pane: macdPane,
+            color: palette.accent,
+            options: {
+              color: palette.accent,
+              lineWidth: 1,
+              priceLineVisible: false,
+              lastValueVisible: false,
+            },
+            data: linePoints(chartRows, bundle.macd),
+          },
+          {
+            key: "MACD:signal",
+            pane: macdPane,
+            color: palette.warn,
+            options: {
+              color: palette.warn,
+              lineWidth: 1,
+              priceLineVisible: false,
+              lastValueVisible: false,
+            },
+            data: linePoints(chartRows, bundle.signal),
+          },
+          {
+            key: "MACD:hist",
+            pane: macdPane,
+            color: palette.positive,
+            histogram: true,
+            options: {
+              priceLineVisible: false,
+              lastValueVisible: false,
+            },
+            data: histogramPoints(
+              chartRows,
+              bundle.hist,
+              palette.positive,
+              palette.negative,
+            ),
+          },
+        );
+      }
     });
+
+    const wanted = new Set(entries.map((entry) => entry.key));
     indicatorSeriesRef.current.forEach((series, name) => {
       if (!wanted.has(name)) {
         chart.removeSeries(series);
         indicatorSeriesRef.current.delete(name);
       }
     });
+    for (const entry of entries) {
+      let series = indicatorSeriesRef.current.get(entry.key);
+      if (!series) {
+        // `title` identifies the study in the chart's crosshair legend and
+        // keeps every series individually addressable for tests.
+        const created = { ...entry.options, title: entry.key };
+        series = entry.histogram
+          ? chart.addSeries(
+              HistogramSeries,
+              created as HistogramSeriesPartialOptions,
+              entry.pane,
+            )
+          : chart.addSeries(
+              LineSeries,
+              created as LineSeriesPartialOptions,
+              entry.pane,
+            );
+        indicatorSeriesRef.current.set(entry.key, series);
+      } else {
+        series.applyOptions({ color: entry.color });
+        const currentPane = series.getPane?.()?.paneIndex?.();
+        if (typeof currentPane === "number" && currentPane !== entry.pane) {
+          series.moveToPane(entry.pane);
+        }
+      }
+      series.setData(entry.data as never);
+    }
+    // Price pane gets 3× the study pane height once a study is visible.
+    if (rsiActive || macdActive) {
+      chart.panes().forEach((pane, index) => {
+        pane.setStretchFactor(index === 0 ? 3 : 1);
+      });
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- see paletteKey
-  }, [activeIndicators, chartRows, compareMode, paletteKey]);
+  }, [activeIndicators, chartRows, compareMode, chartStyle, paletteKey]);
 
   // ── 4. Live tick effect ───────────────────────────────────────────────
   // Updates the current (last) bar via `series.update()` so live ticks
@@ -1806,7 +2016,12 @@ function normalizeRows(payload: unknown): HPRow[] {
   if (Array.isArray(payload)) return payload as HPRow[];
   if (typeof payload === "object") {
     const o = payload as Record<string, unknown>;
-    const items = o.bars ?? o.rows ?? o.history ?? o.items ?? o.candles ?? null;
+    // `ohlcv` is the alias contract's canonical field (hp_seed
+    // output_contract.must_have); bars/rows are the same array under legacy
+    // aliases. Reading all three keeps HP rendering if the envelope trims
+    // one of the duplicates.
+    const items =
+      o.ohlcv ?? o.bars ?? o.rows ?? o.history ?? o.items ?? o.candles ?? null;
     if (Array.isArray(items)) return items as HPRow[];
   }
   return [];
@@ -1917,69 +2132,195 @@ function rebaseToPct(rows: HPRow[]): LineData[] {
   return out;
 }
 
-function computeIndicators(closes: number[]) {
+function lastDefined(values: (number | null)[]): number | null {
+  for (let i = values.length - 1; i >= 0; i--) {
+    const value = values[i];
+    if (value != null && Number.isFinite(value)) return value;
+  }
+  return null;
+}
+
+function linePoints(
+  rows: Array<HPRow & { _change?: number; _changePct?: number }>,
+  values: (number | null)[],
+): LineData[] {
+  const out: LineData[] = [];
+  values.forEach((value, index) => {
+    if (value == null || !Number.isFinite(value)) return;
+    const row = rows[index];
+    if (!row) return;
+    out.push({ time: chartTime(row.date ?? row.ts), value });
+  });
+  return out;
+}
+
+function histogramPoints(
+  rows: Array<HPRow & { _change?: number; _changePct?: number }>,
+  values: (number | null)[],
+  positiveColor: string,
+  negativeColor: string,
+): HistogramData[] {
+  const out: HistogramData[] = [];
+  values.forEach((value, index) => {
+    if (value == null || !Number.isFinite(value)) return;
+    const row = rows[index];
+    if (!row) return;
+    out.push({
+      time: chartTime(row.date ?? row.ts),
+      value,
+      color: value >= 0 ? positiveColor : negativeColor,
+    });
+  });
+  return out;
+}
+
+/** Wilder RSI, aligned to the close series (null before the first value). */
+function rsiSeries(closes: number[], period = 14): (number | null)[] {
+  const out: (number | null)[] = new Array(closes.length).fill(null);
+  if (closes.length <= period) return out;
+  let gains = 0;
+  let losses = 0;
+  for (let i = 1; i < closes.length; i++) {
+    const diff = closes[i] - closes[i - 1];
+    if (i <= period) {
+      if (diff >= 0) gains += diff;
+      else losses -= diff;
+      if (i === period) {
+        const rs = losses === 0 ? 100 : gains / losses;
+        out[i] = 100 - 100 / (1 + rs);
+      }
+    } else {
+      const gain = diff >= 0 ? diff : 0;
+      const loss = diff < 0 ? -diff : 0;
+      gains = (gains * (period - 1) + gain) / period;
+      losses = (losses * (period - 1) + loss) / period;
+      const rs = losses === 0 ? 100 : gains / losses;
+      out[i] = 100 - 100 / (1 + rs);
+    }
+  }
+  return out;
+}
+
+function macdBundle(closes: number[]): {
+  macd: (number | null)[];
+  signal: (number | null)[];
+  hist: (number | null)[];
+} {
+  const ema12 = ema(closes, 12);
+  const ema26 = ema(closes, 26);
+  const macd = closes.map((_, i) =>
+    ema12[i] != null && ema26[i] != null
+      ? (ema12[i] as number) - (ema26[i] as number)
+      : null,
+  );
+  const firstIdx = macd.findIndex((v) => v != null);
+  const signal: (number | null)[] = new Array(closes.length).fill(null);
+  if (firstIdx >= 0) {
+    const signalTail = ema(macd.slice(firstIdx) as number[], 9);
+    signalTail.forEach((value, i) => {
+      if (value != null) signal[firstIdx + i] = value;
+    });
+  }
+  const hist = macd.map((value, i) =>
+    value != null && signal[i] != null ? value - (signal[i] as number) : null,
+  );
+  return { macd, signal, hist };
+}
+
+function bollingerBands(
+  closes: number[],
+  period = 20,
+  mult = 2,
+): { upper: (number | null)[]; mid: (number | null)[]; lower: (number | null)[] } {
+  const mid = sma(closes, period);
+  const upper: (number | null)[] = new Array(closes.length).fill(null);
+  const lower: (number | null)[] = new Array(closes.length).fill(null);
+  for (let i = period - 1; i < closes.length; i++) {
+    const mean = mid[i];
+    if (mean == null) continue;
+    let variance = 0;
+    for (let j = i - period + 1; j <= i; j++) {
+      const diff = closes[j] - mean;
+      variance += diff * diff;
+    }
+    const deviation = Math.sqrt(variance / period);
+    upper[i] = mean + mult * deviation;
+    lower[i] = mean - mult * deviation;
+  }
+  return { upper, mid, lower };
+}
+
+/**
+ * True ATR — Wilder-smoothed average of the true range:
+ *   TR = max(H−L, |H−prevC|, |L−prevC|)
+ * Aligned with the backend TECH function's definition (ewm alpha =
+ * 1/period, seeded on the first TR). The pre-fix HP "ATR" was the mean
+ * absolute close change — no high/low, no gaps — and understated ranges.
+ */
+function trueAtrSeries(
+  rows: Array<HPRow & { _change?: number; _changePct?: number }>,
+  period = 14,
+): (number | null)[] {
+  const out: (number | null)[] = new Array(rows.length).fill(null);
+  if (rows.length === 0) return out;
+  let previousClose: number | null = null;
+  let atr: number | null = null;
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    const high = row.high;
+    const low = row.low;
+    const close = row.close ?? row.adj_close ?? row.adjClose;
+    if (
+      high == null ||
+      low == null ||
+      !Number.isFinite(high) ||
+      !Number.isFinite(low)
+    ) {
+      if (close != null && Number.isFinite(close)) previousClose = close;
+      continue;
+    }
+    const trueRange =
+      previousClose == null
+        ? high - low
+        : Math.max(
+            high - low,
+            Math.abs(high - previousClose),
+            Math.abs(low - previousClose),
+          );
+    atr = atr == null ? trueRange : ((period - 1) * atr + trueRange) / period;
+    out[i] = atr;
+    if (close != null && Number.isFinite(close)) previousClose = close;
+  }
+  return out;
+}
+
+function computeIndicators(
+  rows: Array<HPRow & { _change?: number; _changePct?: number }>,
+) {
+  const closes = rows
+    .map((r) => r.close ?? r.adj_close ?? r.adjClose)
+    .filter((v): v is number => v != null && Number.isFinite(v));
   if (closes.length < 15) {
     return {
-      rsi: null,
-      macd: null,
-      atr: null,
+      rsi: null as number | null,
+      macd: null as number | null,
+      atr: null as number | null,
       rsiSpark: [] as number[],
       macdSpark: [] as number[],
       atrSpark: [] as number[],
     };
   }
-  // RSI(14)
-  const rsiSeries: number[] = [];
-  let gains = 0;
-  let losses = 0;
-  for (let i = 1; i < closes.length; i++) {
-    const diff = closes[i] - closes[i - 1];
-    if (i <= 14) {
-      if (diff >= 0) gains += diff;
-      else losses -= diff;
-      if (i === 14) {
-        const rs = losses === 0 ? 100 : gains / losses;
-        rsiSeries.push(100 - 100 / (1 + rs));
-      }
-    } else {
-      const gain = diff >= 0 ? diff : 0;
-      const loss = diff < 0 ? -diff : 0;
-      gains = (gains * 13 + gain) / 14;
-      losses = (losses * 13 + loss) / 14;
-      const rs = losses === 0 ? 100 : gains / losses;
-      rsiSeries.push(100 - 100 / (1 + rs));
-    }
-  }
-  const rsi = rsiSeries.length ? rsiSeries[rsiSeries.length - 1] : null;
-
-  // MACD: EMA12 - EMA26
-  const ema12 = ema(closes, 12);
-  const ema26 = ema(closes, 26);
-  const macdSeries = closes.map((_, i) =>
-    ema12[i] != null && ema26[i] != null ? (ema12[i] as number) - (ema26[i] as number) : null,
-  );
-  const macd = macdSeries[macdSeries.length - 1];
-
-  // ATR(14): simple range mean
-  const ranges: number[] = [];
-  for (let i = 1; i < closes.length; i++) {
-    ranges.push(Math.abs(closes[i] - closes[i - 1]));
-  }
-  const atrSeries: number[] = [];
-  for (let i = 13; i < ranges.length; i++) {
-    let s = 0;
-    for (let j = i - 13; j <= i; j++) s += ranges[j];
-    atrSeries.push(s / 14);
-  }
-  const atr = atrSeries.length ? atrSeries[atrSeries.length - 1] : null;
+  const rsiAll = rsiSeries(closes, 14);
+  const macd = macdBundle(closes);
+  const atrAll = trueAtrSeries(rows, 14);
 
   return {
-    rsi,
-    macd: typeof macd === "number" ? macd : null,
-    atr,
-    rsiSpark: rsiSeries.slice(-24),
-    macdSpark: macdSeries.filter((v): v is number => typeof v === "number").slice(-24),
-    atrSpark: atrSeries.slice(-24),
+    rsi: lastDefined(rsiAll),
+    macd: lastDefined(macd.macd),
+    atr: lastDefined(atrAll),
+    rsiSpark: rsiAll.filter((v): v is number => v != null).slice(-24),
+    macdSpark: macd.macd.filter((v): v is number => v != null).slice(-24),
+    atrSpark: atrAll.filter((v): v is number => v != null).slice(-24),
   };
 }
 

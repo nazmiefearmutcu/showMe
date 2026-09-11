@@ -27,6 +27,8 @@ import {
 import { useFunction } from "@/lib/useFunction";
 import { useUtcStamp } from "@/lib/useUtcStamp";
 import { useVisibilityTick } from "@/lib/useVisibilityTick";
+import { useWorkspace } from "@/lib/workspace";
+import { navigate } from "@/lib/router";
 import { formatSignedDelta } from "@/lib/format";
 import {
   FunctionControlGroup,
@@ -45,6 +47,7 @@ interface CrossRate {
   ask?: number;
   change?: number;
   change_pct?: number;
+  spread_pips?: number;
   ts?: string;
   history?: number[];
 }
@@ -78,6 +81,7 @@ export function WCRSPane({ code }: FunctionPaneProps) {
   );
   // Bundle D / PERF-04. Visibility-aware poll.
   const tick = useVisibilityTick(REFRESH_MS);
+  const setFocusedTarget = useWorkspace((s) => s.setFocusedTarget);
 
   const { state, data, error, refetch } = useFunction<unknown>({
     code,
@@ -92,7 +96,8 @@ export function WCRSPane({ code }: FunctionPaneProps) {
   useEffect(() => {
     if (tick === 0) return;
     refetch();
-  }, [tick, refetch]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- tick is the trigger
+  }, [tick]);
 
   const payload = useMemo(
     () =>
@@ -119,7 +124,17 @@ export function WCRSPane({ code }: FunctionPaneProps) {
   );
   const stats = useMemo(() => deriveStats(rows, base), [rows, base]);
   const utcStamp = useUtcStamp(tick);
-  const isLive = state === "ok";
+  // Honesty: the green pill may only claim "live" when the backend actually
+  // served a live tier — `reference_cross_rate_matrix` is a labelled fallback
+  // and must never wear a live badge (envelope warnings carry the detail).
+  const warnings = data?.warnings ?? [];
+  const sourceMode = payload.source_mode ?? "";
+  const isLive = state === "ok" && sourceMode.startsWith("live_");
+  const liveLabel = isLive
+    ? "live"
+    : state === "ok" && sourceMode.startsWith("reference")
+      ? "reference"
+      : state;
 
   const cols = useMemo<DataGridColumn<CrossRate>[]>(
     () => [
@@ -127,11 +142,26 @@ export function WCRSPane({ code }: FunctionPaneProps) {
         key: "pair",
         header: "Pair",
         width: 110,
-        render: (r) => (
-          <button type="button" style={pairBtnStyle}>
-            {fmtPair(r)}
-          </button>
-        ),
+        render: (r) => {
+          const pair = fmtPair(r);
+          const navigable = Boolean(r.pair || (r.base && r.quote));
+          return (
+            <button
+              type="button"
+              style={navigable ? pairBtnStyle : pairBtnStaticStyle}
+              title={navigable ? `Open ${pair} in FXIP` : undefined}
+              aria-label={navigable ? `Open ${pair} in FX Info Portal` : undefined}
+              disabled={!navigable}
+              onClick={() => {
+                if (!navigable) return;
+                setFocusedTarget("FXIP", pair);
+                navigate(`/symbol/${pair}/FXIP`);
+              }}
+            >
+              {pair}
+            </button>
+          );
+        },
       },
       {
         key: "rate",
@@ -220,8 +250,17 @@ export function WCRSPane({ code }: FunctionPaneProps) {
         },
       },
     ],
-    [],
+    [setFocusedTarget],
   );
+
+  // Envelope warnings name the fallback reason; render them so a degraded
+  // matrix cannot be mistaken for a live one.
+  const warningBanner =
+    warnings.length > 0 ? (
+      <div role="status" style={warningStyle} aria-label="Data quality warning">
+        {warnings.join(" · ")}
+      </div>
+    ) : null;
 
   return (
     <div className="u-pane-host">
@@ -239,7 +278,7 @@ export function WCRSPane({ code }: FunctionPaneProps) {
                 {utcStamp} UTC
               </Pill>
               <Pill tone={isLive ? "positive" : "warn"} variant="soft">
-                {isLive ? "live" : state}
+                {liveLabel}
               </Pill>
               <LoadStatePill state={state} />
               <RefreshButton loading={state === "loading"} onClick={refetch} />
@@ -264,12 +303,16 @@ export function WCRSPane({ code }: FunctionPaneProps) {
               icon="!"
             />
           ) : rows.length === 0 ? (
-            <Empty
-              title="No crosses"
-              body={`No WCRS rows for base ${base}. Source mode: ${payload.source_mode ?? "unknown"}.`}
-            />
+            <div className="u-grid-gap-14">
+              {warningBanner}
+              <Empty
+                title="No crosses"
+                body={`No WCRS rows for base ${base}. Source mode: ${payload.source_mode ?? "unknown"}.`}
+              />
+            </div>
           ) : (
             <div className="u-grid-gap-14">
+              {warningBanner}
               <KPIRibbon stats={stats} stamp={utcStamp} base={base} />
               <CrossHeatmap rows={heatmapRows} activeBase={base} />
               <DataGrid
@@ -277,6 +320,7 @@ export function WCRSPane({ code }: FunctionPaneProps) {
                 rows={rows}
                 rowKey={(r, i) => fmtPair(r) + i}
                 density="compact"
+                ariaLabel="WCRS cross rates"
               />
               <div style={twoColLayout}>
                 <section style={methodPanel}>
@@ -607,10 +651,16 @@ function fmtRate(v: number | undefined): string {
 }
 
 function fmtPips(r: CrossRate): string {
+  // Backend ships JPY-aware spread_pips (JPY quote = pip factor 100, else
+  // 10000). Render that field when present; the local fallback mirrors the
+  // same pip factor so USDJPY is never shown 100x wide.
+  if (typeof r.spread_pips === "number" && Number.isFinite(r.spread_pips)) {
+    return r.spread_pips.toFixed(1);
+  }
   if (r.bid == null || r.ask == null) return "—";
   const spread = r.ask - r.bid;
-  const pip = Math.abs(spread * 10000);
-  return pip.toFixed(1);
+  const pipFactor = (r.quote ?? "").toUpperCase() === "JPY" ? 100 : 10000;
+  return Math.abs(spread * pipFactor).toFixed(1);
 }
 
 const tabBarStyle: CSSProperties = {
@@ -648,13 +698,26 @@ const pairBtnStyle: CSSProperties = {
   background: "transparent",
   border: "none",
   color: "var(--accent)",
-  cursor: "default",
+  cursor: "pointer",
   font: "inherit",
   padding: 0,
   fontFamily: "JetBrains Mono, monospace",
   fontWeight: 600,
   letterSpacing: "0.02em",
   transition: "transform var(--motion-base)",
+};
+
+const pairBtnStaticStyle: CSSProperties = {
+  ...pairBtnStyle,
+  cursor: "default",
+};
+
+const warningStyle: CSSProperties = {
+  border: "1px solid var(--warning, var(--text-mute))",
+  color: "var(--text-secondary)",
+  fontSize: "var(--font-size-sm)",
+  padding: "6px 8px",
+  fontFamily: "JetBrains Mono, monospace",
 };
 
 const primaryNumStyle: CSSProperties = {

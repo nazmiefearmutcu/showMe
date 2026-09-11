@@ -197,6 +197,42 @@ describe("MOST — numeric cells (P5/P6)", () => {
     const numericCells = container.querySelectorAll(".terminal-grid-numeric");
     expect(numericCells.length).toBeGreaterThan(0);
   });
+
+  it("keeps exactly-zero moves in the Median |Δ%| sample (F14 L)", () => {
+    // [10, 0] → median 5.00. The old `v > 0` filter dropped flat rows and
+    // reported 10.00 — overstating the median whenever zeros existed.
+    mockState("ok", [
+      makeRow({ symbol: "AAA", change_pct: 10 }),
+      makeRow({ symbol: "BBB", change_pct: 0 }),
+    ]);
+    render(<MOSTPane code="MOST" />);
+    expect(screen.getByText("5.00%")).toBeInTheDocument();
+    expect(screen.queryByText("10.00%")).toBeNull();
+  });
+
+  it("excludes missing changes from the median instead of treating them as 0", () => {
+    // Only AAA has a real change; BBB has none → median = 10.00 (not 5.00).
+    mockState("ok", [
+      makeRow({ symbol: "AAA", change_pct: 10 }),
+      makeRow({ symbol: "BBB", change_pct: undefined, changePercent: undefined }),
+    ]);
+    render(<MOSTPane code="MOST" />);
+    expect(screen.getByText("10.00%")).toBeInTheDocument();
+  });
+
+  it("formats the as-of clock with the pinned en-US locale (F14 L)", () => {
+    const asOf = "2026-06-08T10:11:28.250007+00:00";
+    mockState("ok", [makeRow()], { as_of: asOf });
+    const { container } = render(<MOSTPane code="MOST" />);
+    const expected = new Date(asOf).toLocaleTimeString("en-US");
+    expect(container.textContent).toContain(`AS OF ${expected}`);
+  });
+
+  it("marks price×volume estimates with ≈ when dollar_volume is absent (F14 L)", () => {
+    mockState("ok", [makeRow({ dollar_volume: undefined, last: 10, volume: 5 })]);
+    const { container } = render(<MOSTPane code="MOST" />);
+    expect(container.textContent).toContain("≈ 50.00");
+  });
 });
 
 describe("MOST — state machine", () => {

@@ -95,6 +95,8 @@ export interface XSymbolChip {
   ok: boolean;
   post_count: number;
   mood?: "bullish" | "bearish" | "mixed";
+  /** English summary (preferred); `summary_tr` remains for legacy payloads. */
+  summary?: string;
   summary_tr?: string;
   bullish_score?: number;
   confidence?: number;

@@ -62,8 +62,8 @@ describe("BDA F1 — severity-coded notes", () => {
       result: {
         spec: { name: "X" } as never,
         notes: [
-          "Tanınan indikatör: rsi (alias=rsi14)",
-          "⚠ 'divergence' desteklenmiyor — yok sayıldı",
+          "Recognized indicator: rsi (alias=rsi14)",
+          "⚠ 'divergence' is not supported — ignored",
         ],
         saved_id: null,
       },
@@ -71,7 +71,7 @@ describe("BDA F1 — severity-coded notes", () => {
     render(<BDAPane />);
     const warn = screen.getByTestId("bda-note-warn");
     expect(warn).toBeInTheDocument();
-    expect(warn.textContent).toMatch(/yok sayıldı/);
+    expect(warn.textContent).toMatch(/ignored/);
     expect(warn.className).toMatch(/u-text-warn/);
   });
 
@@ -79,27 +79,54 @@ describe("BDA F1 — severity-coded notes", () => {
     useAssistantStore.setState({
       result: {
         spec: { name: "X" } as never,
-        notes: ["Timeframe: 1h (varsayılan — belirtilmedi)"],
+        notes: ["No threshold found — defaulted to 30/70"],
         saved_id: null,
       },
     });
     render(<BDAPane />);
     expect(screen.queryByTestId("bda-note-warn")).toBeNull();
-    const note = screen.getByText(/varsayılan — belirtilmedi/);
+    const note = screen.getByText(/defaulted to 30\/70/);
     expect(note.className).toMatch(/u-text-mute/);
+  });
+
+  it("renders a timeframe-default disclosure as info, not warn", () => {
+    useAssistantStore.setState({
+      result: {
+        spec: { name: "X" } as never,
+        notes: ["Timeframe: 1h (default — not specified)"],
+        saved_id: null,
+      },
+    });
+    render(<BDAPane />);
+    expect(screen.queryByTestId("bda-note-warn")).toBeNull();
+    expect(screen.getByText(/default — not specified/)).toBeInTheDocument();
   });
 
   it("renders a catalog-failure note as negative", () => {
     useAssistantStore.setState({
       result: {
         spec: { name: "X" } as never,
-        notes: ["katalog doğrulaması başarısız: unknown indicator id: foo"],
+        notes: ["catalog validation failed: unknown indicator id: foo"],
         saved_id: null,
       },
     });
     render(<BDAPane />);
     const warn = screen.getByTestId("bda-note-warn");
     expect(warn.className).toMatch(/u-text-negative/);
+  });
+
+  it("renders the 'only first indicator used' note as warn (no silent downgrade)", () => {
+    useAssistantStore.setState({
+      result: {
+        spec: { name: "X" } as never,
+        notes: ["⚠ Only the first indicator (rsi) was used — others (macd) were ignored"],
+        saved_id: null,
+      },
+    });
+    render(<BDAPane />);
+    expect(screen.getByTestId("bda-note-warn")).toHaveTextContent(
+      /Only the first indicator/,
+    );
   });
 });
 
@@ -138,6 +165,8 @@ describe("BDA F2 — accessibility", () => {
     render(<BDAPane />);
     const gen = screen.getByTestId("bda-generate-button");
     expect(gen.getAttribute("aria-busy")).toBe("true");
+    // Screen readers must not hear the raw ellipsis while busy.
+    expect(gen.getAttribute("aria-label")).toBe("Generating…");
   });
 });
 

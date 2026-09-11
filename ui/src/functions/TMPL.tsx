@@ -128,9 +128,22 @@ export function TMPLPane() {
             ))}
           </div>
         )}
+        {/* Audit A10 TMPL M — catalog load failure must be visible at the
+            LIST level (with Retry), not only inside the selected-template
+            branch the user may never reach. */}
+        {!loading && entries.length === 0 && error ? (
+          <div role="alert" data-testid="tmpl-catalog-error">
+            <div style={{ color: "var(--negative)", marginBottom: 8 }}>
+              Catalog failed to load: {error}
+            </div>
+            <button type="button" onClick={() => loadCatalog()}>
+              Retry
+            </button>
+          </div>
+        ) : null}
         {/* P5 — empty catalog (load finished, nothing came back). */}
-        {!loading && entries.length === 0 && (
-          <Empty title="No templates" body="The catalog is empty or failed to load." />
+        {!loading && entries.length === 0 && !error && (
+          <Empty title="No templates" body="The catalog is empty." />
         )}
         {ordered.map((e) => {
           const isSelected = selectedId === e.id;
@@ -319,7 +332,13 @@ export function TMPLPane() {
                       // until the user clicks Retry; otherwise a frustrated
                       // double-tap would race a recovered backend into two
                       // strategies on the second success.
-                      setInstantiateError(error ?? "instantiate_failed");
+                      // Audit A10 TMPL L: read the DEDICATED instantiate
+                      // error (not the catalog-load `error` closure, which
+                      // could be a stale catalog failure).
+                      setInstantiateError(
+                        useTemplateStore.getState().instantiateError ??
+                          "instantiate_failed",
+                      );
                     }
                   }}>
                   {creating ? "..." : "Create"}

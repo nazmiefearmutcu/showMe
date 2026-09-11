@@ -115,7 +115,11 @@ export function ECSTPane({ code }: FunctionPaneProps) {
   const sourceMode = payload.source_mode ?? data?.sources?.[0] ?? "—";
 
   const trend = useMemo(() => deriveTrendTone(values), [values]);
-  const isLive = state === "ok";
+  // F4 fix (A1-ECST-M): the backend can serve the labelled
+  // `macro_series_baseline` fallback; a green "live" pill over it contradicts
+  // the muted source pill next to it. Only real providers are live.
+  const LIVE_SOURCE_MODES = new Set(["fred", "worldbank"]);
+  const isLive = state === "ok" && LIVE_SOURCE_MODES.has(sourceMode);
 
   const COLS: DataGridColumn<EcstRow>[] = useMemo(
     () => [
@@ -177,15 +181,17 @@ export function ECSTPane({ code }: FunctionPaneProps) {
                 {frequency}
               </Pill>
               <Pill
-                tone={sourceMode === "fred" ? "positive" : "muted"}
+                tone={LIVE_SOURCE_MODES.has(sourceMode) ? "positive" : "muted"}
                 variant="soft"
                 withDot={false}
               >
                 {sourceMode}
               </Pill>
-              <Pill tone={isLive ? "positive" : "warn"} variant="soft">
-                {isLive ? "live" : state}
-              </Pill>
+              <span data-testid="ecst-mode-pill">
+                <Pill tone={isLive ? "positive" : "warn"} variant="soft">
+                  {isLive ? "live" : state === "ok" ? "reference" : state}
+                </Pill>
+              </span>
               <SegmentedControl
                 label="SERIES"
                 value={seriesId}
@@ -243,6 +249,7 @@ export function ECSTPane({ code }: FunctionPaneProps) {
                 rows={sortedRows}
                 rowKey={(row, i) => `${row.date ?? ""}-${i}`}
                 density="compact"
+                ariaLabel="ECST observations"
               />
             </div>
           )}

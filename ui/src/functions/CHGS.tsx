@@ -1,16 +1,18 @@
 /**
  * CHGS — Chart Studies (preset TECH bundle).
  *
- * Backend (engine/functions/misc/_bonus.py CHGSFunction) keeps a SYNTHETIC
- * `_chart_template` branch that fires unless `live_chart` is passed — this
- * pane ALWAYS requests the live path (`live_chart: true`) and renders the
- * TECH payload honestly:
+ * Backend (engine/functions/misc/_bonus.py CHGSFunction) defers to the live
+ * TECH studies by default; the labelled synthetic `_chart_template` branch is
+ * now opt-in (`reference=true`) and stamps `status:"reference"` +
+ * `data_mode:"modeled"`. The pane renders the TECH payload honestly:
  *
  *  - study chips (from the payload's `indicators` map) + close/study overlay
  *    chart + per-study latest-values table + scalar summary cards;
- *  - a payload without `indicators` IS the synthetic template — it gets a
- *    prominent "synthetic template" pill + inline warning, never silently
- *    presented as live chart data.
+ *  - a genuine failure envelope (`provider_unavailable` / `no_price_history`)
+ *    renders an honest outage Empty with the backend `reason` + Retry — it is
+ *    NEVER labelled "synthetic template";
+ *  - the synthetic template label fires only for the real template shape
+ *    (`data_mode === "modeled"` / `status === "reference"`).
  */
 import { useMemo, useState, type CSSProperties } from "react";
 import {
@@ -57,6 +59,9 @@ interface CHGSIndicatorRow {
 
 interface CHGSData {
   status?: string;
+  data_mode?: string;
+  reason?: string;
+  next_actions?: string[];
   bar_count?: number;
   bars?: CHGSBar[];
   indicators?: Record<string, StudyPoint[]>;
@@ -69,7 +74,7 @@ interface CHGSData {
     macd?: number;
     stoch_k?: number;
   };
-  /* synthetic template shape (no live_chart on the backend) */
+  /* synthetic template shape (only behind reference=true) */
   symbol?: string;
   last?: number;
   rsi_14?: number;
@@ -117,17 +122,35 @@ export function CHGSPane({ code, symbol }: FunctionPaneProps) {
   const [study, setStudy] = useState<string>("sma_20");
   const effectiveSymbol =
     symbol || defaultSymbolForFunction(code, ["EQUITY", "ETF"]);
-  // DEFECT GUARD: the backend CHGS serves a synthetic `_chart_template`
-  // unless live_chart is truthy — always request the live path here.
+  // Default-polarity (2026-09-08): CHGS defers to the live TECH path with no
+  // flag — the old `live_chart:true` param is inert and has been dropped.
   const { state, data, error, refetch } = useFunction<CHGSData>({
     code,
     symbol: effectiveSymbol,
-    params: { live_chart: true, days },
+    params: { days },
     enabled: !!effectiveSymbol,
   });
 
   const payload = data?.data;
-  const isSynthetic = !payload?.indicators;
+  const warnings = Array.isArray(data?.warnings) ? data.warnings : [];
+  const hasStudies = !!payload?.indicators;
+  // The synthetic label is reserved for the genuine template mode — the
+  // backend stamps `data_mode:"modeled"` + `status:"reference"` (legacy
+  // template payloads carry the bespoke last/rsi_14 fields).
+  const isSynthetic =
+    !hasStudies &&
+    (payload?.data_mode === "modeled" ||
+      payload?.status === "reference" ||
+      typeof payload?.last === "number" ||
+      typeof payload?.rsi_14 === "number");
+  // Anything else without studies is an honest outage / no-data state
+  // (`provider_unavailable`, `no_price_history`, or a keyless empty body) —
+  // it must NEVER claim the synthetic template.
+  const isOutage = !hasStudies && !isSynthetic;
+  const outageReason =
+    (typeof payload?.reason === "string" && payload.reason) ||
+    warnings[0] ||
+    "The chart provider returned no study data for this symbol.";
 
   const closes = useMemo(
     () =>
@@ -217,6 +240,17 @@ export function CHGSPane({ code, symbol }: FunctionPaneProps) {
     <Empty
       title="Function error"
       body={error?.message ?? "—"}
+      icon="!"
+      action={
+        <button onClick={refetch} className="btn">
+          Retry
+        </button>
+      }
+    />
+  ) : isOutage ? (
+    <Empty
+      title="Chart studies unavailable"
+      body={outageReason}
       icon="!"
       action={
         <button onClick={refetch} className="btn">
@@ -329,18 +363,32 @@ export function CHGSPane({ code, symbol }: FunctionPaneProps) {
         <PaneHeader
           code={code}
           title={`Chart Studies — ${effectiveSymbol || ""}`}
-          subtitle={`${aliasOf} · ${isSynthetic ? "synthetic template" : `${closes.length} bars · ${studyKeys.length} studies`}`}
+          subtitle={`${aliasOf} · ${
+            isSynthetic
+              ? "synthetic template"
+              : isOutage
+                ? "provider unavailable"
+                : `${closes.length} bars · ${studyKeys.length} studies`
+          }`}
           trailing={
             <FunctionControlGroup>
               <Pill tone="muted" variant="soft" withDot={false}>
-                {isSynthetic ? "template" : `${closes.length} bars`}
+                {isSynthetic
+                  ? "template"
+                  : isOutage
+                    ? "no studies"
+                    : `${closes.length} bars`}
               </Pill>
               <Pill
-                tone={isSynthetic ? "warn" : "positive"}
+                tone={isSynthetic || isOutage ? "warn" : "positive"}
                 variant="soft"
-                withDot={!isSynthetic}
+                withDot={!isSynthetic && !isOutage}
               >
-                {isSynthetic ? "synthetic template" : "live studies"}
+                {isSynthetic
+                  ? "synthetic template"
+                  : isOutage
+                    ? "provider unavailable"
+                    : "live studies"}
               </Pill>
               <SegmentedControl
                 label="RANGE"

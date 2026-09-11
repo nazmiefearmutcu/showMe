@@ -112,16 +112,12 @@ function median(values: number[]): number | null {
 }
 
 export function TOPPane({ code }: FunctionPaneProps) {
-  // Bundle D / PERF-04. Tick nonce blends a manual counter (Refresh/Run
-  // buttons + filter changes) with `useVisibilityTick`'s background-paused
-  // auto-tick. `setTick(t => t + 1)` continues to work because we expose the
-  // manual setter; both inputs feed the composed `tick` used by useFunction.
-  const [manualTick, setManualTick] = useState(0);
-  const visTick = useVisibilityTick(REFRESH_MS);
-  const tick = manualTick + visTick;
-  const setTick = (next: ((prev: number) => number) | number) => {
-    setManualTick((prev) => (typeof next === "function" ? next(prev) : next));
-  };
+  // AUDIT A1 [M]: the poll tick must NOT live in `params` — a tick inside the
+  // params fingerprint made `useFunction` treat every 60s poll as a new load
+  // (data cleared → 3-skeleton flash + Veryfinder overlay reset). Canonical
+  // pattern (TECH.tsx): the visibility-paused tick only drives `refetch()`,
+  // which keeps the tape on screen (`refreshing`) while the new payload lands.
+  const tick = useVisibilityTick(REFRESH_MS);
   const [query, setQuery] = useState("market");
   const [veryfinderMap, setVeryfinderMap] = useState<Record<string, VeryfinderOverlay>>({});
   const [veryfinderState, setVeryfinderState] = useState<"idle" | "loading" | "ok" | "error">("idle");
@@ -138,9 +134,18 @@ export function TOPPane({ code }: FunctionPaneProps) {
   );
   const { state, data, error, refetch } = useFunction<unknown>({
     code,
-    params: { tick, limit, query, max_age_days: maxAgeDays, live: true, news_timeout: 6, timeout: 6 },
+    params: { limit, query, max_age_days: maxAgeDays, live: true, news_timeout: 6, timeout: 6 },
   });
   const setFocusedTarget = useWorkspace((s) => s.setFocusedTarget);
+
+  // Live adoption (campaign 2026-09-11, AUDIT A1 [M]): visibility-paused 60s
+  // refetch. The tick is a trigger only — it never enters `params` (a tick in
+  // params = full skeleton wipe every poll, UA-HIGH-16).
+  useEffect(() => {
+    if (tick === 0) return; // initial mount is useFunction's own load
+    refetch();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- tick is the trigger
+  }, [tick]);
 
   // Auto-refresh interval lives in `useVisibilityTick(REFRESH_MS)` above —
   // it pauses on hidden tabs and resumes on focus. No local setInterval.
@@ -316,20 +321,20 @@ export function TOPPane({ code }: FunctionPaneProps) {
                 intervalSec={REFRESH_MS / 1000}
               />
               {/*
-                Sort indicator. Honesty fix: the tape is NOT newest-first.
-                The backend ranks by deterministic importance_score DESC and
-                only then by published_at DESC, so the prior recency-only
-                label misrepresented the order. The pill now reads
-                "ÖNEM → YENİ" (importance, then newest) with a tooltip that
-                spells out the composite ranking. It stays a passive label
-                (no arrow, no click affordance).
+                Sort indicator (AUDIT A1 [M]). The previous pill claimed
+                "IMPORTANCE → NEWEST", but the backend pipeline
+                (`news_intelligence.sort_articles_newest_first`) and this pane
+                both order by published_at DESC — `importance_score` is only
+                displayed per headline, it does not drive the order. The label
+                now states the real ordering. It stays a passive label (no
+                arrow, no click affordance).
               */}
               <span
-                title="Sort: importance score (high to low), ties broken by publish time (newest first). Importance rationales are shown per headline."
+                title="Sort: publish time (newest first). Importance scores are shown per headline and do not change the order."
                 data-testid="top-sort-label"
               >
                 <Pill tone="muted" variant="soft" withDot={false}>
-                  IMPORTANCE → NEWEST
+                  NEWEST FIRST
                 </Pill>
               </span>
               <NewsLimitControl value={limit} onChange={setLimit} disabled={state === "loading"} />
@@ -337,20 +342,14 @@ export function TOPPane({ code }: FunctionPaneProps) {
                 label="QUERY"
                 value={TOP_QUERIES.includes(query as (typeof TOP_QUERIES)[number]) ? query : ""}
                 options={TOP_QUERIES}
-                onChange={(next) => {
-                  setQuery(String(next));
-                  setTick((t) => t + 1);
-                }}
+                onChange={(next) => setQuery(String(next))}
                 disabled={state === "loading"}
               />
               <SegmentedControl
                 label="AGE"
                 value={maxAgeDays}
                 options={TOP_AGE_OPTIONS}
-                onChange={(next) => {
-                  setMaxAgeDays(next);
-                  setTick((t) => t + 1);
-                }}
+                onChange={(next) => setMaxAgeDays(next)}
                 disabled={state === "loading"}
               />
               <LoadStatePill state={state} />
@@ -394,8 +393,10 @@ export function TOPPane({ code }: FunctionPaneProps) {
                       description={p.description}
                       active={query === p.query}
                       onClick={() => {
-                        setQuery(p.query);
-                        setTick((t) => t + 1);
+                        // Params change drives the fetch; clicking the ACTIVE
+                        // preset issues an explicit refresh instead.
+                        if (query === p.query) refetch();
+                        else setQuery(p.query);
                       }}
                     />
                   ))}
@@ -411,9 +412,11 @@ export function TOPPane({ code }: FunctionPaneProps) {
                       type="button"
                       className="btn btn--ghost u-btn-mini"
                       onClick={() => {
-                        setQuery("market");
-                        setMaxAgeDays(45);
-                        setTick((t) => t + 1);
+                        if (query === "market" && maxAgeDays === 45) refetch();
+                        else {
+                          setQuery("market");
+                          setMaxAgeDays(45);
+                        }
                       }}
                     >
                       Reset
@@ -421,10 +424,7 @@ export function TOPPane({ code }: FunctionPaneProps) {
                     <button
                       type="button"
                       className="btn btn--accent u-btn-mini"
-                      onClick={() => {
-                        setTick((t) => t + 1);
-                        refetch();
-                      }}
+                      onClick={refetch}
                     >
                       Apply
                     </button>
@@ -447,7 +447,7 @@ export function TOPPane({ code }: FunctionPaneProps) {
                     placeholder="market, bitcoin, Fed, earnings..."
                     hint="Search text is sent to TOP; ranking reasons appear on each headline."
                     onKeyDown={(e) => {
-                      if (e.key === "Enter") setTick((t) => t + 1);
+                      if (e.key === "Enter") refetch();
                     }}
                   />
                 </div>
@@ -475,9 +475,11 @@ export function TOPPane({ code }: FunctionPaneProps) {
                     type="button"
                     className="btn btn--accent"
                     onClick={() => {
-                      setQuery("market");
-                      setMaxAgeDays(90);
-                      setTick((t) => t + 1);
+                      if (query === "market" && maxAgeDays === 90) refetch();
+                      else {
+                        setQuery("market");
+                        setMaxAgeDays(90);
+                      }
                     }}
                   >
                     Reset & retry
@@ -521,7 +523,7 @@ export function TOPPane({ code }: FunctionPaneProps) {
                     P2b honesty: the Veryfinder DEMO disclosure lives on its OWN
                     StatCard so the DEMO qualifier is unambiguously about the
                     social-signal overlay, not the news sources. The caption
-                    reads DEMO VERİ when every overlay is a fixture/fallback,
+                    reads DEMO when every overlay is a fixture/fallback,
                     otherwise the live VF batch state.
                   */}
                   <StatCard
@@ -755,7 +757,7 @@ function NewsRow({
 }
 
 /**
- * A4: maps the backend sentiment label to an explicit Turkish word so the
+ * A4: maps the backend sentiment label to an explicit English word so the
  * direction is carried by text, not just the pill colour. Unknown labels
  * pass through verbatim (still text, never color-only).
  */

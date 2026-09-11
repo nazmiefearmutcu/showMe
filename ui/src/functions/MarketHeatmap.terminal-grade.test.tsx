@@ -322,6 +322,65 @@ describe("MarketHeatmap — legend movers (A2)", () => {
   });
 });
 
+/* ── F8: missing-change honesty ───────────────────────────────────────── */
+
+describe("MarketHeatmap — missing change honesty (F8)", () => {
+  it("renders a null change as an em-dash, not a fabricated 0.00% tile", () => {
+    mockOk({
+      period: "1D",
+      rows: [
+        countryRow({ country: "US", etf: "SPY", change_pct: 0.84 }),
+        countryRow({ country: "JP", etf: "EWJ", change_pct: null }),
+      ],
+    });
+    render(<MarketHeatmapPane code="MAP" />);
+    const grid = screen.getByRole("region", {
+      name: /ETF performance heatmap/i,
+    });
+    const failedTile = within(grid).getByRole("button", {
+      name: /JP \(EWJ\) — 1D/,
+    });
+    expect(failedTile.textContent).toContain("—");
+    expect(failedTile.textContent).not.toContain("0.00%");
+  });
+
+  it("excludes null-change rows from Best/Worst and the mover rail", () => {
+    mockOk({
+      period: "1D",
+      rows: [
+        countryRow({ country: "US", etf: "SPY", change_pct: 0.84 }),
+        countryRow({ country: "JP", etf: "EWJ", change_pct: -1.4 }),
+        countryRow({ country: "DE", etf: "EWG", change_pct: null }),
+      ],
+    });
+    render(<MarketHeatmapPane code="MAP" />);
+    // Best = US (+0.84%) — the failed row must not be crowned as flat 0.00.
+    const bestCard = screen.getByText("Best").closest("div");
+    expect(bestCard?.textContent).toContain("US");
+    expect(bestCard?.textContent).not.toContain("DE");
+    // Worst = JP (-1.4%) — the failed row must not suppress the true worst.
+    const worstCard = screen.getByText("Worst").closest("div");
+    expect(worstCard?.textContent).toContain("JP");
+    // The legend rail ranks only finite rows; a null-change row is not a mover.
+    const rail = screen.getByRole("complementary");
+    expect(within(rail).queryByText("DE")).toBeNull();
+  });
+
+  it("labels the main grid for screen readers (MAP vs SECT)", () => {
+    mockOk({ period: "1D", rows: [countryRow()] });
+    render(<MarketHeatmapPane code="MAP" />);
+    expect(
+      screen.getByRole("table", { name: /country heatmap rows/i }),
+    ).toBeInTheDocument();
+    cleanup();
+    mockOk({ period: "1D", rows: [sectorRow()] });
+    render(<MarketHeatmapPane code="SECT" />);
+    expect(
+      screen.getByRole("table", { name: /sector heatmap rows/i }),
+    ).toBeInTheDocument();
+  });
+});
+
 /* ── Live adoption: visibility poll + per-cell flash ─────────────────── */
 
 describe("MarketHeatmap — visibility poll (live adoption)", () => {

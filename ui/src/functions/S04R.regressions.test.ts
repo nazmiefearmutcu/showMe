@@ -134,15 +134,17 @@ describe("S04-R · TOP sort indicator is not falsely interactive", () => {
   });
 
   it("Replaced with an unambiguous passive label", () => {
-    // Honesty upgrade (TOP terminal-grade pass): the tape is ranked by
-    // importance_score DESC then published_at DESC, so the old "RECENT FIRST"
-    // label was inaccurate. The pill is still a passive <Pill> (no onClick,
-    // no arrow) but now reads "IMPORTANCE → NEWEST" (importance, then newest) and
-    // carries a tooltip on its wrapping <span> spelling out the composite
-    // ranking.
+    // Honesty upgrade (AUDIT A1 [M], fixed in the function-audit campaign):
+    // the pipeline and pane both order by published_at DESC — importance
+    // scores are display-only — so the earlier "IMPORTANCE → NEWEST" claim
+    // was inaccurate. The pill stays passive (no arrow, no click) and now
+    // reads "NEWEST FIRST" with a tooltip on the wrapping <span>.
     expect(TOP_SRC).not.toMatch(/RECENT FIRST/);
+    // The old label may still be named in the explanatory comment — assert on
+    // the rendered pill only.
+    expect(TOP_SRC).not.toMatch(/<Pill[^>]*>\s*IMPORTANCE/);
     expect(TOP_SRC).toMatch(
-      /<Pill\s+tone="muted"\s+variant="soft"\s+withDot=\{false\}>\s*IMPORTANCE → NEWEST\s*<\/Pill>/,
+      /<Pill\s+tone="muted"\s+variant="soft"\s+withDot=\{false\}>\s*NEWEST FIRST\s*<\/Pill>/,
     );
     // Still passive — the sort label carries no click handler.
     expect(TOP_SRC).not.toMatch(/top-sort-label[\s\S]{0,120}onClick/);

@@ -14,6 +14,8 @@
  */
 import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
 import {
+  DataGrid,
+  type DataGridColumn,
   Empty,
   FlashValue,
   Pane,
@@ -26,6 +28,12 @@ import {
   StatusDivider,
   StatusSection,
 } from "@/design-system";
+import {
+  buildGridCsv,
+  downloadGridCsv,
+  gridCsvFilename,
+  type GridCsvColumn,
+} from "@/design-system/grid-csv";
 import { formatNumber } from "@/lib/format";
 import { useFunction } from "@/lib/useFunction";
 import { useVisibilityTick } from "@/lib/useVisibilityTick";
@@ -194,8 +202,114 @@ export function OMONPane({ code, symbol }: FunctionPaneProps) {
   const isLive = state === "ok" && payload?.status === "ok";
   const shown = view.rows.length;
   const total = allRows.length;
-  const sideTint =
-    side === "call" ? "var(--positive-soft-hex)" : "var(--negative-soft-hex)";
+
+  // Audit A4 OMON M: the primary chain surface now uses the shared DataGrid —
+  // sortable headers (built-in tri-state sorter), keyboard cell navigation +
+  // clipboard copy, and a CSV export of the visible window.
+  const cols = useMemo<DataGridColumn<OmonRow>[]>(
+    () => [
+      {
+        key: "strike",
+        header: "Strike",
+        numeric: true,
+        sortable: true,
+        width: 90,
+        sortValue: (r) => r.strike ?? null,
+        render: (r) => {
+          const isAtm = r.strike != null && r.strike === view.atmStrike;
+          return (
+            <span
+              style={monoStyle(isAtm)}
+              data-testid={isAtm ? "omon-atm-strike" : undefined}
+              data-atm={isAtm ? "true" : undefined}
+            >
+              {fmtNum(r.strike)}
+            </span>
+          );
+        },
+      },
+      {
+        key: "bid",
+        header: "Bid",
+        numeric: true,
+        sortable: true,
+        width: 80,
+        sortValue: (r) => numOrNull(side === "call" ? r.call_bid : r.put_bid),
+        render: (r) => fmtNum(side === "call" ? r.call_bid : r.put_bid),
+      },
+      {
+        key: "ask",
+        header: "Ask",
+        numeric: true,
+        sortable: true,
+        width: 80,
+        sortValue: (r) => numOrNull(side === "call" ? r.call_ask : r.put_ask),
+        render: (r) => fmtNum(side === "call" ? r.call_ask : r.put_ask),
+      },
+      {
+        key: "oi",
+        header: "OI",
+        numeric: true,
+        sortable: true,
+        width: 90,
+        sortValue: (r) => numOrNull(side === "call" ? r.call_oi : r.put_oi),
+        render: (r) => fmtInt(side === "call" ? r.call_oi : r.put_oi),
+      },
+      {
+        key: "volume",
+        header: "Vol",
+        numeric: true,
+        sortable: true,
+        width: 80,
+        sortValue: (r) => numOrNull(side === "call" ? r.call_volume : r.put_volume),
+        render: (r) => fmtInt(side === "call" ? r.call_volume : r.put_volume),
+      },
+      {
+        key: "iv",
+        header: "IV",
+        numeric: true,
+        sortable: true,
+        width: 78,
+        sortValue: (r) => numOrNull(side === "call" ? r.call_iv : r.put_iv),
+        render: (r) => fmtIv(side === "call" ? r.call_iv : r.put_iv),
+      },
+      {
+        key: "delta",
+        header: "Delta",
+        numeric: true,
+        sortable: true,
+        width: 84,
+        sortValue: (r) => numOrNull(side === "call" ? r.call_delta : r.put_delta),
+        render: (r) => fmtNum(side === "call" ? r.call_delta : r.put_delta, 3),
+      },
+    ],
+    [side, view.atmStrike],
+  );
+
+  const csvColumns = useMemo<GridCsvColumn<OmonRow>[]>(
+    () => [
+      { key: "strike", header: "Strike", value: (r) => r.strike ?? "" },
+      { key: "bid", header: "Bid", value: (r) => (side === "call" ? r.call_bid : r.put_bid) },
+      { key: "ask", header: "Ask", value: (r) => (side === "call" ? r.call_ask : r.put_ask) },
+      { key: "oi", header: "OI", value: (r) => (side === "call" ? r.call_oi : r.put_oi) },
+      {
+        key: "volume",
+        header: "Volume",
+        value: (r) => (side === "call" ? r.call_volume : r.put_volume),
+      },
+      { key: "iv", header: "IV", value: (r) => (side === "call" ? r.call_iv : r.put_iv) },
+      { key: "delta", header: "Delta", value: (r) => (side === "call" ? r.call_delta : r.put_delta) },
+    ],
+    [side],
+  );
+
+  const exportCsv = () => {
+    const csv = buildGridCsv(csvColumns, view.rows);
+    downloadGridCsv(
+      gridCsvFilename(`omon-${effectiveSymbol || "chain"}-${payload?.expiry ?? "expiry"}`),
+      csv,
+    );
+  };
 
   const warningBanner =
     warnings.length > 0 ? (
@@ -279,73 +393,32 @@ export function OMONPane({ code, symbol }: FunctionPaneProps) {
         />
       </section>
       <div style={tableWrapStyle}>
-        <table
-          style={tableStyle}
-          aria-label={`OMON ${side === "call" ? "call" : "put"} chain`}
-        >
-          <thead>
-            <tr>
-              {["Strike", "Bid", "Ask", "OI", "Vol", "IV", "Delta"].map((h, i) => (
-                <th
-                  key={h}
-                  style={{ ...thStyle, textAlign: i === 0 ? "left" : "right" }}
-                >
-                  {h}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {view.rows.map((r) => {
-              const strike = r.strike;
-              const isAtm = strike != null && strike === view.atmStrike;
-              const rowStyle: CSSProperties = isAtm
-                ? {
-                    background: sideTint,
-                    boxShadow: "inset 2px 0 0 var(--accent)",
-                  }
-                : {};
-              return (
-                <tr
-                  key={String(strike)}
-                  style={rowStyle}
-                  data-atm={isAtm ? "true" : undefined}
-                  aria-label={
-                    isAtm
-                      ? `ATM strike ${fmtNum(strike)} ${side} row`
-                      : `${side} strike ${fmtNum(strike)} row`
-                  }
-                >
-                  <td style={{ ...tdStyle, ...monoStyle(isAtm) }}>
-                    {fmtNum(strike)}
-                  </td>
-                  <td style={tdNumStyle}>
-                    {fmtNum(side === "call" ? r.call_bid : r.put_bid)}
-                  </td>
-                  <td style={tdNumStyle}>
-                    {fmtNum(side === "call" ? r.call_ask : r.put_ask)}
-                  </td>
-                  <td style={tdNumStyle}>
-                    {fmtInt(side === "call" ? r.call_oi : r.put_oi)}
-                  </td>
-                  <td style={tdNumStyle}>
-                    {fmtInt(side === "call" ? r.call_volume : r.put_volume)}
-                  </td>
-                  <td style={tdNumStyle}>
-                    {fmtIv(side === "call" ? r.call_iv : r.put_iv)}
-                  </td>
-                  <td style={tdNumStyle}>
-                    {fmtNum(side === "call" ? r.call_delta : r.put_delta, 3)}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-        <div style={noteStyle} aria-label="Chain coverage note">
-          Showing {shown} of {total} strikes
-          {view.capped ? ` (±${MAX_STRIKES_PER_SIDE} around spot)` : ""} ·{" "}
-          {side === "call" ? "calls" : "puts"} view
+        <DataGrid
+          columns={cols}
+          rows={view.rows}
+          rowKey={(r, i) => `${r.strike ?? "strike"}-${i}`}
+          density="compact"
+          ariaLabel={`OMON ${side === "call" ? "call" : "put"} chain`}
+          defaultSortKey="strike"
+          defaultSortDir="ascending"
+          keyboardNavigable
+        />
+        <div style={chainFooterStyle}>
+          <div style={noteStyle} aria-label="Chain coverage note">
+            Showing {shown} of {total} strikes
+            {view.capped ? ` (±${MAX_STRIKES_PER_SIDE} around spot)` : ""} ·{" "}
+            {side === "call" ? "calls" : "puts"} view
+          </div>
+          <button
+            type="button"
+            className="btn btn--ghost"
+            onClick={exportCsv}
+            disabled={view.rows.length === 0}
+            title="Download the visible strike window as CSV"
+            aria-label={`Download ${view.rows.length} strikes as CSV`}
+          >
+            CSV
+          </button>
         </div>
       </div>
     </div>
@@ -440,34 +513,11 @@ const kpiGridStyle: CSSProperties = {
 
 const tableWrapStyle: CSSProperties = { minWidth: 0 };
 
-const tableStyle: CSSProperties = {
-  width: "100%",
-  borderCollapse: "collapse",
-  tableLayout: "fixed",
-  fontFamily: "JetBrains Mono, monospace",
-  fontVariantNumeric: "tabular-nums",
-  fontSize: "var(--font-size-sm)",
-};
-
-const thStyle: CSSProperties = {
-  padding: "4px 8px",
-  color: "var(--text-mute)",
-  fontWeight: 500,
-  letterSpacing: "0.06em",
-  fontSize: "var(--font-size-xs)",
-  textTransform: "uppercase",
-  borderBottom: "1px solid var(--border-subtle)",
-};
-
-const tdStyle: CSSProperties = {
-  padding: "3px 8px",
-  color: "var(--text-primary)",
-  borderBottom: "1px solid var(--border-subtle)",
-};
-
-const tdNumStyle: CSSProperties = {
-  ...tdStyle,
-  textAlign: "right",
+const chainFooterStyle: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  gap: 8,
 };
 
 const noteStyle: CSSProperties = {

@@ -37,7 +37,18 @@ const HEALTHY: XHealth = {
   },
 };
 
-function fullResponse(overrides: Partial<XAnalysisResponse> = {}): XAnalysisResponse {
+// The wire carries `summary` (language-appropriate — English when the request
+// `lang` starts with "en") plus `summary_en` alongside the always-present
+// `summary_tr`. xai.ts does not type the first two yet (cross-lane ask), so
+// the tests model them structurally.
+type XAnalysisResponseWithSummary = XAnalysisResponse & {
+  summary?: string;
+  summary_en?: string;
+};
+
+function fullResponse(
+  overrides: Partial<XAnalysisResponseWithSummary> = {},
+): XAnalysisResponseWithSummary {
   return {
     query: "AAPL",
     post_count: 6,
@@ -46,6 +57,8 @@ function fullResponse(overrides: Partial<XAnalysisResponse> = {}): XAnalysisResp
     fetched_at: "2026-06-09T11:56:00.000Z",
     device: "cpu",
     mood: "bullish",
+    summary: "english summary for AAPL",
+    summary_en: "english summary for AAPL",
     summary_tr: "özet",
     scores: {
       bullish_score_avg: 0.22,
@@ -90,7 +103,7 @@ function fullResponse(overrides: Partial<XAnalysisResponse> = {}): XAnalysisResp
   };
 }
 
-async function renderWithData(overrides: Partial<XAnalysisResponse> = {}) {
+async function renderWithData(overrides: Partial<XAnalysisResponseWithSummary> = {}) {
   vi.mocked(fetchXHealth).mockResolvedValueOnce(HEALTHY);
   vi.mocked(analyzeXTopic).mockResolvedValueOnce(fullResponse(overrides));
   let container!: HTMLElement;
@@ -268,6 +281,22 @@ describe("XSEN A4/A5 — labels", () => {
     expect(label).toMatch(/positive 67%/);
     expect(label).toMatch(/neutral 20%/);
     expect(label).toMatch(/negative 13%/);
+  });
+});
+
+describe("XSEN language honesty (AUDIT A7 [H])", () => {
+  it("renders the English `summary` in English mode, never the Turkish `summary_tr`", async () => {
+    const container = await renderWithData();
+    expect(container.textContent ?? "").toMatch(/english summary for AAPL/);
+    // Regression: the pane used to hard-render data.summary_tr ("özet") on
+    // every result, including lang="en" (the default).
+    expect(container.textContent ?? "").not.toMatch(/özet/);
+  });
+
+  it("keeps the header subtitle English ('Local RoBERTa')", async () => {
+    const container = await renderWithData();
+    expect(container.textContent ?? "").toMatch(/Local RoBERTa/);
+    expect(container.textContent ?? "").not.toMatch(/Yerel/);
   });
 });
 

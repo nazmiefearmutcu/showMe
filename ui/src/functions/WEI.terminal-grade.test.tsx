@@ -16,8 +16,16 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 // Each test installs its own useFunction mock via this mutable holder.
 const mockReturn: { current: unknown } = { current: null };
+const mockTick = { current: 0 };
+let lastFnArgs: Record<string, unknown> | undefined;
 vi.mock("@/lib/useFunction", () => ({
-  useFunction: () => mockReturn.current,
+  useFunction: (args: Record<string, unknown>) => {
+    lastFnArgs = args;
+    return mockReturn.current;
+  },
+}));
+vi.mock("@/lib/useVisibilityTick", () => ({
+  useVisibilityTick: () => mockTick.current,
 }));
 // Router navigate is a side-effect we don't need here.
 vi.mock("@/lib/router", () => ({ navigate: vi.fn() }));
@@ -56,6 +64,8 @@ function mockOk(rows: unknown[], payloadOver: Record<string, unknown> = {}, meta
 afterEach(() => {
   cleanup();
   mockReturn.current = null;
+  mockTick.current = 0;
+  lastFnArgs = undefined;
   // The region tab is persisted (usePersistentOption → localStorage); clear
   // it so one test's region switch doesn't filter out another test's rows.
   try {
@@ -173,5 +183,50 @@ describe("WEI terminal-grade", () => {
     // 10:11 UTC from the payload, not the client clock. The stamp appears in
     // both the header pill and the KPI caption — assert at least one match.
     expect(screen.getAllByText(/10:11 UTC/).length).toBeGreaterThan(0);
+  });
+});
+
+describe("WEI visibility poll + honesty (live adoption)", () => {
+  it("refetches on a visibility tick and keeps tick out of params", () => {
+    mockOk([makeRow()]);
+    const refetch = vi.fn();
+    (mockReturn.current as { refetch: ReturnType<typeof vi.fn> }).refetch = refetch;
+    const { rerender } = render(<WEIPane code="WEI" />);
+    expect(refetch).not.toHaveBeenCalled();
+    const before = JSON.stringify(lastFnArgs?.params ?? null);
+    expect(before).not.toContain("tick");
+
+    mockTick.current = 1;
+    rerender(<WEIPane code="WEI" />);
+    expect(refetch).toHaveBeenCalledTimes(1);
+    // A tick in params would change the fetch key and wipe the pane to a
+    // skeleton on every 30s poll (audit A3 WEI M).
+    expect(JSON.stringify(lastFnArgs?.params ?? null)).toBe(before);
+  });
+
+  it("performance strip never paints a missing change as 0.00%", () => {
+    mockOk([
+      makeRow({ symbol: "^UP", name: "Up index", change_pct: 1.25 }),
+      makeRow({ symbol: "^NA", name: "No data", change_pct: null, changePercent: null }),
+    ]);
+    const { container } = render(<WEIPane code="WEI" />);
+    const strip = container.querySelector(
+      '[aria-label="World index performance strip"]',
+    ) as HTMLElement;
+    expect(strip).not.toBeNull();
+    expect(strip.textContent).toContain("^UP");
+    expect(strip.textContent).not.toContain("^NA");
+    expect(strip.textContent).not.toContain("0.00%");
+  });
+
+  it("maps live market_state to a healthy tone, not amber warn", () => {
+    mockOk([makeRow({ symbol: "^LIVE", market_state: "live" })]);
+    const { container } = render(<WEIPane code="WEI" />);
+    const row = Array.from(container.querySelectorAll("tbody tr")).find((tr) =>
+      tr.textContent?.includes("^LIVE"),
+    );
+    expect(row).toBeTruthy();
+    expect(row?.querySelector(".ds-pill--tone-positive")).not.toBeNull();
+    expect(row?.querySelector(".ds-pill--tone-warn")).toBeNull();
   });
 });

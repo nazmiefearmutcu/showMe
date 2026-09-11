@@ -6,10 +6,10 @@
  * bot-store.fixes.test.ts) so we can assert what the pane forwards, without
  * having to model the mount-time loadList side-effect.
  *
- *   - Sil destructive confirm
- *   - Kaydet client-side validation gate (strategy/credential/symbol)
+ *   - Delete destructive confirm
+ *   - Save client-side validation gate (strategy/credential/symbol)
  *   - shadow → live save threads confirm_account_label
- *   - Rapid double-click on Kaydet → single store.save() invocation
+ *   - Rapid double-click on Save → single store.save() invocation
  *   - Credential deselect clears stale exchange_id
  */
 import { render, screen, fireEvent, act } from "@testing-library/react";
@@ -47,7 +47,7 @@ afterEach(() => {
 
 describe("BOT pane fixes", () => {
   // ─── B-C1 ────────────────────────────────────────────────────────────
-  it("sil_confirms — Sil aborts when ConfirmDialog cancel pressed", () => {
+  it("delete_confirms — Delete aborts when ConfirmDialog cancel pressed", () => {
     const removeSpy = vi.fn(async () => true);
     useBotStore.setState({
       remove: removeSpy,
@@ -59,13 +59,13 @@ describe("BOT pane fixes", () => {
       },
     });
     render(<BOTPane />);
-    fireEvent.click(screen.getByTestId("bot-sil-button"));
+    fireEvent.click(screen.getByTestId("bot-delete-button"));
     expect(screen.getByTestId("confirm-dialog-body")).toBeInTheDocument();
     fireEvent.click(screen.getByTestId("confirm-dialog-cancel"));
     expect(removeSpy).not.toHaveBeenCalled();
   });
 
-  it("sil_confirms_yes — Sil fires remove on ConfirmDialog confirm", () => {
+  it("delete_confirms_yes — Delete fires remove on ConfirmDialog confirm", () => {
     const removeSpy = vi.fn(async () => true);
     useBotStore.setState({
       remove: removeSpy,
@@ -77,18 +77,18 @@ describe("BOT pane fixes", () => {
       },
     });
     render(<BOTPane />);
-    fireEvent.click(screen.getByTestId("bot-sil-button"));
+    fireEvent.click(screen.getByTestId("bot-delete-button"));
     expect(screen.getByTestId("confirm-dialog-body")).toBeInTheDocument();
     fireEvent.click(screen.getByTestId("confirm-dialog-confirm"));
     expect(removeSpy).toHaveBeenCalledWith("b1");
   });
 
   // ─── B-C2 ────────────────────────────────────────────────────────────
-  it("save_disabled_when_empty — Kaydet disabled while strategy/credential/symbol blank", () => {
+  it("save_disabled_when_empty — Save disabled while strategy/credential/symbol blank", () => {
     render(<BOTPane />);
     fireEvent.click(screen.getAllByRole("button", { name: /^\+ new bot$/i })[0]);
-    const kaydet = screen.getByRole("button", { name: /^save$/i }) as HTMLButtonElement;
-    expect(kaydet.disabled).toBe(true);
+    const saveButton = screen.getByRole("button", { name: /^save$/i }) as HTMLButtonElement;
+    expect(saveButton.disabled).toBe(true);
   });
 
   it("save_disabled_until_all_fields_filled — fill 2/3 still disabled", () => {
@@ -96,8 +96,8 @@ describe("BOT pane fixes", () => {
     fireEvent.click(screen.getAllByRole("button", { name: /^\+ new bot$/i })[0]);
     fireEvent.change(screen.getByLabelText(/strategy/i), { target: { value: "s1" } });
     fireEvent.change(screen.getByLabelText(/^symbol$/i), { target: { value: "btc/usdt" } });
-    const kaydet = screen.getByRole("button", { name: /^save$/i }) as HTMLButtonElement;
-    expect(kaydet.disabled).toBe(true);
+    const saveButton = screen.getByRole("button", { name: /^save$/i }) as HTMLButtonElement;
+    expect(saveButton.disabled).toBe(true);
     expect(screen.queryByTestId("bot-field-err-credential")).toBeInTheDocument();
   });
 
@@ -107,8 +107,8 @@ describe("BOT pane fixes", () => {
     fireEvent.change(screen.getByLabelText(/strategy/i), { target: { value: "s1" } });
     fireEvent.change(screen.getByLabelText(/connection/i), { target: { value: "c1" } });
     fireEvent.change(screen.getByLabelText(/^symbol$/i), { target: { value: "btc/usdt" } });
-    const kaydet = screen.getByRole("button", { name: /^save$/i }) as HTMLButtonElement;
-    expect(kaydet.disabled).toBe(false);
+    const saveButton = screen.getByRole("button", { name: /^save$/i }) as HTMLButtonElement;
+    expect(saveButton.disabled).toBe(false);
   });
 
   it("save_shows_inline_errors_for_each_empty_field", () => {
@@ -163,10 +163,10 @@ describe("BOT pane fixes", () => {
     const liveRadios = screen.getAllByRole("radio");
     const liveRadio = liveRadios.find((r) => !(r as HTMLInputElement).checked)!;
     fireEvent.click(liveRadio);
-    // Inline error + disabled Kaydet.
+    // Inline error + disabled Save.
     expect(screen.getByTestId("bot-field-err-confirm-label")).toBeInTheDocument();
-    const kaydet = screen.getByRole("button", { name: /^save$/i }) as HTMLButtonElement;
-    expect(kaydet.disabled).toBe(true);
+    const saveButton = screen.getByRole("button", { name: /^save$/i }) as HTMLButtonElement;
+    expect(saveButton.disabled).toBe(true);
     expect(saveSpy).not.toHaveBeenCalled();
   });
 
@@ -188,12 +188,12 @@ describe("BOT pane fixes", () => {
     fireEvent.change(screen.getByLabelText(/connection/i), { target: { value: "c1" } });
     fireEvent.change(screen.getByLabelText(/^symbol$/i), { target: { value: "BTC/USDT" } });
 
-    const kaydet = screen.getByRole("button", { name: /^save$/i }) as HTMLButtonElement;
-    fireEvent.click(kaydet);
+    const saveButton = screen.getByRole("button", { name: /^save$/i }) as HTMLButtonElement;
+    fireEvent.click(saveButton);
     // After first click, the saving flag should disable the button.
-    expect(kaydet.disabled).toBe(true);
-    fireEvent.click(kaydet);
-    fireEvent.click(kaydet);
+    expect(saveButton.disabled).toBe(true);
+    fireEvent.click(saveButton);
+    fireEvent.click(saveButton);
 
     expect(saveSpy).toHaveBeenCalledTimes(1);
 

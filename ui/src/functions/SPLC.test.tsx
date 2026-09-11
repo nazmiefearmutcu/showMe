@@ -29,6 +29,15 @@ interface MockFnState {
 
 const mockFn: MockFnState = { state: "idle", data: undefined, error: null };
 
+interface CapturedArgs {
+  code?: string;
+  symbol?: string;
+  params?: Record<string, unknown>;
+  enabled?: boolean;
+}
+
+let lastArgs: CapturedArgs | null = null;
+
 function setMockFn(next: MockFnState) {
   mockFn.state = next.state;
   mockFn.data = next.data;
@@ -36,12 +45,15 @@ function setMockFn(next: MockFnState) {
 }
 
 vi.mock("@/lib/useFunction", () => ({
-  useFunction: () => ({
-    state: mockFn.state,
-    data: mockFn.data,
-    error: mockFn.error,
-    refetch: vi.fn(),
-  }),
+  useFunction: (args: CapturedArgs) => {
+    lastArgs = args;
+    return {
+      state: mockFn.state,
+      data: mockFn.data,
+      error: mockFn.error,
+      refetch: vi.fn(),
+    };
+  },
 }));
 
 // SymbolBar pulls router/symbol-resolver side effects we don't need here.
@@ -149,6 +161,7 @@ function providerDownPayload() {
 
 beforeEach(() => {
   localStorage.clear();
+  lastArgs = null;
   setMockFn({ state: "idle", data: undefined });
 });
 afterEach(() => {
@@ -183,6 +196,15 @@ describe("SPLC pane — load states", () => {
     expect(
       screen.queryByLabelText("SPLC supply-chain relationships table"),
     ).toBeNull();
+  });
+});
+
+describe("SPLC pane — request shape (F14 L)", () => {
+  it("sends no dead `live` param (backend is live-by-default)", () => {
+    setMockFn({ state: "ok", ...referencePayload() });
+    render(<SPLCPane code="SPLC" symbol="AAPL" />);
+    expect(lastArgs?.symbol).toBe("AAPL");
+    expect(lastArgs?.params).toBeUndefined();
   });
 });
 

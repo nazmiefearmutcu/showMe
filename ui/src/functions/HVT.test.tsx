@@ -13,7 +13,7 @@
  * `useFunction` is mocked via a mutable shared state (GEX pattern).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { HVTPane } from "./HVT";
 
 /* ── useFunction mock ──────────────────────────────────────────────── */
@@ -152,6 +152,29 @@ describe("HVT pane — load states", () => {
     // 4 window rows (the long window also labels a KPI card — presence).
     expect(screen.getAllByText("30D realized vol").length).toBeGreaterThan(0);
     expect(screen.getAllByText("365D realized vol").length).toBeGreaterThan(0);
+  });
+});
+
+describe("HVT pane — window table (DataGrid migration)", () => {
+  it("renders the term structure as a keyboard-navigable DataGrid with an ariaLabel", () => {
+    setMockFn({ state: "ok", ...okPayload() });
+    render(<HVTPane code="HVT" symbol="AAPL" />);
+    const grid = screen.getByRole("grid", { name: /volatility term structure/i });
+    expect(grid).toBeInTheDocument();
+    expect(
+      within(grid).getByRole("columnheader", { name: /realized vol/i }),
+    ).toBeInTheDocument();
+    expect(
+      within(grid).getByRole("columnheader", { name: /samples/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("offers a CSV export of the visible window rows", () => {
+    setMockFn({ state: "ok", ...okPayload() });
+    render(<HVTPane code="HVT" symbol="AAPL" />);
+    const csv = screen.getByTitle("Download CSV");
+    expect(csv).not.toBeDisabled();
+    expect(csv.getAttribute("aria-label")).toMatch(/4 realized-vol windows/i);
   });
 });
 

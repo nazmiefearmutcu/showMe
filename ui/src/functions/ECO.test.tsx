@@ -20,7 +20,7 @@
  * pane into a specific branch without the real sidecar transport.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { act, cleanup, render, screen, within } from "@testing-library/react";
 import { ECOPane } from "./ECO";
 
 /* ── useFunction mock ──────────────────────────────────────────────── */
@@ -236,5 +236,23 @@ describe("ECO pane — display honesty", () => {
     setMockFn({ state: "ok", ...syntheticPayload() });
     render(<ECOPane code="ECO" />);
     expect(screen.getByText(/Times UTC/i)).toBeInTheDocument();
+  });
+
+  it("advances the Next prints rail as the clock passes a release (AUDIT A10 [L])", () => {
+    setMockFn({ state: "ok", ...syntheticPayload() });
+    const { container } = render(<ECOPane code="ECO" />);
+    const rail = container.querySelector('[aria-label="Upcoming prints"]');
+    expect(rail).not.toBeNull();
+    // Both fixtures are in the future at NOW (12:00): CPI today 13:30, claims +2d.
+    expect(within(rail as HTMLElement).getByText(/CPI YoY/)).toBeInTheDocument();
+    expect(within(rail as HTMLElement).getByText(/Initial Jobless Claims/)).toBeInTheDocument();
+    // Advance past the CPI release — the visibility minute-tick must recompute
+    // "upcoming" without a refetch and drop the now-past print.
+    act(() => {
+      vi.advanceTimersByTime(121 * 60_000);
+    });
+    const railAfter = container.querySelector('[aria-label="Upcoming prints"]');
+    expect(within(railAfter as HTMLElement).queryByText(/CPI YoY/)).toBeNull();
+    expect(within(railAfter as HTMLElement).getByText(/Initial Jobless Claims/)).toBeInTheDocument();
   });
 });

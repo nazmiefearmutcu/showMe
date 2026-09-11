@@ -234,3 +234,89 @@ describe("DAPI pane — grid upgrade (L7)", () => {
     expect(container.querySelector("tbody tr")?.textContent).toContain("/api/health");
   });
 });
+
+describe("DAPI pane — combined-verb routes (F9/M)", () => {
+  function combinedVerbPayload() {
+    return {
+      data: {
+        sources: ["showme_fastapi_routes_curated"],
+        elapsed_ms: 2,
+        data: {
+          rows: [
+            {
+              method: "GET",
+              path: "/api/health",
+              purpose: "Sidecar and engine health check.",
+              request_body: "-",
+              response_shape: "{ ok, engine }",
+              mutates_state: "no",
+              example: "/api/health",
+            },
+            {
+              method: "GET/POST",
+              path: "/api/fn/{code}",
+              purpose: "Run any ShowMe function with JSON params.",
+              request_body: "{ symbol?, asset_class?, params... }",
+              response_shape: "FunctionCallResult",
+              mutates_state: "depends on function",
+              example: "/api/fn/BQL",
+            },
+            {
+              method: "GET/POST/DELETE",
+              path: "/api/proxy/{path:path}",
+              purpose: "Auth-aware proxy to a configured upstream.",
+              request_body: "(passthrough)",
+              response_shape: "(passthrough)",
+              mutates_state: "depends",
+              example: "/api/proxy/some/upstream",
+            },
+          ],
+          summary: {
+            base_url: "http://127.0.0.1:<sidecar-port>",
+            endpoints: 3,
+            total_routes: 46,
+            state_changing: 2,
+            filter: "all",
+            source_mode: "curated_manifest",
+          },
+        },
+      },
+    };
+  }
+
+  it("offers concrete verb chips and matches any verb of a combined route", () => {
+    setMockFn({ state: "ok", ...combinedVerbPayload() });
+    const { container } = render(<DAPIPane code="DAPI" />);
+    // Chips are the split verbs, not the combined token.
+    expect(screen.getByTitle("Filter method GET")).toBeInTheDocument();
+    expect(screen.getByTitle("Filter method POST")).toBeInTheDocument();
+    expect(screen.getByTitle("Filter method DELETE")).toBeInTheDocument();
+    expect(screen.queryByTitle("Filter method GET/POST")).toBeNull();
+
+    // POST matches BOTH combined routes but not the GET-only health row.
+    fireEvent.click(screen.getByTitle("Filter method POST"));
+    expect(container.querySelectorAll("tbody tr").length).toBe(2);
+    expect(container.textContent).toContain("/api/fn/{code}");
+    expect(container.textContent).toContain("/api/proxy/{path:path}");
+    expect(container.textContent).not.toContain("/api/health");
+  });
+
+  it("copies a combined-verb route as ONE concrete verb in cURL", () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+    setMockFn({ state: "ok", ...combinedVerbPayload() });
+    render(<DAPIPane code="DAPI" />);
+    fireEvent.click(screen.getByText("/api/fn/{code}"));
+    fireEvent.click(screen.getByLabelText("Copy GET /api/fn/{code} as cURL"));
+    expect(writeText).toHaveBeenCalledTimes(1);
+    const curl = writeText.mock.calls[0][0] as string;
+    // Valid single-verb curl — the old code emitted `curl -X GET/POST` which
+    // no shell can run.
+    expect(curl).toContain('curl -X GET "http://127.0.0.1:<sidecar-port>/api/fn/{code}"');
+    expect(curl).not.toContain("GET/POST");
+    Reflect.deleteProperty(navigator, "clipboard");
+  });
+});

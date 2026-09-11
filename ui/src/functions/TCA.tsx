@@ -30,7 +30,7 @@
  * audit. Alternate key spellings are accepted so the pane survives engine
  * field drift.
  */
-import { useMemo, type CSSProperties } from "react";
+import { useEffect, useMemo, type CSSProperties } from "react";
 import {
   DataGrid,
   type DataGridColumn,
@@ -210,8 +210,16 @@ export function TCAPane({ code, symbol }: FunctionPaneProps) {
   const { state, data, error, refetch } = useFunction<unknown>({
     code,
     symbol,
-    params: { benchmark: "VWAP", tick },
+    params: { benchmark: "VWAP" },
   });
+  // F4 fix (A6-TCA-M): poll on the visibility tick without touching the
+  // fetch params — a changing param key would treat every poll as a fresh
+  // load (skeleton flash + cleared data). Canonical GLCO pattern.
+  useEffect(() => {
+    if (tick === 0) return;
+    refetch();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- tick is the trigger
+  }, [tick]);
 
   const payload = useMemo<AnyRec>(
     () =>
@@ -428,12 +436,14 @@ export function TCAPane({ code, symbol }: FunctionPaneProps) {
               <Pill tone="accent" variant="soft" withDot={false}>
                 {utcStamp} UTC
               </Pill>
-              <Pill
-                tone={isDegraded ? "negative" : isLive ? "positive" : "warn"}
-                variant="soft"
-              >
-                {modeLabel}
-              </Pill>
+              <span data-testid="tca-mode-pill">
+                <Pill
+                  tone={isDegraded ? "negative" : isLive ? "positive" : "warn"}
+                  variant="soft"
+                >
+                  {modeLabel}
+                </Pill>
+              </span>
               <LoadStatePill state={state} status={status} />
               <RefreshButton loading={state === "loading"} onClick={refetch} />
             </FunctionControlGroup>
@@ -621,6 +631,7 @@ export function TCAPane({ code, symbol }: FunctionPaneProps) {
                   rows={fills}
                   rowKey={(r, i) => `${r.id}-${i}`}
                   density="compact"
+                  ariaLabel="TCA fills"
                 />
               )}
 

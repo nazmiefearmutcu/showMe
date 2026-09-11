@@ -5,7 +5,7 @@
  * for ~60 indices grouped by region. KPI ribbon + per-row sparkline +
  * DeltaChip pills for every Δ field.
  */
-import { useMemo, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import {
   DataGrid,
   type DataGridColumn,
@@ -81,8 +81,18 @@ export function WEIPane({ code }: FunctionPaneProps) {
 
   const { state, data, error, refetch } = useFunction<unknown>({
     code,
-    params: { region: region === "all" ? undefined : region, tick },
+    params: { region: region === "all" ? undefined : region },
   });
+
+  // Live adoption / audit A3 WEI M: the tick drives `refetch()` and must stay
+  // OUT of `params` — a tick in the fetch key made every 30s poll a brand-new
+  // request key, which cleared the payload back to a full skeleton (the hook
+  // only treats same-key calls as a silent refresh). FORM4 pattern.
+  useEffect(() => {
+    if (tick === 0) return; // initial mount is useFunction's own load
+    refetch();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- tick is the trigger
+  }, [tick]);
 
   // P4: local sort state for the grid (DataGrid is presentation-only —
   // we own the ordering and pass sortBy/sortDir/onSort through).
@@ -254,7 +264,9 @@ export function WEIPane({ code }: FunctionPaneProps) {
           r.market_state ? (
             <Pill
               tone={
-                r.market_state.toLowerCase() === "regular"
+                // "live" is the backend's real-time session state (screen
+                // _funcs.py stamps it) — treat it as healthy, not a warning.
+                ["regular", "live"].includes(r.market_state.toLowerCase())
                   ? "positive"
                   : r.market_state.toLowerCase() === "closed"
                     ? "muted"
@@ -697,13 +709,23 @@ function IndexPerformanceStrip({
   rows: WEIRow[];
   onPick?: (symbol: string) => void;
 }) {
+  // Honesty (audit A3 WEI M): a row with no change data must NOT paint as a
+  // confident 0.00% tile. Rows without a finite change are skipped entirely —
+  // the strip is a performance view, and "no data" has no performance.
   const points = rows
-    .map((row) => ({
-      symbol: row.symbol ?? row.ticker ?? "-",
-      name: row.name ?? row.symbol ?? row.ticker ?? "-",
-      change: row.change_pct ?? row.changePercent ?? 0,
-      state: row.market_state ?? "-",
-    }))
+    .map((row) => {
+      const raw = row.change_pct ?? row.changePercent;
+      return {
+        symbol: row.symbol ?? row.ticker ?? "-",
+        name: row.name ?? row.symbol ?? row.ticker ?? "-",
+        change: typeof raw === "number" && Number.isFinite(raw) ? raw : null,
+        state: row.market_state ?? "-",
+      };
+    })
+    .filter(
+      (p): p is { symbol: string; name: string; change: number; state: string } =>
+        p.change != null,
+    )
     .slice(0, 16);
   if (!points.length) return null;
   // UA-HIGH-12: stack-safe.

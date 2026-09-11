@@ -8,7 +8,7 @@
  * `summary.portfolio_linked` so the macro table is never misread as real
  * portfolio exposure — surfaced honestly via the mode pill + footer.
  */
-import { useMemo, type CSSProperties } from "react";
+import { useEffect, useMemo, type CSSProperties } from "react";
 import {
   DataGrid,
   type DataGridColumn,
@@ -117,8 +117,15 @@ export function DEBTPane({ code, symbol }: FunctionPaneProps) {
   const { state, data, error, refetch } = useFunction<unknown>({
     code,
     symbol,
-    params: { tick },
   });
+  // Poll on the visibility tick WITHOUT putting it in the fetch params — a
+  // changing param key makes useFunction treat every poll as a fresh load and
+  // wipes the board into a skeleton instead of a silent refresh.
+  useEffect(() => {
+    if (tick === 0) return; // initial mount is useFunction's own load
+    refetch();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- tick is the trigger
+  }, [tick]);
 
   const payload = useMemo<DebtPayload>(
     () => (isRecord(data?.data) ? (data?.data as DebtPayload) : {}),
@@ -215,7 +222,7 @@ export function DEBTPane({ code, symbol }: FunctionPaneProps) {
               aria-label="Published reference (not a live series)"
               title="Published reference — not a live World Bank series"
             >
-              referans
+              REFERENCE
             </span>
           </span>
         ),

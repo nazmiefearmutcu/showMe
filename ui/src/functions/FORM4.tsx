@@ -180,6 +180,9 @@ export function FORM4Pane({ code, symbol }: FunctionPaneProps) {
         key: "date",
         header: "Date",
         width: 110,
+        // Built-in sorter reads `sortValue` first; the row carries the date
+        // under `filingDate` (or the legacy `date` alias).
+        sortValue: (r) => r.filingDate ?? r.date ?? null,
         render: (r) => (
           <span style={monoPrimaryStyle}>
             {String(r.filingDate ?? r.date ?? "—").slice(0, 10)}
@@ -345,6 +348,11 @@ export function FORM4Pane({ code, symbol }: FunctionPaneProps) {
         rowKey={(r, i) => `${r.filingDate ?? ""}-${r.insider ?? ""}-${i}`}
         density="compact"
         ariaLabel="FORM4 insider transactions"
+        // Audit A3 FORM4 M: primary filings grid gets the kit's built-in
+        // sorter (newest first) + keyboard cell navigation/clipboard copy.
+        defaultSortKey="date"
+        defaultSortDir="descending"
+        keyboardNavigable
       />
       {rows.length > shown.length && (
         <span className="u-text-mute" style={noteStyle}>

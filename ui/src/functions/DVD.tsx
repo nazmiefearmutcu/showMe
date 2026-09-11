@@ -211,7 +211,11 @@ export function DVDPane({ code, symbol }: FunctionPaneProps) {
         <StatCard
           label="Last dividend"
           value={fmtAmount(stats.lastDividend, "dividend")}
-          caption={stats.lastDividendDate ?? "—"}
+          caption={
+            stats.lastDividendDate
+              ? String(stats.lastDividendDate).slice(0, 10)
+              : "—"
+          }
           tone="neutral"
           trend={stats.dividendTrend}
         />
@@ -226,7 +230,7 @@ export function DVDPane({ code, symbol }: FunctionPaneProps) {
           value={String(splitRows.length)}
           caption={
             stats.lastSplit
-              ? `LAST ${stats.lastSplit} @ ${stats.lastSplitDate ?? "—"}`
+              ? `LAST ${stats.lastSplit} @ ${stats.lastSplitDate ? String(stats.lastSplitDate).slice(0, 10) : "—"}`
               : "NO SPLITS"
           }
           tone="neutral"
@@ -238,7 +242,7 @@ export function DVDPane({ code, symbol }: FunctionPaneProps) {
               ? `${stats.yoyDelta >= 0 ? "+" : ""}${stats.yoyDelta.toFixed(2)}%`
               : "—"
           }
-          caption="LATEST VS 4 PRIOR"
+          caption="LATEST VS 1Y PRIOR"
           tone={
             stats.yoyDelta == null
               ? "neutral"
@@ -256,6 +260,12 @@ export function DVDPane({ code, symbol }: FunctionPaneProps) {
         density="compact"
         ariaLabel="DVD corporate actions"
       />
+      {status === "modeled" && (
+        <p style={modelNoteStyle} data-testid="dvd-model-notice" role="note">
+          Model mode: rows are reference-shaped model events, not reported
+          corporate actions.
+        </p>
+      )}
     </div>
   );
 
@@ -327,20 +337,54 @@ function deriveStats(dividendRows: DVDRow[], splitRows: DVDRow[]): DVDStats {
     .map((r) => (typeof r.amount === "number" ? r.amount : null))
     .filter((v): v is number => v != null && Number.isFinite(v));
   const lastDividend = divVals[0] ?? null;
-  const yoy = divVals[4] ?? null;
-  const yoyDelta =
-    lastDividend != null && yoy && yoy !== 0
-      ? ((lastDividend - yoy) / Math.abs(yoy)) * 100
-      : null;
   return {
     lastDividend,
     lastDividendDate: dividendRows[0]?.date ?? null,
     lastSplit:
       typeof splitRows[0]?.amount === "number" ? splitRows[0].amount : null,
     lastSplitDate: splitRows[0]?.date ?? null,
-    yoyDelta,
+    yoyDelta: yoyDelta(dividendRows),
     dividendTrend: divVals.slice(0, 22).reverse(),
   };
+}
+
+/**
+ * Year-over-year % change vs the dividend closest to exactly one year before
+ * the latest dated row. The old implementation compared `divVals[4]` (the 5th
+ * row) under a "4 prior" label — only valid when every row is one quarter.
+ * Not a genuine ~1-year comparison -> `—` (never a mislabeled number).
+ */
+function yoyDelta(dividendRows: DVDRow[]): number | null {
+  const dated = dividendRows
+    .map((r) => ({
+      date: parseDay(r.date),
+      amount: typeof r.amount === "number" ? r.amount : null,
+    }))
+    .filter(
+      (r): r is { date: number; amount: number } =>
+        r.date != null && r.amount != null && Number.isFinite(r.amount),
+    );
+  if (dated.length < 2) return null;
+  const sorted = [...dated].sort((a, b) => b.date - a.date);
+  const latest = sorted[0];
+  const target = latest.date - 365.25 * 86_400_000;
+  let best: { date: number; amount: number } | null = null;
+  let bestDist = Infinity;
+  for (const row of sorted.slice(1)) {
+    const dist = Math.abs(row.date - target);
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = row;
+    }
+  }
+  if (!best || best.amount === 0 || bestDist > 62 * 86_400_000) return null;
+  return ((latest.amount - best.amount) / Math.abs(best.amount)) * 100;
+}
+
+function parseDay(value: string | null | undefined): number | null {
+  if (!value) return null;
+  const t = Date.parse(String(value).slice(0, 10));
+  return Number.isFinite(t) ? t : null;
 }
 
 function fmtAmount(v: unknown, kind?: string): string {
@@ -385,4 +429,11 @@ const monoPrimaryStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
   fontVariantNumeric: "tabular-nums",
   color: "var(--text-primary)",
+};
+
+const modelNoteStyle: CSSProperties = {
+  margin: 0,
+  fontSize: "var(--font-size-sm)",
+  lineHeight: 1.5,
+  color: "var(--text-mute)",
 };

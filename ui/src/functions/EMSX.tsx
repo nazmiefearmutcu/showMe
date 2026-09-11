@@ -67,9 +67,10 @@ type Tif = (typeof TIFS)[number]["value"];
 const TIF_IDS = TIFS.map((o) => o.value);
 
 interface EMSXData {
-  status?: "preview" | "filled" | "input_required" | "ok" | "empty" | "input_error" | "provider_unavailable";
+  status?: "preview" | "filled" | "submitted" | "input_required" | "ok" | "empty" | "input_error" | "provider_unavailable";
   broker?: string;
   submit?: boolean;
+  paper_mode?: boolean;
   symbol?: string;
   asset_class?: string;
   side?: string;
@@ -78,6 +79,8 @@ interface EMSXData {
   type?: string;
   time_in_force?: string;
   tif?: string;
+  price?: number | null;
+  leverage?: number | null;
   order_id?: string;
   reason?: string;
   next_actions?: string[];
@@ -172,6 +175,11 @@ export function EMSXPane({ code, symbol }: FunctionPaneProps) {
         type: orderType,
         tif,
         submit,
+        // F9 [C]: the engine now enforces the manifest's paper_mode guard —
+        // submit=true is ignored unless paper_mode is explicitly false.
+        // Preview calls stay explicitly paper; the confirm-gated live button
+        // is the ONLY call site that passes the explicit live arm.
+        paper_mode: !submit,
       };
       if (orderType === "LIMIT" && priceNumber != null) {
         params.price = priceNumber;
@@ -215,9 +223,15 @@ export function EMSXPane({ code, symbol }: FunctionPaneProps) {
 
   const payload = result?.data;
   const status = payload?.status ?? result?.status;
-  const broker = payload?.broker ?? "paper";
+  // F9 [L]: don't claim a paper broker before any call has run; show the
+  // configured adapter from the payload or the "—" sentinel.
+  const broker = payload?.broker ?? "—";
   const assetClass = payload?.asset_class ?? "—";
-  const live = lastSubmit && status === "filled";
+  // F9 [H]: a real submit now returns status "submitted" (broker accepted the
+  // order; fills arrive later via AIM). Treat it as a live success alongside
+  // the legacy "filled" token so the live state is actually reachable.
+  const live = lastSubmit && (status === "submitted" || status === "filled");
+  const liveLabel = live ? (status === "filled" ? "filled" : "submitted") : "preview";
   const armed = confirmLive;
 
   const state: "idle" | "loading" | "ok" | "error" = running
@@ -236,7 +250,7 @@ export function EMSXPane({ code, symbol }: FunctionPaneProps) {
           title="Execution management"
           subtitle={
             symbol
-              ? `${symbol} · ${assetClass} · ${live ? "filled" : "preview"}`
+              ? `${symbol} · ${assetClass} · ${liveLabel}`
               : "ticket"
           }
           trailing={
@@ -246,7 +260,7 @@ export function EMSXPane({ code, symbol }: FunctionPaneProps) {
               </Pill>
               <Pill
                 tone={
-                  status === "filled"
+                  status === "submitted" || status === "filled"
                     ? "positive"
                     : status === "input_required"
                       ? "warn"
@@ -323,7 +337,7 @@ export function EMSXPane({ code, symbol }: FunctionPaneProps) {
             label="status"
             value={String(status ?? state)}
             tone={
-              status === "filled"
+              status === "submitted" || status === "filled"
                 ? "positive"
                 : status === "input_required"
                   ? "warn"
@@ -544,10 +558,16 @@ function PreviewSummary({
   const p = result.data;
   const status = p?.status ?? result.status ?? "—";
   const nextActions = Array.isArray(p?.next_actions) ? p.next_actions : [];
+  const isLiveResult = lastSubmit && (status === "submitted" || status === "filled");
   return (
     <section style={summaryStyle} aria-label="Ticket preview">
       <span style={sectionTitleStyle}>
-        Preview {lastSubmit ? "· LIVE" : "· paper"}
+        {isLiveResult
+          ? status === "filled"
+            ? "Filled order"
+            : "Order submitted"
+          : "Preview"}{" "}
+        {lastSubmit ? "· LIVE" : "· paper"}
       </span>
       <div style={summaryRowsStyle}>
         <SummaryRow
@@ -582,6 +602,31 @@ function PreviewSummary({
             </span>
           }
         />
+        {/* F9 [M]: the backend explicitly echoes price + leverage for a
+            faithful round-trip (see _funcs.py Session-14 note); the summary
+            must show them or a LIMIT ticket preview hides its limit. */}
+        <SummaryRow
+          label="Price"
+          value={
+            <span style={numericStyle}>
+              {typeof p?.price === "number" && p.price > 0
+                ? p.price.toLocaleString("en-US", {
+                    maximumFractionDigits: 8,
+                  })
+                : "—"}
+            </span>
+          }
+        />
+        <SummaryRow
+          label="Leverage"
+          value={
+            <span style={numericStyle}>
+              {typeof p?.leverage === "number" && p.leverage > 0
+                ? `${p.leverage}×`
+                : "—"}
+            </span>
+          }
+        />
         <SummaryRow
           label="Type"
           value={String(p?.order_type ?? p?.type ?? "—").toUpperCase()}
@@ -595,7 +640,7 @@ function PreviewSummary({
           value={
             <Pill
               tone={
-                status === "filled"
+                status === "submitted" || status === "filled"
                   ? "positive"
                   : status === "input_required"
                     ? "warn"

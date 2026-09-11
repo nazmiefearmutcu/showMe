@@ -61,10 +61,27 @@ interface DAPIData {
   methodology?: string;
 }
 
-function methodTone(method: string): "accent" | "warn" | "negative" | "muted" {
-  if (/^DELETE/.test(method)) return "negative";
-  if (/^(POST|PUT|PATCH)/.test(method)) return "warn";
-  if (/^GET/.test(method)) return "accent";
+/**
+ * F9 [M]: curated rows carry combined verbs ("GET/POST", "GET/POST/DELETE").
+ * Split them so each concrete verb gets its own pill, the method filter
+ * matches any accepted verb, and `copy as cURL` emits ONE valid verb.
+ */
+function methodVerbs(method: string | undefined): string[] {
+  return String(method ?? "")
+    .split("/")
+    .map((v) => v.trim().toUpperCase())
+    .filter(Boolean);
+}
+
+/** Concrete verb used for cURL copies (first listed verb, deterministic). */
+function urlVerb(method: string | undefined): string {
+  return methodVerbs(method)[0] ?? "GET";
+}
+
+function verbTone(verb: string): "accent" | "warn" | "negative" | "muted" {
+  if (verb === "DELETE") return "negative";
+  if (verb === "POST" || verb === "PUT" || verb === "PATCH") return "warn";
+  if (verb === "GET") return "accent";
   return "muted";
 }
 
@@ -92,7 +109,7 @@ export function DAPIPane({ code }: FunctionPaneProps) {
   const methods = useMemo(() => {
     const set = new Set<string>();
     for (const route of routes) {
-      if (route.method) set.add(route.method.toUpperCase());
+      for (const verb of methodVerbs(route.method)) set.add(verb);
     }
     return ["ALL", ...Array.from(set).sort()];
   }, [routes]);
@@ -100,7 +117,10 @@ export function DAPIPane({ code }: FunctionPaneProps) {
   const visible = useMemo(() => {
     const needle = filter.trim().toLowerCase();
     return routes.filter((route) => {
-      if (methodFilter !== "ALL" && (route.method ?? "").toUpperCase() !== methodFilter) {
+      if (
+        methodFilter !== "ALL" &&
+        !methodVerbs(route.method).includes(methodFilter)
+      ) {
         return false;
       }
       if (stateFilter !== "all") {
@@ -128,11 +148,24 @@ export function DAPIPane({ code }: FunctionPaneProps) {
         width: 96,
         sortable: true,
         sortValue: (r) => r.method ?? "",
-        render: (r) => (
-          <Pill tone={methodTone(r.method ?? "")} variant="soft" withDot={false}>
-            {r.method ?? "—"}
-          </Pill>
-        ),
+        render: (r) => {
+          const verbs = methodVerbs(r.method);
+          if (verbs.length === 0) return <span className="u-text-mute">—</span>;
+          return (
+            <span style={methodCellStyle}>
+              {verbs.map((verb) => (
+                <Pill
+                  key={verb}
+                  tone={verbTone(verb)}
+                  variant="soft"
+                  withDot={false}
+                >
+                  {verb}
+                </Pill>
+              ))}
+            </span>
+          );
+        },
       },
       {
         key: "path",
@@ -179,7 +212,7 @@ export function DAPIPane({ code }: FunctionPaneProps) {
       route.request_body && route.request_body !== "-"
         ? ` \\\n  -H "Content-Type: application/json" \\\n  -d '${route.request_body.replace(/'/g, "'\\''")}'`
         : "";
-    copyTextToClipboard(`curl -X ${route.method ?? "GET"} "${url}"${body}`);
+    copyTextToClipboard(`curl -X ${urlVerb(route.method)} "${url}"${body}`);
   };
 
   const body = (
@@ -273,7 +306,7 @@ export function DAPIPane({ code }: FunctionPaneProps) {
                 type="button"
                 className="btn"
                 title="Copy as cURL"
-                aria-label={`Copy ${expandedRoute.method ?? "GET"} ${expandedRoute.path ?? ""} as cURL`}
+                aria-label={`Copy ${urlVerb(expandedRoute.method)} ${expandedRoute.path ?? ""} as cURL`}
                 onClick={() => copyAsCurl(expandedRoute)}
               >
                 ⧉ copy as cURL
@@ -356,6 +389,13 @@ export function DAPIPane({ code }: FunctionPaneProps) {
     </div>
   );
 }
+
+const methodCellStyle: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 4,
+  flexWrap: "wrap",
+};
 
 const pathStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",

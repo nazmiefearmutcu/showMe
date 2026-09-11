@@ -18,10 +18,10 @@
  *   pair, as_of, vol_source, data_mode, source_mode, methodology,
  *   warnings[], tenors[], delta_buckets[],
  *   surface[] / rows[] {tenor, delta, vol, vol_decimal, tenor_years, source_mode},
- *   series[] {tenor, tenor_years, vol}, cards{} or cards[] {key,label,value}
+ *   series[] {tenor, tenor_years, atm_vol_pct}, cards{} or cards[] {key,label,value}
  * Envelope keys: sources[], elapsed_ms, warnings[].
  */
-import { useMemo, type CSSProperties } from "react";
+import { useEffect, useMemo, type CSSProperties } from "react";
 import {
   DataGrid,
   type DataGridColumn,
@@ -62,6 +62,8 @@ interface TermPoint {
   tenor?: string;
   tenor_years?: number;
   vol?: number;
+  /** Backend ATM-term field name (percent). Older payloads may use `vol`. */
+  atm_vol_pct?: number;
 }
 
 interface OVDVCard {
@@ -110,13 +112,20 @@ export function OVDVPane({ code }: FunctionPaneProps) {
     PAIR_IDS,
     "EURUSD",
   );
-  // Bundle D / PERF-04. Visibility-aware poll.
+  // Bundle D / PERF-04. Visibility-aware poll. The tick drives a refetch via
+  // the effect below and is deliberately NOT part of the fetch params: a
+  // changing param key would re-key useFunction and flash the skeleton.
   const tick = useVisibilityTick(REFRESH_MS);
 
   const { state, data, error, refetch } = useFunction<unknown>({
     code,
-    params: { pair, tick },
+    params: { pair },
   });
+  useEffect(() => {
+    if (tick === 0) return;
+    refetch();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- tick is the trigger
+  }, [tick]);
 
   const payload = useMemo<OVDVPayload>(
     () =>
@@ -213,8 +222,10 @@ export function OVDVPane({ code }: FunctionPaneProps) {
     data?.sources?.join(", ") || (isLive ? "yfinance" : "reference_fx_vol_model");
 
   // ATM term-structure points (chronological) for the line + sparkline.
+  // Backend `series[]` rows carry `atm_vol_pct` (percent); accept a legacy
+  // `vol` alias too so the term structure never silently collapses to [].
   const term = useMemo<{ tenor: string; vol: number }[]>(() => {
-    const pts = series.length
+    const pts: TermPoint[] = series.length
       ? series
       : tenors.map((t) => ({
           tenor: t,
@@ -222,8 +233,14 @@ export function OVDVPane({ code }: FunctionPaneProps) {
           vol: cellMap.get(t)?.get("ATM"),
         }));
     return pts
-      .filter((p) => typeof p.vol === "number" && Number.isFinite(p.vol))
-      .map((p) => ({ tenor: p.tenor ?? "—", vol: p.vol as number }));
+      .map((p) => ({
+        tenor: p.tenor ?? "—",
+        vol: typeof p.vol === "number" ? p.vol : p.atm_vol_pct,
+      }))
+      .filter(
+        (p): p is { tenor: string; vol: number } =>
+          typeof p.vol === "number" && Number.isFinite(p.vol),
+      );
   }, [series, tenors, cellMap]);
 
   const atmVals = term.map((p) => p.vol);
@@ -392,6 +409,7 @@ export function OVDVPane({ code }: FunctionPaneProps) {
                   rows={gridRows}
                   rowKey={(r) => r.tenor}
                   density="compact"
+                  ariaLabel="OVDV vol surface grid"
                 />
                 <VolLegend min={volStats.min} max={volStats.max} />
               </section>

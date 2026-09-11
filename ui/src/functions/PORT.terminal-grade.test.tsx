@@ -127,6 +127,59 @@ describe("PORT terminal-grade", () => {
     ).toBeInTheDocument();
   });
 
+  it("A5-M: missing unrealized P&L renders an em-dash, never a confident $0.00", () => {
+    // No unrealized_pnl anywhere — the hero P&L must not read as flat zero.
+    mockFunction({
+      status: "ready",
+      data: {
+        positions: [
+          { symbol: "AAPL", asset_class: "EQUITY", quantity: 10, avg_cost: 100,
+            last: 110, market_value: 1100 },
+        ],
+        totals: { market_value: 1100, cost_basis: 1000, n_positions: 1 },
+        by_asset_class: { EQUITY: 1100 },
+      },
+      sources: ["portfolio_state"],
+    });
+    const { container } = render(<PORTPane code="PORT" />);
+    const pnl = container.querySelector(".port-terminal-summary__pnl");
+    expect(pnl?.textContent).toContain("—");
+    expect(pnl?.textContent).not.toContain("$0");
+    // Return badge follows the same null-not-zero rule.
+    const badge = container.querySelector("[data-testid='port-return-badge']");
+    expect(badge?.textContent).toContain("—");
+  });
+
+  it("A5-M: broker card PnL shows an em-dash when the venue reports no P&L", () => {
+    mockFunction({ status: "ready_no_positions", data: { positions: [], totals: {} } });
+    useExchangeStore.setState({
+      catalog: [],
+      credentials: [{ id: "abc", exchange_id: "binance", account_label: "main",
+                      permissions: ["read"], created_at: "now" }],
+      selectedExchangeId: null, catalogLoading: false, credentialsLoading: false, error: null,
+    });
+    usePortfolioStore.setState({
+      groups: [{
+        credential_id: "abc", exchange_id: "binance", account_label: "main",
+        permissions: ["read"],
+        account: { cash: 1000, equity: 5000, buying_power: 1000, currency: "USDT" },
+        positions: [{ symbol: "ETH/USDT", side: "buy", quantity: 3,
+                      entry_price: 2000, current_price: 2100 }],
+        orders: [], error: null,
+      }],
+      totals: { equity_by_currency: { USDT: 5000 }, stable_usd_equivalent: 5000 },
+      lastFetchedAt: "now", loading: false, error: null,
+      selectedCredentialIds: null, includeOrders: false,
+    });
+    const { container } = render(<PORTPane code="PORT" />);
+    const cell = container.querySelector("[data-testid='port-broker-pnl-ETH/USDT']");
+    expect(cell).not.toBeNull();
+    expect(cell?.textContent).toContain("—");
+    expect(cell?.textContent).not.toContain("$0.00");
+    // Footer no longer reads "ws · 0/0 live" while broker marks are shown.
+    expect(container.textContent).toContain("broker snapshot");
+  });
+
   it("P5: clicking a sortable header reorders rows", () => {
     mockFunction(READY_WITH_POSITIONS);
     const { container } = render(<PORTPane code="PORT" />);

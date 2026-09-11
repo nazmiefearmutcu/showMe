@@ -44,12 +44,18 @@ import type { FunctionPaneProps } from "./registry-types";
 
 interface HFSRow {
   filer?: string;
+  /** Populated SEC 13F DuckDB path: zero-padded CIK (the store has no name table). */
+  filer_cik?: string;
   issuer?: string;
   cusip?: string;
   shares?: number | null;
   market_value?: number | null;
+  /** Populated SEC 13F DuckDB path: aggregated position value in USD. */
+  value_usd?: number | null;
   pct_outstanding?: number | null;
   quarter?: string | null;
+  /** Populated SEC 13F DuckDB path: period-of-report date (YYYY-MM-DD). */
+  report_date?: string | null;
   source_mode?: string;
 }
 
@@ -111,7 +117,10 @@ export function HFSPane({ code, symbol }: FunctionPaneProps) {
   });
 
   const payload = data?.data;
-  const rows: HFSRow[] = useMemo(() => payload?.rows ?? [], [payload]);
+  const rows: HFSRow[] = useMemo(
+    () => (payload?.rows ?? []).map(normalizeHolderRow),
+    [payload],
+  );
   const status = payload?.status ?? "—";
 
   const unavailable = useMemo(
@@ -409,6 +418,27 @@ interface HFSStats {
   topFiler: string | null;
   topShares: number | null;
   totalShares: number | null;
+}
+
+/**
+ * F14 [H] (audit A10 HFS): the populated SEC 13F DuckDB path emits
+ * `filer_cik / value_usd / report_date` (sec_13f_adapter.query_holdings_by_security)
+ * while reference rows emit `filer / market_value / quarter`. Normalize on read
+ * so a real store never blanks the Filer / Notional / Quarter columns.
+ * `pct_outstanding` genuinely does not exist in the store — it stays `—`.
+ */
+function normalizeHolderRow(r: HFSRow): HFSRow {
+  const cikRaw = r.filer_cik;
+  const cik =
+    cikRaw == null || String(cikRaw).trim() === ""
+      ? undefined
+      : `CIK ${String(cikRaw).padStart(10, "0")}`;
+  return {
+    ...r,
+    filer: r.filer ?? cik,
+    market_value: r.market_value ?? r.value_usd ?? null,
+    quarter: r.quarter ?? r.report_date ?? null,
+  };
 }
 
 function deriveStats(rows: HFSRow[]): HFSStats {

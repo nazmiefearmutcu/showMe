@@ -2,11 +2,11 @@
  * IVOL — Implied Vol Surface.
  *
  * Bloomberg `OVDV`/`SKEW` analogue: the option chain's implied-vol surface
- * across expiry × moneyness for one underlying. The sidecar emits a labelled
- * *reference* surface (no live options provider wired) with a
- * "live options provider not configured" warning — the pane surfaces that
- * warning + a REFERENCE source pill so the heatmap is never mistaken for a
- * live OPRA/CBOE feed.
+ * across expiry × moneyness for one underlying. The live path pulls the real
+ * yfinance option chain (`source_mode="live_yfinance"`); the explicit
+ * `reference=true` opt-in / fallback emits the labelled Black-Scholes skew
+ * template (amber REFERENCE pill + notice) so a modeled surface is never
+ * mistaken for a live OPRA/CBOE feed.
  *
  * Payload (data?.data), verified against
  * engine/functions/derivative/_funcs.py::IVOLFunction + _stubs.py templates:
@@ -168,8 +168,18 @@ export function IVOLPane({ code, symbol }: FunctionPaneProps) {
   const { state, data, error, refetch } = useFunction<unknown>({
     code,
     symbol,
-    params: { underlying: symbol, tick },
+    params: { underlying: symbol },
   });
+
+  // Poll-on-tick (visibility-aware): refetch every minute WITHOUT re-keying
+  // the fetch. `tick` must stay out of params — a tick-keyed fetch classifies
+  // as a brand-new load and flashes the 320px skeleton every poll. Deps are
+  // [tick] ONLY: `refetch` is a fresh identity per render.
+  useEffect(() => {
+    if (tick === 0) return;
+    refetch();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- tick is the trigger
+  }, [tick]);
 
   const payload = useMemo<IvolPayload>(
     () =>
@@ -319,7 +329,10 @@ export function IVOLPane({ code, symbol }: FunctionPaneProps) {
 
   const sourceMode =
     payload.source_mode ?? summary.source_mode ?? "reference";
-  const isReference = sourceMode !== "live";
+  // LIVE requires an explicit live_* mode (backend live path stamps
+  // source_mode="live_yfinance"); an absent mode stays honestly "reference".
+  const isLive = sourceMode.startsWith("live_");
+  const isReference = !isLive;
   const warningsList = Array.isArray(payload.warnings)
     ? payload.warnings
     : Array.isArray(data?.warnings)
@@ -440,7 +453,7 @@ export function IVOLPane({ code, symbol }: FunctionPaneProps) {
                   </strong>
                   <span className="u-text-secondary">
                     {warningsList[0] ??
-                      "No live options provider configured. IV is a deterministic per-symbol reference (skew/smile modeled), not a live OPRA/CBOE chain."}
+                      "Reference surface: a deterministic per-symbol skew/smile model anchored on the resolved spot — not a live OPRA/CBOE chain."}
                   </span>
                 </div>
               ) : null}

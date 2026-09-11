@@ -34,11 +34,19 @@ describe("INDX pane", () => {
 
   it("family chip filters by family", () => {
     render(<INDXPane />);
-    // Family buttons now carry an explicit a11y name ("Aile: trend") so the
-    // filter is announced to assistive tech, not just visually styled.
-    fireEvent.click(screen.getByRole("button", { name: /^Aile: trend$/i }));
+    // Family buttons carry an explicit English a11y name ("Family: trend")
+    // so the filter is announced to assistive tech, not just visually styled.
+    // (Renamed from the Turkish "Aile:" — pinned selector updated.)
+    fireEvent.click(screen.getByRole("button", { name: /^Family: trend$/i }));
     expect(screen.queryByText("RSI")).toBeNull();
     expect(screen.getByText("EMA")).toBeInTheDocument();
+  });
+
+  it("shows an English empty-parameters line for indicators with no params", () => {
+    render(<INDXPane />);
+    fireEvent.click(screen.getByText("EMA"));
+    expect(screen.getByText("(no parameters)")).toBeInTheDocument();
+    expect(screen.queryByText(/parametre yok/i)).toBeNull();
   });
 
   it("selecting renders detail view with confidence + parameters", () => {

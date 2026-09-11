@@ -1,12 +1,12 @@
 /**
- * L6 i18n guard — the L6 pane set must not regress to Turkish user-facing
- * copy.
+ * L6 i18n guard — the L6 pane set + the audit-sweep panes must not regress
+ * to Turkish user-facing copy.
  *
- * Scans the L6-owned pane sources (including `anr_pane/**`), stripping
- * comments and test-id hooks first (neither is user-facing). Everything that
- * remains — JSX text, string literals, aria-label/title attributes — must be
- * English. The wordlist below is the campaign's mandated set plus the
- * strings swept in this lane.
+ * Scans the owned pane sources (including `anr_pane/**`), stripping comments
+ * and test-id hooks first (neither is user-facing). Everything that remains —
+ * JSX text, string literals, aria-label/title attributes — must be English.
+ * The wordlist below is the campaign's mandated set plus the strings swept
+ * in this lane.
  */
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
@@ -33,15 +33,29 @@ const OWNED_FILES = [
   "TMPL.tsx",
   "BIO.tsx",
   "OrderTicket.tsx",
+  // Audit-sweep additions (F12): the panes whose Turkish leftovers were
+  // fixed in this lane must stay English.
+  "CONN.tsx",
+  "BDA.tsx",
+  "STRA.tsx",
+  "ALRT.tsx",
+  "CRPR.tsx",
+  "AIM.tsx",
+  "DEBT.tsx",
+  "INDX.tsx",
+  "XSEN.tsx",
   ...ANR_FILES,
 ];
 
 const TURKISH_CHARS = /[ğüşıöçĞÜŞİÖÇ]/;
 // Case-insensitive stems: Turkish words are matched by their distinctive
 // prefixes so inflected forms ("Semboller", "Uygulanabilirlik") are caught.
-// `\bson\b` / `\bsil\b` keep those short words from matching English tokens.
+// `\bson\b` / `\bsil\b` / `\bal\b` / `\bsat\b` keep those short words from
+// matching English tokens (case-sensitive for `al`/`sat` would miss "AL"/"SAT"
+// labels, so the whole list stays case-insensitive and the word boundaries do
+// the disambiguating).
 const TURKISH_WORDS =
-  /(durdur|sorgu|sinyal|ayar|strateji|toplam|durum|kaynak|piyasa|skor|hata|etkin|lider|geride|karli|zararli|gerekli|zaman|konsens|makale|yeniden|bilinmeyen|sadece|saniye|tekrar|botlar|tumunu|iptal|onay|uygulan|sembol|kullan|serbest|\bson\b|\bsil\b)/i;
+  /(durdur|sorgu|sinyal|ayar|strateji|toplam|durum|kaynak|piyasa|skor|hata|etkin|lider|geride|karli|zararli|gerekli|zaman|konsens|makale|yeniden|bilinmeyen|sadece|saniye|tekrar|botlar|tumunu|iptal|onay|uygulan|sembol|kullan|serbest|kural|hepsi|olamaz|etkilenecek|zorunlu|kaydediliyor|merdiven|kredi|defteri|tanınan|taninan|varsayılan|varsayilan|desteklenmiyor|desteklenm|yok sayıl|yok sayil|ozellestir|pozisyon|belirtilmedi|talep edilmedi|\bson\b|\bsil\b|\bal\b|\bsat\b)/i;
 
 /** Remove line + block comments without touching string contents. */
 function stripComments(src: string): string {
@@ -70,6 +84,16 @@ function stripComments(src: string): string {
       continue;
     }
     if (quote) {
+      // Single/double-quoted JS strings cannot contain a raw newline — a
+      // newline while "inside" one means the opener was JSX text (e.g. an
+      // apostrophe in prose). Self-heal so later comments still strip.
+      if (c === "\n" && quote !== "`") {
+        quote = null;
+        state = "code";
+        out += c;
+        i += 1;
+        continue;
+      }
       out += c;
       if (c === "\\") {
         out += src[i + 1] ?? "";
@@ -99,7 +123,8 @@ function stripComments(src: string): string {
 
 /**
  * Remove `data-testid=...` / `testId=...` values — test hooks are identifiers,
- * not user-facing copy (e.g. `perf-kpi-en-karli`, `tmpl-olustur-button`).
+ * not user-facing copy (e.g. `perf-kpi-top-gainer`, `stra-sil-button`,
+ * `tmpl-olustur-button`).
  */
 function stripTestIds(src: string): string {
   return src.replace(/\b(?:data-testid|testId)=("[^"]*"|'[^']*'|`[^`]*`)/g, "TESTID");

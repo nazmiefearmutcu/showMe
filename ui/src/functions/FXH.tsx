@@ -8,7 +8,7 @@
  * The scenario ladder itself is the backend's fixed ±10% set — the SHOCK
  * knob sizes the headline strengthen/weaken cards (noted inline).
  */
-import { useMemo, type CSSProperties } from "react";
+import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import {
   DataGrid,
   type DataGridColumn,
@@ -74,6 +74,8 @@ interface FXHData {
   days_to_maturity?: number;
   source_mode?: string;
   methodology?: string;
+  /** Engine-reported fields that fell back to their built-in defaults. */
+  assumed_defaults?: string[];
 }
 
 const PAIR_OPTIONS = [
@@ -106,6 +108,12 @@ const SHOCK_OPTIONS = [
   { value: 0.1, label: "±10%", title: "SHOCK ±10%" },
 ] as const;
 
+// Engine defaults for the illustrative book (fxh.py). The pane shows these
+// in explicit input controls and labels the untouched values as assumptions.
+const DEFAULT_NOTIONAL = 1_000_000;
+const DEFAULT_BASE_RATE = 0.035;
+const DEFAULT_HOME_RATE = 0.045;
+
 /** Mirror of the backend pair normalizer — 6 alpha letters or bust. */
 function normalizePair(raw: string | undefined): PairId | null {
   if (!raw) return null;
@@ -128,6 +136,21 @@ export function FXHPane({ code, symbol }: FunctionPaneProps) {
   const [ratio, setRatio] = usePersistentNumber("showme.fxh.ratio", 0.75);
   const [days, setDays] = usePersistentNumber("showme.fxh.days", 90);
   const [shock, setShock] = usePersistentNumber("showme.fxh.shock", 0.05);
+  // Explicit exposure/rate inputs. Before this, the pane sent only the pair
+  // knobs and the engine silently modelled a $1,000,000 book at 3.5%/4.5%.
+  // Now every number driving the book is visible, editable and labelled.
+  const [notional, setNotional] = usePersistentNumber(
+    "showme.fxh.notional",
+    DEFAULT_NOTIONAL,
+  );
+  const [baseRate, setBaseRate] = usePersistentNumber(
+    "showme.fxh.base_rate",
+    DEFAULT_BASE_RATE,
+  );
+  const [homeRate, setHomeRate] = usePersistentNumber(
+    "showme.fxh.home_rate",
+    DEFAULT_HOME_RATE,
+  );
 
   // An explicit FX pair symbol (navigation intent) beats the stored pick.
   const effectivePair = normalizePair(symbol) ?? pair;
@@ -139,6 +162,9 @@ export function FXHPane({ code, symbol }: FunctionPaneProps) {
       hedge_ratio: ratio,
       days,
       usd_shock_pct: shock,
+      notional,
+      base_rate: baseRate,
+      home_rate: homeRate,
     },
   });
 
@@ -267,6 +293,25 @@ export function FXHPane({ code, symbol }: FunctionPaneProps) {
 
   const geom = useMemo(() => buildCurve(curve), [curve]);
 
+  // Which model inputs are still the engine defaults? Surface that as an
+  // explicit "assumed defaults" note instead of presenting the book as if
+  // the user had entered every number.
+  const exposureIsDefault = notional === DEFAULT_NOTIONAL;
+  const ratesAreDefault =
+    baseRate === DEFAULT_BASE_RATE && homeRate === DEFAULT_HOME_RATE;
+  const assumedParts = [
+    exposureIsDefault ? `exposure ${fmtMoney(notional, false)}` : null,
+    ratesAreDefault
+      ? `rates ${(baseRate * 100).toFixed(2)}% foreign / ${(homeRate * 100).toFixed(2)}% home`
+      : null,
+  ].filter((v): v is string => v != null);
+  const assumedNote = assumedParts.length ? (
+    <div role="note" aria-label="Assumed defaults" style={assumedNoteStyle}>
+      <strong>Assumed defaults:</strong> {assumedParts.join(" · ")} — edit the
+      exposure/rate inputs to model your own book.
+    </div>
+  ) : null;
+
   const warningBanner =
     warnings.length > 0 ? (
       <div role="status" style={warningStyle} aria-label="Data quality warning">
@@ -313,11 +358,41 @@ export function FXHPane({ code, symbol }: FunctionPaneProps) {
     ) : (
       <div className="u-grid-gap-14">
         {warningBanner}
+        <section style={inputsPanelStyle} aria-label="FXH exposure inputs">
+          <NumField
+            label="EXPOSURE"
+            ariaLabel="Exposure notional (foreign currency)"
+            value={notional}
+            onCommit={setNotional}
+            step={100_000}
+            min={0}
+          />
+          <NumField
+            label="FGN RATE"
+            ariaLabel="Foreign interest rate (decimal)"
+            value={baseRate}
+            onCommit={setBaseRate}
+            step={0.001}
+            min={-0.1}
+          />
+          <NumField
+            label="HOME RATE"
+            ariaLabel="Home interest rate (decimal)"
+            value={homeRate}
+            onCommit={setHomeRate}
+            step={0.001}
+            min={-0.1}
+          />
+          <span style={inputsHintStyle}>
+            foreign-ccy exposure · decimal annual rates
+          </span>
+        </section>
+        {assumedNote}
         <section style={kpiGridStyle} aria-label="FXH KPI ribbon">
           <StatCard
             label="Home value"
             value={fmtMoney(payload?.total_home_value, false)}
-            caption={`${rows.length} CCY · ${fmtNum(payload?.hedge_ratio != null ? payload.hedge_ratio * 100 : null, 0)}% HEDGED`}
+            caption={`${fmtMoney(notional, false)} NOTIONAL · ${fmtNum(payload?.hedge_ratio != null ? payload.hedge_ratio * 100 : null, 0)}% HEDGED`}
             tone="neutral"
           />
           <StatCard
@@ -547,7 +622,104 @@ function fmtShock(shock: number): string {
   return Number.isInteger(pct) ? String(pct) : pct.toFixed(1);
 }
 
+/* ── input field (DCF NumberField pattern) ─────────────────────────── */
+
+function NumField({
+  label,
+  ariaLabel,
+  value,
+  onCommit,
+  step,
+  min,
+}: {
+  label: string;
+  ariaLabel: string;
+  value: number;
+  onCommit: (next: number) => void;
+  step: number;
+  min: number;
+}) {
+  const [draft, setDraft] = useState(String(value));
+  useEffect(() => {
+    setDraft(String(value));
+  }, [value]);
+  return (
+    <label style={fieldRowStyle}>
+      <span style={fieldLabelStyle}>{label}</span>
+      <input
+        type="number"
+        aria-label={ariaLabel}
+        value={draft}
+        step={step}
+        min={min}
+        onChange={(e) => {
+          setDraft(e.target.value);
+          const n = Number(e.target.value);
+          if (e.target.value.trim() !== "" && Number.isFinite(n) && n >= min) {
+            onCommit(n);
+          }
+        }}
+        onBlur={() => setDraft(String(value))}
+        style={numInputStyle}
+      />
+    </label>
+  );
+}
+
 /* ── styles ────────────────────────────────────────────────────────── */
+
+const inputsPanelStyle: CSSProperties = {
+  display: "flex",
+  alignItems: "flex-end",
+  flexWrap: "wrap",
+  gap: 14,
+  border: "1px solid var(--border-card)",
+  borderRadius: "var(--radius-md)",
+  background: "var(--surface-2)",
+  padding: "8px 12px",
+};
+
+const inputsHintStyle: CSSProperties = {
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: "var(--font-size-2xs)",
+  color: "var(--text-mute)",
+  letterSpacing: "0.04em",
+  paddingBottom: 3,
+};
+
+const assumedNoteStyle: CSSProperties = {
+  border: "1px solid color-mix(in srgb, var(--warn) 40%, transparent)",
+  background: "var(--warn-soft)",
+  borderRadius: "var(--radius-sm)",
+  padding: "7px 10px",
+  fontSize: "var(--font-size-sm)",
+  color: "var(--text-secondary)",
+};
+
+const fieldRowStyle: CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  gap: 3,
+};
+
+const fieldLabelStyle: CSSProperties = {
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: "var(--font-size-xs)",
+  color: "var(--text-mute)",
+  letterSpacing: "0.06em",
+};
+
+const numInputStyle: CSSProperties = {
+  width: 110,
+  fontFamily: "JetBrains Mono, monospace",
+  fontVariantNumeric: "tabular-nums",
+  fontSize: "var(--font-size-sm)",
+  padding: "2px 4px",
+  border: "1px solid var(--border-row)",
+  borderRadius: 3,
+  background: "var(--surface-1)",
+  color: "var(--text-primary)",
+};
 
 const kpiGridStyle: CSSProperties = {
   display: "grid",

@@ -154,6 +154,16 @@ describe("PIB pane — load states", () => {
       screen.getByText(/SEC filing feed returned no rows/i),
     ).toBeInTheDocument();
   });
+
+  it("distinguishes an empty healthy feed from a provider outage (audit A3 L)", () => {
+    setMockFn({
+      state: "ok",
+      data: { sources: ["sec_edgar"], data: { status: "ok", rows: [], sections: [] } },
+    });
+    render(<PIBPane code="PIB" symbol="AAPL" />);
+    expect(screen.getByText(/No filings returned/i)).toBeInTheDocument();
+    expect(screen.queryByText(/book unavailable/i)).toBeNull();
+  });
 });
 
 describe("PIB pane — section map + filings table", () => {
@@ -172,6 +182,17 @@ describe("PIB pane — section map + filings table", () => {
     expect(container.textContent).toContain("0001140361-26-035636");
     expect(container.textContent).toContain("0000320193-26-000020");
     expect(container.textContent).toContain("sec_edgar_filing_metadata");
+  });
+
+  it("sorts filings newest-first by default and is keyboard navigable (audit A3 M)", () => {
+    const payload = okPayload();
+    // Reverse the fixture so only the built-in sorter can put 09-03 first.
+    payload.data.data.rows = [...payload.data.data.rows].reverse();
+    setMockFn({ state: "ok", ...payload });
+    const { container } = render(<PIBPane code="PIB" symbol="AAPL" />);
+    expect(screen.getByRole("grid")).toBeInTheDocument();
+    const firstRow = container.querySelector("tbody tr");
+    expect(firstRow?.textContent).toContain("2026-09-03");
   });
 });
 

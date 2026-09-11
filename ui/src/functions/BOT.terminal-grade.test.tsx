@@ -3,11 +3,16 @@
  *
  * Covers the NEW behaviours added in the terminal-grade pass:
  *  F1 — design-system Pill status with an accessible name.
- *  F2 — signal table caption + scope; price uses formatPrice; fallback-equity
- *       badge shown only when equity_source === "fallback_10k".
+ *  F2 — signal table aria-label + scope; price uses formatPrice; fallback-equity
+ *       badge shown only when equity_source === "fallback_10k"; CSV export of
+ *       the FULL signal log.
  *  F4 — pane error region is a polite live region (role=status).
  *  F5 — Empty when no bots; Skeleton when loading + empty.
  *  F6 — Disable triggers a ConfirmDialog; disabled Save has a title.
+ *
+ * F10 (fix lane, audit A9): the mode fieldset legend is English ("Mode"); the
+ * signal log is a DataGrid with a full-log CSV export; the Enable button
+ * explains WHY it is disabled when the credential is unavailable.
  *
  * These are additive; the existing BOT suites stay green. Follows the
  * store-setState render style of BOT.fixes2.test.tsx + STRA.terminal-grade.
@@ -17,7 +22,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { BOTPane } from "./BOT";
+import { BOTPane, buildSignalLogCsv } from "./BOT";
 import { useBotStore } from "@/lib/bot-store";
 import { useStrategyStore } from "@/lib/strategy-store";
 import { useExchangeStore } from "@/lib/exchange-store";
@@ -106,7 +111,7 @@ describe("BOT F1 — Pill status with accessible name", () => {
 });
 
 describe("BOT F2 — signal table semantics + display", () => {
-  it("signal table has a caption and column scopes", () => {
+  it("signal table has an aria-label and column scopes (DataGrid)", () => {
     useBotStore.setState({
       draft: {
         ...PERSISTED_DRAFT,
@@ -117,8 +122,9 @@ describe("BOT F2 — signal table semantics + display", () => {
       } as never,
     });
     render(<BOTPane />);
-    const table = screen.getByRole("table", { name: /signal/i });
-    expect(table.querySelector("caption")).not.toBeNull();
+    const table = screen.getByRole("table", { name: /signal log/i });
+    // DataGrid carries the accessible name via aria-label (no <caption>).
+    expect(table.getAttribute("aria-label")).toBe("Signal log");
     const ths = table.querySelectorAll("th[scope='col']");
     expect(ths.length).toBe(5);
   });
@@ -253,14 +259,14 @@ describe("BOT F5 — empty / loading sidebar states", () => {
 });
 
 describe("BOT F6 — disable confirm + disabled-Save title", () => {
-  it("Durdur triggers a ConfirmDialog instead of disabling immediately", () => {
+  it("Stop triggers a ConfirmDialog instead of disabling immediately", () => {
     const disableSpy = vi.fn(async () => null);
     useBotStore.setState({
       draft: { ...PERSISTED_DRAFT, enabled: true } as never,
       disable: disableSpy as never,
     });
     render(<BOTPane />);
-    fireEvent.click(screen.getByTestId("bot-durdur-button"));
+    fireEvent.click(screen.getByTestId("bot-stop-button"));
     // Dialog open, disable NOT yet called.
     expect(screen.getByTestId("confirm-dialog-body")).toBeInTheDocument();
     expect(disableSpy).not.toHaveBeenCalled();
@@ -279,6 +285,59 @@ describe("BOT F6 — disable confirm + disabled-Save title", () => {
   });
 });
 
+describe("BOT F10 — audit A9 fixes (English legend, DataGrid CSV, Enable reason)", () => {
+  it("mode fieldset legend is English 'Mode' (no Turkish 'Mod')", () => {
+    useBotStore.setState({ draft: { ...PERSISTED_DRAFT } as never });
+    render(<BOTPane />);
+    expect(screen.getByText("Mode")).toBeInTheDocument();
+    expect(screen.queryByText("Mod")).toBeNull();
+  });
+
+  it("signal log CSV button exports the FULL log, not the 20-row view window", () => {
+    const entries = Array.from({ length: 25 }).map((_, i) => ({
+      bar_index: i,
+      bar_time: `2026-05-22T${String(i % 24).padStart(2, "0")}:00:00Z`,
+      kind: i % 2 === 0 ? ("entry" as const) : ("exit" as const),
+      price: 100 + i,
+      action: "shadow" as const,
+    }));
+    const csv = buildSignalLogCsv(entries);
+    const lines = csv.trim().split("\n");
+    // header + all 25 rows (view window is only the last 20).
+    expect(lines.length).toBe(26);
+    // Newest first: the last entry (i=24) leads the export.
+    expect(lines[1]).toContain("2026-05-22T00:00:00Z");
+    expect(lines[1]).toContain("124");
+    expect(csv).toContain("Equity source");
+  });
+
+  it("shows the CSV button enabled with rows and disabled with none", () => {
+    useBotStore.setState({
+      draft: {
+        ...PERSISTED_DRAFT,
+        signal_log: [
+          { bar_index: 0, bar_time: "2026-05-22T10:00:00Z", kind: "entry",
+            price: 100, action: "shadow" },
+        ],
+      } as never,
+    });
+    render(<BOTPane />);
+    expect(screen.getByTestId("bot-signal-log-csv")).not.toBeDisabled();
+  });
+
+  it("disabled Enable button explains an unavailable (orphaned) connection", () => {
+    useBotStore.setState({
+      draft: {
+        ...PERSISTED_DRAFT, mode: "live", credential_id: "ghost-c",
+      } as never,
+    });
+    render(<BOTPane />);
+    const enable = screen.getByRole("button", { name: /^enable$/i }) as HTMLButtonElement;
+    expect(enable.disabled).toBe(true);
+    expect(enable.getAttribute("title")).toMatch(/no connection is available/i);
+  });
+});
+
 describe("BOT — no dead CSS alias tokens in new code", () => {
   it("BOT.tsx references no nonexistent CSS alias tokens", () => {
     const src = readFileSync(join(__dir, "BOT.tsx"), "utf8");
@@ -287,5 +346,13 @@ describe("BOT — no dead CSS alias tokens in new code", () => {
     expect(src).not.toMatch(/var\(--border-1\)/);
     expect(src).not.toMatch(/var\(--accent-warn\)/);
     expect(src).not.toMatch(/var\(--accent-ok\)/);
+  });
+
+  // F10 (audit A9) — Turkish internal identifiers were renamed; a source pin
+  // prevents them coming back.
+  it("BOT.tsx carries no Turkish identifiers or copy", () => {
+    const src = readFileSync(join(__dir, "BOT.tsx"), "utf8");
+    expect(src).not.toMatch(/bot-durdur|bot-sil/);
+    expect(src).not.toMatch(/[ğüşıöçĞÜŞİÖÇ]/);
   });
 });

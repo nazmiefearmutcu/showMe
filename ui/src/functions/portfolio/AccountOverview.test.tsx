@@ -5,11 +5,19 @@
  * honesty badge surviving an empty payload, using the repo's standard
  * mutable-holder useFunction mock.
  */
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const mockReturn: { current: unknown } = { current: null };
-vi.mock("@/lib/useFunction", () => ({ useFunction: () => mockReturn.current }));
+const mockArgs: {
+  current: { code?: string; params?: Record<string, unknown> } | null;
+} = { current: null };
+vi.mock("@/lib/useFunction", () => ({
+  useFunction: (args: unknown) => {
+    mockArgs.current = args as (typeof mockArgs)["current"];
+    return mockReturn.current;
+  },
+}));
 vi.mock("@/lib/router", () => ({ navigate: vi.fn() }));
 
 import { AccountOverviewPane } from "./AccountOverview";
@@ -38,6 +46,8 @@ function ok(
 afterEach(() => {
   cleanup();
   mockReturn.current = null;
+  mockArgs.current = null;
+  vi.useRealTimers();
 });
 
 const LIVE_COMPOSITE = {
@@ -134,5 +144,36 @@ describe("ACCT Account Overview pane", () => {
     expect(container.querySelectorAll("table").length).toBe(2);
     // Live payload → no disclosure badge.
     expect(screen.queryByTestId("portx-data-badge")).toBeNull();
+  });
+
+  it("auto-refreshes on the visibility tick WITHOUT a params change", () => {
+    vi.useFakeTimers();
+    const refetch = vi.fn();
+    mockReturn.current = {
+      state: "ok",
+      data: {
+        code: "ACCT",
+        instrument: null,
+        data: LIVE_COMPOSITE,
+        metadata: { live: true },
+        fetched_at: "2026-09-11T00:00:00Z",
+        sources: ["yfinance"],
+        warnings: [],
+        elapsed_ms: 42,
+      },
+      error: undefined,
+      refetch,
+    };
+    render(<AccountOverviewPane code="ACCT" />);
+    // Initial mount is useFunction's own load — the tick must not double-fetch.
+    expect(refetch).not.toHaveBeenCalled();
+    act(() => {
+      vi.advanceTimersByTime(60_000);
+    });
+    expect(refetch).toHaveBeenCalledTimes(1);
+    // The tick drives refetch() only: the fetch key stays { code } — a tick in
+    // params would wipe the table to a skeleton every cycle.
+    expect(mockArgs.current?.code).toBe("ACCT");
+    expect(mockArgs.current?.params).toBeUndefined();
   });
 });

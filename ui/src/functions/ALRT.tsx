@@ -47,7 +47,7 @@ import { invoke, isInTauri } from "@/lib/tauri";
 import { toast } from "@/lib/toast";
 import { fetchQuote, type QuoteSnapshot } from "@/lib/quotes";
 import { useVisibilityTick } from "@/lib/useVisibilityTick";
-import { formatPrice, formatMissing } from "@/lib/format";
+import { formatPrice, formatMissing, formatPercent, formatCompactNumber } from "@/lib/format";
 import { FunctionControlGroup, LoadStatePill, RefreshButton } from "./function-controls";
 import type { FunctionPaneProps } from "./registry-types";
 
@@ -122,7 +122,7 @@ export function ALRTPane({ code }: FunctionPaneProps) {
   const [quoteError, setQuoteError] = useState<string | null>(null);
   const [quoteLoading, setQuoteLoading] = useState(false);
   // Round 24 HIGH 8 — threshold validation tracks the parsed shape so
-  // we can show a TR-language error instead of silently coercing "1e500"
+  // we can show an explicit error instead of silently coercing "1e500"
   // to Infinity and writing a bogus row.
   const thresholdParsed = parseDecimalSafe(threshold);
   const thresholdInvalid =
@@ -402,9 +402,15 @@ export function ALRTPane({ code }: FunctionPaneProps) {
         width: 100,
         // Thresholds are unsigned targets, not signed deltas — render plainly
         // in tabular mono so they don't reflow and don't carry a +/- sign.
+        // Unit follows the alert field: % for change_pct, compact for volume,
+        // price formatting otherwise.
         render: (r) => (
           <span className="terminal-grid-numeric" style={numericCellStyle}>
-            {formatPrice(r.threshold)}
+            {r.field === "change_pct"
+              ? formatPercent(r.threshold, { digits: 2 })
+              : r.field === "volume"
+                ? formatCompactNumber(r.threshold)
+                : formatPrice(r.threshold)}
           </span>
         ),
       },
@@ -607,7 +613,7 @@ export function ALRTPane({ code }: FunctionPaneProps) {
               style={{ color: "var(--negative)", fontSize: "var(--font-size-sm)", marginTop: 4 }}
             >
               {thresholdParsed.ok
-                ? "Threshold 0 olamaz."
+                ? "Threshold cannot be 0."
                 : thresholdParsed.reason === "not_finite"
                   ? "Enter a finite number (Infinity rejected)."
                   : "Enter a valid number."}
@@ -683,6 +689,7 @@ export function ALRTPane({ code }: FunctionPaneProps) {
                 rows={rows}
                 rowKey={(r) => r.id}
                 density="compact"
+                ariaLabel="Alerts"
               />
             )}
           </div>

@@ -49,12 +49,22 @@ describe("STRA pane", () => {
     expect((useStrategyStore.getState().draft?.indicators ?? []).length).toBe(1);
   });
 
-  it("Kural ekle in entry rules appends a rule", () => {
+  it("Add rule in entry rules appends a rule", () => {
     render(<STRAPane />);
     fireEvent.click(screen.getByRole("button", { name: /^\+ new strategy$/i }));
-    const allKuralButtons = screen.getAllByRole("button", { name: /kural ekle/i });
-    fireEvent.click(allKuralButtons[0]);
+    const allAddRuleButtons = screen.getAllByRole("button", { name: /add rule/i });
+    fireEvent.click(allAddRuleButtons[0]);
     expect((useStrategyStore.getState().draft?.entry_rules ?? []).length).toBe(1);
+  });
+
+  it("rule operand placeholder is English (i18n regression)", () => {
+    render(<STRAPane />);
+    fireEvent.click(screen.getByRole("button", { name: /^\+ new strategy$/i }));
+    // A blank draft has no rules yet — add one so the operand input exists.
+    fireEvent.click(screen.getAllByRole("button", { name: /add rule/i })[0]);
+    expect(
+      screen.getByPlaceholderText("literal:30 or alias"),
+    ).toBeInTheDocument();
   });
 
   it("renders saved strategy in left list", () => {

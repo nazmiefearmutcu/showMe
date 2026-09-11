@@ -855,12 +855,35 @@ function useLiveQuotesInternal(
 
     void refresh("initial");
 
+    // Visibility gate (F14 [M], audit A10 WATCH): the shared snapshot poll
+    // used to keep firing 30s fetches from a backgrounded tab. Skip ticks
+    // while `document.visibilityState === "hidden"` and fire exactly one
+    // background refresh on the return transition so the first visible frame
+    // is not a full cadence stale. Browser timer throttling softens but does
+    // not remove the request fan-out this prevents.
     const pollId =
       pollMs != null && pollMs > 0
         ? setInterval(() => {
+            if (
+              typeof document !== "undefined" &&
+              document.visibilityState === "hidden"
+            ) {
+              return;
+            }
             void refresh("background");
           }, pollMs)
         : null;
+
+    const onVisibility: (() => void) | null =
+      pollId != null && typeof document !== "undefined"
+        ? () => {
+            if (document.visibilityState === "hidden") return;
+            void refresh("background");
+          }
+        : null;
+    if (onVisibility) {
+      document.addEventListener("visibilitychange", onVisibility);
+    }
 
     const handles: StreamHandle[] = [];
     if (autoSubscribe) {
@@ -896,6 +919,9 @@ function useLiveQuotesInternal(
     return () => {
       cancelled = true;
       if (pollId != null) clearInterval(pollId);
+      if (onVisibility) {
+        document.removeEventListener("visibilitychange", onVisibility);
+      }
       for (const h of handles) h.close();
       refetchRef.current = () => undefined;
     };

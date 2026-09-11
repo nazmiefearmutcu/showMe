@@ -11,10 +11,10 @@
  *        the local portfolio.db (a historical snapshot), NOT live broker
  *        fills and NOT ShowMe bot trades.
  *   H2 — each row's `source` (e.g. "showme_import") is surfaced in a column.
- *   H3 — the `mode` column is relabelled "Kayıt" and its pill carries a
+ *   H3 — the `mode` column is relabelled "Record" and its pill carries a
  *        tooltip clarifying that "writable" = an editable DB record, NOT a
  *        live-trading mode.
- *   B-UI — `generated_at` from the API drives a "Son güncelleme" indicator.
+ *   B-UI — `generated_at` from the API drives a "Last updated" indicator.
  *   D1/D2 — formatting via format.ts helpers + `terminal-grid-numeric`.
  *   A1–A5 — DataGrid aria-label, symbol aria-labels, role=status error,
  *        wired column sorting, CSV aria-label + result count honesty.
@@ -289,7 +289,7 @@ export function TXNSPane({ code, symbol }: FunctionPaneProps) {
         },
       },
       {
-        // H3 — relabelled "Kayıt" (record) so the column never implies a
+        // H3 — relabelled "Record" so the column never implies a
         // live-trading mode. The pill carries an accessible label + title
         // tooltip spelling out what "writable" actually means.
         key: "mode",
@@ -345,6 +345,11 @@ export function TXNSPane({ code, symbol }: FunctionPaneProps) {
   const utcNow = new Date().toISOString().slice(11, 16);
   const oldestRow = rows && rows.length ? rows[rows.length - 1] : null;
   const visibleCount = rows?.length ?? 0;
+  // The API's `total` is a DB-wide COUNT(*) (no symbol filter), so it is only
+  // an honest denominator with NO filter active. When a filter is set we show
+  // the loaded count instead of mixing filtered rows with the unfiltered total
+  // (the KPI captions below likewise state their "loaded N" scope).
+  const filtered = filter.trim().length > 0;
   const lastUpdated = generatedAt ? fmtClock(generatedAt) : formatMissing;
   // A5 — distinguish an empty portfolio.db (0 total) from a filter that
   // simply matched nothing (M rows exist but none match).
@@ -359,13 +364,16 @@ export function TXNSPane({ code, symbol }: FunctionPaneProps) {
           subtitle={
             summary
               ? `${summary.n} closed · realized ${summary.realized.toFixed(2)}`
-              : `${total} row(s) total`
+              : filtered
+                ? `${visibleCount} matched row(s) loaded`
+                : `${total} row(s) total`
           }
           trailing={
             <FunctionControlGroup>
-              {/* A5 — visible / total count, honest. */}
+              {/* A5 — count pill. With a filter active the backend total is
+                  DB-wide, so label the loaded count instead of mixing scopes. */}
               <Pill tone="muted" variant="soft" withDot={false}>
-                {visibleCount} / {total} rows
+                {filtered ? `${visibleCount} shown · filtered` : `${visibleCount} / ${total} rows`}
               </Pill>
               {/* B-UI — freshness indicator from the API's generated_at.
                   Wrapper carries the testid/title since Pill is closed-prop. */}
@@ -488,7 +496,7 @@ export function TXNSPane({ code, symbol }: FunctionPaneProps) {
                     value={
                       <ChangeText value={summary.avg} prefix="$" digits={2} />
                     }
-                    caption={`limit ${limit}`}
+                    caption={`over loaded ${summary.n}`}
                     tone={
                       summary.avg > 0
                         ? "positive"

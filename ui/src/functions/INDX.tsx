@@ -69,7 +69,7 @@ function ConfidenceMeter({ c }: { c: number }) {
 }
 
 function ParameterTable({ params }: { params: IndicatorParam[] }) {
-  if (params.length === 0) return <div style={{ color: "var(--text-secondary)" }}>(parametre yok)</div>;
+  if (params.length === 0) return <div style={{ color: "var(--text-secondary)" }}>(no parameters)</div>;
   return (
     <table style={{ width: "100%", fontSize: "var(--font-size-md)" }}>
       <caption className="u-sr-only">Indicator parameters and effects</caption>
@@ -186,7 +186,7 @@ export function INDXPane() {
           {FAMILIES.map((f) => (
             <button key={f} onClick={() => setFamily(f)}
                     aria-pressed={family === f}
-                    aria-label={`Aile: ${f}`}
+                    aria-label={`Family: ${f}`}
                     style={{ fontSize: "var(--font-size-sm)", opacity: family === f ? 1 : 0.55 }}>
               {f}
             </button>

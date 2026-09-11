@@ -111,6 +111,8 @@ const TOOL_CONFIG: Record<string, ToolConfig> = {
   BMTX: {
     title: "Behavior Matrix",
     subtitle: "Portfolio behavior diagnostics",
+    usesUniverse: true,
+    supportsLive: true,
   },
   BTFW: {
     title: "Backtest Forward",
@@ -120,8 +122,11 @@ const TOOL_CONFIG: Record<string, ToolConfig> = {
     supportsLive: true,
   },
   BTUNE: {
-    title: "Bot Tuning",
-    subtitle: "Portfolio parameter tuning surface",
+    title: "Backtest Auto-Tuner",
+    subtitle: "Hyperparameter sweep across strategies",
+    defaultSymbol: "AAPL",
+    usesSymbol: true,
+    supportsLive: true,
   },
   LOTS: {
     title: "Tax Lots",
@@ -141,6 +146,7 @@ const TOOL_CONFIG: Record<string, ToolConfig> = {
   MLSIG: {
     title: "ML Signals",
     subtitle: "Portfolio signal ranking",
+    supportsLive: true,
   },
   PCAS: {
     title: "PCA Stress",
@@ -218,7 +224,12 @@ export function PortfolioAnalyticsPane({ code, symbol }: FunctionPaneProps) {
   const [symbolInput, setSymbolInput] = useState(symbol ?? config.defaultSymbol ?? "AAPL");
   const [live, setLive] = useState(false);
   const [mode, setMode] = useState(config.modes?.[0] ?? "all");
-  const [account, setAccount] = useState("10000");
+  // REBA capital: the rebalance order deltas are computed against this
+  // notional, so it must be an explicit user input (was hardcoded 100000).
+  const [capital, setCapital] = useState("100000");
+  // PORT_WHATIF relabels `account` as Quantity; its own default is a plain
+  // 100-share ticket, not the 10,000 sizing-unit default of PSC.
+  const [account, setAccount] = useState(() => (upper === "PORT_WHATIF" ? "100" : "10000"));
   const [entry, setEntry] = useState("100");
   const [stop, setStop] = useState("95");
   const [target, setTarget] = useState("115");
@@ -232,11 +243,12 @@ export function PortfolioAnalyticsPane({ code, symbol }: FunctionPaneProps) {
         live,
         mode,
         account,
+        capital,
         entry,
         stop,
         target,
       }),
-    [upper, symbols, targetText, live, mode, account, entry, stop, target],
+    [upper, symbols, targetText, live, mode, account, capital, entry, stop, target],
   );
   const { state, data, error, refetch } = useFunction<PortfolioPayload>({
     code: upper,
@@ -340,6 +352,8 @@ export function PortfolioAnalyticsPane({ code, symbol }: FunctionPaneProps) {
             setSymbolInput={setSymbolInput}
             account={account}
             setAccount={setAccount}
+            capital={capital}
+            setCapital={setCapital}
             entry={entry}
             setEntry={setEntry}
             stop={stop}
@@ -389,6 +403,8 @@ function PortfolioControls({
   setSymbolInput,
   account,
   setAccount,
+  capital,
+  setCapital,
   entry,
   setEntry,
   stop,
@@ -406,6 +422,8 @@ function PortfolioControls({
   setSymbolInput: (value: string) => void;
   account: string;
   setAccount: (value: string) => void;
+  capital: string;
+  setCapital: (value: string) => void;
   entry: string;
   setEntry: (value: string) => void;
   stop: string;
@@ -449,6 +467,20 @@ function PortfolioControls({
         <label className="portfolio-control-field portfolio-control-field--wide" htmlFor={fid("targets")}>
           <span>Targets</span>
           <input id={fid("targets")} value={targetText} onChange={(e) => setTargetText(e.target.value.toUpperCase())} />
+        </label>
+      ) : null}
+      {code === "REBA" ? (
+        // The order deltas are computed against this notional. It used to be
+        // hardcoded to $100k with no control, so every shown delta silently
+        // belonged to a $100k model book.
+        <label className="portfolio-control-field" htmlFor={fid("capital")}>
+          <span>Capital</span>
+          <input
+            id={fid("capital")}
+            value={capital}
+            onChange={(e) => setCapital(e.target.value)}
+            inputMode="decimal"
+          />
         </label>
       ) : null}
       {code === "PSC" || code === "PORT_WHATIF" ? (
@@ -851,6 +883,10 @@ function extractRows(payload: PortfolioPayload | undefined): Row[] {
     payload.top_loadings,
     payload.loadings,
     payload.series,
+    // BMTX (and sibling matrix producers) emit `cells`/`surface` instead of
+    // `rows`; without these the pane always fell to "No data available".
+    payload.cells,
+    payload.surface,
   ];
   for (const candidate of candidates) {
     const rows = arrayOfRecords(candidate);
@@ -887,6 +923,7 @@ function buildParams(
     live: boolean;
     mode: string;
     account: string;
+    capital: string;
     entry: string;
     stop: string;
     target: string;
@@ -898,12 +935,22 @@ function buildParams(
       return { symbols, live: state.live };
     case "MARS":
       return { symbols, live: state.live };
+    case "BMTX":
+      // Live backtest matrix — without this the backend always served the
+      // reference template (`_matrix_template`) and the live path was dead.
+      return { symbols, live_backtest: state.live };
+    case "BTUNE":
+      // Live parameter sweep — same dead-path issue as BMTX.
+      return { live_backtest: state.live };
+    case "MLSIG":
+      // Live yfinance-trained classifier (backend reads live_ml).
+      return { live_ml: state.live };
     case "PORT_OPT":
       return { symbols, mode: state.mode, live: state.live, days: 756 };
     case "RPAR":
       return { symbols, method: state.mode, live_risk: state.live, model: !state.live };
     case "REBA":
-      return { targets: parseTargets(state.targetText), max_notional: 100000 };
+      return { targets: parseTargets(state.targetText), max_notional: num(state.capital, 100000) };
     case "STRS":
       return { action: state.mode, refresh_prices: state.live };
     case "PVAR":
@@ -919,7 +966,7 @@ function buildParams(
         risk_pct: 0.01,
       };
     case "PORT_WHATIF":
-      return { quantity: num(state.account, 10), cost: num(state.entry, 100) };
+      return { quantity: num(state.account, 100), cost: num(state.entry, 100) };
     case "TRA":
       return { years: 5, live_return: state.live };
     case "BTFW":
@@ -942,12 +989,34 @@ function parseTargets(raw: string): Record<string, number> {
     const [symbol, value] = part.split(":").map((s) => s.trim());
     if (!symbol || !value) continue;
     const pct = Number(value);
-    if (Number.isFinite(pct) && pct > 0) out[symbol.toUpperCase()] = pct / 100;
+    // Keep EXPLICIT zero targets: "SPY:60, QQQ:0" is a full-exit instruction
+    // for QQQ, not an omitted symbol. Dropping it silently re-normalized the
+    // book to SPY 100% (the user's liquidation intent vanished).
+    if (Number.isFinite(pct) && pct >= 0) out[symbol.toUpperCase()] = pct / 100;
   }
   return out;
 }
 
+// Flagship metrics for the hero KPI, most meaningful first. The backend
+// summaries are heterogeneous (RPAR leads with `symbols`, a COUNT), so
+// picking the first numeric field rendered "5.00" instead of portfolio vol.
+const HERO_METRIC_PREFERENCE = [
+  "portfolio_vol",
+  "total_return",
+  "return",
+  "total_pnl",
+  "pnl",
+  "sharpe",
+  "vol",
+];
+
 function heroValue(metrics: Array<{ key: string; label: string; value: unknown }>): string {
+  for (const key of HERO_METRIC_PREFERENCE) {
+    const metric = metrics.find(
+      (candidate) => candidate.key.toLowerCase() === key && typeof candidate.value === "number",
+    );
+    if (metric) return formatSmart(metric.key, metric.value);
+  }
   const first = metrics.find((metric) => typeof metric.value === "number") ?? metrics[0];
   return first ? formatSmart(first.key, first.value) : formatMissing;
 }
@@ -956,8 +1025,20 @@ function formatSmart(key: string, value: unknown): string {
   if (value == null || value === "") return formatMissing;
   if (typeof value === "string") return value;
   if (typeof value === "boolean") return value ? "yes" : "no";
+  // Nested dicts (e.g. BTUNE rows[].params = {fast: 5, slow: 30}) must render
+  // as a readable `k=v` summary — never "[object Object]".
+  if (typeof value === "object") {
+    if (Array.isArray(value)) return value.map((entry) => String(entry)).join(", ");
+    return formatObjectSummary(value as Record<string, unknown>);
+  }
   if (typeof value !== "number" || !Number.isFinite(value)) return String(value);
   const k = key.toLowerCase();
+  // Epoch timestamps (LOTS `opened_at` ships UNIX seconds) must not fall
+  // through to the compact-number formatter ("1.74B").
+  if (isDateKey(k)) {
+    const iso = formatEpochDate(value);
+    if (iso) return iso;
+  }
   if (k.includes("pct") || k.includes("percent")) return formatPercent(value);
   if (k === "weight" || k.endsWith("_weight") || k.includes("fraction")) {
     return formatPercent(value, { fromFraction: Math.abs(value) <= 1 });
@@ -980,6 +1061,52 @@ function formatSmart(key: string, value: unknown): string {
   if (k.includes("price") || k === "entry" || k === "stop" || k === "target") return formatPrice(value);
   if (Math.abs(value) >= 1000000) return formatCompactNumber(value);
   return formatNumber(value, Math.abs(value) < 10 && value % 1 !== 0 ? 4 : 2);
+}
+
+/** Compact `key=value, key=value` summary for a nested dict cell. */
+function formatObjectSummary(record: Record<string, unknown>): string {
+  const entries = Object.entries(record);
+  if (!entries.length) return "—";
+  return entries
+    .map(([entryKey, entryValue]) => {
+      const scalar =
+        entryValue == null
+          ? formatMissing
+          : typeof entryValue === "object"
+            ? "[…]"
+            : String(entryValue);
+      return `${entryKey}=${scalar}`;
+    })
+    .join(", ");
+}
+
+/**
+ * Date-ish field names whose numeric values are epoch timestamps. Kept to
+ * explicit suffixes so magnitude fields (e.g. `weight`, `notional`) are never
+ * re-interpreted as dates.
+ */
+function isDateKey(key: string): boolean {
+  return (
+    key === "date" ||
+    key === "datetime" ||
+    key === "timestamp" ||
+    key === "as_of" ||
+    key.endsWith("_at") ||
+    key.endsWith("_date") ||
+    key.endsWith("_ts") ||
+    key.endsWith("_time")
+  );
+}
+
+/** Epoch seconds (10-digit) or milliseconds (13-digit) → ISO `YYYY-MM-DD`. */
+function formatEpochDate(value: number): string | null {
+  if (!Number.isFinite(value)) return null;
+  const ms = Math.abs(value) >= 1e12 ? value : value * 1000;
+  const date = new Date(ms);
+  if (Number.isNaN(date.getTime())) return null;
+  const year = date.getUTCFullYear();
+  if (year < 1990 || year > 2200) return null;
+  return date.toISOString().slice(0, 10);
 }
 
 function humanLabel(key: string): string {
@@ -1055,7 +1182,10 @@ export interface PortfolioDataQuality {
 // "reference" is still detected, but only on the CONTROLLED enum fields
 // (status / data_mode / return_data_state) below, where the value space is
 // fixed and unambiguous.
-const SYNTHETIC_SOURCE_RE = /model|template|synthetic|sample/i;
+// "placeholder" is unambiguous: BTFW's no-run payload ships
+// `sources:["placeholder_no_backtest_run"]` (plus `status:"placeholder"`),
+// which previously escaped every pattern and rendered badge-less.
+const SYNTHETIC_SOURCE_RE = /model|template|synthetic|sample|placeholder/i;
 
 /**
  * Classify a portfolio payload as live / modeled / sample / degraded by
@@ -1067,8 +1197,9 @@ const SYNTHETIC_SOURCE_RE = /model|template|synthetic|sample/i;
  *   - `source_mode` containing model/reference/template
  *   - `return_data_state` ("synthetic_fallback")
  *   - `fallback === true` / `fallback_reason`
- *   - `metadata.degraded` / `metadata.fallback`
- *   - any free-text `sources[]` entry matching /model|template|synthetic|sample/i
+ *   - `metadata.degraded` / `metadata.fallback` / `metadata.live === false`
+ *   - `is_placeholder === true` or a status/source containing "placeholder"
+ *   - any free-text `sources[]` entry matching /model|template|synthetic|sample|placeholder/i
  *     (NOT "reference" — ambiguous in provider names; only the controlled
  *     `status`/`data_mode`/`return_data_state` enums detect "reference")
  *
@@ -1088,13 +1219,20 @@ export function portfolioDataMode(
   const fallback = payload?.fallback === true;
   const fallbackReason = typeof payload?.fallback_reason === "string" ? payload.fallback_reason : "";
   const metaDegraded = metadata?.degraded === true || metadata?.fallback === true;
+  // Explicit backend admission that the payload is not live (e.g. MGN's
+  // sample margin book declares metadata.live = false). Treated as modeled
+  // unless the status already says the provider is unavailable — that case
+  // is "degraded" (partial live), not a model.
+  const metaNotLive = metadata?.live === false;
+  const isPlaceholder = payload?.is_placeholder === true;
   const syntheticSource = (sources ?? []).find((s) => SYNTHETIC_SOURCE_RE.test(s));
 
-  // Explicit sample / template wins as "sample".
+  // Explicit sample / template / placeholder wins as "sample".
   const sampleSignal =
-    /sample|template/.test(sourceMode) ||
-    /sample|template/.test(status) ||
-    (syntheticSource ? /sample|template/i.test(syntheticSource) : false);
+    isPlaceholder ||
+    /sample|template|placeholder/.test(sourceMode) ||
+    /sample|template|placeholder/.test(status) ||
+    (syntheticSource ? /sample|template|placeholder/i.test(syntheticSource) : false);
   if (sampleSignal) {
     return {
       mode: "sample",
@@ -1110,6 +1248,7 @@ export function portfolioDataMode(
     status === "reference" ||
     status === "modeled" ||
     fallback ||
+    (metaNotLive && status !== "provider_unavailable") ||
     Boolean(syntheticSource);
   if (modeledSignal) {
     return {

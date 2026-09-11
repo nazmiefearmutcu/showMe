@@ -9,7 +9,7 @@
  * `reference_model` the pane says the spot is a labelled reference level,
  * NOT a live quote, and surfaces provider warnings verbatim.
  */
-import { useMemo, type CSSProperties } from "react";
+import { useEffect, useMemo, type CSSProperties } from "react";
 import {
   DataGrid,
   type DataGridColumn,
@@ -25,6 +25,7 @@ import {
   StatusSection,
 } from "@/design-system";
 import { useFunction } from "@/lib/useFunction";
+import { useVisibilityTick } from "@/lib/useVisibilityTick";
 import {
   FunctionControlGroup,
   LoadStatePill,
@@ -85,6 +86,8 @@ const DAYS_OPTIONS = [
 ] as const;
 const DAYS_IDS = DAYS_OPTIONS.map((o) => o.value);
 
+const REFRESH_MS = 30_000;
+
 export function FXIPPane({ code, symbol }: FunctionPaneProps) {
   const [pair, setPair] = usePersistentOption<string>(
     "showme.fxip.pair",
@@ -97,11 +100,20 @@ export function FXIPPane({ code, symbol }: FunctionPaneProps) {
     90,
   );
   const effectivePair = symbol || pair;
+  // FX spot is quote-live: poll the portal on the visibility tick without
+  // touching the fetch params (a changing key would re-key useFunction and
+  // flash the skeleton on every poll — canonical TECH/GLCO pattern).
+  const tick = useVisibilityTick(REFRESH_MS);
   const { state, data, error, refetch } = useFunction<FXIPData>({
     code,
     symbol: effectivePair,
     params: { days },
   });
+  useEffect(() => {
+    if (tick === 0) return;
+    refetch();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- tick is the trigger
+  }, [tick]);
 
   const payload = data?.data;
   const status = payload?.status ?? "—";
@@ -132,7 +144,7 @@ export function FXIPPane({ code, symbol }: FunctionPaneProps) {
         numeric: true,
         width: 140,
         render: (r) => (
-          <span style={monoPrimaryStyle}>{fmtValue(r.value)}</span>
+          <span style={monoPrimaryStyle}>{fmtRowValue(r)}</span>
         ),
       },
       {
@@ -341,10 +353,24 @@ function fmtSignedPct(v: number): string {
   return `${v >= 0 ? "+" : ""}${v.toFixed(3)}%`;
 }
 
-function fmtValue(v: number | string | null | undefined): string {
-  if (v == null) return "—";
-  if (typeof v === "number") return Number.isFinite(v) ? String(v) : "—";
-  return v;
+/**
+ * Rate-unit rows ship decimals (0.045 base rate, 0.01 carry) while the KPI
+ * ribbon shows the same inputs as percents. Render decimal-annual rows in
+ * percent units so the table and the cards agree; the carry is signed like
+ * the KPI (quote rate − base rate).
+ */
+function fmtRowValue(r: FXIPMetricRow): string {
+  const v = r.value;
+  if (typeof v === "string") return v;
+  if (v == null || !Number.isFinite(v)) return "—";
+  if (r.unit === "decimal annual") {
+    const pct = v * 100;
+    if (r.metric === "carry_annualized") {
+      return `${pct >= 0 ? "+" : ""}${pct.toFixed(3)}%`;
+    }
+    return `${pct.toFixed(3)}%`;
+  }
+  return String(v);
 }
 
 /* ── styles ────────────────────────────────────────────────────────── */

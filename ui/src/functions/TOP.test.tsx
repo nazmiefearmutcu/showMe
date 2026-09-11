@@ -20,7 +20,7 @@
  *   A3 — the source link + symbol buttons carry aria-labels.
  *   Display — loading shows a Skeleton; empty + error states render.
  */
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const useFunctionMock = vi.fn();
@@ -213,14 +213,44 @@ describe("TOP honesty", () => {
     expect(screen.getByText(/VF · OK · DEMO/i)).toBeTruthy();
   });
 
-  it("H2 — header sort label reflects importance-then-recency, not 'recent first'", () => {
+  it("H2 — header sort label matches the REAL ordering: newest first", () => {
     useFunctionMock.mockReturnValue(okEnvelope([ARTICLE_FIXTURE]));
     render(<TOPPane code="TOP" />);
     const sort = screen.getByTestId("top-sort-label");
-    expect(sort.textContent).toMatch(/IMPORTANCE/);
-    expect(sort.textContent).not.toMatch(/RECENT FIRST/i);
-    // Tooltip discloses the composite ranking (importance, then publish time).
-    expect(sort.getAttribute("title")).toMatch(/importance/i);
+    // AUDIT A1 [M]: the tape is sorted by published_at DESC (client + backend
+    // pipeline), so the label must not claim an importance-driven order.
+    expect(sort.textContent).toMatch(/NEWEST FIRST/);
+    expect(sort.textContent).not.toMatch(/IMPORTANCE/);
+    expect(sort.getAttribute("title")).toMatch(/newest first/i);
+    // Importance is still surfaced per headline, never as the sort order.
+    expect(sort.getAttribute("title")).toMatch(/importance score/i);
+  });
+
+  it("M — keeps the poll tick OUT of fetch params and refetches on tick (no skeleton wipe)", async () => {
+    const refetch = vi.fn();
+    useFunctionMock.mockReturnValue({
+      state: "ok" as const,
+      refetch,
+      error: undefined,
+      data: {
+        data: { items: [ARTICLE_FIXTURE] },
+        sources: ["rss"],
+        warnings: [],
+        elapsed_ms: 12,
+      },
+    });
+    render(<TOPPane code="TOP" />);
+    // The canonical refetch pattern requires tick to never appear in params —
+    // a tick in params fingerprints as a new load and wipes the tape.
+    const firstCall = useFunctionMock.mock.calls.at(-1)?.[0] as {
+      params: Record<string, unknown>;
+    };
+    expect(firstCall.params).not.toHaveProperty("tick");
+    // The 60s visibility tick drives refetch() instead.
+    await act(async () => {
+      vi.advanceTimersByTime(60_000);
+    });
+    expect(refetch).toHaveBeenCalled();
   });
 });
 

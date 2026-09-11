@@ -9,7 +9,7 @@
  *   - The "this is a public proxy, not a wallet-label transfer feed"
  *     caveat so the user never mistakes proxy rows for a paid feed.
  */
-import { useEffect, useMemo, type CSSProperties } from "react";
+import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import {
   DataGrid,
   type DataGridColumn,
@@ -114,7 +114,21 @@ export function WHALPane({ code, symbol }: FunctionPaneProps) {
   // Bundle D / PERF-04. Visibility-aware poll.
   const tick = useVisibilityTick(REFRESH_MS);
 
-  const resolvedSymbol = symbol || SAMPLES[market];
+  // Tab/symbol consistency: a symbol bound under one market (e.g. BTCUSDT)
+  // must NOT leak into another market tab (the Equity tab would query Yahoo
+  // for "BTCUSDT" and surface a misleading empty table). Remember which
+  // market the bound symbol was selected under; when the user switches tabs
+  // without picking a new security, fall back to that market's sample.
+  const [bound, setBound] = useState<{ symbol: string; market: MarketId } | null>(
+    symbol ? { symbol, market } : null,
+  );
+  if ((bound?.symbol ?? "") !== symbol) {
+    // A new security was picked (render-phase rebind — no effect round-trip).
+    setBound(symbol ? { symbol, market } : null);
+  }
+  const symbolBoundHere =
+    !!symbol && bound !== null && bound.symbol === symbol && bound.market === market;
+  const resolvedSymbol = symbolBoundHere ? symbol : SAMPLES[market];
   const threshold = Number(thresholdK) * 1000;
 
   // UA-HIGH-16: previously `tick` was inside the `params` object — `useFunction`

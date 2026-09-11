@@ -17,6 +17,8 @@
  */
 import { useMemo, type CSSProperties } from "react";
 import {
+  DataGrid,
+  type DataGridColumn,
   Empty,
   Pane,
   PaneBody,
@@ -29,6 +31,12 @@ import {
   StatusDivider,
   StatusSection,
 } from "@/design-system";
+import {
+  buildGridCsv,
+  downloadGridCsv,
+  gridCsvFilename,
+  type GridCsvColumn,
+} from "@/design-system/grid-csv";
 import { useFunction } from "@/lib/useFunction";
 import { defaultSymbolForFunction } from "@/lib/symbols";
 import {
@@ -138,6 +146,75 @@ export function DARKPane({ code, symbol }: FunctionPaneProps) {
   const latestWeek =
     payload?.cards?.as_of ?? payload?.summary?.latest_week ?? byWeek[0]?.weekStartDate ?? null;
 
+  const columns = useMemo<DataGridColumn<DarkVenueRow>[]>(
+    () => [
+      {
+        key: "venue",
+        header: "Venue / MPID",
+        width: 150,
+        sortable: true,
+        render: (v) => <span style={monoStrongStyle}>{v.venue ?? "—"}</span>,
+      },
+      {
+        key: "ats_share_volume",
+        header: "ATS volume",
+        numeric: true,
+        width: 130,
+        sortable: true,
+        render: (v) => <span style={monoMutedStyle}>{fmtCompact(v.ats_share_volume)}</span>,
+      },
+      {
+        key: "ats_trade_count",
+        header: "Trades",
+        numeric: true,
+        width: 110,
+        sortable: true,
+        render: (v) => <span style={monoMutedStyle}>{fmtCompact(v.ats_trade_count)}</span>,
+      },
+      {
+        key: "share_of_ats_pct",
+        header: "Share of ATS",
+        numeric: true,
+        width: 150,
+        sortable: true,
+        render: (v) => (
+          <span style={shareCellStyle}>
+            <span
+              aria-hidden
+              style={{ ...tintBarStyle, ...tintFor(v.share_of_ats_pct) }}
+            />
+            {fmtPct(v.share_of_ats_pct)}
+          </span>
+        ),
+      },
+      {
+        key: "dark_pool_pct",
+        header: "Dark % of total",
+        numeric: true,
+        width: 140,
+        sortable: true,
+        render: (v) => <span style={monoMutedStyle}>{fmtPct(v.dark_pool_pct)}</span>,
+      },
+    ],
+    [],
+  );
+
+  const csvColumns = useMemo<GridCsvColumn<DarkVenueRow>[]>(
+    () => [
+      { key: "venue", header: "Venue / MPID", value: (v) => v.venue ?? "" },
+      { key: "ats_share_volume", header: "ATS volume", value: (v) => v.ats_share_volume ?? "" },
+      { key: "ats_trade_count", header: "Trades", value: (v) => v.ats_trade_count ?? "" },
+      { key: "share_of_ats_pct", header: "Share of ATS (%)", value: (v) => v.share_of_ats_pct ?? "" },
+      { key: "dark_pool_pct", header: "Dark % of total", value: (v) => v.dark_pool_pct ?? "" },
+    ],
+    [],
+  );
+
+  const exportCsv = () => {
+    const csv = buildGridCsv(csvColumns, venues);
+    downloadGridCsv(gridCsvFilename(`dark-${effectiveSymbol || "venues"}`), csv);
+  };
+
   const body = !effectiveSymbol ? (
     <Empty title="Pick a symbol" body="DARK needs an equity / ETF ticker." icon="⌖" />
   ) : state === "loading" || state === "idle" ? (
@@ -226,39 +303,16 @@ export function DARKPane({ code, symbol }: FunctionPaneProps) {
       </section>
 
       <section style={tableWrapStyle} aria-label="Off-exchange volume by venue">
-        <table style={tableStyle} aria-label="Venue ranking">
-          <thead>
-            <tr>
-              {["Venue / MPID", "ATS volume", "Trades", "Share of ATS", "Dark % of total"].map((h, i) => (
-                <th key={h} style={{ ...thStyle, textAlign: i >= 1 && i <= 3 ? "right" : "left" }}>
-                  {h}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {venues.map((v, i) => (
-              <tr
-                key={`${v.venue ?? "venue"}-${i}`}
-                aria-label={`Venue ${v.venue ?? "—"}: ATS volume ${fmtCompact(v.ats_share_volume)}, ${fmtPct(v.share_of_ats_pct)} of ATS`}
-              >
-                <td style={{ ...tdStyle, ...monoStrongStyle }}>{v.venue ?? "—"}</td>
-                <td style={tdNumStyle}>{fmtCompact(v.ats_share_volume)}</td>
-                <td style={tdNumStyle}>{fmtCompact(v.ats_trade_count)}</td>
-                <td style={tdNumStyle}>
-                  <span style={shareCellStyle}>
-                    <span
-                      aria-hidden
-                      style={{ ...tintBarStyle, ...tintFor(v.share_of_ats_pct) }}
-                    />
-                    {fmtPct(v.share_of_ats_pct)}
-                  </span>
-                </td>
-                <td style={tdNumStyle}>{fmtPct(v.dark_pool_pct)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <DataGrid
+          columns={columns}
+          rows={venues}
+          rowKey={(v, i) => `${v.venue ?? "venue"}-${i}`}
+          density="compact"
+          ariaLabel="Venue ranking"
+          defaultSortKey="ats_share_volume"
+          defaultSortDir="descending"
+          keyboardNavigable
+        />
         <div className="u-text-mute" style={noteTextStyle}>
           dark % of total shown only when the yfinance weekly total volume
           joined for that week · source {venues[0]?.source_mode ?? "—"}
@@ -286,6 +340,16 @@ export function DARKPane({ code, symbol }: FunctionPaneProps) {
                 onChange={setWeeks}
                 title="Weeks window"
               />
+              <button
+                type="button"
+                className="btn"
+                onClick={exportCsv}
+                disabled={venues.length === 0}
+                title="Download CSV"
+                aria-label={`Download ${venues.length} venues as CSV`}
+              >
+                CSV
+              </button>
               <LoadStatePill state={state} status={status} />
               <RefreshButton
                 loading={state === "loading"}
@@ -384,36 +448,6 @@ const sparkHeadStyle: CSSProperties = {
 
 const tableWrapStyle: CSSProperties = { minWidth: 0 };
 
-const tableStyle: CSSProperties = {
-  width: "100%",
-  borderCollapse: "collapse",
-  tableLayout: "fixed",
-  fontFamily: "JetBrains Mono, monospace",
-  fontVariantNumeric: "tabular-nums",
-  fontSize: "var(--font-size-sm)",
-};
-
-const thStyle: CSSProperties = {
-  padding: "4px 8px",
-  color: "var(--text-mute)",
-  fontWeight: 500,
-  letterSpacing: "0.06em",
-  fontSize: "var(--font-size-xs)",
-  textTransform: "uppercase",
-  borderBottom: "1px solid var(--border-subtle)",
-};
-
-const tdStyle: CSSProperties = {
-  padding: "3px 8px",
-  color: "var(--text-primary)",
-  borderBottom: "1px solid var(--border-subtle)",
-};
-
-const tdNumStyle: CSSProperties = {
-  ...tdStyle,
-  textAlign: "right",
-};
-
 const shareCellStyle: CSSProperties = {
   display: "inline-flex",
   alignItems: "center",
@@ -440,4 +474,10 @@ const monoStrongStyle: CSSProperties = {
   fontVariantNumeric: "tabular-nums",
   color: "var(--text-primary)",
   fontWeight: 600,
+};
+
+const monoMutedStyle: CSSProperties = {
+  fontFamily: "JetBrains Mono, monospace",
+  fontVariantNumeric: "tabular-nums",
+  color: "var(--text-secondary)",
 };

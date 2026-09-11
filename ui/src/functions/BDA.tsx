@@ -30,28 +30,31 @@ const HELP_CAPTION =
 
 type NoteTone = "warn" | "info" | "negative" | "neutral";
 
-/** Classify a backend note string into a severity tone for honest styling. */
+/** Classify a backend note string into a severity tone for honest styling.
+ *
+ * The backend emits ENGLISH notes ("catalog validation failed", "… is not
+ * supported — ignored", "defaulted to 30/70"), so the classifier keys on
+ * English tokens. A regression test pins each class so a translated note can
+ * never silently downgrade a warning to neutral. */
 function classifyNote(note: string): NoteTone {
   const low = note.toLowerCase();
   if (
-    low.includes("başarısız") ||
-    low.includes("hata") ||
+    low.includes("failed") ||
     low.includes("validation") ||
-    low.includes("katalog")
+    low.includes("catalog")
   ) {
     return "negative";
   }
   if (
     note.includes("⚠") ||
-    low.includes("yok sayıl") ||
-    low.includes("desteklenm") ||
-    low.includes("uyarı") ||
     low.includes("ignored") ||
-    low.includes("unsupported")
+    low.includes("not supported") ||
+    low.includes("unsupported") ||
+    low.includes("was used")
   ) {
     return "warn";
   }
-  if (low.includes("varsayılan") || low.includes("default")) {
+  if (low.includes("default")) {
     return "info";
   }
   return "neutral";
@@ -150,6 +153,7 @@ export function BDAPane() {
           <button onClick={() => generate(false)}
                   data-testid="bda-generate-button"
                   aria-busy={loadingGenerate}
+                  aria-label={loadingGenerate ? "Generating…" : "Suggest strategy"}
                   title={generateTitle}
                   disabled={!hasText || loadingGenerate}>
             {loadingGenerate ? "…" : "Suggest strategy"}
@@ -157,6 +161,7 @@ export function BDAPane() {
           <button onClick={() => generate(true)}
                   data-testid="bda-generate-save-button"
                   aria-busy={loadingGenerate}
+                  aria-label={loadingGenerate ? "Generating…" : "Suggest + save strategy"}
                   title={generateTitle}
                   disabled={!hasText || loadingGenerate}
                   style={{ background: "var(--positive)", color: "var(--accent-on)" }}>
@@ -263,6 +268,7 @@ export function BDAPane() {
           <button onClick={() => selectedStrategy && explainStrategy(selectedStrategy)}
                   data-testid="bda-explain-button"
                   aria-busy={loadingExplain}
+                  aria-label={loadingExplain ? "Loading explanation…" : "Explain"}
                   title={explainTitle}
                   disabled={!selectedStrategy || loadingExplain}>
             {loadingExplain ? "…" : "Explain"}

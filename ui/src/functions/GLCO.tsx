@@ -91,7 +91,8 @@ export function GLCOPane({ code }: FunctionPaneProps) {
   useEffect(() => {
     if (tick === 0) return;
     refetch();
-  }, [tick, refetch]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- tick is the trigger
+  }, [tick]);
   const payload = useMemo(
     () => (isRecord(data?.data) ? data?.data : null),
     [data],

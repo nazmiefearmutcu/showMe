@@ -177,6 +177,23 @@ export function XSENPane({ code, symbol }: FunctionPaneProps) {
   );
   const sentimentOrder = useMemo(() => orderSentiments(Object.keys(examples)), [examples]);
 
+  // AUDIT A7 [H]: pick the language-appropriate summary. The backend puts the
+  // requested-language prose in `summary` (English when lang starts with "en")
+  // and always echoes `summary_tr`; `summary_en` is the English variant. The
+  // previous pane hard-rendered `summary_tr`, so every English run showed a
+  // Turkish paragraph. `xai.ts` does not type these keys yet, so read them via
+  // a local structural view (wire already carries them).
+  const summaryText = useMemo(() => {
+    if (!data) return undefined;
+    const withSummaries = data as XAnalysisResponse & {
+      summary?: string;
+      summary_en?: string;
+    };
+    const wantsEnglish = lang.toLowerCase().startsWith("en");
+    if (wantsEnglish) return withSummaries.summary ?? withSummaries.summary_en;
+    return withSummaries.summary_tr ?? withSummaries.summary;
+  }, [data, lang]);
+
   // Active scrape source label (Brave -> Nitter -> Jina order).
   // Bug #10e: When the model load times out the backend returns a partial
   // {ok:false, model_loaded:false} payload with no `scraper` key. The
@@ -229,7 +246,7 @@ export function XSENPane({ code, symbol }: FunctionPaneProps) {
         <PaneHeader
           code={code}
           title="X social sentiment"
-          subtitle={`Yerel RoBERTa · sentiment + emotion + topic · query "${query || "—"}" · ${data?.post_count ?? 0} posts`}
+          subtitle={`Local RoBERTa · sentiment + emotion + topic · query "${query || "—"}" · ${data?.post_count ?? 0} posts`}
           help={<XSENHelp health={health} />}
           trailing={
             <div style={toolbar}>
@@ -515,8 +532,14 @@ export function XSENPane({ code, symbol }: FunctionPaneProps) {
                   toneFor={() => "neutral"}
                 />
               </div>
-              {/* Summary prose */}
-              {data.summary_tr ? <SummaryProse text={data.summary_tr} /> : null}
+              {/* Summary prose — AUDIT A7 [H]: the backend returns BOTH
+                  `summary_tr` and the language-appropriate `summary`
+                  (`summary_en` when lang starts with "en"). The pane used to
+                  hard-render `summary_tr`, so every English run showed a
+                  Turkish paragraph. Render `summary` for English and only
+                  fall back to Turkish when the requested language is not
+                  English. */}
+              {summaryText ? <SummaryProse text={summaryText} /> : null}
               {/* Tweet sample feed */}
               <ExamplesSection
                 examples={examples}

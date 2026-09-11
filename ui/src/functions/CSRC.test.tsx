@@ -65,6 +65,7 @@ function okPayload() {
             contract_unit: "1,000 barrels",
             volume: 290000,
             open_interest: 310000,
+            open_interest_state: "reference",
             last: 91.48,
             change_pct: 0.42,
             quote_state: "live",
@@ -77,6 +78,7 @@ function okPayload() {
             contract_unit: "100 troy ounces",
             volume: 145000,
             open_interest: 480000,
+            open_interest_state: "reference",
             last: null,
             change_pct: null,
             quote_state: "reference",
@@ -89,6 +91,7 @@ function okPayload() {
             contract_unit: "5,000 bushels",
             volume: 205000,
             open_interest: 620000,
+            open_interest_state: "reference",
             last: 442.5,
             change_pct: -1.2,
             quote_state: "live",
@@ -166,6 +169,25 @@ describe("CSRC pane — data honesty", () => {
     // The reference row has no price — the Last cell must show the
     // missing-value dash, never a fabricated number.
     expect(screen.getByText(/1 reference row/)).toBeInTheDocument();
+  });
+
+  it("marks open interest as a reference figure even on live-quoted rows", () => {
+    setMockFn({ state: "ok", ...okPayload() });
+    render(<CSRCPane code="CSRC" />);
+    // The column header itself carries the reference label...
+    expect(screen.getByText("OI (ref)")).toBeInTheDocument();
+    // ...and every OI cell explains the curated provenance on hover.
+    expect(screen.getAllByTitle(/reference open interest/i).length).toBe(3);
+  });
+});
+
+describe("CSRC pane — sorting honesty", () => {
+  it("sinks rows with a null sort value to the end (not treated as flat 0)", () => {
+    window.localStorage.setItem("showme.csrc.sort", "change_pct");
+    setMockFn({ state: "ok", ...okPayload() });
+    render(<CSRCPane code="CSRC" />);
+    const symbols = screen.getAllByText(/=F$/).map((el) => el.textContent ?? "");
+    expect(symbols).toEqual(["CL=F", "ZC=F", "GC=F"]);
   });
 });
 

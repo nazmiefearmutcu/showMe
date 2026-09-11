@@ -74,3 +74,106 @@ describe("EQS pane — KPI sparkline honesty", () => {
     );
   });
 });
+
+describe("EQS pane — result honesty (F6)", () => {
+  it("renders a true empty state on zero matches (no fabricated head(3) rows)", async () => {
+    runFunctionMock.mockResolvedValue({
+      code: "EQS",
+      data: { status: "no_matches", rows: [], query: 'symbol = "ZZZZ"', matched: 0, scanned: 5 },
+      metadata: { matched: 0, scanned: 5 },
+      sources: ["equity_screener_model"],
+      elapsed_ms: 3,
+    });
+    const { container } = render(<EQSPane code="EQS" />);
+    fireEvent.click(screen.getByRole("button", { name: /^run$/i }));
+
+    expect(
+      await screen.findByText(/No matches with current filters/i),
+    ).toBeInTheDocument();
+    // The MATCHED pill tells the truth and no result table is rendered.
+    expect(screen.getByText(/MATCHED 0 \/ 5/i)).toBeInTheDocument();
+    expect(container.querySelector("table")).toBeNull();
+  });
+
+  it("surfaces dsl_parse_error with the parser message verbatim", async () => {
+    runFunctionMock.mockResolvedValue({
+      code: "EQS",
+      data: {
+        rows: [],
+        status: "dsl_parse_error",
+        error: "Invalid query segment at position 0: expected 'field operator value'",
+        query: "?? broken",
+        matched: 0,
+        scanned: 5,
+      },
+      metadata: { matched: 0, scanned: 5 },
+      sources: [],
+      elapsed_ms: 2,
+    });
+    render(<EQSPane code="EQS" />);
+    fireEvent.click(screen.getByRole("button", { name: /^run$/i }));
+
+    expect(await screen.findByText(/DSL parse error/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Invalid query segment at position 0/i),
+    ).toBeInTheDocument();
+  });
+
+  it("renders the backend's real universe label, not the requested one", async () => {
+    runFunctionMock.mockResolvedValue({
+      ...okResult(),
+      metadata: {
+        matched: 2,
+        scanned: 15,
+        universe: "MEGA15 (stub for SP500/NDX/DOW until constituents bundle)",
+        universe_size: 15,
+      },
+    });
+    render(<EQSPane code="EQS" />);
+    fireEvent.click(screen.getByRole("button", { name: /^run$/i }));
+
+    expect(
+      await screen.findAllByText(/MEGA15 \(stub for SP500\/NDX\/DOW/i),
+    ).not.toHaveLength(0);
+  });
+
+  it("shows a live-screen-unavailable empty state with the backend reason", async () => {
+    runFunctionMock.mockResolvedValue({
+      code: "EQS",
+      data: {
+        status: "provider_unavailable",
+        rows: [],
+        query: "marketCap > 0",
+        matched: 0,
+        scanned: 3,
+        reason:
+          "Live screen produced no symbol rows; the template stub is not substituted on the live path.",
+      },
+      metadata: { matched: 0, scanned: 3, fallback: true, live: false },
+      sources: [],
+      elapsed_ms: 4,
+    });
+    render(<EQSPane code="EQS" />);
+    fireEvent.click(screen.getByRole("button", { name: /^run$/i }));
+
+    expect(
+      await screen.findByText(/Live screen unavailable/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/template stub is not substituted/i),
+    ).toBeInTheDocument();
+  });
+
+  it("marks model-template rows with a visible model notice", async () => {
+    runFunctionMock.mockResolvedValue({
+      ...okResult(),
+      metadata: { matched: 2, scanned: 5, template: true, live: false },
+    });
+    render(<EQSPane code="EQS" />);
+    fireEvent.click(screen.getByRole("button", { name: /^run$/i }));
+
+    expect(await screen.findByTestId("eqs-model-notice")).toHaveTextContent(
+      /model template/i,
+    );
+  });
+});

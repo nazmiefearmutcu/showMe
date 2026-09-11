@@ -93,7 +93,11 @@ export function FRHPane({ code, symbol }: FunctionPaneProps) {
     symbol: symbol || undefined,
     params: {
       limit,
-      ...(mode === "live" ? { live: true } : {}),
+      // Template mode must send the explicit reference flag: the backend's
+      // default polarity treats an ABSENT live/reference param as live, so
+      // omitting it silently fetched live exchange data under the Template
+      // label. Live mode keeps the explicit live flag.
+      ...(mode === "live" ? { live: true } : { reference: true }),
     },
   });
 
@@ -181,7 +185,7 @@ export function FRHPane({ code, symbol }: FunctionPaneProps) {
             ...gridStyle,
             gridTemplateColumns: `minmax(110px, 1.2fr) repeat(${exchanges.length + 1}, minmax(84px, 1fr)) minmax(120px, 1.2fr)`,
           }}
-          role="grid"
+          role="table"
           aria-label="Funding rate heatmap"
         >
           <div style={rowGridStyle} role="row" aria-label="Funding rate columns">
@@ -310,7 +314,7 @@ function RateCell({
   const ratio = finite ? Math.min(1, Math.abs(value) / range) : 0;
   return (
     <div
-      role="gridcell"
+      role="cell"
       aria-label={ariaLabel}
       style={{
         ...cellStyle,

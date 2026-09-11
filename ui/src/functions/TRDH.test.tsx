@@ -34,6 +34,7 @@ interface MockFnState {
 }
 
 const mockFn: MockFnState = { state: "idle", data: undefined, error: null };
+const recordedCalls: Array<{ params?: Record<string, unknown> }> = [];
 
 function setMockFn(next: MockFnState) {
   mockFn.state = next.state;
@@ -42,12 +43,15 @@ function setMockFn(next: MockFnState) {
 }
 
 vi.mock("@/lib/useFunction", () => ({
-  useFunction: () => ({
-    state: mockFn.state,
-    data: mockFn.data,
-    error: mockFn.error,
-    refetch: vi.fn(),
-  }),
+  useFunction: (opts: { params?: Record<string, unknown> }) => {
+    recordedCalls.push(opts);
+    return {
+      state: mockFn.state,
+      data: mockFn.data,
+      error: mockFn.error,
+      refetch: vi.fn(),
+    };
+  },
 }));
 
 /* ── fixtures ──────────────────────────────────────────────────────── */
@@ -124,10 +128,25 @@ function boardPayload() {
 
 beforeEach(() => {
   localStorage.removeItem("showme.trdh.exchanges");
+  recordedCalls.length = 0;
   setMockFn({ state: "idle", data: undefined });
 });
 afterEach(() => {
   cleanup();
+});
+
+describe("TRDH pane — poll pattern (countdown refresh)", () => {
+  it("polls via visibility tick without putting tick into the fetch params", () => {
+    setMockFn(boardPayload());
+    render(<TRDHPane code="TRDH" />);
+    expect(recordedCalls.length).toBeGreaterThan(0);
+    for (const call of recordedCalls) {
+      // The tick is the refetch trigger, never a param — a tick-keyed fetch
+      // would wipe to the skeleton every poll.
+      expect(call.params ?? {}).not.toHaveProperty("tick");
+      expect(call.params).toEqual({ exchanges: expect.any(String) });
+    }
+  });
 });
 
 describe("TRDH pane — load states", () => {

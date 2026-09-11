@@ -10,7 +10,7 @@
  * agent bubble left with reasoning trace expandable), suggestion chips,
  * and a sticky composer at the bottom.
  */
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import {
   Card,
   CardBody,
@@ -35,6 +35,7 @@ import { useAbortableFetch } from "@/lib/useAbortableFetch";
 import { useWorkspace } from "@/lib/workspace";
 import { navigate } from "@/lib/router";
 import { formatCurrency } from "@/lib/format";
+import { sidecarFetch } from "@/lib/sidecar";
 import type { FunctionPaneProps } from "./registry-types";
 
 const SUGGESTION_CHIPS = [
@@ -55,7 +56,18 @@ interface ChatTurn {
   ts: number;
 }
 
-const COST_CAP_USD = 1.0;
+/**
+ * Real LLM budget ledger shape served by GET /api/llm/cost (backend
+ * server_routes/state.py:45-62). The pane's cost meter used to hardcode a
+ * $1.00 cap and only count THIS session's asks, so it could disagree with the
+ * env-overridable real cap and ignore spend from other callers (audit A8 M).
+ */
+interface LlmCostLedger {
+  today_usd: number;
+  cap_usd: number;
+  remaining_usd: number;
+  exhausted: boolean;
+}
 
 // HONESTY: the answer (narrative + highlights) is composed DETERMINISTICALLY
 // from real function outputs — it is NOT AI-written. Only the PLAN step may
@@ -84,6 +96,29 @@ export function ASKPane({ code }: FunctionPaneProps) {
   // Bundle D / ABORT-01. Aborts the in-flight `ask()` if the user navigates
   // away or fires another query before the previous one resolves.
   const askFetch = useAbortableFetch();
+
+  // Audit A8 M: the cost pill reads the REAL daily ledger (all callers, real
+  // env cap). When the ledger route is unreachable the pane degrades to an
+  // explicitly-labelled session-only cost — never a fabricated cap.
+  const [llmCost, setLlmCost] = useState<LlmCostLedger | null>(null);
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+  const reloadLlmCost = useCallback(async () => {
+    try {
+      const ledger = await sidecarFetch<LlmCostLedger>("/api/llm/cost");
+      if (mountedRef.current) setLlmCost(ledger);
+    } catch {
+      if (mountedRef.current) setLlmCost(null);
+    }
+  }, []);
+  useEffect(() => {
+    void reloadLlmCost();
+  }, [reloadLlmCost]);
 
   // Auto-scroll to bottom when thread grows
   useEffect(() => {
@@ -123,7 +158,9 @@ export function ASKPane({ code }: FunctionPaneProps) {
       // On the deterministic (rule-based) path this is genuinely $0.00 — no
       // fake minimum. We accumulate it for the session-total pill.
       const incr = Number.isFinite(r.cost_usd) ? Number(r.cost_usd) : 0;
-      setCostSpentUsd((prev) => Math.min(COST_CAP_USD, prev + Math.max(0, incr)));
+      setCostSpentUsd((prev) => prev + Math.max(0, incr));
+      // Refresh the real ledger after every completed ask.
+      void reloadLlmCost();
     } catch (err) {
       if (!askFetch.isMounted()) return;
       // Don't surface AbortError as a chat-bubble error — the user already
@@ -177,8 +214,17 @@ export function ASKPane({ code }: FunctionPaneProps) {
     return null;
   }, [thread]);
 
-  const costPct = Math.min(100, (costSpentUsd / COST_CAP_USD) * 100);
-  const costTone = costPct >= 90 ? "negative" : costPct >= 60 ? "warn" : "positive";
+  const ledgerPct =
+    llmCost && llmCost.cap_usd > 0
+      ? Math.min(100, (llmCost.today_usd / llmCost.cap_usd) * 100)
+      : 0;
+  const costTone = llmCost
+    ? llmCost.exhausted || ledgerPct >= 90
+      ? "negative"
+      : ledgerPct >= 60
+        ? "warn"
+        : "positive"
+    : "muted";
 
   const isEmpty = thread.length === 0;
 
@@ -202,10 +248,28 @@ export function ASKPane({ code }: FunctionPaneProps) {
               >
                 {modelLabel(lastResult)}
               </Pill>
-              <Pill tone={costTone} variant="soft" withDot={false}>
-                {formatCurrency(costSpentUsd, { fractionDigits: 4 })} /{" "}
-                {formatCurrency(COST_CAP_USD, { fractionDigits: 2 })}
-              </Pill>
+              {llmCost ? (
+                <Pill
+                  tone={costTone}
+                  variant="soft"
+                  withDot={false}
+                  aria-label={`LLM spend today ${formatCurrency(llmCost.today_usd, {
+                    fractionDigits: 4,
+                  })} of ${formatCurrency(llmCost.cap_usd, { fractionDigits: 2 })} daily cap`}
+                >
+                  {formatCurrency(llmCost.today_usd, { fractionDigits: 4 })} /{" "}
+                  {formatCurrency(llmCost.cap_usd, { fractionDigits: 2 })}
+                </Pill>
+              ) : (
+                <Pill
+                  tone="muted"
+                  variant="soft"
+                  withDot={false}
+                  aria-label="LLM ledger unavailable — showing this session's measured spend"
+                >
+                  session {formatCurrency(costSpentUsd, { fractionDigits: 4 })}
+                </Pill>
+              )}
               <Pill
                 tone={running ? "warn" : "muted"}
                 variant="soft"
@@ -226,14 +290,20 @@ export function ASKPane({ code }: FunctionPaneProps) {
           />
           <StatusDivider />
           <StatusSection
-            label="COST"
-            value={formatCurrency(costSpentUsd, { fractionDigits: 4 })}
+            label="LLM TODAY"
+            value={llmCost ? formatCurrency(llmCost.today_usd, { fractionDigits: 4 }) : "—"}
             tone={costTone}
           />
           <StatusDivider />
           <StatusSection
+            label="SESSION"
+            value={formatCurrency(costSpentUsd, { fractionDigits: 4 })}
+            tone="neutral"
+          />
+          <StatusDivider />
+          <StatusSection
             label="CAP"
-            value={formatCurrency(COST_CAP_USD, { fractionDigits: 2 })}
+            value={llmCost ? formatCurrency(llmCost.cap_usd, { fractionDigits: 2 }) : "—"}
             tone="muted"
           />
           <StatusDivider />
@@ -437,6 +507,9 @@ function ChatBubble({
   const r = turn.result;
   if (!r) return null;
   const llmPlanned = Boolean(r.was_llm_called && r.model_used);
+  // Audit A8 L: resolved once per turn — was recomputed per highlight and
+  // three more times in the reasoning trace.
+  const evidence = collectEvidence(r);
   return (
     <div style={agentRow}>
       {/* A3 — a blocking request resolves once, so a single polite
@@ -478,8 +551,7 @@ function ChatBubble({
         {r.highlights.length > 0 ? (
           <div style={highlightRow}>
             {r.highlights.map((h, i) => {
-              const ev = collectEvidence(r);
-              const cite = ev[i] ?? ev[0];
+              const cite = evidence[i] ?? evidence[0];
               return (
                 <HighlightWithCitation
                   key={`${h.label}-${i}`}
@@ -537,11 +609,11 @@ function ChatBubble({
             ) : null}
 
             {/* Evidence */}
-            {collectEvidence(r).length > 0 ? (
+            {evidence.length > 0 ? (
               <Card variant="elev-2" density="compact">
-                <CardHeader trailing={`${collectEvidence(r).length} refs`}>Evidence</CardHeader>
+                <CardHeader trailing={`${evidence.length} refs`}>Evidence</CardHeader>
                 <CardBody>
-                  <EvidenceTable evidence={collectEvidence(r)} onOpen={onOpen} />
+                  <EvidenceTable evidence={evidence} onOpen={onOpen} />
                 </CardBody>
               </Card>
             ) : null}

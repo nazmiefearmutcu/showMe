@@ -52,6 +52,10 @@ interface SpotRow {
   source?: string;
   source_mode?: string;
   as_of?: string | null;
+  /** EIA raw series fields — normalized to `last`/`as_of` on read so a
+   *  backend that still ships `value`/`period` can never silently drop rows. */
+  value?: number | string | null;
+  period?: string | null;
 }
 
 interface SpotHistoryPoint {
@@ -104,7 +108,10 @@ export function CommoditySpotPane({ code, symbol, title }: CommoditySpotPaneProp
 
   const payload = data?.data;
   const rows = useMemo(
-    () => (payload?.rows ?? []).filter((r) => r && typeof r.last === "number"),
+    () =>
+      (payload?.rows ?? [])
+        .map(normaliseSpotRow)
+        .filter((r): r is SpotRow => r !== null),
     [payload],
   );
   const closes = useMemo(
@@ -120,6 +127,9 @@ export function CommoditySpotPane({ code, symbol, title }: CommoditySpotPaneProp
   const isReferenceModel =
     sourceMode === "model" || status === "reference_model";
   const isProviderDown = status === "provider_unavailable";
+  // Honesty: "live" is earned by the backend's live_* source modes only
+  // (live_yfinance, live_eia, …). Model/fallback envelopes never claim it.
+  const isLive = status === "ok" && /^live_/.test(sourceMode);
 
   const primary = rows[0];
   const spread =
@@ -176,8 +186,8 @@ export function CommoditySpotPane({ code, symbol, title }: CommoditySpotPaneProp
             key={row.symbol ?? row.name}
             label={row.symbol ?? "Spot"}
             value={fmtPrice(row.last)}
-            caption={`${row.unit ?? ""} · ${fmtSigned(row.change_pct)} · ${fmtAsOf(row.as_of)}`}
-            tone={numOr(row.change_pct) >= 0 ? "positive" : "negative"}
+            caption={`${row.unit ?? ""} · ${fmtSignedPct(row.change_pct)} · ${fmtAsOf(row.as_of)}`}
+            tone={changeTone(row.change_pct)}
             trend={trendFor(closes)}
           />
         ))}
@@ -230,11 +240,17 @@ export function CommoditySpotPane({ code, symbol, title }: CommoditySpotPaneProp
                 {sourceMode === "live_yfinance" ? `${closes.length} pts` : sourceMode}
               </Pill>
               <Pill
-                tone={isReferenceModel || isProviderDown ? "warn" : "positive"}
+                tone={isReferenceModel || isProviderDown ? "warn" : isLive ? "positive" : "muted"}
                 variant="soft"
-                withDot={!isReferenceModel && !isProviderDown}
+                withDot={isLive}
               >
-                {isReferenceModel ? "reference model" : isProviderDown ? "provider down" : "live quote"}
+                {isReferenceModel
+                  ? "reference model"
+                  : isProviderDown
+                    ? "provider down"
+                    : isLive
+                      ? "live quote"
+                      : sourceMode}
               </Pill>
               <SegmentedControl
                 label="HISTORY"
@@ -353,8 +369,42 @@ function trendFor(
 
 /* ── formatting ────────────────────────────────────────────────────── */
 
-function numOr(v: number | null | undefined): number {
-  return typeof v === "number" && Number.isFinite(v) ? v : 0;
+/** Coerce numbers and numeric strings (EIA ships its `value` as either). */
+function toFiniteNumber(v: unknown): number | null {
+  if (typeof v === "number") return Number.isFinite(v) ? v : null;
+  if (typeof v === "string" && v.trim() !== "") {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
+/**
+ * Normalize one backend row to the shared SpotRow contract.
+ *
+ * The EIA tier ships `value`/`period` (backend `live_eia`); the yfinance tier
+ * ships `last`/`as_of`. Rows that carry neither are dropped rather than
+ * rendered as fake zeros — but a usable `value` row is always kept
+ * (audit A3-H: the old `last`-only filter dropped every EIA row silently).
+ */
+function normaliseSpotRow(raw: SpotRow | null | undefined): SpotRow | null {
+  if (!raw || typeof raw !== "object") return null;
+  const last = toFiniteNumber(raw.last) ?? toFiniteNumber(raw.value);
+  if (last === null) return null;
+  const asOf =
+    raw.as_of ??
+    (raw.period != null && String(raw.period).trim() !== ""
+      ? String(raw.period)
+      : null);
+  return { ...raw, last, as_of: asOf };
+}
+
+function changeTone(
+  v: number | null | undefined,
+): "positive" | "negative" | "neutral" {
+  const n = toFiniteNumber(v);
+  if (n === null) return "neutral";
+  return n >= 0 ? "positive" : "negative";
 }
 
 function fmtPrice(v: number | null | undefined): string {
@@ -370,6 +420,12 @@ function fmtPrice(v: number | null | undefined): string {
 function fmtSigned(v: number | null | undefined): string {
   if (v == null || !Number.isFinite(v)) return "—";
   return `${v >= 0 ? "+" : ""}${fmtPrice(v)}`;
+}
+
+/** Percent caption: `change_pct` is already a percent, so stamp the unit. */
+function fmtSignedPct(v: number | null | undefined): string {
+  const base = fmtSigned(v);
+  return base === "—" ? base : `${base}%`;
 }
 
 function fmtCompact(v: number | null | undefined): string {

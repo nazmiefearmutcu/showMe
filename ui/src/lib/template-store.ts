@@ -39,6 +39,12 @@ interface TemplateStoreShape {
    */
   instantiating: boolean;
   error: string | null;
+  /**
+   * Audit A10 TMPL L: dedicated message for a failed instantiate, kept apart
+   * from the catalog-load `error` so a stale catalog failure can never
+   * masquerade as an instantiate failure (and vice-versa).
+   */
+  instantiateError: string | null;
 
   loadCatalog: () => Promise<void>;
   setSelected: (id: string | null) => void;
@@ -52,6 +58,7 @@ export const useTemplateStore = create<TemplateStoreShape>((set, get) => ({
   loading: false,
   instantiating: false,
   error: null,
+  instantiateError: null,
 
   loadCatalog: async () => {
     set({ loading: true, error: null });
@@ -70,7 +77,7 @@ export const useTemplateStore = create<TemplateStoreShape>((set, get) => ({
   instantiate: async (id, name, symbol) => {
     // Round 24 CRITICAL — see `instantiating` field docstring.
     if (get().instantiating) return null;
-    set({ instantiating: true });
+    set({ instantiating: true, instantiateError: null });
     try {
       const result = await sidecarFetch<InstantiateResult>(
         `/api/templates/${id}/instantiate`,
@@ -92,7 +99,10 @@ export const useTemplateStore = create<TemplateStoreShape>((set, get) => ({
       }
       return result;
     } catch (e) {
-      set({ error: e instanceof Error ? e.message : String(e) });
+      const message = e instanceof Error ? e.message : String(e);
+      // Keep `error` for legacy callers, but the pane reads the dedicated
+      // `instantiateError` so a catalog-load failure can't leak into the modal.
+      set({ error: message, instantiateError: message });
       return null;
     } finally {
       set({ instantiating: false });

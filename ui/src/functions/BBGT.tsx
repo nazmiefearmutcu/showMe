@@ -93,6 +93,7 @@ interface BBGTData {
   status?: string;
   broker?: string | null;
   submit?: boolean;
+  paper_mode?: boolean;
   broker_available?: boolean;
   symbol?: string;
   asset_class?: string;
@@ -180,6 +181,11 @@ export function BBGTPane({ code }: FunctionPaneProps) {
         type: orderType,
         tif,
         submit,
+        // F9 [C]: the engine now enforces the manifest's paper_mode guard —
+        // submit=true is ignored unless paper_mode is explicitly false.
+        // Preview calls stay explicitly paper; the confirm-gated live button
+        // is the ONLY call site that passes the explicit live arm.
+        paper_mode: !submit,
       };
       if (orderType === "LIMIT" && priceNumber != null) {
         params.price = priceNumber;
@@ -215,7 +221,11 @@ export function BBGTPane({ code }: FunctionPaneProps) {
   const status = payload?.status ?? result?.status;
   const broker = payload?.broker ?? "—";
   const brokerAvailable = payload?.broker_available === true;
-  const live = lastSubmit && status === "filled";
+  // F9 [H]: the backend now returns status "submitted" for a real broker
+  // acceptance (fills arrive later via AIM) — treat it as a live success so
+  // the previously unreachable filled/submitted state renders honestly.
+  const live = lastSubmit && (status === "submitted" || status === "filled");
+  const liveLabel = live ? (status === "filled" ? "filled" : "submitted") : "preview";
   const state: "idle" | "loading" | "ok" | "error" = running
     ? "loading"
     : error
@@ -232,7 +242,7 @@ export function BBGTPane({ code }: FunctionPaneProps) {
           title="Multi-Asset Trade Ticket"
           subtitle={
             trimmedSymbol
-              ? `${trimmedSymbol} · ${assetClass.toLowerCase()} · ${live ? "filled" : "preview"}`
+              ? `${trimmedSymbol} · ${assetClass.toLowerCase()} · ${liveLabel}`
               : "multi-asset ticket"
           }
           trailing={
@@ -386,7 +396,13 @@ export function BBGTPane({ code }: FunctionPaneProps) {
           <StatusSection
             label="status"
             value={String(status ?? state)}
-            tone={status === "filled" ? "positive" : status === "preview" ? "neutral" : "warn"}
+            tone={
+              status === "submitted" || status === "filled"
+                ? "positive"
+                : status === "preview"
+                  ? "neutral"
+                  : "warn"
+            }
           />
           <StatusDivider />
           <StatusSection label="asset" value={payload?.asset_class ?? assetClass} />
@@ -454,10 +470,16 @@ function PreviewView({
   const status = p?.status ?? "—";
   const nextActions = Array.isArray(p?.next_actions) ? p.next_actions : [];
   const brokerAvailable = p?.broker_available === true;
+  const isLiveResult = lastSubmit && (status === "submitted" || status === "filled");
   return (
     <section style={previewCardStyle} aria-label="BBGT ticket preview">
       <span style={sectionTitleStyle}>
-        Order preview {lastSubmit ? "· LIVE" : "· paper"}
+        {isLiveResult
+          ? status === "filled"
+            ? "Order filled"
+            : "Order submitted"
+          : "Order preview"}{" "}
+        {lastSubmit ? "· LIVE" : "· paper"}
       </span>
       <div style={quoteNoteStyle} role="note" aria-label="BBGT quote honesty">
         No market data is attached to this ticket. Reference or indicative
@@ -530,7 +552,7 @@ function PreviewView({
           value={
             <Pill
               tone={
-                status === "filled"
+                status === "submitted" || status === "filled"
                   ? "positive"
                   : status === "preview"
                     ? "accent"

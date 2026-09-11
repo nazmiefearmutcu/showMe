@@ -81,4 +81,77 @@ describe("bots-supervision-store", () => {
     expect(s.stats.live).toBe(0);
     expect(s.stats.signals_today).toBe(0);
   });
+
+  // ─── F10 (audit A10) — authoritative signal count / truncation ───────
+  it("sums per_bot_signal_count and flags feed truncation", async () => {
+    mock.mockResolvedValueOnce({ records: [
+      { id: "a", strategy_id: "s", credential_id: "c", exchange_id: "binance",
+        symbol: "BTC/USDT", timeframe: "1h", mode: "shadow", enabled: true,
+        created_at: "", updated_at: "" },
+      { id: "b", strategy_id: "s", credential_id: "c", exchange_id: "binance",
+        symbol: "ETH/USDT", timeframe: "1h", mode: "shadow", enabled: true,
+        created_at: "", updated_at: "" },
+    ] });
+    const todayTs = FROZEN_NOW.toISOString();
+    mock.mockResolvedValueOnce({
+      generated_at: todayTs,
+      signals: [
+        { bar_index: 1, bar_time: todayTs, kind: "entry",
+          price: 100, action: "shadow", timestamp: todayTs,
+          bot_id: "a", bot_symbol: "BTC/USDT", bot_strategy_id: "s",
+          bot_exchange_id: "binance", bot_mode: "shadow" },
+      ],
+      per_bot_signal_count: { a: 80, b: 57 },
+    });
+    await useBotsSupervisionStore.getState().loadAll();
+    const s = useBotsSupervisionStore.getState();
+    // Authoritative total comes from the backend map, not the 1-row feed.
+    expect(s.stats.signals_total).toBe(137);
+    // 137 > 1-row feed ⇒ the feed-derived "today" count is a LOWER BOUND.
+    expect(s.stats.feed_truncated).toBe(true);
+    expect(s.stats.signals_today).toBe(1);
+  });
+
+  it("falls back to record signal_count when per_bot_signal_count is absent", async () => {
+    mock.mockResolvedValueOnce({ records: [
+      { id: "a", strategy_id: "s", credential_id: "c", exchange_id: "binance",
+        symbol: "BTC/USDT", timeframe: "1h", mode: "shadow", enabled: true,
+        created_at: "", updated_at: "", signal_count: 7 },
+    ] });
+    mock.mockResolvedValueOnce({ generated_at: "x", signals: [] });
+    await useBotsSupervisionStore.getState().loadAll();
+    const s = useBotsSupervisionStore.getState();
+    expect(s.stats.signals_total).toBe(7);
+    expect(s.stats.feed_truncated).toBe(true);
+  });
+
+  it("reports no truncation when the feed covers every known signal", async () => {
+    mock.mockResolvedValueOnce({ records: [] });
+    mock.mockResolvedValueOnce({
+      generated_at: "x",
+      signals: [
+        { bar_index: 1, bar_time: "x", kind: "entry", price: 1, action: "shadow",
+          bot_id: "a", bot_symbol: "BTC/USDT", bot_strategy_id: "s",
+          bot_exchange_id: "binance", bot_mode: "shadow" },
+      ],
+      per_bot_signal_count: { a: 1 },
+    });
+    await useBotsSupervisionStore.getState().loadAll();
+    const s = useBotsSupervisionStore.getState();
+    expect(s.stats.signals_total).toBe(1);
+    expect(s.stats.feed_truncated).toBe(false);
+  });
+
+  it("leaves signals_total null when the backend ships neither count", async () => {
+    mock.mockResolvedValueOnce({ records: [
+      { id: "a", strategy_id: "s", credential_id: "c", exchange_id: "binance",
+        symbol: "BTC/USDT", timeframe: "1h", mode: "shadow", enabled: true,
+        created_at: "", updated_at: "" },
+    ] });
+    mock.mockResolvedValueOnce({ generated_at: "x", signals: [] });
+    await useBotsSupervisionStore.getState().loadAll();
+    const s = useBotsSupervisionStore.getState();
+    expect(s.stats.signals_total).toBeNull();
+    expect(s.stats.feed_truncated).toBe(false);
+  });
 });

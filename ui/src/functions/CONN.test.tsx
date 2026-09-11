@@ -130,9 +130,35 @@ describe("CONN pane", () => {
     const plan = resolveDeletePlan("main", {
       credential_id: "abc", bot_count: 3, bot_ids: ["b1", "b2", "b3"],
     });
-    expect(plan.title).toMatch(/3 bot/);
+    expect(plan.title).toMatch(/3 bots will be affected/);
     expect(plan.body).toMatch(/used by 3 bots/);
     expect(plan.force).toBe(true);
+  });
+
+  it("resolveDeletePlan: singular bot copy stays grammatical", () => {
+    const plan = resolveDeletePlan("main", {
+      credential_id: "abc", bot_count: 1, bot_ids: ["b1"],
+    });
+    expect(plan.title).toMatch(/1 bot will be affected/);
+  });
+
+  it("English-only user-facing copy (i18n regression)", () => {
+    // The form's required-field / saving labels and the list count must be
+    // English — the pre-fix Turkish strings ("Zorunlu alanlar eksik",
+    // "Kaydediliyor", "Connected") are pinned out.
+    useExchangeStore.setState({ credentials: [{
+      id: "abc", exchange_id: "kraken", account_label: "main",
+      permissions: ["read"], created_at: "2026-05-21T10:00:00Z",
+    }] });
+    render(<CONNPane />);
+    expect(screen.getByText(/Registered: 1/)).toBeInTheDocument();
+    // Binance has no credential rows → no escalation input; fill the label
+    // and leave secrets empty → the disabled reason must be English.
+    fireEvent.click(screen.getByText("Binance"));
+    fireEvent.change(screen.getByLabelText(/account label/i), { target: { value: "main" } });
+    expect(
+      screen.getByRole("button", { name: /connect/i }).getAttribute("title"),
+    ).toMatch(/Missing required fields: api_key, api_secret/);
   });
 
   it("resolveDeletePlan: zero dependents → force=false", () => {
@@ -157,13 +183,13 @@ describe("CONN pane", () => {
       .mockResolvedValue(true);
 
     renderWithCredential();
-    fireEvent.click(screen.getByTestId("conn-sil-abc"));
+    fireEvent.click(screen.getByTestId("conn-delete-abc"));
 
     // Dialog appears with the bot-count copy (no native confirm).
     await waitFor(() =>
       expect(screen.getByTestId("confirm-dialog-body")).toBeInTheDocument(),
     );
-    expect(screen.getByText(/3 bot etkilenecek/)).toBeInTheDocument();
+    expect(screen.getByText(/3 bots will be affected/)).toBeInTheDocument();
     expect(screen.getByText(/used by 3 bots/)).toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId("confirm-dialog-confirm"));
@@ -178,7 +204,7 @@ describe("CONN pane", () => {
       .mockResolvedValue(true);
 
     renderWithCredential();
-    fireEvent.click(screen.getByTestId("conn-sil-abc"));
+    fireEvent.click(screen.getByTestId("conn-delete-abc"));
     await waitFor(() =>
       expect(screen.getByTestId("confirm-dialog-body")).toBeInTheDocument(),
     );
@@ -194,7 +220,7 @@ describe("CONN pane", () => {
       .mockResolvedValue(true);
 
     renderWithCredential();
-    fireEvent.click(screen.getByTestId("conn-sil-abc"));
+    fireEvent.click(screen.getByTestId("conn-delete-abc"));
     await waitFor(() =>
       expect(screen.getByTestId("confirm-dialog-body")).toBeInTheDocument(),
     );

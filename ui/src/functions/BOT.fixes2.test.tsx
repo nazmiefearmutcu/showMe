@@ -69,7 +69,7 @@ afterEach(() => {
 
 describe("BOT pane fixes2", () => {
   // ─── C-UI-1 ──────────────────────────────────────────────────────────
-  it("orphan_strategy_surfaces — silinmiş strategy id dropdown'da görünür", () => {
+  it("orphan_strategy_surfaces — deleted strategy id is visible in the dropdown", () => {
     useBotStore.setState({
       draft: { ...PERSISTED_DRAFT, strategy_id: "ghost-id" } as never,
     });
@@ -208,7 +208,7 @@ describe("BOT pane fixes2", () => {
   });
 
   // ─── H-UI-2 ──────────────────────────────────────────────────────────
-  it("etkinlestir_disabled_while_toggling", () => {
+  it("enable_disabled_while_toggling", () => {
     useBotStore.setState({
       draft: { ...PERSISTED_DRAFT } as never,
       toggling: true,
@@ -218,7 +218,7 @@ describe("BOT pane fixes2", () => {
     expect(btn.disabled).toBe(true);
   });
 
-  it("durdur_disabled_while_toggling", () => {
+  it("stop_disabled_while_toggling", () => {
     useBotStore.setState({
       draft: { ...PERSISTED_DRAFT, enabled: true } as never,
       toggling: true,

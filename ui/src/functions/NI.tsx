@@ -2,7 +2,7 @@
  * NI / CN — topic-news and company-news headline drawers.
  *
  * Bloomberg-grade news intelligence: header with symbol focus + sentiment
- * score badge, two-column layout (feed left, AI synthesis right with
+ * score badge, two-column layout (feed left, rule-based synthesis right with
  * Bull / Bear / Catalysts sections), and a 24h sentiment timeline strip.
  */
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
@@ -378,7 +378,11 @@ export function NIPane({ code, symbol }: FunctionPaneProps) {
         <SentimentTimeline buckets={timeline} />
       </section>
       <aside style={synthesisColumn}>
-        <AISynthesisCard synthesis={synthesis} selectedArticle={selectedArticle} />
+        <AISynthesisCard
+          synthesis={synthesis}
+          selectedArticle={selectedArticle}
+          veryfinderState={veryfinderState}
+        />
       </aside>
     </div>
   );
@@ -564,17 +568,48 @@ function buildSynthesis(
 function AISynthesisCard({
   synthesis,
   selectedArticle,
+  veryfinderState,
 }: {
   synthesis: SynthesisData;
   selectedArticle: NIArticle | null;
+  veryfinderState: LoadState;
 }) {
+  // Honesty (AUDIT A2 [H]): the previous "AI" pill implied an LLM over this
+  // section, but the synthesis is a deterministic client-side rule/threshold
+  // filter (Veryfinder social score > ±18 for Bull/Bear, importance_score ≥ 70
+  // or high/critical severity for Catalysts). No model call exists in this
+  // path — the pill now says RULE and the tooltip spells out the rule.
   return (
     <Card variant="elev-2">
-      <CardHeader trailing={<Pill tone="accent" variant="soft" withDot={false}>AI</Pill>}>
+      <CardHeader
+        trailing={
+          <span
+            title="Deterministic rule-based filter over the headlines: Bull/Bear from Veryfinder social scores (|score| > 18), Catalysts from importance_score ≥ 70 or high/critical severity. No LLM is involved."
+            data-testid="ni-synthesis-rule-pill"
+          >
+            <Pill tone="muted" variant="soft" withDot={false}>
+              RULE
+            </Pill>
+          </span>
+        }
+      >
         Synthesis
       </CardHeader>
       <CardBody>
         <div className="u-grid-gap-12">
+          {/*
+            Honesty (AUDIT A2 [L]): when the Veryfinder overlay is unreachable
+            the Bull/Bear sections go empty while Catalysts (headline-only)
+            still fills. Attribute the emptiness explicitly so it is not read
+            as "no bullish/bearish news exists".
+          */}
+          {veryfinderState === "error" ? (
+            <p data-testid="ni-social-unavailable" style={synthUnavailableStyle}>
+              Social overlay unavailable — Veryfinder could not be reached, so
+              Bull/Bear signals are missing. Catalysts still reflect headline
+              impact scores.
+            </p>
+          ) : null}
           {selectedArticle ? (
             <div style={selectedSummaryStyle}>
               <div style={selectedKickerStyle}>NOW READING</div>
@@ -1209,6 +1244,16 @@ const synthEmpty: CSSProperties = {
   fontSize: "var(--font-size-sm)",
   color: "var(--text-mute)",
   fontStyle: "italic",
+};
+
+const synthUnavailableStyle: CSSProperties = {
+  margin: 0,
+  padding: "6px 8px",
+  border: "1px solid var(--warn-soft)",
+  borderRadius: "var(--radius-sm)",
+  background: "var(--warn-soft)",
+  fontSize: "var(--font-size-xs)",
+  color: "var(--text-secondary)",
 };
 
 const synthList: CSSProperties = {

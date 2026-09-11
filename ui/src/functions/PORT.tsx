@@ -59,7 +59,7 @@ interface Position {
   last?: number | null;
   current_price?: number | null;
   market_value?: number;
-  unrealized_pnl?: number;
+  unrealized_pnl?: number | null;
   weight?: number;
   currency?: string;
   [key: string]: unknown;
@@ -91,7 +91,7 @@ interface CloseRecord {
   avg_cost?: number;
   exit_price?: number;
   market_value?: number;
-  realized_pnl?: number;
+  realized_pnl?: number | null;
   closed_at?: string;
   dry_run?: boolean;
   reason?: string;
@@ -213,7 +213,9 @@ function PortfolioCommandBar() {
       </div>
       <div className="port-command-bar__actions">
         <span className="port-subtle">
-          {lastFetched ? `Last ${new Date(lastFetched).toLocaleTimeString()}` : "Not fetched"}
+          {lastFetched
+            ? `Last ${new Date(lastFetched).toLocaleTimeString("en-US", { hour12: false })}`
+            : "Not fetched"}
         </span>
         <button className="btn btn--ghost port-icon-btn" type="button" onClick={() => load()} disabled={loading} title="Refresh portfolio">
           {loading ? "..." : "↻"}
@@ -438,8 +440,16 @@ function CredentialGroup({ g }: { g: PortfolioGroup }) {
                   {current != null ? formatPrice(current) : formatMissing}
                 </td>
                 <td align="right" className="terminal-grid-numeric">{formatCurrency(notional, { compact: true })}</td>
-                <td align="right" className="terminal-grid-numeric">
-                  <DeltaChip value={p.unrealized_pnl ?? 0} format="currency" fractionDigits={2} />
+                <td
+                  align="right"
+                  className="terminal-grid-numeric"
+                  data-testid={`port-broker-pnl-${p.symbol}`}
+                >
+                  {typeof p.unrealized_pnl === "number" && Number.isFinite(p.unrealized_pnl) ? (
+                    <DeltaChip value={p.unrealized_pnl} format="currency" fractionDigits={2} />
+                  ) : (
+                    formatMissing
+                  )}
                 </td>
                 <td align="right">
                   {g.permissions.includes("trade") && (
@@ -752,11 +762,16 @@ export function PORTPane({ code }: FunctionPaneProps) {
   }
 
   const utcNow = new Date().toISOString().slice(11, 16);
-  const pnlValue = viewTotals?.unrealized_pnl ?? 0;
+  // Honesty (audit A5 PORT M): a missing unrealized P&L must render the shared
+  // em-dash, not a confident $0.00. Keep `null` all the way to ChangeText.
+  const pnlValue =
+    typeof viewTotals?.unrealized_pnl === "number" && Number.isFinite(viewTotals.unrealized_pnl)
+      ? viewTotals.unrealized_pnl
+      : null;
   const pnlTone: "positive" | "negative" | "neutral" =
-    pnlValue > 0 ? "positive" : pnlValue < 0 ? "negative" : "neutral";
+    pnlValue == null ? "neutral" : pnlValue > 0 ? "positive" : pnlValue < 0 ? "negative" : "neutral";
   const pnlPct =
-    viewTotals?.cost_basis && viewTotals.cost_basis !== 0
+    pnlValue != null && viewTotals?.cost_basis && viewTotals.cost_basis !== 0
       ? (pnlValue / Math.abs(viewTotals.cost_basis)) * 100
       : null;
   const positionCount = viewTotals?.n_positions ?? positions.length;
@@ -879,7 +894,11 @@ export function PORTPane({ code }: FunctionPaneProps) {
           <span>elapsed · {data?.elapsed_ms?.toFixed(0) ?? "—"} ms</span>
           <span>sources · {data?.sources?.join(", ") || "—"}</span>
           <span>
-            ws · {liveCount}/{positions.length} live
+            {positions.length > 0
+              ? `ws · ${liveCount}/${positions.length} live`
+              : brokerSurfaced
+                ? `ws · broker snapshot (${brokerPositions.length} rows)`
+                : "ws · no local positions"}
           </span>
           {data?.warnings?.length ? <span>{data.warnings.length} warn</span> : null}
         </PaneFooter>
@@ -943,7 +962,7 @@ function PORTView({
   };
   const sortedPositions = useMemo(() => {
     if (!sortBy) return positions;
-    const accessor = (p: Position): number | undefined => {
+    const accessor = (p: Position): number | null | undefined => {
       if (sortBy === "quantity") return p.quantity;
       if (sortBy === "avg_cost") return positionEntryPrice(p);
       if (sortBy === "last") return positionCurrentPrice(p);
@@ -988,7 +1007,15 @@ function PORTView({
           <span
             className={`port-terminal-summary__pnl port-terminal-summary__pnl--${pnlTone}${tickFlashClass(pnlFlash) ? ` ${tickFlashClass(pnlFlash)}` : ""}`}
           >
-            <ChangeText value={totals?.unrealized_pnl ?? 0} prefix="$" digits={0} />
+            <ChangeText
+              value={
+                typeof totals?.unrealized_pnl === "number" && Number.isFinite(totals.unrealized_pnl)
+                  ? totals.unrealized_pnl
+                  : null
+              }
+              prefix="$"
+              digits={0}
+            />
             {pnlPct != null ? <em>{formatPercent(pnlPct, { signed: true })}</em> : null}
           </span>
         </div>
@@ -1365,7 +1392,17 @@ function ClosePreviewPanel({
         <Kpi
           label="Realized P&L"
           numeric
-          value={<ChangeText value={r.realized_pnl ?? 0} prefix="$" digits={0} />}
+          value={
+            <ChangeText
+              value={
+                typeof r.realized_pnl === "number" && Number.isFinite(r.realized_pnl)
+                  ? r.realized_pnl
+                  : null
+              }
+              prefix="$"
+              digits={0}
+            />
+          }
         />
       </div>
       {preview.dry_run ? (

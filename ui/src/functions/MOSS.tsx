@@ -166,6 +166,8 @@ export function MOSSPane({ code }: FunctionPaneProps) {
     [payload],
   );
   const topSymbol = payload?.top_symbol ?? "";
+  // F14: never hardcode the rolling window — the payload carries it per point.
+  const historyWindow = (payload?.history?.[0] as { window?: number } | undefined)?.window;
 
   const COLS: DataGridColumn<MOSSRow>[] = useMemo(
     () => [
@@ -271,7 +273,7 @@ export function MOSSPane({ code }: FunctionPaneProps) {
                 Top vol — <span style={monoStrongStyle}>{topSymbol}</span>
               </div>
               <div style={historyMetaStyle}>
-                Rolling 20-session annualized volatility · latest{" "}
+                Rolling {historyWindow ? `${historyWindow}-session ` : ""}annualized volatility · latest{" "}
                 {fmtPct(historyValues[historyValues.length - 1])}
               </div>
             </div>

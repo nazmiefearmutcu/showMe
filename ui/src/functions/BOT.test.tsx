@@ -28,7 +28,7 @@ describe("BOT pane", () => {
     expect(screen.getAllByText(/new bot/i).length).toBeGreaterThan(0);
   });
 
-  it("Yeni bot opens a blank draft", () => {
+  it("New bot opens a blank draft", () => {
     render(<BOTPane />);
     fireEvent.click(screen.getAllByRole("button", { name: /^\+ new bot$/i })[0]);
     expect(useBotStore.getState().draft).not.toBeNull();

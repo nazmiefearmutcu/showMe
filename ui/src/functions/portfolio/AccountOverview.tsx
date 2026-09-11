@@ -7,7 +7,7 @@
  * No new endpoint, no derived fabrication — every figure maps to a payload
  * field documented in wave2-targets §3 (`portfolio/acct.py`).
  */
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import {
   DataGrid,
   type DataGridColumn,
@@ -17,6 +17,7 @@ import {
   PaneHeader,
 } from "@/design-system";
 import { useFunction } from "@/lib/useFunction";
+import { useVisibilityTick } from "@/lib/useVisibilityTick";
 import { navigate } from "@/lib/router";
 import { formatCurrency, formatMissing, formatNumber, formatPrice } from "@/lib/format";
 import { FunctionControlGroup, LoadStatePill, RefreshButton } from "../function-controls";
@@ -180,6 +181,16 @@ const POSITION_COLUMNS: DataGridColumn<Row>[] = [
 
 export function AccountOverviewPane({ code }: FunctionPaneProps) {
   const { state, data, error, refetch } = useFunction<AcctPayload>({ code });
+  // Live adoption (campaign 2026-09-11): marks roll server-side only, so the
+  // account table used to go stale until a manual Refresh. Visibility-paused
+  // 60s refetch; the tick drives `refetch()` only — never a param, or the
+  // fetch key would change every cycle and wipe the table to a skeleton.
+  const tick = useVisibilityTick(60_000);
+  useEffect(() => {
+    if (tick === 0) return; // initial mount is useFunction's own load
+    refetch();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- tick is the trigger
+  }, [tick]);
   const payload = data?.data;
   const accounts = useMemo(() => asRows(payload?.accounts), [payload]);
   const accountRows = useMemo(() => asRows(payload?.rows), [payload]);
@@ -411,7 +422,7 @@ export function AccountOverviewPane({ code }: FunctionPaneProps) {
         <PaneHeader
           code={code.toUpperCase()}
           title="Account Overview"
-          subtitle="Cash, margin, exposure, and account state"
+          subtitle="Market value, unrealized P&L, and cross-account exposure"
           trailing={
             <FunctionControlGroup>
               <LoadStatePill state={state} status={str(payload?.status) ?? data?.status ?? null} />

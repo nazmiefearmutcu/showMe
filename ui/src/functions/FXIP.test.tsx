@@ -16,7 +16,7 @@
  * `useFunction` is mocked via mutable shared state (GEX pattern).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { FXIPPane } from "./FXIP";
 
 /* ── useFunction mock ──────────────────────────────────────────────── */
@@ -28,6 +28,9 @@ interface MockFnState {
 }
 
 const mockFn: MockFnState = { state: "idle", data: undefined, error: null };
+const refetchMock = vi.fn();
+const mockTick = { current: 0 };
+const recordedCalls: Array<{ params?: Record<string, unknown> }> = [];
 
 function setMockFn(next: MockFnState) {
   mockFn.state = next.state;
@@ -36,12 +39,19 @@ function setMockFn(next: MockFnState) {
 }
 
 vi.mock("@/lib/useFunction", () => ({
-  useFunction: () => ({
-    state: mockFn.state,
-    data: mockFn.data,
-    error: mockFn.error,
-    refetch: vi.fn(),
-  }),
+  useFunction: (opts: { params?: Record<string, unknown> }) => {
+    recordedCalls.push(opts);
+    return {
+      state: mockFn.state,
+      data: mockFn.data,
+      error: mockFn.error,
+      refetch: refetchMock,
+    };
+  },
+}));
+
+vi.mock("@/lib/useVisibilityTick", () => ({
+  useVisibilityTick: () => mockTick.current,
 }));
 
 /* ── fixtures ──────────────────────────────────────────────────────── */
@@ -49,12 +59,19 @@ vi.mock("@/lib/useFunction", () => ({
 const metricRows = [
   { metric: "spot", value: 1.1628, unit: "USD per EUR", source: "yfinance" },
   { metric: "base_rate", value: 0.035, unit: "decimal annual", source: "reference_policy_rate" },
+  { metric: "quote_rate", value: 0.045, unit: "decimal annual", source: "reference_policy_rate" },
   { metric: "1m_forward", value: 1.16378, unit: "rate", source: "covered_interest_parity" },
   {
     metric: "atm_vol_1m_pct",
     value: 8.45,
     unit: "percent",
     source: "reference_vol_assumption",
+  },
+  {
+    metric: "carry_annualized",
+    value: 0.01,
+    unit: "decimal annual",
+    source: "rate_differential",
   },
 ];
 
@@ -87,6 +104,9 @@ function fxipPayload(sourceMode: string) {
 beforeEach(() => {
   localStorage.clear();
   setMockFn({ state: "idle", data: undefined });
+  refetchMock.mockReset();
+  mockTick.current = 0;
+  recordedCalls.length = 0;
 });
 afterEach(() => {
   cleanup();
@@ -156,5 +176,35 @@ describe("FXIP pane — pair picker", () => {
     render(<FXIPPane code="FXIP" />);
     fireEvent.click(screen.getByTitle("PAIR USDJPY"));
     expect(screen.getByText(/FX Info Portal — USDJPY/i)).toBeInTheDocument();
+  });
+});
+
+describe("FXIP pane — visibility poll (live adoption)", () => {
+  it("refetches on a visibility tick without feeding it into the params", () => {
+    setMockFn({ state: "ok", ...fxipPayload("live_yfinance_quote") });
+    const { rerender } = render(<FXIPPane code="FXIP" symbol="EURUSD" />);
+    // Mount is useFunction's own initial load — the tick must not double-fetch.
+    expect(refetchMock).not.toHaveBeenCalled();
+    const snapshot = () =>
+      JSON.stringify(recordedCalls[recordedCalls.length - 1]?.params ?? null);
+
+    const before = snapshot();
+    mockTick.current = 2;
+    rerender(<FXIPPane code="FXIP" symbol="EURUSD" />);
+    expect(refetchMock).toHaveBeenCalledTimes(1);
+    expect(snapshot()).toBe(before);
+    expect(snapshot()).not.toContain("tick");
+  });
+});
+
+describe("FXIP pane — unit consistency", () => {
+  it("renders decimal-annual metric rows as percents, matching the KPI ribbon", () => {
+    setMockFn({ state: "ok", ...fxipPayload("live_yfinance_quote") });
+    render(<FXIPPane code="FXIP" symbol="EURUSD" />);
+    const table = screen.getByRole("table", { name: "FXIP portal metrics" });
+    // 0.035 base rate / 0.045 quote rate / 0.01 carry -> percent units.
+    expect(within(table).getByText("3.500%")).toBeInTheDocument();
+    expect(within(table).getByText("4.500%")).toBeInTheDocument();
+    expect(within(table).getByText("+1.000%")).toBeInTheDocument();
   });
 });

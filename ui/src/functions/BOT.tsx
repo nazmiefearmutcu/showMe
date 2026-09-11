@@ -18,7 +18,18 @@ import {
   TIMEFRAMES,
   validateSymbol,
 } from "@/lib/validators";
-import { ConfirmDialog, Empty, Pill, SkeletonRow } from "@/design-system";
+import {
+  buildGridCsv,
+  ConfirmDialog,
+  DataGrid,
+  downloadGridCsv,
+  Empty,
+  gridCsvFilename,
+  Pill,
+  SkeletonRow,
+  type DataGridColumn,
+  type GridCsvColumn,
+} from "@/design-system";
 import { formatPrice } from "@/lib/format";
 import { isKaosRecord } from "@/lib/kaos-venues";
 import { KaosEngineBadge, KaosLaneBanner, VenueBadges } from "@/functions/KaosBadges";
@@ -26,6 +37,10 @@ import { KaosEngineBadge, KaosLaneBanner, VenueBadges } from "@/functions/KaosBa
 // Sentinel the backend stamps onto a SignalEntry whose live order was sized
 // on the fallback equity ($10k) rather than real broker equity.
 const FALLBACK_EQUITY_SOURCE = "fallback_10k";
+
+// The signal log renders the newest SIGNAL_LOG_WINDOW entries; the CSV export
+// always covers the FULL `signal_log` array (the wire payload is not windowed).
+const SIGNAL_LOG_WINDOW = 20;
 
 // F1 — map a bot's (enabled, mode) state to a design-system Pill tone and
 // an accessible status label.
@@ -50,62 +65,103 @@ function StatusPill({ rec }: { rec: { mode: string; enabled: boolean } }) {
   );
 }
 
+function fallbackEquityBadge(entry: SignalEntry) {
+  if (entry.equity_source !== FALLBACK_EQUITY_SOURCE) return null;
+  return (
+    <span
+      data-testid="bot-signal-fallback-equity"
+      title="This live order was sized with the fallback ($10k) balance instead of the real broker balance."
+      style={{ marginLeft: 6, display: "inline-block" }}
+    >
+      <Pill tone="warn" variant="soft" withDot={false}>
+        ≈$10k
+      </Pill>
+    </span>
+  );
+}
+
+const SIGNAL_COLUMNS: DataGridColumn<SignalEntry>[] = [
+  {
+    key: "bar_time",
+    header: "Time",
+    width: 150,
+    sortable: true,
+    sortValue: (e) => e.bar_time ?? "",
+    render: (e) => e.bar_time.slice(0, 19),
+  },
+  {
+    key: "kind",
+    header: "Kind",
+    width: 80,
+    sortable: true,
+    sortValue: (e) => e.kind,
+    render: (e) => (
+      <span className={e.kind === "entry" ? "u-text-positive" : "u-text-warn"}>
+        {e.kind}
+      </span>
+    ),
+  },
+  {
+    key: "price",
+    header: "Price",
+    width: 110,
+    numeric: true,
+    align: "right",
+    sortable: true,
+    sortValue: (e) => e.price,
+    render: (e) => formatPrice(e.price),
+  },
+  {
+    key: "action",
+    header: "Action",
+    width: 90,
+    sortable: true,
+    sortValue: (e) => e.action,
+    render: (e) => e.action,
+  },
+  {
+    key: "detail",
+    header: "Detail",
+    sortable: true,
+    sortValue: (e) => e.error || e.order_id || "",
+    render: (e) => (
+      <>
+        {e.error || e.order_id || ""}
+        {fallbackEquityBadge(e)}
+      </>
+    ),
+  },
+];
+
+const SIGNAL_CSV_COLUMNS: GridCsvColumn<SignalEntry>[] = [
+  { key: "bar_time", header: "Time", value: (e) => e.bar_time },
+  { key: "kind", header: "Kind", value: (e) => e.kind },
+  { key: "price", header: "Price", value: (e) => e.price },
+  { key: "action", header: "Action", value: (e) => e.action },
+  { key: "detail", header: "Detail", value: (e) => e.error || e.order_id || "" },
+  { key: "equity_source", header: "Equity source", value: (e) => e.equity_source ?? "" },
+];
+
+/** Export the FULL signal_log (not just the 20-row view window) as CSV. */
+export function buildSignalLogCsv(entries: SignalEntry[]): string {
+  return buildGridCsv(SIGNAL_CSV_COLUMNS, [...entries].reverse());
+}
+
 function SignalLog({ entries }: { entries: SignalEntry[] }) {
   if (entries.length === 0) return <div className="u-text-secondary">(no signals yet)</div>;
+  const rows = entries.slice(-SIGNAL_LOG_WINDOW).reverse();
   return (
-    <table
-      className="terminal-grid-numeric"
-      aria-label="Signal log"
-      style={{ width: "100%", fontSize: "var(--font-size-sm)" }}
-    >
-      <caption className="u-sr-only">
-        Signals produced by the bot — time, type, price, action and detail.
-      </caption>
-      <thead>
-        <tr className="u-text-secondary">
-          <th scope="col" align="left">Time</th>
-          <th scope="col">Kind</th>
-          <th scope="col" align="right">Price</th>
-          <th scope="col">Action</th>
-          <th scope="col" align="left">Detail</th>
-        </tr>
-      </thead>
-      <tbody>
-        {entries.slice(-20).reverse().map((e, i) => {
-          const isFallback = e.equity_source === FALLBACK_EQUITY_SOURCE;
-          // P2b — stable composite key from entry identity so a new signal
-          // arriving doesn't remount every row (index keys on a reversed
-          // slice shift every row). bar_index disambiguates same-bar_time
-          // entry/exit pairs; `i` is a final tiebreaker against any residual
-          // collision (e.g. legacy rows with empty bar_time).
-          const rowKey = `${e.bar_time}-${e.kind}-${e.bar_index}-${i}`;
-          return (
-            <tr key={rowKey}>
-              <td>{e.bar_time.slice(0, 19)}</td>
-              <td className={e.kind === "entry" ? "u-text-positive" : "u-text-warn"}>
-                {e.kind}
-              </td>
-              <td align="right">{formatPrice(e.price)}</td>
-              <td>{e.action}</td>
-              <td>
-                {e.error || e.order_id || ""}
-                {isFallback && (
-                  <span
-                    data-testid="bot-signal-fallback-equity"
-                    title="This live order was sized with the fallback ($10k) balance instead of the real broker balance."
-                    style={{ marginLeft: 6, display: "inline-block" }}
-                  >
-                    <Pill tone="warn" variant="soft" withDot={false}>
-                      ≈$10k
-                    </Pill>
-                  </span>
-                )}
-              </td>
-            </tr>
-          );
-        })}
-      </tbody>
-    </table>
+    <DataGrid
+      columns={SIGNAL_COLUMNS}
+      rows={rows}
+      density="compact"
+      ariaLabel="Signal log"
+      // Keep the existing newest-first presentation by default; the built-in
+      // sorter takes over on header click (asc → desc → none).
+      defaultSortKey="bar_time"
+      defaultSortDir="none"
+      rowKey={(e, i) => `${e.bar_time}-${e.kind}-${e.bar_index}-${i}`}
+    />
   );
 }
 
@@ -224,6 +280,21 @@ export function BOTPane() {
   const saveDisabled =
     !dirty || saving || missingStrategy || missingCredential || missingSymbol ||
     timeframeUnknown;
+
+  // Safe-L fix (audit A9): explain why Enable is disabled. In live mode the
+  // button requires the re-typed account_label; when the credential is
+  // orphaned/unavailable the old markup left it disabled with NO reason.
+  const enableDisabledReason: string | undefined = (() => {
+    if (!draft?.id || draft.enabled) return undefined;
+    if (dirty) return "Save or discard changes before enabling this bot.";
+    if (toggling) return "Enable is already in progress…";
+    if (draft.mode === "live" && confirmLabel !== credential?.account_label) {
+      return credential
+        ? `Re-type account_label "${credential.account_label}" to enable live mode.`
+        : "No connection is available for this bot. Re-select a connection before enabling live mode.";
+    }
+    return undefined;
+  })();
 
   // F6 — explain *why* Save is disabled (same validation that disables it).
   // Returns undefined when Save is enabled so the button has no stale title.
@@ -507,7 +578,7 @@ export function BOTPane() {
             </label>
 
             <fieldset style={{ borderColor: "var(--border-card)", padding: 8 }}>
-              <legend>Mod</legend>
+              <legend>Mode</legend>
               <label htmlFor="bot-mode-shadow">
                 <input id="bot-mode-shadow" type="radio" checked={draft.mode === "shadow"}
                        onChange={() => setField("mode", "shadow")} />
@@ -574,14 +645,14 @@ export function BOTPane() {
                   }} disabled={
                     dirty || toggling ||
                     (draft.mode === "live" && confirmLabel !== credential?.account_label)
-                  }>
+                  } title={enableDisabledReason}>
                     {toggling ? "..." : "Enable"}
                   </button>
                 </>
               )}
               {draft.id && draft.enabled && (
                 <button
-                  data-testid="bot-durdur-button"
+                  data-testid="bot-stop-button"
                   onClick={() => setPendingDisableId(draft.id!)}
                   disabled={toggling || pendingDisableId !== null}>
                   {toggling ? "..." : "Stop"}
@@ -589,7 +660,7 @@ export function BOTPane() {
               )}
             {draft.id && (
               <button
-                data-testid="bot-sil-button"
+                data-testid="bot-delete-button"
                 onClick={() => setPendingDeleteBotId(draft.id!)}
                 disabled={loading || pendingDeleteBotId !== null}
                 className="u-text-negative"
@@ -599,11 +670,33 @@ export function BOTPane() {
             )}
             </div>
 
-            <h4>Signal log ({(draft.signal_log ?? []).length})</h4>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <h4 style={{ margin: 0 }}>Signal log ({(draft.signal_log ?? []).length})</h4>
+              <button
+                data-testid="bot-signal-log-csv"
+                type="button"
+                onClick={() => {
+                  const entries = draft.signal_log ?? [];
+                  downloadGridCsv(
+                    gridCsvFilename(
+                      `bot-signals-${(draft.symbol || draft.id || "bot").replace(/[^A-Za-z0-9_-]+/g, "-")}`,
+                    ),
+                    buildSignalLogCsv(entries),
+                  );
+                }}
+                disabled={(draft.signal_log ?? []).length === 0}
+                title="Download CSV"
+                aria-label={`Download all ${(draft.signal_log ?? []).length} signals as CSV`}
+                style={{ marginLeft: "auto" }}
+              >
+                CSV
+              </button>
+            </div>
             <SignalLog entries={draft.signal_log ?? []} />
-            {(draft.signal_log ?? []).length > 20 && (
+            {(draft.signal_log ?? []).length > SIGNAL_LOG_WINDOW && (
               <div className="u-text-secondary" style={{ fontSize: "var(--font-size-sm)" }}>
-                Showing the last 20 signals — {(draft.signal_log ?? []).length} total.
+                Showing the last {SIGNAL_LOG_WINDOW} signals — {(draft.signal_log ?? []).length} total;
+                the CSV export covers the full log.
               </div>
             )}
           </div>

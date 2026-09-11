@@ -37,13 +37,18 @@ function setMockFn(next: Partial<MockFnState>) {
   mockFn.error = next.error ?? null;
 }
 
+const { useFunctionSpy } = vi.hoisted(() => ({ useFunctionSpy: vi.fn() }));
+
 vi.mock("@/lib/useFunction", () => ({
-  useFunction: () => ({
-    state: mockFn.state,
-    data: mockFn.data,
-    error: mockFn.error,
-    refetch: vi.fn(),
-  }),
+  useFunction: (args: unknown) => {
+    useFunctionSpy(args);
+    return {
+      state: mockFn.state,
+      data: mockFn.data,
+      error: mockFn.error,
+      refetch: vi.fn(),
+    };
+  },
 }));
 
 /* ── fixtures (shape mirrors the live /api/fn/FRH probe) ───────────── */
@@ -123,6 +128,7 @@ function templatePayload(): Partial<MockFnState> {
 
 beforeEach(() => {
   localStorage.clear();
+  useFunctionSpy.mockClear();
   setMockFn({ state: "idle", data: undefined });
 });
 
@@ -165,7 +171,8 @@ describe("FRH pane — live heatmap", () => {
   it("renders one row per symbol with tinted exchange cells", () => {
     setMockFn(livePayload());
     render(<FRHPane code="FRH" />);
-    const grid = screen.getByLabelText("Funding rate heatmap");
+    // Read-only matrix uses table semantics (no fake interactive grid role).
+    const grid = screen.getByRole("table", { name: "Funding rate heatmap" });
     expect(screen.getAllByLabelText(/funding row/).length).toBe(3);
     expect(grid).toHaveTextContent("BTCUSDT");
     expect(grid).toHaveTextContent("ETHUSDT");
@@ -218,5 +225,28 @@ describe("FRH pane — template honesty", () => {
     expect(liveOpt).not.toBeNull();
     fireEvent.click(liveOpt as Element);
     expect(localStorage.getItem("showme.frh.mode")).toBe("live");
+  });
+});
+
+describe("FRH pane — mode request params (dead Template control regression)", () => {
+  it("Template mode sends reference=true so the backend cannot default-polarity into live", () => {
+    setMockFn(templatePayload());
+    render(<FRHPane code="FRH" />);
+    const last = useFunctionSpy.mock.calls.at(-1)?.[0] as {
+      params?: Record<string, unknown>;
+    };
+    expect(last?.params?.reference).toBe(true);
+    expect(last?.params?.live).toBeUndefined();
+  });
+
+  it("Live mode sends live=true and no reference flag", () => {
+    localStorage.setItem("showme.frh.mode", "live");
+    setMockFn(livePayload());
+    render(<FRHPane code="FRH" />);
+    const last = useFunctionSpy.mock.calls.at(-1)?.[0] as {
+      params?: Record<string, unknown>;
+    };
+    expect(last?.params?.live).toBe(true);
+    expect(last?.params?.reference).toBeUndefined();
   });
 });

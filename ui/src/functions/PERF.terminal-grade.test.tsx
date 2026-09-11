@@ -19,6 +19,9 @@
  * green.
  */
 import { render, screen, fireEvent } from "@testing-library/react";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PERFPane } from "./PERF";
 import {
@@ -28,6 +31,8 @@ import {
   type PerformanceMetrics,
 } from "@/lib/performance-store";
 import { useBotsSupervisionStore } from "@/lib/bots-supervision-store";
+
+const __dir = dirname(fileURLToPath(import.meta.url));
 
 const FROZEN_NOW = new Date("2026-06-08T12:00:00Z");
 
@@ -177,21 +182,22 @@ describe("PERF F3 — drawdown reads as a negative loss", () => {
 
 // ─── F4 — accessibility ──────────────────────────────────────────────────
 describe("PERF F4 — a11y", () => {
-  it("leaderboard table has caption + scope columns + aria-label", () => {
+  it("leaderboard DataGrid has an aria-label and scope columns", () => {
     usePerformanceStore.setState({
       leaderboard: [_entry({ bot_id: "a", symbol: "BTC/USDT", total_pnl: 5 })],
     });
     render(<PERFPane />);
     const table = screen.getByRole("table", { name: /leaderboard/i });
-    expect(table.querySelector("caption")).not.toBeNull();
+    // DataGrid carries the accessible name via aria-label (no <caption>).
+    expect(table.getAttribute("aria-label")).toBe("Performance leaderboard");
     expect(table.querySelectorAll("th[scope='col']").length).toBe(5);
   });
 
-  it("trades table has caption + scope columns + aria-label", () => {
+  it("trades DataGrid has an aria-label and scope columns", () => {
     seedSelected();
     render(<PERFPane />);
     const table = screen.getByRole("table", { name: /recent trades/i });
-    expect(table.querySelector("caption")).not.toBeNull();
+    expect(table.getAttribute("aria-label")).toBe("Recent trades");
     expect(table.querySelectorAll("th[scope='col']").length).toBe(6);
   });
 
@@ -221,18 +227,22 @@ describe("PERF F4 — a11y", () => {
     expect(screen.getByLabelText(/Leader: BTC\/USDT/)).toBeInTheDocument();
   });
 
-  it("leaderboard rows are keyboard-operable and mark aria-selected", () => {
+  it("leaderboard rows are keyboard-operable and signal selection on the symbol cell", () => {
     const loadBot = vi.fn(async () => {});
     usePerformanceStore.setState({
       leaderboard: [_entry({ bot_id: "a", symbol: "BTC/USDT", total_pnl: 5 })],
       selected: _detail({ bot_id: "a", symbol: "BTC/USDT" }),
       loadBot,
     } as never);
-    render(<PERFPane />);
-    const row = screen.getByRole("button", { name: /BTC\/USDT open performance details/i });
-    expect(row.getAttribute("tabindex")).toBe("0");
-    expect(row.getAttribute("aria-selected")).toBe("true");
-    fireEvent.keyDown(row, { key: "Enter" });
+    const { container } = render(<PERFPane />);
+    // DataGrid interactive rows are role=button + tabIndex=0 and Enter fires
+    // onRowClick; selection is signalled on the symbol cell's data-selected
+    // (aria-selected on role=button was invalid ARIA and removed).
+    const row = container.querySelector<HTMLElement>("tbody tr[role='button']");
+    expect(row).not.toBeNull();
+    expect(row!.getAttribute("tabindex")).toBe("0");
+    expect(screen.getByTestId("perf-row-symbol-a").getAttribute("data-selected")).toBe("true");
+    fireEvent.keyDown(row!, { key: "Enter" });
     expect(loadBot).toHaveBeenCalledWith("a");
   });
 
@@ -298,5 +308,62 @@ describe("PERF F5 — states + freshness", () => {
     usePerformanceStore.setState({ leaderboard: [_entry({ bot_id: "a" })], generatedAt: null });
     render(<PERFPane />);
     expect(screen.getByTestId("perf-last-updated").textContent).toMatch(/—/);
+  });
+});
+
+// ─── F10 (fix lane, audit A1) — DataGrid sort + CSV exports ──────────────
+describe("PERF F10 — leaderboard/trades DataGrid + CSV", () => {
+  it("sorts the leaderboard from a column header", () => {
+    usePerformanceStore.setState({
+      leaderboard: [
+        _entry({ bot_id: "a", symbol: "BTC/USDT", total_pnl: 5 }),
+        _entry({ bot_id: "b", symbol: "ETH/USDT", total_pnl: 50 }),
+      ],
+    });
+    const { container } = render(<PERFPane />);
+    const firstRow = () => container.querySelectorAll("tbody tr")[0]?.textContent ?? "";
+    // Default: payload order (backend ranking) until a header is clicked.
+    expect(firstRow()).toContain("BTC/USDT");
+    fireEvent.click(screen.getByRole("columnheader", { name: /Total PnL/i }));
+    // First click → ascending; the smaller PnL now leads.
+    expect(firstRow()).toContain("BTC/USDT");
+    fireEvent.click(screen.getByRole("columnheader", { name: /Total PnL/i }));
+    // Second click → descending.
+    expect(firstRow()).toContain("ETH/USDT");
+  });
+
+  it("leaderboard CSV button disables with no rows and is enabled with rows", () => {
+    const first = render(<PERFPane />);
+    expect(screen.getByTestId("perf-export-leaderboard-csv")).toBeDisabled();
+    first.unmount();
+    usePerformanceStore.setState({
+      leaderboard: [_entry({ bot_id: "a", symbol: "BTC/USDT", total_pnl: 5 })],
+    });
+    render(<PERFPane />);
+    expect(screen.getByTestId("perf-export-leaderboard-csv")).not.toBeDisabled();
+  });
+
+  it("trades CSV button exports the full blotter and stays click-safe in jsdom", () => {
+    const trades = Array.from({ length: 60 }).map((_, i) => ({
+      entry_time: `2026-05-22T10:${String(i % 60).padStart(2, "0")}:00Z`,
+      exit_time: `2026-05-22T11:${String(i % 60).padStart(2, "0")}:00Z`,
+      entry_price: 100 + i, exit_price: 101 + i, qty: 1, pnl: i % 2 ? -2 : 3,
+      pnl_pct: i % 2 ? -2 : 3,
+    }));
+    seedSelected({ trades });
+    render(<PERFPane />);
+    // The 60-row blotter is windowed to 50 in the view, disclosed honestly.
+    expect(screen.getByTestId("perf-trades-window-note").textContent).toMatch(/last 50 trades/);
+    const csv = screen.getByTestId("perf-export-trades-csv");
+    expect(csv).not.toBeDisabled();
+    csv.click();
+  });
+
+  // F10 (audit A1) — Turkish internal identifiers/comments renamed; a source
+  // pin prevents them coming back.
+  it("PERF.tsx carries no Turkish identifiers or copy", () => {
+    const src = readFileSync(join(__dir, "PERF.tsx"), "utf8");
+    expect(src).not.toMatch(/perf-kpi-(lider|en-karli|geride-kalan|en-zararli)/);
+    expect(src).not.toMatch(/[ğüşıöçĞÜŞİÖÇ]/);
   });
 });

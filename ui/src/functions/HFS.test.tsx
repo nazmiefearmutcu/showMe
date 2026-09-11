@@ -118,6 +118,42 @@ function unavailablePayload() {
   };
 }
 
+/**
+ * F14 [H] regression fixture: the REAL columns of the populated SEC 13F
+ * DuckDB path (`sec_13f_adapter.query_holdings_by_security` returns
+ * `filer_cik / report_date / value_usd / shares`). Pre-fix the pane read
+ * `filer / market_value / quarter`, so this payload rendered "—" for
+ * Filer / Notional and fell back to quarter="latest".
+ */
+function liveStorePayload() {
+  return {
+    data: {
+      sources: ["sec_13f"],
+      elapsed_ms: 31,
+      data: {
+        status: "ok",
+        issuer: "AAPL",
+        quarter: "latest",
+        rows: [
+          {
+            filer_cik: "0001067983",
+            report_date: "2026-06-30",
+            value_usd: 123_456_789_000,
+            shares: 1_318_000_000,
+          },
+          {
+            filer_cik: "1364742",
+            report_date: "2026-06-30",
+            value_usd: 98_000_000_000,
+            shares: 1_040_000_000,
+          },
+        ],
+        next_actions: [],
+      },
+    },
+  };
+}
+
 /* ── tests ─────────────────────────────────────────────────────────── */
 
 beforeEach(() => {
@@ -201,5 +237,23 @@ describe("HFS pane — data honesty", () => {
     expect(
       screen.getByText(/ingest_13f\.py or retry the local SEC 13F store/i),
     ).toBeInTheDocument();
+  });
+
+  it("renders populated SEC 13F store columns (filer_cik/value_usd/report_date)", () => {
+    // F14 [H]: pre-fix this payload blanked Filer / Notional / Quarter.
+    setMockFn({ state: "ok", ...liveStorePayload() });
+    const { container } = render(<HFSPane code="HFS" symbol="AAPL" />);
+
+    // Filer column: CIK fallback (zero-padded), never blank.
+    expect(
+      screen.getAllByText(/CIK 0001067983/).length,
+    ).toBeGreaterThanOrEqual(1);
+    // Notional column: value_usd rendered as compact USD, never "—".
+    expect(container.textContent).toContain("123.46B");
+    // Quarter column: report_date, not the payload-level "latest" fallback.
+    expect(container.textContent).toContain("2026-06-30");
+    // A real store never raises the reference banner and reads live.
+    expect(screen.queryByLabelText("Reference data notice")).toBeNull();
+    expect(screen.getByText("live")).toBeInTheDocument();
   });
 });

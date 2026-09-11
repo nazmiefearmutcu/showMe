@@ -7,6 +7,12 @@
  * module filter chips (persisted under `showme.bmc.module`). Body: lesson
  * list + a reader panel for the selected lesson. Synth by design (curriculum
  * reference), and the pane says so — nothing pretends to be live data.
+ *
+ * Completion truth (A6 fix 2026-09-11): the backend curriculum always ships
+ * `progress:"not_started"` (no persistence exists server-side), so the pane
+ * tracks completion locally under `showme.bmc.completed` keyed by
+ * `module#lesson_no`. The Completed KPI counts that real local state instead
+ * of a field that could never be non-zero.
  */
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import {
@@ -44,6 +50,21 @@ interface BMCData {
 }
 
 const MODULE_IDS = ["all", "equities", "fixed income", "fx", "commodities", "macro", "alternatives"];
+const COMPLETED_STORAGE_KEY = "showme.bmc.completed";
+
+/** Local completion map: `module#lesson_no` → true. */
+function readCompleted(): Record<string, boolean> {
+  if (typeof localStorage === "undefined") return {};
+  try {
+    const raw = localStorage.getItem(COMPLETED_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return parsed as Record<string, boolean>;
+  } catch {
+    return {};
+  }
+}
 
 export function BMCPane({ code }: FunctionPaneProps) {
   const [moduleFilter, setModuleFilter] = usePersistentOption<string>(
@@ -52,6 +73,7 @@ export function BMCPane({ code }: FunctionPaneProps) {
     "all",
   );
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [completed, setCompleted] = useState<Record<string, boolean>>(readCompleted);
 
   const { state, data, error, refetch } = useFunction<BMCData>({
     code,
@@ -85,6 +107,29 @@ export function BMCPane({ code }: FunctionPaneProps) {
 
   const selected = rows.find((r) => lessonKey(r) === selectedKey) ?? rows[0] ?? null;
   const status = payload?.status ?? "—";
+
+  // Completion = local persistence OR (future) a real backend progress field.
+  const lessonCompleted = (r: BMCLesson): boolean =>
+    completed[lessonKey(r)] === true || r.progress === "completed";
+  const completedCount = rows.filter(lessonCompleted).length;
+
+  function toggleCompleted(r: BMCLesson) {
+    const key = lessonKey(r);
+    setCompleted((prev) => {
+      const next = { ...prev };
+      if (next[key]) delete next[key];
+      else next[key] = true;
+      if (typeof localStorage !== "undefined") {
+        try {
+          localStorage.setItem(COMPLETED_STORAGE_KEY, JSON.stringify(next));
+        } catch {
+          // Storage may be unavailable (private mode) — the session state
+          // still updates; nothing is claimed to persist.
+        }
+      }
+      return next;
+    });
+  }
 
   const chipOptions = [
     { value: "all", label: "All" },
@@ -136,8 +181,8 @@ export function BMCPane({ code }: FunctionPaneProps) {
         />
         <StatCard
           label="Completed"
-          value={String(rows.filter((r) => r.progress === "completed").length)}
-          caption={`OF ${rows.length} IN VIEW`}
+          value={String(completedCount)}
+          caption={`OF ${rows.length} IN VIEW · LOCAL`}
           tone="neutral"
         />
       </section>
@@ -177,11 +222,11 @@ export function BMCPane({ code }: FunctionPaneProps) {
                   <span style={lessonNoStyle}>{lesson.lesson_no ?? "·"}</span>
                   <span style={lessonTitleStyle}>{lesson.lesson ?? "—"}</span>
                   <Pill
-                    tone={lesson.progress === "completed" ? "positive" : "muted"}
+                    tone={lessonCompleted(lesson) ? "positive" : "muted"}
                     variant="soft"
                     withDot={false}
                   >
-                    {lesson.progress ?? "not_started"}
+                    {lessonCompleted(lesson) ? "completed" : (lesson.progress ?? "not_started")}
                   </Pill>
                 </button>
               </li>
@@ -196,6 +241,23 @@ export function BMCPane({ code }: FunctionPaneProps) {
                 {selected.module ?? "module"}
               </Pill>
               <span style={readerTitleStyle}>{selected.lesson ?? "—"}</span>
+              <button
+                type="button"
+                className="btn btn--ghost"
+                aria-label={
+                  lessonCompleted(selected)
+                    ? `Mark lesson not started: ${selected.lesson ?? ""}`
+                    : `Mark lesson completed: ${selected.lesson ?? ""}`
+                }
+                title={
+                  lessonCompleted(selected)
+                    ? "Mark this lesson not started"
+                    : "Mark this lesson completed (saved in this browser)"
+                }
+                onClick={() => toggleCompleted(selected)}
+              >
+                {lessonCompleted(selected) ? "Mark not started" : "Mark completed"}
+              </button>
             </div>
             <dl style={dlStyle}>
               <dt style={dtStyle}>Objective</dt>

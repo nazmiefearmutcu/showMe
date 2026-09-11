@@ -15,6 +15,8 @@
  */
 import { useMemo, type CSSProperties } from "react";
 import {
+  DataGrid,
+  type DataGridColumn,
   Empty,
   Pane,
   PaneBody,
@@ -27,6 +29,12 @@ import {
   StatusDivider,
   StatusSection,
 } from "@/design-system";
+import {
+  buildGridCsv,
+  downloadGridCsv,
+  gridCsvFilename,
+  type GridCsvColumn,
+} from "@/design-system/grid-csv";
 import { formatNumberFixed } from "@/lib/format";
 import { useFunction } from "@/lib/useFunction";
 import { defaultSymbolForFunction } from "@/lib/symbols";
@@ -84,6 +92,8 @@ const DAYS_OPTIONS = [
 ] as const;
 const DAYS_IDS = DAYS_OPTIONS.map((o) => o.value);
 
+const DEFAULT_FORMULA = "stdev(daily close returns) * sqrt(252)";
+
 /* ── pane ──────────────────────────────────────────────────────────── */
 
 export function HVTPane({ code, symbol }: FunctionPaneProps) {
@@ -117,6 +127,60 @@ export function HVTPane({ code, symbol }: FunctionPaneProps) {
   const status = payload?.status ?? "—";
   const isLive = state === "ok" && status === "ok";
   const isReference = status === "reference";
+
+  const columns = useMemo<DataGridColumn<HvtRow>[]>(
+    () => [
+      {
+        key: "metric",
+        header: "Window",
+        width: 150,
+        sortable: true,
+        sortValue: (r) => r.window_days ?? 0,
+        render: (r) => (
+          <span style={monoStrongStyle}>{r.metric ?? `${r.window_days}D`}</span>
+        ),
+      },
+      {
+        key: "realized_vol_pct",
+        header: "Realized vol",
+        numeric: true,
+        width: 116,
+        sortable: true,
+        render: (r) => <span style={monoStrongStyle}>{fmtPct(r.realized_vol_pct)}</span>,
+      },
+      {
+        key: "samples",
+        header: "Samples",
+        numeric: true,
+        width: 92,
+        sortable: true,
+        render: (r) => <span style={monoMutedStyle}>{r.samples ?? "—"}</span>,
+      },
+      {
+        key: "formula",
+        header: "Formula",
+        render: (r) => (
+          <span style={formulaStyle}>{r.formula ?? DEFAULT_FORMULA}</span>
+        ),
+      },
+    ],
+    [],
+  );
+
+  const csvColumns = useMemo<GridCsvColumn<HvtRow>[]>(
+    () => [
+      { key: "metric", header: "Window", value: (r) => r.metric ?? `${r.window_days}D` },
+      { key: "realized_vol_pct", header: "Realized vol (%)", value: (r) => r.realized_vol_pct ?? "" },
+      { key: "samples", header: "Samples", value: (r) => r.samples ?? "" },
+      { key: "formula", header: "Formula", value: (r) => r.formula ?? DEFAULT_FORMULA },
+    ],
+    [],
+  );
+
+  const exportCsv = () => {
+    const csv = buildGridCsv(csvColumns, rows);
+    downloadGridCsv(gridCsvFilename(`hvt-${effectiveSymbol || "windows"}`), csv);
+  };
 
   const body = !effectiveSymbol ? (
     <Empty title="Pick a symbol" body="HVT needs an equity / ETF with daily history." icon="⌖" />
@@ -219,31 +283,16 @@ export function HVTPane({ code, symbol }: FunctionPaneProps) {
       </section>
 
       <section style={tableWrapStyle} aria-label="Realized volatility windows">
-        <table style={tableStyle} aria-label="Volatility term structure">
-          <thead>
-            <tr>
-              {["Window", "Realized vol", "Samples", "Formula"].map((h, i) => (
-                <th key={h} style={{ ...thStyle, textAlign: i === 1 || i === 2 ? "right" : "left" }}>
-                  {h}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((r) => (
-              <tr key={r.window_days ?? r.metric} aria-label={`${r.metric}: ${fmtPct(r.realized_vol_pct)}`}>
-                <td style={{ ...tdStyle, ...monoStrongStyle }}>
-                  {r.metric ?? `${r.window_days}D`}
-                </td>
-                <td style={tdNumStyle}>{fmtPct(r.realized_vol_pct)}</td>
-                <td style={tdNumStyle}>{r.samples ?? "—"}</td>
-                <td style={{ ...tdStyle, color: "var(--text-mute)", fontSize: "var(--font-size-2xs)" }}>
-                  {r.formula ?? "stdev(daily close returns) * sqrt(252)"}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <DataGrid
+          columns={columns}
+          rows={rows}
+          rowKey={(r, i) => `${r.window_days ?? r.metric ?? "row"}-${i}`}
+          density="compact"
+          ariaLabel="Volatility term structure"
+          defaultSortKey="window_days"
+          defaultSortDir="ascending"
+          keyboardNavigable
+        />
         {isReference ? (
           <div style={refNoteStyle} role="status">
             Reference template (deterministic per-symbol seed) — NOT measured
@@ -277,6 +326,16 @@ export function HVTPane({ code, symbol }: FunctionPaneProps) {
                 onChange={setDays}
                 title="Lookback window"
               />
+              <button
+                type="button"
+                className="btn"
+                onClick={exportCsv}
+                disabled={rows.length === 0}
+                title="Download CSV"
+                aria-label={`Download ${rows.length} realized-vol windows as CSV`}
+              >
+                CSV
+              </button>
               <LoadStatePill state={state} status={status} />
               <RefreshButton
                 loading={state === "loading"}
@@ -370,36 +429,6 @@ const sparkFootStyle: CSSProperties = {
 
 const tableWrapStyle: CSSProperties = { minWidth: 0 };
 
-const tableStyle: CSSProperties = {
-  width: "100%",
-  borderCollapse: "collapse",
-  tableLayout: "fixed",
-  fontFamily: "JetBrains Mono, monospace",
-  fontVariantNumeric: "tabular-nums",
-  fontSize: "var(--font-size-sm)",
-};
-
-const thStyle: CSSProperties = {
-  padding: "4px 8px",
-  color: "var(--text-mute)",
-  fontWeight: 500,
-  letterSpacing: "0.06em",
-  fontSize: "var(--font-size-xs)",
-  textTransform: "uppercase",
-  borderBottom: "1px solid var(--border-subtle)",
-};
-
-const tdStyle: CSSProperties = {
-  padding: "3px 8px",
-  color: "var(--text-primary)",
-  borderBottom: "1px solid var(--border-subtle)",
-};
-
-const tdNumStyle: CSSProperties = {
-  ...tdStyle,
-  textAlign: "right",
-};
-
 const noteTextStyle: CSSProperties = {
   fontSize: "var(--font-size-2xs)",
   fontFamily: "JetBrains Mono, monospace",
@@ -411,6 +440,17 @@ const monoStrongStyle: CSSProperties = {
   fontVariantNumeric: "tabular-nums",
   color: "var(--text-primary)",
   fontWeight: 600,
+};
+
+const monoMutedStyle: CSSProperties = {
+  fontFamily: "JetBrains Mono, monospace",
+  fontVariantNumeric: "tabular-nums",
+  color: "var(--text-secondary)",
+};
+
+const formulaStyle: CSSProperties = {
+  color: "var(--text-mute)",
+  fontSize: "var(--font-size-2xs)",
 };
 
 const refNoteStyle: CSSProperties = {

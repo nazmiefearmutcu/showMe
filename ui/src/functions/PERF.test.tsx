@@ -79,8 +79,8 @@ describe("PERF pane", () => {
 
   // ─── H-SUP-1 — KPI strip semantic ────────────────────────────────────
   it("test_kpi_strip_all_positive_shows_no_loss_pill", () => {
-    // tüm-pozitif portföy: "En karli" + "Lider" görünür, "En zararli" YOK.
-    // "Geride kalan" = en düşük ama yine de pozitif → mute renkte.
+    // All-positive portfolio: "Top gainer" + "Leader" visible, "Top loser"
+    // absent. "Laggard" = lowest but still positive → muted tone.
     usePerformanceStore.setState({
       leaderboard: [
         _entry({ bot_id: "a", symbol: "BTC/USDT", total_pnl: 50, trade_count: 5 }),
@@ -89,17 +89,17 @@ describe("PERF pane", () => {
       ],
     });
     render(<PERFPane />);
-    // Lider (always shown):
-    const lider = screen.getByTestId("perf-kpi-lider");
-    expect(lider.textContent).toMatch(/BTC\/USDT/);
-    // En karli (positive exists):
-    const enKarli = screen.getByTestId("perf-kpi-en-karli");
-    expect(enKarli.textContent).toMatch(/BTC\/USDT/);
-    // Geride kalan (always shown when >1 bot):
-    const geride = screen.getByTestId("perf-kpi-geride-kalan");
-    expect(geride.textContent).toMatch(/SOL\/USDT/);
-    // En zararli — none of the bots is negative, pill must be absent.
-    expect(screen.queryByTestId("perf-kpi-en-zararli")).toBeNull();
+    // Leader (always shown):
+    const leader = screen.getByTestId("perf-kpi-leader");
+    expect(leader.textContent).toMatch(/BTC\/USDT/);
+    // Top gainer (positive exists):
+    const topGainer = screen.getByTestId("perf-kpi-top-gainer");
+    expect(topGainer.textContent).toMatch(/BTC\/USDT/);
+    // Laggard (always shown when >1 bot):
+    const laggard = screen.getByTestId("perf-kpi-laggard");
+    expect(laggard.textContent).toMatch(/SOL\/USDT/);
+    // Top loser — none of the bots is negative, pill must be absent.
+    expect(screen.queryByTestId("perf-kpi-top-loser")).toBeNull();
   });
 
   it("test_kpi_strip_mixed_shows_both_best_and_worst", () => {
@@ -112,13 +112,13 @@ describe("PERF pane", () => {
       ],
     });
     render(<PERFPane />);
-    expect(screen.getByTestId("perf-kpi-lider").textContent).toMatch(/BTC\/USDT/);
-    expect(screen.getByTestId("perf-kpi-en-karli").textContent).toMatch(/BTC\/USDT/);
-    expect(screen.getByTestId("perf-kpi-geride-kalan").textContent).toMatch(/SOL\/USDT/);
-    expect(screen.getByTestId("perf-kpi-en-zararli").textContent).toMatch(/SOL\/USDT/);
+    expect(screen.getByTestId("perf-kpi-leader").textContent).toMatch(/BTC\/USDT/);
+    expect(screen.getByTestId("perf-kpi-top-gainer").textContent).toMatch(/BTC\/USDT/);
+    expect(screen.getByTestId("perf-kpi-laggard").textContent).toMatch(/SOL\/USDT/);
+    expect(screen.getByTestId("perf-kpi-top-loser").textContent).toMatch(/SOL\/USDT/);
   });
 
-  it("all-negative portfolio still shows Lider (top-ranked, even if negative)", () => {
+  it("all-negative portfolio still shows Leader (top-ranked, even if negative)", () => {
     usePerformanceStore.setState({
       leaderboard: [
         _entry({ bot_id: "a", symbol: "BTC/USDT", total_pnl: -5,  trade_count: 5 }),
@@ -126,10 +126,10 @@ describe("PERF pane", () => {
       ],
     });
     render(<PERFPane />);
-    expect(screen.getByTestId("perf-kpi-lider").textContent).toMatch(/BTC\/USDT/);
-    expect(screen.getByTestId("perf-kpi-en-zararli").textContent).toMatch(/ETH\/USDT/);
-    // En karli pill absent (no positive bot).
-    expect(screen.queryByTestId("perf-kpi-en-karli")).toBeNull();
+    expect(screen.getByTestId("perf-kpi-leader").textContent).toMatch(/BTC\/USDT/);
+    expect(screen.getByTestId("perf-kpi-top-loser").textContent).toMatch(/ETH\/USDT/);
+    // Top gainer pill absent (no positive bot).
+    expect(screen.queryByTestId("perf-kpi-top-gainer")).toBeNull();
   });
 
   // ─── BUG #7 / F1 — simulated equity disclosure on the curve ──────────

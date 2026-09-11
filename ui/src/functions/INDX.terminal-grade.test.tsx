@@ -136,8 +136,8 @@ describe("INDX A1/A2 — input + family a11y", () => {
 
   it("family filter buttons have aria-labels", () => {
     render(<INDXPane />);
-    expect(screen.getByLabelText("Aile: momentum")).toBeInTheDocument();
-    expect(screen.getByLabelText("Aile: trend")).toBeInTheDocument();
+    expect(screen.getByLabelText("Family: momentum")).toBeInTheDocument();
+    expect(screen.getByLabelText("Family: trend")).toBeInTheDocument();
   });
 });
 

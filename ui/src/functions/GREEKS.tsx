@@ -141,7 +141,10 @@ export function GreeksPane({ code }: FunctionPaneProps) {
   const totals = payload?.totals;
 
   const rows: GreeksRow[] = useMemo(() => {
-    const perPosition = payload?.positions ?? [];
+    // Wire guard: the backend empty-book envelope historically shipped
+    // ``positions: 0`` (scalar). Spreading a non-array threw
+    // ``TypeError: 0 is not iterable`` during render. Never trust the type.
+    const perPosition = Array.isArray(payload?.positions) ? payload.positions : [];
     const aggregate: GreeksRow = {
       label: "NET — book",
       isAggregate: true,

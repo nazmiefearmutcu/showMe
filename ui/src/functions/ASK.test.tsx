@@ -35,6 +35,18 @@ import * as askLib from "@/lib/ask";
 import * as router from "@/lib/router";
 import type { AskResponse } from "@/lib/ask";
 
+// The pane reads the real LLM ledger (GET /api/llm/cost) on mount; keep the
+// suite deterministic by defaulting that fetch to "ledger unavailable".
+vi.mock("@/lib/sidecar", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/sidecar")>();
+  return {
+    ...actual,
+    sidecarFetch: vi.fn(() => Promise.reject(new Error("no sidecar in tests"))),
+  };
+});
+import { sidecarFetch } from "@/lib/sidecar";
+const sidecarMock = sidecarFetch as unknown as ReturnType<typeof vi.fn>;
+
 function makeResponse(overrides: Partial<AskResponse> = {}): AskResponse {
   return {
     query: "test query",
@@ -96,6 +108,9 @@ async function submitQuery(text = "find crypto opportunities") {
 
 beforeEach(() => {
   vi.spyOn(router, "navigate").mockImplementation(() => undefined);
+  // Pending forever by default: no state update fires outside act() for the
+  // tests that don't care about the ledger. Ledger tests override per-call.
+  sidecarMock.mockImplementation(() => new Promise(() => {}));
 });
 
 afterEach(() => {
@@ -336,5 +351,32 @@ describe("ASK pane — usability (U1)", () => {
       screen.getByRole("button", { name: /run query|type a query/i }),
     ).toHaveAttribute("aria-busy", "false");
     resolve(makeResponse());
+  });
+});
+
+describe("ASK pane - real LLM ledger (audit A8 M)", () => {
+  it("reads the real /api/llm/cost ledger for the cost pill", async () => {
+    vi.spyOn(askLib, "ask").mockResolvedValue(makeResponse());
+    sidecarMock.mockResolvedValueOnce({
+      today_usd: 0.42,
+      cap_usd: 5,
+      remaining_usd: 4.58,
+      exhausted: false,
+    });
+    render(<ASKPane code="ASK" />);
+    const pill = await screen.findByLabelText(/LLM spend today/i);
+    expect(pill.textContent).toMatch(/\$0\.4200 \/ \$5\.00/);
+    expect(sidecarMock).toHaveBeenCalledWith("/api/llm/cost");
+    // The hardcoded $1.00 cap must be gone from the pane.
+    expect(screen.queryByText(/\$1\.00/)).toBeNull();
+  });
+
+  it("falls back to a labelled session cost when the ledger is unavailable", async () => {
+    vi.spyOn(askLib, "ask").mockResolvedValue(makeResponse());
+    sidecarMock.mockRejectedValueOnce(new Error("ledger down"));
+    render(<ASKPane code="ASK" />);
+    const pill = await screen.findByLabelText(/ledger unavailable/i);
+    expect(pill.textContent).toMatch(/session \$0\.0000/);
+    expect(screen.queryByText(/\$1\.00/)).toBeNull();
   });
 });

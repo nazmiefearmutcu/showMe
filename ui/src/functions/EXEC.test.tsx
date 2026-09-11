@@ -165,6 +165,23 @@ describe("EXEC pane — load states", () => {
     // Parent id lands in the footer.
     expect(container.textContent).toContain("PLAN-AAPL-TWAP");
   });
+
+  it("labels plan metrics as planned/simulated, never as execution results (F9/M)", () => {
+    setMockFn({ state: "ok", ...okResult() });
+    render(<EXECPane code="EXEC" symbol="AAPL" />);
+    // Lifecycle pill: action=plan executes nothing.
+    expect(
+      screen.getByText(/PLANNED · SIMULATED VS INTERVAL BARS/i),
+    ).toBeInTheDocument();
+    // The IS/slip cards carry the planned qualifier; avg fill is "simulated".
+    expect(
+      screen.getByText(/PLANNED · AVG IMPLEMENTATION SHORTFALL/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/PLANNED · WORST SLICE VS INTERVAL VWAP/i),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/SIMULATED AVG FILL/i)).toBeInTheDocument();
+  });
 });
 
 describe("EXEC pane — cost-tone semantics", () => {

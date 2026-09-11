@@ -1,14 +1,18 @@
 /**
- * CHGS pane — render-contract + synthetic-defect tests (CRVF/GEX pattern).
+ * CHGS pane — render-contract + honesty tests (CRVF/GEX pattern).
  *
- * The backend CHGS keeps a SYNTHETIC `_chart_template` branch unless
- * `live_chart` is passed. The pane always requests the live path. Pins:
+ * The backend CHGS defers to the live TECH studies by default; only
+ * `reference=true` serves the labelled synthetic template. Pins:
  *
  *  - the load states (loading / error / ok) render;
  *  - a LIVE payload renders summary cards, the close/study overlay chart,
  *    and the per-study latest-values table — with a "live studies" pill;
- *  - a SYNTHETIC template payload (no `indicators` map) gets the prominent
- *    "synthetic template" pill + warning and never renders as live data;
+ *  - a SYNTHETIC template payload (status=reference / data_mode=modeled)
+ *    gets the prominent "synthetic template" pill + warning and never
+ *    renders as live data;
+ *  - a PROVIDER OUTAGE envelope (provider_unavailable / no_price_history)
+ *    renders an honest outage Empty with the backend reason — it is never
+ *    labelled "synthetic template";
  *  - the study selector chip interaction re-labels the overlay.
  *
  * `useFunction` is mocked via a mutable shared state.
@@ -24,6 +28,7 @@ interface MockFnState {
   data?: {
     data?: unknown;
     sources?: string[];
+    warnings?: string[];
     metadata?: Record<string, unknown>;
     elapsed_ms?: number;
   };
@@ -90,6 +95,8 @@ function syntheticPayload() {
   return {
     data: {
       data: {
+        status: "reference",
+        data_mode: "modeled",
         symbol: "AAPL",
         last: 123.45,
         rsi_14: 54.2,
@@ -99,6 +106,25 @@ function syntheticPayload() {
       sources: ["showme_chart_model"],
       metadata: { alias_of: "TECH", live: false },
       elapsed_ms: 1,
+    },
+  };
+}
+
+function outagePayload() {
+  return {
+    data: {
+      data: {
+        status: "provider_unavailable",
+        rows: [],
+        ohlcv: [],
+        summary: { symbol: "AAPL", days: 180 },
+        reason: "yfinance fetch failed: HTTP 503 from quote provider",
+        next_actions: ["Try again later or check symbol support."],
+      },
+      sources: ["yfinance"],
+      warnings: ["yfinance: HTTP 503 from quote provider"],
+      metadata: { alias_of: "TECH" },
+      elapsed_ms: 12,
     },
   };
 }
@@ -196,6 +222,55 @@ describe("CHGS pane — synthetic honesty", () => {
     const { container } = render(<CHGSPane code="CHGS" symbol="AAPL" />);
     expect(container.querySelector('svg[role="img"]')).toBeNull();
     expect(container.querySelector("tbody")).toBeNull();
+  });
+});
+
+describe("CHGS pane — provider outage honesty", () => {
+  it("renders the outage reason and never claims the synthetic template", () => {
+    setMockFn({ state: "ok", ...outagePayload() });
+    const { container } = render(<CHGSPane code="CHGS" symbol="AAPL" />);
+    expect(screen.getByText(/Chart studies unavailable/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/yfinance fetch failed: HTTP 503/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/synthetic template/i)).toBeNull();
+    expect(screen.queryByText(/NOT live OHLCV data/i)).toBeNull();
+    expect(container.querySelector('svg[role="img"]')).toBeNull();
+  });
+
+  it("covers the no_price_history envelope with its backend reason", () => {
+    setMockFn({
+      state: "ok",
+      data: {
+        data: {
+          status: "no_price_history",
+          rows: [],
+          ohlcv: [],
+          reason:
+            "provider returned no price history for ZZZZ (180d, interval 1d)",
+        },
+        sources: ["yfinance"],
+        warnings: ["no price history"],
+        metadata: { alias_of: "TECH" },
+      },
+    });
+    render(<CHGSPane code="CHGS" symbol="ZZZZ" />);
+    expect(screen.getByText(/no price history for ZZZZ/i)).toBeInTheDocument();
+    expect(screen.queryByText(/synthetic template/i)).toBeNull();
+  });
+
+  it("falls back to the envelope warning for a keyless empty body", () => {
+    setMockFn({
+      state: "ok",
+      data: {
+        data: {},
+        warnings: ["no yfinance"],
+        metadata: { alias_of: "TECH" },
+      },
+    });
+    render(<CHGSPane code="CHGS" symbol="AAPL" />);
+    expect(screen.getByText(/no yfinance/i)).toBeInTheDocument();
+    expect(screen.queryByText(/synthetic template/i)).toBeNull();
   });
 });
 

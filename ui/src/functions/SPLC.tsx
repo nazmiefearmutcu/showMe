@@ -98,10 +98,12 @@ export function SPLCPane({ code, symbol }: FunctionPaneProps) {
     "all",
   );
   const effectiveSymbol = symbol || defaultSymbolForFunction(code, ["EQUITY", "ETF"]);
+  // F14 [L] (audit A10 SPLC): the backend is live-by-default and never reads a
+  // `live` param, so the old `params: { live: true }` only polluted the fetch
+  // key. Removed — the request is now param-free (symbol carries the input).
   const { state, data, error, refetch } = useFunction<SPLCData>({
     code,
     symbol: effectiveSymbol,
-    params: { live: true },
     enabled: !!effectiveSymbol,
   });
 

@@ -25,9 +25,14 @@
  *        the fallback ($10k) equity (equity_source === "fallback_10k").
  *   F4 — Skeleton while first load is in flight; design-system Empty for
  *        empty bot/feed tables; error region is a polite live region.
- *   F5 — both tables carry caption + scope + aria-label + numeric grid.
+ *   F5 — both tables carry scope + aria-label (DataGrid) + numeric grid.
  *   F6 — refresh aria-label + busy state; feed window disclosed; KPI strip
  *        shows an at-a-glance Stuck/Degraded count.
+ *   F10 (fix lane, audit A10) — "Signals today" uses the backend's
+ *        authoritative per_bot_signal_count to disclose a truncated feed
+ *        window (renders "≥N" instead of silently capping at 50); both
+ *        supervision tables migrated to the DataGrid kit with full CSV
+ *        exports.
  */
 import { useMemo, useRef } from "react";
 import { useBotsSupervisionStore, type FeedSignal, type SupervisedBot } from "@/lib/bots-supervision-store";
@@ -35,7 +40,17 @@ import { useBotEcosystemPolling } from "@/lib/useBotEcosystemPolling";
 import { formatPrice } from "@/lib/format";
 import { isKaosRecord } from "@/lib/kaos-venues";
 import { KaosEngineBadge, VenueBadges } from "@/functions/KaosBadges";
-import { Empty, Pill, SkeletonRow } from "@/design-system";
+import {
+  buildGridCsv,
+  DataGrid,
+  downloadGridCsv,
+  Empty,
+  gridCsvFilename,
+  Pill,
+  SkeletonRow,
+  type DataGridColumn,
+  type GridCsvColumn,
+} from "@/design-system";
 
 // Sentinel the backend stamps onto a SignalEntry whose live order was sized
 // on the fallback equity ($10k) rather than real broker equity.
@@ -185,13 +200,29 @@ function relativeTickAge(ts: string | undefined | null, now: number): { text: st
 function KPIStrip({ unhealthy }: { unhealthy: number }) {
   const stats = useBotsSupervisionStore((s) => s.stats);
   const generatedAt = useBotsSupervisionStore((s) => s.generatedAt);
+  // F10 (audit A10) — the feed window (last FEED_WINDOW signals) can truncate
+  // the day's count. When the authoritative per-bot totals prove truncation,
+  // the KPI renders "≥N" and explains the lower bound instead of silently
+  // undercounting. Exact when the feed covers every known signal.
+  const signalsTodayTitle = stats.feed_truncated
+    ? `Lower bound: the feed window shows the newest ${FEED_WINDOW} of ` +
+      `${stats.signals_total ?? "?"} signals on record, so more may have ` +
+      `occurred today. Increase the feed window or query the bots directly.`
+    : `Signals counted from the current feed; ` +
+      `${stats.signals_total ?? "unknown"} signals on record across all bots.`;
   return (
     <div style={{ display: "flex", gap: 24, alignItems: "center", padding: "8px 16px",
                   borderBottom: "1px solid var(--border-card)" }}>
       <KPI label="Total bots" value={stats.total} />
       <KPI label="Enabled" value={stats.enabled} />
       <KPI label="Live" value={stats.live} highlight={stats.live > 0 ? "negative" : undefined} />
-      <KPI label="Signals today" value={stats.signals_today} />
+      <div data-testid="bots-kpi-signals-today" title={signalsTodayTitle}>
+        <KPI
+          label="Signals today"
+          value={stats.signals_today}
+          valuePrefix={stats.feed_truncated ? "≥" : undefined}
+        />
+      </div>
       {/* F6 — at-a-glance unhealthy count so a supervisor sees problems
           immediately. Honest 0 when nothing is wrong. */}
       <div data-testid="bots-kpi-unhealthy">
@@ -208,8 +239,8 @@ function KPIStrip({ unhealthy }: { unhealthy: number }) {
   );
 }
 
-function KPI({ label, value, highlight }: {
-  label: string; value: number; highlight?: "negative" | "warn";
+function KPI({ label, value, highlight, valuePrefix }: {
+  label: string; value: number; highlight?: "negative" | "warn"; valuePrefix?: string;
 }) {
   const cls = value > 0 && highlight === "negative"
     ? "u-text-negative"
@@ -220,7 +251,7 @@ function KPI({ label, value, highlight }: {
     <div>
       <div style={{ fontSize: "var(--font-size-2xs)" }} className="u-text-secondary">{label}</div>
       <div style={{ fontSize: "var(--font-size-3xl)", fontWeight: 600 }} className={cls}>
-        {value}
+        {valuePrefix}{value}
       </div>
     </div>
   );
@@ -246,6 +277,51 @@ function resolveSignalCount(
   };
 }
 
+/** KAOS Multibot pinned first (stable); every other row keeps payload order. */
+export function sortBotsForDisplay(bots: SupervisedBot[]): SupervisedBot[] {
+  return [...bots].sort((a, b) => Number(isKaosRecord(b)) - Number(isKaosRecord(a)));
+}
+
+const BOT_CSV_COLUMNS: GridCsvColumn<SupervisedBot>[] = [
+  { key: "symbol", header: "Symbol", value: (b) => b.symbol },
+  { key: "timeframe", header: "TF", value: (b) => b.timeframe },
+  { key: "mode", header: "Mode", value: (b) => b.mode },
+  { key: "enabled", header: "Enabled", value: (b) => b.enabled },
+  { key: "status", header: "Status", value: (b) => deriveHealth(b).label },
+  {
+    key: "signal_count",
+    header: "Signals",
+    value: (b) =>
+      typeof b.signal_count === "number" && Number.isFinite(b.signal_count)
+        ? b.signal_count
+        : "",
+  },
+  { key: "last_event_at", header: "Last tick", value: (b) => b.last_event_at ?? "" },
+  { key: "last_action", header: "Last action", value: (b) => b.last_action ?? "" },
+  {
+    key: "permission_revoked",
+    header: "Permission revoked",
+    value: (b) => b.permission_revoked ?? false,
+  },
+];
+
+const FEED_CSV_COLUMNS: GridCsvColumn<FeedSignal>[] = [
+  { key: "timestamp", header: "Time", value: (s) => s.timestamp ?? s.bar_time },
+  { key: "bot_symbol", header: "Bot", value: (s) => s.bot_symbol },
+  { key: "kind", header: "Kind", value: (s) => s.kind },
+  { key: "price", header: "Price", value: (s) => s.price },
+  { key: "action", header: "Action", value: (s) => s.action },
+  { key: "equity_source", header: "Equity source", value: (s) => s.equity_source ?? "" },
+];
+
+export function buildBotsCsv(bots: SupervisedBot[]): string {
+  return buildGridCsv(BOT_CSV_COLUMNS, sortBotsForDisplay(bots));
+}
+
+export function buildFeedCsv(feed: FeedSignal[]): string {
+  return buildGridCsv(FEED_CSV_COLUMNS, feed);
+}
+
 function BotTable() {
   const bots = useBotsSupervisionStore((s) => s.bots);
   const feed = useBotsSupervisionStore((s) => s.feed);
@@ -262,6 +338,108 @@ function BotTable() {
     }
     return acc;
   }, [feed]);
+  const rows = useMemo(() => sortBotsForDisplay(bots), [bots]);
+  // F10 (audit A10) — DataGrid kit: sortable columns + keyboard-reachable
+  // headers + clipboard support (the table previously had none of these).
+  const columns = useMemo<DataGridColumn<SupervisedBot>[]>(() => [
+    {
+      key: "symbol",
+      header: "Symbol",
+      width: 150,
+      sortable: true,
+      sortValue: (b) => b.symbol,
+      render: (b) => (
+        <>
+          <strong>{b.symbol}</strong>
+          {isKaosRecord(b) && <KaosEngineBadge />}
+          {b.permission_revoked && <PermRevokedBadge />}
+        </>
+      ),
+    },
+    {
+      key: "venues",
+      header: "Venues",
+      width: 110,
+      align: "center",
+      // Venue chips render only when the payload carries venues (the list
+      // payload currently does not) — hidden otherwise, never faked.
+      render: (b) => <VenueBadges venues={b.venues} />,
+    },
+    {
+      key: "timeframe",
+      header: "TF",
+      width: 60,
+      align: "center",
+      sortable: true,
+      sortValue: (b) => b.timeframe,
+      render: (b) => b.timeframe,
+    },
+    {
+      key: "status",
+      header: "Status",
+      width: 110,
+      align: "center",
+      sortable: true,
+      sortValue: (b) => deriveHealth(b).label,
+      render: (b) => <StatusPill bot={b} />,
+    },
+    {
+      key: "signals",
+      header: "Signals",
+      width: 90,
+      numeric: true,
+      align: "right",
+      sortable: true,
+      sortValue: (b) => resolveSignalCount(b, byBot[b.id]).value,
+      render: (b) => {
+        const sigCount = resolveSignalCount(b, byBot[b.id]);
+        return (
+          <span
+            data-testid={`bots-signal-count-${b.id}`}
+            title={sigCount.tooltip}
+          >
+            {sigCount.value}
+          </span>
+        );
+      },
+    },
+    {
+      key: "last_event_at",
+      header: "Last tick",
+      width: 100,
+      sortable: true,
+      sortValue: (b) => b.last_event_at ?? "",
+      render: (b) => {
+        const age = relativeTickAge(b.last_event_at, now);
+        return (
+          <span
+            data-testid={`bots-last-tick-${b.id}`}
+            className={age.stale ? "u-text-secondary" : undefined}
+            title={b.last_event_at ? formatLocalTimestamp(b.last_event_at) : undefined}
+          >
+            {age.text}
+          </span>
+        );
+      },
+    },
+    {
+      key: "last_signal",
+      header: "Last signal",
+      render: (b) => {
+        const sig = byBot[b.id]?.[0];
+        return sig ? (
+          <span>
+            {sig.kind} @ {formatPrice(sig.price)} ({sig.action})
+            <span className="u-text-secondary">
+              {" · " + formatLocalTimestamp(sig.timestamp ?? sig.bar_time)}
+            </span>
+          </span>
+        ) : (
+          <span className="u-text-secondary">(no signals)</span>
+        );
+      },
+    },
+  ], [byBot, now]);
   if (bots.length === 0) {
     return (
       <div data-testid="bots-empty">
@@ -270,86 +448,93 @@ function BotTable() {
     );
   }
   return (
-    <table
-      className="terminal-grid-numeric"
-      aria-label="Bot supervision table"
-      style={{ width: "100%", fontSize: "var(--font-size-md)", marginTop: 8 }}
-    >
-      <caption className="u-sr-only">
-        Audit summary across all bots — symbol, timeframe, health, signal
-        count and last-tick freshness.
-      </caption>
-      <thead>
-        <tr className="u-text-secondary">
-          <th scope="col" align="left">Symbol</th>
-          <th scope="col">Venues</th>
-          <th scope="col">TF</th>
-          <th scope="col">Status</th>
-          <th scope="col" align="right">Signals</th>
-          <th scope="col" align="left">Last tick</th>
-          <th scope="col" align="left">Last signal</th>
-        </tr>
-      </thead>
-      <tbody>
-        {/* KAOS Multibot pinned first (stable) — the default bot leads the
-            supervision table; every other row keeps payload order. */}
-        {[...bots]
-          .sort((a, b) => Number(isKaosRecord(b)) - Number(isKaosRecord(a)))
-          .map((b) => {
-          const sig = byBot[b.id]?.[0];
-          const sigCount = resolveSignalCount(b, byBot[b.id]);
-          const age = relativeTickAge(b.last_event_at, now);
-          return (
-            <tr key={b.id} style={{ borderBottom: "1px solid var(--border-card)" }}>
-              <td>
-                <strong>{b.symbol}</strong>
-                {isKaosRecord(b) && <KaosEngineBadge />}
-                {b.permission_revoked && <PermRevokedBadge />}
-              </td>
-              <td align="center">
-                {/* Venue chips render only when the payload carries venues
-                    (the list payload currently does not) — hidden otherwise,
-                    never faked. */}
-                <VenueBadges venues={b.venues} />
-              </td>
-              <td align="center">{b.timeframe}</td>
-              <td align="center"><StatusPill bot={b} /></td>
-              <td
-                align="right"
-                title={sigCount.tooltip}
-                data-testid={`bots-signal-count-${b.id}`}
-              >
-                {sigCount.value}
-              </td>
-              <td
-                data-testid={`bots-last-tick-${b.id}`}
-                className={age.stale ? "u-text-secondary" : undefined}
-                title={b.last_event_at ? formatLocalTimestamp(b.last_event_at) : undefined}
-              >
-                {age.text}
-              </td>
-              <td>
-                {sig ? (
-                  <span>
-                    {sig.kind} @ {formatPrice(sig.price)} ({sig.action})
-                    <span className="u-text-secondary">
-                      {" · " + formatLocalTimestamp(sig.timestamp ?? sig.bar_time)}
-                    </span>
-                  </span>
-                ) : (
-                  <span className="u-text-secondary">(no signals)</span>
-                )}
-              </td>
-            </tr>
-          );
-        })}
-      </tbody>
-    </table>
+    <div style={{ marginTop: 8 }}>
+      <DataGrid
+        columns={columns}
+        rows={rows}
+        rowKey={(b) => b.id}
+        density="compact"
+        ariaLabel="Bot supervision table"
+        // Keep the KAOS-first payload order initially; headers cycle
+        // asc → desc → none without re-pinning.
+        defaultSortKey="symbol"
+        defaultSortDir="none"
+      />
+    </div>
   );
 }
 
 function SignalFeed() {
   const feed = useBotsSupervisionStore((s) => s.feed);
+  const columns = useMemo<DataGridColumn<FeedSignal>[]>(() => [
+    {
+      key: "timestamp",
+      header: "Time",
+      width: 180,
+      sortable: true,
+      sortValue: (s) => s.timestamp ?? s.bar_time ?? "",
+      render: (s) => formatLocalTimestamp(s.timestamp ?? s.bar_time),
+    },
+    {
+      key: "bot_symbol",
+      header: "Bot",
+      width: 120,
+      sortable: true,
+      sortValue: (s) => s.bot_symbol,
+      render: (s) => (
+        <span style={{ background: "var(--bg-elev-2)", padding: "1px 4px", borderRadius: 3 }}>
+          {s.bot_symbol}
+        </span>
+      ),
+    },
+    {
+      key: "kind",
+      header: "Kind",
+      width: 70,
+      align: "center",
+      sortable: true,
+      sortValue: (s) => s.kind ?? "",
+      render: (s) => (
+        <span className={s.kind === "entry" ? "u-text-positive" : "u-text-warn"}>
+          {s.kind}
+        </span>
+      ),
+    },
+    {
+      key: "price",
+      header: "Price",
+      width: 110,
+      numeric: true,
+      align: "right",
+      sortable: true,
+      sortValue: (s) => s.price,
+      render: (s) => formatPrice(s.price),
+    },
+    {
+      key: "action",
+      header: "Action",
+      width: 120,
+      align: "center",
+      sortable: true,
+      sortValue: (s) => s.action ?? "",
+      render: (s) => (
+        <>
+          {s.action}
+          {s.equity_source === FALLBACK_EQUITY_SOURCE && (
+            <span
+              data-testid="bots-feed-fallback-equity"
+              title="This live order was sized with the fallback ($10k) balance instead of the real broker balance."
+              style={{ marginLeft: 6, display: "inline-block" }}
+            >
+              <Pill tone="warn" variant="soft" withDot={false}>
+                ≈$10k
+              </Pill>
+            </span>
+          )}
+        </>
+      ),
+    },
+  ], []);
   if (feed.length === 0) {
     return (
       <div data-testid="bots-feed-empty">
@@ -358,66 +543,18 @@ function SignalFeed() {
     );
   }
   return (
-    <table
-      className="terminal-grid-numeric"
-      aria-label="Unified signal feed"
-      style={{ width: "100%", fontSize: "var(--font-size-sm)", marginTop: 8 }}
-    >
-      <caption className="u-sr-only">
-        Latest signals from all bots, newest first — time, bot, type,
-        price and action.
-      </caption>
-      <thead>
-        <tr className="u-text-secondary">
-          <th scope="col" align="left">Time</th>
-          <th scope="col" align="left">Bot</th>
-          <th scope="col">Kind</th>
-          <th scope="col" align="right">Price</th>
-          <th scope="col">Action</th>
-        </tr>
-      </thead>
-      <tbody>
-        {feed.map((s) => {
-          const isFallback = s.equity_source === FALLBACK_EQUITY_SOURCE;
-          // P3-B — stable composite key. The old trailing array index `-${i}`
-          // shifted for every row when a newer signal prepended, defeating key
-          // stability. Disambiguate same-bar entry/exit via kind + action
-          // (both on FeedSignal) instead of the positional index.
-          const rowKey = `${s.bot_id}-${s.bar_time}-${s.bar_index}-${s.action ?? ""}-${s.kind ?? ""}`;
-          return (
-            <tr key={rowKey}>
-              <td>{formatLocalTimestamp(s.timestamp ?? s.bar_time)}</td>
-              <td>
-                <span style={{ background: "var(--bg-elev-2)", padding: "1px 4px", borderRadius: 3 }}>
-                  {s.bot_symbol}
-                </span>
-              </td>
-              <td
-                align="center"
-                className={s.kind === "entry" ? "u-text-positive" : "u-text-warn"}
-              >
-                {s.kind}
-              </td>
-              <td align="right">{formatPrice(s.price)}</td>
-              <td align="center">
-                {s.action}
-                {isFallback && (
-                  <span
-                    data-testid="bots-feed-fallback-equity"
-                    title="This live order was sized with the fallback ($10k) balance instead of the real broker balance."
-                    style={{ marginLeft: 6, display: "inline-block" }}
-                  >
-                    <Pill tone="warn" variant="soft" withDot={false}>
-                      ≈$10k
-                    </Pill>
-                  </span>
-                )}
-              </td>
-            </tr>
-          );
-        })}
-      </tbody>
-    </table>
+    <div style={{ marginTop: 8 }}>
+      <DataGrid
+        columns={columns}
+        rows={feed}
+        density="compact"
+        ariaLabel="Unified signal feed"
+        // P3-B — stable composite key (no positional index).
+        rowKey={(s) => `${s.bot_id}-${s.bar_time}-${s.bar_index}-${s.action ?? ""}-${s.kind ?? ""}`}
+        defaultSortKey="timestamp"
+        defaultSortDir="none"
+      />
+    </div>
   );
 }
 
@@ -426,6 +563,7 @@ export function BOTSPane() {
   const error = useBotsSupervisionStore((s) => s.error);
   const loading = useBotsSupervisionStore((s) => s.loading);
   const bots = useBotsSupervisionStore((s) => s.bots);
+  const feed = useBotsSupervisionStore((s) => s.feed);
 
   // BUG #10 — unified polling.  PERF mounts the same hook; once is enough,
   // but mounting it in both panes is safe (each install owns its own
@@ -463,9 +601,22 @@ export function BOTSPane() {
           </div>
         )}
         {/* BUG #11 — refresh control sits next to the table heading; the
-            label spells out that it refreshes the WHOLE supervisor view. */}
+            label spells out that it refreshes the WHOLE supervisor view.
+            F10 (audit A10) — CSV export of the full bot table next to it. */}
         <div style={{ display: "flex", alignItems: "center", margin: "12px 0 4px" }}>
           <h4 style={{ margin: 0 }}>Bots</h4>
+          <button
+            data-testid="bots-export-csv"
+            type="button"
+            aria-label={`Download all ${bots.length} bots as CSV`}
+            title="Download CSV"
+            disabled={bots.length === 0}
+            onClick={() =>
+              downloadGridCsv(gridCsvFilename("bots-supervision"), buildBotsCsv(bots))
+            }
+          >
+            CSV
+          </button>
           <button
             data-testid="bots-refresh-all"
             aria-label="Refresh the full audit view"
@@ -486,7 +637,21 @@ export function BOTSPane() {
         ) : (
           <BotTable />
         )}
-        <h4 style={{ margin: "16px 0 4px" }}>Signal feed (last {FEED_WINDOW} signals)</h4>
+        <div style={{ display: "flex", alignItems: "center", margin: "16px 0 4px" }}>
+          <h4 style={{ margin: 0 }}>Signal feed (last {FEED_WINDOW} signals)</h4>
+          <button
+            data-testid="bots-feed-export-csv"
+            type="button"
+            aria-label={`Download all ${feed.length} feed signals as CSV`}
+            title="Download CSV"
+            disabled={feed.length === 0}
+            onClick={() =>
+              downloadGridCsv(gridCsvFilename("bots-signal-feed"), buildFeedCsv(feed))
+            }
+          >
+            CSV
+          </button>
+        </div>
         <SignalFeed />
       </div>
     </div>

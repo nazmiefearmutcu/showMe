@@ -22,6 +22,7 @@ import {
   Tabs,
 } from "@/design-system";
 import { useFunction } from "@/lib/useFunction";
+import { useVisibilityTick } from "@/lib/useVisibilityTick";
 import {
   FunctionControlGroup,
   LoadStatePill,
@@ -403,14 +404,25 @@ function KPIRibbon({ stats, stamp }: { stats: EcoStats; stamp: string }) {
 }
 
 function NextPrintsRail({ events }: { events: EcoEvent[] }) {
+  // AUDIT A10 [L]: "Next prints" used a one-shot `Date.now()` inside a memo
+  // keyed only on `events`, so a release that had just passed stayed listed
+  // until the next manual refetch. A visibility-paused minute clock (tick NOT
+  // in fetch params) recomputes the upcoming set while the tab is visible.
+  const tick = useVisibilityTick(60_000);
+  // `tick` is the wall-clock re-render trigger; Date.now() itself is
+  // non-reactive, so the hook rule flags `tick` as an unnecessary dependency.
+  const now = useMemo(
+    () => Date.now(),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- tick re-reads the wall clock each visible minute
+    [tick],
+  );
   const upcoming = useMemo(() => {
-    const now = Date.now();
     return events
       .map((e) => ({ e, t: parseTime(e) }))
       .filter((x) => x.t != null && (x.t as number) >= now)
       .sort((a, b) => (a.t as number) - (b.t as number))
       .slice(0, 6);
-  }, [events]);
+  }, [events, now]);
   return (
     <aside style={railStyle} aria-label="Upcoming prints">
       <div style={railHeaderStyle}>

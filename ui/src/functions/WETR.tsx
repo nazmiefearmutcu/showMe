@@ -1,14 +1,16 @@
 /**
  * WETR — Weather trends for commodity-relevant regions.
  *
- * Sidecar returns `status: ok` when OpenWeather One Call is configured;
- * otherwise `provider_unavailable` with `source_mode: seasonal_model`
- * and a labelled seasonal-model row set. The pane shows the daily grid
- * (HDD/CDD/risk_flag/commodity_impact), a region tab strip, and a
- * provider-status banner so the user never confuses the seasonal-model
- * stub for live OpenWeather data.
+ * Backend provider chain (engine/functions/commodity/_funcs.py
+ * WETRFunction): keyed OpenWeatherMap when configured, otherwise the
+ * KEYLESS Open-Meteo adapter — so the default user gets genuinely live
+ * daily forecast rows (`status: ok`, `source_mode: live_open_meteo`).
+ * Only `reference=true` or a provider outage serves the labelled
+ * seasonal-model rows (`source_mode: seasonal_model`,
+ * `status: provider_unavailable`). The pane labels the pill + notice from
+ * that real backend `source_mode` so live rows are never called a model.
  */
-import { useMemo, type CSSProperties } from "react";
+import { useEffect, useMemo, type CSSProperties } from "react";
 import {
   DataGrid,
   type DataGridColumn,
@@ -76,6 +78,12 @@ const LOCATION_IDS = LOCATIONS.map((l) => l.id);
 
 const REFRESH_MS = 60_000;
 
+/** Friendly provider names for the backend `source_mode` values. */
+const WEATHER_SOURCE_LABELS: Record<string, string> = {
+  live_open_meteo: "Open-Meteo",
+  live_openweathermap: "OpenWeatherMap",
+};
+
 export function WETRPane({ code }: FunctionPaneProps) {
   const [location, setLocation] = usePersistentOption<LocationId>(
     "showme.wetr-location",
@@ -87,8 +95,16 @@ export function WETRPane({ code }: FunctionPaneProps) {
 
   const { state, data, error, refetch } = useFunction<unknown>({
     code,
-    params: { location, days: 10, tick },
+    // Audit A4-M: the tick must stay OUT of params — useFunction fingerprints
+    // params into the fetch key, so a tick here re-keyed every poll into a
+    // fresh load (skeleton flash + cleared rows). Poll via refetch() instead.
+    params: { location, days: 10 },
   });
+  useEffect(() => {
+    if (tick === 0) return; // initial mount handled by useFunction's own load
+    refetch();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- tick is the trigger
+  }, [tick]);
 
   const payload = useMemo<WETRPayload>(
     () =>
@@ -104,7 +120,12 @@ export function WETRPane({ code }: FunctionPaneProps) {
   );
 
   const sourceMode = payload.source_mode ?? rows[0]?.source_mode ?? "—";
-  const isLive = payload.status === "ok" && sourceMode.includes("openweather");
+  // Audit A4-H: live is earned by the backend's live_* mode (live_open_meteo
+  // is the keyless DEFAULT), not by a substring that only matched the keyed
+  // provider. The seasonal-model branch applies to seasonal_model only.
+  const isLive = payload.status === "ok" && /^live_/.test(sourceMode);
+  const isSeasonalModel = sourceMode === "seasonal_model";
+  const providerLabel = WEATHER_SOURCE_LABELS[sourceMode] ?? sourceMode;
   const utcStamp = useUtcStamp(tick);
 
   const stats = useMemo(() => deriveWeatherStats(rows), [rows]);
@@ -206,8 +227,8 @@ export function WETRPane({ code }: FunctionPaneProps) {
             <FunctionControlGroup>
               <Pill tone="muted" variant="soft" withDot={false}>{rows.length} d</Pill>
               <Pill tone="accent" variant="soft" withDot={false}>{utcStamp} UTC</Pill>
-              <Pill tone={isLive ? "positive" : "warn"} variant="soft">
-                {isLive ? "live forecast" : "seasonal model"}
+              <Pill tone={isLive ? "positive" : isSeasonalModel ? "warn" : "muted"} variant="soft">
+                {isLive ? `live · ${providerLabel}` : isSeasonalModel ? "seasonal model" : sourceMode}
               </Pill>
               <LoadStatePill state={state} />
               <RefreshButton loading={state === "loading"} onClick={refetch} />
@@ -231,12 +252,12 @@ export function WETRPane({ code }: FunctionPaneProps) {
             <Empty title="No forecast" body={payload.reason ?? "No WETR rows."} />
           ) : (
             <div className="u-grid-gap-14">
-              {!isLive ? (
+              {isSeasonalModel ? (
                 <div style={noticeStyle}>
                   <strong className="u-text-warn">Seasonal model rows</strong>
                   <span className="u-text-secondary">
                     {payload.reason ??
-                      "OpenWeather is not configured — rows are a labelled seasonal weather model, not live forecast data."}
+                      "Rows are a labelled seasonal weather model, not live forecast data."}
                   </span>
                   {payload.next_actions?.length ? (
                     <ul style={hintList}>

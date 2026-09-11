@@ -235,6 +235,21 @@ describe("FORM4 pane — controls", () => {
   });
 });
 
+describe("FORM4 pane — filings grid sorting (audit A3 M)", () => {
+  it("sorts newest-first by default and enables keyboard grid navigation", () => {
+    const payload = livePayload();
+    // Reverse the fixture so only the built-in sorter can put 09-03 first.
+    payload.data.data.rows = [...payload.data.data.rows].reverse();
+    setMockFn({ state: "ok", ...payload });
+    const { container } = render(<FORM4Pane code="FORM4" symbol="AAPL" />);
+    // keyboardNavigable upgrades the table to a keyboard grid.
+    expect(screen.getByRole("grid")).toBeInTheDocument();
+    const rows = Array.from(container.querySelectorAll("tbody tr"));
+    expect(rows[0]?.textContent).toContain("2026-09-03");
+    expect(rows.at(-1)?.textContent).toContain("2026-08-27");
+  });
+});
+
 describe("FORM4 pane — visibility poll (live adoption)", () => {
   it("refetches on a visibility tick but not on mount", () => {
     const refetch = vi.fn();

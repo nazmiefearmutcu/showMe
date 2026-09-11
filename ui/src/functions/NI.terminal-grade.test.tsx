@@ -132,6 +132,36 @@ describe("NI data honesty", () => {
   });
 });
 
+describe("NI synthesis honesty (AUDIT A2)", () => {
+  it("[H] — the synthesis pill reads RULE with a rule tooltip, never 'AI'", async () => {
+    runFunctionMock.mockResolvedValue({
+      status: "ok",
+      data: { articles: [REAL_ARTICLE] },
+      sources: ["rss"],
+    });
+    render(<NIPane code="CN" symbol="ACME" />);
+    const pill = await screen.findByTestId("ni-synthesis-rule-pill");
+    expect(pill.textContent).toMatch(/RULE/);
+    expect(pill.getAttribute("title")).toMatch(/rule-based/i);
+    expect(pill.getAttribute("title")).toMatch(/No LLM/i);
+    // The old overclaiming pill label is gone.
+    expect(screen.queryByText("AI")).toBeNull();
+  });
+
+  it("[L] — attributes empty Bull/Bear sections when the social overlay is down", async () => {
+    runFunctionMock.mockResolvedValue({
+      status: "ok",
+      data: { articles: [REAL_ARTICLE] },
+      sources: ["rss"],
+    });
+    fetchVeryfinderBatchMock.mockRejectedValue(new Error("veryfinder down"));
+    render(<NIPane code="CN" symbol="ACME" />);
+    const note = await screen.findByTestId("ni-social-unavailable");
+    expect(note.textContent).toMatch(/Social overlay unavailable/i);
+    expect(note.textContent).toMatch(/Catalysts/i);
+  });
+});
+
 describe("NI accessibility + display quality", () => {
   beforeEach(() => {
     runFunctionMock.mockResolvedValue({

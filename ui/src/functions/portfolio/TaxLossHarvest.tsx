@@ -8,7 +8,7 @@
  * LIVE reads real positions; MODEL serves the labelled single-row baseline
  * (`tax_loss_model`) which the shared data-quality badge discloses.
  */
-import { useMemo, useState } from "react";
+import { useMemo, useState, type CSSProperties } from "react";
 import {
   DataGrid,
   type DataGridColumn,
@@ -25,6 +25,7 @@ import {
   LoadStatePill,
   RefreshButton,
 } from "../function-controls";
+import { usePersistentNumber } from "../function-control-state";
 import type { FunctionPaneProps } from "../registry-types";
 import {
   asRows,
@@ -62,6 +63,20 @@ function washWindow(row: Row): string {
   const [open, close] = window;
   if (typeof open !== "string" || typeof close !== "string") return "—";
   return `${open} → ${close}`;
+}
+
+/** Clamp a percent-form value into [0, 100]; non-finite -> 0. */
+function clampPct(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(100, value));
+}
+
+/** Parse a percent input; empty / invalid falls back to the current value. */
+function readPctInput(raw: string, fallback: number): number {
+  if (raw.trim() === "") return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return fallback;
+  return clampPct(n);
 }
 
 const CANDIDATE_COLUMNS: DataGridColumn<Row>[] = [
@@ -167,9 +182,26 @@ const CANDIDATE_COLUMNS: DataGridColumn<Row>[] = [
 
 export function TaxLossHarvestPane({ code }: FunctionPaneProps) {
   const [live, setLive] = useState(true);
+  // User-controlled tax assumptions (persisted). These were previously
+  // hardcoded and presented as authoritative; now the operator sets the
+  // bracket / LT rate in PERCENT and they are sent to the backend as
+  // FRACTIONS (the wire contract) with the applied values echoed in the hero.
+  const [bracketPct, setBracketPct] = usePersistentNumber(
+    "showme.tlh.tax-bracket-pct",
+    24,
+  );
+  const [ltRatePct, setLtRatePct] = usePersistentNumber(
+    "showme.tlh.lt-cap-rate-pct",
+    15,
+  );
   const params = useMemo(
-    () => ({ live_tax: live, include_legacy: true, tax_bracket: 0.24, lt_cap_rate: 0.15 }),
-    [live],
+    () => ({
+      live_tax: live,
+      include_legacy: true,
+      tax_bracket: clampPct(bracketPct) / 100,
+      lt_cap_rate: clampPct(ltRatePct) / 100,
+    }),
+    [live, bracketPct, ltRatePct],
   );
   const { state, data, error, refetch } = useFunction<TlhPayload>({ code, params });
   const payload = data?.data;
@@ -214,8 +246,8 @@ export function TaxLossHarvestPane({ code }: FunctionPaneProps) {
               <span className="portfolio-analytics-label">Estimated tax savings</span>
               <strong className="u-text-positive">{fmtMoney(totalSavings)}</strong>
               <span>
-                {payload?.n_loss_positions ?? candidates.length} loss position(s) · bracket{" "}
-                {fmtPct(payload?.tax_bracket_used, { fromFraction: true })} · LT rate{" "}
+                {payload?.n_loss_positions ?? candidates.length} loss position(s) · assumed bracket{" "}
+                {fmtPct(payload?.tax_bracket_used, { fromFraction: true })} · assumed LT rate{" "}
                 {fmtPct(payload?.lt_cap_rate_used, { fromFraction: true })}
               </span>
             </div>
@@ -299,6 +331,42 @@ export function TaxLossHarvestPane({ code }: FunctionPaneProps) {
               >
                 {live ? "LIVE" : "MODEL"}
               </button>
+              <label
+                style={assumptionStyle}
+                title="Assumed marginal tax bracket on short-term losses (percent)"
+              >
+                Bracket %
+                <input
+                  type="number"
+                  min={0}
+                  max={100}
+                  step={1}
+                  value={bracketPct}
+                  onChange={(e) =>
+                    setBracketPct(readPctInput(e.target.value, bracketPct))
+                  }
+                  aria-label="Tax bracket percent"
+                  style={assumptionInputStyle}
+                />
+              </label>
+              <label
+                style={assumptionStyle}
+                title="Assumed long-term capital-gains rate (percent)"
+              >
+                LT %
+                <input
+                  type="number"
+                  min={0}
+                  max={100}
+                  step={1}
+                  value={ltRatePct}
+                  onChange={(e) =>
+                    setLtRatePct(readPctInput(e.target.value, ltRatePct))
+                  }
+                  aria-label="Long-term capital gains rate percent"
+                  style={assumptionInputStyle}
+                />
+              </label>
               <LoadStatePill state={state} status={status} />
               <RefreshButton
                 loading={state === "loading"}
@@ -319,5 +387,25 @@ export function TaxLossHarvestPane({ code }: FunctionPaneProps) {
     </div>
   );
 }
+
+const assumptionStyle: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 4,
+  fontSize: "var(--font-size-xs)",
+  color: "var(--text-secondary)",
+};
+
+const assumptionInputStyle: CSSProperties = {
+  width: 52,
+  padding: "2px 4px",
+  fontFamily: "JetBrains Mono, monospace",
+  fontVariantNumeric: "tabular-nums",
+  fontSize: "var(--font-size-xs)",
+  background: "var(--surface-2)",
+  color: "var(--text-primary)",
+  border: "1px solid var(--border-subtle)",
+  borderRadius: 4,
+};
 
 export default TaxLossHarvestPane;

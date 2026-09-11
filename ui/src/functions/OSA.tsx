@@ -3,8 +3,8 @@
  *
  * Fully client-parameterised model pane: the legs editor (buy/sell,
  * call/put, strike, expiry, IV, quantity) drives the backend Black-Scholes
- * strategy analyzer, which returns per-leg solved premiums and a 101-point
- * expiration payoff/PnL curve. Legs persist under `showme.osa.legs`, spot /
+ * strategy analyzer, which returns per-leg premiums computed from the
+ * entered IV and a 101-point expiration payoff/PnL curve. Legs persist under `showme.osa.legs`, spot /
  * rate under `showme.osa.*`.
  *
  * Data honesty: the strategy is a MODEL (sources=black_scholes_formula),
@@ -422,8 +422,8 @@ export function OSAPane({ code }: FunctionPaneProps) {
             + Add leg
           </button>
           <span className="u-text-mute" style={noteTextStyle}>
-            quantity per leg = ±1 step · premium priced at spot {fmtNum(spot)} · IV solved
-            per leg by the model
+            quantity per leg = ±1 step · premium priced at spot {fmtNum(spot)} · IV per leg
+            is the entered value (default 25%)
           </span>
         </div>
       </section>

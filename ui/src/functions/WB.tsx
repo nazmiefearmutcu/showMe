@@ -6,7 +6,7 @@
  * and a methodology footer. Binds to `/api/fn/WB` so the live FRED path
  * and the sovereign_yield_model fallback both reach the UI.
  */
-import { useMemo, type CSSProperties } from "react";
+import { useEffect, useMemo, type CSSProperties } from "react";
 import {
   DataGrid,
   type DataGridColumn,
@@ -39,11 +39,17 @@ interface WBRow {
   yield?: number;
   as_of?: string;
   source_mode?: string;
+  reference_vintage?: string;
 }
 
 interface WBPayload {
   rows?: WBRow[];
-  summary?: { countries?: number; tenor?: string; source_mode?: string };
+  summary?: {
+    countries?: number;
+    tenor?: string;
+    source_mode?: string;
+    reference_vintage?: string;
+  };
   methodology?: string;
   field_dictionary?: Record<string, string>;
 }
@@ -74,15 +80,24 @@ export function WBPane({ code }: FunctionPaneProps) {
   const [live, setLive] = usePersistentOption<"on" | "off">(
     "showme.wb-live",
     ["on", "off"],
-    "off",
+    // F4 fix (A1-WB-L): the backend is live-by-default (keyless FRED CSV);
+    // defaulting the toggle to "off" silently forced the labelled template.
+    "on",
   );
   // Bundle D / PERF-04. Visibility-aware poll.
   const tick = useVisibilityTick(REFRESH_MS);
 
   const { state, data, error, refetch } = useFunction<unknown>({
     code,
-    params: { reference: live !== "on", tick },
+    params: { reference: live !== "on" },
   });
+  // F4 fix (A1-WB-M): poll via refetch, not a params key — a changing `tick`
+  // param cleared the grid and flashed a full-pane skeleton every 30 s.
+  useEffect(() => {
+    if (tick === 0) return;
+    refetch();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- tick is the trigger
+  }, [tick]);
 
   const payload = useMemo<WBPayload>(
     () =>
@@ -103,13 +118,21 @@ export function WBPane({ code }: FunctionPaneProps) {
     return allRows.filter((r) => set.has((r.country ?? "").toUpperCase()));
   }, [allRows, region]);
 
-  const stats = useMemo(() => deriveStats(allRows), [allRows]);
+  // Seed contract (wb_seed.py): rank intensity / stats use the VISIBLE
+  // min/max so the heat rescales when the region tab is switched.
+  const stats = useMemo(() => deriveStats(rows), [rows]);
   const utcStamp = useUtcStamp(tick);
   const sourceMode = payload.summary?.source_mode ?? rows[0]?.source_mode ?? "—";
   const isLiveSource = sourceMode === "fred";
+  const modelVintage =
+    payload.summary?.reference_vintage ??
+    allRows.find((r) => r.reference_vintage)?.reference_vintage ??
+    null;
   const noticeText =
     sourceMode === "sovereign_yield_model"
-      ? "Rows are the labelled sovereign_yield_model template. Set `live` to on for live FRED yields."
+      ? `Rows are the labelled sovereign_yield_model template${
+          modelVintage ? ` (reference vintage ${modelVintage})` : ""
+        } — the live FRED fetch returned no rows. Toggle \`live\` off/on to retry the live path.`
       : null;
 
   const minYield = stats.min;
@@ -226,12 +249,14 @@ export function WBPane({ code }: FunctionPaneProps) {
             <FunctionControlGroup>
               <Pill tone="muted" variant="soft" withDot={false}>{rows.length} ctry</Pill>
               <Pill tone="accent" variant="soft" withDot={false}>{utcStamp} UTC</Pill>
-              <Pill
-                tone={isLiveSource ? "positive" : "warn"}
-                variant="soft"
-              >
-                {isLiveSource ? "live" : "stub"}
-              </Pill>
+              <span data-testid="wb-mode-pill">
+                <Pill
+                  tone={isLiveSource ? "positive" : "warn"}
+                  variant="soft"
+                >
+                  {isLiveSource ? "live" : "stub"}
+                </Pill>
+              </span>
               <button
                 type="button"
                 onClick={() => setLive(live === "on" ? "off" : "on")}
@@ -299,6 +324,7 @@ export function WBPane({ code }: FunctionPaneProps) {
                 rows={rows}
                 rowKey={(r, i) => `${r.country ?? "row"}-${i}`}
                 density="compact"
+                ariaLabel="WB sovereign yields"
               />
               {payload.methodology ? (
                 <div style={methodologyBox}>

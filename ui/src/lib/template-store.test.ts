@@ -50,4 +50,15 @@ describe("template-store", () => {
     expect(r).toBeNull();
     expect(useTemplateStore.getState().error).toContain("500");
   });
+
+  it("instantiate keeps a dedicated instantiateError (audit A10 L)", async () => {
+    mock.mockRejectedValueOnce(new Error("instantiate exploded"));
+    await useTemplateStore.getState().instantiate("rsi-mean-revert");
+    expect(useTemplateStore.getState().instantiateError).toContain("instantiate exploded");
+
+    // A later success clears the dedicated error.
+    mock.mockResolvedValueOnce({ template_id: "rsi-mean-revert", strategy: { id: "s2" } });
+    await useTemplateStore.getState().instantiate("rsi-mean-revert");
+    expect(useTemplateStore.getState().instantiateError).toBeNull();
+  });
 });

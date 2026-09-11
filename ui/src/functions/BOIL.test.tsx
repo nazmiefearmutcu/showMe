@@ -159,6 +159,14 @@ describe("BOIL pane — ok payload", () => {
     const svg = container.querySelector('svg[role="img"]');
     expect(svg?.getAttribute("aria-label")).toMatch(/4 points/i);
   });
+
+  it("stamps the % unit on the change captions (audit A8-L)", () => {
+    setMockFn({ state: "ok", ...livePayload() });
+    const { container } = render(<BOILPane code="BOIL" symbol="CL=F" />);
+    // "+0.710" alone reads as a price move; the backend supplies a percent.
+    expect(container.textContent).toContain("+0.710%");
+    expect(container.textContent).toContain("+0.500%");
+  });
 });
 
 describe("BOIL pane — interaction", () => {

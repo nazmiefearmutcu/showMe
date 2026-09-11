@@ -279,7 +279,7 @@ describe("CONN terminal-grade — F5 in-app delete dialog", () => {
       .mockResolvedValue(true);
 
     render(<CONNPane />);
-    fireEvent.click(screen.getByTestId("conn-sil-abc"));
+    fireEvent.click(screen.getByTestId("conn-delete-abc"));
     const dialog = await screen.findByRole("dialog");
     expect(dialog).toBeInTheDocument();
     fireEvent.click(within(dialog).getByTestId("confirm-dialog-confirm"));
@@ -308,7 +308,7 @@ describe("CONN terminal-grade — P2-1 single dependents fetch per Sil click", (
       .mockResolvedValue(true);
 
     render(<CONNPane />);
-    fireEvent.click(screen.getByTestId("conn-sil-abc"));
+    fireEvent.click(screen.getByTestId("conn-delete-abc"));
     const dialog = await screen.findByRole("dialog");
     expect(depsSpy).toHaveBeenCalledTimes(1);
     fireEvent.click(within(dialog).getByTestId("confirm-dialog-confirm"));
@@ -327,7 +327,7 @@ describe("CONN terminal-grade — P2-1 single dependents fetch per Sil click", (
       .mockResolvedValue(true);
 
     render(<CONNPane />);
-    fireEvent.click(screen.getByTestId("conn-sil-abc"));
+    fireEvent.click(screen.getByTestId("conn-delete-abc"));
     const dialog = await screen.findByRole("dialog");
     expect(depsSpy).toHaveBeenCalledTimes(1);
     fireEvent.click(within(dialog).getByTestId("confirm-dialog-confirm"));
@@ -347,7 +347,7 @@ describe("CONN terminal-grade — P2-1 single dependents fetch per Sil click", (
       .mockResolvedValue(true);
 
     render(<CONNPane />);
-    fireEvent.click(screen.getByTestId("conn-sil-abc"));
+    fireEvent.click(screen.getByTestId("conn-delete-abc"));
     const dialog = await screen.findByRole("dialog");
     expect(depsSpy).toHaveBeenCalledTimes(1);
     // Row-level banner derives from the same single fetch.

@@ -68,6 +68,10 @@ interface EcfcPayload {
   rows?: EcfcRow[];
   series?: EcfcRow[];
   cards?: EcfcCard[];
+  status?: string;
+  data_state?: string;
+  reason?: string;
+  next_actions?: string[];
   methodology?: string;
   field_dictionary?: Record<string, string>;
   source_mode?: string;
@@ -113,7 +117,16 @@ export function ECFCPane({ code }: FunctionPaneProps) {
     return set.size;
   }, [rows]);
 
-  const isLive = state === "ok";
+  // Availability is folded into the "live" state: an HTTP-200
+  // `provider_unavailable` envelope must never light the green live pill.
+  const providerUnavailable =
+    payload.status === "provider_unavailable" ||
+    payload.data_state === "provider_unavailable";
+  const isLive = state === "ok" && !providerUnavailable;
+  const providerReason =
+    (typeof payload.reason === "string" && payload.reason) ||
+    (Array.isArray(data?.warnings) ? data.warnings[0] : undefined) ||
+    "The IMF DataMapper feed is momentarily unreachable — retry in a moment.";
 
   const COLS: DataGridColumn<EcfcRow>[] = useMemo(
     () => [
@@ -193,7 +206,7 @@ export function ECFCPane({ code }: FunctionPaneProps) {
                 {sourceMode}
               </Pill>
               <Pill tone={isLive ? "positive" : "warn"} variant="soft">
-                {isLive ? "live" : state}
+                {isLive ? "live" : providerUnavailable ? "provider unavailable" : state}
               </Pill>
               <SegmentedControl
                 label="COUNTRY"
@@ -220,6 +233,17 @@ export function ECFCPane({ code }: FunctionPaneProps) {
             <Empty
               title="Forecast load failed"
               body={error?.message ?? "—"}
+              icon="!"
+              action={
+                <button onClick={refetch} className="btn btn--accent">
+                  Retry
+                </button>
+              }
+            />
+          ) : providerUnavailable ? (
+            <Empty
+              title="Forecast provider unavailable"
+              body={providerReason}
               icon="!"
               action={
                 <button onClick={refetch} className="btn btn--accent">
@@ -271,6 +295,34 @@ export function ECFCPane({ code }: FunctionPaneProps) {
   );
 }
 
+/**
+ * Signed-tone policy per IMF metric label. Sign tone ONLY where "higher is
+ * good" (growth, fiscal balance, current account); unemployment and debt are
+ * inverse (higher = worse); inflation / GDP levels carry no inherent good or
+ * bad — they stay neutral so the ribbon never paints a bad number green.
+ */
+const CARD_POLARITY: Record<string, "sign" | "inverse" | "neutral"> = {
+  "Real GDP growth": "sign",
+  Inflation: "neutral",
+  "Unemployment rate": "inverse",
+  "Fiscal balance": "sign",
+  "Government debt": "inverse",
+  "Current account": "sign",
+  GDP: "neutral",
+};
+
+function cardTone(
+  label: string | undefined,
+  n: number | null,
+): "positive" | "negative" | "neutral" {
+  if (n == null) return "neutral";
+  const polarity = CARD_POLARITY[label ?? ""] ?? "neutral";
+  if (polarity === "neutral" || n === 0) return "neutral";
+  const higher = n > 0 ? "positive" : "negative";
+  if (polarity === "sign") return higher;
+  return higher === "positive" ? "negative" : "positive";
+}
+
 function KPIRibbon({
   cards,
   country,
@@ -294,8 +346,7 @@ function KPIRibbon({
     <section style={kpiGridStyle} aria-label="ECFC KPI ribbon">
       {cards.map((card, i) => {
         const n = numeric(card.value);
-        const tone: "positive" | "negative" | "neutral" =
-          n == null ? "neutral" : n >= 0 ? "positive" : "negative";
+        const tone = cardTone(card.label, n);
         return (
           <StatCard
             key={`${card.label ?? "card"}-${i}`}

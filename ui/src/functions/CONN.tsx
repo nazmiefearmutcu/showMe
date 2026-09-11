@@ -34,7 +34,10 @@ function Initials({ name, fallbackId }: { name: string; fallbackId?: string }) {
   // Coinbase / Coinbase Advanced / Coinbase Pro all "CO"), the caller can
   // pass `fallbackId` so we render a 3-letter tag derived from the exchange
   // id instead, breaking the visual collision.
-  const baseTag = name.replace(/[^A-Za-zĞÜŞİÖÇğüşıöç]/g, "").slice(0, 2).toUpperCase();
+  // Latin letters (incl. accented ranges U+00C0–U+024F) survive; symbols and
+  // digits are dropped. Written with unicode escapes so the source stays
+  // ASCII-clean for the i18n guard.
+  const baseTag = name.replace(/[^A-Za-z\u00C0-\u024F]/g, "").slice(0, 2).toUpperCase();
   const expandedTag = fallbackId
     ? fallbackId.replace(/[^A-Za-z0-9]/g, "").slice(0, 3).toUpperCase()
     : baseTag;
@@ -70,7 +73,7 @@ export function collidingInitials(entries: CatalogEntry[]): Set<string> {
   const buckets = new Map<string, string[]>();
   for (const e of entries) {
     const key = e.display_name
-      .replace(/[^A-Za-zĞÜŞİÖÇğüşıöç]/g, "")
+      .replace(/[^A-Za-z\u00C0-\u024F]/g, "")
       .slice(0, 2)
       .toUpperCase();
     const list = buckets.get(key) ?? [];
@@ -104,8 +107,8 @@ export function collidingDisplayNames(entries: CatalogEntry[]): Set<string> {
  * Honest: never claims "connected" without a real, IN-SESSION verification.
  *
  * P2-2 — a credential `last_verified` in a PREVIOUS session no longer shows
- * the green "Doğrulandı" (which would imply live connectivity); it gets a
- * muted "Daha önce doğrulandı" ("stale") instead. Green is reserved for an
+ * the green "verified" state (which would imply live connectivity); it gets
+ * a muted "previously verified" ("stale") instead. Green is reserved for an
  * in-session successful test only.
  */
 type ConnStatus = "ok" | "failed" | "stale" | "untested";
@@ -159,7 +162,7 @@ function CredentialRow({
   const [confirm, setConfirm] = useState("");
   const [testing, setTesting] = useState<"idle" | "ok" | "err">("idle");
   const [testMsg, setTestMsg] = useState<string | null>(null);
-  // Round 24 HIGH — pre-flight dependents lookup runs once per Sil click.
+  // Round 24 HIGH — pre-flight dependents lookup runs once per delete click.
   // Without this `dependentLoading` flag, a double-click queued two lookups
   // + two confirmation modals via handleCredentialDelete.
   const [dependentLoading, setDependentLoading] = useState(false);
@@ -277,7 +280,7 @@ function CredentialRow({
         </span>
       )}
       <button
-        data-testid={`conn-sil-${rec.id}`}
+        data-testid={`conn-delete-${rec.id}`}
         aria-busy={dependentLoading || deletingInFlight}
         disabled={dependentLoading || deletingInFlight}
         title={
@@ -332,7 +335,7 @@ function CredentialRow({
 /**
  * C9 (FIX_CONTRACT) — resolve the dependent-bot count + confirm copy for a
  * credential delete. Split out from the dialog so the in-app ConfirmDialog
- * (F5) can show the bot count / "doğrulanamadı" warning before the user
+ * (F5) can show the bot count / "unverified" warning before the user
  * confirms, and so the same `force`/cascade semantics drive the actual
  * delete. Exported for tests.
  *
@@ -350,8 +353,8 @@ export interface DeletePlan {
 
 /**
  * P2-1 — accepts the PRE-FETCHED dependents from the row's click handler so
- * the delete path performs ONLY ONE `dependentBots` round-trip per Sil click
- * (previously the row and this function each fetched, which double-tripped the
+ * the delete path performs ONLY ONE `dependentBots` round-trip per delete
+ * click (previously the row and this function each fetched, which double-tripped the
  * network and could diverge). `dependents === null` means the single lookup
  * threw (both endpoints failed) → treated identically to `bots_unknown`.
  */
@@ -365,15 +368,15 @@ export function resolveDeletePlan(
     return {
       title: "Bot dependencies could not be verified",
       body:
-        `How many bots depend on the "${accountLabel}" connection could not be ` +
-        `verified server-side (both endpoints failed). Deleting will likely ` +
-        `affect uncategorized bots — continue?`,
+        `Which bots depend on the "${accountLabel}" connection could not be ` +
+        `verified server-side (both lookup endpoints failed). Deleting will ` +
+        `likely affect uncategorized bots — continue?`,
       force: true,
     };
   }
   if (botCount > 0) {
     return {
-      title: `${botCount} bot etkilenecek`,
+      title: `${botCount} bot${botCount === 1 ? "" : "s"} will be affected`,
       body:
         `This credential is used by ${botCount} bots. Deleting will automatically ` +
         `disable them. Continue?`,
@@ -420,14 +423,14 @@ function ExchangeForm({ entry }: { entry: CatalogEntry }) {
   const disabledReason = labelMissing
     ? "Account label required."
     : missingRequired.length
-      ? `Zorunlu alanlar eksik: ${missingRequired.join(", ")}`
+      ? `Missing required fields: ${missingRequired.join(", ")}`
       : undefined;
 
   const errorRegionId = `conn-form-error-${entry.id}`;
   const labelInputId = `conn-account-label-${entry.id}`;
 
   // P2-1 — `deps` is the single fetch performed by the row; resolveDeletePlan
-  // reuses it instead of re-fetching, so one Sil click = one dependents call.
+  // reuses it instead of re-fetching, so one delete click = one dependents call.
   const requestDelete = (id: string, lbl: string, deps: CredentialDependents | null) => {
     const plan = resolveDeletePlan(lbl, deps);
     setPendingDelete({ id, label: lbl, plan });
@@ -545,7 +548,7 @@ function ExchangeForm({ entry }: { entry: CatalogEntry }) {
           aria-busy={submitting || storeSaving}
           disabled={submitting || storeSaving || !canSubmit}
           title={
-            submitting || storeSaving ? "Kaydediliyor…" : disabledReason
+            submitting || storeSaving ? "Saving…" : disabledReason
           }
         >
           {(submitting || storeSaving) ? "..." : "Connect"}
@@ -562,7 +565,7 @@ function ExchangeForm({ entry }: { entry: CatalogEntry }) {
       </form>
 
       {/* F5 — in-app, focus-trapped delete confirmation (replaces native
-          confirmAction). Preserves the bot-count / "doğrulanamadı" copy and
+          confirmAction). Preserves the bot-count / "unverified" copy and
           the exact force/cascade semantics from resolveDeletePlan(). */}
       <ConfirmDialog
         open={pendingDelete !== null}
@@ -731,8 +734,12 @@ export function CONNPane() {
                   </div>
                 </div>
                 {credCount(e.id) > 0 && (
-                  <span className="u-text-positive" style={{ fontSize: "var(--font-size-sm)" }}>
-                    Connected: {credCount(e.id)}
+                  <span
+                    className="u-text-mute"
+                    style={{ fontSize: "var(--font-size-sm)" }}
+                    title="Credentials registered for this exchange — row status shows whether each was verified in-session"
+                  >
+                    Registered: {credCount(e.id)}
                   </span>
                 )}
               </button>

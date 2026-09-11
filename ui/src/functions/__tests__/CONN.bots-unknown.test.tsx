@@ -129,7 +129,7 @@ describe("delete plan — A12 bots_unknown warning", () => {
       .mockResolvedValue(true);
 
     renderWithCredential();
-    fireEvent.click(screen.getByTestId("conn-sil-abc"));
+    fireEvent.click(screen.getByTestId("conn-delete-abc"));
     await waitFor(() =>
       expect(screen.getByTestId("confirm-dialog-body")).toBeInTheDocument(),
     );

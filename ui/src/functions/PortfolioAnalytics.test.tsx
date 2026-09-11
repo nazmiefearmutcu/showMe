@@ -16,13 +16,22 @@
  *  A2 — DataGrid ariaLabel, warnings strip role=status, bound control label.
  *  U1 — all 20 codes reachable from the toolbar strip.
  */
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 // Each test installs its own useFunction mock via this mutable holder.
 const mockReturn: { current: unknown } = { current: null };
+// Captures the args useFunction was last called with, so parameter wiring
+// (REBA capital, MLSIG live_ml, BTUNE/BMTX live_backtest, LOTS defaults) can
+// be asserted without a real fetch.
+const mockArgs: {
+  current: { code?: string; symbol?: string; params?: Record<string, unknown> } | null;
+} = { current: null };
 vi.mock("@/lib/useFunction", () => ({
-  useFunction: () => mockReturn.current,
+  useFunction: (args: unknown) => {
+    mockArgs.current = args as (typeof mockArgs)["current"];
+    return mockReturn.current;
+  },
 }));
 // Router navigate is a side-effect we don't need to drive here.
 vi.mock("@/lib/router", () => ({ navigate: vi.fn() }));
@@ -59,6 +68,7 @@ function mockOk(
 afterEach(() => {
   cleanup();
   mockReturn.current = null;
+  mockArgs.current = null;
 });
 
 const LIVE_ROWS = [
@@ -157,6 +167,168 @@ describe("PORTX shared data-quality badge (H1)", () => {
     mockOk({ status: "reference", rows: LIVE_ROWS });
     render(<PortfolioAnalyticsPane code="MARS" symbol="" />);
     expect(screen.getByTestId("portx-data-badge")).toBeTruthy();
+  });
+});
+
+describe("PORTX classifier coverage for placeholder/sample payloads (F3)", () => {
+  it("badges the BTFW placeholder payload (status/source/is_placeholder)", () => {
+    mockOk(
+      { status: "placeholder", is_placeholder: true, rows: [{ metric: "sharpe", value: null }] },
+      { sources: ["placeholder_no_backtest_run"], metadata: { live: false, is_placeholder: true } },
+    );
+    render(<PortfolioAnalyticsPane code="BTFW" symbol="" />);
+    const badge = screen.getByTestId("portx-data-badge");
+    expect(badge.getAttribute("data-mode")).toBe("sample");
+  });
+
+  it("badges the MGN sample margin book on status + source_mode", () => {
+    mockOk(
+      {
+        status: "sample",
+        source_mode: "sample_margin_positions",
+        is_sample: true,
+        rows: [{ account: "paper", equity: 10000, maintenance_cushion_pct: 12.3 }],
+      },
+      { sources: ["margin_engine", "sample_margin_positions"], metadata: { live: false, is_sample: true } },
+    );
+    render(<PortfolioAnalyticsPane code="MGN" symbol="" />);
+    const badge = screen.getByTestId("portx-data-badge");
+    expect(badge.getAttribute("data-mode")).toBe("sample");
+  });
+
+  it("badges an explicit metadata.live=false payload (model admission)", () => {
+    mockOk({ status: "ok", rows: LIVE_ROWS }, { metadata: { live: false } });
+    render(<PortfolioAnalyticsPane code="MARS" symbol="" />);
+    expect(screen.getByTestId("portx-data-badge")).toBeTruthy();
+  });
+});
+
+describe("PORTX generic renderer shape fixes (F3)", () => {
+  it("renders BTUNE params dict as k=v, never [object Object]", () => {
+    mockOk({
+      status: "reference",
+      source_mode: "reference_model",
+      rows: [{ label: "fast=5, slow=30", params: { fast: 5, slow: 30 }, sharpe: 1.25, calmar: 1.9 }],
+    });
+    const { container } = render(<PortfolioAnalyticsPane code="BTUNE" symbol="" />);
+    const text = container.textContent ?? "";
+    expect(text).not.toContain("[object Object]");
+    expect(text).toContain("fast=5");
+  });
+
+  it("extracts BMTX cells/surface so the matrix renders (not 'No data')", () => {
+    mockOk({
+      status: "reference",
+      cells: [
+        { label: "AAPL sma_crossover", symbol: "AAPL", strategy: "sma_crossover", sharpe: 1.2, total_return: 0.1 },
+      ],
+      surface: [
+        { label: "AAPL sma_crossover", symbol: "AAPL", strategy: "sma_crossover", sharpe: 1.2, total_return: 0.1 },
+      ],
+    });
+    render(<PortfolioAnalyticsPane code="BMTX" symbol="" />);
+    expect(screen.queryByText(/No data available/i)).toBeNull();
+    expect(screen.getAllByText("AAPL").length).toBeGreaterThan(0);
+  });
+
+  it("formats LOTS opened_at epoch seconds as a date, not a magnitude", () => {
+    mockOk({
+      status: "ok",
+      rows: [
+        { lot_id: "L1", symbol: "AAPL", quantity: 15, price: 180, remaining: 15, opened_at: 1735689600 },
+      ],
+    });
+    const { container } = render(<PortfolioAnalyticsPane code="LOTS" symbol="" />);
+    const text = container.textContent ?? "";
+    expect(text).toContain("2025-01-01");
+    expect(text).not.toContain("1.74B");
+  });
+
+  it("prefers portfolio_vol over a leading symbol count in the hero KPI", () => {
+    mockOk({
+      status: "ok",
+      summary: { method: "inverse_vol", symbols: 5, portfolio_vol: 0.123 },
+      rows: [{ symbol: "AAPL", weight_pct: 20, risk_contribution_pct: 20 }],
+    });
+    const { container } = render(<PortfolioAnalyticsPane code="RPAR" symbol="" />);
+    const hero = container.querySelector(".portfolio-analytics-summary__hero strong");
+    expect(hero?.textContent).toBe("12.30%");
+  });
+
+  it("defaults PORT_WHATIF to a 100-share ticket, not 10,000", () => {
+    mockOk({ status: "ok", rows: [{ metric: "cost", before: 0, after: 10000 }] });
+    render(<PortfolioAnalyticsPane code="PORT_WHATIF" symbol="" />);
+    expect(mockArgs.current?.params?.quantity).toBe(100);
+  });
+});
+
+describe("PORTX parameter wiring (F3)", () => {
+  it("sends the user-entered REBA capital and keeps zero-weight targets", () => {
+    mockOk({ status: "ok", rows: [{ symbol: "SPY", target_weight_pct: 50 }] });
+    render(<PortfolioAnalyticsPane code="REBA" symbol="" />);
+    fireEvent.change(screen.getByLabelText("Capital"), { target: { value: "250000" } });
+    fireEvent.change(screen.getByLabelText("Targets"), { target: { value: "SPY:60, QQQ:0" } });
+    expect(mockArgs.current?.params?.max_notional).toBe(250000);
+    expect(mockArgs.current?.params?.targets).toEqual({ SPY: 0.6, QQQ: 0 });
+  });
+
+  it("wires the MLSIG LIVE toggle to live_ml", () => {
+    mockOk({
+      status: "reference",
+      source_mode: "reference_model",
+      rows: [{ feature: "ret_5", importance: 0.24, meaning: "Five-day momentum." }],
+    });
+    render(<PortfolioAnalyticsPane code="MLSIG" symbol="" />);
+    fireEvent.click(screen.getByRole("button", { name: "MODEL" }));
+    expect(mockArgs.current?.params?.live_ml).toBe(true);
+  });
+
+  it("wires the BTUNE LIVE toggle to live_backtest and opens on the default symbol", () => {
+    mockOk({
+      status: "reference",
+      source_mode: "reference_model",
+      rows: [{ label: "fast=5, slow=30", params: { fast: 5, slow: 30 }, sharpe: 1.25 }],
+    });
+    render(<PortfolioAnalyticsPane code="BTUNE" symbol="" />);
+    // Cold open: the pane must supply a default instrument so the backend's
+    // "BTUNE requires an instrument symbol" ValueError is never reachable.
+    expect(mockArgs.current?.symbol).toBe("AAPL");
+    fireEvent.click(screen.getByRole("button", { name: "MODEL" }));
+    expect(mockArgs.current?.params?.live_backtest).toBe(true);
+  });
+
+  it("wires the BMTX LIVE toggle to live_backtest", () => {
+    mockOk({ status: "reference", cells: [{ symbol: "SPY", strategy: "sma_crossover", sharpe: 1 }] });
+    render(<PortfolioAnalyticsPane code="BMTX" symbol="" />);
+    fireEvent.click(screen.getByRole("button", { name: "MODEL" }));
+    expect(mockArgs.current?.params?.live_backtest).toBe(true);
+  });
+});
+
+describe("PORTX STRS stress-test coverage (F3)", () => {
+  it("renders the compare payload (comparisons/rows/summary)", () => {
+    mockOk({
+      status: "ok",
+      comparisons: [
+        { scenario: "GFC_2008", total_pnl: -1200, pct: -12, severity: "severe" },
+        { scenario: "RATE_2022", total_pnl: -300, pct: -3, severity: "moderate" },
+      ],
+      summary: { scenarios: 2, positions: 4, price_source: "portfolio_state_cost", worst_total_pnl: -1200 },
+    });
+    const { container } = render(<PortfolioAnalyticsPane code="STRS" symbol="" />);
+    expect(container.textContent).toContain("GFC_2008");
+    expect(container.textContent).toContain("portfolio_state_cost");
+  });
+
+  it("keeps the empty-portfolio branch honest", () => {
+    mockOk({
+      status: "empty_portfolio",
+      rows: [],
+      comparisons: [],
+      reason: "empty portfolio",
+    });
+    render(<PortfolioAnalyticsPane code="STRS" symbol="" />);
+    expect(screen.getByText("No portfolio positions")).toBeInTheDocument();
   });
 });
 

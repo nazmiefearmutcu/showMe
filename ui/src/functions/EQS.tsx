@@ -213,6 +213,26 @@ export function EQSPane({ code }: FunctionPaneProps) {
 
   const rows = useMemo(() => normalizeRows(result?.data), [result?.data]);
 
+  // Backend truth surfaced to the pane (F6):
+  //  - `dsl_parse_error` must render the parser error verbatim instead of the
+  //    generic "No matches" empty state;
+  //  - the universe label must come from the response metadata so the pane
+  //    cannot claim SP500 coverage when the MEGA15 stub was actually scanned.
+  const payloadRecord = useMemo(
+    () => (isRecord(result?.data) ? result.data : null),
+    [result?.data],
+  );
+  const payloadStatus =
+    typeof payloadRecord?.status === "string" ? payloadRecord.status : null;
+  const parseError =
+    typeof payloadRecord?.error === "string" ? payloadRecord.error : null;
+  const universeLabel =
+    typeof result?.metadata?.universe === "string" &&
+    result.metadata.universe.length > 0
+      ? result.metadata.universe
+      : universe;
+  const isModeled = result?.metadata?.template === true;
+
   // Derived KPI summaries
   const matchedCount = Number(result?.metadata?.matched ?? rows.length);
   const scannedCount = result?.metadata?.scanned != null ? Number(result.metadata.scanned) : null;
@@ -351,7 +371,7 @@ export function EQSPane({ code }: FunctionPaneProps) {
         <PaneHeader
           code={code}
           title="Equity screener"
-          subtitle={`Universe · ${universe}`}
+          subtitle={`Universe · ${universeLabel}`}
           trailing={
             <FunctionControlGroup>
               <Pill tone="accent" variant="soft" withDot={false}>
@@ -535,6 +555,11 @@ export function EQSPane({ code }: FunctionPaneProps) {
                 <p className="u-text-mute u-text-10" data-testid="eqs-kpi-synth-note">
                   SYNTH sparklines are illustrative — this screener payload carries no history series.
                 </p>
+                {isModeled && (
+                  <p className="u-text-mute u-text-10" data-testid="eqs-model-notice">
+                    Rows are the labelled equity-screener model template — not live market data.
+                  </p>
+                )}
 
                 <Card>
                   <CardHeader
@@ -558,23 +583,54 @@ export function EQSPane({ code }: FunctionPaneProps) {
                   </CardHeader>
                   <CardBody>
                     {rows.length === 0 ? (
-                      <Empty
-                        title="No matches with current filters"
-                        body="Try a less restrictive DSL query or widen the universe."
-                        action={
-                          <button
-                            type="button"
-                            className="btn btn--accent"
-                            onClick={() => {
-                              setQuery(SAMPLES[0]);
-                              setUniverse("SP500");
-                              run();
-                            }}
-                          >
-                            Reset & retry
-                          </button>
-                        }
-                      />
+                      payloadStatus === "dsl_parse_error" ? (
+                        <Empty
+                          title="DSL parse error"
+                          body={
+                            parseError ??
+                            "The query could not be parsed. Check the field names and operators."
+                          }
+                          icon="!"
+                          action={
+                            <button
+                              type="button"
+                              className="btn btn--accent"
+                              onClick={run}
+                            >
+                              Fix & retry
+                            </button>
+                          }
+                        />
+                      ) : (
+                        <Empty
+                          title={
+                            payloadStatus === "provider_unavailable"
+                              ? "Live screen unavailable"
+                              : "No matches with current filters"
+                          }
+                          body={
+                            payloadStatus === "provider_unavailable"
+                              ? String(
+                                  (payloadRecord?.reason as string) ??
+                                    "No live screener rows were produced; template rows are not substituted on the live path.",
+                                )
+                              : "Try a less restrictive DSL query or widen the universe."
+                          }
+                          action={
+                            <button
+                              type="button"
+                              className="btn btn--accent"
+                              onClick={() => {
+                                setQuery(SAMPLES[0]);
+                                setUniverse("SP500");
+                                run();
+                              }}
+                            >
+                              Reset & retry
+                            </button>
+                          }
+                        />
+                      )
                     ) : (
                       <DataGrid columns={cols} rows={rows} density="compact" />
                     )}
@@ -588,7 +644,7 @@ export function EQSPane({ code }: FunctionPaneProps) {
           <span>provider · {(sources.join(", ") || "—")}</span>
           <span>elapsed · {elapsed != null ? elapsed.toFixed(0) : "—"} ms</span>
           <span>rows · {rows.length}/{limit}</span>
-          <span>universe · {universe}</span>
+          <span>universe · {universeLabel}</span>
         </PaneFooter>
       </Pane>
     </div>

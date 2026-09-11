@@ -181,8 +181,11 @@ export function MOSTPane({ code }: FunctionPaneProps) {
     () =>
       median(
         rows
-          .map((r) => Math.abs(Number(r.change_pct ?? r.changePercent ?? 0)))
-          .filter((v) => Number.isFinite(v) && v > 0),
+          .map((r) => {
+            const raw = r.change_pct ?? r.changePercent;
+            return raw == null ? null : Math.abs(Number(raw));
+          })
+          .filter((v): v is number => v != null && Number.isFinite(v)),
       ),
     [rows],
   );
@@ -332,12 +335,14 @@ export function MOSTPane({ code }: FunctionPaneProps) {
         numeric: true,
         width: 110,
         render: (r) => {
+          const estimated = r.dollar_volume == null;
           const dollar = r.dollar_volume ?? estimateDollar(r);
           const ratio = maxDollarVolume > 0 ? dollar / maxDollarVolume : 0;
+          const label = formatCompactNumber(dollar, { fixedDigits: 2 });
           return (
             <FlashValue value={numOrNull(r.dollar_volume ?? dollar)} className="u-block">
               <NumericBar
-                value={formatCompactNumber(dollar, { fixedDigits: 2 })}
+                value={estimated ? `≈ ${label}` : label}
                 ratio={ratio}
               />
             </FlashValue>
@@ -554,7 +559,7 @@ export function MOSTPane({ code }: FunctionPaneProps) {
                   <StatCard
                     label="Source"
                     value={sourceLabel.toUpperCase()}
-                    caption={`AS OF ${payload?.as_of ? new Date(payload.as_of).toLocaleTimeString() : "—"}`}
+                    caption={`AS OF ${payload?.as_of ? new Date(payload.as_of).toLocaleTimeString("en-US") : "—"}`}
                     tone="neutral"
                   />
                 </div>
@@ -756,10 +761,12 @@ function formatSortValue(r: MostRow, key: SortKey): string {
     const v = Math.abs(Number(r.change_pct ?? r.changePercent ?? 0));
     return `${v.toFixed(2)}%`;
   }
-  if (key === "dollar_volume")
-    return formatCompactNumber(r.dollar_volume ?? estimateDollar(r), {
-      fixedDigits: 2,
-    });
+  if (key === "dollar_volume") {
+    const estimated = r.dollar_volume == null;
+    const dollar = r.dollar_volume ?? estimateDollar(r);
+    const label = formatCompactNumber(dollar, { fixedDigits: 2 });
+    return estimated ? `≈ ${label}` : label;
+  }
   return formatCompactNumber(r.volume, { fixedDigits: 2 });
 }
 

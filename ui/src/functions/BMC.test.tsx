@@ -11,7 +11,7 @@
  *  - the module filter persists under `showme.bmc.module`.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { BMCPane } from "./BMC";
 
 /* ── useFunction mock ──────────────────────────────────────────────── */
@@ -61,7 +61,7 @@ function okPayload() {
         objective: "Read P/E, EV/EBITDA, and sales multiples without mixing denominators.",
         example: "High-growth software vs mature utilities",
         quiz: "When is EV/Sales more useful than P/E?",
-        progress: "completed",
+        progress: "not_started",
       },
       {
         module: "Fixed Income",
@@ -113,8 +113,10 @@ describe("BMC pane — curriculum body", () => {
     // Lesson list with progress pills (titles also appear in the reader).
     expect(screen.getAllByText("Equity index construction").length).toBeGreaterThanOrEqual(1);
     expect(screen.getByTitle("Open lesson: Yield and duration")).toBeInTheDocument();
+    // Backend rows ship not_started — the pane never invents a completed row.
     expect(container.textContent).toContain("not_started");
-    expect(container.textContent).toContain("completed");
+    const lessonList = screen.getByLabelText("BMC lessons");
+    expect(within(lessonList).queryByText(/^completed$/i)).toBeNull();
     // Reader shows the first lesson's fields.
     expect(container.textContent).toContain("Compare price-weighted and market-cap-weighted indices.");
     expect(container.textContent).toContain("Why can one large-cap stock move a cap-weighted index?");
@@ -138,5 +140,34 @@ describe("BMC pane — curriculum body", () => {
     fireEvent.click(screen.getByTitle("Open lesson: Valuation multiples"));
     expect(container.textContent).toContain("Read P/E, EV/EBITDA, and sales multiples without mixing denominators.");
     expect(container.textContent).toContain("When is EV/Sales more useful than P/E?");
+  });
+
+  it("tracks lesson completion locally and counts it in the Completed KPI", () => {
+    setMockFn({ state: "ok", data: { data: okPayload() } });
+    render(<BMCPane code="BMC" />);
+    const kpi = screen.getByLabelText("BMC summary");
+    // Backend rows are all not_started, so the KPI starts at a real 0 (it used
+    // to be hardwired to 0 forever because the backend never emits completed).
+    expect(within(kpi).getByText("Completed")).toBeInTheDocument();
+    expect(within(kpi).getByText("0")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /mark lesson completed/i }));
+    expect(localStorage.getItem("showme.bmc.completed")).toContain("Equities#1");
+    expect(within(kpi).getByText("1")).toBeInTheDocument();
+    // The pill flips for that lesson only.
+    const lessonList = screen.getByLabelText("BMC lessons");
+    expect(within(lessonList).getByText("completed")).toBeInTheDocument();
+    // Toggling again clears it.
+    fireEvent.click(screen.getByRole("button", { name: /mark lesson not started/i }));
+    expect(within(kpi).getByText("0")).toBeInTheDocument();
+  });
+
+  it("restores persisted completion on a fresh mount", () => {
+    localStorage.setItem("showme.bmc.completed", JSON.stringify({ "Fixed Income#1": true }));
+    setMockFn({ state: "ok", data: { data: okPayload() } });
+    render(<BMCPane code="BMC" />);
+    expect(within(screen.getByLabelText("BMC summary")).getByText("1")).toBeInTheDocument();
+    const lessonList = screen.getByLabelText("BMC lessons");
+    expect(within(lessonList).getByText("completed")).toBeInTheDocument();
   });
 });

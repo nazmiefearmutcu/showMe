@@ -57,6 +57,18 @@ export interface AggregateStats {
   enabled: number;
   live: number;
   signals_today: number;
+  /**
+   * Authoritative all-time signal total across bots (sum of the backend's
+   * `per_bot_signal_count`, falling back to each record's `signal_count`).
+   * `null`/absent when the backend shipped neither — older payloads.
+   */
+  signals_total?: number | null;
+  /**
+   * True when the feed window (`limit`, default 50) does not cover every
+   * known signal, so the feed-derived `signals_today` is a LOWER BOUND.
+   * Optional so older test fixtures / payloads stay valid.
+   */
+  feed_truncated?: boolean;
 }
 
 interface SupervisionStoreShape {
@@ -82,18 +94,50 @@ function _localDateOf(ts: string | undefined | null): string | null {
   return d.toLocaleDateString("en-CA");
 }
 
-function _computeStats(bots: SupervisedBot[], feed: FeedSignal[]): AggregateStats {
+function _computeStats(
+  bots: SupervisedBot[],
+  feed: FeedSignal[],
+  perBotCounts?: Record<string, number>,
+): AggregateStats {
   const today = new Date().toLocaleDateString("en-CA");
+  // H-SUP-2 (fix lane F10, audit A10): the feed is window-limited
+  // (`limit`, default 50), so a "Signals today" count derived from it alone
+  // silently caps. The backend ships the authoritative per-bot totals
+  // (`per_bot_signal_count`) on the same feed payload; use them to detect the
+  // truncation and disclose the lower bound instead of undercounting.
+  const authoritative = _authoritativeSignalTotal(bots, perBotCounts);
   return {
     total: bots.length,
     enabled: bots.filter((b) => b.enabled).length,
     live: bots.filter((b) => b.enabled && b.mode === "live").length,
     signals_today: feed.filter((s) => _localDateOf(s.timestamp) === today).length,
+    signals_total: authoritative,
+    feed_truncated: authoritative != null && authoritative > feed.length,
   };
 }
 
+function _authoritativeSignalTotal(
+  bots: SupervisedBot[],
+  perBotCounts?: Record<string, number>,
+): number | null {
+  // Preferred source: the feed payload's per_bot_signal_count map (uncapped
+  // by the feed window; FIFO-capped per bot only at the record layer).
+  if (perBotCounts && typeof perBotCounts === "object") {
+    const values = Object.values(perBotCounts).filter(
+      (n): n is number => typeof n === "number" && Number.isFinite(n),
+    );
+    if (values.length > 0) return values.reduce((acc, n) => acc + n, 0);
+  }
+  // Fallback: the /api/bots records' own signal_count field.
+  const counts = bots
+    .map((b) => b.signal_count)
+    .filter((n): n is number => typeof n === "number" && Number.isFinite(n));
+  if (counts.length > 0) return counts.reduce((acc, n) => acc + n, 0);
+  return null;
+}
+
 export const useBotsSupervisionStore = create<SupervisionStoreShape>((set) => ({
-  stats: { total: 0, enabled: 0, live: 0, signals_today: 0 },
+  stats: { total: 0, enabled: 0, live: 0, signals_today: 0, signals_total: null, feed_truncated: false },
   bots: [],
   feed: [],
   generatedAt: null,
@@ -105,7 +149,12 @@ export const useBotsSupervisionStore = create<SupervisionStoreShape>((set) => ({
     try {
       const [botsBody, feedBody] = await Promise.all([
         sidecarFetch<{ records: SupervisedBot[] }>("/api/bots"),
-        sidecarFetch<{ generated_at: string; signals: FeedSignal[] }>(`/api/bots/feed?limit=${limit}`),
+        sidecarFetch<{
+          generated_at: string;
+          signals: FeedSignal[];
+          // H-SUP-2 — authoritative per-bot signal totals; not window-truncated.
+          per_bot_signal_count?: Record<string, number>;
+        }>(`/api/bots/feed?limit=${limit}`),
       ]);
       // H-5 — defend against null/undefined arrays in the response body.
       // Without this, `.filter` downstream throws and `loading` never clears.
@@ -115,7 +164,7 @@ export const useBotsSupervisionStore = create<SupervisionStoreShape>((set) => ({
         bots: records,
         feed: signals,
         generatedAt: feedBody?.generated_at ?? null,
-        stats: _computeStats(records, signals),
+        stats: _computeStats(records, signals, feedBody?.per_bot_signal_count),
         loading: false,
       });
     } catch (e) {

@@ -235,3 +235,55 @@ describe("FXH pane — knobs", () => {
     expect(lastParams?.pair).toBe("USDJPY");
   });
 });
+
+describe("FXH pane — explicit exposure/rate inputs", () => {
+  it("sends the notional + rate inputs and labels untouched defaults", () => {
+    setMockFn({ state: "ok", ...livePayload() });
+    render(<FXHPane code="FXH" />);
+    // Old behaviour: the pane never sent these — the engine silently
+    // modelled a $1,000,000 book at 3.5%/4.5%.
+    expect(lastParams).toMatchObject({
+      notional: 1_000_000,
+      base_rate: 0.035,
+      home_rate: 0.045,
+    });
+    const note = screen.getByRole("note", { name: /assumed defaults/i });
+    expect(note).toHaveTextContent(/exposure \$1\.00M/);
+    expect(note).toHaveTextContent(/rates 3\.50% foreign \/ 4\.50% home/);
+  });
+
+  it("overrides the exposure via the input and persists it", () => {
+    setMockFn({ state: "ok", ...livePayload() });
+    render(<FXHPane code="FXH" />);
+    fireEvent.change(
+      screen.getByLabelText("Exposure notional (foreign currency)"),
+      { target: { value: "5000000" } },
+    );
+    expect(lastParams?.notional).toBe(5_000_000);
+    expect(localStorage.getItem("showme.fxh.notional")).toBe("5000000");
+    // The exposure is no longer an assumed default (rates still are).
+    const note = screen.getByRole("note", { name: /assumed defaults/i });
+    expect(note).not.toHaveTextContent(/exposure \$1\.00M/);
+    expect(note).toHaveTextContent(/rates 3\.50%/);
+  });
+
+  it("drops the disclosure once exposure and both rates are explicit", () => {
+    setMockFn({ state: "ok", ...livePayload() });
+    render(<FXHPane code="FXH" />);
+    fireEvent.change(
+      screen.getByLabelText("Exposure notional (foreign currency)"),
+      { target: { value: "2000000" } },
+    );
+    fireEvent.change(
+      screen.getByLabelText("Foreign interest rate (decimal)"),
+      { target: { value: "0.02" } },
+    );
+    fireEvent.change(
+      screen.getByLabelText("Home interest rate (decimal)"),
+      { target: { value: "0.03" } },
+    );
+    expect(
+      screen.queryByRole("note", { name: /assumed defaults/i }),
+    ).toBeNull();
+  });
+});

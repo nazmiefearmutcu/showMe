@@ -130,6 +130,7 @@ export function PIBPane({ code, symbol }: FunctionPaneProps) {
         key: "filingDate",
         header: "Filed",
         width: 116,
+        sortValue: (r) => r.filingDate ?? null,
         render: (r) => (
           <span style={monoPrimaryStyle}>
             {(r.filingDate ?? "—").slice(0, 10)}
@@ -220,12 +221,27 @@ export function PIBPane({ code, symbol }: FunctionPaneProps) {
         </button>
       }
     />
-  ) : providerDown || rows.length === 0 ? (
+  ) : providerDown ? (
     <Empty
       title="Public information book unavailable"
       body={
         payload?.reason ??
         "SEC filing feed returned no rows; the book cannot be rendered without filing evidence."
+      }
+      action={
+        <button onClick={refetch} className="btn">
+          Retry
+        </button>
+      }
+    />
+  ) : rows.length === 0 ? (
+    // Audit A3 PIB L: a legitimately empty (but healthy) feed is not an
+    // "unavailable" book — keep the honest distinction.
+    <Empty
+      title="No filings returned"
+      body={
+        payload?.reason ??
+        `The SEC feed returned no filings for ${effectiveSymbol} in the selected window.`
       }
       action={
         <button onClick={refetch} className="btn">
@@ -280,6 +296,11 @@ export function PIBPane({ code, symbol }: FunctionPaneProps) {
         rowKey={(r, i) => `${r.accession ?? ""}-${i}`}
         density="compact"
         ariaLabel="PIB filings table"
+        // Audit A3 PIB M: filings grid gets the kit's built-in sorter
+        // (newest first) + keyboard cell navigation/clipboard copy.
+        defaultSortKey="filingDate"
+        defaultSortDir="descending"
+        keyboardNavigable
       />
     </div>
   );

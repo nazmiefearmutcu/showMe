@@ -32,6 +32,15 @@ interface MockFnState {
 
 const mockFn: MockFnState = { state: "idle", data: undefined, error: null };
 const refetch = vi.fn();
+// F9: capture the options useFunction received so a test can pin that the
+// poll tick never enters `params` (tick-in-params = skeleton wipe every poll).
+const { useFunctionCalls } = vi.hoisted(() => ({
+  useFunctionCalls: [] as Array<{
+    code?: string;
+    symbol?: string;
+    params?: Record<string, unknown>;
+  }>,
+}));
 
 function setMockFn(next: MockFnState) {
   mockFn.state = next.state;
@@ -40,12 +49,19 @@ function setMockFn(next: MockFnState) {
 }
 
 vi.mock("@/lib/useFunction", () => ({
-  useFunction: () => ({
-    state: mockFn.state,
-    data: mockFn.data,
-    error: mockFn.error,
-    refetch,
-  }),
+  useFunction: (args: {
+    code?: string;
+    symbol?: string;
+    params?: Record<string, unknown>;
+  }) => {
+    useFunctionCalls.push(args);
+    return {
+      state: mockFn.state,
+      data: mockFn.data,
+      error: mockFn.error,
+      refetch,
+    };
+  },
 }));
 
 // Visibility poll is irrelevant to render assertions — return a stable tick.
@@ -189,6 +205,7 @@ beforeEach(() => {
   vi.setSystemTime(NOW);
   localStorage.clear();
   refetch.mockClear();
+  useFunctionCalls.length = 0;
   setMockFn({ state: "idle", data: undefined });
 });
 afterEach(() => {
@@ -333,5 +350,43 @@ describe("AIM pane — a11y + display", () => {
     setMockFn({ state: "ok", ...okPayload() });
     render(<AIMPane code="AIM" />);
     expect(screen.getByLabelText(/Data mode: Live/i)).toBeInTheDocument();
+  });
+});
+
+describe("AIM pane — F9 fixes (audit A3)", () => {
+  it("renders an English notice title for an unknown data_mode (no Turkish)", () => {
+    setMockFn({ state: "ok", ...emptyPayload("ledger_cache") });
+    render(<AIMPane code="AIM" />);
+    const notice = screen.getByTestId("aim-mode-notice");
+    expect(notice.textContent ?? "").toContain("Reference ledger");
+    expect(notice.textContent ?? "").not.toContain("Referans");
+  });
+
+  it("keeps the poll tick out of the fetch params (refetch pattern, no skeleton wipe)", () => {
+    setMockFn({ state: "ok", ...okPayload() });
+    render(<AIMPane code="AIM" />);
+    const last = useFunctionCalls.at(-1);
+    expect(last?.params).toEqual({ limit: 200 });
+    expect(last?.params).not.toHaveProperty("tick");
+  });
+
+  it("default-sorts the blotter by created_at (newest first) and is keyboard-navigable", () => {
+    setMockFn({ state: "ok", ...okPayload() });
+    const { container } = render(<AIMPane code="AIM" />);
+    // role=grid is only applied when keyboardNavigable is on.
+    expect(
+      screen.getByRole("grid", { name: "AIM order blotter" }),
+    ).toBeInTheDocument();
+    // Default sort = created_at descending → the 10:00 AAPL open above BTC 08:00.
+    const firstRow = container.querySelector("tbody tr");
+    expect(firstRow?.textContent ?? "").toContain("AAPL");
+  });
+
+  it("renders '—' (not a fabricated 0) for the Filled card when cards are absent", () => {
+    setMockFn({ state: "ok", ...okPayload({ cards: undefined }) });
+    render(<AIMPane code="AIM" />);
+    const card = screen.getByText("Filled").closest(".stat-card");
+    expect(card).not.toBeNull();
+    expect(card?.textContent ?? "").toContain("—");
   });
 });

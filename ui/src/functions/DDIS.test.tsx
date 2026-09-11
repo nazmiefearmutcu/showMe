@@ -4,8 +4,9 @@
  * `useFunction` is mocked via a mutable shared object. Pins:
  *  - loading skeleton, error, and ok branches render;
  *  - a live SEC ladder renders bucket rows + % share bars;
- *  - an illustrative payload renders the prominent honesty note;
- *  - an empty ladder does NOT fabricate rows;
+ *  - an EMPTY schedule (the shipped no-data contract: status "empty",
+ *    rows [], reason + next_actions) surfaces the backend's reason and
+ *    next actions — no illustrative ladder is ever fabricated;
  *  - interaction: the refresh button triggers a refetch.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -67,21 +68,22 @@ function secPayload() {
   };
 }
 
-function illustrativePayload() {
+function emptySchedulePayload() {
   return {
-    status: "illustrative",
-    rows: [
-      { bucket: "0-1Y", tenor_years: 0.5, amount_usd_bn: 3.2, currency: "USD", pct: 12.1 },
-      { bucket: "1-3Y", tenor_years: 2.0, amount_usd_bn: 8.6, currency: "USD", pct: 32.6 },
-      { bucket: "3-5Y", tenor_years: 4.0, amount_usd_bn: 6.4, currency: "USD", pct: 24.2 },
-      { bucket: "5Y+", tenor_years: 7.0, amount_usd_bn: 8.5, currency: "USD", pct: 32.1 },
-    ],
+    status: "empty",
+    rows: [],
     summary: {
       issuer: "US10Y",
-      total_debt_usd_bn: 26.7,
+      total_debt_usd_bn: 0.0,
       currency: "USD",
-      source_mode: "illustrative_model",
+      source_mode: "no_live_source",
     },
+    reason:
+      "Sovereign/unspecified issuer: SEC corporate maturity schedule does not apply; no debt ladder is shown.",
+    next_actions: [
+      "Pass an explicit ``maturities`` schedule for this issuer.",
+      "Pick a tickerable US corporate issuer to read the SEC EDGAR maturity ladder.",
+    ],
   };
 }
 
@@ -145,14 +147,20 @@ describe("DDIS pane — live ladder", () => {
   });
 });
 
-describe("DDIS pane — illustrative honesty", () => {
-  it("renders the honesty note for an illustrative ladder and never calls it live", () => {
-    setMockFn({ state: "ok", data: { data: illustrativePayload() } });
+describe("DDIS pane — empty-schedule honesty", () => {
+  it("surfaces the backend reason + next actions and never fabricates a ladder", () => {
+    setMockFn({ state: "ok", data: { data: emptySchedulePayload() } });
     const { container } = render(<DDISPane code="DDIS" symbol="AAPL" />);
-    expect(screen.getByText(/Illustrative model\./i)).toBeInTheDocument();
-    expect(container.textContent).toContain("NOT filed debt data");
-    // The status pill AND the load-state pill both read "illustrative".
-    expect(screen.getAllByText(/^illustrative$/).length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText(/No maturity ladder/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/SEC corporate maturity schedule does not apply/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/Pass an explicit/i),
+    ).toBeInTheDocument();
+    // No illustrative badge vocabulary, no fabricated bucket row.
+    expect(container.textContent).not.toMatch(/illustrative/i);
+    expect(container.textContent).not.toMatch(/0-1Y/);
     expect(screen.queryByText(/SEC live/i)).toBeNull();
   });
 });

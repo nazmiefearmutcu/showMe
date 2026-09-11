@@ -1,11 +1,11 @@
 /**
  * PERF — Cumulative performance pane. Sub-system I.
  *
- * Top: 4-pill KPI strip — Lider / En karli / Geride kalan / En zararli — each
+ * Top: 4-pill KPI strip — Leader / Top gainer / Laggard / Top loser — each
  * tracks its own semantic so the user can read "top by PnL ranking" vs
  * "worst loser" without one masking the other (H-SUP-1 fix).
  *
- * Middle: sortable leaderboard table.
+ * Middle: sortable leaderboard DataGrid (sort/clipboard/CSV).
  * Right (when bot selected): equity curve <svg> (no external chart lib).
  *
  * Polling is driven by `useBotEcosystemPolling` so this pane and BOTS stay
@@ -20,17 +20,22 @@
  *        N is small (ratios from few trades are unreliable). "inf" → "∞".
  *   F3 — display correctness: drawdown reads as a negative LOSS (red); all
  *        toFixed replaced with format.ts helpers; P&L sign-coloured.
- *   F4 — full a11y: table caption + scope + aria-label; SVG role=img +
+ *   F4 — full a11y: grid aria-labels + scope headers; SVG role=img +
  *        aria-label + sr-only summary; refresh aria-busy/disabled; KPI pills
- *        named; keyboard-operable rows w/ aria-selected; single pane-level
- *        sr-only role=status summary gated by a ref.
+ *        named; keyboard-operable rows; single pane-level sr-only role=status
+ *        summary gated by a ref.
  *   F5 — Skeleton on first load, design-system Empty states, last-updated
  *        freshness indicator from generated_at; honest "—" when absent.
+ *
+ * F10 (fix lane, audit A1): leaderboard + trades migrated to the DataGrid kit
+ * (sort/clipboard/CSV); Turkish comments and legacy Turkish test-ids renamed.
  */
+import { useMemo } from "react";
 import {
   usePerformanceStore,
   type LeaderboardEntry,
   type PerformanceMetrics,
+  type TradeRow,
 } from "@/lib/performance-store";
 import { useBotEcosystemPolling } from "@/lib/useBotEcosystemPolling";
 import {
@@ -44,7 +49,17 @@ import {
 import { maxOf, minOf } from "@/lib/maxOf";
 import { isKaosRecord } from "@/lib/kaos-venues";
 import { KaosEngineBadge } from "@/functions/KaosBadges";
-import { Empty, Pill, SkeletonRow } from "@/design-system";
+import {
+  buildGridCsv,
+  DataGrid,
+  downloadGridCsv,
+  Empty,
+  gridCsvFilename,
+  Pill,
+  SkeletonRow,
+  type DataGridColumn,
+  type GridCsvColumn,
+} from "@/design-system";
 
 // Sentinel the backend stamps onto a SignalEntry whose live order was sized on
 // the fallback equity ($10k) rather than real broker equity. Mirrors BOT/BOTS.
@@ -60,6 +75,98 @@ function _pnlClass(n: number): string | undefined {
   if (n < 0) return "u-text-negative";
   return undefined;
 }
+
+// F10 — the trades view window; the CSV export always covers every trade.
+const TRADES_WINDOW = 50;
+
+// F10 (audit A1) — leaderboard CSV columns. Raw numbers (not formatted
+// strings) so spreadsheets receive values.
+const LEADERBOARD_CSV_COLUMNS: GridCsvColumn<LeaderboardEntry>[] = [
+  { key: "symbol", header: "Symbol", value: (e) => e.symbol },
+  { key: "bot_id", header: "Bot ID", value: (e) => e.bot_id },
+  { key: "mode", header: "Mode", value: (e) => e.mode },
+  { key: "enabled", header: "Enabled", value: (e) => e.enabled },
+  { key: "trade_count", header: "Trades", value: (e) => e.trade_count },
+  { key: "win_rate", header: "Win rate", value: (e) => e.win_rate },
+  { key: "total_pnl", header: "Total PnL", value: (e) => e.total_pnl },
+  { key: "max_drawdown", header: "Max drawdown", value: (e) => e.max_drawdown },
+  { key: "sharpe", header: "Sharpe", value: (e) => e.sharpe ?? "" },
+  { key: "sortino", header: "Sortino", value: (e) => e.sortino ?? "" },
+  { key: "profit_factor", header: "Profit factor", value: (e) => e.profit_factor ?? "" },
+];
+
+const TRADE_CSV_COLUMNS: GridCsvColumn<TradeRow>[] = [
+  { key: "entry_time", header: "Entry time", value: (t) => t.entry_time },
+  { key: "entry_price", header: "Entry price", value: (t) => t.entry_price },
+  { key: "exit_time", header: "Exit time", value: (t) => t.exit_time },
+  { key: "exit_price", header: "Exit price", value: (t) => t.exit_price },
+  { key: "qty", header: "Qty", value: (t) => t.qty },
+  { key: "pnl", header: "PnL", value: (t) => t.pnl },
+  { key: "pnl_pct", header: "PnL %", value: (t) => t.pnl_pct },
+];
+
+const TRADE_COLUMNS: DataGridColumn<TradeRow>[] = [
+  {
+    key: "entry_time",
+    header: "Entry",
+    width: 140,
+    sortable: true,
+    sortValue: (t) => t.entry_time,
+    render: (t) => t.entry_time.slice(0, 16),
+  },
+  {
+    key: "entry_price",
+    header: "@",
+    width: 100,
+    numeric: true,
+    align: "right",
+    sortable: true,
+    sortValue: (t) => t.entry_price,
+    render: (t) => formatPrice(t.entry_price),
+  },
+  {
+    key: "exit_time",
+    header: "Exit",
+    width: 140,
+    sortable: true,
+    sortValue: (t) => t.exit_time,
+    render: (t) => t.exit_time.slice(0, 16),
+  },
+  {
+    key: "exit_price",
+    header: "@",
+    width: 100,
+    numeric: true,
+    align: "right",
+    sortable: true,
+    sortValue: (t) => t.exit_price,
+    render: (t) => formatPrice(t.exit_price),
+  },
+  {
+    key: "pnl",
+    header: "PnL",
+    width: 100,
+    numeric: true,
+    align: "right",
+    sortable: true,
+    sortValue: (t) => t.pnl,
+    render: (t) => (
+      <span className={_pnlClass(t.pnl)}>{formatSignedCurrency(t.pnl)}</span>
+    ),
+  },
+  {
+    key: "pnl_pct",
+    header: "%",
+    width: 80,
+    numeric: true,
+    align: "right",
+    sortable: true,
+    sortValue: (t) => t.pnl_pct,
+    render: (t) => (
+      <span className={_pnlClass(t.pnl_pct)}>{formatPercent(t.pnl_pct, { signed: true })}</span>
+    ),
+  },
+];
 
 /**
  * F2 — render a metric that may arrive as the string "inf"/"-inf" (the backend
@@ -295,19 +402,19 @@ export function PERFPane() {
 
   const totalPnL = leaderboard.reduce((acc, e) => acc + e.total_pnl, 0);
 
-  // H-SUP-1 — four distinct semantics so a tüm-pozitif portfolio still
-  // shows "Geride kalan" (the worst-ranked bot, even if positive) and a
-  // tüm-negatif portfolio still shows "Lider" (the top-ranked bot, even
+  // H-SUP-1 — four distinct semantics so an all-positive portfolio still
+  // shows "Laggard" (the worst-ranked bot, even if positive) and an
+  // all-negative portfolio still shows "Leader" (the top-ranked bot, even
   // if negative).  When mixed, all four pills appear independently.
   //
   // The leaderboard is sorted by (-total_pnl, -trade_count) so [0] is the
   // ranking leader and [length-1] is the ranking laggard regardless of sign.
-  const topPerformer = leaderboard[0];                                          // her zaman göster
+  const topPerformer = leaderboard[0];                                          // always shown
   const bottomPerformer =
-    leaderboard.length > 1 ? leaderboard[leaderboard.length - 1] : undefined;   // her zaman göster (if >1 bot)
-  const positiveBest = leaderboard.find((b) => b.total_pnl > 0);                // gerçek "En karli" (only if exists)
+    leaderboard.length > 1 ? leaderboard[leaderboard.length - 1] : undefined;   // always shown (if >1 bot)
+  const positiveBest = leaderboard.find((b) => b.total_pnl > 0);                // real "Top gainer" (only if exists)
   const negativeWorst =
-    [...leaderboard].reverse().find((b) => b.total_pnl < 0);                    // gerçek "En zararli" (only if exists)
+    [...leaderboard].reverse().find((b) => b.total_pnl < 0);                    // real "Top loser" (only if exists)
 
   // F5 — first-load skeleton: only while loading AND we have nothing yet.
   const firstLoad = loading && leaderboard.length === 0;
@@ -323,6 +430,88 @@ export function PERFPane() {
   const startingEquity = selected?.starting_equity ?? 10_000;
   const isFallbackEquity = selected?.equity_source === FALLBACK_EQUITY_SOURCE;
 
+  // F10 (audit A1) — leaderboard columns for the DataGrid kit (sort,
+  // clipboard, keyboard-reachable headers). Selection is signalled on the
+  // symbol cell (▸ + sr-only "selected") instead of the invalid
+  // aria-selected-on-role=button the hand-rolled table used.
+  const leaderboardColumns = useMemo<DataGridColumn<LeaderboardEntry>[]>(() => [
+    {
+      key: "symbol",
+      header: "Symbol",
+      width: 150,
+      sortable: true,
+      sortValue: (e) => e.symbol,
+      render: (e) => {
+        const isSelected = selected?.bot_id === e.bot_id;
+        return (
+          <span
+            data-testid={`perf-row-symbol-${e.bot_id}`}
+            data-selected={isSelected ? "true" : undefined}
+          >
+            {isSelected && <span aria-hidden="true">▸ </span>}
+            {e.symbol}
+            {isKaosRecord(e) && <KaosEngineBadge />}
+            {isSelected && <span className="u-sr-only"> selected</span>}
+          </span>
+        );
+      },
+    },
+    {
+      key: "trade_count",
+      header: "Trades",
+      width: 80,
+      numeric: true,
+      align: "right",
+      sortable: true,
+      sortValue: (e) => e.trade_count,
+      render: (e) => formatNumber(e.trade_count),
+    },
+    {
+      key: "win_rate",
+      header: "Win %",
+      width: 80,
+      numeric: true,
+      align: "right",
+      sortable: true,
+      sortValue: (e) => e.win_rate,
+      render: (e) => formatPercent(e.win_rate, { fromFraction: true, digits: 0 }),
+    },
+    {
+      key: "total_pnl",
+      header: "Total PnL",
+      width: 110,
+      numeric: true,
+      align: "right",
+      sortable: true,
+      sortValue: (e) => e.total_pnl,
+      render: (e) => (
+        <span className={_pnlClass(e.total_pnl)}>{formatSignedCurrency(e.total_pnl)}</span>
+      ),
+    },
+    {
+      key: "max_drawdown",
+      header: "Max DD",
+      width: 100,
+      numeric: true,
+      align: "right",
+      sortable: true,
+      sortValue: (e) => e.max_drawdown,
+      render: (e) => {
+        // F3 — drawdown reads as a LOSS: the engine returns a positive
+        // magnitude, so we negate for display and colour it red.
+        const ddLoss = e.max_drawdown > 0 ? -e.max_drawdown : 0;
+        return (
+          <span
+            data-testid={`perf-row-dd-${e.bot_id}`}
+            className={ddLoss < 0 ? "u-text-negative" : undefined}
+          >
+            {ddLoss < 0 ? formatSignedCurrency(ddLoss) : formatCurrency(0)}
+          </span>
+        );
+      },
+    },
+  ], [selected?.bot_id]);
+
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
       {/* F4 — the ONLY pane-level live region for selection/refresh summary. */}
@@ -335,26 +524,26 @@ export function PERFPane() {
           label="Leader"
           entry={topPerformer}
           tone={topPerformer && topPerformer.total_pnl >= 0 ? "ok" : "err"}
-          testId="perf-kpi-lider"
+          testId="perf-kpi-leader"
         />
         <BotPill
           label="Top gainer"
           entry={positiveBest}
           tone="ok"
           signPrefix="+"
-          testId="perf-kpi-en-karli"
+          testId="perf-kpi-top-gainer"
         />
         <BotPill
           label="Laggard"
           entry={bottomPerformer}
           tone={bottomPerformer && bottomPerformer.total_pnl >= 0 ? "mute" : "err"}
-          testId="perf-kpi-geride-kalan"
+          testId="perf-kpi-laggard"
         />
         <BotPill
           label="Top loser"
           entry={negativeWorst}
           tone="err"
-          testId="perf-kpi-en-zararli"
+          testId="perf-kpi-top-loser"
         />
         {/* F5 — last-updated freshness indicator from the leaderboard's
             generated_at. Honest "—" when the backend hasn't stamped one. */}
@@ -395,7 +584,25 @@ export function PERFPane() {
       <div style={{ display: "grid", gridTemplateColumns: selected ? "1fr 1fr" : "1fr",
                     flex: 1, overflow: "hidden" }}>
         <div style={{ overflowY: "auto", padding: 8 }}>
-          <h4>Leaderboard</h4>
+          <div style={{ display: "flex", alignItems: "center" }}>
+            <h4 style={{ margin: 0 }}>Leaderboard</h4>
+            <button
+              data-testid="perf-export-leaderboard-csv"
+              type="button"
+              onClick={() =>
+                downloadGridCsv(
+                  gridCsvFilename("perf-leaderboard"),
+                  buildGridCsv(LEADERBOARD_CSV_COLUMNS, leaderboard),
+                )
+              }
+              disabled={leaderboard.length === 0}
+              title="Download CSV"
+              aria-label={`Download ${leaderboard.length} leaderboard rows as CSV`}
+              style={{ marginLeft: "auto" }}
+            >
+              CSV
+            </button>
+          </div>
           {firstLoad ? (
             <div data-testid="perf-loading" aria-busy="true">
               {Array.from({ length: 5 }).map((_, i) => (
@@ -410,72 +617,20 @@ export function PERFPane() {
               />
             </div>
           ) : (
-            <table
-              className="terminal-grid-numeric"
-              aria-label="Performance leaderboard"
-              style={{ width: "100%", fontSize: "var(--font-size-md)" }}
-            >
-              <caption className="u-sr-only">
-                Cumulative performance across all bots — symbol, trade count,
-                win rate, total PnL and max drawdown. Click a row for details.
-              </caption>
-              <thead>
-                <tr className="u-text-secondary">
-                  <th scope="col" align="left">Symbol</th>
-                  <th scope="col" align="right">Trades</th>
-                  <th scope="col" align="right">Win %</th>
-                  <th scope="col" align="right">Total PnL</th>
-                  <th scope="col" align="right">Max DD</th>
-                </tr>
-              </thead>
-              <tbody>
-                {leaderboard.map((e) => {
-                  const isSelected = selected?.bot_id === e.bot_id;
-                  // F3 — drawdown reads as a LOSS: the engine returns a positive
-                  // magnitude, so we negate for display and colour it red.
-                  const ddLoss = e.max_drawdown > 0 ? -e.max_drawdown : 0;
-                  return (
-                    <tr
-                      key={e.bot_id}
-                      // F4 — keyboard-operable, selectable row.
-                      role="button"
-                      tabIndex={0}
-                      aria-selected={isSelected}
-                      aria-label={`${e.symbol} open performance details`}
-                      onClick={() => loadBot(e.bot_id)}
-                      onKeyDown={(ev) => {
-                        if (ev.key === "Enter" || ev.key === " ") {
-                          ev.preventDefault();
-                          loadBot(e.bot_id);
-                        }
-                      }}
-                      style={{
-                        cursor: "pointer",
-                        background: isSelected ? "var(--surface-2)" : "transparent",
-                        borderBottom: "1px solid var(--border-card)",
-                      }}
-                    >
-                      <td>
-                        {e.symbol}
-                        {isKaosRecord(e) && <KaosEngineBadge />}
-                      </td>
-                      <td align="right">{formatNumber(e.trade_count)}</td>
-                      <td align="right">{formatPercent(e.win_rate, { fromFraction: true, digits: 0 })}</td>
-                      <td align="right" className={_pnlClass(e.total_pnl)}>
-                        {formatSignedCurrency(e.total_pnl)}
-                      </td>
-                      <td
-                        align="right"
-                        className={ddLoss < 0 ? "u-text-negative" : undefined}
-                        data-testid={`perf-row-dd-${e.bot_id}`}
-                      >
-                        {ddLoss < 0 ? formatSignedCurrency(ddLoss) : formatCurrency(0)}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+            <div style={{ marginTop: 8 }}>
+              <DataGrid
+                columns={leaderboardColumns}
+                rows={leaderboard}
+                rowKey={(e) => e.bot_id}
+                density="compact"
+                ariaLabel="Performance leaderboard"
+                // Keep the backend's (-total_pnl, -trade_count) payload order
+                // until the user sorts a header (asc → desc → none).
+                defaultSortKey="total_pnl"
+                defaultSortDir="none"
+                onRowClick={(e) => loadBot(e.bot_id)}
+              />
+            </div>
           )}
         </div>
 
@@ -533,43 +688,47 @@ export function PERFPane() {
             )}
             <EquityCurve points={selected.equity_curve} startingEquity={startingEquity} />
 
-            <h4 style={{ margin: "8px 0 4px" }}>Trades ({formatNumber(selected.trades.length)})</h4>
-            <table
-              className="terminal-grid-numeric"
-              aria-label="Recent trades"
-              style={{ width: "100%", fontSize: "var(--font-size-sm)" }}
-            >
-              <caption className="u-sr-only">
-                The bot's recent trades, newest first — entry/exit time and price,
-                PnL and percentage return.
-              </caption>
-              <thead>
-                <tr className="u-text-secondary">
-                  <th scope="col" align="left">Entry</th>
-                  <th scope="col" align="right">@</th>
-                  <th scope="col" align="left">Exit</th>
-                  <th scope="col" align="right">@</th>
-                  <th scope="col" align="right">PnL</th>
-                  <th scope="col" align="right">%</th>
-                </tr>
-              </thead>
-              <tbody>
-                {selected.trades.slice(-50).reverse().map((t, i) => (
-                  <tr key={`${t.entry_time}-${t.exit_time}-${i}`}>
-                    <td>{t.entry_time.slice(0, 16)}</td>
-                    <td align="right">{formatPrice(t.entry_price)}</td>
-                    <td>{t.exit_time.slice(0, 16)}</td>
-                    <td align="right">{formatPrice(t.exit_price)}</td>
-                    <td align="right" className={_pnlClass(t.pnl)}>
-                      {formatSignedCurrency(t.pnl)}
-                    </td>
-                    <td align="right" className={_pnlClass(t.pnl_pct)}>
-                      {formatPercent(t.pnl_pct, { signed: true })}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <div style={{ display: "flex", alignItems: "center", margin: "8px 0 4px" }}>
+              <h4 style={{ margin: 0 }}>Trades ({formatNumber(selected.trades.length)})</h4>
+              <button
+                data-testid="perf-export-trades-csv"
+                type="button"
+                onClick={() =>
+                  downloadGridCsv(
+                    gridCsvFilename(
+                      `perf-trades-${selected.symbol.replace(/[^A-Za-z0-9_-]+/g, "-")}`,
+                    ),
+                    buildGridCsv(TRADE_CSV_COLUMNS, [...selected.trades].reverse()),
+                  )
+                }
+                disabled={selected.trades.length === 0}
+                title="Download CSV"
+                aria-label={`Download all ${selected.trades.length} trades as CSV`}
+                style={{ marginLeft: "auto" }}
+              >
+                CSV
+              </button>
+            </div>
+            {selected.trades.length > TRADES_WINDOW && (
+              <div
+                data-testid="perf-trades-window-note"
+                className="u-text-secondary"
+                style={{ fontSize: "var(--font-size-sm)", marginBottom: 4 }}
+              >
+                Showing the last {TRADES_WINDOW} trades — the CSV export covers
+                all {formatNumber(selected.trades.length)}.
+              </div>
+            )}
+            <DataGrid
+              columns={TRADE_COLUMNS}
+              rows={selected.trades.slice(-TRADES_WINDOW).reverse()}
+              density="compact"
+              ariaLabel="Recent trades"
+              // Newest-first (see F1 caption below); headers cycle asc → desc → none.
+              defaultSortKey="entry_time"
+              defaultSortDir="none"
+              rowKey={(t, i) => `${t.entry_time}-${t.exit_time}-${i}`}
+            />
           </div>
         )}
       </div>

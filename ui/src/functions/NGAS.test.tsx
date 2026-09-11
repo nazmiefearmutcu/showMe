@@ -129,3 +129,21 @@ describe("NGAS pane — ok payload", () => {
     ).toBeInTheDocument();
   });
 });
+
+describe("commodity-spot shared body — audit fixes (NGAS, second code)", () => {
+  it("stamps the % unit on the change caption (audit A1-M)", () => {
+    setMockFn({ state: "ok", ...livePayload() });
+    const { container } = render(<NGASPane code="NGAS" symbol="NG=F" />);
+    expect(container.textContent).toContain("+1.200%");
+  });
+
+  it("gives a missing change a neutral tone instead of green (audit A3-L)", () => {
+    const p = livePayload();
+    delete (p.data.data.rows[0] as unknown as Record<string, unknown>).change_pct;
+    setMockFn({ state: "ok", ...p });
+    render(<NGASPane code="NGAS" symbol="NG=F" />);
+    const card = screen.getByText("NG=F").closest(".stat-card");
+    expect(card?.className).toContain("stat-card--neutral");
+    expect(card?.className).not.toContain("stat-card--positive");
+  });
+});

@@ -15,7 +15,7 @@
  * `useFunction` is mocked via a mutable shared state (GEX pattern).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { DARKPane } from "./DARK";
 
 /* ── useFunction mock ──────────────────────────────────────────────── */
@@ -204,6 +204,29 @@ describe("DARK pane — load states", () => {
     expect(spark?.getAttribute("aria-label")).toMatch(/ATS share volume/i);
     // No stale banner on a healthy payload.
     expect(screen.queryByText(/PROVIDER DATA STALE/)).toBeNull();
+  });
+});
+
+describe("DARK pane — venue grid (DataGrid migration)", () => {
+  it("renders the venue ranking as a keyboard-navigable DataGrid with an ariaLabel", () => {
+    setMockFn({ state: "ok", ...okPayload() });
+    render(<DARKPane code="DARK" symbol="AAPL" />);
+    const grid = screen.getByRole("grid", { name: /venue ranking/i });
+    expect(grid).toBeInTheDocument();
+    expect(
+      within(grid).getByRole("columnheader", { name: /share of ats/i }),
+    ).toBeInTheDocument();
+    expect(
+      within(grid).getByRole("columnheader", { name: /dark % of total/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("offers a CSV export of the venue rows", () => {
+    setMockFn({ state: "ok", ...okPayload() });
+    render(<DARKPane code="DARK" symbol="AAPL" />);
+    const csv = screen.getByTitle("Download CSV");
+    expect(csv).not.toBeDisabled();
+    expect(csv.getAttribute("aria-label")).toMatch(/3 venues/i);
   });
 });
 

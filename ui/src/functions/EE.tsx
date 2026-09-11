@@ -95,10 +95,23 @@ export function EEPane({ code, symbol }: FunctionPaneProps) {
 
   const stats = useMemo(() => deriveStats(rows), [rows]);
   const status = payload?.status ?? "—";
-  const isLive = state === "ok" && status === "ok";
   const isUnavailable =
     rows.length > 0 &&
     rows[0]?.period === "provider_unavailable";
+  // Honesty (F6): the placeholder path keeps data.status="ok" but stamps
+  // metadata.fallback=True and the shared envelope reports
+  // provider_unavailable. A green "live" pill over a placeholder row is a
+  // false live claim — fold both signals into isLive and label honestly.
+  const isLive =
+    state === "ok" &&
+    status === "ok" &&
+    !isUnavailable &&
+    data?.status !== "provider_unavailable";
+  const pillLabel = isLive ? "live" : isUnavailable ? "unavailable" : status;
+  const realRowCount = useMemo(
+    () => rows.filter((r) => r.period !== "provider_unavailable").length,
+    [rows],
+  );
 
   const COLS: DataGridColumn<EERow>[] = useMemo(
     () => [
@@ -267,14 +280,14 @@ export function EEPane({ code, symbol }: FunctionPaneProps) {
         <PaneHeader
           code={code}
           title={`Earnings & Estimates — ${effectiveSymbol || ""}`}
-          subtitle={`${effectiveSymbol || "—"} · ${rows.length} quarters`}
+          subtitle={`${effectiveSymbol || "—"} · ${realRowCount} quarters`}
           trailing={
             <FunctionControlGroup>
               <Pill tone="muted" variant="soft" withDot={false}>
-                {rows.length} q
+                {realRowCount} q
               </Pill>
               <Pill tone={isLive ? "positive" : "warn"} variant="soft">
-                {isLive ? "live" : status}
+                {pillLabel}
               </Pill>
               <SegmentedControl
                 label="HIST"

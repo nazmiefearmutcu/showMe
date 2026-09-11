@@ -60,6 +60,10 @@ interface EREVData {
   current_score?: TrendRow | null;
   methodology?: string;
   field_dictionary?: Record<string, unknown>;
+  reason?: string;
+  data_mode?: string;
+  warnings?: unknown[];
+  next_actions?: string[];
 }
 
 export function EREVPane({ code, symbol }: FunctionPaneProps) {
@@ -88,7 +92,30 @@ export function EREVPane({ code, symbol }: FunctionPaneProps) {
     [trend, revisions, payload?.velocity_avg],
   );
   const status = payload?.status ?? "—";
-  const isLive = state === "ok" && status === "ok";
+  // Honesty: live only when the function AND the shared envelope both say ok
+  // AND the payload is not a labelled model/unavailable fallback. The backend
+  // no longer fabricates analyst buckets, but the pane must also refuse to
+  // claim live if a fallback envelope ever lands here (F6).
+  const isLive =
+    state === "ok" &&
+    status === "ok" &&
+    data?.status !== "provider_unavailable" &&
+    payload?.data_mode !== "modeled";
+  const warnings = useMemo<string[]>(
+    () =>
+      Array.isArray(payload?.warnings)
+        ? payload.warnings.map((w) => String(w)).filter(Boolean)
+        : [],
+    [payload?.warnings],
+  );
+  const reasonText =
+    typeof payload?.reason === "string" && payload.reason ? payload.reason : null;
+  // The backend mirrors the primary provider error into both `reason` and
+  // `warnings`; don't print the same sentence twice.
+  const extraWarnings = useMemo(
+    () => warnings.filter((w) => w !== reasonText),
+    [warnings, reasonText],
+  );
 
   const COLS: DataGridColumn<TrendRow>[] = useMemo(
     () => [
@@ -197,8 +224,35 @@ export function EREVPane({ code, symbol }: FunctionPaneProps) {
     />
   ) : trend.length === 0 ? (
     <Empty
-      title="No revision history"
-      body="Provider returned no recommendation buckets for this symbol."
+      title={
+        payload?.status === "provider_unavailable"
+          ? "Provider unavailable"
+          : "No revision history"
+      }
+      body={
+        <div style={emptyBodyStyle}>
+          <p style={emptyReasonStyle}>
+            {reasonText ??
+              "Provider returned no recommendation buckets for this symbol."}
+          </p>
+          {extraWarnings.length > 0 && (
+            <ul style={nextActionsStyle}>
+              {extraWarnings.map((w, i) => (
+                <li key={i}>{w}</li>
+              ))}
+            </ul>
+          )}
+          {Array.isArray(payload?.next_actions) &&
+            payload.next_actions.length > 0 && (
+              <ul style={nextActionsStyle}>
+                {payload.next_actions.map((a, i) => (
+                  <li key={i}>{a}</li>
+                ))}
+              </ul>
+            )}
+        </div>
+      }
+      icon={payload?.status === "provider_unavailable" ? "⌀" : "∅"}
       action={
         <button onClick={refetch} className="btn">
           Retry
@@ -424,4 +478,26 @@ const monoMutedStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
   fontVariantNumeric: "tabular-nums",
   color: "var(--text-mute)",
+};
+
+const emptyBodyStyle: CSSProperties = {
+  display: "grid",
+  gap: 8,
+  textAlign: "left",
+  maxWidth: 520,
+  margin: "0 auto",
+};
+
+const emptyReasonStyle: CSSProperties = {
+  color: "var(--text-primary)",
+  fontSize: "var(--font-size-md)",
+  lineHeight: 1.5,
+};
+
+const nextActionsStyle: CSSProperties = {
+  margin: 0,
+  paddingLeft: 18,
+  color: "var(--text-mute)",
+  fontSize: "var(--font-size-sm)",
+  lineHeight: 1.6,
 };

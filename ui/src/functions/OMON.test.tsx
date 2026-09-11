@@ -170,10 +170,10 @@ describe("OMON pane — ATM highlight + side toggle", () => {
   it("highlights the strike nearest to spot as ATM", () => {
     setMockFn({ state: "ok", ...okPayload() });
     const { container } = render(<OMONPane code="OMON" symbol="AAPL" />);
-    const atmRows = container.querySelectorAll('tr[data-atm="true"]');
-    expect(atmRows.length).toBe(1);
-    expect(atmRows[0].getAttribute("aria-label")).toMatch(/ATM strike 100/i);
-    expect(atmRows[0].textContent).toContain("100");
+    const atmCells = container.querySelectorAll('[data-atm="true"]');
+    expect(atmCells.length).toBe(1);
+    expect(atmCells[0].textContent).toContain("100");
+    expect(container.querySelector('[data-testid="omon-atm-strike"]')).not.toBeNull();
   });
 
   it("switches to put columns when PUTS is selected", () => {
@@ -209,16 +209,15 @@ describe("OMON pane — expiry selection", () => {
 });
 
 describe("OMON pane — accessibility", () => {
-  it("gives every chain row a descriptive aria-label", () => {
+  it("exposes the chain as a keyboard grid with per-cell reachability", () => {
     setMockFn({ state: "ok", ...okPayload() });
     const { container } = render(<OMONPane code="OMON" symbol="AAPL" />);
-    const rows = Array.from(container.querySelectorAll("tbody tr"));
-    expect(rows.length).toBe(4);
-    for (const r of rows) {
-      const label = r.getAttribute("aria-label");
-      expect(label).toBeTruthy();
-      expect(label).toMatch(/strike/i);
-    }
+    // DataGrid upgrades to role=grid when keyboardNavigable is set (arrow-key
+    // cell navigation + Ctrl/Cmd+C copy).
+    const grid = container.querySelector('[role="grid"]');
+    expect(grid).not.toBeNull();
+    expect(container.querySelectorAll("tbody tr").length).toBe(4);
+    expect(container.querySelectorAll("td[data-cell]").length).toBeGreaterThan(0);
   });
 
   it("labels the chain table for screen readers", () => {
@@ -226,6 +225,38 @@ describe("OMON pane — accessibility", () => {
     const { container } = render(<OMONPane code="OMON" symbol="AAPL" />);
     const table = container.querySelector("table");
     expect(table?.getAttribute("aria-label")).toMatch(/chain/i);
+  });
+});
+
+describe("OMON pane — chain sort + CSV (audit A4 M)", () => {
+  it("reorders the visible strike window when an OI header is clicked", () => {
+    const payload = okPayload();
+    // Give each strike a distinct OI so the built-in sorter visibly reorders.
+    payload.data.data.rows[0].call_oi = 10; // strike 95
+    payload.data.data.rows[1].call_oi = 5000; // strike 100
+    payload.data.data.rows[2].call_oi = 50; // strike 105
+    payload.data.data.rows[3].call_oi = 900; // strike 110
+    setMockFn({ state: "ok", ...payload });
+    const { container } = render(<OMONPane code="OMON" symbol="AAPL" />);
+    const strikes = () =>
+      Array.from(container.querySelectorAll("tbody tr td:first-child")).map(
+        (td) => td.textContent,
+      );
+    expect(strikes()[0]).toBe("95");
+    fireEvent.click(screen.getByText("OI"));
+    // First click on a new column sorts ascending → 10 (strike 95) leads.
+    expect(strikes()[0]).toBe("95");
+    fireEvent.click(screen.getByText("OI"));
+    // Second click flips to descending → 5000 (strike 100) leads.
+    expect(strikes()[0]).toBe("100");
+  });
+
+  it("offers a CSV export of the visible window", () => {
+    setMockFn({ state: "ok", ...okPayload() });
+    render(<OMONPane code="OMON" symbol="AAPL" />);
+    const csv = screen.getByRole("button", { name: /download 4 strikes as csv/i });
+    expect(csv).toBeEnabled();
+    expect(csv.textContent).toBe("CSV");
   });
 });
 

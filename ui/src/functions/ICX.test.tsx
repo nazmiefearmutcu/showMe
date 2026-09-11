@@ -28,6 +28,9 @@ interface MockFnState {
 }
 
 const mockFn: MockFnState = { state: "idle", data: undefined, error: null };
+const mockTick = { current: 0 };
+const refetchMock = vi.fn();
+let lastFnArgs: Record<string, unknown> | undefined;
 
 function setMockFn(next: MockFnState) {
   mockFn.state = next.state;
@@ -36,12 +39,19 @@ function setMockFn(next: MockFnState) {
 }
 
 vi.mock("@/lib/useFunction", () => ({
-  useFunction: () => ({
-    state: mockFn.state,
-    data: mockFn.data,
-    error: mockFn.error,
-    refetch: vi.fn(),
-  }),
+  useFunction: (args: Record<string, unknown>) => {
+    lastFnArgs = args;
+    return {
+      state: mockFn.state,
+      data: mockFn.data,
+      error: mockFn.error,
+      refetch: refetchMock,
+    };
+  },
+}));
+
+vi.mock("@/lib/useVisibilityTick", () => ({
+  useVisibilityTick: () => mockTick.current,
 }));
 
 /* ── fixtures ──────────────────────────────────────────────────────── */
@@ -87,6 +97,9 @@ function okPayload() {
 
 beforeEach(() => {
   setMockFn({ state: "idle", data: undefined });
+  mockTick.current = 0;
+  lastFnArgs = undefined;
+  refetchMock.mockReset();
 });
 
 afterEach(() => {
@@ -170,6 +183,44 @@ describe("ICX pane — quote honesty", () => {
     const aaplCell = screen.getByText("AAPL").closest("tr");
     expect(aaplCell?.textContent).toContain("—");
     expect(screen.getByText(/1 without live quote/i)).toBeInTheDocument();
+  });
+});
+
+describe("ICX pane — quote snapshot refresh (audit A3 M)", () => {
+  it("refetches on a visibility tick and keeps tick out of params", () => {
+    setMockFn({ state: "ok", ...okPayload() });
+    const { rerender } = render(<ICXPane code="ICX" />);
+    expect(refetchMock).not.toHaveBeenCalled();
+    const before = JSON.stringify(lastFnArgs?.params ?? null);
+    expect(before).not.toContain("tick");
+
+    mockTick.current = 1;
+    rerender(<ICXPane code="ICX" />);
+    expect(refetchMock).toHaveBeenCalledTimes(1);
+    // A tick inside params would flip the fetch key and re-skeleton the pane.
+    expect(JSON.stringify(lastFnArgs?.params ?? null)).toBe(before);
+  });
+
+  it("sinks no-quote rows below real decliners when sorting by change (audit A3 L)", () => {
+    setMockFn({
+      state: "ok",
+      data: {
+        data: {
+          status: "ok",
+          index: "SPX",
+          constituents: 2,
+          rows: [
+            { symbol: "DOWN", company: "Down Co", last: 10, change_pct: -8 },
+            { symbol: "MISS", company: "Missing Co", last: null, change_pct: null },
+          ],
+        },
+      },
+    });
+    const { container } = render(<ICXPane code="ICX" />);
+    const symbols = Array.from(
+      container.querySelectorAll("tbody tr td:first-child"),
+    ).map((td) => td.textContent);
+    expect(symbols).toEqual(["DOWN", "MISS"]);
   });
 });
 

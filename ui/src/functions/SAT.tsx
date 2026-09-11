@@ -261,11 +261,19 @@ export function SATPane({ code, symbol }: FunctionPaneProps) {
   // Bundle D / PERF-04. Visibility-aware poll (weather updates slowly).
   const tick = useVisibilityTick(REFRESH_MS);
 
+  // UA-HIGH-16 pattern: `tick` must NOT sit inside `params` — useFunction keys
+  // its cache on the serialized params, so a tick in params clears the payload
+  // and flashes the skeleton every poll. Refetch from an effect instead.
   const { state, data, error, refetch } = useFunction<unknown>({
     code,
     symbol,
-    params: { aoi, layer: "true_color", tick },
+    params: { aoi, layer: "true_color" },
   });
+  useEffect(() => {
+    if (tick === 0) return; // initial mount handled by useFunction's own load
+    refetch();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- tick is the trigger
+  }, [tick]);
 
   const payload = useMemo<SATPayload>(
     () => (isRecord(data?.data) ? (data?.data as SATPayload) : {}),

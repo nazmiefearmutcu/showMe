@@ -2,13 +2,16 @@
  * WIRP — World Interest Rate Probability.
  *
  * Bloomberg `WIRP<GO>` analogue: implied probabilities for the next 4-8
- * central-bank meetings split into cut / hold / hike scenarios. The
- * sidecar currently returns a labelled `reference_rate_probability_table`
- * source mode and a `live futures-implied probability adapter is not
- * configured` warning — the pane exposes that warning prominently so the
- * user never confuses it with a live FedWatch feed.
+ * central-bank meetings split into cut / hold / hike scenarios. The Fed row
+ * is built live and keyless (FRED target range + ^IRX-implied near-term
+ * rate, or the CME FedWatch adapter when wired); ECB/BoE report
+ * `provider_unavailable` rather than fabricated numbers. The header pill
+ * classifies on the backend's actual `source_mode` values
+ * (`live_fed_funds_futures` / `cme_fedwatch` / `live_fred_target_no_irx`),
+ * so live data is never mislabelled as a reference table — and unknown
+ * modes never over-claim live.
  */
-import { useMemo, type CSSProperties } from "react";
+import { useEffect, useMemo, type CSSProperties } from "react";
 import {
   DataGrid,
   type DataGridColumn,
@@ -58,6 +61,8 @@ interface WIRPPayload {
   methodology?: string;
   field_dictionary?: Record<string, string>;
   source_mode?: string;
+  data_mode?: string;
+  status?: string;
 }
 
 const BANKS = [
@@ -81,8 +86,16 @@ export function WIRPPane({ code }: FunctionPaneProps) {
 
   const { state, data, error, refetch } = useFunction<unknown>({
     code,
-    params: { central_bank: bank, meetings: 6, tick },
+    params: { central_bank: bank, meetings: 6 },
   });
+  // F4 fix (A6-WIRP-M): poll on the visibility tick without touching the
+  // fetch params — a changing param key makes useFunction treat every poll
+  // as a fresh load (skeleton flash + cleared data). Canonical GLCO pattern.
+  useEffect(() => {
+    if (tick === 0) return;
+    refetch();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- tick is the trigger
+  }, [tick]);
 
   const payload = useMemo<WIRPPayload>(
     () =>
@@ -97,9 +110,21 @@ export function WIRPPane({ code }: FunctionPaneProps) {
     [payload.rows],
   );
 
-  const sourceMode =
-    payload.source_mode ?? rows[0]?.source_mode ?? "reference_rate_probability_table";
-  const isReferenceTable = sourceMode !== "live";
+  // F4 fix (A6-WIRP-H): the live backend emits top-level `source_mode` values
+  // such as `live_fed_funds_futures` / `cme_fedwatch` / `live_fred_target_no_irx`.
+  // Comparing against the literal "live" mislabelled every live row as a
+  // reference table. Only the explicit live modes earn the live pill —
+  // anything else (reference table, provider outage, unknown drift) stays
+  // honestly labelled reference.
+  const LIVE_SOURCE_MODES = new Set([
+    "live_fed_funds_futures",
+    "cme_fedwatch",
+    "live_fred_target_no_irx",
+  ]);
+  const sourceMode = payload.source_mode ?? rows[0]?.source_mode ?? "unknown";
+  const status = typeof payload.status === "string" ? payload.status : "";
+  const isReferenceTable =
+    !LIVE_SOURCE_MODES.has(sourceMode) || status === "provider_unavailable";
   const warningsList = Array.isArray(data?.warnings) ? data?.warnings : [];
 
   const utcStamp = useUtcStamp(tick);
@@ -178,12 +203,14 @@ export function WIRPPane({ code }: FunctionPaneProps) {
             <FunctionControlGroup>
               <Pill tone="muted" variant="soft" withDot={false}>{rows.length} mtg</Pill>
               <Pill tone="accent" variant="soft" withDot={false}>{utcStamp} UTC</Pill>
-              <Pill
-                tone={isReferenceTable ? "warn" : "positive"}
-                variant="soft"
-              >
-                {isReferenceTable ? "reference table" : "live"}
-              </Pill>
+              <span data-testid="wirp-mode-pill">
+                <Pill
+                  tone={isReferenceTable ? "warn" : "positive"}
+                  variant="soft"
+                >
+                  {isReferenceTable ? "reference table" : "live"}
+                </Pill>
+              </span>
               <LoadStatePill state={state} />
               <RefreshButton loading={state === "loading"} onClick={refetch} />
             </FunctionControlGroup>
@@ -210,10 +237,10 @@ export function WIRPPane({ code }: FunctionPaneProps) {
                 <div style={noticeStyle}>
                   <strong className="u-text-warn">Reference probability table</strong>
                   <span className="u-text-secondary">
-                    Rows are labelled `reference_rate_probability_table` — the live
-                    futures-implied probability adapter (CME FedWatch / SOFR / OIS)
-                    is not configured. Treat values as labelled references, not
-                    live tape data.
+                    Rows are labelled `{sourceMode}` — no live futures-implied
+                    probability source (CME FedWatch / SOFR / OIS) is
+                    contributing right now. Treat values as labelled
+                    references, not live tape data.
                   </span>
                 </div>
               ) : null}
@@ -259,6 +286,7 @@ export function WIRPPane({ code }: FunctionPaneProps) {
                 rows={rows}
                 rowKey={(r, i) => `${r.date ?? "row"}-${i}`}
                 density="compact"
+                ariaLabel="WIRP meeting probabilities"
               />
               {payload.methodology ? (
                 <div style={methodologyBox}>

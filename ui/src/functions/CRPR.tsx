@@ -13,7 +13,7 @@
  * pinned at its implied bucket, a compact agency table, and KPI cards for
  * implied rating, debt/EBITDA, and interest coverage.
  */
-import { useMemo, type CSSProperties } from "react";
+import { useEffect, useMemo, type CSSProperties } from "react";
 import {
   DataGrid,
   type DataGridColumn,
@@ -155,11 +155,20 @@ export function CRPRPane({ code, symbol }: FunctionPaneProps) {
   // Bundle D / PERF-04. Visibility-aware poll.
   const tick = useVisibilityTick(REFRESH_MS);
 
+  // UA-HIGH-16 pattern: `tick` must NOT sit inside `params` — useFunction keys
+  // its cache on the serialized params, so a tick in params would clear the
+  // payload and flash the skeleton every poll. Refetch from an effect instead,
+  // keeping the ladder on screen while the new payload lands.
   const { state, data, error, refetch } = useFunction<unknown>({
     code,
     symbol,
-    params: { tick },
+    params: {},
   });
+  useEffect(() => {
+    if (tick === 0) return; // initial mount handled by useFunction's own load
+    refetch();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- tick is the trigger
+  }, [tick]);
 
   const payload = useMemo<CrprPayload>(
     () =>
@@ -586,7 +595,7 @@ export function CRPRPane({ code, symbol }: FunctionPaneProps) {
                       ? {
                           // Valid meter: always carries a value within [min,max].
                           role: "meter",
-                          "aria-label": "Kredi notu merdiveni",
+                          "aria-label": "Credit rating ladder",
                           "aria-valuemin": 0,
                           "aria-valuemax": meterMax,
                           "aria-valuenow": meterNow,

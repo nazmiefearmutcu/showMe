@@ -172,6 +172,39 @@ describe("NALRT pane — alerts", () => {
   });
 });
 
+describe("NALRT pane — alert links (AUDIT A10 [M])", () => {
+  it("renders the title as an absolute-URL link in a new tab", () => {
+    setMockFn({ state: "ok", data: { data: okPayload() } });
+    render(<NALRTPane code="NALRT" symbol="AAPL" />);
+    const link = screen.getByRole("link", { name: /Fed signals surprise hike/i });
+    expect(link).toHaveAttribute("href", "https://example.com/a");
+    expect(link).toHaveAttribute("target", "_blank");
+    expect(link).toHaveAttribute("rel", "noopener noreferrer");
+  });
+
+  it("refuses to link a non-absolute or script URL (guarded like BRIEF/READ)", () => {
+    const payload = okPayload();
+    const alerts = [
+      {
+        title: "Unsafe url story",
+        source: "wire",
+        age_minutes: 10,
+        importance_score: 81,
+        severity: "high",
+        alert: true,
+        matched_terms: [],
+        url: "javascript:alert(1)",
+        link: "//evil.example.com/story",
+      },
+    ];
+    setMockFn({ state: "ok", data: { data: { ...payload, alerts, alert_count: 1 } } });
+    render(<NALRTPane code="NALRT" symbol="AAPL" />);
+    // The headline still renders — as plain text, never as a link.
+    expect(screen.getByText("Unsafe url story")).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /Unsafe url story/i })).toBeNull();
+  });
+});
+
 describe("NALRT pane — controls", () => {
   it("persists and activates the threshold control", () => {
     setMockFn({ state: "ok", data: { data: okPayload() } });

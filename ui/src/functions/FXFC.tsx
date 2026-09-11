@@ -62,6 +62,7 @@ interface FXFCData {
   base_rate?: number;
   quote_rate?: number;
   vol_annualized?: number;
+  source_mode?: string;
   forecast?: FXFCRow[];
   curve?: FXFCRow[];
   methodology?: string;
@@ -112,7 +113,14 @@ export function FXFCPane({ code, symbol }: FunctionPaneProps) {
     () => payload?.forecast ?? payload?.curve ?? [],
     [payload],
   );
-  const isLive = rows[0]?.source_mode === "live_yfinance_quote";
+  // The backend spot chain has several live tiers (live_yfinance_quote,
+  // live_ecb_reference, live_official/Frankfurter) plus manual_input. Only
+  // `reference_model` is the labelled static fallback — treating every
+  // non-yfinance tier as "reference" mislabelled live ECB spot. The
+  // envelope-level source_mode is preferred; per-row carries the fallback.
+  const sourceMode = payload?.source_mode ?? rows[0]?.source_mode;
+  const isLive = typeof sourceMode === "string" && sourceMode.startsWith("live_");
+  const isManual = sourceMode === "manual_input";
   const spot = payload?.spot;
 
   const stats = useMemo(() => deriveStats(rows), [rows]);
@@ -244,11 +252,17 @@ export function FXFCPane({ code, symbol }: FunctionPaneProps) {
           <StatCard
             label={`Spot ${payload?.pair ?? effectivePair}`}
             value={fmtFx(spot)}
-            caption={isLive ? "LIVE YFINANCE SPOT" : "REFERENCE MODEL SPOT"}
+            caption={
+              isLive
+                ? `LIVE SPOT · ${sourceMode}`
+                : isManual
+                  ? "MANUAL SPOT INPUT"
+                  : "REFERENCE MODEL SPOT"
+            }
             tone={isLive ? "positive" : "neutral"}
           />
           <StatCard
-            label="3M forecast"
+            label={`${stats.horizon} forecast`}
             value={fmtFx(stats.fwd3m)}
             caption={`${fmtDiff(stats.points3m)} F−S`}
             tone="neutral"
@@ -342,7 +356,7 @@ export function FXFCPane({ code, symbol }: FunctionPaneProps) {
           trailing={
             <FunctionControlGroup>
               <Pill tone={isLive ? "positive" : "warn"} variant="soft">
-                {isLive ? "live spot" : "reference spot"}
+                {isLive ? "live spot" : isManual ? "manual spot" : "reference spot"}
               </Pill>
               <SegmentedControl
                 label="PAIR"
@@ -388,6 +402,9 @@ function deriveStats(rows: FXFCRow[]) {
   const byHorizon = (h: string) => rows.find((r) => r.horizon === h);
   const r3m = byHorizon("3M") ?? rows[Math.min(1, rows.length - 1)];
   return {
+    // Label the ladder slot actually used — a custom tenor set without a 3M
+    // row must not be presented as a "3M forecast".
+    horizon: r3m?.horizon ?? "3M",
     fwd3m: r3m?.forecast ?? null,
     points3m: r3m?.forward_points ?? 0,
   };

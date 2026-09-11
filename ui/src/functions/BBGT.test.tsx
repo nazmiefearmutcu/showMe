@@ -127,6 +127,7 @@ describe("BBGT pane — preview interaction", () => {
           tif: string;
           submit: boolean;
           price: number;
+          paper_mode: boolean;
         };
       },
     ];
@@ -134,6 +135,7 @@ describe("BBGT pane — preview interaction", () => {
     expect(optsArg.symbol).toBe("SPY");
     expect(optsArg.asset_class).toBe("FX");
     expect(optsArg.params.submit).toBe(false);
+    expect(optsArg.params.paper_mode).toBe(true);
     expect(optsArg.params.quantity).toBe(100);
     expect(optsArg.params.price).toBe(612.25);
   });
@@ -189,9 +191,12 @@ describe("BBGT pane — live submit gate", () => {
     fireEvent.click(submitBtn);
     await waitFor(() => expect(runFunctionMock).toHaveBeenCalledTimes(1));
     const optsArg = runFunctionMock.mock.calls[0][1] as {
-      params: { submit: boolean };
+      params: { submit: boolean; paper_mode: boolean };
     };
     expect(optsArg.params.submit).toBe(true);
+    // F9 [C]: the engine ignores submit=true unless paper_mode is explicitly
+    // false — the armed button is the only call site that passes it.
+    expect(optsArg.params.paper_mode).toBe(false);
   });
 
   it("never labels a preview as a live fill", async () => {
@@ -202,5 +207,37 @@ describe("BBGT pane — live submit gate", () => {
     await screen.findByText(/Order preview/i);
     expect(container.textContent).toContain("· paper");
     expect(container.textContent).not.toContain("FILLED");
+  });
+
+  it("renders a submitted live order with an honest SUBMITTED state (F9/H)", async () => {
+    runFunctionMock.mockResolvedValue({
+      data: {
+        status: "submitted",
+        broker: "alpaca_broker",
+        order_id: "ord-42",
+        symbol: "SPY",
+        asset_class: "EQUITY",
+        side: "BUY",
+        quantity: 100,
+        order_type: "LIMIT",
+        time_in_force: "DAY",
+        price: 612.25,
+        leverage: null,
+        next_actions: [],
+      },
+      sources: ["alpaca_broker"],
+      elapsed_ms: 7,
+      warnings: [],
+    });
+    const { container } = render(<BBGTPane code="BBGT" />);
+    fillTicket();
+    fireEvent.click(screen.getByText("I confirm this is a real order"));
+    fireEvent.click(screen.getByTitle("Submit live order (submit=true)"));
+    await screen.findByText(/Order submitted/);
+    // Header + summary + footer now carry the honest lifecycle token.
+    expect(screen.getAllByText("SUBMITTED").length).toBeGreaterThan(0);
+    expect(screen.getByText("ord-42")).toBeInTheDocument();
+    expect(container.textContent).toContain("· LIVE");
+    expect(container.textContent).not.toContain("· paper");
   });
 });

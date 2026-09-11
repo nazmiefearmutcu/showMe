@@ -232,4 +232,26 @@ describe("TXNS terminal-grade", () => {
     ).toBeInTheDocument();
     expect(screen.getByText(/has 7 records/)).toBeInTheDocument();
   });
+
+  it("P1: a filtered view never mixes visible rows with the DB-wide total", async () => {
+    listTradesMock.mockResolvedValue(trades(SAMPLE, { total: 250 }));
+    render(<TXNSPane code="TXNS" symbol="" />);
+    await screen.findByLabelText("Trade blotter");
+
+    // No filter → honest loaded/total denominator.
+    expect(screen.getByText("2 / 250 rows")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Symbol filter"), {
+      target: { value: "AAPL" },
+    });
+
+    // Filtered → loaded count only; the DB-wide 250 is not a filtered total
+    // and must not appear as one.
+    expect(await screen.findByText(/2 shown · filtered/)).toBeInTheDocument();
+    expect(screen.queryByText(/2 \/ 250 rows/)).toBeNull();
+
+    // The KPI strip states its loaded-window scope instead of implying it
+    // covers the whole DB.
+    expect(screen.getByText("over loaded 2")).toBeInTheDocument();
+  });
 });

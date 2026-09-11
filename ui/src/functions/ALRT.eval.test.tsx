@@ -14,7 +14,7 @@
  *  - the row surfaces the live Current value + an armed/triggered status;
  *  - no fire when there is no quote.
  */
-import { render, screen, act } from "@testing-library/react";
+import { render, screen, act, fireEvent } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // fetchQuote + the fire side-effects are mocked so each spec drives a
@@ -241,5 +241,39 @@ describe("ALRT evaluation loop", () => {
     // recordFire must not have run: fired_count stays 0.
     const rows = await loadAlerts();
     expect(rows.find((r) => r.symbol === "FAIL")?.fired_count).toBe(0);
+  });
+});
+
+describe("ALRT threshold validation (i18n)", () => {
+  it("shows the English zero-threshold error, never the Turkish string", async () => {
+    await mountPane();
+    const input = screen.getByLabelText(/threshold/i) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "0" } });
+    const err = screen.getByTestId("alrt-threshold-error");
+    expect(err.textContent).toBe("Threshold cannot be 0.");
+    expect(err.textContent).not.toMatch(/olamaz/);
+  });
+
+  it("clears the error for a valid threshold (no lingering Turkish copy)", async () => {
+    await mountPane();
+    const input = screen.getByLabelText(/threshold/i) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "0" } });
+    expect(screen.getByTestId("alrt-threshold-error")).toBeInTheDocument();
+    fireEvent.change(input, { target: { value: "200" } });
+    expect(screen.queryByTestId("alrt-threshold-error")).toBeNull();
+  });
+});
+
+describe("ALRT level cell formatting", () => {
+  it("renders a change_pct threshold with a percent unit", async () => {
+    await seed({ symbol: "AAPL", field: "change_pct", direction: "above", threshold: 5 });
+    await mountPane();
+    expect(screen.getAllByText("5.00%").length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("renders a volume threshold compactly (no price-style decimals)", async () => {
+    await seed({ symbol: "AAPL", field: "volume", direction: "above", threshold: 2500000 });
+    await mountPane();
+    expect(screen.getAllByText("2.5M").length).toBeGreaterThanOrEqual(1);
   });
 });

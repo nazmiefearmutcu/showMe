@@ -14,11 +14,13 @@
  *   bids[], asks[]  (each level: { price, size }),
  *   rows[]          (each: { side, price, size, cum_size, notional }),
  *   best_bid, best_ask, mid, spread, spread_bps, microprice,
- *   imbalance (top-of-book), surface[]/depth_table[] (buckets w/ imbalance),
- *   top10_imbalance, kyle_lambda_proxy, methodology.
+ *   imbalance (top-of-book), methodology.
+ * Emitted-but-not-yet-rendered (depth-scaling opportunity, not a wire read):
+ *   surface[]/depth_table[] (buckets w/ imbalance), top10_imbalance,
+ *   kyle_lambda_proxy.
  * Plus envelope: data.sources, data.warnings, data.elapsed_ms.
  */
-import { useMemo, type CSSProperties } from "react";
+import { useEffect, useMemo, type CSSProperties } from "react";
 import {
   Empty,
   Pane,
@@ -112,11 +114,20 @@ export function MICROPane({ code, symbol }: FunctionPaneProps) {
   );
   const tick = useVisibilityTick(REFRESH_MS);
 
+  // UA-HIGH-16 pattern: `tick` must NOT sit inside `params` — useFunction keys
+  // its cache on the serialized params, so a tick in params clears the payload
+  // and replaces the whole ladder with a skeleton every 5s. Refetch from an
+  // effect instead; only the depth control re-keys the request.
   const { state, data, error, refetch } = useFunction<unknown>({
     code,
     symbol,
-    params: { depth_levels: Number(depthOpt), tick },
+    params: { depth_levels: Number(depthOpt) },
   });
+  useEffect(() => {
+    if (tick === 0) return; // initial mount handled by useFunction's own load
+    refetch();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- tick is the trigger
+  }, [tick]);
 
   const payload = useMemo<MicroPayload>(
     () =>

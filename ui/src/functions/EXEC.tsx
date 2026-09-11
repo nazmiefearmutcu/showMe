@@ -65,6 +65,7 @@ interface EXECOrder {
 interface EXECData {
   status?: string;
   reason?: string;
+  action?: string;
   symbol?: string;
   algo?: string;
   interval?: string;
@@ -74,6 +75,7 @@ interface EXECData {
     avg_is_bps?: number | null;
     worst_slippage_bps?: number | null;
     data_mode?: string;
+    execution_mode?: string;
     as_of?: number | null;
   };
 }
@@ -146,6 +148,10 @@ export function EXECPane({ code, symbol }: FunctionPaneProps) {
   const order = payload?.orders?.[0];
   const cards = payload?.cards;
   const status = payload?.status ?? "—";
+  // F9 [M]: action=plan executes NOTHING — Avg IS / worst slip / avg fill are
+  // hypothetical against historical interval bars. Surface the lifecycle
+  // ("planned · simulated") instead of presenting them as execution results.
+  const planned = payload?.action === "plan" || cards?.execution_mode === "planned";
 
   const COLS: DataGridColumn<EXECRow>[] = useMemo(
     () => [
@@ -258,13 +264,13 @@ export function EXECPane({ code, symbol }: FunctionPaneProps) {
         <StatCard
           label="Avg IS"
           value={fmtBps(cards?.avg_is_bps)}
-          caption={`AVG IMPLEMENTATION SHORTFALL · ${order?.algo ?? payload?.algo ?? algo}`}
+          caption={`${planned ? "PLANNED · " : ""}AVG IMPLEMENTATION SHORTFALL · ${order?.algo ?? payload?.algo ?? algo}`}
           tone={bpsTone(cards?.avg_is_bps, side, true)}
         />
         <StatCard
           label="Worst slip"
           value={fmtBps(cards?.worst_slippage_bps)}
-          caption="WORST SLICE VS INTERVAL VWAP"
+          caption={`${planned ? "PLANNED · " : ""}WORST SLICE VS INTERVAL VWAP`}
           tone={bpsTone(cards?.worst_slippage_bps, side, false)}
         />
         <StatCard
@@ -276,7 +282,7 @@ export function EXECPane({ code, symbol }: FunctionPaneProps) {
         <StatCard
           label="Final pace"
           value={fmtPct(rows[rows.length - 1]?.pace_pct)}
-          caption={`ARRIVAL ${fmtNum(order?.arrival_price, 2)} → AVG FILL ${fmtNum(order?.avg_fill_px, 2)}`}
+          caption={`ARRIVAL ${fmtNum(order?.arrival_price, 2)} → ${planned ? "SIMULATED " : ""}AVG FILL ${fmtNum(order?.avg_fill_px, 2)}`}
           tone="neutral"
         />
       </section>
@@ -302,6 +308,15 @@ export function EXECPane({ code, symbol }: FunctionPaneProps) {
               <Pill tone="muted" variant="soft" withDot={false}>
                 {rows.length} slices
               </Pill>
+              {planned && payload?.status === "ok" ? (
+                <span
+                  title="No order was sent — the schedule and IS/slippage metrics are hypothetical against live interval bars."
+                >
+                  <Pill tone="warn" variant="soft" withDot={false}>
+                    PLANNED · SIMULATED VS INTERVAL BARS
+                  </Pill>
+                </span>
+              ) : null}
               <LoadStatePill state={state} status={status} />
               <SegmentedControl
                 label="ALGO"
@@ -347,6 +362,15 @@ export function EXECPane({ code, symbol }: FunctionPaneProps) {
           <StatusSection label="sources" value={data?.sources?.join(", ") || "—"} />
           <StatusDivider />
           <StatusSection label="status" value={status} />
+          <StatusDivider />
+          <StatusSection
+            label="mode"
+            value={
+              cards?.execution_mode ??
+              (payload?.action === "plan" ? "planned" : "—")
+            }
+            tone={planned ? "warn" : "muted"}
+          />
           <StatusDivider />
           <StatusSection label="slices" value={rows.length} />
           <StatusDivider />

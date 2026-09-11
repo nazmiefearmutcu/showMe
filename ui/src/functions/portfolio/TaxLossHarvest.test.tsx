@@ -8,7 +8,13 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const mockReturn: { current: unknown } = { current: null };
-vi.mock("@/lib/useFunction", () => ({ useFunction: () => mockReturn.current }));
+const recordedCalls: Array<{ params?: Record<string, unknown> }> = [];
+vi.mock("@/lib/useFunction", () => ({
+  useFunction: (opts: { params?: Record<string, unknown> }) => {
+    recordedCalls.push(opts);
+    return mockReturn.current;
+  },
+}));
 vi.mock("@/lib/router", () => ({ navigate: vi.fn() }));
 
 import { TaxLossHarvestPane } from "./TaxLossHarvest";
@@ -37,6 +43,7 @@ function ok(
 afterEach(() => {
   cleanup();
   mockReturn.current = null;
+  recordedCalls.length = 0;
 });
 
 const LIVE_PAYLOAD = {
@@ -155,5 +162,41 @@ describe("TLH Tax-Loss Harvesting pane", () => {
     render(<TaxLossHarvestPane code="TLH" />);
     fireEvent.click(screen.getByRole("button", { name: "LIVE" }));
     expect(screen.getByRole("button", { name: "MODEL" })).toBeInTheDocument();
+  });
+});
+
+describe("TLH tax assumptions (user-controlled, persisted)", () => {
+  it("sends the default bracket / LT-rate as fractions", () => {
+    ok(LIVE_PAYLOAD);
+    render(<TaxLossHarvestPane code="TLH" />);
+    expect(recordedCalls.length).toBeGreaterThan(0);
+    const params = recordedCalls[0].params ?? {};
+    expect(params.tax_bracket).toBeCloseTo(0.24, 6);
+    expect(params.lt_cap_rate).toBeCloseTo(0.15, 6);
+  });
+
+  it("lets the operator override the rates (percent inputs, fraction wire)", () => {
+    ok(LIVE_PAYLOAD);
+    render(<TaxLossHarvestPane code="TLH" />);
+    fireEvent.change(screen.getByLabelText("Tax bracket percent"), {
+      target: { value: "32" },
+    });
+    fireEvent.change(
+      screen.getByLabelText("Long-term capital gains rate percent"),
+      { target: { value: "18" } },
+    );
+    const latest = recordedCalls[recordedCalls.length - 1].params ?? {};
+    expect(latest.tax_bracket).toBeCloseTo(0.32, 6);
+    expect(latest.lt_cap_rate).toBeCloseTo(0.18, 6);
+    // Persisted under showme.tlh.* so the choice survives remounts.
+    expect(localStorage.getItem("showme.tlh.tax-bracket-pct")).toBe("32");
+    expect(localStorage.getItem("showme.tlh.lt-cap-rate-pct")).toBe("18");
+  });
+
+  it("echoes the assumption labels in the hero copy", () => {
+    ok(LIVE_PAYLOAD);
+    render(<TaxLossHarvestPane code="TLH" />);
+    expect(screen.getByText(/assumed bracket/i)).toBeInTheDocument();
+    expect(screen.getByText(/assumed LT rate/i)).toBeInTheDocument();
   });
 });

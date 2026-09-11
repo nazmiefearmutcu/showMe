@@ -1,4 +1,4 @@
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TMPLPane } from "./TMPL";
 import { useTemplateStore } from "@/lib/template-store";
@@ -59,5 +59,39 @@ describe("TMPL pane", () => {
     fireEvent.click(screen.getByRole("button", { name: /use this template/i }));
     fireEvent.click(screen.getByRole("button", { name: /close/i }));
     expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("surfaces a catalog load error at the list level with Retry (audit A10 M)", () => {
+    const loadCatalog = vi.fn(async () => {});
+    useTemplateStore.setState({
+      entries: [],
+      selectedId: null,
+      loading: false,
+      error: "catalog exploded",
+      loadCatalog,
+    });
+    render(<TMPLPane />);
+    const box = screen.getByTestId("tmpl-catalog-error");
+    expect(box.textContent).toContain("catalog exploded");
+    // Mount effect already triggered one load; the Retry button adds one more.
+    const before = loadCatalog.mock.calls.length;
+    fireEvent.click(within(box).getByRole("button", { name: /retry/i }));
+    expect(loadCatalog.mock.calls.length).toBe(before + 1);
+  });
+
+  it("shows the instantiate error, not a stale catalog error (audit A10 L)", async () => {
+    // A stale catalog error from an earlier load must not leak into the modal.
+    useTemplateStore.setState({ error: "stale catalog failure" });
+    vi.spyOn(useTemplateStore.getState(), "instantiate").mockImplementation(async () => {
+      useTemplateStore.setState({ instantiateError: "instantiate exploded" });
+      return null;
+    });
+    render(<TMPLPane />);
+    fireEvent.click(screen.getByText("RSI MR"));
+    fireEvent.click(screen.getByRole("button", { name: /use this template/i }));
+    fireEvent.click(screen.getByRole("button", { name: /create/i }));
+    const indicator = await screen.findByTestId("tmpl-error-indicator");
+    expect(indicator.textContent).toContain("instantiate exploded");
+    expect(indicator.textContent).not.toContain("stale catalog failure");
   });
 });

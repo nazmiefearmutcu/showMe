@@ -47,6 +47,8 @@ interface CSRCRow {
   contract_unit?: string;
   volume?: number;
   open_interest?: number;
+  /** "reference" — OI is curated; the live quote provider never fills it. */
+  open_interest_state?: string;
   last?: number | null;
   change_pct?: number | null;
   quote_state?: string;
@@ -196,11 +198,14 @@ export function CSRCPane({ code }: FunctionPaneProps) {
       },
       {
         key: "open_interest",
-        header: "Open int.",
+        header: "OI (ref)",
         numeric: true,
         width: 100,
         render: (r) => (
-          <span style={monoMutedStyle}>
+          <span
+            style={monoMutedStyle}
+            title="Reference open interest (curated) — the quote provider does not publish OI."
+          >
             {formatCompactNumber(r.open_interest)}
           </span>
         ),
@@ -346,8 +351,11 @@ export function CSRCPane({ code }: FunctionPaneProps) {
 }
 
 function num(value: unknown): number {
+  // Sort desc; unanswered (null/undefined/"") values sink to the end instead
+  // of being coerced to 0 (which made them read as "flat" between real rows).
+  if (value == null || value === "") return Number.NEGATIVE_INFINITY;
   const n = typeof value === "number" ? value : Number(value);
-  return Number.isFinite(n) ? n : 0;
+  return Number.isFinite(n) ? n : Number.NEGATIVE_INFINITY;
 }
 
 const noteStyle: CSSProperties = {

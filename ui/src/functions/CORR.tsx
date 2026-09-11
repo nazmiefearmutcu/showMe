@@ -471,6 +471,7 @@ export function CORRPane({ code }: FunctionPaneProps) {
             rows={selectedDetail?.overlap_sample ?? []}
             density="compact"
             empty="overlap sample unavailable"
+            ariaLabel="Correlation overlap sample"
           />
         </Card>
 
@@ -492,9 +493,11 @@ export function CORRPane({ code }: FunctionPaneProps) {
           columns={returnSummaryColumns}
         />
         <TableCard
-          title={`Bug Analysis · ${bugSeverityCount.critical} critical · ${bugSeverityCount.warning} warning · ${bugSeverityCount.info} info`}
+          title={`Data diagnostics · ${bugSeverityCount.critical} critical · ${bugSeverityCount.warning} warning · ${bugSeverityCount.info} info`}
           rows={bugRows}
           columns={bugColumns}
+          collapsible
+          emptyLabel="no diagnostics recorded"
         />
       </div>
     );
@@ -1274,20 +1277,44 @@ function TableCard<T>({
   title,
   rows,
   columns,
+  collapsible = false,
+  emptyLabel,
 }: {
   title: string;
   rows: T[];
   columns: DataGridColumn<T>[];
+  collapsible?: boolean;
+  emptyLabel?: string;
 }) {
+  const grid = (
+    <DataGrid
+      columns={columns}
+      rows={rows}
+      density="compact"
+      empty={emptyLabel ?? `${title.toLowerCase()} unavailable`}
+      ariaLabel={`${title} table`}
+    />
+  );
+  if (collapsible) {
+    // Developer-diagnostic tables (bug scan) stay available but collapsed so
+    // a trader surface is not dominated by QA residue. Native <details> keeps
+    // the control keyboard-reachable for free.
+    return (
+      <Card>
+        <details>
+          <summary style={diagnosticsSummaryStyle}>
+            <span>{title}</span>
+            <span style={diagnosticsCountStyle}>{rows.length} rows</span>
+          </summary>
+          {grid}
+        </details>
+      </Card>
+    );
+  }
   return (
     <Card>
       <CardHeader trailing={`${rows.length} rows`}>{title}</CardHeader>
-      <DataGrid
-        columns={columns}
-        rows={rows}
-        density="compact"
-        empty={`${title.toLowerCase()} unavailable`}
-      />
+      {grid}
     </Card>
   );
 }
@@ -1669,6 +1696,26 @@ const metricStripStyle: CSSProperties = {
   display: "grid",
   gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
   gap: 8,
+};
+
+const diagnosticsSummaryStyle: CSSProperties = {
+  cursor: "pointer",
+  padding: "10px 12px",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  gap: 8,
+  fontSize: "var(--font-size-md)",
+  fontWeight: 600,
+  color: "var(--text-primary)",
+};
+
+const diagnosticsCountStyle: CSSProperties = {
+  fontFamily: "JetBrains Mono, monospace",
+  fontVariantNumeric: "tabular-nums",
+  fontSize: "var(--font-size-sm)",
+  fontWeight: 400,
+  color: "var(--text-mute)",
 };
 
 const statCardStyle: CSSProperties = {

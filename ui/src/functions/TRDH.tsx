@@ -13,7 +13,7 @@
  * Honesty: countdowns come only from the payload's seconds_until_open /
  * seconds_until_close; a 24h venue with no next close renders "continuous".
  */
-import { useMemo, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import {
   DataGrid,
   type DataGridColumn,
@@ -29,12 +29,18 @@ import {
   StatusSection,
 } from "@/design-system";
 import { useFunction } from "@/lib/useFunction";
+import { useVisibilityTick } from "@/lib/useVisibilityTick";
 import {
   FunctionControlGroup,
   LoadStatePill,
   RefreshButton,
 } from "./function-controls";
 import type { FunctionPaneProps } from "./registry-types";
+
+// Countdowns fall as wall-clock advances, so the board re-fetches every
+// minute (visibility-paused). The tick stays OUT of the fetch params —
+// putting it in params would re-key the load and flash the skeleton.
+const REFRESH_MS = 60_000;
 
 interface TRDHRow {
   exchange?: string;
@@ -92,6 +98,7 @@ function readPersistedSelection(): string[] {
 
 export function TRDHPane({ code }: FunctionPaneProps) {
   const [selected, setSelected] = useState<string[]>(readPersistedSelection);
+  const tick = useVisibilityTick(REFRESH_MS);
 
   const { state, data, error, refetch } = useFunction<TRDHData>({
     code,
@@ -100,6 +107,15 @@ export function TRDHPane({ code }: FunctionPaneProps) {
     params: { exchanges: selected.join(",") },
     enabled: selected.length > 0,
   });
+
+  // Poll-on-tick: countdowns ("closes in 1h 52m") must not freeze while the
+  // board sits open. Deps are [tick] ONLY — refetch is a new identity every
+  // render, so including it would re-run the effect forever.
+  useEffect(() => {
+    if (tick === 0) return;
+    refetch();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- tick is the trigger
+  }, [tick]);
 
   function toggleExchange(exchange: string) {
     const next = selected.includes(exchange)

@@ -86,6 +86,24 @@ export function DPFPane({ code, symbol }: FunctionPaneProps) {
   const stats = useMemo(() => deriveStats(rows), [rows]);
   const status = payload?.status ?? "—";
   const isLive = state === "ok" && status === "ok";
+  // The fallback path serves a labelled shape model, not reported FINRA
+  // volume. Surface the backend reason (e.g. a timeout) and never let the
+  // "AS OF" caption imply the model weeks are reported weeks.
+  const shapeModel = rows.some(
+    (r) =>
+      (r.source_mode ?? "").includes("shape_model") ||
+      (r.source_mode ?? "").includes("labelled"),
+  );
+  const dataWarning = useMemo(() => {
+    if (status === "ok" && !shapeModel) return null;
+    return (
+      payload?.reason ??
+      rows.find((r) => r.data_warning)?.data_warning ??
+      (shapeModel
+        ? "FINRA ATS feed unavailable — rows are a labelled shape model, not reported ATS volume."
+        : null)
+    );
+  }, [payload?.reason, rows, shapeModel, status]);
 
   const COLS: DataGridColumn<DPFRow>[] = useMemo(
     () => [
@@ -197,11 +215,25 @@ export function DPFPane({ code, symbol }: FunctionPaneProps) {
     />
   ) : (
     <div className="u-grid-gap-14">
+      {dataWarning ? (
+        <section style={noticeStyle} aria-label="DPF data warning">
+          <strong className="u-text-warn">
+            {status === "provider_unavailable"
+              ? "Provider unavailable"
+              : "Data warning"}
+          </strong>
+          <span className="u-text-secondary">{dataWarning}</span>
+        </section>
+      ) : null}
       <section style={kpiGridStyle} aria-label="DPF KPI ribbon">
         <StatCard
           label="Weeks"
           value={String(rows.length)}
-          caption={`AS OF ${(rows[0]?.weekStartDate ?? "").slice(0, 10) || "—"}`}
+          caption={
+            shapeModel
+              ? "LATEST WEEK IN MODEL"
+              : `AS OF ${(rows[0]?.weekStartDate ?? "").slice(0, 10) || "—"}`
+          }
           tone="neutral"
         />
         <StatCard
@@ -360,6 +392,16 @@ const kpiGridStyle: CSSProperties = {
   display: "grid",
   gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
   gap: 10,
+};
+
+const noticeStyle: CSSProperties = {
+  border: "1px solid color-mix(in srgb, var(--warn) 40%, transparent)",
+  background: "var(--warn-soft)",
+  borderRadius: "var(--radius-sm)",
+  padding: "9px 10px",
+  display: "grid",
+  gap: 4,
+  fontSize: "var(--font-size-md)",
 };
 
 const monoStrongStyle: CSSProperties = {
