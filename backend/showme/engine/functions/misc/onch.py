@@ -18,6 +18,11 @@ from showme.engine.core.instrument import AssetClass, Instrument
 
 _MEMPOOL_BASE = "https://mempool.space/api"
 _COINGECKO_GLOBAL = "https://api.coingecko.com/api/v3/global"
+# Optional keyless companion tiers (L9): chain TVL + Ethereum network vitals.
+# Rows are only appended when the provider returns a parseable value and each
+# row keeps its own source label; a failure leaves the payload untouched.
+_DEFILLAMA_CHAINS = "https://api.llama.fi/v2/chains"
+_BLOCKSCOUT_ETH_STATS = "https://eth.blockscout.com/api/v2/stats"
 _UA = {"User-Agent": "showMe research contact@example.com"}
 
 # Hardcoded values the legacy stub leaned on / the kind of canned numbers a
@@ -37,7 +42,11 @@ _METHODOLOGY = (
     "dominance, total market cap, 24h volume). No API keys are used. Hashrate "
     "is normalised to EH/s and difficulty to trillions (T). The fee histogram "
     "series carries the transaction count projected for each upcoming mempool "
-    "block. On a genuine upstream outage the handler returns "
+    "block. Optional keyless companion tiers add chain TVL from DefiLlama and "
+    "Ethereum network vitals (average gas price, ETH spot) from Blockscout "
+    "when they respond — each row carries its own source and a missing tier "
+    "adds nothing (never a fabricated metric). "
+    "On a genuine upstream outage the handler returns "
     "data_mode='not_configured' style status='provider_unavailable' with an "
     "honest warning and next_actions — it never fabricates address counts, "
     "fee curves, or a synthetic gas trend."
@@ -47,7 +56,7 @@ _FIELD_DICTIONARY = {
     "metric": "Name of the on-chain / market metric.",
     "value": "Live measured value formatted for display.",
     "unit": "Unit of the value (sat/vB, EH/s, T, tx, %, USD).",
-    "source": "Provider the row came from (mempool / coingecko).",
+    "source": "Provider the row came from (mempool / coingecko / defillama / blockscout).",
     "context": "Short interpretation or provenance for the value.",
     "time_utc": "Observation time (UTC) when applicable.",
     "mempool_count": "Number of unconfirmed transactions waiting in the mempool.",
@@ -87,9 +96,24 @@ class ONCHFunction(BaseFunction):
             code=self.code,
             instrument=instrument,
             data=payload,
-            sources=["mempool", "coingecko"],
+            sources=self._row_sources(payload),
             metadata={"keyless": True},
         )
+
+    @staticmethod
+    def _row_sources(payload: dict[str, Any]) -> list[str]:
+        """Provider names actually present in the served rows.
+
+        Base providers first (mempool + coingecko, always attempted), then any
+        optional keyless tier that produced a row (defillama / blockscout).
+        Never invents a provider that did not contribute.
+        """
+        sources = ["mempool", "coingecko"]
+        for row in payload.get("rows", []):
+            source = str(row.get("source") or "").strip()
+            if source and source not in sources:
+                sources.append(source)
+        return sources
 
     # ------------------------------------------------------------------ live
 
@@ -193,6 +217,45 @@ class ONCHFunction(BaseFunction):
         if total_vol_usd is not None:
             rows.append(_row("24h Volume", _fmt_usd(total_vol_usd), "USD", "coingecko",
                              "All cryptocurrencies"))
+
+        # Optional keyless companion tiers (L9): DefiLlama chain TVL and
+        # Blockscout Ethereum network vitals. Best-effort — a row is appended
+        # ONLY when the provider parsed a real value, and it keeps its own
+        # ``source`` label; a failure adds nothing (never a fabricated row).
+        try:
+            chains = await _json(_DEFILLAMA_CHAINS)
+            if isinstance(chains, list):
+                tvl_by_chain = {
+                    str(node.get("name") or "").lower(): _as_num(node.get("tvl"))
+                    for node in chains
+                    if isinstance(node, dict)
+                }
+                eth_tvl = tvl_by_chain.get("ethereum")
+                if eth_tvl is not None:
+                    rows.append(_row(
+                        "Ethereum TVL", _fmt_usd(eth_tvl), "USD", "defillama",
+                        "Total value locked across Ethereum contracts",
+                    ))
+        except Exception:  # noqa: BLE001 — optional companion tier
+            pass
+        try:
+            eth_stats = await _json(_BLOCKSCOUT_ETH_STATS)
+            if isinstance(eth_stats, dict):
+                gas_prices = eth_stats.get("gas_prices")
+                avg_gas = _as_num(gas_prices.get("average")) if isinstance(gas_prices, dict) else None
+                if avg_gas is not None:
+                    rows.append(_row(
+                        "ETH Gas (avg)", _fmt(avg_gas, 2), "gwei", "blockscout",
+                        "Average gas price on Ethereum",
+                    ))
+                eth_price = _as_num(eth_stats.get("coin_price"))
+                if eth_price is not None:
+                    rows.append(_row(
+                        "ETH Price", _fmt_usd(eth_price), "USD", "blockscout",
+                        "Ethereum spot price reported by Blockscout",
+                    ))
+        except Exception:  # noqa: BLE001 — optional companion tier
+            pass
 
         # Fee histogram: projected tx count per upcoming block (chart_grammar).
         series = [

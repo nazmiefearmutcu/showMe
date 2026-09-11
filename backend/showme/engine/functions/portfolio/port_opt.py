@@ -67,8 +67,10 @@ class PortOptFunction(BaseFunction):
             from showme.engine.functions.portfolio.rpar import _template_returns
             rets = _template_returns(symbols, days)
             sources = ["computed_return_model"]
+            fallback = True
         else:
             sources = ["yfinance"]
+            fallback = False
         out: dict[str, Any] = {"symbols": list(rets.columns), "samples": int(len(rets))}
         if mode in ("frontier", "all"):
             ef = efficient_frontier(rets, allow_short=allow_short, risk_free=rf)
@@ -138,7 +140,12 @@ class PortOptFunction(BaseFunction):
                               metadata={"mode": mode, "days": days,
                                          "risk_free": rf,
                                          "allow_short": allow_short,
-                                         "live": live})
+                                         # R2-F11: template rows must never
+                                         # carry a live voucher — the source
+                                         # string alone used to be the only
+                                         # thing keeping the pill honest.
+                                         "live": live and not fallback,
+                                         "fallback": fallback})
 
 
 def _truthy(value: Any) -> bool:

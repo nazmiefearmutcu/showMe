@@ -71,11 +71,16 @@ def test_template_derives_from_symbol_set_and_is_labelled_model() -> None:
 
 
 def test_non_live_payload_is_model_with_as_of() -> None:
-    # No yfinance dep wired ⇒ deterministic template path.
-    out = asyncio.run(WEIFunction().execute())
+    # Explicit live=False opts into the labelled deterministic template; the
+    # default path (L9) attempts live quotes first and degrades to a
+    # provider_unavailable envelope carrying the same labelled template.
+    out = asyncio.run(WEIFunction().execute(live=False))
     rows = out.data["rows"]
     assert rows, "non-live WEI returned no rows"
     assert all(r.get("market_state") == "model" for r in rows)
     # Honesty: a real data freshness stamp must be present.
     assert out.data.get("as_of"), "non-live WEI payload missing as_of timestamp"
     assert out.data.get("source_mode") == "world_index_template"
+    assert out.data.get("status") == "ok"
+    assert out.metadata.get("live") is False
+    assert out.metadata.get("fallback") is True

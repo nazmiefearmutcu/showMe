@@ -9,6 +9,7 @@ DATA PIPELINE:
 from __future__ import annotations
 
 import os
+import time
 from typing import Any
 
 import httpx
@@ -17,6 +18,13 @@ import pandas as pd
 from showme.engine.core.base_data_source import (
     BaseDataSource, DataKind, DataRequest, DataSourceError
 )
+
+# FINRA OTC Transparency updates weekly. Cache successful pulls briefly so
+# several panes (DARK/DPF) hitting the same symbol in a minute do not each
+# send an anonymous POST; a failed pull backs off for a minute so a degraded
+# endpoint is not hammered at the adapter's 1 rps budget.
+_CACHE_TTL_S = 900.0
+_FAILURE_COOLDOWN_S = 60.0
 
 
 class FINRAAdapter(BaseDataSource):
@@ -33,6 +41,8 @@ class FINRAAdapter(BaseDataSource):
         self.api_secret = os.environ.get("FINRA_API_SECRET", "")
         self._token: str | None = None
         self._client: httpx.AsyncClient | None = None
+        self._cache: dict[tuple[str, int], tuple[float, pd.DataFrame]] = {}
+        self._cooldown_until: float = 0.0
 
     async def _client_(self) -> httpx.AsyncClient:
         if self._client is None:
@@ -73,6 +83,21 @@ class FINRAAdapter(BaseDataSource):
         (verified 2026-06-01: newest week 2026-05-04 for AAPL).
         """
         await self._maybe_auth()
+        # TTL cache + failure backoff (L9): a repeated pull for the same
+        # symbol inside the TTL is served from memory (copy-out so callers
+        # cannot mutate the cached frame); after a failed pull the adapter
+        # refuses to retry until the cooldown expires instead of hammering
+        # the anonymous endpoint.
+        cache_key = (symbol.upper() if symbol else "*", int(limit))
+        now = time.monotonic()
+        cached = self._cache.get(cache_key)
+        if cached is not None and (now - cached[0]) < _CACHE_TTL_S:
+            return cached[1].copy()
+        if now < self._cooldown_until:
+            remaining = self._cooldown_until - now
+            raise DataSourceError(
+                f"finra: cooling down after a failed pull ({remaining:.0f}s left)"
+            )
         client = await self._client_()
         compare: list[dict[str, Any]] = [
             {"fieldName": "summaryTypeCode", "fieldValue": "ATS_W_SMBL", "compareType": "EQUAL"},
@@ -92,13 +117,15 @@ class FINRAAdapter(BaseDataSource):
             r.raise_for_status()
             data = r.json()
         except httpx.HTTPError as e:
+            self._cooldown_until = time.monotonic() + _FAILURE_COOLDOWN_S
             raise DataSourceError(f"finra: {e}")
         rows = data if isinstance(data, list) else (
             (data.get("data") or data.get("rows") or []) if isinstance(data, dict) else []
         )
-        if not isinstance(rows, list):
-            return pd.DataFrame()
-        return pd.DataFrame(rows)
+        frame = pd.DataFrame(rows) if isinstance(rows, list) else pd.DataFrame()
+        self._cache[cache_key] = (time.monotonic(), frame)
+        self._cooldown_until = 0.0
+        return frame.copy()
 
     async def fetch(self, request: DataRequest) -> Any:
         sym = (request.instrument.symbol if request.instrument else None) or (

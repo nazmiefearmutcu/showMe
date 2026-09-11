@@ -71,6 +71,7 @@ class FunctionFactory:
         from showme.engine.data_sources.alt.reddit_adapter import RedditAdapter
         from showme.engine.data_sources.alt.stocktwits_adapter import StockTwitsAdapter
         from showme.engine.data_sources.alt.openweathermap_adapter import OpenWeatherMapAdapter
+        from showme.engine.data_sources.alt.open_meteo_adapter import OpenMeteoAdapter
         from showme.engine.data_sources.alt.sentinelhub_adapter import SentinelHubAdapter
         from showme.engine.data_sources.alt.opensky_adapter import OpenSkyAdapter
         from showme.engine.data_sources.alt.glassnode_adapter import GlassnodeAdapter
@@ -119,6 +120,7 @@ class FunctionFactory:
             "reddit":          RedditAdapter(cfg_for("reddit")),
             "stocktwits":      StockTwitsAdapter(cfg_for("stocktwits")),
             "openweather":     OpenWeatherMapAdapter(cfg_for("openweathermap")),
+            "open_meteo":      OpenMeteoAdapter(cfg_for("open_meteo")),
             "sentinelhub":     SentinelHubAdapter(cfg_for("sentinelhub")),
             "opensky":         OpenSkyAdapter(cfg_for("opensky")),
             "glassnode":       GlassnodeAdapter(cfg_for("glassnode")),

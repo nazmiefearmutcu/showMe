@@ -55,6 +55,24 @@ async def _weekly_total_volume(symbol: str) -> dict[str, float]:
         return {}
 
 
+def _fallback_rows(symbol: str, weeks: int, reason: str | None) -> list[dict[str, Any]]:
+    """Labelled shape-model rows for the provider-unavailable path.
+
+    The shape model has no real total-volume denominator, so the ratio
+    (``dark_pool_pct``) and its estimate are nulled instead of fabricated;
+    only the labelled volume shape survives. ``reason`` marks a stale/timeout
+    source mode and attaches the data warning.
+    """
+    rows = recent_week_rows(symbol, weeks, source_mode="labelled_current_shape_model")
+    for row in rows:
+        row["dark_pool_pct"] = None
+        row["estimated_total_volume"] = None
+        if reason:
+            row["source_mode"] = "finra_ats_weekly_stale"
+            row["data_warning"] = reason
+    return rows
+
+
 @FunctionRegistry.register
 class DPFFunction(BaseFunction):
     code = "DPF"
@@ -73,10 +91,7 @@ class DPFFunction(BaseFunction):
             )
         except (asyncio.TimeoutError, TimeoutError) as exc:
             reason = f"DPF execution timed out: {exc}"
-            weekly = recent_week_rows(instrument.symbol, int(params.get("weeks", 12)), source_mode="labelled_current_shape_model")
-            for row in weekly:
-                row["source_mode"] = "finra_ats_weekly_stale"
-                row["data_warning"] = reason
+            weekly = _fallback_rows(instrument.symbol, int(params.get("weeks", 12)), reason)
             return FunctionResult(
                 code=self.code, instrument=instrument,
                 data={
@@ -152,7 +167,7 @@ class DPFFunction(BaseFunction):
                 agg = agg.sort_values("weekStartDate", ascending=False).head(weeks)
                 if week_total:
                     sources.append("yfinance")
-        weekly = agg.to_dict(orient="records") if hasattr(agg, "to_dict") and not agg.empty else recent_week_rows(instrument.symbol, weeks, source_mode="labelled_current_shape_model")
+        weekly = agg.to_dict(orient="records") if hasattr(agg, "to_dict") and not agg.empty else _fallback_rows(instrument.symbol, weeks, None)
         status = "ok" if hasattr(agg, "empty") and not agg.empty else "provider_unavailable"
         stale_reason = _stale_reason((weekly[0] or {}).get("weekStartDate") if weekly else None)
         if stale_reason:

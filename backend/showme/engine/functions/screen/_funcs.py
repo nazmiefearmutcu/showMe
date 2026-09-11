@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import re
 from datetime import datetime, timezone
 from typing import Any
@@ -26,6 +27,36 @@ class SRCHFunction(BaseFunction):
         query = str(params.get("query") or "yield >= 4 AND duration <= 10")
         universe = _symbol_filter(params.get("universe"))
         rows = _filter_universe(_bond_reference_rows(), universe)
+        # Default polarity (2026-09-11, L5): the keyless US Treasury par-yield
+        # curve (``deps.ustreasury``) refreshes the US tenor yields by default;
+        # an explicit falsy live / ``reference=true`` serves the static table.
+        reference = _truthy(params.get("reference"))
+        live_param_present = (
+            params.get("live_screen") is not None or params.get("live") is not None
+        )
+        live = (
+            _truthy(params.get("live_screen") or params.get("live"))
+            if live_param_present
+            else not reference
+        )
+        sources = ["showme_bond_reference_universe"]
+        warnings: list[str] = []
+        reference_note: str | None = None
+        if live:
+            live_yields, yield_source = await _treasury_curve_yields(
+                getattr(self.deps, "ustreasury", None)
+            )
+            if live_yields:
+                rows = _merge_yield_rows(rows, live_yields, yield_source)
+                sources = [yield_source, "showme_bond_reference_universe"]
+                reference_note = (
+                    "US Treasury yields are live via the keyless Treasury curve; "
+                    "durations, ratings, and non-US rows are curated reference values."
+                )
+            else:
+                warnings = [
+                    "US Treasury curve unavailable; yields are curated reference values."
+                ]
         # H-6 honesty fix (2026-09-08): the bond universe is a STATIC
         # reference table (2024-era yields) with no live path yet, so a
         # matched filter must never report status "ok" as if these were
@@ -35,9 +66,11 @@ class SRCHFunction(BaseFunction):
             rows,
             query=query,
             limit=_int_param(params, "limit", 50),
-            sources=["showme_bond_reference_universe"],
+            sources=sources,
             field_dictionary=_BOND_FIELDS,
+            warnings=warnings,
             reference=True,
+            reference_note=reference_note,
         )
 
 
@@ -53,7 +86,18 @@ class FSRCFunction(BaseFunction):
         query = str(params.get("query") or "expenseRatio < 0.01 AND aum_usd > 10000000000")
         universe = _symbol_filter(params.get("universe"))
         rows = _filter_universe(_fund_reference_rows(), universe)
-        live = _truthy(params.get("live_screen") or params.get("live"))
+        # Default polarity (2026-09-11, L9): attempt keyless yfinance quotes by
+        # default; an explicit falsy ``live``/``live_screen`` or
+        # ``reference=true`` serves the curated reference universe only.
+        reference = _truthy(params.get("reference"))
+        live_param_present = (
+            params.get("live_screen") is not None or params.get("live") is not None
+        )
+        live = (
+            _truthy(params.get("live_screen") or params.get("live"))
+            if live_param_present
+            else not reference
+        )
         warnings: list[str] = []
         sources = ["showme_fund_reference_universe"]
         if live and self.deps.yfinance:
@@ -67,6 +111,8 @@ class FSRCFunction(BaseFunction):
             if quotes:
                 rows = _merge_quote_rows(rows, quotes)
                 sources = ["yfinance", "showme_fund_reference_universe"]
+            else:
+                warnings = [*warnings, "quote provider returned no usable rows"]
         return _screen_result(
             self.code,
             rows,
@@ -90,7 +136,18 @@ class CSRCFunction(BaseFunction):
         query = str(params.get("query") or 'sector = "Energy"')
         universe = _symbol_filter(params.get("universe"))
         rows = _filter_universe(_commodity_reference_rows(), universe)
-        live = _truthy(params.get("live_screen") or params.get("live"))
+        # Default polarity (2026-09-11, L5): attempt live yfinance quotes by
+        # default; an explicit falsy ``live``/``live_screen`` or
+        # ``reference=true`` serves the curated reference universe only.
+        reference = _truthy(params.get("reference"))
+        live_param_present = (
+            params.get("live_screen") is not None or params.get("live") is not None
+        )
+        live = (
+            _truthy(params.get("live_screen") or params.get("live"))
+            if live_param_present
+            else not reference
+        )
         warnings: list[str] = []
         sources = ["showme_commodity_reference_universe"]
         if live and self.deps.yfinance:
@@ -126,14 +183,52 @@ class SECFFunction(BaseFunction):
         query = str(params.get("query") or "technology")
         universe = _symbol_filter(params.get("universe"))
         rows = _filter_universe(_security_reference_rows(), universe)
+        # Default polarity (2026-09-11, L5): enrich matches with live yfinance
+        # quotes by default; the curated identity fields keep a per-row
+        # reference label. An explicit falsy live / ``reference=true`` serves
+        # the reference master only.
+        reference = _truthy(params.get("reference"))
+        live_param_present = (
+            params.get("live_screen") is not None or params.get("live") is not None
+        )
+        live = (
+            _truthy(params.get("live_screen") or params.get("live"))
+            if live_param_present
+            else not reference
+        )
+        sources = ["showme_security_master_reference"]
+        warnings: list[str] = []
+        live_quotes = False
+        if live and self.deps.yfinance and rows:
+            quotes, warnings = await _quote_rows(
+                self.deps.yfinance,
+                [str(row["symbol"]) for row in rows],
+                timeout=_float_param(params, "quote_timeout", 3.0),
+                screen_timeout=_float_param(params, "screen_timeout", 5.0),
+            )
+            if quotes:
+                rows = _merge_quote_rows(rows, quotes)
+                sources = ["yfinance", "showme_security_master_reference"]
+                live_quotes = True
+                missing = sum(1 for row in rows if row.get("quote_state") != "live")
+                if missing:
+                    warnings = [*warnings, f"{missing} symbol(s) had no live quote"]
+            else:
+                warnings = [*warnings, "quote provider returned no usable rows"]
         if _looks_like_dsl(query):
             return _screen_result(
                 self.code,
                 rows,
                 query=_rewrite_screen_query(query),
                 limit=_int_param(params, "limit", 50),
-                sources=["showme_security_master"],
+                sources=sources,
                 field_dictionary=_SECURITY_FIELDS,
+                warnings=warnings,
+                reference=True,
+                reference_note=(
+                    "Live quotes attached where available; identity fields, "
+                    "exchanges and tags are the curated reference master."
+                ),
             )
         filtered = _security_text_search(rows, query)
         limit = _int_param(params, "limit", 50)
@@ -153,8 +248,15 @@ class SECFFunction(BaseFunction):
                     "Examples: technology, treasury, crude, bitcoin, SPY.",
                 ],
             },
-            metadata={"query": query, "matched": len(filtered), "scanned": len(rows), "limit": limit},
-            sources=["showme_security_master"],
+            metadata={
+                "query": query,
+                "matched": len(filtered),
+                "scanned": len(rows),
+                "limit": limit,
+                "live_quotes": live_quotes,
+            },
+            warnings=warnings,
+            sources=sources,
         )
 
 
@@ -176,7 +278,18 @@ class MOSTFunction(BaseFunction):
             ]
         limit = _int_param(params, "limit", 50)
         sort_key = str(params.get("sort") or "dollar_volume").strip().lower()
-        live = _truthy(params.get("live_screen") or params.get("live"))
+        # Default polarity (2026-09-11, L9): attempt keyless yfinance quotes by
+        # default; an explicit falsy ``live``/``live_screen`` or
+        # ``reference=true`` serves the labelled reference universe only.
+        reference = _truthy(params.get("reference"))
+        live_param_present = (
+            params.get("live_screen") is not None or params.get("live") is not None
+        )
+        live = (
+            _truthy(params.get("live_screen") or params.get("live"))
+            if live_param_present
+            else not reference
+        )
         universe = [str(row["symbol"]) for row in rows]
         if not rows:
             return FunctionResult(
@@ -271,7 +384,18 @@ class WEIFunction(BaseFunction):
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         # Single source of truth: the curated, provider-verified world set.
         indices = _world_index_symbols()
-        live = _truthy(params.get("live_screen") or params.get("live"))
+        # Default polarity (2026-09-11, L9): attempt keyless yfinance quotes by
+        # default; an explicit falsy ``live``/``live_screen`` or
+        # ``reference=true`` serves the labelled deterministic template only.
+        reference = _truthy(params.get("reference"))
+        live_param_present = (
+            params.get("live_screen") is not None or params.get("live") is not None
+        )
+        live = (
+            _truthy(params.get("live_screen") or params.get("live"))
+            if live_param_present
+            else not reference
+        )
         if live and self.deps.yfinance:
             rows, warnings = await _quote_rows(
                 self.deps.yfinance,
@@ -431,6 +555,7 @@ def _screen_result(
     field_dictionary: list[dict[str, str]],
     warnings: list[str] | None = None,
     reference: bool = False,
+    reference_note: str | None = None,
 ) -> FunctionResult:
     rewritten = _rewrite_screen_query(query)
     scanned = len(rows)
@@ -500,8 +625,11 @@ def _screen_result(
         warnings=(
             (warnings or [])
             + ([
-                "Static reference bond universe: yields and durations are curated "
-                "reference values, not live market quotes."
+                reference_note
+                or (
+                    "Static reference bond universe: yields and durations are curated "
+                    "reference values, not live market quotes."
+                )
             ] if reference and limited else [])
         ),
     )
@@ -573,6 +701,67 @@ def _merge_quote_rows(
             out.append({**row, **quote, "quote_state": "live"})
         else:
             out.append({**row, "quote_state": "reference"})
+    return out
+
+
+# Tenors refreshed from the keyless US Treasury daily par-yield curve CSV.
+_US_TREASURY_CURVE_COLUMNS = {
+    "US3M": "3 Mo",
+    "US2Y": "2 Yr",
+    "US5Y": "5 Yr",
+    "US10Y": "10 Yr",
+    "US30Y": "30 Yr",
+}
+
+
+async def _treasury_curve_yields(provider: Any) -> tuple[dict[str, float], str]:
+    """Latest keyless US Treasury par-yield per tenor; ``({}, "")`` on failure.
+
+    ``provider`` is the ``ustreasury`` adapter (``yield_curve()`` returns a
+    date-indexed DataFrame). Any failure degrades to an empty map so callers
+    keep their curated reference rows instead of fabricating yields.
+    """
+    if provider is None:
+        return {}, ""
+    try:
+        curve = await provider.yield_curve()
+    except Exception:  # noqa: BLE001 — outage degrades to reference rows
+        return {}, ""
+    try:
+        if hasattr(curve, "empty") and curve.empty:
+            return {}, ""
+        latest = curve.dropna(how="all").iloc[-1] if hasattr(curve, "dropna") else curve.iloc[-1]
+    except Exception:  # noqa: BLE001
+        return {}, ""
+    yields: dict[str, float] = {}
+    for symbol, column in _US_TREASURY_CURVE_COLUMNS.items():
+        value = latest.get(column) if hasattr(latest, "get") else None
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(number):
+            yields[symbol] = number
+    return (yields, "ustreasury") if yields else ({}, "")
+
+
+def _merge_yield_rows(
+    rows: list[dict[str, Any]],
+    live_yields: dict[str, float],
+    source: str,
+) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        symbol = str(row.get("symbol") or "").upper()
+        if symbol in live_yields:
+            out.append({
+                **row,
+                "yield": round(live_yields[symbol], 3),
+                "yield_state": "live",
+                "yield_source": source,
+            })
+        else:
+            out.append({**row, "yield_state": "reference"})
     return out
 
 

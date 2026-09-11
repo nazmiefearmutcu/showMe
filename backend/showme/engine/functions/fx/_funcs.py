@@ -238,7 +238,27 @@ class WCRSFunction(BaseFunction):
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         bases = _currency_list(params.get("bases") or params.get("base"), default=_DEFAULT_CURRENCIES[:5])
         quotes = _currency_list(params.get("quotes"), default=_DEFAULT_CURRENCIES)
-        matrix, source_mode, sources = await _cross_matrix(self, bases, quotes, params)
+        history_budget = max(0.5, min(3.0, float(params.get("history_timeout", 2.5))))
+        # History gate mirrors the matrix live gate: an explicit ``live=false``
+        # turns both off, so a pure reference matrix never mixes in live
+        # change values.
+        live_enabled = _truthy(params.get("live_fx") or params.get("live", True))
+        if live_enabled:
+            # The per-currency history legs run concurrently with the matrix
+            # fetch so the bounded history budget (max 3s) cannot stack on
+            # top of the matrix latency.
+            (matrix, source_mode, sources), (legs, leg_sources) = await asyncio.gather(
+                _cross_matrix(self, bases, quotes, params),
+                _usd_history_legs(
+                    self,
+                    _unique([*bases, *quotes]),
+                    params,
+                    budget=history_budget,
+                ),
+            )
+        else:
+            matrix, source_mode, sources = await _cross_matrix(self, bases, quotes, params)
+            legs, leg_sources = {}, {}
         rows = []
         heatmap = []
         for base in bases:
@@ -250,19 +270,37 @@ class WCRSFunction(BaseFunction):
                 pip_factor = 100 if quote == "JPY" else 10000
                 bid = rate * 0.9999
                 ask = rate * 1.0001
-                rows.append(
-                    {
-                        "base": base,
-                        "quote": quote,
-                        "pair": f"{base}{quote}",
-                        "rate": round(rate, 8),
-                        "bid": round(bid, 8),
-                        "ask": round(ask, 8),
-                        "spread_pips": round((ask - bid) * pip_factor, 3),
-                        "change_pct": 0.0,
-                        "source_mode": source_mode,
-                    }
-                )
+                # Real daily change from the derived cross history; null when
+                # no usable history exists — never the old placeholder 0.0.
+                change_pct: float | None = None
+                if live_enabled:
+                    history = _cross_history_points(base, quote, legs)
+                else:
+                    history = []
+                if len(history) >= 2:
+                    change_pct = _daily_change(history)
+                row = {
+                    "base": base,
+                    "quote": quote,
+                    "pair": f"{base}{quote}",
+                    "rate": round(rate, 8),
+                    "bid": round(bid, 8),
+                    "ask": round(ask, 8),
+                    "spread_pips": round((ask - bid) * pip_factor, 3),
+                    "change_pct": change_pct,
+                    "source_mode": source_mode,
+                }
+                if history:
+                    # UI convention (WCRS/GLCO panes): per-row ``history`` is
+                    # the numeric daily cross-close series, ascending.
+                    row["history"] = [point["close"] for point in history]
+                    row_sources = _unique([
+                        leg_sources.get(base, ""),
+                        leg_sources.get(quote, ""),
+                    ])
+                    if row_sources:
+                        row["history_source"] = ",".join(row_sources)
+                rows.append(row)
         data = {
             "status": "ok",
             "matrix": matrix,
@@ -272,13 +310,19 @@ class WCRSFunction(BaseFunction):
             "methodology": (
                 "WCRS builds a cross-rate matrix from live exchangerate.host quotes when available, "
                 "else from keyless ECB reference rates (Frankfurter). "
-                "If both fail, it falls back to a labelled reference matrix; bid/ask are display spreads around the mid."
+                "If both fail, it falls back to a labelled reference matrix; bid/ask are display spreads around the mid. "
+                "The daily change % and the per-row history are derived from keyless daily history legs "
+                "(one USD leg per currency, cross = leg(quote)/leg(base)); when history is unavailable the "
+                "change is null, never a placeholder 0.00%."
             ),
             "field_dictionary": {
                 "rate": "Mid cross rate: quote currency units per one base currency unit.",
                 "bid": "Display bid calculated as mid * 0.9999.",
                 "ask": "Display ask calculated as mid * 1.0001.",
                 "spread_pips": "Ask-bid spread converted to pips using JPY-aware pip sizing.",
+                "change_pct": "Real daily percent change of the cross rate from the last two daily closes; null when no history is available.",
+                "history": "Numeric daily cross-close series (ascending) for the sparkline; absent when history is unavailable.",
+                "history_source": "Provider tier(s) the daily history legs came from (yfinance / ecb).",
                 "source_mode": "live_exchangerate_host, live_official (Frankfurter/ECB), or reference_cross_rate_matrix.",
             },
         }
@@ -733,6 +777,11 @@ async def _history_rows(fn: BaseFunction, pair: str, params: dict[str, Any]) -> 
     start = datetime.now(timezone.utc) - timedelta(days=max(5, days))
     inst = Instrument(symbol=pair, asset_class=AssetClass.FX)
     timeout = float(params.get("yfinance_timeout", params.get("timeout", 4)))
+    extra: dict[str, Any] = {"timeout": timeout}
+    # Optional deep-history gate: WCRS passes deep_history=False so its
+    # bounded 14-day legs do not trigger the wrapper's 60-year depth race.
+    if params.get("deep_history") is not None:
+        extra["deep_history"] = params["deep_history"]
     if fn.deps.yfinance:
         try:
             df = await asyncio.wait_for(
@@ -742,7 +791,8 @@ async def _history_rows(fn: BaseFunction, pair: str, params: dict[str, Any]) -> 
                         instrument=inst,
                         start=start,
                         interval="1d",
-                        extra={"timeout": timeout},
+                        limit=days,
+                        extra=extra,
                     )
                 ),
                 timeout=timeout + 1,
@@ -807,6 +857,101 @@ def _daily_change(history: list[dict[str, Any]]) -> float:
     if not prev or last is None:
         return 0.0
     return round((last / prev - 1.0) * 100.0, 4)
+
+
+def _history_close_map(rows: list[dict[str, Any]]) -> dict[str, float]:
+    """{date: close} from ``_history_rows`` points; unusable closes skipped."""
+    series: dict[str, float] = {}
+    for point in rows or []:
+        date = str(point.get("date") or "")[:10]
+        close = _num(point.get("close"))
+        if date and close is not None and close > 0:
+            series[date] = close
+    return series
+
+
+async def _usd_history_legs(
+    fn: BaseFunction,
+    currencies: list[str],
+    params: dict[str, Any],
+    *,
+    budget: float,
+) -> tuple[dict[str, dict[str, float]], dict[str, str]]:
+    """Daily close legs for every non-USD currency via ``_history_rows``.
+
+    Each leg is the source's ``USD{ccy}`` daily close (quote currency per
+    USD). A single fetch per currency covers the whole matrix because any
+    cross is the ratio of two USD legs, so the pane never fires one history
+    request per pair. Currencies whose history is unavailable are simply
+    absent — callers must render null, never 0.0.
+    """
+    unique = [c for c in _unique(currencies) if len(c) == 3 and c != "USD"]
+    try:
+        days = max(7, min(30, int(float(params.get("days", 14)))))
+    except Exception:
+        days = 14
+    local_params = {**params, "days": days, "deep_history": False}
+    tasks = {
+        ccy: asyncio.create_task(_history_rows(fn, f"USD{ccy}", local_params))
+        for ccy in unique
+    }
+    legs: dict[str, dict[str, float]] = {}
+    sources: dict[str, str] = {}
+    if tasks:
+        done, pending = await asyncio.wait(tasks.values(), timeout=max(0.5, budget))
+        for task in pending:
+            task.cancel()
+        for ccy, task in tasks.items():
+            if task not in done or task.cancelled():
+                continue
+            try:
+                rows, source = task.result()
+            except Exception:  # noqa: BLE001 — missing leg degrades to null
+                continue
+            series = _history_close_map(rows)
+            if len(series) >= 2:
+                legs[ccy] = series
+                if source:
+                    sources[ccy] = source
+    return legs, sources
+
+
+def _cross_history_points(
+    base: str,
+    quote: str,
+    legs: dict[str, dict[str, float]],
+    *,
+    limit: int = 14,
+) -> list[dict[str, Any]]:
+    """Derived daily cross closes: quote-per-base = leg(quote) / leg(base).
+
+    ``USD`` is the implicit constant-1.0 leg. Returns ``[]`` when either leg
+    is unavailable or the two series share fewer than two dates — callers
+    must leave the change null rather than inventing a value.
+    """
+    base_leg = None if base == "USD" else legs.get(base)
+    quote_leg = None if quote == "USD" else legs.get(quote)
+    if base != "USD" and base_leg is None:
+        return []
+    if quote != "USD" and quote_leg is None:
+        return []
+    if base_leg is None and quote_leg is None:
+        return []
+    dates = set(base_leg) if base_leg is not None else set(quote_leg)
+    if base_leg is not None and quote_leg is not None:
+        dates &= set(quote_leg)
+    if len(dates) < 2:
+        return []
+    points: list[dict[str, Any]] = []
+    for date in sorted(dates)[-limit:]:
+        base_value = 1.0 if base_leg is None else base_leg[date]
+        quote_value = 1.0 if quote_leg is None else quote_leg[date]
+        if base_value <= 0:
+            continue
+        close = quote_value / base_value
+        if math.isfinite(close) and close > 0:
+            points.append({"date": date, "close": round(close, 8)})
+    return points
 
 
 def _forward(spot: float, r_base: float, r_quote: float, years: float,

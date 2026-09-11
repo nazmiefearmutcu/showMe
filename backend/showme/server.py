@@ -1371,6 +1371,40 @@ def _summarize_source_states(sources: list[Any]) -> dict[str, int]:
 
 _FAILURE_DATA_MODES = {"provider_unavailable", "not_configured", "empty"}
 
+# 2026-09-11 (L5 flagship honesty fix): declared failure statuses on the
+# payload itself. A provider-exhausted envelope that lists its real provider
+# chain in ``sources`` (DES sets ``sources_used = list(provider_order)`` when
+# every provider failed) must never earn a LIVE pill: the status is the
+# authority on liveness, not the source names. ``empty`` is deliberately NOT
+# in this set — an empty result set from a live feed is not a failure.
+_FAILURE_DATA_STATUSES = frozenset({
+    "provider_unavailable",
+    "not_configured",
+    "calc_error",
+    "error",
+})
+
+
+def _payload_declares_failure(metadata: dict[str, Any], payload: dict[str, Any]) -> bool:
+    """True when the payload itself declares a provider/compute failure.
+
+    Failure semantics dominate the worst-case data-state ladder: a truthy
+    ``metadata.fallback``/``degraded`` marker, an exception envelope, or a
+    failure ``status`` on ``payload["data"]`` (or the top-level payload)
+    vetoes LIVE regardless of how live the source NAMES look.
+    """
+    if _truthy_value(metadata.get("fallback")) or _truthy_value(metadata.get("degraded")):
+        return True
+    if metadata.get("exception_type"):
+        return True
+    for container in (payload.get("data"), payload):
+        if not isinstance(container, dict):
+            continue
+        status = str(container.get("status") or "").strip().lower()
+        if status in _FAILURE_DATA_STATUSES:
+            return True
+    return False
+
 
 def _metadata_proves_live(metadata: dict[str, Any]) -> bool:
     """True when the payload metadata explicitly vouches for a live feed.
@@ -1424,6 +1458,11 @@ def enforce_live_or_label_synthetic(
       ``live`` / ``synthetic`` / ``reference`` / ``model`` and a single
       ``data_state`` label is stamped on the payload (worst-case wins:
       ``reference`` > ``model`` > ``synthetic`` > ``live``).
+    * Failure semantics beat source names (2026-09-11, L5): a payload
+      that declares a provider/compute failure (``status``,
+      ``metadata.fallback``/``degraded``) can never earn LIVE even when
+      its sources list real provider names — it is pinned to
+      ``provider_unavailable``.
     * The ``warnings`` array is left intact — BTMM's ``live`` pill reads
       it to decide whether to flip to ``warn``.
     * A new top-level ``sanitizer_summary`` field reports counts so the
@@ -1456,6 +1495,10 @@ def enforce_live_or_label_synthetic(
     # against liveness — model paths that keep formula-named sources (no
     # marker) must not ride the source-name summary to a LIVE pill.
     declares_not_live = ("live" in metadata) and not _truthy_value(metadata.get("live"))
+    # 2026-09-11 (L5): failure semantics veto the LIVE label regardless of
+    # source names (see ``_payload_declares_failure``).
+    failure_veto = _payload_declares_failure(metadata, payload)
+    source_would_be_live = summary["live"] > 0 or _metadata_proves_live(metadata)
 
     # Dominant data_state: reference > model > synthetic > live.
     if summary["reference"] > 0:
@@ -1464,9 +1507,12 @@ def enforce_live_or_label_synthetic(
         data_state = "model"
     elif summary["synthetic"] > 0 or metadata_synthetic:
         data_state = "synthetic"
-    elif not declares_not_live and (
-        summary["live"] > 0 or _metadata_proves_live(metadata)
-    ):
+    elif source_would_be_live and failure_veto:
+        # Provider-failure envelopes cannot wear a LIVE pill even when their
+        # sources list real provider names. Worst-case wins: the payload is
+        # pinned to the honest provider_unavailable state instead.
+        data_state = "provider_unavailable"
+    elif source_would_be_live and not declares_not_live:
         data_state = "live"
     else:
         # H-1 fix (2026-09-08): an empty / all-sentinel source summary
@@ -1504,14 +1550,28 @@ def enforce_live_or_label_synthetic(
                 f"Non-live source labeled as data_state={data_state}: "
                 + ", ".join(labeled_sources[:6])
             )
+        failure_state = data_state == "provider_unavailable"
+        if failure_state:
+            provider_errors.append(
+                "Failure semantics vetoed the live label: the payload declares "
+                "a provider failure/fallback status, so provider names in "
+                "sources cannot prove live data."
+            )
         metadata = {
             **metadata,
-            "degraded": data_state in {"synthetic", "model"},
+            "degraded": data_state in {"synthetic", "model", "provider_unavailable"},
             "synthetic": data_state == "synthetic" or metadata_synthetic,
             "data_state": data_state,
             "original_sources": list(sources),
             "provider_errors": provider_errors,
         }
+        if failure_state:
+            # Stamp the exhausted-fallback semantics so downstream code
+            # (``function_contracts._derive_status``) routes this payload to
+            # provider_unavailable and the UI pill reads PROVIDER DOWN even
+            # when the raw engine status was still ``ok``.
+            metadata["fallback"] = True
+            metadata["data_mode"] = "provider_unavailable"
         payload["metadata"] = metadata
 
     # Always stamp top-level data_state + sanitizer_summary so the UI can

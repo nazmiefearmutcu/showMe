@@ -178,11 +178,13 @@ class FunctionDeps:
     granola: Any = None
     polymarket: Any = None
     treasury_auctions: Any = None
+    ustreasury: Any = None
     imf: Any = None
     oecd: Any = None
     exchangerate_host: Any = None
     stooq: Any = None
     openweather: Any = None
+    open_meteo: Any = None
     stocktwits: Any = None
     reddit: Any = None
     sentinelhub: Any = None

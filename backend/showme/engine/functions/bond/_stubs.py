@@ -42,6 +42,21 @@ _FISCALDATA_AVG_RATES = (
     "v2/accounting/od/avg_interest_rates"
 )
 
+# ALLQ per-tenor anchors from the keyless US Treasury daily par-yield curve
+# (``engine/data_sources/bond/ustreasury_adapter.py``). FiscalData only
+# publishes a security-TYPE average coupon (H-8 caveat); when the curve
+# adapter is wired we can anchor each tenor to its actual par yield.
+_US_TREASURY_TENOR_COLUMNS = {
+    "US1M": "1 Mo", "US2M": "2 Mo", "US3M": "3 Mo", "US4M": "4 Mo", "US6M": "6 Mo",
+    "US1Y": "1 Yr", "US2Y": "2 Yr", "US3Y": "3 Yr", "US5Y": "5 Yr", "US7Y": "7 Yr",
+    "US10Y": "10 Yr", "US20Y": "20 Yr", "US30Y": "30 Yr",
+}
+_US_TREASURY_TENOR_YEARS = {
+    "US1M": 1 / 12, "US2M": 2 / 12, "US3M": 0.25, "US4M": 4 / 12, "US6M": 0.5,
+    "US1Y": 1.0, "US2Y": 2.0, "US3Y": 3.0, "US5Y": 5.0, "US7Y": 7.0,
+    "US10Y": 10.0, "US20Y": 20.0, "US30Y": 30.0,
+}
+
 # Sovereign issuers that have no SEC CIK; treated as non-corporate so CRPR/DDIS
 # fall back to a clearly-labelled reference profile rather than guessing a CIK.
 _SOVEREIGN_HINTS = (
@@ -773,6 +788,57 @@ class ALLQFunction(BaseFunction):
         )
         return (price, "treasury_fiscaldata", note)
 
+    async def _ustreasury_curve_anchor(self, symbol: str) -> tuple[float, str, str] | None:
+        """Per-tenor anchor from the keyless US Treasury par-yield curve CSV.
+
+        Preferred over the FiscalData security-TYPE average whenever the
+        ``ustreasury`` adapter is wired: the CSV carries the actual per-tenor
+        par yield, discounted to a clean-price proxy with the same formula
+        used by ``_treasury_anchor``. Returns ``None`` when the adapter is
+        absent, the tenor is not on the curve, or the fetch fails — callers
+        keep the existing FiscalData / yfinance anchor chain.
+        """
+        provider = getattr(self.deps, "ustreasury", None)
+        upper = str(symbol).upper()
+        column = _US_TREASURY_TENOR_COLUMNS.get(upper)
+        if provider is None or column is None:
+            return None
+        try:
+            curve = await provider.yield_curve()
+        except Exception:  # noqa: BLE001 — fallback chain below stays honest
+            return None
+        if hasattr(curve, "empty") and curve.empty:
+            return None
+        latest = (
+            curve.dropna(how="all").iloc[-1]
+            if hasattr(curve, "dropna")
+            else curve.iloc[-1]
+        )
+        value = latest.get(column) if hasattr(latest, "get") else None
+        try:
+            yld = float(value)
+        except (TypeError, ValueError):
+            return None
+        years = float(_US_TREASURY_TENOR_YEARS.get(upper, 10.0))
+        ref_yield = 4.0
+        price = 100.0 * (1.0 + (ref_yield - yld) / 100.0 * years / (1.0 + ref_yield / 100.0))
+        price = round(max(50.0, min(150.0, price)), 4)
+        return (
+            price,
+            "ustreasury",
+            f"Treasury {column} par yield {yld:.3f}% (per-tenor, keyless curve)",
+        )
+
+    async def _treasury_anchor_for(self, symbol: str) -> tuple[float, str, str] | None:
+        """Prefer the per-tenor curve anchor; fall back to the FiscalData type average."""
+        try:
+            got = await self._ustreasury_curve_anchor(symbol)
+        except Exception:  # noqa: BLE001 — anchor fallback chain below stays honest
+            got = None
+        if got is not None:
+            return got
+        return await self._treasury_anchor(symbol)
+
     async def _yfinance_anchor(self, symbol: str) -> tuple[float, str, str] | None:
         adapter = getattr(self.deps, "yfinance", None) or getattr(self.deps, "quotes", None)
         if adapter is not None and hasattr(adapter, "fetch_quote"):
@@ -825,7 +891,7 @@ class ALLQFunction(BaseFunction):
         fetch_error: Exception | None = None
         try:
             if _is_sovereign(symbol):
-                got = await self._treasury_anchor(symbol)
+                got = await self._treasury_anchor_for(symbol)
             else:
                 got = await self._yfinance_anchor(symbol)
                 source = "yfinance"

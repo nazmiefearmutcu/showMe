@@ -43,7 +43,10 @@ def test_onch_contract_preserved_and_no_legacy_constants() -> None:
     assert ONCHFunction.name == "On-Chain Metrics"
     assert ONCHFunction.category == "misc"
 
-    # Required payload keys + honest provenance.
+    # Required payload keys + honest provenance. The base tiers are always
+    # attempted; defillama/blockscout are optional keyless companion tiers
+    # that may contribute extra rows when reachable (L9).
+    allowed_sources = {"mempool", "coingecko", "defillama", "blockscout"}
     assert data["status"] in OK_SET
     assert "rows" in data and isinstance(data["rows"], list)
     assert isinstance(data.get("methodology"), str) and data["methodology"]
@@ -51,7 +54,8 @@ def test_onch_contract_preserved_and_no_legacy_constants() -> None:
     assert "model" not in result.sources
     assert "glassnode" not in result.sources
     assert "etherscan" not in result.sources
-    assert set(result.sources) == {"mempool", "coingecko"}
+    assert {"mempool", "coingecko"} <= set(result.sources)
+    assert set(result.sources) <= allowed_sources
 
 
 def test_onch_live_or_graceful() -> None:
@@ -76,10 +80,11 @@ def test_onch_live_or_graceful() -> None:
         assert required in metrics, f"missing live metric {required}"
 
     # None of the displayed values may be the canned legacy constants.
+    allowed_row_sources = {"mempool", "coingecko", "defillama", "blockscout"}
     for row in rows:
         assert row["value"] not in _LEGACY_VALUES
         assert row.get("context") != "model constant"
-        assert row.get("source") in {"mempool", "coingecko"}
+        assert row.get("source") in allowed_row_sources
 
     # Block height is a real, recent tip (> 800k) and not the 840000 constant.
     bh = metrics["Block Height"]["value"].replace(",", "")

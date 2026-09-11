@@ -425,12 +425,23 @@ class DESFunction(BaseFunction):
         if warnings:
             data.setdefault("provider_errors", list(warnings))
 
+        metadata: dict[str, Any] = {
+            "asset_class": instrument.asset_class.value,
+            "provider_errors": warnings,
+        }
+        if rd is None:
+            # 2026-09-11 (L5): provider-exhausted envelopes must declare the
+            # fallback so the sanitizer/UI can never read the real provider
+            # names in ``sources`` as proof of liveness (the DES loophole).
+            metadata["fallback"] = True
+            metadata["degraded"] = True
+
         return FunctionResult(
             code=self.code,
             instrument=instrument,
             data=data,
             sources=sources_used,
-            metadata={"asset_class": instrument.asset_class.value, "provider_errors": warnings},
+            metadata=metadata,
         )
 
     def _render_html(self, r: FunctionResult) -> str:

@@ -24,14 +24,31 @@ class TAUCFunction(BaseFunction):
         security_filter = str(params.get("security_type") or params.get("type") or "").strip().lower()
         limit = params.get("limit")
         limit = int(limit) if limit else None
-        if not _truthy(params.get("live_auctions") or params.get("live")):
+        # Default polarity (2026-09-11, L5): the keyless TreasuryDirect
+        # adapter is the DEFAULT. An explicit falsy ``live_auctions``/``live``
+        # (or ``reference=true``) opts back into the labelled template.
+        reference = _truthy(params.get("reference"))
+        live_param_present = (
+            params.get("live_auctions") is not None or params.get("live") is not None
+        )
+        live_requested = (
+            _truthy(params.get("live_auctions") or params.get("live"))
+            if live_param_present
+            else True
+        )
+        if reference or not live_requested:
             items = _filter_security_type(_template_auctions(action, limit), security_filter)
             return FunctionResult(
                 code=self.code,
                 instrument=None,
                 data=_auction_payload(action, horizon, items, "treasury_auction_model", security_filter),
                 sources=["treasury_auction_model"],
-                metadata={"live": False},
+                metadata={
+                    "live": False,
+                    "fallback": True,
+                    "degraded": True,
+                    "data_mode": "modeled",
+                },
             )
         if not self.deps.treasury_auctions:
             items = _filter_security_type(_template_auctions(action, limit), security_filter)
@@ -41,6 +58,12 @@ class TAUCFunction(BaseFunction):
                 data=_auction_payload(action, horizon, items, "treasury_auction_model", security_filter),
                 sources=["treasury_auction_model"],
                 warnings=["no treasury_auctions adapter"],
+                metadata={
+                    "live": False,
+                    "fallback": True,
+                    "degraded": True,
+                    "data_mode": "modeled",
+                },
             )
         timeout = float(params.get("auction_timeout", params.get("timeout", 6)))
         try:
@@ -61,8 +84,12 @@ class TAUCFunction(BaseFunction):
                 instrument=None,
                 data=_auction_payload(action, horizon, items, "treasury_auction_fallback", security_filter),
                 sources=["treasury_auction_fallback"],
+                warnings=[f"treasurydirect: {type(exc).__name__}: {exc}"],
                 metadata={
                     "live": False,
+                    "fallback": True,
+                    "degraded": True,
+                    "data_mode": "modeled",
                     "provider_errors": [f"treasurydirect: {type(exc).__name__}: {exc}"],
                 },
             )
@@ -71,6 +98,7 @@ class TAUCFunction(BaseFunction):
             code=self.code, instrument=None,
             data=_auction_payload(action, horizon, items, "treasurydirect", security_filter),
             sources=["treasurydirect"],
+            metadata={"live": True, "data_mode": "live_official"},
         )
 
 

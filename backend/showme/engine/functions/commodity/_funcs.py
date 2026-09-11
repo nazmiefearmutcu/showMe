@@ -256,6 +256,98 @@ def _history_rows(df: Any, symbol: str, limit: int = 260) -> list[dict[str, Any]
     return rows
 
 
+async def _symbol_history(
+    yfinance: Any,
+    symbol: str,
+    *,
+    days: int,
+    timeout: float,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Daily OHLCV history for one commodity symbol via the wired provider.
+
+    Reuses the exact ``_contract_snapshot`` history leg (period bucket, bar
+    cap, adapter request shape) so BOIL/BGAS/CPF history carries the same
+    point schema as before: ``{date, symbol, open, high, low, close,
+    volume}``. Any failure returns ``([], [error])`` — callers must leave
+    the row without history rather than fabricate a series.
+    """
+    inst = Instrument(symbol=symbol, asset_class=AssetClass.COMMODITY)
+    limit = min(max(days, 2), 500)
+    try:
+        df = await asyncio.wait_for(
+            yfinance.fetch(DataRequest(
+                kind=DataKind.OHLCV,
+                instrument=inst,
+                limit=limit,
+                extra={"period": _period_for_days(days), "timeout": timeout},
+            )),
+            timeout=max(timeout + 1.0, 3.0),
+        )
+    except Exception as exc:  # noqa: BLE001 — history is best-effort
+        return [], [f"{symbol} history: {exc}"]
+    return _history_rows(df, symbol, limit=limit), []
+
+
+async def _yahoo_chart_ohlcv(
+    symbol: str,
+    timeout: float,
+    *,
+    range_: str = "3mo",
+) -> list[dict[str, Any]]:
+    """Keyless Yahoo chart API daily OHLCV points for one symbol.
+
+    Parses the same endpoint CPF already uses (``_yahoo_history``) into the
+    BOIL/BGAS history point schema: ``{date, symbol, open, high, low, close,
+    volume}`` in ascending date order. Raises on any fetch/parse failure so
+    callers can degrade to "no history" explicitly (never a fabricated
+    point). No API key required.
+    """
+    from showme.providers._http import get_client  # keyless shared client (async)
+
+    client = await get_client()
+    url = (
+        "https://query1.finance.yahoo.com/v8/finance/chart/"
+        f"{symbol}?range={range_}&interval=1d"
+    )
+    resp = await client.get(
+        url,
+        timeout=timeout,
+        headers={"User-Agent": "showMe research contact@example.com"},
+    )
+    payload = resp.json()
+    result = (payload or {}).get("chart", {}).get("result")
+    if not result:
+        return []
+    node = result[0]
+    timestamps = node.get("timestamp") or []
+    quote = (node.get("indicators", {}).get("quote") or [{}])[0]
+    opens = quote.get("open") or []
+    highs = quote.get("high") or []
+    lows = quote.get("low") or []
+    closes = quote.get("close") or []
+    volumes = quote.get("volume") or []
+
+    def _at(values: list[Any], index: int) -> float | None:
+        return _finite(values[index]) if index < len(values) else None
+
+    rows: list[dict[str, Any]] = []
+    for index, ts in enumerate(timestamps):
+        close = _at(closes, index)
+        if close is None:
+            continue
+        date = datetime.fromtimestamp(int(ts), tz=timezone.utc).date().isoformat()
+        rows.append({
+            "date": date,
+            "symbol": symbol,
+            "open": _at(opens, index),
+            "high": _at(highs, index),
+            "low": _at(lows, index),
+            "close": close,
+            "volume": _at(volumes, index),
+        })
+    return rows
+
+
 def _model_row(symbol: str) -> dict[str, Any]:
     meta = COMMODITY_CONTRACTS[symbol]
     last = float(meta["model_last"])
@@ -311,19 +403,10 @@ async def _contract_snapshot(
         except Exception as exc:
             errors.append(f"{symbol} quote: {exc}")
         if include_history:
-            try:
-                df = await asyncio.wait_for(
-                    yfinance.fetch(DataRequest(
-                        kind=DataKind.OHLCV,
-                        instrument=inst,
-                        limit=min(max(days, 2), 500),
-                        extra={"period": _period_for_days(days), "timeout": timeout},
-                    )),
-                    timeout=max(timeout + 1.0, 3.0),
-                )
-                history = _history_rows(df, symbol, limit=min(max(days, 2), 500))
-            except Exception as exc:
-                errors.append(f"{symbol} history: {exc}")
+            history, history_errors = await _symbol_history(
+                yfinance, symbol, days=days, timeout=timeout,
+            )
+            errors.extend(history_errors)
 
     last = _finite(getattr(quote, "last", None))
     prev = _finite(getattr(quote, "close_prev", None))
@@ -785,34 +868,17 @@ class CPFFunction(BaseFunction):
         """Fetch ~1y of daily closes for ``symbol`` from the keyless Yahoo
         chart API. Returns [{date, value}, ...] in ascending date order.
 
-        No API key required. A descriptive User-Agent is sent. On any
-        network/parse failure the caller treats an empty list as a graceful
-        outage (it never fabricates points).
+        Delegates to the shared ``_yahoo_chart_ohlcv`` parser (same endpoint)
+        and keeps the historical ``{date, value}`` output shape. On any
+        network/parse failure the caller treats the raised error as a
+        graceful outage (it never fabricates points).
         """
-        from showme.providers._http import get_client  # keyless shared client (async)
-
-        client = await get_client()
-        url = (
-            "https://query1.finance.yahoo.com/v8/finance/chart/"
-            f"{symbol}?range=1y&interval=1d"
-        )
-        resp = await client.get(url, timeout=timeout, headers={"User-Agent": "showMe research contact@example.com"})
-        payload = resp.json()
-        result = (payload or {}).get("chart", {}).get("result")
-        if not result:
-            return []
-        node = result[0]
-        timestamps = node.get("timestamp") or []
-        quote = (node.get("indicators", {}).get("quote") or [{}])[0]
-        closes = quote.get("close") or []
-        out: list[dict[str, Any]] = []
-        for ts, close in zip(timestamps, closes):
-            val = _finite(close)
-            if val is None:
-                continue
-            date = datetime.fromtimestamp(int(ts), tz=timezone.utc).date().isoformat()
-            out.append({"date": date, "value": val})
-        return out
+        points = await _yahoo_chart_ohlcv(symbol, timeout, range_="1y")
+        return [
+            {"date": point["date"], "value": point["close"]}
+            for point in points
+            if point.get("close") is not None
+        ]
 
     def _trend_forecast(
         self,
@@ -921,7 +987,22 @@ class GLCOFunction(BaseFunction):
                 return row
 
             if live:
+                # Real 5d history (L9): start the bounded daily-history fetch
+                # for every symbol in parallel with the quote pass, then give
+                # it a short grace window after quotes resolve. A slow history
+                # fetch can never delay the board beyond that grace because
+                # pending tasks are cancelled; symbols without history simply
+                # keep no ``history`` key (the UI must label its own
+                # illustrative fallback, never a fabricated backend series).
+                # History uses the keyless shared Yahoo chart client (the CPF
+                # path) instead of the adapter: live probing showed routing it
+                # through the adapter's token bucket starves the quote pass.
+                history_timeout = max(1.0, min(3.0, quote_timeout + 1.0))
                 tasks = [asyncio.create_task(_one(s)) for s in symbols]
+                history_tasks = [
+                    asyncio.create_task(_yahoo_chart_ohlcv(sym, history_timeout, range_="1mo"))
+                    for sym in symbols
+                ]
                 done, pending = await asyncio.wait(tasks, timeout=screen_timeout)
                 for task in pending:
                     task.cancel()
@@ -931,6 +1012,33 @@ class GLCOFunction(BaseFunction):
                     row = task.result()
                     if row:
                         rows.append(row)
+                history_grace = max(0.25, min(1.0, screen_timeout * 0.2))
+                history_done, history_pending = await asyncio.wait(
+                    history_tasks, timeout=history_grace,
+                )
+                for task in history_pending:
+                    task.cancel()
+                history_by_symbol: dict[str, list[dict[str, Any]]] = {}
+                for sym, task in zip(symbols, history_tasks):
+                    if task not in history_done or task.cancelled():
+                        continue
+                    try:
+                        history = task.result()
+                    except Exception as exc:  # noqa: BLE001 — best-effort history
+                        provider_errors.append(f"{sym} history: {exc}")
+                        continue
+                    if history:
+                        history_by_symbol[sym] = history
+                for row in rows:
+                    history = history_by_symbol.get(str(row.get("symbol")))
+                    if history:
+                        # UI convention (GLCO/WCRS panes): per-row ``history``
+                        # is the numeric daily CLOSE series, ascending.
+                        row["history"] = [
+                            point["close"] for point in history
+                            if point.get("close") is not None
+                        ]
+                        row["history_source"] = "yfinance_daily"
         if not rows:
             rows = [_model_row(sym) for sym in symbols]
             rows = _filter_sector(rows, params.get("sector"))
@@ -967,7 +1075,7 @@ class GLCOFunction(BaseFunction):
                 "status": "ok",
                 "source_mode": "live_yfinance",
                 "rows": rows,
-                "methodology": "GLCO ranks front-month commodity futures by absolute percent move. Change % is (last / previous close - 1) * 100.",
+                "methodology": "GLCO ranks front-month commodity futures by absolute percent move. Change % is (last / previous close - 1) * 100. Each live row carries a real daily close history (last ~30 calendar days, keyless Yahoo chart data) in row.history when available; absence of history where the provider did not answer.",
                 "field_dictionary": _commodity_field_dictionary(),
             },
             sources=["yfinance"],
@@ -992,68 +1100,51 @@ class WETRFunction(BaseFunction):
         lat = lat if lat is not None else float(preset["lat"])
         lon = lon if lon is not None else float(preset["lon"])
         commodity = str(params.get("commodity") or preset["commodity_context"]).strip()
-        if not self.deps.openweather:
-            rows = _weather_model_rows(days, lat, lon, location_key, commodity)
-            return FunctionResult(
-                code=self.code,
-                instrument=None,
-                data={
-                    "status": "provider_unavailable",
-                    "reason": "OPENWEATHERMAP_API_KEY is not configured; rows are a labelled seasonal weather model, not live forecast data.",
-                    "location": location_key,
-                    "lat": lat,
-                    "lon": lon,
-                    "commodity_context": commodity,
-                    "source_mode": "seasonal_model",
-                    "rows": rows,
-                    "history": rows,
-                    "risk_flags": sorted({row["risk_flag"] for row in rows}),
-                    "methodology": "WETR shows weather variables relevant to commodities. HDD=max(18C-temp,0), CDD=max(temp-18C,0); risk flags map dry/hot/cold/wet days to demand or crop-weather pressure.",
-                    "field_dictionary": {
-                        "temp_c": "Daily average temperature in Celsius.",
-                        "precip_mm": "Daily precipitation in millimeters.",
-                        "hdd": "Heating degree days versus 18C.",
-                        "cdd": "Cooling degree days versus 18C.",
-                        "commodity_impact": "Plain-language link between weather and the selected commodity context.",
-                    },
-                    "next_actions": [
-                        "Set OPENWEATHERMAP_API_KEY for live forecast rows.",
-                        "Use Location/Lat/Lon controls to switch commodity-relevant regions.",
-                    ],
-                },
-                sources=["seasonal_weather_model"],
-                metadata={"provider_errors": ["OPENWEATHERMAP_API_KEY not set"]},
+        # Default polarity (2026-09-11, L5): attempt the live weather chain by
+        # default. The keyless Open-Meteo adapter is bound by FunctionFactory,
+        # so WETR no longer needs an OpenWeatherMap key to serve live rows;
+        # ``reference=true`` opts back into the labelled seasonal model.
+        reference = _truthy(params.get("reference"))
+        provider, provider_name = self._live_weather_provider()
+        if reference or provider is None:
+            return self._seasonal_model_result(
+                days, lat, lon, location_key, commodity,
+                reason=(
+                    "Rows are a labelled seasonal weather model (reference), "
+                    "not live forecast data."
+                    if reference
+                    else "No live weather provider is wired; rows are a labelled "
+                    "seasonal weather model, not live forecast data."
+                ),
             )
         try:
-            data = await self.deps.openweather.onecall(lat, lon)
-        except Exception as e:
-            rows = _weather_model_rows(days, lat, lon, location_key, commodity)
-            return FunctionResult(
-                code=self.code,
-                instrument=None,
-                data={
-                    "status": "provider_unavailable",
-                    "reason": f"OpenWeather request failed: {e}",
-                    "location": location_key,
-                    "lat": lat,
-                    "lon": lon,
-                    "commodity_context": commodity,
-                    "source_mode": "seasonal_model",
-                    "rows": rows,
-                    "history": rows,
-                    "methodology": "OpenWeather failed, so WETR returned labelled seasonal model rows.",
-                    "field_dictionary": {
-                        "temp_c": "Daily average temperature in Celsius.",
-                        "precip_mm": "Daily precipitation in millimeters.",
-                        "hdd": "Heating degree days versus 18C.",
-                        "cdd": "Cooling degree days versus 18C.",
-                    },
-                    "next_actions": ["Check OpenWeather credentials/network and rerun."],
-                },
-                sources=["openweathermap", "seasonal_weather_model"],
-                metadata={"provider_errors": [str(e)]},
+            if provider_name == "open_meteo":
+                data = await provider.onecall(lat, lon, days=days)
+            else:
+                data = await provider.onecall(lat, lon)
+        except Exception as e:  # noqa: BLE001 — provider outage degrades honestly
+            return self._seasonal_model_result(
+                days, lat, lon, location_key, commodity,
+                reason=f"Live weather request failed: {e}",
+                warning=f"{provider_name}: {e}",
             )
-        rows = _normalise_weather_rows(data, days, lat, lon, location_key, commodity)
+        live_mode = "live_open_meteo" if provider_name == "open_meteo" else "live_openweathermap"
+        rows = _normalise_weather_rows(
+            data,
+            days,
+            lat,
+            lon,
+            location_key,
+            commodity,
+            source_mode=live_mode,
+            allow_model_fallback=False,
+        )
+        if not rows:
+            return self._seasonal_model_result(
+                days, lat, lon, location_key, commodity,
+                reason=f"{provider_name} returned no usable daily forecast rows.",
+                warning=f"{provider_name}: empty daily forecast",
+            )
         return FunctionResult(
             code=self.code,
             instrument=None,
@@ -1063,18 +1154,94 @@ class WETRFunction(BaseFunction):
                 "lat": lat,
                 "lon": lon,
                 "commodity_context": commodity,
-                "source_mode": "live_openweathermap",
+                "source_mode": live_mode,
                 "rows": rows,
                 "history": rows,
-                "methodology": "WETR normalizes OpenWeather daily forecast rows and adds commodity impact flags.",
+                "risk_flags": sorted({row["risk_flag"] for row in rows}),
+                "methodology": (
+                    "WETR normalizes live daily forecast rows from the keyless "
+                    "weather chain and adds commodity impact flags."
+                ),
                 "field_dictionary": {
                     "temp_c": "Daily average temperature in Celsius.",
                     "precip_mm": "Daily precipitation in millimeters.",
                     "hdd": "Heating degree days versus 18C.",
                     "cdd": "Cooling degree days versus 18C.",
+                    "commodity_impact": "Plain-language link between weather and the selected commodity context.",
                 },
             },
-            sources=["openweathermap"],
+            sources=[provider_name],
+            metadata={"live": True, "data_mode": "live_official"},
+        )
+
+    def _live_weather_provider(self) -> tuple[Any, str]:
+        """Pick the live weather adapter: keyed OpenWeatherMap, else keyless Open-Meteo."""
+        openweather = self.deps.openweather
+        if openweather is not None and getattr(openweather, "api_key", ""):
+            return openweather, "openweathermap"
+        open_meteo = getattr(self.deps, "open_meteo", None)
+        if open_meteo is not None:
+            return open_meteo, "open_meteo"
+        if openweather is not None:
+            return openweather, "openweathermap"
+        return None, ""
+
+    def _seasonal_model_result(
+        self,
+        days: int,
+        lat: float,
+        lon: float,
+        location_key: str,
+        commodity: str,
+        *,
+        reason: str,
+        warning: str | None = None,
+    ) -> FunctionResult:
+        """Labelled seasonal-model fallback — never presented as live."""
+        rows = _weather_model_rows(days, lat, lon, location_key, commodity)
+        provider_errors = [warning] if warning else [
+            "No live weather provider configured; seasonal model used."
+        ]
+        return FunctionResult(
+            code=self.code,
+            instrument=None,
+            data={
+                "status": "provider_unavailable",
+                "reason": reason,
+                "location": location_key,
+                "lat": lat,
+                "lon": lon,
+                "commodity_context": commodity,
+                "source_mode": "seasonal_model",
+                "rows": rows,
+                "history": rows,
+                "risk_flags": sorted({row["risk_flag"] for row in rows}),
+                "methodology": (
+                    "WETR shows weather variables relevant to commodities. "
+                    "HDD=max(18C-temp,0), CDD=max(temp-18C,0); risk flags map "
+                    "dry/hot/cold/wet days to demand or crop-weather pressure. "
+                    "These rows are a labelled seasonal model, not a live forecast."
+                ),
+                "field_dictionary": {
+                    "temp_c": "Daily average temperature in Celsius.",
+                    "precip_mm": "Daily precipitation in millimeters.",
+                    "hdd": "Heating degree days versus 18C.",
+                    "cdd": "Cooling degree days versus 18C.",
+                    "commodity_impact": "Plain-language link between weather and the selected commodity context.",
+                },
+                "next_actions": [
+                    "Retry WETR after the public weather providers recover.",
+                    "Rows shown are a deterministic seasonal model, not live forecast data.",
+                ],
+            },
+            sources=["seasonal_weather_model"],
+            warnings=[warning] if warning else [],
+            metadata={
+                "fallback": True,
+                "degraded": True,
+                "data_mode": "modeled",
+                "provider_errors": provider_errors,
+            },
         )
 
 
@@ -1090,6 +1257,8 @@ def _commodity_field_dictionary() -> dict[str, str]:
         "change_pct": "(last / prev - 1) * 100.",
         "source_mode": "live_yfinance, live_eia, or labelled model.",
         "as_of": "Provider timestamp or chart date for the row.",
+        "history": "Real daily CLOSE series (ascending numbers) for the contract when the keyless daily history was available; absent when history could not be fetched.",
+        "history_source": "Provider tier the row history came from (yfinance_daily).",
     }
 
 
@@ -1153,10 +1322,13 @@ def _normalise_weather_rows(
     lon: float,
     location: str,
     commodity: str,
+    *,
+    source_mode: str = "live_openweathermap",
+    allow_model_fallback: bool = True,
 ) -> list[dict[str, Any]]:
     daily = data.get("daily") if isinstance(data, dict) else None
     if not isinstance(daily, list):
-        return _weather_model_rows(days, lat, lon, location, commodity)
+        return _weather_model_rows(days, lat, lon, location, commodity) if allow_model_fallback else []
     rows: list[dict[str, Any]] = []
     for i, item in enumerate(daily[:days]):
         if not isinstance(item, dict):
@@ -1192,9 +1364,11 @@ def _normalise_weather_rows(
             "cdd": round(cdd, 2),
             "risk_flag": risk,
             "commodity_impact": _weather_impact(risk, commodity),
-            "source_mode": "live_openweathermap",
+            "source_mode": source_mode,
         })
-    return rows or _weather_model_rows(days, lat, lon, location, commodity)
+    if not rows:
+        return _weather_model_rows(days, lat, lon, location, commodity) if allow_model_fallback else []
+    return rows
 
 
 def _weather_impact(risk: str, commodity: str) -> str:
