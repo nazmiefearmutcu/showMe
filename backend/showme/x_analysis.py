@@ -582,7 +582,11 @@ class XAnalyzer:
             query = self._symbol_query(symbol or "")
         if not query:
             return {"ok": False, "events": [], "warning": "query required"}
-        result = self.analyze_topic(query=query, limit=limit, since=since, lang=lang)
+        # Route default is "en"; normalize empty/None here so a caller that
+        # omits `lang` (or sends `?lang=`) can never fall through to the
+        # legacy Turkish default inside `_aggregate` (`(lang or "tr")`).
+        effective_lang = (lang or "en").strip().lower() or "en"
+        result = self.analyze_topic(query=query, limit=limit, since=since, lang=effective_lang)
         # Bug #6: an insufficient_data verdict has no examples / summary so it
         # cannot produce INSTANT events. Treat the same as zero-post path.
         if result.get("post_count", 0) == 0 or result.get("verdict") == "insufficient_data":
@@ -590,6 +594,10 @@ class XAnalyzer:
                 "ok": False,
                 "events": [],
                 "warning": result.get("warning") or "no posts",
+                # Language honesty (C3 Q15 / C9 i18n): the lang-picked
+                # `summary` is the primary field; `summary_tr` stays present
+                # for callers that explicitly need the legacy Turkish text.
+                "summary": result.get("summary") or result.get("summary_tr"),
                 "summary_tr": result.get("summary_tr"),
                 "verdict": result.get("verdict"),
             }
@@ -650,6 +658,13 @@ class XAnalyzer:
         # Always also emit one "summary" event so the feed shows the rolling mood.
         weighted = result.get("scores", {}).get("bullish_score_engagement_weighted") or 0.0
         priority = _instant_priority_score(result.get("mood", "mixed"), abs(weighted), {})
+        # Language honesty (C3 Q15 / C9 i18n): `result["summary"]` is already
+        # picked by the request `lang` inside `_aggregate` (route default
+        # "en"). The previous hardcode shipped `summary_tr` unconditionally,
+        # so INSTANT rendered Turkish copy on an English UI. Keep
+        # `summary_tr` on the event for callers that explicitly need the
+        # legacy Turkish text (lang=tr makes `summary` itself Turkish).
+        summary_picked = result.get("summary") or result.get("summary_tr") or ""
         events.append(
             {
                 "id": None,
@@ -664,8 +679,9 @@ class XAnalyzer:
                     f"{result.get('mood', 'mixed')} ({weighted:+.2f})"
                 ),
                 "link": "https://x.com/search?q=" + query,
-                "summary": result.get("summary_tr", ""),
-                "generated_summary": result.get("summary_tr", ""),
+                "summary": summary_picked,
+                "generated_summary": summary_picked,
+                "summary_tr": result.get("summary_tr", ""),
                 "priority_score": priority,
                 "priority_label": _instant_priority_label(priority),
                 "matched_keywords": [symbol] if symbol else [],
@@ -688,6 +704,10 @@ class XAnalyzer:
             "events": events,
             "transport": "x_sentiment",
             "warning": result.get("warning"),
+            # Additive top-level aliases: `summary` = language-picked text,
+            # `summary_tr` retained for legacy Turkish consumers.
+            "summary": summary_picked,
+            "summary_tr": result.get("summary_tr"),
         }
 
 
