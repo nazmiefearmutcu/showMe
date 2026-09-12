@@ -173,6 +173,9 @@ export function TRDHPane({ code }: FunctionPaneProps) {
         key: "state",
         header: "State",
         width: 110,
+        // Lane B4: 0 = open, 1 = closed so ascending keeps the component's
+        // open-first ordering; ties keep the soonest-change order below.
+        sortValue: (r) => (r.is_open_now ? 0 : 1),
         render: (r) => (
           <Pill
             tone={r.is_open_now ? "positive" : "muted"}
@@ -278,6 +281,11 @@ export function TRDHPane({ code }: FunctionPaneProps) {
         rowKey={(r, i) => `${r.exchange ?? ""}-${i}`}
         density="compact"
         ariaLabel="Trading hours board"
+        // Lane B4: open venues first (stable ties preserve the component's
+        // soonest-change secondary order).
+        defaultSortKey="state"
+        defaultSortDir="ascending"
+        keyboardNavigable
       />
     </div>
   );

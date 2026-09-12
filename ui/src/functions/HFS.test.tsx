@@ -20,6 +20,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, fireEvent } from "@testing-library/react";
 import { HFSPane } from "./HFS";
+import * as router from "@/lib/router";
+import { useWorkspace } from "@/lib/workspace";
 
 /* ── useFunction mock ──────────────────────────────────────────────── */
 
@@ -255,5 +257,41 @@ describe("HFS pane — data honesty", () => {
     // A real store never raises the reference banner and reads live.
     expect(screen.queryByLabelText("Reference data notice")).toBeNull();
     expect(screen.getByText("live")).toBeInTheDocument();
+  });
+});
+
+describe("HFS pane — DES cross-link (B2)", () => {
+  it("renders the resolved issuer as a button named 'Open DES for AAPL'", () => {
+    setMockFn({ state: "ok", ...referencePayload() });
+    render(<HFSPane code="HFS" symbol="AAPL" />);
+    const buttons = screen.getAllByRole("button", { name: "Open DES for AAPL" });
+    expect(buttons.length).toBe(2); // one per holder row
+    expect(buttons[0].tagName).toBe("BUTTON");
+    expect(buttons[0].textContent).toBe("AAPL");
+  });
+
+  it("R2: the issuer link carries the u-symbol-link class with no inline color override", () => {
+    setMockFn({ state: "ok", ...referencePayload() });
+    render(<HFSPane code="HFS" symbol="AAPL" />);
+    const btn = screen.getAllByRole("button", { name: "Open DES for AAPL" })[0];
+    expect(btn.classList.contains("u-symbol-link")).toBe(true);
+    expect((btn as HTMLElement).style.color).toBe("");
+  });
+
+  it("clicking the issuer focuses DES and routes to /symbol/AAPL/DES", () => {
+    setMockFn({ state: "ok", ...referencePayload() });
+    const nav = vi.spyOn(router, "navigate").mockImplementation(() => undefined);
+    render(<HFSPane code="HFS" symbol="AAPL" />);
+    fireEvent.click(
+      screen.getAllByRole("button", { name: "Open DES for AAPL" })[0],
+    );
+    expect(nav).toHaveBeenCalledWith("/symbol/AAPL/DES");
+    const tree = useWorkspace.getState().tree;
+    expect(tree.kind).toBe("leaf");
+    if (tree.kind === "leaf") {
+      expect(tree.code).toBe("DES");
+      expect(tree.symbol).toBe("AAPL");
+    }
+    nav.mockRestore();
   });
 });

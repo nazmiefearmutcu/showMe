@@ -233,3 +233,28 @@ describe("DDM pane — data honesty", () => {
     expect(screen.queryByText("-100.00%")).toBeNull();
   });
 });
+
+describe("DDM pane — step grid sort + keyboard (lane B4)", () => {
+  it("defaults to value-descending (output first) with keyboard navigation", () => {
+    mockFn.state = "ok";
+    mockFn.data = okPayload();
+    const { container } = render(<DDMPane code="DDM" symbol="AAPL" />);
+
+    const grid = screen.getByRole("grid", { name: "DDM model steps" });
+    expect(grid).toBeInTheDocument();
+    // Roving keyboard cell: the first cell owns the tab stop.
+    expect(
+      grid.querySelector('td[data-cell="0-0"]')?.getAttribute("tabindex"),
+    ).toBe("0");
+
+    // Fixture: Dividend TTM 1.0 then Fair value/share 17.17 — value desc
+    // lifts the model output to the top row.
+    const rowsBefore = Array.from(container.querySelectorAll("tbody tr"));
+    expect(rowsBefore[0]?.textContent).toContain("Fair value/share");
+
+    // Activating the sort cycles desc -> none: backend step order returns.
+    fireEvent.click(container.querySelector('th[aria-sort="descending"]')!);
+    const rowsAfter = Array.from(container.querySelectorAll("tbody tr"));
+    expect(rowsAfter[0]?.textContent).toContain("Dividend TTM");
+  });
+});

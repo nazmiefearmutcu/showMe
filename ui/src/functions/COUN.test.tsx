@@ -19,6 +19,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { COUNPane } from "./COUN";
+import { downloadGridCsv } from "@/design-system/grid-csv";
 
 /* ── useFunction mock ──────────────────────────────────────────────── */
 
@@ -44,6 +45,14 @@ vi.mock("@/lib/useFunction", () => ({
     refetch: vi.fn(),
   }),
 }));
+
+// Keep the real CSV builder, but capture the download call so the export
+// payload can be asserted (jsdom has no Blob download).
+vi.mock("@/design-system/grid-csv", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/design-system/grid-csv")>();
+  return { ...actual, downloadGridCsv: vi.fn(() => true) };
+});
 
 /* ── fixtures ──────────────────────────────────────────────────────── */
 
@@ -104,6 +113,7 @@ function livePayload() {
 beforeEach(() => {
   localStorage.removeItem("showme.coun.country");
   setMockFn({ state: "idle", data: undefined });
+  (downloadGridCsv as ReturnType<typeof vi.fn>).mockClear();
 });
 afterEach(() => {
   cleanup();
@@ -210,5 +220,33 @@ describe("COUN pane — grid upgrade (L7)", () => {
     // Values: Policy rate 37, Inflation 55, Real GDP 1 → ascending promotes GDP.
     fireEvent.click(screen.getByRole("columnheader", { name: /Value/i }));
     expect(container.querySelector("tbody tr")?.textContent).toContain("Real GDP");
+  });
+});
+
+describe("COUN pane — grid CSV export", () => {
+  it("exports the raw country metrics table via the CSV button", () => {
+    localStorage.setItem("showme.coun.country", "TR");
+    setMockFn(livePayload());
+    render(<COUNPane code="COUN" />);
+    const btn = screen.getByTitle("Download CSV");
+    expect(btn).not.toBeDisabled();
+    fireEvent.click(btn);
+    const mock = downloadGridCsv as ReturnType<typeof vi.fn>;
+    expect(mock).toHaveBeenCalledTimes(1);
+    const [filename, csv] = mock.mock.calls[0] as [string, string];
+    expect(filename).toMatch(/^coun-TR-\d{4}-\d{2}-\d{2}\.csv$/);
+    // Header row + RAW payload values (37, not "37 %").
+    expect(csv).toContain("Section,Metric,Value,Unit,As of,Series ID,Source");
+    expect(csv).toContain("rates,Policy rate,37,%,2026-08-28,,BIS CBPOL");
+    expect(csv).toContain(
+      "growth,Real GDP,1,index,2026-06-01,TURGDPRQDSMEI,macro_series_baseline",
+    );
+  });
+
+  it("disables the CSV button when no rows are returned", () => {
+    setMockFn({ state: "ok", data: { data: { rows: [], country: "US" } } });
+    render(<COUNPane code="COUN" />);
+    expect(screen.getByTitle("Download CSV")).toBeDisabled();
+    expect(downloadGridCsv).not.toHaveBeenCalled();
   });
 });

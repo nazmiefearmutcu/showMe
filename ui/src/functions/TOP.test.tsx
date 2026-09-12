@@ -22,6 +22,7 @@
  */
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { relativeTimeLabel } from "@/lib/time";
 
 const useFunctionMock = vi.fn();
 const fetchVeryfinderBatchMock = vi.fn();
@@ -251,6 +252,70 @@ describe("TOP honesty", () => {
       vi.advanceTimersByTime(60_000);
     });
     expect(refetch).toHaveBeenCalled();
+  });
+});
+
+describe("TOP — headline source/time meta (C3)", () => {
+  const ARTICLE_FEED = {
+    ...ARTICLE_FIXTURE,
+    source: "rss",
+    feed: "US Top News and Analysis",
+  };
+
+  it("renders the outlet feed + relative time as right-aligned meta", async () => {
+    useFunctionMock.mockReturnValue(okEnvelope([ARTICLE_FEED]));
+    render(<TOPPane code="TOP" />);
+    await flushVeryfinder();
+
+    const list = screen.getByRole("list", { name: /headlines/i });
+    const row = within(list)
+      .getByRole("button", { name: ARTICLE_FEED.title })
+      .closest("li") as HTMLElement;
+    expect(row).not.toBeNull();
+
+    // Outlet = the human `feed` (wire-verified), never the machine token.
+    expect(within(row).getByTestId("top-headline-source").textContent).toBe(
+      "US Top News and Analysis",
+    );
+    expect(within(row).queryByText("rss")).toBeNull();
+
+    // Relative time via the existing helper, evaluated against the same
+    // frozen clock the pane read (pending timers may have ticked a minute).
+    expect(within(row).getByTestId("top-headline-time").textContent).toBe(
+      relativeTimeLabel(ARTICLE_FEED.published_at),
+    );
+    expect(within(row).getByTestId("top-headline-time").textContent).toMatch(
+      /minutes ago/,
+    );
+
+    // The meta cluster follows the `u-flex-1` spacer in the tags row ⇒ right.
+    const tags = screen.getByTestId("top-headline-meta")
+      .parentElement as HTMLElement;
+    const kids = Array.from(tags.children);
+    const spacerIdx = kids.findIndex((k) => k.classList.contains("u-flex-1"));
+    const metaIdx = kids.indexOf(screen.getByTestId("top-headline-meta"));
+    expect(spacerIdx).toBeGreaterThanOrEqual(0);
+    expect(metaIdx).toBeGreaterThan(spacerIdx);
+  });
+
+  it("omits the source/time columns honestly when the payload lacks them", async () => {
+    const bare = {
+      title: "Untitled wire item with no source metadata",
+      url: "https://example.com/bare",
+      symbols: ["SPY"],
+    };
+    useFunctionMock.mockReturnValue(okEnvelope([bare]));
+    render(<TOPPane code="TOP" />);
+    await flushVeryfinder();
+
+    const list = screen.getByRole("list", { name: /headlines/i });
+    const row = within(list)
+      .getByRole("button", { name: bare.title })
+      .closest("li") as HTMLElement;
+    expect(row).not.toBeNull();
+    // No "source / —" filler: both columns are absent entirely.
+    expect(within(row).queryByTestId("top-headline-source")).toBeNull();
+    expect(within(row).queryByTestId("top-headline-time")).toBeNull();
   });
 });
 

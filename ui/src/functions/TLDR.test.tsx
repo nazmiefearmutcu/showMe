@@ -197,3 +197,31 @@ describe("TLDR pane — scope interaction", () => {
     expect(screen.getAllByText(/portfolio \+ watchlist/i).length).toBeGreaterThan(0);
   });
 });
+
+describe("TLDR pane — movers grid sort + keyboard (lane B4)", () => {
+  it("defaults to biggest movers first and enables keyboard grid navigation", () => {
+    const payload = okPayload();
+    // Reverse the quotes so only the built-in sorter can put AAPL first.
+    const data = payload.data.data as { quotes: unknown[] };
+    data.quotes = [...data.quotes].reverse();
+    setMockFn(payload);
+    const { container } = render(<TLDRPane code="TLDR" />);
+
+    const grid = screen.getByRole("grid", { name: "TLDR quote movers" });
+    expect(grid).toBeInTheDocument();
+    // Roving keyboard cell: the first cell owns the tab stop.
+    expect(
+      grid.querySelector('td[data-cell="0-0"]')?.getAttribute("tabindex"),
+    ).toBe("0");
+
+    // change_pct descending -> AAPL (+0.084) first, MSFT (-2.693) last.
+    const rowsBefore = Array.from(container.querySelectorAll("tbody tr"));
+    expect(rowsBefore[0]?.textContent).toContain("AAPL");
+    expect(rowsBefore.at(-1)?.textContent).toContain("MSFT");
+
+    // Activating the sort cycles desc -> none: reversed fixture order returns.
+    fireEvent.click(container.querySelector('th[aria-sort="descending"]')!);
+    const rowsAfter = Array.from(container.querySelectorAll("tbody tr"));
+    expect(rowsAfter[0]?.textContent).toContain("MSFT");
+  });
+});

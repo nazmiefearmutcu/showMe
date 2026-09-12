@@ -22,6 +22,7 @@ import {
   PaneHeader,
   Pill,
   Skeleton,
+  Sparkline,
   StatCard,
   StatusDivider,
   StatusSection,
@@ -53,16 +54,101 @@ interface WIRPCard {
   value?: number | string | null;
 }
 
+interface WIRPAnchor {
+  current_target_mid?: number | null;
+  current_target_upper?: number | null;
+  current_target_lower?: number | null;
+  implied_near_term_rate?: number | null;
+  implied_near_term_source?: string;
+  effr?: number | null;
+  as_of?: string | null;
+  effr_as_of?: string | null;
+}
+
 interface WIRPPayload {
   central_bank?: string;
   rows?: WIRPRow[];
   surface?: unknown[];
+  anchor?: WIRPAnchor;
   cards?: WIRPCard[];
   methodology?: string;
   field_dictionary?: Record<string, string>;
   source_mode?: string;
   data_mode?: string;
   status?: string;
+}
+
+interface AnchorEntry {
+  key: string;
+  label: string;
+  value: string;
+  title?: string;
+}
+
+/**
+ * Meeting-to-meeting implied policy-rate path: a zero baseline (today's
+ * anchor, no cumulative move yet) followed by the running sum of each
+ * meeting's probability-weighted `implied_change_bp`. Meetings without a
+ * finite implied move are skipped, not zeroed — a missing row must not
+ * flatten a real path. No finite implied value anywhere → empty path.
+ */
+export function cumulativeBpPath(rows: WIRPRow[]): number[] {
+  const path = [0];
+  let acc = 0;
+  let sawValue = false;
+  for (const row of rows) {
+    const bp = row.implied_change_bp;
+    if (typeof bp !== "number" || !Number.isFinite(bp)) continue;
+    acc += bp;
+    path.push(acc);
+    sawValue = true;
+  }
+  return sawValue ? path : [];
+}
+
+/**
+ * Target-range anchor labels straight from the backend `anchor` object
+ * (FRED target band / implied near-term rate). Values that did not arrive
+ * are omitted rather than rendered as em-dash filler.
+ */
+export function anchorEntries(anchor: WIRPAnchor | undefined): AnchorEntry[] {
+  if (!anchor) return [];
+  const out: AnchorEntry[] = [];
+  const { current_target_lower: lower, current_target_upper: upper } = anchor;
+  if (
+    typeof lower === "number" &&
+    Number.isFinite(lower) &&
+    typeof upper === "number" &&
+    Number.isFinite(upper)
+  ) {
+    out.push({
+      key: "target",
+      label: "Target",
+      value: `${lower.toFixed(2)}–${upper.toFixed(2)}%`,
+    });
+  }
+  if (
+    typeof anchor.current_target_mid === "number" &&
+    Number.isFinite(anchor.current_target_mid)
+  ) {
+    out.push({
+      key: "mid",
+      label: "Mid",
+      value: `${anchor.current_target_mid.toFixed(3)}%`,
+    });
+  }
+  if (
+    typeof anchor.implied_near_term_rate === "number" &&
+    Number.isFinite(anchor.implied_near_term_rate)
+  ) {
+    out.push({
+      key: "near",
+      label: "Near-term",
+      value: `${anchor.implied_near_term_rate.toFixed(3)}%`,
+      title: anchor.implied_near_term_source,
+    });
+  }
+  return out;
 }
 
 const BANKS = [
@@ -191,6 +277,11 @@ export function WIRPPane({ code }: FunctionPaneProps) {
     (acc, r) => acc + (typeof r.implied_change_bp === "number" ? r.implied_change_bp : 0),
     0,
   );
+  // Secondary visual (campaign C1): cumulative implied path from the real
+  // per-meeting `implied_change_bp` series + the backend `anchor` band.
+  const path = cumulativeBpPath(rows);
+  const anchors = anchorEntries(payload.anchor);
+  const pathReady = path.length >= 2;
 
   return (
     <div className="u-pane-host">
@@ -281,6 +372,35 @@ export function WIRPPane({ code }: FunctionPaneProps) {
                   tone={totalImplied >= 0 ? "positive" : "negative"}
                 />
               </section>
+              {pathReady || anchors.length ? (
+                <section style={pathPanelStyle} aria-label="WIRP implied path">
+                  <div style={pathMetaStyle}>
+                    <span style={pathTitleStyle}>Implied path</span>
+                    <span className="u-text-mute" style={pathCaptionStyle}>
+                      Σ implied Δ from the {bank} anchor · {rows.length} meetings
+                    </span>
+                    {anchors.map((a) => (
+                      <span key={a.key} style={anchorChipStyle} title={a.title}>
+                        <span style={anchorLabelStyle}>{a.label}</span>
+                        <span style={anchorValueStyle}>{a.value}</span>
+                      </span>
+                    ))}
+                  </div>
+                  {pathReady ? (
+                    <Sparkline
+                      values={path}
+                      width={200}
+                      height={40}
+                      tone={path[path.length - 1] >= 0 ? "positive" : "negative"}
+                      ariaLabel="Cumulative implied policy-rate path"
+                    />
+                  ) : (
+                    <span className="u-text-mute" style={pathCaptionStyle}>
+                      No per-meeting implied series returned.
+                    </span>
+                  )}
+                </section>
+              ) : null}
               <DataGrid
                 columns={cols}
                 rows={rows}
@@ -421,4 +541,58 @@ const methodologyBox: CSSProperties = {
   padding: "10px 12px",
   display: "grid",
   gap: 6,
+};
+
+const pathPanelStyle: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  flexWrap: "wrap",
+  gap: 14,
+  border: "1px solid var(--border-subtle)",
+  background: "var(--surface-2)",
+  borderRadius: "var(--radius-sm)",
+  padding: "8px 10px",
+};
+
+const pathMetaStyle: CSSProperties = {
+  display: "flex",
+  alignItems: "baseline",
+  flexWrap: "wrap",
+  gap: "4px 12px",
+  minWidth: 0,
+};
+
+const pathTitleStyle: CSSProperties = {
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: "var(--font-size-xs)",
+  fontWeight: 700,
+  letterSpacing: "0.06em",
+  textTransform: "uppercase",
+  color: "var(--text-display)",
+};
+
+const pathCaptionStyle: CSSProperties = {
+  fontSize: "var(--font-size-xs)",
+};
+
+const anchorChipStyle: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "baseline",
+  gap: 5,
+};
+
+const anchorLabelStyle: CSSProperties = {
+  fontSize: "var(--font-size-2xs)",
+  textTransform: "uppercase",
+  letterSpacing: "0.05em",
+  color: "var(--text-mute)",
+};
+
+const anchorValueStyle: CSSProperties = {
+  fontFamily: "JetBrains Mono, monospace",
+  fontVariantNumeric: "tabular-nums",
+  fontSize: "var(--font-size-xs)",
+  fontWeight: 600,
+  color: "var(--text-primary)",
 };

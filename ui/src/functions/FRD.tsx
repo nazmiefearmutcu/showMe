@@ -27,6 +27,12 @@ import {
 } from "@/design-system";
 import { useFunction } from "@/lib/useFunction";
 import {
+  buildGridCsv,
+  downloadGridCsv,
+  gridCsvFilename,
+  type GridCsvColumn,
+} from "@/design-system/grid-csv";
+import {
   FunctionControlGroup,
   LoadStatePill,
   RefreshButton,
@@ -107,6 +113,47 @@ export function FRDPane({ code, symbol }: FunctionPaneProps) {
   const stats = useMemo(() => deriveStats(rows, payload), [rows, payload]);
 
   const curve = useMemo(() => buildCurve(rows, spot), [rows, spot]);
+
+  // CSV export of the tenor grid — RAW payload numbers plus the derived
+  // annualized carry (a number, not the formatted "+1.01%" string).
+  const csvColumns = useMemo<GridCsvColumn<FRDRow>[]>(
+    () => [
+      { key: "tenor", header: "Tenor", value: (r) => r.tenor ?? "" },
+      { key: "tenor_years", header: "Years", value: (r) => r.tenor_years ?? "" },
+      { key: "spot", header: "Spot", value: (r) => r.spot ?? "" },
+      { key: "forward", header: "Forward", value: (r) => r.forward ?? "" },
+      {
+        key: "forward_points",
+        header: "Forward points",
+        value: (r) => r.forward_points ?? "",
+      },
+      {
+        key: "annualized_carry_pct",
+        header: "Ann. carry %",
+        value: (r) => annualizedCarry(r) ?? "",
+      },
+      { key: "base_rate", header: "Base rate", value: (r) => r.base_rate ?? "" },
+      {
+        key: "quote_rate",
+        header: "Quote rate",
+        value: (r) => r.quote_rate ?? "",
+      },
+      {
+        key: "source_mode",
+        header: "Source",
+        value: (r) => r.source_mode ?? "",
+      },
+    ],
+    [],
+  );
+
+  const exportCsv = () => {
+    const csv = buildGridCsv(csvColumns, rows);
+    downloadGridCsv(
+      gridCsvFilename(`frd-${payload?.pair ?? effectivePair}`),
+      csv,
+    );
+  };
 
   const COLS: DataGridColumn<FRDRow>[] = useMemo(
     () => [
@@ -345,6 +392,16 @@ export function FRDPane({ code, symbol }: FunctionPaneProps) {
                 options={PAIR_OPTIONS}
                 onChange={setPair}
               />
+              <button
+                type="button"
+                className="btn"
+                onClick={exportCsv}
+                disabled={rows.length === 0}
+                title="Download CSV"
+                aria-label={`Download ${rows.length} forward tenors as CSV`}
+              >
+                CSV
+              </button>
               <LoadStatePill state={state} status={payload ? "ok" : null} />
               <RefreshButton
                 loading={state === "loading"}

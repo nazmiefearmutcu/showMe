@@ -20,6 +20,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { ALLQPane } from "./ALLQ";
+import { downloadGridCsv } from "@/design-system/grid-csv";
 
 /* ── useFunction mock ──────────────────────────────────────────────── */
 
@@ -55,6 +56,14 @@ vi.mock("@/lib/useFunction", () => ({
     };
   },
 }));
+
+// Keep the real CSV builder, but capture the download call so the export
+// payload can be asserted (jsdom has no Blob download).
+vi.mock("@/design-system/grid-csv", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/design-system/grid-csv")>();
+  return { ...actual, downloadGridCsv: vi.fn(() => true) };
+});
 
 /* ── fixtures: mirror the FiscalData-anchored live probe shape ─────── */
 
@@ -149,6 +158,7 @@ function unavailablePayload() {
 beforeEach(() => {
   localStorage.clear();
   setMockFn({ state: "idle", data: undefined });
+  (downloadGridCsv as ReturnType<typeof vi.fn>).mockClear();
 });
 afterEach(() => {
   cleanup();
@@ -240,5 +250,33 @@ describe("ALLQ pane — width control", () => {
     fireEvent.click(screen.getByText("0.36"));
     expect(lastParams?.spread).toBe(0.36);
     expect(localStorage.getItem("showme.allq.spread")).toBe("36");
+  });
+});
+
+describe("ALLQ pane — grid CSV export", () => {
+  it("exports the raw dealer ladder via the toolbar CSV button", () => {
+    setMockFn({ state: "ok", ...okPayload() });
+    render(<ALLQPane code="ALLQ" symbol="US10Y" />);
+    const btn = screen.getByTitle("Download CSV");
+    expect(btn).not.toBeDisabled();
+    fireEvent.click(btn);
+    const mock = downloadGridCsv as ReturnType<typeof vi.fn>;
+    expect(mock).toHaveBeenCalledTimes(1);
+    const [filename, csv] = mock.mock.calls[0] as [string, string];
+    expect(filename).toMatch(/^allq-US10Y-\d{4}-\d{2}-\d{2}\.csv$/);
+    // Header row + RAW payload numbers (not formatted price strings).
+    expect(csv).toContain(
+      "Dealer,Bond,Bid,Ask,Mid,Spread bps,Size,Quote time,Reference",
+    );
+    expect(csv).toContain(
+      "Composite A,US10Y,106.2081,106.3881,106.2981,16.934,1000000",
+    );
+  });
+
+  it("disables the CSV button when the ladder is empty", () => {
+    setMockFn({ state: "ok", ...unavailablePayload() });
+    render(<ALLQPane code="ALLQ" symbol="US10Y" />);
+    expect(screen.getByTitle("Download CSV")).toBeDisabled();
+    expect(downloadGridCsv).not.toHaveBeenCalled();
   });
 });

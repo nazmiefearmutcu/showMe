@@ -14,6 +14,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { PEOPPane } from "./PEOP";
+import { downloadGridCsv } from "@/design-system/grid-csv";
 
 /* ── useFunction mock ──────────────────────────────────────────────── */
 
@@ -40,6 +41,14 @@ vi.mock("@/lib/useFunction", () => ({
     enabled: args.enabled,
   }),
 }));
+
+// Keep the real CSV builder, but capture the download call so the export
+// payload can be asserted (jsdom has no Blob download).
+vi.mock("@/design-system/grid-csv", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/design-system/grid-csv")>();
+  return { ...actual, downloadGridCsv: vi.fn(() => true) };
+});
 
 /* ── fixtures (shape mirrors a live /api/fn/PEOP probe) ────────────── */
 
@@ -77,6 +86,7 @@ function okPayload() {
 beforeEach(() => {
   localStorage.clear();
   setMockFn({ state: "idle", data: undefined });
+  (downloadGridCsv as ReturnType<typeof vi.fn>).mockClear();
 });
 afterEach(() => {
   cleanup();
@@ -186,5 +196,35 @@ describe("PEOP pane — grid upgrade (L7)", () => {
     expect(payload).toContain("Apple");
     expect(payload).toContain("https://www.apple.com/newsroom");
     Reflect.deleteProperty(navigator, "clipboard");
+  });
+});
+
+describe("PEOP pane — grid CSV export", () => {
+  it("exports the raw people results via the CSV button", () => {
+    setMockFn({ state: "ok", data: { data: okPayload() } });
+    render(<PEOPPane code="PEOP" />);
+    fireEvent.change(screen.getByLabelText(/People search query/i), {
+      target: { value: "apple" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+    const btn = screen.getByTitle("Download CSV");
+    expect(btn).not.toBeDisabled();
+    fireEvent.click(btn);
+    const mock = downloadGridCsv as ReturnType<typeof vi.fn>;
+    expect(mock).toHaveBeenCalledTimes(1);
+    const [filename, csv] = mock.mock.calls[0] as [string, string];
+    expect(filename).toMatch(/^peop-apple-\d{4}-\d{2}-\d{2}\.csv$/);
+    expect(csv).toContain(
+      "Name,Role / title,Firm,Bio,Contact,Source,Source URL,Source date,Match score",
+    );
+    expect(csv).toContain(
+      "Tim Cook,CEO through summer 2026; Executive Chairman effective 2026-09-01,Apple,,public_profile_only,apple_newsroom_public_reference,https://www.apple.com/newsroom,,2",
+    );
+  });
+
+  it("keeps the CSV button disabled before any query is committed", () => {
+    render(<PEOPPane code="PEOP" />);
+    expect(screen.getByTitle("Download CSV")).toBeDisabled();
+    expect(downloadGridCsv).not.toHaveBeenCalled();
   });
 });

@@ -199,7 +199,8 @@ export function TXNSPane({ code, symbol }: FunctionPaneProps) {
         render: (r) => (
           <button
             type="button"
-            aria-label={`${r.symbol} details`}
+            aria-label={`Open DES for ${r.symbol}`}
+            title="Open DES"
             onClick={() => {
               setFocusedTarget("DES", r.symbol);
               navigate(`/symbol/${r.symbol}/DES`);

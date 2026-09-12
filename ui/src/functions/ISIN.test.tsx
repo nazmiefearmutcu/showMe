@@ -11,6 +11,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { ISINPane } from "./ISIN";
+import { downloadGridCsv } from "@/design-system/grid-csv";
 
 /* ── useFunction mock ──────────────────────────────────────────────── */
 
@@ -36,6 +37,14 @@ vi.mock("@/lib/useFunction", () => ({
     refetch: vi.fn(),
   }),
 }));
+
+// Keep the real CSV builder (so the exported document can be asserted) but
+// capture the download call — jsdom has no Blob download.
+vi.mock("@/design-system/grid-csv", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/design-system/grid-csv")>();
+  return { ...actual, downloadGridCsv: vi.fn(() => true) };
+});
 
 /* ── fixtures ──────────────────────────────────────────────────────── */
 
@@ -88,6 +97,29 @@ function okPayload(input: string) {
           },
         ],
         next_actions: [],
+      },
+    },
+  };
+}
+
+/** Large-payload fixture mirroring the live AAPL shape (272 exchange rows). */
+function manyMatchesPayload(count: number, input = "US0378331005") {
+  const matches = Array.from({ length: count }, (_, i) => ({
+    figi: `BBG${String(i).padStart(7, "0")}`,
+    ticker: "AAPL",
+    name: "APPLE INC",
+    marketSector: "Equity",
+    securityType: "Common Stock",
+    securityType2: "Common Stock",
+    exchCode: `X${i}`,
+    compositeFIGI: "BBG000B9XRY4",
+    shareClassFIGI: "BBG001S5N8V8",
+  }));
+  return {
+    data: {
+      data: {
+        status: "ok",
+        match_groups: [{ input, id_type: "ID_ISIN", matches }],
       },
     },
   };
@@ -174,6 +206,78 @@ describe("ISIN pane — match cards", () => {
     setMockFn({ state: "ok", ...okPayload("US0378331005") });
     render(<ISINPane code="ISIN" symbol="US0378331005" />);
     expect(screen.getByText("ID_ISIN")).toBeInTheDocument();
+  });
+});
+
+describe("ISIN pane — large payload: render cap + CSV export", () => {
+  it("caps the rendered match cards at 100 and shows an honest 'Showing 100 of 272' note", () => {
+    setMockFn({ state: "ok", ...manyMatchesPayload(272) });
+    const { container } = render(
+      <ISINPane code="ISIN" symbol="US0378331005" />,
+    );
+    expect(container.querySelectorAll('[aria-label^="Match "]').length).toBe(100);
+    const note = screen.getByTestId("isin-cap-note");
+    expect(note).toHaveTextContent("Showing 100 of 272");
+  });
+
+  it("renders no cap note when the payload fits the cap", () => {
+    setMockFn({ state: "ok", ...okPayload("US0378331005") });
+    render(<ISINPane code="ISIN" symbol="US0378331005" />);
+    expect(screen.queryByTestId("isin-cap-note")).toBeNull();
+  });
+
+  it("honestly reports the true exchange-level count from groups, not the backend's limited rows", () => {
+    // Live probe: data.rows=6 (limit_per_input) while match_groups[0].matches=272.
+    setMockFn({
+      state: "ok",
+      data: {
+        data: {
+          status: "ok",
+          rows: [1, 2, 3, 4, 5, 6],
+          match_groups: manyMatchesPayload(272).data.data.match_groups,
+        },
+      },
+    });
+    render(<ISINPane code="ISIN" symbol="US0378331005" />);
+    expect(screen.getByText(/272 exchange-level match\(es\)/i)).toBeInTheDocument();
+  });
+
+  it("exports ALL 272 matches to CSV, including rows beyond the render cap", () => {
+    const mock = downloadGridCsv as ReturnType<typeof vi.fn>;
+    mock.mockClear();
+    setMockFn({ state: "ok", ...manyMatchesPayload(272) });
+    render(<ISINPane code="ISIN" symbol="US0378331005" />);
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: /download 272 exchange-level match\(es\) as csv/i,
+      }),
+    );
+    expect(mock).toHaveBeenCalledTimes(1);
+    const [filename, csv] = mock.mock.calls[0] as [string, string];
+    expect(filename).toMatch(/^isin-US0378331005-\d{4}-\d{2}-\d{2}\.csv$/);
+    const lines = csv.split("\n");
+    expect(lines.length).toBe(273); // header + all 272 rows
+    expect(lines[0]).toContain("FIGI");
+    expect(csv).toContain("BBG0000000"); // match 1 (rendered)
+    expect(csv).toContain("BBG0000271"); // match 272 — beyond the 100-card cap
+  });
+
+  it("keeps the CSV export disabled when the lookup returned no matches", () => {
+    setMockFn({
+      state: "ok",
+      data: {
+        data: {
+          status: "empty",
+          rows: [],
+          match_groups: [{ input: "ZZZZ", id_type: "TICKER", matches: [] }],
+          next_actions: [],
+        },
+      },
+    });
+    render(<ISINPane code="ISIN" symbol="ZZZZ" />);
+    expect(
+      screen.getByRole("button", { name: /download 0 exchange-level match\(es\) as csv/i }),
+    ).toBeDisabled();
   });
 });
 

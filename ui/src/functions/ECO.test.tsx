@@ -238,6 +238,81 @@ describe("ECO pane — display honesty", () => {
     expect(screen.getByText(/Times UTC/i)).toBeInTheDocument();
   });
 
+  it("C3 — derives the actual-vs-forecast bar from the fixture's real values", () => {
+    setMockFn({ state: "ok", ...syntheticPayload() });
+    render(<ECOPane code="ECO" />);
+    // Only the printed CPI row (forecast 3.1, actual 3.2) carries both values.
+    const bars = screen.getAllByTestId("eco-afbar");
+    expect(bars).toHaveLength(1);
+    // Scaled against max(|3.1|, |3.2|) = 3.2 on a 44px track.
+    expect(screen.getByTestId("eco-afbar-forecast").style.width).toBe("43px");
+    expect(screen.getByTestId("eco-afbar-actual").style.width).toBe("44px");
+    // Beat ⇒ positive tone (inline style, palette-var based); the label
+    // carries the real numbers + unit for AT readers.
+    expect(screen.getByTestId("eco-afbar-actual").getAttribute("style")).toContain(
+      "var(--positive)",
+    );
+    expect(bars[0].getAttribute("role")).toBe("img");
+    expect(bars[0].getAttribute("aria-label")).toBe("forecast 3.1% vs actual 3.2%");
+  });
+
+  it("C3 — tones the bar by the surprise sign and scales against the larger leg", () => {
+    const miss = {
+      country: "US",
+      event: "GDP Growth Rate QoQ",
+      date: isoOffset(0),
+      importance: "high",
+      forecast: 4,
+      actual: 2,
+      previous: 3,
+      surprise: -2,
+      unit: "%",
+    };
+    setMockFn({
+      state: "ok",
+      data: {
+        data: {
+          events: [miss],
+          rows: [miss],
+          source_mode: "tradingeconomics",
+          as_of: AS_OF,
+        },
+        sources: ["tradingeconomics"],
+        elapsed_ms: 5,
+      },
+    });
+    render(<ECOPane code="ECO" />);
+    expect(screen.getByTestId("eco-afbar-forecast").style.width).toBe("44px");
+    expect(screen.getByTestId("eco-afbar-actual").style.width).toBe("22px");
+    expect(screen.getByTestId("eco-afbar-actual").getAttribute("style")).toContain(
+      "var(--negative)",
+    );
+    expect(screen.getByTestId("eco-afbar").getAttribute("aria-label")).toBe(
+      "forecast 4% vs actual 2%",
+    );
+  });
+
+  it("C3 — renders NO bar when the actual print is missing (honest pending state)", () => {
+    const pending = events[1]; // forecast 215, actual null
+    setMockFn({
+      state: "ok",
+      data: {
+        data: {
+          events: [pending],
+          rows: [pending],
+          source_mode: "tradingeconomics",
+          as_of: AS_OF,
+        },
+        sources: ["tradingeconomics"],
+        elapsed_ms: 9,
+      },
+    });
+    render(<ECOPane code="ECO" />);
+    expect(screen.queryByTestId("eco-afbar")).toBeNull();
+    // The numeric actual cell keeps the honest em-dash.
+    expect(screen.getAllByText("—").length).toBeGreaterThan(0);
+  });
+
   it("advances the Next prints rail as the clock passes a release (AUDIT A10 [L])", () => {
     setMockFn({ state: "ok", ...syntheticPayload() });
     const { container } = render(<ECOPane code="ECO" />);

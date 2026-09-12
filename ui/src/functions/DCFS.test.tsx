@@ -267,3 +267,34 @@ describe("DCFS pane — grid CSV export (audit A3 OPP)", () => {
     expect(downloadGridCsv).not.toHaveBeenCalled();
   });
 });
+
+describe("DCFS pane — tornado sort + keyboard (lane B4)", () => {
+  it("defaults to largest absolute spread first with keyboard navigation", () => {
+    const payload = okPayload();
+    // Reverse the tornado so only the built-in sorter can put fcfe first.
+    const tornado = (payload.data as { tornado: unknown[] }).tornado;
+    (payload.data as { tornado: unknown[] }).tornado = [...tornado].reverse();
+    mockFn.state = "ok";
+    mockFn.data = payload;
+    const { container } = render(<DCFSPane code="DCFS" symbol="AAPL" />);
+
+    const grid = screen.getByRole("grid", {
+      name: "DCF input tornado ranking",
+    });
+    expect(grid).toBeInTheDocument();
+    // Roving keyboard cell: the first cell owns the tab stop.
+    expect(
+      grid.querySelector('td[data-cell="0-0"]')?.getAttribute("tabindex"),
+    ).toBe("0");
+
+    // |delta| descending: fcfe (100) first, invalid g_terminal row last.
+    const rowsBefore = Array.from(container.querySelectorAll("tbody tr"));
+    expect(rowsBefore[0]?.textContent).toContain("fcfe");
+    expect(rowsBefore.at(-1)?.textContent).toContain("g_terminal");
+
+    // Activating the sort cycles desc -> none: reversed fixture order returns.
+    fireEvent.click(container.querySelector('th[aria-sort="descending"]')!);
+    const rowsAfter = Array.from(container.querySelectorAll("tbody tr"));
+    expect(rowsAfter[0]?.textContent).toContain("g_terminal");
+  });
+});

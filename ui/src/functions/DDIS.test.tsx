@@ -174,3 +174,31 @@ describe("DDIS pane — interaction", () => {
     expect(refetch).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("DDIS pane — ladder sort + keyboard (lane B4)", () => {
+  it("pins nearest-tenor-first and enables keyboard grid navigation", () => {
+    // Reverse the ladder so only the built-in sorter can restore 0-1Y first.
+    setMockFn({
+      state: "ok",
+      data: { data: { ...secPayload(), rows: [...secRows].reverse() } },
+    });
+    const { container } = render(<DDISPane code="DDIS" symbol="AAPL" />);
+
+    const grid = screen.getByRole("grid", { name: "DDIS maturity ladder" });
+    expect(grid).toBeInTheDocument();
+    // Roving keyboard cell: the first cell owns the tab stop.
+    expect(
+      grid.querySelector('td[data-cell="0-0"]')?.getAttribute("tabindex"),
+    ).toBe("0");
+
+    // tenor_years ascending -> 0-1Y first, 5Y+ last.
+    const rowsBefore = Array.from(container.querySelectorAll("tbody tr"));
+    expect(rowsBefore[0]?.textContent).toContain("0-1Y");
+    expect(rowsBefore.at(-1)?.textContent).toContain("5Y+");
+
+    // Activating the sort cycles asc -> desc: 5Y+ leads.
+    fireEvent.click(container.querySelector('th[aria-sort="ascending"]')!);
+    const rowsAfter = Array.from(container.querySelectorAll("tbody tr"));
+    expect(rowsAfter[0]?.textContent).toContain("5Y+");
+  });
+});

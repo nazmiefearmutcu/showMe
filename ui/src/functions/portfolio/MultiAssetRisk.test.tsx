@@ -11,7 +11,7 @@ const mockReturn: { current: unknown } = { current: null };
 vi.mock("@/lib/useFunction", () => ({ useFunction: () => mockReturn.current }));
 vi.mock("@/lib/router", () => ({ navigate: vi.fn() }));
 
-import { MultiAssetRiskPane } from "./MultiAssetRisk";
+import { MultiAssetRiskPane, deriveFactorWaterfall } from "./MultiAssetRisk";
 
 function ok(
   payload: Record<string, unknown>,
@@ -103,5 +103,52 @@ describe("MARS Multi-Asset Risk pane", () => {
     render(<MultiAssetRiskPane code="MARS" />);
     fireEvent.click(screen.getByRole("button", { name: "LIVE" }));
     expect(screen.getByRole("button", { name: "MODEL" })).toBeInTheDocument();
+  });
+});
+
+describe("MARS factor contribution waterfall (real derivation)", () => {
+  const MIXED_ROWS = [
+    { factor: "SMB", loading: -0.31, abs_loading: 0.31, meaning: "Small-cap versus large-cap tilt." },
+    { factor: "MKT", loading: 1.12, abs_loading: 1.12, meaning: "Broad equity market beta." },
+    { factor: "BAB", loading: -0.05, abs_loading: 0.05, meaning: "Low-volatility tilt." },
+    { factor: "QMJ", loading: 0.14, abs_loading: 0.14, meaning: "Quality tilt." },
+  ];
+
+  it("sorts by |loading| descending and keeps the signed beta", () => {
+    const factors = deriveFactorWaterfall(MIXED_ROWS);
+    expect(factors.map((entry) => entry.factor)).toEqual(["MKT", "SMB", "QMJ", "BAB"]);
+    expect(factors.find((entry) => entry.factor === "SMB")!.loading).toBe(-0.31);
+    expect(factors.find((entry) => entry.factor === "SMB")!.absLoading).toBe(0.31);
+  });
+
+  it("falls back to |loading| and drops rows that carry no real beta", () => {
+    const factors = deriveFactorWaterfall([
+      { factor: "MKT", loading: 0.8 },
+      { factor: "BAD", loading: "x" },
+      { loading: 1.0 },
+    ]);
+    expect(factors.map((entry) => entry.factor)).toEqual(["MKT"]);
+    expect(factors[0].absLoading).toBe(0.8);
+  });
+
+  it("renders the signed waterfall in |loading| order with direction flags", () => {
+    ok({ ...LIVE_PAYLOAD, rows: MIXED_ROWS });
+    render(<MultiAssetRiskPane code="MARS" />);
+    const panel = screen.getByTestId("mars-waterfall");
+    const ordered = [...panel.querySelectorAll("[data-factor]")].map((el) =>
+      el.getAttribute("data-factor"),
+    );
+    expect(ordered).toEqual(["MKT", "SMB", "QMJ", "BAB"]);
+    expect(panel.querySelector('[data-factor="SMB"]')!.getAttribute("data-direction")).toBe("neg");
+    expect(panel.querySelector('[data-factor="MKT"]')!.getAttribute("data-direction")).toBe("pos");
+    expect(panel.textContent).toContain("+1.1200");
+    expect(panel.textContent).toContain("-0.3100");
+    expect(panel.textContent).toContain("negative = hedges it");
+  });
+
+  it("degrades honestly when rows carry no numeric loading", () => {
+    ok({ ...LIVE_PAYLOAD, rows: [{ factor: "MKT", meaning: "Broad equity market beta." }] });
+    render(<MultiAssetRiskPane code="MARS" />);
+    expect(screen.getByText("No factor loadings returned.")).toBeInTheDocument();
   });
 });

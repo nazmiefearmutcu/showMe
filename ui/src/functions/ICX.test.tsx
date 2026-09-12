@@ -18,6 +18,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { ICXPane } from "./ICX";
+import * as router from "@/lib/router";
+import { useWorkspace } from "@/lib/workspace";
 
 /* ── useFunction mock ──────────────────────────────────────────────── */
 
@@ -245,5 +247,39 @@ describe("ICX pane — sort + tint bars", () => {
     const tracks = container.querySelectorAll("[data-testid^='chg-track-']");
     // NVDA + AMZN have quotes; AAPL's cell renders the dash instead.
     expect(tracks.length).toBe(2);
+  });
+});
+
+describe("ICX pane — DES cross-link (B2)", () => {
+  it("renders each member ticker as a button named 'Open DES for <sym>'", () => {
+    setMockFn({ state: "ok", ...okPayload() });
+    render(<ICXPane code="ICX" />);
+    const btn = screen.getByRole("button", { name: "Open DES for NVDA" });
+    expect(btn.tagName).toBe("BUTTON");
+    expect(btn.textContent).toBe("NVDA");
+  });
+
+  it("R2: the symbol link carries the u-symbol-link class with no inline color override", () => {
+    setMockFn({ state: "ok", ...okPayload() });
+    render(<ICXPane code="ICX" />);
+    const btn = screen.getByRole("button", { name: "Open DES for NVDA" });
+    expect(btn.classList.contains("u-symbol-link")).toBe(true);
+    // An inline color would defeat the class accent (and its hover state).
+    expect((btn as HTMLElement).style.color).toBe("");
+  });
+
+  it("clicking a member ticker focuses DES and routes to /symbol/NVDA/DES", () => {
+    setMockFn({ state: "ok", ...okPayload() });
+    const nav = vi.spyOn(router, "navigate").mockImplementation(() => undefined);
+    render(<ICXPane code="ICX" />);
+    fireEvent.click(screen.getByRole("button", { name: "Open DES for NVDA" }));
+    expect(nav).toHaveBeenCalledWith("/symbol/NVDA/DES");
+    const tree = useWorkspace.getState().tree;
+    expect(tree.kind).toBe("leaf");
+    if (tree.kind === "leaf") {
+      expect(tree.code).toBe("DES");
+      expect(tree.symbol).toBe("NVDA");
+    }
+    nav.mockRestore();
   });
 });

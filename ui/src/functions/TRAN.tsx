@@ -7,7 +7,7 @@
  * speakers, and jump-to-section anchors. Data honesty: when the provider is
  * unavailable / not configured the pane says so explicitly — never fake text.
  */
-import { useMemo, type CSSProperties } from "react";
+import { useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import {
   Empty,
   Pane,
@@ -90,6 +90,45 @@ function formatTimestamp(seconds: number | null | undefined): string | null {
 }
 
 /**
+ * Absolute-URL guard (MEET/BRIEF pattern): only `http(s)://` values become
+ * links — a relative/opaque token must never turn into a broken or unsafe
+ * `<a href>`. Returns null when no safe absolute URL exists.
+ */
+function safeHttpUrl(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return /^https?:\/\//i.test(trimmed) ? trimmed : null;
+}
+
+/**
+ * Client-side transcript search highlight: splits `text` on every
+ * case-insensitive occurrence of `query` and wraps matches in <mark>. Returns
+ * the original string untouched when the query is empty or has no match.
+ */
+function highlightMatches(text: string, query: string): ReactNode {
+  if (!query) return text;
+  const haystack = text.toLowerCase();
+  const needle = query.toLowerCase();
+  const nodes: ReactNode[] = [];
+  let cursor = 0;
+  let at = haystack.indexOf(needle, cursor);
+  if (at === -1) return text;
+  let key = 0;
+  while (at !== -1) {
+    if (at > cursor) nodes.push(text.slice(cursor, at));
+    nodes.push(
+      <mark key={key++} style={markStyle}>
+        {text.slice(at, at + needle.length)}
+      </mark>,
+    );
+    cursor = at + needle.length;
+    at = haystack.indexOf(needle, cursor);
+  }
+  if (cursor < text.length) nodes.push(text.slice(cursor));
+  return nodes;
+}
+
+/**
  * Speaker persistence without the options list: distinct speakers only exist
  * after the payload arrives, so the stored raw string is read/written directly
  * (usePersistentOption validates against options at mount and would clobber
@@ -125,6 +164,9 @@ function groupBySection(rows: TranUtterance[]): TranSection[] {
 
 export function TRANPane({ code, symbol }: FunctionPaneProps) {
   const [speaker, setSpeaker] = usePersistedSpeaker();
+  // In-transcript search is a transient view (not persisted): it filters the
+  // utterance ladder client-side, composed AFTER the speaker filter.
+  const [search, setSearch] = useState("");
   const effectiveSymbol = symbol || defaultSymbolForFunction(code, ["EQUITY", "ETF"]);
   const { state, data, error, refetch } = useFunction<TRANData>({
     code,
@@ -161,10 +203,19 @@ export function TRANPane({ code, symbol }: FunctionPaneProps) {
         : utterances.filter((r) => (r.speaker ?? "").trim() === speaker),
     [utterances, speaker],
   );
-  const sections = useMemo(() => groupBySection(filtered), [filtered]);
+  // Search composes with the speaker filter: it only ever narrows the
+  // speaker-scoped rows (never re-introduces rows the speaker filter dropped).
+  const searchQuery = search.trim();
+  const visible = useMemo(() => {
+    if (!searchQuery) return filtered;
+    const needle = searchQuery.toLowerCase();
+    return filtered.filter((r) => (r.utterance ?? "").toLowerCase().includes(needle));
+  }, [filtered, searchQuery]);
+  const sections = useMemo(() => groupBySection(visible), [visible]);
 
   const quarter = payload?.event?.quarter ?? "";
   const eventDate = payload?.event?.event_date ?? "";
+  const sourceUrl = safeHttpUrl(payload?.event?.source_url);
   const isLive = state === "ok" && status === "ok";
   const totalUtterances = utterances.length;
 
@@ -213,17 +264,65 @@ export function TRANPane({ code, symbol }: FunctionPaneProps) {
       }
     />
   ) : sections.length === 0 ? (
-    <Empty
-      title="No utterances for this speaker"
-      body={`The transcript has ${totalUtterances} utterances, none from "${speaker}".`}
-      action={
-        <button onClick={() => setSpeaker("all")} className="btn">
-          Show all speakers
-        </button>
-      }
-    />
+    searchQuery ? (
+      <Empty
+        title="No utterances match"
+        body={`No utterances in ${
+          speaker === "all" ? "this transcript" : `"${speaker}"'s remarks`
+        } contain "${searchQuery}". The search never fabricates rows — clear it to see the full ladder.`}
+        action={
+          <button onClick={() => setSearch("")} className="btn">
+            Clear search
+          </button>
+        }
+      />
+    ) : (
+      <Empty
+        title="No utterances for this speaker"
+        body={`The transcript has ${totalUtterances} utterances, none from "${speaker}".`}
+        action={
+          <button onClick={() => setSpeaker("all")} className="btn">
+            Show all speakers
+          </button>
+        }
+      />
+    )
   ) : (
     <div className="u-grid-gap-14">
+      <div style={searchRowStyle}>
+        <input
+          type="text"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search transcript…"
+          aria-label="Search transcript"
+          data-testid="tran-search-input"
+          style={searchInputStyle}
+        />
+        {searchQuery ? (
+          <>
+            <span
+              style={searchCountStyle}
+              data-testid="tran-search-count"
+              title={
+                speaker === "all"
+                  ? `Matches across all ${filtered.length} utterances`
+                  : `Matches within ${speaker}'s ${filtered.length} utterances`
+              }
+            >
+              {visible.length} of {filtered.length}
+            </span>
+            <button
+              type="button"
+              className="btn"
+              onClick={() => setSearch("")}
+              aria-label="Clear transcript search"
+            >
+              Clear
+            </button>
+          </>
+        ) : null}
+      </div>
       {sections.length > 1 ? (
         <nav style={jumpNavStyle} aria-label="Jump to transcript section">
           <span style={jumpNavLabelStyle}>JUMP</span>
@@ -264,7 +363,9 @@ export function TRANPane({ code, symbol }: FunctionPaneProps) {
                   {u.role ? <Pill tone="muted" variant="soft" withDot={false}>{u.role}</Pill> : null}
                   {ts ? <span style={tsStyle}>{ts}</span> : null}
                 </header>
-                <p style={utteranceTextStyle}>{u.utterance ?? "—"}</p>
+                <p style={utteranceTextStyle}>
+                  {highlightMatches(u.utterance ?? "—", searchQuery)}
+                </p>
               </article>
             );
           })}
@@ -297,6 +398,19 @@ export function TRANPane({ code, symbol }: FunctionPaneProps) {
               <Pill tone={isLive ? "positive" : "warn"} variant="soft">
                 {isLive ? "live" : status}
               </Pill>
+              {sourceUrl ? (
+                <a
+                  className="btn btn--ghost u-btn-mini"
+                  href={sourceUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  data-testid="tran-source-link"
+                  aria-label="Open the source filing (new tab)"
+                  title={sourceUrl}
+                >
+                  source ↗
+                </a>
+              ) : null}
               {speakers.length > 0 ? (
                 <SegmentedControl
                   label="SPEAKER"
@@ -337,6 +451,41 @@ export function TRANPane({ code, symbol }: FunctionPaneProps) {
     </div>
   );
 }
+
+const markStyle: CSSProperties = {
+  background: "var(--accent-soft)",
+  color: "inherit",
+  borderRadius: 2,
+  padding: "0 1px",
+};
+
+const searchRowStyle: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 8,
+  flexWrap: "wrap",
+};
+
+const searchInputStyle: CSSProperties = {
+  flex: "1 1 220px",
+  minWidth: 160,
+  maxWidth: 360,
+  height: 26,
+  padding: "0 8px",
+  background: "var(--surface-2)",
+  border: "1px solid var(--border-subtle)",
+  borderRadius: "var(--radius-sm)",
+  color: "var(--text-primary)",
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: "var(--font-size-sm)",
+};
+
+const searchCountStyle: CSSProperties = {
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: "var(--font-size-2xs)",
+  color: "var(--text-mute)",
+  letterSpacing: "0.04em",
+};
 
 const jumpNavStyle: CSSProperties = {
   display: "flex",

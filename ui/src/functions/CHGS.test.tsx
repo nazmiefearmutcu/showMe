@@ -289,3 +289,29 @@ describe("CHGS pane — interaction", () => {
     expect(screen.getAllByText(/SMA 50/).length).toBeGreaterThanOrEqual(1);
   });
 });
+
+describe("CHGS pane — study grid sort + keyboard (lane B4)", () => {
+  it("pins alphabetical study order and enables keyboard grid navigation", () => {
+    setMockFn({ state: "ok", ...livePayload() });
+    const { container } = render(<CHGSPane code="CHGS" symbol="AAPL" />);
+    const grid = screen.getByRole("grid", {
+      name: "CHGS per-study latest values",
+    });
+    expect(grid).toBeInTheDocument();
+    // Roving keyboard cell: the first cell owns the tab stop.
+    expect(
+      grid.querySelector('td[data-cell="0-0"]')?.getAttribute("tabindex"),
+    ).toBe("0");
+
+    // studyKeys arrive sma_20/sma_50/ema_20; label-ascending -> EMA 20 first.
+    const header = container.querySelector('th[aria-sort="ascending"]');
+    expect(header).not.toBeNull();
+    const rowsBefore = Array.from(container.querySelectorAll("tbody tr"));
+    expect(rowsBefore[0]?.textContent).toContain("EMA 20");
+
+    // Activating the sort cycles asc -> desc: SMA 50 leads.
+    fireEvent.click(header!);
+    const rowsAfter = Array.from(container.querySelectorAll("tbody tr"));
+    expect(rowsAfter[0]?.textContent).toContain("SMA 50");
+  });
+});

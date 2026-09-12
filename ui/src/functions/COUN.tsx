@@ -28,6 +28,12 @@ import {
   StatusSection,
 } from "@/design-system";
 import { PaneState } from "@/design-system/PaneState";
+import {
+  buildGridCsv,
+  downloadGridCsv,
+  gridCsvFilename,
+  type GridCsvColumn,
+} from "@/design-system/grid-csv";
 import { useFunction } from "@/lib/useFunction";
 import {
   FunctionControlGroup,
@@ -108,6 +114,34 @@ export function COUNPane({ code }: FunctionPaneProps) {
     state === "ok" &&
     rows.length > 0 &&
     !rows.every((r) => isReferenceMode(r.source_mode));
+
+  // CSV export of the country metrics table — RAW payload values (a numeric
+  // value stays numeric; string values pass through unchanged).
+  const csvColumns = useMemo<GridCsvColumn<COUNRow>[]>(
+    () => [
+      { key: "section", header: "Section", value: (r) => r.section ?? "" },
+      { key: "metric", header: "Metric", value: (r) => r.metric ?? "" },
+      { key: "value", header: "Value", value: (r) => r.value ?? "" },
+      { key: "unit", header: "Unit", value: (r) => r.unit ?? "" },
+      { key: "as_of", header: "As of", value: (r) => r.as_of ?? "" },
+      {
+        key: "series_id",
+        header: "Series ID",
+        value: (r) => r.series_id ?? "",
+      },
+      {
+        key: "source_mode",
+        header: "Source",
+        value: (r) => r.source_mode ?? "",
+      },
+    ],
+    [],
+  );
+
+  const exportCsv = () => {
+    const csv = buildGridCsv(csvColumns, rows);
+    downloadGridCsv(gridCsvFilename(`coun-${country}`), csv);
+  };
 
   const COLS: DataGridColumn<COUNRow>[] = useMemo(
     () => [
@@ -231,6 +265,16 @@ export function COUNPane({ code }: FunctionPaneProps) {
                 options={COUNTRY_OPTIONS}
                 onChange={setCountry}
               />
+              <button
+                type="button"
+                className="btn"
+                onClick={exportCsv}
+                disabled={rows.length === 0}
+                title="Download CSV"
+                aria-label={`Download ${rows.length} country metrics as CSV`}
+              >
+                CSV
+              </button>
               <LoadStatePill state={state} status={rows.length ? "ok" : null} />
               <RefreshButton loading={state === "loading"} onClick={refetch} title="Refresh country guide" />
             </FunctionControlGroup>

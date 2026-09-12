@@ -17,6 +17,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { SRSKPane } from "./SRSK";
+import { downloadGridCsv } from "@/design-system/grid-csv";
 
 /* ── useFunction mock ──────────────────────────────────────────────── */
 
@@ -52,6 +53,14 @@ vi.mock("@/lib/useFunction", () => ({
     };
   },
 }));
+
+// Keep the real CSV builder, but capture the download call so the export
+// payload can be asserted (jsdom has no Blob download).
+vi.mock("@/design-system/grid-csv", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/design-system/grid-csv")>();
+  return { ...actual, downloadGridCsv: vi.fn(() => true) };
+});
 
 /* ── fixtures ──────────────────────────────────────────────────────── */
 
@@ -114,6 +123,7 @@ function livePayload(rows: Record<string, unknown>[] = CORE_ROWS) {
 beforeEach(() => {
   localStorage.clear();
   setMockFn({ state: "idle", data: undefined });
+  (downloadGridCsv as ReturnType<typeof vi.fn>).mockClear();
 });
 afterEach(() => {
   cleanup();
@@ -252,5 +262,57 @@ describe("SRSK pane — controls + honesty", () => {
     });
     render(<SRSKPane code="SRSK" />);
     expect(screen.queryByText("live worldbank")).toBeNull();
+  });
+});
+
+describe("SRSK pane — grid CSV export", () => {
+  it("exports the ranked sovereign table with RAW numbers via the CSV button", () => {
+    setMockFn({ state: "ok", ...livePayload() });
+    render(<SRSKPane code="SRSK" />);
+    const btn = screen.getByTitle("Download CSV");
+    expect(btn).not.toBeDisabled();
+    fireEvent.click(btn);
+    const mock = downloadGridCsv as ReturnType<typeof vi.fn>;
+    expect(mock).toHaveBeenCalledTimes(1);
+    const [filename, csv] = mock.mock.calls[0] as [string, string];
+    expect(filename).toMatch(/^srsk-core-\d{4}-\d{2}-\d{2}\.csv$/);
+    expect(csv).toContain(
+      "Rank,Country,Risk score,CDS-proxy %,1Y PD %,Debt/GDP %,Reserves months,CA %GDP,CPI %,Recovery,As of,Source,Note",
+    );
+    expect(csv).toContain(
+      "1,TR,90.1,6.63,26.9,26.6,4.7,-0.77,34.9,0.4,2024,worldbank,",
+    );
+  });
+
+  it("exports the full ranked set beyond the 10-row render cap", () => {
+    const wide = Array.from({ length: 12 }, (_, i) =>
+      srskRow({ country: `C${i}`, risk_score: 90 - i, pd_1y_pct: 20 - i }),
+    );
+    setMockFn({ state: "ok", ...livePayload(wide) });
+    render(<SRSKPane code="SRSK" />);
+    // The table shows 10 of 12 …
+    expect(screen.getByText(/riskiest of 12 countries/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByTitle("Download CSV"));
+    const mock = downloadGridCsv as ReturnType<typeof vi.fn>;
+    const [, csv] = mock.mock.calls[0] as [string, string];
+    // … the export carries all 12 data rows + header.
+    expect(csv.trim().split("\n").length).toBe(13);
+    expect(csv).toContain("12,C11,");
+  });
+
+  it("disables the CSV button when no sovereign rows are returned", () => {
+    setMockFn({
+      state: "ok",
+      data: {
+        data: {
+          status: "provider_unavailable",
+          reason: "World Bank Open Data unreachable and no FRED key configured",
+          rows: [],
+        },
+      },
+    });
+    render(<SRSKPane code="SRSK" />);
+    expect(screen.getByTitle("Download CSV")).toBeDisabled();
+    expect(downloadGridCsv).not.toHaveBeenCalled();
   });
 });

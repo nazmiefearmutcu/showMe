@@ -222,3 +222,29 @@ describe("TRDH pane — exchange chip interaction", () => {
     expect(localStorage.getItem("showme.trdh.exchanges")).toContain("TYO");
   });
 });
+
+describe("TRDH pane — board grid sort + keyboard (lane B4)", () => {
+  it("pins open-first with keyboard navigation and cycles to descending", () => {
+    setMockFn(boardPayload());
+    const { container } = render(<TRDHPane code="TRDH" />);
+
+    const grid = screen.getByRole("grid", { name: "Trading hours board" });
+    expect(grid).toBeInTheDocument();
+    // Roving keyboard cell: the first cell owns the tab stop.
+    expect(
+      grid.querySelector('td[data-cell="0-0"]')?.getAttribute("tabindex"),
+    ).toBe("0");
+
+    // state ascending (open=0) keeps BINANCE first, closed LSE last.
+    const header = container.querySelector('th[aria-sort="ascending"]');
+    expect(header).not.toBeNull();
+    const rowsBefore = Array.from(container.querySelectorAll("tbody tr"));
+    expect(rowsBefore[0]?.textContent).toContain("BINANCE");
+    expect(rowsBefore.at(-1)?.textContent).toContain("LSE");
+
+    // Activating the sort cycles asc -> desc: closed LSE leads.
+    fireEvent.click(header!);
+    const rowsAfter = Array.from(container.querySelectorAll("tbody tr"));
+    expect(rowsAfter[0]?.textContent).toContain("LSE");
+  });
+});

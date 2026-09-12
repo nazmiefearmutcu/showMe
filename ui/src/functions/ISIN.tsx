@@ -20,6 +20,12 @@ import {
   StatusDivider,
   StatusSection,
 } from "@/design-system";
+import {
+  buildGridCsv,
+  downloadGridCsv,
+  gridCsvFilename,
+  type GridCsvColumn,
+} from "@/design-system/grid-csv";
 import { useFunction } from "@/lib/useFunction";
 import {
   FunctionControlGroup,
@@ -68,6 +74,68 @@ interface ISINData {
 const HISTORY_KEY = "showme.isin.history";
 const HISTORY_MAX = 5;
 const DEFAULT_INPUT = "US0378331005";
+
+/**
+ * Render bound. OpenFIGI returns one match per listing exchange (AAPL ≈ 272
+ * rows) and one card per match is largely redundant — C8 Q14 attributed a
+ * ~210 ms cold-mount main-thread task to the unbounded card render. Cap the
+ * DOM at the first N matches per group; the COMPLETE match set stays
+ * reachable through the CSV export (never a silent truncation).
+ */
+const MATCH_RENDER_CAP = 100;
+
+interface ISINMatchCsvRow {
+  input: string;
+  id_type: string;
+  figi: string;
+  ticker: string;
+  name: string;
+  exchange: string;
+  sector: string;
+  security_type: string;
+  composite_figi: string;
+  share_class_figi: string;
+}
+
+const MATCH_CSV_COLUMNS: GridCsvColumn<ISINMatchCsvRow>[] = [
+  { key: "input", header: "Input" },
+  { key: "id_type", header: "ID Type" },
+  { key: "figi", header: "FIGI" },
+  { key: "ticker", header: "Ticker" },
+  { key: "name", header: "Name" },
+  { key: "exchange", header: "Exchange" },
+  { key: "sector", header: "Sector" },
+  { key: "security_type", header: "Security Type" },
+  { key: "composite_figi", header: "Composite FIGI" },
+  { key: "share_class_figi", header: "Share Class FIGI" },
+];
+
+/** Flatten EVERY group's full match list — not the capped render view. */
+function buildMatchCsvRows(
+  groups: ISINGroup[],
+  fallbackInput: string,
+): ISINMatchCsvRow[] {
+  const rows: ISINMatchCsvRow[] = [];
+  for (const group of groups) {
+    const input = group.input ?? fallbackInput;
+    const idType = group.id_type ?? "";
+    for (const match of group.matches ?? []) {
+      rows.push({
+        input,
+        id_type: idType,
+        figi: match.figi ?? "",
+        ticker: match.ticker ?? "",
+        name: match.name ?? "",
+        exchange: match.exchCode ?? "",
+        sector: match.marketSector ?? "",
+        security_type: match.securityType ?? "",
+        composite_figi: match.compositeFIGI ?? "",
+        share_class_figi: match.shareClassFIGI ?? "",
+      });
+    }
+  }
+  return rows;
+}
 
 function readHistory(): string[] {
   try {
@@ -132,7 +200,23 @@ export function ISINPane({ code, symbol }: FunctionPaneProps) {
     setLookup(value);
   }
 
-  const matchCount = payload?.rows?.length ?? 0;
+  // True exchange-level match count: the backend's `rows` field is capped by
+  // limit_per_input (live probe: rows=6 while match_groups[0].matches=272),
+  // so the rendered/counted total must come from the groups themselves.
+  const matchCount = useMemo(
+    () =>
+      groups.reduce((sum, group) => sum + (group.matches?.length ?? 0), 0),
+    [groups],
+  );
+
+  function exportCsv() {
+    const rows = buildMatchCsvRows(groups, lookup);
+    if (rows.length === 0) return;
+    downloadGridCsv(
+      gridCsvFilename(`isin-${lookup || "matches"}`),
+      buildGridCsv(MATCH_CSV_COLUMNS, rows),
+    );
+  }
 
   const body = lookup.length === 0 ? (
     <Empty
@@ -185,6 +269,8 @@ export function ISINPane({ code, symbol }: FunctionPaneProps) {
     <div className="u-grid-gap-14">
       {groups.map((group) => {
         const inputLabel = group.input ?? lookup;
+        const matches = group.matches ?? [];
+        const shown = matches.slice(0, MATCH_RENDER_CAP);
         return (
           <section key={inputLabel} aria-label={`Cross-ID results for ${inputLabel}`}>
             <div style={groupHeaderStyle}>
@@ -197,11 +283,11 @@ export function ISINPane({ code, symbol }: FunctionPaneProps) {
               <span style={monoMutedStyle}>
                 {group.error
                   ? `lookup failed: ${group.error}`
-                  : `${group.matches?.length ?? 0} exchange-level match(es)`}
+                  : `${matches.length} exchange-level match(es)`}
               </span>
             </div>
             <div style={cardGridStyle}>
-              {(group.matches ?? []).map((match, idx) => (
+              {shown.map((match, idx) => (
                 <div
                   key={`${inputLabel}-${match.figi ?? idx}`}
                   style={cardStyle}
@@ -243,6 +329,12 @@ export function ISINPane({ code, symbol }: FunctionPaneProps) {
                 </div>
               ))}
             </div>
+            {matches.length > shown.length ? (
+              <p style={capNoteStyle} data-testid="isin-cap-note">
+                Showing {shown.length} of {matches.length} exchange-level
+                matches — use CSV for the full list.
+              </p>
+            ) : null}
           </section>
         );
       })}
@@ -271,6 +363,16 @@ export function ISINPane({ code, symbol }: FunctionPaneProps) {
                   Look up
                 </button>
               </form>
+              <button
+                type="button"
+                className="btn"
+                onClick={exportCsv}
+                disabled={matchCount === 0}
+                title="Download all OpenFIGI matches as CSV"
+                aria-label={`Download ${matchCount} exchange-level match(es) as CSV`}
+              >
+                CSV
+              </button>
               <LoadStatePill state={state} status={status} />
               <RefreshButton
                 loading={state === "loading"}
@@ -373,6 +475,14 @@ const cardGridStyle: CSSProperties = {
   display: "grid",
   gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))",
   gap: 10,
+};
+
+const capNoteStyle: CSSProperties = {
+  margin: "8px 0 0",
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: "var(--font-size-2xs)",
+  color: "var(--text-mute)",
+  letterSpacing: "0.04em",
 };
 
 const cardStyle: CSSProperties = {

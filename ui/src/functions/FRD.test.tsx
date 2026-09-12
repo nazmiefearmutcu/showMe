@@ -19,6 +19,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { FRDPane } from "./FRD";
+import { downloadGridCsv } from "@/design-system/grid-csv";
 
 /* ── useFunction mock ──────────────────────────────────────────────── */
 
@@ -60,6 +61,14 @@ vi.mock("@/lib/useFunction", () => ({
     };
   },
 }));
+
+// Keep the real CSV builder, but capture the download call so the export
+// payload can be asserted (jsdom has no Blob download).
+vi.mock("@/design-system/grid-csv", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/design-system/grid-csv")>();
+  return { ...actual, downloadGridCsv: vi.fn(() => true) };
+});
 
 /* ── fixtures: live-probed EURUSD CIP grid ─────────────────────────── */
 
@@ -111,6 +120,7 @@ function payload(sourceMode: string) {
 beforeEach(() => {
   localStorage.clear();
   setMockFn({ state: "idle", data: undefined });
+  (downloadGridCsv as ReturnType<typeof vi.fn>).mockClear();
 });
 afterEach(() => {
   cleanup();
@@ -232,5 +242,39 @@ describe("FRD pane — data honesty", () => {
         (tr.textContent ?? "").includes("reference_model"),
       ),
     ).toBe(true);
+  });
+});
+
+describe("FRD pane — grid CSV export", () => {
+  it("exports the raw CIP tenor grid via the CSV button", () => {
+    setMockFn({ state: "ok", ...payload("live_yfinance_quote") });
+    render(<FRDPane code="FRD" />);
+    const btn = screen.getByTitle("Download CSV");
+    expect(btn).not.toBeDisabled();
+    fireEvent.click(btn);
+    const mock = downloadGridCsv as ReturnType<typeof vi.fn>;
+    expect(mock).toHaveBeenCalledTimes(1);
+    const [filename, csv] = mock.mock.calls[0] as [string, string];
+    expect(filename).toMatch(/^frd-EURUSD-\d{4}-\d{2}-\d{2}\.csv$/);
+    expect(csv).toContain(
+      "Tenor,Years,Spot,Forward,Forward points,Ann. carry %,Base rate,Quote rate,Source",
+    );
+    expect(csv).toContain(
+      "1W,0.019178,1.1624,1.162626,0.000226,",
+    );
+    // The carry cell is a raw NUMBER, not the formatted "+1.01%" string.
+    const firstRow = csv.split("\n")[1];
+    expect(firstRow).toContain(",0.035,0.045,live_yfinance_quote");
+    expect(firstRow).not.toContain("%");
+  });
+
+  it("disables the CSV button when no tenors come back", () => {
+    setMockFn({
+      state: "ok",
+      data: { data: { pair: "EURUSD", rows: [] } },
+    });
+    render(<FRDPane code="FRD" />);
+    expect(screen.getByTitle("Download CSV")).toBeDisabled();
+    expect(downloadGridCsv).not.toHaveBeenCalled();
   });
 });

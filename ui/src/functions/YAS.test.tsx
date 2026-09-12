@@ -19,6 +19,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { YASPane } from "./YAS";
+import { downloadGridCsv } from "@/design-system/grid-csv";
 
 /* ── useFunction mock ──────────────────────────────────────────────── */
 
@@ -60,6 +61,14 @@ vi.mock("@/lib/useFunction", () => ({
     };
   },
 }));
+
+// Keep the real CSV builder, but capture the download call so the export
+// payload can be asserted (jsdom has no Blob download).
+vi.mock("@/design-system/grid-csv", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/design-system/grid-csv")>();
+  return { ...actual, downloadGridCsv: vi.fn(() => true) };
+});
 
 /* ── fixtures: closed-form 10Y 4.25% semiannual @ 99.5 ─────────────── */
 
@@ -124,6 +133,7 @@ function livePayload() {
 beforeEach(() => {
   localStorage.clear();
   setMockFn({ state: "idle", data: undefined });
+  (downloadGridCsv as ReturnType<typeof vi.fn>).mockClear();
 });
 afterEach(() => {
   cleanup();
@@ -240,5 +250,30 @@ describe("YAS pane — model inputs", () => {
       target: { value: "UST5Y" },
     });
     expect(lastSymbol).toBe("UST5Y");
+  });
+});
+
+describe("YAS pane — grid CSV export", () => {
+  it("exports the raw shock ladder via the CSV button", () => {
+    setMockFn({ state: "ok", ...livePayload() });
+    render(<YASPane code="YAS" />);
+    const btn = screen.getByTitle("Download CSV");
+    expect(btn).not.toBeDisabled();
+    fireEvent.click(btn);
+    const mock = downloadGridCsv as ReturnType<typeof vi.fn>;
+    expect(mock).toHaveBeenCalledTimes(1);
+    const [filename, csv] = mock.mock.calls[0] as [string, string];
+    expect(filename).toMatch(/^yas-US10Y-\d{4}-\d{2}-\d{2}\.csv$/);
+    expect(csv).toContain("Shock bp,YTM %,Price,Δ vs now");
+    // RAW numbers + Δ computed against the summary price (107.915 − 99.5).
+    expect(csv).toContain("-100,3.312,107.915,8.415");
+    expect(csv).toContain("0,4.312,99.5,0");
+  });
+
+  it("disables the CSV button when no ladder is returned", () => {
+    setMockFn({ state: "ok", data: { data: { status: "ok", curve: [] } } });
+    render(<YASPane code="YAS" />);
+    expect(screen.getByTitle("Download CSV")).toBeDisabled();
+    expect(downloadGridCsv).not.toHaveBeenCalled();
   });
 });

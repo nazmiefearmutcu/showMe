@@ -181,6 +181,91 @@ describe("TRAN pane — transcript render", () => {
   });
 });
 
+describe("TRAN pane — in-transcript search (C3)", () => {
+  function typeSearch(value: string) {
+    fireEvent.change(screen.getByTestId("tran-search-input"), {
+      target: { value },
+    });
+  }
+
+  it("filters the utterance ladder client-side, highlights matches and shows X of N", () => {
+    setMockFn({ state: "ok", data: okPayload() });
+    const { container } = render(<TRANPane code="TRAN" symbol="AAPL" />);
+    expect(container.querySelectorAll(".tran-utterance").length).toBe(3);
+
+    typeSearch("services");
+
+    const utts = Array.from(container.querySelectorAll(".tran-utterance"));
+    expect(utts.length).toBe(1);
+    expect(utts[0].textContent ?? "").toContain("Taking your question on Services growth.");
+    // Highlight preserves the original casing while matching case-insensitively.
+    const marks = Array.from(utts[0].querySelectorAll("mark"));
+    expect(marks.length).toBe(1);
+    expect(marks[0].textContent).toBe("Services");
+    // "X of N" counts against the current speaker scope (all ⇒ 3).
+    expect(screen.getByTestId("tran-search-count").textContent).toMatch(/1 of 3/);
+  });
+
+  it("composes with the speaker filter (search only narrows the speaker's rows)", () => {
+    setMockFn({ state: "ok", data: okPayload() });
+    const { container } = render(<TRANPane code="TRAN" symbol="AAPL" />);
+    // Speaker filter first — Tim Cook has 2 utterances in the fixture.
+    fireEvent.click(screen.getByRole("button", { name: "Tim Cook" }));
+    expect(container.querySelectorAll(".tran-utterance").length).toBe(2);
+
+    typeSearch("june");
+    const utts = Array.from(container.querySelectorAll(".tran-utterance"));
+    expect(utts.length).toBe(1);
+    expect(utts[0].textContent ?? "").toContain("strongest June quarter");
+    // Scope is the speaker's 2 utterances, NOT the full transcript.
+    expect(screen.getByTestId("tran-search-count").textContent).toMatch(/1 of 2/);
+    expect(screen.getByTestId("tran-search-count").getAttribute("title")).toMatch(
+      /Tim Cook's 2 utterances/,
+    );
+  });
+
+  it("shows an honest no-match state and clears back to the full ladder", () => {
+    setMockFn({ state: "ok", data: okPayload() });
+    const { container } = render(<TRANPane code="TRAN" symbol="AAPL" />);
+    typeSearch("zzz-nothing");
+    expect(screen.getByText(/No utterances match/i)).toBeInTheDocument();
+    expect(screen.getByText(/never fabricates rows/i)).toBeInTheDocument();
+    // No utterance cards are rendered while zero rows match.
+    expect(container.querySelectorAll(".tran-utterance").length).toBe(0);
+
+    fireEvent.click(screen.getByRole("button", { name: /clear search/i }));
+    expect(container.querySelectorAll(".tran-utterance").length).toBe(3);
+    expect(screen.queryByTestId("tran-search-count")).toBeNull();
+  });
+});
+
+describe("TRAN pane — source link (C3)", () => {
+  it("renders the event source_url as a safe absolute link in the header", () => {
+    setMockFn({ state: "ok", data: okPayload() });
+    render(<TRANPane code="TRAN" symbol="AAPL" />);
+    const link = screen.getByTestId("tran-source-link");
+    expect(link).toHaveAttribute(
+      "href",
+      "https://www.sec.gov/Archives/edgar/data/320193/x/",
+    );
+    expect(link).toHaveAttribute("target", "_blank");
+    expect(link).toHaveAttribute("rel", "noopener noreferrer");
+  });
+
+  it("guards the link: non-absolute source_urls render NO anchor", () => {
+    for (const bad of ["javascript:alert(1)", "/Archives/edgar/data/320193/"]) {
+      cleanup();
+      const payload = okPayload();
+      payload.data.event = { ...payload.data.event, source_url: bad };
+      setMockFn({ state: "ok", data: payload });
+      const { container } = render(<TRANPane code="TRAN" symbol="AAPL" />);
+      expect(screen.queryByTestId("tran-source-link")).toBeNull();
+      // The unsafe token never leaks into any href attribute.
+      expect(container.querySelector('a[href^="javascript:"]')).toBeNull();
+    }
+  });
+});
+
 describe("TRAN pane — speaker filter", () => {
   it("filters utterances to the selected speaker and offers a reset", () => {
     setMockFn({ state: "ok", data: okPayload() });

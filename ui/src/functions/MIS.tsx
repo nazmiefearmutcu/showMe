@@ -480,6 +480,9 @@ export function MISPane({ code }: FunctionPaneProps) {
         // This is also the sort key — keeps the displayed metric and the
         // visual order consistent across markets with different TF
         // success rates.
+        // Lane B4: the built-in sorter reads this accessor (rows carry no
+        // `score` field) so the grid's default order IS the displayed score.
+        sortValue: (r) => r.normalized_score ?? r.weighted_score ?? null,
         render: (r) => (
           <span className="terminal-grid-numeric">
             <ChangeText
@@ -1227,6 +1230,12 @@ function ResultsTab(props: {
                     rowKey={(r) => `${r.market}:${r.symbol}`}
                     density="compact"
                     ariaLabel="Multi Indicator Scan results"
+                    // Lane B4: highest-conviction symbol first — the pane's
+                    // own contract ("surfaces the highest-conviction
+                    // symbols") is now the grid's default order.
+                    defaultSortKey="score"
+                    defaultSortDir="descending"
+                    keyboardNavigable
                   />
                   {rows
                     .filter((r) => expandedRows.has(`${r.market}:${r.symbol}`))

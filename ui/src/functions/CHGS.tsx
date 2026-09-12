@@ -352,6 +352,13 @@ export function CHGSPane({ code, symbol }: FunctionPaneProps) {
           rowKey={(r) => r.key}
           density="compact"
           ariaLabel="CHGS per-study latest values"
+          // Lane B4: studies are a heterogeneous reference list (price-scale
+          // SMA/BB vs oscillators), so numeric value sorting would be
+          // misleading — alphabetical study labels are the only honest
+          // default and they pin the previous studyKeys.sort() order.
+          defaultSortKey="label"
+          defaultSortDir="ascending"
+          keyboardNavigable
         />
       ) : null}
     </div>

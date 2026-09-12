@@ -24,6 +24,12 @@ import {
 } from "@/design-system";
 import { PaneState } from "@/design-system/PaneState";
 import { buildTsvRow, copyTextToClipboard } from "@/design-system/clipboard";
+import {
+  buildGridCsv,
+  downloadGridCsv,
+  gridCsvFilename,
+  type GridCsvColumn,
+} from "@/design-system/grid-csv";
 import { useFunction } from "@/lib/useFunction";
 import {
   FunctionControlGroup,
@@ -73,6 +79,50 @@ export function PEOPPane({ code }: FunctionPaneProps) {
   const hasSearched = query.trim().length > 0;
 
   const commit = () => setQuery(draft.trim());
+
+  // CSV export of the people results — RAW payload fields (match_score stays
+  // a number, never the formatted row strings).
+  const csvColumns = useMemo<GridCsvColumn<PEOPItem>[]>(
+    () => [
+      { key: "full_name", header: "Name", value: (r) => r.full_name ?? "" },
+      { key: "role", header: "Role / title", value: (r) => r.role ?? "" },
+      { key: "company", header: "Firm", value: (r) => r.company ?? "" },
+      { key: "bio", header: "Bio", value: (r) => r.bio ?? "" },
+      {
+        key: "contact_status",
+        header: "Contact",
+        value: (r) => r.contact_status ?? "",
+      },
+      { key: "source", header: "Source", value: (r) => r.source ?? "" },
+      {
+        key: "source_url",
+        header: "Source URL",
+        value: (r) => r.source_url ?? "",
+      },
+      {
+        key: "source_date",
+        header: "Source date",
+        value: (r) => r.source_date ?? "",
+      },
+      {
+        key: "match_score",
+        header: "Match score",
+        value: (r) => r.match_score ?? "",
+      },
+    ],
+    [],
+  );
+
+  const exportCsv = () => {
+    const slug =
+      query
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "") || "results";
+    const csv = buildGridCsv(csvColumns, items);
+    downloadGridCsv(gridCsvFilename(`peop-${slug}`), csv);
+  };
 
   const COLS: DataGridColumn<PEOPItem>[] = useMemo(
     () => [
@@ -254,6 +304,16 @@ export function PEOPPane({ code }: FunctionPaneProps) {
                   Search
                 </button>
               </form>
+              <button
+                type="button"
+                className="btn"
+                onClick={exportCsv}
+                disabled={items.length === 0}
+                title="Download CSV"
+                aria-label={`Download ${items.length} people results as CSV`}
+              >
+                CSV
+              </button>
               <LoadStatePill state={hasSearched ? state : "idle"} status={status === "idle" ? null : status} />
               <RefreshButton
                 loading={state === "loading"}

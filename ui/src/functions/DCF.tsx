@@ -319,6 +319,10 @@ export function DCFPane({ code, symbol }: FunctionPaneProps) {
           rowKey={(r, i) => `${r.year ?? "y"}-${i}`}
           density="compact"
           ariaLabel="DCF cashflow table"
+          // Lane B4: the forecast is a sequence — pin year-ascending.
+          defaultSortKey="year"
+          defaultSortDir="ascending"
+          keyboardNavigable
         />
       </div>
       <div>
@@ -329,6 +333,11 @@ export function DCFPane({ code, symbol }: FunctionPaneProps) {
           rowKey={(r, i) => `${r.component ?? "c"}-${i}`}
           density="compact"
           ariaLabel="DCF value bridge"
+          // Lane B4: value-descending surfaces the dominant value driver
+          // (usually Equity value) above the component detail.
+          defaultSortKey="value"
+          defaultSortDir="descending"
+          keyboardNavigable
         />
       </div>
     </div>

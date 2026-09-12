@@ -632,6 +632,11 @@ export function TCAPane({ code, symbol }: FunctionPaneProps) {
                   rowKey={(r, i) => `${r.id}-${i}`}
                   density="compact"
                   ariaLabel="TCA fills"
+                  // Lane B4: worst-cost fill first — TCA exists to surface
+                  // execution outliers, and cost is the actionable column.
+                  defaultSortKey="costUsd"
+                  defaultSortDir="descending"
+                  keyboardNavigable
                 />
               )}
 

@@ -57,12 +57,45 @@ interface TlhPayload {
   [key: string]: unknown;
 }
 
-function washWindow(row: Row): string {
-  const window = row.wash_sale_window;
-  if (!Array.isArray(window) || window.length < 2) return "—";
+/**
+ * Wash-sale window read derived from the real `wash_sale_window[2]` dates on
+ * each candidate row (US §1091: 30 days before through 30 days after a sale).
+ * Status is computed against the current clock; when a rebuy inside the
+ * window actually happened the backend would have to send it — the probe
+ * confirmed it does not, so no disallowed-loss amount is ever previewed.
+ */
+export interface WashWindowRead {
+  open: string;
+  close: string;
+  status: "open" | "upcoming" | "expired";
+  daysLeft: number | null;
+}
+
+const DAY_MS = 86_400_000;
+
+export function deriveWashWindow(
+  window: unknown,
+  nowMs: number = Date.now(),
+): WashWindowRead | null {
+  if (!Array.isArray(window) || window.length < 2) return null;
   const [open, close] = window;
-  if (typeof open !== "string" || typeof close !== "string") return "—";
-  return `${open} → ${close}`;
+  if (typeof open !== "string" || typeof close !== "string") return null;
+  const openMs = Date.parse(`${open}T00:00:00Z`);
+  const closeMs = Date.parse(`${close}T00:00:00Z`);
+  if (!Number.isFinite(openMs) || !Number.isFinite(closeMs) || closeMs < openMs) return null;
+  const endOfCloseDay = closeMs + DAY_MS - 1;
+  if (nowMs < openMs) {
+    return { open, close, status: "upcoming", daysLeft: Math.ceil((closeMs - nowMs) / DAY_MS) };
+  }
+  if (nowMs <= endOfCloseDay) {
+    return {
+      open,
+      close,
+      status: "open",
+      daysLeft: Math.max(0, Math.ceil((closeMs - nowMs) / DAY_MS)),
+    };
+  }
+  return { open, close, status: "expired", daysLeft: null };
 }
 
 /** Clamp a percent-form value into [0, 100]; non-finite -> 0. */
@@ -175,8 +208,26 @@ const CANDIDATE_COLUMNS: DataGridColumn<Row>[] = [
   {
     key: "wash_sale_window",
     header: "Wash Window",
-    width: 180,
-    render: (row) => <span className="portfolio-analytics-num">{washWindow(row)}</span>,
+    width: 188,
+    render: (row) => {
+      const read = deriveWashWindow(row.wash_sale_window);
+      if (!read) return <span className="portfolio-analytics-num">—</span>;
+      const label =
+        read.status === "open"
+          ? `OPEN · ${read.daysLeft ?? 0}d left`
+          : read.status.toUpperCase();
+      return (
+        <span
+          className="u-flex u-items-center u-gap-2"
+          title={`US §1091 window ${read.open} → ${read.close}: repurchasing a substantially identical security inside this window disallows the loss.`}
+        >
+          <Pill tone={read.status === "open" ? "warn" : "muted"} variant="soft" withDot={false}>
+            {label}
+          </Pill>
+          <span className="portfolio-analytics-num">→ {read.close}</span>
+        </span>
+      );
+    },
   },
 ];
 
@@ -217,7 +268,10 @@ export function TaxLossHarvestPane({ code }: FunctionPaneProps) {
   const totalSavings =
     typeof payload?.total_estimated_tax_savings === "number" ? payload.total_estimated_tax_savings : null;
   const replacements = candidates.filter((row) => str(row.replacement_etf) != null).length;
-  const windowText = candidates.length ? washWindow(candidates[0]) : "—";
+  const firstWindow = candidates.length
+    ? deriveWashWindow(candidates[0].wash_sale_window)
+    : null;
+  const windowText = firstWindow ? `${firstWindow.open} → ${firstWindow.close}` : "—";
   const note = typeof data?.metadata?.note === "string" ? data.metadata.note : null;
 
   const badge = (

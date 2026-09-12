@@ -16,7 +16,7 @@
  * only evaluate while the app is running with this pane mounted, and the UI
  * says so.
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   DataGrid,
   type DataGridColumn,
@@ -46,6 +46,7 @@ import { parseDecimalSafe } from "@/lib/validators";
 import { invoke, isInTauri } from "@/lib/tauri";
 import { toast } from "@/lib/toast";
 import { fetchQuote, type QuoteSnapshot } from "@/lib/quotes";
+import { normalizeSymbol, useLiveQuote, type QuoteView } from "@/lib/market-data";
 import { useVisibilityTick } from "@/lib/useVisibilityTick";
 import { formatPrice, formatMissing, formatPercent, formatCompactNumber } from "@/lib/format";
 import { FunctionControlGroup, LoadStatePill, RefreshButton } from "./function-controls";
@@ -64,6 +65,26 @@ const POLL_MS = 45_000;
 const FIRE_COOLDOWN_MS = 5 * 60_000;
 
 type AlertStatus = "triggered" | "armed" | "none";
+
+/**
+ * B1b — route-bound seed state. Reported by {@link LiveSeedBridge} (mounted
+ * only when the pane was opened for a symbol, `#/symbol/<sym>/ALRT`): the
+ * live value of the currently-selected alert `field`, plus the honest
+ * loading/error shape so the form can say "waiting" vs "no quote" without
+ * ever fabricating a number. `field` is carried along so a stale report from
+ * the previous field can never seed the wrong input.
+ */
+interface SeedState {
+  /** Symbol provenance — a stale report from the previous route symbol must
+   *  never seed the next symbol's input (Workspace reuses the pane instance
+   *  across symbol switches, so effects fire with the previous closure). */
+  symbol: string;
+  field: AlertRow["field"];
+  value: number | null;
+  source: string | null;
+  loading: boolean;
+  error: string | null;
+}
 
 /**
  * Honest per-tick evaluation. `value` is the alert's current computed value;
@@ -111,9 +132,16 @@ function evaluateAlert(
   return { status: onTriggerSide ? "triggered" : "armed", newTrigger: crossed };
 }
 
-export function ALRTPane({ code }: FunctionPaneProps) {
+export function ALRTPane({ code, symbol: routeSymbol }: FunctionPaneProps) {
+  // B1b (campaign 2026-09-11 double) — route-bound opening. `PaneChrome`'s
+  // "set alert" action navigates to `#/symbol/<sym>/ALRT`, so the pane
+  // receives the bound symbol as a prop. We prefill the symbol field and
+  // seed the threshold from the same live quote source the pane chrome
+  // header uses (`useLiveQuote`); with no quote the threshold stays blank
+  // and the hint says so (never a fabricated price).
+  const routeSym = normalizeSymbol(routeSymbol);
   const [rows, setRows] = useState<AlertRow[] | null>(null);
-  const [symbol, setSymbol] = useState("");
+  const [symbol, setSymbol] = useState(routeSym);
   const [threshold, setThreshold] = useState("");
   const [direction, setDirection] = useState<AlertDirection>("above");
   const [field, setField] = useState<AlertRow["field"]>("price");
@@ -121,6 +149,13 @@ export function ALRTPane({ code }: FunctionPaneProps) {
   const [quote, setQuote] = useState<QuoteSnapshot | null>(null);
   const [quoteError, setQuoteError] = useState<string | null>(null);
   const [quoteLoading, setQuoteLoading] = useState(false);
+  // B1b — manual-edit seal: once the trader types in the threshold we never
+  // overwrite it with a later quote tick. `seededKeyRef` remembers which
+  // (symbol|field) already got its one seed, so a 1 Hz quote stream cannot
+  // keep re-filling the input.
+  const [thresholdTouched, setThresholdTouched] = useState(false);
+  const seededKeyRef = useRef("");
+  const [seed, setSeed] = useState<SeedState | null>(null);
   // Round 24 HIGH 8 — threshold validation tracks the parsed shape so
   // we can show an explicit error instead of silently coercing "1e500"
   // to Infinity and writing a bogus row.
@@ -166,6 +201,54 @@ export function ALRTPane({ code }: FunctionPaneProps) {
     loadAlerts().then(setRows);
   }, []);
 
+  // B1b — (re)prefill when the route hands a symbol to this pane. Workspace
+  // reuses the mounted component across symbol switches, so this is an
+  // effect on the prop, not just initial state. The old threshold belonged
+  // to the previous symbol; clearing it lets the new symbol's quote seed
+  // cleanly (and keeps the honest-blank contract when no quote exists).
+  useEffect(() => {
+    if (!routeSym) return;
+    setSymbol(routeSym);
+    setThreshold("");
+    setThresholdTouched(false);
+    seededKeyRef.current = "";
+    // R1-1 — kill a stale seed from the previous symbol during the
+    // transition. Symbol-aware: on mount (and after the bridge already
+    // reported the NEW symbol's state before this effect runs) the fresh
+    // seed is kept, so the one-shot seeding still works on arrival.
+    setSeed((prev) => (prev && prev.symbol !== routeSym ? null : prev));
+  }, [routeSym]);
+
+  // Stable collector for the seed bridge — the functional update bails out
+  // when nothing changed, so the 1 Hz quote clock never re-renders the pane.
+  const onSeed = useCallback((next: SeedState) => {
+    setSeed((prev) =>
+      prev &&
+      prev.symbol === next.symbol &&
+      prev.field === next.field &&
+      prev.value === next.value &&
+      prev.source === next.source &&
+      prev.loading === next.loading &&
+      prev.error === next.error
+        ? prev
+        : next,
+    );
+  }, []);
+
+  // One seed per (symbol, field), and only while the trader hasn't taken
+  // over the input. A null value (no quote / no such field on the quote)
+  // seeds nothing — the hint reports the honest state instead. The symbol
+  // provenance gate (R1-1) makes the previous closure's seed inert.
+  useEffect(() => {
+    if (!routeSym || thresholdTouched) return;
+    if (seed == null || seed.symbol !== routeSym || seed.field !== field) return;
+    if (seed.value == null || !Number.isFinite(seed.value)) return;
+    const key = `${routeSym}|${field}`;
+    if (seededKeyRef.current === key) return;
+    setThreshold(seedThresholdText(seed.value, field));
+    seededKeyRef.current = key;
+  }, [routeSym, thresholdTouched, seed, field]);
+
   const reload = async () => {
     setRows(null);
     setRows(await loadAlerts());
@@ -202,9 +285,14 @@ export function ALRTPane({ code }: FunctionPaneProps) {
         threshold: parsed.value,
         note: note.trim() || undefined,
       });
-      setSymbol("");
+      setSymbol(routeSym || "");
       setThreshold("");
       setNote("");
+      // A route-bound form goes back to a fresh seeded state after Add
+      // (re-arms the one-shot seed); without a route this is the exact
+      // pre-B1b reset (blank form).
+      setThresholdTouched(false);
+      seededKeyRef.current = "";
       setRows(await loadAlerts());
       toast.success("Alert added", `${sym} ${direction} ${parsed.value}`);
     } finally {
@@ -328,6 +416,26 @@ export function ALRTPane({ code }: FunctionPaneProps) {
     currentValue !== null && Number.isFinite(Number(threshold))
       ? previewCondition(currentValue, direction, Number(threshold))
       : null;
+
+  // B1b seed hint — honest copy for the route-bound form. It never claims a
+  // seeded value before one exists, and it never says "no quote" while the
+  // provider is still loading. Untouched only: after a manual edit the
+  // trader owns the input and the hint retires.
+  const fieldLabel = field === "change_pct" ? "change %" : field;
+  const seedHint =
+    routeSym &&
+    !thresholdTouched &&
+    seed != null &&
+    seed.symbol === routeSym &&
+    seed.field === field
+      ? seed.value != null && Number.isFinite(seed.value)
+        ? `seeded from the live ${routeSym} ${fieldLabel}${seed.source ? ` (${seed.source})` : ""} — edit freely`
+        : seed.error
+          ? `no live ${routeSym} ${fieldLabel} (${seed.error}) — the threshold stays blank; enter it manually`
+          : seed.loading
+            ? `waiting for the live ${routeSym} ${fieldLabel} — the threshold seeds on arrival`
+            : `no live ${routeSym} ${fieldLabel} — the threshold stays blank; enter it manually`
+      : undefined;
 
   const onToggle = async (id: string, active: boolean) => {
     // Round 24 HIGH 9 — store-level `isAlertToggling()` is the canonical
@@ -648,12 +756,23 @@ export function ALRTPane({ code }: FunctionPaneProps) {
               label="Threshold"
               type="number"
               value={threshold}
-              onChange={(e) => setThreshold(e.target.value)}
+              onChange={(e) => {
+                setThreshold(e.target.value);
+                // Manual edit wins from here on — a later quote tick never
+                // clobbers what the trader typed.
+                setThresholdTouched(true);
+              }}
               placeholder="e.g. 200"
+              hint={seedHint}
               aria-invalid={thresholdInvalid || undefined}
               aria-describedby={thresholdInvalid ? "alrt-threshold-error" : undefined}
             />
           </FieldRow>
+          {/* B1b — mounts only when the pane is route-bound; unbound panes
+              (sidebar `#/fn/ALRT`) pay no extra quote subscription. */}
+          {routeSym && (
+            <LiveSeedBridge symbol={routeSym} field={field} onSeed={onSeed} />
+          )}
           {thresholdInvalid && (
             <div
               id="alrt-threshold-error"
@@ -824,6 +943,53 @@ function quoteValue(quote: QuoteSnapshot, field: AlertRow["field"]): number | nu
   if (field === "change_pct") return quote.change_pct ?? quote.regularMarketChangePercent ?? null;
   if (field === "volume") return quote.volume ?? null;
   return null;
+}
+
+/**
+ * B1b — live seed source for the route-bound add form. Mounted only when the
+ * pane was opened for a symbol; subscribes through the same multiplexed
+ * `useLiveQuote` channel the pane chrome header uses and reports the current
+ * value of the selected field upward. Renders nothing.
+ */
+function LiveSeedBridge({
+  symbol,
+  field,
+  onSeed,
+}: {
+  symbol: string;
+  field: AlertRow["field"];
+  onSeed: (seed: SeedState) => void;
+}) {
+  const quote = useLiveQuote(symbol);
+  const value = liveQuoteValue(quote, field);
+  const { source, loading, error } = quote;
+  useEffect(() => {
+    onSeed({ symbol, field, value, source, loading, error });
+  }, [symbol, field, value, source, loading, error, onSeed]);
+  return null;
+}
+
+/** Same value projection as {@link quoteValue}, for the live QuoteView. */
+function liveQuoteValue(quote: QuoteView, field: AlertRow["field"]): number | null {
+  if (field === "price") return quote.price;
+  if (field === "change_pct") return quote.changePct;
+  if (field === "volume") return quote.snapshot?.volume ?? null;
+  return null;
+}
+
+/**
+ * Render a live value into an editable `<input type="number">` seed. Plain
+ * decimal text (no locale separators — a number input rejects them), with
+ * precision scaled to the magnitude and trailing zeros stripped. Volume
+ * seeds as a whole number. Never called with a non-finite value.
+ */
+function seedThresholdText(value: number, field: AlertRow["field"]): string {
+  if (!Number.isFinite(value)) return "";
+  if (field === "volume") return String(Math.round(value));
+  const abs = Math.abs(value);
+  const decimals = field === "change_pct" || abs >= 1000 ? 2 : abs >= 1 ? 4 : 6;
+  const text = String(Number(value.toFixed(decimals)));
+  return text === "0" && value !== 0 ? String(value) : text;
 }
 
 function previewCondition(value: number, direction: AlertDirection, threshold: number): { state: string; distance: number } {

@@ -31,6 +31,12 @@ import {
   formatPrice,
 } from "@/lib/format";
 import {
+  buildGridCsv,
+  downloadGridCsv,
+  gridCsvFilename,
+  type GridCsvColumn,
+} from "@/design-system/grid-csv";
+import {
   FunctionControlGroup,
   LoadStatePill,
   RefreshButton,
@@ -147,6 +153,50 @@ export function FSRCPane({ code }: FunctionPaneProps) {
     setCategory("ALL");
     setMaxExpense("any");
   }
+
+  // CSV export of the screener results — RAW payload numbers (expenseRatio
+  // stays the 0.000945 fraction, not the formatted "0.09%" string).
+  const csvColumns = useMemo<GridCsvColumn<FSRCRow>[]>(
+    () => [
+      { key: "symbol", header: "Symbol", value: (r) => r.symbol ?? "" },
+      { key: "name", header: "Fund", value: (r) => r.name ?? "" },
+      { key: "issuer", header: "Issuer", value: (r) => r.issuer ?? "" },
+      { key: "category", header: "Category", value: (r) => r.category ?? "" },
+      { key: "aum_usd", header: "AUM (USD)", value: (r) => r.aum_usd ?? "" },
+      {
+        key: "expenseRatio",
+        header: "Expense ratio",
+        value: (r) => r.expenseRatio ?? "",
+      },
+      {
+        key: "ytd_return_pct",
+        header: "YTD %",
+        value: (r) => r.ytd_return_pct ?? "",
+      },
+      {
+        key: "dividend_yield",
+        header: "Dividend yield",
+        value: (r) => r.dividend_yield ?? "",
+      },
+      { key: "last", header: "Last", value: (r) => r.last ?? "" },
+      {
+        key: "change_pct",
+        header: "Change %",
+        value: (r) => r.change_pct ?? "",
+      },
+      {
+        key: "quote_state",
+        header: "Source",
+        value: (r) => r.quote_state ?? "",
+      },
+    ],
+    [],
+  );
+
+  const exportCsv = () => {
+    const csv = buildGridCsv(csvColumns, rows);
+    downloadGridCsv(gridCsvFilename("fsrc-funds"), csv);
+  };
 
   const COLS: DataGridColumn<FSRCRow>[] = useMemo(
     () => [
@@ -393,6 +443,16 @@ export function FSRCPane({ code }: FunctionPaneProps) {
                 options={SORT_OPTIONS}
                 onChange={setSortKey}
               />
+              <button
+                type="button"
+                className="btn"
+                onClick={exportCsv}
+                disabled={rows.length === 0}
+                title="Download CSV"
+                aria-label={`Download ${rows.length} fund rows as CSV`}
+              >
+                CSV
+              </button>
               <LoadStatePill state={state} status={status} />
               <RefreshButton
                 loading={state === "loading"}

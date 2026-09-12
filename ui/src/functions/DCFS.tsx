@@ -439,6 +439,9 @@ function Tornado({ rows }: { rows: DCFSTornadoRow[] }) {
         header: "Spread",
         numeric: true,
         width: 200,
+        // Lane B4: the tornado ranks by |spread| — the rendered cell is
+        // already absolute, so the sort accessor must match it.
+        sortValue: (row) => (typeof row.delta === "number" ? Math.abs(row.delta) : null),
         render: (row) =>
           row.status === "invalid_perturbation" ? (
             <span className="u-text-mute" title={row.reason}>
@@ -470,6 +473,11 @@ function Tornado({ rows }: { rows: DCFSTornadoRow[] }) {
         rowKey={(row, i) => `${row.input ?? ""}-${i}`}
         density="compact"
         ariaLabel="DCF input tornado ranking"
+        // Lane B4: largest absolute spread first — the input the valuation
+        // is most sensitive to leads the tornado.
+        defaultSortKey="delta"
+        defaultSortDir="descending"
+        keyboardNavigable
       />
     </section>
   );

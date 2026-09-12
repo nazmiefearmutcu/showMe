@@ -30,6 +30,7 @@ vi.mock("@/lib/state", () => ({
 vi.mock("@/lib/router", () => ({ navigate: vi.fn() }));
 
 import { TXNSPane } from "./TXNS";
+import * as router from "@/lib/router";
 
 const SAMPLE: StateTrade[] = [
   {
@@ -159,9 +160,17 @@ describe("TXNS terminal-grade", () => {
 
   it("A1: symbol button has a descriptive aria-label", async () => {
     await renderWith(trades(SAMPLE));
-    expect(
-      screen.getByRole("button", { name: "AAPL details" }),
-    ).toBeInTheDocument();
+    const btn = screen.getByRole("button", { name: "Open DES for AAPL" });
+    expect(btn).toBeInTheDocument();
+    // R2: the class owns the accent — no inline color may override it.
+    expect(btn.classList.contains("u-symbol-link")).toBe(true);
+    expect((btn as HTMLElement).style.color).toBe("");
+  });
+
+  it("A1+ B2: symbol button navigates to /symbol/AAPL/DES", async () => {
+    await renderWith(trades(SAMPLE));
+    fireEvent.click(screen.getByRole("button", { name: "Open DES for AAPL" }));
+    expect(router.navigate).toHaveBeenCalledWith("/symbol/AAPL/DES");
   });
 
   it("A2: async error renders an announced role=status region", async () => {

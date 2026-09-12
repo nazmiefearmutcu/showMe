@@ -222,10 +222,12 @@ export function MOSTPane({ code }: FunctionPaneProps) {
         width: 110,
         render: (r) => {
           const sym = r.symbol ?? r.ticker ?? "";
+          // R1-2 — no symbol means no DES target: honest dash, no focusable
+          // control that activates into a no-op.
+          if (!sym) return <span className="u-text-mute">—</span>;
           // Bundle D / A11Y-01. Same fix as EQS — single click + Enter/Space
           // navigate to DES so keyboard users can reach the detail surface.
           const goDES = () => {
-            if (!sym) return;
             setFocusedTarget("DES", sym);
             navigate(`/symbol/${sym}/DES`);
           };
@@ -240,9 +242,10 @@ export function MOSTPane({ code }: FunctionPaneProps) {
                 }
               }}
               className="scan-symbol"
+              aria-label={`Open DES for ${sym}`}
               title="Open DES"
             >
-              {sym || "—"}
+              {sym}
             </button>
           );
         },

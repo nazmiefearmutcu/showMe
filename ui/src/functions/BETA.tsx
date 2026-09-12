@@ -32,6 +32,12 @@ import { formatNumberPlain } from "@/lib/format";
 import { useFunction } from "@/lib/useFunction";
 import { defaultSymbolForFunction } from "@/lib/symbols";
 import {
+  buildGridCsv,
+  downloadGridCsv,
+  gridCsvFilename,
+  type GridCsvColumn,
+} from "@/design-system/grid-csv";
+import {
   FunctionControlGroup,
   LoadStatePill,
   RefreshButton,
@@ -126,6 +132,40 @@ export function BetaPane({ code, symbol }: FunctionPaneProps) {
       ? selected.correlation * selected.correlation
       : null;
   const isBaseline = status === "computed_market_model";
+
+  // CSV export of the per-window regression table — RAW payload numbers.
+  const csvColumns = useMemo<GridCsvColumn<BetaWindowRow>[]>(
+    () => [
+      { key: "window", header: "Window", value: (r) => r.window ?? "" },
+      { key: "window_days", header: "Window days", value: (r) => r.window_days ?? "" },
+      { key: "beta", header: "Beta", value: (r) => r.beta ?? "" },
+      {
+        key: "correlation",
+        header: "Correlation",
+        value: (r) => r.correlation ?? "",
+      },
+      { key: "samples", header: "Samples", value: (r) => r.samples ?? "" },
+      {
+        key: "annualized_volatility_target",
+        header: "Ann vol target",
+        value: (r) => r.annualized_volatility_target ?? "",
+      },
+      {
+        key: "annualized_volatility_bench",
+        header: "Ann vol bench",
+        value: (r) => r.annualized_volatility_bench ?? "",
+      },
+    ],
+    [],
+  );
+
+  const exportCsv = () => {
+    const csv = buildGridCsv(csvColumns, rows);
+    downloadGridCsv(
+      gridCsvFilename(`beta-${effectiveSymbol || "windows"}`),
+      csv,
+    );
+  };
 
   const body = !effectiveSymbol ? (
     <Empty title="Pick a symbol" body="BETA needs a ticker to regress." icon="⌖" />
@@ -270,6 +310,16 @@ export function BetaPane({ code, symbol }: FunctionPaneProps) {
                 onChange={setRolling}
                 title="Rolling history window (days)"
               />
+              <button
+                type="button"
+                className="btn"
+                onClick={exportCsv}
+                disabled={rows.length === 0}
+                title="Download CSV"
+                aria-label={`Download ${rows.length} regression windows as CSV`}
+              >
+                CSV
+              </button>
               <LoadStatePill state={state} status={status} />
               <RefreshButton
                 loading={state === "loading"}

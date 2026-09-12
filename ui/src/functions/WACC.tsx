@@ -30,6 +30,12 @@ import { useUtcStamp } from "@/lib/useUtcStamp";
 import { defaultSymbolForFunction } from "@/lib/symbols";
 import { maxOf, minOf } from "@/lib/maxOf";
 import {
+  buildGridCsv,
+  downloadGridCsv,
+  gridCsvFilename,
+  type GridCsvColumn,
+} from "@/design-system/grid-csv";
+import {
   FunctionControlGroup,
   LoadStatePill,
   RefreshButton,
@@ -143,6 +149,21 @@ export function WACCPane({ code, symbol }: FunctionPaneProps) {
     [],
   );
 
+  // CSV export of the component table — RAW decimals (0.0842, not "8.42%").
+  const csvColumns = useMemo<GridCsvColumn<WACCRow>[]>(
+    () => [
+      { key: "component", header: "Component", value: (r) => r.component ?? "" },
+      { key: "value", header: "Value", value: (r) => r.value ?? "" },
+      { key: "formula", header: "Formula", value: (r) => r.formula ?? "" },
+    ],
+    [],
+  );
+
+  const exportCsv = () => {
+    const csv = buildGridCsv(csvColumns, rows);
+    downloadGridCsv(gridCsvFilename(`wacc-${resolvedSymbol}`), csv);
+  };
+
   return (
     <div className="u-pane-host">
       <Pane>
@@ -170,6 +191,16 @@ export function WACCPane({ code, symbol }: FunctionPaneProps) {
               <Pill tone={fellBack ? "warn" : "positive"} variant="soft">
                 {fellBack ? "fallback active" : "live"}
               </Pill>
+              <button
+                type="button"
+                className="btn"
+                onClick={exportCsv}
+                disabled={rows.length === 0}
+                title="Download CSV"
+                aria-label={`Download ${rows.length} WACC components as CSV`}
+              >
+                CSV
+              </button>
               <LoadStatePill state={state} />
               <RefreshButton loading={state === "loading"} onClick={refetch} />
             </FunctionControlGroup>

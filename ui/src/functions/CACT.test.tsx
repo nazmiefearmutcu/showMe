@@ -214,3 +214,34 @@ describe("CACT pane — filter interactions", () => {
     ).toBeInTheDocument();
   });
 });
+
+describe("CACT pane — actions grid sort + keyboard (lane B4)", () => {
+  it("defaults to newest-action-first and enables keyboard grid navigation", () => {
+    const payload = mixedPayload();
+    // Reverse so only the built-in sorter can put 2027 first.
+    const data = payload.data.data as { rows: unknown[] };
+    data.rows = [...data.rows].reverse();
+    setMockFn({ state: "ok", ...payload });
+    const { container } = render(<CACTPane code="CACT" symbol="AAPL" />);
+
+    const grid = screen.getByRole("grid", {
+      name: "CACT corporate actions table",
+    });
+    expect(grid).toBeInTheDocument();
+    // Roving keyboard cell: the first cell owns the tab stop.
+    expect(
+      grid.querySelector('td[data-cell="0-0"]')?.getAttribute("tabindex"),
+    ).toBe("0");
+
+    // event_date descending -> 2027-01-15 first, 2026-07-31 last.
+    expect(container.querySelector('th[aria-sort="descending"]')).not.toBeNull();
+    const rowsBefore = Array.from(container.querySelectorAll("tbody tr"));
+    expect(rowsBefore[0]?.textContent).toContain("2027-01-15");
+    expect(rowsBefore.at(-1)?.textContent).toContain("2026-07-31");
+
+    // Activating the sort cycles desc -> none: reversed fixture order returns.
+    fireEvent.click(container.querySelector('th[aria-sort="descending"]')!);
+    const rowsAfter = Array.from(container.querySelectorAll("tbody tr"));
+    expect(rowsAfter[0]?.textContent).not.toContain("2027-01-15");
+  });
+});

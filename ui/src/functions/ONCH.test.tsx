@@ -251,3 +251,28 @@ describe("ONCH pane — controls", () => {
     expect(screen.getByRole("button", { name: "30s" })).not.toBeDisabled();
   });
 });
+
+describe("ONCH pane — metric grid sort + keyboard (lane B4)", () => {
+  it("defaults to alphabetical metric order and enables keyboard grid navigation", () => {
+    setMockFn({ state: "ok", ...livePayload() });
+    const { container } = render(<ONCHPane code="ONCH" />);
+
+    const grid = screen.getByRole("grid", { name: "ONCH on-chain metrics" });
+    expect(grid).toBeInTheDocument();
+    // Roving keyboard cell: the first cell owns the tab stop.
+    expect(
+      grid.querySelector('td[data-cell="0-0"]')?.getAttribute("tabindex"),
+    ).toBe("0");
+
+    // Fixture order is Fastest Fee / Hashrate / BTC Dominance; metric
+    // ascending -> BTC Dominance first, Hashrate last.
+    const rowsBefore = Array.from(container.querySelectorAll("tbody tr"));
+    expect(rowsBefore[0]?.textContent).toContain("BTC Dominance");
+    expect(rowsBefore.at(-1)?.textContent).toContain("Hashrate");
+
+    // Activating the sort cycles asc -> desc: Hashrate leads.
+    fireEvent.click(container.querySelector('th[aria-sort="ascending"]')!);
+    const rowsAfter = Array.from(container.querySelectorAll("tbody tr"));
+    expect(rowsAfter[0]?.textContent).toContain("Hashrate");
+  });
+});

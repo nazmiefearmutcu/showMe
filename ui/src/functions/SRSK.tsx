@@ -29,6 +29,12 @@ import {
 import { formatNumberFixed } from "@/lib/format";
 import { useFunction } from "@/lib/useFunction";
 import {
+  buildGridCsv,
+  downloadGridCsv,
+  gridCsvFilename,
+  type GridCsvColumn,
+} from "@/design-system/grid-csv";
+import {
   FunctionControlGroup,
   LoadStatePill,
   RefreshButton,
@@ -126,6 +132,60 @@ export function SRSKPane({ code }: FunctionPaneProps) {
     () => deriveStats(ranked, payload?.cards),
     [ranked, payload],
   );
+
+  // CSV export reaches the FULL ranked set (the table caps at MAX_SHOWN,
+  // the file does not) — ranks are applied to every scored row.
+  const csvColumns = useMemo<GridCsvColumn<RankedRow>[]>(
+    () => [
+      {
+        key: "rank",
+        header: "Rank",
+        value: (r) => r.__rank ?? "",
+      },
+      { key: "country", header: "Country", value: (r) => r.country ?? "" },
+      { key: "risk_score", header: "Risk score", value: (r) => r.risk_score ?? "" },
+      {
+        key: "proxy_spread_pct",
+        header: "CDS-proxy %",
+        value: (r) => r.proxy_spread_pct ?? "",
+      },
+      { key: "pd_1y_pct", header: "1Y PD %", value: (r) => r.pd_1y_pct ?? "" },
+      {
+        key: "debt_to_gdp",
+        header: "Debt/GDP %",
+        value: (r) => r.debt_to_gdp ?? "",
+      },
+      {
+        key: "reserves_months",
+        header: "Reserves months",
+        value: (r) => r.reserves_months ?? "",
+      },
+      {
+        key: "current_account_gdp",
+        header: "CA %GDP",
+        value: (r) => r.current_account_gdp ?? "",
+      },
+      {
+        key: "inflation_pct",
+        header: "CPI %",
+        value: (r) => r.inflation_pct ?? "",
+      },
+      { key: "recovery", header: "Recovery", value: (r) => r.recovery ?? "" },
+      { key: "as_of", header: "As of", value: (r) => r.as_of ?? "" },
+      {
+        key: "source_mode",
+        header: "Source",
+        value: (r) => r.source_mode ?? "",
+      },
+      { key: "note", header: "Note", value: (r) => r.note ?? "" },
+    ],
+    [],
+  );
+
+  const exportCsv = () => {
+    const csv = buildGridCsv(csvColumns, withRanks(ranked));
+    downloadGridCsv(gridCsvFilename(`srsk-${universe}`), csv);
+  };
 
   const COLS: DataGridColumn<RankedRow>[] = useMemo(
     () => [
@@ -371,6 +431,16 @@ export function SRSKPane({ code }: FunctionPaneProps) {
                 options={UNIVERSE_OPTIONS}
                 onChange={setUniverse}
               />
+              <button
+                type="button"
+                className="btn"
+                onClick={exportCsv}
+                disabled={ranked.length === 0}
+                title="Download CSV"
+                aria-label={`Download ${ranked.length} sovereign rows as CSV`}
+              >
+                CSV
+              </button>
               <LoadStatePill state={state} status={payload?.status} />
               <RefreshButton
                 loading={state === "loading"}

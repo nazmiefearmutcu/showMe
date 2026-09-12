@@ -7,11 +7,13 @@
  * returns `data_mode='not_configured'` with `rows=[]`. This pane therefore
  * leans on KEYLESS public layers it CAN render honestly:
  *
- *   - Imagery: NASA EOSDIS GIBS WMTS true-colour mosaic (no key required),
- *     consumed from the payload's `imagery.primary_url` with a graceful
- *     fallback URL and a hatched "tile unavailable" panel on image error.
- *   - Weather: Open-Meteo current conditions (no key required), surfaced as
- *     a location summary card + a small conditions table.
+ *   - Imagery: NASA EOSDIS GIBS WMS true-colour mosaic (no key required),
+ *     consumed from the payload's top-level `tile_url` (mirrored in
+ *     `true_color_tile.url`) with a hatched "tile unavailable" panel on
+ *     image error — never a fabricated fallback tile.
+ *   - Conditions: Open-Meteo current + daily values (no key required) from
+ *     the payload's `conditions.*` object, surfaced as a location summary
+ *     card + a small metric table.
  *
  * Everything is driven from the real envelope (`data.data`). When the
  * provider is in `not_configured` / reference mode that is shown verbatim
@@ -46,39 +48,25 @@ import type { FunctionPaneProps } from "./registry-types";
 
 /* ----------------------------- payload types ------------------------------ */
 
-interface SATImagery {
-  primary_url?: string;
-  tile_url?: string;
-  fallback_url?: string;
-  url?: string;
-  layer?: string;
-  capture_utc?: string;
-  date?: string;
-  cloud_pct?: number;
-  attribution?: string;
-  source?: string;
-}
-
-interface SATWeather {
-  summary?: string;
-  conditions?: string;
-  code?: number | string | null;
-  temperature_c?: number | null;
-  apparent_c?: number | null;
-  wind_kmh?: number | null;
-  wind_dir_deg?: number | null;
-  humidity_pct?: number | null;
-  cloud_cover_pct?: number | null;
-  precip_mm?: number | null;
-  pressure_hpa?: number | null;
-  observed_at?: string;
-}
-
-interface SATCard {
+/** Real top-level tile mirrored from the producer (`sat.py: true_color_tile`). */
+interface SATTrueColorTile {
   label?: string;
-  value?: number | string | null;
-  unit?: string;
-  caption?: string;
+  url?: string;
+  is_satellite?: boolean;
+}
+
+/** Real conditions object emitted by the producer (`sat.py: conditions`). */
+interface SATConditions {
+  current_temp_c?: number | null;
+  current_cloud_pct?: number | null;
+  /** Open-Meteo wind_speed_10m — its default unit is km/h (verified empirically). */
+  current_wind_ms?: number | null;
+  weather_code?: number | string | null;
+  daily_cloud_mean_pct?: number | null;
+  daily_temp_max_c?: number | null;
+  daily_temp_min_c?: number | null;
+  daily_precip_mm?: number | null;
+  source?: string;
 }
 
 interface SATRow {
@@ -101,25 +89,22 @@ interface SATLocation {
 }
 
 interface SATPayload {
+  status?: string;
   data_mode?: string;
-  source_mode?: string;
-  location_key?: string;
   aoi?: string;
-  location?: string;
-  label?: string;
-  blurb?: string;
-  lat?: number;
-  lon?: number;
-  coordinates?: { lat?: number; lon?: number };
-  imagery?: SATImagery;
-  weather?: SATWeather;
-  cards?: SATCard[];
+  aoi_label?: string;
+  layer?: string;
+  bbox_label?: string;
+  capture_date?: string;
+  tile_url?: string;
+  true_color_tile?: SATTrueColorTile;
+  conditions?: SATConditions;
+  cloud_pct?: number | null;
+  reason?: string | null;
+  degraded_reason?: string | null;
   rows?: SATRow[];
   locations?: SATLocation[];
-  degraded?: boolean;
-  degraded_reason?: string | null;
   methodology?: string;
-  source?: string;
   as_of?: string;
 }
 
@@ -159,15 +144,6 @@ function fmt(v: unknown, digits = 1): string {
   });
 }
 
-function compass(deg: number | null): string {
-  if (deg === null) return "";
-  const dirs = [
-    "N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
-    "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW",
-  ];
-  return dirs[Math.round((deg % 360) / 22.5) % 16] ?? "";
-}
-
 function cloudTone(pct: number | null): "positive" | "accent" | "warn" {
   if (pct === null) return "accent";
   if (pct < 33) return "positive";
@@ -175,40 +151,68 @@ function cloudTone(pct: number | null): "positive" | "accent" | "warn" {
   return "warn";
 }
 
+/** WMO weather code → short English label (Open-Meteo `weather_code`). */
+const WMO_LABELS: Record<number, string> = {
+  0: "Clear sky",
+  1: "Mainly clear",
+  2: "Partly cloudy",
+  3: "Overcast",
+  45: "Fog",
+  48: "Rime fog",
+  51: "Light drizzle",
+  53: "Drizzle",
+  55: "Dense drizzle",
+  56: "Freezing drizzle",
+  57: "Freezing drizzle",
+  61: "Light rain",
+  63: "Rain",
+  65: "Heavy rain",
+  66: "Freezing rain",
+  67: "Freezing rain",
+  71: "Light snow",
+  73: "Snow",
+  75: "Heavy snow",
+  77: "Snow grains",
+  80: "Light showers",
+  81: "Showers",
+  82: "Violent showers",
+  85: "Snow showers",
+  86: "Heavy snow showers",
+  95: "Thunderstorm",
+  96: "Thunderstorm, hail",
+  99: "Thunderstorm, heavy hail",
+};
+
+function wmoLabel(code: number | null): string | null {
+  if (code === null) return null;
+  return WMO_LABELS[code] ?? `WMO code ${code}`;
+}
+
 /* ------------------------------ image tile -------------------------------- */
 
 function ImageTile({
-  imagery,
+  src,
+  tileLabel,
   location,
-  asOf,
+  captureDate,
+  layer,
 }: {
-  imagery?: SATImagery;
+  src?: string;
+  tileLabel?: string;
   location?: string;
-  asOf?: string;
+  captureDate?: string;
+  layer?: string;
 }) {
-  const primary =
-    imagery?.primary_url ?? imagery?.tile_url ?? imagery?.url ?? undefined;
-  const fallback = imagery?.fallback_url;
-  const [src, setSrc] = useState<string | undefined>(primary ?? fallback);
   const [failed, setFailed] = useState(false);
 
-  // Reset when upstream URLs change (AOI switch / refresh tick).
+  // Reset when the upstream URL changes (AOI switch / refresh tick).
   useEffect(() => {
-    setSrc(primary ?? fallback);
     setFailed(false);
-  }, [primary, fallback]);
-
-  const onError = () => {
-    if (src && src === primary && fallback && fallback !== primary) {
-      setSrc(fallback);
-    } else {
-      setFailed(true);
-    }
-  };
+  }, [src]);
 
   const corner = (pos: CSSProperties): CSSProperties => ({ ...cornerTick, ...pos });
-  const layerLabel = imagery?.layer ? imagery.layer.replace(/_/g, " ") : "";
-  const dateLabel = imagery?.capture_utc ?? imagery?.date ?? asOf ?? "";
+  const layerLabel = layer ? layer.replace(/_/g, " ") : "";
+  const dateLabel = captureDate ?? "";
 
   return (
     <div style={imageFrame}>
@@ -224,14 +228,14 @@ function ImageTile({
           style={imageEl}
           loading="lazy"
           referrerPolicy="no-referrer"
-          onError={onError}
+          onError={() => setFailed(true)}
         />
       ) : (
         <div style={imageFallback}>
           <span style={fallbackGlyph}>◛ ◛ ◛</span>
           <span>Imagery tile unavailable</span>
           <span className="u-text-mute">
-            {imagery?.attribution ?? imagery?.source ?? "NASA EOSDIS GIBS"}
+            {tileLabel ?? "NASA EOSDIS GIBS"}
           </span>
         </div>
       )}
@@ -280,14 +284,14 @@ export function SATPane({ code, symbol }: FunctionPaneProps) {
     [data?.data],
   );
 
-  const weather = payload.weather;
-  const dataMode = payload.data_mode ?? payload.source_mode ?? "";
+  const conditions = payload.conditions ?? {};
+  const dataMode = payload.data_mode ?? "";
   const isLive = dataMode.toLowerCase() === "live";
   const isNotConfigured = dataMode.toLowerCase() === "not_configured";
-  const degraded = Boolean(payload.degraded) || isNotConfigured;
+  const degraded = isNotConfigured || payload.status === "partial";
+  const degradeReason = payload.degraded_reason ?? payload.reason ?? null;
   const warningsList = Array.isArray(data?.warnings) ? data?.warnings : [];
 
-  const cards = Array.isArray(payload.cards) ? payload.cards : [];
   const rows = useMemo<SATRow[]>(
     () => (Array.isArray(payload.rows) ? payload.rows : []),
     [payload.rows],
@@ -324,13 +328,21 @@ export function SATPane({ code, symbol }: FunctionPaneProps) {
     }
   }, [choiceIds, aoi, setAoi]);
 
-  const locationName =
-    payload.location ?? payload.label ?? payload.aoi ?? effectiveAoi;
-  const lat = num(payload.lat ?? payload.coordinates?.lat);
-  const lon = num(payload.lon ?? payload.coordinates?.lon);
-  const windDir = num(weather?.wind_dir_deg);
-  const cloud = num(weather?.cloud_cover_pct);
-  const precip = num(weather?.precip_mm);
+  const locationName = payload.aoi_label ?? payload.aoi ?? effectiveAoi;
+  const captureDateLabel = payload.capture_date ?? payload.as_of;
+  // Conditions: every rendered value maps to a real `conditions.*` key.
+  const tempC = num(conditions.current_temp_c);
+  const tempMax = num(conditions.daily_temp_max_c);
+  const tempMin = num(conditions.daily_temp_min_c);
+  const precipMm = num(conditions.daily_precip_mm);
+  // Open-Meteo `wind_speed_10m` default unit is km/h (verified against the
+  // live provider: default_value / ms_value = 3.597); the backend field name
+  // `current_wind_ms` is a misnomer and must not drive the unit label.
+  const windKmh = num(conditions.current_wind_ms);
+  const cloudDay = num(payload.cloud_pct ?? conditions.daily_cloud_mean_pct);
+  const cloudNow = num(conditions.current_cloud_pct);
+  const conditionLabel = wmoLabel(num(conditions.weather_code));
+  const hasConditions = Object.keys(conditions).length > 0;
   const utcStamp = useUtcStamp(tick);
 
   const cols = useMemo<DataGridColumn<SATRow>[]>(
@@ -454,84 +466,80 @@ export function SATPane({ code, symbol }: FunctionPaneProps) {
 
               <div style={topRow}>
                 <ImageTile
-                  imagery={payload.imagery}
+                  src={payload.tile_url ?? payload.true_color_tile?.url}
+                  tileLabel={payload.true_color_tile?.label}
                   location={locationName}
-                  asOf={payload.as_of}
+                  captureDate={captureDateLabel}
+                  layer={payload.layer}
                 />
 
                 <section style={summaryCard} aria-label="Location weather">
                   <div style={summaryHead}>
                     <div style={summaryLoc}>
                       <span style={locNameStyle}>{locationName}</span>
-                      {payload.blurb ? (
-                        <span style={locBlurbStyle}>{payload.blurb}</span>
-                      ) : (
-                        <span style={locBlurbStyle}>
-                          {lat !== null && lon !== null
-                            ? `${fmt(lat, 3)}, ${fmt(lon, 3)}`
-                            : "alt-data observation point"}
-                        </span>
-                      )}
+                      <span style={locBlurbStyle}>
+                        {payload.bbox_label ?? "alt-data observation point"}
+                      </span>
                     </div>
                     <div style={{ textAlign: "right" }}>
                       <div style={bigTemp}>
-                        {fmt(weather?.temperature_c)}
-                        <span style={tempUnit}>°C</span>
+                        {fmt(tempC)}
+                        {tempC !== null ? <span style={tempUnit}>°C</span> : null}
                       </div>
-                      {num(weather?.apparent_c) !== null ? (
-                        <div style={metaText}>feels {fmt(weather?.apparent_c)}°C</div>
+                      {tempMax !== null && tempMin !== null ? (
+                        <div style={metaText}>
+                          H {fmt(tempMax)}° · L {fmt(tempMin)}°
+                        </div>
                       ) : null}
                     </div>
                   </div>
 
                   <div style={condLine}>
-                    <Pill tone={cloudTone(cloud)} variant="soft" withDot={false}>
-                      {weather?.summary ?? weather?.conditions ?? "—"}
-                    </Pill>
-                    {cloud !== null ? (
-                      <span style={metaText}>{fmt(cloud, 0)}% cloud</span>
+                    {conditionLabel ? (
+                      <Pill tone={cloudTone(cloudDay)} variant="soft" withDot={false}>
+                        {conditionLabel}
+                      </Pill>
                     ) : null}
-                    {precip !== null && precip > 0 ? (
-                      <span style={precipChip}>↓ {fmt(precip, 1)} mm</span>
+                    {cloudDay !== null ? (
+                      <span style={metaText}>{fmt(cloudDay, 0)}% cloud</span>
+                    ) : null}
+                    {!hasConditions ? (
+                      <span style={metaText}>conditions unavailable</span>
                     ) : null}
                   </div>
 
-                  {cards.length ? (
+                  {hasConditions ? (
                     <div style={cardGrid}>
-                      {cards.slice(0, 4).map((c, i) => (
-                        <StatCard
-                          key={`${c.label ?? "card"}-${i}`}
-                          label={c.label ?? "—"}
-                          value={
-                            num(c.value) !== null
-                              ? `${fmt(c.value, c.unit === "%" ? 0 : 1)}${c.unit ? ` ${c.unit}` : ""}`
-                              : c.value == null
-                                ? "—"
-                                : String(c.value)
-                          }
-                          caption={c.caption ?? `AS OF ${utcStamp} UTC`}
-                          tone="neutral"
-                        />
-                      ))}
+                      <StatCard
+                        label="Temp max"
+                        value={tempMax !== null ? `${fmt(tempMax)} °C` : "—"}
+                        caption={captureDateLabel ? `for ${captureDateLabel}` : undefined}
+                        tone="neutral"
+                      />
+                      <StatCard
+                        label="Temp min"
+                        value={tempMin !== null ? `${fmt(tempMin)} °C` : "—"}
+                        caption={captureDateLabel ? `for ${captureDateLabel}` : undefined}
+                        tone="neutral"
+                      />
+                      <StatCard
+                        label="Precip (day)"
+                        value={precipMm !== null ? `${fmt(precipMm)} mm` : "—"}
+                        caption={captureDateLabel ? `for ${captureDateLabel}` : undefined}
+                        tone="neutral"
+                      />
+                      <StatCard
+                        label="Wind (now)"
+                        value={windKmh !== null ? `${fmt(windKmh)} km/h` : "—"}
+                        caption={conditions.source ?? "open_meteo"}
+                        tone="neutral"
+                      />
                     </div>
                   ) : null}
 
                   <div style={metaRow}>
-                    {windDir !== null ? (
-                      <span style={metaText}>
-                        Wind {compass(windDir)} ({fmt(windDir, 0)}°)
-                        {num(weather?.wind_kmh) !== null
-                          ? ` · ${fmt(weather?.wind_kmh, 0)} km/h`
-                          : ""}
-                      </span>
-                    ) : null}
-                    {num(weather?.humidity_pct) !== null ? (
-                      <span style={metaText}>RH {fmt(weather?.humidity_pct, 0)}%</span>
-                    ) : null}
-                    {weather?.observed_at ? (
-                      <span style={metaText}>
-                        obs {weather.observed_at.replace("T", " ")}
-                      </span>
+                    {cloudNow !== null ? (
+                      <span style={metaText}>now {fmt(cloudNow, 0)}% cloud</span>
                     ) : null}
                   </div>
                 </section>
@@ -551,8 +559,8 @@ export function SATPane({ code, symbol }: FunctionPaneProps) {
                 />
               )}
 
-              {degraded && payload.degraded_reason ? (
-                <div style={degradeLine}>⚠ {payload.degraded_reason}</div>
+              {degraded && degradeReason ? (
+                <div style={degradeLine}>⚠ {degradeReason}</div>
               ) : null}
 
               {payload.methodology ? (
@@ -567,11 +575,7 @@ export function SATPane({ code, symbol }: FunctionPaneProps) {
         <PaneFooter>
           <StatusSection
             label="provider"
-            value={
-              data?.sources?.join(", ") ||
-              payload.source ||
-              "NASA GIBS · Open-Meteo"
-            }
+            value={data?.sources?.join(", ") || "NASA GIBS · Open-Meteo"}
           />
           <StatusDivider />
           <StatusSection label="mode" value={dataMode || "—"} tone={isLive ? "positive" : "accent"} />
@@ -764,19 +768,6 @@ const metaText: CSSProperties = {
   fontSize: 10.5,
   color: "var(--text-mute)",
   fontVariantNumeric: "tabular-nums",
-  fontFamily: "JetBrains Mono, monospace",
-};
-
-const precipChip: CSSProperties = {
-  display: "inline-flex",
-  alignItems: "center",
-  gap: 4,
-  fontSize: 10.5,
-  fontVariantNumeric: "tabular-nums",
-  color: "var(--accent)",
-  border: "1px solid color-mix(in srgb, var(--accent) 40%, transparent)",
-  borderRadius: 4,
-  padding: "1px 6px",
   fontFamily: "JetBrains Mono, monospace",
 };
 

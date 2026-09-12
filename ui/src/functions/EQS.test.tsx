@@ -75,6 +75,19 @@ describe("EQS pane — KPI sparkline honesty", () => {
   });
 });
 
+describe("EQS pane — query editor a11y (C9)", () => {
+  it("gives the DSL query editor an English accessible name", () => {
+    render(<EQSPane code="EQS" />);
+    // C9 A11Y-1: the query textarea carried zero naming attributes; the
+    // accessible name now mirrors the visible "DSL query" field label with
+    // the pane code for screen-reader context. (Not "natural-language":
+    // the EQS editor takes the screener's DSL, not free text.)
+    const editor = screen.getByRole("textbox", { name: "EQS DSL query" });
+    expect(editor.tagName).toBe("TEXTAREA");
+    expect(editor).toHaveValue('sector = "Technology" AND marketCap > 50000000000');
+  });
+});
+
 describe("EQS pane — result honesty (F6)", () => {
   it("renders a true empty state on zero matches (no fabricated head(3) rows)", async () => {
     runFunctionMock.mockResolvedValue({

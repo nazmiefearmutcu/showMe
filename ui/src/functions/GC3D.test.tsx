@@ -17,8 +17,8 @@
  * lastParams capture.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { GC3DPane } from "./GC3D";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { GC3DPane, deriveCurveSlope } from "./GC3D";
 
 /* ── useFunction mock ──────────────────────────────────────────────── */
 
@@ -200,5 +200,72 @@ describe("GC3D pane — look-back control", () => {
     fireEvent.click(screen.getByText("2y"));
     expect(lastParams?.days).toBe(730);
     expect(localStorage.getItem("showme.gc3d.days")).toBe("730");
+  });
+});
+
+/* ── campaign C1: curve slope derived from the real surface ────────── */
+
+describe("GC3D pane — curve-slope derivation (real surface math)", () => {
+  it("derives 10Y−2Y per date from the surface points", () => {
+    const slope = deriveCurveSlope(SURFACE);
+    expect(slope).not.toBeNull();
+    expect(slope?.shortTenor).toBe("2Y");
+    expect(slope?.longTenor).toBe("10Y");
+    expect(slope?.points.map((p) => p.date)).toEqual(DATES);
+    // 4.45−4.62, 4.465−4.635, 4.48−4.65 → −0.17 on every snapshot.
+    for (const point of slope?.points ?? []) {
+      expect(point.slope).toBeCloseTo(-0.17, 10);
+    }
+  });
+
+  it("falls back to the nearest maturities and never collapses to one leg", () => {
+    const surface = [
+      { date: "2026-09-07", tenor: "5Y", tenor_years: 5, yield: 4.0 },
+      { date: "2026-09-07", tenor: "30Y", tenor_years: 30, yield: 4.9 },
+    ];
+    const slope = deriveCurveSlope(surface);
+    expect(slope?.shortTenor).toBe("5Y");
+    expect(slope?.longTenor).toBe("30Y");
+    expect(slope?.points[0].slope).toBeCloseTo(0.9, 10);
+  });
+
+  it("returns null (honest drop) without two distinct maturities", () => {
+    expect(
+      deriveCurveSlope([
+        { date: "2026-09-07", tenor: "10Y", tenor_years: 10, yield: 4.45 },
+        { date: "2026-08-08", tenor: "10Y", tenor_years: 10, yield: 4.465 },
+      ]),
+    ).toBeNull();
+    // Two maturities, but no date carries both legs → no interpolated slope.
+    expect(
+      deriveCurveSlope([
+        { date: "2026-09-07", tenor: "2Y", tenor_years: 2, yield: 4.65 },
+        { date: "2026-08-08", tenor: "10Y", tenor_years: 10, yield: 4.465 },
+      ]),
+    ).toBeNull();
+  });
+
+  it("renders the slope panel with the latest readout + sparkline", () => {
+    setMockFn({ state: "ok", ...modelPayload() });
+    render(<GC3DPane code="GC3D" symbol="US10Y" />);
+    const panel = screen.getByLabelText("GC3D curve slope");
+    expect(within(panel).getByText(/10Y − 2Y slope/)).toBeInTheDocument();
+    expect(within(panel).getByText(/latest -0\.170 pp/)).toBeInTheDocument();
+    expect(within(panel).getByText(/inverted/)).toBeInTheDocument();
+    expect(
+      within(panel).getByRole("img", {
+        name: "10Y-minus-2Y curve slope across 3 snapshots",
+      }),
+    ).toBeInTheDocument();
+  });
+
+  it("renders no slope panel when the surface cannot derive a pair", () => {
+    const payload = modelPayload();
+    const singleTenor = SURFACE.filter((p) => p.tenor === "10Y");
+    (payload.data.data as Record<string, unknown>).surface = singleTenor;
+    (payload.data.data as Record<string, unknown>).rows = singleTenor;
+    setMockFn({ state: "ok", ...payload });
+    render(<GC3DPane code="GC3D" symbol="US10Y" />);
+    expect(screen.queryByLabelText("GC3D curve slope")).toBeNull();
   });
 });

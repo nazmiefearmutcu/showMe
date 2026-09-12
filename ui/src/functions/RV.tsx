@@ -28,6 +28,8 @@ import {
   StatusSection,
 } from "@/design-system";
 import { useFunction } from "@/lib/useFunction";
+import { navigate } from "@/lib/router";
+import { useWorkspace } from "@/lib/workspace";
 import { defaultSymbolForFunction } from "@/lib/symbols";
 import {
   FunctionControlGroup,
@@ -89,6 +91,8 @@ const MEDIAN_LABEL = "Median (peer set, computed)";
 
 export function RVPane({ code, symbol }: FunctionPaneProps) {
   const effectiveSymbol = symbol || defaultSymbolForFunction(code, ["EQUITY"]);
+  // DES cross-link (B2): each comp-sheet ticker opens its profile.
+  const setFocusedTarget = useWorkspace((s) => s.setFocusedTarget);
   const { state, data, error, refetch } = useFunction<RVData>({
     code,
     symbol: effectiveSymbol,
@@ -119,19 +123,38 @@ export function RVPane({ code, symbol }: FunctionPaneProps) {
         key: "symbol",
         header: "Symbol",
         width: 200,
-        render: (r) =>
-          r.is_median_row ? (
-            <span style={medianLabelStyle}>{MEDIAN_LABEL}</span>
-          ) : (
-            <span style={monoStrongStyle}>
-              {r.symbol ?? "—"}
+        render: (r) => {
+          if (r.is_median_row) {
+            return <span style={medianLabelStyle}>{MEDIAN_LABEL}</span>;
+          }
+          const sym = r.symbol ?? "";
+          return (
+            <span>
+              {sym ? (
+                <button
+                  type="button"
+                  className="u-symbol-link"
+                  style={monoStrongLinkStyle}
+                  aria-label={`Open DES for ${sym}`}
+                  title="Open DES"
+                  onClick={() => {
+                    setFocusedTarget("DES", sym);
+                    navigate(`/symbol/${sym}/DES`);
+                  }}
+                >
+                  {sym}
+                </button>
+              ) : (
+                <span style={monoStrongStyle}>—</span>
+              )}
               {r.is_target ? (
                 <Pill tone="accent" variant="soft" withDot={false}>
                   target
                 </Pill>
               ) : null}
             </span>
-          ),
+          );
+        },
       },
       ...METRICS.map(
         (m): DataGridColumn<RVRow> => ({
@@ -200,7 +223,7 @@ export function RVPane({ code, symbol }: FunctionPaneProps) {
           ),
       },
     ],
-    [bestByMetric],
+    [bestByMetric, setFocusedTarget],
   );
 
   const targetPeDeltaPct = useMemo(() => {
@@ -464,6 +487,16 @@ const monoStrongStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
   fontVariantNumeric: "tabular-nums",
   color: "var(--text-primary)",
+  fontWeight: 600,
+};
+
+/**
+ * R2 — DES-link variant of {@link monoStrongStyle} with NO inline `color`:
+ * the `.u-symbol-link` class owns the accent (+ hover underline).
+ */
+const monoStrongLinkStyle: CSSProperties = {
+  fontFamily: "JetBrains Mono, monospace",
+  fontVariantNumeric: "tabular-nums",
   fontWeight: 600,
 };
 

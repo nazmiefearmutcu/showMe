@@ -247,6 +247,20 @@ describe("FA pane — accessibility", () => {
   });
 });
 
+describe("FA pane — honesty (no phantom RESTATED badge)", () => {
+  // Double-campaign A4: the pane used to read `payload.restated`, but the
+  // backend never emits that key (live probe + deep scan, `equity/fa.py`).
+  // The dead read + unreachable badge were removed; this pin fails if the
+  // phantom field is ever wired back without a real producer.
+  it("does not render a RESTATED badge for a payload carrying the phantom field", () => {
+    const payload = okPayload();
+    (payload.data.data as Record<string, unknown>).restated = true;
+    setMockFn({ state: "ok", ...payload });
+    render(<FAPane code="FA" symbol="AAPL" />);
+    expect(screen.queryByText("RESTATED")).toBeNull();
+  });
+});
+
 describe("FA pane — ratios tab humanizes ratio labels", () => {
   it("renders humanized ratio labels with no underscores", () => {
     mockTab = "ratios";

@@ -21,6 +21,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { AIMPane } from "./AIM";
+import * as router from "@/lib/router";
+import { useWorkspace } from "@/lib/workspace";
 
 /* ── useFunction mock ──────────────────────────────────────────────── */
 
@@ -388,5 +390,38 @@ describe("AIM pane — F9 fixes (audit A3)", () => {
     const card = screen.getByText("Filled").closest(".stat-card");
     expect(card).not.toBeNull();
     expect(card?.textContent ?? "").toContain("—");
+  });
+});
+
+describe("AIM pane — DES cross-link (B2)", () => {
+  it("renders the order symbol as a button named 'Open DES for AAPL'", () => {
+    setMockFn({ state: "ok", ...okPayload() });
+    render(<AIMPane code="AIM" />);
+    const btn = screen.getByRole("button", { name: "Open DES for AAPL" });
+    expect(btn.tagName).toBe("BUTTON");
+    expect(btn.textContent).toBe("AAPL");
+  });
+
+  it("R2: the symbol link carries the u-symbol-link class with no inline color override", () => {
+    setMockFn({ state: "ok", ...okPayload() });
+    render(<AIMPane code="AIM" />);
+    const btn = screen.getByRole("button", { name: "Open DES for AAPL" });
+    expect(btn.classList.contains("u-symbol-link")).toBe(true);
+    expect((btn as HTMLElement).style.color).toBe("");
+  });
+
+  it("clicking the symbol focuses DES and routes to /symbol/AAPL/DES", () => {
+    setMockFn({ state: "ok", ...okPayload() });
+    const nav = vi.spyOn(router, "navigate").mockImplementation(() => undefined);
+    render(<AIMPane code="AIM" />);
+    fireEvent.click(screen.getByRole("button", { name: "Open DES for AAPL" }));
+    expect(nav).toHaveBeenCalledWith("/symbol/AAPL/DES");
+    const tree = useWorkspace.getState().tree;
+    expect(tree.kind).toBe("leaf");
+    if (tree.kind === "leaf") {
+      expect(tree.code).toBe("DES");
+      expect(tree.symbol).toBe("AAPL");
+    }
+    nav.mockRestore();
   });
 });

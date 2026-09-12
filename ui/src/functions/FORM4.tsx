@@ -25,7 +25,11 @@ import {
   StatusDivider,
   StatusSection,
 } from "@/design-system";
-import { formatNumberFixed } from "@/lib/format";
+import {
+  formatCurrency,
+  formatNumberFixed,
+  formatSignedCurrency,
+} from "@/lib/format";
 import { useFunction } from "@/lib/useFunction";
 import { useVisibilityTick } from "@/lib/useVisibilityTick";
 import { defaultSymbolForFunction } from "@/lib/symbols";
@@ -46,6 +50,7 @@ interface FORM4Row {
   role?: string | null;
   transaction_type?: string | null;
   transaction?: string | null;
+  side?: string | null;
   shares?: number | null;
   price?: number | null;
   value?: number | null;
@@ -92,6 +97,119 @@ function numOrNull(v: unknown): number | null {
   if (v == null) return null;
   const n = typeof v === "number" ? v : Number(v);
   return Number.isFinite(n) ? n : null;
+}
+
+/** One month of signed insider flow, derived from the real row payload. */
+export interface MonthlyNetBucket {
+  month: string;
+  count: number;
+  /** Sum of buy-side notionals (USD), or null when the month is unresolved. */
+  buy: number | null;
+  /** Sum of sell-side notionals (USD, positive magnitude). */
+  sell: number | null;
+  /** buy − sell; null when unresolved (never a partial sum). */
+  net: number | null;
+  /** True only when every buy/sell row in the month carried a notional. */
+  resolved: boolean;
+  /** Buy/sell rows whose notional could not be derived (metadata-only). */
+  missing: number;
+}
+
+const MONTH_KEY_RE = /^\d{4}-\d{2}$/;
+
+function rowMonth(row: FORM4Row): string | null {
+  const raw = String(row.filingDate ?? row.date ?? "").trim();
+  const key = raw.slice(0, 7);
+  return MONTH_KEY_RE.test(key) ? key : null;
+}
+
+/** buy → +1, sell → −1; grants/option exercises/metadata carry no buy-sell flow. */
+function rowDirection(row: FORM4Row): number {
+  const type = String(row.transaction_type ?? "").trim().toLowerCase();
+  if (type === "buy") return 1;
+  if (type === "sell") return -1;
+  const side = String(row.side ?? "").trim().toLowerCase();
+  if (side === "buy") return 1;
+  if (side === "sell") return -1;
+  return 0;
+}
+
+/** Reported USD value first, else shares × price; null when neither is real. */
+function rowNotional(row: FORM4Row): number | null {
+  const value = numOrNull(row.value);
+  if (value != null) return value;
+  const shares = numOrNull(row.shares);
+  const price = numOrNull(row.price);
+  return shares != null && price != null ? shares * price : null;
+}
+
+/**
+ * Net insider flow per month: buys − sells in USD, computed from the filing
+ * rows the pane already renders. A month is resolved only when EVERY buy/sell
+ * row in it carries a computable notional — a partial sum would understate
+ * the flow, so unresolved months stay null and render as an em-dash.
+ */
+export function monthlyNetBuckets(
+  byMonth: { month: string; count: number }[],
+  rows: FORM4Row[],
+): MonthlyNetBucket[] {
+  const totals = new Map<
+    string,
+    { buy: number; sell: number; missing: number }
+  >();
+  for (const row of rows) {
+    const month = rowMonth(row);
+    if (!month) continue;
+    const direction = rowDirection(row);
+    if (direction === 0) continue;
+    const acc = totals.get(month) ?? { buy: 0, sell: 0, missing: 0 };
+    const notional = rowNotional(row);
+    if (notional == null) {
+      acc.missing += 1;
+    } else if (direction > 0) {
+      acc.buy += Math.abs(notional);
+    } else {
+      acc.sell += Math.abs(notional);
+    }
+    totals.set(month, acc);
+  }
+  return byMonth.map((bucket) => {
+    const acc = totals.get(bucket.month);
+    if (!acc || acc.missing > 0) {
+      return {
+        month: bucket.month,
+        count: bucket.count,
+        buy: null,
+        sell: null,
+        net: null,
+        resolved: false,
+        missing: acc?.missing ?? 0,
+      };
+    }
+    return {
+      month: bucket.month,
+      count: bucket.count,
+      buy: acc.buy,
+      sell: acc.sell,
+      net: acc.buy - acc.sell,
+      resolved: true,
+      missing: 0,
+    };
+  });
+}
+
+/**
+ * The wire emits `by_month` newest-first; take the most recent `cap` months
+ * and flip to oldest-left chronological order for both monthly strips.
+ */
+export function recentChronological<T extends { month: string }>(
+  months: T[],
+  cap = 12,
+): T[] {
+  return [...months]
+    .sort((a, b) => (a.month < b.month ? 1 : a.month > b.month ? -1 : 0))
+    .slice(0, cap)
+    .reverse();
 }
 
 export function FORM4Pane({ code, symbol }: FunctionPaneProps) {
@@ -149,7 +267,13 @@ export function FORM4Pane({ code, symbol }: FunctionPaneProps) {
     () => payload?.filings ?? [],
     [payload],
   );
-  const byMonth = payload?.by_month ?? [];
+  const byMonth = useMemo(() => payload?.by_month ?? [], [payload]);
+  // OPP (audit A3): buys − sells in USD per month, computed from the same
+  // rows the grid renders — no invented split of the count histogram.
+  const netBuckets = useMemo(
+    () => monthlyNetBuckets(byMonth, rows),
+    [byMonth, rows],
+  );
   const status = payload?.status ?? "—";
   const dataMode = payload?.data_mode ?? status;
 
@@ -336,6 +460,11 @@ export function FORM4Pane({ code, symbol }: FunctionPaneProps) {
       <section aria-label="FORM4 monthly filing histogram">
         <MonthlyHistogram byMonth={byMonth} />
       </section>
+      {netBuckets.length > 0 && (
+        <section aria-label="FORM4 monthly net insider flow">
+          <MonthlyNetFlow buckets={netBuckets} />
+        </section>
+      )}
       {allMetadataOnly && (
         <Pill tone="warn" variant="soft" withDot={false}>
           Filing metadata only — the upstream parser returned no per-trade
@@ -427,13 +556,15 @@ export function FORM4Pane({ code, symbol }: FunctionPaneProps) {
 /**
  * Monthly filing-count histogram — inline SVG bars, chronological
  * (oldest left → newest right), capped at the most recent 12 buckets.
+ * The wire order is newest-first; `recentChronological` keeps the newest
+ * 12 (the old `slice(-12)` dropped them when >12 months were returned).
  */
 function MonthlyHistogram({
   byMonth,
 }: {
   byMonth: { month: string; count: number }[];
 }) {
-  const buckets = byMonth.slice(-12);
+  const buckets = recentChronological(byMonth);
   if (!buckets.length) {
     return (
       <span className="u-text-mute">No monthly filing counts returned.</span>
@@ -497,6 +628,125 @@ function MonthlyHistogram({
   );
 }
 
+/**
+ * OPP (audit A3): net insider flow table — MONTH × (BUY, SELL, NET) with a
+ * signed mini-bar in the NET column (positive right of the zero line, negative
+ * left). Unresolved months render an em-dash and no bar; the row title spells
+ * out why (metadata-only filings have no parsed shares × price).
+ */
+function MonthlyNetFlow({ buckets }: { buckets: MonthlyNetBucket[] }) {
+  const shown = recentChronological(buckets);
+  const maxAbs = shown.reduce(
+    (m, b) => (b.net != null ? Math.max(m, Math.abs(b.net)) : m),
+    0,
+  );
+  return (
+    <div>
+      <div style={netHeadStyle}>
+        <span style={netTitleStyle}>NET INSIDER FLOW</span>
+        <span style={netMetaStyle}>
+          buys − sells, USD · — = transaction values not parsed
+        </span>
+      </div>
+      <table style={netTableStyle}>
+        <thead>
+          <tr>
+            <th scope="col" style={netThLeftStyle}>
+              Month
+            </th>
+            <th scope="col" style={netThRightStyle}>
+              Buy
+            </th>
+            <th scope="col" style={netThRightStyle}>
+              Sell
+            </th>
+            <th scope="col" style={netThRightStyle}>
+              Net
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {shown.map((b) => {
+            const net = b.net;
+            const unresolved = net == null;
+            const tone =
+              net == null
+                ? "var(--text-mute)"
+                : net > 0
+                  ? "var(--positive)"
+                  : net < 0
+                    ? "var(--negative)"
+                    : "var(--text-secondary)";
+            const barPct =
+              net != null && maxAbs > 0
+                ? Math.max(1, (Math.abs(net) / maxAbs) * 100)
+                : 0;
+            const title = unresolved
+              ? `Net not computable for ${b.month} — ${
+                  b.missing > 0
+                    ? `${b.missing} buy/sell filing(s) without parsed shares × price`
+                    : "no parsed buy/sell rows"
+                }`
+              : `${b.month}: buy ${formatCurrency(b.buy, CURRENCY_OPTS)}, sell ${formatCurrency(b.sell, CURRENCY_OPTS)}, net ${formatSignedCurrency(b.net, CURRENCY_OPTS)}`;
+            return (
+              <tr
+                key={b.month}
+                data-testid="form4-net-row"
+                data-net={unresolved ? "na" : String(b.net)}
+                title={title}
+              >
+                <th scope="row" style={netMonthStyle}>
+                  {b.month}
+                </th>
+                <td style={netMoneyStyle}>{fmtMoney(b.buy)}</td>
+                <td style={netMoneyStyle}>{fmtMoney(b.sell)}</td>
+                <td style={netCellStyle}>
+                  <span
+                    data-testid="form4-net-value"
+                    style={{ ...netValueStyle, color: tone }}
+                  >
+                    {fmtSignedMoney(b.net)}
+                  </span>
+                  {net != null && (
+                    <span style={netBarWrapStyle} aria-hidden="true">
+                      <span style={netBarZeroStyle} />
+                      <span
+                        data-testid="form4-net-bar"
+                        style={{
+                          position: "absolute",
+                          top: 2,
+                          bottom: 2,
+                          left: net >= 0 ? "50%" : undefined,
+                          right: net < 0 ? "50%" : undefined,
+                          width: `${barPct / 2}%`,
+                          background:
+                            net >= 0 ? "var(--positive)" : "var(--negative)",
+                          borderRadius: 1,
+                        }}
+                      />
+                    </span>
+                  )}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/** Compact USD for the monthly net table (missing values → em-dash). */
+const CURRENCY_OPTS = { compact: true, fractionDigits: 1 } as const;
+
+function fmtMoney(v: number | null): string {
+  return formatCurrency(v, CURRENCY_OPTS);
+}
+
+function fmtSignedMoney(v: number | null): string {
+  return formatSignedCurrency(v, CURRENCY_OPTS);
+}
+
 function fmtNum(v: unknown, digits: number): string {
   if (v == null) return "—";
   const n = typeof v === "number" ? v : Number(v);
@@ -520,4 +770,89 @@ const monoMutedStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
   fontVariantNumeric: "tabular-nums",
   color: "var(--text-mute)",
+};
+
+const netHeadStyle: CSSProperties = {
+  display: "flex",
+  alignItems: "baseline",
+  gap: 8,
+  marginBottom: 4,
+};
+const netTitleStyle: CSSProperties = {
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: "var(--font-size-2xs)",
+  letterSpacing: "0.08em",
+  color: "var(--text-secondary)",
+};
+const netMetaStyle: CSSProperties = {
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: "var(--font-size-2xs)",
+  color: "var(--text-mute)",
+};
+const netTableStyle: CSSProperties = {
+  borderCollapse: "collapse",
+  width: "100%",
+  maxWidth: 560,
+  fontFamily: "JetBrains Mono, monospace",
+  fontVariantNumeric: "tabular-nums",
+  fontSize: "var(--font-size-sm)",
+};
+const netThBaseStyle: CSSProperties = {
+  fontWeight: 500,
+  fontSize: "var(--font-size-2xs)",
+  letterSpacing: "0.06em",
+  textTransform: "uppercase",
+  color: "var(--text-mute)",
+  borderBottom: "1px solid var(--border-subtle)",
+  padding: "2px 6px",
+};
+const netThLeftStyle: CSSProperties = {
+  ...netThBaseStyle,
+  textAlign: "left",
+};
+const netThRightStyle: CSSProperties = {
+  ...netThBaseStyle,
+  textAlign: "right",
+  width: 76,
+};
+const netMonthStyle: CSSProperties = {
+  ...monoPrimaryStyle,
+  fontWeight: 400,
+  textAlign: "left",
+  padding: "2px 6px",
+  color: "var(--text-mute)",
+};
+const netMoneyStyle: CSSProperties = {
+  ...monoPrimaryStyle,
+  textAlign: "right",
+  padding: "2px 6px",
+};
+const netCellStyle: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "flex-end",
+  gap: 6,
+  padding: "2px 6px",
+};
+const netValueStyle: CSSProperties = {
+  fontFamily: "JetBrains Mono, monospace",
+  fontVariantNumeric: "tabular-nums",
+  fontWeight: 600,
+  minWidth: 52,
+  textAlign: "right",
+};
+const netBarWrapStyle: CSSProperties = {
+  position: "relative",
+  display: "inline-block",
+  width: 64,
+  height: 10,
+  flex: "0 0 auto",
+};
+const netBarZeroStyle: CSSProperties = {
+  position: "absolute",
+  left: "50%",
+  top: 0,
+  bottom: 0,
+  width: 1,
+  background: "var(--border-subtle)",
 };

@@ -15,6 +15,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { FSRCPane } from "./FSRC";
+import { downloadGridCsv } from "@/design-system/grid-csv";
 
 /* ── useFunction mock ──────────────────────────────────────────────── */
 
@@ -40,6 +41,14 @@ vi.mock("@/lib/useFunction", () => ({
     refetch: vi.fn(),
   }),
 }));
+
+// Keep the real CSV builder, but capture the download call so the export
+// payload can be asserted (jsdom has no Blob download).
+vi.mock("@/design-system/grid-csv", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/design-system/grid-csv")>();
+  return { ...actual, downloadGridCsv: vi.fn(() => true) };
+});
 
 /* ── fixtures ──────────────────────────────────────────────────────── */
 
@@ -103,6 +112,7 @@ function okPayload() {
 
 beforeEach(() => {
   setMockFn({ state: "idle", data: undefined });
+  (downloadGridCsv as ReturnType<typeof vi.fn>).mockClear();
 });
 
 afterEach(() => {
@@ -222,5 +232,46 @@ describe("FSRC pane — filter controls compose the server-side query", () => {
     fireEvent.click(screen.getByTitle("Category ALL"));
     fireEvent.click(screen.getByTitle("Expense ANY"));
     expect(screen.getAllByText(/aum_usd >= 0/).length).toBeGreaterThan(0);
+  });
+});
+
+describe("FSRC pane — grid CSV export", () => {
+  it("exports the raw screener rows via the CSV button", () => {
+    setMockFn({ state: "ok", ...okPayload() });
+    render(<FSRCPane code="FSRC" />);
+    const btn = screen.getByTitle("Download CSV");
+    expect(btn).not.toBeDisabled();
+    fireEvent.click(btn);
+    const mock = downloadGridCsv as ReturnType<typeof vi.fn>;
+    expect(mock).toHaveBeenCalledTimes(1);
+    const [filename, csv] = mock.mock.calls[0] as [string, string];
+    expect(filename).toMatch(/^fsrc-funds-\d{4}-\d{2}-\d{2}\.csv$/);
+    expect(csv).toContain(
+      "Symbol,Fund,Issuer,Category,AUM (USD),Expense ratio,YTD %,Dividend yield,Last,Change %,Source",
+    );
+    // RAW numbers: expense ratio stays 0.000945, AUM stays 500000000000.
+    expect(csv).toContain(
+      "SPY,SPDR S&P 500 ETF Trust,State Street,US Large Blend,500000000000,0.000945,8.6,0.012,770.19,-0.385,live",
+    );
+    // The reference row keeps its empty last/change cells (no fake price).
+    expect(csv).toContain("EEM,iShares MSCI Emerging Markets ETF,BlackRock,Emerging Markets,20000000000,0.0068,5.2,0.021,,,reference");
+  });
+
+  it("disables the CSV button when no rows matched", () => {
+    setMockFn({
+      state: "ok",
+      data: {
+        data: {
+          status: "empty",
+          query: "aum_usd >= 0",
+          rows: [],
+          matched: 0,
+          scanned: 10,
+        },
+      },
+    });
+    render(<FSRCPane code="FSRC" />);
+    expect(screen.getByTitle("Download CSV")).toBeDisabled();
+    expect(downloadGridCsv).not.toHaveBeenCalled();
   });
 });

@@ -32,6 +32,12 @@ import {
 import { useFunction } from "@/lib/useFunction";
 import { defaultSymbolForFunction } from "@/lib/symbols";
 import {
+  buildGridCsv,
+  downloadGridCsv,
+  gridCsvFilename,
+  type GridCsvColumn,
+} from "@/design-system/grid-csv";
+import {
   FunctionControlGroup,
   LoadStatePill,
   RefreshButton,
@@ -137,6 +143,42 @@ export function LITMPane({ code, symbol }: FunctionPaneProps) {
         .at(-1) ?? "—",
     [matters],
   );
+
+  // CSV export mirrors the VISIBLE matters (the ITEM filter applies) so the
+  // file always matches the table on screen.
+  const csvColumns = useMemo<GridCsvColumn<LITMRow>[]>(
+    () => [
+      { key: "symbol", header: "Symbol", value: (r) => r.symbol ?? "" },
+      {
+        key: "filing_date",
+        header: "Filed",
+        value: (r) => (r.filing_date ?? "").slice(0, 10),
+      },
+      { key: "item_code", header: "Item", value: (r) => r.item_code ?? "" },
+      {
+        key: "event_type",
+        header: "Event",
+        value: (r) => r.event_type ?? "",
+      },
+      { key: "severity", header: "Severity", value: (r) => r.severity ?? "" },
+      {
+        key: "source_mode",
+        header: "Source",
+        value: (r) => r.source_mode ?? "",
+      },
+      { key: "accession", header: "Accession", value: (r) => r.accession ?? "" },
+      { key: "document", header: "Document", value: (r) => r.document ?? "" },
+    ],
+    [],
+  );
+
+  const exportCsv = () => {
+    const csv = buildGridCsv(csvColumns, filtered);
+    downloadGridCsv(
+      gridCsvFilename(`litm-${effectiveSymbol || "matters"}`),
+      csv,
+    );
+  };
 
   const COLS: DataGridColumn<LITMRow>[] = useMemo(
     () => [
@@ -316,6 +358,16 @@ export function LITMPane({ code, symbol }: FunctionPaneProps) {
                 onChange={setItemFilter}
                 title="Monitored 8-K item filter"
               />
+              <button
+                type="button"
+                className="btn"
+                onClick={exportCsv}
+                disabled={filtered.length === 0}
+                title="Download CSV"
+                aria-label={`Download ${filtered.length} litigation matters as CSV`}
+              >
+                CSV
+              </button>
               <LoadStatePill state={state} status={status} />
               <RefreshButton
                 loading={state === "loading"}

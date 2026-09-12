@@ -137,6 +137,7 @@ vi.mock("@/lib/watchlist", () => ({ addSymbol: vi.fn(async () => ["BTCUSDT"]) })
 
 import { MISPane } from "./MIS";
 import { runMisScan } from "@/lib/mis";
+import type { MisScanResult } from "@/lib/mis";
 
 const runMisScanMock = vi.mocked(runMisScan);
 
@@ -214,7 +215,8 @@ describe("MIS terminal-grade", () => {
   it("P1: the results DataGrid carries an aria-label", async () => {
     await mountReady();
     await runScan();
-    const table = screen.getByRole("table", { name: /multi indicator scan results/i });
+    // Lane B4: keyboardNavigable upgrades the table to role="grid".
+    const table = screen.getByRole("grid", { name: /multi indicator scan results/i });
     expect(table).toBeInTheDocument();
   });
 
@@ -264,5 +266,33 @@ describe("MIS terminal-grade", () => {
       (el.getAttribute("title") ?? "").includes("insufficient bars"),
     );
     expect(skippedCell).toBeTruthy();
+  });
+});
+
+describe("MIS terminal-grade — results grid sort + keyboard (lane B4)", () => {
+  it("defaults to highest-conviction score first with keyboard grid navigation", async () => {
+    // Reverse the scan rows so only the built-in sorter can put BTCUSDT first.
+    runMisScanMock.mockResolvedValueOnce({
+      ...SCAN_RESULT,
+      rows: [...SCAN_RESULT.rows].reverse(),
+    } as unknown as MisScanResult);
+    await mountReady();
+    await runScan();
+    const grid = screen.getByRole("grid", {
+      name: /multi indicator scan results/i,
+    });
+    expect(grid).toBeInTheDocument();
+    // Roving keyboard cell: the first cell owns the tab stop.
+    expect(
+      grid.querySelector('td[data-cell="0-0"]')?.getAttribute("tabindex"),
+    ).toBe("0");
+    // score descending: BTCUSDT (+0.55) first, ETHUSDT (-0.40) last.
+    const rowsBefore = Array.from(grid.querySelectorAll("tbody tr"));
+    expect(rowsBefore[0]?.textContent).toContain("BTCUSDT");
+    expect(rowsBefore.at(-1)?.textContent).toContain("ETHUSDT");
+    // Activating the sort cycles desc -> none: reversed fixture order returns.
+    fireEvent.click(grid.querySelector('th[aria-sort="descending"]')!);
+    const rowsAfter = Array.from(grid.querySelectorAll("tbody tr"));
+    expect(rowsAfter[0]?.textContent).toContain("ETHUSDT");
   });
 });

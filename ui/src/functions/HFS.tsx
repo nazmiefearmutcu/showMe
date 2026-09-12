@@ -35,6 +35,8 @@ import {
   StatusSection,
 } from "@/design-system";
 import { useFunction } from "@/lib/useFunction";
+import { navigate } from "@/lib/router";
+import { useWorkspace } from "@/lib/workspace";
 import {
   FunctionControlGroup,
   LoadStatePill,
@@ -100,6 +102,8 @@ export function HFSPane({ code, symbol }: FunctionPaneProps) {
   const [input, setInput] = useState(() => (symbol || "").trim());
   const [lookup, setLookup] = useState(() => (symbol || "").trim());
   const [recents, setRecents] = useState<string[]>(readRecents);
+  // DES cross-link (B2): the resolved issuer ticker opens its profile.
+  const setFocusedTarget = useWorkspace((s) => s.setFocusedTarget);
 
   // Follow the terminal symbol when it changes; the search box overrides it.
   useEffect(() => {
@@ -178,9 +182,25 @@ export function HFSPane({ code, symbol }: FunctionPaneProps) {
         key: "issuer",
         header: "Issuer",
         width: 104,
-        render: (r) => (
-          <span style={monoPrimaryStyle}>{r.issuer ?? payload?.issuer ?? "—"}</span>
-        ),
+        render: (r) => {
+          const issuer = r.issuer ?? payload?.issuer ?? "";
+          if (!issuer) return <span style={monoPrimaryStyle}>—</span>;
+          return (
+            <button
+              type="button"
+              className="u-symbol-link"
+              style={monoPrimaryLinkStyle}
+              aria-label={`Open DES for ${issuer}`}
+              title="Open DES"
+              onClick={() => {
+                setFocusedTarget("DES", issuer);
+                navigate(`/symbol/${issuer}/DES`);
+              }}
+            >
+              {issuer}
+            </button>
+          );
+        },
       },
       {
         key: "shares",
@@ -242,7 +262,7 @@ export function HFSPane({ code, symbol }: FunctionPaneProps) {
           ),
       },
     ],
-    [payload?.issuer, payload?.quarter],
+    [payload?.issuer, payload?.quarter, setFocusedTarget],
   );
 
   const resultBody = !lookup ? (
@@ -559,6 +579,15 @@ const monoPrimaryStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
   fontVariantNumeric: "tabular-nums",
   color: "var(--text-primary)",
+};
+
+/**
+ * R2 — DES-link variant of {@link monoPrimaryStyle} with NO inline `color`:
+ * the `.u-symbol-link` class owns the accent (+ hover underline).
+ */
+const monoPrimaryLinkStyle: CSSProperties = {
+  fontFamily: "JetBrains Mono, monospace",
+  fontVariantNumeric: "tabular-nums",
 };
 
 const monoMutedStyle: CSSProperties = {

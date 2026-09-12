@@ -392,6 +392,12 @@ function StepTable({ rows }: { rows: DMMStepRow[] }) {
       rowKey={(row, i) => `${row.metric ?? ""}-${i}`}
       density="compact"
       ariaLabel="DDM model steps"
+      // Lane B4: value-descending puts the model OUTPUT (fair value/share)
+      // above the D0/D1/r/g derivation rows; the step narrative is one
+      // click away (cycle to "none").
+      defaultSortKey="value"
+      defaultSortDir="descending"
+      keyboardNavigable
     />
   );
 }

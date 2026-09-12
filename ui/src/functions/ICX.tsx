@@ -27,6 +27,8 @@ import {
 } from "@/design-system";
 import { useFunction } from "@/lib/useFunction";
 import { useVisibilityTick } from "@/lib/useVisibilityTick";
+import { navigate } from "@/lib/router";
+import { useWorkspace } from "@/lib/workspace";
 import { formatPercent, formatPrice } from "@/lib/format";
 import {
   FunctionControlGroup,
@@ -97,6 +99,8 @@ export function ICXPane({ code, symbol }: FunctionPaneProps) {
     SORT_OPTIONS.map((o) => o.value),
     "change",
   );
+  // DES cross-link (B2): the member ticker opens its security description.
+  const setFocusedTarget = useWorkspace((s) => s.setFocusedTarget);
 
   // The index CODE is ICX's symbol-ish param: honour a symbol prop that
   // maps to a supported code, else fall back to the persisted selector.
@@ -162,7 +166,25 @@ export function ICXPane({ code, symbol }: FunctionPaneProps) {
         key: "symbol",
         header: "Symbol",
         width: 104,
-        render: (r) => <span style={monoStrongStyle}>{r.symbol ?? "—"}</span>,
+        render: (r) => {
+          const sym = r.symbol ?? "";
+          if (!sym) return <span style={monoStrongStyle}>—</span>;
+          return (
+            <button
+              type="button"
+              className="u-symbol-link"
+              style={monoStrongLinkStyle}
+              aria-label={`Open DES for ${sym}`}
+              title="Open DES"
+              onClick={() => {
+                setFocusedTarget("DES", sym);
+                navigate(`/symbol/${sym}/DES`);
+              }}
+            >
+              {sym}
+            </button>
+          );
+        },
       },
       {
         key: "company",
@@ -191,7 +213,7 @@ export function ICXPane({ code, symbol }: FunctionPaneProps) {
         render: (r) => <ChangeBar row={r} maxAbs={maxAbsChange} />,
       },
     ],
-    [maxAbsChange],
+    [maxAbsChange, setFocusedTarget],
   );
 
   const body =
@@ -407,6 +429,17 @@ const monoStrongStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
   fontVariantNumeric: "tabular-nums",
   color: "var(--text-primary)",
+  fontWeight: 600,
+};
+
+/**
+ * R2 — DES-link variant of {@link monoStrongStyle} with NO inline `color`:
+ * the `.u-symbol-link` class owns the accent (+ hover underline). An inline
+ * color would override the class and make the link read as plain text.
+ */
+const monoStrongLinkStyle: CSSProperties = {
+  fontFamily: "JetBrains Mono, monospace",
+  fontVariantNumeric: "tabular-nums",
   fontWeight: 600,
 };
 

@@ -273,6 +273,11 @@ export function HDSPane({ code, symbol }: FunctionPaneProps) {
         rowKey={(r, i) => `${r.holder ?? ""}-${i}`}
         density="compact"
         ariaLabel="HDS holder table"
+        // Lane B4: largest holders first — matches the "Top holder" KPI and
+        // the concentration read; null shares sink to the bottom.
+        defaultSortKey="shares"
+        defaultSortDir="descending"
+        keyboardNavigable
       />
     </div>
   );

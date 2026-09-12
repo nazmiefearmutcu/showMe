@@ -207,6 +207,11 @@ export function DDISPane({ code, symbol }: FunctionPaneProps) {
         rowKey={(r) => r.bucket ?? String(r.tenor_years ?? "")}
         density="compact"
         ariaLabel="DDIS maturity ladder"
+        // Lane B4: nearest maturities first — the ladder is a wall-risk
+        // read, so tenor-ascending is the decision-relevant default.
+        defaultSortKey="tenor_years"
+        defaultSortDir="ascending"
+        keyboardNavigable
       />
     </div>
   );

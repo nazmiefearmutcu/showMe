@@ -8,10 +8,16 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const mockReturn: { current: unknown } = { current: null };
-vi.mock("@/lib/useFunction", () => ({ useFunction: () => mockReturn.current }));
+const recordedCalls: Array<{ params?: Record<string, unknown> }> = [];
+vi.mock("@/lib/useFunction", () => ({
+  useFunction: (opts: { params?: Record<string, unknown> }) => {
+    recordedCalls.push(opts);
+    return mockReturn.current;
+  },
+}));
 vi.mock("@/lib/router", () => ({ navigate: vi.fn() }));
 
-import { PcaStressPane } from "./PcaStress";
+import { PcaStressPane, deriveCumulativeVariance } from "./PcaStress";
 
 function ok(
   payload: Record<string, unknown>,
@@ -37,6 +43,7 @@ function ok(
 afterEach(() => {
   cleanup();
   mockReturn.current = null;
+  recordedCalls.length = 0;
 });
 
 const LIVE_PAYLOAD = {
@@ -106,5 +113,75 @@ describe("PCAS PCA Stress pane", () => {
     expect(pc2).not.toBeDisabled();
     fireEvent.click(pc2);
     expect(screen.getByRole("button", { name: "PC2" })).toBeDisabled();
+  });
+});
+
+describe("PCAS cumulative variance curve (real derivation)", () => {
+  it("builds a monotone cumulative curve from the real ratios", () => {
+    const points = deriveCumulativeVariance([0.52, 0.18, 0.09, 0.05, 0.03]);
+    expect(points.map((entry) => entry.pc)).toEqual([1, 2, 3, 4, 5]);
+    expect(points[0].cumulative).toBeCloseTo(0.52, 10);
+    expect(points[4].cumulative).toBeCloseTo(0.87, 10);
+    for (let i = 1; i < points.length; i += 1) {
+      expect(points[i].cumulative).toBeGreaterThanOrEqual(points[i - 1].cumulative);
+    }
+  });
+
+  it("skips non-finite entries and stays empty when nothing is usable", () => {
+    const points = deriveCumulativeVariance([0.5, Number.NaN, "x", Infinity, 0.25]);
+    expect(points.map((entry) => entry.cumulative)).toEqual([0.5, 0.75]);
+    expect(deriveCumulativeVariance(undefined)).toEqual([]);
+    expect(deriveCumulativeVariance([])).toEqual([]);
+  });
+
+  it("renders the cumulative curve and the exact readout", () => {
+    ok(LIVE_PAYLOAD);
+    render(<PcaStressPane code="PCAS" />);
+    expect(
+      screen.getByRole("img", { name: /Cumulative explained variance across 5 components/ }),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("pcas-cumulative").textContent).toContain("87.00%");
+    expect(screen.getByTestId("pcas-cumulative").textContent).toContain("5 component(s)");
+  });
+
+  it("renders a readout without a curve when only one component is returned", () => {
+    ok({ ...LIVE_PAYLOAD, explained_variance_ratio: [0.52], asset_returns: [] });
+    render(<PcaStressPane code="PCAS" />);
+    expect(screen.queryByRole("img", { name: /Cumulative explained variance/ })).toBeNull();
+    expect(screen.getByTestId("pcas-cumulative").textContent).toContain("52.00%");
+    expect(screen.getByTestId("pcas-cumulative").textContent).toContain("1 component(s)");
+  });
+
+  it("discloses a truncated spectrum against the real asset count", () => {
+    ok({
+      ...LIVE_PAYLOAD,
+      explained_variance_ratio: [0.6, 0.3],
+      asset_returns: [
+        { symbol: "AAPL" },
+        { symbol: "MSFT" },
+        { symbol: "GLD" },
+        { symbol: "BTCUSDT" },
+      ],
+    });
+    render(<PcaStressPane code="PCAS" />);
+    expect(screen.getByTestId("pcas-cumulative").textContent).toContain(
+      "first 2 of up to 4 components returned",
+    );
+  });
+
+  it("omits live_prices on the MODEL path so the backend serves template returns", () => {
+    ok(LIVE_PAYLOAD);
+    render(<PcaStressPane code="PCAS" />);
+    fireEvent.click(screen.getByRole("button", { name: "LIVE" }));
+    const latest = recordedCalls[recordedCalls.length - 1].params ?? {};
+    expect("live_prices" in latest).toBe(false);
+    expect(latest.live).toBe(true);
+    expect(screen.getByRole("button", { name: "MODEL" })).toBeInTheDocument();
+  });
+
+  it("keeps live_prices=true on the LIVE path", () => {
+    ok(LIVE_PAYLOAD);
+    render(<PcaStressPane code="PCAS" />);
+    expect(recordedCalls.some((call) => call.params?.live_prices === true)).toBe(true);
   });
 });

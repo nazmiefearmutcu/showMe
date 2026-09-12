@@ -8,6 +8,7 @@
  * compatible because the writer always reads back the same JSON
  * shape.
  */
+import { useSyncExternalStore } from "react";
 import { invoke, isInTauri } from "./tauri";
 import { safeReadLocal, safeWriteLocal } from "./safe-storage";
 
@@ -61,14 +62,85 @@ async function writeTauri(bundle: Bundle): Promise<boolean> {
 /** Read the active watchlist; Tauri preferred, local fallback. */
 export async function loadWatchlist(): Promise<WatchlistRow[]> {
   const remote = await readTauri();
-  if (remote && remote.rows) return remote.rows;
-  return readLocal().rows;
+  const rows = remote && remote.rows ? remote.rows : readLocal().rows;
+  publish(rows);
+  return rows;
 }
 
 export async function saveWatchlist(rows: WatchlistRow[]): Promise<void> {
   const bundle: Bundle = { rows };
-  if (await writeTauri(bundle)) return;
+  if (await writeTauri(bundle)) {
+    publish(rows);
+    return;
+  }
   writeLocal(bundle);
+  publish(rows);
+}
+
+/**
+ * Reactive layer (campaign 2026-09-11 double / lane B1).
+ *
+ * PaneChrome's "+ watch" toggle must reflect membership changes made
+ * anywhere else in the app (WATCH pane, Welcome seeding, MIS). The
+ * watchlist itself stays async (Tauri preset filesystem / localStorage),
+ * so a module-level cache is the single source of truth for snapshots:
+ * every load/save publishes it, and subscribers re-read
+ * `isWatched()` synchronously.
+ */
+const listeners = new Set<() => void>();
+let cache: WatchlistRow[] | null = null;
+let initialLoad: Promise<WatchlistRow[]> | null = null;
+
+function publish(rows: WatchlistRow[]): void {
+  cache = rows;
+  for (const listener of listeners) listener();
+}
+
+export function subscribeWatchlist(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+
+/** Synchronous membership check against the published cache. */
+export function isWatched(symbol: string): boolean {
+  const sym = symbol.trim().toUpperCase();
+  if (!sym || !cache) return false;
+  return cache.some((r) => r.symbol === sym);
+}
+
+/**
+ * One-shot hydration for components that mount before any other surface
+ * has read the store (PaneChrome mounts with the desk). Shares a single
+ * in-flight read across every caller; a failed read resolves empty so a
+ * mount can never hang.
+ */
+export function ensureWatchlistLoaded(): Promise<WatchlistRow[]> {
+  if (!initialLoad) {
+    initialLoad = loadWatchlist().catch(() => [] as WatchlistRow[]);
+  }
+  return initialLoad;
+}
+
+/** Test-only: reset the module cache + in-flight hydration promise. */
+export function resetWatchlistStoreForTests(): void {
+  cache = null;
+  initialLoad = null;
+  listeners.clear();
+}
+
+/**
+ * React binding for the toggle. Returns false (not watched) until the
+ * store is hydrated, then tracks every publish.
+ */
+export function useIsWatched(symbol?: string): boolean {
+  const sym = symbol ? symbol.trim().toUpperCase() : "";
+  return useSyncExternalStore(
+    subscribeWatchlist,
+    () => (sym ? isWatched(sym) : false),
+    () => false,
+  );
 }
 
 /**

@@ -153,9 +153,25 @@ export function ECOPane({ code }: FunctionPaneProps) {
         header: "Actual",
         numeric: true,
         width: 88,
-        render: (e) => (
-          <span style={primaryNumStyle}>{fmtVal(e.actual, e.unit)}</span>
-        ),
+        render: (e) => {
+          const forecast = numeric(e.forecast);
+          const actual = numeric(e.actual);
+          return (
+            <span style={actualCellStyle}>
+              <span style={primaryNumStyle}>{fmtVal(e.actual, e.unit)}</span>
+              {/* Actual-vs-forecast compare bar — only when BOTH the consensus
+                  and the print exist. A missing actual (pending release) or a
+                  null forecast renders no bar at all: no fabricated compare. */}
+              {forecast != null && actual != null ? (
+                <ActualVsForecastBar
+                  forecast={forecast}
+                  actual={actual}
+                  unit={e.unit}
+                />
+              ) : null}
+            </span>
+          );
+        },
       },
       {
         key: "previous",
@@ -468,6 +484,55 @@ function NextPrintsRail({ events }: { events: EcoEvent[] }) {
         Sorted by next release. Surprise = actual minus forecast at print time.
       </div>
     </aside>
+  );
+}
+
+/**
+ * Compact actual-vs-forecast compare: two stacked magnitude bars scaled
+ * against the larger of the two absolute values (consensus = the base bar,
+ * the print = the tinted bar). The print's tone follows the surprise sign —
+ * positive/negative vs the consensus — with a neutral tint on an exact hit.
+ *
+ * Data honesty: the component is only reachable when `actual` AND `forecast`
+ * are both finite numbers; null/absent prints never produce a bar.
+ */
+function ActualVsForecastBar({
+  forecast,
+  actual,
+  unit,
+}: {
+  forecast: number;
+  actual: number;
+  unit?: string;
+}) {
+  const max = Math.max(Math.abs(forecast), Math.abs(actual));
+  if (!(max > 0)) return null;
+  const widthFor = (value: number) =>
+    Math.max(2, Math.round((Math.abs(value) / max) * AF_BAR_WIDTH));
+  const tone =
+    actual === forecast
+      ? "var(--text-mute)"
+      : actual > forecast
+        ? "var(--positive)"
+        : "var(--negative)";
+  const label = `forecast ${formatNumber(forecast, 2)}${unit ?? ""} vs actual ${formatNumber(actual, 2)}${unit ?? ""}`;
+  return (
+    <span
+      role="img"
+      aria-label={label}
+      data-testid="eco-afbar"
+      style={afBarWrapStyle}
+      title={label}
+    >
+      <span
+        data-testid="eco-afbar-forecast"
+        style={{ ...afBarStyle, width: widthFor(forecast) }}
+      />
+      <span
+        data-testid="eco-afbar-actual"
+        style={{ ...afBarStyle, width: widthFor(actual), background: tone }}
+      />
+    </span>
   );
 }
 
@@ -787,4 +852,27 @@ const primaryNumStyle: CSSProperties = {
   fontVariantNumeric: "tabular-nums",
   color: "var(--text-display)",
   fontWeight: 600,
+};
+
+const actualCellStyle: CSSProperties = {
+  display: "inline-flex",
+  flexDirection: "column",
+  gap: 3,
+  alignItems: "flex-start",
+};
+
+const AF_BAR_WIDTH = 44;
+
+const afBarWrapStyle: CSSProperties = {
+  display: "inline-flex",
+  flexDirection: "column",
+  gap: 2,
+  width: AF_BAR_WIDTH,
+};
+
+const afBarStyle: CSSProperties = {
+  display: "block",
+  height: 3,
+  borderRadius: 2,
+  background: "var(--text-mute)",
 };

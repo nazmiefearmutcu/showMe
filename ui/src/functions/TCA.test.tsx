@@ -170,3 +170,33 @@ describe("TCA pane — fills grid + visibility poll", () => {
     expect(lastFnArgs?.params).toEqual({ benchmark: "VWAP" });
   });
 });
+
+describe("TCA pane — fills grid sort + keyboard (lane B4)", () => {
+  it("defaults to worst-cost fill first and enables keyboard grid navigation", () => {
+    const payload = derivedPayload();
+    // Reverse the fills so only the built-in sorter can put r1 first.
+    const data = payload.data.data as { rows: unknown[] };
+    data.rows = [...data.rows].reverse();
+    setMockFn({ state: "ok", ...payload });
+    const { container } = render(<TCAPane code="TCA" symbol="BTCUSDT" />);
+    fireEvent.click(screen.getByRole("tab", { name: "Fills" }));
+
+    const grid = screen.getByRole("grid", { name: "TCA fills" });
+    expect(grid).toBeInTheDocument();
+    // Roving keyboard cell: the first cell owns the tab stop.
+    expect(
+      grid.querySelector('td[data-cell="0-0"]')?.getAttribute("tabindex"),
+    ).toBe("0");
+
+    // Derived costs: r1 = $110.00 (10 @ +1000bp) > r2 = $45.00 — cost
+    // descending keeps the worst fill first.
+    const rowsBefore = Array.from(container.querySelectorAll("tbody tr"));
+    expect(rowsBefore[0]?.textContent).toContain("$110.00");
+    expect(rowsBefore.at(-1)?.textContent).toContain("$45.00");
+
+    // Activating the sort cycles desc -> none: reversed fixture order returns.
+    fireEvent.click(container.querySelector('th[aria-sort="descending"]')!);
+    const rowsAfter = Array.from(container.querySelectorAll("tbody tr"));
+    expect(rowsAfter[0]?.textContent).toContain("$45.00");
+  });
+});

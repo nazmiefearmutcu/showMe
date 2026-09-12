@@ -54,7 +54,6 @@ interface FAData {
   field_dictionary?: Record<string, unknown>;
   currency?: string;
   filing_date?: string;
-  restated?: boolean;
   [key: string]: unknown;
 }
 
@@ -112,7 +111,6 @@ export function FAPane({ code, symbol }: FunctionPaneProps) {
   const filingDate =
     (payload?.filing_date as string | undefined) ??
     (typeof payload?.last_updated === "string" ? (payload.last_updated as string) : undefined);
-  const restated = Boolean(payload?.restated);
 
   const heroRatios = useMemo(() => deriveHeroRatios(payload?.ratios), [payload?.ratios]);
 
@@ -170,11 +168,6 @@ export function FAPane({ code, symbol }: FunctionPaneProps) {
               <Pill tone="muted" variant="soft" withDot={false}>
                 {currency}
               </Pill>
-              {restated ? (
-                <Pill tone="warn" variant="soft" withDot={false}>
-                  RESTATED
-                </Pill>
-              ) : null}
               <Tabs
                 variant="segmented"
                 items={TABS.map((t) => ({ id: t.id, label: t.label }))}

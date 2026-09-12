@@ -1816,6 +1816,12 @@
   font-weight: 600;
 }
 
+/* R2: hover must signal clickability — the accent color alone was too quiet
+   once pane-level inline colors were in play. */
+.u-symbol-link:hover {
+  text-decoration: underline;
+}
+
 /* Sr-only — visually hide but expose to assistive tech. */
 .u-sr-only {
   border: 0;

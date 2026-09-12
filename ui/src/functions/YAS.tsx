@@ -26,6 +26,12 @@ import {
 } from "@/design-system";
 import { useFunction } from "@/lib/useFunction";
 import {
+  buildGridCsv,
+  downloadGridCsv,
+  gridCsvFilename,
+  type GridCsvColumn,
+} from "@/design-system/grid-csv";
+import {
   FunctionControlGroup,
   LoadStatePill,
   RefreshButton,
@@ -137,6 +143,30 @@ export function YASPane({ code, symbol }: FunctionPaneProps) {
     )?.value;
     return { macaulay, modified, convexity };
   }, [payload]);
+
+  // CSV export of the ±100bp shock ladder — RAW payload numbers plus the
+  // Δ-vs-now column computed against the summary price.
+  const csvColumns = useMemo<GridCsvColumn<YASShockPoint>[]>(
+    () => [
+      { key: "shock_bps", header: "Shock bp", value: (r) => r.shock_bps ?? "" },
+      { key: "ytm_pct", header: "YTM %", value: (r) => r.ytm_pct ?? "" },
+      { key: "price", header: "Price", value: (r) => r.price ?? "" },
+      {
+        key: "delta_vs_now",
+        header: "Δ vs now",
+        value: (r) =>
+          typeof r.price === "number" && summary?.price != null
+            ? r.price - summary.price
+            : "",
+      },
+    ],
+    [summary],
+  );
+
+  const exportCsv = () => {
+    const csv = buildGridCsv(csvColumns, curve);
+    downloadGridCsv(gridCsvFilename(`yas-${bond}`), csv);
+  };
 
   const COLS: DataGridColumn<YASShockPoint>[] = useMemo(
     () => [
@@ -320,6 +350,16 @@ export function YASPane({ code, symbol }: FunctionPaneProps) {
                 options={FREQ_OPTIONS}
                 onChange={setFreq}
               />
+              <button
+                type="button"
+                className="btn"
+                onClick={exportCsv}
+                disabled={curve.length === 0}
+                title="Download CSV"
+                aria-label={`Download ${curve.length} shock ladder rows as CSV`}
+              >
+                CSV
+              </button>
               <LoadStatePill state={state} status={payload?.status ?? null} />
               <RefreshButton
                 loading={state === "loading"}

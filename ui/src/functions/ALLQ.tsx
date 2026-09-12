@@ -32,6 +32,12 @@ import {
 import { useFunction } from "@/lib/useFunction";
 import { defaultSymbolForFunction } from "@/lib/symbols";
 import {
+  buildGridCsv,
+  downloadGridCsv,
+  gridCsvFilename,
+  type GridCsvColumn,
+} from "@/design-system/grid-csv";
+import {
   FunctionControlGroup,
   LoadStatePill,
   RefreshButton,
@@ -195,6 +201,39 @@ export function ALLQPane({ code, symbol }: FunctionPaneProps) {
     ];
   }, [stats]);
 
+  // CSV export of the dealer ladder — RAW payload numbers (exporters should
+  // not parse formatted "106.2081" strings back into floats).
+  const csvColumns = useMemo<GridCsvColumn<ALLQRow>[]>(
+    () => [
+      { key: "dealer", header: "Dealer", value: (r) => r.dealer ?? "" },
+      { key: "bond", header: "Bond", value: (r) => r.bond ?? "" },
+      { key: "bid", header: "Bid", value: (r) => r.bid ?? "" },
+      { key: "ask", header: "Ask", value: (r) => r.ask ?? "" },
+      { key: "mid", header: "Mid", value: (r) => r.mid ?? "" },
+      {
+        key: "spread_bps_of_price",
+        header: "Spread bps",
+        value: (r) => r.spread_bps_of_price ?? "",
+      },
+      { key: "size", header: "Size", value: (r) => r.size ?? "" },
+      {
+        key: "quote_time",
+        header: "Quote time",
+        value: (r) => r.quote_time ?? "",
+      },
+      { key: "reference", header: "Reference", value: (r) => r.reference ?? "" },
+    ],
+    [],
+  );
+
+  const exportCsv = () => {
+    const csv = buildGridCsv(csvColumns, rows);
+    downloadGridCsv(
+      gridCsvFilename(`allq-${summary?.bond ?? effectiveSymbol ?? "quotes"}`),
+      csv,
+    );
+  };
+
   const unavailableReason =
     payload?.next_actions?.[0] ??
     data?.warnings?.[0] ??
@@ -303,6 +342,16 @@ export function ALLQPane({ code, symbol }: FunctionPaneProps) {
                 options={SPREAD_OPTIONS}
                 onChange={setSpreadPts}
               />
+              <button
+                type="button"
+                className="btn"
+                onClick={exportCsv}
+                disabled={rows.length === 0}
+                title="Download CSV"
+                aria-label={`Download ${rows.length} dealer quotes as CSV`}
+              >
+                CSV
+              </button>
               <LoadStatePill state={state} status={status} />
               <RefreshButton
                 loading={state === "loading"}

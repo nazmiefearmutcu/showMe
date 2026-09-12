@@ -11,7 +11,7 @@ const mockReturn: { current: unknown } = { current: null };
 vi.mock("@/lib/useFunction", () => ({ useFunction: () => mockReturn.current }));
 vi.mock("@/lib/router", () => ({ navigate: vi.fn() }));
 
-import { PositionVarPane } from "./PositionVar";
+import { PositionVarPane, deriveVarExceptions } from "./PositionVar";
 
 function ok(
   payload: Record<string, unknown>,
@@ -137,5 +137,71 @@ describe("PVAR Position VaR pane", () => {
     expect(ninetyNine).not.toBeDisabled();
     fireEvent.click(ninetyNine);
     expect(screen.getByRole("button", { name: "99%" })).toBeDisabled();
+  });
+});
+
+const EXCEPTION_SERIES = [
+  { pnl: -3000, density: 2 },
+  { pnl: -1500, density: 6 },
+  { pnl: 0, density: 9 },
+  { pnl: 1500, density: 4 },
+];
+
+describe("PVAR VaR exception read (real derivation)", () => {
+  it("counts a bin fully beyond the line exactly (line on a bin edge)", () => {
+    // Bin centers 1500 apart => edges at -3750/-2250/-750/750/2250.
+    const read = deriveVarExceptions(EXCEPTION_SERIES, 2250);
+    expect(read).not.toBeNull();
+    expect(read!.breaches).toBe(2);
+    expect(read!.periods).toBe(21);
+    expect(read!.straddle).toBe(false);
+    expect(read!.breachBins).toEqual([0]);
+  });
+
+  it("drops a bin cut by the line and reports a lower bound instead", () => {
+    const read = deriveVarExceptions(EXCEPTION_SERIES, 1850);
+    expect(read!.breaches).toBe(2);
+    expect(read!.straddle).toBe(true);
+    expect(read!.breachBins).toEqual([0]);
+  });
+
+  it("reports zero breaches when the line sits beyond every realized loss", () => {
+    const read = deriveVarExceptions(EXCEPTION_SERIES, 10000);
+    expect(read!.breaches).toBe(0);
+    expect(read!.straddle).toBe(false);
+    expect(read!.periods).toBe(21);
+  });
+
+  it("honest-drop when VaR is absent or the histogram is too short", () => {
+    expect(deriveVarExceptions(EXCEPTION_SERIES, null)).toBeNull();
+    expect(deriveVarExceptions(EXCEPTION_SERIES, Number.NaN)).toBeNull();
+    expect(deriveVarExceptions([{ pnl: -3000, density: 2 }], 1850)).toBeNull();
+  });
+
+  it("renders the exact breach strip and marks the VaR line in the histogram", () => {
+    ok({ ...LIVE_PAYLOAD, var: 2250 });
+    render(<PositionVarPane code="PVAR" />);
+    const strip = screen.getByTestId("pvar-exceptions");
+    expect(strip.textContent).toContain("2 of 21 periods beyond the 95% VaR line");
+    expect(strip.textContent).toContain("expected ≈ 1");
+    expect(strip.textContent).not.toContain("≥");
+    expect(
+      screen.getByRole("img", { name: /Loss distribution histogram.*VaR line/ }),
+    ).toBeInTheDocument();
+  });
+
+  it("flags the boundary bin as a lower bound in the strip", () => {
+    ok({ ...LIVE_PAYLOAD, var: 1850 });
+    render(<PositionVarPane code="PVAR" />);
+    const strip = screen.getByTestId("pvar-exceptions");
+    expect(strip.textContent).toContain("≥ 2 of 21 periods beyond the 95% VaR line");
+    expect(strip.textContent).toContain("boundary bin spans the line");
+  });
+
+  it("omits the exception strip when the backend sends no VaR value", () => {
+    ok({ ...LIVE_PAYLOAD, var: null });
+    render(<PositionVarPane code="PVAR" />);
+    expect(screen.queryByTestId("pvar-exceptions")).toBeNull();
+    expect(screen.getByRole("img", { name: /Loss distribution histogram/i })).toBeInTheDocument();
   });
 });

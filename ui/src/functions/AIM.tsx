@@ -33,6 +33,8 @@ import {
 import { useFunction } from "@/lib/useFunction";
 import { useUtcStamp } from "@/lib/useUtcStamp";
 import { useVisibilityTick } from "@/lib/useVisibilityTick";
+import { navigate } from "@/lib/router";
+import { useWorkspace } from "@/lib/workspace";
 import { formatCurrency, formatMissing, formatNumber } from "@/lib/format";
 import {
   FunctionControlGroup,
@@ -103,6 +105,8 @@ export function AIMPane({ code, symbol }: FunctionPaneProps) {
     TABS,
     "open",
   );
+  // DES cross-link (B2): the order's symbol opens its security description.
+  const setFocusedTarget = useWorkspace((s) => s.setFocusedTarget);
   // Bundle D / PERF-04. Visibility-aware poll.
   const tick = useVisibilityTick(REFRESH_MS);
 
@@ -205,7 +209,25 @@ export function AIMPane({ code, symbol }: FunctionPaneProps) {
         key: "symbol",
         header: "Symbol",
         width: 92,
-        render: (r) => <span style={symbolCell}>{r.symbol || formatMissing}</span>,
+        render: (r) => {
+          const sym = r.symbol ?? "";
+          if (!sym) return <span style={symbolCell}>{formatMissing}</span>;
+          return (
+            <button
+              type="button"
+              className="u-symbol-link"
+              style={symbolLinkStyle}
+              aria-label={`Open DES for ${sym}`}
+              title="Open DES"
+              onClick={() => {
+                setFocusedTarget("DES", sym);
+                navigate(`/symbol/${sym}/DES`);
+              }}
+            >
+              {sym}
+            </button>
+          );
+        },
       },
       {
         key: "side",
@@ -295,7 +317,7 @@ export function AIMPane({ code, symbol }: FunctionPaneProps) {
         render: (r) => <span style={mutedNumStyle}>{fmtTime(r.created_at)}</span>,
       },
     ],
-    [],
+    [setFocusedTarget],
   );
 
   return (
@@ -636,6 +658,17 @@ const symbolCell: CSSProperties = {
   fontWeight: 600,
   letterSpacing: "0.02em",
   color: "var(--text-display)",
+};
+
+/**
+ * R2 — DES-link variant of {@link symbolCell} with NO inline `color`: the
+ * `.u-symbol-link` class owns the accent (+ hover underline) so the cell
+ * reads as a link instead of plain text.
+ */
+const symbolLinkStyle: CSSProperties = {
+  fontFamily: "JetBrains Mono, monospace",
+  fontWeight: 600,
+  letterSpacing: "0.02em",
 };
 
 const typeCell: CSSProperties = {

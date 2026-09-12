@@ -32,6 +32,7 @@ import { PaneState } from "@/design-system/PaneState";
 import { compareGridValues } from "@/design-system/DataGrid";
 import { formatNumberFixed } from "@/lib/format";
 import { navigate } from "@/lib/router";
+import { useWorkspace } from "@/lib/workspace";
 import { useFunction } from "@/lib/useFunction";
 import {
   FunctionControlGroup,
@@ -115,6 +116,8 @@ export function MOSSPane({ code }: FunctionPaneProps) {
   );
   const [sortBy, setSortBy] = useState<string | null>("vol_pct");
   const [sortDir, setSortDir] = useState<SortDir>("descending");
+  // DES cross-link (B2): same focused-security + navigate pattern as WEI.
+  const setFocusedTarget = useWorkspace((s) => s.setFocusedTarget);
 
   const { state, data, error, refetch } = useFunction<MOSSData>({
     code,
@@ -176,25 +179,33 @@ export function MOSSPane({ code }: FunctionPaneProps) {
         header: "Symbol",
         width: 130,
         sortable: true,
-        render: (r) => (
-          <button
-            type="button"
-            className="scan-symbol"
-            title="Open DES"
-            aria-label={`Open ${r.symbol ?? "symbol"} in DES`}
-            onClick={() => {
-              if (r.symbol) navigate(`/symbol/${r.symbol}/DES`);
-            }}
-            onKeyDown={(e) => {
-              if ((e.key === "Enter" || e.key === " ") && r.symbol) {
-                e.preventDefault();
-                navigate(`/symbol/${r.symbol}/DES`);
-              }
-            }}
-          >
-            {r.symbol ?? "—"}
-          </button>
-        ),
+        render: (r) => {
+          const sym = r.symbol ?? "";
+          // R1-2 — no symbol means no DES target: render the honest dash as
+          // plain text, never a focusable control that activates into a no-op.
+          if (!sym) return <span style={monoMutedStyle}>—</span>;
+          const goDES = () => {
+            setFocusedTarget("DES", sym);
+            navigate(`/symbol/${sym}/DES`);
+          };
+          return (
+            <button
+              type="button"
+              className="scan-symbol"
+              title="Open DES"
+              aria-label={`Open DES for ${sym}`}
+              onClick={goDES}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  goDES();
+                }
+              }}
+            >
+              {sym}
+            </button>
+          );
+        },
       },
       {
         key: "asset_class",
@@ -246,7 +257,7 @@ export function MOSSPane({ code }: FunctionPaneProps) {
         ),
       },
     ],
-    [],
+    [setFocusedTarget],
   );
 
   const body = (

@@ -1,12 +1,15 @@
 /**
  * WHAL — cross-market whale monitor tests.
  *
- * Pins two contracts:
+ * Pins three contracts:
  *  1. Tab/symbol consistency — a bound crypto symbol (BTCUSDT) must never be
  *     queried under the Equity/ETF/FX tab; the tab falls back to its sample
  *     (AAPL/SPY/EURUSD) until a new security is picked.
  *  2. The canonical refresh pattern (UA-HIGH-16) — `tick` stays OUT of
  *     `params` and drives `refetch()` from an effect.
+ *  3. P0/X-02 — the symbol-less route (`#/fn/WHAL`) must NOT re-arm a
+ *     render-phase rebind every render ("Too many re-renders" → error
+ *     boundary); the rebind converges and only fires on a genuine prop change.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
@@ -186,5 +189,62 @@ describe("WHAL pane — visibility poll (live adoption)", () => {
     mockTick.current = 5;
     rerender(<WHALPane code="WHAL" symbol="BTCUSDT" />);
     expect(JSON.stringify(lastFnArgs?.params ?? null)).toBe(before);
+  });
+});
+
+describe("WHAL pane — symbol-less route convergence (P0 / X-02)", () => {
+  // Crash shape from C5 S1/S3 (+ C8 S1): `#/fn/WHAL` mounts with NO symbol
+  // prop and a live payload; the old render-phase rebind compared
+  // `bound?.symbol ?? ""` against `undefined` (always true) and looped into
+  // React's "Too many re-renders". This suite must fail on that code (the
+  // per-render setState throws during mount) and pass once the rebind
+  // converges on a genuine prop change.
+  it("mounts without a symbol prop and paints the crypto sample rows (no rebind loop)", () => {
+    render(<WHALPane code="WHAL" />);
+    expect(paramsNow().symbol).toBe("BTCUSDT");
+    expect(paramsNow().market).toBe("CRYPTO");
+    // Live-shape row actually painted — not an error boundary.
+    expect(screen.getByText("large trade")).toBeInTheDocument();
+    expect(screen.getByText("$2.50M")).toBeInTheDocument();
+    expect(screen.queryByText(/pane render failed/i)).toBeNull();
+    expect(screen.queryByText(/too many re-renders/i)).toBeNull();
+  });
+
+  it("falls back to each market sample when no symbol prop is present", () => {
+    render(<WHALPane code="WHAL" />);
+    expect(paramsNow().symbol).toBe("BTCUSDT");
+    fireEvent.click(screen.getByRole("tab", { name: "Equity" }));
+    expect(paramsNow().symbol).toBe("AAPL");
+    fireEvent.click(screen.getByRole("tab", { name: "ETF" }));
+    expect(paramsNow().symbol).toBe("SPY");
+    fireEvent.click(screen.getByRole("tab", { name: "FX" }));
+    expect(paramsNow().symbol).toBe("EURUSD");
+  });
+
+  it("rebinds when the prop symbol genuinely changes", () => {
+    const { rerender } = render(<WHALPane code="WHAL" symbol="BTCUSDT" />);
+    expect(paramsNow().symbol).toBe("BTCUSDT");
+    rerender(<WHALPane code="WHAL" symbol="ETHUSDT" />);
+    expect(paramsNow().symbol).toBe("ETHUSDT");
+  });
+
+  it("keeps the bound record when the prop disappears and still resolves samples", () => {
+    const { rerender } = render(<WHALPane code="WHAL" symbol="BTCUSDT" />);
+    rerender(<WHALPane code="WHAL" />);
+    // Prop absent → market sample wins (CRYPTO sample is BTCUSDT here), and
+    // crucially the pane does not crash or loop on the transition.
+    expect(paramsNow().symbol).toBe("BTCUSDT");
+    fireEvent.click(screen.getByRole("tab", { name: "Equity" }));
+    expect(paramsNow().symbol).toBe("AAPL");
+    fireEvent.click(screen.getByRole("tab", { name: "Crypto" }));
+    expect(paramsNow().symbol).toBe("BTCUSDT");
+    expect(screen.queryByText(/too many re-renders/i)).toBeNull();
+  });
+
+  it("rebinds when the prop returns after being absent", () => {
+    const { rerender } = render(<WHALPane code="WHAL" />);
+    expect(paramsNow().symbol).toBe("BTCUSDT");
+    rerender(<WHALPane code="WHAL" symbol="SOLUSDT" />);
+    expect(paramsNow().symbol).toBe("SOLUSDT");
   });
 });

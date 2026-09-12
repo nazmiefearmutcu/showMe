@@ -274,3 +274,35 @@ describe("DCF pane — model inputs", () => {
     expect(localStorage.getItem("showme.dcf.years")).toBe("7");
   });
 });
+
+describe("DCF pane — grid sort + keyboard (lane B4)", () => {
+  it("pins cashflow year-ascending + bridge value-descending, both keyboard-navigable", () => {
+    setMockFn({ state: "ok", ...okPayload() });
+    render(<DCFPane code="DCF" symbol="AAPL" />);
+
+    const cfGrid = screen.getByRole("grid", { name: "DCF cashflow table" });
+    const bridgeGrid = screen.getByRole("grid", { name: "DCF value bridge" });
+    expect(cfGrid).toBeInTheDocument();
+    expect(bridgeGrid).toBeInTheDocument();
+    expect(
+      cfGrid.querySelector('td[data-cell="0-0"]')?.getAttribute("tabindex"),
+    ).toBe("0");
+    expect(
+      bridgeGrid.querySelector('td[data-cell="0-0"]')?.getAttribute("tabindex"),
+    ).toBe("0");
+
+    // Cashflow: year-ascending pins the chronological forecast (year 1 first).
+    const cfRows = Array.from(cfGrid.querySelectorAll("tbody tr"));
+    expect(cfRows[0]?.textContent).toContain("$11.00B");
+    // Bridge: value-descending puts the dominant component (equity value) on top.
+    const bridgeRows = Array.from(bridgeGrid.querySelectorAll("tbody tr"));
+    expect(bridgeRows[0]?.textContent).toContain("Equity value");
+
+    // Activating the bridge sort cycles desc -> none: backend order returns.
+    const header = bridgeGrid.querySelector('th[aria-sort="descending"]');
+    expect(header).not.toBeNull();
+    fireEvent.click(header!);
+    const bridgeAfter = Array.from(bridgeGrid.querySelectorAll("tbody tr"));
+    expect(bridgeAfter[0]?.textContent).toContain("PV explicit FCFE");
+  });
+});

@@ -43,6 +43,7 @@ vi.mock("@/lib/router", () => ({ navigate: vi.fn() }));
 
 import { MOSTPane } from "./MOST";
 import * as router from "@/lib/router";
+import { useWorkspace } from "@/lib/workspace";
 
 function makeRow(over: Record<string, unknown> = {}) {
   return {
@@ -147,8 +148,9 @@ describe("MOST — render + a11y", () => {
   it("renders the ranked leaders grid without throwing", () => {
     mockState("ok", [makeRow()]);
     render(<MOSTPane code="MOST" />);
+    // B2: the symbol cell is a DES launcher with an explicit accessible name.
     expect(
-      screen.getByRole("button", { name: "NVDA" }),
+      screen.getByRole("button", { name: "Open DES for NVDA" }),
     ).toBeInTheDocument();
   });
 
@@ -187,6 +189,18 @@ describe("MOST — data honesty (P2)", () => {
     // Header column count is fixed (no leftover Trend column).
     const headerCells = container.querySelectorAll("thead th");
     expect(headerCells.length).toBe(10);
+  });
+});
+
+describe("MOST — empty symbol (R1-2)", () => {
+  it("renders a non-focusable dash instead of a 'No symbol' dead button", () => {
+    mockState("ok", [makeRow({ symbol: undefined, ticker: undefined })]);
+    const { container } = render(<MOSTPane code="MOST" />);
+
+    expect(screen.queryByRole("button", { name: /No symbol/i })).toBeNull();
+    const rowEl = container.querySelector("tbody tr");
+    expect(rowEl?.textContent).toContain("—");
+    expect(rowEl?.querySelector("button")).toBeNull();
   });
 });
 
@@ -278,8 +292,20 @@ describe("MOST — navigation", () => {
   it("navigates to DES when the symbol button is clicked", () => {
     mockState("ok", [makeRow({ symbol: "TSLA" })]);
     render(<MOSTPane code="MOST" />);
-    fireEvent.click(screen.getByRole("button", { name: "TSLA" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open DES for TSLA" }));
     expect(router.navigate).toHaveBeenCalledWith("/symbol/TSLA/DES");
+  });
+
+  it("DES launcher focuses the security, not just the route (B2)", () => {
+    mockState("ok", [makeRow({ symbol: "TSLA" })]);
+    render(<MOSTPane code="MOST" />);
+    fireEvent.click(screen.getByRole("button", { name: "Open DES for TSLA" }));
+    const tree = useWorkspace.getState().tree;
+    expect(tree.kind).toBe("leaf");
+    if (tree.kind === "leaf") {
+      expect(tree.code).toBe("DES");
+      expect(tree.symbol).toBe("TSLA");
+    }
   });
 });
 

@@ -63,6 +63,8 @@ interface TopArticle {
   headline?: string;
   summary?: string;
   source?: string;
+  /** Human-readable outlet name carried by the RSS adapter (wins over `source`). */
+  feed?: string;
   url?: string;
   link?: string;
   publishedAt?: string;
@@ -622,7 +624,9 @@ function NewsRow({
   const key = articleKey(a, index);
   const fullTitle = a.title || a.headline || "(untitled)";
   const href = a.url ?? a.link;
-  const sourceLabel = a.source ?? "source";
+  const outlet = outletLabel(a);
+  const sourceLabel = outlet || "source";
+  const ts = tsLabel(a);
   const reasonsTitle =
     Array.isArray(a.importance_reasons) && a.importance_reasons.length > 0
       ? a.importance_reasons.join(" · ")
@@ -648,11 +652,6 @@ function NewsRow({
         >
           {fullTitle}
         </button>
-        {a.source && (
-          <Pill tone="muted" variant="soft" withDot={false}>
-            {a.source}
-          </Pill>
-        )}
         {a.sentiment && (
           <Pill
             tone={
@@ -737,9 +736,28 @@ function NewsRow({
             <span key={reason} className="top-news-card__reason" title={reasonsTitle}>{reason}</span>
           ))}
         <span className="u-flex-1" />
-        {tsLabel(a) && (
-          <span className="top-news-card__ts">{tsLabel(a)}</span>
-        )}
+        {/*
+          C3 depth: per-headline source/time meta, right-aligned in the tags
+          row. `feed` (human outlet, wire-verified) wins over the machine
+          adapter token (`source`); both columns are omitted when the payload
+          carries them empty — no "source / —" filler.
+        */}
+        <span style={newsMetaStyle} data-testid="top-headline-meta">
+          {outlet && (
+            <span
+              style={newsOutletStyle}
+              title={`Source feed: ${outlet}`}
+              data-testid="top-headline-source"
+            >
+              {outlet}
+            </span>
+          )}
+          {ts && (
+            <span className="top-news-card__ts" data-testid="top-headline-time">
+              {ts}
+            </span>
+          )}
+        </span>
         {href && (
           <a
             href={href}
@@ -1002,6 +1020,14 @@ function articleKey(a: TopArticle, index: number): string {
   return String(a.url ?? a.link ?? a.title ?? a.headline ?? index);
 }
 
+/**
+ * Human-readable outlet name: the RSS adapter's `feed` (e.g. "Reuters") wins
+ * over the machine `source` token (e.g. "rss"); empty when neither exists.
+ */
+function outletLabel(a: TopArticle): string {
+  return String(a.feed ?? a.source ?? "").trim();
+}
+
 function tsLabel(a: TopArticle): string | null {
   return relativeTimeLabel(articleTimestamp(a));
 }
@@ -1040,6 +1066,19 @@ const presetGridStyle: CSSProperties = {
   display: "grid",
   gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))",
   gap: 8,
+};
+
+const newsMetaStyle: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 8,
+  flexWrap: "wrap",
+};
+
+const newsOutletStyle: CSSProperties = {
+  fontSize: "var(--font-size-2xs)",
+  color: "var(--text-mute)",
+  letterSpacing: "0.04em",
 };
 
 const filterChipRowStyle: CSSProperties = {

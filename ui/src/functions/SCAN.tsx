@@ -645,6 +645,7 @@ export function SCANPane({ code }: FunctionPaneProps) {
                       rows={2}
                       spellCheck={false}
                       style={textareaStyle}
+                      aria-label="SCAN screen query"
                     />
                     <div style={sampleRowStyle}>
                       {SAMPLE_INTENTS.map((s) => (

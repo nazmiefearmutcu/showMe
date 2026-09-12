@@ -16,6 +16,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { BetaPane } from "./BETA";
+import { downloadGridCsv } from "@/design-system/grid-csv";
 
 /* ── mocks ─────────────────────────────────────────────────────────── */
 
@@ -51,6 +52,14 @@ vi.mock("@/lib/useFunction", () => ({
     };
   },
 }));
+
+// Keep the real CSV builder, but capture the download call so the export
+// payload can be asserted (jsdom has no Blob download).
+vi.mock("@/design-system/grid-csv", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/design-system/grid-csv")>();
+  return { ...actual, downloadGridCsv: vi.fn(() => true) };
+});
 
 /* ── fixtures ──────────────────────────────────────────────────────── */
 
@@ -125,6 +134,7 @@ function baselinePayload() {
 beforeEach(() => {
   lastArgs.length = 0;
   refetchMock.mockClear();
+  (downloadGridCsv as ReturnType<typeof vi.fn>).mockClear();
   mockFn.state = "idle";
   mockFn.data = undefined;
   mockFn.error = null;
@@ -229,5 +239,33 @@ describe("BETA pane — persisted controls", () => {
     fireEvent.click(screen.getByTitle("ROLLING 90d"));
     expect(lastCall()?.params?.rolling_window).toBe(90);
     expect(lastCall()?.symbol).toBe("AAPL");
+  });
+});
+
+describe("BETA pane — grid CSV export", () => {
+  it("exports the raw per-window regression table via the CSV button", () => {
+    mockFn.state = "ok";
+    mockFn.data = okPayload();
+    render(<BetaPane code="BETA" symbol="AAPL" />);
+    const btn = screen.getByTitle("Download CSV");
+    expect(btn).not.toBeDisabled();
+    fireEvent.click(btn);
+    const mock = downloadGridCsv as ReturnType<typeof vi.fn>;
+    expect(mock).toHaveBeenCalledTimes(1);
+    const [filename, csv] = mock.mock.calls[0] as [string, string];
+    expect(filename).toMatch(/^beta-AAPL-\d{4}-\d{2}-\d{2}\.csv$/);
+    // Header row + RAW payload numbers (vols stay fractions, not "24.0%").
+    expect(csv).toContain(
+      "Window,Window days,Beta,Correlation,Samples,Ann vol target,Ann vol bench",
+    );
+    expect(csv).toContain("1Y,252,1.07,0.72,252,0.24,0.18");
+  });
+
+  it("disables the CSV button when no beta rows exist", () => {
+    mockFn.state = "ok";
+    mockFn.data = { data: { status: "ok", rows: [], history: [] }, warnings: [] };
+    render(<BetaPane code="BETA" symbol="AAPL" />);
+    expect(screen.getByTitle("Download CSV")).toBeDisabled();
+    expect(downloadGridCsv).not.toHaveBeenCalled();
   });
 });

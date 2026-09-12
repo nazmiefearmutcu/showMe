@@ -220,6 +220,12 @@ export function ONCHPane({ code }: FunctionPaneProps) {
         rowKey={(r, i) => `${r.metric ?? ""}-${i}`}
         density="compact"
         ariaLabel="ONCH on-chain metrics"
+        // Lane B4: metric values are display strings with mixed units
+        // (sat/vB, EH/s, %), so numeric sorting would be dishonest —
+        // alphabetical metric ordering is the neutral default.
+        defaultSortKey="metric"
+        defaultSortDir="ascending"
+        keyboardNavigable
       />
     </div>
   );

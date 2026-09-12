@@ -196,3 +196,30 @@ describe("HDS pane — interaction", () => {
     expect(refetch).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("HDS pane — holder grid sort + keyboard (lane B4)", () => {
+  it("defaults to largest-holder-first and enables keyboard grid navigation", () => {
+    // Reverse the holders so only the built-in sorter can put Vanguard first.
+    const payload = livePayload();
+    (payload.data.data as { rows: unknown[] }).rows = [...liveRows].reverse();
+    setMockFn({ state: "ok", ...payload });
+    const { container } = render(<HDSPane code="HDS" symbol="AAPL" />);
+
+    const grid = screen.getByRole("grid", { name: "HDS holder table" });
+    expect(grid).toBeInTheDocument();
+    // Roving keyboard cell: the first cell owns the tab stop.
+    expect(
+      grid.querySelector('td[data-cell="0-0"]')?.getAttribute("tabindex"),
+    ).toBe("0");
+
+    // shares descending -> Vanguard (1.3B) first, BlackRock (1.1B) last.
+    const rowsBefore = Array.from(container.querySelectorAll("tbody tr"));
+    expect(rowsBefore[0]?.textContent).toContain("Vanguard Group");
+    expect(rowsBefore.at(-1)?.textContent).toContain("BlackRock");
+
+    // Activating the sort cycles desc -> none: reversed fixture order returns.
+    fireEvent.click(container.querySelector('th[aria-sort="descending"]')!);
+    const rowsAfter = Array.from(container.querySelectorAll("tbody tr"));
+    expect(rowsAfter[0]?.textContent).toContain("BlackRock");
+  });
+});

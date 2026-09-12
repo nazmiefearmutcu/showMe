@@ -17,6 +17,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { MOSSPane } from "./MOSS";
 import * as router from "@/lib/router";
+import { useWorkspace } from "@/lib/workspace";
 
 /* ── useFunction mock ──────────────────────────────────────────────── */
 
@@ -206,8 +207,24 @@ describe("MOSS pane — live payload", () => {
     setMockFn({ state: "ok", ...livePayload() });
     render(<MOSSPane code="MOSS" />);
     const nav = vi.spyOn(router, "navigate").mockImplementation(() => undefined);
-    fireEvent.click(screen.getByLabelText("Open HIGHVOL in DES"));
+    fireEvent.click(screen.getByLabelText("Open DES for HIGHVOL"));
     expect(nav).toHaveBeenCalledWith("/symbol/HIGHVOL/DES");
+    nav.mockRestore();
+  });
+
+  it("DES launcher focuses the security, not just the route (B2)", () => {
+    setMockFn({ state: "ok", ...livePayload() });
+    render(<MOSSPane code="MOSS" />);
+    const nav = vi.spyOn(router, "navigate").mockImplementation(() => undefined);
+    const button = screen.getByRole("button", { name: "Open DES for HIGHVOL" });
+    expect(button.tagName).toBe("BUTTON");
+    fireEvent.click(button);
+    const tree = useWorkspace.getState().tree;
+    expect(tree.kind).toBe("leaf");
+    if (tree.kind === "leaf") {
+      expect(tree.code).toBe("DES");
+      expect(tree.symbol).toBe("HIGHVOL");
+    }
     nav.mockRestore();
   });
 });
@@ -221,5 +238,21 @@ describe("MOSS pane — controls", () => {
     fireEvent.click(top20);
     // The newly selected option becomes the active (disabled) one.
     expect(screen.getByRole("button", { name: "20" })).toBeDisabled();
+  });
+});
+
+describe("MOSS pane — empty symbol (R1-2)", () => {
+  it("renders a non-focusable dash instead of a 'No symbol' dead button", () => {
+    const payload = livePayload();
+    const inner = payload.data.data as { rows: unknown[]; top_symbol: string };
+    inner.rows = [row({ symbol: undefined })];
+    inner.top_symbol = "";
+    setMockFn({ state: "ok", ...payload });
+    const { container } = render(<MOSSPane code="MOSS" />);
+
+    expect(screen.queryByRole("button", { name: /No symbol/i })).toBeNull();
+    const rowEl = container.querySelector("tbody tr");
+    expect(rowEl?.textContent).toContain("—");
+    expect(rowEl?.querySelector("button")).toBeNull();
   });
 });

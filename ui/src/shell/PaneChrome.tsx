@@ -20,6 +20,13 @@ import {
   writePinnedDragData,
 } from "@/lib/pins";
 import { useLiveQuote } from "@/lib/market-data";
+import {
+  addSymbol,
+  ensureWatchlistLoaded,
+  removeSymbol,
+  useIsWatched,
+} from "@/lib/watchlist";
+import { navigate } from "@/lib/router";
 import { PaneHealth } from "./PaneHealth";
 import { formatPercent, formatPrice } from "@/lib/format";
 
@@ -188,6 +195,12 @@ export function PaneChrome({ leafId, code, symbol, linkGroup }: PaneChromeProps)
         {symbol ?? "—"}
         {symbol && <LiveQuoteChip symbol={symbol} />}
       </span>
+      {symbol && (
+        <>
+          <WatchToggle symbol={symbol} />
+          <SetAlertAction symbol={symbol} />
+        </>
+      )}
       <PaneHealth leafId={leafId} />
       {isFocused && <span className="pane-chrome__focus">focus</span>}
 
@@ -488,6 +501,116 @@ function LiveQuoteChip({ symbol }: { symbol: string }) {
     </span>
   );
 }
+
+/**
+ * WatchToggle — "+ watch" membership toggle next to the symbol chip
+ * (campaign 2026-09-11 double / lane B1). One-point adoption for every
+ * symbol-bound pane: adds/removes the bound symbol in the shared watchlist
+ * store and reflects membership changes made anywhere else in the app
+ * (`useIsWatched` subscribes to the store's publish channel). Inline SVG
+ * glyph (no emoji); filled + accent when watched, outline + mute otherwise.
+ */
+function WatchToggle({ symbol }: { symbol: string }) {
+  const watched = useIsWatched(symbol);
+  // Hydrate the store once per session; other surfaces read it too, so this
+  // is a shared, cached read rather than a per-pane fetch.
+  useEffect(() => {
+    void ensureWatchlistLoaded();
+  }, []);
+  const label = watched
+    ? `Remove ${symbol} from watchlist`
+    : `Add ${symbol} to watchlist`;
+  return (
+    <button
+      type="button"
+      data-testid="pane-chrome-watch"
+      aria-pressed={watched}
+      aria-label={label}
+      title={label}
+      className="pane-chrome__watch"
+      onClick={() => {
+        void (watched ? removeSymbol(symbol) : addSymbol(symbol));
+      }}
+      style={{
+        ...symbolActionStyle,
+        color: watched ? "var(--accent)" : "var(--text-mute)",
+        borderColor: watched ? "var(--accent)" : "transparent",
+        background: watched
+          ? "color-mix(in srgb, var(--accent) 14%, transparent)"
+          : "transparent",
+      }}
+    >
+      <svg width="10" height="10" viewBox="0 0 24 24" aria-hidden focusable="false">
+        <path
+          d="M12 3.6l2.6 5.27 5.82.85-4.21 4.1.99 5.79L12 16.87l-5.2 2.74.99-5.79-4.21-4.1 5.82-.85L12 3.6z"
+          fill={watched ? "currentColor" : "none"}
+          stroke="currentColor"
+          strokeWidth="1.8"
+          strokeLinejoin="round"
+        />
+      </svg>
+    </button>
+  );
+}
+
+/**
+ * SetAlertAction — hands the bound symbol to the existing ALRT pane via the
+ * hash router (`#/symbol/<sym>/ALRT`); ALRT's own seeded form does the rest.
+ * Navigation only — no modal, no duplicated alert UI.
+ */
+function SetAlertAction({ symbol }: { symbol: string }) {
+  const label = `Set an alert for ${symbol}`;
+  return (
+    <button
+      type="button"
+      data-testid="pane-chrome-alert"
+      aria-label={label}
+      title={label}
+      className="pane-chrome__alert"
+      onClick={() => navigate(`/symbol/${symbol}/ALRT`)}
+      style={{
+        ...symbolActionStyle,
+        color: "var(--text-mute)",
+        borderColor: "transparent",
+        background: "transparent",
+      }}
+    >
+      <svg width="10" height="10" viewBox="0 0 24 24" aria-hidden focusable="false">
+        <path
+          d="M12 3a5.5 5.5 0 0 0-5.5 5.5v3.1L5 15h14l-1.5-3.4V8.5A5.5 5.5 0 0 0 12 3z"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.8"
+          strokeLinejoin="round"
+        />
+        <path
+          d="M10 17.6a2 2 0 0 0 4 0"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.8"
+          strokeLinecap="round"
+        />
+      </svg>
+    </button>
+  );
+}
+
+/** Shared compact geometry for the two symbol actions — same 14px band as
+ * the link badge so the chrome row height stays untouched. */
+const symbolActionStyle: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  minWidth: 16,
+  height: 14,
+  padding: "0 2px",
+  marginLeft: "var(--space-2)",
+  border: "1px solid transparent",
+  borderRadius: 3,
+  background: "transparent",
+  cursor: "pointer",
+  lineHeight: 1,
+};
 
 const MODE_TONE: Record<string, string> = {
   live_official: "positive",

@@ -124,9 +124,20 @@ export function WHALPane({ code, symbol }: FunctionPaneProps) {
   const [bound, setBound] = useState<{ symbol: string; market: MarketId } | null>(
     symbol ? { symbol, market } : null,
   );
-  if ((bound?.symbol ?? "") !== symbol) {
-    // A new security was picked (render-phase rebind — no effect round-trip).
-    setBound(symbol ? { symbol, market } : null);
+  // P0/X-02: this render-phase rebind must CONVERGE. The previous guard
+  // compared `bound?.symbol ?? ""` against the prop, which is always unequal
+  // on the symbol-less route (`"" !== undefined`) → setState every render →
+  // React's "Too many re-renders" → PaneErrorBoundary on `#/fn/WHAL`.
+  // Track the prop value we already bound to instead: rebind only on a
+  // genuine prop change. When the prop disappears, keep the existing bound
+  // record (it can only resolve while `symbol` is present) and let the
+  // market sample take over; a returning prop rebinds again.
+  const [boundTo, setBoundTo] = useState<string | undefined>(symbol);
+  if (symbol !== boundTo) {
+    setBoundTo(symbol);
+    if (symbol !== undefined) {
+      setBound({ symbol, market });
+    }
   }
   const symbolBoundHere =
     !!symbol && bound !== null && bound.symbol === symbol && bound.market === market;

@@ -64,6 +64,71 @@ interface PvarPayload {
   [key: string]: unknown;
 }
 
+/**
+ * VaR exception read derived from the REAL payload: `series[]` is the
+ * empirical P&L histogram (bin center `pnl`, observation count `density`) the
+ * backend builds from the same realized portfolio P&L that VaR is estimated
+ * from, and `var` is a positive loss. A period breaches when its realized
+ * P&L falls beyond −VaR. Bin counts are exact for every bin fully outside the
+ * threshold; a bin straddling the line makes the count a lower bound
+ * (`straddle`), never an invented number.
+ */
+export interface VarExceptionRead {
+  breaches: number;
+  periods: number;
+  straddle: boolean;
+  breachBins: number[];
+}
+
+export function deriveVarExceptions(
+  series: Array<{ pnl: number; density: number }>,
+  varDollar: number | null | undefined,
+): VarExceptionRead | null {
+  if (varDollar == null || !Number.isFinite(varDollar) || series.length < 2) return null;
+  const ordered = [...series].sort((a, b) => a.pnl - b.pnl);
+  const diffs: number[] = [];
+  for (let i = 1; i < ordered.length; i += 1) {
+    const gap = ordered[i].pnl - ordered[i - 1].pnl;
+    if (gap > 1e-12) diffs.push(gap);
+  }
+  // `np.histogram` (backend) uses uniform bins, so the smallest positive
+  // center gap is the bin width and each bin spans [pnl − w/2, pnl + w/2).
+  const width = diffs.length ? Math.min(...diffs) : 0;
+  const lossLine = -varDollar;
+  const tol = 1e-9 * Math.max(1, Math.abs(lossLine));
+  const half = width / 2;
+  let breaches = 0;
+  let periods = 0;
+  let straddle = false;
+  const breachBins: number[] = [];
+  series.forEach((bar, index) => {
+    const density = Number.isFinite(bar.density) && bar.density > 0 ? bar.density : 0;
+    periods += density;
+    if (!density) return;
+    if (width <= 0) {
+      if (bar.pnl <= lossLine + tol) {
+        breaches += density;
+        breachBins.push(index);
+      }
+      return;
+    }
+    const upper = bar.pnl + half;
+    const lower = bar.pnl - half;
+    if (upper <= lossLine + tol) {
+      // Every observation in the bin is at/beyond the line (>= VaR loss).
+      breaches += density;
+      breachBins.push(index);
+    } else if (lower < lossLine - tol) {
+      // The line cuts through this bin: the exact excess is unknowable from
+      // the histogram, so the count stays a lower bound.
+      straddle = true;
+    }
+    // else: bin sits entirely inside the line (no breach).
+  });
+  if (periods <= 0) return null;
+  return { breaches, periods, straddle, breachBins };
+}
+
 const COMPONENT_COLUMNS: DataGridColumn<Row>[] = [
   {
     key: "symbol",
@@ -163,6 +228,16 @@ export function PositionVarPane({ code }: FunctionPaneProps) {
   const confidenceLabel =
     typeof payload?.confidence_level === "number" ? `${Math.round(payload.confidence_level * 100)}%` : "—";
   const horizon = str(payload?.horizon) ?? "—";
+
+  const exceptions = useMemo(
+    () => deriveVarExceptions(histogram, varDollar),
+    [histogram, varDollar],
+  );
+  const expectedBreaches = useMemo(() => {
+    const level = payload?.confidence_level;
+    if (!exceptions || typeof level !== "number" || !Number.isFinite(level)) return null;
+    return Math.max(0, Math.round((1 - level) * exceptions.periods));
+  }, [exceptions, payload]);
 
   const riskMax = useMemo(
     () =>
@@ -266,8 +341,27 @@ export function PositionVarPane({ code }: FunctionPaneProps) {
               </section>
 
               <section className="portfolio-visual-panel">
-                <SectionHead title="P&L distribution" meta="empirical loss histogram" />
-                <LossHistogram bars={histogram} />
+                <SectionHead
+                  title="P&L distribution"
+                  meta={exceptions ? "empirical histogram · VaR exceptions marked" : "empirical loss histogram"}
+                />
+                <LossHistogram
+                  bars={histogram}
+                  varLine={varDollar}
+                  breachBins={exceptions?.breachBins ?? []}
+                />
+                {exceptions ? (
+                  <p
+                    className="portfolio-analytics-muted"
+                    data-testid="pvar-exceptions"
+                    style={{ margin: "6px 0 0" }}
+                    title="Bin-count exceedances of the VaR threshold (−VaR) over the realized P&L periods; expected count = (1 − confidence) × periods."
+                  >
+                    {`${exceptions.straddle ? "≥ " : ""}${exceptions.breaches} of ${exceptions.periods} periods beyond the ${confidenceLabel} VaR line`}
+                    {expectedBreaches != null ? ` · expected ≈ ${expectedBreaches}` : ""}
+                    {exceptions.straddle ? " · boundary bin spans the line" : ""}
+                  </p>
+                ) : null}
               </section>
 
               {payload?.methodology ? (
@@ -337,7 +431,15 @@ export function PositionVarPane({ code }: FunctionPaneProps) {
   );
 }
 
-function LossHistogram({ bars }: { bars: Array<{ pnl: number; density: number }> }) {
+function LossHistogram({
+  bars,
+  varLine,
+  breachBins = [],
+}: {
+  bars: Array<{ pnl: number; density: number }>;
+  varLine?: number | null;
+  breachBins?: number[];
+}) {
   if (bars.length < 2) {
     return <span className="portfolio-analytics-muted">No distribution series returned.</span>;
   }
@@ -351,18 +453,26 @@ function LossHistogram({ bars }: { bars: Array<{ pnl: number; density: number }>
   const span = pnlMax - pnlMin || 1;
   const barWidth = Math.max(1, (width - padX * 2) / bars.length - 1);
   const zeroX = padX + ((0 - pnlMin) / span) * (width - padX * 2);
+  const breachSet = new Set(breachBins);
+  const lineValue = typeof varLine === "number" && Number.isFinite(varLine) && varLine > 0 ? -varLine : null;
+  const lineX = lineValue != null ? padX + ((lineValue - pnlMin) / span) * (width - padX * 2) : null;
+  const showVarLine = lineX != null && lineX >= padX && lineX <= width - padX;
   return (
     <div className="u-mt-4">
       <svg
         viewBox={`0 0 ${width} ${height}`}
         className="portfolio-frontier"
         role="img"
-        aria-label={`Loss distribution histogram, ${bars.length} bins, P&L range ${fmtNum(pnlMin, 0)} to ${fmtNum(pnlMax, 0)}`}
+        aria-label={
+          `Loss distribution histogram, ${bars.length} bins, P&L range ${fmtNum(pnlMin, 0)} to ${fmtNum(pnlMax, 0)}` +
+          (showVarLine && lineValue != null ? `, VaR line at ${fmtNum(lineValue, 0)}` : "")
+        }
         style={{ height: 150 }}
       >
         {bars.map((bar, index) => {
           const x = padX + (index / bars.length) * (width - padX * 2);
           const barHeight = (bar.density / maxDensity) * (height - padY * 2);
+          const breached = breachSet.has(index);
           return (
             <rect
               key={`${bar.pnl}-${index}`}
@@ -370,7 +480,12 @@ function LossHistogram({ bars }: { bars: Array<{ pnl: number; density: number }>
               y={height - padY - barHeight}
               width={barWidth}
               height={barHeight}
-              style={{ fill: bar.pnl < 0 ? "var(--negative)" : "var(--positive)", opacity: 0.75, stroke: "none" }}
+              style={{
+                fill: bar.pnl < 0 ? "var(--negative)" : "var(--positive)",
+                opacity: breached ? 0.95 : 0.75,
+                stroke: breached ? "var(--negative)" : "none",
+                strokeWidth: breached ? 1.2 : 0,
+              }}
             />
           );
         })}
@@ -385,10 +500,25 @@ function LossHistogram({ bars }: { bars: Array<{ pnl: number; density: number }>
             strokeDasharray="3 3"
           />
         ) : null}
+        {showVarLine && lineX != null ? (
+          <line
+            x1={lineX}
+            y1={padY}
+            x2={lineX}
+            y2={height - padY}
+            stroke="var(--negative)"
+            strokeWidth={1.4}
+            strokeDasharray="5 3"
+          />
+        ) : null}
       </svg>
       <div className="portfolio-frontier__axis">
         <span>{fmtMoney(pnlMin, true)}</span>
-        <span>zero line · dashed</span>
+        <span>
+          {showVarLine && lineValue != null
+            ? `zero · VaR ${fmtMoney(lineValue, true)}`
+            : "zero line · dashed"}
+        </span>
         <span>{fmtMoney(pnlMax, true)}</span>
       </div>
     </div>

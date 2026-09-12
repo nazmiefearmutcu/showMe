@@ -18,6 +18,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, fireEvent } from "@testing-library/react";
 import { LITMPane } from "./LITM";
+import { downloadGridCsv } from "@/design-system/grid-csv";
 
 /* ── useFunction mock ──────────────────────────────────────────────── */
 
@@ -48,6 +49,14 @@ vi.mock("@/lib/useFunction", () => ({
 vi.mock("@/shell/SymbolBar", () => ({
   SymbolBar: () => null,
 }));
+
+// Keep the real CSV builder, but capture the download call so the export
+// payload can be asserted (jsdom has no Blob download).
+vi.mock("@/design-system/grid-csv", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/design-system/grid-csv")>();
+  return { ...actual, downloadGridCsv: vi.fn(() => true) };
+});
 
 /* ── fixtures ──────────────────────────────────────────────────────── */
 
@@ -151,6 +160,7 @@ function providerDownPayload() {
 beforeEach(() => {
   localStorage.clear();
   setMockFn({ state: "idle", data: undefined });
+  (downloadGridCsv as ReturnType<typeof vi.fn>).mockClear();
 });
 afterEach(() => {
   cleanup();
@@ -235,5 +245,49 @@ describe("LITM pane — item filter interaction", () => {
     );
     expect(table?.textContent).toContain("bankruptcy_or_receivership");
     expect(table?.textContent).not.toContain("officer_departure");
+  });
+});
+
+describe("LITM pane — grid CSV export", () => {
+  it("exports the visible matters via the CSV button", () => {
+    setMockFn({ state: "ok", ...mattersPayload() });
+    render(<LITMPane code="LITM" symbol="XYZ" />);
+    const btn = screen.getByTitle("Download CSV");
+    expect(btn).not.toBeDisabled();
+    fireEvent.click(btn);
+    const mock = downloadGridCsv as ReturnType<typeof vi.fn>;
+    expect(mock).toHaveBeenCalledTimes(1);
+    const [filename, csv] = mock.mock.calls[0] as [string, string];
+    expect(filename).toMatch(/^litm-XYZ-\d{4}-\d{2}-\d{2}\.csv$/);
+    expect(csv).toContain(
+      "Symbol,Filed,Item,Event,Severity,Source,Accession,Document",
+    );
+    expect(csv).toContain(
+      "XYZ,2026-08-14,1.03,bankruptcy_or_receivership,review,sec_edgar_8k,0001193125-26-111111,d8k.htm",
+    );
+  });
+
+  it("exports only the matters matching the active ITEM filter", () => {
+    setMockFn({ state: "ok", ...mattersPayload() });
+    const { container } = render(<LITMPane code="LITM" symbol="XYZ" />);
+    const itemGroup = container.querySelector(
+      '[aria-label="Monitored 8-K item filter"]',
+    );
+    const chip = Array.from(itemGroup!.querySelectorAll("button")).find(
+      (b) => b.textContent === "1.03",
+    );
+    fireEvent.click(chip!);
+    fireEvent.click(screen.getByTitle("Download CSV"));
+    const mock = downloadGridCsv as ReturnType<typeof vi.fn>;
+    const [, csv] = mock.mock.calls[0] as [string, string];
+    expect(csv).toContain("bankruptcy_or_receivership");
+    expect(csv).not.toContain("officer_departure");
+  });
+
+  it("disables the CSV button when the scan found no matters", () => {
+    setMockFn({ state: "ok", ...emptyPayload() });
+    render(<LITMPane code="LITM" symbol="AAPL" />);
+    expect(screen.getByTitle("Download CSV")).toBeDisabled();
+    expect(downloadGridCsv).not.toHaveBeenCalled();
   });
 });

@@ -16,6 +16,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, fireEvent } from "@testing-library/react";
 import { RVPane } from "./RV";
+import * as router from "@/lib/router";
+import { useWorkspace } from "@/lib/workspace";
 
 /* ── useFunction mock ──────────────────────────────────────────────── */
 
@@ -175,5 +177,40 @@ describe("RV pane — interaction", () => {
     render(<RVPane code="RV" symbol="AAPL" />);
     fireEvent.click(screen.getByTitle(/Refresh comp table/i));
     expect(refetch).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("RV pane — DES cross-link (B2)", () => {
+  it("renders each peer ticker as a button named 'Open DES for <sym>'", () => {
+    setMockFn({ state: "ok", ...okPayload() });
+    render(<RVPane code="RV" symbol="AAPL" />);
+    const btn = screen.getByRole("button", { name: "Open DES for MSFT" });
+    expect(btn.tagName).toBe("BUTTON");
+    expect(btn.textContent).toBe("MSFT");
+    // The computed median row is not a security — it must stay plain text.
+    expect(screen.queryByRole("button", { name: /Median/ })).toBeNull();
+  });
+
+  it("R2: the peer link carries the u-symbol-link class with no inline color override", () => {
+    setMockFn({ state: "ok", ...okPayload() });
+    render(<RVPane code="RV" symbol="AAPL" />);
+    const btn = screen.getByRole("button", { name: "Open DES for MSFT" });
+    expect(btn.classList.contains("u-symbol-link")).toBe(true);
+    expect((btn as HTMLElement).style.color).toBe("");
+  });
+
+  it("clicking a peer ticker focuses DES and routes to /symbol/MSFT/DES", () => {
+    setMockFn({ state: "ok", ...okPayload() });
+    const nav = vi.spyOn(router, "navigate").mockImplementation(() => undefined);
+    render(<RVPane code="RV" symbol="AAPL" />);
+    fireEvent.click(screen.getByRole("button", { name: "Open DES for MSFT" }));
+    expect(nav).toHaveBeenCalledWith("/symbol/MSFT/DES");
+    const tree = useWorkspace.getState().tree;
+    expect(tree.kind).toBe("leaf");
+    if (tree.kind === "leaf") {
+      expect(tree.code).toBe("DES");
+      expect(tree.symbol).toBe("MSFT");
+    }
+    nav.mockRestore();
   });
 });

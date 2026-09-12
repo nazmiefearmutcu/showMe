@@ -313,6 +313,11 @@ export function CACTPane({ code, symbol }: FunctionPaneProps) {
         rowKey={(r, i) => `${r.action_type ?? ""}-${r.event_date ?? ""}-${i}`}
         density="compact"
         ariaLabel="CACT corporate actions table"
+        // Lane B4: latest action first — the corporate-action timeline is
+        // read newest-first; null dates sink to the bottom.
+        defaultSortKey="event_date"
+        defaultSortDir="descending"
+        keyboardNavigable
       />
     </div>
   );

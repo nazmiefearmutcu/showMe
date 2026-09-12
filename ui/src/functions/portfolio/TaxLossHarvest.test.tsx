@@ -17,7 +17,7 @@ vi.mock("@/lib/useFunction", () => ({
 }));
 vi.mock("@/lib/router", () => ({ navigate: vi.fn() }));
 
-import { TaxLossHarvestPane } from "./TaxLossHarvest";
+import { TaxLossHarvestPane, deriveWashWindow } from "./TaxLossHarvest";
 
 function ok(
   payload: Record<string, unknown>,
@@ -198,5 +198,66 @@ describe("TLH tax assumptions (user-controlled, persisted)", () => {
     render(<TaxLossHarvestPane code="TLH" />);
     expect(screen.getByText(/assumed bracket/i)).toBeInTheDocument();
     expect(screen.getByText(/assumed LT rate/i)).toBeInTheDocument();
+  });
+});
+
+describe("TLH wash-sale window badge (real derivation)", () => {
+  const NOW = Date.UTC(2026, 8, 12, 0, 0, 0); // 2026-09-12T00:00Z
+
+  it("derives open / upcoming / expired from the real date pair", () => {
+    expect(deriveWashWindow(["2026-08-13", "2026-10-12"], NOW)).toEqual({
+      open: "2026-08-13",
+      close: "2026-10-12",
+      status: "open",
+      daysLeft: 30,
+    });
+    expect(deriveWashWindow(["2026-10-01", "2026-11-30"], NOW)?.status).toBe("upcoming");
+    const expired = deriveWashWindow(["2026-01-01", "2026-02-01"], NOW);
+    expect(expired?.status).toBe("expired");
+    expect(expired?.daysLeft).toBeNull();
+  });
+
+  it("rejects malformed windows instead of inventing a status", () => {
+    expect(deriveWashWindow(null, NOW)).toBeNull();
+    expect(deriveWashWindow(["2026-01-01"], NOW)).toBeNull();
+    expect(deriveWashWindow(["nope", "2026-01-01"], NOW)).toBeNull();
+    expect(deriveWashWindow(["2026-05-01", "2026-04-01"], NOW)).toBeNull();
+  });
+
+  it("badges each candidate with its window state and the §1091 tooltip", () => {
+    ok({
+      ...LIVE_PAYLOAD,
+      candidates: [
+        {
+          ...LIVE_PAYLOAD.candidates[0],
+          symbol: "OPENCO",
+          wash_sale_window: ["2020-01-01", "2099-12-31"],
+        },
+        {
+          ...LIVE_PAYLOAD.candidates[1],
+          symbol: "EXPCO",
+          wash_sale_window: ["2000-01-01", "2000-02-01"],
+        },
+      ],
+    });
+    render(<TaxLossHarvestPane code="TLH" />);
+    expect(screen.getByText(/^OPEN · \d+d left$/)).toBeInTheDocument();
+    expect(screen.getByText("EXPIRED")).toBeInTheDocument();
+    expect(
+      screen.getByTitle(/US §1091 window 2020-01-01 → 2099-12-31/),
+    ).toBeInTheDocument();
+  });
+
+  it("renders an em-dash, never a fabricated badge, for malformed windows", () => {
+    ok({
+      ...LIVE_PAYLOAD,
+      candidates: [
+        { ...LIVE_PAYLOAD.candidates[0], symbol: "BADWIN", wash_sale_window: ["bad", "worse"] },
+      ],
+    });
+    render(<TaxLossHarvestPane code="TLH" />);
+    expect(screen.queryByText(/OPEN ·/)).toBeNull();
+    expect(screen.queryByText("EXPIRED")).toBeNull();
+    expect(screen.getAllByText("—").length).toBeGreaterThan(0);
   });
 });

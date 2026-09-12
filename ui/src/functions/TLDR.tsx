@@ -226,6 +226,11 @@ export function TLDRPane({ code, symbol }: FunctionPaneProps) {
               rowKey={(r, i) => `${r.symbol ?? ""}-${i}`}
               density="compact"
               ariaLabel="TLDR quote movers"
+              // Lane B4: biggest gainers first — the section is the digest's
+              // "Movers" read; null change_pct rows sink to the bottom.
+              defaultSortKey="change_pct"
+              defaultSortDir="descending"
+              keyboardNavigable
             />
           </section>
         ) : null}

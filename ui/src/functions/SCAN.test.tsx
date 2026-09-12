@@ -79,6 +79,17 @@ describe("SCAN pane — render + a11y", () => {
     ).toBeInTheDocument();
   });
 
+  it("gives the intent editor an English accessible name", () => {
+    vi.spyOn(scanner, "runScan").mockResolvedValue(makeResult([makeRow()]));
+    render(<SCANPane code="SCAN" />);
+    // C9 A11Y-1: the intent textarea carried zero naming attributes. The
+    // accessible name mirrors the visible "Intent (NL)" field label with the
+    // pane code so screen readers announce which query they are editing.
+    const editor = screen.getByRole("textbox", { name: "SCAN screen query" });
+    expect(editor.tagName).toBe("TEXTAREA");
+    expect(editor).toHaveValue("crypto opportunities high conviction");
+  });
+
   it("gives every sample-intent quick action an aria-label", () => {
     vi.spyOn(scanner, "runScan").mockResolvedValue(makeResult([makeRow()]));
     render(<SCANPane code="SCAN" />);

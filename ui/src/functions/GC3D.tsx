@@ -22,6 +22,7 @@ import {
   PaneHeader,
   Pill,
   Skeleton,
+  Sparkline,
   StatCard,
   StatusDivider,
   StatusSection,
@@ -77,6 +78,70 @@ const DAYS_IDS = DAYS_OPTIONS.map((o) => o.value);
 /** Max date columns rendered before downsampling to keep the grid readable. */
 const MAX_DATE_COLS = 8;
 
+export interface CurveSlope {
+  shortTenor: string;
+  longTenor: string;
+  points: Array<{ date: string; slope: number }>;
+}
+
+/**
+ * Curve slope derived from the real surface points: per snapshot date,
+ * longTenor yield minus shortTenor yield (percentage points). Prefers the
+ * exact 10Y/2Y labels and falls back to the nearest maturity by
+ * `tenor_years` when a label is missing; dates without both legs are
+ * skipped (no interpolation). Returns null when fewer than two distinct
+ * maturities exist or no date carries both legs — the honest-drop path.
+ */
+export function deriveCurveSlope(surface: GC3DPoint[]): CurveSlope | null {
+  const years = new Map<string, number>();
+  for (const p of surface) {
+    if (p.tenor && typeof p.tenor_years === "number" && Number.isFinite(p.tenor_years)) {
+      years.set(p.tenor, p.tenor_years);
+    }
+  }
+  const candidates = [...years.entries()].map(([tenor, year]) => ({ tenor, year }));
+  if (candidates.length < 2) return null;
+
+  const nearest = (target: number, exclude?: string): string | null => {
+    let best: { tenor: string; distance: number } | null = null;
+    for (const c of candidates) {
+      if (c.tenor === exclude) continue;
+      const distance = Math.abs(c.year - target);
+      if (!best || distance < best.distance) best = { tenor: c.tenor, distance };
+    }
+    return best?.tenor ?? null;
+  };
+
+  let longTenor = years.has("10Y") ? "10Y" : nearest(10);
+  const shortTenor = years.has("2Y") ? "2Y" : nearest(2);
+  if (longTenor && shortTenor && longTenor === shortTenor) {
+    // Nearest-maturity fallback can collapse both legs onto one tenor
+    // (e.g. only 5Y/30Y present) — re-pick the long leg away from the short.
+    longTenor = nearest(10, shortTenor);
+  }
+  if (!longTenor || !shortTenor || longTenor === shortTenor) return null;
+
+  const byDate = new Map<string, Map<string, number>>();
+  for (const p of surface) {
+    if (!p.date || !p.tenor || typeof p.yield !== "number" || !Number.isFinite(p.yield)) continue;
+    let row = byDate.get(p.date);
+    if (!row) {
+      row = new Map<string, number>();
+      byDate.set(p.date, row);
+    }
+    row.set(p.tenor, p.yield);
+  }
+  const points = [...byDate.entries()]
+    .filter(([, row]) => row.has(longTenor as string) && row.has(shortTenor))
+    .map(([date, row]) => ({
+      date,
+      slope: (row.get(longTenor as string) as number) - (row.get(shortTenor) as number),
+    }))
+    .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  if (!points.length) return null;
+  return { shortTenor, longTenor, points };
+}
+
 export function GC3DPane({ code, symbol }: FunctionPaneProps) {
   const [days, setDays] = usePersistentOption<number>(
     "showme.gc3d.days",
@@ -105,6 +170,10 @@ export function GC3DPane({ code, symbol }: FunctionPaneProps) {
   const isModelFixture = sourceMode !== "fred";
 
   const grid = useMemo(() => buildGrid(surface, payload), [surface, payload]);
+  // Secondary visual (campaign C1): curve slope derived from the same real
+  // surface points (10Y−2Y, or nearest available maturities).
+  const slope = useMemo(() => deriveCurveSlope(surface), [surface]);
+  const latestSlope = slope?.points.length ? slope.points[slope.points.length - 1].slope : null;
 
   const COLS: DataGridColumn<GridRow>[] = useMemo(() => {
     const tenorCol: DataGridColumn<GridRow> = {
@@ -201,6 +270,30 @@ export function GC3DPane({ code, symbol }: FunctionPaneProps) {
             tone="neutral"
           />
         </section>
+        {slope && latestSlope != null ? (
+          <section style={slopePanelStyle} aria-label="GC3D curve slope">
+            <div style={slopeMetaStyle}>
+              <span style={slopeTitleStyle}>
+                {slope.longTenor} − {slope.shortTenor} slope
+              </span>
+              <span className="u-text-mute" style={slopeCaptionStyle}>
+                latest {latestSlope >= 0 ? "+" : ""}
+                {latestSlope.toFixed(3)} pp ·{" "}
+                {latestSlope < 0 ? "inverted" : "upward"} · {slope.points.length}{" "}
+                snapshot{slope.points.length === 1 ? "" : "s"} · derived from surface
+              </span>
+            </div>
+            {slope.points.length >= 2 ? (
+              <Sparkline
+                values={slope.points.map((p) => p.slope)}
+                width={220}
+                height={36}
+                tone={latestSlope < 0 ? "negative" : "accent"}
+                ariaLabel={`${slope.longTenor}-minus-${slope.shortTenor} curve slope across ${slope.points.length} snapshots`}
+              />
+            ) : null}
+          </section>
+        ) : null}
         <div>
           <div style={gridTitleStyle}>
             date × tenor surface (yield %, accent tint = level vs range)
@@ -410,6 +503,39 @@ const captionStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
   fontSize: "var(--font-size-2xs)",
   color: "var(--text-mute)",
+};
+
+const slopePanelStyle: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  flexWrap: "wrap",
+  gap: 14,
+  border: "1px solid var(--border-subtle)",
+  background: "var(--surface-2)",
+  borderRadius: "var(--radius-sm)",
+  padding: "8px 10px",
+};
+
+const slopeMetaStyle: CSSProperties = {
+  display: "flex",
+  alignItems: "baseline",
+  flexWrap: "wrap",
+  gap: "4px 12px",
+  minWidth: 0,
+};
+
+const slopeTitleStyle: CSSProperties = {
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: "var(--font-size-xs)",
+  fontWeight: 700,
+  letterSpacing: "0.06em",
+  textTransform: "uppercase",
+  color: "var(--text-display)",
+};
+
+const slopeCaptionStyle: CSSProperties = {
+  fontSize: "var(--font-size-xs)",
 };
 
 const heatWrapStyle: CSSProperties = {

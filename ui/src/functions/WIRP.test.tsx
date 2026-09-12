@@ -12,7 +12,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
-import { WIRPPane } from "./WIRP";
+import { WIRPPane, anchorEntries, cumulativeBpPath } from "./WIRP";
 
 /* ── useFunction / tick mocks ─────────────────────────────────────── */
 
@@ -86,6 +86,15 @@ function livePayload() {
             source_mode: "live_fed_funds_futures",
           },
         ],
+        anchor: {
+          current_target_mid: 3.625,
+          current_target_upper: 3.75,
+          current_target_lower: 3.5,
+          implied_near_term_rate: 3.5,
+          implied_near_term_source: "^IRX 13-week T-bill",
+          effr: 3.63,
+          as_of: "2026-09-12",
+        },
         cards: [],
         methodology: "live method",
         field_dictionary: {},
@@ -211,5 +220,93 @@ describe("WIRP pane — visibility poll (F4 refetch contract)", () => {
     render(<WIRPPane code="WIRP" />);
     fireEvent.click(screen.getByRole("tab", { name: "ECB" }));
     expect(lastFnArgs?.params).toEqual({ central_bank: "ECB", meetings: 6 });
+  });
+});
+
+/* ── campaign C1: implied path + anchor labels ─────────────────────── */
+
+describe("WIRP pane — implied-path derivation (real fields only)", () => {
+  it("builds a zero-baseline cumulative path from implied_change_bp", () => {
+    const rows = [
+      { implied_change_bp: -1.25 },
+      { implied_change_bp: -2.5 },
+      { implied_change_bp: 0 },
+    ];
+    expect(cumulativeBpPath(rows)).toEqual([0, -1.25, -3.75, -3.75]);
+  });
+
+  it("skips meetings without a finite implied move instead of zeroing them", () => {
+    const rows = [
+      { implied_change_bp: 5 },
+      { implied_change_bp: undefined },
+      { implied_change_bp: Number.NaN },
+      { implied_change_bp: 2.5 },
+    ];
+    expect(cumulativeBpPath(rows)).toEqual([0, 5, 7.5]);
+  });
+
+  it("returns an empty path when no meeting carries an implied move", () => {
+    expect(cumulativeBpPath([{ date: "2026-09-16" }])).toEqual([]);
+  });
+
+  it("derives anchor labels only from fields present on the wire", () => {
+    expect(
+      anchorEntries({
+        current_target_mid: 3.625,
+        current_target_upper: 3.75,
+        current_target_lower: 3.5,
+        implied_near_term_rate: 3.5,
+        implied_near_term_source: "^IRX 13-week T-bill",
+      }),
+    ).toEqual([
+      { key: "target", label: "Target", value: "3.50–3.75%" },
+      { key: "mid", label: "Mid", value: "3.625%" },
+      {
+        key: "near",
+        label: "Near-term",
+        value: "3.500%",
+        title: "^IRX 13-week T-bill",
+      },
+    ]);
+    // Absent anchor → no fabricated labels.
+    expect(anchorEntries(undefined)).toEqual([]);
+    expect(anchorEntries({ as_of: "2026-09-12" })).toEqual([]);
+  });
+
+  it("renders the cumulative path sparkline + target-range anchor labels", () => {
+    setMockFn({ state: "ok", ...livePayload() });
+    render(<WIRPPane code="WIRP" />);
+    const panel = screen.getByLabelText("WIRP implied path");
+    expect(
+      within(panel).getByRole("img", {
+        name: "Cumulative implied policy-rate path",
+      }),
+    ).toBeInTheDocument();
+    expect(within(panel).getByText("3.50–3.75%")).toBeInTheDocument();
+    expect(within(panel).getByText("3.625%")).toBeInTheDocument();
+    expect(within(panel).getByText("3.500%")).toBeInTheDocument();
+    expect(within(panel).getByText(/Σ implied Δ from the FED anchor/)).toBeInTheDocument();
+  });
+
+  it("keeps the anchor strip but drops the sparkline honestly when the series is absent", () => {
+    const payload = livePayload();
+    const rows = (payload.data.data as Record<string, unknown>).rows as Array<Record<string, unknown>>;
+    for (const row of rows) delete row.implied_change_bp;
+    setMockFn({ state: "ok", ...payload });
+    render(<WIRPPane code="WIRP" />);
+    const panel = screen.getByLabelText("WIRP implied path");
+    expect(within(panel).queryByRole("img")).toBeNull();
+    expect(within(panel).getByText(/No per-meeting implied series returned/)).toBeInTheDocument();
+  });
+
+  it("renders no path panel when neither the series nor the anchor is on the wire", () => {
+    const payload = livePayload();
+    const data = payload.data.data as Record<string, unknown>;
+    delete data.anchor;
+    const rows = data.rows as Array<Record<string, unknown>>;
+    for (const row of rows) delete row.implied_change_bp;
+    setMockFn({ state: "ok", ...payload });
+    render(<WIRPPane code="WIRP" />);
+    expect(screen.queryByLabelText("WIRP implied path")).toBeNull();
   });
 });

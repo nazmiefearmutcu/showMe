@@ -475,6 +475,7 @@ export function EQSPane({ code }: FunctionPaneProps) {
                       rows={3}
                       spellCheck={false}
                       style={textareaStyle}
+                      aria-label="EQS DSL query"
                     />
                     <div style={sampleRowStyle}>
                       {SAMPLES.map((s) => (
