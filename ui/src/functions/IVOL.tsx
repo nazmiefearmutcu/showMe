@@ -1,49 +1,66 @@
 /**
- * IVOL — Implied Vol Surface.
+ * IVOL — Implied Vol Surface (Options-family redesign, lane L2 · 2026-09-12).
  *
- * Bloomberg `OVDV`/`SKEW` analogue: the option chain's implied-vol surface
- * across expiry × moneyness for one underlying. The live path pulls the real
- * yfinance option chain (`source_mode="live_yfinance"`); the explicit
- * `reference=true` opt-in / fallback emits the labelled Black-Scholes skew
- * template (amber REFERENCE pill + notice) so a modeled surface is never
- * mistaken for a live OPRA/CBOE feed.
+ * Wire contract (probed live — raw: options-redesign/raw/ivol-payload.json):
+ *   surface[] / rows[] cells → { expiry, strike, moneyness, option_type,
+ *                                vol (decimal), vol_pct (percent),
+ *                                bid, ask, mid, last, volume, open_interest }
+ *     ⚠ the cells carry `vol` / `vol_pct` — NEVER `iv`. The pre-redesign pane
+ *       keyed on `iv`, so the heatmap was empty (`0×30` pill), the smile strip
+ *       never mounted and the "Skew detail" table rendered 30 rows of em-dashes.
+ *   calls_grid[] / puts_grid[] → { expiry, strike, iv (decimal), volume }
+ *     (reference-template mirror of the same surface; used only when the
+ *      surface/rows arrays come back empty).
+ *   series[]  → { t: expiry, v: atm_iv (decimal) }   (ATM term structure)
+ *   summary   → { contracts, expiries, calls, puts, source_mode,
+ *                 atm_iv_front, atm_iv_back, skew, term_slope }
+ *   envelope  → status ("ok" | "reference" | "provider_unavailable"),
+ *               data_state (spot source), reason, sources, elapsed_ms
  *
- * Payload (data?.data), verified against
- * engine/functions/derivative/_funcs.py::IVOLFunction + _stubs.py templates:
- *   spot            number ($)
- *   as_of           iso8601
- *   surface[]       { expiry, dte?, strike, moneyness?, iv(decimal),
- *                     option_type?, type? }
- *   rows[]          { expiry, dte?, atm_iv?, rr_25d?, bf_25d?, put_skew?, ... }
- *   series[]        { t: expiryLabel, v: atm_iv(decimal) }   (ATM term structure)
- *   cards[]         { label, value, unit? }                  (KPIs)
- *   summary         { atm_iv_front?, atm_iv_back?, skew?, term_slope?,
- *                     x_labels?, y_labels?, contracts?, expiries?, source_mode? }
- *   source_mode, methodology, name, symbol, warnings[]
- * NOTE: surface[].iv and skew-row scalars are DECIMALS (×100 for display).
- *       Moneyness may be absent on raw chain rows → derived from strike/spot.
- *       The pane defensively normalises whichever shape the handler returns.
+ * P0 resolution (commission MASTER-VERDICT.md:212):
+ *   - heatmap + smile read the REAL `vol` field;
+ *   - the smile table derives call/put IV by strike from the real rows;
+ *   - the dead "Skew detail" table (atm_iv/rr_25d/bf_25d — never emitted) is gone;
+ *   - expiries are deduped (was 30 duplicate tabs → duplicate React keys);
+ *   - exactly ONE mode pill + ONE reference notice; no mode echo in the footer;
+ *   - KPI ≤ 4; one DataGrid (sortable + keyboard + CSV); one footer provenance row.
+ *
+ * Honesty: the mode pill is driven by `source_mode` (only `live_*` is live) and
+ * the reference notice spells out the spot anchor from `data_state` plus the
+ * provider reason — a modeled surface can never read as a live OPRA/CBOE chain.
+ * Missing cells render the em-dash sentinel, never a fabricated value.
  */
-import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from "react";
 import {
   DataGrid,
   type DataGridColumn,
   DeltaChip,
-  Empty,
   Pane,
   PaneBody,
   PaneFooter,
   PaneHeader,
+  PaneState,
   Pill,
-  Skeleton,
-  Sparkline,
   StatCard,
   StatusDivider,
   StatusSection,
   Tabs,
 } from "@/design-system";
+import {
+  buildGridCsv,
+  downloadGridCsv,
+  gridCsvFilename,
+  type GridCsvColumn,
+} from "@/design-system/grid-csv";
 import { useFunction } from "@/lib/useFunction";
-import { useUtcStamp } from "@/lib/useUtcStamp";
 import { useVisibilityTick } from "@/lib/useVisibilityTick";
 import {
   FunctionControlGroup,
@@ -53,99 +70,158 @@ import {
 import type { FunctionPaneProps } from "./registry-types";
 
 const EXPIRY_STORAGE_KEY = "showme.ivol-expiry";
+const REFRESH_MS = 60_000;
+const MONEYNESS_BUCKET = 0.05;
+const ATM_TOLERANCE = 0.026;
 
-interface RawSurfaceCell {
+/* ── wire types ─────────────────────────────────────────────────────── */
+
+interface RawCell {
   expiry?: string;
-  dte?: number;
-  moneyness?: number;
   strike?: number;
-  iv?: number; // decimal (e.g. 0.32)
+  moneyness?: number;
   option_type?: string;
   type?: string;
+  /** decimal IV — the REAL surface field */
+  vol?: number;
+  /** percent IV — the REAL surface field */
+  vol_pct?: number;
+  /** decimal IV — calls_grid / puts_grid only */
+  iv?: number;
 }
 
-interface RawSkewRow {
-  expiry?: string;
-  dte?: number;
-  atm_iv?: number; // decimal
-  rr_25d?: number; // decimal
-  bf_25d?: number; // decimal
-  put_skew?: number; // decimal
-}
-
-interface IvolSeriesPoint {
+interface SeriesPoint {
   t?: string;
-  v?: number; // decimal
-}
-
-interface IvolCard {
-  label?: string;
-  value?: number | string | null;
-  unit?: string;
+  v?: number;
 }
 
 interface IvolSummary {
-  atm_iv_front?: number;
-  atm_iv_back?: number;
-  skew?: number;
-  term_slope?: number;
-  x_labels?: string[];
-  y_labels?: string[];
   contracts?: number;
   expiries?: number;
+  calls?: number;
+  puts?: number;
   source_mode?: string;
+  atm_iv_front?: number | null;
+  atm_iv_back?: number | null;
+  skew?: number | null;
+  term_slope?: number | null;
 }
 
 interface IvolPayload {
   symbol?: string;
-  name?: string;
   spot?: number;
-  as_of?: string;
-  surface?: RawSurfaceCell[];
-  rows?: RawSkewRow[];
-  series?: IvolSeriesPoint[];
-  cards?: IvolCard[];
-  summary?: IvolSummary;
+  status?: string;
+  reason?: string;
+  data_state?: string;
   source_mode?: string;
+  surface?: RawCell[];
+  rows?: RawCell[];
+  calls_grid?: RawCell[];
+  puts_grid?: RawCell[];
+  series?: SeriesPoint[];
+  summary?: IvolSummary;
   methodology?: string;
   warnings?: string[];
 }
 
-// Normalised grid model assembled from whichever surface shape the backend
-// returns. `mny` is a bucketed moneyness ratio (K/S) used as the column key.
-interface GridCell {
-  iv: number; // decimal
-  strike?: number;
-  optionType?: string;
-}
-interface GridRow {
+/* ── normalization ──────────────────────────────────────────────────── */
+
+type OptionSide = "CALL" | "PUT";
+
+interface VolCell {
   expiry: string;
-  dte?: number;
-  cells: Map<string, GridCell>; // mny-bucket → cell
+  strike?: number;
+  moneyness?: number;
+  side?: OptionSide;
+  vol: number; // decimal
 }
 
-// Per-side skew ladder row (OPP wave 2026-09-11): the heatmap merges calls
-// and puts per moneyness bucket, so the CALL vs PUT read is lost there. This
-// row keeps the sides separate for the active expiry.
-interface SideSkewRow {
-  strike: number;
-  call_iv?: number;
-  put_iv?: number;
+function sideOf(raw: string | undefined): OptionSide | undefined {
+  const s = (raw ?? "").toUpperCase();
+  if (s === "CALL" || s === "C") return "CALL";
+  if (s === "PUT" || s === "P") return "PUT";
+  return undefined;
 }
 
-const REFRESH_MS = 60_000;
+/** surface / rows cells: the real field is `vol` (fallback `vol_pct`). Never `iv`. */
+function surfaceVol(c: RawCell): number | undefined {
+  if (typeof c.vol === "number" && Number.isFinite(c.vol)) return c.vol;
+  if (typeof c.vol_pct === "number" && Number.isFinite(c.vol_pct)) {
+    return c.vol_pct / 100;
+  }
+  return undefined;
+}
 
-const mnyKey = (m: number): string => m.toFixed(2);
-const isAtmBucket = (m: number): boolean => Math.abs(m - 1) < 0.026;
+/** calls_grid / puts_grid cells: the real field there is `iv`. */
+function gridVol(c: RawCell): number | undefined {
+  if (typeof c.iv === "number" && Number.isFinite(c.iv)) return c.iv;
+  return surfaceVol(c);
+}
+
+function collectCells(
+  list: RawCell[] | undefined,
+  forcedSide: OptionSide | undefined,
+  read: (c: RawCell) => number | undefined,
+  spot: number | undefined,
+): VolCell[] {
+  const out: VolCell[] = [];
+  for (const c of list ?? []) {
+    const expiry = String(c.expiry ?? "").trim();
+    if (!expiry) continue;
+    const vol = read(c);
+    if (vol == null || vol < 0) continue;
+    let moneyness =
+      typeof c.moneyness === "number" && Number.isFinite(c.moneyness)
+        ? c.moneyness
+        : undefined;
+    if (moneyness == null && typeof c.strike === "number" && spot != null && spot > 0) {
+      moneyness = c.strike / spot;
+    }
+    out.push({
+      expiry,
+      strike:
+        typeof c.strike === "number" && Number.isFinite(c.strike)
+          ? c.strike
+          : undefined,
+      moneyness,
+      side: forcedSide ?? sideOf(c.option_type ?? c.type),
+      vol,
+    });
+  }
+  return out;
+}
+
+/**
+ * Normalise the surface from the real wire fields. Preference order:
+ * `surface` → `rows` (identical array on both backend paths) → the template's
+ * `calls_grid`/`puts_grid` mirrors (which carry `iv`).
+ */
+function normalizeSurface(payload: IvolPayload, spot: number | undefined): VolCell[] {
+  const surface = Array.isArray(payload.surface) ? payload.surface : [];
+  const rows = Array.isArray(payload.rows) ? payload.rows : [];
+  const primary = collectCells(
+    surface.length ? surface : rows,
+    undefined,
+    surfaceVol,
+    spot,
+  );
+  if (primary.length) return primary;
+  return [
+    ...collectCells(payload.calls_grid, "CALL", gridVol, spot),
+    ...collectCells(payload.puts_grid, "PUT", gridVol, spot),
+  ];
+}
+
+/* ── presentation helpers ───────────────────────────────────────────── */
 
 /** decimal → "32.00%" */
-const pct = (decimal: number | undefined, digits = 2): string =>
+const pct = (decimal: number | null | undefined, digits = 2): string =>
   typeof decimal === "number" && Number.isFinite(decimal)
     ? `${(decimal * 100).toFixed(digits)}%`
     : "—";
 
-/** decimal → "+32.00%" (×100, signed) — matches the heatmap's scaling */
-const signedPct = (decimal: number | undefined, digits = 2): string =>
+/** decimal → "+32.00%" (signed) */
+const signedPct = (decimal: number | null | undefined, digits = 2): string =>
   typeof decimal === "number" && Number.isFinite(decimal)
     ? `${decimal > 0 ? "+" : ""}${(decimal * 100).toFixed(digits)}%`
     : "—";
@@ -158,20 +234,47 @@ const numFmt = (v: number | undefined | null, digits = 0): string =>
       })
     : "—";
 
-/** IV (decimal) → heat background. Cool accent for low vol, hot negative for high. */
-function heatColor(iv: number, lo: number, hi: number): string {
-  const span = hi - lo || 1;
-  const t = Math.min(1, Math.max(0, (iv - lo) / span));
-  if (t < 0.5) {
-    const a = Math.round((0.12 + t * 0.5) * 100);
-    return `color-mix(in srgb, var(--accent) ${a}%, transparent)`;
-  }
-  const a = Math.round((0.18 + (t - 0.5) * 0.9) * 100);
-  return `color-mix(in srgb, var(--negative) ${a}%, transparent)`;
+const bucketOf = (moneyness: number): string =>
+  (Math.round(moneyness / MONEYNESS_BUCKET) * MONEYNESS_BUCKET).toFixed(2);
+
+const isAtmBucket = (key: string): boolean =>
+  Math.abs(Number(key) - 1) < ATM_TOLERANCE;
+
+function mean(xs: number[]): number {
+  return xs.reduce((a, b) => a + b, 0) / xs.length;
+}
+
+/** Sequential heat scale on the positive token ladder (IV has no sign). */
+function heatBackground(vol: number, lo: number, hi: number): string {
+  const span = hi - lo;
+  if (!(span > 0)) return "var(--heat-pos-3)";
+  const t = (vol - lo) / span;
+  const step = Math.min(5, Math.max(1, Math.ceil(t * 5)));
+  return `var(--heat-pos-${step})`;
+}
+
+/* ── grid models ────────────────────────────────────────────────────── */
+
+interface HeatAgg {
+  call: number[];
+  put: number[];
+  other: number[];
+}
+
+interface HeatRow {
+  expiry: string;
+  cells: Map<string, HeatAgg>;
+}
+
+interface SmileRow {
+  strike: number;
+  call?: number;
+  put?: number;
+  spread?: number;
 }
 
 export function IVOLPane({ code, symbol }: FunctionPaneProps) {
-  // Bundle D / PERF-04. Visibility-aware poll.
+  // Visibility-aware 60s poll (refetch trigger only — never a fetch param).
   const tick = useVisibilityTick(REFRESH_MS);
 
   const { state, data, error, refetch } = useFunction<unknown>({
@@ -180,10 +283,6 @@ export function IVOLPane({ code, symbol }: FunctionPaneProps) {
     params: { underlying: symbol },
   });
 
-  // Poll-on-tick (visibility-aware): refetch every minute WITHOUT re-keying
-  // the fetch. `tick` must stay out of params — a tick-keyed fetch classifies
-  // as a brand-new load and flashes the 320px skeleton every poll. Deps are
-  // [tick] ONLY: `refetch` is a fresh identity per render.
   useEffect(() => {
     if (tick === 0) return;
     refetch();
@@ -199,132 +298,85 @@ export function IVOLPane({ code, symbol }: FunctionPaneProps) {
   );
 
   const spot = typeof payload.spot === "number" ? payload.spot : undefined;
-  const surfaceRaw = useMemo<RawSurfaceCell[]>(
-    () => (Array.isArray(payload.surface) ? payload.surface : []),
-    [payload.surface],
-  );
-  const skewRows = useMemo<RawSkewRow[]>(
-    () => (Array.isArray(payload.rows) ? payload.rows : []),
-    [payload.rows],
-  );
-  const series = useMemo<IvolSeriesPoint[]>(
+  const summary = payload.summary ?? {};
+  const series = useMemo<SeriesPoint[]>(
     () => (Array.isArray(payload.series) ? payload.series : []),
     [payload.series],
   );
-  const cards = Array.isArray(payload.cards) ? payload.cards : [];
-  const summary = payload.summary ?? {};
 
-  // ---- Normalise the surface into an expiry×moneyness grid. -------------
-  // Some handler paths return rich {moneyness} cells; the offline reference
-  // template returns plain {expiry, strike, iv}. Bucket moneyness to a small
-  // strike ladder around spot so the heatmap columns line up cleanly.
-  const grid = useMemo<GridRow[]>(() => {
-    if (!surfaceRaw.length) return [];
-    const byExpiry = new Map<string, GridRow>();
-    const order: string[] = [];
-    for (const c of surfaceRaw) {
-      const expiry = String(c.expiry ?? "");
-      if (!expiry || typeof c.iv !== "number" || !Number.isFinite(c.iv)) {
-        continue;
-      }
-      let m = typeof c.moneyness === "number" ? c.moneyness : undefined;
-      if (m == null && typeof c.strike === "number" && spot && spot > 0) {
-        m = c.strike / spot;
-      }
-      if (m == null || !Number.isFinite(m)) continue;
-      // Bucket to 5% moneyness steps so calls+puts at the same strike merge.
-      const bucket = Math.round(m / 0.05) * 0.05;
-      const key = mnyKey(bucket);
-      let row = byExpiry.get(expiry);
-      if (!row) {
-        row = { expiry, dte: c.dte, cells: new Map() };
-        byExpiry.set(expiry, row);
-        order.push(expiry);
-      }
-      // Prefer the cell closest to the bucket center; otherwise average IVs so
-      // a call/put pair at one strike reads as one smooth surface point.
-      const existing = row.cells.get(key);
-      if (existing) {
-        existing.iv = (existing.iv + c.iv) / 2;
-      } else {
-        row.cells.set(key, {
-          iv: c.iv,
-          strike: c.strike,
-          optionType: c.option_type ?? c.type,
-        });
-      }
-    }
-    return order.map((e) => byExpiry.get(e)!);
-  }, [surfaceRaw, spot]);
+  // The REAL surface cells: `vol` on surface/rows, `iv` only for the grid mirrors.
+  const surfaceCells = useMemo<VolCell[]>(
+    () => normalizeSurface(payload, spot),
+    [payload, spot],
+  );
 
-  // Ordered moneyness columns present anywhere in the grid.
-  const moneyCols = useMemo<number[]>(() => {
-    const set = new Set<string>();
-    for (const r of grid) for (const k of r.cells.keys()) set.add(k);
-    return [...set].map(Number).sort((a, b) => a - b);
-  }, [grid]);
-
-  // Expiry tenor labels for tabs / rows. Prefer the grid order; fall back to
-  // the skew rows or the ATM term series so the selector still works when the
-  // surface array is sparse.
+  // Unique expiries in wire order — dedupe is structural (Map keys), which
+  // kills the old duplicate-tab React keys (30 duplicate "30d" entries).
   const expiries = useMemo<string[]>(() => {
-    if (grid.length) return grid.map((r) => r.expiry);
-    if (skewRows.length) {
-      return skewRows.map((r) => String(r.expiry ?? "")).filter(Boolean);
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const c of surfaceCells) {
+      if (!seen.has(c.expiry)) {
+        seen.add(c.expiry);
+        out.push(c.expiry);
+      }
     }
-    return series.map((p) => String(p.t ?? "")).filter(Boolean);
-  }, [grid, skewRows, series]);
+    return out;
+  }, [surfaceCells]);
 
-  // Heat scale bounds across all real IV cells.
-  const ivBounds = useMemo(() => {
+  // Expiry × moneyness heat model (call+put at one bucket merge into the
+  // cell average; the per-side split lives in the smile table below).
+  const heat = useMemo(() => {
+    const byExpiry = new Map<string, Map<string, HeatAgg>>();
+    const order: string[] = [];
+    for (const c of surfaceCells) {
+      if (c.moneyness == null || !Number.isFinite(c.moneyness)) continue;
+      const key = bucketOf(c.moneyness);
+      let row = byExpiry.get(c.expiry);
+      if (!row) {
+        row = new Map();
+        byExpiry.set(c.expiry, row);
+        order.push(c.expiry);
+      }
+      const agg = row.get(key) ?? { call: [], put: [], other: [] };
+      (c.side === "CALL" ? agg.call : c.side === "PUT" ? agg.put : agg.other).push(c.vol);
+      row.set(key, agg);
+    }
+    const rows: HeatRow[] = order.map((expiry) => ({
+      expiry,
+      cells: byExpiry.get(expiry)!,
+    }));
+    const bucketSet = new Set<string>();
+    for (const r of rows) for (const k of r.cells.keys()) bucketSet.add(k);
+    const buckets = [...bucketSet].sort((a, b) => Number(a) - Number(b));
     let lo = Infinity;
     let hi = -Infinity;
-    for (const r of grid) {
-      for (const c of r.cells.values()) {
-        if (c.iv < lo) lo = c.iv;
-        if (c.iv > hi) hi = c.iv;
+    for (const r of rows) {
+      for (const agg of r.cells.values()) {
+        const v = mean([...agg.call, ...agg.put, ...agg.other]);
+        lo = Math.min(lo, v);
+        hi = Math.max(hi, v);
       }
     }
-    if (!Number.isFinite(lo)) lo = 0;
-    if (!Number.isFinite(hi)) hi = 1;
-    return { lo, hi };
-  }, [grid]);
-
-  // ATM term-structure series: prefer the backend series, else read the ATM
-  // bucket out of each grid row.
-  const termSeries = useMemo<number[]>(() => {
-    if (series.length) {
-      return series.map((p) => (typeof p.v === "number" ? p.v * 100 : 0));
+    if (!Number.isFinite(lo)) {
+      lo = 0;
+      hi = 1;
     }
-    return grid
-      .map((r) => {
-        for (const [k, c] of r.cells) {
-          if (isAtmBucket(Number(k))) return c.iv * 100;
-        }
-        return null;
-      })
-      .filter((v): v is number => v != null);
-  }, [series, grid]);
+    return { rows, buckets, lo, hi };
+  }, [surfaceCells]);
 
-  // Persisted expiry selection, validated against the live expiry set.
-  // Read the stored expiry lazily; the placeholder "—" is never honoured so a
-  // cold-start render (before data arrives) can't lock the selection to it.
+  // Persisted expiry selection, validated against the loaded set.
   const [activeExpiry, setActiveExpiry] = useState<string>(() => {
     if (typeof localStorage === "undefined") return "";
     const raw = localStorage.getItem(EXPIRY_STORAGE_KEY);
     return raw && raw !== "—" ? raw : "";
   });
-
-  // Once real expiries exist, snap the selection onto a valid one if the stored
-  // key isn't among them (covers first data arrival + symbol/expiry changes).
   useEffect(() => {
     if (expiries.length && !expiries.includes(activeExpiry)) {
       setActiveExpiry(expiries[0]);
     }
   }, [expiries, activeExpiry]);
 
-  // Persist only real expiries — never the "—" placeholder — so a saved
-  // selection survives cold starts instead of being clobbered.
   const selectExpiry = useCallback((next: string) => {
     setActiveExpiry(next);
     if (typeof localStorage !== "undefined" && next && next !== "—") {
@@ -336,167 +388,94 @@ export function IVOLPane({ code, symbol }: FunctionPaneProps) {
     ? activeExpiry
     : (expiries[0] ?? "");
 
-  // Per-side skew source (OPP wave 2026-09-11): real CALL/PUT IV per strike
-  // for the active expiry, straight off the shipped surface cells (no
-  // interpolation, no merging — the heatmap above merges the sides).
-  const sideCurves = useMemo<{
-    calls: Array<{ strike: number; iv: number }>;
-    puts: Array<{ strike: number; iv: number }>;
-  }>(() => {
-    const calls: Array<{ strike: number; iv: number }> = [];
-    const puts: Array<{ strike: number; iv: number }> = [];
-    if (!effectiveExpiry) return { calls, puts };
-    for (const c of surfaceRaw) {
-      if (String(c.expiry ?? "") !== effectiveExpiry) continue;
-      if (typeof c.iv !== "number" || !Number.isFinite(c.iv)) continue;
+  // Smile: real CALL/PUT IV by strike for the active expiry.
+  const smileRows = useMemo<SmileRow[]>(() => {
+    if (!effectiveExpiry) return [];
+    const byStrike = new Map<number, SmileRow>();
+    for (const c of surfaceCells) {
+      if (c.expiry !== effectiveExpiry) continue;
       if (typeof c.strike !== "number" || !Number.isFinite(c.strike)) continue;
-      const side = String(c.option_type ?? c.type ?? "").toUpperCase();
-      if (side === "CALL" || side === "C") calls.push({ strike: c.strike, iv: c.iv });
-      else if (side === "PUT" || side === "P") puts.push({ strike: c.strike, iv: c.iv });
+      if (!c.side) continue; // cannot attribute a side → not a smile point
+      const row = byStrike.get(c.strike) ?? { strike: c.strike };
+      if (c.side === "CALL") {
+        if (row.call == null) row.call = c.vol;
+      } else if (row.put == null) {
+        row.put = c.vol;
+      }
+      byStrike.set(c.strike, row);
     }
-    calls.sort((a, b) => a.strike - b.strike);
-    puts.sort((a, b) => a.strike - b.strike);
-    return { calls, puts };
-  }, [surfaceRaw, effectiveExpiry]);
+    return [...byStrike.values()]
+      .sort((a, b) => a.strike - b.strike)
+      .map((r) => ({
+        ...r,
+        spread: r.call != null && r.put != null ? r.put - r.call : undefined,
+      }));
+  }, [surfaceCells, effectiveExpiry]);
 
-  // Shared strike ladder for the active expiry (±20% around spot when the
-  // spot is known, so the strip stays compact; all strikes otherwise).
-  const sideSkewRows = useMemo<SideSkewRow[]>(() => {
-    const byStrike = new Map<number, SideSkewRow>();
-    for (const p of sideCurves.calls) {
-      const row = byStrike.get(p.strike) ?? { strike: p.strike };
-      row.call_iv = p.iv;
-      byStrike.set(p.strike, row);
-    }
-    for (const p of sideCurves.puts) {
-      const row = byStrike.get(p.strike) ?? { strike: p.strike };
-      row.put_iv = p.iv;
-      byStrike.set(p.strike, row);
-    }
-    const rows = [...byStrike.values()].sort((a, b) => a.strike - b.strike);
-    if (spot && spot > 0) {
-      const near = rows.filter((r) => Math.abs(r.strike / spot - 1) <= 0.2);
-      if (near.length >= 2) return near;
-    }
-    return rows;
-  }, [sideCurves, spot]);
-
-  const sideSkewCount = sideCurves.calls.length + sideCurves.puts.length;
-
-  const sourceMode =
-    payload.source_mode ?? summary.source_mode ?? "reference";
-  // LIVE requires an explicit live_* mode (backend live path stamps
-  // source_mode="live_yfinance"); an absent mode stays honestly "reference".
-  const isLive = sourceMode.startsWith("live_");
-  const isReference = !isLive;
-  const warningsList = Array.isArray(payload.warnings)
-    ? payload.warnings
-    : Array.isArray(data?.warnings)
-      ? (data?.warnings as string[])
-      : [];
-  const sources =
-    data?.sources?.join(", ") || sourceMode || "showMe option-chain reference";
-  const utcStamp = useUtcStamp(tick);
-
-  const cardTone = (
-    label: string,
-    value: number,
-  ): "neutral" | "positive" | "negative" => {
-    const l = label.toLowerCase();
-    if (l.includes("skew")) return value > 0 ? "negative" : "positive";
-    if (l.includes("slope")) return value >= 0 ? "positive" : "negative";
-    return "neutral";
-  };
-
-  const tableCols = useMemo<DataGridColumn<RawSkewRow>[]>(
-    () => [
-      {
-        key: "expiry",
-        header: "Expiry",
-        width: 92,
-        render: (r) => <span style={expiryCell}>{r.expiry ?? "—"}</span>,
-      },
-      {
-        key: "dte",
-        header: "DTE",
-        numeric: true,
-        width: 70,
-        render: (r) => <span style={mutedNum}>{numFmt(r.dte)}</span>,
-      },
-      {
-        key: "atm_iv",
-        header: "ATM IV",
-        numeric: true,
-        width: 94,
-        render: (r) => <span style={primaryNum}>{pct(r.atm_iv)}</span>,
-      },
-      {
-        key: "rr_25d",
-        header: "25Δ RR",
-        numeric: true,
-        width: 96,
-        render: (r) =>
-          typeof r.rr_25d === "number" ? (
-            <DeltaChip value={r.rr_25d * 100} format="raw" fractionDigits={2} />
-          ) : (
-            "—"
-          ),
-      },
-      {
-        key: "bf_25d",
-        header: "25Δ BF",
-        numeric: true,
-        width: 92,
-        render: (r) => <span style={mutedNum}>{pct(r.bf_25d)}</span>,
-      },
-      {
-        key: "put_skew",
-        header: "Put Skew",
-        numeric: true,
-        width: 96,
-        render: (r) => <span style={mutedNum}>{pct(r.put_skew)}</span>,
-      },
-    ],
-    [],
+  const frontLabel = String(series[0]?.t ?? expiries[0] ?? "front");
+  const backLabel = String(
+    series[series.length - 1]?.t ?? expiries[expiries.length - 1] ?? "back",
   );
 
-  // Per-side skew ladder columns — keeps CALL IV and PUT IV in separate,
-  // explicitly-labelled columns for the active expiry.
-  const skewCols = useMemo<DataGridColumn<SideSkewRow>[]>(
+  // ---- honesty layer -----------------------------------------------------
+  const sourceMode = payload.source_mode ?? summary.source_mode ?? "reference";
+  const isLive = sourceMode.startsWith("live_");
+  const isSynthetic = sourceMode.startsWith("synthetic");
+  const modeLabel = isLive ? "live" : isSynthetic ? "synthetic" : "reference";
+  const spotState = payload.data_state;
+  const anchorLabel =
+    spotState === "live_quote"
+      ? "the live spot"
+      : spotState === "synthetic_anchor"
+        ? "a synthetic spot anchor"
+        : spotState === "user_override"
+          ? "the user spot override"
+          : "the resolved spot";
+  const envelopeStatus = data?.status ?? payload.status;
+  const providerReason = payload.reason ?? data?.reason;
+  const sources =
+    data?.sources?.join(", ") || sourceMode || "showMe option-chain reference";
+
+  // ---- table columns -----------------------------------------------------
+  const smileCols = useMemo<DataGridColumn<SmileRow>[]>(
     () => [
       {
         key: "strike",
         header: "Strike",
         numeric: true,
         width: 90,
+        sortable: true,
+        sortValue: (r) => r.strike,
         render: (r) => <span style={primaryNum}>{numFmt(r.strike, 2)}</span>,
       },
       {
-        key: "call_iv",
+        key: "call",
         header: "Call IV",
         numeric: true,
         width: 90,
-        render: (r) => <span style={mutedNum}>{pct(r.call_iv)}</span>,
+        sortable: true,
+        sortValue: (r) => r.call ?? null,
+        render: (r) => <span style={mutedNum}>{pct(r.call)}</span>,
       },
       {
-        key: "put_iv",
+        key: "put",
         header: "Put IV",
         numeric: true,
         width: 90,
-        render: (r) => <span style={mutedNum}>{pct(r.put_iv)}</span>,
+        sortable: true,
+        sortValue: (r) => r.put ?? null,
+        render: (r) => <span style={mutedNum}>{pct(r.put)}</span>,
       },
       {
-        key: "skew",
+        key: "spread",
         header: "Put − Call",
         numeric: true,
-        width: 100,
+        width: 110,
+        sortable: true,
+        sortValue: (r) => r.spread ?? null,
         render: (r) =>
-          typeof r.call_iv === "number" && typeof r.put_iv === "number" ? (
-            <DeltaChip
-              value={(r.put_iv - r.call_iv) * 100}
-              format="raw"
-              fractionDigits={2}
-            />
+          r.spread != null ? (
+            <DeltaChip value={r.spread * 100} format="raw" fractionDigits={2} />
           ) : (
             "—"
           ),
@@ -505,350 +484,188 @@ export function IVOLPane({ code, symbol }: FunctionPaneProps) {
     [],
   );
 
-  const hasData =
-    grid.length > 0 || skewRows.length > 0 || series.length > 0;
+  const csvCols = useMemo<GridCsvColumn<SmileRow>[]>(
+    () => [
+      { key: "strike", header: "Strike", value: (r) => r.strike },
+      { key: "call", header: "Call IV", value: (r) => r.call ?? "" },
+      { key: "put", header: "Put IV", value: (r) => r.put ?? "" },
+      { key: "spread", header: "Put-Call", value: (r) => r.spread ?? "" },
+    ],
+    [],
+  );
+
+  const exportCsv = useCallback(() => {
+    const csv = buildGridCsv(csvCols, smileRows);
+    downloadGridCsv(
+      gridCsvFilename(
+        `ivol-smile-${payload.symbol ?? symbol ?? "surface"}-${effectiveExpiry || "all"}`,
+      ),
+      csv,
+    );
+  }, [csvCols, smileRows, payload.symbol, symbol, effectiveExpiry]);
+
+  const hasSurface = surfaceCells.length > 0;
 
   return (
     <div className="u-pane-host">
       <Pane>
         <PaneHeader
           code={code}
-          title="Implied vol surface"
+          title={`Implied vol surface — ${payload.symbol ?? symbol ?? "—"}`}
           subtitle={`${payload.symbol ?? symbol ?? "—"} · spot ${spot != null ? numFmt(spot, 2) : "—"} · ${expiries.length} exp · poll ${REFRESH_MS / 1000}s`}
           trailing={
             <FunctionControlGroup>
-              <Pill tone="muted" variant="soft" withDot={false}>
-                {moneyCols.length}×{expiries.length}
+              <Pill
+                tone={isLive ? "positive" : "warn"}
+                variant="soft"
+                aria-label={`surface mode ${modeLabel}`}
+              >
+                {modeLabel}
               </Pill>
-              <Pill tone="accent" variant="soft" withDot={false}>
-                {utcStamp} UTC
-              </Pill>
-              <Pill tone={isReference ? "warn" : "positive"} variant="soft">
-                {isReference ? "reference" : "live"}
-              </Pill>
-              <LoadStatePill state={state} />
+              <LoadStatePill state={state} status={envelopeStatus} />
+              <button
+                type="button"
+                className="btn"
+                onClick={exportCsv}
+                disabled={smileRows.length === 0}
+                title="Download smile CSV"
+                aria-label={`Download ${smileRows.length} smile rows as CSV`}
+              >
+                CSV
+              </button>
               <RefreshButton loading={state === "loading"} onClick={refetch} />
             </FunctionControlGroup>
           }
         />
         <PaneBody>
-          {state === "loading" || state === "idle" ? (
-            <Skeleton height={320} />
-          ) : state === "error" ? (
-            <Empty
-              title="Function error"
-              body={error?.message ?? "Request failed"}
-              icon="!"
-            />
-          ) : !hasData ? (
-            <Empty
-              title="No surface data"
-              body={`No implied-vol points for ${payload.symbol ?? symbol ?? "this underlying"}.`}
-            />
-          ) : (
+          <PaneState
+            state={state}
+            error={error}
+            empty={!hasSurface}
+            emptyTitle="No implied-vol surface"
+            emptyBody={
+              providerReason ??
+              `No implied-vol points for ${payload.symbol ?? symbol ?? "this underlying"}.`
+            }
+            onRetry={refetch}
+            loadingRows={3}
+          >
             <div className="u-grid-gap-14">
-              {isReference ? (
-                <div style={noticeStyle}>
+              {/* Single honesty notice — mode is stated once in the pill above. */}
+              {!isLive ? (
+                <div
+                  data-testid="ivol-reference-notice"
+                  role="status"
+                  style={noticeStyle}
+                >
                   <strong className="u-text-warn">
-                    Labelled reference surface
+                    {isSynthetic ? "Synthetic surface" : "Reference surface"}
                   </strong>
                   <span className="u-text-secondary">
-                    {warningsList[0] ??
-                      "Reference surface: a deterministic per-symbol skew/smile model anchored on the resolved spot — not a live OPRA/CBOE chain."}
+                    {`Deterministic skew template anchored on ${anchorLabel} — not a live OPRA/CBOE chain.`}
+                    {providerReason ? ` Provider: ${providerReason}.` : ""}
                   </span>
                 </div>
               ) : null}
 
-              {/* KPI ribbon — prefer backend cards, fall back to summary. */}
-              <section style={kpiGrid} aria-label="IVOL KPI ribbon">
-                {cards.length ? (
-                  cards.slice(0, 3).map((c, i) => {
-                    const v = typeof c.value === "number" ? c.value : NaN;
-                    return (
-                      <StatCard
-                        key={i}
-                        label={c.label ?? `Card ${i + 1}`}
-                        value={
-                          Number.isFinite(v)
-                            ? `${v.toFixed(2)}${c.unit ?? "%"}`
-                            : String(c.value ?? "—")
-                        }
-                        caption={`AS OF ${utcStamp} UTC`}
-                        tone={cardTone(c.label ?? "", v)}
-                        trend={termSeries}
-                      />
-                    );
-                  })
-                ) : (
-                  <>
-                    <StatCard
-                      label="ATM IV (front)"
-                      value={pct(summary.atm_iv_front)}
-                      caption={`AS OF ${utcStamp} UTC`}
-                      tone="neutral"
-                      trend={termSeries}
-                    />
-                    <StatCard
-                      label="Skew (90-110)"
-                      value={pct(summary.skew)}
-                      tone={(summary.skew ?? 0) > 0 ? "negative" : "positive"}
-                    />
-                    <StatCard
-                      label="Term slope"
-                      value={signedPct(summary.term_slope)}
-                      tone={
-                        (summary.term_slope ?? 0) >= 0
-                          ? "positive"
-                          : "negative"
-                      }
-                    />
-                  </>
-                )}
+              {/* KPI ribbon — 4 real summary numbers, one caption each. */}
+              <section style={kpiGridStyle} aria-label="IVOL KPI ribbon">
+                <StatCard
+                  label="ATM IV (front)"
+                  value={pct(summary.atm_iv_front)}
+                  caption={`${frontLabel} expiry`}
+                />
+                <StatCard
+                  label="ATM IV (back)"
+                  value={pct(summary.atm_iv_back)}
+                  caption={`${backLabel} expiry`}
+                />
+                <StatCard
+                  label="Skew (90-110)"
+                  value={pct(summary.skew)}
+                  caption={`${frontLabel} expiry · K/S wings`}
+                />
+                <StatCard
+                  label="Term slope"
+                  value={signedPct(summary.term_slope)}
+                  caption="back − front"
+                />
               </section>
 
-              {/* ATM term-structure sparkline. */}
-              {termSeries.length > 1 ? (
-                <section style={termBlock}>
-                  <div style={termHead}>
-                    <span style={sectionLabel}>ATM term structure</span>
-                    <span style={termRange}>
-                      {pct(summary.atm_iv_front)} →{" "}
-                      {pct(summary.atm_iv_back)}
-                    </span>
-                  </div>
-                  <Sparkline
-                    values={termSeries}
-                    width={520}
-                    height={46}
-                    tone="accent"
-                    ariaLabel="ATM implied vol term structure"
-                  />
-                </section>
-              ) : null}
-
-              {/* Expiry tab selector (cross-highlights the surface row). */}
-              {expiries.length > 0 ? (
-                <div style={tabBarStyle}>
-                  <Tabs
-                    variant="segmented"
-                    items={expiries.map((e) => ({ id: e, label: e }))}
-                    active={effectiveExpiry}
-                    onChange={selectExpiry}
-                  />
-                </div>
-              ) : null}
-
-              {/* Vol surface heatmap: expiry rows × moneyness columns. */}
-              {grid.length > 0 && moneyCols.length > 0 ? (
-                <section>
-                  <div style={sectionLabelRow}>
+              {/* Primary visual: real-vol surface heatmap. */}
+              {heat.rows.length > 0 && heat.buckets.length > 0 ? (
+                <section aria-label="IV surface">
+                  <div style={sectionHeadStyle}>
                     <span style={sectionLabel}>
-                      Vol surface · IV by moneyness (K/S)
+                      {/* FIX R2-#10/R1-F13: name the metric so the merged
+                          call+put average cannot be read as the KPI's
+                          single-side front ATM (33.5 vs 32.00). */}
+                      IV surface · K/S buckets · cell = call+put avg (%)
                     </span>
                     <span className="u-text-mute" style={tinyMeta}>
-                      {pct(ivBounds.lo, 1)} – {pct(ivBounds.hi, 1)}
+                      {pct(heat.lo, 1)} – {pct(heat.hi, 1)}
                     </span>
                   </div>
-                  <div style={surfaceWrap}>
-                    <table style={surfaceTable}>
-                      <thead>
-                        <tr>
-                          <th style={cornerTh}>Exp \ K</th>
-                          {moneyCols.map((m) => (
-                            <th
-                              key={m}
-                              style={{
-                                ...colTh,
-                                ...(isAtmBucket(m) ? colThAtm : null),
-                              }}
-                            >
-                              {`${Math.round(m * 100)}%`}
-                            </th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {grid.map((row) => {
-                          const isActive = row.expiry === effectiveExpiry;
-                          return (
-                            <tr key={row.expiry}>
-                              <th
-                                style={{
-                                  ...rowTh,
-                                  ...(isActive ? rowThActive : null),
-                                }}
-                                onClick={() => selectExpiry(row.expiry)}
-                                title={`Select ${row.expiry}`}
-                              >
-                                {row.expiry}
-                              </th>
-                              {moneyCols.map((m) => {
-                                const cell = row.cells.get(mnyKey(m));
-                                const atm = isAtmBucket(m);
-                                if (!cell) {
-                                  return (
-                                    <td key={m} style={emptyCell}>
-                                      —
-                                    </td>
-                                  );
-                                }
-                                return (
-                                  <td
-                                    key={m}
-                                    style={{
-                                      ...heatCellStyle,
-                                      background: heatColor(
-                                        cell.iv,
-                                        ivBounds.lo,
-                                        ivBounds.hi,
-                                      ),
-                                      ...(atm ? heatCellAtm : null),
-                                      ...(isActive ? heatCellActiveRow : null),
-                                      fontWeight: isActive ? 600 : 400,
-                                    }}
-                                    title={`${row.expiry} @ ${Math.round(m * 100)}% (${cell.optionType ?? "—"}): ${(cell.iv * 100).toFixed(2)}% IV · K ${numFmt(cell.strike, 2)}`}
-                                  >
-                                    {(cell.iv * 100).toFixed(1)}
-                                  </td>
-                                );
-                              })}
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                  <div style={legendRow}>
-                    <span className="u-text-mute">Low IV</span>
-                    <span
-                      style={swatch(
-                        heatColor(ivBounds.lo, ivBounds.lo, ivBounds.hi),
-                      )}
-                    />
-                    <span
-                      style={swatch(
-                        heatColor(
-                          (ivBounds.lo + ivBounds.hi) / 2,
-                          ivBounds.lo,
-                          ivBounds.hi,
-                        ),
-                      )}
-                    />
-                    <span
-                      style={swatch(
-                        heatColor(ivBounds.hi, ivBounds.lo, ivBounds.hi),
-                      )}
-                    />
-                    <span className="u-text-mute">High IV</span>
-                  </div>
+                  <SurfaceHeatmap
+                    rows={heat.rows}
+                    buckets={heat.buckets}
+                    lo={heat.lo}
+                    hi={heat.hi}
+                    activeExpiry={effectiveExpiry}
+                    onSelect={selectExpiry}
+                  />
                 </section>
               ) : null}
 
-              {/* Per-side skew ladder (OPP): CALL vs PUT IV by strike for the
-                  active expiry — the merged moneyness heatmap cannot show it. */}
-              {sideSkewCount >= 2 && sideSkewRows.length > 0 ? (
-                <section aria-label="IV skew by strike">
-                  <div style={sectionLabelRow}>
+              {/* Secondary table: real per-side smile for the active expiry. */}
+              {smileRows.length > 0 ? (
+                <section aria-label="IV smile — call vs put by strike">
+                  <div style={sectionHeadStyle}>
                     <span style={sectionLabel}>
-                      IV skew · call vs put by strike
+                      Smile · call vs put by strike
                     </span>
-                    <span
-                      className="u-text-mute"
-                      style={tinyMeta}
-                      data-testid="ivol-skew-mode"
-                    >
-                      {`${effectiveExpiry || "—"} · ${
-                        isReference ? "reference surface" : "live surface"
-                      }`}
-                    </span>
-                  </div>
-                  <div style={skewStripStyle}>
-                    <div style={skewCurveColStyle}>
-                      <span style={sideLabelStyle}>CALL IV</span>
-                      <Sparkline
-                        values={sideCurves.calls.map((p) => p.iv * 100)}
-                        width={220}
-                        height={38}
-                        tone="accent"
-                        ariaLabel={`Call IV by strike, ${sideCurves.calls.length} strikes, last ${pct(
-                          sideCurves.calls[sideCurves.calls.length - 1]?.iv,
-                        )}`}
+                    {expiries.length > 1 ? (
+                      <Tabs
+                        variant="segmented"
+                        ariaLabel="Surface expiry"
+                        items={expiries.map((e) => ({ id: e, label: e }))}
+                        active={effectiveExpiry}
+                        onChange={selectExpiry}
                       />
-                      <span className="u-text-mute" style={tinyMeta}>
-                        {`${sideCurves.calls.length} strikes · last ${pct(
-                          sideCurves.calls[sideCurves.calls.length - 1]?.iv,
-                        )}`}
-                      </span>
-                    </div>
-                    <div style={skewCurveColStyle}>
-                      <span style={sideLabelStyle}>PUT IV</span>
-                      <Sparkline
-                        values={sideCurves.puts.map((p) => p.iv * 100)}
-                        width={220}
-                        height={38}
-                        tone="negative"
-                        ariaLabel={`Put IV by strike, ${sideCurves.puts.length} strikes, last ${pct(
-                          sideCurves.puts[sideCurves.puts.length - 1]?.iv,
-                        )}`}
-                      />
-                      <span className="u-text-mute" style={tinyMeta}>
-                        {`${sideCurves.puts.length} strikes · last ${pct(
-                          sideCurves.puts[sideCurves.puts.length - 1]?.iv,
-                        )}`}
-                      </span>
-                    </div>
+                    ) : null}
                   </div>
                   <DataGrid
-                    columns={skewCols}
-                    rows={sideSkewRows}
+                    columns={smileCols}
+                    rows={smileRows}
                     rowKey={(r) => String(r.strike)}
                     density="compact"
-                    ariaLabel="IV skew ladder — call vs put IV by strike"
+                    ariaLabel={`IV smile — ${effectiveExpiry} call vs put by strike`}
+                    defaultSortKey="strike"
+                    defaultSortDir="ascending"
+                    keyboardNavigable
                   />
-                </section>
-              ) : null}
-
-              {/* Per-expiry skew detail (real rows). */}
-              {skewRows.length > 0 ? (
-                <section>
-                  <div style={sectionLabelRow}>
-                    <span style={sectionLabel}>Skew detail by expiry</span>
+                  <div className="u-text-mute" style={noteTextStyle}>
+                    {`${smileRows.length} strike${smileRows.length === 1 ? "" : "s"} · ${effectiveExpiry || "—"}`}
                   </div>
-                  <DataGrid
-                    columns={tableCols}
-                    rows={skewRows}
-                    rowKey={(r, i) => `${r.expiry ?? "row"}-${i}`}
-                    density="compact"
-                    ariaLabel="Implied vol skew detail by expiry"
-                  />
-                </section>
-              ) : null}
-
-              {payload.methodology ? (
-                <section style={methodPanel}>
-                  <div style={metaLabel}>Methodology</div>
-                  <p style={methodText}>{payload.methodology}</p>
                 </section>
               ) : null}
             </div>
-          )}
+          </PaneState>
         </PaneBody>
         <PaneFooter>
           <StatusSection label="provider" value={sources} />
           <StatusDivider />
-          <StatusSection label="poll" value={`${REFRESH_MS / 1000}s`} />
+          <StatusSection
+            label="status"
+            value={envelopeStatus ?? "—"}
+            tone={isLive ? "positive" : "warn"}
+          />
           <StatusDivider />
-          <StatusSection label="cells" value={surfaceRaw.length} />
+          <StatusSection label="cells" value={surfaceCells.length} />
           <StatusDivider />
           <StatusSection
             label="elapsed"
             value={`${data?.elapsed_ms?.toFixed(0) ?? "—"} ms`}
-          />
-          <StatusDivider />
-          <StatusSection
-            label="mode"
-            value={sourceMode}
-            tone={isReference ? "warn" : "positive"}
           />
         </PaneFooter>
       </Pane>
@@ -856,13 +673,177 @@ export function IVOLPane({ code, symbol }: FunctionPaneProps) {
   );
 }
 
-const tabBarStyle: CSSProperties = {
-  padding: "6px 0",
-};
+/* ── surface heatmap (primary visual, roving-tabindex keyboard grid) ── */
 
-const kpiGrid: CSSProperties = {
+function SurfaceHeatmap({
+  rows,
+  buckets,
+  lo,
+  hi,
+  activeExpiry,
+  onSelect,
+}: {
+  rows: HeatRow[];
+  buckets: string[];
+  lo: number;
+  hi: number;
+  activeExpiry: string;
+  onSelect: (expiry: string) => void;
+}) {
+  const [focusPos, setFocusPos] = useState({ r: 0, c: 0 });
+  const tableRef = useRef<HTMLTableElement | null>(null);
+
+  const focusAt = useCallback(
+    (r: number, c: number) => {
+      const rr = Math.min(Math.max(r, 0), Math.max(0, rows.length - 1));
+      const cc = Math.min(Math.max(c, 0), Math.max(0, buckets.length - 1));
+      setFocusPos({ r: rr, c: cc });
+      tableRef.current
+        ?.querySelector<HTMLButtonElement>(
+          `button[data-cell="1"][data-r="${rr}"][data-c="${cc}"]`,
+        )
+        ?.focus();
+    },
+    [rows.length, buckets.length],
+  );
+
+  const onKeyDown = useCallback(
+    (event: ReactKeyboardEvent<HTMLTableElement>) => {
+      const target = event.target as HTMLElement;
+      const cell = target.closest?.('button[data-cell="1"]') as HTMLElement | null;
+      if (!cell) return;
+      const r = Number(cell.dataset.r);
+      const c = Number(cell.dataset.c);
+      let next: { r: number; c: number } | null = null;
+      switch (event.key) {
+        case "ArrowRight":
+          next = { r, c: c + 1 };
+          break;
+        case "ArrowLeft":
+          next = { r, c: c - 1 };
+          break;
+        case "ArrowDown":
+          next = { r: r + 1, c };
+          break;
+        case "ArrowUp":
+          next = { r: r - 1, c };
+          break;
+        case "Home":
+          next = { r, c: 0 };
+          break;
+        case "End":
+          next = { r, c: buckets.length - 1 };
+          break;
+        default:
+          return;
+      }
+      event.preventDefault();
+      focusAt(next.r, next.c);
+    },
+    [buckets.length, focusAt],
+  );
+
+  return (
+    <div style={surfaceWrap}>
+      <table
+        ref={tableRef}
+        role="grid"
+        aria-label="IV surface heatmap — expiry rows by moneyness columns"
+        onKeyDown={onKeyDown}
+        style={surfaceTable}
+      >
+        <thead>
+          <tr>
+            <th scope="col" style={cornerTh}>
+              Exp \ K/S
+            </th>
+            {buckets.map((key) => (
+              <th
+                key={key}
+                scope="col"
+                style={{ ...colTh, ...(isAtmBucket(key) ? colThAtm : null) }}
+              >
+                {`${Math.round(Number(key) * 100)}%`}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, r) => {
+            const isActive = row.expiry === activeExpiry;
+            return (
+              <tr key={row.expiry}>
+                <th scope="row" role="rowheader" style={rowTh}>
+                  <button
+                    type="button"
+                    className="focus-ring"
+                    aria-pressed={isActive}
+                    onClick={() => onSelect(row.expiry)}
+                    title={`Select ${row.expiry} for the smile table`}
+                    style={rowHeaderBtn(isActive)}
+                  >
+                    {row.expiry}
+                  </button>
+                </th>
+                {buckets.map((key, c) => {
+                  const agg = row.cells.get(key);
+                  if (!agg) {
+                    return (
+                      <td key={key} role="gridcell" style={missingTd}>
+                        <span className="u-text-mute">—</span>
+                      </td>
+                    );
+                  }
+                  const callV = agg.call.length ? mean(agg.call) : undefined;
+                  const putV = agg.put.length ? mean(agg.put) : undefined;
+                  const vol = mean([...agg.call, ...agg.put, ...agg.other]);
+                  const wings = [
+                    callV != null ? `call ${(callV * 100).toFixed(2)}%` : null,
+                    putV != null ? `put ${(putV * 100).toFixed(2)}%` : null,
+                  ]
+                    .filter(Boolean)
+                    .join(" · ");
+                  const label = `${row.expiry} · K/S ${Math.round(Number(key) * 100)}% · IV ${(vol * 100).toFixed(2)}%`;
+                  const title = wings ? `${label} (${wings})` : label;
+                  const selected = focusPos.r === r && focusPos.c === c;
+                  return (
+                    <td key={key} role="gridcell" style={heatTd}>
+                      <button
+                        type="button"
+                        data-cell="1"
+                        data-r={r}
+                        data-c={c}
+                        tabIndex={selected ? 0 : -1}
+                        aria-label={title}
+                        title={title}
+                        className="focus-ring"
+                        onFocus={() => {
+                          if (!selected) setFocusPos({ r, c });
+                        }}
+                        onClick={() => onSelect(row.expiry)}
+                        style={heatCellBtn(heatBackground(vol, lo, hi))}
+                      >
+                        {/* FIX R1-F13: carry the unit in the visible label —
+                            the merged cell value is a percent. */}
+                        {(vol * 100).toFixed(1)}%
+                      </button>
+                    </td>
+                  );
+                })}
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/* ── styles (existing tokens/classes only — no new global CSS) ──────── */
+
+const kpiGridStyle: CSSProperties = {
   display: "grid",
-  gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))",
+  gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
   gap: 10,
 };
 
@@ -876,43 +857,32 @@ const noticeStyle: CSSProperties = {
   fontSize: "var(--font-size-md)",
 };
 
+const sectionHeadStyle: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  gap: 10,
+  marginBottom: 6,
+  flexWrap: "wrap",
+};
+
 const sectionLabel: CSSProperties = {
-  fontFamily: "JetBrains Mono, monospace",
+  fontFamily: "var(--font-mono)",
   fontSize: "var(--font-size-2xs)",
-  letterSpacing: "0.08em",
-  textTransform: "uppercase",
+  letterSpacing: "var(--tracking-label)",
   color: "var(--text-mute)",
 };
 
-const sectionLabelRow: CSSProperties = {
-  display: "flex",
-  alignItems: "baseline",
-  justifyContent: "space-between",
-  marginBottom: 6,
-};
-
 const tinyMeta: CSSProperties = {
-  fontFamily: "JetBrains Mono, monospace",
+  fontFamily: "var(--font-mono)",
   fontVariantNumeric: "tabular-nums",
   fontSize: "var(--font-size-2xs)",
 };
 
-const termBlock: CSSProperties = {
-  display: "grid",
-  gap: 4,
-};
-
-const termHead: CSSProperties = {
-  display: "flex",
-  alignItems: "baseline",
-  justifyContent: "space-between",
-};
-
-const termRange: CSSProperties = {
-  fontFamily: "JetBrains Mono, monospace",
-  fontVariantNumeric: "tabular-nums",
+const noteTextStyle: CSSProperties = {
+  fontFamily: "var(--font-mono)",
   fontSize: "var(--font-size-2xs)",
-  color: "var(--text-secondary)",
+  marginTop: 4,
 };
 
 const surfaceWrap: CSSProperties = {
@@ -926,8 +896,7 @@ const surfaceTable: CSSProperties = {
   borderCollapse: "separate",
   borderSpacing: 0,
   width: "100%",
-  fontSize: "var(--font-size-2xs)",
-  fontFamily: "JetBrains Mono, monospace",
+  fontFamily: "var(--font-mono)",
   fontVariantNumeric: "tabular-nums",
 };
 
@@ -942,10 +911,11 @@ const cornerTh: CSSProperties = {
   fontWeight: 600,
   fontSize: "var(--font-size-xs)",
   letterSpacing: "0.04em",
+  whiteSpace: "nowrap",
 };
 
 const colTh: CSSProperties = {
-  padding: "4px 5px",
+  padding: "4px 6px",
   color: "var(--text-secondary)",
   fontWeight: 600,
   textAlign: "center",
@@ -954,128 +924,75 @@ const colTh: CSSProperties = {
 };
 
 const colThAtm: CSSProperties = {
-  color: "var(--accent)",
+  color: "var(--text-display)",
+  fontWeight: 700,
 };
 
 const rowTh: CSSProperties = {
   position: "sticky",
   left: 0,
   zIndex: 1,
+  padding: 0,
   background: "var(--surface-2)",
-  color: "var(--text-secondary)",
+  borderTop: "1px solid var(--grid-color)",
   textAlign: "left",
-  padding: "3px 8px",
+};
+
+const rowHeaderBtn = (isActive: boolean): CSSProperties => ({
+  all: "unset",
+  display: "block",
+  boxSizing: "border-box",
+  width: "100%",
+  textAlign: "left",
+  padding: "5px 8px",
+  fontFamily: "var(--font-mono)",
+  fontSize: "var(--font-size-2xs)",
   fontWeight: 600,
+  fontVariantNumeric: "tabular-nums",
   whiteSpace: "nowrap",
   cursor: "pointer",
-};
-
-const rowThActive: CSSProperties = {
-  color: "var(--accent)",
-};
-
-const heatCellStyle: CSSProperties = {
-  textAlign: "center",
-  padding: "3px 5px",
-  color: "var(--text-display)",
-  borderTop: "1px solid var(--grid-color)",
-  minWidth: 42,
-};
-
-const heatCellAtm: CSSProperties = {
-  boxShadow: "inset 0 0 0 1px var(--accent)",
-};
-
-const heatCellActiveRow: CSSProperties = {
-  borderTop: "1px solid var(--accent)",
-};
-
-const emptyCell: CSSProperties = {
-  textAlign: "center",
-  padding: "3px 5px",
-  color: "var(--text-mute)",
-  borderTop: "1px solid var(--grid-color)",
-};
-
-const legendRow: CSSProperties = {
-  display: "flex",
-  gap: 8,
-  alignItems: "center",
-  fontSize: "var(--font-size-xs)",
-  marginTop: 6,
-};
-
-const swatch = (bg: string): CSSProperties => ({
-  width: 24,
-  height: 9,
-  borderRadius: 2,
-  background: bg,
-  border: "1px solid var(--grid-color)",
+  color: isActive ? "var(--text-display)" : "var(--text-secondary)",
+  background: isActive ? "var(--accent-soft)" : "transparent",
 });
 
-const skewStripStyle: CSSProperties = {
-  display: "flex",
-  flexWrap: "wrap",
-  gap: 14,
-  marginBottom: 8,
+const heatTd: CSSProperties = {
+  padding: 0,
+  borderTop: "1px solid var(--grid-color)",
+  verticalAlign: "middle",
 };
 
-const skewCurveColStyle: CSSProperties = {
-  display: "grid",
-  gap: 3,
-  padding: "6px 8px",
-  border: "1px solid var(--border-card)",
-  borderRadius: "var(--radius-md)",
-  background: "var(--surface-2)",
-};
-
-const sideLabelStyle: CSSProperties = {
-  fontFamily: "JetBrains Mono, monospace",
+const missingTd: CSSProperties = {
+  textAlign: "center",
+  padding: "5px 6px",
+  borderTop: "1px solid var(--grid-color)",
   fontSize: "var(--font-size-2xs)",
-  letterSpacing: "0.08em",
-  color: "var(--text-secondary)",
-  fontWeight: 600,
 };
 
-const expiryCell: CSSProperties = {
-  fontFamily: "JetBrains Mono, monospace",
+const heatCellBtn = (background: string): CSSProperties => ({
+  all: "unset",
+  display: "block",
+  boxSizing: "border-box",
+  width: "100%",
+  textAlign: "center",
+  padding: "5px 6px",
+  fontFamily: "var(--font-mono)",
+  fontSize: "var(--font-size-2xs)",
+  fontVariantNumeric: "tabular-nums",
   color: "var(--text-display)",
-  fontWeight: 600,
-};
+  background,
+  cursor: "pointer",
+});
 
 const primaryNum: CSSProperties = {
-  fontFamily: "JetBrains Mono, monospace",
+  fontFamily: "var(--font-mono)",
   fontVariantNumeric: "tabular-nums",
   color: "var(--text-display)",
 };
 
 const mutedNum: CSSProperties = {
-  fontFamily: "JetBrains Mono, monospace",
+  fontFamily: "var(--font-mono)",
   fontVariantNumeric: "tabular-nums",
   color: "var(--text-secondary)",
-};
-
-const methodPanel: CSSProperties = {
-  border: "1px solid var(--border-card)",
-  borderRadius: "var(--radius-md)",
-  padding: 12,
-  background: "var(--surface-2)",
-};
-
-const metaLabel: CSSProperties = {
-  color: "var(--text-mute)",
-  fontFamily: "JetBrains Mono, monospace",
-  fontSize: "var(--font-size-2xs)",
-  textTransform: "uppercase",
-  letterSpacing: "0.08em",
-  marginBottom: 6,
-};
-
-const methodText: CSSProperties = {
-  margin: 0,
-  color: "var(--text-secondary)",
-  lineHeight: 1.5,
-  fontSize: "var(--font-size-md)",
 };
 
 export default IVOLPane;

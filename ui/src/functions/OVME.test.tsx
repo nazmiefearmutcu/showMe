@@ -1,15 +1,16 @@
 /**
- * OVME pane — render-contract + interaction tests.
+ * OVME pane — render-contract + interaction tests (options-family redesign
+ * 2026-09-12, lane L4).
  *
  * Pure Black-Scholes model pane. Tests pin:
  *
- *  - the four load states (loading / error / bad-payload / ok) render;
- *  - the ok state renders price + 5 greeks, the value-curve SVG and the
- *    sampled sensitivity grid with the current-spot row highlighted;
- *  - CALL/PUT toggle persists and re-labels the pane;
- *  - editing an input persists it under `showme.ovme.*`.
- *
- * `useFunction` is mocked via a mutable shared state (GEX pattern).
+ *  - the load states (loading / error / honest invalid-inputs) via PaneState;
+ *  - ok renders exactly 4 KPI cards, the value-curve SVG (model value vs
+ *    intrinsic) with vega/rho inline, and the sensitivity DataGrid
+ *    (sort/keyboard/CSV) with the current-spot row marked;
+ *  - honesty: exactly ONE model label (header pill), em-dash for missing
+ *    values, backend reason for invalid inputs;
+ *  - interactions: CALL/PUT toggle persists and relabels, inputs persist.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
@@ -66,6 +67,7 @@ function okPayload() {
         rate: 0.045,
         div_yield: 0,
         type: "CALL",
+        model: "bs",
         price: 4.263,
         delta: 0.4228,
         gamma: 0.026,
@@ -78,6 +80,8 @@ function okPayload() {
         sensitivity: curve,
         summary: { price: 4.263 },
       },
+      sources: ["black_scholes_formula"],
+      elapsed_ms: 14,
     },
   };
 }
@@ -94,10 +98,10 @@ afterEach(() => {
 });
 
 describe("OVME pane — load states", () => {
-  it("renders a skeleton while loading", () => {
+  it("renders the PaneState skeleton while loading", () => {
     setMockFn({ state: "loading", data: undefined });
     const { container } = render(<OVMEPane code="OVME" symbol="SPY" />);
-    expect(container.querySelector('[aria-busy="true"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="pane-state-loading"]')).not.toBeNull();
   });
 
   it("renders the error state when the fetch errors", () => {
@@ -110,7 +114,7 @@ describe("OVME pane — load states", () => {
     expect(screen.getByText(/sidecar exploded/i)).toBeInTheDocument();
   });
 
-  it("renders an honest bad-payload state for invalid model inputs", () => {
+  it("renders an honest invalid-inputs state with the backend reason", () => {
     setMockFn({
       state: "ok",
       data: {
@@ -125,37 +129,93 @@ describe("OVME pane — load states", () => {
     expect(screen.getByText(/Model needs valid inputs/i)).toBeInTheDocument();
     expect(screen.getByText(/invalid_inputs/i)).toBeInTheDocument();
   });
+});
 
-  it("renders price, greeks, curve and sensitivity grid when ok", () => {
+describe("OVME pane — ok surface", () => {
+  it("renders 4 KPIs, the value curve with inline vega/rho and the sensitivity grid", () => {
     setMockFn({ state: "ok", ...okPayload() });
     const { container } = render(<OVMEPane code="OVME" symbol="SPY" />);
-    // Price + greeks cards (formatted to fixed digits). The price shows in
-    // both the stat card and the chart header — assert presence, not count.
-    expect(screen.getAllByText("4.263").length).toBeGreaterThan(0);
+
+    // Exactly four KPI cards (the 6-card row is gone).
+    expect(container.querySelectorAll(".stat-card").length).toBe(4);
+    expect(screen.getByText("4.263")).toBeInTheDocument();
     expect(screen.getByText("0.4228")).toBeInTheDocument();
     expect(screen.getByText("-0.0356")).toBeInTheDocument();
-    expect(screen.getByText("0.1953")).toBeInTheDocument();
-    expect(screen.getByText("0.0951")).toBeInTheDocument();
+    // Vega / rho live inline on the curve header, not as oversized cards.
+    expect(screen.getByText(/vega 0\.1953/)).toBeInTheDocument();
+    expect(screen.getByText(/rho 0\.0951/)).toBeInTheDocument();
+
     // Value curve SVG present with an aria-label.
     const chart = container.querySelector('svg[role="img"]');
     expect(chart?.getAttribute("aria-label")).toMatch(/value from spot/i);
-    // Sensitivity grid: 51 points sampled every 5th = 11 rows.
-    const rows = container.querySelectorAll('table[aria-label="Value sensitivity to spot"] tbody tr');
+
+    // Sensitivity grid: 51 points sampled every 5th = 11 rows, keyboard grid.
+    const grid = container.querySelector('table[aria-label="Value sensitivity to spot"]');
+    expect(grid).not.toBeNull();
+    expect(grid?.getAttribute("role")).toBe("grid");
+    const rows = container.querySelectorAll(
+      'table[aria-label="Value sensitivity to spot"] tbody tr',
+    );
     expect(rows.length).toBe(11);
-    // The current-spot row (spot 100) is highlighted.
-    const highlighted = Array.from(rows).find((r) => r.getAttribute("style")?.includes("accent-soft"));
-    expect(highlighted?.textContent).toContain("100");
+    // The current-spot row is marked (accent-soft selection tint).
+    expect(container.querySelector('span[style*="accent-soft"]')).not.toBeNull();
+
+    // Exactly one model label (header pill) on the whole surface.
+    expect(screen.getAllByText(/^model$/i)).toHaveLength(1);
+  });
+
+  it("renders em-dashes (never fabricated numbers) for missing model outputs", () => {
+    const fixture = okPayload();
+    const payload = fixture.data.data as Record<string, unknown>;
+    delete payload.price;
+    delete payload.delta;
+    delete payload.vega;
+    setMockFn({ state: "ok", ...fixture });
+    render(<OVMEPane code="OVME" symbol="SPY" />);
+    expect(screen.getAllByText("—").length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("exposes a CSV export for the sensitivity grid in the header slot", () => {
+    setMockFn({ state: "ok", ...okPayload() });
+    render(<OVMEPane code="OVME" symbol="SPY" />);
+    const csv = screen.getByLabelText(/Download 11 sensitivity rows as CSV/i);
+    expect(csv).toBeInTheDocument();
+    // FIX R2-#10 (F4): family-consistent placement — header, not the grid section.
+    expect(csv.closest(".ds-pane-header")).not.toBeNull();
+  });
+
+  it("renders editable numeric values with en-US dot decimals (no tr-TR commas)", () => {
+    setMockFn({ state: "ok", ...okPayload() });
+    render(<OVMEPane code="OVME" symbol="SPY" />);
+    // FIX R2-#3: `type="number"` displayed OS-locale separators ("0,25").
+    const years = screen.getByLabelText("Years to expiry") as HTMLInputElement;
+    expect(years.getAttribute("type")).toBe("text");
+    expect(years.getAttribute("inputmode")).toBe("decimal");
+    expect(years.value).toBe("0.25");
+    expect(years.value).not.toContain(",");
+    const rate = screen.getByLabelText("Risk-free rate percent") as HTMLInputElement;
+    expect(rate.value).toBe("4.5");
+    expect(rate.value).not.toContain(",");
+  });
+
+  it("keeps the value curve at the trimmed 120px height (below-fold budget)", () => {
+    setMockFn({ state: "ok", ...okPayload() });
+    const { container } = render(<OVMEPane code="OVME" symbol="SPY" />);
+    // FIX R2-#9: the curve height was 150px; the sensitivity grid gains a row
+    // at the 900px fold with the 120px budget. This pin guards the regression.
+    const chart = container.querySelector('svg[role="img"]');
+    expect(chart?.getAttribute("height")).toBe("120");
   });
 });
 
 describe("OVME pane — interactions", () => {
-  it("toggling CALL/PUT persists the type and relabels the pane", () => {
+  it("toggling CALL/PUT persists the type and relabels the header", () => {
     setMockFn({ state: "ok", ...okPayload() });
     render(<OVMEPane code="OVME" symbol="SPY" />);
-    expect(screen.getByText(/Option Valuation — CALL/)).toBeInTheDocument();
+    expect(screen.getByText(/CALL 100 · ATM/)).toBeInTheDocument();
     fireEvent.click(screen.getByText("PUT"));
     expect(localStorage.getItem("showme.ovme.type")).toBe("PUT");
-    expect(screen.getByText(/Option Valuation — PUT/)).toBeInTheDocument();
+    expect(screen.getByText(/PUT 100 · ATM/)).toBeInTheDocument();
   });
 
   it("editing the spot input persists it", () => {

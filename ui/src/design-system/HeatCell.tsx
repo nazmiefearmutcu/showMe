@@ -29,6 +29,13 @@ interface HeatCellProps {
   label?: ReactNode;
   onClick?: () => void;
   ariaLabel?: string;
+  /**
+   * Optional tab-index pass-through for roving-focus grids (FIX R1-F2).
+   * Without it the caller's `tabIndex` on a wrapper never reaches this
+   * natively focusable button, so every cell became a tab stop. Additive:
+   * omitted (`undefined`) keeps the browser default focusability.
+   */
+  tabIndex?: number;
 }
 
 function HeatCellImpl({
@@ -40,6 +47,7 @@ function HeatCellImpl({
   label,
   onClick,
   ariaLabel,
+  tabIndex,
 }: HeatCellProps) {
   const bg = diagonal ? "var(--surface-1)" : intensityToken(value, range);
   const ratio = Math.min(1, Math.abs(value) / range);
@@ -54,6 +62,7 @@ function HeatCellImpl({
     <button
       type="button"
       onClick={onClick}
+      tabIndex={tabIndex}
       // `focus-ring` re-arms the global :focus-visible ring: this element's
       // inline `all: unset` would otherwise swallow it (Lane C utility).
       className={

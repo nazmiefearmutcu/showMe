@@ -3687,7 +3687,7 @@
     monospace;
   font-size: 11px;
   letter-spacing: 0.06em;
-  color: var(--accent);
+  color: color-mix(in srgb, var(--accent) 95%, #000);
   font-weight: 700;
   padding: var(--space-1) var(--space-4);
   background: var(--accent-soft);
@@ -6853,16 +6853,18 @@
   --ds-pill-fg: var(--neutral);
 }
 .ds-pill--tone-positive {
-  --ds-pill-fg: var(--positive);
+  /* C9 contrast: darken the soft-pill label so it clears AA on the soft bg
+     (measured 3.53→4.59 worst case on papyrus). */
+  --ds-pill-fg: color-mix(in srgb, var(--positive) 84%, #000);
 }
 .ds-pill--tone-negative {
   --ds-pill-fg: var(--negative);
 }
 .ds-pill--tone-accent {
-  --ds-pill-fg: var(--accent);
+  --ds-pill-fg: color-mix(in srgb, var(--accent) 95%, #000);
 }
 .ds-pill--tone-warn {
-  --ds-pill-fg: var(--warn);
+  --ds-pill-fg: color-mix(in srgb, var(--warn) 97%, #000);
 }
 .ds-pill--tone-muted {
   --ds-pill-fg: var(--text-mute);
@@ -8812,202 +8814,6 @@
   opacity: 0.85 !important;
 }
 
-/* =====================================================================
- * GEX — dealer gamma exposure bar chart (Session 16 BugHunt)
- * Token-driven so Papyrus / Matrix / custom presets propagate cleanly.
- * Mirrors the visual shape of the static `ProGex` design-export but
- * binds every value to the live `/api/fn/GEX` response.
- * ===================================================================== */
-.gex-chart {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
-  min-height: 320px;
-}
-
-.gex-chart__axis {
-  display: flex;
-  justify-content: space-between;
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  /* Was --text-mute (the faintest token) — axis ticks were near-invisible
-   * on dark themes. --text-secondary keeps them legible without competing
-   * with the bars. */
-  color: var(--text-secondary);
-  padding: 0 var(--space-2);
-}
-
-.gex-chart__rows {
-  position: relative;
-  display: flex;
-  flex-direction: column-reverse;
-  gap: var(--space-2);
-  padding: var(--space-2) 0;
-  min-height: 240px;
-}
-
-.gex-chart__zero {
-  position: absolute;
-  inset: 0 auto 0 50%;
-  width: 1px;
-  background: var(--line, var(--border-default));
-  pointer-events: none;
-}
-
-.gex-chart__row {
-  position: relative;
-  display: grid;
-  grid-template-columns: 1fr 1fr auto;
-  align-items: center;
-  height: var(--space-6);
-  font-family: var(--font-mono);
-  font-size: 11px;
-}
-
-.gex-chart__bar {
-  display: block;
-  height: var(--space-4);
-  border-radius: var(--radius-xs);
-}
-
-.gex-chart__bar--put {
-  justify-self: end;
-  background: linear-gradient(
-    90deg,
-    color-mix(in srgb, var(--negative) 80%, transparent),
-    color-mix(in srgb, var(--negative) 20%, transparent)
-  );
-}
-
-.gex-chart__bar--call {
-  justify-self: start;
-  background: linear-gradient(
-    90deg,
-    color-mix(in srgb, var(--positive) 20%, transparent),
-    color-mix(in srgb, var(--positive) 80%, transparent)
-  );
-}
-
-.gex-chart__strike {
-  position: absolute;
-  left: 50%;
-  transform: translateX(-50%);
-  /* Stable, centered width so the label stops jumping horizontally when a
-   * strike gains/loses a decimal (612 vs 612.34). The fixed min-width keeps
-   * the zero-line label column visually locked. */
-  min-width: 64px;
-  text-align: center;
-  color: var(--text-primary);
-  background: var(--surface);
-  padding: 0 var(--space-3);
-  pointer-events: none;
-  font-variant-numeric: tabular-nums;
-}
-
-.gex-chart__row--spot .gex-chart__strike {
-  color: var(--accent);
-  font-weight: 600;
-}
-
-/* Call / put WALL emphasis — the heaviest dealer-gamma concentrations.
- * Was barely visible (a soft box-shadow over a translucent bar). Now the
- * wall bar is solid, taller, and ringed so it reads as the dominant level
- * even at a glance, plus a faint full-row tint to anchor it. */
-.gex-chart__row--call-wall .gex-chart__bar--call,
-.gex-chart__row--put-wall .gex-chart__bar--put {
-  height: 11px;
-}
-
-.gex-chart__row--call-wall {
-  background: linear-gradient(
-    90deg,
-    transparent 50%,
-    color-mix(in srgb, var(--positive) 12%, transparent)
-  );
-}
-
-.gex-chart__row--call-wall .gex-chart__bar--call {
-  background: var(--positive);
-  box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--positive) 85%, transparent);
-}
-
-.gex-chart__row--put-wall {
-  background: linear-gradient(
-    90deg,
-    color-mix(in srgb, var(--negative) 12%, transparent),
-    transparent 50%
-  );
-}
-
-.gex-chart__row--put-wall .gex-chart__bar--put {
-  background: var(--negative);
-  box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--negative) 85%, transparent);
-}
-
-/* Zero-gamma FLIP point — the strike where dealer hedging changes polarity.
- * Surface it as a dashed --warn rule across the row plus a tinted band so
- * the user can read the regime boundary, not just a recoloured number. */
-.gex-chart__row--flip {
-  background: color-mix(in srgb, var(--warn) 10%, transparent);
-}
-
-.gex-chart__row--flip::before {
-  content: "";
-  position: absolute;
-  inset: 0 0 auto 0;
-  height: 0;
-  border-top: 1px dashed color-mix(in srgb, var(--warn) 70%, transparent);
-  pointer-events: none;
-}
-
-.gex-chart__row--flip .gex-chart__strike {
-  color: var(--warn);
-  font-weight: 600;
-  background: color-mix(in srgb, var(--warn) 16%, var(--surface));
-}
-
-.gex-chart__legend {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 14px;
-  font-size: 11.5px;
-  /* Was --text-faint — the legend was nearly unreadable. --text-secondary
-   * brings it to a legible weight while staying subordinate to the bars. */
-  color: var(--text-secondary);
-  padding-top: var(--space-2);
-  border-top: 1px solid color-mix(in srgb, var(--line, var(--border-default)) 60%, transparent);
-}
-
-.gex-chart__legend span {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-3);
-}
-
-.gex-chart__sw {
-  display: inline-block;
-  width: 18px;
-  height: var(--space-4);
-  border-radius: var(--radius-xs);
-}
-
-.gex-chart__sw--call {
-  background: linear-gradient(90deg, transparent, var(--positive));
-}
-
-.gex-chart__sw--put {
-  background: linear-gradient(90deg, var(--negative), transparent);
-}
-
-.gex-chart__sw--spot {
-  background: var(--accent);
-}
-
-.gex-chart__sw--flip {
-  background: var(--warn);
-}
 
 /* Prominent degradation banner shown when the backend served the synthetic
  * reference model instead of a live options chain. Negative tone (not the

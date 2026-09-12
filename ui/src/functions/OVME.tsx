@@ -1,32 +1,36 @@
 /**
- * OVME — Option Valuation desk (Black-Scholes + Greeks).
+ * OVME — Option Valuation desk (Black-Scholes-Merton + greeks).
  *
- * Pure model pane: spot / strike / tenor / vol / rate / dividend inputs
- * (all persisted under `showme.ovme.*`) drive the backend Black-Scholes-
- * Merton pricer, which returns the premium, all five greeks, a 51-point
- * value curve and per-spot sensitivities.
+ * Recreated 2026-09-11 (options-family redesign, lane L4). One screen, one
+ * job: a single compact input strip drives the backend BSM pricer, the
+ * value-vs-spot curve is the primary visual (with vega/rho read inline), and
+ * the sampled sensitivity curve is a DataGrid with sort / keyboard / CSV.
  *
- * Layout: CALL/PUT toggle + status pill in the header, an inputs strip,
- * a price + greeks card grid, an inline-SVG value curve (value vs
- * intrinsic, current spot + strike markers) and a sampled sensitivity
- * grid table. The request omits the symbol (the backend rejects
- * EQUITY-class instruments for this derivative function) and every price
- * comes from the model — the header pill states "model", never "live".
+ * Data honesty: every price is model output (sources=black_scholes_formula),
+ * never a market feed — the header carries the single "model" pill. Invalid
+ * inputs render the backend's structured reason, missing values render as an
+ * em-dash, and no fabricated numbers are shown anywhere.
  */
-import { useMemo, type CSSProperties } from "react";
+import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import {
-  Empty,
+  DataGrid,
+  Field,
   Pane,
   PaneBody,
   PaneFooter,
   PaneHeader,
+  PaneState,
   Pill,
-  Skeleton,
   StatCard,
   StatusDivider,
   StatusSection,
+  buildGridCsv,
+  downloadGridCsv,
+  gridCsvFilename,
+  type DataGridColumn,
+  type GridCsvColumn,
 } from "@/design-system";
-import { formatNumberFixed } from "@/lib/format";
+import { formatNumber, formatNumberFixed } from "@/lib/format";
 import { useFunction } from "@/lib/useFunction";
 import {
   FunctionControlGroup,
@@ -49,6 +53,7 @@ interface SensitivityPoint {
 
 interface OvmeData {
   status?: string;
+  reason?: string;
   spot?: number;
   strike?: number;
   T?: number;
@@ -57,6 +62,7 @@ interface OvmeData {
   rate?: number;
   div_yield?: number;
   type?: string;
+  model?: string;
   price?: number;
   delta?: number;
   gamma?: number;
@@ -68,10 +74,9 @@ interface OvmeData {
   curve?: SensitivityPoint[];
   sensitivity?: SensitivityPoint[];
   summary?: Record<string, unknown>;
-  methodology?: string;
 }
 
-/* ── persisted input helpers ───────────────────────────────────────── */
+/* ── persisted controls ────────────────────────────────────────────── */
 
 const TYPE_OPTIONS = [
   { value: "CALL", label: "CALL" },
@@ -129,162 +134,220 @@ export function OVMEPane({ code }: FunctionPaneProps) {
             : "ATM"
       : "—";
   // Sample the 51-point curve down to an 11-row grid (every 0.05 of spot).
-  const gridRows = useMemo(
-    () => curve.filter((_, i) => i % 5 === 0),
-    [curve],
+  const gridRows = useMemo(() => curve.filter((_, i) => i % 5 === 0), [curve]);
+
+  const gridColumns = useMemo<DataGridColumn<SensitivityPoint>[]>(
+    () => [
+      {
+        key: "spot",
+        header: "Spot",
+        width: 92,
+        numeric: true,
+        sortable: true,
+        render: (r) => {
+          const rowSpot = num(r.spot);
+          const nearSpot = rowSpot != null && Math.abs(rowSpot - spot) < 1e-9;
+          return (
+            <span
+              style={{
+                ...monoStrongStyle,
+                ...(nearSpot
+                  ? {
+                      background: "var(--accent-soft)",
+                      padding: "1px 4px",
+                      borderRadius: "var(--radius-xs)",
+                    }
+                  : {}),
+              }}
+            >
+              {fmtNum(rowSpot)}
+            </span>
+          );
+        },
+      },
+      {
+        key: "price",
+        header: "Value",
+        width: 104,
+        numeric: true,
+        sortable: true,
+        render: (r) => <span style={monoStrongStyle}>{fmtNum(r.price, 3)}</span>,
+      },
+      {
+        key: "intrinsic",
+        header: "Intrinsic",
+        width: 100,
+        numeric: true,
+        sortable: true,
+        render: (r) => <span style={monoStyle}>{fmtNum(r.intrinsic, 3)}</span>,
+      },
+      {
+        key: "time_value",
+        header: "Time value",
+        width: 110,
+        numeric: true,
+        sortable: true,
+        render: (r) => <span style={monoStyle}>{fmtNum(r.time_value, 3)}</span>,
+      },
+      {
+        key: "delta",
+        header: "Delta",
+        width: 92,
+        numeric: true,
+        sortable: true,
+        render: (r) => <span style={monoStyle}>{fmtNum(r.delta, 4)}</span>,
+      },
+    ],
+    [spot],
   );
 
-  const body = state === "loading" || state === "idle" ? (
-    <div className="u-grid-gap-8" aria-busy="true">
-      <Skeleton height={56} />
-      <Skeleton height={56} />
-      <Skeleton height={120} />
-    </div>
-  ) : state === "error" ? (
-    <Empty
-      title="Function error"
-      body={error?.message ?? "—"}
-      icon="!"
-      action={
-        <button onClick={refetch} className="btn">
-          Retry
-        </button>
-      }
-    />
-  ) : payload?.status !== "ok" ? (
-    <Empty
-      title="Model needs valid inputs"
-      body={
+  const csvColumns = useMemo<GridCsvColumn<SensitivityPoint>[]>(
+    () => [
+      { key: "spot", header: "Spot", value: (r) => r.spot ?? "" },
+      { key: "price", header: "Value", value: (r) => r.price ?? "" },
+      { key: "intrinsic", header: "Intrinsic", value: (r) => r.intrinsic ?? "" },
+      { key: "time_value", header: "Time value", value: (r) => r.time_value ?? "" },
+      { key: "delta", header: "Delta", value: (r) => r.delta ?? "" },
+    ],
+    [],
+  );
+
+  const exportCsv = () => {
+    downloadGridCsv(
+      gridCsvFilename(`ovme-${type.toLowerCase()}`),
+      buildGridCsv(csvColumns, gridRows),
+    );
+  };
+
+  const body = (
+    <PaneState
+      state={state}
+      error={error}
+      empty={payload?.status !== "ok"}
+      emptyTitle="Model needs valid inputs"
+      emptyBody={
         firstString(payload?.summary, "error") ??
+        payload?.reason ??
         "Spot and strike must be positive numbers for the Black-Scholes pricer."
       }
-      icon="∅"
-      action={
-        <button onClick={refetch} className="btn">
-          Retry
-        </button>
-      }
-    />
-  ) : (
-    <div className="u-grid-gap-14">
-      {/* inputs strip */}
-      <section style={inputRowStyle} aria-label="Valuation inputs">
-        <label style={inputLabelStyle}>
-          <span className="u-text-mute">SPOT</span>
-          <NumInput value={spot} step={1} min={0.01} ariaLabel="Underlying spot price" onChange={setSpot} />
-        </label>
-        <label style={inputLabelStyle}>
-          <span className="u-text-mute">STRIKE</span>
-          <NumInput value={strike} step={1} min={0.01} ariaLabel="Option strike price" onChange={setStrike} />
-        </label>
-        <label style={inputLabelStyle}>
-          <span className="u-text-mute">YEARS</span>
-          <NumInput value={years} step={0.05} min={0.01} ariaLabel="Years to expiry" onChange={setYears} />
-        </label>
-        <label style={inputLabelStyle}>
-          <span className="u-text-mute">VOL %</span>
-          <NumInput value={volPct} step={1} min={0.01} ariaLabel="Implied volatility percent" onChange={setVolPct} />
-        </label>
-        <label style={inputLabelStyle}>
-          <span className="u-text-mute">RATE %</span>
-          <NumInput value={ratePct} step={0.25} ariaLabel="Risk-free rate percent" onChange={setRatePct} />
-        </label>
-        <label style={inputLabelStyle}>
-          <span className="u-text-mute">DIV %</span>
-          <NumInput value={divPct} step={0.25} min={0} ariaLabel="Dividend yield percent" onChange={setDivPct} />
-        </label>
-      </section>
+      onRetry={refetch}
+    >
+      <div className="u-grid-gap-14">
+        {/* input strip — one compact row, unit folded into the label */}
+        <section style={inputRowStyle} aria-label="Valuation inputs">
+          <NumField
+            label="Spot"
+            value={spot}
+            min={0.01}
+            step={1}
+            width={96}
+            ariaLabel="Underlying spot price"
+            onChange={setSpot}
+          />
+          <NumField
+            label="Strike"
+            value={strike}
+            min={0.01}
+            step={1}
+            width={96}
+            ariaLabel="Option strike price"
+            onChange={setStrike}
+          />
+          <NumField
+            label="T (y)"
+            value={years}
+            min={0.01}
+            step={0.05}
+            width={84}
+            ariaLabel="Years to expiry"
+            onChange={setYears}
+          />
+          <NumField
+            label="Vol %"
+            value={volPct}
+            min={0.01}
+            step={1}
+            width={84}
+            ariaLabel="Implied volatility percent"
+            onChange={setVolPct}
+          />
+          <NumField
+            label="Rate %"
+            value={ratePct}
+            step={0.25}
+            width={84}
+            ariaLabel="Risk-free rate percent"
+            onChange={setRatePct}
+          />
+          <NumField
+            label="Div %"
+            value={divPct}
+            min={0}
+            step={0.25}
+            width={84}
+            ariaLabel="Dividend yield percent"
+            onChange={setDivPct}
+          />
+        </section>
 
-      {/* price + greeks cards */}
-      <section style={kpiGridStyle} aria-label="Price and greeks">
-        <StatCard
-          label="Price"
-          value={fmtNum(payload?.price, 3)}
-          caption={`${type} · ${moneyness} · T ${fmtNum(years, 2)}Y`}
-          tone="neutral"
-        />
-        <StatCard
-          label="Delta"
-          value={fmtNum(payload?.delta, 4)}
-          caption="Δ PER 1 UNDERLYING"
-          tone={deltaTone(payload?.delta)}
-        />
-        <StatCard
-          label="Gamma"
-          value={fmtNum(payload?.gamma, 4)}
-          caption="Δ CHANGE PER 1 UNIT"
-          tone="neutral"
-        />
-        <StatCard
-          label="Theta / day"
-          value={fmtNum(payload?.theta, 4)}
-          caption="DECAY PER DAY"
-          tone={thetaTone(payload?.theta)}
-        />
-        <StatCard
-          label="Vega / vol pt"
-          value={fmtNum(payload?.vega, 4)}
-          caption="PER 1 VOL POINT"
-          tone="neutral"
-        />
-        <StatCard
-          label="Rho / rate pt"
-          value={fmtNum(payload?.rho, 4)}
-          caption="PER 1 RATE POINT"
-          tone="neutral"
-        />
-      </section>
+        {/* KPI strip — the four decision-relevant numbers */}
+        <section style={kpiGridStyle} aria-label="Price and greeks">
+          <StatCard
+            label="Price"
+            value={fmtNum(payload?.price, 3)}
+            caption="per share"
+            tone="neutral"
+          />
+          <StatCard
+            label="Delta"
+            value={fmtNum(payload?.delta, 4)}
+            caption="per +1 spot"
+            tone={deltaTone(payload?.delta)}
+          />
+          <StatCard
+            label="Gamma"
+            value={fmtNum(payload?.gamma, 4)}
+            caption="per +1 delta"
+            tone="neutral"
+          />
+          <StatCard
+            label="Theta"
+            value={fmtNum(payload?.theta, 4)}
+            caption="per day"
+            tone={thetaTone(payload?.theta)}
+          />
+        </section>
 
-      {/* value curve */}
-      <ValueChart
-        curve={curve}
-        spot={spot}
-        strike={strike}
-        optionType={type}
-        price={payload?.price}
-      />
+        {/* primary visual — value curve, vega/rho read inline */}
+        <ValueChart
+          curve={curve}
+          spot={spot}
+          strike={strike}
+          optionType={type}
+          vega={payload?.vega}
+          rho={payload?.rho}
+        />
 
-      {/* sensitivity grid */}
-      <section style={tableWrapStyle} aria-label="Sensitivity grid">
-        <table style={tableStyle} aria-label="Value sensitivity to spot">
-          <thead>
-            <tr>
-              {["Spot", "Value", "Intrinsic", "Time value", "Delta"].map((h, i) => (
-                <th key={h} style={{ ...thStyle, textAlign: i === 0 ? "left" : "right" }}>
-                  {h}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {gridRows.map((r) => {
-              const rowSpot = num(r.spot);
-              const nearSpot = rowSpot != null && Math.abs(rowSpot - spot) < 1e-9;
-              return (
-                <tr
-                  key={rowSpot ?? gridRows.indexOf(r)}
-                  style={nearSpot ? { background: "var(--accent-soft)" } : undefined}
-                  aria-label={`At spot ${fmtNum(rowSpot)}: value ${fmtNum(r.price, 3)}, delta ${fmtNum(r.delta, 3)}`}
-                >
-                  <td style={{ ...tdStyle, ...(nearSpot ? monoAccentStyle : {}) }}>
-                    {fmtNum(rowSpot)}
-                    {nearSpot ? " ◂" : ""}
-                  </td>
-                  <td style={tdNumStyle}>{fmtNum(r.price, 3)}</td>
-                  <td style={tdNumStyle}>{fmtNum(r.intrinsic, 3)}</td>
-                  <td style={tdNumStyle}>{fmtNum(r.time_value, 3)}</td>
-                  <td style={tdNumStyle}>{fmtNum(r.delta, 4)}</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-        <div className="u-text-mute" style={noteTextStyle}>
-          sampled every 5th point of the {curve.length}-point sensitivity run ·
-          model d1 {fmtNum(payload?.d1, 3)} / d2 {fmtNum(payload?.d2, 3)}
-        </div>
-      </section>
-    </div>
+        {/* secondary table — sensitivity curve with sort / keyboard / CSV */}
+        <section aria-label="Sensitivity grid" style={tableWrapStyle}>
+          <div style={tableHeadStyle}>
+            <span className="u-text-mute" style={noteTextStyle}>
+              sensitivity · every 5th point
+            </span>
+          </div>
+          <DataGrid
+            columns={gridColumns}
+            rows={gridRows}
+            rowKey={(r, i) => `${r.spot ?? i}-${i}`}
+            density="compact"
+            ariaLabel="Value sensitivity to spot"
+            defaultSortKey="spot"
+            defaultSortDir="ascending"
+            keyboardNavigable
+          />
+        </section>
+      </div>
+    </PaneState>
   );
 
   return (
@@ -292,8 +355,8 @@ export function OVMEPane({ code }: FunctionPaneProps) {
       <Pane>
         <PaneHeader
           code={code}
-          title={`Option Valuation — ${type} ${fmtNum(strike)}`}
-          subtitle={`S ${fmtNum(spot)} · T ${fmtNum(years, 2)}Y · vol ${fmtNum(volPct)}% · r ${fmtNum(ratePct)}% · q ${fmtNum(divPct)}%`}
+          title="Option Valuation"
+          subtitle={`${type} ${fmtStrike(strike)} · ${moneyness}`}
           trailing={
             <FunctionControlGroup>
               <Pill tone="muted" variant="soft" withDot={false}>
@@ -306,6 +369,18 @@ export function OVMEPane({ code }: FunctionPaneProps) {
                 onChange={setType}
                 title="Option type"
               />
+              {/* R2-#10 (F4): CSV lives in the header slot like the rest of
+                  the family, not inside the grid section. */}
+              <button
+                type="button"
+                className="btn btn--ghost"
+                onClick={exportCsv}
+                disabled={gridRows.length === 0}
+                title="Download CSV"
+                aria-label={`Download ${gridRows.length} sensitivity rows as CSV`}
+              >
+                CSV
+              </button>
               <LoadStatePill state={state} status={payload?.status} />
               <RefreshButton loading={state === "loading"} onClick={refetch} title="Reprice option" />
             </FunctionControlGroup>
@@ -317,9 +392,7 @@ export function OVMEPane({ code }: FunctionPaneProps) {
           <StatusDivider />
           <StatusSection label="status" value={payload?.status ?? state} />
           <StatusDivider />
-          <StatusSection label="model" value={payload?.type ?? type} tone="accent" />
-          <StatusDivider />
-          <StatusSection label="grid" value={`${curve.length} pt`} />
+          <StatusSection label="points" value={curve.length} tone="accent" />
           <StatusDivider />
           <StatusSection label="elapsed" value={`${data?.elapsed_ms?.toFixed(0) ?? "—"} ms`} />
         </PaneFooter>
@@ -331,7 +404,9 @@ export function OVMEPane({ code }: FunctionPaneProps) {
 /* ── value curve (inline SVG, tokens only) ─────────────────────────── */
 
 const CHART_W = 560;
-const CHART_H = 150;
+// FIX R2-#9: vertical budget trim (was 150) so the sensitivity grid gains a
+// row above the 900px fold.
+const CHART_H = 120;
 const CHART_PAD_X = 10;
 const CHART_PAD_TOP = 10;
 const CHART_PAD_BOTTOM = 16;
@@ -341,13 +416,15 @@ function ValueChart({
   spot,
   strike,
   optionType,
-  price,
+  vega,
+  rho,
 }: {
   curve: SensitivityPoint[];
   spot: number;
   strike: number;
   optionType: string;
-  price?: number;
+  vega?: number;
+  rho?: number;
 }) {
   const geom = useMemo(() => {
     const xs: number[] = [];
@@ -405,16 +482,18 @@ function ValueChart({
     <section style={chartCardStyle} aria-label="Option value curve">
       <div style={chartHeadStyle}>
         <span className="u-text-mute" style={noteTextStyle}>
-          VALUE VS SPOT · {curve.length} PTS · {optionType}
+          Value vs spot
         </span>
-        <span style={monoStrongStyle}>{fmtNum(price, 3)}</span>
+        <span className="u-text-mute" style={noteTextStyle}>
+          vega {fmtNum(vega, 4)} / vol pt · rho {fmtNum(rho, 4)} / rate pt
+        </span>
       </div>
       <svg
         width="100%"
         height={CHART_H}
         viewBox={`0 0 ${CHART_W} ${CHART_H}`}
         role="img"
-        aria-label={`${optionType} value from spot ${fmtNum(geom.xMin)} to ${fmtNum(geom.xMax)}, currently ${fmtNum(price, 3)}`}
+        aria-label={`${optionType} value from spot ${fmtNum(geom.xMin)} to ${fmtNum(geom.xMax)}`}
         preserveAspectRatio="none"
       >
         {/* intrinsic (muted, dashed) */}
@@ -425,8 +504,8 @@ function ValueChart({
           strokeWidth={1}
           strokeDasharray="4 3"
         />
-        {/* model value (accent) */}
-        <path d={geom.valuePath} fill="none" stroke="var(--accent)" strokeWidth={1.5} />
+        {/* model value — the only primary data series */}
+        <path d={geom.valuePath} fill="none" stroke="var(--accent-2, var(--accent))" strokeWidth={1.5} />
         {/* strike marker */}
         {strikeX != null && (
           <line
@@ -446,12 +525,18 @@ function ValueChart({
             x2={spotX}
             y1={CHART_PAD_TOP}
             y2={CHART_H - CHART_PAD_BOTTOM}
-            stroke="var(--positive)"
+            stroke="var(--text-primary)"
             strokeWidth={1}
             strokeDasharray="3 3"
           />
         )}
-        <text x={CHART_PAD_X} y={CHART_H - 4} fontSize={9} fill="var(--text-mute)" fontFamily="JetBrains Mono, monospace">
+        <text
+          x={CHART_PAD_X}
+          y={CHART_H - 4}
+          fontSize={9}
+          fill="var(--text-mute)"
+          fontFamily="JetBrains Mono, monospace"
+        >
           {fmtNum(geom.xMin, 0)}
         </text>
         <text
@@ -465,10 +550,11 @@ function ValueChart({
           {fmtNum(geom.xMax, 0)}
         </text>
       </svg>
+      {/* minimal two-entry key — the only two multi-series lines */}
       <div style={legendRowStyle}>
         <span style={legendItemStyle}>
           <svg width={18} height={6} aria-hidden>
-            <line x1={0} x2={18} y1={3} y2={3} stroke="var(--accent)" strokeWidth={1.5} />
+            <line x1={0} x2={18} y1={3} y2={3} stroke="var(--accent-2, var(--accent))" strokeWidth={1.5} />
           </svg>
           Model value
         </span>
@@ -478,53 +564,54 @@ function ValueChart({
           </svg>
           Intrinsic
         </span>
-        <span style={legendItemStyle}>
-          <svg width={10} height={8} aria-hidden>
-            <line x1={5} x2={5} y1={0} y2={8} stroke="var(--positive)" strokeWidth={1} strokeDasharray="3 3" />
-          </svg>
-          Spot
-        </span>
-        <span style={legendItemStyle}>
-          <svg width={10} height={8} aria-hidden>
-            <line x1={5} x2={5} y1={0} y2={8} stroke="var(--text-mute)" strokeWidth={1} strokeDasharray="2 3" />
-          </svg>
-          Strike
-        </span>
       </div>
     </section>
   );
 }
 
-/* ── small input ───────────────────────────────────────────────────── */
+/* ── small input (kit Field wrapper with local text state) ─────────── */
 
-function NumInput({
+function NumField({
+  label,
   value,
   onChange,
   step = 1,
   min,
+  width,
   ariaLabel,
 }: {
+  label: string;
   value: number;
   onChange: (v: number) => void;
   step?: number;
   min?: number;
+  width?: number;
   ariaLabel: string;
 }) {
+  const [text, setText] = useState<string>(() => String(value));
+  useEffect(() => {
+    setText(String(value));
+  }, [value]);
   return (
-    <input
-      type="number"
-      className="fn-num-input"
-      style={numInputStyle}
-      value={String(value)}
+    <Field
+      label={label}
+      // FIX R2-#3: `type="number"` renders with the OS locale separator
+      // (tr-TR "0,25"); text + dot value + inputMode pins en-US formatting.
+      type="text"
+      inputMode="decimal"
+      value={text}
       step={step}
       min={min}
+      width={width}
       aria-label={ariaLabel}
       onChange={(e) => {
+        setText(e.target.value);
         const n = Number(e.target.value);
         if (e.target.value.trim() !== "" && Number.isFinite(n) && (min == null || n >= min)) {
           onChange(n);
         }
       }}
+      onBlur={() => setText(String(value))}
     />
   );
 }
@@ -532,6 +619,9 @@ function NumInput({
 /* ── helpers ───────────────────────────────────────────────────────── */
 
 function num(v: unknown): number | null {
+  // GUARD: Number(null) === 0 — an absent value must stay missing (em-dash),
+  // never collapse into a fabricated zero.
+  if (v == null || v === "") return null;
   const n = typeof v === "number" ? v : Number(v);
   return Number.isFinite(n) ? n : null;
 }
@@ -558,50 +648,38 @@ function fmtNum(v: unknown, digits = 2): string {
   return formatNumberFixed(n, digits);
 }
 
+/** Header strike: grouping with at most 2 decimals ("100", not "100.00"). */
+function fmtStrike(v: unknown): string {
+  const n = num(v);
+  if (n == null) return "—";
+  return formatNumber(n, 2);
+}
+
 /* ── styles (design tokens only) ───────────────────────────────────── */
 
 const kpiGridStyle: CSSProperties = {
   display: "grid",
-  gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
+  gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
   gap: 10,
 };
 
 const inputRowStyle: CSSProperties = {
   display: "flex",
-  flexWrap: "wrap",
-  alignItems: "end",
-  gap: 12,
-};
-
-const inputLabelStyle: CSSProperties = {
-  display: "flex",
-  flexDirection: "column",
-  gap: 3,
-  fontSize: "var(--font-size-xs)",
-  fontFamily: "JetBrains Mono, monospace",
-  letterSpacing: "0.06em",
-};
-
-const numInputStyle: CSSProperties = {
-  width: 84,
-  padding: "3px 6px",
-  background: "var(--bg-raised, transparent)",
-  border: "1px solid var(--border)",
-  borderRadius: "var(--radius-md, 4px)",
-  color: "var(--text-primary)",
-  fontFamily: "JetBrains Mono, monospace",
-  fontVariantNumeric: "tabular-nums",
-  fontSize: "var(--font-size-sm)",
+  alignItems: "flex-end",
+  gap: 10,
+  overflowX: "auto",
+  paddingBottom: 2,
 };
 
 const chartCardStyle: CSSProperties = {
   display: "flex",
   flexDirection: "column",
   gap: 6,
-  padding: "10px 12px",
-  border: "1px solid var(--border)",
-  borderRadius: 8,
-  background: "var(--bg-raised, transparent)",
+  // FIX R2-#9: trimmed from 10/12 to lift the primary grid above the fold.
+  padding: "8px 10px",
+  border: "1px solid var(--border-subtle)",
+  borderRadius: "var(--radius-md)",
+  background: "var(--scrim-low)",
 };
 
 const chartHeadStyle: CSSProperties = {
@@ -609,6 +687,7 @@ const chartHeadStyle: CSSProperties = {
   justifyContent: "space-between",
   alignItems: "baseline",
   gap: 12,
+  flexWrap: "wrap",
 };
 
 const legendRowStyle: CSSProperties = {
@@ -624,55 +703,33 @@ const legendItemStyle: CSSProperties = {
   gap: 6,
   fontSize: "var(--font-size-2xs)",
   color: "var(--text-mute)",
-  fontFamily: "JetBrains Mono, monospace",
+  fontFamily: "var(--font-mono)",
 };
 
 const tableWrapStyle: CSSProperties = { minWidth: 0 };
 
-const tableStyle: CSSProperties = {
-  width: "100%",
-  borderCollapse: "collapse",
-  tableLayout: "fixed",
-  fontFamily: "JetBrains Mono, monospace",
-  fontVariantNumeric: "tabular-nums",
-  fontSize: "var(--font-size-sm)",
-};
-
-const thStyle: CSSProperties = {
-  padding: "4px 8px",
-  color: "var(--text-mute)",
-  fontWeight: 500,
-  letterSpacing: "0.06em",
-  fontSize: "var(--font-size-xs)",
-  textTransform: "uppercase",
-  borderBottom: "1px solid var(--border-subtle)",
-};
-
-const tdStyle: CSSProperties = {
-  padding: "3px 8px",
-  color: "var(--text-primary)",
-  borderBottom: "1px solid var(--border-subtle)",
-};
-
-const tdNumStyle: CSSProperties = {
-  ...tdStyle,
-  textAlign: "right",
-};
-
-const monoAccentStyle: CSSProperties = {
-  color: "var(--accent)",
-  fontWeight: 700,
+const tableHeadStyle: CSSProperties = {
+  display: "flex",
+  justifyContent: "space-between",
+  alignItems: "center",
+  gap: 12,
+  marginBottom: 6,
 };
 
 const noteTextStyle: CSSProperties = {
   fontSize: "var(--font-size-2xs)",
-  fontFamily: "JetBrains Mono, monospace",
+  fontFamily: "var(--font-mono)",
   letterSpacing: "0.05em",
-  marginTop: 6,
+};
+
+const monoStyle: CSSProperties = {
+  fontFamily: "var(--font-mono)",
+  fontVariantNumeric: "tabular-nums",
+  color: "var(--text-secondary)",
 };
 
 const monoStrongStyle: CSSProperties = {
-  fontFamily: "JetBrains Mono, monospace",
+  fontFamily: "var(--font-mono)",
   fontVariantNumeric: "tabular-nums",
   color: "var(--text-primary)",
   fontWeight: 600,

@@ -1,50 +1,56 @@
 /**
  * OVDV — FX Option Volatility Surface.
  *
- * Bloomberg `OVDV<GO>` analogue / FX cousin of IVOL: the OTC FX
- * implied-vol surface across standard tenors (1W..2Y) × delta buckets
- * (10P / 25P / ATM / 25C / 10C) for a currency pair, rendered as a
- * heatmap grid, with the ATM term-structure line below and KPI cards
- * for the ATM / 25Δ risk-reversal / 25Δ butterfly inputs.
+ * One screen, one job: the surf. The tenor×delta implied-vol matrix is the
+ * primary visual and is drawn with the design-system `HeatCell` (no local
+ * heat implementation). The ATM term structure reads the backend's REAL
+ * `series[].atm_vol_pct`; the 25Δ RR / BF cards read the real card fields.
  *
- * The sidecar anchors the ATM curve to LIVE FX realized vol when
- * yfinance history is available (`vol_source === "live_realized_vol"`,
- * `data_mode === "DELAYED_REFERENCE"`), otherwise it labels the surface
- * `reference_fx_vol_model` (`data_mode === "MODELED"`) and emits a
- * warning. The pane surfaces that distinction honestly so a modeled
- * surface is never mistaken for vendor-quoted OTC vols.
- *
- * Payload (data?.data) keys consumed:
- *   pair, as_of, vol_source, data_mode, source_mode, methodology,
- *   warnings[], tenors[], delta_buckets[],
- *   surface[] / rows[] {tenor, delta, vol, vol_decimal, tenor_years, source_mode},
- *   series[] {tenor, tenor_years, atm_vol_pct}, cards{} or cards[] {key,label,value}
- * Envelope keys: sources[], elapsed_ms, warnings[].
+ *  Header : pair segmented control + CSV + load-state pill + refresh.
+ *  KPI    : ATM (1M anchor), 25Δ RR, 25Δ BF, term slope — 4 cards, no
+ *           duplicate trend sparks (the term panel is the one term view).
+ *  Primary: roving-focus tenor×delta IV grid (arrow keys + Home/End move the
+ *           active cell, compact readout line below, accent outline marks
+ *           the selection; colour comes from the heat scale only).
+ *  Term   : one compact Sparkline panel fed by `series[].atm_vol_pct`.
+ *  Notice : ONE panel max — the reference-model context and provider
+ *           warnings share it (no stacked amber boxes).
+ *  Footer : provenance once (provider · mode · vol src · cells · elapsed).
  */
-import { useEffect, useMemo, type CSSProperties } from "react";
 import {
-  DataGrid,
-  type DataGridColumn,
-  Empty,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from "react";
+import {
+  HeatCell,
   Pane,
   PaneBody,
   PaneFooter,
   PaneHeader,
-  Pill,
-  Skeleton,
+  PaneState,
   Sparkline,
   StatCard,
   StatusDivider,
   StatusSection,
-  Tabs,
 } from "@/design-system";
+import {
+  buildGridCsv,
+  downloadGridCsv,
+  gridCsvFilename,
+  type GridCsvColumn,
+} from "@/design-system/grid-csv";
 import { useFunction } from "@/lib/useFunction";
-import { useUtcStamp } from "@/lib/useUtcStamp";
 import { useVisibilityTick } from "@/lib/useVisibilityTick";
 import {
   FunctionControlGroup,
   LoadStatePill,
   RefreshButton,
+  SegmentedControl,
 } from "./function-controls";
 import { usePersistentOption } from "./function-control-state";
 import type { FunctionPaneProps } from "./registry-types";
@@ -61,9 +67,10 @@ interface SurfaceRow {
 interface TermPoint {
   tenor?: string;
   tenor_years?: number;
-  vol?: number;
-  /** Backend ATM-term field name (percent). Older payloads may use `vol`. */
+  /** Backend ATM-term field name (percent). Real realized-vol anchor. */
   atm_vol_pct?: number;
+  /** Legacy alias kept for older payloads. */
+  vol?: number;
 }
 
 interface OVDVCard {
@@ -75,6 +82,8 @@ interface OVDVCard {
 interface OVDVPayload {
   pair?: string;
   as_of?: string;
+  status?: string;
+  reason?: string;
   surface?: SurfaceRow[];
   rows?: SurfaceRow[];
   series?: TermPoint[];
@@ -86,7 +95,6 @@ interface OVDVPayload {
   delta_buckets?: string[];
   methodology?: string;
   warnings?: string[];
-  // Card-schema slots are also echoed at the top level by the handler.
   atm_vol_pct?: number;
   risk_reversal_25d_pct?: number;
   butterfly_25d_pct?: number;
@@ -207,9 +215,18 @@ export function OVDVPane({ code }: FunctionPaneProps) {
   const cardVal = (key: string, topLevel?: number): number | undefined =>
     cardLookup[key] ?? toNum(topLevel);
 
-  const dataMode = payload.data_mode ?? payload.source_mode ?? "MODELED";
+  const dataMode = payload.data_mode ?? payload.source_mode ?? "modeled";
   const volSource = payload.vol_source ?? "user_inputs";
   const isLive = volSource === "live_realized_vol";
+
+  // FIX R1-H/R2-#1: the failure disposition comes from the ENVELOPE status
+  // (`data.status`, falling back to the payload status) — never from the
+  // local fetch state. A provider outage must not render a green "ok" pill
+  // or drop the provider reason.
+  const callStatus = data?.status ?? payload.status;
+  const statusOverride =
+    callStatus && callStatus !== "ok" ? callStatus : undefined;
+  const providerReason = payload.reason ?? data?.reason ?? null;
 
   const warningsList = useMemo<string[]>(() => {
     const fromPayload = Array.isArray(payload.warnings) ? payload.warnings : [];
@@ -217,26 +234,26 @@ export function OVDVPane({ code }: FunctionPaneProps) {
     return [...fromPayload, ...fromEnvelope.map((w) => String(w))];
   }, [payload.warnings, data?.warnings]);
 
-  const utcStamp = useUtcStamp(tick);
   const sources =
     data?.sources?.join(", ") || (isLive ? "yfinance" : "reference_fx_vol_model");
 
-  // ATM term-structure points (chronological) for the line + sparkline.
-  // Backend `series[]` rows carry `atm_vol_pct` (percent); accept a legacy
-  // `vol` alias too so the term structure never silently collapses to [].
+  // ATM term-structure points (chronological) for the term panel.
+  // Preferred source: the REAL `series[].atm_vol_pct` (verified live 2026-09-12:
+  // {tenor, atm_vol_pct}); the grid's ATM column is only a fallback when the
+  // series is absent (same real values, just pivoted).
   const term = useMemo<{ tenor: string; vol: number }[]>(() => {
-    const pts: TermPoint[] = series.length
-      ? series
-      : tenors.map((t) => ({
-          tenor: t,
-          tenor_years: undefined,
-          vol: cellMap.get(t)?.get("ATM"),
-        }));
-    return pts
+    const fromSeries = series
       .map((p) => ({
         tenor: p.tenor ?? "—",
         vol: typeof p.vol === "number" ? p.vol : p.atm_vol_pct,
       }))
+      .filter(
+        (p): p is { tenor: string; vol: number } =>
+          typeof p.vol === "number" && Number.isFinite(p.vol),
+      );
+    if (fromSeries.length) return fromSeries;
+    return tenors
+      .map((t) => ({ tenor: t, vol: cellMap.get(t)?.get("ATM") }))
       .filter(
         (p): p is { tenor: string; vol: number } =>
           typeof p.vol === "number" && Number.isFinite(p.vol),
@@ -253,198 +270,372 @@ export function OVDVPane({ code }: FunctionPaneProps) {
 
   const rr = cardVal("risk_reversal_25d_pct", payload.risk_reversal_25d_pct);
   const bf = cardVal("butterfly_25d_pct", payload.butterfly_25d_pct);
-  const atmFront = cardVal("atm_vol_pct", payload.atm_vol_pct) ?? frontAtm;
+  const atmQuote = cardVal("atm_vol_pct", payload.atm_vol_pct) ?? frontAtm;
 
-  // Delta-grid columns: tenor label + one heat cell per delta bucket.
-  const cols = useMemo<DataGridColumn<{ tenor: string }>[]>(() => {
-    const tenorCol: DataGridColumn<{ tenor: string }> = {
-      key: "tenor",
-      header: "Tenor",
-      width: 78,
-      render: (r) => <span style={tenorCell}>{r.tenor}</span>,
+  /* ── roving-focus surface grid ─────────────────────────────────────── */
+
+  const atmCol = Math.max(0, deltas.indexOf("ATM"));
+  const fallbackCell = useMemo(
+    () => ({ r: 0, c: atmCol }),
+    [atmCol],
+  );
+  const [activePref, setActivePref] = useState<{ r: number; c: number } | null>(null);
+  const activeCell = activePref ?? fallbackCell;
+  // Keep the active cell inside the current bounds after a payload swap.
+  useEffect(() => {
+    setActivePref((a) => {
+      if (!a) return a;
+      const r = Math.min(a.r, Math.max(0, tenors.length - 1));
+      const c = Math.min(a.c, Math.max(0, deltas.length - 1));
+      return r === a.r && c === a.c ? a : { r, c };
+    });
+  }, [tenors.length, deltas.length]);
+
+  const tableRef = useRef<HTMLTableElement>(null);
+  // R3-N2: a ragged surface could leave the roving tab stop on an empty cell
+  // (empty cells render no HeatCell → zero tab stops). Snap the effective
+  // active cell to the first present cell when the preferred one has no value.
+  const effectiveActiveCell = useMemo(() => {
+    const has = (r: number, c: number) => {
+      const t = tenors[r];
+      const d = deltas[c];
+      return t != null && d != null && Number.isFinite(cellMap.get(t)?.get(d) as number);
     };
-    const deltaCols: DataGridColumn<{ tenor: string }>[] = deltas.map(
-      (delta) => ({
-        key: `d_${delta}`,
-        header: delta,
-        numeric: true,
-        width: 92,
-        render: (r) => {
-          const vol = cellMap.get(r.tenor)?.get(delta);
-          if (vol == null || !Number.isFinite(vol)) {
-            return <span style={emptyCell}>—</span>;
-          }
-          return (
-            <HeatCell
-              vol={vol}
-              min={volStats.min}
-              max={volStats.max}
-              emphasis={delta === "ATM"}
-            />
-          );
-        },
-      }),
-    );
-    return [tenorCol, ...deltaCols];
-  }, [deltas, cellMap, volStats]);
+    if (has(activeCell.r, activeCell.c)) return activeCell;
+    for (let r = 0; r < tenors.length; r += 1) {
+      for (let c = 0; c < deltas.length; c += 1) {
+        if (has(r, c)) return { r, c };
+      }
+    }
+    return activeCell;
+  }, [activeCell, tenors, deltas, cellMap]);
+  // FIX R2-#2: the term sparkline must fill its panel. The kit Sparkline
+  // takes a pixel width, so we measure the panel (ResizeObserver) instead of
+  // hard-coding 280px (~18% of the card on a desktop viewport).
+  const [termRef, termWidth] = useMeasuredWidth<HTMLDivElement>(280);
+  const moveActiveCell = useCallback(
+    (r: number, c: number) => {
+      const next = {
+        r: Math.max(0, Math.min(tenors.length - 1, r)),
+        c: Math.max(0, Math.min(deltas.length - 1, c)),
+      };
+      setActivePref(next);
+      // The kit `HeatCell` button owns the roving tab stop (FIX R1-F2); the
+      // wrapper <td> is not focusable anymore.
+      const el = tableRef.current?.querySelector<HTMLElement>(
+        `[data-cell="${next.r}-${next.c}"] .showme-heat-cell`,
+      );
+      el?.focus();
+    },
+    [tenors.length, deltas.length],
+  );
 
-  const gridRows = useMemo(() => tenors.map((t) => ({ tenor: t })), [tenors]);
+  const onCellKeyDown = useCallback(
+    (e: ReactKeyboardEvent<HTMLTableCellElement>, r: number, c: number) => {
+      switch (e.key) {
+        case "ArrowDown":
+          e.preventDefault();
+          moveActiveCell(r + 1, c);
+          break;
+        case "ArrowUp":
+          e.preventDefault();
+          moveActiveCell(r - 1, c);
+          break;
+        case "ArrowRight":
+          e.preventDefault();
+          moveActiveCell(r, c + 1);
+          break;
+        case "ArrowLeft":
+          e.preventDefault();
+          moveActiveCell(r, c - 1);
+          break;
+        case "Home":
+          e.preventDefault();
+          moveActiveCell(r, 0);
+          break;
+        case "End":
+          e.preventDefault();
+          moveActiveCell(r, deltas.length - 1);
+          break;
+        default:
+          break;
+      }
+    },
+    [deltas.length, moveActiveCell],
+  );
+
+  const activeVol = cellMap.get(tenors[activeCell.r] ?? "")?.get(
+    deltas[activeCell.c] ?? "",
+  );
+  const readout =
+    tenors.length && deltas.length
+      ? `${tenors[activeCell.r]} × ${deltas[activeCell.c]} · ${fmtPct(activeVol)}`
+      : "—";
+
+  const heatSpan = volStats.max - volStats.min;
+
+  const csvColumns = useMemo<GridCsvColumn<SurfaceRow>[]>(
+    () => [
+      { key: "tenor", header: "Tenor", value: (r) => r.tenor ?? "" },
+      { key: "tenor_years", header: "TenorYears", value: (r) => r.tenor_years ?? "" },
+      { key: "delta", header: "Delta", value: (r) => r.delta ?? "" },
+      { key: "vol", header: "VolPct", value: (r) => r.vol ?? "" },
+    ],
+    [],
+  );
+  const exportCsv = () => {
+    const csv = buildGridCsv(csvColumns, surface);
+    downloadGridCsv(gridCsvFilename(`ovdv-${payload.pair ?? pair}`), csv);
+  };
+
+  const showNotice =
+    (state === "ok" || state === "refreshing") &&
+    surface.length > 0 &&
+    (!isLive || warningsList.length > 0);
 
   return (
     <div className="u-pane-host">
       <Pane>
         <PaneHeader
           code={code}
-          title="FX vol surface"
-          subtitle={`${payload.pair ?? pair} · ${tenors.length}×${deltas.length} grid · poll ${REFRESH_MS / 1000}s · ${dataMode}`}
+          title={`FX vol surface — ${payload.pair ?? pair}`}
+          subtitle={`${payload.pair ?? pair} · poll ${REFRESH_MS / 1000}s`}
           trailing={
             <FunctionControlGroup>
-              <Pill tone="muted" variant="soft" withDot={false}>
-                {tenors.length} ten
-              </Pill>
-              <Pill tone="accent" variant="soft" withDot={false}>
-                {utcStamp} UTC
-              </Pill>
-              <Pill tone={isLive ? "positive" : "warn"} variant="soft">
-                {isLive ? "live realized vol" : "reference model"}
-              </Pill>
-              <LoadStatePill state={state} />
+              <SegmentedControl
+                label="PAIR"
+                value={pair}
+                options={PAIRS.map((p) => ({ value: p.id, label: p.label }))}
+                onChange={(next) => setPair(next as PairId)}
+                title="Currency pair"
+              />
+              <button
+                type="button"
+                className="btn btn--ghost"
+                onClick={exportCsv}
+                disabled={surface.length === 0}
+                title="Download CSV"
+                aria-label={`Download ${surface.length} surface cells as CSV`}
+              >
+                CSV
+              </button>
+              <LoadStatePill
+                state={state}
+                status={statusOverride ?? payload.data_mode}
+              />
               <RefreshButton loading={state === "loading"} onClick={refetch} />
             </FunctionControlGroup>
           }
         />
-        <div style={tabBarStyle}>
-          <Tabs
-            variant="segmented"
-            items={PAIRS.map((p) => ({ id: p.id, label: p.label }))}
-            active={pair}
-            onChange={(id) => setPair(id as PairId)}
-          />
-        </div>
         <PaneBody>
-          {state === "loading" || state === "idle" ? (
-            <Skeleton height={340} />
-          ) : state === "error" ? (
-            <Empty title="Function error" body={error?.message ?? "—"} icon="!" />
-          ) : surface.length === 0 ? (
-            <Empty
-              title="No surface"
-              body={`No OVDV vol surface for ${payload.pair ?? pair}.`}
-            />
-          ) : (
-            <div className="u-grid-gap-14">
-              {!isLive ? (
-                <div style={noticeStyle}>
-                  <strong className="u-text-warn">Reference vol model</strong>
-                  <span className="u-text-secondary">
-                    The ATM term structure is labelled <code>{dataMode}</code> —
-                    no live OTC FX vol vendor (or realized-vol history) is
-                    configured. The smile wings are modeled from the 25Δ RR / BF
-                    inputs. Treat the surface as a labelled reference, not
-                    vendor-quoted OTC vols.
-                  </span>
-                </div>
-              ) : null}
-              {warningsList.length ? (
-                <div style={warningBox}>
-                  <strong className="u-text-warn">Provider warnings</strong>
-                  <ul style={warningList}>
-                    {warningsList.slice(0, 3).map((w, i) => (
-                      <li key={i} className="u-text-secondary">
-                        {w}
-                      </li>
+          <PaneState
+            state={state}
+            error={error}
+            empty={surface.length === 0}
+            emptyTitle={
+              statusOverride === "provider_unavailable"
+                ? "Vol surface provider unavailable"
+                : "No vol surface"
+            }
+            emptyBody={
+              providerReason ? (
+                <span style={reasonClampStyle} title={providerReason}>
+                  {providerReason}
+                </span>
+              ) : (
+                `No OVDV vol surface for ${payload.pair ?? pair}.`
+              )
+            }
+            onRetry={refetch}
+            className="u-grid-gap-14"
+          >
+            {showNotice && (
+              <div
+                role="status"
+                aria-label="Data quality notice"
+                data-testid="ovdv-notice"
+                style={noticeStyle}
+              >
+                {!isLive && (
+                  <div>
+                    <strong className="u-text-warn">Reference vol model</strong>{" "}
+                    <span className="u-text-secondary">
+                      ATM curve labelled <code>{dataMode}</code> — no live OTC FX
+                      vol vendor configured; smile wings modelled from the 25Δ
+                      RR/BF inputs. Reference, not vendor-quoted OTC vols.
+                    </span>
+                  </div>
+                )}
+                {warningsList.slice(0, 3).map((w, i) => (
+                  <div key={i} className="u-text-secondary">
+                    {w}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <section style={kpiGrid} aria-label="OVDV KPI ribbon">
+              <StatCard
+                label="ATM vol (1M)"
+                value={fmtPct(atmQuote)}
+                caption="realized-vol anchor"
+                tone="neutral"
+              />
+              <StatCard
+                label="25Δ risk reversal"
+                value={fmtPctSigned(rr)}
+                caption="call − put · 25Δ"
+                tone={(rr ?? 0) >= 0 ? "positive" : "negative"}
+              />
+              <StatCard
+                label="25Δ butterfly"
+                value={fmtPct(bf)}
+                caption="wing convexity · 25Δ"
+                tone="neutral"
+              />
+              <StatCard
+                label="Term slope"
+                value={
+                  termSlope == null
+                    ? "—"
+                    : `${termSlope >= 0 ? "+" : ""}${termSlope.toFixed(2)} pp`
+                }
+                // R2-#5/F5: the tenor range is stated once, on the term
+                // panel head — the KPI caption names the slope basis instead.
+                caption="back − front"
+                tone={slopeTone}
+              />
+            </section>
+
+            <section aria-label="FX vol surface grid" style={surfaceSection}>
+              <div style={sectionHead}>
+                <span style={sectionLabel}>
+                  Surface · tenor × delta (implied vol %)
+                </span>
+                <span style={sectionLabel}>
+                  {fmtPct(volStats.min)} – {fmtPct(volStats.max)}
+                </span>
+              </div>
+              <table
+                ref={tableRef}
+                role="grid"
+                aria-label="OVDV vol surface grid"
+                aria-rowcount={tenors.length + 1}
+                aria-colcount={deltas.length + 1}
+                style={tableStyle}
+              >
+                <thead>
+                  <tr>
+                    <th scope="col" style={cornerHeadStyle} aria-label="Tenor" />
+                    {deltas.map((delta, c) => (
+                      <th
+                        key={delta}
+                        scope="col"
+                        aria-colindex={c + 2}
+                        style={colHeadStyle}
+                      >
+                        {delta}
+                      </th>
                     ))}
-                  </ul>
+                  </tr>
+                </thead>
+                <tbody>
+                  {tenors.map((tenor, r) => (
+                    <tr key={tenor}>
+                      <th scope="row" style={rowHeadStyle}>
+                        {tenor}
+                      </th>
+                      {deltas.map((delta, c) => {
+                        const vol = cellMap.get(tenor)?.get(delta);
+                        const isActive =
+                          effectiveActiveCell.r === r && effectiveActiveCell.c === c;
+                        return (
+                          <td
+                            key={delta}
+                            data-cell={`${r}-${c}`}
+                            aria-colindex={c + 2}
+                            onFocus={() => setActivePref({ r, c })}
+                            onKeyDown={(e) => onCellKeyDown(e, r, c)}
+                            style={{
+                              ...cellStyle,
+                              outline: isActive
+                                ? "1px solid var(--accent)"
+                                : "none",
+                              outlineOffset: -1,
+                            }}
+                          >
+                            {vol == null || !Number.isFinite(vol) ? (
+                              <span style={emptyCellStyle}>—</span>
+                            ) : (
+                              <HeatCell
+                                value={heatValue(vol, volStats.min, heatSpan)}
+                                range={1}
+                                size={32}
+                                label={vol.toFixed(2)}
+                                tabIndex={isActive ? 0 : -1}
+                                ariaLabel={`${tenor} × ${delta} implied vol ${vol.toFixed(2)} percent`}
+                                onClick={() => setActivePref({ r, c })}
+                              />
+                            )}
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <div style={readoutRow}>
+                <span
+                  data-testid="ovdv-readout"
+                  aria-live="polite"
+                  style={readoutStyle}
+                >
+                  {readout}
+                </span>
+              </div>
+            </section>
+
+            <section aria-label="ATM term structure" style={termSection}>
+              <div style={sectionHead}>
+                <span style={sectionLabel}>
+                  ATM term structure · realized vol
+                </span>
+                <span style={sectionLabel}>
+                  {term.length ? `${term[0].tenor} → ${term[term.length - 1].tenor}` : "—"}
+                </span>
+              </div>
+              {term.length > 0 ? (
+                <div
+                  ref={termRef}
+                  style={measureWrap}
+                  data-testid="ovdv-term-measure"
+                >
+                  <Sparkline
+                    values={atmVals}
+                    width={termWidth}
+                    height={48}
+                    tone={slopeTone}
+                    ariaLabel={`ATM vol by tenor: ${term
+                      .map((p) => `${p.tenor} ${p.vol.toFixed(2)}`)
+                      .join(", ")}`}
+                  />
                 </div>
-              ) : null}
-
-              <section style={kpiGrid} aria-label="OVDV KPI ribbon">
-                <StatCard
-                  label="ATM Vol (front)"
-                  value={fmtPct(atmFront)}
-                  caption={`${term[0]?.tenor ?? "—"} · ${payload.pair ?? pair}`}
-                  tone="neutral"
-                  trend={atmVals}
-                />
-                <StatCard
-                  label="25Δ Risk Reversal"
-                  value={fmtPctSigned(rr)}
-                  caption="Call − put skew (25Δ)"
-                  tone={(rr ?? 0) >= 0 ? "positive" : "negative"}
-                />
-                <StatCard
-                  label="25Δ Butterfly"
-                  value={fmtPct(bf)}
-                  caption="Smile convexity (25Δ)"
-                  tone="neutral"
-                />
-                <StatCard
-                  label="Term slope"
-                  value={
-                    termSlope == null
-                      ? "—"
-                      : `${termSlope >= 0 ? "+" : ""}${termSlope.toFixed(2)} pp`
-                  }
-                  caption={
-                    term.length
-                      ? `${term[0]?.tenor} → ${term[term.length - 1]?.tenor}`
-                      : "—"
-                  }
-                  tone={slopeTone}
-                  trend={atmVals}
-                />
-              </section>
-
-              <section style={surfaceWrap} aria-label="Vol surface grid">
-                <div style={surfaceHead}>
-                  <span style={metaLabel}>
-                    Surface · tenor × delta (implied vol %)
-                  </span>
-                  <span style={metaLabel}>
-                    {fmtPct(volStats.min)} – {fmtPct(volStats.max)}
-                  </span>
-                </div>
-                <DataGrid
-                  columns={cols}
-                  rows={gridRows}
-                  rowKey={(r) => r.tenor}
-                  density="compact"
-                  ariaLabel="OVDV vol surface grid"
-                />
-                <VolLegend min={volStats.min} max={volStats.max} />
-              </section>
-
-              <section style={termPanel} aria-label="ATM term structure">
-                <div style={surfaceHead}>
-                  <span style={metaLabel}>ATM term structure</span>
-                  <span className="u-inline-flex">
-                    <Sparkline
-                      values={atmVals.length ? atmVals : [0, 0]}
-                      width={140}
-                      height={28}
-                      tone={slopeTone}
-                    />
-                  </span>
-                </div>
-                <TermStructure points={term} />
-              </section>
-
-              {payload.methodology ? (
-                <section style={methodPanel}>
-                  <div style={metaLabel}>Methodology</div>
-                  <p style={methodText}>{payload.methodology}</p>
-                </section>
-              ) : null}
-            </div>
-          )}
+              ) : (
+                <span style={emptyCellStyle}>—</span>
+              )}
+            </section>
+          </PaneState>
         </PaneBody>
         <PaneFooter>
           <StatusSection label="provider" value={sources} />
           <StatusDivider />
           <StatusSection
             label="mode"
-            value={dataMode}
-            tone={isLive ? "positive" : "warn"}
+            // FIX R1-H/R2-#1: on a failure envelope the footer mode reads the
+            // call status (provider_unavailable) instead of claiming a mode
+            // the data never reached.
+            value={statusOverride ?? dataMode}
+            tone={isLive && !statusOverride ? "positive" : "warn"}
           />
           <StatusDivider />
           <StatusSection label="vol src" value={volSource} />
@@ -455,86 +646,8 @@ export function OVDVPane({ code }: FunctionPaneProps) {
             label="elapsed"
             value={`${data?.elapsed_ms?.toFixed(0) ?? "—"} ms`}
           />
-          <StatusDivider />
-          <StatusSection
-            label="pair"
-            value={payload.pair ?? pair}
-            tone="accent"
-          />
         </PaneFooter>
       </Pane>
-    </div>
-  );
-}
-
-/** A single heatmap cell: background intensity scales with vol across the surface. */
-function HeatCell({
-  vol,
-  min,
-  max,
-  emphasis,
-}: {
-  vol: number;
-  min: number;
-  max: number;
-  emphasis?: boolean;
-}) {
-  const span = max - min;
-  const t = span > 1e-9 ? (vol - min) / span : 0.5;
-  // Cool (low vol) -> warm (high vol): blend accent -> negative.
-  const lowTone = "var(--accent)";
-  const highTone = "var(--negative)";
-  const intensity = 0.12 + Math.max(0, Math.min(1, t)) * 0.5;
-  const cellTone = t >= 0.5 ? highTone : lowTone;
-  return (
-    <span
-      style={{
-        ...heatCell,
-        background: `color-mix(in srgb, ${cellTone} ${(intensity * 100).toFixed(0)}%, transparent)`,
-        borderColor: emphasis
-          ? "color-mix(in srgb, var(--accent) 55%, transparent)"
-          : "transparent",
-        fontWeight: emphasis ? 700 : 600,
-      }}
-    >
-      {vol.toFixed(2)}
-    </span>
-  );
-}
-
-function VolLegend({ min, max }: { min: number; max: number }) {
-  const mid = (min + max) / 2;
-  return (
-    <div style={legendRow} aria-hidden>
-      <span style={legendLabel}>{fmtPct(min)}</span>
-      <span style={legendBar} />
-      <span style={legendLabel}>{fmtPct(mid)}</span>
-      <span style={{ ...legendBar, ...legendBarHigh }} />
-      <span style={legendLabel}>{fmtPct(max)}</span>
-    </div>
-  );
-}
-
-/** ATM term-structure as horizontal bars per tenor — bar length = relative vol. */
-function TermStructure({ points }: { points: { tenor: string; vol: number }[] }) {
-  if (!points.length) {
-    return <div style={legendLabel}>No ATM term points.</div>;
-  }
-  const max = Math.max(...points.map((p) => p.vol), 1e-6);
-  return (
-    <div style={termList}>
-      {points.map((p) => {
-        const width = Math.max(4, Math.min(100, (p.vol / max) * 100));
-        return (
-          <div key={p.tenor} style={termRow}>
-            <span style={termTenor}>{p.tenor}</span>
-            <span style={termTrack}>
-              <span style={{ ...termFill, width: `${width}%` }} />
-            </span>
-            <span style={termVol}>{p.vol.toFixed(2)}%</span>
-          </div>
-        );
-      })}
     </div>
   );
 }
@@ -548,6 +661,50 @@ function toNum(v: unknown): number | undefined {
   return undefined;
 }
 
+/**
+ * FIX R2-#4: map the real IV into the kit's [0,1] intensity scale with a
+ * visible floor. The old `vol - min` mapped the cheapest cell to exactly 0,
+ * which `intensityToken` paints `transparent` — one present cell lost its
+ * heat encoding. Floor at 0.2 keeps every present cell in `--heat-pos-1..5`.
+ */
+function heatValue(vol: number, min: number, span: number): number {
+  if (!(span > 1e-9)) return 0.8;
+  return 0.2 + 0.8 * ((vol - min) / span);
+}
+
+/**
+ * Measure a container's rendered width so a pixel-width kit chart fills it
+ * (FIX R2-#2). Falls back to the previous fixed width when layout is
+ * unavailable (jsdom / hidden pane) and re-measures on resize; no deps.
+ */
+function useMeasuredWidth<T extends HTMLElement>(
+  fallback: number,
+): [(node: T | null) => void, number] {
+  const [width, setWidth] = useState(fallback);
+  const roRef = useRef<ResizeObserver | null>(null);
+  // Callback ref: the measured node is conditionally rendered (only when the
+  // series exists), so a mount-time effect would measure nothing and never
+  // retry. Attach the observer the moment the node attaches.
+  const setRef = useCallback((node: T | null) => {
+    roRef.current?.disconnect();
+    roRef.current = null;
+    if (!node) return;
+    const measure = () => {
+      const next = Math.round(node.getBoundingClientRect().width);
+      if (next > 0) setWidth(next);
+    };
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(node);
+    roRef.current = ro;
+  }, []);
+  // No teardown effect: under StrictMode's double-mount React does not
+  // re-invoke callback refs, so an effect cleanup would disconnect the
+  // observer permanently (R3-N1). `setRef(null)` disconnects on unmount.
+  return [setRef, width];
+}
+
 function fmtPct(v: number | undefined | null): string {
   if (v == null || !Number.isFinite(v)) return "—";
   return `${v.toFixed(2)}%`;
@@ -558,11 +715,7 @@ function fmtPctSigned(v: number | undefined | null): string {
   return `${v >= 0 ? "+" : ""}${v.toFixed(3)}%`;
 }
 
-const tabBarStyle: CSSProperties = {
-  padding: "8px 14px",
-  borderBottom: "1px solid var(--border-subtle)",
-  background: "var(--surface-2)",
-};
+/* ── styles (design tokens only) ───────────────────────────────────── */
 
 const kpiGrid: CSSProperties = {
   display: "grid",
@@ -570,125 +723,87 @@ const kpiGrid: CSSProperties = {
   gap: 10,
 };
 
-const surfaceWrap: CSSProperties = {
-  border: "1px solid var(--border-card)",
-  borderRadius: "var(--radius-md)",
-  background: "var(--surface-2)",
-  padding: 12,
+const surfaceSection: CSSProperties = {
+  minWidth: 0,
   display: "grid",
-  gap: 10,
+  gap: 6,
 };
 
-const surfaceHead: CSSProperties = {
+const termSection: CSSProperties = {
+  minWidth: 0,
+  display: "grid",
+  gap: 6,
+};
+
+const sectionHead: CSSProperties = {
   display: "flex",
   alignItems: "center",
   justifyContent: "space-between",
   gap: 8,
 };
 
-const tenorCell: CSSProperties = {
-  fontFamily: "JetBrains Mono, monospace",
+const sectionLabel: CSSProperties = {
+  color: "var(--text-mute)",
+  fontFamily: "var(--font-mono)",
+  fontSize: "var(--font-size-2xs)",
+  letterSpacing: "0.08em",
+  textTransform: "uppercase",
+};
+
+const tableStyle: CSSProperties = {
+  borderCollapse: "collapse",
+  width: "max-content",
+  fontFamily: "var(--font-mono)",
+};
+
+const colHeadStyle: CSSProperties = {
+  padding: "4px 8px",
+  fontSize: "var(--font-size-xs)",
+  letterSpacing: "var(--tracking-label)",
+  color: "var(--text-mute)",
+  fontWeight: 400,
+  textAlign: "center",
+  borderBottom: "1px solid var(--border-strong)",
+};
+
+const cornerHeadStyle: CSSProperties = {
+  ...colHeadStyle,
+  textAlign: "left",
+  paddingLeft: 0,
+};
+
+const rowHeadStyle: CSSProperties = {
+  padding: "2px 10px 2px 0",
+  fontSize: "var(--font-size-sm)",
   color: "var(--text-display)",
   fontWeight: 600,
-  letterSpacing: "0.02em",
+  textAlign: "left",
+  whiteSpace: "nowrap",
 };
 
-const heatCell: CSSProperties = {
-  display: "inline-flex",
-  alignItems: "center",
-  justifyContent: "center",
-  minWidth: 64,
-  padding: "2px 6px",
-  borderRadius: "var(--radius-sm)",
-  border: "1px solid transparent",
-  fontFamily: "JetBrains Mono, monospace",
-  fontVariantNumeric: "tabular-nums",
-  fontSize: "var(--font-size-xs)",
-  color: "var(--text-display)",
+const cellStyle: CSSProperties = {
+  padding: 1,
+  lineHeight: 0,
 };
 
-const emptyCell: CSSProperties = {
+const emptyCellStyle: CSSProperties = {
   color: "var(--text-mute)",
-  fontFamily: "JetBrains Mono, monospace",
+  fontFamily: "var(--font-mono)",
+  fontSize: "var(--font-size-xs)",
 };
 
-const legendRow: CSSProperties = {
+const readoutRow: CSSProperties = {
   display: "flex",
   alignItems: "center",
-  gap: 6,
+  minHeight: 16,
 };
 
-const legendBar: CSSProperties = {
-  flex: "1 1 auto",
-  height: 6,
-  borderRadius: 999,
-  background:
-    "linear-gradient(90deg, color-mix(in srgb, var(--accent) 18%, transparent), color-mix(in srgb, var(--accent) 55%, transparent))",
-};
-
-const legendBarHigh: CSSProperties = {
-  background:
-    "linear-gradient(90deg, color-mix(in srgb, var(--negative) 22%, transparent), color-mix(in srgb, var(--negative) 60%, transparent))",
-};
-
-const legendLabel: CSSProperties = {
-  color: "var(--text-mute)",
-  fontFamily: "JetBrains Mono, monospace",
+const readoutStyle: CSSProperties = {
+  color: "var(--text-secondary)",
+  fontFamily: "var(--font-mono)",
   fontVariantNumeric: "tabular-nums",
   fontSize: "var(--font-size-2xs)",
   letterSpacing: "0.04em",
-  flex: "0 0 auto",
-};
-
-const termPanel: CSSProperties = {
-  border: "1px solid var(--border-card)",
-  borderRadius: "var(--radius-md)",
-  background: "var(--surface-2)",
-  padding: 12,
-  display: "grid",
-  gap: 10,
-};
-
-const termList: CSSProperties = {
-  display: "grid",
-  gap: 7,
-};
-
-const termRow: CSSProperties = {
-  display: "grid",
-  gridTemplateColumns: "64px minmax(0, 1fr) 72px",
-  alignItems: "center",
-  gap: 10,
-  fontSize: "var(--font-size-md)",
-};
-
-const termTenor: CSSProperties = {
-  fontFamily: "JetBrains Mono, monospace",
-  color: "var(--text-display)",
-  fontWeight: 600,
-  fontSize: "var(--font-size-sm)",
-};
-
-const termTrack: CSSProperties = {
-  height: 8,
-  background: "var(--surface-3)",
-  borderRadius: 999,
-  overflow: "hidden",
-};
-
-const termFill: CSSProperties = {
-  height: "100%",
-  borderRadius: 999,
-  background:
-    "linear-gradient(90deg, color-mix(in srgb, var(--accent) 45%, transparent), var(--accent))",
-  transition: "width var(--motion-base)",
-};
-
-const termVol: CSSProperties = {
-  fontFamily: "JetBrains Mono, monospace",
-  fontVariantNumeric: "tabular-nums",
-  color: "var(--text-secondary)",
-  textAlign: "right",
 };
 
 const noticeStyle: CSSProperties = {
@@ -698,42 +813,19 @@ const noticeStyle: CSSProperties = {
   padding: "9px 10px",
   display: "grid",
   gap: 4,
-  fontSize: "var(--font-size-md)",
+  fontSize: "var(--font-size-sm)",
 };
 
-const warningBox: CSSProperties = {
-  border: "1px solid color-mix(in srgb, var(--warn) 30%, transparent)",
-  background: "var(--surface-2)",
-  borderRadius: "var(--radius-sm)",
-  padding: "8px 10px",
-  display: "grid",
-  gap: 4,
+/** Two-line clamp for long provider diagnostics — full text via `title`. */
+const reasonClampStyle: CSSProperties = {
+  display: "-webkit-box",
+  WebkitLineClamp: 2,
+  WebkitBoxOrient: "vertical",
+  overflow: "hidden",
+  wordBreak: "break-word",
 };
 
-const warningList: CSSProperties = {
-  margin: 0,
-  paddingLeft: 18,
-  fontSize: "var(--font-size-xs)",
-};
-
-const methodPanel: CSSProperties = {
-  border: "1px solid var(--border-card)",
-  borderRadius: "var(--radius-md)",
-  padding: 12,
-  background: "var(--surface-2)",
-};
-
-const metaLabel: CSSProperties = {
-  color: "var(--text-mute)",
-  fontFamily: "JetBrains Mono, monospace",
-  fontSize: "var(--font-size-2xs)",
-  textTransform: "uppercase",
-  letterSpacing: "0.08em",
-};
-
-const methodText: CSSProperties = {
-  margin: "6px 0 0",
-  color: "var(--text-secondary)",
-  lineHeight: 1.5,
-  fontSize: "var(--font-size-md)",
+const measureWrap: CSSProperties = {
+  width: "100%",
+  minWidth: 0,
 };

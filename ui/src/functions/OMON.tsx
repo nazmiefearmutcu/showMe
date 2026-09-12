@@ -1,29 +1,32 @@
 /**
  * OMON — Option Monitor (single-name listed option chain).
  *
- * Header: expiry segmented control (first 4 listed expiries, persisted) +
- * CALLS/PUTS side toggle + status pill + refresh. Body: KPI ribbon (spot,
- * ATM IV, call/put OI) + a compact chain table — strike, bid/ask, OI, volume,
- * IV and Black-Scholes delta for the selected side. Rows are tinted with the
- * side's soft token (calls positive / puts negative) and the ATM strike is
- * highlighted. Only ±10 strikes around spot are rendered, with an honest
- * "showing N of M" note.
+ * One screen, one job: the chain IS the product.
  *
- * Data honesty: provider_unavailable / empty payloads render an explicit
- * empty state, and backend warnings surface as a degraded pill + footer row.
+ *  Header   : symbol · expiry · poll — expiry/side segmented controls, CSV,
+ *             load-state pill, refresh. Exactly one status indicator.
+ *  KPI      : spot, ATM IV, call/put open-interest share (4 cards max).
+ *  Primary  : the option chain DataGrid — sortable, keyboard navigable
+ *             (roving cells + Ctrl/Cmd+C copy) and CSV-exportable.
+ *  Secondary: one compact IV-smile panel fed by the backend's real
+ *             `series[]` (call_iv/put_iv per strike). `cards[]` duplicates
+ *             `summary` and is deliberately not rendered.
+ *  Footer   : provenance once (provider · mode · status · rows · elapsed).
+ *
+ * Data honesty: provider_unavailable payloads render the PaneState empty
+ * branch carrying the backend reason + Retry; backend warnings surface as
+ * ONE inline notice (never a second pill/banner duplicate).
  */
 import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
 import {
   DataGrid,
   type DataGridColumn,
-  Empty,
   FlashValue,
   Pane,
   PaneBody,
   PaneFooter,
   PaneHeader,
-  Pill,
-  Skeleton,
+  PaneState,
   StatCard,
   StatusDivider,
   StatusSection,
@@ -54,7 +57,9 @@ const MAX_EXPIRY_SEGMENTS = 4;
 const REFRESH_MS = 30_000;
 
 function numOrNull(v: unknown): number | null {
-  if (v == null) return null;
+  // null/undefined/"" must stay missing — Number("") === 0 would turn an
+  // empty wire cell into a confident 0.00 (FIX R1-F8).
+  if (v == null || v === "") return null;
   const n = typeof v === "number" ? v : Number(v);
   return Number.isFinite(n) ? n : null;
 }
@@ -76,6 +81,12 @@ interface OmonRow {
   put_delta?: number | null;
 }
 
+interface OmonSeriesPoint {
+  strike?: number;
+  call_iv?: number | null;
+  put_iv?: number | null;
+}
+
 interface OmonSummary {
   underlier?: string;
   expiry?: string;
@@ -94,6 +105,7 @@ interface OmonData {
   expiries?: string[];
   spot?: number | null;
   rows?: OmonRow[];
+  series?: OmonSeriesPoint[];
   summary?: OmonSummary;
   methodology?: string;
 }
@@ -199,13 +211,68 @@ export function OMONPane({ code, symbol }: FunctionPaneProps) {
     };
   }, [allRows, spot]);
 
-  const isLive = state === "ok" && payload?.status === "ok";
+  const status = payload?.status;
+  const isLive = state === "ok" && status === "ok";
+  const metaMode = data?.metadata?.data_mode;
+  const dataMode =
+    (typeof metaMode === "string" && metaMode) || (isLive ? "live chain" : status || state);
   const shown = view.rows.length;
   const total = allRows.length;
+  // FIX R2-#6: `provider_unavailable` was stated three times (header pill +
+  // footer MODE + footer STATUS). The footer `status` slot is now the single
+  // copy; the header pill and the footer `mode` duplicate are suppressed in
+  // that state (the PaneState hero carries the reason + Retry).
+  const providerDown = status === "provider_unavailable";
+  const statusText = status ?? state;
 
-  // Audit A4 OMON M: the primary chain surface now uses the shared DataGrid —
-  // sortable headers (built-in tri-state sorter), keyboard cell navigation +
-  // clipboard copy, and a CSV export of the visible window.
+  // IV-smile series (real backend field). Keep strikes that carry at least
+  // one finite side so the panel never renders a dead axis.
+  const smile = useMemo(() => {
+    const points = (payload?.series ?? [])
+      .filter((p) => p && typeof p.strike === "number" && Number.isFinite(p.strike))
+      .map((p) => ({
+        strike: p.strike as number,
+        call: numOrNull(p.call_iv),
+        put: numOrNull(p.put_iv),
+      }))
+      .sort((a, b) => a.strike - b.strike);
+    const usable = points.length > 1 && points.some((p) => p.call != null || p.put != null);
+    return { points, usable };
+  }, [payload?.series]);
+
+  const sideValue = (r: OmonRow, key: string): number | null => {
+    return numOrNull(
+      (r as unknown as Record<string, unknown>)[`${side}_${key}`],
+    );
+  };
+  const cellText = useCallback(
+    (r: OmonRow, key: string): string => {
+      switch (key) {
+        case "strike":
+          return fmtNum(r.strike);
+        case "bid":
+          return fmtNum(sideValue(r, "bid"));
+        case "ask":
+          return fmtNum(sideValue(r, "ask"));
+        case "oi":
+          return fmtInt(sideValue(r, "oi"));
+        case "volume":
+          return fmtInt(sideValue(r, "volume"));
+        case "iv":
+          return fmtIv(sideValue(r, "iv"));
+        case "delta":
+          return fmtNum(sideValue(r, "delta"), 3);
+        default:
+          return "";
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- sideValue closes over `side`
+    [side],
+  );
+
+  // Sortable + copyable chain columns. `sortValue` drives the built-in
+  // sorter; `getCellText` makes Ctrl/Cmd+C copy the side-aware value (the
+  // grid's raw-row fallback would copy undefined for side columns).
   const cols = useMemo<DataGridColumn<OmonRow>[]>(
     () => [
       {
@@ -234,8 +301,8 @@ export function OMONPane({ code, symbol }: FunctionPaneProps) {
         numeric: true,
         sortable: true,
         width: 80,
-        sortValue: (r) => numOrNull(side === "call" ? r.call_bid : r.put_bid),
-        render: (r) => fmtNum(side === "call" ? r.call_bid : r.put_bid),
+        sortValue: (r) => sideValue(r, "bid"),
+        render: (r) => fmtNum(sideValue(r, "bid")),
       },
       {
         key: "ask",
@@ -243,8 +310,8 @@ export function OMONPane({ code, symbol }: FunctionPaneProps) {
         numeric: true,
         sortable: true,
         width: 80,
-        sortValue: (r) => numOrNull(side === "call" ? r.call_ask : r.put_ask),
-        render: (r) => fmtNum(side === "call" ? r.call_ask : r.put_ask),
+        sortValue: (r) => sideValue(r, "ask"),
+        render: (r) => fmtNum(sideValue(r, "ask")),
       },
       {
         key: "oi",
@@ -252,8 +319,8 @@ export function OMONPane({ code, symbol }: FunctionPaneProps) {
         numeric: true,
         sortable: true,
         width: 90,
-        sortValue: (r) => numOrNull(side === "call" ? r.call_oi : r.put_oi),
-        render: (r) => fmtInt(side === "call" ? r.call_oi : r.put_oi),
+        sortValue: (r) => sideValue(r, "oi"),
+        render: (r) => fmtInt(sideValue(r, "oi")),
       },
       {
         key: "volume",
@@ -261,8 +328,8 @@ export function OMONPane({ code, symbol }: FunctionPaneProps) {
         numeric: true,
         sortable: true,
         width: 80,
-        sortValue: (r) => numOrNull(side === "call" ? r.call_volume : r.put_volume),
-        render: (r) => fmtInt(side === "call" ? r.call_volume : r.put_volume),
+        sortValue: (r) => sideValue(r, "volume"),
+        render: (r) => fmtInt(sideValue(r, "volume")),
       },
       {
         key: "iv",
@@ -270,8 +337,8 @@ export function OMONPane({ code, symbol }: FunctionPaneProps) {
         numeric: true,
         sortable: true,
         width: 78,
-        sortValue: (r) => numOrNull(side === "call" ? r.call_iv : r.put_iv),
-        render: (r) => fmtIv(side === "call" ? r.call_iv : r.put_iv),
+        sortValue: (r) => sideValue(r, "iv"),
+        render: (r) => fmtIv(sideValue(r, "iv")),
       },
       {
         key: "delta",
@@ -279,27 +346,25 @@ export function OMONPane({ code, symbol }: FunctionPaneProps) {
         numeric: true,
         sortable: true,
         width: 84,
-        sortValue: (r) => numOrNull(side === "call" ? r.call_delta : r.put_delta),
-        render: (r) => fmtNum(side === "call" ? r.call_delta : r.put_delta, 3),
+        sortValue: (r) => sideValue(r, "delta"),
+        render: (r) => fmtNum(sideValue(r, "delta"), 3),
       },
     ],
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- sideValue closes over `side`
     [side, view.atmStrike],
   );
 
   const csvColumns = useMemo<GridCsvColumn<OmonRow>[]>(
     () => [
       { key: "strike", header: "Strike", value: (r) => r.strike ?? "" },
-      { key: "bid", header: "Bid", value: (r) => (side === "call" ? r.call_bid : r.put_bid) },
-      { key: "ask", header: "Ask", value: (r) => (side === "call" ? r.call_ask : r.put_ask) },
-      { key: "oi", header: "OI", value: (r) => (side === "call" ? r.call_oi : r.put_oi) },
-      {
-        key: "volume",
-        header: "Volume",
-        value: (r) => (side === "call" ? r.call_volume : r.put_volume),
-      },
-      { key: "iv", header: "IV", value: (r) => (side === "call" ? r.call_iv : r.put_iv) },
-      { key: "delta", header: "Delta", value: (r) => (side === "call" ? r.call_delta : r.put_delta) },
+      { key: "bid", header: "Bid", value: (r) => sideValue(r, "bid") },
+      { key: "ask", header: "Ask", value: (r) => sideValue(r, "ask") },
+      { key: "oi", header: "OI", value: (r) => sideValue(r, "oi") },
+      { key: "volume", header: "Volume", value: (r) => sideValue(r, "volume") },
+      { key: "iv", header: "IV", value: (r) => sideValue(r, "iv") },
+      { key: "delta", header: "Delta", value: (r) => sideValue(r, "delta") },
     ],
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- sideValue closes over `side`
     [side],
   );
 
@@ -311,118 +376,32 @@ export function OMONPane({ code, symbol }: FunctionPaneProps) {
     );
   };
 
-  const warningBanner =
-    warnings.length > 0 ? (
-      <div role="status" style={warningStyle} aria-label="Data quality warning">
-        {warnings.join(" · ")}
-      </div>
-    ) : null;
+  const callOi = numOrNull(payload?.summary?.total_call_oi);
+  const putOi = numOrNull(payload?.summary?.total_put_oi);
+  const oiTotal = (callOi ?? 0) + (putOi ?? 0);
+  const oiCaption = (v: number | null, sideName: Side): string =>
+    v != null && oiTotal > 0
+      ? `${((v / oiTotal) * 100).toFixed(1)}% of chain OI`
+      : `${sideName} open interest`;
 
-  const body = !effectiveSymbol ? (
-    <Empty title="Pick a symbol" body="OMON needs an equity / ETF underlier." icon="⌖" />
-  ) : state === "loading" || state === "idle" ? (
-    <div className="u-grid-gap-8">
-      <Skeleton height={56} />
-      <Skeleton height={20} />
-      <Skeleton height={20} />
-      <Skeleton height={20} width="80%" />
-    </div>
-  ) : state === "error" ? (
-    <Empty
-      title="Function error"
-      body={error?.message ?? "—"}
-      icon="!"
-      action={
-        <button onClick={refetch} className="btn">
-          Retry
-        </button>
-      }
-    />
-  ) : total === 0 ? (
-    <div className="u-grid-gap-14">
-      {warningBanner}
-      <Empty
-        title={
-          payload?.status === "provider_unavailable"
-            ? "Option chain unavailable"
-            : "No option strikes returned"
-        }
-        body={
-          payload?.reason ??
-          "Provider returned no strikes for this underlier / expiry."
-        }
-        icon="∅"
-        action={
-          <button onClick={refetch} className="btn">
-            Retry
-          </button>
-        }
-      />
-    </div>
-  ) : (
-    <div className="u-grid-gap-14">
-      {warningBanner}
-      <section style={kpiGridStyle} aria-label="OMON KPI ribbon">
-        <StatCard
-          label="Spot"
-          value={
-            <FlashValue value={numOrNull(payload?.summary?.spot ?? spot)}>
-              {fmtNum(payload?.summary?.spot ?? spot)}
-            </FlashValue>
-          }
-          caption={`EXPIRY ${payload?.expiry ?? "—"}`}
-          tone="neutral"
-        />
-        <StatCard
-          label="ATM IV"
-          value={fmtIv(payload?.summary?.atm_iv)}
-          caption={view.atmStrike != null ? `ATM ${fmtNum(view.atmStrike)}` : "—"}
-          tone="neutral"
-        />
-        <StatCard
-          label="Call OI"
-          value={fmtCompact(payload?.summary?.total_call_oi)}
-          caption="TOTAL CHAIN"
-          tone="positive"
-        />
-        <StatCard
-          label="Put OI"
-          value={fmtCompact(payload?.summary?.total_put_oi)}
-          caption="TOTAL CHAIN"
-          tone="negative"
-        />
-      </section>
-      <div style={tableWrapStyle}>
-        <DataGrid
-          columns={cols}
-          rows={view.rows}
-          rowKey={(r, i) => `${r.strike ?? "strike"}-${i}`}
-          density="compact"
-          ariaLabel={`OMON ${side === "call" ? "call" : "put"} chain`}
-          defaultSortKey="strike"
-          defaultSortDir="ascending"
-          keyboardNavigable
-        />
-        <div style={chainFooterStyle}>
-          <div style={noteStyle} aria-label="Chain coverage note">
-            Showing {shown} of {total} strikes
-            {view.capped ? ` (±${MAX_STRIKES_PER_SIDE} around spot)` : ""} ·{" "}
-            {side === "call" ? "calls" : "puts"} view
-          </div>
-          <button
-            type="button"
-            className="btn btn--ghost"
-            onClick={exportCsv}
-            disabled={view.rows.length === 0}
-            title="Download the visible strike window as CSV"
-            aria-label={`Download ${view.rows.length} strikes as CSV`}
-          >
-            CSV
-          </button>
-        </div>
-      </div>
-    </div>
-  );
+  const isEmpty = total === 0;
+  const showPill = !(providerDown && isEmpty);
+  const showFooterMode = dataMode !== statusText;
+  const emptyTitle = !effectiveSymbol
+    ? "Pick a symbol"
+    : status === "provider_unavailable"
+      ? "Option chain unavailable"
+      : "No option strikes returned";
+  const emptyReason = payload?.reason ?? warnings[0] ?? null;
+  const emptyBody = !effectiveSymbol
+    ? "OMON needs an equity / ETF underlier."
+    : emptyReason
+      ? (
+          <span style={reasonClampStyle} title={emptyReason}>
+            {emptyReason}
+          </span>
+        )
+      : "Provider returned no strikes for this underlier / expiry.";
 
   return (
     <div className="u-pane-host">
@@ -430,20 +409,9 @@ export function OMONPane({ code, symbol }: FunctionPaneProps) {
         <PaneHeader
           code={code}
           title={`Option Monitor — ${effectiveSymbol || ""}`}
-          subtitle={`${effectiveSymbol || "—"} · ${payload?.expiry ?? "—"} · spot ${fmtNum(payload?.summary?.spot ?? spot)}`}
+          subtitle={`${effectiveSymbol || "—"} · expiry ${payload?.expiry ?? "—"} · poll ${REFRESH_MS / 1000}s`}
           trailing={
             <FunctionControlGroup>
-              <Pill tone="muted" variant="soft" withDot={false}>
-                {shown}/{total} st
-              </Pill>
-              {warnings.length > 0 && (
-                <Pill tone="warn" variant="soft">
-                  degraded
-                </Pill>
-              )}
-              <Pill tone={isLive ? "positive" : "warn"} variant="soft">
-                {isLive ? "live chain" : payload?.status || state}
-              </Pill>
               {expirySlice.length > 0 && (
                 <SegmentedControl
                   label="EXPIRY"
@@ -458,9 +426,20 @@ export function OMONPane({ code, symbol }: FunctionPaneProps) {
                 value={side}
                 options={SIDE_OPTIONS}
                 onChange={setSide}
+                disabled={isEmpty}
                 title="Option side"
               />
-              <LoadStatePill state={state} status={payload?.status} />
+              <button
+                type="button"
+                className="btn btn--ghost"
+                onClick={exportCsv}
+                disabled={view.rows.length === 0}
+                title="Download CSV"
+                aria-label={`Download ${view.rows.length} strikes as CSV`}
+              >
+                CSV
+              </button>
+              {showPill && <LoadStatePill state={state} status={status} />}
               <RefreshButton
                 loading={state === "loading"}
                 onClick={refetch}
@@ -470,22 +449,111 @@ export function OMONPane({ code, symbol }: FunctionPaneProps) {
             </FunctionControlGroup>
           }
         />
-        <PaneBody>{body}</PaneBody>
+        <PaneBody>
+          <PaneState
+            state={state}
+            error={error}
+            empty={isEmpty}
+            emptyTitle={emptyTitle}
+            emptyBody={emptyBody}
+            emptyIcon={status === "provider_unavailable" ? "!" : "∅"}
+            onRetry={refetch}
+            retryLabel="Retry"
+            className="u-grid-gap-14"
+          >
+            {warnings.length > 0 && (
+              <div role="status" aria-label="Data quality notice" style={noticeStyle}>
+                {warnings.join(" · ")}
+              </div>
+            )}
+            <section style={kpiGridStyle} aria-label="OMON KPI ribbon">
+              <StatCard
+                label="Spot"
+                value={
+                  <FlashValue value={numOrNull(payload?.summary?.spot ?? spot)}>
+                    {fmtNum(payload?.summary?.spot ?? spot)}
+                  </FlashValue>
+                }
+                caption={`expiry ${payload?.expiry ?? "—"}`}
+                tone="neutral"
+              />
+              <StatCard
+                label="ATM IV"
+                value={fmtIv(payload?.summary?.atm_iv)}
+                caption={view.atmStrike != null ? `atm strike ${fmtNum(view.atmStrike)}` : "—"}
+                tone="neutral"
+              />
+              <StatCard
+                label="Call OI"
+                value={fmtCompact(callOi)}
+                caption={oiCaption(callOi, "call")}
+                tone="positive"
+              />
+              <StatCard
+                label="Put OI"
+                value={fmtCompact(putOi)}
+                caption={oiCaption(putOi, "put")}
+                tone="negative"
+              />
+            </section>
+            <div style={tableWrapStyle}>
+              <DataGrid
+                columns={cols}
+                rows={view.rows}
+                rowKey={(r, i) => `${r.strike ?? "strike"}-${i}`}
+                density="compact"
+                ariaLabel={`OMON ${side === "call" ? "call" : "put"} chain`}
+                defaultSortKey="strike"
+                defaultSortDir="ascending"
+                keyboardNavigable
+                getCellText={(r, col) => cellText(r, col.key)}
+              />
+              <div style={noteStyle} aria-label="Chain coverage note">
+                Showing {shown} of {total} strikes
+                {view.capped ? ` (±${MAX_STRIKES_PER_SIDE} around spot)` : ""} ·{" "}
+                {side === "call" ? "calls" : "puts"} view
+              </div>
+            </div>
+            {smile.usable && (
+              <section
+                aria-label="IV smile by strike"
+                data-testid="omon-iv-smile"
+                style={smileWrapStyle}
+              >
+                <div style={sectionHeadStyle}>
+                  <span style={sectionLabelStyle}>IV smile · call vs put</span>
+                  <span style={sectionLabelStyle}>
+                    strikes {fmtNum(smile.points[0].strike)}–
+                    {fmtNum(smile.points[smile.points.length - 1].strike)}
+                  </span>
+                </div>
+                <IvSmileChart points={smile.points} />
+                <div style={legendStyle} aria-hidden>
+                  <span style={legendItemStyle}>
+                    <span style={{ ...legendSwatchStyle, background: "var(--positive)" }} />
+                    Call IV
+                  </span>
+                  <span style={legendItemStyle}>
+                    <span style={{ ...legendSwatchStyle, background: "var(--negative)" }} />
+                    Put IV
+                  </span>
+                </div>
+              </section>
+            )}
+          </PaneState>
+        </PaneBody>
         <PaneFooter>
-          <StatusSection
-            label="sources"
-            value={data?.sources?.join(", ") || "—"}
-          />
+          <StatusSection label="provider" value={data?.sources?.join(", ") || "yfinance"} />
+          {showFooterMode && (
+            <>
+              <StatusDivider />
+              <StatusSection label="mode" value={dataMode} tone={isLive ? "positive" : "warn"} />
+            </>
+          )}
           <StatusDivider />
-          <StatusSection label="status" value={payload?.status ?? state} />
+          <StatusSection label="status" value={statusText} />
           <StatusDivider />
-          <StatusSection
-            label="expiry"
-            value={payload?.expiry ?? "—"}
-            tone="accent"
-          />
-          <StatusDivider />
-          <StatusSection label="shown" value={`${shown} of ${total}`} />
+          <StatusSection label="rows" value={total} />
           {warnings.length > 0 && (
             <>
               <StatusDivider />
@@ -503,22 +571,135 @@ export function OMONPane({ code, symbol }: FunctionPaneProps) {
   );
 }
 
+/* ── IV smile chart (real series[] only — no synthetic fallback) ─────── */
+
+interface SmilePoint {
+  strike: number;
+  call: number | null;
+  put: number | null;
+}
+
+function IvSmileChart({ points }: { points: SmilePoint[] }) {
+  const geo = useMemo(() => {
+    const finite = points
+      .flatMap((p) => [p.call, p.put])
+      .filter((v): v is number => v != null && Number.isFinite(v));
+    if (finite.length < 2) return null;
+    const W = 560;
+    const H = 116;
+    const ML = 44;
+    const MR = 10;
+    const MT = 8;
+    const MB = 18;
+    const minX = points[0].strike;
+    const maxX = points[points.length - 1].strike;
+    const padX = (maxX - minX) * 0.02 || 1;
+    const minY = Math.min(...finite);
+    const maxY = Math.max(...finite);
+    const padY = (maxY - minY) * 0.12 || Math.max(0.01, maxY * 0.1);
+    const y0 = Math.max(0, minY - padY);
+    const y1 = maxY + padY;
+    const sx = (x: number) =>
+      ML + ((x - (minX - padX)) / (maxX + padX - (minX - padX))) * (W - ML - MR);
+    const sy = (v: number) => MT + (1 - (v - y0) / (y1 - y0)) * (H - MT - MB);
+    const segment = (key: "call" | "put"): string[] => {
+      const segs: string[] = [];
+      let current: string[] = [];
+      for (const p of points) {
+        const v = p[key];
+        if (v == null || !Number.isFinite(v)) {
+          if (current.length > 1) segs.push(current.join(" "));
+          current = [];
+          continue;
+        }
+        current.push(
+          `${current.length ? "L" : "M"}${sx(p.strike).toFixed(1)},${sy(v).toFixed(1)}`,
+        );
+      }
+      if (current.length > 1) segs.push(current.join(" "));
+      return segs;
+    };
+    return {
+      W,
+      H,
+      ML,
+      MB,
+      y0,
+      y1,
+      minX,
+      maxX,
+      call: segment("call"),
+      put: segment("put"),
+    };
+  }, [points]);
+
+  if (!geo) return null;
+  return (
+    <svg
+      width={geo.W}
+      height={geo.H}
+      viewBox={`0 0 ${geo.W} ${geo.H}`}
+      role="img"
+      aria-label="Implied volatility smile by strike, call and put"
+      className="u-block"
+    >
+      <text x={geo.ML - 6} y={12} textAnchor="end" fontSize={9} fill="var(--text-mute)">
+        {fmtIv(geo.y1)}
+      </text>
+      <text
+        x={geo.ML - 6}
+        y={geo.H - geo.MB}
+        textAnchor="end"
+        fontSize={9}
+        fill="var(--text-mute)"
+      >
+        {fmtIv(geo.y0)}
+      </text>
+      <text x={geo.ML} y={geo.H - 4} fontSize={9} fill="var(--text-mute)">
+        {fmtNum(geo.minX)}
+      </text>
+      <text
+        x={geo.W - 10}
+        y={geo.H - 4}
+        textAnchor="end"
+        fontSize={9}
+        fill="var(--text-mute)"
+      >
+        {fmtNum(geo.maxX)}
+      </text>
+      {geo.call.map((d, i) => (
+        <path
+          key={`call-${i}`}
+          d={d}
+          fill="none"
+          stroke="var(--positive)"
+          strokeWidth={1.5}
+          data-series="call"
+        />
+      ))}
+      {geo.put.map((d, i) => (
+        <path
+          key={`put-${i}`}
+          d={d}
+          fill="none"
+          stroke="var(--negative)"
+          strokeWidth={1.5}
+          data-series="put"
+        />
+      ))}
+    </svg>
+  );
+}
+
 /* ── styles (design tokens only) ───────────────────────────────────── */
 
 const kpiGridStyle: CSSProperties = {
   display: "grid",
-  gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
+  gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))",
   gap: 10,
 };
 
 const tableWrapStyle: CSSProperties = { minWidth: 0 };
-
-const chainFooterStyle: CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "space-between",
-  gap: 8,
-};
 
 const noteStyle: CSSProperties = {
   marginTop: 6,
@@ -526,13 +707,64 @@ const noteStyle: CSSProperties = {
   color: "var(--text-mute)",
 };
 
-const warningStyle: CSSProperties = {
+const noticeStyle: CSSProperties = {
   padding: "6px 10px",
-  borderRadius: "var(--radius-md)",
-  border: "1px solid var(--border-subtle)",
-  background: "var(--scrim-low)",
+  borderRadius: "var(--radius-sm)",
+  border: "1px solid color-mix(in srgb, var(--warn) 40%, transparent)",
+  background: "var(--warn-soft)",
   color: "var(--text-primary)",
   fontSize: "var(--font-size-sm)",
+};
+
+/** Two-line clamp for the long provider diagnostic — full text via `title`. */
+const reasonClampStyle: CSSProperties = {
+  display: "-webkit-box",
+  WebkitLineClamp: 2,
+  WebkitBoxOrient: "vertical",
+  overflow: "hidden",
+  wordBreak: "break-word",
+};
+
+const smileWrapStyle: CSSProperties = {
+  minWidth: 0,
+  display: "grid",
+  gap: 4,
+};
+
+const sectionHeadStyle: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  gap: 8,
+};
+
+const sectionLabelStyle: CSSProperties = {
+  color: "var(--text-mute)",
+  fontFamily: "var(--font-mono)",
+  fontSize: "var(--font-size-2xs)",
+  letterSpacing: "0.08em",
+  textTransform: "uppercase",
+};
+
+const legendStyle: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 12,
+};
+
+const legendItemStyle: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 5,
+  fontSize: "var(--font-size-2xs)",
+  color: "var(--text-mute)",
+};
+
+const legendSwatchStyle: CSSProperties = {
+  width: 10,
+  height: 2,
+  borderRadius: 1,
+  flex: "0 0 auto",
 };
 
 function monoStyle(strong: boolean): CSSProperties {
@@ -545,21 +777,21 @@ function monoStyle(strong: boolean): CSSProperties {
 /* ── formatting helpers ────────────────────────────────────────────── */
 
 function fmtNum(v: unknown, digits = 2): string {
-  if (v == null) return "—";
+  if (v == null || v === "") return "—";
   const n = typeof v === "number" ? v : Number(v);
   if (!Number.isFinite(n)) return "—";
   return formatNumber(n, digits);
 }
 
 function fmtInt(v: unknown): string {
-  if (v == null) return "—";
+  if (v == null || v === "") return "—";
   const n = typeof v === "number" ? v : Number(v);
   if (!Number.isFinite(n)) return "—";
   return Math.round(n).toLocaleString("en-US");
 }
 
 function fmtCompact(v: unknown): string {
-  if (v == null) return "—";
+  if (v == null || v === "") return "—";
   const n = typeof v === "number" ? v : Number(v);
   if (!Number.isFinite(n)) return "—";
   const a = Math.abs(n);
@@ -570,7 +802,7 @@ function fmtCompact(v: unknown): string {
 }
 
 function fmtIv(v: unknown): string {
-  if (v == null) return "—";
+  if (v == null || v === "") return "—";
   const n = typeof v === "number" ? v : Number(v);
   if (!Number.isFinite(n)) return "—";
   // yfinance IV is a decimal fraction (0.31 → 31.2%).

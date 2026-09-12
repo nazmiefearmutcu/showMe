@@ -107,7 +107,12 @@ export function PaneBody({
   className?: string;
 }) {
   return (
-    <div tabIndex={0} className={`ds-pane-body${className ? ` ${className}` : ""}`} style={style}>
+    <div
+      tabIndex={0}
+      lang="en"
+      className={`ds-pane-body${className ? ` ${className}` : ""}`}
+      style={style}
+    >
       {children}
     </div>
   );

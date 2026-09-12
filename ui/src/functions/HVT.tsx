@@ -1,19 +1,32 @@
 /**
- * HVT — Historical Volatility Trends (realized-vol term structure).
+ * HVT — Historical volatility trends (options-family redesign 2026-09-12).
  *
- * Live close-to-close realized volatility from yfinance daily OHLCV:
- * 4 window rows (30/60/90/lookback days) plus a rolling history curve.
- * Header: lookback segmented control (persisted `showme.hvt.days`) +
- * status pill + refresh. Body: KPI ribbon (spot, current 30D RV, history
- * average, observations), the rolling RV curve as an inline-SVG sparkline
- * (design-system `Sparkline`, no chart lib) and the window table.
+ * One screen, one job: the realized-vol term structure. Primary visual is
+ * the rolling-RV sparkline built ONLY from the real `history[]` series, with
+ * the window table as the single DataGrid (sort + keyboard + CSV). Probe
+ * evidence (sidecar 2026-09-12, raw: options-redesign/raw/hvt-*.json):
  *
- * Data honesty: `provider_unavailable` payloads (seeded reference rows)
- * render an explicit empty state — seeded vol values are never shown as
- * if they were measured from real closes. The explicit `reference=true`
- * opt-in template is labeled as such when it comes back.
+ *   rows[]    { metric, window_days, realized_vol, realized_vol_pct,
+ *               samples, formula }
+ *   history[] { date, vol, vol_pct, window_days }        (real when live)
+ *   summary   { current_realized_vol, current_realized_vol_pct,
+ *               observations, history_window_days }
+ *
+ * Honesty: `provider_unavailable` payloads ship SEEDED reference rows — this
+ * pane refuses to render them and shows the empty branch with the provider
+ * reason instead. The explicit `reference=true` template is renderable but
+ * labeled once (mode pill + one grid note). Removed decoration: KPI mini
+ * trend spark, duplicate spark/footer point counts, duplicate lookback
+ * labels, the constant Formula column, and the second text block under the
+ * grid (methodology XOR reference note, never both).
  */
-import { useMemo, type CSSProperties } from "react";
+import {
+  useCallback,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
 import {
   DataGrid,
   type DataGridColumn,
@@ -22,8 +35,8 @@ import {
   PaneBody,
   PaneFooter,
   PaneHeader,
+  PaneState,
   Pill,
-  Skeleton,
   Sparkline,
   StatCard,
   StatusDivider,
@@ -94,10 +107,93 @@ const DAYS_IDS = DAYS_OPTIONS.map((o) => o.value);
 
 const DEFAULT_FORMULA = "stdev(daily close returns) * sqrt(252)";
 
+/* ── helpers ───────────────────────────────────────────────────────── */
+
+function num(v: unknown): number | null {
+  // null/undefined/"" must stay missing — Number(null) === 0 would render a
+  // fake "0.0%" for a payload that never measured the value.
+  if (v == null || v === "") return null;
+  const n = typeof v === "number" ? v : Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function fmtNum(v: unknown): string {
+  const n = num(v);
+  if (n == null) return "—";
+  return formatNumberFixed(n, 2);
+}
+
+function fmtPct(v: unknown): string {
+  const n = num(v);
+  if (n == null) return "—";
+  return `${n.toFixed(1)}%`;
+}
+
+interface SeriesPoint {
+  value: number;
+  date?: string;
+}
+
+function seriesStats(history: HvtHistoryPoint[]): {
+  min: SeriesPoint | null;
+  max: SeriesPoint | null;
+  avg: number | null;
+  count: number;
+} {
+  let min: SeriesPoint | null = null;
+  let max: SeriesPoint | null = null;
+  let sum = 0;
+  let count = 0;
+  for (const point of history) {
+    const value = num(point.vol_pct);
+    if (value == null) continue;
+    sum += value;
+    count += 1;
+    if (!min || value < min.value) min = { value, date: point.date };
+    if (!max || value > max.value) max = { value, date: point.date };
+  }
+  return { min, max, avg: count ? sum / count : null, count };
+}
+
+/**
+ * Measure a container's rendered width so the pixel-width kit `Sparkline`
+ * fills its card (FIX R2-#2: a hard-coded 560px drew the rolling-RV curve in
+ * ~38% of the card, the right half staying dead). No deps; falls back to the
+ * previous fixed width when layout is unavailable (jsdom / hidden pane).
+ */
+function useMeasuredWidth<T extends HTMLElement>(
+  fallback: number,
+): [(node: T | null) => void, number] {
+  const [width, setWidth] = useState(fallback);
+  const roRef = useRef<ResizeObserver | null>(null);
+  // Callback ref: the measured node is conditionally rendered (only when the
+  // series exists), so a mount-time effect would measure nothing and never
+  // retry. Attach the observer the moment the node attaches.
+  const setRef = useCallback((node: T | null) => {
+    roRef.current?.disconnect();
+    roRef.current = null;
+    if (!node) return;
+    const measure = () => {
+      const next = Math.round(node.getBoundingClientRect().width);
+      if (next > 0) setWidth(next);
+    };
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(node);
+    roRef.current = ro;
+  }, []);
+  // No teardown effect: under StrictMode's double-mount React does not
+  // re-invoke callback refs, so an effect cleanup would disconnect the
+  // observer permanently (R3-N1). `setRef(null)` disconnects on unmount.
+  return [setRef, width];
+}
+
 /* ── pane ──────────────────────────────────────────────────────────── */
 
 export function HVTPane({ code, symbol }: FunctionPaneProps) {
-  const effectiveSymbol = symbol || defaultSymbolForFunction(code, ["EQUITY", "ETF"]);
+  const effectiveSymbol =
+    symbol || defaultSymbolForFunction(code, ["EQUITY", "ETF"]);
   const [days, setDays] = usePersistentOption<number>(
     "showme.hvt.days",
     DAYS_IDS,
@@ -112,21 +208,32 @@ export function HVTPane({ code, symbol }: FunctionPaneProps) {
 
   const payload = data?.data;
   const rows: HvtRow[] = useMemo(() => payload?.rows ?? [], [payload]);
-  const history: HvtHistoryPoint[] = useMemo(() => payload?.history ?? [], [payload]);
+  const history: HvtHistoryPoint[] = useMemo(
+    () => payload?.history ?? [],
+    [payload],
+  );
   const volSeries = useMemo(
     () =>
       history
-        .map((h) => (typeof h.vol_pct === "number" && Number.isFinite(h.vol_pct) ? h.vol_pct : null))
-        .filter((v): v is number => v != null),
+        .map((point) => num(point.vol_pct))
+        .filter((value): value is number => value != null),
     [history],
   );
+  const stats = useMemo(() => seriesStats(history), [history]);
+  const [sparkRef, sparkWidth] = useMeasuredWidth<HTMLDivElement>(560);
   const currentVol = num(payload?.summary?.current_realized_vol_pct);
-  const avgVol = volSeries.length
-    ? volSeries.reduce((a, v) => a + v, 0) / volSeries.length
-    : null;
-  const status = payload?.status ?? "—";
-  const isLive = state === "ok" && status === "ok";
+  const observations = payload?.summary?.observations;
+  const windowDays = num(payload?.summary?.history_window_days) ?? 30;
+  const status = payload?.status;
+  const isLive = status === "ok";
   const isReference = status === "reference";
+  const providerDown = status === "provider_unavailable";
+  // The mode (live/reference) is stated exactly once — by the header mode
+  // pill. The load-state pill + footer carry the CALL status only, so a
+  // reference payload does not repeat its label three times.
+  const loadStatus = isLive || isReference ? "ok" : status;
+  const hasData = (isLive || isReference) && rows.length > 0;
+  const lastDate = history[history.length - 1]?.date;
 
   const columns = useMemo<DataGridColumn<HvtRow>[]>(
     () => [
@@ -135,9 +242,11 @@ export function HVTPane({ code, symbol }: FunctionPaneProps) {
         header: "Window",
         width: 150,
         sortable: true,
-        sortValue: (r) => r.window_days ?? 0,
-        render: (r) => (
-          <span style={monoStrongStyle}>{r.metric ?? `${r.window_days}D`}</span>
+        sortValue: (row) => row.window_days ?? 0,
+        render: (row) => (
+          <span style={MONO_STRONG}>
+            {row.metric ?? (row.window_days ? `${row.window_days}D` : "—")}
+          </span>
         ),
       },
       {
@@ -146,7 +255,9 @@ export function HVTPane({ code, symbol }: FunctionPaneProps) {
         numeric: true,
         width: 116,
         sortable: true,
-        render: (r) => <span style={monoStrongStyle}>{fmtPct(r.realized_vol_pct)}</span>,
+        render: (row) => (
+          <span style={MONO_STRONG}>{fmtPct(row.realized_vol_pct)}</span>
+        ),
       },
       {
         key: "samples",
@@ -154,13 +265,8 @@ export function HVTPane({ code, symbol }: FunctionPaneProps) {
         numeric: true,
         width: 92,
         sortable: true,
-        render: (r) => <span style={monoMutedStyle}>{r.samples ?? "—"}</span>,
-      },
-      {
-        key: "formula",
-        header: "Formula",
-        render: (r) => (
-          <span style={formulaStyle}>{r.formula ?? DEFAULT_FORMULA}</span>
+        render: (row) => (
+          <span style={MONO_MUTED}>{row.samples ?? "—"}</span>
         ),
       },
     ],
@@ -169,142 +275,149 @@ export function HVTPane({ code, symbol }: FunctionPaneProps) {
 
   const csvColumns = useMemo<GridCsvColumn<HvtRow>[]>(
     () => [
-      { key: "metric", header: "Window", value: (r) => r.metric ?? `${r.window_days}D` },
-      { key: "realized_vol_pct", header: "Realized vol (%)", value: (r) => r.realized_vol_pct ?? "" },
-      { key: "samples", header: "Samples", value: (r) => r.samples ?? "" },
-      { key: "formula", header: "Formula", value: (r) => r.formula ?? DEFAULT_FORMULA },
+      {
+        key: "metric",
+        header: "Window",
+        value: (row) => row.metric ?? (row.window_days ? `${row.window_days}D` : ""),
+      },
+      {
+        key: "realized_vol_pct",
+        header: "Realized vol (%)",
+        value: (row) => row.realized_vol_pct ?? "",
+      },
+      { key: "samples", header: "Samples", value: (row) => row.samples ?? "" },
     ],
     [],
   );
 
   const exportCsv = () => {
     const csv = buildGridCsv(csvColumns, rows);
-    downloadGridCsv(gridCsvFilename(`hvt-${effectiveSymbol || "windows"}`), csv);
+    downloadGridCsv(
+      gridCsvFilename(`hvt-${effectiveSymbol || "windows"}`),
+      csv,
+    );
   };
 
+  const subtitle = [
+    payload?.spot != null ? `spot ${fmtNum(payload.spot)}` : null,
+    lastDate ? `as of ${lastDate}` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
   const body = !effectiveSymbol ? (
-    <Empty title="Pick a symbol" body="HVT needs an equity / ETF with daily history." icon="⌖" />
-  ) : state === "loading" || state === "idle" ? (
-    <div className="u-grid-gap-8" aria-busy="true">
-      <Skeleton height={56} />
-      <Skeleton height={96} />
-      <Skeleton height={20} width="70%" />
-    </div>
-  ) : state === "error" ? (
     <Empty
-      title="Function error"
-      body={error?.message ?? "—"}
-      icon="!"
-      action={
-        <button onClick={refetch} className="btn">
-          Retry
-        </button>
-      }
-    />
-  ) : !isLive && !isReference ? (
-    // provider_unavailable / empty: the fallback rows are SEEDED values,
-    // never real measurements — refuse to render them as data.
-    <Empty
-      title="Realized-vol history unavailable"
-      body={
-        payload?.reason ??
-        "No daily close history returned for this symbol — realized volatility cannot be measured."
-      }
-      icon="∅"
-      action={
-        <button onClick={refetch} className="btn">
-          Retry
-        </button>
-      }
-    />
-  ) : rows.length === 0 ? (
-    <Empty
-      title="No realized-vol windows returned"
-      body="The provider returned no usable return window."
-      icon="∅"
-      action={
-        <button onClick={refetch} className="btn">
-          Retry
-        </button>
-      }
+      title="Pick a symbol"
+      body="HVT needs an equity / ETF with daily history."
+      icon="⌖"
     />
   ) : (
-    <div className="u-grid-gap-14">
-      <section style={kpiGridStyle} aria-label="HVT KPI ribbon">
-        <StatCard
-          label="Spot"
-          value={fmtNum(payload?.spot)}
-          caption={`LOOKBACK ${payload?.lookback_days ?? days}D`}
-          tone="neutral"
-        />
+    <PaneState
+      state={state}
+      error={error}
+      empty={!hasData}
+      emptyTitle={
+        providerDown
+          ? "Realized-vol history unavailable"
+          : "No realized-vol windows returned"
+      }
+      emptyBody={
+        providerDown
+          ? (payload?.reason ??
+            "No daily close history returned for this symbol — realized volatility cannot be measured.")
+          : "The provider returned no usable return window."
+      }
+      emptyIcon="∅"
+      onRetry={refetch}
+      loadingRows={5}
+    >
+      <section style={KPI_GRID} aria-label="HVT KPI ribbon">
         <StatCard
           label="Current 30D RV"
           value={fmtPct(currentVol)}
-          caption={`${payload?.summary?.observations ?? "—"} OBS · WIN ${payload?.summary?.history_window_days ?? "—"}D`}
+          caption={`${observations ?? "—"} obs`}
           tone="neutral"
-          trend={trendOf(volSeries)}
         />
         <StatCard
-          label="History average RV"
-          value={fmtPct(avgVol)}
-          caption={`${volSeries.length} ROLLING PTS`}
-          tone={currentVol != null && avgVol != null ? (currentVol > avgVol ? "negative" : "positive") : "neutral"}
+          label="History average"
+          value={fmtPct(stats.avg)}
+          caption={`${stats.count} rolling points`}
+          tone="neutral"
         />
         <StatCard
-          label={longestWindow(rows)?.metric ?? "Long window"}
-          value={fmtPct(longestWindow(rows)?.realized_vol_pct)}
-          caption={`${longestWindow(rows)?.samples ?? "—"} SAMPLES`}
+          label="History min"
+          value={fmtPct(stats.min?.value)}
+          caption={stats.min?.date ?? "—"}
+          tone="neutral"
+        />
+        <StatCard
+          label="History max"
+          value={fmtPct(stats.max?.value)}
+          caption={stats.max?.date ?? "—"}
           tone="neutral"
         />
       </section>
 
-      <section style={sparkCardStyle} aria-label="Rolling realized volatility curve">
-        <div style={sparkHeadStyle}>
-          <span className="u-text-mute" style={noteTextStyle}>
-            ROLLING RV % · {volSeries.length} PTS · {payload?.summary?.history_window_days ?? "—"}D WINDOW
+      <section
+        className="hvt-spark"
+        style={SPARK_CARD}
+        aria-label="Rolling realized volatility curve"
+      >
+        <div style={SPARK_HEAD}>
+          <span className="u-text-mute" style={META}>
+            Rolling RV · {windowDays}D window
           </span>
-          <span style={monoStrongStyle}>{fmtPct(volSeries[volSeries.length - 1])}</span>
         </div>
-        <Sparkline
-          values={volSeries}
-          width={560}
-          height={88}
-          tone="accent"
-          ariaLabel={`Rolling realized volatility, ${volSeries.length} points, current ${fmtPct(volSeries[volSeries.length - 1])}, average ${fmtPct(avgVol)}`}
-        />
-        <div style={sparkFootStyle}>
-          <span className="u-text-mute" style={noteTextStyle}>
+        {volSeries.length > 1 ? (
+          <div ref={sparkRef} style={MEASURE_WRAP} data-testid="hvt-spark-measure">
+            <Sparkline
+              values={volSeries}
+              width={sparkWidth}
+              height={88}
+              tone="accent"
+              ariaLabel={`Rolling realized volatility, ${volSeries.length} points, last ${fmtPct(volSeries[volSeries.length - 1])}`}
+            />
+          </div>
+        ) : (
+          <div className="u-text-mute" style={META}>
+            No rolling history returned.
+          </div>
+        )}
+        <div style={SPARK_FOOT}>
+          <span className="u-text-mute" style={META}>
             {history[0]?.date ?? "—"}
           </span>
-          <span className="u-text-mute" style={noteTextStyle}>
-            {history[history.length - 1]?.date ?? "—"}
+          <span className="u-text-mute" style={META}>
+            {lastDate ?? "—"}
           </span>
         </div>
       </section>
 
-      <section style={tableWrapStyle} aria-label="Realized volatility windows">
+      <section style={TABLE_WRAP} aria-label="Realized volatility windows">
         <DataGrid
           columns={columns}
           rows={rows}
-          rowKey={(r, i) => `${r.window_days ?? r.metric ?? "row"}-${i}`}
+          rowKey={(row, index) =>
+            `${row.window_days ?? row.metric ?? "row"}-${index}`
+          }
           density="compact"
           ariaLabel="Volatility term structure"
-          defaultSortKey="window_days"
+          defaultSortKey="metric"
           defaultSortDir="ascending"
           keyboardNavigable
         />
         {isReference ? (
-          <div style={refNoteStyle} role="status">
+          <div style={REF_NOTE} role="status" data-testid="hvt-ref-note">
             Reference template (deterministic per-symbol seed) — NOT measured
             from live closes.
           </div>
         ) : (
-          <div className="u-text-mute" style={noteTextStyle}>
-            {payload?.methodology ?? "stdev(daily close-to-close returns) * sqrt(252)"}
+          <div className="u-text-mute" style={NOTE}>
+            {payload?.methodology ?? DEFAULT_FORMULA}
           </div>
         )}
       </section>
-    </div>
+    </PaneState>
   );
 
   return (
@@ -312,13 +425,19 @@ export function HVTPane({ code, symbol }: FunctionPaneProps) {
       <Pane>
         <PaneHeader
           code={code}
-          title={`Historical Volatility — ${effectiveSymbol || ""}`}
-          subtitle={`${effectiveSymbol || "—"} · 30D RV ${fmtPct(currentVol)} · avg ${fmtPct(avgVol)}`}
+          title={`Historical volatility — ${effectiveSymbol || ""}`}
+          subtitle={subtitle || "waiting for daily closes"}
           trailing={
             <FunctionControlGroup>
-              <Pill tone={isLive ? "positive" : "warn"} variant="soft">
-                {isLive ? "live" : status}
-              </Pill>
+              {isLive ? (
+                <Pill tone="positive" variant="soft">
+                  live
+                </Pill>
+              ) : isReference ? (
+                <Pill tone="warn" variant="soft">
+                  reference
+                </Pill>
+              ) : null}
               <SegmentedControl
                 label="LOOKBACK"
                 value={days}
@@ -336,7 +455,7 @@ export function HVTPane({ code, symbol }: FunctionPaneProps) {
               >
                 CSV
               </button>
-              <LoadStatePill state={state} status={status} />
+              <LoadStatePill state={state} status={loadStatus} />
               <RefreshButton
                 loading={state === "loading"}
                 onClick={refetch}
@@ -348,118 +467,97 @@ export function HVTPane({ code, symbol }: FunctionPaneProps) {
         />
         <PaneBody>{body}</PaneBody>
         <PaneFooter>
-          <StatusSection label="sources" value={data?.sources?.join(", ") || "—"} />
+          <StatusSection
+            label="sources"
+            value={data?.sources?.join(", ") || "—"}
+          />
           <StatusDivider />
-          <StatusSection label="status" value={status} />
+          <StatusSection label="status" value={loadStatus ?? "—"} />
           <StatusDivider />
-          <StatusSection label="points" value={volSeries.length} tone="accent" />
+          <StatusSection label="windows" value={rows.length} tone="accent" />
           <StatusDivider />
-          <StatusSection label="lookback" value={`${days}d`} />
-          <StatusDivider />
-          <StatusSection label="elapsed" value={`${data?.elapsed_ms?.toFixed(0) ?? "—"} ms`} />
+          <StatusSection
+            label="elapsed"
+            value={`${data?.elapsed_ms?.toFixed(0) ?? "—"} ms`}
+          />
         </PaneFooter>
       </Pane>
     </div>
   );
 }
 
-/* ── helpers ───────────────────────────────────────────────────────── */
-
-function num(v: unknown): number | null {
-  const n = typeof v === "number" ? v : Number(v);
-  return Number.isFinite(n) ? n : null;
-}
-
-function longestWindow(rows: HvtRow[]): HvtRow | null {
-  let best: HvtRow | null = null;
-  for (const r of rows) {
-    if (r.window_days != null && (best == null || (r.window_days ?? 0) > (best.window_days ?? 0))) {
-      best = r;
-    }
-  }
-  return best;
-}
-
-function trendOf(values: number[]): number[] {
-  return values.slice(-22);
-}
-
-function fmtNum(v: unknown): string {
-  const n = num(v);
-  if (n == null) return "—";
-  return formatNumberFixed(n, 2);
-}
-
-function fmtPct(v: unknown): string {
-  const n = num(v);
-  if (n == null) return "—";
-  return `${n.toFixed(1)}%`;
-}
-
 /* ── styles (design tokens only) ───────────────────────────────────── */
 
-const kpiGridStyle: CSSProperties = {
+const KPI_GRID: CSSProperties = {
   display: "grid",
-  gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))",
+  gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
   gap: 10,
 };
 
-const sparkCardStyle: CSSProperties = {
+const SPARK_CARD: CSSProperties = {
   display: "flex",
   flexDirection: "column",
   gap: 8,
   padding: "10px 12px",
-  border: "1px solid var(--border)",
-  borderRadius: 8,
-  background: "var(--bg-raised, transparent)",
+  border: "1px solid var(--border-subtle)",
+  borderRadius: "var(--radius-sm)",
+  background: "var(--scrim-low)",
 };
 
-const sparkHeadStyle: CSSProperties = {
+const SPARK_HEAD: CSSProperties = {
   display: "flex",
   justifyContent: "space-between",
   alignItems: "baseline",
   gap: 12,
 };
 
-const sparkFootStyle: CSSProperties = {
+const SPARK_FOOT: CSSProperties = {
   display: "flex",
   justifyContent: "space-between",
   gap: 12,
 };
 
-const tableWrapStyle: CSSProperties = { minWidth: 0 };
+/** Full-width wrapper measured for the responsive sparkline (FIX R2-#2). */
+const MEASURE_WRAP: CSSProperties = {
+  width: "100%",
+  minWidth: 0,
+};
 
-const noteTextStyle: CSSProperties = {
+const TABLE_WRAP: CSSProperties = { minWidth: 0 };
+
+const META: CSSProperties = {
   fontSize: "var(--font-size-2xs)",
-  fontFamily: "JetBrains Mono, monospace",
+  fontFamily: "var(--font-mono)",
   letterSpacing: "0.05em",
 };
 
-const monoStrongStyle: CSSProperties = {
-  fontFamily: "JetBrains Mono, monospace",
+const NOTE: CSSProperties = {
+  marginTop: 6,
+  fontSize: "var(--font-size-2xs)",
+  fontFamily: "var(--font-mono)",
+  color: "var(--text-mute)",
+};
+
+const REF_NOTE: CSSProperties = {
+  ...NOTE,
+  padding: "5px 8px",
+  border: "1px solid var(--border-subtle)",
+  borderRadius: "var(--radius-sm)",
+  background: "var(--scrim-low)",
+  color: "var(--text-primary)",
+};
+
+const MONO_STRONG: CSSProperties = {
+  fontFamily: "var(--font-mono)",
   fontVariantNumeric: "tabular-nums",
   color: "var(--text-primary)",
   fontWeight: 600,
 };
 
-const monoMutedStyle: CSSProperties = {
-  fontFamily: "JetBrains Mono, monospace",
+const MONO_MUTED: CSSProperties = {
+  fontFamily: "var(--font-mono)",
   fontVariantNumeric: "tabular-nums",
   color: "var(--text-secondary)",
 };
 
-const formulaStyle: CSSProperties = {
-  color: "var(--text-mute)",
-  fontSize: "var(--font-size-2xs)",
-};
-
-const refNoteStyle: CSSProperties = {
-  marginTop: 6,
-  padding: "5px 8px",
-  borderRadius: "var(--radius-md)",
-  border: "1px solid var(--border-subtle)",
-  background: "var(--scrim-low)",
-  color: "var(--text-primary)",
-  fontSize: "var(--font-size-2xs)",
-  fontFamily: "JetBrains Mono, monospace",
-};
+export default HVTPane;

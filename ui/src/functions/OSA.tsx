@@ -1,32 +1,37 @@
 /**
- * OSA — Option Strategy Analysis (multi-leg builder).
+ * OSA — Option Strategy Analyzer (multi-leg payoff desk).
  *
- * Fully client-parameterised model pane: the legs editor (buy/sell,
- * call/put, strike, expiry, IV, quantity) drives the backend Black-Scholes
- * strategy analyzer, which returns per-leg premiums computed from the
- * entered IV and a 101-point expiration payoff/PnL curve. Legs persist under `showme.osa.legs`, spot /
- * rate under `showme.osa.*`.
+ * Recreated 2026-09-11 (options-family redesign, lane L4). One screen, one
+ * job: a compact leg editor drives the backend Black-Scholes strategy
+ * analyzer, the payoff SVG is the primary visual, and a payoff-at-key-prices
+ * DataGrid carries sort / keyboard / CSV.
  *
  * Data honesty: the strategy is a MODEL (sources=black_scholes_formula),
- * never a market feed — the header pill states "model", not "live".
- * Max gain / loss are computed over the VISIBLE price grid, and the stats
- * strip says so. The request omits the symbol entirely (the backend
- * rejects EQUITY-class instruments for this derivative function).
+ * never a market feed — the header carries the single "model" pill. Leg
+ * premiums are priced at the entered per-leg IV (never "solved"); max
+ * gain/loss are read over the visible expiry grid; a missing summary value
+ * renders as an em-dash, never a fabricated number.
  */
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import {
-  Empty,
+  DataGrid,
+  Field,
   Pane,
   PaneBody,
   PaneFooter,
   PaneHeader,
+  PaneState,
   Pill,
-  Skeleton,
   StatCard,
   StatusDivider,
   StatusSection,
+  buildGridCsv,
+  downloadGridCsv,
+  gridCsvFilename,
+  type DataGridColumn,
+  type GridCsvColumn,
 } from "@/design-system";
-import { formatNumber } from "@/lib/format";
+import { formatNumber, formatNumberFixed } from "@/lib/format";
 import { useFunction } from "@/lib/useFunction";
 import {
   FunctionControlGroup,
@@ -76,15 +81,22 @@ interface OsaSummary {
 
 interface OsaData {
   status?: string;
+  reason?: string;
   spot?: number;
   rate?: number;
+  div_yield?: number;
   strategy?: string;
   rows?: OsaLegRow[];
   legs?: OsaLegRow[];
   curve?: OsaCurvePoint[];
   pnl_curve?: OsaCurvePoint[];
   summary?: OsaSummary;
-  methodology?: string;
+}
+
+interface PayoffRow {
+  spot: number;
+  payoff: number | null;
+  pnl: number | null;
 }
 
 /* ── strategy presets + persistence ────────────────────────────────── */
@@ -201,6 +213,7 @@ export function OSAPane({ code }: FunctionPaneProps) {
   const [legs, setLegs] = usePersistentLegs(LEGS_KEY);
   const [spot, setSpot] = usePersistentNumber("showme.osa.spot", 100);
   const [rate, setRate] = usePersistentNumber("showme.osa.rate", 4.5); // percent
+  const [divPct, setDivPct] = usePersistentNumber("showme.osa.div", 0); // percent
   const [preset, setPreset] = useState<string>(() => readStoredPreset(PRESET_KEY));
 
   const applyPreset = (id: string) => {
@@ -232,17 +245,24 @@ export function OSAPane({ code }: FunctionPaneProps) {
     setPreset("custom");
   };
 
+  // The backend echoes the `strategy` label; sending it keeps the header
+  // honest (otherwise the runner's CALL_SPREAD default is echoed even for a
+  // straddle / condor).
+  const presetLabel = PRESETS.find((p) => p.id === preset)?.label ?? "CUSTOM";
   const { state, data, error, refetch } = useFunction<OsaData>({
     code,
     params: {
       asset_class: "DERIVATIVE",
       spot,
       rate: rate / 100,
+      div_yield: divPct / 100,
+      strategy: presetLabel,
       legs: legs.map((l) => ({ ...l })),
     },
   });
 
   const payload = data?.data;
+  const isOk = state !== "loading" && state !== "idle" && payload?.status === "ok";
   const curve: OsaCurvePoint[] = useMemo(
     () => (payload?.curve && payload.curve.length ? payload.curve : payload?.pnl_curve ?? []),
     [payload],
@@ -254,198 +274,277 @@ export function OSAPane({ code }: FunctionPaneProps) {
   const maxGain = num(summary?.max_gain_visible);
   const maxLoss = num(summary?.max_loss_visible);
 
-  const premiumFor = (idx: number): number | null => num(legRows[idx]?.premium);
+  const profileRows = useMemo(
+    () =>
+      keyPriceRows(
+        curve,
+        breakevens,
+        legs.map((l) => l.strike),
+        spot,
+      ),
+    [curve, breakevens, legs, spot],
+  );
 
-  const body = state === "loading" || state === "idle" ? (
-    <div className="u-grid-gap-8" aria-busy="true">
-      <Skeleton height={56} />
-      <Skeleton height={120} />
-      <Skeleton height={20} width="70%" />
-    </div>
-  ) : state === "error" ? (
-    <Empty
-      title="Function error"
-      body={error?.message ?? "—"}
-      icon="!"
-      action={
-        <button onClick={refetch} className="btn">
-          Retry
-        </button>
-      }
-    />
-  ) : payload?.status !== "ok" || curve.length < 2 ? (
-    <Empty
-      title="Strategy could not be priced"
-      body="Check the legs — every strike, expiry and IV must be positive."
-      icon="∅"
-      action={
-        <button onClick={refetch} className="btn">
-          Retry
-        </button>
-      }
-    />
-  ) : (
-    <div className="u-grid-gap-14">
-      {/* stats strip */}
-      <section style={kpiGridStyle} aria-label="Strategy statistics">
-        <StatCard
-          label="Net debit"
-          value={fmtSigned(netDebit)}
-          caption={netDebit != null && netDebit < 0 ? "CREDIT RECEIVED" : "PAID UP FRONT"}
-          tone={netDebit != null && netDebit < 0 ? "positive" : "neutral"}
-        />
-        <StatCard
-          label="Max gain (grid)"
-          value={fmtSigned(maxGain)}
-          caption="VISIBLE PRICE RANGE"
-          tone={maxGain != null && maxGain > 0 ? "positive" : "neutral"}
-        />
-        <StatCard
-          label="Max loss (grid)"
-          value={fmtSigned(maxLoss)}
-          caption="VISIBLE PRICE RANGE"
-          tone={maxLoss != null && maxLoss < 0 ? "negative" : "neutral"}
-        />
-        <StatCard
-          label="Breakevens"
-          value={String(summary?.breakeven_count_visible ?? breakevens.length)}
-          caption={breakevens.length ? breakevens.map((b) => fmtNum(b, 1)).join(" / ") : "NONE IN RANGE"}
-          tone="neutral"
-        />
-      </section>
-
-      {/* payoff / P&L chart */}
-      <PayoffChart
-        curve={curve}
-        breakevens={breakevens}
-        spot={spot}
-        netDebit={netDebit}
-      />
-
-      {/* legs editor */}
-      <section aria-label="Strategy legs editor" style={tableWrapStyle}>
-        <table style={tableStyle} aria-label="Legs">
-          <thead>
-            <tr>
-              {["Side", "Type", "Strike", "Expiry (y)", "IV", "Premium", ""].map((h, i) => (
-                <th key={h + i} style={{ ...thStyle, textAlign: i >= 2 && i <= 5 ? "right" : "left" }}>
-                  {h}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {legs.map((leg, idx) => {
-              const long = leg.qty >= 0;
-              return (
-                <tr key={idx} aria-label={`Leg ${idx + 1}: ${long ? "buy" : "sell"} ${leg.type} ${fmtNum(leg.strike)}`}>
-                  <td style={tdStyle}>
-                    <MiniToggle
-                      ariaLabel={`Leg ${idx + 1} side`}
-                      options={[
-                        { value: "B", label: "BUY" },
-                        { value: "S", label: "SELL" },
-                      ]}
-                      value={long ? "B" : "S"}
-                      onChange={(v) => {
-                        const mag = Math.abs(leg.qty) || 1;
-                        patchLeg(idx, { qty: v === "B" ? mag : -mag });
-                      }}
-                    />
-                  </td>
-                  <td style={tdStyle}>
-                    <MiniToggle
-                      ariaLabel={`Leg ${idx + 1} type`}
-                      options={[
-                        { value: "CALL", label: "C" },
-                        { value: "PUT", label: "P" },
-                      ]}
-                      value={leg.type}
-                      onChange={(v) => patchLeg(idx, { type: v as OsaLeg["type"] })}
-                    />
-                  </td>
-                  <td style={tdNumStyle}>
-                    <NumInput
-                      value={leg.strike}
-                      step={1}
-                      min={0.01}
-                      ariaLabel={`Leg ${idx + 1} strike`}
-                      onChange={(v) => patchLeg(idx, { strike: v })}
-                    />
-                  </td>
-                  <td style={tdNumStyle}>
-                    <NumInput
-                      value={leg.expiry}
-                      step={0.05}
-                      min={0.01}
-                      ariaLabel={`Leg ${idx + 1} expiry years`}
-                      onChange={(v) => patchLeg(idx, { expiry: v })}
-                    />
-                  </td>
-                  <td style={tdNumStyle}>
-                    <NumInput
-                      value={leg.vol}
-                      step={0.05}
-                      min={0.01}
-                      ariaLabel={`Leg ${idx + 1} implied volatility decimal`}
-                      onChange={(v) => patchLeg(idx, { vol: v })}
-                    />
-                  </td>
-                  <td style={tdNumStyle}>
-                    <span style={monoStrongStyle}>{fmtNum(premiumFor(idx))}</span>
-                  </td>
-                  <td style={tdStyle}>
-                    <button
-                      type="button"
-                      className="btn btn--ghost"
-                      title={`Remove leg ${idx + 1}`}
-                      aria-label={`Remove leg ${idx + 1}`}
-                      disabled={legs.length <= 1}
-                      onClick={() => removeLeg(idx)}
-                    >
-                      ✕
-                    </button>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-        <div style={editorNoteStyle}>
-          <button
-            type="button"
-            className="btn btn--ghost"
-            onClick={addLeg}
-            disabled={legs.length >= MAX_LEGS}
-            title="Add a leg (max 4)"
+  const gridColumns = useMemo<DataGridColumn<PayoffRow>[]>(
+    () => [
+      {
+        key: "spot",
+        header: "Spot",
+        width: 96,
+        numeric: true,
+        sortable: true,
+        render: (r) => <span style={monoStrongStyle}>{formatNumberFixed(r.spot, 2)}</span>,
+      },
+      {
+        key: "payoff",
+        header: "Payoff at expiry",
+        width: 128,
+        numeric: true,
+        sortable: true,
+        render: (r) => <span style={monoStyle}>{fmtSigned(r.payoff)}</span>,
+      },
+      {
+        key: "pnl",
+        header: "P&L",
+        width: 110,
+        numeric: true,
+        sortable: true,
+        render: (r) => (
+          <span
+            style={{
+              ...monoStrongStyle,
+              color:
+                r.pnl == null
+                  ? "var(--text-mute)"
+                  : r.pnl >= 0
+                    ? "var(--positive)"
+                    : "var(--negative)",
+            }}
           >
-            + Add leg
-          </button>
-          <span className="u-text-mute" style={noteTextStyle}>
-            quantity per leg = ±1 step · premium priced at spot {fmtNum(spot)} · IV per leg
-            is the entered value (default 25%)
+            {fmtSigned(r.pnl)}
           </span>
-        </div>
-      </section>
+        ),
+      },
+    ],
+    [],
+  );
 
-      {/* spot / rate inputs */}
-      <section
-        style={inputRowStyle}
-        aria-label="Underlying assumptions"
-      >
-        <label style={inputLabelStyle}>
-          <span className="u-text-mute">SPOT</span>
-          <NumInput value={spot} step={1} min={0.01} ariaLabel="Underlying spot price" onChange={setSpot} />
-        </label>
-        <label style={inputLabelStyle}>
-          <span className="u-text-mute">RATE %</span>
-          <NumInput value={rate} step={0.25} ariaLabel="Risk-free rate percent" onChange={setRate} />
-        </label>
-        <span className="u-text-mute" style={noteTextStyle}>
-          premiums reprice on every change
-        </span>
-      </section>
-    </div>
+  const csvColumns = useMemo<GridCsvColumn<PayoffRow>[]>(
+    () => [
+      { key: "spot", header: "Spot", value: (r) => r.spot },
+      { key: "payoff", header: "Payoff at expiry", value: (r) => r.payoff ?? "" },
+      { key: "pnl", header: "P&L", value: (r) => r.pnl ?? "" },
+    ],
+    [],
+  );
+
+  const exportCsv = () => {
+    downloadGridCsv(
+      gridCsvFilename("osa-payoff"),
+      buildGridCsv(csvColumns, profileRows),
+    );
+  };
+
+  const strategyEcho =
+    payload?.status === "ok" && payload.strategy ? String(payload.strategy) : null;
+  const strategyLabel = (strategyEcho ?? presetLabel).replace(/_/g, " ").toUpperCase();
+
+  const body = (
+    <PaneState
+      state={state}
+      error={error}
+      empty={!isOk}
+      emptyTitle="Strategy could not be priced"
+      emptyBody={
+        payload?.reason ??
+        "Check the legs — every strike, expiry and IV must be positive, and the backend must return at least two curve points."
+      }
+      onRetry={refetch}
+    >
+      <div className="u-grid-gap-14">
+        {/* KPI strip — net debit / bounds / breakevens */}
+        <section style={kpiGridStyle} aria-label="Strategy statistics">
+          <StatCard
+            label="Net debit"
+            value={fmtSigned(netDebit)}
+            caption={netDebit == null ? undefined : netDebit < 0 ? "credit received" : "paid up front"}
+            tone={netDebit != null && netDebit < 0 ? "positive" : "neutral"}
+          />
+          <StatCard
+            label="Max gain"
+            value={fmtSigned(maxGain)}
+            caption={maxGain == null ? undefined : "at range high"}
+            tone={maxGain != null && maxGain > 0 ? "positive" : "neutral"}
+          />
+          <StatCard
+            label="Max loss"
+            value={fmtSigned(maxLoss)}
+            caption={maxLoss == null ? undefined : "at range low"}
+            tone={maxLoss != null && maxLoss < 0 ? "negative" : "neutral"}
+          />
+          <StatCard
+            label="Breakevens"
+            value={String(summary?.breakeven_count_visible ?? breakevens.length)}
+            caption={breakevens.length ? breakevens.map((b) => fmtNum(b, 2)).join(" / ") : "none in range"}
+            tone="neutral"
+          />
+        </section>
+
+        {/* primary visual — expiration P&L profile */}
+        <PayoffChart curve={curve} breakevens={breakevens} spot={spot} />
+
+        {/* compact leg editor — one row set, kit input density */}
+        <section aria-label="Strategy legs editor" style={editorWrapStyle}>
+          <div style={{ ...editorGridStyle, ...editorHeadStyle }} aria-hidden="true">
+            <span>SIDE</span>
+            <span>TYPE</span>
+            <span>STRIKE</span>
+            <span>EXP Y</span>
+            <span>IV</span>
+            <span>QTY</span>
+            <span style={editorNumHeadStyle}>PREMIUM</span>
+            <span />
+          </div>
+          {legs.map((leg, idx) => {
+            const long = leg.qty >= 0;
+            return (
+              <div
+                key={idx}
+                role="group"
+                aria-label={`Leg ${idx + 1}: ${long ? "buy" : "sell"} ${leg.type} ${fmtNum(leg.strike)}`}
+                style={{ ...editorGridStyle, ...editorRowStyle }}
+              >
+                <MiniToggle
+                  ariaLabel={`Leg ${idx + 1} side`}
+                  options={[
+                    { value: "B", label: "BUY" },
+                    { value: "S", label: "SELL" },
+                  ]}
+                  value={long ? "B" : "S"}
+                  onChange={(v) => {
+                    const mag = Math.abs(leg.qty) || 1;
+                    patchLeg(idx, { qty: v === "B" ? mag : -mag });
+                  }}
+                />
+                <MiniToggle
+                  ariaLabel={`Leg ${idx + 1} type`}
+                  options={[
+                    { value: "CALL", label: "C" },
+                    { value: "PUT", label: "P" },
+                  ]}
+                  value={leg.type}
+                  onChange={(v) => patchLeg(idx, { type: v as OsaLeg["type"] })}
+                />
+                <NumInput
+                  value={leg.strike}
+                  step={1}
+                  min={0.01}
+                  ariaLabel={`Leg ${idx + 1} strike`}
+                  onChange={(v) => patchLeg(idx, { strike: v })}
+                />
+                <NumInput
+                  value={leg.expiry}
+                  step={0.05}
+                  min={0.01}
+                  ariaLabel={`Leg ${idx + 1} expiry years`}
+                  onChange={(v) => patchLeg(idx, { expiry: v })}
+                />
+                <NumInput
+                  value={leg.vol}
+                  step={0.05}
+                  min={0.01}
+                  ariaLabel={`Leg ${idx + 1} implied volatility decimal`}
+                  onChange={(v) => patchLeg(idx, { vol: v })}
+                />
+                <NumInput
+                  value={Math.abs(leg.qty) || 1}
+                  step={1}
+                  min={1}
+                  ariaLabel={`Leg ${idx + 1} quantity`}
+                  onChange={(v) => patchLeg(idx, { qty: Math.round(v) * (long ? 1 : -1) })}
+                />
+                <span style={premiumStyle}>{fmtNum(legRows[idx]?.premium)}</span>
+                <button
+                  type="button"
+                  className="btn btn--ghost"
+                  title={`Remove leg ${idx + 1}`}
+                  aria-label={`Remove leg ${idx + 1}`}
+                  disabled={legs.length <= 1}
+                  onClick={() => removeLeg(idx)}
+                  style={removeBtnStyle}
+                >
+                  ✕
+                </button>
+              </div>
+            );
+          })}
+          <div style={editorFootStyle}>
+            <button
+              type="button"
+              className="btn btn--ghost"
+              onClick={addLeg}
+              disabled={legs.length >= MAX_LEGS}
+              title="Add a leg (max 4)"
+            >
+              + Add leg
+            </button>
+            <span className="u-text-mute" style={noteTextStyle}>
+              premium = Black-Scholes at current spot · IV per leg is the entered value (default
+              0.25)
+            </span>
+          </div>
+        </section>
+
+        {/* model assumptions — single compact row, kit Field inputs */}
+        <section style={assumptionRowStyle} aria-label="Model assumptions">
+          <NumField
+            label="Spot"
+            value={spot}
+            min={0.01}
+            step={1}
+            width={104}
+            ariaLabel="Underlying spot price"
+            onChange={setSpot}
+          />
+          <NumField
+            label="Rate %"
+            value={rate}
+            step={0.25}
+            width={92}
+            ariaLabel="Risk-free rate percent"
+            onChange={setRate}
+          />
+          <NumField
+            label="Div %"
+            value={divPct}
+            min={0}
+            step={0.25}
+            width={92}
+            ariaLabel="Dividend yield percent"
+            onChange={setDivPct}
+          />
+        </section>
+
+        {/* secondary table — expiry P&L at the decision-relevant prices */}
+        <section aria-label="Expiry P&L at key prices" style={tableWrapStyle}>
+          <div style={tableHeadStyle}>
+            <span className="u-text-mute" style={noteTextStyle}>
+              key prices · {profileRows.length} rows
+            </span>
+          </div>
+          <DataGrid
+            columns={gridColumns}
+            rows={profileRows}
+            rowKey={(r) => r.spot}
+            density="compact"
+            ariaLabel="Expiry P&L at key prices"
+            defaultSortKey="spot"
+            defaultSortDir="ascending"
+            keyboardNavigable
+          />
+        </section>
+      </div>
+    </PaneState>
   );
 
   return (
@@ -453,8 +552,8 @@ export function OSAPane({ code }: FunctionPaneProps) {
       <Pane>
         <PaneHeader
           code={code}
-          title={`Option Strategy Analyzer${payload?.strategy ? ` — ${String(payload.strategy).replace(/_/g, " ").toUpperCase()}` : ""}`}
-          subtitle={`${legs.length} leg${legs.length === 1 ? "" : "s"} · spot ${fmtNum(spot)} · net debit ${fmtSigned(netDebit)}`}
+          title={`Option Strategy Analyzer — ${strategyLabel}`}
+          subtitle={`${legs.length} leg${legs.length === 1 ? "" : "s"} · spot ${fmtNum(spot)}`}
           trailing={
             <FunctionControlGroup>
               <Pill tone="muted" variant="soft" withDot={false}>
@@ -467,6 +566,18 @@ export function OSAPane({ code }: FunctionPaneProps) {
                 onChange={applyPreset}
                 title="Strategy preset"
               />
+              {/* R2-#10 (F4): CSV lives in the header slot like the rest of
+                  the family, not inside the grid section. */}
+              <button
+                type="button"
+                className="btn btn--ghost"
+                onClick={exportCsv}
+                disabled={profileRows.length === 0}
+                title="Download CSV"
+                aria-label={`Download ${profileRows.length} payoff rows as CSV`}
+              >
+                CSV
+              </button>
               <LoadStatePill state={state} status={payload?.status} />
               <RefreshButton loading={state === "loading"} onClick={refetch} title="Reprice strategy" />
             </FunctionControlGroup>
@@ -478,11 +589,7 @@ export function OSAPane({ code }: FunctionPaneProps) {
           <StatusDivider />
           <StatusSection label="status" value={payload?.status ?? state} />
           <StatusDivider />
-          <StatusSection label="legs" value={legs.length} tone="accent" />
-          <StatusDivider />
-          <StatusSection label="grid" value={`${curve.length} pt`} />
-          <StatusDivider />
-          <StatusSection label="rate" value={`${fmtNum(rate)}%`} />
+          <StatusSection label="points" value={curve.length} tone="accent" />
           <StatusDivider />
           <StatusSection label="elapsed" value={`${data?.elapsed_ms?.toFixed(0) ?? "—"} ms`} />
         </PaneFooter>
@@ -491,10 +598,12 @@ export function OSAPane({ code }: FunctionPaneProps) {
   );
 }
 
-/* ── payoff / P&L chart (inline SVG, tokens only) ──────────────────── */
+/* ── payoff chart (inline SVG, tokens only) ─────────────────────────── */
 
 const CHART_W = 560;
-const CHART_H = 150;
+// FIX R2-#9: vertical budget trim (was 150) so the primary grid gains a row
+// above the 900px fold; 120px still reads as the payoff curve.
+const CHART_H = 120;
 const CHART_PAD_X = 10;
 const CHART_PAD_TOP = 10;
 const CHART_PAD_BOTTOM = 16;
@@ -503,30 +612,25 @@ function PayoffChart({
   curve,
   breakevens,
   spot,
-  netDebit,
 }: {
   curve: OsaCurvePoint[];
   breakevens: number[];
   spot: number;
-  netDebit: number | null;
 }) {
   const geom = useMemo(() => {
     const xs: number[] = [];
     const pnl: number[] = [];
-    const payoff: number[] = [];
     for (const p of curve) {
       const x = num(p.spot);
-      const a = num(p.pnl);
-      const b = num(p.payoff);
-      if (x == null || a == null || b == null) continue;
+      const y = num(p.pnl);
+      if (x == null || y == null) continue;
       xs.push(x);
-      pnl.push(a);
-      payoff.push(b);
+      pnl.push(y);
     }
     if (xs.length < 2) return null;
     let lo = 0;
     let hi = 0;
-    for (const v of [...pnl, ...payoff]) {
+    for (const v of pnl) {
       if (v < lo) lo = v;
       if (v > hi) hi = v;
     }
@@ -538,22 +642,10 @@ function PayoffChart({
     const px = (x: number) =>
       CHART_PAD_X + ((x - xMin) / xSpan) * (CHART_W - 2 * CHART_PAD_X);
     const py = (v: number) => CHART_PAD_TOP + (1 - (v - lo) / span) * plotH;
-    const path = (vals: number[]) =>
-      vals
-        .map((v, i) => `${i === 0 ? "M" : "L"}${px(xs[i]).toFixed(1)},${py(v).toFixed(1)}`)
-        .join(" ");
-    return {
-      xs,
-      pnl,
-      payoff,
-      px,
-      py,
-      zeroY: py(0),
-      pnlPath: path(pnl),
-      payoffPath: path(payoff),
-      xMin,
-      xMax,
-    };
+    const path = pnl
+      .map((v, i) => `${i === 0 ? "M" : "L"}${px(xs[i]).toFixed(1)},${py(v).toFixed(1)}`)
+      .join(" ");
+    return { px, py, path, xMin, xMax, zeroY: py(0) };
   }, [curve]);
 
   if (!geom) {
@@ -567,51 +659,38 @@ function PayoffChart({
   const spotX = spot >= geom.xMin && spot <= geom.xMax ? geom.px(spot) : null;
 
   return (
-    <section style={chartCardStyle} aria-label="Expiration payoff and P&L chart">
-      <div style={chartHeadStyle}>
-        <span className="u-text-mute" style={noteTextStyle}>
-          EXPIRY PAYOFF / P&L · {geom.xs.length} PTS
-        </span>
-        <span className="u-text-mute" style={noteTextStyle}>
-          {netDebit != null && netDebit < 0 ? "credit strategy" : "debit strategy"}
-        </span>
-      </div>
+    <section style={chartCardStyle} aria-label="Expiration payoff chart">
+      <span className="u-text-mute" style={noteTextStyle}>
+        Expiration P&amp;L · visible grid
+      </span>
       <svg
         width="100%"
         height={CHART_H}
         viewBox={`0 0 ${CHART_W} ${CHART_H}`}
         role="img"
-        aria-label={`Expiration payoff and P&L from ${fmtNum(geom.xMin)} to ${fmtNum(geom.xMax)}, ${breakevens.length} breakeven point${breakevens.length === 1 ? "" : "s"}`}
+        aria-label={`Expiration P&L from spot ${fmtNum(geom.xMin)} to ${fmtNum(geom.xMax)} with ${breakevens.length} breakeven marker${breakevens.length === 1 ? "" : "s"}`}
         preserveAspectRatio="none"
       >
-        {/* zero P&L baseline */}
+        {/* zero P&L line — structural reference */}
         <line
           x1={CHART_PAD_X}
           x2={CHART_W - CHART_PAD_X}
           y1={geom.zeroY}
           y2={geom.zeroY}
-          stroke="var(--border-subtle)"
+          stroke="var(--border-strong)"
           strokeWidth={1}
         />
-        {/* payoff at expiry (muted, dashed) */}
-        <path
-          d={geom.payoffPath}
-          fill="none"
-          stroke="var(--text-mute)"
-          strokeWidth={1}
-          strokeDasharray="4 3"
-        />
-        {/* P&L (accent) */}
-        <path d={geom.pnlPath} fill="none" stroke="var(--accent)" strokeWidth={1.5} />
-        {/* breakeven markers */}
+        {/* P&L at expiry — the only data series */}
+        <path d={geom.path} fill="none" stroke="var(--accent-2, var(--accent))" strokeWidth={1.5} />
+        {/* breakeven markers, in-line on the zero line */}
         {breakevens.map((b) => (
           <circle
             key={b}
             cx={geom.px(b)}
             cy={geom.zeroY}
-            r={3.5}
+            r={3}
             fill="var(--bg)"
-            stroke="var(--accent)"
+            stroke="var(--accent-2, var(--accent))"
             strokeWidth={1.5}
           />
         ))}
@@ -622,13 +701,19 @@ function PayoffChart({
             x2={spotX}
             y1={CHART_PAD_TOP}
             y2={CHART_H - CHART_PAD_BOTTOM}
-            stroke="var(--positive)"
+            stroke="var(--text-primary)"
             strokeWidth={1}
             strokeDasharray="3 3"
           />
         )}
         {/* axis hints */}
-        <text x={CHART_PAD_X} y={CHART_H - 4} fontSize={9} fill="var(--text-mute)" fontFamily="JetBrains Mono, monospace">
+        <text
+          x={CHART_PAD_X}
+          y={CHART_H - 4}
+          fontSize={9}
+          fill="var(--text-mute)"
+          fontFamily="JetBrains Mono, monospace"
+        >
           {fmtNum(geom.xMin, 0)}
         </text>
         <text
@@ -642,37 +727,57 @@ function PayoffChart({
           {fmtNum(geom.xMax, 0)}
         </text>
       </svg>
-      <div style={legendRowStyle}>
-        <span style={legendItemStyle}>
-          <svg width={18} height={6} aria-hidden>
-            <line x1={0} x2={18} y1={3} y2={3} stroke="var(--accent)" strokeWidth={1.5} />
-          </svg>
-          P&L at expiry
-        </span>
-        <span style={legendItemStyle}>
-          <svg width={18} height={6} aria-hidden>
-            <line x1={0} x2={18} y1={3} y2={3} stroke="var(--text-mute)" strokeWidth={1} strokeDasharray="4 3" />
-          </svg>
-          Payoff
-        </span>
-        <span style={legendItemStyle}>
-          <svg width={10} height={8} aria-hidden>
-            <circle cx={5} cy={4} r={3} fill="var(--bg)" stroke="var(--accent)" strokeWidth={1.5} />
-          </svg>
-          Breakeven
-        </span>
-        <span style={legendItemStyle}>
-          <svg width={10} height={8} aria-hidden>
-            <line x1={5} x2={5} y1={0} y2={8} stroke="var(--positive)" strokeWidth={1} strokeDasharray="3 3" />
-          </svg>
-          Spot
-        </span>
-      </div>
     </section>
   );
 }
 
-/* ── small inputs ──────────────────────────────────────────────────── */
+/* ── small inputs (kit Field for the strip, dense inputs for the matrix) ── */
+
+function NumField({
+  label,
+  value,
+  onChange,
+  step = 1,
+  min,
+  width,
+  ariaLabel,
+}: {
+  label: string;
+  value: number;
+  onChange: (v: number) => void;
+  step?: number;
+  min?: number;
+  width?: number;
+  ariaLabel: string;
+}) {
+  const [text, setText] = useState<string>(() => String(value));
+  useEffect(() => {
+    setText(String(value));
+  }, [value]);
+  return (
+    <Field
+      label={label}
+      // FIX R2-#3: `type="number"` renders the value with the OS locale
+      // decimal separator (tr-TR "0,25"); a text input with a dot-decimal
+      // value + `inputMode="decimal"` pins en-US formatting.
+      type="text"
+      inputMode="decimal"
+      value={text}
+      step={step}
+      min={min}
+      width={width}
+      aria-label={ariaLabel}
+      onChange={(e) => {
+        setText(e.target.value);
+        const n = Number(e.target.value);
+        if (e.target.value.trim() !== "" && Number.isFinite(n) && (min == null || n >= min)) {
+          onChange(n);
+        }
+      }}
+      onBlur={() => setText(String(value))}
+    />
+  );
+}
 
 function NumInput({
   value,
@@ -693,7 +798,9 @@ function NumInput({
   }, [value]);
   return (
     <input
-      type="number"
+      // FIX R2-#3: en-US dot decimals (see NumField note).
+      type="text"
+      inputMode="decimal"
       className="fn-num-input"
       style={numInputStyle}
       value={text}
@@ -707,6 +814,7 @@ function NumInput({
           onChange(n);
         }
       }}
+      onBlur={() => setText(String(value))}
     />
   );
 }
@@ -745,6 +853,9 @@ function MiniToggle({
 /* ── helpers ───────────────────────────────────────────────────────── */
 
 function num(v: unknown): number | null {
+  // GUARD: Number(null) === 0 — an absent value must stay missing (em-dash),
+  // never collapse into a fabricated zero.
+  if (v == null || v === "") return null;
   const n = typeof v === "number" ? v : Number(v);
   return Number.isFinite(n) ? n : null;
 }
@@ -767,17 +878,52 @@ function computeBreakevens(curve: OsaCurvePoint[]): number[] {
   return out;
 }
 
+/**
+ * The decision-relevant slice of the 101-point wire curve: the endpoints,
+ * the current spot, every strike and every breakeven — each snapped to its
+ * nearest wire curve point (no interpolation beyond what the backend sent).
+ */
+function keyPriceRows(
+  curve: OsaCurvePoint[],
+  breakevens: number[],
+  strikes: number[],
+  spot: number,
+): PayoffRow[] {
+  const points: PayoffRow[] = [];
+  for (const p of curve) {
+    const s = num(p.spot);
+    if (s == null) continue;
+    points.push({ spot: s, payoff: num(p.payoff), pnl: num(p.pnl) });
+  }
+  if (points.length < 2) return [];
+  const targets = [points[0].spot, points[points.length - 1].spot, spot, ...strikes, ...breakevens];
+  const picked = new Set<number>();
+  for (const t of targets) {
+    let best = 0;
+    let bestDist = Infinity;
+    for (let i = 0; i < points.length; i += 1) {
+      const d = Math.abs(points[i].spot - t);
+      if (d < bestDist) {
+        bestDist = d;
+        best = i;
+      }
+    }
+    picked.add(best);
+  }
+  return [...picked].sort((a, b) => a - b).map((i) => points[i]);
+}
+
 function fmtNum(v: number | null | undefined, digits = 2): string {
   const n = num(v);
   if (n == null) return "—";
   return formatNumber(n, digits);
 }
 
-function fmtSigned(v: number | null | undefined): string {
+function fmtSigned(v: number | null | undefined, digits = 2): string {
   const n = num(v);
   if (n == null) return "—";
   const sign = n > 0 ? "+" : "";
-  return `${sign}${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  return `${sign}${formatNumberFixed(n, digits)}`;
 }
 
 /* ── styles (design tokens only) ───────────────────────────────────── */
@@ -792,110 +938,116 @@ const chartCardStyle: CSSProperties = {
   display: "flex",
   flexDirection: "column",
   gap: 6,
-  padding: "10px 12px",
-  border: "1px solid var(--border)",
-  borderRadius: 8,
-  background: "var(--bg-raised, transparent)",
+  // FIX R2-#9: trimmed from 10/12 to lift the primary grid above the fold.
+  padding: "8px 10px",
+  border: "1px solid var(--border-subtle)",
+  borderRadius: "var(--radius-md)",
+  background: "var(--scrim-low)",
 };
 
-const chartHeadStyle: CSSProperties = {
+const editorWrapStyle: CSSProperties = {
   display: "flex",
-  justifyContent: "space-between",
-  alignItems: "baseline",
-  gap: 12,
+  flexDirection: "column",
+  gap: 4,
+  overflowX: "auto",
+  minWidth: 0,
 };
 
-const legendRowStyle: CSSProperties = {
-  display: "flex",
-  flexWrap: "wrap",
-  gap: 14,
-  alignItems: "center",
-};
+const EDITOR_COLS = "64px 52px minmax(64px,1fr) minmax(58px,1fr) minmax(54px,1fr) 48px 76px 22px";
 
-const legendItemStyle: CSSProperties = {
-  display: "inline-flex",
-  alignItems: "center",
+const editorGridStyle: CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: EDITOR_COLS,
   gap: 6,
-  fontSize: "var(--font-size-2xs)",
+  alignItems: "center",
+  minWidth: 470,
+};
+
+// Labels are written already-uppercase on purpose: no new
+// `text-transform` site (the lang=tr uppercase defect is a central fix).
+const editorHeadStyle: CSSProperties = {
+  fontFamily: "var(--font-mono)",
+  fontSize: "var(--font-size-xs)",
+  letterSpacing: "var(--tracking-label)",
   color: "var(--text-mute)",
-  fontFamily: "JetBrains Mono, monospace",
+  padding: "0 2px",
+};
+
+const editorNumHeadStyle: CSSProperties = { textAlign: "right" };
+
+const editorRowStyle: CSSProperties = {
+  padding: "2px 0",
+  borderBottom: "1px solid var(--border-subtle)",
+};
+
+const editorFootStyle: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 10,
+  flexWrap: "wrap",
+  marginTop: 4,
 };
 
 const tableWrapStyle: CSSProperties = { minWidth: 0 };
 
-const tableStyle: CSSProperties = {
+const tableHeadStyle: CSSProperties = {
+  display: "flex",
+  justifyContent: "space-between",
+  alignItems: "center",
+  gap: 12,
+  marginBottom: 6,
+};
+
+const assumptionRowStyle: CSSProperties = {
+  display: "flex",
+  alignItems: "flex-end",
+  gap: 10,
+};
+
+const numInputStyle: CSSProperties = {
   width: "100%",
-  borderCollapse: "collapse",
-  tableLayout: "fixed",
-  fontFamily: "JetBrains Mono, monospace",
+  minWidth: 0,
+  padding: "3px 6px",
+  background: "var(--bg-elev-2)",
+  border: "1px solid var(--border-subtle)",
+  borderRadius: "var(--radius-sm)",
+  color: "var(--text-primary)",
+  fontFamily: "var(--font-mono)",
   fontVariantNumeric: "tabular-nums",
   fontSize: "var(--font-size-sm)",
+  outline: "none",
 };
 
-const thStyle: CSSProperties = {
-  padding: "4px 8px",
-  color: "var(--text-mute)",
-  fontWeight: 500,
-  letterSpacing: "0.06em",
-  fontSize: "var(--font-size-xs)",
-  textTransform: "uppercase",
-  borderBottom: "1px solid var(--border-subtle)",
-};
-
-const tdStyle: CSSProperties = {
-  padding: "3px 8px",
-  color: "var(--text-primary)",
-  borderBottom: "1px solid var(--border-subtle)",
-};
-
-const tdNumStyle: CSSProperties = {
-  ...tdStyle,
+const premiumStyle: CSSProperties = {
+  fontFamily: "var(--font-mono)",
+  fontVariantNumeric: "tabular-nums",
+  color: "var(--text-display)",
+  fontWeight: 600,
+  fontSize: "var(--font-size-sm)",
   textAlign: "right",
 };
 
-const editorNoteStyle: CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  gap: 10,
-  marginTop: 6,
+const removeBtnStyle: CSSProperties = {
+  height: 20,
+  minWidth: 0,
+  padding: "0 6px",
+  lineHeight: "20px",
 };
 
 const noteTextStyle: CSSProperties = {
   fontSize: "var(--font-size-2xs)",
-  fontFamily: "JetBrains Mono, monospace",
+  fontFamily: "var(--font-mono)",
   letterSpacing: "0.05em",
 };
 
-const inputRowStyle: CSSProperties = {
-  display: "flex",
-  flexWrap: "wrap",
-  alignItems: "end",
-  gap: 12,
-};
-
-const inputLabelStyle: CSSProperties = {
-  display: "flex",
-  flexDirection: "column",
-  gap: 3,
-  fontSize: "var(--font-size-xs)",
-  fontFamily: "JetBrains Mono, monospace",
-  letterSpacing: "0.06em",
-};
-
-const numInputStyle: CSSProperties = {
-  width: 84,
-  padding: "3px 6px",
-  background: "var(--bg-raised, transparent)",
-  border: "1px solid var(--border)",
-  borderRadius: "var(--radius-md, 4px)",
-  color: "var(--text-primary)",
-  fontFamily: "JetBrains Mono, monospace",
+const monoStyle: CSSProperties = {
+  fontFamily: "var(--font-mono)",
   fontVariantNumeric: "tabular-nums",
-  fontSize: "var(--font-size-sm)",
+  color: "var(--text-secondary)",
 };
 
 const monoStrongStyle: CSSProperties = {
-  fontFamily: "JetBrains Mono, monospace",
+  fontFamily: "var(--font-mono)",
   fontVariantNumeric: "tabular-nums",
   color: "var(--text-primary)",
   fontWeight: 600,
@@ -907,6 +1059,8 @@ const miniToggleStyle: CSSProperties = {
 };
 
 const miniToggleBtnStyle: CSSProperties = {
-  padding: "1px 6px",
+  padding: "1px 5px",
   fontSize: "var(--font-size-2xs)",
+  height: 20,
+  minWidth: 0,
 };

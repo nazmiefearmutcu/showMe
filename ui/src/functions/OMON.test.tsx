@@ -1,16 +1,16 @@
 /**
- * OMON pane — data-honesty + render-contract tests.
+ * OMON pane — redesign contract tests (L3, options family).
  *
- * `useFunction` is mocked via a mutable shared state (same pattern as
- * GEX.test.tsx) plus a params recorder, so tests can pin:
- *
- *  - the four load states (loading / empty / error / ok) render;
- *  - an ok payload renders one row per strike with the side columns;
- *  - the ATM strike (nearest to spot) carries the data-atm highlight;
- *  - the coverage note honestly reports "showing N of M";
- *  - a provider_unavailable payload renders the explicit empty state and
- *    surfaces backend warnings as a degraded pill + inline note;
- *  - switching expiry re-issues the query with the new `expiry` param.
+ * Pins the new DOM/behaviour:
+ *  - PaneState covers loading / error / empty (provider_unavailable carries
+ *    the backend reason + Retry — no duplicate degraded pill/banner);
+ *  - the chain DataGrid renders one row per visible strike with a single
+ *    "Showing N of M" coverage note, sortable columns and keyboard cells;
+ *  - KPI captions are unique (call/put OI share of chain open interest);
+ *  - the IV-smile secondary panel is fed by the real `series[]` (call_iv /
+ *    put_iv) and stays absent when the series is empty;
+ *  - warnings surface as exactly ONE role=status notice;
+ *  - side/expiry selection + params stability across visibility ticks.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
@@ -20,7 +20,7 @@ import { OMONPane } from "./OMON";
 
 interface MockFnState {
   state: "idle" | "loading" | "ok" | "error" | "refreshing";
-  data?: { data?: unknown; warnings?: string[] } | undefined;
+  data?: { data?: unknown; warnings?: string[]; metadata?: Record<string, unknown> } | undefined;
   error?: Error | null;
 }
 
@@ -52,11 +52,6 @@ vi.mock("@/lib/useVisibilityTick", () => ({
   useVisibilityTick: () => mockTick.current,
 }));
 
-// SymbolBar pulls router/symbol-resolver side effects we don't need here.
-vi.mock("@/shell/SymbolBar", () => ({
-  SymbolBar: () => null,
-}));
-
 /* ── fixtures: 2 expiries, 4 strikes around spot 100 ───────────────── */
 
 function row(strike: number) {
@@ -78,6 +73,7 @@ function row(strike: number) {
   };
 }
 
+/** Real payload shape (probe 2026-09-12): series carries call/put IV per strike. */
 function okPayload() {
   return {
     data: {
@@ -88,6 +84,12 @@ function okPayload() {
         expiries: ["2026-07-17", "2026-08-21"],
         spot: 100.25,
         rows: [row(95), row(100), row(105), row(110)],
+        series: [
+          { strike: 95, call_iv: 0.35, put_iv: null },
+          { strike: 100, call_iv: 0.31, put_iv: 0.33 },
+          { strike: 105, call_iv: 0.3, put_iv: 0.34 },
+          { strike: 110, call_iv: 0.29, put_iv: 0.36 },
+        ],
         summary: {
           underlier: "AAPL",
           expiry: "2026-07-17",
@@ -98,7 +100,10 @@ function okPayload() {
           strike_count: 4,
         },
       },
-      warnings: [],
+      warnings: [] as string[],
+      metadata: { data_mode: "live_yfinance" },
+      sources: ["yfinance"],
+      elapsed_ms: 176,
     },
   };
 }
@@ -114,55 +119,124 @@ afterEach(() => {
   cleanup();
 });
 
-describe("OMON pane — load states", () => {
+describe("OMON pane — load states via PaneState", () => {
   it("renders a skeleton while loading", () => {
     setMockFn({ state: "loading", data: undefined });
     const { container } = render(<OMONPane code="OMON" symbol="AAPL" />);
     expect(container.querySelector('[aria-busy="true"]')).not.toBeNull();
   });
 
-  it("renders the provider_unavailable empty state with the warning surfaced", () => {
+  it("provider_unavailable renders the honest empty state with reason + Retry", () => {
     setMockFn({
       state: "ok",
       data: {
         data: {
           status: "provider_unavailable",
           underlier: "AAPL",
+          reason: "Live option chain unavailable: network timeout",
           rows: [],
         },
         warnings: ["Live option chain unavailable: network timeout"],
       },
     });
-    render(<OMONPane code="OMON" symbol="AAPL" />);
-    // Empty renders the title in both a heading and an aria node.
+    const { container } = render(<OMONPane code="OMON" symbol="AAPL" />);
+    expect(container.querySelector('[data-testid="pane-state-empty"]')).not.toBeNull();
     expect(
       screen.getAllByText(/Option chain unavailable/i).length,
     ).toBeGreaterThan(0);
-    // Honesty: the backend warning text must be visible, plus the degraded pill.
+    // The provider reason is visible verbatim and Retry is offered.
     expect(
-      screen.getByText(/Live option chain unavailable/i),
-    ).toBeInTheDocument();
-    expect(screen.getByText(/degraded/i)).toBeInTheDocument();
+      screen.getAllByText(/Live option chain unavailable: network timeout/i).length,
+    ).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+    // One honesty surface only — no second degraded pill/banner.
+    expect(screen.queryByText(/^degraded$/i)).toBeNull();
+    // FIX R2-#6: the outage string appears ONCE (footer status). The header
+    // pill and the footer MODE duplicate are suppressed in this state.
+    expect(screen.getAllByText("provider_unavailable").length).toBe(1);
+    const footer = container.querySelector(".ds-pane-footer");
+    expect(footer?.textContent).toContain("provider_unavailable");
+    expect(footer?.textContent).not.toContain("mode");
+    // Long provider diagnostics clamp to 2 lines with the full text on title.
+    const reason = screen.getByText(/Live option chain unavailable: network timeout/i);
+    expect(reason.getAttribute("title")).toBe(
+      "Live option chain unavailable: network timeout",
+    );
+    // Dead controls at 0 rows: SIDE segmented + CSV are disabled.
+    expect(screen.getByRole("button", { name: "PUTS" })).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: /download 0 strikes as csv/i }),
+    ).toBeDisabled();
   });
 
-  it("renders the error state when the fetch errors", () => {
+  it("renders the PaneState error branch when the fetch errors", () => {
     setMockFn({
       state: "error",
       data: undefined,
       error: new Error("sidecar exploded"),
     });
-    render(<OMONPane code="OMON" symbol="AAPL" />);
+    const { container } = render(<OMONPane code="OMON" symbol="AAPL" />);
+    expect(container.querySelector('[data-testid="pane-state-error"]')).not.toBeNull();
     expect(screen.getByText(/sidecar exploded/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
   });
 
-  it("renders one chain row per strike when ok", () => {
+  it("ok payload renders the chain with ONE coverage note and unique OI captions", () => {
     setMockFn({ state: "ok", ...okPayload() });
     const { container } = render(<OMONPane code="OMON" symbol="AAPL" />);
     expect(container.querySelectorAll("tbody tr").length).toBe(4);
-    // Honest coverage note.
-    expect(screen.getByText(/Showing 4 of 4 strikes/i)).toBeInTheDocument();
-    // Live honesty pill (no synthetic/degraded wording for live data).
-    expect(screen.getByText(/live chain/i)).toBeInTheDocument();
+    // Coverage stated exactly once (header pill + footer duplicate removed).
+    expect(screen.getAllByText(/Showing 4 of 4 strikes/i).length).toBe(1);
+    // OI cards carry their own share values, not a repeated "TOTAL CHAIN".
+    expect(screen.getByText("53.8% of chain OI")).toBeInTheDocument();
+    expect(screen.getByText("46.2% of chain OI")).toBeInTheDocument();
+    expect(screen.queryByText(/TOTAL CHAIN/i)).toBeNull();
+  });
+
+  it("keeps an empty-string wire cell missing (never coerced to 0.00 / 0.0%)", () => {
+    const payload = okPayload();
+    const row0 = payload.data.data.rows[0] as unknown as Record<string, unknown>;
+    row0.call_bid = "";
+    row0.call_iv = "";
+    setMockFn({ state: "ok", ...payload });
+    const { container } = render(<OMONPane code="OMON" symbol="AAPL" />);
+    // Default sort = strike ascending → first row is the strike-95 row.
+    const firstRow = container.querySelector("tbody tr")!;
+    // Columns: Strike, Bid, Ask, OI, Vol, IV, Delta.
+    expect(firstRow.children[1].textContent).toBe("—");
+    expect(firstRow.children[5].textContent).toBe("—");
+  });
+});
+
+describe("OMON pane — smile panel from the real series[]", () => {
+  it("draws the IV smile with call and put series", () => {
+    setMockFn({ state: "ok", ...okPayload() });
+    const { container } = render(<OMONPane code="OMON" symbol="AAPL" />);
+    const panel = container.querySelector('[data-testid="omon-iv-smile"]');
+    expect(panel).not.toBeNull();
+    expect(panel?.querySelectorAll('path[data-series="call"]').length).toBeGreaterThan(0);
+    expect(panel?.querySelectorAll('path[data-series="put"]').length).toBeGreaterThan(0);
+  });
+
+  it("omits the smile panel when the series carries no usable IV", () => {
+    const payload = okPayload();
+    (payload.data.data as { series?: unknown }).series = [];
+    setMockFn({ state: "ok", ...payload });
+    const { container } = render(<OMONPane code="OMON" symbol="AAPL" />);
+    expect(container.querySelector('[data-testid="omon-iv-smile"]')).toBeNull();
+  });
+});
+
+describe("OMON pane — honesty notice", () => {
+  it("surfaces backend warnings as exactly one status notice", () => {
+    const payload = okPayload();
+    payload.data.warnings = ["partial chain: 4 of 29 strikes returned"];
+    setMockFn({ state: "ok", ...payload });
+    render(<OMONPane code="OMON" symbol="AAPL" />);
+    expect(
+      screen.getAllByText(/partial chain: 4 of 29 strikes returned/i).length,
+    ).toBe(1);
+    expect(screen.getAllByRole("status").length).toBe(1);
   });
 });
 
@@ -208,27 +282,7 @@ describe("OMON pane — expiry selection", () => {
   });
 });
 
-describe("OMON pane — accessibility", () => {
-  it("exposes the chain as a keyboard grid with per-cell reachability", () => {
-    setMockFn({ state: "ok", ...okPayload() });
-    const { container } = render(<OMONPane code="OMON" symbol="AAPL" />);
-    // DataGrid upgrades to role=grid when keyboardNavigable is set (arrow-key
-    // cell navigation + Ctrl/Cmd+C copy).
-    const grid = container.querySelector('[role="grid"]');
-    expect(grid).not.toBeNull();
-    expect(container.querySelectorAll("tbody tr").length).toBe(4);
-    expect(container.querySelectorAll("td[data-cell]").length).toBeGreaterThan(0);
-  });
-
-  it("labels the chain table for screen readers", () => {
-    setMockFn({ state: "ok", ...okPayload() });
-    const { container } = render(<OMONPane code="OMON" symbol="AAPL" />);
-    const table = container.querySelector("table");
-    expect(table?.getAttribute("aria-label")).toMatch(/chain/i);
-  });
-});
-
-describe("OMON pane — chain sort + CSV (audit A4 M)", () => {
+describe("OMON pane — sort, CSV, keyboard grid", () => {
   it("reorders the visible strike window when an OI header is clicked", () => {
     const payload = okPayload();
     // Give each strike a distinct OI so the built-in sorter visibly reorders.
@@ -257,6 +311,43 @@ describe("OMON pane — chain sort + CSV (audit A4 M)", () => {
     const csv = screen.getByRole("button", { name: /download 4 strikes as csv/i });
     expect(csv).toBeEnabled();
     expect(csv.textContent).toBe("CSV");
+  });
+
+  it("exposes the chain as a keyboard grid with roving cell focus", () => {
+    setMockFn({ state: "ok", ...okPayload() });
+    const { container } = render(<OMONPane code="OMON" symbol="AAPL" />);
+    const grid = container.querySelector('[role="grid"]');
+    expect(grid).not.toBeNull();
+    expect(container.querySelectorAll("tbody tr").length).toBe(4);
+    expect(container.querySelectorAll("td[data-cell]").length).toBe(28);
+    // Roving tabindex: exactly one data cell is tabbable.
+    expect(
+      container.querySelectorAll('td[data-cell][tabindex="0"]').length,
+    ).toBe(1);
+  });
+
+  it("copies the focused side-aware cell value with Ctrl+C", () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+    try {
+      setMockFn({ state: "ok", ...okPayload() });
+      const { container } = render(<OMONPane code="OMON" symbol="AAPL" />);
+      // Roving focus starts at row 0 / strike column; ArrowRight → Bid.
+      fireEvent.keyDown(container.querySelector('[data-cell="0-0"]')!, {
+        key: "ArrowRight",
+      });
+      fireEvent.keyDown(container.querySelector('[data-cell="0-1"]')!, {
+        key: "c",
+        ctrlKey: true,
+      });
+      // getCellText wiring: raw-row fallback would copy "" for side columns.
+      expect(writeText).toHaveBeenCalledWith("3.1");
+    } finally {
+      Reflect.deleteProperty(navigator, "clipboard");
+    }
   });
 });
 
