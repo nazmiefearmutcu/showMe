@@ -37,6 +37,7 @@ import type { FunctionPaneProps } from "./registry-types";
 interface DINERow {
   name?: string;
   display_name?: string;
+  address?: string | null;
   lat?: number;
   lon?: number;
   distance_km?: number | null;
@@ -45,6 +46,7 @@ interface DINERow {
   place_id?: number;
   category?: string;
   type?: string;
+  cuisine?: string | null;
   opening_hours?: string | null;
   rating?: number | null;
   price?: string | null;
@@ -63,10 +65,12 @@ interface DINEData {
 const DEFAULT_LOCATION = "New York";
 const DEFAULT_QUERY = "restaurant";
 
+// 40 is Nominatim's documented maximum for the limit parameter — asking
+// for more would just be clamped by the provider policy.
 const LIMIT_OPTIONS = [
   { value: 10, label: "10" },
-  { value: 15, label: "15" },
   { value: 25, label: "25" },
+  { value: 40, label: "40" },
 ] as const;
 const LIMIT_IDS = LIMIT_OPTIONS.map((o) => o.value);
 
@@ -82,7 +86,7 @@ export function DINEPane({ code }: FunctionPaneProps) {
   const [limit, setLimit] = usePersistentOption<number>(
     "showme.dine.limit",
     LIMIT_IDS,
-    10,
+    25,
   );
   const [typeFilter, setTypeFilter] = useState<string>("all");
 
@@ -216,8 +220,11 @@ export function DINEPane({ code }: FunctionPaneProps) {
                   </Pill>
                 ) : null}
               </div>
-              <div style={addrStyle}>{row.display_name ?? "—"}</div>
+              <div style={addrStyle}>{row.address ?? row.display_name ?? "—"}</div>
               <div style={metaRowStyle}>
+                {row.cuisine ? (
+                  <span style={metaStyle}>cuisine {row.cuisine}</span>
+                ) : null}
                 <span style={metaStyle}>
                   distance {fmtDistance(row.distance_km)}
                 </span>

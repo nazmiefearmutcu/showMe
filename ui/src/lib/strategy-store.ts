@@ -148,7 +148,14 @@ export const useStrategyStore = create<StrategyStoreShape>((set, get) => ({
     }
   },
 
-  openNew: () => set({ draft: _BLANK_SPEC(), draftIsNew: true, dirty: false, lastPreview: null }),
+  openNew: () => set({
+    draft: _BLANK_SPEC(),
+    draftIsNew: true,
+    dirty: false,
+    lastPreview: null,
+    // A fresh draft must not inherit the previous strategy's error banner.
+    error: null,
+  }),
 
   openExisting: async (id) => {
     // H-UI-11 — abort any prior in-flight request so we don't get a

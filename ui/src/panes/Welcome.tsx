@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import { Pill, Skeleton, Sparkline } from "@/design-system";
 import { navigate } from "@/lib/router";
 import { toast } from "@/lib/toast";
 import { useSentimentStore } from "@/lib/sentiment-store";
-import type { FunctionEntry } from "@/lib/sidecar";
+import { sidecarFetch, type FunctionEntry } from "@/lib/sidecar";
 import { useAppStore } from "@/lib/store";
 import { useFunction } from "@/lib/useFunction";
 import { useVisibilityTick } from "@/lib/useVisibilityTick";
@@ -518,6 +518,36 @@ export function Welcome() {
       : DEFAULT_WATCHLIST;
   const watchEmpty = watchRows.length === 0 && watchlistHydrated && positions.length === 0;
 
+  // Live cross-asset tape for the Exposure panel while the local book is
+  // empty: asset-class member count + average live change from the SAME
+  // quote fan-out the KPI strip and watchlist already poll (no extra
+  // network). It is a market read — the panel header labels it as such —
+  // not portfolio exposure, and it disappears the moment real positions
+  // exist.
+  const exposureTape = useMemo(() => {
+    const byClass = new Map<string, { count: number; sum: number; n: number }>();
+    for (const row of watchRows) {
+      const quote = liveQuotes[row.symbol.toUpperCase()];
+      const label =
+        (quote?.snapshot?.asset_class ?? "other").trim().toUpperCase() || "OTHER";
+      const slot = byClass.get(label) ?? { count: 0, sum: 0, n: 0 };
+      slot.count += 1;
+      const change = quote?.changePct;
+      if (change != null && Number.isFinite(change)) {
+        slot.sum += change;
+        slot.n += 1;
+      }
+      byClass.set(label, slot);
+    }
+    return Array.from(byClass.entries())
+      .map(([label, slot]) => ({
+        label,
+        count: slot.count,
+        change: slot.n > 0 ? slot.sum / slot.n : null,
+      }))
+      .sort((a, b) => b.count - a.count);
+  }, [watchRows, liveQuotes]);
+
   // U9 first-run desk setup: offer a one-time, dismissible card while the
   // desk is still the untouched cold-boot default AND the watchlist is
   // empty. `isFirstRunDone` reads the `showme.firstrun.done` localStorage
@@ -678,7 +708,7 @@ export function Welcome() {
           <button
             type="button"
             className="terminal-action terminal-action--solid"
-            onClick={() => navigate("/fn/INSTANT")}
+            onClick={() => navigate("/fn/BBGT")}
           >
             Trade ticket
           </button>
@@ -799,7 +829,18 @@ export function Welcome() {
             data-testid="sentiment-gauge"
             data-score={sentimentScore.toFixed(3)}
           >
-            <span className="terminal-gauge__arc" />
+            <svg
+              className="terminal-gauge__arc"
+              viewBox="0 0 96 52"
+              aria-hidden="true"
+              focusable="false"
+            >
+              {/* Two 90° arcs of a 44px-radius circle centred at the needle
+                  pivot (48,48): red = [-90°, 0°] bearish, green = [0°, +90°]
+                  bullish, exactly matching sentimentNeedleAngle's scale. */}
+              <path className="terminal-gauge__arc-neg" d="M 4 48 A 44 44 0 0 1 48 4" />
+              <path className="terminal-gauge__arc-pos" d="M 48 4 A 44 44 0 0 1 92 48" />
+            </svg>
             <span
               className="terminal-gauge__needle"
               data-testid="sentiment-needle"
@@ -1092,10 +1133,18 @@ export function Welcome() {
           <div className="terminal-panel terminal-panel--exposure">
             <div className="terminal-panel__header">
               <h3>Exposure</h3>
-              <span>{engineRoot ? "engine attached" : "engine pending"}</span>
+              <span>
+                {exposureRows.length
+                  ? engineRoot
+                    ? "engine attached"
+                    : "engine pending"
+                  : exposureTape.length
+                    ? "no positions — live tape"
+                    : "no positions"}
+              </span>
             </div>
             {exposureRows.length ? (
-              <div className="terminal-exposure">
+              <div className="terminal-exposure" data-testid="exposure-positions">
                 {exposureRows.map(([label, value]) => (
                   <ExposureLine
                     key={label}
@@ -1105,10 +1154,41 @@ export function Welcome() {
                   />
                 ))}
               </div>
+            ) : exposureTape.length ? (
+              // No portfolio book yet — keep the panel ALIVE with the
+              // watchlist's live cross-asset breadth instead of a dead empty
+              // state. Header copy marks it as a tape, not exposure.
+              <div className="terminal-exposure" data-testid="exposure-live-tape">
+                {exposureTape.map((row) => (
+                  <div className="terminal-exposure__line" key={row.label}>
+                    <div>
+                      <strong>{row.label.toLowerCase()}</strong>
+                      <span>
+                        {row.count} sym
+                        {row.change == null
+                          ? " · —"
+                          : ` · ${formatPct(row.change)}`}
+                      </span>
+                    </div>
+                    <span className="terminal-exposure__track" aria-hidden>
+                      <span
+                        style={{
+                          width:
+                            row.change == null
+                              ? "0%"
+                              : `${Math.min(100, Math.max(4, Math.abs(row.change) * 20))}%`,
+                        }}
+                      />
+                    </span>
+                  </div>
+                ))}
+                <AddPositionForm onAdded={() => portfolio.refetch()} />
+              </div>
             ) : (
               <div className="terminal-empty">
                 <strong>No local exposure rows</strong>
-                <span>Open PORT to attach account or paper portfolio state.</span>
+                <span>Add positions below or open PORT to attach a book.</span>
+                <AddPositionForm onAdded={() => portfolio.refetch()} />
               </div>
             )}
           </div>
@@ -1388,6 +1468,90 @@ function ExposureLine({
         <span style={{ width: `${pct}%` }} />
       </span>
     </div>
+  );
+}
+
+/**
+ * Manual position entry for the local portfolio book
+ * (``POST /api/portfolio/positions``). The welcome-page exposure panel is
+ * read-only otherwise, and before this route existed there was NO way to
+ * attach a paper book at all — the empty state only pointed at PORT. Adding
+ * a position persists it to ``runtime/portfolio.json``; PORT then marks it
+ * with live prices, so exposure rows are real from the first entry.
+ */
+function AddPositionForm({ onAdded }: { onAdded: () => void }) {
+  const [symbol, setSymbol] = useState("");
+  const [quantity, setQuantity] = useState("");
+  const [avgCost, setAvgCost] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (busy) return;
+    const sym = symbol.trim().toUpperCase();
+    const qty = Number(quantity);
+    const cost = Number(avgCost);
+    if (!sym || !Number.isFinite(qty) || qty <= 0 || !Number.isFinite(cost) || cost < 0) {
+      setError("symbol, a positive qty and a non-negative cost are required");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await sidecarFetch<{ ok: boolean }>("/api/portfolio/positions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ symbol: sym, quantity: qty, avg_cost: cost }),
+      });
+      setSymbol("");
+      setQuantity("");
+      setAvgCost("");
+      toast.success(
+        `${sym} added to the portfolio book`,
+        "Exposure marks update with live prices.",
+      );
+      onAdded();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <form className="terminal-exposure__add" data-testid="exposure-add-form" onSubmit={submit}>
+      <input
+        value={symbol}
+        onChange={(e) => setSymbol(e.target.value)}
+        placeholder="SYMBOL"
+        aria-label="Position symbol"
+        maxLength={24}
+        spellCheck={false}
+      />
+      <input
+        value={quantity}
+        onChange={(e) => setQuantity(e.target.value)}
+        placeholder="QTY"
+        aria-label="Position quantity"
+        inputMode="decimal"
+      />
+      <input
+        value={avgCost}
+        onChange={(e) => setAvgCost(e.target.value)}
+        placeholder="COST"
+        aria-label="Average cost"
+        inputMode="decimal"
+      />
+      <button type="submit" className="terminal-action" disabled={busy}>
+        {busy ? "…" : "Add"}
+      </button>
+      {error && (
+        <span className="terminal-exposure__add-error" role="alert">
+          {error}
+        </span>
+      )}
+    </form>
   );
 }
 

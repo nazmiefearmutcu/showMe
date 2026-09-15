@@ -183,6 +183,33 @@ describe("DINE pane — cards + honesty", () => {
       screen.getByRole("status", { name: /data coverage note/i }),
     ).toHaveTextContent(/Ratings and prices are NOT fabricated/i);
   });
+
+  it("prefers the compact OSM address and surfaces the cuisine tag", () => {
+    const payload = livePayload();
+    payload.data.rows[0] = {
+      ...payload.data.rows[0],
+      address: "121 East 17th Street, Manhattan, New York, 10003",
+      cuisine: "italian",
+    } as (typeof payload.data.rows)[number];
+    setMockFn({ state: "ok", data: payload });
+    const { container } = render(<DINEPane code="DINE" />);
+    expect(container.textContent).toContain(
+      "121 East 17th Street, Manhattan, New York, 10003",
+    );
+    expect(container.textContent).toContain("cuisine italian");
+  });
+});
+
+describe("DINE pane — result density controls", () => {
+  it("offers the provider-maximum limit (40) and defaults to 25", () => {
+    setMockFn({ state: "ok", data: livePayload() });
+    render(<DINEPane code="DINE" />);
+    const forty = screen.getByRole("button", { name: "40" });
+    expect(forty).toBeTruthy();
+    expect((forty as HTMLButtonElement).disabled).toBe(false);
+    // The default (25) is the active segment and therefore disabled.
+    expect((screen.getByRole("button", { name: "25" }) as HTMLButtonElement).disabled).toBe(true);
+  });
 });
 
 describe("DINE pane — interaction", () => {

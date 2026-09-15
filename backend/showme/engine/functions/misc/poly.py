@@ -105,6 +105,17 @@ class POLYFunction(BaseFunction):
         status_label = "ok" if compact else "empty"
         as_of = datetime.now(timezone.utc).isoformat()
 
+        # Honesty: an empty success must say WHY it is empty. A topic filter
+        # that removed every market is an answer, not an outage — surface it
+        # so the pane never shows a bare "0 markets" with no reason.
+        result_warnings: list[str] = []
+        if provider_errors:
+            result_warnings.append(f"adapter fell back to keyless Gamma: {provider_errors[0]}")
+        if not compact and query:
+            result_warnings.append(
+                f"Gamma returned open markets, but none matched the topic filter {str(query)!r}."
+            )
+
         return FunctionResult(
             code=self.code,
             instrument=None,
@@ -151,7 +162,7 @@ class POLYFunction(BaseFunction):
                 },
             },
             sources=["polymarket"],
-            warnings=provider_errors and [f"adapter fell back to keyless Gamma: {provider_errors[0]}"] or [],
+            warnings=result_warnings,
             metadata={"query": query, "matched": len(compact), "provider_errors": provider_errors},
         )
 

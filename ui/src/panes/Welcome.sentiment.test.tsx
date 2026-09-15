@@ -211,6 +211,24 @@ describe("Welcome sentiment panel — DOM binding", () => {
   });
 });
 
+describe("Welcome sentiment gauge — arc geometry", () => {
+  it("draws the scale as a symmetric 180° SVG arc centred on the needle pivot", () => {
+    const { getByTestId } = render(<Welcome />);
+    const gauge = getByTestId("sentiment-gauge");
+    const arc = gauge.querySelector("svg.terminal-gauge__arc");
+    expect(arc).not.toBeNull();
+    // 96×52 viewBox; 44px radius arcs around (48,48) — the same centre the
+    // needle pivots on (rotate(0) = apex/Neutral, ±90° = the arc's ends).
+    // Regression pin: the old border-trick arc was rotated -35°, which
+    // visually skewed the scale 35° away from the needle.
+    expect(arc!.getAttribute("viewBox")).toBe("0 0 96 52");
+    const neg = arc!.querySelector("path.terminal-gauge__arc-neg");
+    const pos = arc!.querySelector("path.terminal-gauge__arc-pos");
+    expect(neg!.getAttribute("d")).toBe("M 4 48 A 44 44 0 0 1 48 4");
+    expect(pos!.getAttribute("d")).toBe("M 48 4 A 44 44 0 0 1 92 48");
+  });
+});
+
 describe("Welcome — demo data banners on BRIEF + MOVERS", () => {
   it("renders 'Demo data' banner on the BRIEF panel", () => {
     const { getByTestId } = render(<Welcome />);

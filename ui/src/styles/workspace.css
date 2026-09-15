@@ -507,6 +507,45 @@
   padding: var(--space-5);
 }
 
+/* Manual position entry (Welcome exposure panel → PortfolioState book). */
+.terminal-home .terminal-exposure__add {
+  border-top: 1px solid var(--terminal-border);
+  display: grid;
+  gap: var(--space-2);
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 0.7fr) minmax(0, 0.8fr) auto;
+  margin-top: var(--space-1);
+  padding-top: var(--space-3);
+}
+
+.terminal-home .terminal-exposure__add input {
+  background: var(--terminal-soft);
+  border: 1px solid var(--terminal-border);
+  color: var(--terminal-heading);
+  font-family: inherit;
+  font-size: 10px;
+  letter-spacing: 0.6px;
+  min-width: 0;
+  padding: 4px 6px;
+  text-transform: uppercase;
+}
+
+.terminal-home .terminal-exposure__add input::placeholder {
+  color: var(--terminal-muted);
+  letter-spacing: 0.6px;
+}
+
+.terminal-home .terminal-exposure__add .terminal-action {
+  height: auto;
+  padding: 4px 10px;
+}
+
+.terminal-home .terminal-exposure__add-error {
+  color: var(--terminal-red);
+  font-size: 10px;
+  grid-column: 1 / -1;
+  letter-spacing: 0.3px;
+}
+
 .terminal-home .terminal-newsflow__item {
   padding: var(--space-2) var(--space-4);
 }

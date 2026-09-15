@@ -8,6 +8,15 @@ Two-tier resolution:
      kept aligned with ``backend/showme/server_routes/*.py``. Audit gate:
      ``backend/tests/test_dapi.py::test_curated_manifest_matches_routes``
      ensures the curated list does not drift from the real router table.
+
+Filter resolution (2026-09 fix): the routed ``/api/fn/{code}`` layer merges
+generic agent defaults into EVERY call — for a CRYPTO desk that bundle carries
+``query="bitcoin cryptocurrency"``, which is a news topic, not a route filter.
+DAPI used to apply it as its own filter and silently returned zero rows (the
+pane showed "ROUTES 0/46" and blamed an attaching engine). The manifest is
+never silently emptied: explicit filters use ``path_filter`` (or ``filter``),
+and a routed legacy ``query`` that matches no route is ignored and reported
+via ``warnings`` + ``summary.ignored_filter``.
 """
 
 from __future__ import annotations
@@ -100,6 +109,78 @@ def _resolve_routes(provider: Any) -> list[dict[str, Any]] | None:
     return None
 
 
+#: Explicit filter keys. The routed ``/api/fn`` merge never injects these,
+#: so they are safe for callers that want to narrow the route table.
+EXPLICIT_FILTER_KEYS = ("path_filter", "filter")
+
+#: Sentinel the routed ``/api/fn`` layer adds to every merged call
+#: (``_agent_runtime._route_function_params``). Direct engine calls do not
+#: carry it, so DAPI can tell an explicit invocation from a routed one.
+ROUTED_CALL_SENTINEL = "__explicit_symbol"
+
+
+def _row_matches(row: dict[str, Any], query: str) -> bool:
+    """Substring match on path or purpose (the documented filter contract)."""
+    return (
+        query in str(row.get("path", "")).lower()
+        or query in str(row.get("purpose", "")).lower()
+    )
+
+
+def _is_mutating(row: dict[str, Any]) -> bool:
+    """True when a route can change local state (``yes`` or ``depends``)."""
+    return str(row.get("mutates_state", "")).strip().lower().startswith(("yes", "depends"))
+
+
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _explicit_filter(params: dict[str, Any]) -> str:
+    """Return the caller-supplied route filter (collision-free keys first)."""
+    for key in EXPLICIT_FILTER_KEYS:
+        raw = params.get(key)
+        if raw is not None and str(raw).strip():
+            return str(raw).strip().lower()
+    return ""
+
+
+def _resolve_query(
+    params: dict[str, Any],
+    endpoints: list[dict[str, Any]],
+) -> tuple[str, str | None, list[str]]:
+    """Resolve the effective filter without ever silently emptying the table.
+
+    Returns ``(query, ignored_query, warnings)``. ``path_filter``/``filter``
+    are always honored. The legacy ``query`` alias is honored unless the call
+    was routed AND the value matches no mounted route — that is the generic
+    agent default the routing layer injects (a news query), which must not be
+    mistaken for user intent.
+    """
+    query = _explicit_filter(params)
+    if query:
+        return query, None, []
+    legacy = str(params.get("query") or "").strip().lower()
+    if not legacy:
+        return "", None, []
+    if ROUTED_CALL_SENTINEL in params and not any(
+        _row_matches(row, legacy) for row in endpoints
+    ):
+        warning = (
+            f"Ignored query filter '{legacy}': the routed /api/fn layer merges "
+            "the desk's generic agent defaults (news query) into every call and "
+            "this value matches no mounted route. The route manifest is never "
+            "silently emptied — pass path_filter=... (or filter=...) for an "
+            "explicit route filter."
+        )
+        return "", legacy, [warning]
+    return legacy, None, []
+
+
 @FunctionRegistry.register
 class DAPIFunction(BaseFunction):
     code = "DAPI"
@@ -107,14 +188,13 @@ class DAPIFunction(BaseFunction):
     category = "api"
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
-        query = str(params.get("query") or params.get("filter") or "").strip().lower()
         live = _resolve_routes(getattr(self.deps, "dapi_route_provider", None))
         endpoints = live if live is not None else [dict(row) for row in DAPI_CURATED_ROUTES]
         source_mode = "live_router_introspection" if live is not None else "curated_manifest"
-        rows = [
-            row for row in endpoints
-            if not query or query in str(row.get("path", "")).lower() or query in str(row.get("purpose", "")).lower()
-        ]
+        query, ignored_filter, warnings = _resolve_query(params, endpoints)
+        rows = [row for row in endpoints if not query or _row_matches(row, query)]
+        if _truthy(params.get("mutates_only")):
+            rows = [row for row in rows if _is_mutating(row)]
         return FunctionResult(
             code=self.code,
             instrument=None,
@@ -127,12 +207,12 @@ class DAPIFunction(BaseFunction):
                     # F9 [L]: the pane's "mutating" filter also counts
                     # "depends ..." rows, so the summary must agree with the
                     # filter it labels (yes + depends), not just "yes".
-                    "state_changing": sum(
-                        1 for row in rows
-                        if str(row.get("mutates_state", "")).strip().lower()
-                        .startswith(("yes", "depends"))
-                    ),
+                    "state_changing": sum(1 for row in rows if _is_mutating(row)),
                     "filter": query or "all",
+                    # Routed-call honesty: when the generic agent-default
+                    # query was ignored, surface exactly which value was
+                    # dropped (never a silent zero-row response).
+                    "ignored_filter": ignored_filter,
                     "source_mode": source_mode,
                 },
                 "methodology": (
@@ -142,6 +222,11 @@ class DAPIFunction(BaseFunction):
                     "shape the engine serves. Otherwise it falls back to the curated manifest in "
                     "showme/engine/functions/api/dapi.py::DAPI_CURATED_ROUTES — kept aligned with "
                     "backend/showme/server_routes/*.py and audited by tests/test_dapi.py. "
+                    "Filtering: pass path_filter=... (or filter=...) to narrow by substring on "
+                    "path/purpose; legacy query=... is honored for direct calls and for routed "
+                    "calls only when it matches a route — the /api/fn routing layer injects a "
+                    "generic news query into every call, and an ignored injected value is reported "
+                    "in warnings + summary.ignored_filter instead of silently emptying the table. "
                     "Auth: X-ShowMe-Token (or Authorization: Bearer ...) gates /api/* when "
                     "SHOWME_AUTH_TOKEN is set; /api/health and the sidecar info endpoints stay open."
                 ),
@@ -153,7 +238,12 @@ class DAPIFunction(BaseFunction):
                     "response_shape": "High-level response contract.",
                     "mutates_state": "Whether the endpoint can change local portfolio/broker state.",
                     "source_mode": "curated_manifest vs live_router_introspection.",
+                    "summary.ignored_filter": (
+                        "Routed agent-default query dropped because it matched no route "
+                        "(null when no filter was ignored)."
+                    ),
                 },
             },
+            warnings=warnings,
             sources=["showme_fastapi_routes_live" if live is not None else "showme_fastapi_routes_curated"],
         )

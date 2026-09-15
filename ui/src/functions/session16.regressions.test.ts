@@ -29,20 +29,22 @@ describe("Session 16 — EQS pane forces the live screener path", () => {
   });
 });
 
-describe("Session 16 — HP COMPARE overlay tracks the active chart palette", () => {
+describe("Session 16 — HP chart colors are token-driven (engine owns charts)", () => {
   const hpSource = readFileSync(
     resolve(ROOT, "ui/src/functions/HP.tsx"),
     "utf8",
   );
 
-  it("no longer hard-codes the dark-mode COMPARE_COLORS hex literal", () => {
-    // Old: `const COMPARE_COLORS = ["#7C7AFF", "#F0B445", "#2FD480", "#FF5874"];`
-    // pinned compare-chip colors and chart strokes to dark mode. The
-    // S16 fix derives them from useChartPalette() so Papyrus / Matrix /
-    // custom-slot presets actually recolor the overlay.
+  it("keeps no dark-mode COMPARE_COLORS hex literal and mounts the engine", () => {
+    // History: S16 removed the hard-coded `COMPARE_COLORS = ["#7C7AFF", …]`
+    // inline overlay so palettes could recolor it. The chart-engine
+    // migration then removed the bespoke overlay entirely — the engine owns
+    // charts and resolves every color from live CSS variables — so the old
+    // `compareColorsFromPalette`/`useChartPalette` pins no longer apply.
+    // What must stay true: no dark-mode hex literal survives, and HP mounts
+    // the shared engine.
     expect(hpSource).not.toMatch(/COMPARE_COLORS\s*=\s*\[/);
-    expect(hpSource).toContain("compareColorsFromPalette");
-    expect(hpSource).toContain("useChartPalette");
+    expect(hpSource).toContain("@/chart/Chart");
   });
 });
 

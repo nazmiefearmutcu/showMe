@@ -171,6 +171,32 @@ AGENT_LOCAL_SIGNAL_PROFILES = {
 }
 
 
+def _csrc_default_universe() -> list[str]:
+    """Full curated commodity complex for the CSRC route default.
+
+    Imported from the screen handler so the routed default and the pane's
+    reference universe cannot drift apart; the literal fallback only fires
+    if the engine package is unavailable at import time. (The old routed
+    default was a 6-symbol list — every CSRC call without an explicit
+    ``universe`` was silently restricted to it.)
+    """
+    try:
+        from showme.engine.functions.screen._funcs import _commodity_reference_symbols
+
+        symbols = _commodity_reference_symbols()
+        if symbols:
+            return symbols
+    except Exception:  # noqa: BLE001
+        pass
+    return [
+        "CL=F", "BZ=F", "NG=F", "RB=F", "HO=F",
+        "GC=F", "SI=F", "HG=F", "PL=F", "PA=F", "ALI=F", "LTH=F", "UX=F",
+        "ZC=F", "ZW=F", "KE=F", "ZS=F", "ZM=F", "ZL=F", "ZO=F",
+        "KC=F", "SB=F", "CC=F", "CT=F", "OJ=F",
+        "LE=F", "HE=F", "GF=F", "DY=F",
+    ]
+
+
 def _parse_agent_candidates(raw: Any) -> list[dict[str, str]]:
     if raw is None or raw == "":
         raw = list(AGENT_DEFAULT_CANDIDATES)
@@ -276,6 +302,16 @@ def _agent_function_params(entry: FunctionIndexEntry, candidate: dict[str, str])
         "fred_timeout": 3,
         "damodaran_timeout": 3,
     }
+    # News pipelines fan out across a dozen RSS feeds and routinely need 6-9s
+    # of wall clock. The generic 3s routing budget truncated every routed news
+    # call into an empty "rss: timed out after 3.0s" delivery (Welcome
+    # newsflow, BRIEF, NI, ...). Give the news category its own budget that
+    # still sits safely under FUNCTION_TIMEOUT_SECONDS (14s); an explicit
+    # caller timeout/news_timeout still wins because ``merged`` updates the
+    # defaults after this point.
+    if category == "news":
+        params["timeout"] = 10
+        params["news_timeout"] = 10
     if code == "BQL":
         params["query"] = (
             f"get(close, volume) for(['{profile['bql_symbol']}']) "
@@ -302,7 +338,7 @@ def _agent_function_params(entry: FunctionIndexEntry, candidate: dict[str, str])
     elif code == "ICX":
         params["index"] = "SPX"
     elif code == "CSRC":
-        params.update({"query": 'sector = "Energy"', "universe": ["CL=F", "BZ=F", "NG=F", "GC=F", "SI=F", "HG=F"]})
+        params.update({"query": 'sector = "Energy"', "universe": _csrc_default_universe()})
     elif code == "FSRC":
         params.update({"query": "expenseRatio < 0.01 AND aum_usd > 10000000000", "universe": ["SPY", "VOO", "IVV", "QQQ", "VTI", "IWM", "EEM", "GLD", "TLT", "HYG"]})
     elif code == "SRCH":
@@ -322,7 +358,27 @@ def _agent_function_params(entry: FunctionIndexEntry, candidate: dict[str, str])
     elif code in {"CDE", "ALRT", "LOTS"}:
         params["action"] = "list"
     elif code == "POLY":
-        params["query"] = profile["news_query"]
+        # POLY's `query` is a strict AND-token topic filter over Polymarket
+        # questions, not a news query. The routed crypto-news default
+        # ("bitcoin cryptocurrency") matched zero markets, so the pane showed
+        # "0 markets / cached_snapshot" on every browse. Drop the generic
+        # default so POLY lists top open markets by volume; a caller-supplied
+        # `query` is re-merged after this point and still narrows the search.
+        # The generic fetch defaults are dropped for the same reason: the
+        # 3s timeout undercut the Gamma fetch and limit=6 starved the pane
+        # (its own default is 25 markets).
+        params.pop("query", None)
+        params.pop("limit", None)
+        params.pop("timeout", None)
+    elif code == "WHAL":
+        # WHAL chooses its own intraday Yahoo interval (1m/5m) and its public
+        # HTTP budget (SEC tickers ~800 KB + Yahoo + filings). The generic
+        # agent defaults ("interval": "1d" / "timeout": 3) collapsed the
+        # equity flow to a single daily aggregate and undercut the SEC/Yahoo
+        # fetches. Let WHAL's own defaults apply; explicit caller values are
+        # re-merged afterwards.
+        params.pop("interval", None)
+        params.pop("timeout", None)
     elif code in {"MEET", "PEOP"}:
         params["query"] = "Satoshi Nakamoto" if asset_class == "CRYPTO" else symbol
     elif code == "BTFW":
@@ -707,6 +763,12 @@ def _route_function_params(code: str, params: dict[str, Any]) -> dict[str, Any]:
         if ranged_days is not None:
             defaults["days"] = ranged_days
     if code.upper() == "FRH" and "symbols" not in merged:
+        defaults.pop("symbols", None)
+    if code.upper() == "MOSS" and not (merged.get("universe") or merged.get("symbols")):
+        # The generic agent profile injects a 3-5 name peer list into
+        # ``symbols``; without an explicit caller-supplied universe/symbols
+        # MOSS must scan its FULL default cross-asset universe instead of
+        # being silently restricted to the route's peer group.
         defaults.pop("symbols", None)
     if code.upper() == "ICX" and defaults.get("query") and not merged.get("index"):
         defaults["index"] = str(defaults["query"]).strip().upper()

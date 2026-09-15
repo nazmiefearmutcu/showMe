@@ -75,13 +75,13 @@ afterEach(() => {
   }
 });
 
-describe("WEI terminal-grade", () => {
-  function gridSymbols(container: HTMLElement): (string | null | undefined)[] {
-    return Array.from(container.querySelectorAll("tbody tr")).map(
-      (tr) => within(tr as HTMLElement).queryByRole("button")?.textContent,
-    );
-  }
+function gridSymbols(container: HTMLElement): (string | null | undefined)[] {
+  return Array.from(container.querySelectorAll("tbody tr")).map(
+    (tr) => within(tr as HTMLElement).queryByRole("button")?.textContent,
+  );
+}
 
+describe("WEI terminal-grade", () => {
   it("region filter restricts the rendered rows", () => {
     mockOk([
       makeRow({ symbol: "^GSPC", name: "S&P 500", region: "americas" }),
@@ -225,8 +225,11 @@ describe("WEI visibility poll + honesty (live adoption)", () => {
       '[aria-label="World index performance strip"]',
     ) as HTMLElement;
     expect(strip).not.toBeNull();
-    expect(strip.textContent).toContain("^UP");
-    expect(strip.textContent).not.toContain("^NA");
+    // Tiles display the index symbol WITHOUT the Yahoo caret ("^") because it
+    // reads like an up-arrow next to falling values (user report). The raw
+    // symbol still rides the aria-label + navigation.
+    expect(strip.textContent).toContain("UP");
+    expect(strip.textContent).not.toContain("NA");
     expect(strip.textContent).not.toContain("0.00%");
   });
 
@@ -239,5 +242,50 @@ describe("WEI visibility poll + honesty (live adoption)", () => {
     expect(row).toBeTruthy();
     expect(row?.querySelector(".ds-pill--tone-positive")).not.toBeNull();
     expect(row?.querySelector(".ds-pill--tone-warn")).toBeNull();
+  });
+
+  it("renders unresolved indices as explicit no-quote rows, never fake data", () => {
+    // The backend now returns the FULL universe every cycle; symbols with
+    // no quote carry last=null + market_state="unavailable". The pane must
+    // show them as missing (—, warn pill, no sparkline) rather than
+    // dropping the row or inventing numbers.
+    mockOk([
+      makeRow({ symbol: "^UP", name: "Up index", change_pct: 1.25 }),
+      makeRow({
+        symbol: "^NQ",
+        name: "No quote index",
+        last: undefined,
+        price: undefined,
+        change: undefined,
+        change_pct: undefined,
+        high: undefined,
+        low: undefined,
+        market_state: "unavailable",
+      }),
+    ]);
+    const { container } = render(<WEIPane code="WEI" />);
+    const row = Array.from(container.querySelectorAll("tbody tr")).find((tr) =>
+      tr.textContent?.includes("^NQ"),
+    );
+    expect(row).toBeTruthy();
+    expect(row?.textContent).toContain("—");
+    expect(row?.querySelector(".ds-pill--tone-warn")).not.toBeNull();
+    // No procedural sparkline may masquerade as history for a no-quote row.
+    expect(row?.querySelector('[data-synthetic="true"]')).toBeNull();
+    expect(row?.querySelector("svg")).toBeNull();
+  });
+
+  it("paints the whole global board from one payload (Asia + MEA present)", () => {
+    mockOk([
+      makeRow({ symbol: "^GSPC", name: "S&P 500", region: "americas" }),
+      makeRow({ symbol: "^N225", name: "Nikkei 225", region: "asia", change_pct: -1.2 }),
+      makeRow({ symbol: "XU100.IS", name: "BIST 100", region: "mea", change_pct: 0.4 }),
+    ]);
+    const { container } = render(<WEIPane code="WEI" />);
+    const symbols = gridSymbols(container);
+    expect(symbols).toEqual(expect.arrayContaining(["^GSPC", "^N225", "XU100.IS"]));
+    // Region tabs still gate the board.
+    fireEvent.click(screen.getByRole("tab", { name: "Asia" }));
+    expect(gridSymbols(container)).toEqual(["^N225"]);
   });
 });

@@ -36,6 +36,7 @@ import {
   RefreshButton,
 } from "./function-controls";
 import { usePersistentOption } from "./function-control-state";
+import { Chart } from "@/chart/Chart";
 import type { FunctionPaneProps } from "./registry-types";
 
 interface WEIRow {
@@ -102,6 +103,8 @@ export function WEIPane({ code }: FunctionPaneProps) {
     key: "change_pct",
     dir: "descending",
   });
+  /** Index clicked for deep inspection: opens the chart-engine modal. */
+  const [chartSymbol, setChartSymbol] = useState<string | null>(null);
 
   const baseRows = useMemo(() => {
     const all = normalizeRows(data?.data);
@@ -227,6 +230,11 @@ export function WEIPane({ code }: FunctionPaneProps) {
         header: "5d",
         width: 78,
         render: (r) => {
+          // No quote this cycle ⇒ no trend line at all. A procedural spark
+          // on an "unavailable" row would imply price history we do not have.
+          if ((r.market_state ?? "").toLowerCase() === "unavailable") {
+            return formatMissing;
+          }
           // P2 honesty: a real intraday series (r.history) renders at full
           // opacity; otherwise the line is procedural — de-emphasize it and
           // mark it data-synthetic so it can't masquerade as real history.
@@ -344,10 +352,7 @@ export function WEIPane({ code }: FunctionPaneProps) {
               {isModel ? <ModelDataBadge /> : null}
               {notice ? <StatusNotice notice={notice} /> : null}
               <KPIRibbon stats={stats} stamp={utcStamp} />
-              <IndexPerformanceStrip rows={rows} onPick={(sym) => {
-                setFocusedTarget("DES", sym);
-                navigate(`/symbol/${sym}/DES`);
-              }} />
+              <IndexPerformanceStrip rows={rows} onPick={(sym) => setChartSymbol(sym)} />
               <DataGrid
                 columns={cols}
                 rows={rows}
@@ -356,6 +361,10 @@ export function WEIPane({ code }: FunctionPaneProps) {
                 sortBy={sortBy}
                 sortDir={sortDir}
                 onSort={onSort}
+                onRowClick={(r) => {
+                  const sym = r.symbol ?? r.ticker;
+                  if (sym) setChartSymbol(sym);
+                }}
                 onRowDoubleClick={(r) => {
                   const sym = r.symbol ?? r.ticker;
                   if (!sym) return;
@@ -366,6 +375,46 @@ export function WEIPane({ code }: FunctionPaneProps) {
             </div>
           )}
         </PaneBody>
+        {chartSymbol && (
+          <div
+            className="wei-chart-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label={`${chartSymbol} chart`}
+            data-testid="wei-chart-modal"
+          >
+            <div className="wei-chart-modal__panel">
+              <div className="wei-chart-modal__head">
+                <button
+                  type="button"
+                  className="wei-chart-modal__symbol"
+                  data-testid="wei-chart-modal-symbol"
+                  title={`Open ${chartSymbol} details`}
+                  onClick={() => {
+                    setFocusedTarget("DES", chartSymbol);
+                    navigate(`/symbol/${chartSymbol}/DES`);
+                  }}
+                >
+                  {displaySymbol(chartSymbol)}
+                </button>
+                <span className="wei-chart-modal__name">
+                  {rows.find((r) => (r.symbol ?? r.ticker) === chartSymbol)?.name ?? ""}
+                </span>
+                <button
+                  type="button"
+                  className="wei-chart-modal__close"
+                  aria-label="Close chart"
+                  onClick={() => setChartSymbol(null)}
+                >
+                  ×
+                </button>
+              </div>
+              <div className="wei-chart-modal__body">
+                <Chart symbol={chartSymbol} fill initialInterval="15m" />
+              </div>
+            </div>
+          </div>
+        )}
         <PaneFooter>
           <StatusSection label="provider" value={data?.sources?.join(", ") || "showMe engine"} />
           <StatusDivider />
@@ -770,7 +819,9 @@ function IndexPerformanceStrip({
               ["--wei-tone" as string]: tone,
             }}
           >
-            <strong className="wei-index-tile__sym">{point.symbol}</strong>
+            <strong className="wei-index-tile__sym">
+              {displaySymbol(point.symbol)}
+            </strong>
             <span className="u-text-secondary u-text-10">{truncate(point.name, 16)}</span>
             <b className="wei-index-tile__chg terminal-grid-numeric">
               {sign}
@@ -796,6 +847,16 @@ function fmtIndex(v: number | undefined | null): string {
 
 function truncate(s: string, n: number): string {
   return s.length > n ? `${s.slice(0, n - 1)}…` : s;
+}
+
+/**
+ * Yahoo index tickers carry a leading caret ("^N225") that reads like an
+ * up-arrow glyph in the tiles — users reported "falling markets show an up
+ * sign". Strip it for DISPLAY only; navigation and quote lookups keep the
+ * raw symbol.
+ */
+function displaySymbol(sym: string): string {
+  return sym.startsWith("^") ? sym.slice(1) : sym;
 }
 
 const tabBarStyle: CSSProperties = {

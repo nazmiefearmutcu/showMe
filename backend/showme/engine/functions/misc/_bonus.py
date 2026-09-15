@@ -127,10 +127,9 @@ class MOSSFunction(BaseFunction):
     description = "Realised volatility leaderboard across watchlist or universe."
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
-        symbols = _parse_symbol_list(params.get("universe") or params.get("symbols") or [
-            "AAPL", "TSLA", "NVDA", "META", "AMZN", "MSFT", "GOOGL",
-            "JPM", "V", "WMT", "PG", "BTCUSDT", "ETHUSDT",
-        ])
+        symbols = _parse_symbol_list(
+            params.get("universe") or params.get("symbols") or _moss_default_universe()
+        )
         if instrument and instrument.symbol not in symbols:
             symbols.insert(0, instrument.symbol)
         symbols = list(dict.fromkeys(str(s).upper() for s in symbols if str(s).strip()))
@@ -156,60 +155,133 @@ class MOSSFunction(BaseFunction):
                 sources=["no_live_source"],
                 metadata={"universe_size": len(symbols), "days": days, "live": False, "fallback": True},
             )
-        timeout = float(params.get("yfinance_timeout", 8))
+        # A realised-vol scan needs a few seconds per historical series on the
+        # shared longest-history path; the generic route default (3s) would
+        # cancel most of the cross-asset universe, so floor it at 6s.
+        try:
+            timeout = max(6.0, min(float(params.get("yfinance_timeout", 8) or 8), 10.0))
+        except (TypeError, ValueError):
+            timeout = 8.0
+        # Bounded fan-out (WEI pattern): the default universe is now
+        # cross-asset (~40+ symbols), so the scan runs under a semaphore with
+        # a screen-level deadline and the provider rate-limit bucket bypassed
+        # (bounded concurrency replaces it). Symbols still pending at the
+        # deadline are cancelled AND emitted as explicit vol=null rows below.
+        _screen_timeout_raw = params.get("screen_timeout", 11.0)
+        try:
+            screen_timeout = max(1.0, min(float(_screen_timeout_raw or 11.0), 12.0))
+        except (TypeError, ValueError):
+            screen_timeout = 11.0
+        try:
+            concurrency = max(1, min(int(float(params.get("quote_concurrency", 12) or 12)), 12))
+        except (TypeError, ValueError):
+            concurrency = 12
+        semaphore = asyncio.Semaphore(concurrency)
 
         async def _vol(s):
-            try:
-                inst = await self.deps.symbol_registry.resolve(s) if self.deps.symbol_registry else None
-                if not inst:
-                    inst = Instrument(symbol=s, asset_class=AssetClass.EQUITY)
-                df = await asyncio.wait_for(
-                    self.deps.yfinance.fetch(DataRequest(
-                        kind=DataKind.OHLCV,
-                        instrument=inst,
-                        start=datetime.now(timezone.utc) - timedelta(days=days),
-                        interval="1d",
-                    )),
-                    timeout=timeout,
-                )
-                if df.empty:
-                    return {"symbol": s, "error": "empty price history"}
-                rets = df["close"].pct_change().dropna()
-                if rets.empty:
-                    return {"symbol": s, "error": "not enough returns"}
-                vol = float(rets.std() * (252 ** 0.5))
-                return {
-                    "row": {
-                        "symbol": s,
-                        "asset_class": inst.asset_class.value if inst else "EQUITY",
-                        "vol_annualized": vol,
-                        "vol": vol,
-                        "vol_pct": vol * 100,
-                        "samples": int(len(rets)),
-                        "last_close": float(df["close"].iloc[-1]),
-                        "start": _date_label(df.index[0]),
-                        "end": _date_label(df.index[-1]),
-                    },
-                    "history": _moss_history(df, s),
-                }
-            except Exception as exc:
-                return {"symbol": s, "error": str(exc)}
+            async with semaphore:
+                try:
+                    inst = await self.deps.symbol_registry.resolve(s) if self.deps.symbol_registry else None
+                    if not inst:
+                        # Asset-class hint (not a blanket EQUITY) so the
+                        # cross-asset default universe maps correctly on the
+                        # provider (BTCUSDT -> BTC-USD, EURUSD=X stays FX).
+                        inst = Instrument(
+                            symbol=s,
+                            asset_class=AssetClass(_moss_asset_class_hint(s)),
+                        )
+                    df = await asyncio.wait_for(
+                        self.deps.yfinance.fetch(DataRequest(
+                            kind=DataKind.OHLCV,
+                            instrument=inst,
+                            start=datetime.now(timezone.utc) - timedelta(days=days),
+                            interval="1d",
+                            extra={
+                                "bypass_rate_limit": True,
+                                # A realised-vol screen only needs the requested
+                                # lookback window; without this the shared
+                                # longest-history race would pull decades of
+                                # daily bars per symbol and blow the scan budget.
+                                "deep_history": False,
+                            },
+                        )),
+                        timeout=timeout,
+                    )
+                    if df.empty:
+                        return {"symbol": s, "error": "empty price history"}
+                    rets = df["close"].pct_change().dropna()
+                    if rets.empty:
+                        return {"symbol": s, "error": "not enough returns"}
+                    vol = float(rets.std() * (252 ** 0.5))
+                    return {
+                        "row": {
+                            "symbol": s,
+                            "asset_class": inst.asset_class.value if inst else "EQUITY",
+                            "vol_annualized": vol,
+                            "vol": vol,
+                            "vol_pct": vol * 100,
+                            "samples": int(len(rets)),
+                            "last_close": float(df["close"].iloc[-1]),
+                            "start": _date_label(df.index[0]),
+                            "end": _date_label(df.index[-1]),
+                        },
+                        "history": _moss_history(df, s),
+                    }
+                except Exception as exc:  # noqa: BLE001
+                    return {"symbol": s, "error": str(exc)}
 
-        results = await asyncio.gather(*(_vol(s) for s in symbols))
+        tasks = [asyncio.create_task(_vol(s)) for s in symbols]
+        done, pending = await asyncio.wait(tasks, timeout=screen_timeout)
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        results: list[Any] = []
+        for task in done:
+            try:
+                results.append(task.result())
+            except Exception as exc:  # noqa: BLE001
+                results.append({"error": str(exc)})
         provider_errors = [
             f"{r.get('symbol')}: {r.get('error')}"
             for r in results
             if isinstance(r, dict) and r.get("error")
         ]
+        if pending:
+            provider_errors.append(
+                f"{len(pending)} symbol(s) exceeded the {screen_timeout:.0f}s scan budget"
+            )
         good = [r for r in results if isinstance(r, dict) and isinstance(r.get("row"), dict)]
+        resolved_symbols = {str(r["row"].get("symbol") or "").upper() for r in good}
         rows = [r["row"] for r in good]
-        rows.sort(key=lambda x: x["vol_annualized"], reverse=True)
+        rows.sort(key=lambda x: float(x.get("vol_annualized") or 0.0), reverse=True)
+        # Requirement: pending/unresolved symbols are NEVER silently dropped.
+        # They ride along as explicit vol=null rows (state="unavailable") so
+        # the pane can label them instead of showing a smaller universe than
+        # the one it claims to scan.
+        unavailable_rows: list[dict[str, Any]] = [
+            {
+                "symbol": symbol,
+                "asset_class": _moss_asset_class_hint(symbol),
+                "vol_annualized": None,
+                "vol": None,
+                "vol_pct": None,
+                "samples": 0,
+                "last_close": None,
+                "state": "unavailable",
+            }
+            for symbol in symbols
+            if symbol.upper() not in resolved_symbols
+        ]
         if not rows:
             # R2 M-2: mirror the no-adapter fallback envelope — the
             # zero-rows failure path must carry fallback/live markers and
             # surface the provider errors as warnings, not metadata-only.
             reason = "no symbols returned usable price history"
             envelope = _moss_unavailable(symbols, days, reason)
+            if unavailable_rows:
+                envelope["rows"] = unavailable_rows
+                envelope["unavailable"] = len(unavailable_rows)
             return FunctionResult(
                 code=self.code,
                 instrument=None,
@@ -228,13 +300,17 @@ class MOSSFunction(BaseFunction):
         histories = {r["row"]["symbol"]: r.get("history", []) for r in good}
         top_symbol = rows[0]["symbol"]
         history = histories.get(top_symbol, [])
+        rows = [*rows, *unavailable_rows][:limit]
         return FunctionResult(
             code=self.code,
             instrument=None,
-            data=_moss_payload(rows[:limit], history, symbols, days, live=True),
+            data=_moss_payload(rows, history, symbols, days, live=True),
             sources=["yfinance"],
             metadata={
                 "universe_size": len(symbols),
+                "scanned": len(symbols),
+                "resolved": len(good),
+                "unavailable": len(unavailable_rows),
                 "days": days,
                 "live": True,
                 "top_symbol": top_symbol,
@@ -452,6 +528,63 @@ def _parse_symbol_list(raw: Any) -> list[str]:
     return []
 
 
+# ── MOSS — default cross-asset scan universe ─────────────────────────────
+# Liquid names only: the realised-vol scan fetches daily OHLCV per symbol,
+# so the default stays bounded (~40 symbols) and runs under a semaphore with
+# a screen deadline. Equities are shared with MOST's verified subset; the
+# crypto/FX/commodity legs were live-verified on 2026-09-15.
+_MOSS_EQUITY_COUNT = 24
+_MOSS_CRYPTO_SYMBOLS: tuple[str, ...] = (
+    "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT",
+    "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "LINKUSDT", "LTCUSDT",
+)
+_MOSS_FX_SYMBOLS: tuple[str, ...] = (
+    "EURUSD=X", "GBPUSD=X", "USDJPY=X", "AUDUSD=X",
+    "USDCAD=X", "USDCHF=X", "NZDUSD=X", "EURJPY=X",
+)
+_MOSS_COMMODITY_SYMBOLS: tuple[str, ...] = ("GC=F", "CL=F", "SI=F", "NG=F")
+_MOSS_EQUITY_FALLBACK: tuple[str, ...] = (
+    "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "AVGO", "JPM", "LLY",
+    "V", "UNH", "XOM", "MA", "COST", "HD", "PG", "JNJ", "WMT", "ABBV",
+    "NFLX", "BAC", "KO", "CRM",
+)
+
+
+def _moss_default_universe() -> list[str]:
+    """Default MOSS scan universe: ~24 equities + crypto + FX + commodities.
+
+    The equity leg imports MOST's verified liquid subset so the two screens
+    cannot drift; if that import ever fails the curated fallback keeps the
+    screen working.
+    """
+    equities: tuple[str, ...] = _MOSS_EQUITY_FALLBACK
+    try:
+        from showme.engine.functions.screen._funcs import _MOST_EQUITY_SYMBOLS
+
+        if _MOST_EQUITY_SYMBOLS:
+            equities = tuple(_MOST_EQUITY_SYMBOLS)[:_MOSS_EQUITY_COUNT]
+    except Exception:  # noqa: BLE001
+        equities = _MOSS_EQUITY_FALLBACK
+    return [
+        *equities,
+        *_MOSS_CRYPTO_SYMBOLS,
+        *_MOSS_FX_SYMBOLS,
+        *_MOSS_COMMODITY_SYMBOLS,
+    ]
+
+
+def _moss_asset_class_hint(symbol: str) -> str:
+    """Uppercase ``AssetClass`` value for a raw screen symbol."""
+    upper = symbol.upper()
+    if upper.endswith("=X"):
+        return AssetClass.FX.value
+    if upper.endswith("=F"):
+        return AssetClass.COMMODITY.value
+    if upper.endswith(("USDT", "USDC")) or (upper.endswith("USD") and len(upper) > 3):
+        return AssetClass.CRYPTO.value
+    return AssetClass.EQUITY.value
+
+
 def _moss_payload(
     rows: list[dict[str, Any]],
     history: list[dict[str, Any]],
@@ -472,8 +605,11 @@ def _moss_payload(
         "live": live,
         "methodology": (
             "Ranks the selected universe by annualized realized volatility: "
-            "std(daily close-to-close returns) * sqrt(252). The chart shows the "
-            "rolling 20-session annualized volatility history for the current top symbol."
+            "std(daily close-to-close returns) * sqrt(252). The default universe is a "
+            "liquid cross-asset sample (equities + crypto + FX + commodities); symbols the "
+            "provider does not answer inside the scan budget are emitted with vol=null "
+            "(state=unavailable) rather than dropped. The chart shows the rolling 20-session "
+            "annualized volatility history for the current top symbol."
         ),
         "field_dictionary": {
             "vol_annualized": "Annualized realized volatility as a decimal.",
@@ -523,7 +659,11 @@ def _moss_template(symbols: list[str], days: int) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for idx, symbol in enumerate(dict.fromkeys(symbols)):
         upper = symbol.upper()
-        if upper.endswith(("USDT", "USD")) and not upper.endswith(("=F", "USD=X")):
+        if upper.endswith("=X"):
+            base_vol = 0.11
+            last_close = 1.08 + idx * 0.01
+            asset_class = "fx"
+        elif upper.endswith(("USDT", "USD")) and not upper.endswith("=F"):
             base_vol = 0.58
             last_close = 78000.0 - idx * 950
             asset_class = "crypto"
@@ -531,7 +671,7 @@ def _moss_template(symbols: list[str], days: int) -> list[dict[str, Any]]:
             base_vol = 0.26
             last_close = 2350.0 + idx * 11
             asset_class = "commodity"
-        elif upper.endswith(("USD", "EUR", "JPY", "GBP", "CHF", "CAD", "AUD")) and len(upper) == 6:
+        elif upper.endswith(("EUR", "JPY", "GBP", "CHF", "CAD", "AUD")) and len(upper) == 6:
             base_vol = 0.11
             last_close = 1.08 + idx * 0.01
             asset_class = "fx"

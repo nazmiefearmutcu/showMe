@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -306,7 +307,9 @@ class DINEFunction(BaseFunction):
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         location = str(params.get("location") or "New York").strip()
         query = str(params.get("query") or "restaurant").strip()
-        limit = max(1, min(int(params.get("limit") or 10), 25))
+        # Nominatim's documented maximum is 40 (provider policy, not a
+        # local choice) — request denser result sets up to that cap.
+        limit = max(1, min(int(params.get("limit") or 25), _NOMINATIM_MAX_LIMIT))
         try:
             rows = await _nominatim_restaurants(query, location, limit)
         except Exception as exc:
@@ -350,17 +353,26 @@ class DINEFunction(BaseFunction):
                     {"label": "Provider", "value": "OSM"},
                 ],
                 "methodology": (
-                    "DINE uses OpenStreetMap Nominatim search results for real place names, addresses, "
-                    "coordinates, OSM ids, and tags. Ratings/prices are not fabricated; those fields stay blank "
-                    "unless a ratings provider is connected."
+                    "DINE searches OpenStreetMap Nominatim bounded to a viewbox around the requested "
+                    "location (the city is geocoded first, then the place query runs with bounded=1 so "
+                    "results are inside the area, not name matches anywhere on the planet). Amenity "
+                    "keywords such as 'restaurant' use Nominatim's tagged-object search; other keywords "
+                    "fall back to text matching. Results are cached ~5 minutes in-process, requests are "
+                    "throttled to the provider's 1 req/sec policy, and ratings/prices are never fabricated "
+                    "— those fields stay blank unless a ratings provider is connected."
                 ),
                 "field_dictionary": {
                     "name": "Restaurant/place name from OSM.",
                     "display_name": "Full OSM display address.",
+                    "address": "Compact street address composed from the OSM address tags (street, district, city, postcode).",
                     "lat": "Latitude.",
                     "lon": "Longitude.",
+                    "category": "OSM category (e.g. amenity).",
+                    "type": "OSM place type (e.g. restaurant, cafe, fast_food).",
+                    "cuisine": "OSM cuisine tag when the mapper supplied one.",
+                    "opening_hours": "OSM opening_hours tag when the mapper supplied one.",
                     "osm_type": "OSM object type.",
-                    "distance_km": "Approximate distance from the first matched result.",
+                    "distance_km": "Approximate distance from the bounded search area's centre (city centre).",
                 },
             },
             sources=["openstreetmap_nominatim"],
@@ -489,8 +501,24 @@ _NOMINATIM_USER_AGENT = (
     "contact: showme-dine@users.noreply.github.com)"
 )
 _NOMINATIM_MIN_INTERVAL_SEC = 1.0  # OSM Nominatim policy: ≤1 req/sec absolute.
+# Nominatim's documented maximum for the ``limit`` parameter ("cannot be
+# more than 40"). We never ask for more, whatever the caller sends.
+_NOMINATIM_MAX_LIMIT = 40
+# Results are cached in-process for ~5 minutes so repeated pane polls and
+# manual refreshes do not hammer the public instance (usage-policy ask).
+_NOMINATIM_CACHE_TTL_SEC = 300.0
+_NOMINATIM_CACHE_MAX_ENTRIES = 128
 _nominatim_last_call_ts: float = 0.0
 _nominatim_lock: asyncio.Lock | None = None
+_nominatim_cache: dict[str, tuple[float, Any]] = {}
+
+# Amenity tags where Nominatim's bounded viewbox search accepts the
+# ``[keyword]`` special-phrase form and returns every tagged object in
+# the area (instead of only places whose NAME contains the word).
+_NOMINATIM_AMENITY_KEYWORDS = frozenset({
+    "restaurant", "cafe", "fast_food", "bar", "pub", "biergarten",
+    "food_court", "ice_cream",
+})
 
 
 async def _nominatim_throttle() -> None:
@@ -510,7 +538,30 @@ async def _nominatim_throttle() -> None:
         _nominatim_last_call_ts = asyncio.get_running_loop().time()
 
 
-async def _nominatim_restaurants(query: str, location: str, limit: int) -> list[dict[str, Any]]:
+def _nominatim_cache_get(key: str) -> Any | None:
+    entry = _nominatim_cache.get(key)
+    if entry is None:
+        return None
+    expires_at, value = entry
+    if expires_at < time.monotonic():
+        _nominatim_cache.pop(key, None)
+        return None
+    return value
+
+
+def _nominatim_cache_set(key: str, value: Any) -> None:
+    if len(_nominatim_cache) >= _NOMINATIM_CACHE_MAX_ENTRIES:
+        oldest = min(_nominatim_cache, key=lambda k: _nominatim_cache[k][0])
+        _nominatim_cache.pop(oldest, None)
+    _nominatim_cache[key] = (time.monotonic() + _NOMINATIM_CACHE_TTL_SEC, value)
+
+
+async def _nominatim_get(params: dict[str, Any]) -> list[dict[str, Any]]:
+    """One throttled Nominatim search request (policy-compliant headers).
+
+    Raises on HTTP 429 so DINE flips to ``provider_unavailable`` instead
+    of pretending success.
+    """
     import httpx
 
     await _nominatim_throttle()
@@ -521,29 +572,131 @@ async def _nominatim_restaurants(query: str, location: str, limit: int) -> list[
         # which header the operator inspects.
         "From": "showme-dine@users.noreply.github.com",
     }
-    params = {
-        "q": f"{query} {location}",
-        "format": "jsonv2",
-        "addressdetails": 1,
-        "extratags": 1,
-        "limit": limit,
-    }
     async with httpx.AsyncClient(timeout=8, headers=headers) as client:
         resp = await client.get("https://nominatim.openstreetmap.org/search", params=params)
         if resp.status_code == 429:
-            # Surface OSM's rate-limit explicitly so DINE flips to
-            # ``provider_unavailable`` instead of pretending success.
             raise RuntimeError(
                 f"Nominatim rate-limited (HTTP 429); Retry-After: {resp.headers.get('Retry-After')}"
             )
         resp.raise_for_status()
         payload = resp.json() or []
-    if not payload:
-        return []
-    origin_lat = _num(payload[0].get("lat"))
-    origin_lon = _num(payload[0].get("lon"))
+    return payload if isinstance(payload, list) else []
+
+
+async def _nominatim_viewbox(location: str) -> dict[str, Any]:
+    """Geocode ``location`` once → ``{"viewbox": ..., "center": (lat, lon)}``.
+
+    Empty dict when Nominatim has no usable bounding box for the string,
+    in which case the caller falls back to the legacy free-text search.
+    """
+    payload = await _nominatim_get({"q": location, "format": "jsonv2", "limit": 1})
+    if not payload or not isinstance(payload[0], dict):
+        return {}
+    bbox = payload[0].get("boundingbox")
+    if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+        return {}
+    south = _num(bbox[0])
+    north = _num(bbox[1])
+    west = _num(bbox[2])
+    east = _num(bbox[3])
+    if None in (south, north, west, east) or south >= north or west >= east:
+        return {}
+    return {
+        "viewbox": f"{west},{south},{east},{north}",
+        "center": ((south + north) / 2.0, (west + east) / 2.0),
+    }
+
+
+def _nominatim_address(item: dict[str, Any]) -> str | None:
+    """Compact one-line address from the OSM ``address`` tags, or None."""
+    address = item.get("address")
+    if not isinstance(address, dict):
+        return None
+    street = " ".join(
+        str(part) for part in (address.get("house_number"), address.get("road")) if part
+    )
+    district = (
+        address.get("suburb")
+        or address.get("neighbourhood")
+        or address.get("city_district")
+    )
+    city = (
+        address.get("city")
+        or address.get("town")
+        or address.get("village")
+        or address.get("municipality")
+    )
+    postcode = address.get("postcode")
+    compact = ", ".join(str(part) for part in (street, district, city, postcode) if part)
+    return compact or None
+
+
+async def _nominatim_restaurants(query: str, location: str, limit: int) -> list[dict[str, Any]]:
+    limit = max(1, min(int(limit or 25), _NOMINATIM_MAX_LIMIT))
+    cache_key = f"search|{query.casefold()}|{location.casefold()}|{limit}"
+    cached = _nominatim_cache_get(cache_key)
+    if cached is not None:
+        return [dict(row) for row in cached]
+
+    # 1) Geocode the location (cached separately) so the place search can
+    #    be bounded to the area instead of name-matching the whole planet.
+    geo_key = f"geo|{location.casefold()}"
+    geo = _nominatim_cache_get(geo_key)
+    if geo is None:
+        geo = await _nominatim_viewbox(location)
+        _nominatim_cache_set(geo_key, geo)
+
+    keyword = query.strip().casefold().replace(" ", "_")
+    viewbox = geo.get("viewbox") if isinstance(geo, dict) else None
+    params: dict[str, Any] = {
+        "format": "jsonv2",
+        "addressdetails": 1,
+        "extratags": 1,
+        "limit": limit,
+    }
+    if viewbox and keyword in _NOMINATIM_AMENITY_KEYWORDS:
+        # Nominatim special phrase: every object tagged with this amenity
+        # inside the bounded viewbox, not just places named "restaurant".
+        # (Amenity-only search requires a bounded area per provider docs.)
+        params["q"] = f"[{keyword}]"
+    else:
+        params["q"] = query
+    if viewbox:
+        params["viewbox"] = viewbox
+        params["bounded"] = 1
+    payload = await _nominatim_get(params)
+    if not payload and viewbox:
+        # A bounded search can legitimately come back empty (small area /
+        # unmapped keyword); retry the legacy free-text form once so the
+        # pane still answers honestly instead of showing a false zero.
+        payload = await _nominatim_get({
+            "q": f"{query} {location}",
+            "format": "jsonv2",
+            "addressdetails": 1,
+            "extratags": 1,
+            "limit": limit,
+        })
+
+    center = geo.get("center") if isinstance(geo, dict) else None
+    if center:
+        origin_lat, origin_lon = center
+    elif payload:
+        origin_lat = _num(payload[0].get("lat"))
+        origin_lon = _num(payload[0].get("lon"))
+    else:
+        origin_lat, origin_lon = None, None
+
     rows: list[dict[str, Any]] = []
-    for item in payload[:limit]:
+    seen: set[tuple[Any, Any]] = set()
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        identity: tuple[Any, Any] = (item.get("osm_type"), item.get("osm_id"))
+        if identity[1] is None:
+            identity = ("place_id", item.get("place_id"))
+        if identity in seen:
+            continue
+        seen.add(identity)
         lat = _num(item.get("lat"))
         lon = _num(item.get("lon"))
         tags = item.get("extratags") if isinstance(item.get("extratags"), dict) else {}
@@ -551,6 +704,7 @@ async def _nominatim_restaurants(query: str, location: str, limit: int) -> list[
         rows.append({
             "name": name,
             "display_name": item.get("display_name"),
+            "address": _nominatim_address(item),
             "lat": lat,
             "lon": lon,
             "distance_km": _haversine(origin_lat, origin_lon, lat, lon),
@@ -562,12 +716,16 @@ async def _nominatim_restaurants(query: str, location: str, limit: int) -> list[
             "place_id": item.get("place_id"),
             "category": item.get("category"),
             "type": item.get("type"),
+            "cuisine": tags.get("cuisine"),
             "opening_hours": tags.get("opening_hours"),
             "rating": None,
             "price": None,
             "source_mode": "openstreetmap_nominatim",
         })
-    return rows
+        if len(rows) >= limit:
+            break
+    _nominatim_cache_set(cache_key, rows)
+    return [dict(row) for row in rows]
 
 
 def _num(value: Any) -> float | None:

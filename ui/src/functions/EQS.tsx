@@ -236,6 +236,14 @@ export function EQSPane({ code }: FunctionPaneProps) {
   // Derived KPI summaries
   const matchedCount = Number(result?.metadata?.matched ?? rows.length);
   const scannedCount = result?.metadata?.scanned != null ? Number(result.metadata.scanned) : null;
+  // Session-17 coverage honesty: the pane chip may hold e.g. 503 symbols while
+  // the provider only produced rows for a subset (delisted names). Surface the
+  // real universe size next to the scanned count instead of implying full
+  // coverage.
+  const universeSize =
+    result?.metadata?.universe_size != null ? Number(result.metadata.universe_size) : null;
+  const partialCoverage =
+    scannedCount != null && universeSize != null && universeSize > scannedCount;
   const sources = result?.sources ?? [];
 
   const changeKey = useMemo(() => {
@@ -570,8 +578,18 @@ export function EQSPane({ code }: FunctionPaneProps) {
                           MATCHED {matchedCount}
                         </Pill>
                         {scannedCount != null && (
-                          <Pill tone="muted" variant="soft" withDot={false}>
+                          <Pill
+                            tone={partialCoverage ? "warn" : "muted"}
+                            variant="soft"
+                            withDot={false}
+                            aria-label={
+                              partialCoverage
+                                ? `Scanned ${scannedCount} of ${universeSize} universe symbols`
+                                : `Scanned ${scannedCount} symbols`
+                            }
+                          >
                             SCANNED {scannedCount}
+                            {partialCoverage ? ` / ${universeSize}` : ""}
                           </Pill>
                         )}
                         <Pill tone="muted" variant="soft" withDot={false}>

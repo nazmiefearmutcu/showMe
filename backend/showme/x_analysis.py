@@ -32,12 +32,50 @@ from typing import Any
 from collections.abc import Iterable
 
 from showme.x_spontaneous import Post, SpontaneousXScraper, clean_text
+from showme.engine.services.stocktwits_sentiment import (
+    fetch_symbol_chip as _stocktwits_fetch_chip,
+)
 
 LOG = logging.getLogger("showme.x_analysis")
 
 DEFAULT_LIMIT = 120
 MAX_LIMIT = 500
 DEFAULT_LANG = "en"
+
+# ---- X chain circuit breaker -----------------------------------------------
+# On hosts where the scraped chain is dead (search engines blocked from the
+# local network, Cloudflare on nitter/jina, or the model bundle missing) every
+# symbol_chip call would pay ~5 external timeouts and a 12-symbol refresh
+# would hammer dead engines. When the chain fails we cool it down and let the
+# Stocktwits fallback serve the gauge; the breaker self-heals after the
+# cooldown so a fixed network / installed model recovers without a restart.
+X_CHAIN_COOLDOWN_SECONDS = float(
+    os.environ.get("SHOWME_X_CHAIN_COOLDOWN_SECONDS", "120")
+)
+X_MODEL_MISSING_COOLDOWN_SECONDS = float(
+    os.environ.get("SHOWME_X_MODEL_COOLDOWN_SECONDS", "1800")
+)
+
+_x_chain_unavailable_until = 0.0
+
+
+def _x_chain_available() -> bool:
+    return time.monotonic() >= _x_chain_unavailable_until
+
+
+def _note_x_chain_failure(reason: str, *, cooldown: float | None = None) -> None:
+    global _x_chain_unavailable_until
+    seconds = X_CHAIN_COOLDOWN_SECONDS if cooldown is None else cooldown
+    _x_chain_unavailable_until = max(
+        _x_chain_unavailable_until, time.monotonic() + seconds
+    )
+    LOG.info("X sentiment chain cooling down for %.0fs: %s", seconds, reason)
+
+
+def _reset_x_chain_breaker() -> None:
+    """Test hook — re-arm the X chain immediately."""
+    global _x_chain_unavailable_until
+    _x_chain_unavailable_until = 0.0
 
 # Below this many real posts the classifier output is statistical noise —
 # 2 neutral tweets shouldn't be enough to declare "bullish" with any
@@ -513,32 +551,64 @@ class XAnalyzer:
         lang: str | None = DEFAULT_LANG,
     ) -> dict[str, Any]:
         query = self._symbol_query(symbol)
-        analysis = self.analyze_topic(query=query, limit=limit, since=since, lang=lang)
-        # Bug #6: insufficient_data shape lacks summary_tr/distributions/etc.,
-        # so handle it the same way as post_count==0 — chip stays non-ok.
-        if analysis.get("post_count", 0) == 0 or analysis.get("verdict") == "insufficient_data":
-            return {
-                "symbol": symbol,
-                "ok": False,
-                "post_count": analysis.get("post_count", 0),
-                "warning": analysis.get("warning") or "no posts",
-                "verdict": analysis.get("verdict"),
-            }
+        x_warning: str | None = None
+        if _x_chain_available():
+            try:
+                analysis = self.analyze_topic(query=query, limit=limit, since=since, lang=lang)
+            except FileNotFoundError as exc:
+                # Model bundle missing on this host — the classifier can never
+                # score scraped posts, so cool the chain down hard and let the
+                # fallback serve the chip until an operator installs the model.
+                _note_x_chain_failure(
+                    f"model bundle missing: {exc}",
+                    cooldown=X_MODEL_MISSING_COOLDOWN_SECONDS,
+                )
+                analysis = {}
+            except Exception as exc:  # noqa: BLE001
+                _note_x_chain_failure(str(exc) or exc.__class__.__name__)
+                analysis = {}
+            else:
+                # Bug #6: insufficient_data shape lacks summary_tr/etc., so
+                # handle it the same way as post_count==0 — chip stays non-ok
+                # on the X path and the live fallback below takes over.
+                if analysis.get("post_count", 0) > 0 and analysis.get("verdict") != "insufficient_data":
+                    return {
+                        "symbol": symbol,
+                        "ok": True,
+                        "post_count": analysis["post_count"],
+                        "mood": analysis["mood"],
+                        # Language-appropriate summary (analysis["summary"] is
+                        # already picked by lang at x_analysis.py) plus the
+                        # legacy Turkish one; XSenChip prefers `summary`.
+                        "summary": analysis["summary"],
+                        "summary_tr": analysis["summary_tr"],
+                        "bullish_score": analysis["scores"]["bullish_score_engagement_weighted"],
+                        "confidence": analysis["scores"]["confidence"],
+                        "dominant": analysis["dominant"],
+                        "distributions": analysis["distributions"],
+                        "examples": analysis["examples"],
+                    }
+                x_warning = str(analysis.get("warning") or "no posts")
+                # Zero posts (all scraper backends down) or too few for a
+                # verdict — cool the chain so the next refresh of this
+                # 12-symbol fan-out doesn't retry dead engines.
+                _note_x_chain_failure(x_warning)
+        else:
+            x_warning = "x sentiment chain cooling down"
+
+        # Live fallback: author-labelled Stocktwits tags (see the module
+        # docstring). Only labelled posts score; below the minimum the chip
+        # stays a non-ok "no data" shape — never a fabricated number.
+        fallback = _stocktwits_fetch_chip(symbol)
+        if fallback is not None:
+            fallback["warning"] = x_warning
+            return fallback
         return {
             "symbol": symbol,
-            "ok": True,
-            "post_count": analysis["post_count"],
-            "mood": analysis["mood"],
-            # Language-appropriate summary (analysis["summary"] is already
-            # picked by lang at x_analysis.py:468) plus the legacy Turkish
-            # one; XSenChip prefers `summary` so an en run never shows TR.
-            "summary": analysis["summary"],
-            "summary_tr": analysis["summary_tr"],
-            "bullish_score": analysis["scores"]["bullish_score_engagement_weighted"],
-            "confidence": analysis["scores"]["confidence"],
-            "dominant": analysis["dominant"],
-            "distributions": analysis["distributions"],
-            "examples": analysis["examples"],
+            "ok": False,
+            "post_count": 0,
+            "warning": x_warning or "no posts returned by any scraper backend",
+            "error": "no live sentiment source produced a verdict (x chain + stocktwits)",
         }
 
     @staticmethod

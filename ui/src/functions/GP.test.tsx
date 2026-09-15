@@ -1,106 +1,43 @@
 /**
- * S03-R regressions for GP / TECH.
+ * GP / TECH regressions — in-house chart engine migration.
  *
  * What we lock down:
- *   1. ChartView creates the chart ONCE for a given style/palette — refreshing
- *      candles or indicators must not call `chart.remove()` + `createChart()`
- *      (the bug that killed scroll/zoom state and live ticks).
- *   2. Historical refresh updates the existing series via `setData()`.
- *   3. A live tick updates the current bar via `series.update()` without
- *      touching the chart instance.
- *   4. The source no longer ships the `buildMockNews` fabricator and none of
+ *   1. The pane mounts the in-house chart engine (`@/chart/Chart`) with the
+ *      pane symbol and mapped initial timeframe/style, and no longer imports
+ *      or instantiates lightweight-charts.
+ *   2. The redundant chip rows (TIMEFRAME / STYLE / BARS / INDICATORS) and
+ *      the dead Compare/Export controls are gone — the engine owns those
+ *      controls now. The RANGE row (which drives the function payload behind
+ *      the header stats and key-level rail) stays.
+ *   3. The source no longer ships the `buildMockNews` fabricator and none of
  *      the canned fake headlines leak into the file.
- *   5. Compare and Export toolbar controls — Round-3 audit found them visible
- *      but non-functional. They must now be aria-disabled with a `title`.
  */
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it, vi } from "vitest";
-import { act, cleanup, render } from "@testing-library/react";
-import { ChartView } from "./GP";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanup, render, screen } from "@testing-library/react";
+import type { TransportState } from "@/lib/market-data";
+import { GPPane } from "./GP";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const gpSourceRaw = readFileSync(resolve(__dirname, "GP.tsx"), "utf-8");
 
-// ---- lightweight-charts spy --------------------------------------------
-// Each call to `createChart` returns a fresh stub so we can count
-// instantiations and assert that `setData` / `update` happen on the same
-// instance across refreshes.
-interface SeriesStub {
-  setData: ReturnType<typeof vi.fn>;
-  update: ReturnType<typeof vi.fn>;
-  applyOptions: ReturnType<typeof vi.fn>;
-  __label?: string;
-}
-interface ChartStub {
-  addCandlestickSeries: ReturnType<typeof vi.fn<(...args: unknown[]) => SeriesStub>>;
-  addLineSeries: ReturnType<typeof vi.fn<(...args: unknown[]) => SeriesStub>>;
-  addAreaSeries: ReturnType<typeof vi.fn<(...args: unknown[]) => SeriesStub>>;
-  addHistogramSeries: ReturnType<typeof vi.fn<(...args: unknown[]) => SeriesStub>>;
-  removeSeries: ReturnType<typeof vi.fn>;
-  subscribeCrosshairMove: ReturnType<typeof vi.fn>;
-  priceScale: ReturnType<typeof vi.fn>;
-  timeScale: ReturnType<typeof vi.fn>;
-  remove: ReturnType<typeof vi.fn>;
-  applyOptions: ReturnType<typeof vi.fn>;
-  resize: ReturnType<typeof vi.fn>;
-  __series: SeriesStub[];
-  addSeries: ReturnType<typeof vi.fn>;
-}
+/* ── chart-engine probe ─────────────────────────────────────────────── */
 
-const chartInstances: ChartStub[] = [];
+const engineProbe = vi.hoisted(() => ({
+  lastProps: null as Record<string, unknown> | null,
+}));
 
-function makeSeries(): SeriesStub {
-  return {
-    setData: vi.fn(),
-    update: vi.fn(),
-    applyOptions: vi.fn(),
-  };
-}
+vi.mock("@/chart/Chart", () => ({
+  Chart: (props: Record<string, unknown>) => {
+    engineProbe.lastProps = props;
+    return <div data-testid="chart-engine" />;
+  },
+  default: () => <div data-testid="chart-engine" />,
+}));
 
-vi.mock("lightweight-charts", () => {
-  class LineSeries {}
-  class CandlestickSeries {}
-  class HistogramSeries {}
-  class AreaSeries {}
-  const createChart = vi.fn(() => {
-    const series: SeriesStub[] = [];
-    const track = (s: SeriesStub) => {
-      series.push(s);
-      return s;
-    };
-    const instance: ChartStub = {
-      addCandlestickSeries: vi.fn(() => track(makeSeries())),
-      addLineSeries: vi.fn(() => track(makeSeries())),
-      addAreaSeries: vi.fn(() => track(makeSeries())),
-      addHistogramSeries: vi.fn(() => track(makeSeries())),
-      removeSeries: vi.fn(),
-      subscribeCrosshairMove: vi.fn(),
-      priceScale: vi.fn(() => ({ applyOptions: vi.fn() })),
-      timeScale: vi.fn(() => ({
-        fitContent: vi.fn(),
-        setVisibleLogicalRange: vi.fn(),
-      })),
-      remove: vi.fn(),
-      applyOptions: vi.fn(),
-      resize: vi.fn(),
-      __series: series,
-      addSeries: vi.fn((constructor, options) => {
-        if (constructor === CandlestickSeries) return instance.addCandlestickSeries(options);
-        if (constructor === LineSeries) return instance.addLineSeries(options);
-        if (constructor === HistogramSeries) return instance.addHistogramSeries(options);
-        if (constructor === AreaSeries) return instance.addAreaSeries(options);
-        return track(makeSeries());
-      }),
-    };
-    chartInstances.push(instance);
-    return instance;
-  });
-  return { createChart, LineSeries, CandlestickSeries, HistogramSeries, AreaSeries };
-});
-
-// jsdom ships no ResizeObserver — stub it so the mount effect doesn't throw.
+// jsdom ships no ResizeObserver — stub it for ResizableChartFrame.
 class FakeResizeObserver {
   observe() {}
   disconnect() {}
@@ -108,171 +45,106 @@ class FakeResizeObserver {
 }
 (globalThis as { ResizeObserver?: unknown }).ResizeObserver = FakeResizeObserver;
 
-function makeCandle(time: string, close: number) {
+/* ── hook mocks ─────────────────────────────────────────────────────── */
+
+const mockQuoteState = {
+  transportState: "idle" as TransportState,
+  lastTick: null as { price: number; ts: number } | null,
+  lastTickAt: null as number | null,
+  snapshot: null as { price: number } | null,
+  freshnessMs: null as number | null,
+  stale: false,
+  refreshing: false,
+};
+
+vi.mock("@/lib/market-data", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/market-data")>();
   return {
-    ts: time,
-    open: close - 1,
-    high: close + 2,
-    low: close - 2,
-    close,
-    volume: 1_000,
+    ...actual,
+    useLiveQuote: () => mockQuoteState,
+    useLiveQuotes: () => ({ snapshots: {}, ticks: {} }),
+  };
+});
+
+const mockState = vi.hoisted(() => ({ payload: {} as unknown }));
+
+vi.mock("@/lib/useFunction", () => ({
+  useFunction: () => ({
+    state: "ok",
+    data: mockState.payload,
+    error: null,
+    refetch: vi.fn(),
+  }),
+}));
+
+/* ── fixtures ───────────────────────────────────────────────────────── */
+
+function gpPayload() {
+  return {
+    data: {
+      ohlcv: [
+        { time: "2026-05-18", open: 100, high: 102, low: 99, close: 101, volume: 100_000 },
+        { time: "2026-05-19", open: 101, high: 104, low: 100, close: 103, volume: 120_000 },
+        { time: "2026-05-20", open: 103, high: 105, low: 102, close: 104.25, volume: 90_000 },
+      ],
+    },
+    sources: ["yfinance"],
   };
 }
 
-afterEachReset();
+beforeEach(() => {
+  engineProbe.lastProps = null;
+  mockState.payload = gpPayload();
+  if (typeof localStorage !== "undefined") localStorage.clear();
+});
 
-function afterEachReset() {
-  // Vitest globals via @testing-library/react teardown.
-  // We just rely on cleanup() inside each test where needed.
-}
+afterEach(() => {
+  cleanup();
+});
 
-describe("GP / ChartView — chart instance lifecycle", () => {
-  it("creates the chart once and reuses it across candle refreshes", () => {
-    chartInstances.length = 0;
-    const initial = [makeCandle("2026-05-15", 100), makeCandle("2026-05-16", 101)];
-    const updated = [...initial, makeCandle("2026-05-17", 103)];
-    const { rerender } = render(
-      <ChartView
-        chartId="GP"
-        candles={initial}
-        interval="1d"
-        chartStyle="candle"
-        onCrosshair={() => undefined}
-      />,
-    );
-    expect(chartInstances).toHaveLength(1);
-    const chart = chartInstances[0];
-    expect(chart.remove).not.toHaveBeenCalled();
-    expect(chart.addCandlestickSeries).toHaveBeenCalledTimes(1);
+/* ── tests ──────────────────────────────────────────────────────────── */
 
-    act(() => {
-      rerender(
-        <ChartView
-          chartId="GP"
-          candles={updated}
-          interval="1d"
-          chartStyle="candle"
-          onCrosshair={() => undefined}
-        />,
-      );
-    });
-
-    // Same chart instance, still no remove(). The candle + volume series
-    // should each have had setData called again with the refreshed data.
-    expect(chartInstances).toHaveLength(1);
-    expect(chart.remove).not.toHaveBeenCalled();
-    const candleSeries = chart.__series[0];
-    expect(candleSeries.setData).toHaveBeenCalledTimes(2);
-    // Final call should reflect the updated candle count.
-    const lastCall = candleSeries.setData.mock.calls.at(-1)?.[0] as unknown[];
-    expect(lastCall).toHaveLength(updated.length);
-    cleanup();
+describe("GP — in-house chart engine mount", () => {
+  it("mounts the engine with the pane symbol and mapped timeframe/style", () => {
+    render(<GPPane code="GP" symbol="AAPL" />);
+    expect(screen.getByTestId("chart-engine")).toBeInTheDocument();
+    expect(engineProbe.lastProps?.symbol).toBe("AAPL");
+    expect(engineProbe.lastProps?.fill).toBe(true);
+    // GP's default interval "1d" + style "candle" map onto engine vocabulary.
+    expect(engineProbe.lastProps?.initialInterval).toBe("1D");
+    expect(engineProbe.lastProps?.initialType).toBe("candles");
   });
 
-  it("changing chartStyle DOES rebuild the chart (intentional)", () => {
-    chartInstances.length = 0;
-    const candles = [makeCandle("2026-05-15", 100), makeCandle("2026-05-16", 101)];
-    const { rerender } = render(
-      <ChartView
-        chartId="GP"
-        candles={candles}
-        interval="1d"
-        chartStyle="candle"
-        onCrosshair={() => undefined}
-      />,
-    );
-    expect(chartInstances).toHaveLength(1);
-
-    act(() => {
-      rerender(
-        <ChartView
-          chartId="GP"
-          candles={candles}
-          interval="1d"
-          chartStyle="line"
-          onCrosshair={() => undefined}
-        />,
-      );
-    });
-    // Style change is the legitimate trigger to swap series → new instance.
-    expect(chartInstances).toHaveLength(2);
-    expect(chartInstances[0].remove).toHaveBeenCalledTimes(1);
-    cleanup();
+  it("maps a persisted lowercase interval onto the engine catalog", () => {
+    localStorage.setItem("showme.gp-interval", "1h");
+    render(<GPPane code="GP" symbol="AAPL" />);
+    expect(engineProbe.lastProps?.initialInterval).toBe("1h");
   });
 
-  it("changing only the onCrosshair callback identity does NOT rebuild", () => {
-    chartInstances.length = 0;
-    const candles = [makeCandle("2026-05-15", 100), makeCandle("2026-05-16", 101)];
-    const { rerender } = render(
-      <ChartView
-        chartId="GP"
-        candles={candles}
-        interval="1d"
-        chartStyle="candle"
-        onCrosshair={() => undefined}
-      />,
-    );
-    expect(chartInstances).toHaveLength(1);
-    act(() => {
-      rerender(
-        <ChartView
-          chartId="GP"
-          candles={candles}
-          interval="1d"
-          chartStyle="candle"
-          onCrosshair={() => undefined /* new identity each render */}
-        />,
-      );
-    });
-    expect(chartInstances).toHaveLength(1);
-    cleanup();
+  it("uses the pane's default symbol when the route carries none", () => {
+    render(<GPPane code="GP" symbol={undefined} />);
+    expect(screen.getByTestId("chart-engine")).toBeInTheDocument();
+    expect(engineProbe.lastProps?.symbol).toBeTruthy();
   });
 
-  it("applies a live tick via series.update() without rebuilding", () => {
-    chartInstances.length = 0;
-    const candles = [makeCandle("2026-05-15", 100), makeCandle("2026-05-16", 101)];
-    const { rerender } = render(
-      <ChartView
-        chartId="GP"
-        candles={candles}
-        interval="1d"
-        chartStyle="candle"
-        onCrosshair={() => undefined}
-        liveTick={null}
-      />,
-    );
-    const chart = chartInstances[0];
-    const candleSeries = chart.__series[0];
-    expect(candleSeries.update).not.toHaveBeenCalled();
-
-    act(() => {
-      rerender(
-        <ChartView
-          chartId="GP"
-          candles={candles}
-          interval="1d"
-          chartStyle="candle"
-          onCrosshair={() => undefined}
-          liveTick={{ price: 105, ts: Date.now() }}
-        />,
-      );
-    });
-
-    expect(chartInstances).toHaveLength(1);
-    expect(candleSeries.update).toHaveBeenCalledTimes(1);
-    const updateArg = candleSeries.update.mock.calls[0]?.[0] as {
-      close: number;
-      high: number;
-      low: number;
-    };
-    expect(updateArg.close).toBe(105);
-    // High must expand to cover the new tick.
-    expect(updateArg.high).toBeGreaterThanOrEqual(105);
-    cleanup();
+  it("keeps the RANGE row (payload driver) while the engine owns the rest", () => {
+    const { container } = render(<GPPane code="GP" symbol="AAPL" />);
+    expect(screen.getByText("RANGE")).toBeInTheDocument();
+    for (const chipRow of ["TIMEFRAME", "STYLE", "BARS", "INDICATORS"]) {
+      expect(container.textContent).not.toContain(chipRow);
+    }
+    expect(screen.queryByTestId("gp-compare-button")).toBeNull();
+    expect(screen.queryByTestId("gp-export-button")).toBeNull();
+    expect(screen.queryByText("Compare +")).toBeNull();
   });
 });
 
 describe("GP source — fabricated content guards", () => {
+  it("no longer imports or ships lightweight-charts / ChartView", () => {
+    expect(gpSourceRaw).not.toMatch(/lightweight-charts/);
+    expect(gpSourceRaw).not.toMatch(/ChartView/);
+  });
+
   it("does not export or define buildMockNews", () => {
     expect(gpSourceRaw).not.toMatch(/function\s+buildMockNews/);
     expect(gpSourceRaw).not.toMatch(/buildMockNews\s*\(/);
@@ -286,17 +158,8 @@ describe("GP source — fabricated content guards", () => {
     expect(gpSourceRaw).not.toContain("closes in on key Fib retracement");
   });
 
-  it("Compare and Export toolbar controls are aria-disabled", () => {
-    // Lightweight string assertions — these JSX attributes must travel
-    // together with the test-ids that downstream a11y harness checks expect.
-    expect(gpSourceRaw).toMatch(
-      /aria-disabled="true"[\s\S]{0,400}data-testid="gp-compare-button"/,
-    );
-    expect(gpSourceRaw).toMatch(
-      /aria-disabled="true"[\s\S]{0,400}data-testid="gp-export-button"/,
-    );
-    // Both should carry a title so hover explains why they're inert.
-    expect(gpSourceRaw).toMatch(/title="Compare overlay is not wired yet"/);
-    expect(gpSourceRaw).toMatch(/title="Chart export is not wired yet"/);
+  it("no longer ships the dead Compare/Export controls", () => {
+    expect(gpSourceRaw).not.toMatch(/gp-compare-button/);
+    expect(gpSourceRaw).not.toMatch(/gp-export-button/);
   });
 });

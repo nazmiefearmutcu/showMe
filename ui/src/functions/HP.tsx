@@ -1,37 +1,25 @@
 /**
  * HP — Historical price (Bloomberg HP<GO> analogue).
  *
- * Bloomberg-grade chart panel:
+ * The main historical price chart is rendered by the in-house showMe chart
+ * engine (`@/chart/Chart`), which owns the timeframe/type pickers, the
+ * searchable indicator picker, unlimited zoom/pan/fit and theming. HP keeps
+ * the function payload (range / interval / bars) that feeds the symbol header
+ * strip, the key-level rail and the footer, plus the resizable frame and the
+ * honest transport pills.
+ *
+ * Bloomberg-grade panel:
  *   - symbol header strip (price, delta, OHLC, RT badge)
- *   - timeframe pill row + chart-style + indicators dropdown + compare + export
- *   - chart canvas (lightweight-charts) with crosshair readout
+ *   - RANGE pill row (drives the function payload) + CSV export
+ *   - chart engine surface (timeframe / style / indicators owned by it)
  *   - right rail: KEY LEVELS · INDICATORS · NEWS
- *   - footer: OHLC value list + provider + cache indicator
+ *   - footer: OHLC value list + provider + history indicator
+ *
+ * The retired chart-library series also carried the Compare % overlay
+ * and the screenshot-based PNG export; both were bound to that chart instance
+ * and went with it (no dead controls). CSV export and the RANGE chips stay.
  */
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type CSSProperties,
-  type MutableRefObject,
-} from "react";
-import {
-  type CandlestickData,
-  type HistogramData,
-  type HistogramSeriesPartialOptions,
-  type IChartApi,
-  type ISeriesApi,
-  type LineData,
-  type LineSeriesPartialOptions,
-  type Time,
-  createChart,
-  LineSeries,
-  CandlestickSeries,
-  HistogramSeries,
-  AreaSeries,
-} from "lightweight-charts";
+import { useMemo, type CSSProperties } from "react";
 import {
   DeltaChip,
   Empty,
@@ -46,14 +34,9 @@ import {
   StatusSection,
   StatusDivider,
 } from "@/design-system";
-import {
-  measureChartElement,
-  resizeChartToElement,
-} from "@/lib/chart-layout";
 import { useFunction } from "@/lib/useFunction";
 import { defaultSymbolForFunction } from "@/lib/symbols";
 import { useLiveQuote, type TransportState } from "@/lib/market-data";
-import { useEscape, useFocusTrap } from "@/lib/a11y";
 import { maxOf, minOf } from "@/lib/maxOf";
 import { SymbolBar } from "@/shell/SymbolBar";
 import { buildCsv, type HPRow } from "./HP.csv";
@@ -64,7 +47,7 @@ import {
 } from "./function-controls";
 import { usePersistentOption } from "./function-control-state";
 import type { FunctionPaneProps } from "./registry-types";
-import { alpha, useChartPalette, type ChartPalette } from "@/lib/chart-palette";
+import { Chart } from "@/chart/Chart";
 import { formatPrice } from "@/lib/format";
 
 const RANGES = [
@@ -90,90 +73,29 @@ const INTERVALS = [
 type IntervalId = (typeof INTERVALS)[number]["id"];
 const INTERVAL_IDS = INTERVALS.map((i) => i.id);
 
-const DEPTHS = [
-  { id: "300", label: "300" },
-  { id: "1000", label: "1K" },
-  { id: "3000", label: "3K" },
-  { id: "10000", label: "10K" },
-] as const;
-type DepthId = (typeof DEPTHS)[number]["id"];
-const DEPTH_IDS = DEPTHS.map((d) => d.id);
+// HP's historical fetch depth for the rail/header payload. The BARS chips are
+// gone (the engine fetches its own bars), so the payload pins the pane's
+// previous default instead of a persisted preference.
+const DEFAULT_BARS = 1000;
 
 type ChartStyle = "candle" | "line" | "area";
 
-const CHART_STYLES: { id: ChartStyle; label: string }[] = [
-  { id: "candle", label: "Candle" },
-  { id: "line", label: "Line" },
-  { id: "area", label: "Area" },
-];
+/** HP's historical default chart style, mapped to the engine vocabulary. */
+const HP_CHART_STYLE: ChartStyle = "candle";
 
-const INDICATOR_PRESETS = ["SMA(20)", "EMA(50)", "RSI(14)", "MACD", "BB(20,2)"];
-
-const MAX_COMPARE = 3;
 /**
- * Compare overlay colors (Session 16 BugHunt) — derived from the live
- * chart palette so Papyrus / Matrix / custom-slot presets actually
- * recolor the chip dots, chip borders, and compare-series strokes
- * instead of leaking the old dark-mode hex literals.
+ * The engine's timeframe catalog is case-sensitive in ways HP's ids were
+ * not: "1d"/"1w" (HP) map to the engine's "1D"/"1W", while "1m" (minute)
+ * and "1M" (month) stay distinct instruments.
  */
-function compareColorsFromPalette(palette: ChartPalette): [string, string, string, string] {
-  return [palette.accent, palette.warn, palette.positive, palette.negative];
-}
-const EQUITY_PEERS = ["MSFT", "NVDA", "AAPL", "GOOG", "AMZN", "TSLA", "META", "AMD", "SPY", "QQQ"];
-const CRYPTO_PEERS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"];
-const FX_PEERS = ["EURUSD", "GBPUSD", "USDJPY", "DXY"];
-
-function suggestPeers(primary: string | undefined): string[] {
-  if (!primary) return EQUITY_PEERS.slice(0, 5);
-  const sym = primary.toUpperCase();
-  const isCrypto = /USDT$|USD$|^BTC|^ETH|^SOL|^DOGE/.test(sym);
-  const isFx = /=X$|^[A-Z]{6}$|^DXY$/.test(sym);
-  const pool = isCrypto ? CRYPTO_PEERS : isFx ? FX_PEERS : EQUITY_PEERS;
-  return pool.filter((p) => p !== sym).slice(0, 5);
+function mapInterval(interval: IntervalId): string {
+  if (interval === "1d") return "1D";
+  if (interval === "1w") return "1W";
+  return interval;
 }
 
-function usePersistentSymbols(
-  key: string,
-  max: number,
-): [string[], React.Dispatch<React.SetStateAction<string[]>>] {
-  const [value, setValue] = useState<string[]>(() => {
-    if (typeof localStorage === "undefined") return [];
-    const raw = localStorage.getItem(key);
-    if (!raw) return [];
-    try {
-      const parsed = JSON.parse(raw);
-      if (!Array.isArray(parsed)) return [];
-      return parsed
-        .filter((s): s is string => typeof s === "string" && s.trim().length > 0)
-        .map((s) => s.trim().toUpperCase())
-        .slice(0, max);
-    } catch {
-      return [];
-    }
-  });
-  useEffect(() => {
-    if (typeof localStorage !== "undefined") {
-      localStorage.setItem(key, JSON.stringify(value));
-    }
-  }, [key, value]);
-  return [value, setValue];
-}
-
-interface ComparedSeries {
-  symbol: string;
-  rows: HPRow[];
-  state: "idle" | "loading" | "ok" | "error";
-  color: string;
-}
-
-interface CrosshairState {
-  price: number | null;
-  open: number | null;
-  high: number | null;
-  low: number | null;
-  close: number | null;
-  volume: number | null;
-  time: string | null;
+function mapStyle(style: ChartStyle): "candles" | "line" | "area" {
+  return style === "candle" ? "candles" : style;
 }
 
 export function HPPane({ code, symbol }: FunctionPaneProps) {
@@ -185,64 +107,27 @@ export function HPPane({ code, symbol }: FunctionPaneProps) {
     RANGE_IDS,
     "3M",
   );
-  const [interval, setInterval] = usePersistentOption<IntervalId>(
+  // The engine owns the live timeframe picker; HP keeps the persisted
+  // interval to seed the engine and to size the rail/header payload.
+  const [interval] = usePersistentOption<IntervalId>(
     "showme.hp-interval",
     INTERVAL_IDS,
     "1d",
   );
-  const [depth, setDepth] = usePersistentOption<DepthId>(
-    "showme.hp-depth",
-    DEPTH_IDS,
-    "1000",
-  );
-  const [chartStyle, setChartStyle] = useState<ChartStyle>("candle");
-  const [activeIndicators, setActiveIndicators] = useState<string[]>([
-    "SMA(20)",
-    "EMA(50)",
-  ]);
-  const [indicatorOpen, setIndicatorOpen] = useState(false);
-  const [comparedSymbols, setComparedSymbols] = usePersistentSymbols(
-    `showme.hp-compare.${code}`,
-    MAX_COMPARE,
-  );
-  const [compareOpen, setCompareOpen] = useState(false);
 
   const days = useMemo(() => RANGES.find((r) => r.id === range)!.days, [range]);
   const { state, data, error, refetch } = useFunction<unknown>({
     code,
     symbol: effectiveSymbol,
-    params: { days, range, interval, bars: Number(depth) },
+    params: { days, range, interval, bars: DEFAULT_BARS },
     enabled: !!effectiveSymbol,
   });
 
-  const compareParams = { days, range, interval, bars: Number(depth) };
-  const compareA = useFunction<unknown>({
-    code,
-    symbol: comparedSymbols[0] ?? "",
-    params: compareParams,
-    enabled: !!comparedSymbols[0] && !!effectiveSymbol,
-  });
-  const compareB = useFunction<unknown>({
-    code,
-    symbol: comparedSymbols[1] ?? "",
-    params: compareParams,
-    enabled: !!comparedSymbols[1] && !!effectiveSymbol,
-  });
-  const compareC = useFunction<unknown>({
-    code,
-    symbol: comparedSymbols[2] ?? "",
-    params: compareParams,
-    enabled: !!comparedSymbols[2] && !!effectiveSymbol,
-  });
-
   const rows = useMemo(() => decorate(normalizeRows(data?.data)), [data]);
-  // S12 HP live-data wiring: until S12 the SymbolHeaderStrip's "RT
-  // SESSION" pill only meant the *historical* fetch returned ok, and
-  // the `liveTick` prop on PriceChart was unused — so HP's chart never
-  // ticked between refreshes. We now subscribe to the canonical live
-  // quote channel (`useLiveQuote`) so the chart current bar advances
-  // via `series.update()` and the header pills report honest transport
-  // state (RT LIVE / RECONNECTING / STALE / SNAPSHOT ONLY / OFFLINE).
+  // S12 HP live-data wiring: HP subscribes to the canonical live quote
+  // channel (`useLiveQuote`) so the header strip reports honest transport
+  // state (RT LIVE / RECONNECTING / STALE / SNAPSHOT ONLY / OFFLINE) and
+  // shows the freshest tick. The chart engine owns its own canvas refresh.
   const liveQuote = useLiveQuote(effectiveSymbol, {
     enabled: !!effectiveSymbol,
   });
@@ -261,70 +146,6 @@ export function HPPane({ code, symbol }: FunctionPaneProps) {
   const snapshotOnlyTransport =
     state === "ok" && rows.length === 0 && !!liveQuote.snapshot;
   const liveTickPrice = liveQuote.lastTick?.price ?? null;
-  const liveTickAt = liveQuote.lastTickAt ?? null;
-  // Theme-aware compare overlay palette — replaces the prior dark-mode
-  // hex literal so Papyrus / Matrix / custom slots track correctly.
-  const compareChartPalette = useChartPalette();
-  const compareColors = useMemo(
-    () => compareColorsFromPalette(compareChartPalette),
-    [compareChartPalette],
-  );
-
-  const comparedSeries = useMemo<ComparedSeries[]>(() => {
-    const slots = [compareA, compareB, compareC];
-    return comparedSymbols
-      .map((sym, idx) => {
-        const slot = slots[idx];
-        return slot
-          ? {
-              symbol: sym,
-              rows: normalizeRows(slot.data?.data),
-              state: slot.state,
-              color: compareColors[(idx + 1) % compareColors.length],
-            }
-          : null;
-      })
-      .filter((s): s is ComparedSeries => s !== null);
-  }, [comparedSymbols, compareA, compareB, compareC, compareColors]);
-
-  const addCompareSymbol = useCallback(
-    (raw: string) => {
-      const next = raw.trim().toUpperCase();
-      if (!next || next === effectiveSymbol?.toUpperCase()) return;
-      setComparedSymbols((prev) => {
-        if (prev.includes(next)) return prev;
-        if (prev.length >= MAX_COMPARE) return prev;
-        return [...prev, next];
-      });
-    },
-    [effectiveSymbol, setComparedSymbols],
-  );
-  const removeCompareSymbol = useCallback(
-    (sym: string) => {
-      setComparedSymbols((prev) => prev.filter((s) => s !== sym));
-    },
-    [setComparedSymbols],
-  );
-
-  const chartApiRef = useRef<IChartApi | null>(null);
-  const handleExportPng = useCallback(() => {
-    const chart = chartApiRef.current;
-    if (!chart) return;
-    const canvas = chart.takeScreenshot();
-    canvas.toBlob((blob) => {
-      if (!blob) return;
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `${effectiveSymbol ?? "chart"}-${range}-${new Date()
-        .toISOString()
-        .slice(0, 10)}.png`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      setTimeout(() => URL.revokeObjectURL(url), 0);
-    });
-  }, [effectiveSymbol, range]);
 
   const stats = useMemo(() => {
     if (!rows.length) return null;
@@ -430,7 +251,6 @@ export function HPPane({ code, symbol }: FunctionPaneProps) {
                 disabled={!rows.length || !effectiveSymbol}
                 onClick={() => downloadCsv(effectiveSymbol ?? "data", range, rows)}
                 title="Download CSV"
-                
               >
                 CSV
               </button>
@@ -474,33 +294,22 @@ export function HPPane({ code, symbol }: FunctionPaneProps) {
           snapshotOnly={snapshotOnlyTransport}
         />
 
-        {/* Toolbar row */}
-        <ChartToolbar
-          range={range}
-          onRangeChange={setRange}
-          interval={interval}
-          onIntervalChange={setInterval}
-          depth={depth}
-          onDepthChange={setDepth}
-          chartStyle={chartStyle}
-          onChartStyleChange={setChartStyle}
-          activeIndicators={activeIndicators}
-          indicatorOpen={indicatorOpen}
-          onIndicatorOpen={setIndicatorOpen}
-          onIndicatorToggle={(name) =>
-            setActiveIndicators((prev) =>
-              prev.includes(name) ? prev.filter((p) => p !== name) : [...prev, name],
-            )
-          }
-          comparedSymbols={comparedSymbols}
-          compareOpen={compareOpen}
-          onCompareOpen={setCompareOpen}
-          onCompareAdd={addCompareSymbol}
-          onCompareRemove={removeCompareSymbol}
-          comparePeerSuggestions={suggestPeers(effectiveSymbol)}
-          onExportPng={handleExportPng}
-          canExport={!!rows.length}
-        />
+        {/*
+         * Toolbar — RANGE drives the function payload behind the header
+         * stats and the key-level rail. Timeframe / chart type / indicators
+         * are owned by the chart engine's own toolbar, so their chip rows
+         * (and the chart-instance-bound Compare / PNG export) are gone.
+         */}
+        <div style={toolbarRowStyle}>
+          <div style={toolbarSegmentStyle}>
+            <span style={toolbarLabelStyle}>RANGE</span>
+            <PillRow
+              items={RANGES.map((r) => ({ id: r.id, label: r.label }))}
+              active={range}
+              onChange={(id) => setRange(id as RangeId)}
+            />
+          </div>
+        </div>
 
         <PaneBody className="u-p-0 u-flex u-min-h-0">
           {!effectiveSymbol ? (
@@ -529,20 +338,11 @@ export function HPPane({ code, symbol }: FunctionPaneProps) {
           ) : (
             <ChartLayout
               chartId={code.toUpperCase()}
-              rows={rows}
               interval={interval}
-              chartStyle={chartStyle}
-              activeIndicators={activeIndicators}
               stats={stats}
               week52={week52}
+              rows={rows}
               symbol={effectiveSymbol ?? ""}
-              comparedSeries={comparedSeries}
-              chartApiRef={chartApiRef}
-              liveTick={
-                liveTickPrice != null && liveTickAt != null
-                  ? { price: liveTickPrice, ts: liveTickAt }
-                  : null
-              }
             />
           )}
         </PaneBody>
@@ -723,323 +523,6 @@ function SymbolHeaderStrip({
   );
 }
 
-function ChartToolbar({
-  range,
-  onRangeChange,
-  interval,
-  onIntervalChange,
-  depth,
-  onDepthChange,
-  chartStyle,
-  onChartStyleChange,
-  activeIndicators,
-  indicatorOpen,
-  onIndicatorOpen,
-  onIndicatorToggle,
-  comparedSymbols,
-  compareOpen,
-  onCompareOpen,
-  onCompareAdd,
-  onCompareRemove,
-  comparePeerSuggestions,
-  onExportPng,
-  canExport,
-}: {
-  range: RangeId;
-  onRangeChange: (id: RangeId) => void;
-  interval: IntervalId;
-  onIntervalChange: (id: IntervalId) => void;
-  depth: DepthId;
-  onDepthChange: (id: DepthId) => void;
-  chartStyle: ChartStyle;
-  onChartStyleChange: (style: ChartStyle) => void;
-  activeIndicators: string[];
-  indicatorOpen: boolean;
-  onIndicatorOpen: (open: boolean) => void;
-  onIndicatorToggle: (name: string) => void;
-  comparedSymbols: string[];
-  compareOpen: boolean;
-  onCompareOpen: (open: boolean) => void;
-  onCompareAdd: (sym: string) => void;
-  onCompareRemove: (sym: string) => void;
-  comparePeerSuggestions: string[];
-  onExportPng: () => void;
-  canExport: boolean;
-}) {
-  return (
-    <div style={toolbarRowStyle}>
-      <div style={toolbarSegmentStyle}>
-        <span style={toolbarLabelStyle}>TIMEFRAME</span>
-        <PillRow
-          items={INTERVALS.map((i) => ({ id: i.id, label: i.label }))}
-          active={interval}
-          onChange={(id) => onIntervalChange(id as IntervalId)}
-        />
-      </div>
-      <div style={toolbarSegmentStyle}>
-        <span style={toolbarLabelStyle}>RANGE</span>
-        <PillRow
-          items={RANGES.map((r) => ({ id: r.id, label: r.label }))}
-          active={range}
-          onChange={(id) => onRangeChange(id as RangeId)}
-        />
-      </div>
-      <div style={toolbarSegmentStyle}>
-        <span style={toolbarLabelStyle}>STYLE</span>
-        <PillRow
-          items={CHART_STYLES}
-          active={chartStyle}
-          onChange={(id) => onChartStyleChange(id as ChartStyle)}
-        />
-      </div>
-      <div style={toolbarSegmentStyle}>
-        <span style={toolbarLabelStyle}>BARS</span>
-        <PillRow
-          items={DEPTHS.map((d) => ({ id: d.id, label: d.label }))}
-          active={depth}
-          onChange={(id) => onDepthChange(id as DepthId)}
-        />
-      </div>
-      <div
-        className="u-position-relative"
-        onKeyDown={(e) => {
-          // A11Y: Esc closes the indicators dropdown (QA report noted this
-          // was previously click-outside only). Stop-propagation so the
-          // pane's parent keydown handlers don't double-fire.
-          if (e.key === "Escape" && indicatorOpen) {
-            e.stopPropagation();
-            onIndicatorOpen(false);
-          }
-        }}
-      >
-        <button
-          type="button"
-          onClick={() => onIndicatorOpen(!indicatorOpen)}
-          style={toolbarButtonStyle}
-          title="Indicators"
-          aria-haspopup="menu"
-          aria-expanded={indicatorOpen}
-        >
-          Indicators
-          <span className="hp-ind-count">
-            ({activeIndicators.length})
-          </span>
-        </button>
-        {indicatorOpen && (
-          <div
-            style={indicatorMenuStyle}
-            role="menu"
-            aria-label="Indicators"
-            data-testid="hp-indicators-menu"
-          >
-            {INDICATOR_PRESETS.map((name) => {
-              const active = activeIndicators.includes(name);
-              return (
-                <button
-                  key={name}
-                  type="button"
-                  onClick={() => onIndicatorToggle(name)}
-                  style={{
-                    ...indicatorMenuItemStyle,
-                    background: active ? "var(--accent-soft)" : "transparent",
-                    color: active ? "var(--accent)" : "var(--text-secondary)",
-                  }}
-                >
-                  <span className="hp-ind-check">
-                    {active ? "✓" : ""}
-                  </span>
-                  {name}
-                </button>
-              );
-            })}
-          </div>
-        )}
-      </div>
-      <ComparePopup
-        comparedSymbols={comparedSymbols}
-        open={compareOpen}
-        onOpen={onCompareOpen}
-        onAdd={onCompareAdd}
-        onRemove={onCompareRemove}
-        suggestions={comparePeerSuggestions}
-      />
-      <button
-        type="button"
-        style={toolbarIconButtonStyle}
-        title={canExport ? "Export PNG" : "No chart data to export"}
-        aria-label="Export chart as PNG"
-        onClick={() => {
-          if (canExport) onExportPng();
-        }}
-        disabled={!canExport}
-      >
-        ⇪
-      </button>
-    </div>
-  );
-}
-
-function ComparePopup({
-  comparedSymbols,
-  open,
-  onOpen,
-  onAdd,
-  onRemove,
-  suggestions,
-}: {
-  comparedSymbols: string[];
-  open: boolean;
-  onOpen: (open: boolean) => void;
-  onAdd: (sym: string) => void;
-  onRemove: (sym: string) => void;
-  suggestions: string[];
-}) {
-  const [draft, setDraft] = useState("");
-  const containerRef = useRef<HTMLDivElement>(null);
-  const popupRef = useRef<HTMLDivElement>(null);
-  const full = comparedSymbols.length >= MAX_COMPARE;
-  // Session 16 BugHunt: compare chip dots / borders must follow the
-  // active chart palette. The popup is a sibling of HPPane so it cannot
-  // inherit the parent's compareColors memo — recompute locally.
-  const popupPalette = useChartPalette();
-  const compareColors = useMemo(
-    () => compareColorsFromPalette(popupPalette),
-    [popupPalette],
-  );
-
-  useEffect(() => {
-    if (!open) return;
-    const onDocClick = (e: MouseEvent) => {
-      if (!containerRef.current) return;
-      if (!containerRef.current.contains(e.target as Node)) onOpen(false);
-    };
-    document.addEventListener("mousedown", onDocClick);
-    return () => document.removeEventListener("mousedown", onDocClick);
-  }, [open, onOpen]);
-
-  // A11Y: Esc closes the dialog + Tab is trapped inside while open.
-  // The compare popup was missing Esc per the QA report.
-  useEscape(open, () => onOpen(false));
-  useFocusTrap(popupRef, open);
-
-  const submit = () => {
-    if (!draft.trim() || full) return;
-    onAdd(draft);
-    setDraft("");
-  };
-
-  return (
-    <div ref={containerRef} className="u-position-relative">
-      <button
-        type="button"
-        onClick={() => onOpen(!open)}
-        style={toolbarButtonStyle}
-        title="Compare with peer symbols"
-        aria-haspopup="dialog"
-        aria-expanded={open}
-        data-testid="hp-compare-toggle"
-      >
-        Compare {comparedSymbols.length > 0 ? `(${comparedSymbols.length})` : "+"}
-      </button>
-      {open && (
-        <div
-          ref={popupRef}
-          style={comparePopupStyle}
-          role="dialog"
-          aria-label="Compare symbols"
-          aria-modal="false"
-          data-testid="hp-compare-popup"
-        >
-          <div style={comparePopupHeaderStyle}>
-            <span>COMPARE OVERLAY</span>
-            <span style={comparePopupHintStyle}>
-              {comparedSymbols.length}/{MAX_COMPARE} · % rebased
-            </span>
-          </div>
-          {comparedSymbols.length > 0 && (
-            <div style={compareChipRowStyle}>
-              {comparedSymbols.map((s, idx) => (
-                <span
-                  key={s}
-                  style={{
-                    ...compareChipStyle,
-                    borderColor: compareColors[(idx + 1) % compareColors.length],
-                  }}
-                >
-                  <span
-                    aria-hidden
-                    style={{
-                      ...compareChipDotStyle,
-                      background: compareColors[(idx + 1) % compareColors.length],
-                    }}
-                  />
-                  <span>{s}</span>
-                  <button
-                    type="button"
-                    onClick={() => onRemove(s)}
-                    style={compareChipRemoveStyle}
-                    aria-label={`Remove ${s} from compare`}
-                    title={`Remove ${s}`}
-                  >
-                    ×
-                  </button>
-                </span>
-              ))}
-            </div>
-          )}
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              submit();
-            }}
-            style={compareFormStyle}
-          >
-            <input
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              placeholder={full ? "Max 3 peers" : "Add peer (e.g. MSFT)"}
-              style={compareInputStyle}
-              disabled={full}
-              aria-label="Peer symbol to compare"
-              data-testid="hp-compare-input"
-            />
-            <button
-              type="submit"
-              style={compareAddBtnStyle}
-              disabled={full || !draft.trim()}
-              data-testid="hp-compare-add"
-            >
-              Add
-            </button>
-          </form>
-          {suggestions.length > 0 && (
-            <>
-              <div style={comparePopupSubLabelStyle}>SUGGESTED</div>
-              <div style={compareSuggestionRowStyle}>
-                {suggestions
-                  .filter((s) => !comparedSymbols.includes(s))
-                  .slice(0, 5)
-                  .map((s) => (
-                    <button
-                      key={s}
-                      type="button"
-                      onClick={() => onAdd(s)}
-                      style={compareSuggestionBtnStyle}
-                      disabled={full}
-                      data-testid={`hp-compare-suggest-${s}`}
-                    >
-                      {s}
-                    </button>
-                  ))}
-              </div>
-            </>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
 function PillRow({
   items,
   active,
@@ -1077,36 +560,17 @@ function ChartLayout({
   chartId,
   rows,
   interval,
-  chartStyle,
-  activeIndicators,
   stats,
   week52,
   symbol,
-  comparedSeries,
-  chartApiRef,
-  liveTick,
 }: {
   chartId: string;
   rows: Array<HPRow & { _change?: number; _changePct?: number }>;
-  interval: string;
-  chartStyle: ChartStyle;
-  activeIndicators: string[];
+  interval: IntervalId;
   stats: { high: number; low: number; totalPct: number | null; n: number; last: number; first: number } | null;
   week52: { high: number; low: number } | null;
   symbol: string;
-  comparedSeries: ComparedSeries[];
-  chartApiRef: MutableRefObject<IChartApi | null>;
-  liveTick: HPLiveTick | null;
 }) {
-  const [crosshair, setCrosshair] = useState<CrosshairState>({
-    price: null,
-    open: null,
-    high: null,
-    low: null,
-    close: null,
-    volume: null,
-    time: null,
-  });
   return (
     <div style={chartLayoutStyle}>
       <div style={chartCanvasWrapStyle}>
@@ -1119,45 +583,15 @@ function ChartLayout({
           style={chartSurfaceStyle}
           ariaLabel="Resize price chart"
         >
-          <PriceChart
-            chartId={chartId}
-            rows={rows}
-            interval={interval}
-            chartStyle={chartStyle}
-            activeIndicators={activeIndicators}
-            onCrosshair={setCrosshair}
-            comparedSeries={comparedSeries}
-            chartApiRef={chartApiRef}
-            liveTick={liveTick}
+          <Chart
+            symbol={symbol}
+            fill
+            initialInterval={mapInterval(interval)}
+            initialType={mapStyle(HP_CHART_STYLE)}
           />
-          <CrosshairReadout state={crosshair} />
         </ResizableChartFrame>
       </div>
       <RightRail stats={stats} week52={week52} rows={rows} symbol={symbol} />
-    </div>
-  );
-}
-
-function CrosshairReadout({ state }: { state: CrosshairState }) {
-  if (state.price == null) return null;
-  return (
-    <div style={crosshairBoxStyle}>
-      <div style={crosshairRowStyle}>
-        <span style={crosshairLabelStyle}>PRICE</span>
-        <span style={crosshairValueStyle}>{fmtNum(state.price)}</span>
-      </div>
-      {state.volume != null && (
-        <div style={crosshairRowStyle}>
-          <span style={crosshairLabelStyle}>VOL</span>
-          <span style={crosshairValueStyle}>{fmtVolume(state.volume)}</span>
-        </div>
-      )}
-      {state.time && (
-        <div style={crosshairRowStyle}>
-          <span style={crosshairLabelStyle}>TIME</span>
-          <span style={crosshairValueStyle}>{state.time}</span>
-        </div>
-      )}
     </div>
   );
 }
@@ -1327,689 +761,7 @@ function IndicatorRow({
   );
 }
 
-/**
- * Live tick payload — when supplied, HP updates the current (last) bar via
- * `series.update()` instead of pushing a full new candle through `setData`.
- * This preserves the chart instance, the user's scroll/zoom, and lightweight-
- * charts' incremental rendering. HP's backend does not currently ship a live
- * tick stream; the prop exists so a future WebSocket bridge (or test harness)
- * can drive the live bar without re-mounting the chart.
- */
-export interface HPLiveTick {
-  price: number;
-  ts?: number;
-}
-
-/** Overlay/study series types HP can toggle from the Indicators menu. */
-type HPIndicatorSeries = ISeriesApi<"Line"> | ISeriesApi<"Histogram">;
-
-interface HPIndicatorEntry {
-  key: string;
-  pane: number;
-  color: string;
-  histogram?: boolean;
-  options: Record<string, unknown>;
-  data: Array<LineData | HistogramData>;
-}
-
-/**
- * Mount-only price chart.
- *
- * S03-H regression target: HP previously called `createChart()` + `chart.remove()`
- * on every data refresh because the entire body of the lifecycle effect was
- * pinned to `chartRows`. That wiped scroll position, zoom, and any in-flight
- * lightweight-charts subscriptions on every fresh poll. The new layout:
- *
- *   1. Mount effect — creates the chart, primary series, volume series, and
- *      crosshair subscription exactly ONCE for a given combination of
- *      [chartStyle, compareMode, interval, palette]. Changing chartStyle (the
- *      only legitimate trigger for a different series shape) is the one path
- *      that intentionally rebuilds.
- *   2. Data refresh effect — runs on `chartRows` / `comparedSeries` changes
- *      and calls `setData()` on the existing series refs. No instance churn.
- *   3. Indicator effect — runs on `activeIndicators` changes and add/removes
- *      individual indicator series while keeping the chart alive.
- *   4. Live tick effect — runs on `liveTick` and calls `series.update()` on
- *      the current bar.
- *   5. Crosshair callback — captured through a ref so a fresh callback
- *      identity (a brand-new `onCrosshair` from the parent on every render)
- *      does NOT rebuild the chart.
- */
-export function PriceChart({
-  chartId: _chartId,
-  rows,
-  interval,
-  chartStyle,
-  activeIndicators,
-  onCrosshair,
-  comparedSeries,
-  chartApiRef,
-  liveTick = null,
-}: {
-  chartId: string;
-  rows: Array<HPRow & { _change?: number; _changePct?: number }>;
-  interval: string;
-  chartStyle: ChartStyle;
-  activeIndicators: string[];
-  onCrosshair: (state: CrosshairState) => void;
-  comparedSeries: ComparedSeries[];
-  chartApiRef: MutableRefObject<IChartApi | null>;
-  liveTick?: HPLiveTick | null;
-}) {
-  const hostRef = useRef<HTMLDivElement>(null);
-  const chartRef = useRef<IChartApi | null>(null);
-  // Strongly-typed series refs survive across data refreshes so we can call
-  // `setData` / `update` without ever recreating the chart instance.
-  const mainSeriesRef = useRef<
-    | ISeriesApi<"Candlestick">
-    | ISeriesApi<"Line">
-    | ISeriesApi<"Area">
-    | null
-  >(null);
-  const volumeSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
-  const indicatorSeriesRef = useRef<Map<string, HPIndicatorSeries>>(new Map());
-  const compareSeriesRef = useRef<Map<string, ISeriesApi<"Line">>>(new Map());
-  // Pin the latest crosshair callback so the mount effect doesn't have to
-  // depend on its identity. Callers (e.g. ChartLayout) usually pass a new
-  // closure each render — that must not rebuild the chart.
-  const onCrosshairRef = useRef(onCrosshair);
-  onCrosshairRef.current = onCrosshair;
-
-  const palette = useChartPalette();
-  // S03-H: `useChartPalette` returns a fresh object on every render because
-  // its underlying store fires an immediate `subscribe → setState(read())`
-  // dance on mount. Depending the mount effect on `palette` directly would
-  // therefore tear down and recreate the chart on the very first commit
-  // (and again on every parent re-render). `paletteKey` reduces the palette
-  // to a value-stable string so the mount effect only fires when the user
-  // actually swaps theme presets.
-  const paletteKey = useMemo(
-    () =>
-      [
-        palette.text,
-        palette.grid,
-        palette.border,
-        palette.positive,
-        palette.negative,
-        palette.accent,
-        palette.warn,
-        palette.volNeutral,
-        palette.volPos,
-        palette.volNeg,
-      ].join("|"),
-    [palette],
-  );
-  const chartRows = useMemo(
-    () =>
-      [...rows]
-        .filter(
-          (row) =>
-            row.open != null &&
-            row.high != null &&
-            row.low != null &&
-            row.close != null,
-        )
-        .sort(
-          (a, b) =>
-            new Date(a.date ?? a.ts ?? "").getTime() -
-            new Date(b.date ?? b.ts ?? "").getTime(),
-        ),
-    [rows],
-  );
-  const compareMode = useMemo(
-    () => comparedSeries.some((s) => s.rows.length > 0),
-    [comparedSeries],
-  );
-
-  // ── 1. Mount effect ───────────────────────────────────────────────────
-  // Creates the chart + primary/volume series. Rebuilds ONLY on the inputs
-  // that genuinely require a fresh series shape:
-  //   - chartStyle: candle ↔ line ↔ area swap the series type entirely
-  //   - compareMode: the % rebase overlay shares one Y-axis, not two
-  //   - interval: drives `timeVisible` / `secondsVisible` options
-  //   - palette: theme switch repaints every series at construction time
-  // Crucially, `chartRows` is NOT in this dep list anymore (the S03-H bug).
-  useEffect(() => {
-    const el = hostRef.current;
-    if (!el) return;
-    // Captured here rather than read in the cleanup: both refs hold Maps that
-    // are created once and only ever mutated, so this is the same object, and
-    // it keeps the cleanup from reaching through a ref after a rebuild.
-    const indicatorSeries = indicatorSeriesRef.current;
-    const compareSeries = compareSeriesRef.current;
-    const size = measureChartElement(el);
-    const chart = createChart(el, {
-      layout: {
-        background: { color: "transparent" },
-        textColor: palette.text,
-        fontFamily: "JetBrains Mono, SF Mono, monospace",
-        fontSize: 11,
-      },
-      grid: {
-        vertLines: { color: palette.grid },
-        horzLines: { color: palette.grid },
-      },
-      timeScale: {
-        rightOffset: 8,
-        barSpacing: 7,
-        minBarSpacing: 0.3,
-        timeVisible: interval !== "1d" && interval !== "1w",
-        secondsVisible: interval === "1m",
-        borderColor: palette.border,
-      },
-      rightPriceScale: { borderColor: palette.border },
-      crosshair: { mode: 1 },
-      width: size.width,
-      height: size.height,
-    });
-
-    if (compareMode) {
-      mainSeriesRef.current = chart.addSeries(LineSeries, {
-        color: palette.accent,
-        lineWidth: 2,
-        priceLineVisible: false,
-        priceFormat: {
-          type: "custom",
-          formatter: (v: number) => `${v.toFixed(2)}%`,
-          minMove: 0.01,
-        },
-      });
-    } else if (chartStyle === "candle") {
-      mainSeriesRef.current = chart.addSeries(CandlestickSeries, {
-        upColor: palette.positive,
-        downColor: palette.negative,
-        borderUpColor: palette.positive,
-        borderDownColor: palette.negative,
-        wickUpColor: palette.positive,
-        wickDownColor: palette.negative,
-      });
-    } else if (chartStyle === "line") {
-      mainSeriesRef.current = chart.addSeries(LineSeries, {
-        color: palette.accent,
-        lineWidth: 2,
-        priceLineVisible: false,
-      });
-    } else {
-      mainSeriesRef.current = chart.addSeries(AreaSeries, {
-        lineColor: palette.accent,
-        topColor: alpha(palette.accent, 0.32),
-        bottomColor: alpha(palette.accent, 0.02),
-        lineWidth: 2,
-      });
-    }
-
-    if (!compareMode) {
-      volumeSeriesRef.current = chart.addSeries(HistogramSeries, {
-        priceScaleId: "volume",
-        color: palette.volNeutral,
-        priceFormat: { type: "volume" },
-      });
-      chart.priceScale("volume").applyOptions({
-        scaleMargins: { top: 0.78, bottom: 0 },
-      });
-    }
-
-    chart.subscribeCrosshairMove((param) => {
-      const cb = onCrosshairRef.current;
-      if (!param.time || !param.seriesData.size) {
-        cb({
-          price: null,
-          open: null,
-          high: null,
-          low: null,
-          close: null,
-          volume: null,
-          time: null,
-        });
-        return;
-      }
-      // With study panes (RSI/MACD) active, `seriesData` may list an
-      // oscillator series first — the readout must always prefer the main
-      // price series so PRICE/OHLC never shows an RSI number.
-      const mainSeries = mainSeriesRef.current;
-      const seriesValues =
-        (mainSeries &&
-          (param.seriesData.get(mainSeries) as
-            | {
-                close?: number;
-                open?: number;
-                high?: number;
-                low?: number;
-                value?: number;
-              }
-            | undefined)) ||
-        (Array.from(param.seriesData.values())[0] as
-          | {
-              close?: number;
-              open?: number;
-              high?: number;
-              low?: number;
-              value?: number;
-            }
-          | undefined);
-      const t = param.time;
-      const tStr =
-        typeof t === "number"
-          ? new Date(t * 1000).toISOString().slice(0, 16).replace("T", " ")
-          : String(t);
-      // chartRows is read via a ref so the closure doesn't grow stale —
-      // the crosshair callback always sees the latest data even though
-      // the subscription was created at mount.
-      const latest = chartRowsRef.current;
-      const idx = latest.findIndex(
-        (r) => chartTime(r.date ?? r.ts) === param.time,
-      );
-      const row = idx >= 0 ? latest[idx] : null;
-      cb({
-        price: seriesValues?.close ?? seriesValues?.value ?? null,
-        open: seriesValues?.open ?? row?.open ?? null,
-        high: seriesValues?.high ?? row?.high ?? null,
-        low: seriesValues?.low ?? row?.low ?? null,
-        close: seriesValues?.close ?? row?.close ?? null,
-        volume: row?.volume ?? null,
-        time: tStr,
-      });
-    });
-
-    chartRef.current = chart;
-    chartApiRef.current = chart;
-    const ro = new ResizeObserver(() => {
-      resizeChartToElement(chart, el);
-    });
-    ro.observe(el);
-    return () => {
-      ro.disconnect();
-      chart.remove();
-      chartRef.current = null;
-      chartApiRef.current = null;
-      mainSeriesRef.current = null;
-      volumeSeriesRef.current = null;
-      indicatorSeries.clear();
-      compareSeries.clear();
-    };
-    // paletteKey is a value-stable proxy for `palette`; depending on the object
-    // identity would remount the chart on every render (see the paletteKey
-    // comment above). The disable has to sit immediately above the dependency
-    // array — the rule reports on that line, so a wrapped comment misses it.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chartStyle, compareMode, interval, paletteKey, chartApiRef]);
-
-  // Keep a ref to the most recent chartRows so the crosshair closure created
-  // at mount time can read fresh data without rebuilding the subscription.
-  const chartRowsRef = useRef(chartRows);
-  chartRowsRef.current = chartRows;
-
-  // ── 2. Data refresh effect ────────────────────────────────────────────
-  // Updates main + volume + compare series via `setData()` on the existing
-  // chart. This is the path that runs on every normal poll/refetch.
-  useEffect(() => {
-    const chart = chartRef.current;
-    const mainSeries = mainSeriesRef.current;
-    if (!chart || !mainSeries || chartRows.length < 2) return;
-
-    if (compareMode) {
-      (mainSeries as ISeriesApi<"Line">).setData(rebaseToPct(chartRows));
-      const wanted = new Set<string>();
-      comparedSeries.forEach((s) => {
-        if (!s.rows.length) return;
-        const sorted = [...s.rows]
-          .filter(
-            (r) =>
-              r.close != null || r.adj_close != null || r.adjClose != null,
-          )
-          .sort(
-            (a, b) =>
-              new Date(a.date ?? a.ts ?? "").getTime() -
-              new Date(b.date ?? b.ts ?? "").getTime(),
-          );
-        if (sorted.length < 2) return;
-        wanted.add(s.symbol);
-        let peerLine = compareSeriesRef.current.get(s.symbol);
-        if (!peerLine) {
-          const newSeries = chart.addSeries(LineSeries, {
-            color: s.color,
-            lineWidth: 2,
-            priceLineVisible: false,
-            lastValueVisible: true,
-            title: s.symbol,
-          });
-          compareSeriesRef.current.set(s.symbol, newSeries);
-          peerLine = newSeries;
-        } else {
-          peerLine.applyOptions({ color: s.color });
-        }
-        peerLine.setData(rebaseToPct(sorted));
-      });
-      // Drop compare series that are no longer requested without touching
-      // the chart instance.
-      compareSeriesRef.current.forEach((series, sym) => {
-        if (!wanted.has(sym)) {
-          chart.removeSeries(series);
-          compareSeriesRef.current.delete(sym);
-        }
-      });
-    } else {
-      if (chartStyle === "candle") {
-        (mainSeries as ISeriesApi<"Candlestick">).setData(
-          chartRows.map<CandlestickData>((row) => ({
-            time: chartTime(row.date ?? row.ts),
-            open: Number(row.open),
-            high: Number(row.high),
-            low: Number(row.low),
-            close: Number(row.close),
-          })),
-        );
-      } else {
-        (mainSeries as ISeriesApi<"Line" | "Area">).setData(
-          chartRows.map<LineData>((row) => ({
-            time: chartTime(row.date ?? row.ts),
-            value: Number(row.close),
-          })),
-        );
-      }
-      volumeSeriesRef.current?.setData(
-        chartRows.map<HistogramData>((row) => ({
-          time: chartTime(row.date ?? row.ts),
-          value: Number(row.volume ?? 0),
-          color:
-            Number(row.close) >= Number(row.open)
-              ? palette.volPos
-              : palette.volNeg,
-        })),
-      );
-    }
-    // NOTE: viewport framing intentionally lives in the dedicated first-seed
-    // effect below. Calling `focusLatestBars` here on every refresh wiped the
-    // user's wheel/pinch zoom on every periodic poll (S13 regression).
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- see paletteKey
-  }, [chartRows, comparedSeries, compareMode, chartStyle, paletteKey]);
-
-  // ── 2b. First-seed viewport focus ─────────────────────────────────────
-  // S13 fix: frame the latest bars exactly ONCE for a given chart instance,
-  // so the user's manual scroll/zoom survives every subsequent data poll.
-  // Reset on chart rebuild (chartStyle swap creates a new instance) by
-  // pairing the guard ref with the same key set the mount effect uses.
-  const hasFocusedRef = useRef(false);
-  useEffect(() => {
-    hasFocusedRef.current = false;
-  }, [chartStyle, compareMode, interval, paletteKey]);
-  useEffect(() => {
-    if (hasFocusedRef.current) return;
-    const chart = chartRef.current;
-    const el = hostRef.current;
-    if (!chart || !el || chartRows.length < 2) return;
-    focusLatestBars(chart, chartRows.length, el.clientWidth);
-    hasFocusedRef.current = true;
-  }, [chartRows.length, chartStyle, compareMode, interval, paletteKey]);
-
-  // ── 3. Indicator effect ───────────────────────────────────────────────
-  // Adds / removes / refreshes the overlay + study series without
-  // recreating the chart. Compare mode hides indicators.
-  //
-  // Standard study rendering (2026-09-11 F7):
-  //   - SMA(n) / EMA(n)  → line overlay on the price pane
-  //   - BB(20,2)         → upper/mid/lower band overlay on the price pane
-  //   - RSI(14)          → Wilder RSI line in its own sub-pane
-  //   - MACD             → MACD + signal lines and a histogram sub-pane
-  // Study panes are stacked after the price pane in activation order
-  // (RSI first, then MACD) so toggling one never leaves an empty pane.
-  useEffect(() => {
-    const chart = chartRef.current;
-    if (!chart || compareMode || chartRows.length < 2) return;
-    const closes = chartRows.map((r) => Number(r.close));
-    const indicatorColors = [
-      palette.accent,
-      palette.positive,
-      palette.warn,
-      palette.negative,
-    ];
-    const rsiActive = activeIndicators.includes("RSI(14)");
-    const macdActive = activeIndicators.includes("MACD");
-    const rsiPane = rsiActive ? 1 : 0;
-    const macdPane = macdActive ? (rsiActive ? 2 : 1) : 0;
-
-    const entries: HPIndicatorEntry[] = [];
-    activeIndicators.forEach((name, idx) => {
-      const color = indicatorColors[idx % indicatorColors.length];
-      const mm = name.match(/(SMA|EMA)\((\d+)\)/);
-      if (mm) {
-        const period = Number(mm[2]);
-        const values = mm[1] === "SMA" ? sma(closes, period) : ema(closes, period);
-        entries.push({
-          key: name,
-          pane: 0,
-          color,
-          options: {
-            color,
-            lineWidth: 1,
-            priceLineVisible: false,
-            lastValueVisible: false,
-          },
-          data: linePoints(chartRows, values),
-        });
-        return;
-      }
-      if (name === "BB(20,2)") {
-        const bands = bollingerBands(closes, 20, 2);
-        entries.push(
-          {
-            key: "BB(20,2):upper",
-            pane: 0,
-            color: indicatorColors[2 % indicatorColors.length],
-            options: {
-              color: indicatorColors[2 % indicatorColors.length],
-              lineWidth: 1,
-              priceLineVisible: false,
-              lastValueVisible: false,
-            },
-            data: linePoints(chartRows, bands.upper),
-          },
-          {
-            key: "BB(20,2):mid",
-            pane: 0,
-            color: indicatorColors[0],
-            options: {
-              color: indicatorColors[0],
-              lineWidth: 1,
-              priceLineVisible: false,
-              lastValueVisible: false,
-            },
-            data: linePoints(chartRows, bands.mid),
-          },
-          {
-            key: "BB(20,2):lower",
-            pane: 0,
-            color: indicatorColors[3],
-            options: {
-              color: indicatorColors[3],
-              lineWidth: 1,
-              priceLineVisible: false,
-              lastValueVisible: false,
-            },
-            data: linePoints(chartRows, bands.lower),
-          },
-        );
-        return;
-      }
-      if (name === "RSI(14)") {
-        entries.push({
-          key: "RSI(14)",
-          pane: rsiPane,
-          color,
-          options: {
-            color,
-            lineWidth: 1,
-            priceLineVisible: false,
-            lastValueVisible: false,
-          },
-          data: linePoints(chartRows, rsiSeries(closes, 14)),
-        });
-        return;
-      }
-      if (name === "MACD") {
-        const bundle = macdBundle(closes);
-        entries.push(
-          {
-            key: "MACD",
-            pane: macdPane,
-            color: palette.accent,
-            options: {
-              color: palette.accent,
-              lineWidth: 1,
-              priceLineVisible: false,
-              lastValueVisible: false,
-            },
-            data: linePoints(chartRows, bundle.macd),
-          },
-          {
-            key: "MACD:signal",
-            pane: macdPane,
-            color: palette.warn,
-            options: {
-              color: palette.warn,
-              lineWidth: 1,
-              priceLineVisible: false,
-              lastValueVisible: false,
-            },
-            data: linePoints(chartRows, bundle.signal),
-          },
-          {
-            key: "MACD:hist",
-            pane: macdPane,
-            color: palette.positive,
-            histogram: true,
-            options: {
-              priceLineVisible: false,
-              lastValueVisible: false,
-            },
-            data: histogramPoints(
-              chartRows,
-              bundle.hist,
-              palette.positive,
-              palette.negative,
-            ),
-          },
-        );
-      }
-    });
-
-    const wanted = new Set(entries.map((entry) => entry.key));
-    indicatorSeriesRef.current.forEach((series, name) => {
-      if (!wanted.has(name)) {
-        chart.removeSeries(series);
-        indicatorSeriesRef.current.delete(name);
-      }
-    });
-    for (const entry of entries) {
-      let series = indicatorSeriesRef.current.get(entry.key);
-      if (!series) {
-        // `title` identifies the study in the chart's crosshair legend and
-        // keeps every series individually addressable for tests.
-        const created = { ...entry.options, title: entry.key };
-        series = entry.histogram
-          ? chart.addSeries(
-              HistogramSeries,
-              created as HistogramSeriesPartialOptions,
-              entry.pane,
-            )
-          : chart.addSeries(
-              LineSeries,
-              created as LineSeriesPartialOptions,
-              entry.pane,
-            );
-        indicatorSeriesRef.current.set(entry.key, series);
-      } else {
-        series.applyOptions({ color: entry.color });
-        const currentPane = series.getPane?.()?.paneIndex?.();
-        if (typeof currentPane === "number" && currentPane !== entry.pane) {
-          series.moveToPane(entry.pane);
-        }
-      }
-      series.setData(entry.data as never);
-    }
-    // Price pane gets 3× the study pane height once a study is visible.
-    if (rsiActive || macdActive) {
-      chart.panes().forEach((pane, index) => {
-        pane.setStretchFactor(index === 0 ? 3 : 1);
-      });
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- see paletteKey
-  }, [activeIndicators, chartRows, compareMode, chartStyle, paletteKey]);
-
-  // ── 4. Live tick effect ───────────────────────────────────────────────
-  // Updates the current (last) bar via `series.update()` so live ticks
-  // never cause a remount or full setData replay. Skipped in compare mode
-  // (% rebase doesn't translate to a single-bar tick) and for empty data.
-  useEffect(() => {
-    if (!liveTick) return;
-    if (compareMode) return;
-    const mainSeries = mainSeriesRef.current;
-    if (!mainSeries || chartRows.length < 1) return;
-    const lastRow = chartRows[chartRows.length - 1];
-    const lastTime = chartTime(lastRow.date ?? lastRow.ts);
-    const price = liveTick.price;
-    if (chartStyle === "candle") {
-      (mainSeries as ISeriesApi<"Candlestick">).update({
-        time: lastTime,
-        open: Number(lastRow.open),
-        high: Math.max(Number(lastRow.high), price),
-        low: Math.min(Number(lastRow.low), price),
-        close: price,
-      });
-    } else {
-      (mainSeries as ISeriesApi<"Line" | "Area">).update({
-        time: lastTime,
-        value: price,
-      });
-    }
-  }, [liveTick, chartStyle, compareMode, chartRows]);
-
-  if (chartRows.length < 2) return null;
-  return (
-    <>
-      <div style={chartFitToolbarStyle}>
-        <span>{chartRows.length.toLocaleString("en-US")} bars loaded</span>
-        <div className="u-flex u-gap-6 hp-chart-toolbar-actions">
-          <button
-            type="button"
-            className="btn btn--ghost"
-            onClick={() => chartRef.current?.timeScale().fitContent()}
-          >
-            Fit
-          </button>
-          <button
-            type="button"
-            className="btn btn--ghost"
-            onClick={() => {
-              const el = hostRef.current;
-              if (chartRef.current && el)
-                focusLatestBars(chartRef.current, chartRows.length, el.clientWidth);
-            }}
-          >
-            Last
-          </button>
-        </div>
-      </div>
-      <div
-        ref={hostRef}
-        style={chartHostStyle}
-        role="img"
-        aria-label={`Price chart, ${interval} interval, ${chartRows.length} bars`}
-      />
-    </>
-  );
-}
-
 // ----- helpers -----
-
-function chartTime(value: string | undefined): Time {
-  const text = String(value ?? "");
-  if (text.includes("T")) {
-    const ts = Date.parse(text);
-    if (Number.isFinite(ts)) return Math.floor(ts / 1000) as Time;
-  }
-  return text.slice(0, 10) as Time;
-}
 
 function normalizeRows(payload: unknown): HPRow[] {
   if (!payload) return [];
@@ -2072,26 +824,6 @@ function downloadCsv(symbol: string, range: string, rows: HPRow[]): void {
   setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
-function focusLatestBars(chart: IChartApi, count: number, width: number): void {
-  if (count <= 0) return;
-  const visible = Math.max(90, Math.min(240, Math.floor(width / 7)));
-  chart.timeScale().setVisibleLogicalRange({
-    from: Math.max(0, count - visible),
-    to: count + 8,
-  });
-}
-
-function sma(values: number[], period: number): (number | null)[] {
-  const out: (number | null)[] = [];
-  let sum = 0;
-  for (let i = 0; i < values.length; i++) {
-    sum += values[i];
-    if (i >= period) sum -= values[i - period];
-    out.push(i >= period - 1 ? sum / period : null);
-  }
-  return out;
-}
-
 function ema(values: number[], period: number): (number | null)[] {
   const out: (number | null)[] = [];
   const k = 2 / (period + 1);
@@ -2114,64 +846,12 @@ function ema(values: number[], period: number): (number | null)[] {
   return out;
 }
 
-function rebaseToPct(rows: HPRow[]): LineData[] {
-  const out: LineData[] = [];
-  let base: number | null = null;
-  for (const r of rows) {
-    const close = (r.close ?? r.adj_close ?? r.adjClose) as number | undefined;
-    if (close == null || !Number.isFinite(close)) continue;
-    if (base == null) {
-      if (close === 0) continue;
-      base = close;
-    }
-    out.push({
-      time: chartTime(r.date ?? r.ts),
-      value: ((close - base) / base) * 100,
-    });
-  }
-  return out;
-}
-
 function lastDefined(values: (number | null)[]): number | null {
   for (let i = values.length - 1; i >= 0; i--) {
     const value = values[i];
     if (value != null && Number.isFinite(value)) return value;
   }
   return null;
-}
-
-function linePoints(
-  rows: Array<HPRow & { _change?: number; _changePct?: number }>,
-  values: (number | null)[],
-): LineData[] {
-  const out: LineData[] = [];
-  values.forEach((value, index) => {
-    if (value == null || !Number.isFinite(value)) return;
-    const row = rows[index];
-    if (!row) return;
-    out.push({ time: chartTime(row.date ?? row.ts), value });
-  });
-  return out;
-}
-
-function histogramPoints(
-  rows: Array<HPRow & { _change?: number; _changePct?: number }>,
-  values: (number | null)[],
-  positiveColor: string,
-  negativeColor: string,
-): HistogramData[] {
-  const out: HistogramData[] = [];
-  values.forEach((value, index) => {
-    if (value == null || !Number.isFinite(value)) return;
-    const row = rows[index];
-    if (!row) return;
-    out.push({
-      time: chartTime(row.date ?? row.ts),
-      value,
-      color: value >= 0 ? positiveColor : negativeColor,
-    });
-  });
-  return out;
 }
 
 /** Wilder RSI, aligned to the close series (null before the first value). */
@@ -2225,29 +905,6 @@ function macdBundle(closes: number[]): {
     value != null && signal[i] != null ? value - (signal[i] as number) : null,
   );
   return { macd, signal, hist };
-}
-
-function bollingerBands(
-  closes: number[],
-  period = 20,
-  mult = 2,
-): { upper: (number | null)[]; mid: (number | null)[]; lower: (number | null)[] } {
-  const mid = sma(closes, period);
-  const upper: (number | null)[] = new Array(closes.length).fill(null);
-  const lower: (number | null)[] = new Array(closes.length).fill(null);
-  for (let i = period - 1; i < closes.length; i++) {
-    const mean = mid[i];
-    if (mean == null) continue;
-    let variance = 0;
-    for (let j = i - period + 1; j <= i; j++) {
-      const diff = closes[j] - mean;
-      variance += diff * diff;
-    }
-    const deviation = Math.sqrt(variance / period);
-    upper[i] = mean + mult * deviation;
-    lower[i] = mean - mult * deviation;
-  }
-  return { upper, mid, lower };
 }
 
 /**
@@ -2430,183 +1087,22 @@ const pillButtonStyle: CSSProperties = {
   letterSpacing: "0.04em",
 };
 
-const toolbarButtonStyle: CSSProperties = {
-  height: 24,
-  padding: "0 10px",
-  background: "var(--surface-2)",
-  border: "1px solid var(--border-subtle)",
-  borderRadius: "var(--radius-sm)",
-  color: "var(--text-secondary)",
-  fontFamily: "JetBrains Mono, monospace",
-  fontSize: "var(--font-size-2xs)",
-  letterSpacing: "0.06em",
-  textTransform: "uppercase",
-  cursor: "default",
-};
 
-const toolbarIconButtonStyle: CSSProperties = {
-  ...toolbarButtonStyle,
-  width: 28,
-  padding: 0,
-  fontSize: "var(--font-size-lg)",
-};
 
-const indicatorMenuStyle: CSSProperties = {
-  position: "absolute",
-  top: 30,
-  right: 0,
-  zIndex: 30,
-  width: 180,
-  background: "var(--surface-3)",
-  border: "1px solid var(--border-strong)",
-  borderRadius: "var(--radius-md)",
-  boxShadow: "var(--shadow-elev-2)",
-  padding: 4,
-  display: "grid",
-  gap: 1,
-};
 
-const indicatorMenuItemStyle: CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  gap: 8,
-  padding: "6px 8px",
-  border: "none",
-  borderRadius: "var(--radius-sm)",
-  fontFamily: "JetBrains Mono, monospace",
-  fontSize: "var(--font-size-sm)",
-  cursor: "default",
-  textAlign: "left",
-};
 
-const comparePopupStyle: CSSProperties = {
-  position: "absolute",
-  top: 30,
-  right: 0,
-  zIndex: 30,
-  width: 240,
-  background: "var(--surface-3)",
-  border: "1px solid var(--border-strong)",
-  borderRadius: "var(--radius-md)",
-  boxShadow: "var(--shadow-elev-2)",
-  padding: 10,
-  display: "grid",
-  gap: 8,
-};
 
-const comparePopupHeaderStyle: CSSProperties = {
-  display: "flex",
-  justifyContent: "space-between",
-  alignItems: "center",
-  fontFamily: "JetBrains Mono, monospace",
-  fontSize: "var(--font-size-xs)",
-  color: "var(--text-mute)",
-  letterSpacing: "0.08em",
-  textTransform: "uppercase",
-};
 
-const comparePopupHintStyle: CSSProperties = {
-  color: "var(--text-secondary)",
-  fontWeight: 500,
-};
 
-const comparePopupSubLabelStyle: CSSProperties = {
-  fontFamily: "JetBrains Mono, monospace",
-  fontSize: "var(--font-size-xs)",
-  color: "var(--text-mute)",
-  letterSpacing: "0.08em",
-  textTransform: "uppercase",
-  marginTop: 2,
-};
 
-const compareChipRowStyle: CSSProperties = {
-  display: "flex",
-  flexWrap: "wrap",
-  gap: 4,
-};
 
-const compareChipStyle: CSSProperties = {
-  display: "inline-flex",
-  alignItems: "center",
-  gap: 5,
-  padding: "3px 6px",
-  background: "var(--surface-1)",
-  border: "1px solid var(--border-subtle)",
-  borderRadius: "var(--radius-sm)",
-  fontFamily: "JetBrains Mono, monospace",
-  fontSize: "var(--font-size-2xs)",
-  color: "var(--text-primary)",
-};
 
-const compareChipDotStyle: CSSProperties = {
-  width: 6,
-  height: 6,
-  borderRadius: "50%",
-  display: "inline-block",
-};
 
-const compareChipRemoveStyle: CSSProperties = {
-  border: "none",
-  background: "transparent",
-  color: "var(--text-mute)",
-  fontSize: "var(--font-size-md)",
-  lineHeight: 1,
-  padding: 0,
-  marginLeft: 2,
-  cursor: "default",
-};
 
-const compareFormStyle: CSSProperties = {
-  display: "flex",
-  gap: 4,
-};
 
-const compareInputStyle: CSSProperties = {
-  flex: 1,
-  height: 24,
-  padding: "0 8px",
-  background: "var(--surface-1)",
-  border: "1px solid var(--border-subtle)",
-  borderRadius: "var(--radius-sm)",
-  color: "var(--text-primary)",
-  fontFamily: "JetBrains Mono, monospace",
-  fontSize: "var(--font-size-sm)",
-  textTransform: "uppercase",
-};
 
-const compareAddBtnStyle: CSSProperties = {
-  height: 24,
-  padding: "0 10px",
-  background: "var(--accent)",
-  color: "var(--accent-on)",
-  border: "none",
-  borderRadius: "var(--radius-sm)",
-  fontFamily: "JetBrains Mono, monospace",
-  fontSize: "var(--font-size-2xs)",
-  fontWeight: 600,
-  letterSpacing: "0.06em",
-  textTransform: "uppercase",
-  cursor: "default",
-};
 
-const compareSuggestionRowStyle: CSSProperties = {
-  display: "flex",
-  flexWrap: "wrap",
-  gap: 4,
-};
 
-const compareSuggestionBtnStyle: CSSProperties = {
-  height: 22,
-  padding: "0 6px",
-  background: "var(--surface-2)",
-  border: "1px solid var(--border-subtle)",
-  borderRadius: "var(--radius-sm)",
-  color: "var(--text-secondary)",
-  fontFamily: "JetBrains Mono, monospace",
-  fontSize: "var(--font-size-2xs)",
-  letterSpacing: "0.04em",
-  cursor: "default",
-};
 
 const chartLayoutStyle: CSSProperties = {
   display: "grid",
@@ -2635,67 +1131,11 @@ const chartSurfaceStyle: CSSProperties = {
   borderRadius: "var(--radius-md)",
 };
 
-const chartHostStyle: CSSProperties = {
-  position: "absolute",
-  inset: 0,
-  minWidth: 0,
-  minHeight: 0,
-};
 
-const chartFitToolbarStyle: CSSProperties = {
-  position: "absolute",
-  top: 8,
-  left: 10,
-  right: 10,
-  zIndex: 2,
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "space-between",
-  gap: 8,
-  pointerEvents: "none",
-  color: "var(--text-mute)",
-  fontSize: "var(--font-size-2xs)",
-  textTransform: "uppercase",
-  letterSpacing: "0.06em",
-};
 
-const crosshairBoxStyle: CSSProperties = {
-  position: "absolute",
-  top: 18,
-  right: 18,
-  zIndex: 3,
-  background: "var(--surface-glass)",
-  backdropFilter: "blur(8px)",
-  WebkitBackdropFilter: "blur(8px)",
-  border: "1px solid var(--border-strong)",
-  borderRadius: "var(--radius-sm)",
-  padding: "8px 10px",
-  display: "grid",
-  gap: 3,
-  minWidth: 140,
-  pointerEvents: "none",
-};
 
-const crosshairRowStyle: CSSProperties = {
-  display: "flex",
-  justifyContent: "space-between",
-  gap: 14,
-};
 
-const crosshairLabelStyle: CSSProperties = {
-  fontFamily: "JetBrains Mono, monospace",
-  fontSize: "var(--font-size-xs)",
-  color: "var(--text-mute)",
-  textTransform: "uppercase",
-  letterSpacing: "0.08em",
-};
 
-const crosshairValueStyle: CSSProperties = {
-  fontFamily: "JetBrains Mono, monospace",
-  fontSize: "var(--font-size-sm)",
-  color: "var(--text-display)",
-  fontVariantNumeric: "tabular-nums",
-};
 
 const rightRailStyle: CSSProperties = {
   display: "grid",

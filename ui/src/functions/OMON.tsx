@@ -39,6 +39,7 @@ import {
 } from "@/design-system/grid-csv";
 import { formatNumber } from "@/lib/format";
 import { useFunction } from "@/lib/useFunction";
+import { SymbolBar } from "@/shell/SymbolBar";
 import { useVisibilityTick } from "@/lib/useVisibilityTick";
 import { defaultSymbolForFunction } from "@/lib/symbols";
 import {
@@ -449,6 +450,7 @@ export function OMONPane({ code, symbol }: FunctionPaneProps) {
             </FunctionControlGroup>
           }
         />
+        <SymbolBar code={code} symbol={effectiveSymbol} />
         <PaneBody>
           <PaneState
             state={state}

@@ -41,11 +41,22 @@ def dapi() -> FunctionManifest:
         asset_classes=[],
         inputs=[
             InputSpec(
-                name="query",
+                name="path_filter",
                 label="Filter",
                 control=ControlKind.TEXT,
                 required=False,
                 description="Substring filter on path or purpose; empty returns everything.",
+            ),
+            InputSpec(
+                name="query",
+                label="Filter (legacy alias)",
+                control=ControlKind.TEXT,
+                required=False,
+                description=(
+                    "Legacy alias for path_filter. Honored for direct engine calls; "
+                    "a routed /api/fn call silently injects a generic news query, so a "
+                    "routed query that matches no route is ignored and reported."
+                ),
             ),
             InputSpec(
                 name="mutates_only",
@@ -56,6 +67,7 @@ def dapi() -> FunctionManifest:
             ),
         ],
         defaults={
+            "path_filter": "",
             "query": "",
             "mutates_only": False,
         },
@@ -107,9 +119,14 @@ def dapi() -> FunctionManifest:
             "FastAPI router table so Excel/external clients see the same shape the engine serves. "
             "Otherwise it falls back to the curated route manifest in engine/functions/api/dapi.py:: "
             "DAPI_CURATED_ROUTES — which is kept aligned with backend/showme/server_routes/*.py and "
-            "audited by tests/test_dapi.py. Auth: X-ShowMe-Token (or Authorization: Bearer …) gates "
-            "/api/* when SHOWME_AUTH_TOKEN is set; /api/health stays open. Source mode is reported "
-            "honestly so callers know whether they got a live snapshot or the curated baseline."
+            "audited by tests/test_dapi.py. Filtering uses path_filter (alias filter=); the legacy "
+            "query= alias is honored for direct calls and for routed calls only when it matches a "
+            "route — the /api/fn routing layer injects a generic news query into every call, and an "
+            "ignored injected value is reported in warnings + summary.ignored_filter instead of "
+            "silently emptying the route table (the 2026-09 'ROUTES 0/46' regression). Auth: "
+            "X-ShowMe-Token (or Authorization: Bearer …) gates /api/* when SHOWME_AUTH_TOKEN is set; "
+            "/api/health stays open. Source mode is reported honestly so callers know whether they "
+            "got a live snapshot or the curated baseline."
         ),
         field_dict={
             "rows[].method": FieldDef(description="HTTP verb (comma-joined when one path accepts multiple).", source="dapi"),
@@ -122,6 +139,7 @@ def dapi() -> FunctionManifest:
             "summary.endpoints": FieldDef(unit="count", description="Endpoints returned after filtering.", source="dapi"),
             "summary.total_routes": FieldDef(unit="count", description="All routes known to the manifest.", source="dapi"),
             "summary.state_changing": FieldDef(unit="count", description="How many returned routes can mutate state.", source="dapi"),
+            "summary.ignored_filter": FieldDef(description="Routed agent-default query dropped because it matched no route (null when nothing was ignored).", source="dapi"),
         },
         provenance=ProvenanceSpec(
             require_source_list=True,
@@ -151,6 +169,20 @@ def dapi() -> FunctionManifest:
                 assertions=[
                     "every_row_path_or_purpose_contains_quote",
                     "rows_length_strictly_less_than_total_routes",
+                ],
+            ),
+            SemanticTest(
+                name="dapi_routed_default_query_never_empties_manifest",
+                description=(
+                    "A routed call carrying the injected agent-default query (e.g. "
+                    "'bitcoin cryptocurrency') must return the full manifest and report "
+                    "the ignored value instead of silently returning zero rows."
+                ),
+                inputs={"query": "bitcoin cryptocurrency", "__explicit_symbol": False},
+                assertions=[
+                    "rows_length_equals_total_routes",
+                    "summary.filter == 'all'",
+                    "summary.ignored_filter == 'bitcoin cryptocurrency'",
                 ],
             ),
             SemanticTest(

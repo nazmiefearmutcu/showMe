@@ -150,6 +150,24 @@ describe("EQS pane — result honesty (F6)", () => {
     ).not.toHaveLength(0);
   });
 
+  it("surfaces partial scan coverage against the real universe size", async () => {
+    // Session-17: the pane must not pretend the whole chip universe was
+    // scanned when the provider returned fewer rows (delisted names).
+    runFunctionMock.mockResolvedValue({
+      ...okResult(),
+      metadata: {
+        matched: 2,
+        scanned: 491,
+        universe: "custom (503 symbols)",
+        universe_size: 503,
+      },
+    });
+    render(<EQSPane code="EQS" />);
+    fireEvent.click(screen.getByRole("button", { name: /^run$/i }));
+
+    expect(await screen.findByText(/SCANNED 491 \/ 503/)).toBeInTheDocument();
+  });
+
   it("shows a live-screen-unavailable empty state with the backend reason", async () => {
     runFunctionMock.mockResolvedValue({
       code: "EQS",

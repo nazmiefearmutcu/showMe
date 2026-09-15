@@ -50,6 +50,7 @@ import {
 } from "@/design-system/grid-csv";
 import { formatNumberFixed } from "@/lib/format";
 import { useFunction } from "@/lib/useFunction";
+import { SymbolBar } from "@/shell/SymbolBar";
 import { defaultSymbolForFunction } from "@/lib/symbols";
 import {
   FunctionControlGroup,
@@ -465,6 +466,7 @@ export function HVTPane({ code, symbol }: FunctionPaneProps) {
             </FunctionControlGroup>
           }
         />
+        <SymbolBar code={code} symbol={effectiveSymbol} />
         <PaneBody>{body}</PaneBody>
         <PaneFooter>
           <StatusSection

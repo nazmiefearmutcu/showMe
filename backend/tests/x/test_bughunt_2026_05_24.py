@@ -221,11 +221,31 @@ def test_min_posts_for_verdict_env_override(monkeypatch: pytest.MonkeyPatch) -> 
         importlib.reload(mod)
 
 
+@pytest.fixture(autouse=True)
+def _reset_x_chain_and_offline_fallback(monkeypatch: pytest.MonkeyPatch):
+    """Keep these unit tests deterministic AND offline.
+
+    symbol_chip now cascades X → Stocktwits: the breaker state would leak
+    between tests, and the live fallback would hit the public endpoint. Reset
+    the breaker before/after every test and stub the fallback off.
+    """
+    from showme import x_analysis
+
+    x_analysis._reset_x_chain_breaker()
+    monkeypatch.setattr(x_analysis, "_stocktwits_fetch_chip", lambda symbol: None)
+    yield
+    x_analysis._reset_x_chain_breaker()
+
+
 def test_symbol_chip_does_not_pretend_to_have_data_on_insufficient(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """DES/CN chips that build on symbol_chip must not raise KeyError when
-    analyze_topic returns the insufficient_data shape (no examples key)."""
+    analyze_topic returns the insufficient_data shape (no examples key).
+
+    With the X chain reporting insufficient data and the live fallback stubbed
+    offline, the chip must stay a non-ok em-dash shape — never a verdict.
+    """
     from showme import x_analysis
 
     analyzer = x_analysis.XAnalyzer()
@@ -240,8 +260,8 @@ def test_symbol_chip_does_not_pretend_to_have_data_on_insufficient(
 
     chip = analyzer.symbol_chip("AAPL")
     assert chip["ok"] is False
-    assert chip["post_count"] == 3
-    assert chip["verdict"] == "insufficient_data"
+    assert chip["post_count"] == 0
+    assert "stocktwits" in chip["error"]
 
 
 # ── Honest freshness — _aggregate stamps a served-time fetched_at ──────────

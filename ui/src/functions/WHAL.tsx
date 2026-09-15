@@ -183,7 +183,15 @@ export function WHALPane({ code, symbol }: FunctionPaneProps) {
   const warnings = Array.isArray(payload.provider_warnings) ? payload.provider_warnings : [];
   const utcStamp = useUtcStamp(tick);
   const isLive = payload.status === "ok";
-  const thresholdHits = rows.filter((r) => r.threshold_crossed).length;
+  // Min-USD contract: a row whose known USD value is below the applied
+  // threshold must never render — even if an older backend (or a cached
+  // payload) still ships it. Rows with no USD value (SEC filings, FX
+  // impulse proxies) are not comparable to a dollar floor and stay.
+  const visibleRows = useMemo<WHALRow[]>(
+    () => rows.filter((r) => rowMeetsMinUsd(r, threshold)),
+    [rows, threshold],
+  );
+  const thresholdHits = visibleRows.filter((r) => r.threshold_crossed).length;
 
   const cols = useMemo<DataGridColumn<WHALRow>[]>(
     () => [
@@ -277,10 +285,10 @@ export function WHALPane({ code, symbol }: FunctionPaneProps) {
         <PaneHeader
           code={code}
           title={`Whale flow · ${resolvedSymbol}`}
-          subtitle={`${rows.length} rows · ${thresholdHits} crossed $${(threshold / 1000).toFixed(0)}k · ${payload.provider ?? "—"}`}
+          subtitle={`${visibleRows.length} rows · ${thresholdHits} crossed ${fmtThresholdUsd(threshold)} · ${payload.provider ?? "—"}`}
           trailing={
             <FunctionControlGroup>
-              <Pill tone="muted" variant="soft" withDot={false}>{rows.length} alerts</Pill>
+              <Pill tone="muted" variant="soft" withDot={false}>{visibleRows.length} alerts</Pill>
               <Pill tone="accent" variant="soft" withDot={false}>{utcStamp} UTC</Pill>
               <Pill
                 tone={isLive ? "positive" : "warn"}
@@ -312,10 +320,10 @@ export function WHALPane({ code, symbol }: FunctionPaneProps) {
                   color: thresholdK === v ? "var(--accent)" : "var(--text-secondary)",
                   borderColor: thresholdK === v ? "var(--accent)" : "var(--border-subtle)",
                 }}
-                aria-pressed={thresholdK === v}
-              >
-                {v === "10000" ? "10M" : `${v}k`}
-              </button>
+                 aria-pressed={thresholdK === v}
+               >
+                 {fmtThresholdUsd(Number(v) * 1000).replace("$", "")}
+               </button>
             ))}
           </div>
         </div>
@@ -358,12 +366,12 @@ export function WHALPane({ code, symbol }: FunctionPaneProps) {
                   ))}
                 </section>
               ) : null}
-              {rows.length === 0 ? (
+              {visibleRows.length === 0 ? (
                 <Empty title="No alerts" body={payload.summary ?? "No public WHAL rows returned."} />
               ) : (
                 <DataGrid
                   columns={cols}
-                  rows={rows}
+                  rows={visibleRows}
                   rowKey={(r, i) => `${r.timestamp ?? ""}-${r.symbol ?? ""}-${i}`}
                   density="compact"
                 />
@@ -382,7 +390,7 @@ export function WHALPane({ code, symbol }: FunctionPaneProps) {
           <StatusDivider />
           <StatusSection label="market" value={market} />
           <StatusDivider />
-          <StatusSection label="threshold" value={`$${(threshold / 1000).toFixed(0)}k`} />
+          <StatusSection label="threshold" value={fmtThresholdUsd(threshold)} />
           <StatusDivider />
           <StatusSection label="lookback" value={`${payload.lookback_hours ?? 24}h`} />
           <StatusDivider />
@@ -442,6 +450,28 @@ function formatLargeNumber(n: number): string {
   if (Math.abs(n) >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
   if (Math.abs(n) >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
   return n.toLocaleString("en-US", { maximumFractionDigits: 2 });
+}
+
+/** Render the applied Min-USD value the same way the preset buttons do
+ * (100k / 500k / 1M / 5M / 10M) so the footer chip can never claim a
+ * different number than the filter actually applied. */
+function fmtThresholdUsd(v: number): string {
+  if (!Number.isFinite(v) || v <= 0) return "$0";
+  if (v >= 1_000_000) {
+    const m = v / 1_000_000;
+    return `$${Number.isInteger(m) ? m : m.toFixed(1)}M`;
+  }
+  if (v >= 1_000) {
+    const k = v / 1_000;
+    return `$${Number.isInteger(k) ? k : k.toFixed(1)}k`;
+  }
+  return `$${v}`;
+}
+
+function rowMeetsMinUsd(row: WHALRow, threshold: number): boolean {
+  if (threshold <= 0) return true;
+  if (row.usd_value == null) return true; // unitless filing / impulse proxy
+  return Number(row.usd_value) >= threshold;
 }
 
 function formatCardValue(value: unknown, unit?: string): string {

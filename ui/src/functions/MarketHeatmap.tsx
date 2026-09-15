@@ -334,7 +334,10 @@ export function MarketHeatmapPane({ code }: FunctionPaneProps) {
 
                 {/* Main: heatmap grid (left) + legend rail (right) */}
                 <div style={mainGridStyle}>
-                  <div className="u-min-w-0">
+                  {/* `display:grid` lets the heat grid stretch to the full row
+                      height so a taller legend rail never leaves a dead band
+                      between the tiles and the country table. */}
+                  <div className="u-min-w-0" style={{ display: "grid" }}>
                     <SectorHeatGrid
                       rows={rows}
                       isSector={isSector}
@@ -451,7 +454,10 @@ function SectorHeatGrid({
   // (never a fabricated tile size).
   const maxAbs = maxAbsOf(rows.map((r) => changeOf(r) ?? 0), 1);
   return (
-    <div className="u-grid-gap-6">
+    <div
+      className="u-grid-gap-6"
+      style={{ height: "100%", gridTemplateRows: "minmax(0,1fr) auto" }}
+    >
       <section style={heatGridStyle} aria-label="ETF performance heatmap">
         {rows.map((row, idx) => (
           <HeatCell
@@ -1142,8 +1148,10 @@ const mainGridStyle: CSSProperties = {
 const heatGridStyle: CSSProperties = {
   display: "grid",
   gridTemplateColumns: "repeat(6, 1fr)",
+  // Row floor 76px, stretching to fill a taller grid row (tall windows keep
+  // the left column flush with the legend rail — no blank band).
+  gridAutoRows: "minmax(76px, 1fr)",
   gap: 6,
-  minHeight: 180,
 };
 
 const heatCellWrapStyle: CSSProperties = {

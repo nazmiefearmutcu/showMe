@@ -6,8 +6,8 @@ Covers the survey-4 coverage gaps closed by the backend lane:
   ``FunctionFactory``) instead of the ``seasonal_weather_model`` token.
 * TAUC defaults to the keyless TreasuryDirect adapter instead of the
   hand-written auction template.
-* FRH defaults to the in-file keyless Binance/Bybit/OKX funding feeds
-  (previously gated behind ``live=1``).
+* FRH always serves the in-file keyless Binance/Bybit/OKX funding feeds
+  (the model template and its ``reference``/``live`` opt-outs were removed).
 * ALLQ anchors US tenors on the keyless Treasury par-yield curve when the
   ``ustreasury`` adapter is wired (per-tenor, no FiscalData type-average).
 * CSRC/SECF/SRCH screen universes default to live keyless sources and
@@ -322,12 +322,21 @@ class _FakeResponse:
 
 
 class _FakeFundingClient:
-    def __init__(self, fail: bool = False):
+    def __init__(self, fail: bool = False, ticker: list[dict[str, Any]] | None = None):
         self.fail = fail
+        self.ticker = ticker
         self.calls = 0
+        self.ticker_calls = 0
 
     async def get(self, url: str, params: dict[str, Any] | None = None) -> _FakeResponse:
         self.calls += 1
+        if "ticker/24hr" in url:
+            self.ticker_calls += 1
+            if self.fail:
+                raise RuntimeError("exchange down")
+            if self.ticker is None:
+                return _FakeResponse(404, {})
+            return _FakeResponse(200, self.ticker)
         if self.fail:
             raise RuntimeError("exchange down")
         if "premiumIndex" in url:
@@ -373,16 +382,56 @@ def test_frh_provider_exhausted_envelope_cannot_earn_live() -> None:
     assert sanitized["status"] == "provider_unavailable"
 
 
-def test_frh_reference_true_serves_model_without_network() -> None:
+def test_frh_reference_true_no_longer_serves_template() -> None:
     from showme.engine.functions.screen.frh import FRHFunction
 
     client = _FakeFundingClient()
     fn = FRHFunction()
     fn._http_client = client
     result = asyncio.run(fn.execute(symbols="BTCUSDT", reference=True))
-    assert client.calls == 0
-    assert result.sources == ["funding_rate_model"]
-    assert _body(result)["data_state"] != "live"
+    # reference=true can no longer opt into a model template: fetch live.
+    assert client.calls > 0
+    assert "funding_rate_model" not in (result.sources or [])
+    assert result.sources == ["binance", "bybit", "okx"]
+    assert result.metadata.get("data_mode") == "live_exchange"
+    assert result.metadata.get("data_mode") != "modeled"
+
+
+def test_frh_limit_expands_universe_past_default_25(monkeypatch) -> None:
+    from showme.engine.functions.screen import frh as frh_mod
+
+    ticker = [
+        {"symbol": f"COIN{i:03d}USDT", "quoteVolume": f"{1_000_000 - i}"}
+        for i in range(60)
+    ]
+    monkeypatch.setattr(frh_mod, "_ranking_cache", None)
+    client = _FakeFundingClient(ticker=ticker)
+    fn = frh_mod.FRHFunction()
+    fn._http_client = client
+    result = asyncio.run(fn.execute(limit=50))
+    symbols = [row["symbol"] for row in result.data["rows"]]
+    assert len(symbols) == 50
+    assert symbols[:3] == ["COIN000USDT", "COIN001USDT", "COIN002USDT"]
+    assert client.ticker_calls == 1
+    # A second call inside the ~10-minute TTL reuses the cached ranking.
+    again = asyncio.run(fn.execute(limit=50))
+    assert len(again.data["rows"]) == 50
+    assert client.ticker_calls == 1
+
+
+def test_frh_explicit_symbols_win_over_dynamic_universe() -> None:
+    from showme.engine.functions.screen import frh as frh_mod
+
+    client = _FakeFundingClient(ticker=[{"symbol": "COIN999USDT", "quoteVolume": "1"}])
+    fn = frh_mod.FRHFunction()
+    fn._http_client = client
+    result = asyncio.run(fn.execute(symbols=["btcusdt", "ethusdt", "solusdt"], limit=10))
+    assert [row["symbol"] for row in result.data["rows"]] == [
+        "BTCUSDT",
+        "ETHUSDT",
+        "SOLUSDT",
+    ]
+    assert client.ticker_calls == 0
 
 
 # ─────────────────────────────────────────────────────────────────────────

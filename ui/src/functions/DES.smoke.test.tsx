@@ -19,6 +19,11 @@ vi.mock("@/lib/useFunction", () => ({
   }),
 }));
 
+// The engine fetches /api/bars and paints a canvas — stub it out.
+vi.mock("@/chart/Chart", () => ({
+  Chart: () => <div data-testid="chart-engine" />,
+}));
+
 vi.mock("@/lib/market-data", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/market-data")>();
   return {

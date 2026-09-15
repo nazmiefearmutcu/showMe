@@ -61,6 +61,7 @@ import {
   type GridCsvColumn,
 } from "@/design-system/grid-csv";
 import { useFunction } from "@/lib/useFunction";
+import { SymbolBar } from "@/shell/SymbolBar";
 import { useVisibilityTick } from "@/lib/useVisibilityTick";
 import {
   FunctionControlGroup,
@@ -537,6 +538,7 @@ export function IVOLPane({ code, symbol }: FunctionPaneProps) {
             </FunctionControlGroup>
           }
         />
+        <SymbolBar code={code} symbol={symbol} />
         <PaneBody>
           <PaneState
             state={state}

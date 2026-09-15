@@ -6,11 +6,12 @@
  * Bands, Stochastic, ADX, OBV) with exposed `indicator_params`.
  *
  * Layout: persisted per-family toggle chips (`showme.tech.families`) +
- * params strip derived from the payload, a close-price sparkline card
- * (design-system inline-SVG `Sparkline`, no chart lib), and a compact
- * latest-values card grid with honest tones (RSI/Stoch overbought-oversold,
- * MACD histogram sign, ADX trend strength). Empty / error / degraded
- * (warnings) states are explicit — never fake numbers.
+ * params strip derived from the payload, the in-house chart engine
+ * (`@/chart/Chart` — it owns timeframes/types/indicators/zoom and fetches
+ * its own /api/bars), and a compact latest-values card grid with honest
+ * tones (RSI/Stoch overbought-oversold, MACD histogram sign, ADX trend
+ * strength). Empty / error / degraded (warnings) states are explicit —
+ * never fake numbers.
  *
  * Study sub-panes (OPP wave 2026-09-11): the SAME family chips drive two
  * inline sub-panes — RSI(14) on a fixed 0–100 domain (true 70/30 guides) and
@@ -29,7 +30,6 @@ import {
   PaneHeader,
   Pill,
   Skeleton,
-  Sparkline,
   StatCard,
   StatusDivider,
   StatusSection,
@@ -38,6 +38,7 @@ import { formatNumberFixed } from "@/lib/format";
 import { useFunction } from "@/lib/useFunction";
 import { useVisibilityTick } from "@/lib/useVisibilityTick";
 import { defaultSymbolForFunction } from "@/lib/symbols";
+import { Chart } from "@/chart/Chart";
 import { FunctionControlGroup, LoadStatePill, RefreshButton } from "./function-controls";
 import type { FunctionPaneProps } from "./registry-types";
 
@@ -278,8 +279,8 @@ export function TECHPane({ code, symbol }: FunctionPaneProps) {
           {paramsLine}
         </div>
       ) : null}
-      <section style={sparkCardStyle} aria-label="Close price sparkline">
-        <div style={sparkHeadStyle}>
+      <section style={chartCardStyle} aria-label="Price chart">
+        <div style={chartHeadStyle}>
           <span className="u-text-mute" style={paramsStyle}>
             CLOSE · {bars.length} BARS · {(payload?.resolution ?? "—").toUpperCase()}
           </span>
@@ -289,13 +290,7 @@ export function TECHPane({ code, symbol }: FunctionPaneProps) {
             </span>
           </FlashValue>
         </div>
-        <Sparkline
-          values={closes}
-          width={280}
-          height={48}
-          tone="accent"
-          ariaLabel={`Close price, ${closes.length} bars, last ${fmtNum(summary?.last_price ?? lastBar?.close)}`}
-        />
+        <Chart symbol={effectiveSymbol} height={280} initialInterval="1D" />
       </section>
       {showRsiStudy ? (
         <RsiStudyPane values={rsiStudy} period={params.rsi_period ?? 14} />
@@ -829,17 +824,13 @@ const paramsStyle: CSSProperties = {
   letterSpacing: "0.05em",
 };
 
-const sparkCardStyle: CSSProperties = {
+const chartCardStyle: CSSProperties = {
   display: "flex",
   flexDirection: "column",
   gap: 8,
-  padding: "10px 12px",
-  border: "1px solid var(--border)",
-  borderRadius: 8,
-  background: "var(--bg-raised, transparent)",
 };
 
-const sparkHeadStyle: CSSProperties = {
+const chartHeadStyle: CSSProperties = {
   display: "flex",
   justifyContent: "space-between",
   alignItems: "baseline",

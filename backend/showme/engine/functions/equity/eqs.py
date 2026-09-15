@@ -11,14 +11,18 @@ DSL examples:
 
 from __future__ import annotations
 
+import asyncio
 import re
+import time
 from dataclasses import dataclass
 from typing import Any
 
 import pandas as pd
 
+from showme.engine.core.base_data_source import DataKind, DataRequest
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from showme.engine.core.instrument import AssetClass, Instrument
+from showme.engine.functions.equity.des import _normalize_dividend_yield
 
 
 # ── Mini DSL ──
@@ -132,12 +136,42 @@ def _eval(node: Any, row: dict[str, Any]) -> bool:
     return False
 
 
+# Query aliases → the real column names the screener DataFrame exposes.
+# The pane presets send ``dividendYield`` while the live/template frame names
+# the column ``dividend_yield``; without this fold every predicate on it
+# matched zero rows (reported as "MATCHED 0 of 11 scanned" while the universe
+# chip said 503 symbols). Same class of alias for the other known spellings.
+_QUERY_ALIASES: dict[str, str] = {
+    "dividendyield": "dividend_yield",
+    "dividend_yield_ttm": "dividend_yield",
+    "divyield": "dividend_yield",
+    "div_yield": "dividend_yield",
+    "marketcap": "marketCap",
+    "market_cap": "marketCap",
+    "pe_ratio": "pe",
+    "pe_ttm": "pe",
+    "trailingpe": "pe",
+    "price_to_book": "pb",
+    "pb_ratio": "pb",
+    "price_to_sales": "ps",
+    "ps_ratio": "ps",
+}
+
+
+def normalize_query_aliases(query: str) -> str:
+    """Fold known field aliases onto the screener's real column names."""
+    rewritten = str(query or "")
+    for old, new in _QUERY_ALIASES.items():
+        rewritten = re.sub(rf"\b{re.escape(old)}\b", new, rewritten, flags=re.I)
+    return rewritten
+
+
 def parse_dsl(query: str) -> Any:
-    return _parse(_tokenize(query))[0]
+    return _parse(_tokenize(normalize_query_aliases(query)))[0]
 
 
 def filter_dataframe(df: pd.DataFrame, query: str) -> pd.DataFrame:
-    """Filter a DataFrame against an EQS DSL string."""
+    """Filter a DataFrame against an EQS DSL string (aliases folded)."""
     ast = parse_dsl(query)
     mask = df.apply(lambda r: _eval(ast, r.to_dict()), axis=1)
     return df[mask]
@@ -173,49 +207,7 @@ class EQSFunction(BaseFunction):
         if template_mode:
             rows = _screen_template_rows(instrument, universe)
         elif self.deps.yfinance:
-            import asyncio
-            from showme.engine.core.base_data_source import DataKind, DataRequest
-            from showme.engine.core.instrument import Instrument as I
-            timeout = max(1.0, min(float(params.get("refdata_timeout", params.get("yfinance_timeout", 2))), 4.0))
-            screen_timeout = max(2.0, min(float(params.get("screen_timeout", 4)), 6.0))
-
-            async def _one(s: str):
-                return await self.deps.yfinance.fetch(DataRequest(
-                    kind=DataKind.REFDATA,
-                    instrument=I(symbol=s, asset_class=AssetClass.EQUITY, exchange="NASDAQ"),
-                    extra={"timeout": timeout},
-                ))
-
-            tasks = [asyncio.create_task(_one(str(s))) for s in universe]
-            done, pending = await asyncio.wait(tasks, timeout=screen_timeout)
-            for task in pending:
-                task.cancel()
-            if pending:
-                await asyncio.gather(*pending, return_exceptions=True)
-            result_map = {}
-            for sym, task in zip(universe, tasks):
-                if task in done:
-                    try:
-                        result_map[str(sym)] = task.result()
-                    except Exception:
-                        pass
-            for sym in universe:
-                r = result_map.get(str(sym))
-                if isinstance(r, Exception) or r is None:
-                    continue
-                raw = (r.extras or {}).get("raw", {}) if hasattr(r, "extras") else {}
-                rows.append({
-                    "symbol": sym,
-                    "sector": r.sector or raw.get("sector"),
-                    "industry": r.industry or raw.get("industry"),
-                    "marketCap": r.market_cap or raw.get("marketCap") or 0,
-                    "pe": raw.get("trailingPE") or 0,
-                    "pb": raw.get("priceToBook") or 0,
-                    "ps": raw.get("priceToSalesTrailing12Months") or 0,
-                    "dividend_yield": raw.get("dividendYield") or 0,
-                    "beta": raw.get("beta") or 0,
-                    "country": r.country or raw.get("country"),
-                })
+            rows = await self._live_equity_rows(universe, params)
         # F6 honesty fix: the live_screen=True path must never substitute the
         # 5-row template stub. Previously `rows < 3` silently loaded template
         # rows and still attributed them to `sources=["yfinance"]`. The
@@ -337,6 +329,329 @@ class EQSFunction(BaseFunction):
                 "universe_size": len(universe),
             },
         )
+
+    async def _live_equity_rows(
+        self,
+        universe: list[str],
+        params: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        """Live rows for the requested universe.
+
+        Preferred path: the provider's batched Yahoo fundamentals fills the
+        whole universe in a handful of calls, so ``scanned`` reflects the real
+        500+ symbol universe instead of the ~11 symbols that used to slip
+        inside the per-symbol, rate-limited budget. ``beta``/``industry``/
+        ``ps`` are not part of the batch payload, so a bounded rotated REFDATA
+        slice refreshes them into a process cache whenever the active query
+        actually references them. Without batch support (or when it hard
+        fails) the legacy per-symbol REFDATA fan-out runs unchanged.
+        """
+        provider = self.deps.yfinance
+        batch_fetch = getattr(provider, "fetch_refdata_batch", None)
+        batch_rows: dict[str, dict[str, Any]] = {}
+        if callable(batch_fetch):
+            batch_rows = _batch_cache_read(universe)
+            missing = [s for s in universe if str(s).upper() not in batch_rows]
+            if missing:
+                try:
+                    fresh = await batch_fetch(missing) or {}
+                except Exception:  # noqa: BLE001 — fall back per symbol below
+                    fresh = {}
+                fresh = {
+                    str(key).upper(): value
+                    for key, value in fresh.items()
+                    if isinstance(value, dict)
+                }
+                if fresh:
+                    _batch_cache_write(fresh)
+                    batch_rows.update(fresh)
+        if batch_rows:
+            await self._refresh_refdata_slice(
+                universe, str(params.get("query") or ""), params
+            )
+            master = _security_master_by_symbol()
+            rows: list[dict[str, Any]] = []
+            for sym in universe:
+                key = str(sym).upper()
+                batch = batch_rows.get(key)
+                ref = _refdata_cache_read(key)
+                if batch is None and ref is None:
+                    # The provider has no row for this symbol (delisted or
+                    # outside its coverage) — an honest gap, never a stub.
+                    continue
+                rows.append(_compose_live_row(key, batch, ref, master.get(key)))
+            return rows
+        return await self._per_symbol_rows(universe, params)
+
+    async def _per_symbol_rows(
+        self,
+        universe: list[str],
+        params: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        """Legacy per-symbol REFDATA fan-out (no batch provider support)."""
+        timeout = max(1.0, min(_param_float(params, "refdata_timeout", 2.0), 4.0))
+        screen_timeout = max(2.0, min(_param_float(params, "screen_timeout", 4.0), 6.0))
+
+        async def _one(s: str):
+            return await self.deps.yfinance.fetch(DataRequest(
+                kind=DataKind.REFDATA,
+                instrument=Instrument(symbol=s, asset_class=AssetClass.EQUITY, exchange="NASDAQ"),
+                extra={"timeout": timeout},
+            ))
+
+        tasks = [asyncio.create_task(_one(str(s))) for s in universe]
+        done, pending = await asyncio.wait(tasks, timeout=screen_timeout)
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        rows: list[dict[str, Any]] = []
+        for sym, task in zip(universe, tasks):
+            if task not in done:
+                continue
+            try:
+                result = task.result()
+            except Exception:  # noqa: BLE001 — one dead symbol must not kill the scan
+                continue
+            if result is None:
+                continue
+            raw = (result.extras or {}).get("raw", {}) if hasattr(result, "extras") else {}
+            rows.append({
+                "symbol": sym,
+                "sector": result.sector or raw.get("sector"),
+                "industry": result.industry or raw.get("industry"),
+                "marketCap": result.market_cap or raw.get("marketCap"),
+                "pe": _to_float(raw.get("trailingPE")),
+                "pb": _to_float(raw.get("priceToBook")),
+                "ps": _to_float(raw.get("priceToSalesTrailing12Months")),
+                "dividend_yield": _normalize_dividend_yield(raw.get("dividendYield")),
+                "beta": _to_float(raw.get("beta")),
+                "country": result.country or raw.get("country"),
+            })
+        return rows
+
+    async def _refresh_refdata_slice(
+        self,
+        universe: list[str],
+        query: str,
+        params: dict[str, Any],
+    ) -> None:
+        """Cache REFDATA-only fields (beta/industry/ps) in rotated slices.
+
+        The batch endpoint covers marketCap/PE/PB/yield but not beta; queries
+        that reference those fields would otherwise run with unknown values
+        forever. Each call refreshes a bounded slice of uncached symbols into a
+        process-local cache, so repeated runs progressively cover the universe
+        without ever inventing a number.
+        """
+        normalized = normalize_query_aliases(query or "").lower()
+        if not any(
+            re.search(rf"\b{token}\b", normalized)
+            for token in ("beta", "industry", "ps")
+        ):
+            return
+        budget = int(max(0.0, min(_param_float(params, "refdata_budget", 24.0), 64.0)))
+        if budget <= 0:
+            return
+        pending = [
+            str(s).upper() for s in universe
+            if _refdata_cache_read(str(s).upper()) is None
+        ]
+        if not pending:
+            return
+        global _EQS_REFDATA_CURSOR
+        start = _EQS_REFDATA_CURSOR % len(pending)
+        window = pending[start:start + budget]
+        _EQS_REFDATA_CURSOR = (start + budget) % max(1, len(pending))
+        per_timeout = max(1.0, min(_param_float(params, "refdata_timeout", 2.0), 3.0))
+        slice_timeout = max(1.0, min(_param_float(params, "refdata_screen_timeout", 3.0), 5.0))
+        semaphore = asyncio.Semaphore(6)
+
+        async def _one(symbol: str):
+            async with semaphore:
+                return symbol, await self.deps.yfinance.fetch(DataRequest(
+                    kind=DataKind.REFDATA,
+                    instrument=Instrument(
+                        symbol=symbol,
+                        asset_class=AssetClass.EQUITY,
+                        exchange="NASDAQ",
+                    ),
+                    extra={"timeout": per_timeout, "bypass_rate_limit": True},
+                ))
+
+        tasks = [asyncio.create_task(_one(symbol)) for symbol in window]
+        done, pending_tasks = await asyncio.wait(tasks, timeout=slice_timeout)
+        for task in pending_tasks:
+            task.cancel()
+        if pending_tasks:
+            await asyncio.gather(*pending_tasks, return_exceptions=True)
+        for task in done:
+            try:
+                symbol, refdata = task.result()
+            except Exception:  # noqa: BLE001
+                continue
+            raw = (refdata.extras or {}).get("raw", {}) if hasattr(refdata, "extras") else {}
+            fields = _normalize_raw_fields(raw)
+            if any(value is not None for value in fields.values()):
+                _refdata_cache_write(symbol, fields)
+
+
+# ── Live row plumbing (batch cache + REFDATA slice cache) ──
+_EQS_BATCH_CACHE_TTL_S = 300.0
+_EQS_REFDATA_CACHE_TTL_S = 6 * 3600.0
+_EQS_BATCH_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_EQS_REFDATA_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_EQS_REFDATA_CURSOR = 0
+_SECURITY_MASTER_INDEX: dict[str, dict[str, Any]] | None = None
+
+
+def _to_float(value: Any) -> float | None:
+    try:
+        if value in (None, ""):
+            return None
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number == number else None
+
+
+def _param_float(params: dict[str, Any], name: str, default: float) -> float:
+    try:
+        return float(params.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def _normalize_raw_fields(raw: dict[str, Any]) -> dict[str, Any]:
+    """REFDATA ``raw`` dict → the screener's column vocabulary.
+
+    ``dividend_yield`` is normalised to a decimal fraction (DES helper) so the
+    live column and the seeded rows share ONE convention: 1.93 (percent form
+    from newer yfinance) becomes 0.0193, and a preset comparing ``> 0.04``
+    keeps its documented meaning.
+    """
+    raw = raw or {}
+    return {
+        "marketCap": _to_float(raw.get("marketCap")),
+        "pe": _to_float(raw.get("trailingPE")),
+        "pb": _to_float(raw.get("priceToBook")),
+        "ps": _to_float(raw.get("priceToSalesTrailing12Months")),
+        "dividend_yield": _normalize_dividend_yield(raw.get("dividendYield")),
+        "beta": _to_float(raw.get("beta")),
+        "sector": raw.get("sector"),
+        "industry": raw.get("industry"),
+        "country": raw.get("country"),
+    }
+
+
+# The SECF security master labels S&P members with GICS-style sector names
+# ("Information Technology"), while yfinance — and therefore the EQS template
+# rows and pane presets — uses the Yahoo vocabulary ("Technology"). Fold the
+# master onto the Yahoo names so `sector = "Technology"` matches the whole
+# universe instead of only the REFDATA-sliced rows.
+_MASTER_SECTOR_ALIASES = {
+    "Information Technology": "Technology",
+    "Health Care": "Healthcare",
+    "Consumer Discretionary": "Consumer Cyclical",
+    "Consumer Staples": "Consumer Defensive",
+    "Financials": "Financial Services",
+    "Materials": "Basic Materials",
+}
+
+
+def _normalize_sector_name(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    return _MASTER_SECTOR_ALIASES.get(value, value)
+
+
+def _compose_live_row(
+    symbol: str,
+    batch: dict[str, Any] | None,
+    ref: dict[str, Any] | None,
+    master: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """One live row: batch numbers, REFDATA enrichment, master identity."""
+    batch = batch or {}
+    ref = ref or {}
+    master = master or {}
+    market_cap = _to_float(batch.get("marketCap"))
+    if market_cap is None:
+        market_cap = ref.get("marketCap")
+    pe = _to_float(batch.get("trailingPE"))
+    if pe is None:
+        pe = ref.get("pe")
+    pb = _to_float(batch.get("priceToBook"))
+    if pb is None:
+        pb = ref.get("pb")
+    dividend_yield = _normalize_dividend_yield(batch.get("dividendYield"))
+    if dividend_yield is None:
+        dividend_yield = ref.get("dividend_yield")
+    beta = ref.get("beta")
+    if beta is None:
+        beta = _to_float(batch.get("beta"))
+    return {
+        "symbol": symbol,
+        "sector": (
+            ref.get("sector")
+            or _normalize_sector_name(master.get("sector"))
+            or batch.get("sector")
+        ),
+        "industry": ref.get("industry") or batch.get("industry"),
+        "marketCap": market_cap,
+        "pe": pe,
+        "pb": pb,
+        "ps": ref.get("ps"),
+        "dividend_yield": dividend_yield,
+        "beta": beta,
+        "country": ref.get("country") or master.get("country") or batch.get("country"),
+    }
+
+
+def _batch_cache_read(symbols: list[str]) -> dict[str, dict[str, Any]]:
+    now = time.monotonic()
+    out: dict[str, dict[str, Any]] = {}
+    for symbol in symbols:
+        key = str(symbol).upper()
+        entry = _EQS_BATCH_CACHE.get(key)
+        if entry and entry[0] > now:
+            out[key] = entry[1]
+    return out
+
+
+def _batch_cache_write(payload: dict[str, dict[str, Any]]) -> None:
+    expires_at = time.monotonic() + _EQS_BATCH_CACHE_TTL_S
+    for symbol, raw in payload.items():
+        if isinstance(raw, dict) and raw:
+            _EQS_BATCH_CACHE[str(symbol).upper()] = (expires_at, raw)
+
+
+def _refdata_cache_read(symbol: str) -> dict[str, Any] | None:
+    entry = _EQS_REFDATA_CACHE.get(str(symbol).upper())
+    if entry and entry[0] > time.monotonic():
+        return entry[1]
+    return None
+
+
+def _refdata_cache_write(symbol: str, fields: dict[str, Any]) -> None:
+    _EQS_REFDATA_CACHE[str(symbol).upper()] = (
+        time.monotonic() + _EQS_REFDATA_CACHE_TTL_S,
+        fields,
+    )
+
+
+def _security_master_by_symbol() -> dict[str, dict[str, Any]]:
+    """Bundled SECF master keyed by symbol (sector/country identity)."""
+    global _SECURITY_MASTER_INDEX
+    if _SECURITY_MASTER_INDEX is None:
+        from showme.engine.functions.screen._funcs import _load_security_master
+
+        _SECURITY_MASTER_INDEX = {
+            str(row.get("symbol") or "").upper(): row
+            for row in _load_security_master()
+            if row.get("symbol")
+        }
+    return _SECURITY_MASTER_INDEX
 
 
 # S05 BUGHUNT B6: resolve a universe-name string ("SP500", "MEGA15", "TECH10",

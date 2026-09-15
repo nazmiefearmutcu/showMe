@@ -37,6 +37,11 @@ const mockQuoteState: MockLiveQuoteState = {
   refreshing: false,
 };
 
+// The engine fetches /api/bars and paints a canvas — stub it out.
+vi.mock("@/chart/Chart", () => ({
+  Chart: () => <div data-testid="chart-engine" />,
+}));
+
 vi.mock("@/lib/market-data", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/market-data")>();
   return {
@@ -127,6 +132,13 @@ describe("DES market cap — format.ts source of truth", () => {
     render(<DESPane code="DES" symbol="AAPL" />);
     // 1.8e12 → "$1.8T" via formatCurrency({compact:true}).
     expect(screen.getByText("$1.8T")).toBeTruthy();
+  });
+});
+
+describe("DES header strip — engine chart (migration)", () => {
+  it("mounts the chart engine under the quote row", () => {
+    render(<DESPane code="DES" symbol="AAPL" />);
+    expect(screen.getByTestId("chart-engine")).toBeInTheDocument();
   });
 });
 

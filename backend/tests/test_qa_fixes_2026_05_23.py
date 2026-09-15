@@ -299,7 +299,9 @@ def test_orchestrator_function_codes_logger_is_present() -> None:
         / "agents"
         / "orchestrator.py"
     )
-    text = src.read_text()
+    # Locale-dependent default decoding (cp1254 on this host) cannot read the
+    # UTF-8 em-dashes in the module docstring; pin UTF-8 like the source is.
+    text = src.read_text(encoding="utf-8")
     assert "LOG = logging.getLogger" in text
     assert "FunctionRegistry import failed" in text
 
@@ -313,6 +315,6 @@ def test_orchestrator_plan_parse_logger_is_present() -> None:
         / "agents"
         / "orchestrator.py"
     )
-    text = src.read_text()
+    text = src.read_text(encoding="utf-8")
     assert "LOG = logging.getLogger" in text
     assert "planner output unparseable" in text

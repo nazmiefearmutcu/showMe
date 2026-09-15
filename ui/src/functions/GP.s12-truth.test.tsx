@@ -15,95 +15,26 @@
  *     formatted live price.
  *  2. When transport is idle / no tick has landed, the header falls
  *     back to the historical `lastClose` and reports `data-live="0"`.
- *  3. A live tick still routes through `series.update()` on the
- *     existing chart instance — no remount.
+ *  3. A live tick re-renders the header without remounting the chart
+ *     engine (the engine owns its own canvas + live refresh).
  */
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, render } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import type { TransportState } from "@/lib/market-data";
 import { GPPane } from "./GP";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const gpSourceRaw = readFileSync(resolve(__dirname, "GP.tsx"), "utf-8");
 
-/* ── lightweight-charts spy ────────────────────────────────────────── */
-
-interface SeriesStub {
-  setData: ReturnType<typeof vi.fn>;
-  update: ReturnType<typeof vi.fn>;
-  applyOptions: ReturnType<typeof vi.fn>;
-}
-interface ChartStub {
-  addCandlestickSeries: ReturnType<typeof vi.fn>;
-  addLineSeries: ReturnType<typeof vi.fn>;
-  addAreaSeries: ReturnType<typeof vi.fn>;
-  addHistogramSeries: ReturnType<typeof vi.fn>;
-  removeSeries: ReturnType<typeof vi.fn>;
-  subscribeCrosshairMove: ReturnType<typeof vi.fn>;
-  priceScale: ReturnType<typeof vi.fn>;
-  timeScale: ReturnType<typeof vi.fn>;
-  remove: ReturnType<typeof vi.fn>;
-  applyOptions: ReturnType<typeof vi.fn>;
-  resize: ReturnType<typeof vi.fn>;
-  takeScreenshot: ReturnType<typeof vi.fn>;
-  __series: SeriesStub[];
-  addSeries: ReturnType<typeof vi.fn>;
-}
-
-const chartInstances: ChartStub[] = [];
-
-function makeSeries(): SeriesStub {
-  return {
-    setData: vi.fn(),
-    update: vi.fn(),
-    applyOptions: vi.fn(),
-  };
-}
-
-vi.mock("lightweight-charts", () => {
-  class LineSeries {}
-  class CandlestickSeries {}
-  class HistogramSeries {}
-  class AreaSeries {}
-  const createChart = vi.fn(() => {
-    const series: SeriesStub[] = [];
-    const track = (s: SeriesStub) => {
-      series.push(s);
-      return s;
-    };
-    const instance: ChartStub = {
-      addCandlestickSeries: vi.fn(() => track(makeSeries())),
-      addLineSeries: vi.fn(() => track(makeSeries())),
-      addAreaSeries: vi.fn(() => track(makeSeries())),
-      addHistogramSeries: vi.fn(() => track(makeSeries())),
-      removeSeries: vi.fn(),
-      subscribeCrosshairMove: vi.fn(),
-      priceScale: vi.fn(() => ({ applyOptions: vi.fn() })),
-      timeScale: vi.fn(() => ({
-        fitContent: vi.fn(),
-        setVisibleLogicalRange: vi.fn(),
-      })),
-      remove: vi.fn(),
-      applyOptions: vi.fn(),
-      resize: vi.fn(),
-      takeScreenshot: vi.fn(() => document.createElement("canvas")),
-      __series: series,
-      addSeries: vi.fn((constructor, options) => {
-        if (constructor === CandlestickSeries) return instance.addCandlestickSeries(options);
-        if (constructor === LineSeries) return instance.addLineSeries(options);
-        if (constructor === HistogramSeries) return instance.addHistogramSeries(options);
-        if (constructor === AreaSeries) return instance.addAreaSeries(options);
-        return track(makeSeries());
-      }),
-    };
-    chartInstances.push(instance);
-    return instance;
-  });
-  return { createChart, LineSeries, CandlestickSeries, HistogramSeries, AreaSeries };
-});
+/* ── chart-engine stub ─────────────────────────────────────────────── */
+// The engine fetches /api/bars and paints a canvas — stub it out.
+vi.mock("@/chart/Chart", () => ({
+  Chart: () => <div data-testid="chart-engine" />,
+  default: () => <div data-testid="chart-engine" />,
+}));
 
 class FakeResizeObserver {
   observe() {}
@@ -176,7 +107,6 @@ vi.mock("@/lib/useFunction", () => ({
 /* ── tests ─────────────────────────────────────────────────────────── */
 
 beforeEach(() => {
-  chartInstances.length = 0;
   resetMockQuoteState();
 });
 afterEach(() => {
@@ -224,12 +154,9 @@ describe("S12 GP truth — header reflects live tick", () => {
     expect(gpSourceRaw).toMatch(/defaultHeight=\{\{[^}]*min:\s*(2[4-9]\d|[3-9]\d{2,})/);
   });
 
-  it("threads a live tick into series.update() without remounting the chart", () => {
+  it("keeps the engine mounted when a live tick lands (no remount)", () => {
     const { rerender } = render(<GPPane code="GP" symbol="AAPL" />);
-    const firstInstance = chartInstances[0];
-    expect(firstInstance).toBeDefined();
-    const candleSeries = firstInstance.__series[0];
-    expect(candleSeries.update).not.toHaveBeenCalled();
+    const engineNode = screen.getByTestId("chart-engine");
 
     const tickTs = Date.now();
     act(() => {
@@ -238,10 +165,9 @@ describe("S12 GP truth — header reflects live tick", () => {
       mockQuoteState.lastTickAt = tickTs;
     });
     rerender(<GPPane code="GP" symbol="AAPL" />);
-    expect(chartInstances.length).toBe(1);
-    expect(firstInstance.remove).not.toHaveBeenCalled();
-    expect(candleSeries.update).toHaveBeenCalled();
-    const lastCall = candleSeries.update.mock.calls.at(-1);
-    expect(lastCall?.[0]?.close ?? lastCall?.[0]?.value).toBe(109.5);
+
+    // Same DOM node ⇒ the engine was re-rendered in place, not remounted
+    // (the engine owns its own canvas and live refresh).
+    expect(screen.getByTestId("chart-engine")).toBe(engineNode);
   });
 });

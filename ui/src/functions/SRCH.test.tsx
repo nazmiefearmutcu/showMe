@@ -204,6 +204,17 @@ describe("SRCH pane — filter controls compose the server-side query", () => {
     expect(screen.getAllByText(/type = "Gilt"/).length).toBeGreaterThan(0);
   });
 
+  it("exposes the expanded bond-type chips", () => {
+    // Session-17: the bond universe grew to the full US nominal curve + TIPS
+    // + DE/FR/IT/ES/GB/JP 2Y & 10Y; the new instrument types are selectable.
+    setMockFn({ state: "ok", ...okPayload() });
+    render(<SRCHPane code="SRCH" />);
+    expect(screen.getByTitle("Bond type TIPS")).toBeInTheDocument();
+    expect(screen.getByTitle("Bond type OAT")).toBeInTheDocument();
+    expect(screen.getByTitle("Bond type BTP")).toBeInTheDocument();
+    expect(screen.getByTitle("Bond type Bono")).toBeInTheDocument();
+  });
+
   it("composes yield and duration clauses from the segmented controls", () => {
     setMockFn({ state: "ok", ...okPayload() });
     render(<SRCHPane code="SRCH" />);

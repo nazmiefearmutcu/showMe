@@ -62,7 +62,21 @@ interface SRCHData {
 // Canonical bond types from the backend reference universe
 // (showme_bond_reference_universe) — the chips compose a server-side
 // `type = "…"` predicate, so the labels must match it verbatim.
-const BOND_TYPES = ["Bill", "Note", "Bond", "Bund", "Gilt", "JGB"] as const;
+// Session-17: the universe grew from 8 curve points to the full US nominal
+// curve + TIPS + DE/FR/IT/ES/GB/JP 2Y & 10Y, so the new instrument types are
+// chip-selectable too.
+const BOND_TYPES = [
+  "Bill",
+  "Note",
+  "Bond",
+  "TIPS",
+  "Bund",
+  "Gilt",
+  "JGB",
+  "OAT",
+  "BTP",
+  "Bono",
+] as const;
 
 const MIN_YIELD_OPTIONS = [
   { value: "any", label: "ANY", title: "Min yield ANY" },

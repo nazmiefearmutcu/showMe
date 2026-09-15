@@ -169,6 +169,55 @@ describe("WHAL pane — 24h volume unit (OPP wave)", () => {
   });
 });
 
+describe("WHAL pane — Min USD contract (2026-09-15)", () => {
+  it("hides rows below the applied threshold", () => {
+    setMockFn({
+      state: "ok",
+      data: {
+        data: {
+          status: "ok",
+          provider: "binance_spot",
+          market: "CRYPTO",
+          rows: [
+            {
+              timestamp: "2026-09-11T00:00:00Z",
+              alert_type: "crypto_top_trade",
+              symbol: "BTCUSDT",
+              usd_value: 39_000,
+              threshold_crossed: false,
+              severity: "low",
+            },
+            {
+              timestamp: "2026-09-11T00:01:00Z",
+              alert_type: "crypto_large_trade",
+              symbol: "BTCUSDT",
+              usd_value: 2_500_000,
+              threshold_crossed: true,
+              severity: "high",
+            },
+          ],
+          cards: [],
+          summary: "1 row above threshold",
+        },
+      },
+    });
+    render(<WHALPane code="WHAL" symbol="BTCUSDT" />);
+    expect(screen.getByText("$2.50M")).toBeInTheDocument();
+    expect(screen.queryByText("$39.0k")).toBeNull();
+  });
+
+  it("footer threshold chip matches the applied value", () => {
+    render(<WHALPane code="WHAL" symbol="BTCUSDT" />);
+    // Preset buttons and the chip share one formatter (1M, not "1000k").
+    expect(screen.getByRole("button", { name: "1M" })).toBeInTheDocument();
+    expect(screen.getByText("$1M")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "10M" }));
+    expect(screen.getByText("$10M")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "500k" }));
+    expect(screen.getByText("$500k")).toBeInTheDocument();
+  });
+});
+
 describe("WHAL pane — visibility poll (live adoption)", () => {
   it("refetches on a visibility tick but not on mount", () => {
     const refetch = vi.fn();

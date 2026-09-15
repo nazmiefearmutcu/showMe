@@ -2880,6 +2880,10 @@
   padding: var(--space-5);
 }
 .port-pane-body {
+  /* Grid containers default to `align-content: stretch`, which inflates every
+     auto row on tall viewports and opens giant phantom whitespace between the
+     header, controls and the view. Pin the tracks to their natural height. */
+  align-content: start;
   display: grid;
   gap: var(--space-5);
   padding: var(--space-5);
@@ -3461,11 +3465,17 @@
   padding: var(--space-5);
 }
 .portfolio-analytics-body {
+  /* Same stretch trap as .port-pane-body: with default `align-content:
+     stretch` the tool strip / controls / view rows all absorbed the spare
+     viewport height, pushing the Universe input ~400px below the tabs and
+     leaving one huge blank band under them (user-reported BLAK gap). */
+  align-content: start;
   display: grid;
   gap: var(--space-5);
   padding: var(--space-5);
 }
 .portfolio-tool-strip {
+  align-content: start;
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-3);
@@ -3526,6 +3536,7 @@
 }
 .portfolio-analytics-loading,
 .portfolio-analytics-view {
+  align-content: start;
   display: grid;
   gap: var(--space-5);
 }
@@ -8305,33 +8316,51 @@
   color: var(--terminal-muted);
 }
 
+/* Symmetric sentiment gauge: a 180° SVG arc whose circle centre sits exactly
+   on the needle pivot (48px, 48px). The needle scale is [-90°, +90°] around
+   vertical (sentimentNeedleAngle: -1 → -90°, 0 → 0°, +1 → +90°), so the
+   drawn arc MUST span the same [-90°, +90°] around the SAME centre. The old
+   border-trick arc was rotated -35° — a leftover from the pre-vertical
+   (east-pointing) needle design — which skewed the visible scale 35° away
+   from the needle ("needle in the wrong place" while the label read the
+   correct score). */
 .terminal-gauge {
-  height: 70px;
+  height: 52px;
   position: relative;
-  width: 92px;
+  width: 96px;
 }
 
 .terminal-gauge__arc {
-  border: 4px solid transparent;
-  border-left-color: var(--terminal-red);
-  border-radius: 90px 90px 0 0;
-  border-top-color: var(--terminal-positive);
   display: block;
-  height: 70px;
-  transform: rotate(-35deg);
-  width: 92px;
+  height: 52px;
+  inset: 0;
+  position: absolute;
+  width: 96px;
+}
+
+.terminal-gauge__arc path {
+  fill: none;
+  stroke-linecap: round;
+  stroke-width: 4;
+}
+
+.terminal-gauge__arc-neg {
+  stroke: var(--terminal-red);
+}
+
+.terminal-gauge__arc-pos {
+  stroke: var(--terminal-positive);
 }
 
 .terminal-gauge__needle {
   background: var(--terminal-heading);
   bottom: var(--space-2);
   display: block;
-  /* Vertical needle pivoting from the arc center: sentimentNeedleAngle maps
-     [-1,+1] → [-90°,+90°] with 0° meaning "straight up", so the drawn bar
-     must point up at rotate(0). The old horizontal bar pointed EAST at 0°,
-     reading as "max positive" while the label said Neutral. */
+  /* Vertical needle on the container's centre line (pivot = 48px, 48px =
+     the arc's circle centre). rotate(0) points at the arc's apex (Neutral),
+     -90° at the red end, +90° at the green end. */
   height: 34px;
-  left: 45px;
+  left: calc(50% - 1px);
   position: absolute;
   /* transform driven inline from sentiment-store (Faz 5) */
   transform-origin: bottom center;

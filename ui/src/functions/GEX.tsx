@@ -41,6 +41,7 @@ import {
 } from "@/design-system";
 import { useFunction } from "@/lib/useFunction";
 import { defaultSymbolForFunction } from "@/lib/symbols";
+import { SymbolBar } from "@/shell/SymbolBar";
 import { formatCurrency, formatPrice } from "@/lib/format";
 import {
   FunctionControlGroup,
@@ -395,7 +396,7 @@ function GexLadder({
                         side; a missing value renders an em-dash, never a
                         fabricated $0.00 call bar. */}
                     {value != null && value < 0 ? (
-                      <span style={SIDE_BAR_ROW}>
+                      <span style={{ ...SIDE_BAR_ROW, justifyContent: "flex-end" }}>
                         {tagsNode}
                         <span
                           data-testid="gex-bar-neg"
@@ -403,7 +404,7 @@ function GexLadder({
                         />
                       </span>
                     ) : value == null ? (
-                      <span style={SIDE_BAR_ROW}>
+                      <span style={{ ...SIDE_BAR_ROW, justifyContent: "flex-end" }}>
                         {tagsNode}
                         <span data-testid="gex-bar-missing" style={MISSING}>
                           —
@@ -414,7 +415,7 @@ function GexLadder({
                   <span style={CELL_STRIKE}>{gexStrike(row.strike)}</span>
                   <span style={CELL_RIGHT}>
                     {value != null && value >= 0 ? (
-                      <span style={SIDE_BAR_ROW}>
+                      <span style={{ ...SIDE_BAR_ROW, justifyContent: "flex-start" }}>
                         <span
                           data-testid="gex-bar-pos"
                           style={barStyle("var(--positive)", pct)}
@@ -562,6 +563,7 @@ export function GEXPane({ code, symbol }: FunctionPaneProps) {
             </FunctionControlGroup>
           }
         />
+        <SymbolBar code={code} symbol={effectiveSymbol} />
         <PaneBody className="u-grid-gap-14">
           <PaneState
             state={state}
@@ -757,13 +759,19 @@ const TAG: CSSProperties = {
   whiteSpace: "nowrap",
 };
 
-/** Bar + role-tag pairing on the bar's sign side (FIX R2-#5). */
+/** Bar + role-tag pairing on the bar's sign side (FIX R2-#5).
+ *
+ * `width: 100%` is load-bearing: the bars size themselves with
+ * `width: <pct>%`, and a shrink-to-fit inline-flex resolves that percentage
+ * cyclically → 0px. Rows without a wall tag then rendered NO bar at all and
+ * tagged rows rendered a tiny stub (the "broken ladder" report). Filling the
+ * grid cell makes the percentage resolve against the cell width. */
 const SIDE_BAR_ROW: CSSProperties = {
-  display: "inline-flex",
+  display: "flex",
   alignItems: "center",
   gap: 6,
   minWidth: 0,
-  maxWidth: "100%",
+  width: "100%",
 };
 
 /** Missing-value rendering — never a fabricated $0.00 bar (FIX R1-F7). */
@@ -808,7 +816,11 @@ function barStyle(color: string, pct: number): CSSProperties {
     height: BAR_HEIGHT,
     borderRadius: "var(--radius-xs)",
     background: color,
-    flex: "0 0 auto",
+    // Shrinkable so a large bar + its wall tag never overflow the cell; the
+    // 2px floor keeps near-zero values visible instead of collapsing to a
+    // hairline that reads as "no data".
+    flex: "0 1 auto",
+    minWidth: 2,
   };
 }
 

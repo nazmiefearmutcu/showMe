@@ -1,20 +1,25 @@
 /**
  * CHGS — Chart Studies (preset TECH bundle).
  *
+ * The chart itself is rendered by the in-house showMe chart engine
+ * (`@/chart/Chart`), which owns the timeframe/type pickers, the searchable
+ * indicator picker (RSI/ATR/ADX included), zoom/pan and theming. CHGS keeps
+ * the function payload (`days`) that feeds the summary cards, the per-study
+ * latest-values table and the footer — the backend request keeps its full
+ * default study set (no UI chip row), so the table stays populated.
+ *
  * Backend (engine/functions/misc/_bonus.py CHGSFunction) defers to the live
  * TECH studies by default; the labelled synthetic `_chart_template` branch is
  * now opt-in (`reference=true`) and stamps `status:"reference"` +
  * `data_mode:"modeled"`. The pane renders the TECH payload honestly:
  *
- *  - study chips (from the payload's `indicators` map) + close/study overlay
- *    chart + per-study latest-values table + scalar summary cards;
  *  - a genuine failure envelope (`provider_unavailable` / `no_price_history`)
  *    renders an honest outage Empty with the backend `reason` + Retry — it is
  *    NEVER labelled "synthetic template";
  *  - the synthetic template label fires only for the real template shape
  *    (`data_mode === "modeled"` / `status === "reference"`).
  */
-import { useMemo, useState, type CSSProperties } from "react";
+import { useMemo, type CSSProperties } from "react";
 import {
   DataGrid,
   type DataGridColumn,
@@ -31,6 +36,8 @@ import {
 } from "@/design-system";
 import { useFunction } from "@/lib/useFunction";
 import { defaultSymbolForFunction } from "@/lib/symbols";
+import { SymbolBar } from "@/shell/SymbolBar";
+import { Chart } from "@/chart/Chart";
 import {
   FunctionControlGroup,
   LoadStatePill,
@@ -109,9 +116,7 @@ function studyLabel(key: string): string {
   return STUDY_LABELS[key] ?? key;
 }
 
-const CHART_W = 620;
-const CHART_H = 200;
-const PAD = { top: 12, right: 14, bottom: 24, left: 52 };
+const CHART_H = 380;
 
 export function CHGSPane({ code, symbol }: FunctionPaneProps) {
   const [days, setDays] = usePersistentOption<number>(
@@ -119,7 +124,6 @@ export function CHGSPane({ code, symbol }: FunctionPaneProps) {
     DAYS_IDS,
     180,
   );
-  const [study, setStudy] = useState<string>("sma_20");
   const effectiveSymbol =
     symbol || defaultSymbolForFunction(code, ["EQUITY", "ETF"]);
   // Default-polarity (2026-09-08): CHGS defers to the live TECH path with no
@@ -163,14 +167,6 @@ export function CHGSPane({ code, symbol }: FunctionPaneProps) {
   const studyKeys = useMemo(
     () => Object.keys(payload?.indicators ?? {}).sort(),
     [payload],
-  );
-  const activeStudy = studyKeys.includes(study) ? study : studyKeys[0] ?? "";
-  const studySeries = useMemo(
-    () =>
-      (payload?.indicators?.[activeStudy] ?? []).filter(
-        (p) => typeof p.value === "number",
-      ),
-    [payload, activeStudy],
   );
 
   const studyTableRows = useMemo(
@@ -325,26 +321,7 @@ export function CHGSPane({ code, symbol }: FunctionPaneProps) {
           tone="neutral"
         />
       </section>
-      <SegmentedControl
-        label="STUDY"
-        value={activeStudy}
-        options={studyKeys}
-        onChange={(next) => setStudy(String(next))}
-        title="Overlay study"
-      />
-      <figure style={figureStyle} aria-label="CHGS study chart">
-        <StudyChart closes={closes} studySeries={studySeries} studyLabel={studyLabel(activeStudy)} />
-        <figcaption style={captionStyle}>
-          <span style={legendItemStyle}>
-            <span aria-hidden="true" style={swatchCloseStyle} /> close
-            <span aria-hidden="true" style={swatchStudyStyle} />{" "}
-            {studyLabel(activeStudy)}
-          </span>
-          <span>
-            {closes.length} bars · {studySeries.length} {studyLabel(activeStudy)} pts
-          </span>
-        </figcaption>
-      </figure>
+      <Chart symbol={effectiveSymbol} height={CHART_H} initialInterval="1D" />
       {studyTableRows.length > 0 ? (
         <DataGrid
           columns={STUDY_COLS}
@@ -413,6 +390,7 @@ export function CHGSPane({ code, symbol }: FunctionPaneProps) {
             </FunctionControlGroup>
           }
         />
+        <SymbolBar code={code} symbol={effectiveSymbol} />
         <PaneBody>{body}</PaneBody>
         <PaneFooter>
           <StatusSection
@@ -433,91 +411,6 @@ export function CHGSPane({ code, symbol }: FunctionPaneProps) {
         </PaneFooter>
       </Pane>
     </div>
-  );
-}
-
-/* ── chart ─────────────────────────────────────────────────────────── */
-
-function StudyChart({
-  closes,
-  studySeries,
-  studyLabel: sLabel,
-}: {
-  closes: Array<{ date: string; close: number }>;
-  studySeries: StudyPoint[];
-  studyLabel: string;
-}) {
-  const geom = useMemo(() => {
-    const closeVals = closes.map((c) => c.close);
-    const studyVals = studySeries.map((p) => p.value as number);
-    const all = [...closeVals, ...studyVals];
-    const minY = Math.min(...all);
-    const maxY = Math.max(...all);
-    const spanY = maxY - minY || 1;
-    const innerW = CHART_W - PAD.left - PAD.right;
-    const innerH = CHART_H - PAD.top - PAD.bottom;
-    const x = (i: number, len: number) =>
-      PAD.left + (len <= 1 ? 0 : (i / (len - 1)) * innerW);
-    const y = (v: number) => PAD.top + (1 - (v - minY) / spanY) * innerH;
-    return {
-      closeLine: closes
-        .map((c, i) => `${x(i, closes.length).toFixed(1)},${y(c.close).toFixed(1)}`)
-        .join(" "),
-      studyLine: studySeries
-        .map((p, i) => `${x(i, studySeries.length).toFixed(1)},${y(p.value as number).toFixed(1)}`)
-        .join(" "),
-      last: {
-        x: x(closes.length - 1, closes.length),
-        y: y(closeVals[closeVals.length - 1]),
-        v: closeVals[closeVals.length - 1],
-        date: closes[closes.length - 1].date,
-      },
-      grid: [0, 0.5, 1].map((f) => ({
-        y: PAD.top + f * innerH,
-        v: maxY - f * spanY,
-      })),
-    };
-  }, [closes, studySeries]);
-
-  return (
-    <svg
-      viewBox={`0 0 ${CHART_W} ${CHART_H}`}
-      role="img"
-      aria-label={`Close with ${sLabel} overlay, ${closes.length} bars and ${studySeries.length} study points`}
-      style={svgStyle}
-    >
-      {geom.grid.map((g, i) => (
-        <g key={i}>
-          <line
-            x1={PAD.left}
-            x2={CHART_W - PAD.right}
-            y1={g.y}
-            y2={g.y}
-            stroke="var(--grid-color, var(--text-mute))"
-            strokeWidth={1}
-          />
-          <text x={4} y={g.y + 3} style={axisTextStyle}>
-            {fmtNum(g.v)}
-          </text>
-        </g>
-      ))}
-      <polyline
-        points={geom.studyLine}
-        fill="none"
-        stroke="var(--accent-2, var(--accent))"
-        strokeWidth={1.3}
-        strokeDasharray="4 3"
-      />
-      <polyline
-        points={geom.closeLine}
-        fill="none"
-        stroke="var(--accent)"
-        strokeWidth={1.6}
-      />
-      <circle cx={geom.last.x} cy={geom.last.y} r={3} fill="var(--accent)">
-        <title>{`${geom.last.date.slice(0, 10)}: close ${fmtNum(geom.last.v)}`}</title>
-      </circle>
-    </svg>
   );
 }
 
@@ -549,51 +442,6 @@ const noticeStyle: CSSProperties = {
   padding: "8px 10px",
   fontSize: "var(--font-size-md)",
   color: "var(--text-primary)",
-};
-
-const figureStyle: CSSProperties = {
-  margin: 0,
-};
-
-const captionStyle: CSSProperties = {
-  display: "flex",
-  justifyContent: "space-between",
-  gap: 12,
-  marginTop: 4,
-  fontFamily: "JetBrains Mono, monospace",
-  fontSize: "var(--font-size-2xs)",
-  color: "var(--text-mute)",
-};
-
-const legendItemStyle: CSSProperties = {
-  display: "inline-flex",
-  alignItems: "center",
-  gap: 6,
-};
-
-const swatchCloseStyle: CSSProperties = {
-  width: 12,
-  height: 2,
-  background: "var(--accent)",
-};
-
-const swatchStudyStyle: CSSProperties = {
-  width: 12,
-  height: 2,
-  marginLeft: 8,
-  background: "repeating-linear-gradient(90deg, var(--accent-2, var(--accent)) 0 4px, transparent 4px 7px)",
-};
-
-const svgStyle: CSSProperties = {
-  width: "100%",
-  height: "auto",
-  display: "block",
-};
-
-const axisTextStyle: CSSProperties = {
-  fontFamily: "JetBrains Mono, monospace",
-  fontSize: "var(--font-size-xs)",
-  fill: "var(--text-mute)",
 };
 
 const monoStrongStyle: CSSProperties = {

@@ -52,6 +52,12 @@ vi.mock("@/lib/useFunction", () => ({
   }),
 }));
 
+// The chart engine fetches /api/bars and owns its own canvas — stub it so
+// these tests stay offline and DOM-layout free.
+vi.mock("@/chart/Chart", () => ({
+  Chart: () => <div data-testid="chart-engine" />,
+}));
+
 /* ── fixtures: live shape mirrors chart/tech.py via CHGSFunction ───── */
 
 function series(base: number, n: number) {
@@ -179,14 +185,12 @@ describe("CHGS pane — live payload", () => {
     expect(container.textContent).toContain("RANGE-BOUND");
   });
 
-  it("renders the close + study overlay chart", () => {
+  it("mounts the in-house chart engine and no hand-rolled study chips", () => {
     setMockFn({ state: "ok", ...livePayload() });
-    const { container } = render(<CHGSPane code="CHGS" symbol="AAPL" />);
-    const svg = container.querySelector('svg[role="img"]');
-    expect(svg?.getAttribute("aria-label")).toMatch(
-      /Close with SMA 20 overlay, 6 bars and 6 study points/i,
-    );
-    expect(container.querySelectorAll("polyline").length).toBe(2);
+    render(<CHGSPane code="CHGS" symbol="AAPL" />);
+    // The engine owns timeframe/type/indicator UX now.
+    expect(screen.getByTestId("chart-engine")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Overlay study")).toBeNull();
   });
 
   it("renders the per-study latest-values table", () => {
@@ -217,10 +221,10 @@ describe("CHGS pane — synthetic honesty", () => {
     expect(screen.getByText(/NOT live OHLCV data/i)).toBeInTheDocument();
   });
 
-  it("does NOT render the study chart or table for synthetic payloads", () => {
+  it("does NOT render the chart engine or table for synthetic payloads", () => {
     setMockFn({ state: "ok", ...syntheticPayload() });
     const { container } = render(<CHGSPane code="CHGS" symbol="AAPL" />);
-    expect(container.querySelector('svg[role="img"]')).toBeNull();
+    expect(screen.queryByTestId("chart-engine")).toBeNull();
     expect(container.querySelector("tbody")).toBeNull();
   });
 });
@@ -228,14 +232,14 @@ describe("CHGS pane — synthetic honesty", () => {
 describe("CHGS pane — provider outage honesty", () => {
   it("renders the outage reason and never claims the synthetic template", () => {
     setMockFn({ state: "ok", ...outagePayload() });
-    const { container } = render(<CHGSPane code="CHGS" symbol="AAPL" />);
+    render(<CHGSPane code="CHGS" symbol="AAPL" />);
     expect(screen.getByText(/Chart studies unavailable/i)).toBeInTheDocument();
     expect(
       screen.getByText(/yfinance fetch failed: HTTP 503/i),
     ).toBeInTheDocument();
     expect(screen.queryByText(/synthetic template/i)).toBeNull();
     expect(screen.queryByText(/NOT live OHLCV data/i)).toBeNull();
-    expect(container.querySelector('svg[role="img"]')).toBeNull();
+    expect(screen.queryByTestId("chart-engine")).toBeNull();
   });
 
   it("covers the no_price_history envelope with its backend reason", () => {
@@ -275,18 +279,12 @@ describe("CHGS pane — provider outage honesty", () => {
 });
 
 describe("CHGS pane — interaction", () => {
-  it("switches the overlay study via the chips", () => {
+  it("leaves indicator selection to the engine (no chip row, no dead controls)", () => {
     setMockFn({ state: "ok", ...livePayload() });
-    render(<CHGSPane code="CHGS" symbol="AAPL" />);
-    const group = screen.getByLabelText("Overlay study");
-    const sma20 = group.querySelector('button[title="STUDY sma_20"]');
-    const sma50 = group.querySelector('button[title="STUDY sma_50"]');
-    expect(sma20?.className).toContain("fn-segmented__opt--active");
-    if (sma50) fireEvent.click(sma50);
-    expect(sma50?.className).toContain("fn-segmented__opt--active");
-    expect(sma20?.className).not.toContain("fn-segmented__opt--active");
-    // Caption re-labels to the selected study.
-    expect(screen.getAllByText(/SMA 50/).length).toBeGreaterThanOrEqual(1);
+    const { container } = render(<CHGSPane code="CHGS" symbol="AAPL" />);
+    expect(container.querySelector('[aria-label="Overlay study"]')).toBeNull();
+    expect(container.querySelector('button[title^="STUDY "]')).toBeNull();
+    expect(screen.getByTestId("chart-engine")).toBeInTheDocument();
   });
 });
 

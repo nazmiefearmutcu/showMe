@@ -11,7 +11,8 @@
  *  - a family chip toggle hides that family's cards AND persists the
  *    hidden id under `showme.tech.families`;
  *  - hiding every family renders an explicit all-hidden note;
- *  - the close-price sparkline renders an SVG path + accessible label;
+ *  - the close-price chart is owned by the in-house engine (`@/chart/Chart`)
+ *    and the retired inline sparkline never resurfaces;
  *  - degraded payloads (envelope warnings) surface a visible pill.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -65,6 +66,11 @@ vi.mock("@/lib/useVisibilityTick", () => ({
 
 vi.mock("@/shell/SymbolBar", () => ({
   SymbolBar: () => null,
+}));
+
+// The engine fetches /api/bars and paints a canvas — stub it out.
+vi.mock("@/chart/Chart", () => ({
+  Chart: () => <div data-testid="chart-engine" />,
 }));
 
 /* ── fixture (small: 3 bars, condensed indicator set) ──────────────── */
@@ -242,15 +248,13 @@ describe("TECH pane — family toggles", () => {
   });
 });
 
-describe("TECH pane — sparkline + honesty", () => {
-  it("renders the close-price sparkline as an SVG path with an accessible label", () => {
+describe("TECH pane — chart engine + honesty", () => {
+  it("mounts the chart engine for the close-price series (sparkline retired)", () => {
     setMockFn({ state: "ok", ...okPayload() });
     const { container } = render(<TECHPane code="TECH" symbol="AAPL" />);
-    const spark = screen.getByRole("img", { name: /Close price/i });
-    expect(spark).toBeInTheDocument();
-    const path = spark.querySelector("path");
-    expect(path).not.toBeNull();
-    expect(path?.getAttribute("d")).toBeTruthy();
+    expect(screen.getByTestId("chart-engine")).toBeInTheDocument();
+    // The retired inline-SVG close-price sparkline must never resurface.
+    expect(screen.queryByRole("img", { name: /Close price/i })).toBeNull();
     // Params strip is derived from indicator_params.
     expect(container.textContent).toContain("MACD 12/26/9");
   });

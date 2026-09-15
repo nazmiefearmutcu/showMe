@@ -73,15 +73,28 @@ interface FSRCData {
 // Canonical fund categories from the backend reference universe
 // (showme_fund_reference_universe) — the chips compose a server-side
 // `category = "…"` predicate, so the labels must match it verbatim.
+// Session-17: the backend universe grew from 10 funds to 60+ across these
+// categories; keep this list in lockstep with `_fund_reference_rows()`.
 const CATEGORIES = [
   "US Large Blend",
   "US Large Growth",
+  "US Large Value",
   "US Total Market",
+  "US Mid Blend",
   "US Small Blend",
+  "US Small Value",
+  "International Developed",
   "Emerging Markets",
   "Commodity Precious Metals",
   "Long Government",
+  "Intermediate Government",
+  "Short Government",
+  "Aggregate Bond",
+  "International Bond",
+  "TIPS",
+  "Municipal Bond",
   "High Yield Bond",
+  "Closed-End Fund",
 ] as const;
 
 const MAX_EXPENSE_OPTIONS = [

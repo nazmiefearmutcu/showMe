@@ -1,34 +1,13 @@
 /**
- * GP / TECH — Price chart + technical indicator overlays.
+ * GP / TECH — Price chart + technical indicator rail.
  *
- * Bloomberg-grade chart panel with full indicator overlay treatment:
- *   - symbol header strip
- *   - timeframe + style + indicator legend toolbar
- *   - chart canvas (lightweight-charts) with overlays
- *   - right rail: KEY LEVELS · INDICATORS · NEWS
- *   - footer with OHLC value list + provider + cache
+ * The chart itself is rendered by the in-house showMe chart engine
+ * (`@/chart/Chart`), which owns the timeframe/type pickers, the searchable
+ * indicator picker, zoom/pan and theming. GP keeps the function payload
+ * (range/interval) that feeds the header strip, key-level rail and footer,
+ * plus the resizable frame, the 52-week rail and the honest transport pills.
  */
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type CSSProperties,
-} from "react";
-import {
-  type CandlestickData,
-  type HistogramData,
-  type IChartApi,
-  type ISeriesApi,
-  type LineData,
-  type Time,
-  createChart,
-  LineSeries,
-  CandlestickSeries,
-  HistogramSeries,
-  AreaSeries,
-} from "lightweight-charts";
+import { useMemo, type CSSProperties } from "react";
 import { useLiveQuote } from "@/lib/market-data";
 import type { TransportState } from "@/lib/market-data";
 import {
@@ -45,10 +24,6 @@ import {
   StatusSection,
   StatusDivider,
 } from "@/design-system";
-import {
-  measureChartElement,
-  resizeChartToElement,
-} from "@/lib/chart-layout";
 import { useFunction } from "@/lib/useFunction";
 import { defaultSymbolForFunction } from "@/lib/symbols";
 import { maxOf, minOf } from "@/lib/maxOf";
@@ -60,7 +35,7 @@ import {
 } from "./function-controls";
 import { usePersistentOption } from "./function-control-state";
 import type { FunctionPaneProps } from "./registry-types";
-import { alpha, useChartPalette } from "@/lib/chart-palette";
+import { Chart } from "@/chart/Chart";
 import { formatPrice } from "@/lib/format";
 
 interface OHLCRow {
@@ -76,7 +51,6 @@ interface OHLCRow {
 
 interface GPData {
   ohlcv?: OHLCRow[] | Record<string, unknown>;
-  indicators?: Record<string, Array<{ time: string | number; value: number }>>;
   [key: string]: unknown;
 }
 
@@ -103,63 +77,47 @@ const INTERVALS = [
 type IntervalId = (typeof INTERVALS)[number]["id"];
 const INTERVAL_IDS = INTERVALS.map((i) => i.id);
 
-const DEPTHS = [
-  { id: "300", label: "300" },
-  { id: "1000", label: "1K" },
-  { id: "3000", label: "3K" },
-  { id: "10000", label: "10K" },
-] as const;
-type DepthId = (typeof DEPTHS)[number]["id"];
-const DEPTH_IDS = DEPTHS.map((d) => d.id);
+// GP's historical default fetch depth for the rail payload. The BARS chips
+// are gone (the engine fetches its own bars), so the payload pins the pane's
+// previous default instead of a persisted preference.
+const DEFAULT_BARS = 1000;
 
 type ChartStyle = "candle" | "line" | "area";
 
-const CHART_STYLES: { id: ChartStyle; label: string }[] = [
-  { id: "candle", label: "Candle" },
-  { id: "line", label: "Line" },
-  { id: "area", label: "Area" },
-];
+/**
+ * The engine's timeframe catalog is case-sensitive in ways GP's ids were
+ * not: "1d"/"1w" (GP) map to the engine's "1D"/"1W", while "1m" (minute)
+ * and "1M" (month) stay distinct instruments.
+ */
+function mapInterval(interval: IntervalId): string {
+  if (interval === "1d") return "1D";
+  if (interval === "1w") return "1W";
+  return interval;
+}
 
-interface CrosshairState {
-  price: number | null;
-  open: number | null;
-  high: number | null;
-  low: number | null;
-  close: number | null;
-  volume: number | null;
-  time: string | null;
+/** GP's historical default chart style, mapped to the engine vocabulary. */
+const GP_CHART_STYLE: ChartStyle = "candle";
+
+function mapStyle(style: ChartStyle): "candles" | "line" | "area" {
+  return style === "candle" ? "candles" : style;
 }
 
 export function GPPane({ code, symbol }: FunctionPaneProps) {
   // 2026-05-11 hotfix: default-symbol fallback so palette-cold GP renders.
   const effectiveSymbol = symbol || defaultSymbolForFunction(code);
-  const palette = useChartPalette();
-  const indicatorColors = [palette.accent, palette.positive, palette.warn, palette.negative];
   const [range, setRange] = usePersistentOption<RangeId>(
     `showme.${code.toLowerCase()}-range`,
     RANGE_IDS,
     "1Y",
   );
-  const [interval, setInterval] = usePersistentOption<IntervalId>(
+  // The engine owns the live timeframe picker; GP keeps the persisted
+  // interval only to seed the engine and to serve the payload's resolution
+  // (the rail stats derive from the candles it returns).
+  const [interval] = usePersistentOption<IntervalId>(
     `showme.${code.toLowerCase()}-interval`,
     INTERVAL_IDS,
     "1d",
   );
-  const [depth, setDepth] = usePersistentOption<DepthId>(
-    `showme.${code.toLowerCase()}-depth`,
-    DEPTH_IDS,
-    "1000",
-  );
-  const [chartStyle, setChartStyle] = useState<ChartStyle>("candle");
-  const [crosshair, setCrosshair] = useState<CrosshairState>({
-    price: null,
-    open: null,
-    high: null,
-    low: null,
-    close: null,
-    volume: null,
-    time: null,
-  });
   const days = useMemo(
     () => RANGES.find((r) => r.id === range)?.days ?? 365,
     [range],
@@ -168,15 +126,10 @@ export function GPPane({ code, symbol }: FunctionPaneProps) {
     code,
     symbol: effectiveSymbol,
     enabled: !!effectiveSymbol,
-    params: { days, range, interval, bars: Number(depth) },
+    params: { days, range, interval, bars: DEFAULT_BARS },
   });
 
   const ohlc = useMemo(() => normalizeOHLC(data?.data?.ohlcv), [data]);
-  const indicators = data?.data?.indicators;
-  const indicatorNames = useMemo(
-    () => (indicators ? Object.keys(indicators) : []),
-    [indicators],
-  );
 
   const last = ohlc[ohlc.length - 1];
   const prev = ohlc[ohlc.length - 2];
@@ -239,10 +192,9 @@ export function GPPane({ code, symbol }: FunctionPaneProps) {
       ? { high: week52High, low: week52Low }
       : null;
 
-  // S03-R: live tick overlay so the chart's current bar advances without a
-  // full refetch and the pane can show a real transport state. The historical
-  // bars still come from `useFunction` (which also carries indicators); the
-  // live quote channel just feeds the last bar incrementally.
+  // S03-R: the pane keeps a live quote subscription so the header strip can
+  // show a real transport state and the current price without waiting for the
+  // next function refetch. The chart itself is refreshed by the engine.
   const liveQuote = useLiveQuote(effectiveSymbol, { enabled: !!effectiveSymbol });
   const transportState: TransportState = liveQuote.transportState;
   const isStale =
@@ -288,9 +240,6 @@ export function GPPane({ code, symbol }: FunctionPaneProps) {
               className="u-flex u-items-center u-gap-12 u-min-w-0"
             >
               <span style={tickerStyle}>{symbol}</span>
-              <Pill tone="accent" variant="soft" withDot={false}>
-                {chartStyle.toUpperCase()}
-              </Pill>
               <Pill tone="muted" variant="soft" withDot={false}>
                 {interval.toUpperCase()}
               </Pill>
@@ -332,8 +281,8 @@ export function GPPane({ code, symbol }: FunctionPaneProps) {
                * S12 GP truth: when the live transport is actually open
                * (`transportState === "live"`) and a tick has landed,
                * show that tick — not the candle-frozen `lastClose`. The
-               * chart series is already ticking via `series.update`; the
-               * header must mirror it or the surface lies. We keep the
+               * engine already reflects the tick on the canvas; the header
+               * must mirror it or the surface lies. We keep the
                * historical `lastClose` as a fallback so the header
                * doesn't blank between refreshes when the channel hasn't
                * delivered a first tick yet.
@@ -414,16 +363,13 @@ export function GPPane({ code, symbol }: FunctionPaneProps) {
           </div>
         )}
 
-        {/* Toolbar */}
+        {/*
+         * Toolbar — RANGE drives the function payload behind the header
+         * stats and the key-level rail. Timeframe / chart type / indicators
+         * are owned by the chart engine's own toolbar, so their chip rows
+         * are gone.
+         */}
         <div style={toolbarRowStyle}>
-          <div style={toolbarSegmentStyle}>
-            <span style={toolbarLabelStyle}>TIMEFRAME</span>
-            <PillRow
-              items={INTERVALS.map((i) => ({ id: i.id, label: i.label }))}
-              active={interval}
-              onChange={(id) => setInterval(id as IntervalId)}
-            />
-          </div>
           <div style={toolbarSegmentStyle}>
             <span style={toolbarLabelStyle}>RANGE</span>
             <PillRow
@@ -432,60 +378,6 @@ export function GPPane({ code, symbol }: FunctionPaneProps) {
               onChange={(id) => setRange(id as RangeId)}
             />
           </div>
-          <div style={toolbarSegmentStyle}>
-            <span style={toolbarLabelStyle}>STYLE</span>
-            <PillRow
-              items={CHART_STYLES}
-              active={chartStyle}
-              onChange={(id) => setChartStyle(id as ChartStyle)}
-            />
-          </div>
-          <div style={toolbarSegmentStyle}>
-            <span style={toolbarLabelStyle}>BARS</span>
-            <PillRow
-              items={DEPTHS.map((d) => ({ id: d.id, label: d.label }))}
-              active={depth}
-              onChange={(id) => setDepth(id as DepthId)}
-            />
-          </div>
-          {indicatorNames.length > 0 && (
-            <div style={legendRowStyle}>
-              <span style={toolbarLabelStyle}>INDICATORS</span>
-              {indicatorNames.map((name, idx) => (
-                <span key={name} style={legendChipStyle}>
-                  <span
-                    aria-hidden
-                    style={{
-                      ...legendDotStyle,
-                      background: indicatorColors[idx % indicatorColors.length],
-                    }}
-                  />
-                  {name.toUpperCase()}
-                </span>
-              ))}
-            </div>
-          )}
-          <button
-            type="button"
-            style={disabledToolbarButtonStyle}
-            disabled
-            aria-disabled="true"
-            title="Compare overlay is not wired yet"
-            data-testid="gp-compare-button"
-          >
-            Compare +
-          </button>
-          <button
-            type="button"
-            style={disabledToolbarIconButtonStyle}
-            disabled
-            aria-disabled="true"
-            title="Chart export is not wired yet"
-            data-testid="gp-export-button"
-            aria-label="Export chart (disabled)"
-          >
-            ⇪
-          </button>
         </div>
 
         <PaneBody className="u-p-0 u-flex u-min-h-0">
@@ -520,43 +412,12 @@ export function GPPane({ code, symbol }: FunctionPaneProps) {
                   style={chartSurfaceStyle}
                   ariaLabel="Resize chart"
                 >
-                  <ChartView
-                    chartId={code.toUpperCase()}
-                    candles={ohlc}
-                    indicators={indicators}
-                    interval={interval}
-                    chartStyle={chartStyle}
-                    onCrosshair={setCrosshair}
-                    liveTick={
-                      liveTickPrice != null && liveQuote.lastTickAt != null
-                        ? { price: liveTickPrice, ts: liveQuote.lastTickAt }
-                        : null
-                    }
+                  <Chart
+                    symbol={effectiveSymbol}
+                    fill
+                    initialInterval={mapInterval(interval)}
+                    initialType={mapStyle(GP_CHART_STYLE)}
                   />
-                  {crosshair.price != null && (
-                    <div style={crosshairBoxStyle}>
-                      <div style={crosshairRowStyle}>
-                        <span style={crosshairLabelStyle}>PRICE</span>
-                        <span style={crosshairValueStyle}>
-                          {fmtNum(crosshair.price)}
-                        </span>
-                      </div>
-                      {crosshair.volume != null && (
-                        <div style={crosshairRowStyle}>
-                          <span style={crosshairLabelStyle}>VOL</span>
-                          <span style={crosshairValueStyle}>
-                            {fmtVolume(crosshair.volume)}
-                          </span>
-                        </div>
-                      )}
-                      {crosshair.time && (
-                        <div style={crosshairRowStyle}>
-                          <span style={crosshairLabelStyle}>TIME</span>
-                          <span style={crosshairValueStyle}>{crosshair.time}</span>
-                        </div>
-                      )}
-                    </div>
-                  )}
                 </ResizableChartFrame>
               </div>
               <RightRail
@@ -826,438 +687,6 @@ function IndicatorRow({
   );
 }
 
-type MainSeries =
-  | ISeriesApi<"Candlestick">
-  | ISeriesApi<"Line">
-  | ISeriesApi<"Area">;
-
-export function ChartView({
-  chartId: _chartId,
-  candles,
-  indicators,
-  interval,
-  chartStyle,
-  onCrosshair,
-  liveTick,
-}: {
-  chartId: string;
-  candles: OHLCRow[];
-  indicators?: GPData["indicators"];
-  interval: string;
-  chartStyle: ChartStyle;
-  onCrosshair: (state: CrosshairState) => void;
-  liveTick?: { price: number; ts: number } | null;
-}) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const chartRef = useRef<IChartApi | null>(null);
-  const mainSeriesRef = useRef<MainSeries | null>(null);
-  const volSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
-  const indicatorSeriesRef = useRef<Map<string, ISeriesApi<"Line">>>(new Map());
-  // Cached last historical bar so live ticks can be merged with real OHLC
-  // values instead of fabricating an open/high/low.
-  const lastBarRef = useRef<{
-    time: Time;
-    open: number;
-    high: number;
-    low: number;
-    close: number;
-    volume: number;
-  } | null>(null);
-  const candlesRef = useRef<OHLCRow[]>(candles);
-  // Stable refs for the changeable bits so the chart-mount effect can stay
-  // dep-free. Without this, every parent re-render would tear down the chart
-  // (and the user's scroll/zoom state with it).
-  const onCrosshairRef = useRef(onCrosshair);
-  useEffect(() => {
-    onCrosshairRef.current = onCrosshair;
-  }, [onCrosshair]);
-  const palette = useChartPalette();
-  // Palette objects are minted fresh on every theme tick, so we hold the
-  // latest in a ref and feed the mount effect via that ref (stable identity).
-  // Palette CHANGES are applied via a dedicated effect below as
-  // `applyOptions()` updates — no remount.
-  const paletteRef = useRef(palette);
-  useEffect(() => {
-    paletteRef.current = palette;
-  }, [palette]);
-  const indicatorColors = useMemo(
-    () => [palette.accent, palette.positive, palette.warn, palette.negative],
-    [palette],
-  );
-
-  // ── Mount-only chart instance ──────────────────────────────────────────
-  // Re-runs only when chartStyle changes (different main-series type) or
-  // when the symbol/interval changes externally — palette is read via ref
-  // so theme switches don't tear the chart down. Candles refresh does NOT
-  // rebuild; the dedicated effects below `series.setData` / `series.update`.
-  useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
-    const p = paletteRef.current;
-    const size = measureChartElement(el, 460);
-    const chart = createChart(el, {
-      layout: {
-        background: { color: "transparent" },
-        textColor: p.text,
-        fontFamily: "JetBrains Mono, SF Mono, monospace",
-        fontSize: 11,
-      },
-      grid: {
-        vertLines: { color: p.grid },
-        horzLines: { color: p.grid },
-      },
-      timeScale: {
-        rightOffset: 8,
-        barSpacing: 7,
-        minBarSpacing: 0.3,
-        timeVisible: interval !== "1d" && interval !== "1w",
-        secondsVisible: interval === "1m",
-        borderColor: p.border,
-      },
-      rightPriceScale: { borderColor: p.border },
-      crosshair: { mode: 1 },
-      width: size.width,
-      height: size.height,
-    });
-
-    let mainSeries: MainSeries;
-    if (chartStyle === "candle") {
-      mainSeries = chart.addSeries(CandlestickSeries, {
-        upColor: p.positive,
-        downColor: p.negative,
-        borderUpColor: p.positive,
-        borderDownColor: p.negative,
-        wickUpColor: p.positive,
-        wickDownColor: p.negative,
-      });
-    } else if (chartStyle === "line") {
-      mainSeries = chart.addSeries(LineSeries, {
-        color: p.accent,
-        lineWidth: 2,
-        priceLineVisible: false,
-      });
-    } else {
-      mainSeries = chart.addSeries(AreaSeries, {
-        lineColor: p.accent,
-        topColor: alpha(p.accent, 0.32),
-        bottomColor: alpha(p.accent, 0.02),
-        lineWidth: 2,
-      });
-    }
-
-    const volSeries: ISeriesApi<"Histogram"> = chart.addSeries(HistogramSeries, {
-      priceScaleId: "volume",
-      color: p.volNeutral,
-      priceFormat: { type: "volume" },
-    });
-    chart.priceScale("volume").applyOptions({
-      scaleMargins: { top: 0.78, bottom: 0 },
-    });
-
-    chart.subscribeCrosshairMove((param) => {
-      const cb = onCrosshairRef.current;
-      if (!param.time || !param.seriesData.size) {
-        cb({
-          price: null,
-          open: null,
-          high: null,
-          low: null,
-          close: null,
-          volume: null,
-          time: null,
-        });
-        return;
-      }
-      const main = mainSeriesRef.current;
-      const seriesValues =
-        (main && (param.seriesData.get(main) as
-          | { close?: number; open?: number; high?: number; low?: number; value?: number }
-          | undefined)) ||
-        (Array.from(param.seriesData.values())[0] as
-          | { close?: number; open?: number; high?: number; low?: number; value?: number }
-          | undefined);
-      const t = param.time;
-      const tStr =
-        typeof t === "number"
-          ? new Date(t * 1000).toISOString().slice(0, 16).replace("T", " ")
-          : String(t);
-      const currentCandles = candlesRef.current;
-      const idx = currentCandles.findIndex((c) => timeOf(c) === param.time);
-      const row = idx >= 0 ? currentCandles[idx] : null;
-      cb({
-        price: seriesValues?.close ?? seriesValues?.value ?? null,
-        open: seriesValues?.open ?? row?.open ?? null,
-        high: seriesValues?.high ?? row?.high ?? null,
-        low: seriesValues?.low ?? row?.low ?? null,
-        close: seriesValues?.close ?? row?.close ?? null,
-        volume: row?.volume ?? null,
-        time: tStr,
-      });
-    });
-
-    chartRef.current = chart;
-    mainSeriesRef.current = mainSeries;
-    volSeriesRef.current = volSeries;
-    indicatorSeriesRef.current = new Map();
-
-    const ro = new ResizeObserver(() => {
-      resizeChartToElement(chart, el, 460);
-    });
-    ro.observe(el);
-
-    return () => {
-      ro.disconnect();
-      chart.remove();
-      chartRef.current = null;
-      mainSeriesRef.current = null;
-      volSeriesRef.current = null;
-      indicatorSeriesRef.current = new Map();
-      lastBarRef.current = null;
-    };
-    // Intentionally only chartStyle. `interval` is consumed once at chart
-    // creation (timeScale formatting); a runtime interval change goes through
-    // a separate effect below. `palette` and `onCrosshair` are read via refs.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chartStyle]);
-
-  // ── Interval → timeScale options (no rebuild) ────────────────────────
-  useEffect(() => {
-    const chart = chartRef.current;
-    if (!chart) return;
-    chart.applyOptions({
-      timeScale: {
-        timeVisible: interval !== "1d" && interval !== "1w",
-        secondsVisible: interval === "1m",
-      },
-    });
-  }, [interval]);
-
-  // ── Palette → applyOptions (no rebuild) ──────────────────────────────
-  useEffect(() => {
-    const chart = chartRef.current;
-    const main = mainSeriesRef.current;
-    const vol = volSeriesRef.current;
-    if (!chart) return;
-    chart.applyOptions({
-      layout: { textColor: palette.text },
-      grid: {
-        vertLines: { color: palette.grid },
-        horzLines: { color: palette.grid },
-      },
-      timeScale: { borderColor: palette.border },
-      rightPriceScale: { borderColor: palette.border },
-    });
-    if (main) {
-      if (chartStyle === "candle") {
-        (main as ISeriesApi<"Candlestick">).applyOptions({
-          upColor: palette.positive,
-          downColor: palette.negative,
-          borderUpColor: palette.positive,
-          borderDownColor: palette.negative,
-          wickUpColor: palette.positive,
-          wickDownColor: palette.negative,
-        });
-      } else if (chartStyle === "line") {
-        (main as ISeriesApi<"Line">).applyOptions({ color: palette.accent });
-      } else {
-        (main as ISeriesApi<"Area">).applyOptions({
-          lineColor: palette.accent,
-          topColor: alpha(palette.accent, 0.32),
-          bottomColor: alpha(palette.accent, 0.02),
-        });
-      }
-    }
-    if (vol) vol.applyOptions({ color: palette.volNeutral });
-  }, [palette, chartStyle]);
-
-  // ── Historical seed ───────────────────────────────────────────────────
-  // Refresh = setData on existing series. The chart instance, viewport, and
-  // the user's scroll/zoom state are preserved. Palette is read via ref —
-  // we don't want a theme switch to count as a "candles changed" trigger
-  // here (the palette-applyOptions effect below recolors via applyOptions).
-  useEffect(() => {
-    candlesRef.current = candles;
-    const chart = chartRef.current;
-    const main = mainSeriesRef.current;
-    const vol = volSeriesRef.current;
-    if (!chart || !main || !vol) return;
-    const p = paletteRef.current;
-    if (chartStyle === "candle") {
-      (main as ISeriesApi<"Candlestick">).setData(
-        candles.map<CandlestickData>((c) => ({
-          time: timeOf(c),
-          open: Number(c.open),
-          high: Number(c.high),
-          low: Number(c.low),
-          close: Number(c.close),
-        })),
-      );
-    } else {
-      (main as ISeriesApi<"Line"> | ISeriesApi<"Area">).setData(
-        candles.map<LineData>((c) => ({
-          time: timeOf(c),
-          value: Number(c.close),
-        })),
-      );
-    }
-
-    vol.setData(
-      candles.map<HistogramData>((c) => ({
-        time: timeOf(c),
-        value: Number(c.volume ?? 0),
-        color: Number(c.close) >= Number(c.open) ? p.volPos : p.volNeg,
-      })),
-    );
-
-    // Cache the last bar so live ticks can be merged with real O/H/L.
-    if (candles.length > 0) {
-      const last = candles[candles.length - 1];
-      lastBarRef.current = {
-        time: timeOf(last),
-        open: Number(last.open),
-        high: Number(last.high),
-        low: Number(last.low),
-        close: Number(last.close),
-        volume: Number(last.volume ?? 0),
-      };
-    } else {
-      lastBarRef.current = null;
-    }
-  }, [candles, chartStyle]);
-
-  // ── Indicator overlays ────────────────────────────────────────────────
-  // Indicators come from the analytical payload. We re-use existing line
-  // series when keys match, so a refresh with the same indicator names
-  // never recreates the overlays.
-  useEffect(() => {
-    const chart = chartRef.current;
-    if (!chart) return;
-    const map = indicatorSeriesRef.current;
-    const incoming = indicators ?? {};
-    const wantedKeys = new Set(Object.keys(incoming));
-    for (const [key, series] of Array.from(map.entries())) {
-      if (!wantedKeys.has(key)) {
-        chart.removeSeries(series);
-        map.delete(key);
-      }
-    }
-    Object.entries(incoming).forEach(([key, points], idx) => {
-      if (!Array.isArray(points) || points.length === 0) return;
-      let series = map.get(key);
-      if (!series) {
-        const newSeries = chart.addSeries(LineSeries, {
-          color: indicatorColors[idx % indicatorColors.length],
-          lineWidth: 1,
-          priceLineVisible: false,
-          lastValueVisible: false,
-        });
-        (newSeries as unknown as { __label?: string }).__label = key;
-        map.set(key, newSeries);
-        series = newSeries;
-      } else {
-        series.applyOptions({
-          color: indicatorColors[idx % indicatorColors.length],
-        });
-      }
-      series.setData(
-        points
-          .filter((p) => Number.isFinite(p.value))
-          .map<LineData>((p) => ({
-            time:
-              typeof p.time === "number"
-                ? (p.time as Time)
-                : (String(p.time).slice(0, 10) as Time),
-            value: p.value,
-          })),
-      );
-    });
-    // chartStyle is a rebuild trigger (fresh chart instance), so the overlays
-    // must be re-applied to the new instance or they would silently vanish.
-  }, [indicators, indicatorColors, chartStyle]);
-
-  // Auto-focus latest bars on first seed only — afterwards we leave the
-  // user's scroll/zoom alone.
-  const hasFocusedRef = useRef(false);
-  useEffect(() => {
-    if (hasFocusedRef.current) return;
-    const chart = chartRef.current;
-    const el = containerRef.current;
-    if (!chart || !el || candles.length === 0) return;
-    focusLatestBars(chart, candles.length, el.clientWidth || 460);
-    hasFocusedRef.current = true;
-  }, [candles.length]);
-
-  // ── Live tick → incremental current-bar update ────────────────────────
-  useEffect(() => {
-    if (!liveTick) return;
-    const main = mainSeriesRef.current;
-    const last = lastBarRef.current;
-    if (!main || !last) return;
-    const price = Number(liveTick.price);
-    if (!Number.isFinite(price)) return;
-    const merged = {
-      time: last.time,
-      open: last.open,
-      high: Math.max(last.high, price),
-      low: Math.min(last.low, price),
-      close: price,
-    };
-    if (chartStyle === "candle") {
-      (main as ISeriesApi<"Candlestick">).update(merged as CandlestickData);
-    } else {
-      (main as ISeriesApi<"Line"> | ISeriesApi<"Area">).update({
-        time: last.time,
-        value: price,
-      } as LineData);
-    }
-    lastBarRef.current = { ...last, high: merged.high, low: merged.low, close: price };
-  }, [liveTick, chartStyle]);
-
-  const fitContent = useCallback(() => {
-    chartRef.current?.timeScale().fitContent();
-  }, []);
-  const focusLast = useCallback(() => {
-    const chart = chartRef.current;
-    const el = containerRef.current;
-    if (chart && el) {
-      focusLatestBars(chart, candlesRef.current.length, el.clientWidth || 460);
-    }
-  }, []);
-
-  if (candles.length === 0) {
-    return <Empty title="No price data" body="Function returned no candles." />;
-  }
-
-  return (
-    <>
-      <div style={chartFitToolbarStyle}>
-        <span>
-          {candles.length.toLocaleString("en-US")} candles · drag/scroll to inspect history
-        </span>
-        <div className="u-flex u-gap-6 hp-chart-toolbar-actions">
-          <button
-            type="button"
-            className="btn btn--ghost"
-            onClick={fitContent}
-            data-testid="gp-fit-button"
-          >
-            Fit
-          </button>
-          <button
-            type="button"
-            className="btn btn--ghost"
-            onClick={focusLast}
-            data-testid="gp-last-button"
-          >
-            Last
-          </button>
-        </div>
-      </div>
-      <div ref={containerRef} style={chartHostStyle} data-testid="gp-chart-host" />
-    </>
-  );
-}
-
 // ----- helpers -----
 
 function normalizeOHLC(input: GPData["ohlcv"]): OHLCRow[] {
@@ -1272,27 +701,6 @@ function normalizeOHLC(input: GPData["ohlcv"]): OHLCRow[] {
       .filter((r) => Number.isFinite(r.open));
   }
   return [];
-}
-
-function timeOf(row: OHLCRow): Time {
-  const v = row.time ?? row.ts ?? row.date;
-  if (typeof v === "number")
-    return (v > 10_000_000_000 ? Math.floor(v / 1000) : v) as Time;
-  const text = String(v ?? "");
-  if (text.includes("T")) {
-    const ts = Date.parse(text);
-    if (Number.isFinite(ts)) return Math.floor(ts / 1000) as Time;
-  }
-  return text.slice(0, 10) as Time;
-}
-
-function focusLatestBars(chart: IChartApi, count: number, width: number): void {
-  if (count <= 0) return;
-  const visible = Math.max(90, Math.min(240, Math.floor(width / 7)));
-  chart.timeScale().setVisibleLogicalRange({
-    from: Math.max(0, count - visible),
-    to: count + 8,
-  });
 }
 
 function fmtNum(v: number | undefined | null): string {
@@ -1543,39 +951,6 @@ const pillButtonStyle: CSSProperties = {
   letterSpacing: "0.04em",
 };
 
-const toolbarButtonStyle: CSSProperties = {
-  height: 24,
-  padding: "0 10px",
-  background: "var(--surface-2)",
-  border: "1px solid var(--border-subtle)",
-  borderRadius: "var(--radius-sm)",
-  color: "var(--text-secondary)",
-  fontFamily: "JetBrains Mono, monospace",
-  fontSize: "var(--font-size-2xs)",
-  letterSpacing: "0.06em",
-  textTransform: "uppercase",
-  cursor: "default",
-};
-
-const toolbarIconButtonStyle: CSSProperties = {
-  ...toolbarButtonStyle,
-  width: 28,
-  padding: 0,
-  fontSize: "var(--font-size-lg)",
-};
-
-const disabledToolbarButtonStyle: CSSProperties = {
-  ...toolbarButtonStyle,
-  opacity: 0.45,
-  cursor: "not-allowed",
-};
-
-const disabledToolbarIconButtonStyle: CSSProperties = {
-  ...toolbarIconButtonStyle,
-  opacity: 0.45,
-  cursor: "not-allowed",
-};
-
 const newsEmptyStyle: CSSProperties = {
   padding: "8px 0 2px",
   display: "grid",
@@ -1596,33 +971,6 @@ const newsEmptyBodyStyle: CSSProperties = {
   lineHeight: 1.4,
 };
 
-const legendRowStyle: CSSProperties = {
-  display: "inline-flex",
-  alignItems: "center",
-  gap: 8,
-};
-
-const legendChipStyle: CSSProperties = {
-  display: "inline-flex",
-  alignItems: "center",
-  gap: 5,
-  padding: "2px 8px",
-  background: "var(--surface-2)",
-  border: "1px solid var(--border-subtle)",
-  borderRadius: "var(--radius-sm)",
-  fontFamily: "JetBrains Mono, monospace",
-  fontSize: "var(--font-size-xs)",
-  letterSpacing: "0.06em",
-  color: "var(--text-secondary)",
-};
-
-const legendDotStyle: CSSProperties = {
-  display: "inline-block",
-  width: 8,
-  height: 8,
-  borderRadius: 4,
-};
-
 const chartLayoutStyle: CSSProperties = {
   display: "grid",
   gridTemplateColumns: "minmax(0, 1fr) 240px",
@@ -1638,77 +986,12 @@ const chartCanvasWrapStyle: CSSProperties = {
   minWidth: 0,
 };
 
-// Outer style for ResizableChartFrame. ``position: relative`` so the
-// chart host (absolutely positioned, inset: 0) fills the entire frame.
+// Pure resize chrome for ResizableChartFrame — the chart engine paints its
+// own border/background/radius, so a second frame border would double up.
 const chartSurfaceStyle: CSSProperties = {
   position: "relative",
   boxSizing: "border-box",
-  border: "1px solid var(--border-subtle)",
-  background: "var(--surface-1)",
-  borderRadius: "var(--radius-md)",
   overflow: "hidden",
-};
-
-const chartHostStyle: CSSProperties = {
-  position: "absolute",
-  inset: 0,
-  minWidth: 0,
-  minHeight: 0,
-};
-
-const chartFitToolbarStyle: CSSProperties = {
-  position: "absolute",
-  top: 8,
-  left: 10,
-  right: 10,
-  zIndex: 2,
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "space-between",
-  gap: 8,
-  pointerEvents: "none",
-  color: "var(--text-mute)",
-  fontSize: "var(--font-size-2xs)",
-  textTransform: "uppercase",
-  letterSpacing: "0.06em",
-};
-
-const crosshairBoxStyle: CSSProperties = {
-  position: "absolute",
-  top: 18,
-  right: 18,
-  zIndex: 3,
-  background: "var(--surface-glass)",
-  backdropFilter: "blur(8px)",
-  WebkitBackdropFilter: "blur(8px)",
-  border: "1px solid var(--border-strong)",
-  borderRadius: "var(--radius-sm)",
-  padding: "8px 10px",
-  display: "grid",
-  gap: 3,
-  minWidth: 140,
-  pointerEvents: "none",
-};
-
-const crosshairRowStyle: CSSProperties = {
-  display: "flex",
-  justifyContent: "space-between",
-  gap: 14,
-};
-
-const crosshairLabelStyle: CSSProperties = {
-  fontFamily: "JetBrains Mono, monospace",
-  fontSize: "var(--font-size-xs)",
-  color: "var(--text-mute)",
-  textTransform: "uppercase",
-  letterSpacing: "0.08em",
-};
-
-const crosshairValueStyle: CSSProperties = {
-  fontFamily: "JetBrains Mono, monospace",
-  fontSize: "var(--font-size-sm)",
-  color: "var(--text-display)",
-  fontVariantNumeric: "tabular-nums",
 };
 
 const rightRailStyle: CSSProperties = {

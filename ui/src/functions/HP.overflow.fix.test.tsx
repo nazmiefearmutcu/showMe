@@ -7,8 +7,15 @@
  * MOST.tsx, WEI.tsx, XSEN.tsx, MarketHeatmap.tsx, SCAN.tsx — anywhere a
  * chart series can cross ~100k points.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { maxOf, minOf, maxAbsOf } from "@/lib/maxOf";
+
+// Chart engine stub — pinned in every HP test file so a render regression
+// can never pull in the real engine (this suite exercises pure helpers).
+vi.mock("@/chart/Chart", () => ({
+  Chart: () => <div data-testid="chart-engine" />,
+  default: () => <div data-testid="chart-engine" />,
+}));
 
 describe("UA-CRITICAL-01: HP/GP chart overflow safety", () => {
   it("maxOf / minOf process 150k points without throwing", () => {

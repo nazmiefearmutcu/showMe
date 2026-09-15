@@ -7,12 +7,11 @@
  * heat tokens; cells the backend could not fill (exchange returned nothing,
  * provider_count 0) render an honest "—", never a zero.
  *
- * Honesty: the backend's non-live path returns a synthetic sizing template
- * (sources=funding_rate_model, payload.live=false). That mode renders a
- * prominent "Model template" badge + inline "NOT live funding rates" note —
- * switching MODE to Live fetches real exchange data. The payload has no
- * funding-interval field, so no interval control is offered (the unit is
- * whatever the backend reports, per interval).
+ * Always live: the pane always requests live exchange funding (`live: true`)
+ * and renders no template UI; when every provider fails the backend's
+ * provider_unavailable envelope reaches the empty state below. The payload
+ * has no funding-interval field, so no interval control is offered (the unit
+ * is whatever the backend reports, per interval).
  */
 import { useMemo, type CSSProperties } from "react";
 import {
@@ -21,7 +20,6 @@ import {
   PaneBody,
   PaneFooter,
   PaneHeader,
-  Pill,
   Skeleton,
   StatusDivider,
   StatusSection,
@@ -57,13 +55,6 @@ interface FRHData {
   methodology?: string;
 }
 
-type ModeOption = "template" | "live";
-
-const MODE_OPTIONS: { value: ModeOption; label: string }[] = [
-  { value: "template", label: "Template" },
-  { value: "live", label: "Live" },
-];
-
 type LimitOption = 10 | 25 | 50 | 100;
 
 const LIMIT_OPTIONS: LimitOption[] = [10, 25, 50, 100];
@@ -77,11 +68,6 @@ function fmtRate(value: number): string {
 }
 
 export function FRHPane({ code, symbol }: FunctionPaneProps) {
-  const [mode, setMode] = usePersistentOption<ModeOption>(
-    "showme.frh.mode",
-    MODE_OPTIONS.map((o) => o.value),
-    "template",
-  );
   const [limit, setLimit] = usePersistentOption<LimitOption>(
     "showme.frh.limit",
     LIMIT_OPTIONS,
@@ -93,11 +79,7 @@ export function FRHPane({ code, symbol }: FunctionPaneProps) {
     symbol: symbol || undefined,
     params: {
       limit,
-      // Template mode must send the explicit reference flag: the backend's
-      // default polarity treats an ABSENT live/reference param as live, so
-      // omitting it silently fetched live exchange data under the Template
-      // label. Live mode keeps the explicit live flag.
-      ...(mode === "live" ? { live: true } : { reference: true }),
+      live: true,
     },
   });
 
@@ -111,7 +93,6 @@ export function FRHPane({ code, symbol }: FunctionPaneProps) {
     const list = payload?.exchanges;
     return Array.isArray(list) && list.length > 0 ? list : ["binance", "bybit", "okx"];
   }, [payload]);
-  const isTemplate = payload?.live === false;
 
   const range = useMemo(() => {
     let maxAbs = 0;
@@ -157,28 +138,15 @@ export function FRHPane({ code, symbol }: FunctionPaneProps) {
       />
     ) : (
       <div className="u-grid-gap-14">
-        {isTemplate ? (
-          <section style={templateNoteStyle} aria-label="FRH template warning">
-            <Pill tone="warn" variant="filled" withDot={false}>
-              Model template
-            </Pill>
-            <span style={templateTextStyle}>
-              These rows are a backend sizing template (funding_rate_model),
-              NOT live funding rates. Switch MODE to Live for real exchange
-              data.
-            </span>
-          </section>
-        ) : (
-          <section style={legendStyle} aria-label="FRH legend">
-            <span aria-hidden="true" style={swatchStyle} />
-            <span style={legendTextStyle}>longs pay shorts</span>
-            <span aria-hidden="true" style={{ ...swatchStyle, background: intensityToken(-RANGE_FLOOR, RANGE_FLOOR) }} />
-            <span style={legendTextStyle}>shorts pay longs</span>
-            <span style={legendTextStyle}>
-              · cell values are {payload?.unit ?? "fraction per funding interval"}
-            </span>
-          </section>
-        )}
+        <section style={legendStyle} aria-label="FRH legend">
+          <span aria-hidden="true" style={swatchStyle} />
+          <span style={legendTextStyle}>longs pay shorts</span>
+          <span aria-hidden="true" style={{ ...swatchStyle, background: intensityToken(-RANGE_FLOOR, RANGE_FLOOR) }} />
+          <span style={legendTextStyle}>shorts pay longs</span>
+          <span style={legendTextStyle}>
+            · cell values are {payload?.unit ?? "fraction per funding interval"}
+          </span>
+        </section>
 
         <div
           style={{
@@ -242,16 +210,9 @@ export function FRHPane({ code, symbol }: FunctionPaneProps) {
         <PaneHeader
           code={code}
           title="Funding Rate Heatmap"
-          subtitle={`${rows.length} symbols · ${exchanges.join(" / ")}${isTemplate ? " · template" : " · live"}`}
+          subtitle={`${rows.length} symbols · ${exchanges.join(" / ")} · live`}
           trailing={
             <FunctionControlGroup>
-              <SegmentedControl
-                label="MODE"
-                value={mode}
-                options={MODE_OPTIONS}
-                onChange={setMode}
-                title="Template vs live exchange funding"
-              />
               <SegmentedControl
                 label="SYMBOLS"
                 value={limit}
@@ -274,7 +235,7 @@ export function FRHPane({ code, symbol }: FunctionPaneProps) {
           <StatusDivider />
           <StatusSection label="status" value={status} />
           <StatusDivider />
-          <StatusSection label="mode" value={isTemplate ? "template" : "live"} />
+          <StatusSection label="mode" value="live" />
           <StatusDivider />
           <StatusSection label="symbols" value={rows.length} />
           <StatusDivider />
@@ -394,21 +355,6 @@ const swatchStyle: CSSProperties = {
   height: 10,
   border: "1px solid var(--border-row)",
   background: intensityToken(RANGE_FLOOR, RANGE_FLOOR),
-};
-
-const templateNoteStyle: CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  gap: 8,
-  flexWrap: "wrap",
-  border: "1px dashed var(--border-subtle)",
-  borderRadius: "var(--radius-sm)",
-  padding: "6px 10px",
-};
-
-const templateTextStyle: CSSProperties = {
-  fontSize: "var(--font-size-sm)",
-  color: "var(--text-mute)",
 };
 
 const methodologyStyle: CSSProperties = {

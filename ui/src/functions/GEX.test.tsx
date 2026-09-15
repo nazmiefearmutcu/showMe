@@ -190,9 +190,10 @@ describe("GEX pane — data honesty", () => {
     // The deceptive subtle "reference" pill is gone for synthetic data.
     expect(screen.queryByText("reference")).toBeNull();
     // FIX R2-#10: no green "ok" chip beside the synthetic pill + notice.
-    const pills = Array.from(container.querySelectorAll(".ds-pill")).map(
-      (pill) => pill.textContent,
-    );
+    // Scope to the pane header: the SymbolBar's own code pill lives outside it.
+    const pills = Array.from(
+      container.querySelectorAll(".ds-pane-header .ds-pill"),
+    ).map((pill) => pill.textContent);
     expect(pills).toEqual(["synthetic"]);
     // Emoji glyphs removed from the honesty surface.
     expect(container.textContent ?? "").not.toContain("⚠");
@@ -204,9 +205,10 @@ describe("GEX pane — data honesty", () => {
     expect(screen.queryByTestId("gex-synthetic-notice")).toBeNull();
     expect(screen.queryByText(/NOT real dealer positioning/i)).toBeNull();
     expect(screen.getByText("live chain")).toBeInTheDocument();
-    const pills = Array.from(container.querySelectorAll(".ds-pill")).map(
-      (pill) => pill.textContent,
-    );
+    // Scope to the pane header — the SymbolBar code pill lives outside it.
+    const pills = Array.from(
+      container.querySelectorAll(".ds-pane-header .ds-pill"),
+    ).map((pill) => pill.textContent);
     expect(pills).toEqual(["live chain"]);
   });
 

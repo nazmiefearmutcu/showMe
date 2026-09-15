@@ -3,13 +3,13 @@
  *
  * `useFunction` is mocked via a mutable shared object. Pins:
  *  - loading skeleton, error, empty and ok branches render honest states;
- *  - a LIVE payload renders the symbols × funding grid with tinted cells
- *    and the longs-pay/shorts-pay legend, and does NOT show the template
- *    warning;
- *  - a TEMPLATE payload (backend funding_rate_model, live=false) renders
- *    the prominent "Model template" badge + "NOT live funding rates" note;
+ *  - the live payload renders the symbols × funding grid with tinted cells
+ *    and the longs-pay/shorts-pay legend;
+ *  - no template UI exists anywhere — a legacy modeled payload does NOT
+ *    resurrect the old "Model template" badge;
  *  - exchange cells the backend could not fill render "—" (never 0);
- *  - switching MODE persists under `showme.frh.mode`.
+ *  - the pane always requests live funding (`live: true`, no `reference`);
+ *  - changing SYMBOLS sends the new `limit` to useFunction.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
@@ -50,6 +50,13 @@ vi.mock("@/lib/useFunction", () => ({
     };
   },
 }));
+
+function lastParams(): Record<string, unknown> | undefined {
+  const last = useFunctionSpy.mock.calls.at(-1)?.[0] as {
+    params?: Record<string, unknown>;
+  };
+  return last?.params;
+}
 
 /* ── fixtures (shape mirrors the live /api/fn/FRH probe) ───────────── */
 
@@ -99,7 +106,8 @@ function livePayload(): Partial<MockFnState> {
   };
 }
 
-function templatePayload(): Partial<MockFnState> {
+/** The removed backend template shape — the pane must NOT special-case it. */
+function legacyModeledPayload(): Partial<MockFnState> {
   return {
     state: "ok",
     data: {
@@ -193,60 +201,46 @@ describe("FRH pane — live heatmap", () => {
     expect(avg).toHaveTextContent("—");
   });
 
-  it("shows the legend and does NOT show the template warning when live", () => {
+  it("shows the legend and renders no template UI", () => {
     setMockFn(livePayload());
     render(<FRHPane code="FRH" />);
     expect(screen.getByLabelText("FRH legend")).toHaveTextContent(
       "longs pay shorts",
     );
+    expect(screen.queryByText(/template/i)).toBeNull();
+    expect(screen.queryByLabelText("FRH template warning")).toBeNull();
+  });
+});
+
+describe("FRH pane — always live, no template mode", () => {
+  it("has no MODE control and no template UI even for a legacy modeled payload", () => {
+    setMockFn(legacyModeledPayload());
+    render(<FRHPane code="FRH" />);
+    expect(screen.queryByText(/template/i)).toBeNull();
+    expect(screen.queryByLabelText("FRH template warning")).toBeNull();
     expect(
-      screen.queryByLabelText("FRH template warning"),
+      screen.queryByLabelText("Template vs live exchange funding"),
     ).toBeNull();
-    expect(screen.queryByText(/Model template/i)).toBeNull();
-  });
-});
-
-describe("FRH pane — template honesty", () => {
-  it("renders the prominent model-template badge + NOT-live note", () => {
-    setMockFn(templatePayload());
-    render(<FRHPane code="FRH" />);
-    expect(screen.getByText(/Model template/i)).toBeInTheDocument();
-    expect(
-      screen.getByText(/NOT live funding rates/i),
-    ).toBeInTheDocument();
-    expect(screen.getByLabelText("FRH template warning")).toBeInTheDocument();
+    expect(localStorage.getItem("showme.frh.mode")).toBeNull();
   });
 
-  it("switching MODE to Live persists showme.frh.mode", () => {
-    setMockFn(templatePayload());
-    render(<FRHPane code="FRH" />);
-    const group = screen.getByLabelText("Template vs live exchange funding");
-    const liveOpt = group.querySelector('.fn-segmented__opt[title="MODE Live"]');
-    expect(liveOpt).not.toBeNull();
-    fireEvent.click(liveOpt as Element);
-    expect(localStorage.getItem("showme.frh.mode")).toBe("live");
-  });
-});
-
-describe("FRH pane — mode request params (dead Template control regression)", () => {
-  it("Template mode sends reference=true so the backend cannot default-polarity into live", () => {
-    setMockFn(templatePayload());
-    render(<FRHPane code="FRH" />);
-    const last = useFunctionSpy.mock.calls.at(-1)?.[0] as {
-      params?: Record<string, unknown>;
-    };
-    expect(last?.params?.reference).toBe(true);
-    expect(last?.params?.live).toBeUndefined();
-  });
-
-  it("Live mode sends live=true and no reference flag", () => {
-    localStorage.setItem("showme.frh.mode", "live");
+  it("always requests live funding and never sends reference", () => {
     setMockFn(livePayload());
     render(<FRHPane code="FRH" />);
-    const last = useFunctionSpy.mock.calls.at(-1)?.[0] as {
-      params?: Record<string, unknown>;
-    };
-    expect(last?.params?.live).toBe(true);
-    expect(last?.params?.reference).toBeUndefined();
+    const params = lastParams();
+    expect(params?.live).toBe(true);
+    expect(params?.reference).toBeUndefined();
+    expect(params?.limit).toBe(25);
+  });
+
+  it("changing SYMBOLS sends the new limit and persists it", () => {
+    setMockFn(livePayload());
+    render(<FRHPane code="FRH" />);
+    const group = screen.getByLabelText("Symbol count");
+    const opt = group.querySelector('.fn-segmented__opt[title="SYMBOLS 50"]');
+    expect(opt).not.toBeNull();
+    fireEvent.click(opt as Element);
+    expect(lastParams()?.limit).toBe(50);
+    expect(localStorage.getItem("showme.frh.limit")).toBe("50");
   });
 });

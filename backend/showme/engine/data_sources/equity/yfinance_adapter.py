@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import csv
 import io
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -75,6 +76,18 @@ def _json_scalar(value: Any) -> Any:
     return value
 
 
+_YAHOO_CLASS_SHARE = re.compile(r"\.([A-Z])$")
+
+
+def _yahoo_batch_symbol(symbol: str) -> str:
+    """Translate class-share dots (``BRK.B``) to Yahoo's dash form.
+
+    Exchange suffixes (``SAP.DE``, ``MC.PA``) keep their dot — only a single
+    trailing letter marks a share class on Yahoo's quote endpoint.
+    """
+    return _YAHOO_CLASS_SHARE.sub(r"-\1", str(symbol or "").strip().upper())
+
+
 def _frame_records(frame: Any, *, limit: int | None = None) -> list[dict[str, Any]]:
     if not isinstance(frame, pd.DataFrame) or frame.empty:
         return []
@@ -112,11 +125,24 @@ class YFinanceAdapter(BaseDataSource):
         self._breaker = CircuitBreaker(threshold=50, cooldown=5)
         self._info_cache: dict[str, tuple[datetime, ReferenceData]] = {}
         self._chart_client: httpx.AsyncClient | None = None
+        # Batch quote transport (see ``fetch_refdata_batch``): one cookie/crumb
+        # session shared by the chunks, serialized by ``_batch_lock``.
+        self._batch_client: httpx.AsyncClient | None = None
+        self._batch_crumb: str = ""
+        self._batch_crumb_at: float = 0.0
+        self._batch_lock = asyncio.Lock()
 
     async def fetch(self, request: DataRequest) -> Any:
         if self._breaker.open:
             raise RateLimitError(f"{self.name} circuit open")
-        await self._bucket.acquire()
+        # Callers that run their own bounded concurrent fan-out (e.g. the
+        # WEI world-index screen) may opt out of the shared token bucket
+        # with ``bypass_rate_limit`` — the bucket wait used to sit inside
+        # the caller's per-request latency budget, so symbols queued past
+        # the first few timed out before their turn. Concurrency is capped
+        # caller-side instead.
+        if not request.extra.get("bypass_rate_limit"):
+            await self._bucket.acquire()
         try:
             timeout = float(request.extra.get("timeout", self.config.get("timeout_seconds", 8)))
             if request.kind == DataKind.QUOTE:
@@ -491,6 +517,123 @@ class YFinanceAdapter(BaseDataSource):
         if not include_recommendations:
             self._info_cache[sym] = (utcnow(), rd)
         return rd
+
+    # ── Batched fundamentals (v7 quote) ──
+    async def fetch_refdata_batch(
+        self,
+        symbols: list[str] | tuple[str, ...],
+        *,
+        chunk_size: int = 250,
+        timeout: float | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        """Batched Yahoo fundamentals for many symbols in a few calls.
+
+        Yahoo's public ``/v7/finance/quote`` endpoint returns marketCap,
+        trailingPE, priceToBook, dividendYield, last price and day change for
+        up to a few hundred symbols per call. It needs the short anonymous
+        cookie+crumb handshake yfinance itself performs. The response is keyed
+        by the REQUESTED symbol (class-share dots are translated to Yahoo's
+        dash form and mapped back). Any hard failure returns ``{}`` so callers
+        keep their per-symbol fallback instead of seeing fabricated rows.
+        """
+        clean = [str(s).strip().upper() for s in symbols or () if str(s).strip()]
+        if not clean:
+            return {}
+        request_timeout = float(
+            timeout if timeout is not None else self.config.get("timeout_seconds", 8)
+        )
+        size = max(1, int(chunk_size))
+        async with self._batch_lock:
+            try:
+                client = await self._batch_client_()
+                crumb = await self._yahoo_crumb(client)
+                if not crumb:
+                    return {}
+                out: dict[str, dict[str, Any]] = {}
+                for start in range(0, len(clean), size):
+                    chunk = clean[start:start + size]
+                    payload = await self._yahoo_quote_chunk(
+                        client, chunk, crumb, request_timeout
+                    )
+                    if payload:
+                        out.update(payload)
+                return out
+            except Exception:  # noqa: BLE001 — callers fall back per symbol
+                return {}
+
+    async def _batch_client_(self) -> httpx.AsyncClient:
+        if self._batch_client is None:
+            self._batch_client = httpx.AsyncClient(
+                base_url="https://query1.finance.yahoo.com",
+                timeout=float(self.config.get("timeout_seconds", 8)),
+                follow_redirects=True,
+                headers={
+                    "User-Agent": (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/126.0 Safari/537.36"
+                    ),
+                    "Accept": "application/json,text/plain,*/*",
+                },
+            )
+        return self._batch_client
+
+    async def _yahoo_crumb(self, client: httpx.AsyncClient, *, force: bool = False) -> str:
+        now = utcnow().timestamp()
+        if not force and self._batch_crumb and (now - self._batch_crumb_at) < 1800:
+            return self._batch_crumb
+        try:
+            try:
+                # Sets the anonymous session cookie; the endpoint itself often
+                # 404s, which is fine.
+                await client.get("https://fc.yahoo.com/", timeout=6.0)
+            except Exception:  # noqa: BLE001
+                pass
+            response = await client.get("/v1/test/getcrumb", timeout=8.0)
+            response.raise_for_status()
+            crumb = (response.text or "").strip()
+        except Exception:  # noqa: BLE001
+            crumb = ""
+        self._batch_crumb = crumb
+        self._batch_crumb_at = now
+        return crumb
+
+    async def _yahoo_quote_chunk(
+        self,
+        client: httpx.AsyncClient,
+        chunk: list[str],
+        crumb: str,
+        timeout: float,
+    ) -> dict[str, dict[str, Any]] | None:
+        """One ``/v7/finance/quote`` call; ``None`` on a soft failure."""
+        yahoo_to_requested = {_yahoo_batch_symbol(symbol): symbol for symbol in chunk}
+        params = {"symbols": ",".join(yahoo_to_requested), "crumb": crumb}
+        try:
+            response = await client.get("/v7/finance/quote", params=params, timeout=timeout)
+            if response.status_code in (401, 403):
+                # Stale crumb — refresh once and retry the same chunk.
+                fresh = await self._yahoo_crumb(client, force=True)
+                if fresh:
+                    response = await client.get(
+                        "/v7/finance/quote",
+                        params={**params, "crumb": fresh},
+                        timeout=timeout,
+                    )
+            response.raise_for_status()
+            results = (
+                ((response.json() or {}).get("quoteResponse") or {}).get("result") or []
+            )
+        except Exception:  # noqa: BLE001 — a dead chunk must not kill the rest
+            return None
+        out: dict[str, dict[str, Any]] = {}
+        for raw in results:
+            if not isinstance(raw, dict):
+                continue
+            symbol = str(raw.get("symbol") or "").strip().upper()
+            if not symbol:
+                continue
+            out[yahoo_to_requested.get(symbol, symbol)] = raw
+        return out
 
     async def _fetch_fundamentals(self, req: DataRequest) -> dict[str, pd.DataFrame]:
         sym = self._yf_symbol(req.instrument, req.symbols[0] if req.symbols else None)

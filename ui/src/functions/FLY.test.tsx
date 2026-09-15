@@ -9,7 +9,10 @@
  *    honest on-ground / airborne pill;
  *  - the coverage note states positions are ADS-B snapshots and routes
  *    are not inferred;
- *  - one interaction: callsign filter Apply updates the applied filter.
+ *  - one interaction: callsign filter Apply updates the applied filter;
+ *  - the LIMIT control drives the backend `limit` param (10/25/50/100);
+ *  - the Alerts control opens the rule settings and toggles persist;
+ *  - a fired rule lands in the pane alert history.
  *
  * `useFunction` is mocked via a mutable shared state so each test drives
  * the pane into a specific branch without the real sidecar transport.
@@ -39,13 +42,32 @@ function setMockFn(next: MockFnState) {
   mockFn.error = next.error ?? null;
 }
 
+/** Last `params` object the pane handed to useFunction. */
+const captured = vi.hoisted(() => ({
+  params: undefined as Record<string, unknown> | undefined,
+}));
+
 vi.mock("@/lib/useFunction", () => ({
-  useFunction: () => ({
-    state: mockFn.state,
-    data: mockFn.data,
-    error: mockFn.error,
-    refetch: vi.fn(),
-  }),
+  useFunction: (args: { params?: Record<string, unknown> }) => {
+    captured.params = args.params;
+    return {
+      state: mockFn.state,
+      data: mockFn.data,
+      error: mockFn.error,
+      refetch: vi.fn(),
+    };
+  },
+}));
+
+// Toast side effects are asserted (not rendered) — keep the store quiet.
+const toastWarn = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/toast", () => ({
+  toast: {
+    info: vi.fn(),
+    success: vi.fn(),
+    warn: toastWarn,
+    error: vi.fn(),
+  },
 }));
 
 // SymbolBar pulls router/symbol-resolver side effects we don't need here.
@@ -88,10 +110,35 @@ function livePayload() {
   };
 }
 
+/**
+ * A live payload that trips the crash rule on the FIRST poll: one aircraft
+ * in a −20 m/s (~−3,937 ft/min) descent, well past the −2,500 ft/min
+ * default. The other two stay benign.
+ */
+function crashingPayload() {
+  const descender = {
+    ...aircraft("THY6439", false),
+    vertical_rate_mps: -20,
+    altitude_ft: 38000,
+  };
+  return {
+    warnings: [],
+    sources: ["opensky"],
+    elapsed_ms: 900,
+    data: {
+      status: "live",
+      rows: [descender, aircraft("PGT1234", false)],
+    },
+  };
+}
+
 /* ── tests ─────────────────────────────────────────────────────────── */
 
 beforeEach(() => {
   setMockFn({ state: "idle", data: undefined });
+  // Limit + alert config persist to localStorage — every test starts clean.
+  window.localStorage.clear();
+  toastWarn.mockClear();
 });
 afterEach(() => {
   cleanup();
@@ -173,5 +220,108 @@ describe("FLY pane — interaction", () => {
     fireEvent.click(screen.getByText("Apply"));
     // The applied filter is uppercased and surfaced on the KPI card.
     expect(screen.getByText("THY")).toBeInTheDocument();
+  });
+});
+
+describe("FLY pane — limit control", () => {
+  it("offers the full 10/25/50/100 range (backend cap 100)", () => {
+    setMockFn({ state: "ok", data: livePayload() });
+    render(<FLYPane code="FLY" />);
+    for (const label of ["10", "25", "50", "100"]) {
+      expect(screen.getByRole("button", { name: label })).toBeInTheDocument();
+    }
+  });
+
+  it("sends the selected limit to the backend and persists it", () => {
+    setMockFn({ state: "ok", data: livePayload() });
+    render(<FLYPane code="FLY" />);
+    expect(captured.params?.limit).toBe(25);
+    fireEvent.click(screen.getByRole("button", { name: "100" }));
+    expect(captured.params?.limit).toBe(100);
+    expect(window.localStorage.getItem("showme.fly.limit")).toBe("100");
+  });
+});
+
+describe("FLY pane — alert settings", () => {
+  it("opens the rules popover from the toolbar", () => {
+    setMockFn({ state: "ok", data: livePayload() });
+    render(<FLYPane code="FLY" />);
+    expect(screen.queryByRole("dialog", { name: /FLY alert settings/i })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /FLY alerts/i }));
+    const dialog = screen.getByRole("dialog", { name: /FLY alert settings/i });
+    expect(dialog).toBeInTheDocument();
+    expect(screen.getByLabelText("Erratic flight path")).toBeChecked();
+    expect(screen.getByLabelText("Crash risk")).toBeChecked();
+    expect(screen.getByLabelText("Stale contact")).toBeChecked();
+    // Thresholds are visible with their values + units.
+    expect(screen.getByLabelText("Erratic heading threshold (deg)")).toHaveValue(60);
+    expect(screen.getByLabelText("Crash vertical rate threshold (ft/min)")).toHaveValue(2500);
+    expect(screen.getByLabelText("Crash low altitude threshold (ft)")).toHaveValue(2000);
+    expect(screen.getByLabelText("Stale contact threshold (minutes)")).toHaveValue(10);
+  });
+
+  it("persists a rule toggle and restores it on the next mount", () => {
+    setMockFn({ state: "ok", data: livePayload() });
+    const first = render(<FLYPane code="FLY" />);
+    fireEvent.click(screen.getByRole("button", { name: /FLY alerts/i }));
+    fireEvent.click(screen.getByLabelText("Crash risk"));
+    expect(screen.getByLabelText("Crash risk")).not.toBeChecked();
+    const stored = JSON.parse(window.localStorage.getItem("showme.fly.alerts") ?? "null") as {
+      crash?: { enabled?: boolean };
+    };
+    expect(stored.crash?.enabled).toBe(false);
+    first.unmount();
+
+    render(<FLYPane code="FLY" />);
+    fireEvent.click(screen.getByRole("button", { name: /FLY alerts/i }));
+    expect(screen.getByLabelText("Crash risk")).not.toBeChecked();
+    expect(screen.getByLabelText("Stale contact")).toBeChecked();
+  });
+
+  it("updates a threshold on commit and persists the clamped value", () => {
+    setMockFn({ state: "ok", data: livePayload() });
+    render(<FLYPane code="FLY" />);
+    fireEvent.click(screen.getByRole("button", { name: /FLY alerts/i }));
+    const input = screen.getByLabelText("Stale contact threshold (minutes)");
+    fireEvent.change(input, { target: { value: "25" } });
+    fireEvent.blur(input);
+    const stored = JSON.parse(window.localStorage.getItem("showme.fly.alerts") ?? "null") as {
+      stale?: { minutes?: number };
+    };
+    expect(stored.stale?.minutes).toBe(25);
+  });
+});
+
+describe("FLY pane — alert history", () => {
+  it("records a fired rule and toasts it", () => {
+    setMockFn({ state: "ok", data: crashingPayload() });
+    render(<FLYPane code="FLY" />);
+    const history = screen.getByTestId("fly-alert-history");
+    expect(history).toHaveTextContent("THY6439");
+    expect(history).toHaveTextContent("FLY rule: crash risk — steep descent");
+    expect(history).toHaveTextContent(/3,937 ft\/min/);
+    expect(toastWarn).toHaveBeenCalledWith(
+      "THY6439",
+      expect.stringContaining("FLY rule: crash risk — steep descent"),
+    );
+  });
+
+  it("respects a disabled rule for the current poll", () => {
+    window.localStorage.setItem(
+      "showme.fly.alerts",
+      JSON.stringify({ crash: { enabled: false } }),
+    );
+    setMockFn({ state: "ok", data: crashingPayload() });
+    render(<FLYPane code="FLY" />);
+    expect(screen.queryByTestId("fly-alert-history")).toBeNull();
+    expect(toastWarn).not.toHaveBeenCalled();
+  });
+
+  it("clears the history on demand", () => {
+    setMockFn({ state: "ok", data: crashingPayload() });
+    render(<FLYPane code="FLY" />);
+    expect(screen.getByTestId("fly-alert-history")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Clear" }));
+    expect(screen.queryByTestId("fly-alert-history")).toBeNull();
   });
 });

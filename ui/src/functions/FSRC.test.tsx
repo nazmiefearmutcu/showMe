@@ -219,6 +219,17 @@ describe("FSRC pane — filter controls compose the server-side query", () => {
     ).toBeGreaterThan(0);
   });
 
+  it("exposes the expanded fund-category chips", () => {
+    // Session-17: the backend fund universe grew to 60+ vehicles across 19
+    // categories; every category must stay chip-selectable.
+    setMockFn({ state: "ok", ...okPayload() });
+    render(<FSRCPane code="FSRC" />);
+    expect(screen.getByTitle("Category TIPS")).toBeInTheDocument();
+    expect(screen.getByTitle("Category International Developed")).toBeInTheDocument();
+    expect(screen.getByTitle("Category Closed-End Fund")).toBeInTheDocument();
+    expect(screen.getByTitle("Category Aggregate Bond")).toBeInTheDocument();
+  });
+
   it("combines category AND expense clauses, then resets to match-all", () => {
     setMockFn({ state: "ok", ...okPayload() });
     render(<FSRCPane code="FSRC" />);

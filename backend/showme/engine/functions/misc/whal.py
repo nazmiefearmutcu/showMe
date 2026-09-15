@@ -93,6 +93,16 @@ class WHALFunction(BaseFunction):
                 timeout=timeout,
             )
 
+        # Honest empty-state: a crypto pair queried from a non-crypto tab can
+        # only ever produce proxy rows (Yahoo/EDGAR know nothing about
+        # BTCUSDT). Say so instead of letting an empty table read as "no
+        # whale activity".
+        if market != "CRYPTO" and symbol.endswith(("USDT", "USDC", "FDUSD")):
+            warnings.append(
+                f"{symbol} looks like a crypto pair, but the {market} tab queries Yahoo chart / "
+                "SEC EDGAR. Switch to the Crypto tab for a real trade-flow view."
+            )
+
         payload.update(
             {
                 "symbol": symbol,
@@ -311,8 +321,13 @@ def _shape_binance_trades(
             }
         )
     parsed.sort(key=lambda row: float(row.get("usd_value") or 0), reverse=True)
-    crossed = [row for row in parsed if row.get("threshold_crossed")]
-    return (crossed or parsed)[:row_limit]
+    # Min-USD contract: when a threshold is requested, rows below it must
+    # never render. The old `(crossed or parsed)` fallback dumped the top
+    # trades (often $10k-$40k) into a pane filtered at $10M. With no
+    # threshold (0) the full top-N list is still returned.
+    if threshold_usd > 0:
+        return [row for row in parsed if row.get("threshold_crossed")][:row_limit]
+    return parsed[:row_limit]
 
 
 def _shape_binance_klines(klines: Any, pair: str, venue: str) -> list[dict[str, Any]]:
@@ -466,6 +481,16 @@ def _shape_market_bars(
         )
     if not rows:
         rows = _top_market_rows(enriched, symbol, yahoo_symbol, market, threshold_usd, row_limit)
+    # Min-USD contract for the proxy path: a row whose known notional is
+    # below the requested threshold must never render — including the
+    # "top window" fallback. Rows with no USD value at all (SEC filings,
+    # FX price-impulse proxies) stay: they are not comparable to a dollar
+    # floor and are labelled as such.
+    if threshold_usd > 0:
+        rows = [
+            row for row in rows
+            if row.get("threshold_crossed") or row.get("usd_value") is None
+        ]
     rows.sort(
         key=lambda row: (
             float(row.get("usd_value") or 0),
@@ -527,34 +552,57 @@ def _top_market_rows(
     return rows
 
 
+SEC_TICKERS_TTL_SECONDS = 6 * 3600.0
+# Module-level cache: {TICKER: company_tickers row}. The SEC file is ~800 KB
+# and WHAL polls every 30 s, so refetching it per call burned most of the
+# routed timeout budget for zero new information.
+_SEC_TICKERS_CACHE: dict[str, Any] = {"fetched_at": 0.0, "by_ticker": {}}
+
+
+async def _sec_ticker_map(client: httpx.AsyncClient) -> dict[str, dict[str, Any]]:
+    """Fetch (or reuse) SEC company_tickers.json as a {TICKER: row} map."""
+    cached = _SEC_TICKERS_CACHE.get("by_ticker") or {}
+    fetched_at = float(_SEC_TICKERS_CACHE.get("fetched_at") or 0.0)
+    if cached and (time.time() - fetched_at) < SEC_TICKERS_TTL_SECONDS:
+        return cached
+    response = await client.get(SEC_TICKERS, headers={"User-Agent": USER_AGENT})
+    response.raise_for_status()
+    payload = response.json() or {}
+    by_ticker: dict[str, dict[str, Any]] = {}
+    for item in payload.values() if isinstance(payload, dict) else []:
+        if not isinstance(item, dict):
+            continue
+        ticker = str(item.get("ticker") or "").upper()
+        if ticker:
+            by_ticker[ticker] = item
+    if by_ticker:
+        _SEC_TICKERS_CACHE["by_ticker"] = by_ticker
+        _SEC_TICKERS_CACHE["fetched_at"] = time.time()
+    return by_ticker
+
+
 async def _fetch_sec_filing_rows(
     client: httpx.AsyncClient,
     symbol: str,
     row_limit: int,
 ) -> list[dict[str, Any]]:
-    response = await client.get(SEC_TICKERS, headers={"User-Agent": USER_AGENT})
-    response.raise_for_status()
-    tickers = response.json() or {}
+    tickers = await _sec_ticker_map(client)
     clean_symbol = symbol.upper().split(".")[0]
+    item = tickers.get(clean_symbol)
     cik: int | None = None
     company_name = ""
-    for item in tickers.values() if isinstance(tickers, dict) else []:
-        if not isinstance(item, dict):
-            continue
-        if str(item.get("ticker") or "").upper() == clean_symbol:
-            # Session-14 fix: int(None) on a missing or non-numeric cik_str
-            # used to raise TypeError that surfaced as a 500. Skip the row
-            # gracefully so the wider WHAL call can still return crypto /
-            # yahoo proxy rows.
-            cik_raw = item.get("cik_str")
-            try:
-                cik = int(cik_raw) if cik_raw is not None else None
-            except (TypeError, ValueError):
-                cik = None
-            if cik is None:
-                continue
+    if item is not None:
+        # Session-14 fix: int(None) on a missing or non-numeric cik_str
+        # used to raise TypeError that surfaced as a 500. Skip the row
+        # gracefully so the wider WHAL call can still return crypto /
+        # yahoo proxy rows.
+        cik_raw = item.get("cik_str")
+        try:
+            cik = int(cik_raw) if cik_raw is not None else None
+        except (TypeError, ValueError):
+            cik = None
+        if cik is not None:
             company_name = str(item.get("title") or "")
-            break
     if not cik:
         return []
     sub = await client.get(f"{SEC_SUBMISSIONS}/CIK{cik:010d}.json", headers={"User-Agent": USER_AGENT})

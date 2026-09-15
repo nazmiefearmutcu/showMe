@@ -8,8 +8,9 @@ FORM4, FRD, FRH, FSRC, FTS):
    ``sanitize_function_payload``.
 2. ``FORM4._fallback_form4`` no longer emits an all-None sentinel row.
 3. ``FTS._fallback_hits`` was removed; offline/empty paths now return ``[]``.
-4. ``FRH`` non-live check uses ``_truthy`` so ``live="false"`` (string)
-   stays in the template path instead of going live.
+4. ``FRH`` never resurrects a funding template — even ``live="false"``
+   (JSON string) goes through the live fetch and degrades to the honest
+   ``provider_unavailable`` envelope when every exchange fails.
 
 Each test stays purely local — no sidecar boot required.
 """
@@ -84,26 +85,23 @@ def test_fts_no_live_returns_empty_rows() -> None:
     assert result.data["rows"] == []
 
 
-# ─── 4. FRH _truthy handling of "false" string ───────────────────────────
+# ─── 4. FRH never serves a model template ────────────────────────────────
 
-def test_frh_live_false_string_keeps_template_path() -> None:
-    """`live="false"` (JSON string) must NOT route into the live exchange call."""
+def test_frh_live_false_string_no_longer_serves_template() -> None:
+    """`live="false"` (JSON string) must NOT resurrect a model template."""
+
+    class _FailingClient:
+        async def get(self, url, params=None):
+            raise RuntimeError("exchange down")
+
     fn = frh_mod.FRHFunction(deps=None)
-    # If the truthy fix is missing, this triggers an httpx network call and
-    # the test fails with a different error type.
+    fn._http_client = _FailingClient()
     result = asyncio.run(fn.execute(symbols="BTCUSDT", live="false"))
-    # Non-live path returns the deterministic template, label = funding_rate_model
-    assert "funding_rate_model" in (result.sources or [])
-    # 2026-05-24: sanitizer now labels (not suppresses). The
-    # ``funding_rate_model`` source ends in ``_model`` so the row stays
-    # in place with ``data_state == "model"`` and the metadata records
-    # the same; the legacy ``synthetic`` flag is reserved for true
-    # template/sample/placeholder strings now.
-    payload = {"data": result.data, "sources": result.sources, "metadata": {}}
-    sanitized = server.sanitize_function_payload("FRH", {}, payload)
-    assert sanitized.get("data_state") == "model"
-    assert sanitized.get("sanitizer_summary", {}).get("model", 0) >= 1
-    assert sanitized.get("metadata", {}).get("degraded") is True
+    # The falsy live string is ignored: live fetch was attempted and the
+    # honest provider-exhausted envelope is served — never a template.
+    assert "funding_rate_model" not in (result.sources or [])
+    assert result.metadata.get("data_mode") != "modeled"
+    assert result.data["status"] == "provider_unavailable"
 
 
 @pytest.mark.parametrize("val", ["0", "false", "False", "", "no", "off"])

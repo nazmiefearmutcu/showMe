@@ -43,6 +43,7 @@ def register_routes(app: FastAPI, *, deps: AppDeps) -> None:
         agent,
         ask,
         assistant,
+        bars,
         bots,
         broker,
         exchange,
@@ -84,6 +85,7 @@ def register_routes(app: FastAPI, *, deps: AppDeps) -> None:
     agent.register(app, deps)
     ask.register(app, deps)
     assistant.register(app, deps)
+    bars.register(app, deps)
     bots.register(app, deps)
     state.register(app, deps)
     strategies.register(app, deps)

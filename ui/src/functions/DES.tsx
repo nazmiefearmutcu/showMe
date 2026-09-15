@@ -1,8 +1,9 @@
 /**
  * DES — Description / company snapshot.
  *
- * Bloomberg-grade company detail with a chart-led header strip and
- * description-first body. Profile data via yfinance + finnhub feeds.
+ * Bloomberg-grade company detail with an engine-led header strip
+ * (`@/chart/Chart`, compact — canvas only, seeded 1D) and description-first
+ * body. Profile data via yfinance + finnhub feeds.
  */
 import { type CSSProperties, useState } from "react";
 import {
@@ -26,6 +27,7 @@ import { tickFlashClass } from "@/lib/tick-flash";
 import { defaultSymbolForFunction } from "@/lib/symbols";
 import { useLiveQuote, type TransportState } from "@/lib/market-data";
 import { SymbolBar } from "@/shell/SymbolBar";
+import { Chart } from "@/chart/Chart";
 import {
   FunctionControlGroup,
   LoadStatePill,
@@ -263,6 +265,9 @@ export function DESPane({ code, symbol }: FunctionPaneProps) {
               changePct={changePct}
               currency={profile?.currency}
             />
+            <div style={stripChartStyle}>
+              <Chart symbol={effectiveSymbol} compact height={170} initialInterval="1D" />
+            </div>
           </div>
         )}
 
@@ -749,6 +754,14 @@ const symbolStripStyle: CSSProperties = {
   borderBottom: "1px solid var(--border-subtle)",
   background: "var(--surface-2)",
   flexWrap: "wrap",
+};
+
+// Full-width row inside the wrapped header strip: the compact engine chart
+// sits under the ticker/quote row.
+const stripChartStyle: CSSProperties = {
+  flexBasis: "100%",
+  width: "100%",
+  minWidth: 0,
 };
 
 const tickerStyle: CSSProperties = {

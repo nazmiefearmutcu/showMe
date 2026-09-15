@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>ShowMe dev seed</title>
+</head>
+<body>
+  <p>Seeding sidecar port for browser dev and redirecting to the app…</p>
+  <script>
+    try {
+      localStorage.setItem("showme.sidecarPort", "8795");
+      // Seed the starter watchlist once so the home page renders LIVE rows
+      // (quotes, sector, 1D notional) instead of the empty-state CTA. Never
+      // clobbers an existing list.
+      var WATCH_KEY = "showme.watchlist";
+      if (!localStorage.getItem(WATCH_KEY)) {
+        localStorage.setItem(
+          WATCH_KEY,
+          JSON.stringify({
+            rows: [
+              { symbol: "AAPL", label: "Apple" },
+              { symbol: "MSFT", label: "Microsoft" },
+              { symbol: "NVDA", label: "NVIDIA" },
+              { symbol: "SPY", label: "S&P 500 ETF" },
+              { symbol: "QQQ", label: "Nasdaq 100 ETF" },
+              { symbol: "BTCUSDT", label: "Bitcoin" },
+              { symbol: "ETHUSDT", label: "Ethereum" },
+              { symbol: "SOLUSDT", label: "Solana" },
+            ],
+          }),
+        );
+      }
+    } catch (e) {
+      document.body.textContent = "localStorage failed: " + e;
+    }
+    location.replace("/");
+  </script>
+  <noscript>JavaScript is required.</noscript>
+</body>
+</html>

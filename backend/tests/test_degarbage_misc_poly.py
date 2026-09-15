@@ -121,3 +121,91 @@ def test_matches_query_token_and():
     assert _matches_query(row, "fed cuts") is True
     assert _matches_query(row, "election") is False
     assert _matches_query(row, None) is True
+
+
+# ── Regression: routed browse path (2026-09-15) ──────────────────────────
+# The /api/fn route used to inject the generic crypto-news query
+# ("bitcoin cryptocurrency") into POLY's `query`; POLY treats `query` as a
+# strict AND-token filter, so a browse request came back with 0 markets and
+# data_mode='cached_snapshot'. These tests pin the browse parse with a
+# stubbed provider and the honest empty-filter reason.
+
+
+def _gamma_fixture():
+    return [
+        {
+            "slug": "fed-cut-sept",
+            "question": "Will the Fed cut rates in September?",
+            "outcomes": '["Yes", "No"]',
+            "outcomePrices": '["0.72", "0.28"]',
+            "liquidity": "250000",
+            "volume": "900000",
+            "endDate": "2099-09-16T00:00:00Z",
+        },
+        {
+            "slug": "btc-150k-2026",
+            "question": "Bitcoin above $150k in 2026?",
+            "outcomes": '["Yes", "No"]',
+            "outcomePrices": '["0.31", "0.69"]',
+            "liquidity": "90000",
+            "volume": "50000",
+            "endDate": "2099-12-31T00:00:00Z",
+        },
+    ]
+
+
+def test_poly_stubbed_provider_parses_browse_rows_without_query(monkeypatch):
+    import showme.engine.functions.misc.poly as poly_mod
+
+    async def _fake_fetch(*_args, **_kwargs):
+        return _gamma_fixture()
+
+    monkeypatch.setattr(poly_mod, "_fetch_gamma_markets", _fake_fetch)
+
+    fn = POLYFunction(FunctionDeps())
+    result = _run(fn.execute(status="open", min_liquidity_usd=10_000, limit=25))
+    data = result.data
+
+    assert data["status"] == "ok"
+    assert data["data_mode"] == "delayed_reference"
+    assert len(data["markets"]) == 2
+    assert len(data["rows"]) == 4
+    yes = next(
+        r for r in data["rows"]
+        if r["outcome"] == "Yes" and r["market_id"] == "fed-cut-sept"
+    )
+    assert yes["implied_prob"] == pytest.approx(72.0, abs=1e-6)
+    assert yes["liquidity_usd"] == pytest.approx(250000.0)
+
+
+def test_poly_stubbed_provider_keeps_rows_when_caller_passes_no_query():
+    """The /api/fn route default must not inject a news query (root cause)."""
+    from showme import server
+
+    routed = server._route_function_params(
+        "POLY", {"status": "open", "min_liquidity_usd": 10_000}
+    )
+    assert not routed.get("query"), (
+        "POLY browse must not receive the generic news query — it is a strict "
+        "AND-token topic filter that zeroed every market list"
+    )
+
+
+def test_poly_empty_topic_filter_reports_reason(monkeypatch):
+    import showme.engine.functions.misc.poly as poly_mod
+
+    async def _fake_fetch(*_args, **_kwargs):
+        return _gamma_fixture()
+
+    monkeypatch.setattr(poly_mod, "_fetch_gamma_markets", _fake_fetch)
+
+    fn = POLYFunction(FunctionDeps())
+    result = _run(
+        fn.execute(query="bitcoin cryptocurrency", status="open", min_liquidity_usd=0)
+    )
+    data = result.data
+
+    assert data["status"] == "empty"
+    assert data["data_mode"] == "cached_snapshot"
+    assert data["rows"] == []
+    assert any("bitcoin cryptocurrency" in w for w in result.warnings)

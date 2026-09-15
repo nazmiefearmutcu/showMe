@@ -1,9 +1,11 @@
 /**
  * F7 — GP chart fixes (audit A6 / GP subsection).
  *
- * Pins the fixes shipped in the charts fix lane:
- *   1. `data.indicators` is emitted by the GP alias again → the INDICATORS
- *      legend and the chart overlay series actually render.
+ * Pins the fixes shipped in the charts fix lane that still hold after the
+ * pane migrated to the in-house chart engine:
+ *   1. The payload's `data.indicators` bundle no longer renders as an
+ *      overlay + INDICATORS legend (the engine owns indicator drawing), but
+ *      receiving it must not break the pane.
  *   2. The never-existing `cached` footer pill is replaced by an honest
  *      deep/windowed history chip.
  *   3. "52w high/low" only claims 52 weeks when the provider meta supplied
@@ -18,81 +20,19 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import type { TransportState } from "@/lib/market-data";
 import { GPPane } from "./GP";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const gpSourceRaw = readFileSync(resolve(__dirname, "GP.tsx"), "utf-8");
 
-/* ── lightweight-charts spy ─────────────────────────────────────────── */
-
-interface SeriesStub {
-  setData: ReturnType<typeof vi.fn>;
-  update: ReturnType<typeof vi.fn>;
-  applyOptions: ReturnType<typeof vi.fn>;
-  __label?: string;
-}
-interface AddedEntry {
-  constructor: unknown;
-  options: Record<string, unknown>;
-  series: SeriesStub;
-}
-interface ChartStub {
-  addSeries: ReturnType<typeof vi.fn>;
-  removeSeries: ReturnType<typeof vi.fn>;
-  subscribeCrosshairMove: ReturnType<typeof vi.fn>;
-  priceScale: ReturnType<typeof vi.fn>;
-  timeScale: ReturnType<typeof vi.fn>;
-  remove: ReturnType<typeof vi.fn>;
-  applyOptions: ReturnType<typeof vi.fn>;
-  resize: ReturnType<typeof vi.fn>;
-  __series: SeriesStub[];
-  __added: AddedEntry[];
-}
-
-const chartInstances: ChartStub[] = [];
-
-vi.mock("lightweight-charts", () => {
-  class LineSeries {}
-  class CandlestickSeries {}
-  class HistogramSeries {}
-  class AreaSeries {}
-  const createChart = vi.fn(() => {
-    const series: SeriesStub[] = [];
-    const added: AddedEntry[] = [];
-    const makeSeries = (): SeriesStub => ({
-      setData: vi.fn(),
-      update: vi.fn(),
-      applyOptions: vi.fn(),
-    });
-    const instance: ChartStub = {
-      addSeries: vi.fn(
-        (constructor: unknown, options: Record<string, unknown>) => {
-          const stub = makeSeries();
-          series.push(stub);
-          added.push({ constructor, options, series: stub });
-          return stub;
-        },
-      ),
-      removeSeries: vi.fn(),
-      subscribeCrosshairMove: vi.fn(),
-      priceScale: vi.fn(() => ({ applyOptions: vi.fn() })),
-      timeScale: vi.fn(() => ({
-        fitContent: vi.fn(),
-        setVisibleLogicalRange: vi.fn(),
-      })),
-      remove: vi.fn(),
-      applyOptions: vi.fn(),
-      resize: vi.fn(),
-      __series: series,
-      __added: added,
-    };
-    chartInstances.push(instance);
-    return instance;
-  });
-  return { createChart, LineSeries, CandlestickSeries, HistogramSeries, AreaSeries };
-});
+/* ── chart-engine stub ──────────────────────────────────────────────── */
+// The engine fetches /api/bars and paints a canvas — stub it out.
+vi.mock("@/chart/Chart", () => ({
+  Chart: () => <div data-testid="chart-engine" />,
+  default: () => <div data-testid="chart-engine" />,
+}));
 
 class FakeResizeObserver {
   observe() {}
@@ -168,7 +108,6 @@ function gpPayload(data: Record<string, unknown>) {
 }
 
 beforeEach(() => {
-  chartInstances.length = 0;
   mockQuoteState.transportState = "idle";
   mockState.payload = gpPayload({});
 });
@@ -179,8 +118,8 @@ afterEach(() => {
 
 /* ── tests ──────────────────────────────────────────────────────────── */
 
-describe("F7 GP — payload indicators reach the chart", () => {
-  it("renders the INDICATORS legend from data.indicators", () => {
+describe("F7 GP — payload indicators after the engine migration", () => {
+  it("does not resurface payload indicators as the removed chip legend", () => {
     mockState.payload = gpPayload({
       indicators: {
         sma_20: [{ time: 1, value: 100 }],
@@ -188,43 +127,9 @@ describe("F7 GP — payload indicators reach the chart", () => {
       },
     });
     const { container } = render(<GPPane code="GP" symbol="AAPL" />);
-    expect(container.textContent).toContain("SMA_20");
-    expect(container.textContent).toContain("BB_UPPER");
-  });
-
-  it("draws the overlay series from data.indicators", () => {
-    mockState.payload = gpPayload({
-      indicators: {
-        sma_20: [
-          { time: 1, value: 100 },
-          { time: 2, value: 101 },
-        ],
-        ema_20: [{ time: 1, value: 99 }],
-      },
-    });
-    render(<GPPane code="GP" symbol="AAPL" />);
-    const chart = chartInstances[0];
-    const sma = chart.__added.find((entry) => entry.series.__label === "sma_20");
-    const ema = chart.__added.find((entry) => entry.series.__label === "ema_20");
-    expect(sma).toBeDefined();
-    expect(ema).toBeDefined();
-    expect(sma?.series.setData).toHaveBeenCalled();
-    expect(ema?.series.setData).toHaveBeenCalled();
-  });
-
-  it("re-draws overlays after a chart-style rebuild", () => {
-    mockState.payload = gpPayload({
-      indicators: { sma_20: [{ time: 1, value: 100 }, { time: 2, value: 101 }] },
-    });
-    render(<GPPane code="GP" symbol="AAPL" />);
-    expect(chartInstances).toHaveLength(1);
-    // Candle → Line is the legitimate rebuild path (different series type).
-    fireEvent.click(screen.getByRole("button", { name: "Line" }));
-    expect(chartInstances).toHaveLength(2);
-    const rebuilt = chartInstances[1];
-    const sma = rebuilt.__added.find((entry) => entry.series.__label === "sma_20");
-    expect(sma).toBeDefined();
-    expect(sma?.series.setData).toHaveBeenCalled();
+    expect(screen.getByTestId("chart-engine")).toBeInTheDocument();
+    expect(container.textContent).not.toContain("SMA_20");
+    expect(container.textContent).not.toContain("BB_UPPER");
   });
 
   it("no longer reads the never-existing `cached` field", () => {

@@ -1,0 +1,442 @@
+/* showMe chart engine — shell chrome. Token-driven: every theme applies. */
+
+.sm-chart {
+  position: relative;
+  display: grid;
+  gap: 0;
+  background: var(--surface-1);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.sm-chart--fill {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+/* Compact mode: canvas-only embed (DES header strip etc.). */
+.sm-chart--compact .sm-chart__toolbar,
+.sm-chart--compact .sm-chart__tabs,
+.sm-chart--compact .sm-chart__picker,
+.sm-chart--compact .sm-chart__settings {
+  display: none !important;
+}
+
+.sm-chart__toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--surface-2);
+  flex-wrap: wrap;
+}
+
+.sm-chart__seg {
+  position: relative;
+  display: inline-flex;
+}
+
+.sm-chart__btn {
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-elev-2, var(--surface-2));
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.sm-chart__btn:hover {
+  border-color: var(--accent);
+  color: var(--text-primary);
+}
+
+.sm-chart__btn.is-active {
+  border-color: color-mix(in srgb, var(--accent) 48%, transparent);
+  color: var(--accent);
+  background: var(--accent-soft, var(--surface-2));
+}
+
+/* Drawing-tool glyph buttons: square-ish, larger glyph, tight radius. */
+.sm-chart__btn--tool {
+  padding: 3px 8px;
+  font-size: 13px;
+  line-height: 1.1;
+  letter-spacing: 0;
+}
+
+/* While a draw tool is armed the canvas advertises the active gesture. */
+.sm-chart__canvas.is-drawing {
+  cursor: crosshair;
+}
+
+.sm-chart__spacer {
+  flex: 1;
+}
+
+.sm-chart__menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 40;
+  min-width: 210px;
+  background: var(--surface-1);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.18);
+  padding: 8px;
+  max-height: 320px;
+  overflow: auto;
+}
+
+.sm-chart__menu-group {
+  margin-bottom: 6px;
+}
+
+.sm-chart__menu-title {
+  display: block;
+  color: var(--text-mute);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 2px 2px 4px;
+}
+
+.sm-chart__menu-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 3px;
+}
+
+.sm-chart__menu-item {
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  padding: 3px 4px;
+  border-radius: var(--radius-xs, 3px);
+  cursor: pointer;
+  text-align: center;
+}
+
+.sm-chart__menu-item:hover {
+  background: var(--surface-2);
+  color: var(--text-primary);
+}
+
+.sm-chart__menu-item.is-active {
+  background: var(--accent-soft, var(--surface-2));
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+.sm-chart__menu--type .sm-chart__menu-item {
+  display: block;
+  text-align: left;
+  width: 100%;
+}
+
+/* indicator tabs strip */
+.sm-chart__tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--surface-1);
+  overflow-x: auto;
+}
+
+.sm-chart__tab {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  overflow: hidden;
+}
+
+.sm-chart__tab-btn {
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  padding: 3px 8px;
+  cursor: pointer;
+}
+
+.sm-chart__tab-btn.is-off {
+  opacity: 0.45;
+}
+
+.sm-chart__tab-eye,
+.sm-chart__tab-x {
+  border: none;
+  background: transparent;
+  color: var(--text-mute);
+  font-size: 10px;
+  padding: 3px 6px;
+  cursor: pointer;
+}
+
+.sm-chart__tab-x:hover {
+  color: var(--negative);
+}
+
+/* picker overlay */
+.sm-chart__picker {
+  position: absolute;
+  top: 42px;
+  left: 10px;
+  z-index: 50;
+  width: min(420px, calc(100% - 20px));
+  max-height: 420px;
+  display: grid;
+  gap: 6px;
+  background: var(--surface-1);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.22);
+  padding: 10px;
+}
+
+.sm-chart__search {
+  width: 100%;
+  background: var(--surface-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 6px 8px;
+  outline: none;
+}
+
+.sm-chart__search:focus {
+  border-color: var(--accent);
+}
+
+.sm-chart__picker-list {
+  overflow: auto;
+  max-height: 300px;
+  display: grid;
+  gap: 4px;
+}
+
+.sm-chart__picker-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 4px 6px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.sm-chart__picker-item:hover {
+  background: var(--surface-2);
+  color: var(--text-primary);
+}
+
+.sm-chart__picker-item.is-active {
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+  color: var(--accent);
+}
+
+.sm-chart__picker-meta {
+  color: var(--text-mute);
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.sm-chart__picker-empty {
+  color: var(--text-mute);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 8px 4px;
+}
+
+.sm-chart__picker-close {
+  justify-self: end;
+}
+
+/* settings popover */
+.sm-chart__settings {
+  position: absolute;
+  top: 42px;
+  right: 10px;
+  z-index: 45;
+  width: min(280px, calc(100% - 20px));
+  display: grid;
+  gap: 6px;
+  background: var(--surface-1);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.22);
+  padding: 10px;
+}
+
+.sm-chart__settings-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.sm-chart__settings-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-mute);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.sm-chart__settings-row input,
+.sm-chart__settings-row select {
+  width: 110px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 3px 6px;
+  outline: none;
+}
+
+.sm-chart__canvas-wrap {
+  position: relative;
+  width: 100%;
+}
+
+.sm-chart__canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  outline: none;
+  touch-action: none;
+  cursor: crosshair;
+}
+
+.sm-chart__canvas:focus-visible {
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+.sm-chart__empty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  gap: 6px;
+  text-align: center;
+  color: var(--text-muted, var(--text-mute));
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 16px;
+}
+
+.sm-chart__empty strong {
+  color: var(--text-primary);
+}
+
+/* WEI index chart modal — click a tile/row to inspect, click the symbol
+   again to jump to its full detail page. */
+.wei-chart-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  display: grid;
+  place-items: center;
+  background: color-mix(in srgb, var(--bg-0, var(--surface-1)) 72%, transparent);
+  backdrop-filter: blur(2px);
+  padding: 24px;
+}
+
+.wei-chart-modal__panel {
+  width: min(1080px, 96vw);
+  height: min(680px, 88vh);
+  display: flex;
+  flex-direction: column;
+  background: var(--surface-1);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg, var(--radius-md));
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.28);
+  overflow: hidden;
+}
+
+.wei-chart-modal__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--surface-2);
+}
+
+.wei-chart-modal__symbol {
+  border: 1px solid color-mix(in srgb, var(--accent) 42%, transparent);
+  background: var(--accent-soft, var(--surface-1));
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.wei-chart-modal__symbol:hover {
+  border-color: var(--accent);
+}
+
+.wei-chart-modal__name {
+  color: var(--text-secondary);
+  font-size: 12px;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wei-chart-modal__close {
+  border: 1px solid var(--border-subtle);
+  background: transparent;
+  color: var(--text-mute);
+  font-size: 14px;
+  line-height: 1;
+  padding: 4px 9px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.wei-chart-modal__close:hover {
+  color: var(--negative);
+  border-color: var(--negative);
+}
+
+.wei-chart-modal__body {
+  flex: 1;
+  min-height: 0;
+  padding: 10px;
+}

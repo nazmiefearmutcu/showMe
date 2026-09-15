@@ -1,5 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { buildCsv } from "./HP.csv";
+
+// Chart engine stub — pinned in every HP test file so a render regression
+// can never pull in the real engine (this suite exercises the CSV helper
+// only, so the stub is intentionally a no-op null component).
+vi.mock("@/chart/Chart", () => ({
+  Chart: () => null,
+  default: () => null,
+}));
 
 describe("HP buildCsv", () => {
   it("emits the header even when rows are empty", () => {

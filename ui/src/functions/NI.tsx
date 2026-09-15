@@ -3,7 +3,12 @@
  *
  * Bloomberg-grade news intelligence: header with symbol focus + sentiment
  * score badge, two-column layout (feed left, rule-based synthesis right with
- * Bull / Bear / Catalysts sections), and a 24h sentiment timeline strip.
+ * Bull / Bear / Catalysts sections), and an adaptive sentiment timeline strip
+ * (24H / 72H / 7D — sized to the newest headline).
+ *
+ * Signal sources, in order of preference: the Veryfinder social overlay, then
+ * the backend FinBERT `sentiment_score` stamp as an explicitly labelled
+ * headline fallback. Social and headline numbers are never blended silently.
  */
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import {
@@ -76,7 +81,20 @@ interface NIArticle {
   relevance_score?: number;
   importance_reasons?: string[];
   matched_terms?: string[];
+  // Backend FinBERT stamps on every CN/NI row: long-form label plus a signed
+  // score in -1..+1. Used as the honest fallback signal source when the
+  // Veryfinder social overlay is unavailable for an article.
+  sentiment?: string;
+  sentiment_score?: number;
 }
+
+/**
+ * FinBERT fallback thresholds (headline sentiment_score is -1..+1) and the
+ * number of strongest headline titles surfaced as detail rows per side.
+ */
+const FINBERT_POSITIVE = 0.5;
+const FINBERT_NEGATIVE = -0.5;
+const FINBERT_TOP_HEADLINES = 3;
 
 const REFRESH_MS = 90_000;
 const FETCH_NEWS_LIMIT = Math.max(...NEWS_LIMITS);
@@ -269,42 +287,78 @@ export function NIPane({ code, symbol }: FunctionPaneProps) {
     Boolean(articles?.length) && (veryfinderState === "idle" || veryfinderState === "loading");
   const effectiveState: LoadState = state;
 
-  // Aggregate sentiment — average of veryfinder direction scores, mapped -1..+1
-  const sentimentScore = useMemo(() => {
-    const overlays = Object.values(veryfinderMap).filter((o) => o.ok);
-    if (!overlays.length) return null;
-    let sum = 0;
-    let count = 0;
-    for (const o of overlays) {
-      const s = Number(o.social_score ?? 0);
-      if (Number.isFinite(s) && Number(o.unique_accounts ?? 0) > 0) {
-        // social_score is -100..+100 → /100 → -1..+1
-        sum += Math.max(-1, Math.min(1, s / 100));
-        count++;
+  // Aggregate sentiment — average of veryfinder direction scores, mapped
+  // -1..+1. HONESTY (headline FinBERT fallback): when no usable social
+  // overlay exists (Veryfinder down, still scoring, or every overlay empty),
+  // aggregate the backend's FinBERT `sentiment_score` instead and tag the
+  // source so the badge can say "headline sentiment (FinBERT)" — never a
+  // silent mix of social and headline numbers.
+  const sentimentAggregate = useMemo(() => {
+    const overlays = Object.values(veryfinderMap).filter(
+      (o) => o.ok && Number(o.unique_accounts ?? 0) > 0,
+    );
+    if (overlays.length) {
+      let sum = 0;
+      for (const o of overlays) {
+        const s = Number(o.social_score ?? 0);
+        if (Number.isFinite(s)) {
+          // social_score is -100..+100 → /100 → -1..+1
+          sum += Math.max(-1, Math.min(1, s / 100));
+        }
       }
+      return {
+        score: Math.max(-1, Math.min(1, sum / overlays.length)),
+        source: "social" as const,
+        count: overlays.length,
+      };
     }
-    return count > 0 ? sum / count : null;
-  }, [veryfinderMap]);
+    const scores = (articles ?? [])
+      .map((a) => finbertScore(a))
+      .filter((s): s is number => s != null);
+    if (!scores.length) {
+      return { score: null, source: "finbert" as const, count: 0 };
+    }
+    const avg = scores.reduce((acc, s) => acc + s, 0) / scores.length;
+    return {
+      score: Math.max(-1, Math.min(1, avg)),
+      source: "finbert" as const,
+      count: scores.length,
+    };
+  }, [veryfinderMap, articles]);
 
   // Impact distribution for KPI ribbon.
   //
   // UA-HIGH-07: previously each filter callback called `list.indexOf(a)` —
   // O(n) per item → O(n²) overall. On a 500-article feed that's 250k passes
   // *per render*. Single forEach pass + accumulator drops it to O(n).
+  //
+  // Honesty (headline FinBERT fallback): when NO usable social overlay is
+  // present, Bull/Bear counts come from the FinBERT `sentiment_score`
+  // aggregate (≥ +0.5 / ≤ -0.5) and the KPI caption says so. The fallback is
+  // all-or-nothing so social and headline numbers are never mixed silently.
   const impactStats = useMemo(() => {
     const list = articles ?? [];
     let bull = 0;
     let bear = 0;
     let high = 0;
+    const hasUsableSocial = Object.values(veryfinderMap).some(
+      (o) => o.ok && Number(o.unique_accounts ?? 0) > 0,
+    );
     list.forEach((a, i) => {
       const k = articleKey(a, i);
-      const o = veryfinderMap[k];
-      const score = Number(o?.social_score ?? 0);
-      if (o?.ok && score > 12) bull += 1;
-      if (o?.ok && score < -12) bear += 1;
+      if (hasUsableSocial) {
+        const o = veryfinderMap[k];
+        const score = Number(o?.social_score ?? 0);
+        if (o?.ok && score > 12) bull += 1;
+        if (o?.ok && score < -12) bear += 1;
+      } else {
+        const s = finbertScore(a);
+        if (s != null && s >= FINBERT_POSITIVE) bull += 1;
+        if (s != null && s <= FINBERT_NEGATIVE) bear += 1;
+      }
       if (Number(a.importance_score ?? 0) >= 70) high += 1;
     });
-    return { bull, bear, high };
+    return { bull, bear, high, source: hasUsableSocial ? ("social" as const) : ("finbert" as const) };
   }, [articles, veryfinderMap]);
 
   const sortedArticles = useMemo(
@@ -375,7 +429,7 @@ export function NIPane({ code, symbol }: FunctionPaneProps) {
           selectedKey={selectedKey ?? articleKey(sortedArticles[0]!, 0)}
           onSelect={setSelectedKey}
         />
-        <SentimentTimeline buckets={timeline} />
+        <SentimentTimeline timeline={timeline} />
       </section>
       <aside style={synthesisColumn}>
         <AISynthesisCard
@@ -411,7 +465,7 @@ export function NIPane({ code, symbol }: FunctionPaneProps) {
                   {topicMode ? "topic" : "symbol"} · {requestLabel}
                 </Pill>
               ) : null}
-              <SentimentScoreBadge score={sentimentScore} />
+              <SentimentScoreBadge score={sentimentAggregate.score} source={sentimentAggregate.source} />
               {!topicMode ? <XSenChip symbol={effectiveSymbol} compact /> : null}
               <NewsLimitControl value={limit} onChange={setLimit} disabled={effectiveState === "loading"} />
               <LoadStatePill state={effectiveState} />
@@ -435,14 +489,22 @@ export function NIPane({ code, symbol }: FunctionPaneProps) {
             />
             <StatCard
               label="Sentiment"
-              value={sentimentScore == null ? "—" : `${sentimentScore >= 0 ? "+" : ""}${sentimentScore.toFixed(2)}`}
-              caption={sentimentScore == null ? "no signal" : sentimentScore > 0.18 ? "bullish bias" : sentimentScore < -0.18 ? "bearish bias" : "neutral"}
-              tone={sentimentScore == null ? "neutral" : sentimentScore > 0.18 ? "positive" : sentimentScore < -0.18 ? "negative" : "neutral"}
+              value={sentimentAggregate.score == null ? "—" : `${sentimentAggregate.score >= 0 ? "+" : ""}${sentimentAggregate.score.toFixed(2)}`}
+              caption={
+                sentimentAggregate.score == null
+                  ? "no signal"
+                  : sentimentAggregate.score > 0.18
+                    ? "bullish bias"
+                    : sentimentAggregate.score < -0.18
+                      ? "bearish bias"
+                      : "neutral"
+              }
+              tone={sentimentAggregate.score == null ? "neutral" : sentimentAggregate.score > 0.18 ? "positive" : sentimentAggregate.score < -0.18 ? "negative" : "neutral"}
             />
             <StatCard
               label="Bull / Bear"
               value={`${impactStats.bull} / ${impactStats.bear}`}
-              caption="vf signal split"
+              caption={impactStats.source === "finbert" ? "headline FinBERT split" : "vf signal split"}
               tone={impactStats.bull > impactStats.bear ? "positive" : impactStats.bear > impactStats.bull ? "negative" : "neutral"}
             />
             <StatCard
@@ -494,7 +556,13 @@ export function NIPane({ code, symbol }: FunctionPaneProps) {
   );
 }
 
-function SentimentScoreBadge({ score }: { score: number | null }) {
+function SentimentScoreBadge({
+  score,
+  source,
+}: {
+  score: number | null;
+  source: "social" | "finbert";
+}) {
   if (score == null) {
     return (
       <Pill tone="muted" variant="soft" withDot={false}>
@@ -505,13 +573,17 @@ function SentimentScoreBadge({ score }: { score: number | null }) {
   const clamped = Math.max(-1, Math.min(1, score));
   const tone = clamped > 0.18 ? "positive" : clamped < -0.18 ? "negative" : "warn";
   const sign = clamped >= 0 ? "+" : "";
+  // Honesty: never present the headline FinBERT fallback as a social read.
+  const heading =
+    source === "finbert" ? "Headline sentiment (FinBERT)" : "Aggregate sentiment";
   // Inline mini-bar
   return (
     <span
-      title={`Aggregate sentiment ${clamped.toFixed(2)} (-1..+1)`}
+      title={`${heading} ${clamped.toFixed(2)} (-1..+1)`}
+      aria-label={`${heading} ${sign}${clamped.toFixed(2)}`}
       className={`ni-sent-badge ni-sent-badge--${tone}`}
     >
-      <span className="ni-sent-badge__label">sentiment</span>
+      <span className="ni-sent-badge__label">{source === "finbert" ? "sentiment · headlines" : "sentiment"}</span>
       <span className="ni-sent-badge__track">
         <span
           className="ni-sent-badge__fill"
@@ -530,38 +602,81 @@ function SentimentScoreBadge({ score }: { score: number | null }) {
   );
 }
 
+interface SynthesisItem {
+  text: string;
+  cite?: number;
+}
+
 interface SynthesisData {
-  bull: Array<{ text: string; cite: number }>;
-  bear: Array<{ text: string; cite: number }>;
-  catalysts: Array<{ text: string; cite: number }>;
+  bull: SynthesisItem[];
+  bear: SynthesisItem[];
+  catalysts: SynthesisItem[];
+  /**
+   * True when at least one Bull/Bear entry was classified from headline
+   * FinBERT (`sentiment_score`) instead of a Veryfinder social overlay. The
+   * rail must label the source whenever this is true — social and headline
+   * numbers are never presented as the same thing.
+   */
+  finbertFallback: boolean;
 }
 
 function buildSynthesis(
   articles: NIArticle[],
   veryfinderMap: Record<string, VeryfinderOverlay>,
 ): SynthesisData {
-  const bull: Array<{ text: string; cite: number }> = [];
-  const bear: Array<{ text: string; cite: number }> = [];
-  const catalysts: Array<{ text: string; cite: number }> = [];
+  const bull: SynthesisItem[] = [];
+  const bear: SynthesisItem[] = [];
+  const catalysts: SynthesisItem[] = [];
+  const finbertBull: Array<SynthesisItem & { score: number }> = [];
+  const finbertBear: Array<SynthesisItem & { score: number }> = [];
   articles.forEach((a, i) => {
     const cite = i + 1;
     const overlay = veryfinderMap[articleKey(a, i)];
-    const score = overlay?.ok ? Number(overlay.social_score ?? 0) : null;
-    const headline = a.title ?? a.headline ?? "(untitled)";
+    // A social overlay only counts when it actually carries social evidence;
+    // "ok" overlays with zero unique accounts are treated as unavailable.
+    const socialUsable = Boolean(overlay?.ok && Number(overlay.unique_accounts ?? 0) > 0);
+    const score = socialUsable ? Number(overlay?.social_score ?? 0) : null;
+    const headline = truncate(cleanSummary(a.title ?? a.headline ?? "(untitled)"), 120);
     const importance = Number(a.importance_score ?? 0);
-    if (score != null && score > 18) {
-      bull.push({ text: truncate(cleanSummary(headline), 120), cite });
-    } else if (score != null && score < -18) {
-      bear.push({ text: truncate(cleanSummary(headline), 120), cite });
+    if (score != null) {
+      if (score > 18) {
+        bull.push({ text: headline, cite });
+      } else if (score < -18) {
+        bear.push({ text: headline, cite });
+      }
+    } else {
+      // HONESTY (headline FinBERT fallback): no usable social overlay for
+      // this article → classify from the backend FinBERT sentiment_score
+      // (≥ +0.5 bullish / ≤ -0.5 bearish) and label the section entry.
+      const fb = finbertScore(a);
+      if (fb != null && fb >= FINBERT_POSITIVE) {
+        finbertBull.push({ text: headline, cite, score: fb });
+      } else if (fb != null && fb <= FINBERT_NEGATIVE) {
+        finbertBear.push({ text: headline, cite, score: fb });
+      }
     }
     if (importance >= 70 || a.severity === "high" || a.severity === "critical") {
-      catalysts.push({ text: truncate(cleanSummary(headline), 120), cite });
+      catalysts.push({ text: headline, cite });
     }
   });
+  const finbertFallback = finbertBull.length > 0 || finbertBear.length > 0;
+  if (finbertBull.length) {
+    bull.push({ text: `${finbertBull.length} positive headline(s) — FinBERT` });
+    for (const item of finbertBull.sort((x, y) => y.score - x.score).slice(0, FINBERT_TOP_HEADLINES)) {
+      bull.push({ text: item.text, cite: item.cite });
+    }
+  }
+  if (finbertBear.length) {
+    bear.push({ text: `${finbertBear.length} negative headline(s) — FinBERT` });
+    for (const item of finbertBear.sort((x, y) => x.score - y.score).slice(0, FINBERT_TOP_HEADLINES)) {
+      bear.push({ text: item.text, cite: item.cite });
+    }
+  }
   return {
     bull: bull.slice(0, 5),
     bear: bear.slice(0, 5),
     catalysts: catalysts.slice(0, 5),
+    finbertFallback,
   };
 }
 
@@ -584,7 +699,7 @@ function AISynthesisCard({
       <CardHeader
         trailing={
           <span
-            title="Deterministic rule-based filter over the headlines: Bull/Bear from Veryfinder social scores (|score| > 18), Catalysts from importance_score ≥ 70 or high/critical severity. No LLM is involved."
+            title="Deterministic rule-based filter over the headlines: Bull/Bear from Veryfinder social scores (|score| > 18), or headline FinBERT sentiment (±0.5) for articles with no usable social overlay; Catalysts from importance_score ≥ 70 or high/critical severity. No LLM is involved."
             data-testid="ni-synthesis-rule-pill"
           >
             <Pill tone="muted" variant="soft" withDot={false}>
@@ -606,8 +721,20 @@ function AISynthesisCard({
           {veryfinderState === "error" ? (
             <p data-testid="ni-social-unavailable" style={synthUnavailableStyle}>
               Social overlay unavailable — Veryfinder could not be reached, so
-              Bull/Bear signals are missing. Catalysts still reflect headline
-              impact scores.
+              Bull/Bear signals use headline sentiment (FinBERT) where
+              available. Catalysts still reflect headline impact scores.
+            </p>
+          ) : null}
+          {/*
+            Honesty (headline FinBERT fallback): whenever Bull/Bear entries
+            come from the backend FinBERT stamps instead of a social overlay,
+            say so — never let headline numbers read as social numbers.
+          */}
+          {synthesis.finbertFallback ? (
+            <p data-testid="ni-finbert-fallback" style={synthFinbertStyle}>
+              Bull/Bear fall back to headline sentiment (FinBERT) for
+              headlines without a usable social overlay. These are not
+              social-signal scores.
             </p>
           ) : null}
           {selectedArticle ? (
@@ -655,7 +782,7 @@ function SynthSection({
 }: {
   title: string;
   tone: "positive" | "negative" | "warn";
-  items: Array<{ text: string; cite: number }>;
+  items: SynthesisItem[];
   emptyText: string;
 }) {
   return (
@@ -672,9 +799,11 @@ function SynthSection({
         <ul style={synthList}>
           {items.map((item, i) => (
             <li key={i} style={synthListItem}>
-              <span style={citationChipStyle} title={`citation [${item.cite}]`}>
-                [{item.cite}]
-              </span>
+              {item.cite != null ? (
+                <span style={citationChipStyle} title={`citation [${item.cite}]`}>
+                  [{item.cite}]
+                </span>
+              ) : null}
               <span>{item.text}</span>
             </li>
           ))}
@@ -685,48 +814,121 @@ function SynthSection({
 }
 
 interface TimelineBucket {
-  hour: number; // 0..23 (relative, 23 = newest)
   count: number;
   posScore: number;
   negScore: number;
 }
 
+type TimelineWindow = "24H" | "72H" | "7D";
+
+interface TimelineData {
+  window: TimelineWindow;
+  bucketHours: number;
+  buckets: TimelineBucket[];
+}
+
+const HOUR_MS = 3_600_000;
+
+/**
+ * Adaptive sentiment timeline.
+ *
+ * HONESTY: the old version hard-cut every article older than 24h, so a feed
+ * whose newest headline is 25h old rendered an empty "24H" axis (the reported
+ * "timeline bomboş" bug). The window now follows the data: 24H hourly buckets
+ * when anything is fresh, else 72H in 3h buckets, else 7D in daily buckets.
+ * Nothing within 7d → `null` (the component renders an honest empty state).
+ * Buckets are tinted by the Veryfinder social score when a usable overlay
+ * exists, otherwise by the FinBERT `sentiment_score` sign.
+ */
 function buildTimeline(
   articles: NIArticle[],
   veryfinderMap: Record<string, VeryfinderOverlay>,
-): TimelineBucket[] {
-  const buckets: TimelineBucket[] = Array.from({ length: 24 }, (_, i) => ({
-    hour: i,
-    count: 0,
-    posScore: 0,
-    negScore: 0,
-  }));
+): TimelineData | null {
   const now = Date.now();
+  const dated: Array<{ article: NIArticle; index: number; ageMs: number }> = [];
   articles.forEach((a, i) => {
     const ts = articleTimestamp(a);
     const parsed = ts ? Date.parse(ts) : NaN;
     if (!Number.isFinite(parsed)) return;
-    const hoursAgo = (now - parsed) / 3_600_000;
-    if (hoursAgo < 0 || hoursAgo > 24) return;
-    const idx = Math.max(0, Math.min(23, 23 - Math.floor(hoursAgo)));
+    const ageMs = now - parsed;
+    if (ageMs < 0) return;
+    dated.push({ article: a, index: i, ageMs });
+  });
+  if (!dated.length) return null;
+  const newestAgeMs = Math.min(...dated.map((d) => d.ageMs));
+  let window: TimelineWindow;
+  let bucketHours: number;
+  let bucketCount: number;
+  if (newestAgeMs <= 24 * HOUR_MS) {
+    window = "24H";
+    bucketHours = 1;
+    bucketCount = 24;
+  } else if (newestAgeMs <= 72 * HOUR_MS) {
+    window = "72H";
+    bucketHours = 3;
+    bucketCount = 24;
+  } else if (newestAgeMs <= 7 * 24 * HOUR_MS) {
+    window = "7D";
+    bucketHours = 24;
+    bucketCount = 7;
+  } else {
+    return null;
+  }
+  const buckets: TimelineBucket[] = Array.from({ length: bucketCount }, () => ({
+    count: 0,
+    posScore: 0,
+    negScore: 0,
+  }));
+  const spanMs = bucketHours * HOUR_MS * bucketCount;
+  for (const d of dated) {
+    if (d.ageMs > spanMs) continue;
+    const idx = Math.max(
+      0,
+      Math.min(bucketCount - 1, bucketCount - 1 - Math.floor(d.ageMs / (bucketHours * HOUR_MS))),
+    );
     buckets[idx].count += 1;
-    const overlay = veryfinderMap[articleKey(a, i)];
-    if (overlay?.ok) {
-      const s = Number(overlay.social_score ?? 0);
+    const overlay = veryfinderMap[articleKey(d.article, d.index)];
+    const socialUsable = Boolean(overlay?.ok && Number(overlay.unique_accounts ?? 0) > 0);
+    if (socialUsable) {
+      const s = Number(overlay?.social_score ?? 0);
       if (s > 0) buckets[idx].posScore += s;
       else if (s < 0) buckets[idx].negScore += Math.abs(s);
+    } else {
+      // FinBERT fallback tint (never mixes into a social score — the bar
+      // tooltip and the rail label keep the sources distinct).
+      const fb = finbertScore(d.article);
+      if (fb != null && fb > 0) buckets[idx].posScore += fb * 100;
+      else if (fb != null && fb < 0) buckets[idx].negScore += Math.abs(fb) * 100;
     }
-  });
-  return buckets;
+  }
+  return { window, bucketHours, buckets };
 }
 
-function SentimentTimeline({ buckets }: { buckets: TimelineBucket[] }) {
+function SentimentTimeline({ timeline }: { timeline: TimelineData | null }) {
+  if (!timeline) {
+    return (
+      <section style={timelineWrap} data-testid="ni-timeline-empty">
+        <header style={timelineHeader}>
+          <span style={timelineLabel}>Sentiment timeline</span>
+        </header>
+        <p style={timelineEmptyText}>No headlines in the last 7 days</p>
+      </section>
+    );
+  }
+  const { window: windowLabel, bucketHours, buckets } = timeline;
   const maxCount = Math.max(1, ...buckets.map((b) => b.count));
   const totalEvents = buckets.reduce((sum, b) => sum + b.count, 0);
+  const axis: Record<TimelineWindow, [string, string]> = {
+    "24H": ["-24h", "-12h"],
+    "72H": ["-72h", "-36h"],
+    "7D": ["-7d", "-3d"],
+  };
   return (
     <section style={timelineWrap}>
       <header style={timelineHeader}>
-        <span style={timelineLabel}>24H sentiment timeline</span>
+        <span style={timelineLabel} data-testid="ni-timeline-window">
+          {windowLabel} sentiment timeline
+        </span>
         <span className="ni-section-count">{totalEvents} events</span>
       </header>
       <div style={timelineBars}>
@@ -738,10 +940,14 @@ function SentimentTimeline({ buckets }: { buckets: TimelineBucket[] }) {
               : b.negScore > b.posScore
                 ? "var(--negative)"
                 : "var(--text-mute)";
+          const startH = (buckets.length - i - 1) * bucketHours;
+          const endH = (buckets.length - i) * bucketHours;
+          const barAge =
+            bucketHours >= 24 ? `${startH / 24}d–${endH / 24}d` : `${startH}h–${endH}h`;
           return (
             <span
               key={i}
-              title={`${24 - i}h ago · ${b.count} events`}
+              title={`${barAge} ago · ${b.count} events`}
               className={`ni-timeline-bar${b.count > 0 ? "" : " ni-timeline-bar--empty"}`}
               style={{
                 ["--u-height" as string]: `${Math.max(2, height)}px`,
@@ -752,8 +958,8 @@ function SentimentTimeline({ buckets }: { buckets: TimelineBucket[] }) {
         })}
       </div>
       <footer style={timelineAxis}>
-        <span>-24h</span>
-        <span>-12h</span>
+        <span>{axis[windowLabel][0]}</span>
+        <span>{axis[windowLabel][1]}</span>
         <span>now</span>
       </footer>
     </section>
@@ -1008,6 +1214,16 @@ function articleKey(a: NIArticle, index: number): string {
   ].join("|");
 }
 
+/**
+ * Backend FinBERT sentiment score clamped to -1..+1; null when the article
+ * carries no finite stamp (then there is no headline signal to fall back to).
+ */
+function finbertScore(a: NIArticle): number | null {
+  if (a.sentiment_score == null) return null;
+  const n = Number(a.sentiment_score);
+  return Number.isFinite(n) ? Math.max(-1, Math.min(1, n)) : null;
+}
+
 function formatSignedInt(value?: number | null): string {
   if (value == null || !Number.isFinite(Number(value))) return "—";
   const n = Math.round(Number(value));
@@ -1254,6 +1470,23 @@ const synthUnavailableStyle: CSSProperties = {
   background: "var(--warn-soft)",
   fontSize: "var(--font-size-xs)",
   color: "var(--text-secondary)",
+};
+
+const synthFinbertStyle: CSSProperties = {
+  margin: 0,
+  padding: "6px 8px",
+  border: "1px solid var(--border-subtle)",
+  borderRadius: "var(--radius-sm)",
+  background: "var(--surface-1)",
+  fontSize: "var(--font-size-xs)",
+  color: "var(--text-secondary)",
+};
+
+const timelineEmptyText: CSSProperties = {
+  margin: 0,
+  fontSize: "var(--font-size-sm)",
+  color: "var(--text-mute)",
+  fontStyle: "italic",
 };
 
 const synthList: CSSProperties = {
