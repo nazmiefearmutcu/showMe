@@ -1,9 +1,10 @@
-"""MEET — Meeting briefing workspace.
+"""MEET — Meeting Briefings: world-events tracker.
 
-Pre-meeting briefing: composes Notion search pages, recent Granola notes,
-recent GDELT news, a DES company snapshot, the operator's portfolio
-position in the discussed instrument, and (when the instrument is equity)
-SOSC sentiment into a single briefing JSON. Primary provider is
+The pane tracks scheduled world events (central-bank decisions, CPI, GDP,
+… for every country on the keyless calendar) and country-tagged world
+headlines (wars, elections, summits) in one grouped list: upcoming events
+ascending with live countdowns, past events descending, a country index,
+and spot alerts for rate decisions / wars. Primary provider is
 ``internal`` because the function orchestrates other adapters rather than
 hitting a single feed.
 """
@@ -17,6 +18,7 @@ from ..enums import (
 )
 from ..registry import manifest
 from ..spec import (
+    AlertingSpec,
     CachingPolicy,
     CardSchema,
     CardSlot,
@@ -36,68 +38,102 @@ from ..spec import (
 def meet() -> FunctionManifest:
     return FunctionManifest(
         code="MEET",
-        name="Meeting Briefing",
+        name="Meeting Briefings — World Events",
         category=Category.COMMS_PEOPLE,
         intent=(
-            "Compose a one-pane meeting briefing — Notion pages, recent Granola"
-            " notes, recent news, a DES company snapshot, and the operator's"
-            " portfolio position — so the user walks into a meeting ready to talk."
+            "Track the world's scheduled events in one pane — every country's"
+            " calendar (rate decisions, CPI, GDP) plus country-tagged headlines"
+            " (wars, elections, summits) — with UTC timestamps, affected FX"
+            " pairs, live countdowns and spot alerts so nothing market-moving"
+            " escapes the radar."
         ),
         asset_classes=[
             AssetClass.EQUITY,
             AssetClass.ETF,
             AssetClass.CRYPTO,
             AssetClass.INDEX,
+            AssetClass.FX,
         ],
         inputs=[
             InputSpec(
-                name="topic",
-                label="Topic",
+                name="countries",
+                label="Countries",
                 control=ControlKind.TEXT,
-                required=True,
-                description=(
-                    "Meeting topic — typically a company name, person name, or"
-                    " instrument symbol; used to seed every downstream search."
-                ),
-            ),
-            InputSpec(
-                name="symbol",
-                label="Symbol",
-                control=ControlKind.SYMBOL_PICKER,
                 required=False,
                 description=(
-                    "Optional instrument symbol — when set, DES and portfolio match"
-                    " blocks are populated for that instrument."
+                    "Comma-separated ISO codes / currency codes / country names"
+                    " (e.g. \"TR,US,EU\"). A headline may concern several countries;"
+                    " filtering keeps every row that touches any selected country."
                 ),
             ),
             InputSpec(
-                name="live_meeting",
-                label="Live composition",
+                name="kind",
+                label="Event kind",
+                control=ControlKind.SELECT,
+                required=False,
+                options=["all", "economic", "world"],
+                description="Restrict to scheduled calendar events, world headlines, or both.",
+            ),
+            InputSpec(
+                name="impact",
+                label="Impact",
+                control=ControlKind.MULTISELECT,
+                required=False,
+                options=["high", "medium", "low", "holiday"],
+                description="Impact buckets to keep (empty = all).",
+            ),
+            InputSpec(
+                name="query",
+                label="Search",
+                control=ControlKind.TEXT,
+                required=False,
+                description="Substring filter over titles, country names and affected pairs.",
+            ),
+            InputSpec(
+                name="days_ahead",
+                label="Days ahead",
+                control=ControlKind.NUMBER,
+                required=False,
+                description=(
+                    "Forward window. Upcoming events are always listed from now"
+                    " until at least the nearest high-impact event; the keyless"
+                    " weekly calendar publishes one week at a time."
+                ),
+                min=1,
+                max=365,
+                step=1,
+                unit="d",
+            ),
+            InputSpec(
+                name="days_back",
+                label="Days back",
+                control=ControlKind.NUMBER,
+                required=False,
+                description="Backward window for already-printed events.",
+                min=0,
+                max=90,
+                step=1,
+                unit="d",
+            ),
+            InputSpec(
+                name="limit",
+                label="Row limit",
+                control=ControlKind.NUMBER,
+                required=False,
+                description="Maximum rows returned after filtering.",
+                min=10,
+                max=1000,
+                step=10,
+            ),
+            InputSpec(
+                name="include_world",
+                label="World headlines",
                 control=ControlKind.BOOLEAN,
                 required=False,
                 description=(
-                    "When true the briefing fans out to Notion/Granola/GDELT/DES/portfolio"
-                    " in parallel; when false a local template is returned."
+                    "Fetch the keyless world headline stream (GDELT, RSS fallback)"
+                    " and tag it with the country gazetteer. Off = calendar only."
                 ),
-            ),
-            InputSpec(
-                name="include_sources",
-                label="Include sources",
-                control=ControlKind.MULTISELECT,
-                required=False,
-                description="Which composition blocks to include in the live briefing.",
-                options=["notion", "granola", "gdelt", "des", "portfolio", "sosc"],
-            ),
-            InputSpec(
-                name="timeout",
-                label="Per-source timeout",
-                control=ControlKind.NUMBER,
-                required=False,
-                description="Per-source asyncio timeout used when fanning out the live composition.",
-                min=1.0,
-                max=30.0,
-                step=0.5,
-                unit="s",
             ),
             InputSpec(
                 name="provider_mode",
@@ -107,31 +143,31 @@ def meet() -> FunctionManifest:
                 description="Preferred provider mode; chain may downgrade and report it.",
                 options=[
                     DataMode.LIVE_OFFICIAL.value,
-                    DataMode.MODELED.value,
                     DataMode.CACHED_SNAPSHOT.value,
                 ],
             ),
         ],
         defaults={
-            "live_meeting": False,
-            "include_sources": ["notion", "granola", "gdelt", "des", "portfolio"],
-            "timeout": 8.0,
+            "kind": "all",
+            "days_ahead": 90,
+            "days_back": 7,
+            "limit": 250,
+            "include_world": True,
             "provider_mode": DataMode.LIVE_OFFICIAL.value,
         },
         provider_chain=ProviderChain(
             primary="internal",
-            fallbacks=["cached_snapshot"],
+            fallbacks=["forex_factory", "gdelt", "rss"],
             acceptable_modes=[
                 DataMode.LIVE_OFFICIAL,
-                DataMode.MODELED,
                 DataMode.CACHED_SNAPSHOT,
                 DataMode.NOT_CONFIGURED,
             ],
         ),
-        caching=CachingPolicy(ttl_seconds=120, scope="per_input", persist=True),
+        caching=CachingPolicy(ttl_seconds=300, scope="per_input", persist=True),
         output_contract=OutputContract(
-            must_have=["topic", "data_mode"],
-            rows=False,
+            must_have=["status", "rows", "country_index", "data_mode"],
+            rows=True,
             series=False,
             cards=True,
             warnings=True,
@@ -140,103 +176,134 @@ def meet() -> FunctionManifest:
         chart_grammar=None,
         table_schema=TableSchema(
             columns=[
+                ColumnSpec(key="when_utc", label="When (UTC)", kind="datetime", width_hint=170),
+                ColumnSpec(key="kind", label="Kind", kind="tag", width_hint=80),
+                ColumnSpec(key="impact", label="Impact", kind="tag", width_hint=90),
+                ColumnSpec(key="countries", label="Countries", kind="text", width_hint=140),
+                ColumnSpec(key="title", label="Event", kind="text"),
+                ColumnSpec(key="pairs", label="Affected", kind="text", width_hint=180),
                 ColumnSpec(key="source", label="Source", kind="tag", width_hint=110),
-                ColumnSpec(key="title", label="Title", kind="text"),
-                ColumnSpec(key="excerpt", label="Excerpt", kind="text"),
-                ColumnSpec(key="timestamp", label="When", kind="datetime"),
-                ColumnSpec(key="link", label="Link", kind="text"),
             ],
             sortable=True,
             filterable=True,
         ),
         card_schema=CardSchema(
             slots=[
-                CardSlot(key="topic", label="Topic", kind="big_number"),
-                CardSlot(key="company_name", label="Company", kind="kpi"),
-                CardSlot(key="portfolio_position", label="Position", kind="kpi"),
-                CardSlot(key="news_count", label="News (48h)", kind="kpi"),
-                CardSlot(key="notion_count", label="Notion", kind="kpi"),
-                CardSlot(key="granola_count", label="Granola", kind="kpi"),
+                CardSlot(key="next_high_impact", label="Next high impact", kind="big_number"),
+                CardSlot(key="upcoming_count", label="Upcoming", kind="kpi"),
+                CardSlot(key="past_count", label="Past", kind="kpi"),
+                CardSlot(key="alerts_count", label="Spot alerts", kind="kpi"),
+                CardSlot(key="countries_tracked", label="Countries", kind="kpi"),
                 CardSlot(key="data_mode", label="Mode", kind="mode_pill"),
                 CardSlot(key="as_of", label="As of", kind="timestamp"),
             ],
         ),
         methodology=(
-            "MEET composes a meeting briefing from the operator's connected adapters. With"
-            " ``live_meeting=true`` the engine fans out per-source asyncio tasks in parallel:"
-            " Notion search (pages whose title/body match the topic), Granola list_recent (the last"
-            " 15 local meeting notes), GDELT news (last 48 hours filtered by query), DES (when an"
-            " equity/ETF symbol is supplied — pulls name/sector/industry/market_cap/ceo/website),"
-            " and the operator's portfolio position. Per-source timeouts are configurable and a"
-            " failure on one source surfaces as a warning rather than failing the whole briefing."
-            " With ``live_meeting=false`` a local template is returned so the pane still renders"
-            " when none of the adapters are wired. The briefing is intended as a profile-card"
-            " composition next to PEOP results, not a chart."
+            "MEET composes a WORLD-EVENTS TRACKER from the repo's existing keyless"
+            " providers. Scheduled rows come from the ForexFactory weekly calendar"
+            " (reused from ECO): every country on the calendar is listed with its"
+            " offset-aware timestamp parsed to UTC, impact bucket, and affected FX"
+            " pairs derived country → currency → majors (e.g. TR → USDTRY/EURTRY,"
+            " US → DXY/EURUSD/USDJPY). World rows come from the keyless GDELT"
+            " headline stream (English-language wire; RSS fallback), tagged with"
+            " a country gazetteer; a"
+            " headline may concern several countries and carries the exact matched"
+            " terms in details.matched_terms so every attribution is auditable."
+            " The window lists upcoming events ascending (from now until at least"
+            " the nearest high-impact event) plus past events descending;"
+            " seconds_to_event and age_minutes are computed server-side for UI"
+            " parity while the live countdown ticks client-side. Central-bank"
+            " decisions (Fed/TCMB/ECB/…) and wars are spot-flagged and exposed in"
+            " alerts[] with default lead times the UI can override. When every"
+            " provider fails the payload is a provider_unavailable envelope with"
+            " EMPTY rows and a reason — no events are invented."
         ),
         formula_dict={},
         field_dict={
-            "topic": FieldDef(description="Echo of the requested meeting topic.", source="adapter"),
-            "notion_pages[]": FieldDef(description="Notion pages whose content matches the topic.", source="notion"),
-            "granola_recent[]": FieldDef(description="Recent Granola meeting notes.", source="granola"),
-            "recent_news[]": FieldDef(description="GDELT news from the last 48 hours.", source="gdelt"),
-            "company.name": FieldDef(description="Company display name from DES.", source="yfinance"),
-            "company.sector": FieldDef(description="GICS sector from DES.", source="yfinance"),
-            "portfolio_position.symbol": FieldDef(description="Position symbol when the topic matches a holding.", source="portfolio_state"),
-            "portfolio_position.quantity": FieldDef(description="Position quantity.", source="portfolio_state"),
-            "portfolio_position.avg_cost": FieldDef(description="Average cost basis.", source="portfolio_state"),
+            "rows[].when_utc": FieldDef(description="Event time in UTC, parsed from the provider's offset-aware timestamp.", source="forex_factory"),
+            "rows[].seconds_to_event": FieldDef(unit="s", description="Server-computed seconds from as_of (negative = past); the UI renders the live countdown.", source="computed"),
+            "rows[].countries": FieldDef(description="ISO codes; a row may concern several countries.", source="computed"),
+            "rows[].pairs": FieldDef(description="Quoted FX pairs / indices affected via the country currency.", source="computed"),
+            "rows[].spot": FieldDef(description="True for central-bank decisions and wars — the alert-worthy class.", source="computed"),
+            "rows[].impact": FieldDef(description="high | medium | low | holiday.", source="forex_factory"),
+            "rows[].details.matched_terms": FieldDef(description="Exact gazetteer terms that tagged a world headline.", source="computed"),
+            "country_index[].state": FieldDef(description="local status pill: live | imminent | soon | scheduled | quiet.", source="computed"),
+            "alerts[]": FieldDef(description="Upcoming spot/pinned events with default lead times (minutes).", source="computed"),
+            "country_catalog[]": FieldDef(description="Static country reference (ISO + name) so filters are complete even when a provider is down.", source="reference"),
         },
         provenance=ProvenanceSpec(
             require_source_list=True,
             require_as_of=True,
             require_latency_ms=True,
         ),
-        alerting=None,
+        alerting=AlertingSpec(
+            conditions=[
+                "spot_event_lead_time_hit",
+                "rate_decision_within_24h",
+                "war_headline_high_impact",
+            ],
+            delivery=["tray", "notification", "log"],
+        ),
         semantic_tests=[
             SemanticTest(
-                name="meet_people_directory_results_have_profile_cards",
+                name="meet_country_filter_pins_rate_decisions",
                 description=(
-                    "People directory results have profile cards: when the briefing surfaces"
-                    " people (executives, analysts, attendees) every entry carries name + role +"
-                    " source so the renderer can paint a profile card next to the Notion/news strip."
+                    "Given {countries: ['TR']}, every economic row concerns TR and the"
+                    " TCMB interest-rate decision is present with spot=true and the"
+                    " affected pairs (USDTRY/EURTRY) — selecting a country never loses"
+                    " its central-bank decision."
                 ),
-                inputs={"topic": "Apple"},
+                inputs={"countries": ["TR"]},
                 assertions=[
-                    "people_entries_have_full_name",
-                    "people_entries_have_role_or_company",
-                    "people_entries_render_as_profile_cards",
+                    "every_economic_row_country_is_TR",
+                    "tcmb_rate_decision_present",
+                    "spot_flag_on_rate_decision",
+                    "affected_pairs_include_usdtry",
                 ],
             ),
             SemanticTest(
-                name="meet_missing_topic_raises_or_warns",
+                name="meet_upcoming_and_past_ordering_with_server_countdowns",
                 description=(
-                    "A call with no topic and no instrument must NOT silently return an empty"
-                    " briefing; the response carries a warning that topic is required."
+                    "Upcoming rows are ascending with seconds_to_event >= 0 and match"
+                    " when_utc − as_of within tolerance; past rows are descending with"
+                    " negative seconds_to_event and positive age_minutes."
                 ),
                 inputs={},
-                assertions=["warning_mentions_topic_or_instrument_required"],
-            ),
-            SemanticTest(
-                name="meet_per_source_timeout_isolates_failure",
-                description=(
-                    "A timeout on one source (e.g. notion) surfaces as a warning but never breaks"
-                    " the other blocks — the live briefing degrades gracefully."
-                ),
-                inputs={"topic": "Apple", "live_meeting": True, "_mock": "notion_timeout"},
                 assertions=[
-                    "warning_mentions_notion_timeout",
-                    "other_source_blocks_present_in_response",
+                    "upcoming_ascending",
+                    "past_descending",
+                    "seconds_to_event_matches_when_utc",
+                    "age_minutes_positive_for_past",
                 ],
             ),
             SemanticTest(
-                name="meet_offline_returns_local_template",
+                name="meet_world_rows_carry_matched_terms",
                 description=(
-                    "With live_meeting=false the briefing is a local template marked"
-                    " source_mode=local_briefing — the pane still renders without any adapter."
+                    "A world headline concerning several countries is tagged with every"
+                    " country and each attribution carries the exact gazetteer term in"
+                    " details.matched_terms — a headline never crosses into another"
+                    " country's filter without a matched term."
                 ),
-                inputs={"topic": "Apple", "live_meeting": False},
+                inputs={"_fixture": "multi_country_headline"},
                 assertions=[
-                    "sources_includes_local_briefing",
-                    "metadata_live_is_false",
+                    "multi_country_tags_allowed",
+                    "every_country_has_matched_term",
+                    "war_headlines_are_spot",
+                ],
+            ),
+            SemanticTest(
+                name="meet_empty_window_is_honest",
+                description=(
+                    "When every provider fails, the payload is provider_unavailable with"
+                    " EMPTY rows and an explicit reason — the pane says so instead of"
+                    " inventing events."
+                ),
+                inputs={"_mock": "all_providers_down"},
+                assertions=[
+                    "status_provider_unavailable",
+                    "rows_empty",
+                    "reason_mentions_provider",
+                    "metadata_live_false",
                 ],
             ),
         ],

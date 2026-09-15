@@ -21,6 +21,7 @@ import type {
   Viewport,
 } from "./types";
 import type { Drawing } from "./drawings";
+import { fibLevels } from "./drawings";
 
 /* ── palette ────────────────────────────────────────────────────────── */
 
@@ -95,6 +96,50 @@ function withAlpha(color: string, alpha: number): string {
 export function percentFromBase(v: number, base: number): number {
   if (!Number.isFinite(v) || !Number.isFinite(base) || base === 0) return NaN;
   return ((v - base) / base) * 100;
+}
+
+/**
+ * Normalize a compare symbol's closes to percent change vs. the close of
+ * `firstIndex` (the first visible bar of that series). Entries stay `null`
+ * for non-finite AND zero closes (a zero close is a feed glitch, and a
+ * −100% line would be a dramatic lie), and the WHOLE series is null when no
+ * finite non-zero base exists — the renderer then draws nothing instead of
+ * a fake line. Values before `firstIndex` are still computed once the base
+ * is known (the visible window clips them anyway).
+ */
+export function normalizeCompareSeries(
+  bars: Bar[],
+  firstIndex: number,
+): (number | null)[] {
+  const out: (number | null)[] = new Array(Array.isArray(bars) ? bars.length : 0).fill(null);
+  if (!Array.isArray(bars) || bars.length === 0) return out;
+  const start = Number.isFinite(firstIndex) ? Math.max(0, Math.floor(firstIndex)) : 0;
+  let base: number | null = null;
+  for (let i = start; i < bars.length; i++) {
+    const c = bars[i]?.c;
+    if (typeof c === "number" && Number.isFinite(c) && c !== 0) {
+      base = c;
+      break;
+    }
+  }
+  if (base === null) return out;
+  for (let i = 0; i < bars.length; i++) {
+    const c = bars[i]?.c;
+    if (typeof c === "number" && Number.isFinite(c) && c !== 0) out[i] = percentFromBase(c, base);
+  }
+  return out;
+}
+
+/**
+ * Resolve a CSS color expression (`var(--token)` or a literal) against the
+ * live element. Canvas 2D ignores `var(...)` strings, so the shell resolves
+ * theme tokens through this before painting (compare-line palette).
+ */
+export function resolveCssColor(el: HTMLElement, color: string): string {
+  const m = color.trim().match(/^var\(\s*(--[\w-]+)\s*(?:,\s*([^)]+))?\)$/);
+  if (!m) return color;
+  const fallback = (m[2] ?? color).trim();
+  return cssVar(el, m[1], fallback);
 }
 
 /**
@@ -370,6 +415,46 @@ function drawDrawings(
         ctx.lineWidth = 1.5;
         ctx.stroke();
       }
+      continue;
+    }
+    if (drawing.kind === "fib") {
+      const { p1, p2 } = drawing;
+      if (!p1 || !p2) continue;
+      const x1 = d.time.toX(p1.index);
+      const x2 = d.time.toX(p2.index);
+      const levels = fibLevels(p1.price, p2.price);
+      if (!Number.isFinite(x1) || !Number.isFinite(x2) || levels.length === 0) continue;
+      const loX = Math.min(x1, x2);
+      const hiX = Math.max(x1, x2);
+      ctx.setLineDash([]);
+      ctx.lineWidth = 1;
+      for (const { ratio, price } of levels) {
+        const y = d.pm.toY(price);
+        if (!Number.isFinite(y)) continue;
+        const yy = Math.round(y) + 0.5;
+        ctx.strokeStyle = withAlpha(d.palette.accent, ratio === 0 || ratio === 1 ? 0.9 : 0.55);
+        ctx.beginPath();
+        ctx.moveTo(loX, yy);
+        ctx.lineTo(hiX, yy);
+        ctx.stroke();
+        ctx.fillStyle = withAlpha(d.palette.accent, 0.95);
+        ctx.textAlign = "left";
+        ctx.fillText(`${(ratio * 100).toFixed(1)}% ${fmtPrice(price)}`, hiX + 4, yy);
+      }
+      /* anchor handles mirror the trendline affordance */
+      for (const [hx, hy] of [
+        [x1, d.pm.toY(p1.price)],
+        [x2, d.pm.toY(p2.price)],
+      ] as const) {
+        if (!Number.isFinite(hx) || !Number.isFinite(hy)) continue;
+        ctx.beginPath();
+        ctx.arc(hx, hy, 3.5, 0, Math.PI * 2);
+        ctx.fillStyle = d.palette.background;
+        ctx.fill();
+        ctx.strokeStyle = d.palette.accent;
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      }
     }
   }
   ctx.restore();
@@ -408,6 +493,63 @@ function priceTicks(range: { min: number; max: number }, plotH: number, mode: Pr
   return out;
 }
 
+/* ── compare overlay ────────────────────────────────────────────────── */
+
+/**
+ * Draw normalized compare lines in percent space. Each value is mapped
+ * through the MAIN series' visible anchor price (0% sits on the first
+ * visible close), so a compare line and the price series share one
+ * reference — no independently-fitted second scale that would lie.
+ */
+function drawCompareSeries(
+  ctx: CanvasRenderingContext2D,
+  entries: RenderInput["compare"],
+  d: {
+    base: number | null;
+    pm: PriceMapper;
+    time: TimeScale;
+    pane: { top: number; bottom: number };
+    plotW: number;
+    i0: number;
+    i1: number;
+  },
+): void {
+  if (!entries || entries.length === 0) return;
+  if (d.base == null || !Number.isFinite(d.base) || d.base === 0) return;
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(0, d.pane.top, d.plotW, d.pane.bottom - d.pane.top);
+  ctx.clip();
+  for (const entry of entries) {
+    ctx.strokeStyle = entry.color;
+    ctx.lineWidth = 1.25;
+    ctx.setLineDash([]);
+    ctx.beginPath();
+    let started = false;
+    for (let i = d.i0; i <= d.i1; i++) {
+      const v = entry.values[i];
+      if (v == null || !Number.isFinite(v)) {
+        started = false;
+        continue;
+      }
+      const y = d.pm.toY(d.base * (1 + v / 100));
+      if (!Number.isFinite(y)) {
+        started = false;
+        continue;
+      }
+      const x = d.time.toX(i);
+      if (!started) {
+        ctx.moveTo(x, y);
+        started = true;
+      } else {
+        ctx.lineTo(x, y);
+      }
+    }
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
 /* ── main draw ──────────────────────────────────────────────────────── */
 
 export function drawChart(input: RenderInput): void {
@@ -423,24 +565,29 @@ export function drawChart(input: RenderInput): void {
 
   const rng = time.range();
   const i0 = Math.max(0, Math.floor(rng.from));
-  const i1 = Math.min(bars.length - 1, Math.ceil(rng.to));
+  const i1Raw = Math.min(bars.length - 1, Math.ceil(rng.to));
+  /* Bar replay: everything after the cursor is not painted — the rendered
+     series, volume strip, overlays, panes and legend all stop there. */
+  const i1 =
+    input.replayIndex != null && Number.isFinite(input.replayIndex)
+      ? Math.min(i1Raw, Math.max(0, Math.floor(input.replayIndex)))
+      : i1Raw;
   const mainRange = price.range();
 
   /* Mode-aware price pipeline: grid, series, overlays, crosshair and
      drawings all map through the SAME mapper, so labels always line up. */
   const pm = priceMapperFor(price, input.priceMode ?? "linear");
-  /* Percent labels anchor to the first visible bar's close; no finite
-     non-zero close -> honest fallback to price labels. */
-  let percentBase: number | null = null;
-  if (pm.mode === "percent") {
-    for (let i = i0; i <= i1; i++) {
-      const c = bars[i]?.c;
-      if (typeof c === "number" && Number.isFinite(c) && c !== 0) {
-        percentBase = c;
-        break;
-      }
+  /* First finite non-zero close in the visible (replay-clipped) window —
+     the anchor for percent labels AND for compare-overlay alignment. */
+  let firstVisibleClose: number | null = null;
+  for (let i = i0; i <= i1; i++) {
+    const c = bars[i]?.c;
+    if (typeof c === "number" && Number.isFinite(c) && c !== 0) {
+      firstVisibleClose = c;
+      break;
     }
   }
+  const percentBase = pm.mode === "percent" ? firstVisibleClose : null;
   const axisLabel = (v: number): string => {
     if (percentBase != null) {
       const pct = percentFromBase(v, percentBase);
@@ -618,6 +765,18 @@ export function drawChart(input: RenderInput): void {
   if (input.showVolume) {
     drawVolumeStrip(ctx, drawBars, i0, i1, time, bw, L.panes[0], L.plotW, p);
   }
+
+  /* compare overlay lines — painted across the whole plot up to the replay
+     cursor, anchored to the main series' first visible close */
+  drawCompareSeries(ctx, input.compare, {
+    base: firstVisibleClose,
+    pm,
+    time,
+    pane: L.panes[0],
+    plotW: L.plotW,
+    i0,
+    i1,
+  });
 
   /* overlay indicators on the main pane */
   for (const { def, result } of overlays) {
@@ -819,10 +978,13 @@ function drawLegend(
   range: { i0: number; i1: number },
 ): void {
   const { bars, palette: p, chartType } = input;
-  const idx =
+  let idx =
     crosshair && crosshair.index != null && bars[crosshair.index]
       ? crosshair.index
       : range.i1;
+  if (input.replayIndex != null && Number.isFinite(input.replayIndex)) {
+    idx = Math.min(idx, Math.max(0, Math.floor(input.replayIndex)));
+  }
   const bar = bars[idx];
   if (!bar) return;
   const prev = bars[idx - 1];
@@ -852,8 +1014,23 @@ function drawLegend(
     ctx.fillText(input.legend, input.viewport.width - input.viewport.priceAxisWidth - 6, y);
     ctx.textAlign = "left";
   }
-  /* indicator value rows */
+  /* compare overlay legend row: each line's % change at the cursor bar */
   let rowY = y + 13;
+  if (input.compare && input.compare.length > 0) {
+    let cx = 6;
+    for (const entry of input.compare) {
+      const v = entry.values[idx];
+      const label =
+        v == null || !Number.isFinite(v)
+          ? `${entry.symbol} —`
+          : `${entry.symbol} ${v >= 0 ? "+" : ""}${v.toFixed(2)}%`;
+      ctx.fillStyle = entry.color;
+      ctx.fillText(label, cx, rowY);
+      cx += ctx.measureText(label).width + 14;
+    }
+    rowY += 12;
+  }
+  /* indicator value rows */
   for (const { def, result } of overlays) {
     const parts: string[] = [];
     for (const plot of result.plots) {
@@ -867,16 +1044,21 @@ function drawLegend(
   }
 }
 
-/** Autofit helper the shell calls when data/viewport changes. */
+/** Autofit helper the shell calls when data/viewport changes. `lastIndex`
+ *  (bar replay) excludes bars after the cursor from the fit. */
 export function fitPriceToVisible(
   price: PriceScale,
   bars: Bar[],
   time: TimeScale,
   padFrac = 0.08,
+  lastIndex?: number,
 ): void {
   const rng = time.range();
   const i0 = Math.max(0, Math.floor(rng.from));
-  const i1 = Math.min(bars.length - 1, Math.ceil(rng.to));
+  let i1 = Math.min(bars.length - 1, Math.ceil(rng.to));
+  if (lastIndex != null && Number.isFinite(lastIndex)) {
+    i1 = Math.min(i1, Math.max(0, Math.floor(lastIndex)));
+  }
   let min = Infinity;
   let max = -Infinity;
   for (let i = i0; i <= i1; i++) {

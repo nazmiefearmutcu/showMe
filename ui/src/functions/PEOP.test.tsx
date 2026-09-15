@@ -101,6 +101,62 @@ describe("PEOP pane — pre-search state", () => {
   });
 });
 
+function wikiPayload() {
+  return {
+    status: "ok",
+    query: "jensen",
+    source_mode: "wikipedia_live",
+    items: [
+      {
+        full_name: "Jensen Huang",
+        role: "entrepreneur, engineer",
+        company: "Nvidia",
+        description: "Taiwanese and American businessman (born 1963)",
+        summary:
+          'Jen-Hsun "Jensen" Huang is a Taiwanese and American business executive.',
+        nationality: "Taiwan / United States",
+        profile_url: "https://en.wikipedia.org/wiki/Jensen_Huang",
+        wikidata_id: "Q305177",
+        source: "wikipedia",
+        source_url: "https://en.wikipedia.org/wiki/Jensen_Huang",
+        source_date: "2026-09-11T16:51:37Z",
+        contact_status: "public_profile_only",
+        match_score: 1,
+      },
+    ],
+    connection_status: [
+      { source: "local_people_directory", status: "checked" },
+      { source: "wikipedia", status: "used" },
+    ],
+  };
+}
+
+describe("PEOP pane — live wikipedia rows", () => {
+  it("renders description, nationality and the wikipedia profile link", () => {
+    setMockFn({ state: "ok", data: { data: wikiPayload() } });
+    const { container } = render(<PEOPPane code="PEOP" />);
+    fireEvent.change(screen.getByLabelText(/People search query/i), {
+      target: { value: "jensen" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+
+    // "Jensen Huang" renders in the table AND as the top-match card.
+    expect(screen.getAllByText("Jensen Huang").length).toBe(2);
+    expect(container.textContent).toContain("entrepreneur, engineer");
+    expect(container.textContent).toContain(
+      "Taiwanese and American businessman (born 1963)",
+    );
+    expect(container.textContent).toContain("Nvidia");
+    expect(container.textContent).toContain("Taiwan / United States");
+    expect(container.textContent).toContain("wikipedia_live");
+    // The wikipedia profile URL is the rendered source link.
+    const links = screen.getAllByLabelText(/Open source for/);
+    expect(links[0].getAttribute("href")).toBe(
+      "https://en.wikipedia.org/wiki/Jensen_Huang",
+    );
+  });
+});
+
 describe("PEOP pane — results", () => {
   it("renders the people table with roles, firms and contact chips when ok", () => {
     setMockFn({ state: "ok", data: { data: okPayload() } });

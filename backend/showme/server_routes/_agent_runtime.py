@@ -342,7 +342,20 @@ def _agent_function_params(entry: FunctionIndexEntry, candidate: dict[str, str])
     elif code == "FSRC":
         params.update({"query": "expenseRatio < 0.01 AND aum_usd > 10000000000", "universe": ["SPY", "VOO", "IVV", "QQQ", "VTI", "IWM", "EEM", "GLD", "TLT", "HYG"]})
     elif code == "SRCH":
-        params.update({"query": "yield >= 4 AND duration <= 10", "universe": ["US3M", "US2Y", "US5Y", "US10Y", "US30Y", "DE10Y", "GB10Y", "JP10Y"]})
+        # Full reference-curve universe (session-17 expansion: complete US
+        # nominal curve + TIPS 5/10/30 + foreign 2Y & 10Y). The pane sends its
+        # own query (default MATCH_ALL "yield >= 0") but no universe, so this
+        # routed default used to silently pin the view to the old 8 tenors.
+        params.update({
+            "query": "yield >= 4 AND duration <= 10",
+            "universe": [
+                "US3M", "US6M", "US1Y", "US2Y", "US3Y", "US5Y", "US7Y",
+                "US10Y", "US20Y", "US30Y",
+                "USTIPS5Y", "USTIPS10Y", "USTIPS30Y",
+                "DE2Y", "DE10Y", "FR2Y", "FR10Y", "IT2Y", "IT10Y",
+                "ES2Y", "ES10Y", "GB2Y", "GB10Y", "JP2Y", "JP10Y",
+            ],
+        })
     elif code == "MICRO":
         params.update({"exchange": profile["exchange"], "interval": "1m"})
     elif code == "FRH":
@@ -379,8 +392,20 @@ def _agent_function_params(entry: FunctionIndexEntry, candidate: dict[str, str])
         # re-merged afterwards.
         params.pop("interval", None)
         params.pop("timeout", None)
-    elif code in {"MEET", "PEOP"}:
+    elif code == "PEOP":
         params["query"] = "Satoshi Nakamoto" if asset_class == "CRYPTO" else symbol
+    elif code == "MEET":
+        # MEET is the world-events tracker: `query` is a TEXT FILTER over event
+        # titles. The routed generic news query ("bitcoin cryptocurrency")
+        # filtered every event away (live symptom: "0 rows but 11 alerts"),
+        # and the 3s / limit=6 generic fetch defaults starved the calendar.
+        # Drop the generic defaults; explicit caller params re-merge after
+        # this point.
+        params.pop("query", None)
+        params.pop("limit", None)
+        params.pop("timeout", None)
+        params.pop("news_timeout", None)
+        params.pop("quote_timeout", None)
     elif code == "BTFW":
         params.update({"strategy": "sma_crossover", "days": 120})
     elif code == "BMTX":

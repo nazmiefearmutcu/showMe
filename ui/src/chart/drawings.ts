@@ -13,15 +13,36 @@
 
 export interface Drawing {
   id: string;
-  kind: "hline" | "trend";
+  kind: "hline" | "trend" | "fib";
   /** kind === "hline": the price level. */
   price?: number;
-  /** kind === "trend": endpoints. */
+  /** kind === "trend" | "fib": endpoints. */
   p1?: { index: number; price: number };
   p2?: { index: number; price: number };
 }
 
-export type DrawTool = null | "hline" | "trend";
+export type DrawTool = null | "hline" | "trend" | "fib";
+
+/** Canonical Fibonacci retracement ratios (0 = p2 anchor, 1 = p1 anchor). */
+export const FIB_RATIOS = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1] as const;
+
+/**
+ * Fib level price for a ratio. Convention matches the drawing gesture:
+ * the drag ends at p2, so 0 sits on p2 and 1 on p1 (TradingView grammar —
+ * draw from the swing low up to the high and the levels retrace down).
+ */
+export function fibLevelPrice(p1: number, p2: number, ratio: number): number {
+  return p2 + (p1 - p2) * ratio;
+}
+
+/** All canonical levels between two anchor prices; [] on non-finite input. */
+export function fibLevels(
+  p1: number,
+  p2: number,
+): { ratio: number; price: number }[] {
+  if (!Number.isFinite(p1) || !Number.isFinite(p2)) return [];
+  return FIB_RATIOS.map((ratio) => ({ ratio, price: fibLevelPrice(p1, p2, ratio) }));
+}
 
 let _seq = 0;
 function nextId(): string {
@@ -49,6 +70,17 @@ export function addTrend(
 ): Drawing[] {
   if (!isFinitePoint(p1) || !isFinitePoint(p2)) return list;
   return [...list, { id: nextId(), kind: "trend", p1: { ...p1 }, p2: { ...p2 } }];
+}
+
+/** Append a Fibonacci retracement between two (index, price) anchors. */
+export function addFib(
+  list: Drawing[],
+  p1: { index: number; price: number },
+  p2: { index: number; price: number },
+): Drawing[] {
+  if (!isFinitePoint(p1) || !isFinitePoint(p2)) return list;
+  if (!Number.isFinite(fibLevelPrice(p1.price, p2.price, 0.5))) return list;
+  return [...list, { id: nextId(), kind: "fib", p1: { ...p1 }, p2: { ...p2 } }];
 }
 
 /** Remove by id; unknown ids leave the list contents untouched. */
@@ -108,6 +140,21 @@ export function hitTestDrawing(
     const y2 = toY(p2.price);
     if (![x1, y1, x2, y2].every(Number.isFinite)) return false;
     return distanceToSegment(x, y, x1, y1, x2, y2) <= tol;
+  }
+  if (drawing.kind === "fib") {
+    const { p1, p2 } = drawing;
+    if (!isFinitePoint(p1) || !isFinitePoint(p2)) return false;
+    const x1 = toX(p1.index);
+    const x2 = toX(p2.index);
+    if (!Number.isFinite(x1) || !Number.isFinite(x2)) return false;
+    const loX = Math.min(x1, x2) - tol;
+    const hiX = Math.max(x1, x2) + tol;
+    if (x < loX || x > hiX) return false;
+    for (const level of fibLevels(p1.price, p2.price)) {
+      const levelY = toY(level.price);
+      if (Number.isFinite(levelY) && Math.abs(levelY - y) <= tol) return true;
+    }
+    return false;
   }
   return false;
 }

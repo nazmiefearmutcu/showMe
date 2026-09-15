@@ -18,17 +18,35 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { sidecarFetch } from "@/lib/sidecar";
+import { toast } from "@/lib/toast";
 import { Pill } from "@/design-system";
 import { INDICATORS, indicatorById } from "./indicators";
 import { TIMEFRAMES, timeframeById } from "./timeframes";
 import { createPriceScale, createTimeScale } from "./scales";
-import { drawChart, fitPriceToVisible, priceMapperFor, resolvePalette } from "./renderer";
-import { addHline, addTrend, hitTestDrawing, removeDrawing } from "./drawings";
+import {
+  drawChart,
+  fitPriceToVisible,
+  normalizeCompareSeries,
+  priceMapperFor,
+  resolveCssColor,
+  resolvePalette,
+} from "./renderer";
+import { addFib, addHline, addTrend, hitTestDrawing, removeDrawing } from "./drawings";
 import type { Drawing, DrawTool } from "./drawings";
+import {
+  ALERT_COOLDOWN_MS,
+  alertRuleId,
+  evaluateAlertRule,
+  loadAlertStore,
+  saveAlertStore,
+} from "./chart-alerts";
+import type { AlertFireState, AlertRule } from "./chart-alerts";
+import { clearLayout, loadLayout, saveLayout } from "./chart-layout";
 import type {
   Bar,
   BarsResponse,
   ChartType,
+  CompareSeriesInput,
   IndicatorDef,
   IndicatorInstance,
   PriceMode,
@@ -43,6 +61,15 @@ const DEFAULT_TF = "15m";
 const DEFAULT_BARS = 300;
 /** Pointer hit radius for selecting an existing drawing (px). */
 const DRAW_HIT_TOLERANCE = 6;
+/** Compare-line palette tokens; resolved against the live theme at paint. */
+const COMPARE_COLOR_TOKENS = [
+  "var(--accent)",
+  "var(--positive)",
+  "var(--negative)",
+  "var(--warn)",
+] as const;
+/** Bar-replay base speed: bars advanced per second at 1×. */
+const REPLAY_BARS_PER_SEC = 2;
 
 const SCALE_MODES: { id: PriceMode; label: string; title: string }[] = [
   { id: "linear", label: "LIN", title: "Linear price scale" },
@@ -79,7 +106,18 @@ export interface ChartProps {
   initialType?: ChartType;
   /** Auto-refresh cadence; 0 disables. Defaults to 30s. */
   refreshMs?: number;
+  /** Multi-symbol compare overlay (percent-normalized lines). Default []. */
+  compareSymbols?: string[];
   className?: string;
+}
+
+/** Most recent finite plot value (alert default when the indicator has no levels). */
+function lastFinite(data: (number | null)[]): number | null {
+  for (let i = data.length - 1; i >= 0; i--) {
+    const v = data[i];
+    if (v != null && Number.isFinite(v)) return v;
+  }
+  return null;
 }
 
 export function Chart({
@@ -90,6 +128,7 @@ export function Chart({
   initialInterval = DEFAULT_TF,
   initialType = "candles",
   refreshMs = 30_000,
+  compareSymbols = [],
   className,
 }: ChartProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -106,27 +145,62 @@ export function Chart({
   } | null>(null);
   const rafRef = useRef(0);
 
-  const [interval, setInterval] = useState(initialInterval);
-  const [chartType, setChartType] = useState<ChartType>(initialType);
+  /* Layout restore (milestone 3): one snapshot read at mount; only fields
+     that were actually saved and passed validation are applied. */
+  const [restored] = useState(() => loadLayout(symbol));
+
+  const [interval, setInterval] = useState(restored?.interval ?? initialInterval);
+  const [chartType, setChartType] = useState<ChartType>(restored?.chartType ?? initialType);
   const [bars, setBars] = useState<Bar[]>([]);
   const [source, setSource] = useState("");
   const [reason, setReason] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [asOf, setAsOf] = useState<string | null>(null);
-  const [instances, setInstances] = useState<IndicatorInstance[]>([]);
+  const [instances, setInstances] = useState<IndicatorInstance[]>(
+    restored?.indicators ?? [],
+  );
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerQuery, setPickerQuery] = useState("");
   const [settingsFor, setSettingsFor] = useState<string | null>(null);
   const [tfOpen, setTfOpen] = useState(false);
   const [typeOpen, setTypeOpen] = useState(false);
   const [autoRefresh, setAutoRefresh] = useState(true);
-  const [priceMode, setPriceMode] = useState<PriceMode>("linear");
-  const [showVolume, setShowVolume] = useState(true);
-  const [drawings, setDrawings] = useState<Drawing[]>([]);
+  const [priceMode, setPriceMode] = useState<PriceMode>(restored?.priceMode ?? "linear");
+  const [showVolume, setShowVolume] = useState(restored?.showVolume ?? true);
+  const [drawings, setDrawings] = useState<Drawing[]>(restored?.drawings ?? []);
   const [drawTool, setDrawTool] = useState<DrawTool>(null);
+  const [compare, setCompare] = useState<string[]>(() => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const raw of restored?.compareSymbols ?? compareSymbols) {
+      const s = raw.trim();
+      if (!s || seen.has(s)) continue;
+      seen.add(s);
+      out.push(s);
+    }
+    return out;
+  });
+  const [compareInput, setCompareInput] = useState("");
+  const [compareData, setCompareData] = useState<
+    Record<string, { bars: Bar[]; error: string | null }>
+  >({});
+  const [replayOn, setReplayOn] = useState(false);
+  const [replayIndex, setReplayIndex] = useState(0);
+  const [replayPlaying, setReplayPlaying] = useState(false);
+  const [replaySpeed, setReplaySpeed] = useState<1 | 2 | 5>(1);
+  const [alertRules, setAlertRules] = useState<AlertRule[]>(() => loadAlertStore(symbol).rules);
+  const [alertLog, setAlertLog] = useState<{ id: string; text: string; title: string }[]>([]);
   const pendingTrendRef = useRef<{ index: number; price: number } | null>(null);
   const priceTouchedRef = useRef(false);
+  const replayIdxRef = useRef(0);
+  const compareSeqRef = useRef(0);
+  const compareCacheRef = useRef<Map<string, Bar[]>>(new Map());
+  const firedRef = useRef<Record<string, AlertFireState>>(loadAlertStore(symbol).fired);
+  const skipPersistRef = useRef(false);
+
+  const settingsInstance = instances.find((i) => i.id === settingsFor) ?? null;
+  const settingsDef = settingsInstance ? indicatorById(settingsInstance.indicator) : undefined;
 
   /* -- rendering primitives (declared before every consumer) ------ */
 
@@ -160,6 +234,8 @@ export function Chart({
     const view = timeRef.current.range();
     canvas.dataset.viewFrom = view.from.toFixed(3);
     canvas.dataset.viewTo = view.to.toFixed(3);
+    if (replayOn) canvas.dataset.replayIndex = String(replayIndex);
+    else delete canvas.dataset.replayIndex;
     const pr = priceRef.current.range();
     canvas.dataset.priceMin = pr.min.toFixed(6);
     canvas.dataset.priceMax = pr.max.toFixed(6);
@@ -170,6 +246,41 @@ export function Chart({
       const def = indicatorById(inst.indicator) as IndicatorDef;
       return { instance: inst, def, result: def.compute(barsRef.current, inst.params) };
     });
+    /* Compare overlay: normalize each series vs. its first bar at/after the
+       main series' first visible bar (timestamp alignment, not index luck),
+       then align values onto the main bar grid by exact timestamp. */
+    const comparePaint: CompareSeriesInput[] = [];
+    if (compare.length > 0 && compareData) {
+      const mainBars = barsRef.current;
+      const anchorIdx = Math.max(
+        0,
+        Math.min(mainBars.length - 1, Math.floor(view.from)),
+      );
+      const mainT = mainBars[anchorIdx]?.t ?? null;
+      for (let ci = 0; ci < compare.length; ci++) {
+        const sym = compare[ci];
+        const entry = compareData[sym];
+        if (!entry || entry.error || entry.bars.length === 0) continue;
+        let firstIdx = 0;
+        if (mainT != null) {
+          firstIdx = entry.bars.length;
+          for (let i = 0; i < entry.bars.length; i++) {
+            if (entry.bars[i].t >= mainT) {
+              firstIdx = i;
+              break;
+            }
+          }
+        }
+        const values = normalizeCompareSeries(entry.bars, firstIdx);
+        const byTime = new Map<number, number | null>();
+        for (let i = 0; i < entry.bars.length; i++) byTime.set(entry.bars[i].t, values[i]);
+        comparePaint.push({
+          symbol: sym,
+          color: resolveCssColor(host, COMPARE_COLOR_TOKENS[ci % COMPARE_COLOR_TOKENS.length]),
+          values: mainBars.map((b) => (byTime.has(b.t) ? (byTime.get(b.t) ?? null) : null)),
+        });
+      }
+    }
     drawChart({
       ctx,
       dpr,
@@ -186,16 +297,39 @@ export function Chart({
       priceMode,
       showVolume,
       drawings,
+      replayIndex: replayOn ? replayIndex : undefined,
+      compare: comparePaint,
     });
-  }, [instances, chartType, source, asOf, symbol, viewport, priceMode, showVolume, drawings]);
+  }, [
+    instances,
+    chartType,
+    source,
+    asOf,
+    symbol,
+    viewport,
+    priceMode,
+    showVolume,
+    drawings,
+    compare,
+    compareData,
+    replayOn,
+    replayIndex,
+  ]);
+
+  /* Latest-closure indirection: rAF callbacks must paint with the CURRENT
+     render state, not the closure captured when the frame was requested
+     (a state-driven schedule used to be dropped by the pending-frame
+     guard and then repaint with the previous state). */
+  const drawRef = useRef(draw);
+  drawRef.current = draw;
 
   const schedule = useCallback(() => {
     if (rafRef.current) return;
     rafRef.current = requestAnimationFrame(() => {
       rafRef.current = 0;
-      draw();
+      drawRef.current();
     });
-  }, [draw]);
+  }, []);
 
   const fitAll = useCallback(
     (keepWindow = false) => {
@@ -206,10 +340,16 @@ export function Chart({
         timeRef.current.setRange(from, to);
       }
       priceTouchedRef.current = false;
-      fitPriceToVisible(priceRef.current, barsNow, timeRef.current);
+      fitPriceToVisible(
+        priceRef.current,
+        barsNow,
+        timeRef.current,
+        0.08,
+        replayOn ? replayIdxRef.current : undefined,
+      );
       draw();
     },
-    [draw],
+    [draw, replayOn],
   );
 
   const load = useCallback(
@@ -231,7 +371,13 @@ export function Chart({
         setFetchError(null);
         if (opts?.silent) {
           if (!priceTouchedRef.current) {
-            fitPriceToVisible(priceRef.current, next, timeRef.current);
+            fitPriceToVisible(
+              priceRef.current,
+              next,
+              timeRef.current,
+              0.08,
+              replayOn ? replayIdxRef.current : undefined,
+            );
           }
           draw();
         } else {
@@ -244,7 +390,7 @@ export function Chart({
         setLoading(false);
       }
     },
-    [symbol, interval, fitAll, draw],
+    [symbol, interval, fitAll, draw, replayOn],
   );
 
   useEffect(() => {
@@ -260,6 +406,215 @@ export function Chart({
     }, refreshMs);
     return () => window.clearInterval(id);
   }, [refreshMs, autoRefresh, load]);
+
+  /* -- compare overlay data (milestone 3) ------------------------------ */
+
+  const compareKey = compare.join("\u0001");
+
+  const refreshCompare = useCallback(async (syms: string[], iv: string) => {
+    const seq = ++compareSeqRef.current;
+    if (syms.length === 0) {
+      setCompareData({});
+      return;
+    }
+    const results = await Promise.all(
+      syms.map(async (s) => {
+        const key = `${s}|${iv}`;
+        const cached = compareCacheRef.current.get(key);
+        if (cached) return [s, { bars: cached, error: null }] as const;
+        try {
+          const res = await sidecarFetch<BarsResponse>(
+            `/api/bars?symbol=${encodeURIComponent(s)}&interval=${encodeURIComponent(
+              iv,
+            )}&limit=${DEFAULT_BARS}`,
+          );
+          const bars = Array.isArray(res.bars) ? res.bars : [];
+          if (bars.length === 0) {
+            return [s, { bars, error: res.reason ?? "provider returned no bars" }] as const;
+          }
+          compareCacheRef.current.set(key, bars);
+          return [s, { bars, error: null }] as const;
+        } catch (err) {
+          return [
+            s,
+            { bars: [], error: err instanceof Error ? err.message : String(err) },
+          ] as const;
+        }
+      }),
+    );
+    if (seq !== compareSeqRef.current) return;
+    setCompareData(Object.fromEntries(results));
+  }, []);
+
+  useEffect(() => {
+    /* A non-silent main reload (symbol/interval change) invalidates the
+       cache: compare series are fetched once per symbol+interval and
+       refreshed together with the main series. */
+    compareCacheRef.current.clear();
+    const syms = compareKey ? compareKey.split("\u0001") : [];
+    void refreshCompare(syms, interval);
+  }, [compareKey, interval, symbol, refreshCompare]);
+
+  /* -- bar replay (milestone 3) ---------------------------------------- */
+
+  const applyReplayCursor = useCallback(
+    (value: number) => {
+      const len = barsRef.current.length;
+      const clamped = Math.max(0, Math.min(Math.max(0, len - 1), Math.floor(value)));
+      replayIdxRef.current = clamped;
+      setReplayIndex(clamped);
+      fitPriceToVisible(priceRef.current, barsRef.current, timeRef.current, 0.08, clamped);
+      schedule();
+    },
+    [schedule],
+  );
+
+  const toggleReplay = useCallback(() => {
+    if (replayOn) {
+      setReplayOn(false);
+      setReplayPlaying(false);
+      priceTouchedRef.current = false;
+      fitPriceToVisible(priceRef.current, barsRef.current, timeRef.current);
+      schedule();
+      return;
+    }
+    const len = barsRef.current.length;
+    const start = Math.max(
+      0,
+      Math.min(Math.max(0, len - 1), Math.floor(timeRef.current.range().from)),
+    );
+    replayIdxRef.current = start;
+    setReplayIndex(start);
+    setReplayPlaying(false);
+    setReplayOn(true);
+    if (len > 0) {
+      priceTouchedRef.current = false;
+      fitPriceToVisible(priceRef.current, barsRef.current, timeRef.current, 0.08, start);
+    }
+    schedule();
+  }, [replayOn, schedule]);
+
+  useEffect(() => {
+    if (!replayOn || !replayPlaying) return;
+    let raf = 0;
+    let last = performance.now();
+    let acc = 0;
+    const step = (now: number) => {
+      const dt = Math.max(0, now - last);
+      last = now;
+      acc += (dt / 1000) * REPLAY_BARS_PER_SEC * replaySpeed;
+      const advance = Math.floor(acc);
+      const len = barsRef.current.length;
+      if (advance > 0 && len > 0) {
+        acc -= advance;
+        const next = Math.min(len - 1, replayIdxRef.current + advance);
+        replayIdxRef.current = next;
+        setReplayIndex(next);
+        if (next >= len - 1) {
+          setReplayPlaying(false);
+          return;
+        }
+      }
+      raf = requestAnimationFrame(step);
+    };
+    raf = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(raf);
+  }, [replayOn, replayPlaying, replaySpeed]);
+
+  /* -- indicator alerts (milestone 3) ---------------------------------- */
+
+  useEffect(() => {
+    if (alertRules.length === 0 || bars.length === 0) return;
+    const fires: { rule: AlertRule; barT: number | null }[] = [];
+    const nextFired = { ...firedRef.current };
+    const barTimes = bars.map((b) => b.t);
+    for (const rule of alertRules) {
+      const inst = instances.find((i) => i.id === rule.instanceId);
+      if (!inst) continue;
+      const def = indicatorById(inst.indicator);
+      if (!def) continue;
+      const result = def.compute(bars, inst.params);
+      const plot = result.plots.find((p) => p.key === rule.plotKey);
+      if (!plot) continue;
+      const out = evaluateAlertRule(plot.data, rule, nextFired[rule.id] ?? null, {
+        barTimes,
+        nowMs: Date.now(),
+        cooldownMs: ALERT_COOLDOWN_MS,
+      });
+      if (out.fired) {
+        nextFired[rule.id] = out.state;
+        fires.push({ rule, barT: out.crossingBarT });
+      }
+    }
+    if (fires.length === 0) return;
+    firedRef.current = nextFired;
+    saveAlertStore(symbol, { rules: alertRules, fired: nextFired });
+    const stamp = Date.now();
+    const entries = fires.map((f, i) => ({
+      id: `${f.rule.id}-${f.barT ?? "x"}-${stamp}-${i}`,
+      text: `${f.rule.indicator} · ${f.rule.plotLabel} ${
+        f.rule.op === "crossesAbove" ? "crosses above" : "crosses below"
+      } ${f.rule.value}`,
+      title: f.barT != null ? new Date(f.barT).toISOString() : "bar time unavailable",
+    }));
+    setAlertLog((prev) => [...entries, ...prev].slice(0, 20));
+    for (const f of fires) {
+      toast.warn(
+        `Alert · ${f.rule.indicator}`,
+        `${f.rule.plotLabel} ${
+          f.rule.op === "crossesAbove" ? "crossed above" : "crossed below"
+        } ${f.rule.value}`,
+      );
+    }
+  }, [bars, instances, alertRules, symbol]);
+
+  useEffect(() => {
+    saveAlertStore(symbol, { rules: alertRules, fired: firedRef.current });
+  }, [symbol, alertRules]);
+
+  /* -- layout persistence (milestone 3) -------------------------------- */
+
+  useEffect(() => {
+    if (skipPersistRef.current) {
+      /* One run after Reset: the store was just cleared — do not re-save
+         the default state over the empty key. */
+      skipPersistRef.current = false;
+      return;
+    }
+    saveLayout(symbol, {
+      interval,
+      chartType,
+      priceMode,
+      showVolume,
+      indicators: instances,
+      drawings,
+      compareSymbols: compare,
+    });
+  }, [symbol, interval, chartType, priceMode, showVolume, instances, drawings, compare]);
+
+  const resetLayout = useCallback(() => {
+    clearLayout(symbol);
+    skipPersistRef.current = true;
+    setInterval(initialInterval);
+    setChartType(initialType);
+    setPriceMode("linear");
+    setShowVolume(true);
+    setInstances([]);
+    setDrawings([]);
+    setCompare([]);
+    setCompareInput("");
+    setDrawTool(null);
+    pendingTrendRef.current = null;
+    setSettingsFor(null);
+    setReplayOn(false);
+    setReplayPlaying(false);
+    setAlertRules([]);
+    setAlertLog([]);
+    firedRef.current = {};
+    saveAlertStore(symbol, { rules: [], fired: {} });
+    priceTouchedRef.current = false;
+    fitAll(false);
+  }, [symbol, initialInterval, initialType, fitAll]);
 
   useEffect(() => {
     schedule();
@@ -357,7 +712,7 @@ export function Chart({
     const inPlot = x >= 0 && x <= plotW && y >= 0 && y <= plotH;
 
     /* A draw tool owns the pointer: clicks commit points instead of panning.
-       Hline commits on the first click; trend commits on the second. */
+       Hline commits on the first click; trend/fib commit on the second. */
     if (drawTool) {
       if (inPlot) {
         const index = timeRef.current.toIndex(x);
@@ -371,7 +726,11 @@ export function Chart({
               pendingTrendRef.current = { index, price };
             } else {
               pendingTrendRef.current = null;
-              setDrawings((prev) => addTrend(prev, p1, { index, price }));
+              setDrawings((prev) =>
+                drawTool === "fib"
+                  ? addFib(prev, p1, { index, price })
+                  : addTrend(prev, p1, { index, price }),
+              );
             }
           }
         }
@@ -490,8 +849,11 @@ export function Chart({
     ]);
   };
 
-  const removeIndicator = (id: string) =>
+  const removeIndicator = (id: string) => {
     setInstances((prev) => prev.filter((i) => i.id !== id));
+    /* Alerts belong to the instance — drop them so no orphan rule lingers. */
+    setAlertRules((prev) => prev.filter((r) => r.instanceId !== id));
+  };
 
   const toggleIndicator = (id: string) =>
     setInstances((prev) =>
@@ -503,13 +865,58 @@ export function Chart({
       prev.map((i) => (i.id === id ? { ...i, params: { ...i.params, [key]: value } } : i)),
     );
 
-  /** Arm/disarm a drawing tool; starting one cancels any pending trend point. */
-  const toggleTool = (tool: "hline" | "trend") => {
+  /** Arm/disarm a drawing tool; starting one cancels any pending point. */
+  const toggleTool = (tool: "hline" | "trend" | "fib") => {
     pendingTrendRef.current = null;
     setDrawTool((cur) => (cur === tool ? null : tool));
     setTfOpen(false);
     setTypeOpen(false);
   };
+
+  /* -- compare + alert handlers ---------------------------------------- */
+
+  const addCompare = () => {
+    const s = compareInput.trim();
+    if (!s) return;
+    setCompare((prev) => (prev.includes(s) ? prev : [...prev, s]));
+    setCompareInput("");
+  };
+
+  const removeCompare = (s: string) =>
+    setCompare((prev) => prev.filter((x) => x !== s));
+
+  const settingsResult = useMemo(
+    () => (settingsInstance && settingsDef ? settingsDef.compute(bars, settingsInstance.params) : null),
+    [settingsInstance, settingsDef, bars],
+  );
+  const settingsRules = alertRules.filter((r) => r.instanceId === (settingsInstance?.id ?? ""));
+
+  const addAlertRule = () => {
+    if (!settingsInstance || !settingsResult) return;
+    const plot = settingsResult.plots[0];
+    if (!plot) return;
+    const levels = settingsResult.levels ?? [];
+    const fallback =
+      levels.length > 0 ? levels[levels.length - 1] : lastFinite(plot.data) ?? 0;
+    setAlertRules((prev) => [
+      ...prev,
+      {
+        id: alertRuleId(),
+        instanceId: settingsInstance.id,
+        indicator: settingsDef?.name ?? settingsInstance.indicator,
+        plotKey: plot.key,
+        plotLabel: plot.label,
+        op: "crossesAbove",
+        value: fallback,
+      },
+    ]);
+  };
+
+  const setAlertRule = (id: string, patch: Partial<AlertRule>) =>
+    setAlertRules((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
+
+  const removeAlertRule = (id: string) =>
+    setAlertRules((prev) => prev.filter((r) => r.id !== id));
 
   const pickerResults = useMemo(() => {
     const q = pickerQuery.trim().toLowerCase();
@@ -527,8 +934,6 @@ export function Chart({
     return Array.from(byCat.entries());
   }, [pickerQuery]);
 
-  const settingsInstance = instances.find((i) => i.id === settingsFor) ?? null;
-  const settingsDef = settingsInstance ? indicatorById(settingsInstance.indicator) : undefined;
   const tf = timeframeById(interval);
 
   /* -- render --------------------------------------------------------- */
@@ -684,7 +1089,89 @@ export function Chart({
           >
             ╱
           </button>
+          <button
+            type="button"
+            className={`sm-chart__btn sm-chart__btn--tool sm-chart__btn--fib${
+              drawTool === "fib" ? " is-active" : ""
+            }`}
+            data-testid="sm-chart-draw-fib"
+            aria-pressed={drawTool === "fib"}
+            aria-label="Fibonacci retracement tool — click two anchors; Esc cancels"
+            title="Fibonacci retracement (Esc cancels)"
+            onClick={() => toggleTool("fib")}
+          >
+            FIB
+          </button>
         </div>
+
+        <div className="sm-chart__seg sm-chart__compare">
+          <input
+            value={compareInput}
+            onChange={(e) => setCompareInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                addCompare();
+              }
+            }}
+            placeholder="+ Compare"
+            aria-label="Compare symbol — type a symbol and press Enter"
+            title="Add a comparison symbol (percent-normalized line)"
+            data-testid="sm-chart-compare-add"
+            className="sm-chart__compare-input"
+            spellCheck={false}
+          />
+        </div>
+        {compare.map((sym, i) => {
+          const entry = compareData[sym];
+          const failed = !!entry && (!!entry.error || entry.bars.length === 0);
+          return (
+            <span
+              key={sym}
+              className={`sm-chart__chip${failed ? " is-warn" : ""}`}
+              data-testid={`sm-chart-compare-chip-${sym}`}
+              style={{ color: COMPARE_COLOR_TOKENS[i % COMPARE_COLOR_TOKENS.length] }}
+              title={
+                failed
+                  ? `Compare ${sym} failed — ${entry?.error ?? "no data"}`
+                  : entry
+                    ? `Compare ${sym} (percent change)`
+                    : `Compare ${sym} — loading…`
+              }
+            >
+              {sym}
+              <button
+                type="button"
+                className="sm-chart__chip-x"
+                aria-label={`Remove compare ${sym}`}
+                onClick={() => removeCompare(sym)}
+              >
+                ×
+              </button>
+            </span>
+          );
+        })}
+
+        <button
+          type="button"
+          className={`sm-chart__btn${replayOn ? " is-active" : ""}`}
+          data-testid="sm-chart-replay-toggle"
+          aria-pressed={replayOn}
+          title="Bar replay — replays the loaded window only"
+          onClick={toggleReplay}
+        >
+          ↻ Replay
+        </button>
+
+        <button
+          type="button"
+          className="sm-chart__btn"
+          data-testid="sm-chart-reset-layout"
+          title="Reset chart layout to defaults (clears the saved layout)"
+          onClick={resetLayout}
+        >
+          Reset
+        </button>
 
         <button
           type="button"
@@ -713,6 +1200,59 @@ export function Chart({
           </Pill>
         )}
       </div>
+
+      {replayOn && !compact && (
+        <div
+          className="sm-chart__replay"
+          role="group"
+          aria-label="Bar replay transport — loaded window only"
+        >
+          <button
+            type="button"
+            className="sm-chart__btn"
+            data-testid="sm-chart-replay-play"
+            aria-pressed={replayPlaying}
+            disabled={bars.length === 0}
+            title={replayPlaying ? "Pause" : "Play (2 bars/sec × speed)"}
+            onClick={() => setReplayPlaying((v) => !v)}
+          >
+            {replayPlaying ? "❚❚" : "▶"}
+          </button>
+          {([1, 2, 5] as const).map((s) => (
+            <button
+              key={s}
+              type="button"
+              className={`sm-chart__btn${replaySpeed === s ? " is-active" : ""}`}
+              data-testid={`sm-chart-replay-speed-${s}x`}
+              aria-pressed={replaySpeed === s}
+              onClick={() => setReplaySpeed(s)}
+            >
+              {s}×
+            </button>
+          ))}
+          <input
+            type="range"
+            min={0}
+            max={Math.max(0, bars.length - 1)}
+            step={1}
+            value={replayIndex}
+            data-testid="sm-chart-replay-slider"
+            aria-label={`Bar replay cursor — bar ${Math.min(
+              replayIndex + 1,
+              Math.max(1, bars.length),
+            )} of ${bars.length} (loaded window only)`}
+            title="Bar replay — loaded window only"
+            className="sm-chart__replay-slider"
+            onChange={(e) => {
+              setReplayPlaying(false);
+              applyReplayCursor(Number(e.target.value));
+            }}
+          />
+          <span className="sm-chart__replay-pos" aria-hidden>
+            {bars.length === 0 ? "0/0" : `${replayIndex + 1}/${bars.length}`}
+          </span>
+        </div>
+      )}
 
       {instances.length > 0 && (
         <div className="sm-chart__tabs" role="tablist" aria-label="Open indicators">
@@ -854,6 +1394,69 @@ export function Chart({
               )}
             </label>
           ))}
+          <div className="sm-chart__settings-section">
+            <span className="sm-chart__menu-title">Alerts</span>
+            {settingsRules.map((rule) => (
+              <div key={rule.id} className="sm-chart__alert-rule">
+                <select
+                  value={rule.plotKey}
+                  aria-label="Alert plot"
+                  onChange={(e) => {
+                    const plot = settingsResult?.plots.find((p) => p.key === e.target.value);
+                    setAlertRule(rule.id, {
+                      plotKey: e.target.value,
+                      plotLabel: plot?.label ?? e.target.value,
+                    });
+                  }}
+                >
+                  {(settingsResult?.plots ?? []).map((p) => (
+                    <option key={p.key} value={p.key}>
+                      {p.label}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  value={rule.op}
+                  aria-label="Alert operator"
+                  onChange={(e) =>
+                    setAlertRule(rule.id, { op: e.target.value as AlertRule["op"] })
+                  }
+                >
+                  <option value="crossesAbove">above</option>
+                  <option value="crossesBelow">below</option>
+                </select>
+                <input
+                  type="number"
+                  step="any"
+                  value={rule.value}
+                  aria-label="Alert value"
+                  onChange={(e) => setAlertRule(rule.id, { value: Number(e.target.value) })}
+                />
+                <button
+                  type="button"
+                  className="sm-chart__tab-x"
+                  aria-label="Remove alert"
+                  onClick={() => removeAlertRule(rule.id)}
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+            <button
+              type="button"
+              className="sm-chart__btn"
+              data-testid="sm-chart-alert-add"
+              disabled={(settingsResult?.plots.length ?? 0) === 0}
+              title={
+                settingsResult && settingsResult.plots.length > 0
+                  ? "Add an alert on a plot of this indicator"
+                  : "This indicator exposes no plottable series"
+              }
+              onClick={addAlertRule}
+            >
+              + Alert
+            </button>
+          </div>
         </div>
       )}
 
@@ -868,7 +1471,9 @@ export function Chart({
           role="img"
           aria-label={`Price chart for ${symbol}, ${tf?.label ?? interval}, ${chartType}, ${
             priceMode === "percent" ? "percent scale" : `${priceMode} scale`
-          }${drawTool ? `; ${drawTool} tool active — Esc cancels` : ""}. Click a drawing to delete it when no drawing tool is active.`}
+          }${drawTool ? `; ${drawTool} tool active — Esc cancels` : ""}${
+            replayOn ? "; bar replay active — loaded window only" : ""
+          }. Click a drawing to delete it when no drawing tool is active.`}
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}
@@ -880,6 +1485,20 @@ export function Chart({
           <div className="sm-chart__empty" role="status">
             <strong>No bars</strong>
             <span>{fetchError ?? reason ?? "The provider returned no data for this interval."}</span>
+          </div>
+        )}
+        {alertLog.length > 0 && (
+          <div
+            className="sm-chart__alerts"
+            data-testid="sm-chart-alert-list"
+            role="log"
+            aria-label="Indicator alerts (latest 20)"
+          >
+            {alertLog.map((entry) => (
+              <div key={entry.id} className="sm-chart__alert-item" title={entry.title}>
+                {entry.text}
+              </div>
+            ))}
           </div>
         )}
       </div>

@@ -75,17 +75,16 @@ def test_curated_manifest_lists_canonical_routes() -> None:
     paths = {row["path"] for row in DAPI_CURATED_ROUTES}
     required = {
         "/api/health",
+        "/api/bars",
         "/api/function-index",
         "/api/fn/{code}",
         "/api/quote/{symbol}",
-        "/api/bars",
+        "/api/bots",
+        "/api/strategies",
+        "/api/exchange/credentials",
     }
-    # /api/bars is pinned only when present — the audit gate for the curated
-    # list lives in test_session_04_bughunt.py; this test guards the count
-    # floor the DAPI pane relies on.
-    missing = {path for path in required if path not in paths and path != "/api/bars"}
+    missing = required - paths
     assert not missing, f"DAPI curated manifest missing required routes: {missing}"
-    assert any(path.startswith("/api/bars") for path in paths) or "/api/bars" not in paths
 
 
 def test_curated_rows_carry_the_pane_contract() -> None:
@@ -199,10 +198,14 @@ def test_api_fn_dapi_route_lists_routes(dapi_client: TestClient) -> None:
     assert resp.status_code == 200, resp.text
     body = resp.json()
     data = body["data"]
-    assert data["summary"]["endpoints"] >= 20
-    assert data["summary"]["total_routes"] >= 20
+    total = len(DAPI_CURATED_ROUTES)
+    assert total >= 60, "curated manifest must cover the real sidecar surface"
+    assert data["summary"]["endpoints"] == total
+    assert data["summary"]["total_routes"] == total
     assert data["summary"]["filter"] == "all"
-    assert "/api/health" in _paths(data["rows"])
+    paths = _paths(data["rows"])
+    assert "/api/health" in paths
+    assert "/api/bars" in paths
     # The routed merge injects the desk news query; it must be reported, not
     # applied (this is the exact "ROUTES 0/46" regression).
     assert data["summary"]["ignored_filter"] == "bitcoin cryptocurrency"
@@ -218,4 +221,43 @@ def test_api_fn_dapi_route_honors_path_filter(dapi_client: TestClient) -> None:
     assert all(
         "health" in row["path"].lower() or "health" in row["purpose"].lower()
         for row in data["rows"]
+    )
+
+
+def _normalize_route_path(path: str) -> str:
+    """OpenAPI renders ``/api/proxy/{path:path}`` as ``/api/proxy/{path}``."""
+    return path.replace("{path:path}", "{path}")
+
+
+def test_curated_manifest_matches_routes(dapi_client: TestClient) -> None:
+    """Audit gate: the curated DAPI manifest must not drift from the real
+    router table. Compares the curated paths+verbs against the app's own
+    OpenAPI document (the same table the sidecar serves)."""
+    spec = dapi_client.get("/openapi.json").json()
+    real: dict[str, set[str]] = {}
+    for path, ops in spec.get("paths", {}).items():
+        if not path.startswith("/api/"):
+            continue
+        real[_normalize_route_path(path)] = {
+            method.upper()
+            for method in ops
+            if method.lower() in {"get", "post", "put", "delete", "patch"}
+        }
+
+    curated: dict[str, set[str]] = {}
+    for row in DAPI_CURATED_ROUTES:
+        path = _normalize_route_path(str(row["path"]))
+        verbs = {verb.strip().upper() for verb in str(row["method"]).split("/")}
+        curated.setdefault(path, set()).update(verbs)
+
+    missing = sorted(set(real) - set(curated))
+    extra = sorted(set(curated) - set(real))
+    mismatched = sorted(
+        (path, sorted(curated[path]), sorted(real[path]))
+        for path in set(real) & set(curated)
+        if curated[path] != real[path]
+    )
+    assert not missing and not extra and not mismatched, (
+        "DAPI curated manifest drifted from the router table: "
+        f"missing={missing} extra={extra} verb_mismatch={mismatched}"
     )

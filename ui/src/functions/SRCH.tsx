@@ -46,6 +46,15 @@ interface SRCHRow {
   yield?: number;
   duration?: number;
   rating?: string;
+  // Live-path honesty labels (backend screen/_funcs.py SRCHFunction):
+  // live = refreshed from a keyless provider this cycle; unavailable = a
+  // configured live tenor no provider answered (curated value shown);
+  // reference = curated-only row (legacy payloads omit the field).
+  quote_type?: "live" | "reference" | "unavailable";
+  yield_state?: "live" | "reference";
+  yield_source?: string | null;
+  yield_as_of?: string;
+  yield_cadence?: string;
 }
 
 interface SRCHData {
@@ -57,6 +66,15 @@ interface SRCHData {
   scanned?: number;
   matched?: number;
   next_actions?: string[];
+}
+
+type QuoteType = "live" | "reference" | "unavailable";
+
+function quoteTypeOf(row: SRCHRow): QuoteType {
+  if (row.quote_type === "live" || row.quote_type === "unavailable") {
+    return row.quote_type;
+  }
+  return "reference";
 }
 
 // Canonical bond types from the backend reference universe
@@ -148,8 +166,63 @@ export function SRCHPane({ code }: FunctionPaneProps) {
     return [...base].sort((a, b) => num(b[key]) - num(a[key]));
   }, [payload, sortKey]);
 
+  // Per-row coverage: live rows were refreshed by a keyless provider this
+  // cycle; unavailable rows are configured live tenors no provider answered
+  // (their curated reference value is still shown); reference rows are
+  // curated-only. Drives the header chip, the per-row source pill and the
+  // honesty note — no whole-table downgrade when coverage is partial.
+  const coverage = useMemo(() => {
+    const base = payload?.rows ?? [];
+    const liveSources = new Set<string>();
+    let live = 0;
+    let unavailable = 0;
+    for (const row of base) {
+      const kind = quoteTypeOf(row);
+      if (kind === "live") {
+        live += 1;
+        if (row.yield_source) liveSources.add(row.yield_source);
+      } else if (kind === "unavailable") {
+        unavailable += 1;
+      }
+    }
+    return { live, unavailable, total: base.length, liveSources: [...liveSources] };
+  }, [payload]);
+
   const isFilterError =
     status === "unsupported_predicate" || status === "input_error";
+
+  const coverageNote = useMemo(() => {
+    if (!coverage.total || coverage.live === 0) {
+      return "reference bond universe (no live quotes)";
+    }
+    const via = coverage.liveSources.length
+      ? ` via ${coverage.liveSources.join(", ")}`
+      : "";
+    return coverage.unavailable > 0
+      ? `live yields ${coverage.live}/${coverage.total}${via} · ${coverage.unavailable} tenor(s) show curated reference values`
+      : `live yields${via}`;
+  }, [coverage]);
+
+  const coveragePill =
+    coverage.total === 0 ? null : coverage.live > 0 ? (
+      <span data-testid="srch-coverage-pill">
+        {coverage.unavailable > 0 ? (
+          <Pill tone="warn" variant="soft" withDot={false}>
+            PARTIAL {coverage.live}/{coverage.total} LIVE
+          </Pill>
+        ) : (
+          <Pill tone="positive" variant="soft" withDot={false}>
+            LIVE {coverage.live}
+          </Pill>
+        )}
+      </span>
+    ) : (
+      <span data-testid="srch-coverage-pill">
+        <Pill tone="muted" variant="soft" withDot={false}>
+          REFERENCE
+        </Pill>
+      </span>
+    );
 
   function resetFilters() {
     setBondType("ALL");
@@ -204,6 +277,12 @@ export function SRCHPane({ code }: FunctionPaneProps) {
             {formatPercent(r.yield ?? null)}
           </span>
         ),
+      },
+      {
+        key: "quote_type",
+        header: "Source",
+        width: 96,
+        render: (r) => <QuoteSourceCell row={r} />,
       },
       {
         key: "duration",
@@ -327,8 +406,9 @@ export function SRCHPane({ code }: FunctionPaneProps) {
           {" · "}
           {payload?.scanned ?? "—"} scanned
           {" · "}
+          {coverageNote}
+          {" · "}
           query "{payload?.query ?? query}"
-          {" · reference bond universe (no live quotes)"}
         </p>
       </div>
     );
@@ -342,6 +422,7 @@ export function SRCHPane({ code }: FunctionPaneProps) {
           subtitle={`${payload?.matched ?? 0} matched · ${payload?.scanned ?? 0} scanned`}
           trailing={
             <FunctionControlGroup>
+              {coveragePill}
               <SegmentedControl
                 label="MIN YLD"
                 value={minYield}
@@ -383,6 +464,16 @@ export function SRCHPane({ code }: FunctionPaneProps) {
           <StatusDivider />
           <StatusSection label="status" value={status} />
           <StatusDivider />
+          <StatusSection
+            label="live yields"
+            value={
+              coverage.total
+                ? `${coverage.live}/${coverage.total}`
+                : "—"
+            }
+            tone={coverage.live ? "positive" : "muted"}
+          />
+          <StatusDivider />
           <StatusSection label="matched" value={payload?.matched ?? 0} />
           <StatusDivider />
           <StatusSection
@@ -400,6 +491,47 @@ export function SRCHPane({ code }: FunctionPaneProps) {
 function num(value: unknown): number {
   const n = typeof value === "number" ? value : Number(value);
   return Number.isFinite(n) ? n : 0;
+}
+
+/**
+ * Per-row source pill. `LIVE` marks a yield refreshed by a keyless provider
+ * this cycle (tooltip carries provider + observation date); `N/A` marks a
+ * configured live tenor no provider answered — its curated reference value
+ * is still displayed; `REF` marks curated-only rows (legacy payloads).
+ */
+function QuoteSourceCell({ row }: { row: SRCHRow }) {
+  const kind = quoteTypeOf(row);
+  const testId = `srch-quote-${row.symbol ?? "row"}`;
+  if (kind === "live") {
+    const source = row.yield_source ?? "provider";
+    const asOf = row.yield_as_of ? `, as of ${row.yield_as_of}` : "";
+    return (
+      <span title={`live ${source}${asOf}`} data-testid={testId}>
+        <Pill tone="positive" variant="soft" withDot={false}>
+          LIVE
+        </Pill>
+      </span>
+    );
+  }
+  if (kind === "unavailable") {
+    return (
+      <span
+        title="no live provider answered for this tenor this cycle — curated reference value shown"
+        data-testid={testId}
+      >
+        <Pill tone="warn" variant="soft" withDot={false}>
+          N/A
+        </Pill>
+      </span>
+    );
+  }
+  return (
+    <span title="curated reference value" data-testid={testId}>
+      <Pill tone="muted" variant="soft" withDot={false}>
+        REF
+      </Pill>
+    </span>
+  );
 }
 
 function fmtYears(value: number | null | undefined): string {

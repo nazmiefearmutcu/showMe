@@ -42,9 +42,14 @@ interface PEOPItem {
   full_name?: string;
   role?: string;
   company?: string;
+  description?: string;
+  summary?: string;
+  nationality?: string;
   bio?: string;
   tags?: string[];
   profile_url?: string;
+  thumbnail?: string;
+  wikidata_id?: string;
   source?: string;
   source_url?: string;
   source_date?: string;
@@ -140,15 +145,27 @@ export function PEOPPane({ code }: FunctionPaneProps) {
         width: 320,
         sortable: true,
         sortValue: (r) => r.role ?? "",
-        render: (r) => <span style={titleStyle}>{r.role ?? "—"}</span>,
+        render: (r) => (
+          <span style={cellStackStyle}>
+            <span style={titleStyle}>{r.role ?? "—"}</span>
+            {(r.description ?? r.summary ?? r.bio) && (
+              <span style={summaryStyle}>{r.description ?? r.summary ?? r.bio}</span>
+            )}
+          </span>
+        ),
       },
       {
         key: "company",
         header: "Firm",
-        width: 120,
+        width: 150,
         sortable: true,
         sortValue: (r) => r.company ?? "",
-        render: (r) => <span style={titleStyle}>{r.company ?? "—"}</span>,
+        render: (r) => (
+          <span style={cellStackStyle}>
+            <span style={titleStyle}>{r.company ?? "—"}</span>
+            {r.nationality && <span style={summaryStyle}>{r.nationality}</span>}
+          </span>
+        ),
       },
       {
         key: "contact_status",
@@ -174,9 +191,9 @@ export function PEOPPane({ code }: FunctionPaneProps) {
         header: "Source",
         width: 140,
         render: (r) =>
-          r.source_url ? (
+          r.profile_url ?? r.source_url ? (
             <a
-              href={r.source_url}
+              href={r.profile_url ?? r.source_url}
               target="_blank"
               rel="noreferrer"
               style={linkStyle}
@@ -222,7 +239,7 @@ export function PEOPPane({ code }: FunctionPaneProps) {
   const body = !hasSearched ? (
     <Empty
       title="Search for a person"
-      body="Type a name, company, or role and press Search — the local directory is checked first, then the public-reference set."
+      body="Type a name, company, or role and press Search — the local directory is checked first, then the live Wikipedia/Wikidata people search."
       icon="⌕"
     />
   ) : (
@@ -233,7 +250,7 @@ export function PEOPPane({ code }: FunctionPaneProps) {
       emptyTitle="No people matched"
       emptyBody={
         payload?.next_actions?.[0] ??
-        `The local directory and public-reference set returned nothing for "${query}".`
+        `The local directory and the live Wikipedia/Wikidata search returned nothing for "${query}".`
       }
       onRetry={refetch}
     >
@@ -248,7 +265,7 @@ export function PEOPPane({ code }: FunctionPaneProps) {
           <StatCard
             label="Result source"
             value={payload?.source_mode ?? "—"}
-            caption="LOCAL DIRECTORY FIRST, THEN PUBLIC REFERENCE"
+            caption="LOCAL DIRECTORY, THEN LIVE WIKIPEDIA/WIKIDATA"
             tone="neutral"
           />
           <StatCard
@@ -385,6 +402,22 @@ const monoMutedStyle: CSSProperties = {
 const titleStyle: CSSProperties = {
   fontSize: "var(--font-size-md)",
   color: "var(--text-primary)",
+};
+
+const cellStackStyle: CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  gap: 1,
+  lineHeight: 1.25,
+};
+
+const summaryStyle: CSSProperties = {
+  fontSize: "var(--font-size-xs)",
+  color: "var(--text-mute)",
+  overflow: "hidden",
+  display: "-webkit-box",
+  WebkitLineClamp: 2,
+  WebkitBoxOrient: "vertical",
 };
 
 const linkStyle: CSSProperties = {

@@ -7,9 +7,12 @@
  */
 import { describe, expect, it } from "vitest";
 import {
+  addFib,
   addHline,
   addTrend,
   clearDrawings,
+  fibLevelPrice,
+  fibLevels,
   hitTestDrawing,
   removeDrawing,
   type Drawing,
@@ -120,5 +123,55 @@ describe("hitTestDrawing", () => {
     // (190, 0) lies exactly on the infinite line through p1 -> p2, but beyond
     // the drawn segment, so it must miss.
     expect(hitTestDrawing(trend, 190, 0, toX, toY, 4)).toBe(false);
+  });
+});
+
+describe("fib retracement", () => {
+  it("places the canonical levels between the two anchors (0 on p2, 1 on p1)", () => {
+    const levels = fibLevels(100, 200); // drag low(100) -> high(200)
+    expect(levels.map((l) => l.ratio)).toEqual([0, 0.236, 0.382, 0.5, 0.618, 0.786, 1]);
+    expect(levels[0].price).toBe(200);
+    expect(levels[levels.length - 1].price).toBe(100);
+    expect(fibLevelPrice(100, 200, 0.5)).toBe(150);
+    expect(fibLevelPrice(100, 200, 0.618)).toBeCloseTo(138.2, 10);
+    /* Every level stays between the anchors. */
+    for (const { price } of levels) {
+      expect(price).toBeGreaterThanOrEqual(100);
+      expect(price).toBeLessThanOrEqual(200);
+    }
+  });
+
+  it("returns no levels for non-finite anchors", () => {
+    expect(fibLevels(Number.NaN, 100)).toEqual([]);
+    expect(fibLevels(100, Number.POSITIVE_INFINITY)).toEqual([]);
+  });
+
+  it("appends a fib drawing and copies its anchors", () => {
+    const p1 = { index: 1, price: 100 };
+    const p2 = { index: 5, price: 120 };
+    const list = addFib([], p1, p2);
+    expect(list).toHaveLength(1);
+    expect(list[0].kind).toBe("fib");
+    p1.price = -1;
+    expect(list[0].p1?.price).toBe(100);
+    expect(addFib(list, { index: 1, price: 1 }, { index: 2, price: Number.NaN })).toBe(list);
+  });
+
+  it("hit-tests a fib level line inside the segment and misses outside it", () => {
+    // p1 price 100 -> y 100, p2 price 150 -> y 50; levels 50..100.
+    const fib = addFib([], { index: 1, price: 100 }, { index: 10, price: 150 })[0];
+    const x = 55; // midpoint of the 10..100 px segment
+    expect(hitTestDrawing(fib, x, 50, toX, toY, 3)).toBe(true); // 0% (p2)
+    expect(hitTestDrawing(fib, x, 75, toX, toY, 3)).toBe(true); // 50%
+    expect(hitTestDrawing(fib, x, 100, toX, toY, 3)).toBe(true); // 100% (p1)
+    expect(hitTestDrawing(fib, x, 85, toX, toY, 3)).toBe(false); // between levels
+    expect(hitTestDrawing(fib, 140, 75, toX, toY, 3)).toBe(false); // beyond the segment
+    expect(hitTestDrawing(fib, 5, 75, toX, toY, 3)).toBe(false); // before the segment
+  });
+
+  it("ignores malformed fib drawings in the hit test", () => {
+    expect(
+      hitTestDrawing({ id: "f", kind: "fib", p1: { index: Number.NaN, price: 1 } }, 0, 0, toX, toY, 4),
+    ).toBe(false);
   });
 });

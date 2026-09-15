@@ -11,8 +11,10 @@ Asserts:
     * the spec-mandated special semantic tests are present:
         - CRVF declares ``tenor_curve_not_row_index``
         - TECH declares a ``studies`` multiselect input
-        - PEOP and MEET each declare a ``people_directory_results_have_profile_cards``
+        - PEOP declares a ``people_directory_results_have_profile_cards``
           semantic test
+        - MEET (rebuilt 2026 as the world-events tracker) declares a
+          ``meet_country_filter_pins_rate_decisions`` semantic test
     * each category lands on the right ``Category`` enum
 """
 from __future__ import annotations
@@ -21,7 +23,6 @@ import pytest
 
 from showme.manifest import REGISTRY, load_seeds
 from showme.manifest.enums import Category, ChartKind, ControlKind
-
 
 WAVE2_BOND_CODES = (
     "ALLQ",
@@ -205,16 +206,21 @@ def test_peop_semantic_tests_mention_profile_cards() -> None:
     )
 
 
-def test_meet_semantic_tests_mention_profile_cards() -> None:
-    """MEET must pin 'people directory results have profile cards' in a semantic test."""
+def test_meet_semantic_tests_mention_country_calendar() -> None:
+    """MEET (world-events tracker) must pin its country-calendar invariant.
+
+    The pane was rebuilt from the Notion/Granola briefing into a world-events
+    tracker; the pinned contract is now that a country filter always keeps
+    that country's central-bank decision (rate decisions are spot-tracked).
+    """
     meet = REGISTRY.get("MEET")
     test_names = [t.name for t in meet.semantic_tests]
     descriptions = [t.description for t in meet.semantic_tests]
     haystack = " | ".join(test_names + descriptions).lower()
-    assert "people directory results have profile cards" in haystack or \
-           "profile_cards" in haystack or \
-           "profile cards" in haystack, (
-        f"MEET must declare a semantic test mentioning 'people directory results have profile cards'; "
+    assert "meet_country_filter_pins_rate_decisions" in haystack or \
+           "rate_decision" in haystack or \
+           "rate decision" in haystack, (
+        f"MEET must declare a semantic test pinning the country→rate-decision contract; "
         f"got names={test_names!r}"
     )
 

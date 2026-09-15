@@ -71,6 +71,118 @@
   letter-spacing: 0;
 }
 
+.sm-chart__btn--fib {
+  font-size: 9px;
+  letter-spacing: 0.04em;
+}
+
+/* Compare overlay: symbol input + active-symbol chips. */
+.sm-chart__compare-input {
+  width: 96px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  padding: 4px 8px;
+  outline: none;
+}
+
+.sm-chart__compare-input::placeholder {
+  color: var(--text-mute);
+}
+
+.sm-chart__compare-input:focus {
+  border-color: var(--accent);
+}
+
+.sm-chart__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  border: 1px solid color-mix(in srgb, currentColor 45%, transparent);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  padding: 3px 4px 3px 8px;
+}
+
+.sm-chart__chip.is-warn {
+  border-color: color-mix(in srgb, var(--warn) 60%, transparent);
+  color: var(--warn);
+}
+
+.sm-chart__chip-x {
+  border: none;
+  background: transparent;
+  color: inherit;
+  font-size: 10px;
+  line-height: 1;
+  padding: 1px 4px;
+  cursor: pointer;
+  opacity: 0.75;
+}
+
+.sm-chart__chip-x:hover {
+  opacity: 1;
+  color: var(--negative);
+}
+
+/* Bar-replay transport strip. */
+.sm-chart__replay {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--surface-1);
+}
+
+.sm-chart__replay-slider {
+  flex: 1;
+  min-width: 80px;
+  accent-color: var(--accent);
+}
+
+.sm-chart__replay-pos {
+  color: var(--text-mute);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  min-width: 48px;
+  text-align: right;
+}
+
+/* In-pane alert list (latest 20) — never blocks chart gestures. */
+.sm-chart__alerts {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  max-width: min(340px, calc(100% - 90px));
+  display: grid;
+  gap: 2px;
+  pointer-events: none;
+  z-index: 5;
+}
+
+.sm-chart__alert-item {
+  background: color-mix(in srgb, var(--surface-1) 88%, transparent);
+  border: 1px solid var(--border-subtle);
+  border-left: 2px solid var(--warn);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  padding: 3px 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* While a draw tool is armed the canvas advertises the active gesture. */
 .sm-chart__canvas.is-drawing {
   cursor: crosshair;
@@ -281,7 +393,7 @@
   top: 42px;
   right: 10px;
   z-index: 45;
-  width: min(280px, calc(100% - 20px));
+  width: min(330px, calc(100% - 20px));
   display: grid;
   gap: 6px;
   background: var(--surface-1);
@@ -289,6 +401,34 @@
   border-radius: var(--radius-md);
   box-shadow: 0 14px 34px rgba(0, 0, 0, 0.22);
   padding: 10px;
+}
+
+.sm-chart__settings-section {
+  display: grid;
+  gap: 4px;
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 6px;
+}
+
+.sm-chart__alert-rule {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 82px 72px 22px;
+  align-items: center;
+  gap: 4px;
+}
+
+.sm-chart__alert-rule select,
+.sm-chart__alert-rule input {
+  width: 100%;
+  min-width: 0;
+  background: var(--surface-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  padding: 3px 4px;
+  outline: none;
 }
 
 .sm-chart__settings-head {

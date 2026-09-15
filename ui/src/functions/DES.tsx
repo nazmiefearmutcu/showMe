@@ -5,7 +5,7 @@
  * (`@/chart/Chart`, compact — canvas only, seeded 1D) and description-first
  * body. Profile data via yfinance + finnhub feeds.
  */
-import { type CSSProperties, useState } from "react";
+import { type CSSProperties, useEffect, useMemo, useState } from "react";
 import {
   Card,
   CardBody,
@@ -28,6 +28,8 @@ import { defaultSymbolForFunction } from "@/lib/symbols";
 import { useLiveQuote, type TransportState } from "@/lib/market-data";
 import { SymbolBar } from "@/shell/SymbolBar";
 import { Chart } from "@/chart/Chart";
+import type { Bar } from "@/chart/types";
+import { sidecarFetch } from "@/lib/sidecar";
 import {
   FunctionControlGroup,
   LoadStatePill,
@@ -126,6 +128,221 @@ const fmtDate = (iso?: string | null) => {
   return d.toISOString().slice(0, 10);
 };
 
+/* ── index instruments ────────────────────────────────────────────────
+ * Indices have no company fundamentals (no market cap, P/E, employees or
+ * dividend). Instead of an all-"—" grid and a "provider did not return a
+ * summary" dead end, the pane routes INDEX instruments to a client-side
+ * snapshot computed from the chart engine's daily /api/bars and a curated,
+ * factual profile line. Equities/ETFs/crypto are untouched.
+ */
+
+const DAY_MS = 86_400_000;
+
+interface IndexProfile {
+  name: string;
+  line: string;
+}
+
+/** Curated factual one-liners — never a fabricated business description. */
+const INDEX_PROFILES: Record<string, IndexProfile> = {
+  "^GSPC": {
+    name: "S&P 500",
+    line: "S&P 500 — large-cap U.S. equity benchmark of 500 leading companies.",
+  },
+  "^NDX": {
+    name: "Nasdaq 100",
+    line: "Nasdaq 100 — 100 largest non-financial companies listed on Nasdaq.",
+  },
+  "^DJI": {
+    name: "Dow Jones Industrial Average",
+    line: "Dow Jones Industrial Average — 30 large U.S. blue-chip companies, price-weighted.",
+  },
+  "^RUT": {
+    name: "Russell 2000",
+    line: "Russell 2000 — U.S. small-cap benchmark tracking 2,000 smaller companies.",
+  },
+  "^GDAXI": {
+    name: "DAX",
+    line: "DAX — Germany's blue-chip index of 40 major Frankfurt-listed companies.",
+  },
+  "^FTSE": {
+    name: "FTSE 100",
+    line: "FTSE 100 — 100 largest companies listed on the London Stock Exchange.",
+  },
+  "^FCHI": {
+    name: "CAC 40",
+    line: "CAC 40 — France's benchmark index of 40 large Paris-listed companies.",
+  },
+  "^STOXX50E": {
+    name: "Euro Stoxx 50",
+    line: "Euro Stoxx 50 — 50 euro-area blue-chip companies across 11 countries.",
+  },
+  "^N225": {
+    name: "Nikkei 225",
+    line: "Nikkei 225 — Japan's price-weighted benchmark of 225 Tokyo-listed companies.",
+  },
+  "^HSI": {
+    name: "Hang Seng",
+    line: "Hang Seng — Hong Kong's benchmark of major Hong Kong-listed companies.",
+  },
+  "XU100.IS": {
+    name: "BIST 100",
+    line: "BIST 100 — Borsa Istanbul's benchmark index of the top 100 companies.",
+  },
+};
+
+const INDEX_FALLBACK_PROFILE = "Index instrument — fundamentals not applicable";
+
+function indexSymbolOf(symbol: string, data?: DESData): string {
+  return String(data?.symbol || symbol || "").toUpperCase();
+}
+
+function isIndexInstrument(symbol: string, data?: DESData): boolean {
+  const sym = indexSymbolOf(symbol, data);
+  if (!sym) return false;
+  const assetClass = String(data?.asset_class ?? "").toUpperCase();
+  return (
+    assetClass === "INDEX" ||
+    sym.startsWith("^") ||
+    Object.prototype.hasOwnProperty.call(INDEX_PROFILES, sym)
+  );
+}
+
+function indexProfileLine(symbol: string): string {
+  return INDEX_PROFILES[symbol.toUpperCase()]?.line ?? INDEX_FALLBACK_PROFILE;
+}
+
+interface IndexSnapshot {
+  last: number | null;
+  dayLow: number | null;
+  dayHigh: number | null;
+  low52: number | null;
+  high52: number | null;
+  r1m: number | null;
+  r3m: number | null;
+  r6m: number | null;
+  ytd: number | null;
+}
+
+/**
+ * Compute the honest index snapshot from daily bars: last close, latest
+ * session range, trailing 52-week range and 1M/3M/6M/YTD returns. Returns
+ * nulls when the inputs are missing — the UI renders "—", never a guess.
+ */
+export function computeIndexSnapshot(
+  bars: Bar[],
+): IndexSnapshot {
+  const empty: IndexSnapshot = {
+    last: null,
+    dayLow: null,
+    dayHigh: null,
+    low52: null,
+    high52: null,
+    r1m: null,
+    r3m: null,
+    r6m: null,
+    ytd: null,
+  };
+  const sorted = (bars ?? [])
+    .filter((b) => Number.isFinite(b?.t) && Number.isFinite(b?.c))
+    .sort((a, b) => a.t - b.t);
+  if (!sorted.length) return empty;
+  const lastBar = sorted[sorted.length - 1];
+  const last = lastBar.c;
+  const trailing = sorted.filter((b) => b.t >= lastBar.t - 365 * DAY_MS);
+  const high52 = trailing.length
+    ? Math.max(...trailing.map((b) => b.h).filter(Number.isFinite))
+    : null;
+  const low52 = trailing.length
+    ? Math.min(...trailing.map((b) => b.l).filter(Number.isFinite))
+    : null;
+
+  function returnFrom(cutoffMs: number): number | null {
+    let ref: number | null = null;
+    for (const bar of sorted) {
+      if (bar.t > cutoffMs) break;
+      if (Number.isFinite(bar.c)) ref = bar.c;
+    }
+    if (ref == null || ref === 0) return null;
+    return (last / ref - 1) * 100;
+  }
+
+  const lastStamp = new Date(lastBar.t);
+  const ytdStart = Date.UTC(lastStamp.getUTCFullYear(), 0, 1);
+  return {
+    last: Number.isFinite(last) ? last : null,
+    dayLow: Number.isFinite(lastBar.l) ? lastBar.l : null,
+    dayHigh: Number.isFinite(lastBar.h) ? lastBar.h : null,
+    low52: low52 != null && Number.isFinite(low52) ? low52 : null,
+    high52: high52 != null && Number.isFinite(high52) ? high52 : null,
+    r1m: returnFrom(lastBar.t - 30 * DAY_MS),
+    r3m: returnFrom(lastBar.t - 91 * DAY_MS),
+    r6m: returnFrom(lastBar.t - 182 * DAY_MS),
+    ytd: returnFrom(ytdStart - 1),
+  };
+}
+
+interface BarsPayload {
+  bars?: Bar[];
+  source?: string;
+  asOf?: string;
+  reason?: string;
+}
+
+/** Daily bars from the chart-engine route for the index snapshot. */
+function useIndexBars(symbol: string, enabled: boolean) {
+  const [bars, setBars] = useState<Bar[]>([]);
+  const [source, setSource] = useState<string | null>(null);
+  const [asOf, setAsOf] = useState<string | null>(null);
+  const [reason, setReason] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!enabled || !symbol) return;
+    let cancelled = false;
+    setLoading(true);
+    sidecarFetch<BarsPayload>(
+      `/api/bars?symbol=${encodeURIComponent(symbol)}&interval=1D&limit=400`,
+    )
+      .then((res) => {
+        if (cancelled) return;
+        setBars(Array.isArray(res.bars) ? res.bars : []);
+        setSource(res.source ?? null);
+        setAsOf(res.asOf ?? null);
+        setReason(res.reason ?? null);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setBars([]);
+        setSource(null);
+        setAsOf(null);
+        setReason(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [symbol, enabled]);
+
+  return { bars, source, asOf, reason, loading };
+}
+
+function returnTone(value: number | null): "positive" | "negative" | "neutral" {
+  if (value == null) return "neutral";
+  return value >= 0 ? "positive" : "negative";
+}
+
+function fmtRange(
+  low: number | null,
+  high: number | null,
+  currency?: string,
+): string {
+  if (low == null || high == null) return formatMissing;
+  return `${fmtCurrency(low, currency)} – ${fmtCurrency(high, currency)}`;
+}
+
 export function DESPane({ code, symbol }: FunctionPaneProps) {
   // Fall back to a sensible default symbol so the panel doesn't stall on
   // "Pick a symbol" when the palette opens DES cold.
@@ -163,6 +380,8 @@ export function DESPane({ code, symbol }: FunctionPaneProps) {
   const transportState: TransportState = liveQuote.transportState;
   const snapshotOnly =
     payloadStatus === "ok" && last != null && transportState === "idle";
+  const indexInstrument = isIndexInstrument(effectiveSymbol, profile);
+  const indexName = INDEX_PROFILES[effectiveSymbol.toUpperCase()]?.name;
 
   const body = !effectiveSymbol ? (
     <Empty
@@ -189,7 +408,7 @@ export function DESPane({ code, symbol }: FunctionPaneProps) {
       }
     />
   ) : (
-    <DESView data={profile} />
+    <DESView data={profile} symbol={effectiveSymbol} />
   );
 
   const provider = data?.sources?.[0] ?? "pending";
@@ -204,6 +423,7 @@ export function DESPane({ code, symbol }: FunctionPaneProps) {
             profile?.longName ||
             profile?.shortName ||
             profile?.name ||
+            indexName ||
             effectiveSymbol ||
             "Description"
           }
@@ -215,13 +435,21 @@ export function DESPane({ code, symbol }: FunctionPaneProps) {
                   profile.country,
                 ]
                   .filter(Boolean)
-                  .join(" · ") || "Description"
+                  .join(" · ") || (indexInstrument ? "Index" : "Description")
               : "Description"
           }
           trailing={
             <FunctionControlGroup>
               <XSenChip symbol={effectiveSymbol} compact />
-              <LoadStatePill state={state} status={payloadStatus} />
+              {indexInstrument ? (
+                <span data-testid="des-index-pill">
+                  <Pill tone="accent" variant="soft" withDot={false}>
+                    INDEX SNAPSHOT
+                  </Pill>
+                </span>
+              ) : (
+                <LoadStatePill state={state} status={payloadStatus} />
+              )}
               <RefreshButton
                 loading={state === "loading"}
                 onClick={refetch}
@@ -461,8 +689,14 @@ function BusinessSummary({
   );
 }
 
-function DESView({ data }: { data?: DESData }) {
+function DESView({ data, symbol }: { data?: DESData; symbol: string }) {
   if (!data) return <Empty title="No description data" />;
+  // Indices: no company fundamentals exist. Render the honest client-side
+  // snapshot + curated profile line instead of the all-"—" equity grid and
+  // the "provider did not return a business summary" dead end.
+  if (isIndexInstrument(symbol, data)) {
+    return <IndexView data={data} symbol={indexSymbolOf(symbol, data)} />;
+  }
   const summary = data.longBusinessSummary ?? data.description ?? null;
   const degraded = data.status && data.status !== "ok";
   const crypto = isCryptoProfile(data);
@@ -541,6 +775,95 @@ function DESView({ data }: { data?: DESData }) {
           <CardBody>
             <dl style={dlStyle}>
               {crypto ? <CryptoSnapshotTerms data={data} /> : <EquitySnapshotTerms data={data} />}
+            </dl>
+          </CardBody>
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * INDEX branch — a factual snapshot computed from the chart engine's daily
+ * bars (the same /api/bars route the embedded chart uses) plus a curated
+ * index profile line. Never invents a business summary and never renders an
+ * all-"—" fundamentals grid.
+ */
+function IndexView({ data, symbol }: { data?: DESData; symbol: string }) {
+  const { bars, source, asOf, reason, loading } = useIndexBars(symbol, true);
+  const snapshot = useMemo(() => computeIndexSnapshot(bars), [bars]);
+  const currency = data?.currency ?? "USD";
+  const indexName = INDEX_PROFILES[symbol.toUpperCase()]?.name;
+
+  const note = loading && bars.length === 0
+    ? "Loading daily bars…"
+    : bars.length === 0
+      ? `Index snapshot unavailable${reason ? ` — ${reason}` : ""}`
+      : `Index snapshot — computed from daily bars${source ? ` · ${source}` : ""}${
+          asOf ? ` · as of ${asOf.slice(0, 10)}` : ""
+        }`;
+
+  return (
+    <div className="u-grid-gap-12">
+      <div style={metricsStripStyle} data-testid="des-index-snapshot">
+        <SnapshotMetric
+          label="Last"
+          value={fmtCurrency(snapshot.last, currency)}
+          tone="accent"
+        />
+        <SnapshotMetric
+          label="Day range"
+          value={fmtRange(snapshot.dayLow, snapshot.dayHigh, currency)}
+        />
+        <SnapshotMetric
+          label="52w range"
+          value={fmtRange(snapshot.low52, snapshot.high52, currency)}
+        />
+        <SnapshotMetric label="1M" value={fmtPct(snapshot.r1m)} tone={returnTone(snapshot.r1m)} />
+        <SnapshotMetric label="3M" value={fmtPct(snapshot.r3m)} tone={returnTone(snapshot.r3m)} />
+        <SnapshotMetric label="6M" value={fmtPct(snapshot.r6m)} tone={returnTone(snapshot.r6m)} />
+        <SnapshotMetric label="YTD" value={fmtPct(snapshot.ytd)} tone={returnTone(snapshot.ytd)} />
+      </div>
+
+      <p style={indexNoteStyle} data-testid="des-index-note">
+        {note}
+      </p>
+
+      <div style={mainGridStyle}>
+        <Card>
+          <CardHeader trailing={<Pill tone="muted" withDot={false}>index</Pill>}>
+            Index profile
+          </CardHeader>
+          <CardBody>
+            <p
+              data-testid="des-index-profile"
+              style={summaryParagraphStyle}
+            >
+              {indexProfileLine(symbol)}
+            </p>
+            <p style={indexMutedNoteStyle}>
+              Indices have no company fundamentals — market cap, P/E, employees
+              and dividend fields are not applicable by definition.
+            </p>
+          </CardBody>
+        </Card>
+
+        <Card>
+          <CardHeader>Snapshot</CardHeader>
+          <CardBody>
+            <dl style={dlStyle}>
+              <Term k="Index">{indexName ?? symbol}</Term>
+              <Term k="Symbol">{symbol}</Term>
+              <Term k="Currency">{currency}</Term>
+              <Term k="Bars">
+                {bars.length
+                  ? bars.length.toLocaleString("en-US")
+                  : formatMissing}
+              </Term>
+              <Term k="Source">{source ?? formatMissing}</Term>
+              <Term k="As of">
+                {asOf ? asOf.slice(0, 10) : formatMissing}
+              </Term>
             </dl>
           </CardBody>
         </Card>
@@ -839,6 +1162,20 @@ const summaryParagraphStyle: CSSProperties = {
   lineHeight: 1.6,
   color: "var(--text-secondary)",
   whiteSpace: "pre-line",
+};
+
+const indexNoteStyle: CSSProperties = {
+  margin: 0,
+  color: "var(--text-mute)",
+  fontSize: "var(--font-size-sm)",
+  fontFamily: "JetBrains Mono, monospace",
+};
+
+const indexMutedNoteStyle: CSSProperties = {
+  margin: "10px 0 0 0",
+  color: "var(--text-mute)",
+  fontSize: "var(--font-size-sm)",
+  lineHeight: 1.5,
 };
 
 // Collapsed state: clamp to ~7 lines and fade nothing harshly — overflow is

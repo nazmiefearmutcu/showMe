@@ -38,9 +38,10 @@ def peop() -> FunctionManifest:
         name="People Search",
         category=Category.COMMS_PEOPLE,
         intent=(
-            "Search executives, analysts, and contacts in the local people directory"
-            " and surface profile cards (name / role / company / linkedin / source) so"
-            " an operator can prepare for an outreach or meeting in one pane."
+            "Search executives, analysts, and contacts — local people directory first,"
+            " then a keyless live Wikipedia/Wikidata people search — and surface profile"
+            " cards (name / role / company / description / source) so an operator can"
+            " prepare for an outreach or meeting in one pane."
         ),
         asset_classes=[],
         inputs=[
@@ -150,6 +151,10 @@ def peop() -> FunctionManifest:
                 ColumnSpec(key="full_name", label="Name", kind="text", width_hint=180),
                 ColumnSpec(key="role", label="Role", kind="text"),
                 ColumnSpec(key="company", label="Company", kind="text", width_hint=140),
+                ColumnSpec(key="description", label="Description", kind="text"),
+                ColumnSpec(key="summary", label="Summary", kind="text"),
+                ColumnSpec(key="nationality", label="Nationality", kind="tag"),
+                ColumnSpec(key="profile_url", label="Profile URL", kind="text"),
                 ColumnSpec(key="linkedin", label="LinkedIn", kind="text"),
                 ColumnSpec(key="twitter", label="Twitter", kind="text"),
                 ColumnSpec(key="contact_status", label="Contact", kind="tag"),
@@ -171,20 +176,38 @@ def peop() -> FunctionManifest:
         methodology=(
             "PEOP searches the local SQLite people directory first. With ``action=search`` the engine"
             " tokenizes the query and ranks rows by tag/role/bio match. When the local set has no"
-            " hits the engine falls back to a small bundled public-reference set (e.g. published"
-            " executive announcements) — rows from the fallback carry ``source_url`` and"
-            " ``contact_status='public_profile_only'`` so they are never confused with private"
-            " contact data. The S10 BugHunt fix: an empty or single-character query returns no rows"
-            " and the response carries ``status='needs_data'`` with a 'broaden the query' next-action,"
-            " preventing the prior bug where every empty query fabricated three Apple-leadership"
-            " entries. Auxiliary actions (``upsert`` / ``delete`` / ``stats`` / ``by_company``) hit"
-            " the directory directly and surface ``items`` for the renderer to draw as profile cards."
+            " hits the engine runs a keyless live search against the Wikipedia search API + REST"
+            " summaries, keeps person-like entities (Wikidata ``P31=Q5`` when claims exist, otherwise"
+            " a disclosed description keyword heuristic; disambiguation pages always dropped), and"
+            " enriches role / organization / nationality from Wikidata ``P39`` / ``P106`` / ``P108`` /"
+            " ``P27`` with referenced-QID labels resolved in a batched call. When Wikidata has no"
+            " employer statement an explicitly tagged pattern heuristic may derive the organization"
+            " from the summary (``company_source='summary_pattern'``). Every row carries"
+            " ``source_url`` and ``contact_status='public_profile_only'`` so public profiles are"
+            " never confused with private contact data. The small bundled public-reference set"
+            " remains as a labelled fallback, and provider failures surface as"
+            " ``status='provider_unavailable'`` with a reason — never fabricated rows. The S10"
+            " BugHunt fix is preserved: an empty or single-character query returns no rows and the"
+            " response carries ``status='needs_data'`` with a 'broaden the query' next-action."
+            " Auxiliary actions (``upsert`` / ``delete`` / ``stats`` / ``by_company``) hit the"
+            " directory directly and surface ``items`` for the renderer to draw as profile cards."
         ),
         formula_dict={},
         field_dict={
             "items[].full_name": FieldDef(description="Person display name.", source="directory"),
-            "items[].role": FieldDef(description="Current or announced role.", source="directory"),
-            "items[].company": FieldDef(description="Associated company or organization.", source="directory"),
+            "items[].role": FieldDef(
+                description="Position held / occupation label from Wikidata, description fallback.",
+                source="wikidata",
+            ),
+            "items[].company": FieldDef(
+                description="Employer label from Wikidata (P108); pattern-derived from the summary when absent (company_source=summary_pattern).",
+                source="wikidata",
+            ),
+            "items[].description": FieldDef(description="Short Wikipedia description.", source="wikipedia"),
+            "items[].summary": FieldDef(description="First ~280 chars of the Wikipedia extract.", source="wikipedia"),
+            "items[].nationality": FieldDef(description="Citizenship labels from Wikidata (P27).", source="wikidata"),
+            "items[].profile_url": FieldDef(description="Wikipedia page URL.", source="wikipedia"),
+            "items[].wikidata_id": FieldDef(description="Wikidata entity id (QID) when present.", source="wikidata"),
             "items[].linkedin": FieldDef(description="LinkedIn URL when available.", source="directory"),
             "items[].twitter": FieldDef(description="Twitter handle when available.", source="directory"),
             "items[].contact_status": FieldDef(
@@ -249,6 +272,23 @@ def peop() -> FunctionManifest:
                 description="action=by_company returns only rows whose company matches the requested value.",
                 inputs={"action": "by_company", "company": "Apple"},
                 assertions=["every_item_company_matches_apple"],
+            ),
+            SemanticTest(
+                name="peop_live_wikipedia_search_returns_real_people",
+                description=(
+                    "A search for a well-known executive ('jensen huang') resolves through the"
+                    " keyless live Wikipedia/Wikidata chain: rows carry a wikipedia source, a"
+                    " Wikipedia profile_url and a Wikipedia-derived description/summary; rows are"
+                    " never fabricated and provider failure surfaces provider_unavailable with a"
+                    " reason instead of made-up people."
+                ),
+                inputs={"action": "search", "query": "jensen huang"},
+                assertions=[
+                    "items_include_wikipedia_source",
+                    "every_item_has_profile_url",
+                    "every_item_has_description_or_summary",
+                    "provider_failure_returns_provider_unavailable_with_reason",
+                ],
             ),
         ],
     )

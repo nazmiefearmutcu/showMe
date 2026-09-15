@@ -16,6 +16,8 @@ import pandas as pd
 from showme.engine.core.base_data_source import DataKind, DataRequest
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from showme.engine.core.instrument import AssetClass, Instrument
+from showme.engine.functions._fred_csv import fetch_fred_csv_series
+from showme.quotes import fetch_quote_snapshot
 
 
 @FunctionRegistry.register
@@ -30,9 +32,14 @@ class SRCHFunction(BaseFunction):
         query = str(params.get("query") or "yield >= 4 AND duration <= 10")
         universe = _symbol_filter(params.get("universe"))
         rows = _filter_universe(_bond_reference_rows(), universe)
-        # Default polarity (2026-09-11, L5): the keyless US Treasury par-yield
-        # curve (``deps.ustreasury``) refreshes the US tenor yields by default;
-        # an explicit falsy live / ``reference=true`` serves the static table.
+        # Default polarity (2026-09-11, L5): the keyless live tier chain below
+        # refreshes the configured tenor set by default; an explicit falsy live
+        # / ``reference=true`` serves the static table. Live tiers, in order:
+        # keyless US Treasury curve → keyless FRED CSV (US nominal, TIPS,
+        # foreign 10Y) → Yahoo yield indices (^IRX/^FVX/^TNX/^TYX). Every
+        # configured tenor no provider answers keeps its curated value but is
+        # labelled ``quote_type="unavailable"`` — never silently dropped, and
+        # a partial outage never downgrades the whole table to "reference".
         reference = _truthy(params.get("reference"))
         live_param_present = (
             params.get("live_screen") is not None or params.get("live") is not None
@@ -45,25 +52,39 @@ class SRCHFunction(BaseFunction):
         sources = ["showme_bond_reference_universe"]
         warnings: list[str] = []
         reference_note: str | None = None
+        status_override: str | None = None
+        live_rows = 0
         if live:
-            live_yields, yield_source = await _treasury_curve_yields(
-                getattr(self.deps, "ustreasury", None)
+            live_map, provider_warnings, provider_sources = await _collect_live_bond_yields(
+                getattr(self.deps, "ustreasury", None),
+                http_client=getattr(self, "_http_client", None),
             )
-            if live_yields:
-                rows = _merge_yield_rows(rows, live_yields, yield_source)
-                sources = [yield_source, "showme_bond_reference_universe"]
+            warnings.extend(provider_warnings)
+            rows = _merge_live_yield_rows(rows, live_map)
+            live_rows = sum(1 for row in rows if row.get("quote_type") == "live")
+            if live_rows:
+                sources = [*provider_sources, "showme_bond_reference_universe"]
                 reference_note = (
-                    "US Treasury yields are live via the keyless Treasury curve; "
-                    "durations, ratings, and non-US rows are curated reference values."
+                    f"{live_rows} of {len(_LIVE_BOND_TENORS)} configured live tenors refreshed"
+                    + (f" from {', '.join(provider_sources)}" if provider_sources else "")
+                    + "; durations, ratings and unmapped tenors remain curated reference values."
                 )
             else:
-                warnings = [
+                # Total provider failure: keep the curated rows (never wipe the
+                # table) but declare the outage and mark every configured tenor
+                # unavailable instead of painting curated yields as live.
+                warnings.append(
                     "US Treasury curve unavailable; yields are curated reference values."
-                ]
-        # H-6 honesty fix (2026-09-08): the bond universe is a STATIC
-        # reference table (2024-era yields) with no live path yet, so a
-        # matched filter must never report status "ok" as if these were
-        # current market levels. The payload is labelled "reference".
+                )
+                status_override = "provider_unavailable"
+                reference_note = (
+                    "Live yield providers (US Treasury, keyless FRED CSV, Yahoo) returned no "
+                    "usable tenors this cycle; curated reference values are shown and each "
+                    "configured tenor is marked unavailable."
+                )
+        # H-6 honesty fix (2026-09-08): when no live tenor resolved, a matched
+        # filter must never report status "ok" as if these were current market
+        # levels; the payload stays labelled reference.
         return _screen_result(
             self.code,
             rows,
@@ -72,8 +93,19 @@ class SRCHFunction(BaseFunction):
             sources=sources,
             field_dictionary=_BOND_FIELDS,
             warnings=warnings,
-            reference=True,
+            reference=live_rows == 0,
             reference_note=reference_note,
+            status=status_override,
+            metadata_extra=(
+                {
+                    "live_rows": live_rows,
+                    "unavailable_rows": sum(
+                        1 for row in rows if row.get("quote_type") == "unavailable"
+                    ),
+                }
+                if live
+                else None
+            ),
         )
 
 
@@ -624,6 +656,10 @@ _BOND_FIELDS = [
     {"field": "duration", "meaning": "Approximate interest-rate duration in years."},
     {"field": "rating", "meaning": "Reference credit rating."},
     {"field": "maturity", "meaning": "Maturity bucket or final maturity date."},
+    {"field": "quote_type", "meaning": "live when a keyless provider refreshed this tenor this cycle; unavailable when a configured live tenor had no provider answer; reference for curated-only rows."},
+    {"field": "yield_state", "meaning": "live or reference — whether the yield value shown came from a provider refresh or the curated table."},
+    {"field": "yield_source", "meaning": "Provider that refreshed this row (fred_csv, yahoo_quote, ustreasury) or null."},
+    {"field": "yield_as_of", "meaning": "Observation date of the refreshed yield (monthly foreign series carry their publication date)."},
 ]
 
 _SECURITY_FIELDS = [
@@ -677,6 +713,8 @@ def _screen_result(
     warnings: list[str] | None = None,
     reference: bool = False,
     reference_note: str | None = None,
+    status: str | None = None,
+    metadata_extra: dict[str, Any] | None = None,
 ) -> FunctionResult:
     rewritten = _rewrite_screen_query(query)
     scanned = len(rows)
@@ -700,7 +738,10 @@ def _screen_result(
     if parse_error:
         status = "unsupported_predicate" if unsupported else "input_error"
     elif limited:
-        status = "reference" if reference else "ok"
+        # ``status`` override feeds honest outage labels (e.g. the SRCH live
+        # path declares provider_unavailable when no tenor resolved) while the
+        # curated rows stay in the payload.
+        status = status or ("reference" if reference else "ok")
     else:
         status = "empty"
     reason = None
@@ -741,6 +782,7 @@ def _screen_result(
             "limit": limit,
             "unsupported_columns": unsupported,
             **({"data_mode": "reference"} if reference else {}),
+            **(metadata_extra or {}),
         },
         sources=sources,
         warnings=(
@@ -837,6 +879,57 @@ def _merge_quote_rows(
     return out
 
 
+# Keyless FRED CSV tenor map for the SRCH live refresh. Every series id below
+# was probed live via fredgraph.csv (2026-09-15): the US nominal + TIPS series
+# return daily closes; the IRLTLT01* family carries the OECD long-term 10Y
+# benchmark, monthly cadence (the observation date rides on ``yield_as_of``).
+# The six foreign 2Y rows deliberately have NO mapping — no keyless
+# per-country 2Y source exists (stooq's yield pages are JS-challenge
+# protected from this host; the ECB only publishes euro-area aggregates), so
+# they surface as explicit ``quote_type="unavailable"`` rows.
+_FRED_YIELD_IDS: dict[str, str] = {
+    # US nominal curve (daily closes)
+    "US3M": "DGS3MO",
+    "US6M": "DGS6MO",
+    "US1Y": "DGS1",
+    "US2Y": "DGS2",
+    "US3Y": "DGS3",
+    "US5Y": "DGS5",
+    "US7Y": "DGS7",
+    "US10Y": "DGS10",
+    "US20Y": "DGS20",
+    "US30Y": "DGS30",
+    # US TIPS (real yields, daily closes)
+    "USTIPS5Y": "DFII5",
+    "USTIPS10Y": "DFII10",
+    "USTIPS30Y": "DFII30",
+    # Foreign 10Y benchmarks (OECD long-term rate, monthly)
+    "DE10Y": "IRLTLT01DEM156N",
+    "FR10Y": "IRLTLT01FRM156N",
+    "IT10Y": "IRLTLT01ITM156N",
+    "ES10Y": "IRLTLT01ESM156N",
+    "GB10Y": "IRLTLT01GBM156N",
+    "JP10Y": "IRLTLT01JPM156N",
+}
+
+# Yahoo yield indices used as a fallback for the four US tenors that have a
+# verified CBOE index ticker (probed live via /api/quote on 2026-09-15).
+_YAHOO_YIELD_TICKERS: dict[str, str] = {
+    "US3M": "^IRX",
+    "US5Y": "^FVX",
+    "US10Y": "^TNX",
+    "US30Y": "^TYX",
+}
+
+# Tenors with a mapped keyless provider this module can actually fetch.
+_LIVE_BOND_PROVIDER_TENORS = frozenset(_FRED_YIELD_IDS) | frozenset(_YAHOO_YIELD_TICKERS)
+
+# The full live target set, including the foreign 2Y rows that today have no
+# keyless provider; they stay in the payload labelled unavailable.
+_LIVE_BOND_TENORS = _LIVE_BOND_PROVIDER_TENORS | frozenset(
+    {"DE2Y", "FR2Y", "IT2Y", "ES2Y", "GB2Y", "JP2Y"}
+)
+
 # Tenors refreshed from the keyless US Treasury daily par-yield curve CSV.
 # The full nominal curve (1 Mo … 30 Yr) is published; only tenors that have a
 # matching reference row are mapped here.
@@ -885,23 +978,220 @@ async def _treasury_curve_yields(provider: Any) -> tuple[dict[str, float], str]:
     return (yields, "ustreasury") if yields else ({}, "")
 
 
-def _merge_yield_rows(
+async def _fred_latest_observation(
+    symbol: str,
+    series_id: str,
+    *,
+    client: Any = None,
+) -> dict[str, Any] | None:
+    """Latest keyless FRED CSV observation for one tenor; ``None`` on failure."""
+    try:
+        frame = await fetch_fred_csv_series(series_id, client=client)
+    except Exception:  # noqa: BLE001 — outage degrades to "unavailable" row
+        return None
+    if frame is None or getattr(frame, "empty", True) or "value" not in getattr(frame, "columns", []):
+        return None
+    try:
+        series = frame["value"].dropna()
+        if series.empty:
+            return None
+        value = float(series.iloc[-1])
+        as_of = series.index[-1].date().isoformat()
+    except Exception:  # noqa: BLE001
+        return None
+    if not math.isfinite(value):
+        return None
+    return {
+        "symbol": symbol,
+        "value": value,
+        "source": "fred_csv",
+        "as_of": as_of,
+        "cadence": "monthly" if series_id.startswith("IRLTLT") else "daily",
+    }
+
+
+_FRED_DIRECT_CLIENT: Any = None
+
+
+def _fred_direct_client() -> Any:
+    """Dedicated FRED client with no shared-pool rate limiter.
+
+    Two measured host-level quirks forced this:
+    1. The shared keyless pool serialises/quota-gates parallel pulls; queued
+       behind it the ~25-series fan-out blew past the 14s envelope while
+       FRED answers each CSV in ~0.25s from this host.
+    2. The custom "showMe/1.0" User-Agent makes fred.stlouisfed.org STALL the
+       connection (no response, no error) until the request timeout — probed
+       side by side: custom UA → 8s timeout / 0 rows, httpx default UA →
+       0.14-0.50s / full series. So this client deliberately sends NO custom
+       UA header.
+    Politeness is enforced by the semaphore in ``_fred_yield_values`` instead.
+    """
+    global _FRED_DIRECT_CLIENT
+    import httpx
+
+    if _FRED_DIRECT_CLIENT is None or getattr(_FRED_DIRECT_CLIENT, "is_closed", False):
+        _FRED_DIRECT_CLIENT = httpx.AsyncClient(timeout=8.0)
+    return _FRED_DIRECT_CLIENT
+
+
+async def _fred_yield_values(*, client: Any = None) -> dict[str, dict[str, Any]]:
+    """Fan out the keyless FRED CSV tenor map; missing series are skipped."""
+    sem = asyncio.Semaphore(6)
+
+    async def _one(symbol: str, series_id: str) -> Any:
+        async with sem:
+            return await _fred_latest_observation(symbol, series_id, client=client)
+
+    results = await asyncio.gather(
+        *(_one(symbol, series_id) for symbol, series_id in _FRED_YIELD_IDS.items()),
+        return_exceptions=True,
+    )
+    out: dict[str, dict[str, Any]] = {}
+    for item in results:
+        if isinstance(item, dict) and item.get("value") is not None:
+            out[str(item["symbol"])] = item
+    return out
+
+
+async def _yahoo_yield_values(
+    tickers: dict[str, str],
+) -> dict[str, dict[str, Any]]:
+    """Keyless Yahoo quote snapshot fallback for the mapped yield indices."""
+
+    async def _one(symbol: str, ticker: str) -> dict[str, Any] | None:
+        try:
+            snapshot = await fetch_quote_snapshot(ticker)
+        except Exception:  # noqa: BLE001 — outage degrades to "unavailable" row
+            return None
+        last = snapshot.get("last") if isinstance(snapshot, dict) else None
+        try:
+            value = float(last)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(value):
+            return None
+        fetched_at = str(snapshot.get("fetched_at") or "")
+        entry: dict[str, Any] = {
+            "symbol": symbol,
+            "value": value,
+            "source": "yahoo_quote",
+            "cadence": "intraday",
+        }
+        if fetched_at:
+            entry["as_of"] = fetched_at[:10]
+        return entry
+
+    results = await asyncio.gather(
+        *(_one(symbol, ticker) for symbol, ticker in tickers.items()),
+        return_exceptions=True,
+    )
+    return {
+        str(item["symbol"]): item
+        for item in results
+        if isinstance(item, dict) and item.get("value") is not None
+    }
+
+
+async def _treasury_with_budget(provider: Any) -> tuple[dict[str, float], str]:
+    """Treasury leg capped at 5s so a slow adapter cannot eat the envelope."""
+    try:
+        return await asyncio.wait_for(_treasury_curve_yields(provider), timeout=5.0)
+    except Exception:  # noqa: BLE001 — outage degrades to the FRED tier
+        return {}, ""
+
+
+async def _collect_live_bond_yields(
+    provider: Any,
+    *,
+    http_client: Any = None,
+) -> tuple[dict[str, dict[str, Any]], list[str], list[str]]:
+    """Refresh every configured live tenor from the keyless provider tiers.
+
+    Returns ``(values, warnings, sources)`` where ``values`` maps symbol ->
+    ``{"value", "source", "as_of"?, "cadence"?}``. The first provider answer
+    per tenor wins; an outage is a warning, never an exception — unresolved
+    tenors stay in the caller's payload marked ``quote_type="unavailable"``.
+    """
+    values: dict[str, dict[str, Any]] = {}
+    warnings: list[str] = []
+    sources: list[str] = []
+    # The two keyless legs run CONCURRENTLY (each independently bounded): the
+    # treasury adapter can spend ~10s on a slow day and the FRED fan-out needs
+    # up to a few seconds cold; run sequentially they risked the 14s function
+    # envelope. Precedence below stays treasury → FRED → Yahoo.
+    treasury_task = asyncio.ensure_future(_treasury_with_budget(provider))
+    fred_task = asyncio.ensure_future(
+        _fred_yield_values(client=_fred_direct_client())
+    )
+    curve_yields, curve_source = await treasury_task
+    if curve_yields:
+        for symbol, value in curve_yields.items():
+            values[symbol] = {"value": value, "source": curve_source}
+        sources.append(curve_source)
+    fred_values = await fred_task
+    added_fred = False
+    for symbol, entry in fred_values.items():
+        if symbol not in values:
+            values[symbol] = entry
+            added_fred = True
+    if added_fred:
+        sources.append("fred_csv")
+    yahoo_targets = {
+        symbol: ticker
+        for symbol, ticker in _YAHOO_YIELD_TICKERS.items()
+        if symbol not in values
+    }
+    if yahoo_targets:
+        yahoo_values = await _yahoo_yield_values(yahoo_targets)
+        if yahoo_values:
+            values.update(yahoo_values)
+            sources.append("yahoo_quote")
+    missing = sorted(_LIVE_BOND_PROVIDER_TENORS - set(values))
+    if missing:
+        warnings.append(
+            f"{len(missing)} configured live tenor(s) had no provider answer this cycle"
+        )
+    return values, warnings, sources
+
+
+def _merge_live_yield_rows(
     rows: list[dict[str, Any]],
-    live_yields: dict[str, float],
-    source: str,
+    live: dict[str, dict[str, Any]],
 ) -> list[dict[str, Any]]:
+    """Attach live yields + per-row honesty labels to the curated rows.
+
+    ``quote_type``: ``live`` when a provider refreshed this tenor, (default)
+    ``reference`` for curated-only rows, ``unavailable`` for a configured
+    live tenor no provider answered this cycle. Unavailable rows keep their
+    curated ``yield`` (never dropped, never fabricated as live).
+    """
     out: list[dict[str, Any]] = []
     for row in rows:
         symbol = str(row.get("symbol") or "").upper()
-        if symbol in live_yields:
+        entry = live.get(symbol)
+        if entry is not None:
+            merged = {
+                **row,
+                "yield": round(float(entry["value"]), 3),
+                "yield_state": "live",
+                "quote_type": "live",
+                "yield_source": entry.get("source") or None,
+            }
+            if entry.get("as_of"):
+                merged["yield_as_of"] = entry["as_of"]
+            if entry.get("cadence"):
+                merged["yield_cadence"] = entry["cadence"]
+            out.append(merged)
+        elif symbol in _LIVE_BOND_TENORS:
             out.append({
                 **row,
-                "yield": round(live_yields[symbol], 3),
-                "yield_state": "live",
-                "yield_source": source,
+                "yield_state": "reference",
+                "quote_type": "unavailable",
+                "yield_source": None,
             })
         else:
-            out.append({**row, "yield_state": "reference"})
+            out.append({**row, "yield_state": "reference", "quote_type": "reference"})
     return out
 
 

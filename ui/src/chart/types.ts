@@ -173,6 +173,21 @@ export interface CrosshairState {
   index: number | null;
 }
 
+/* ── compare overlay (milestone 3) ─────────────────────────────────── */
+
+/**
+ * One compare series ready for the renderer: percent change vs. the
+ * series' own first visible close, aligned 1:1 to the MAIN `bars` array
+ * (`values[i]` may be null when the two series' timestamps do not match —
+ * the renderer breaks the line there instead of inventing a value).
+ */
+export interface CompareSeriesInput {
+  symbol: string;
+  /** Resolved color string (the shell resolves theme tokens before paint). */
+  color: string;
+  values: (number | null)[];
+}
+
 /* ── renderer ───────────────────────────────────────────────────────── */
 
 export interface ThemePalette {
@@ -216,4 +231,11 @@ export interface RenderInput {
   showVolume?: boolean;
   /** User drawings; omitted/empty draws nothing. */
   drawings?: Drawing[];
+  /**
+   * Bar replay cursor: bars AFTER this index are not painted and the legend
+   * readout stops at it. Omitted = full series (milestone 3).
+   */
+  replayIndex?: number;
+  /** Multi-symbol compare overlay lines drawn in percent space (milestone 3). */
+  compare?: CompareSeriesInput[];
 }

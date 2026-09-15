@@ -9,7 +9,7 @@
  * direction via the canvas' observable view window (data-view-from/to).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { BarsResponse } from "./types";
 
 const bar = (i: number) => ({
@@ -94,6 +94,20 @@ describe("Chart engine — grab-drag direction", () => {
     // Pointer down (content down) reveals HIGHER prices? No — content moves
     // down, so the window shifts UP: min/max increase.
     expect(Number(canvas.dataset.priceMin)).toBeGreaterThan(before);
+  });
+
+  it("bar replay: transport appears, the slider moves the cursor, exit restores", async () => {
+    const canvas = await mountChart();
+    expect(canvas.dataset.replayIndex).toBeUndefined();
+    fireEvent.click(screen.getByTestId("sm-chart-replay-toggle"));
+    const slider = await screen.findByTestId("sm-chart-replay-slider");
+    expect(slider).toBeInTheDocument();
+    /* The cursor starts at the left edge of the loaded window. */
+    await waitFor(() => expect(canvas.dataset.replayIndex).toBeTruthy());
+    fireEvent.change(slider, { target: { value: "10" } });
+    await waitFor(() => expect(canvas.dataset.replayIndex).toBe("10"));
+    fireEvent.click(screen.getByTestId("sm-chart-replay-toggle"));
+    await waitFor(() => expect(canvas.dataset.replayIndex).toBeUndefined());
   });
 });
 

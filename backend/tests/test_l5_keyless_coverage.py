@@ -583,8 +583,24 @@ def test_secf_reference_true_serves_master_only() -> None:
 # ─────────────────────────────────────────────────────────────────────────
 
 
-def test_srch_default_refreshes_us_yields_from_keyless_curve() -> None:
+async def _no_keyless_fred(*_args, **_kwargs):
+    """Disable the keyless FRED CSV tier for hermetic SRCH tests."""
+    return None
+
+
+async def _no_yahoo_quote(*_args, **_kwargs):
+    """Disable the Yahoo quote tier for hermetic SRCH tests."""
+    raise RuntimeError("yahoo quote disabled in test")
+
+
+def test_srch_default_refreshes_us_yields_from_keyless_curve(monkeypatch) -> None:
+    from showme.engine.functions.screen import _funcs as screen_funcs
     from showme.engine.functions.screen._funcs import SRCHFunction
+
+    # Keep the provider chain deterministic: the injected ustreasury curve is
+    # the only live tier that answers; keyless FRED/Yahoo are stubbed out.
+    monkeypatch.setattr(screen_funcs, "fetch_fred_csv_series", _no_keyless_fred)
+    monkeypatch.setattr(screen_funcs, "fetch_quote_snapshot", _no_yahoo_quote)
 
     curve = _FakeTreasuryCurve({"3 Mo": 4.95, "2 Yr": 4.42, "5 Yr": 4.31, "10 Yr": 4.36, "30 Yr": 4.61})
     result = asyncio.run(
@@ -619,8 +635,14 @@ def test_srch_reference_true_keeps_static_yields() -> None:
     assert by_symbol["US10Y"]["yield"] == 4.45  # bundled static value
 
 
-def test_srch_curve_unavailable_keeps_static_with_warning() -> None:
+def test_srch_curve_unavailable_keeps_static_with_warning(monkeypatch) -> None:
+    from showme.engine.functions.screen import _funcs as screen_funcs
     from showme.engine.functions.screen._funcs import SRCHFunction
+
+    # Stub the keyless tiers so the injected failing curve is the only
+    # provider consulted (deterministic total-outage contract).
+    monkeypatch.setattr(screen_funcs, "fetch_fred_csv_series", _no_keyless_fred)
+    monkeypatch.setattr(screen_funcs, "fetch_quote_snapshot", _no_yahoo_quote)
 
     result = asyncio.run(
         SRCHFunction(FunctionDeps(ustreasury=_FakeTreasuryCurve({}, boom=True))).execute(
@@ -630,3 +652,8 @@ def test_srch_curve_unavailable_keeps_static_with_warning() -> None:
     assert result.sources == ["showme_bond_reference_universe"]
     assert any("curve unavailable" in warning.lower() for warning in result.warnings)
     assert _body(result)["data_state"] == "reference"
+    # Total outage: the payload declares provider_unavailable but keeps the
+    # curated rows, each configured tenor marked unavailable — no fake yields.
+    assert result.data["status"] == "provider_unavailable"
+    assert result.data["rows"]
+    assert all(row.get("quote_type") != "live" for row in result.data["rows"])

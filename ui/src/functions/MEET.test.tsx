@@ -1,25 +1,36 @@
 /**
- * MEET pane — load-state + honesty tests (GEX mock pattern).
+ * MEET (Meeting Briefings — World Events) pane tests.
  *
- * `useFunction` is mocked via a mutable shared object. Pins:
- *  - loading skeleton and error branches render;
- *  - a live briefing payload renders section chips, grouped rows with honest
- *    status pills, connector summary and pre-meeting questions;
- *  - connector statuses that are not ready surface honestly (granola
- *    `not_configured_or_empty`, news `not_available`) — nothing fabricated;
- *  - the section filter chips narrow the row list on click.
+ * Covers the world-events contract:
+ *   - pure countdown formatting (`formatCountdown`),
+ *   - spot-alert dedupe (`dueAlert` fires once per row+lead),
+ *   - UPCOMING / PAST grouping from the payload,
+ *   - the country follow filter (sidebar click narrows rows + persists),
+ *   - the SPOT pin on rate decisions,
+ *   - honest empty / provider_unavailable states,
+ *   - the lead-time toast + in-pane alert history.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { MEETPane } from "./MEET";
-import * as router from "@/lib/router";
+import {
+  dueAlert,
+  formatAge,
+  formatCountdown,
+  groupRows,
+  isSpotFor,
+  leadLabel,
+  normalizeMeetAlerts,
+  type MeetRow,
+} from "./meet/helpers";
 
-/* ── useFunction mock ──────────────────────────────────────────────── */
+/* ── mocks ─────────────────────────────────────────────────────────── */
 
 interface MockFnState {
   state: "idle" | "loading" | "ok" | "error" | "refreshing";
-  data?: { data?: unknown } | undefined;
+  data?: { data?: unknown; sources?: string[]; elapsed_ms?: number } | undefined;
   error?: Error | null;
+  lastParams?: Record<string, unknown>;
 }
 
 const mockFn: MockFnState = { state: "idle", data: undefined, error: null };
@@ -31,92 +42,266 @@ function setMockFn(next: Partial<MockFnState>) {
 }
 
 vi.mock("@/lib/useFunction", () => ({
-  useFunction: () => ({
-    state: mockFn.state,
-    data: mockFn.data,
-    error: mockFn.error,
-    refetch: vi.fn(),
-  }),
+  useFunction: (args: { params?: Record<string, unknown> }) => {
+    mockFn.lastParams = args.params;
+    return {
+      state: mockFn.state,
+      data: mockFn.data,
+      error: mockFn.error,
+      refetch: vi.fn(),
+    };
+  },
 }));
 
-// Deterministic live mark for the portfolio mark-to-market P&L.
 vi.mock("@/lib/market-data", () => ({
-  useLiveQuote: () => ({
-    price: 150,
-    loading: false,
-    stale: false,
-    transportState: "ok",
-  }),
+  useLiveQuote: () => ({ price: 100, changePct: 1.5, loading: false, stale: false }),
 }));
 
-/* ── fixtures (shape mirrors a live /api/fn/MEET probe) ────────────── */
+const toastWarn = vi.fn();
+vi.mock("@/lib/toast", () => ({
+  toast: {
+    info: vi.fn(),
+    success: vi.fn(),
+    warn: (title: string, body?: string) => toastWarn(title, body),
+    error: vi.fn(),
+  },
+}));
 
-function okPayload() {
+/* ── fixtures (mirror a live /api/fn/MEET world-events payload) ────── */
+
+const NOW = Date.now();
+
+function row(overrides: Partial<MeetRow>): MeetRow {
   return {
-    topic: "Apple",
+    id: `economic:${overrides.title ?? "row"}`,
+    kind: "economic",
+    title: "Event",
+    countries: ["US"],
+    country_names: ["United States"],
+    when_utc: new Date(NOW + 3 * 3600_000).toISOString(),
+    impact: "high",
+    pairs: [],
+    source: "forex_factory",
+    spot: false,
+    pinned: false,
+    seconds_to_event: 10800,
+    ...overrides,
+  };
+}
+
+function worldPayload() {
+  const tcmb = row({
+    id: "economic:tcmb",
+    title: "TCMB Interest Rate Decision",
+    countries: ["TR"],
+    country_names: ["Turkey"],
+    pairs: ["USDTRY", "EURTRY"],
+    spot: true,
+    pinned: true,
+    when_utc: new Date(NOW + 2 * 3600_000 + 30_000).toISOString(),
+    seconds_to_event: 7230,
+  });
+  const us = row({
+    id: "economic:us-cpi",
+    title: "CPI y/y",
+    when_utc: new Date(NOW + 30 * 3600_000).toISOString(),
+    seconds_to_event: 108000,
+    pinned: true,
+  });
+  const war = row({
+    id: "world:war",
+    kind: "world",
+    title: "Missile strikes hit power grid after escalation",
+    countries: ["RU", "UA"],
+    country_names: ["Russia", "Ukraine"],
+    impact: "high",
+    source: "gdelt",
+    spot: true,
+    when_utc: new Date(NOW - 2 * 3600_000 - 300_000).toISOString(),
+    seconds_to_event: -7500,
+    age_minutes: 125,
+  });
+  const rows = [tcmb, us, war];
+  return {
     status: "ok",
-    meeting_date: "2026-09-06",
-    company: { name: "Apple", sector: "Technology", ceo: "Tim Cook" },
-    rows: [
+    as_of: new Date(NOW).toISOString(),
+    rows,
+    upcoming: [tcmb, us],
+    past: [war],
+    row_count: rows.length,
+    upcoming_count: 2,
+    past_count: 1,
+    window: {
+      days_ahead: 90,
+      days_back: 7,
+      upcoming_count: 2,
+      past_count: 1,
+      next_high_impact: {
+        id: tcmb.id,
+        title: tcmb.title,
+        when_utc: tcmb.when_utc,
+        country_names: ["Turkey"],
+      },
+    },
+    country_index: [
       {
-        section: "participant",
-        name: "Tim Cook",
-        role: "Executive Chairman effective 2026-09-01",
-        company: "Apple",
-        status: "public_profile_only",
-        source: "apple_newsroom_public_reference",
-        source_url: "https://www.apple.com/newsroom",
+        iso: "TR",
+        name: "Turkey",
+        upcoming_count: 1,
+        past_count: 0,
+        state: "imminent",
+        next_event: { id: tcmb.id, title: tcmb.title, when_utc: tcmb.when_utc, seconds_to_event: 7200, impact: "high", spot: true, kind: "economic" },
       },
       {
-        section: "meeting_note",
-        title: "No recent Granola notes returned",
-        status: "not_configured_or_empty",
-        source: "granola",
+        iso: "US",
+        name: "United States",
+        upcoming_count: 1,
+        past_count: 0,
+        state: "scheduled",
+        next_event: { id: us.id, title: us.title, when_utc: us.when_utc, seconds_to_event: 108000, impact: "high", spot: false, kind: "economic" },
       },
       {
-        section: "news",
-        title: "No recent live news returned for Apple",
-        status: "not_available",
-        source: "news",
+        iso: "RU",
+        name: "Russia",
+        upcoming_count: 0,
+        past_count: 1,
+        state: "quiet",
+        next_event: null,
       },
       {
-        section: "portfolio",
-        title: "No matching portfolio position found",
-        status: "not_linked",
-        source: "portfolio_state",
+        iso: "UA",
+        name: "Ukraine",
+        upcoming_count: 0,
+        past_count: 1,
+        state: "quiet",
+        next_event: null,
       },
     ],
-    briefing_sections: [
-      { section: "participants", status: "ready", count: 1 },
-      { section: "meeting_notes", status: "not_configured_or_empty", count: 0 },
-      { section: "news", status: "not_available", count: 0 },
-      { section: "portfolio", status: "not_linked", count: 0 },
+    country_catalog: [
+      { iso: "TR", name: "Turkey" },
+      { iso: "US", name: "United States" },
+      { iso: "RU", name: "Russia" },
+      { iso: "UA", name: "Ukraine" },
     ],
-    connection_status: [
-      { source: "notion", status: "configured" },
-      { source: "granola", status: "configured" },
-      { source: "gdelt", status: "configured" },
-      { source: "people_public_reference", status: "used" },
-    ],
-    questions: [
-      "What changed since the last meeting or review?",
-      "Which person owns the next follow-up?",
-    ],
-    methodology: "MEET builds a meeting brief from configured connectors.",
+    alerts: [],
+    alert_default_lead_minutes: [1440, 60, 5],
   };
 }
 
 beforeEach(() => {
   localStorage.clear();
   setMockFn({ state: "idle", data: undefined });
-  vi.spyOn(router, "navigate").mockImplementation(() => undefined);
+  toastWarn.mockClear();
 });
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
 });
 
-describe("MEET pane — load states", () => {
+/* ── pure helpers ──────────────────────────────────────────────────── */
+
+describe("formatCountdown — adaptive resolution", () => {
+  it("uses days+hours above 2 days", () => {
+    expect(formatCountdown(3 * 86400 + 4 * 3600 + 12)).toBe("3d 4h");
+  });
+  it("uses hours+minutes above 2 hours", () => {
+    expect(formatCountdown(3 * 3600 + 23 * 60 + 5)).toBe("3h 23m");
+  });
+  it("adds seconds between 10 minutes and 2 hours", () => {
+    expect(formatCountdown(23 * 60 + 45)).toBe("23m 45s");
+  });
+  it("drops to seconds under 10 minutes", () => {
+    expect(formatCountdown(45)).toBe("45s");
+  });
+  it("never claims time that is not there (floors)", () => {
+    expect(formatCountdown(23 * 60 + 45.9)).toBe("23m 45s");
+    expect(formatCountdown(3 * 3600 + 23 * 60 + 59.9)).toBe("3h 23m");
+  });
+  it("handles passed / missing values honestly", () => {
+    expect(formatCountdown(0)).toBe("now");
+    expect(formatCountdown(-12)).toBe("now");
+    expect(formatCountdown(null)).toBe("—");
+    expect(formatCountdown(Number.NaN)).toBe("—");
+  });
+});
+
+describe("formatAge — past rows", () => {
+  it("renders a compact age for passed events", () => {
+    expect(formatAge(-3 * 86400)).toBe("3d ago");
+    expect(formatAge(-4 * 3600)).toBe("4h ago");
+    expect(formatAge(-12 * 60)).toBe("12m ago");
+    expect(formatAge(-45)).toBe("45s ago");
+  });
+  it("is honest for future / missing values", () => {
+    expect(formatAge(60)).toBe("—");
+    expect(formatAge(null)).toBe("—");
+  });
+});
+
+describe("dueAlert — lead-time dedupe", () => {
+  const config = normalizeMeetAlerts({ leadMinutes: [1440, 60, 5] });
+  const spot = row({ id: "e1", spot: true, countries: ["TR"] });
+
+  it("fires the smallest crossed lead exactly once", () => {
+    const nowMs = Date.parse(spot.when_utc) - 3 * 60_000; // 3 min out
+    const first = dueAlert(spot, config, nowMs, new Set());
+    expect(first?.lead).toBe(5);
+    const fired = new Set([first!.key]);
+    expect(dueAlert(spot, config, nowMs + 1000, fired)).toBeNull();
+    // It does not back-fill the larger leads after the imminent one fired.
+    expect(dueAlert(spot, config, Date.parse(spot.when_utc) - 60_000, fired)).toBeNull();
+  });
+
+  it("moves to the next lead as the event approaches", () => {
+    const t60 = Date.parse(spot.when_utc) - 30 * 60_000; // 30 min out → only 60/1440 crossed
+    const hit = dueAlert(spot, config, t60, new Set());
+    expect(hit?.lead).toBe(60);
+    const fired = new Set([hit!.key]);
+    const later = dueAlert(spot, config, Date.parse(spot.when_utc) - 4 * 60_000, fired);
+    expect(later?.lead).toBe(5);
+  });
+
+  it("ignores non-spot low-impact rows", () => {
+    const calm = row({ id: "e2", impact: "low", spot: false, pinned: false });
+    expect(dueAlert(calm, config, Date.parse(calm.when_utc) - 60_000, new Set())).toBeNull();
+  });
+
+  it("respects the disabled toggle", () => {
+    const off = { ...config, enabled: false };
+    expect(dueAlert(spot, off, Date.parse(spot.when_utc) - 60_000, new Set())).toBeNull();
+  });
+});
+
+describe("isSpotFor — follow list raises a country's high-impact events", () => {
+  it("tracks provider spots and pinned high prints", () => {
+    const cfg = normalizeMeetAlerts(null);
+    expect(isSpotFor(row({ id: "a", spot: true }), cfg)).toBe(true);
+    expect(isSpotFor(row({ id: "b", pinned: true, impact: "high" }), cfg)).toBe(true);
+    expect(isSpotFor(row({ id: "c", impact: "low" }), cfg)).toBe(false);
+  });
+
+  it("tracks followed countries (Türkiye ⇒ TCMB always spot)", () => {
+    const cfg = normalizeMeetAlerts({ spotCountries: ["TR"] });
+    const tcmb = row({ id: "tcmb", countries: ["TR"], impact: "high", spot: false, pinned: false });
+    expect(isSpotFor(tcmb, cfg)).toBe(true);
+    expect(leadLabel(1440)).toBe("1d");
+  });
+});
+
+describe("groupRows — upcoming/past split", () => {
+  it("splits on the live clock and keeps undated wire copy in the past", () => {
+    const payload = worldPayload();
+    const { upcoming, past } = groupRows(payload.rows as MeetRow[], NOW);
+    expect(upcoming.map((r) => r.id)).toEqual(["economic:tcmb", "economic:us-cpi"]);
+    expect(past.map((r) => r.id)).toEqual(["world:war"]);
+    const undated = row({ id: "u", undated: true });
+    expect(groupRows([undated], NOW).past).toHaveLength(1);
+  });
+});
+
+/* ── pane rendering ────────────────────────────────────────────────── */
+
+describe("MEET pane — states", () => {
   it("renders a skeleton while loading", () => {
     setMockFn({ state: "loading" });
     const { container } = render(<MEETPane code="MEET" symbol="AAPL" />);
@@ -128,99 +313,112 @@ describe("MEET pane — load states", () => {
     render(<MEETPane code="MEET" symbol="AAPL" />);
     expect(screen.getByText(/sidecar exploded/i)).toBeInTheDocument();
   });
-});
 
-describe("MEET pane — briefing body", () => {
-  it("renders section chips, grouped rows and questions when ok", () => {
-    setMockFn({ state: "ok", data: { data: okPayload() } });
-    const { container } = render(<MEETPane code="MEET" symbol="AAPL" />);
-    // Participants row with honest contact status.
-    expect(screen.getByText("Tim Cook")).toBeInTheDocument();
-    expect(container.textContent).toContain("public_profile_only");
-    // Section status chips carry the honest connector outcome.
-    expect(container.textContent).toContain("meeting_notes · not_configured_or_empty (0)");
-    expect(container.textContent).toContain("news · not_available (0)");
-    // Honest placeholder rows (backend-provided, not fabricated by the pane).
-    expect(container.textContent).toContain("No recent Granola notes returned");
-    expect(container.textContent).toContain("No recent live news returned for Apple");
-    // Connector summary card.
-    expect(container.textContent).toContain("4/4");
-    // Pre-meeting questions.
-    expect(screen.getByText(/What changed since the last meeting/i)).toBeInTheDocument();
-  });
-
-  it("narrows the row list when a section filter chip is clicked", () => {
-    setMockFn({ state: "ok", data: { data: okPayload() } });
-    render(<MEETPane code="MEET" symbol="AAPL" />);
-    fireEvent.click(screen.getByRole("button", { name: "news" }));
-    expect(screen.queryByText("Tim Cook")).toBeNull();
-    expect(screen.getByText(/No recent live news returned for Apple/i)).toBeInTheDocument();
-  });
-});
-
-describe("MEET pane — topic interaction", () => {
-  it("commits a typed topic via the Brief button", () => {
-    setMockFn({ state: "ok", data: { data: okPayload() } });
-    const { container } = render(<MEETPane code="MEET" symbol="AAPL" />);
-    fireEvent.change(screen.getByLabelText(/Meeting topic/i), {
-      target: { value: "Nvidia" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Brief" }));
-    expect(container.textContent).toContain("Nvidia");
-  });
-});
-
-/* ── linked position mark-to-market (audit A3 MEET OPP) ────────────── */
-
-function linkedPositionPayload(
-  overrides: { avg_cost?: number | null } = {},
-) {
-  const avgCost = overrides.avg_cost === undefined ? 100 : overrides.avg_cost;
-  const base = okPayload();
-  return {
-    ...base,
-    portfolio_position: {
-      symbol: "AAPL",
-      quantity: 10,
-      avg_cost: avgCost,
-      currency: "USD",
-    },
-    rows: [
-      ...base.rows.filter((r) => r.section !== "portfolio"),
-      {
-        section: "portfolio",
-        symbol: "AAPL",
-        quantity: 10,
-        avg_cost: avgCost,
-        currency: "USD",
-        status: "linked",
-      },
-    ],
-  };
-}
-
-describe("MEET pane — linked position mark-to-market (audit A3 OPP)", () => {
-  it("renders the live mark-to-market P&L from avg_cost x quantity", () => {
-    setMockFn({ state: "ok", data: { data: linkedPositionPayload() } });
-    const { container } = render(<MEETPane code="MEET" symbol="AAPL" />);
-    // (150 − 100) × 10 = +500.00 USD, +50.0% (quote mocked at 150).
-    expect(container.textContent).toContain("mark P&L +500.00 USD (+50.0%)");
-  });
-
-  it("links the portfolio symbol to DES", () => {
-    setMockFn({ state: "ok", data: { data: linkedPositionPayload() } });
-    render(<MEETPane code="MEET" symbol="AAPL" />);
-    fireEvent.click(screen.getByRole("button", { name: "View AAPL details" }));
-    expect(router.navigate).toHaveBeenCalledWith("/symbol/AAPL/DES");
-  });
-
-  it("renders an em-dash for a missing cost basis (never fabricates a P&L)", () => {
+  it("renders an honest provider_unavailable state without invented rows", () => {
     setMockFn({
       state: "ok",
-      data: { data: linkedPositionPayload({ avg_cost: null }) },
+      data: {
+        data: {
+          status: "provider_unavailable",
+          reason: "No world-events provider responded (forex_factory calendar + news).",
+          rows: [],
+          upcoming: [],
+          past: [],
+        },
+      },
     });
-    const { container } = render(<MEETPane code="MEET" symbol="AAPL" />);
-    expect(container.textContent).toContain("mark P&L —");
-    expect(container.textContent).not.toContain("+500.00");
+    render(<MEETPane code="MEET" />);
+    expect(
+      screen.getAllByText(/No world-events provider responded/i).length,
+    ).toBeGreaterThanOrEqual(1);
+    expect(screen.queryByLabelText(/UPCOMING/)).toBeNull();
+  });
+});
+
+describe("MEET pane — world-events body", () => {
+  function okFixture() {
+    setMockFn({
+      state: "ok",
+      data: { data: worldPayload(), sources: ["forex_factory", "gdelt"], elapsed_ms: 42 },
+    });
+  }
+
+  it("groups rows into UPCOMING and PAST with countdowns and SPOT pins", () => {
+    okFixture();
+    const { container } = render(<MEETPane code="MEET" />);
+    expect(screen.getByLabelText(/UPCOMING/)).toBeInTheDocument();
+    expect(screen.getByLabelText(/PAST/)).toBeInTheDocument();
+    expect(screen.getAllByText("TCMB Interest Rate Decision").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText("Missile strikes hit power grid after escalation")).toBeInTheDocument();
+    // Live countdown for the 2h-out TCMB decision (2h 0m adaptively).
+    expect(container.textContent).toContain("2h 0m");
+    // Past rows show how long ago they printed (never a countdown "now").
+    expect(container.textContent).toContain("2h ago");
+    // Spot pin on the central-bank decision.
+    expect(screen.getAllByText("SPOT").length).toBeGreaterThanOrEqual(1);
+    // Affected pairs are visible on the row.
+    expect(container.textContent).toContain("USDTRY, EURTRY");
+    // Next high-impact banner.
+    expect(screen.getByLabelText("Next high-impact event").textContent).toContain(
+      "TCMB Interest Rate Decision",
+    );
+  });
+
+  it("narrows the list when a country is followed from the sidebar", () => {
+    okFixture();
+    const { container } = render(<MEETPane code="MEET" />);
+    fireEvent.click(screen.getByRole("button", { name: /Follow Turkey/ }));
+    expect(container.textContent).toContain("TCMB Interest Rate Decision");
+    expect(container.textContent).not.toContain("CPI y/y");
+    // The follow list is sent to the backend as the countries filter…
+    expect(mockFn.lastParams?.countries).toBe("TR");
+    // …and persists for the next session.
+    const stored = JSON.parse(localStorage.getItem("showme.meet.alerts") ?? "{}");
+    expect(stored.spotCountries).toContain("TR");
+  });
+
+  it("fires the lead-time toast once and records it in the alert history", () => {
+    const payload = worldPayload();
+    // TCMB 3 minutes out → the 5m lead crosses at mount.
+    const soon = new Date(Date.now() + 3 * 60_000).toISOString();
+    payload.rows = payload.rows.map((r) =>
+      r.id === "economic:tcmb" ? { ...r, when_utc: soon } : r,
+    );
+    payload.upcoming = payload.rows.filter((r) => r.id !== "world:war");
+    setMockFn({ state: "ok", data: { data: payload, sources: [], elapsed_ms: 1 } });
+    render(<MEETPane code="MEET" />);
+    expect(toastWarn).toHaveBeenCalledTimes(1);
+    expect(String(toastWarn.mock.calls[0]?.[0])).toContain("MEET spot");
+    const stored = JSON.parse(localStorage.getItem("showme.meet.alerts") ?? "{}");
+    expect(stored.history.length).toBeGreaterThanOrEqual(1);
+    expect(stored.history[0].lead).toBe(5);
+  });
+
+  it("shows the detail card with affected pairs and source on row click", () => {
+    okFixture();
+    render(<MEETPane code="MEET" />);
+    fireEvent.click(
+      screen.getByRole("button", { name: /TCMB Interest Rate Decision/ }),
+    );
+    const detail = screen.getByLabelText("Event detail");
+    expect(detail.textContent).toContain("USDTRY");
+    expect(detail.textContent).toContain("forex_factory");
+    expect(detail.textContent).toContain("Turkey (TR)");
+  });
+
+  it("shows the alert-settings popover with lead times", () => {
+    okFixture();
+    render(<MEETPane code="MEET" />);
+    fireEvent.click(screen.getByRole("button", { name: "MEET alert settings" }));
+    expect(screen.getByTestId("meet-alerts-popover")).toBeInTheDocument();
+    expect(screen.getByText(/LEAD TIMES/i)).toBeInTheDocument();
+  });
+
+  it("keeps the follow list usable when a catalog country has no events", () => {
+    okFixture();
+    render(<MEETPane code="MEET" />);
+    const sidebar = screen.getByLabelText("Country status");
+    expect(sidebar.textContent).toContain("quiet");
+    expect(screen.getByRole("button", { name: /Follow Ukraine/ })).toBeInTheDocument();
   });
 });

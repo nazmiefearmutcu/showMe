@@ -266,9 +266,14 @@ def test_secf_dsl_with_unknown_column_returns_unsupported_predicate() -> None:
 def test_srch_dsl_with_known_column_still_passes() -> None:
     from showme.engine.functions.screen._funcs import SRCHFunction
 
-    out = asyncio.run(SRCHFunction().execute(query="yield >= 4 AND duration <= 10"))
-    # H-6 (2026-09-08): SRCH is a STATIC reference universe, so matched
-    # rows are labelled "reference" (not "ok") with a top-level warning.
+    # The known-column guard is independent of the live tier chain; pin the
+    # deterministic reference path (live providers are exercised in
+    # test_srch_live_bonds.py with monkeypatched providers).
+    out = asyncio.run(
+        SRCHFunction().execute(query="yield >= 4 AND duration <= 10", live=False)
+    )
+    # H-6 (2026-09-08): with no live refresh the matched rows are labelled
+    # "reference" (not "ok") with a top-level warning.
     assert out.data["status"] == "reference"
     assert out.warnings, "reference universe must warn it is not live"
     assert out.data["rows"]

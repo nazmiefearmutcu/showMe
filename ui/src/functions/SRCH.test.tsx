@@ -196,6 +196,116 @@ describe("SRCH pane — data honesty", () => {
   });
 });
 
+describe("SRCH pane — live yield coverage", () => {
+  function livePayload() {
+    return {
+      data: {
+        sources: ["fred_csv", "showme_bond_reference_universe"],
+        elapsed_ms: 55,
+        data: {
+          status: "ok",
+          query: "yield >= 0",
+          filter: "yield >= 0",
+          scanned: 2,
+          matched: 2,
+          rows: [
+            {
+              symbol: "US10Y",
+              issuer: "US Treasury",
+              type: "Note",
+              maturity: "10Y",
+              tenor_years: 10.0,
+              yield: 4.97,
+              duration: 8.2,
+              rating: "AA+",
+              currency: "USD",
+              quote_type: "live",
+              yield_state: "live",
+              yield_source: "fred_csv",
+              yield_as_of: "2026-09-14",
+              yield_cadence: "daily",
+            },
+            {
+              symbol: "DE2Y",
+              issuer: "Germany",
+              type: "Bund",
+              maturity: "2Y",
+              tenor_years: 2.0,
+              yield: 2.85,
+              duration: 1.9,
+              rating: "AAA",
+              currency: "EUR",
+              quote_type: "unavailable",
+              yield_state: "reference",
+            },
+          ],
+        },
+      },
+    };
+  }
+
+  it("shows a PARTIAL chip + per-row LIVE/N-A pills for mixed coverage", () => {
+    setMockFn({ state: "ok", ...livePayload() });
+    render(<SRCHPane code="SRCH" />);
+    expect(screen.getByTestId("srch-coverage-pill").textContent).toMatch(
+      /PARTIAL 1\/2 LIVE/,
+    );
+    expect(screen.getByTestId("srch-quote-US10Y").textContent).toMatch(/LIVE/);
+    expect(screen.getByTestId("srch-quote-DE2Y").textContent).toMatch(/N\/A/);
+    expect(screen.getByText(/live yields 1\/2/i)).toBeInTheDocument();
+    expect(
+      screen.queryByText(/reference bond universe \(no live quotes\)/i),
+    ).toBeNull();
+  });
+
+  it("shows a full LIVE chip when every row resolved live", () => {
+    const payload = livePayload();
+    payload.data.data.rows = [payload.data.data.rows[0]];
+    payload.data.data.rows[0].quote_type = "live";
+    payload.data.data.scanned = 1;
+    payload.data.data.matched = 1;
+    setMockFn({ state: "ok", ...payload });
+    render(<SRCHPane code="SRCH" />);
+    expect(screen.getByTestId("srch-coverage-pill").textContent).toMatch(/LIVE 1/);
+    expect(screen.queryByTestId("srch-quote-DE2Y")).toBeNull();
+  });
+
+  it("keeps the provider_unavailable outage honest: rows render with N/A pills", () => {
+    setMockFn({
+      state: "ok",
+      data: {
+        data: {
+          status: "provider_unavailable",
+          query: "yield >= 0",
+          scanned: 1,
+          matched: 1,
+          rows: [
+            {
+              symbol: "US10Y",
+              issuer: "US Treasury",
+              type: "Note",
+              maturity: "10Y",
+              tenor_years: 10.0,
+              yield: 4.45,
+              duration: 8.2,
+              rating: "AA+",
+              currency: "USD",
+              quote_type: "unavailable",
+              yield_state: "reference",
+            },
+          ],
+        },
+      },
+    });
+    render(<SRCHPane code="SRCH" />);
+    expect(screen.getByText("US10Y")).toBeInTheDocument();
+    expect(screen.getByTestId("srch-quote-US10Y").textContent).toMatch(/N\/A/);
+    expect(screen.getByTestId("srch-coverage-pill").textContent).toMatch(
+      /REFERENCE/,
+    );
+  });
+});
+
 describe("SRCH pane — filter controls compose the server-side query", () => {
   it("composes a type predicate when a chip is clicked", () => {
     setMockFn({ state: "ok", ...okPayload() });

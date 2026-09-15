@@ -507,9 +507,9 @@ export const STATIC_FUNCTION_INDEX: FunctionEntry[] = [
   },
   {
     "code": "MEET",
-    "name": "Meeting Briefing",
+    "name": "Meeting Briefings — World Events",
     "category": "comm",
-    "description": "Pre-meeting briefing — Notion + Granola + portfolio + news + DES."
+    "description": "World-events tracker — country calendar + tagged headlines with countdowns and spot alerts."
   },
   {
     "code": "MGN",

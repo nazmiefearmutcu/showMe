@@ -36,6 +36,8 @@ beforeEach(() => {
   /* jsdom's canvas has no 2D context — return null so draw() bails early. */
   HTMLCanvasElement.prototype.getContext = (() =>
     null) as typeof HTMLCanvasElement.prototype.getContext;
+  /* Layout persistence would otherwise leak state between cases. */
+  localStorage.clear();
 });
 
 afterEach(() => {
@@ -55,6 +57,25 @@ describe("Chart shell — toolbar smoke (jsdom)", () => {
     expect(screen.getByTestId("sm-chart-draw-trend")).toBeInTheDocument();
     // Default mode is linear.
     expect(screen.getByTestId("sm-chart-scale-linear")).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("renders the milestone-3 controls (compare, fib tool, replay, reset)", async () => {
+    render(<Chart symbol="BTCUSDT" />);
+    expect(await screen.findByTestId("sm-chart-compare-add")).toBeInTheDocument();
+    expect(screen.getByTestId("sm-chart-draw-fib")).toBeInTheDocument();
+    expect(screen.getByTestId("sm-chart-replay-toggle")).toBeInTheDocument();
+    expect(screen.getByTestId("sm-chart-reset-layout")).toBeInTheDocument();
+    // The replay transport strip only exists while replay is active.
+    expect(screen.queryByTestId("sm-chart-replay-slider")).toBeNull();
+  });
+
+  it("arms the fib tool on click and disarms it on a second click", async () => {
+    render(<Chart symbol="BTCUSDT" />);
+    const fib = await screen.findByTestId("sm-chart-draw-fib");
+    fireEvent.click(fib);
+    expect(fib).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(fib);
+    expect(fib).toHaveAttribute("aria-pressed", "false");
   });
 
   it("switches the active scale mode and toggles volume", async () => {

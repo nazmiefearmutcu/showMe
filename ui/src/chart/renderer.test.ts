@@ -8,8 +8,8 @@
  */
 import { describe, expect, it } from "vitest";
 import { createPriceScale, createTimeScale } from "./scales";
-import { drawChart } from "./renderer";
-import type { Bar, RenderInput, ThemePalette, Viewport } from "./types";
+import { drawChart, fitPriceToVisible, normalizeCompareSeries } from "./renderer";
+import type { Bar, CompareSeriesInput, RenderInput, ThemePalette, Viewport } from "./types";
 import type { Drawing } from "./drawings";
 
 const VIEWPORT: Viewport = { width: 800, height: 600, priceAxisWidth: 66, timeAxisHeight: 22 };
@@ -97,6 +97,8 @@ function runDraw(opts: {
   drawings?: Drawing[];
   priceFit?: [number, number];
   chartType?: RenderInput["chartType"];
+  replayIndex?: number;
+  compare?: CompareSeriesInput[];
 }): Recorded {
   const bars = opts.bars ?? makeBars(60);
   const time = createTimeScale();
@@ -122,6 +124,8 @@ function runDraw(opts: {
     priceMode: opts.priceMode,
     showVolume: opts.showVolume,
     drawings: opts.drawings,
+    replayIndex: opts.replayIndex,
+    compare: opts.compare,
   });
   return rec;
 }
@@ -216,5 +220,102 @@ describe("drawChart — user drawings", () => {
       drawings: [{ id: "h2", kind: "hline", price: -5 }],
     });
     expect(rec.dashes.some((d) => d[0] === 5 && d[1] === 4)).toBe(false);
+  });
+
+  it("paints fib levels between the two anchors with ratio labels", () => {
+    const rec = runDraw({
+      drawings: [
+        { id: "f1", kind: "fib", p1: { index: 0, price: 100 }, p2: { index: 59, price: 160 } },
+      ],
+    });
+    expect(rec.labels.some((l) => l.startsWith("0.0%"))).toBe(true);
+    expect(rec.labels.some((l) => l.startsWith("50.0%"))).toBe(true);
+    expect(rec.labels.some((l) => l.startsWith("61.8%"))).toBe(true);
+    expect(rec.labels.some((l) => l.startsWith("100.0%"))).toBe(true);
+    expect(rec.arcs).toBe(2); // anchor handles
+  });
+});
+
+describe("drawChart — bar replay", () => {
+  it("paints no candle after the replay cursor", () => {
+    const bars = makeBars(60);
+    const rec = runDraw({ bars, chartType: "candles", showVolume: false, replayIndex: 30 });
+    const PLOT_W = VIEWPORT.width - VIEWPORT.priceAxisWidth;
+    const x30 = (30 / 59) * PLOT_W;
+    const bodyW = Math.min(28, (PLOT_W / 59) * 0.72);
+    expect(rec.rects.filter((r) => r.x < x30).length).toBeGreaterThan(0);
+    for (const r of rec.rects) {
+      expect(r.x).toBeLessThanOrEqual(x30 + bodyW / 2 + 0.5);
+    }
+  });
+
+  it("keeps the full series when replayIndex is omitted (backward compatible)", () => {
+    const bars = makeBars(60);
+    const rec = runDraw({ bars, chartType: "candles", showVolume: false });
+    const PLOT_W = VIEWPORT.width - VIEWPORT.priceAxisWidth;
+    const x30 = (30 / 59) * PLOT_W;
+    expect(rec.rects.some((r) => r.x > x30 + 40)).toBe(true);
+  });
+});
+
+describe("normalizeCompareSeries", () => {
+  const mk = (closes: number[]): Bar[] =>
+    closes.map((c, i) => ({ t: 1_700_000_000_000 + i * 60_000, o: c, h: c, l: c, c, v: 1 }));
+
+  it("normalizes vs. the first finite close at/after firstIndex", () => {
+    expect(normalizeCompareSeries(mk([50, 100, 110]), 1)).toEqual([-50, 0, 10]);
+  });
+
+  it("skips zero closes for the base and marks them null", () => {
+    const out = normalizeCompareSeries(mk([0, 100, 150]), 0);
+    expect(out[0]).toBeNull();
+    expect(out[1]).toBe(0);
+    expect(out[2]).toBeCloseTo(50, 10);
+  });
+
+  it("returns all nulls when no finite non-zero base exists", () => {
+    expect(normalizeCompareSeries(mk([0, 0]), 0)).toEqual([null, null]);
+    expect(normalizeCompareSeries([], 0)).toEqual([]);
+  });
+});
+
+describe("drawChart — compare overlay", () => {
+  it("labels each compare line's percent change in the legend", () => {
+    const values: (number | null)[] = new Array(60).fill(0);
+    values[59] = 10;
+    const rec = runDraw({ compare: [{ symbol: "ETHUSDT", color: "#ff0000", values }] });
+    expect(rec.labels).toContain("ETHUSDT +10.00%");
+  });
+
+  it("renders an honest dash when the cursor bar has no compare value", () => {
+    const values: (number | null)[] = new Array(60).fill(null);
+    const rec = runDraw({ compare: [{ symbol: "ETHUSDT", color: "#ff0000", values }] });
+    expect(rec.labels).toContain("ETHUSDT —");
+  });
+});
+
+describe("fitPriceToVisible — replay bound", () => {
+  const bars: Bar[] = Array.from({ length: 60 }, (_, i) => ({
+    t: 1_700_000_000_000 + i * 60_000,
+    o: 100,
+    h: i < 30 ? 130 : 1000,
+    l: 90,
+    c: 100,
+    v: 1,
+  }));
+
+  it("excludes bars after lastIndex from the fit", () => {
+    const time = createTimeScale();
+    time.setViewport(VIEWPORT);
+    time.setRange(0, 59);
+    const price = createPriceScale();
+    price.setViewport(VIEWPORT);
+    fitPriceToVisible(price, bars, time, 0, 29);
+    expect(price.range().max).toBeLessThan(200);
+
+    const full = createPriceScale();
+    full.setViewport(VIEWPORT);
+    fitPriceToVisible(full, bars, time, 0);
+    expect(full.range().max).toBeGreaterThan(900);
   });
 });
