@@ -394,6 +394,18 @@ export function MEETPane({ code }: FunctionPaneProps) {
                   : "No upcoming events in the window."
               }
               />
+              {/* Thin full-width rule between the two windows (owner
+                  2026-09-16: "past ile upcoming kısmını ince yanlamasına
+                  uzun bir çizgiyle ayır"). */}
+              <hr
+                aria-hidden
+                style={{
+                  border: 0,
+                  borderTop: "1px solid var(--border-subtle)",
+                  margin: "10px 0",
+                  width: "100%",
+                }}
+              />
               <EventSection
                 label={`PAST · ${past.length}`}
                 rows={past}
@@ -750,12 +762,20 @@ function EventRow({
       ? formatAge(seconds)
       : formatCountdown(seconds);
   const impact = String(row.impact || "low");
+  /* High-impact rows carry a VERY transparent red wash (owner 2026-09-16:
+     "kırmızı highlight ... ancak çok transparan bir kırmızı"). Fixed alpha
+     on purpose so the tint reads identically across presets. */
+  const highImpact = impact.toLowerCase() === "high";
   return (
     <li style={rowItemStyle}>
       <button
         type="button"
         className="btn btn--ghost"
-        style={rowButtonStyle}
+        style={
+          highImpact
+            ? { ...rowButtonStyle, background: "rgba(198, 40, 40, 0.06)" }
+            : rowButtonStyle
+        }
         aria-label={`${row.title} — ${countdown}`}
         onClick={() => onSelect(row.id)}
       >
