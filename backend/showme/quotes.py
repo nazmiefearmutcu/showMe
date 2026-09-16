@@ -197,6 +197,44 @@ _FX_CURRENCIES = frozenset(
 )
 
 
+# Borsa Istanbul aliases: the desk types colloquial codes (THY) while the
+# provider needs the full BIST ticker (THYAO.IS). Only well-known names are
+# mapped so nothing US-listed can be shadowed (owner 2026-09-16: "THY yazdım
+# bir sik göstermiyor" - it resolved to an unrelated Yahoo ticker).
+_BIST_ALIASES: dict[str, str] = {
+    "THY": "THYAO.IS",
+    "THYAO": "THYAO.IS",
+    "PGSUS": "PGSUS.IS",
+    "GARAN": "GARAN.IS",
+    "AKBNK": "AKBNK.IS",
+    "YKBNK": "YKBNK.IS",
+    "ISCTR": "ISCTR.IS",
+    "VAKBN": "VAKBN.IS",
+    "HALKB": "HALKB.IS",
+    "EREGL": "EREGL.IS",
+    "ASELS": "ASELS.IS",
+    "KCHOL": "KCHOL.IS",
+    "SAHOL": "SAHOL.IS",
+    "SISE": "SISE.IS",
+    "TUPRS": "TUPRS.IS",
+    "BIMAS": "BIMAS.IS",
+    "FROTO": "FROTO.IS",
+    "TOASO": "TOASO.IS",
+    "TCELL": "TCELL.IS",
+    "PETKM": "PETKM.IS",
+    "ENKAI": "ENKAI.IS",
+    "KOZAL": "KOZAL.IS",
+    "KOZAA": "KOZAA.IS",
+    "SASA": "SASA.IS",
+    "HEKTS": "HEKTS.IS",
+    "ODAS": "ODAS.IS",
+    "EKGYO": "EKGYO.IS",
+    "TTKOM": "TTKOM.IS",
+    "ARCLK": "ARCLK.IS",
+    "AEFES": "AEFES.IS",
+}
+
+
 def _fx_pair_alias(value: str) -> str | None:
     if len(value) == 6 and value.isalpha() and value[:3] in _FX_CURRENCIES and value[3:] in _FX_CURRENCIES:
         return f"{value}=X"
@@ -208,6 +246,9 @@ def clean_symbol(symbol: str) -> str:
     commodity = _DESK_COMMODITY_ALIASES.get(raw)
     if commodity:
         return commodity
+    bist = _BIST_ALIASES.get(raw)
+    if bist:
+        return bist
     return _fx_pair_alias(raw) or raw
 
 
