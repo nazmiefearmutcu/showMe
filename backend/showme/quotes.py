@@ -232,12 +232,95 @@ def fetch_crypto_quote_sync(symbol: str) -> dict[str, Any]:
     raise QuoteFetchError("; ".join(attempts) or f"no crypto quote for {symbol}")
 
 
+# Yahoo v7 quote endpoint session (crumb-gated but keyless): the v8 chart
+# endpoint the primary leg uses carries no bid/ask, so equity rows showed
+# empty BID/ASK everywhere (home watchlist + WATCH pane, owner 2026-09-16).
+_YF_SESSION: requests.Session | None = None
+_YF_CRUMB: str | None = None
+_YF_CRUMB_AT = 0.0
+_YF_FAILED_AT = 0.0
+# Browser UA matters here: Yahoo answers the crumb dance with 429 for
+# scripted UAs (probed 2026-09-16), the same reason the EQS refdata batch
+# uses a Chrome UA.
+_YF_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
+)
+
+
+def _yahoo_v7_session() -> tuple[requests.Session | None, str | None]:
+    """One shared session + crumb (30 min TTL) for Yahoo's v7 quote API.
+
+    A failed dance sets a 60 s cooldown so a throttled window cannot turn
+    every quote call into a three-request burst.
+    """
+    global _YF_SESSION, _YF_CRUMB, _YF_CRUMB_AT, _YF_FAILED_AT
+    now = time.time()
+    if _YF_SESSION is not None and _YF_CRUMB and (now - _YF_CRUMB_AT) < 1800:
+        return _YF_SESSION, _YF_CRUMB
+    if _YF_FAILED_AT and (now - _YF_FAILED_AT) < 60:
+        return None, None
+    session = requests.Session()
+    headers = {"User-Agent": _YF_UA, "Accept": "application/json,text/plain,*/*"}
+    try:
+        try:
+            # Sets the anonymous consent cookie; a 404 here is normal.
+            session.get("https://fc.yahoo.com/", headers=headers, timeout=5)
+        except Exception:  # noqa: BLE001
+            pass
+        crumb = session.get(
+            "https://query1.finance.yahoo.com/v1/test/getcrumb",
+            headers=headers,
+            timeout=5,
+        ).text.strip()
+    except Exception:  # noqa: BLE001 - enrichment is best-effort
+        _YF_FAILED_AT = now
+        return None, None
+    if not crumb:
+        _YF_FAILED_AT = now
+        return None, None
+    _YF_SESSION, _YF_CRUMB, _YF_CRUMB_AT = session, crumb, now
+    return session, crumb
+
+
+def _fetch_yahoo_v7_bbo(symbol: str) -> dict[str, float]:
+    """Live bid/ask for one Yahoo symbol; ``{}`` on any failure."""
+    session, crumb = _yahoo_v7_session()
+    if session is None or crumb is None:
+        return {}
+    provider_symbol = yahoo_symbol(symbol)
+    try:
+        response = session.get(
+            "https://query1.finance.yahoo.com/v7/finance/quote",
+            params={"symbols": provider_symbol, "crumb": crumb, "fields": "bid,ask"},
+            headers={"User-Agent": _YF_UA, "Accept": "application/json,text/plain,*/*"},
+            timeout=4,
+        )
+        response.raise_for_status()
+        payload = response.json() or {}
+        result = ((payload.get("quoteResponse") or {}).get("result") or [None])[0] or {}
+    except Exception:  # noqa: BLE001
+        return {}
+    out: dict[str, float] = {}
+    bid = number(result.get("bid"))
+    ask = number(result.get("ask"))
+    if bid is not None:
+        out["bid"] = bid
+    if ask is not None:
+        out["ask"] = ask
+    return out
+
+
 def fetch_equity_quote_sync(symbol: str) -> dict[str, Any]:
     attempts: list[str] = []
     for provider in (_fetch_yahoo_chart_quote, _fetch_stooq_quote, _fetch_yfinance_quote):
         try:
             snapshot = provider(symbol)
             if snapshot.get("last") is not None:
+                if snapshot.get("bid") is None and snapshot.get("ask") is None:
+                    bbo = _fetch_yahoo_v7_bbo(symbol)
+                    if bbo:
+                        snapshot.update(bbo)
                 return snapshot
         except Exception as exc:  # noqa: BLE001
             attempts.append(f"{provider.__name__}: {exc}")

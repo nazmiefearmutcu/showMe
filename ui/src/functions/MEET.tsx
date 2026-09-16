@@ -218,11 +218,15 @@ export function MEETPane({ code }: FunctionPaneProps) {
   };
 
   const toggleImpact = (value: ImpactFilter) => {
-    setImpacts((current) =>
-      current.includes(value)
-        ? current.filter((v) => v !== value)
-        : [...current, value],
-    );
+    setImpacts((current) => {
+      /* Single-select semantics (owner 2026-09-16): with the old membership
+         toggle the default "all selected" state kept LOW rows listed while
+         the HIGH chip looked focused. A click now focuses exactly ONE band;
+         clicking the focused band again restores "all". */
+      const onlyThis = current.length === 1 && current[0] === value;
+      if (onlyThis) return [...IMPACT_OPTIONS];
+      return [value];
+    });
   };
 
   const addSymbol = (raw: string) => {
