@@ -394,18 +394,33 @@ export function MEETPane({ code }: FunctionPaneProps) {
                   : "No upcoming events in the window."
               }
               />
-              {/* Thin full-width rule between the two windows (owner
-                  2026-09-16: "past ile upcoming kısmını ince yanlamasına
-                  uzun bir çizgiyle ayır"). */}
-              <hr
+              {/* Full-width rule between the two windows, labelled NOW at
+                  the centre (owner 2026-09-16: "çizgi çok ince içinde NOW
+                  yazsın biraz daha kalın olsun") - 2px segments keep it
+                  clearly visible without shouting. */}
+              <div
                 aria-hidden
                 style={{
-                  border: 0,
-                  borderTop: "1px solid var(--border-subtle)",
-                  margin: "10px 0",
+                  alignItems: "center",
+                  display: "flex",
+                  gap: 10,
+                  margin: "12px 0",
                   width: "100%",
                 }}
-              />
+              >
+                <span style={{ background: "var(--border-strong)", flex: 1, height: 2 }} />
+                <span
+                  style={{
+                    color: "var(--text-mute)",
+                    fontFamily: "JetBrains Mono, monospace",
+                    fontSize: "var(--font-size-sm)",
+                    letterSpacing: "0.16em",
+                  }}
+                >
+                  NOW
+                </span>
+                <span style={{ background: "var(--border-strong)", flex: 1, height: 2 }} />
+              </div>
               <EventSection
                 label={`PAST · ${past.length}`}
                 rows={past}
