@@ -175,6 +175,17 @@ def test_limit_is_bounded_by_query_validation(client):
 # ── (e) 5 s TTL cache ─────────────────────────────────────────────────────
 
 
+def test_cache_windows_are_source_aware_after_500ms_poll_switch():
+    """Every chart now polls at 500 ms (owner: "500ms bütün kapanış
+    zamanları için geçerli olsun"). Binance answers from a 250 ms window so
+    each poll sees a fresh bar; Yahoo keeps a 1 s window because its public
+    endpoint rate-limits harder."""
+    assert bars_mod.bars_cache_ttl_for("1s", "binance") == 0.25
+    assert bars_mod.bars_cache_ttl_for("1D", "binance") == 0.25
+    assert bars_mod.bars_cache_ttl_for("1s", "yahoo") == 1.0
+    assert bars_mod.bars_cache_ttl_for("1D", "yahoo") == 1.0
+
+
 def test_cache_serves_second_call_without_provider_hit(client, monkeypatch):
     calls = {"n": 0}
 

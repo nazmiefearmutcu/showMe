@@ -274,6 +274,54 @@ def fetch_symbol_chip(
     return {**chip, "symbol": symbol}
 
 
+def peek_symbol_chip(symbol: str) -> tuple[dict[str, Any] | None, bool]:
+    """Return ``(chip_or_None, fresh)`` from the cache WITHOUT fetching.
+
+    ``fresh`` is True while the cached entry (success or failure) is inside
+    its TTL. A stale entry returns ``(chip, False)``; ``(None, False)`` means
+    nothing cached yet. Used by the dashboard chip route so it never blocks
+    on the polite throttled fan-out (reported: 8 chips x ~15 s = 20 s home).
+    """
+    st_symbol = to_stocktwits_symbol(symbol)
+    if not st_symbol:
+        return None, False
+    now = time.monotonic()
+    with _cache_lock:
+        entry = _cache.get(st_symbol)
+    if entry is None:
+        return None, False
+    fresh = entry[0] > now
+    chip = entry[1]
+    return ({**chip, "symbol": symbol} if chip else None), fresh
+
+
+_warming: set[str] = set()
+_warming_lock = threading.Lock()
+
+
+def warm_symbol_chip(symbol: str) -> bool:
+    """Fetch ``symbol``'s chip on a daemon thread if not already in flight."""
+    st_symbol = to_stocktwits_symbol(symbol)
+    if not st_symbol:
+        return False
+    with _warming_lock:
+        if st_symbol in _warming:
+            return False
+        _warming.add(st_symbol)
+
+    def _run() -> None:
+        try:
+            fetch_symbol_chip(symbol)
+        except Exception:  # noqa: BLE001 - background warm is best-effort
+            pass
+        finally:
+            with _warming_lock:
+                _warming.discard(st_symbol)
+
+    threading.Thread(target=_run, name=f"showme-chip-warm-{st_symbol}", daemon=True).start()
+    return True
+
+
 def clear_cache() -> None:
     """Test/ops hook — drop every cached response."""
     with _cache_lock:
@@ -282,6 +330,8 @@ def clear_cache() -> None:
 
 __all__ = [
     "fetch_symbol_chip",
+    "peek_symbol_chip",
+    "warm_symbol_chip",
     "to_stocktwits_symbol",
     "clear_cache",
     "MIN_LABELED_FOR_VERDICT",

@@ -20,6 +20,55 @@ from showme.engine.services.risk_parity import (
 )
 
 
+_FIAT = frozenset(
+    {"USD", "EUR", "GBP", "JPY", "CHF", "CAD", "AUD", "NZD", "SEK", "NOK", "CNY", "TRY", "MXN", "BRL", "INR", "KRW", "ZAR"}
+)
+
+
+def _yahoo_symbol(sym: str) -> str:
+    """Map a canonical desk symbol to its Yahoo ticker.
+
+    AAPL -> AAPL, GC=F -> GC=F (already Yahoo), BTCUSDT/BTCUSD -> BTC-USD,
+    EURUSD -> EURUSD=X.
+    """
+    s = (sym or "").strip().upper()
+    if not s or "=" in s or s.startswith("^"):
+        return s
+    for quote in ("USDT", "USDC", "USD"):
+        if len(s) > len(quote) and s.endswith(quote):
+            base = s[: -len(quote)]
+            if base.isalpha() and 2 <= len(base) <= 10:
+                return f"{base}-USD"
+    if len(s) == 6 and s.isalpha() and s[:3] in _FIAT and s[3:] in _FIAT:
+        return f"{s}=X"
+    return s
+
+
+async def _yahoo_daily_returns(symbol: str, days: int) -> pd.Series:
+    """Keyless Yahoo chart-API daily returns (the RPAR history fallback).
+
+    Uses the same tier the price panes are built on (``fetch_yahoo_bars``),
+    so a yfinance-adapter outage can no longer blank the whole allocation.
+    """
+    try:
+        from showme.server_routes import bars as bars_route
+
+        yahoo_range = "1y" if days <= 400 else "2y" if days <= 800 else "5y"
+        rows = await bars_route.fetch_yahoo_bars(_yahoo_symbol(symbol), "1d", yahoo_range)
+        if not rows:
+            return pd.Series(dtype=float)
+        closes = pd.Series(
+            [float(row["c"]) for row in rows if row.get("c") is not None],
+            index=pd.to_datetime(
+                [int(row["t"]) for row in rows if row.get("c") is not None],
+                unit="ms",
+            ).normalize(),
+        ).sort_index()
+        return closes.pct_change().dropna()
+    except Exception:  # noqa: BLE001 - outage degrades to the caller's template
+        return pd.Series(dtype=float)
+
+
 def _template_returns(symbols: list[str], days: int) -> pd.DataFrame:
     periods = max(60, min(days, 504))
     index = pd.date_range(end=datetime.now(timezone.utc).date(), periods=periods, freq="B")
@@ -91,9 +140,20 @@ class RPARFunction(BaseFunction):
                     )),
                     timeout=8,
                 )
-                return sym, close_to_daily_returns(df)
+                series = close_to_daily_returns(df)
+                if series.dropna().shape[0] < 10:
+                    # Owner (2026-09-16): "bu fonksiyon bir daha hata
+                    # vermeyecek" - the yfinance adapter can come back empty
+                    # for mapped crypto/FX pairs (BTCUSDT/EURUSD). Fall back
+                    # to the keyless Yahoo chart API (same tier the price
+                    # panes use) before ever degrading to the template.
+                    series = await _yahoo_daily_returns(sym, days)
+                return sym, series
             except Exception:
-                return sym, pd.Series(dtype=float)
+                try:
+                    return sym, await _yahoo_daily_returns(sym, days)
+                except Exception:  # noqa: BLE001
+                    return sym, pd.Series(dtype=float)
         if live and self.deps.yfinance:
             rs = await asyncio.gather(*(_ret(s) for s in symbols))
             # Audit Q3 #7: pairwise policy keeps crypto+equity covariance

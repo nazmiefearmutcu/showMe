@@ -1759,17 +1759,102 @@ def json_safe(value: Any) -> Any:
     return str(value)
 
 
+_FUNCTION_INDEX_DISK_VERSION = 1
+
+
+def _function_index_disk_path() -> Path | None:
+    """User-cache location for the persisted function index."""
+    try:
+        if sys.platform == "win32":
+            base = os.environ.get("LOCALAPPDATA") or str(Path.home())
+        else:
+            base = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
+        return Path(base) / "showMe" / "function_index.json"
+    except Exception:  # noqa: BLE001 - cache is best-effort
+        return None
+
+
+def _write_function_index_persisted(entries: list[FunctionIndexEntry]) -> None:
+    path = _function_index_disk_path()
+    if path is None:
+        return
+    try:
+        payload = {
+            "version": _FUNCTION_INDEX_DISK_VERSION,
+            "entries": [
+                entry.model_dump()
+                if hasattr(entry, "model_dump")
+                else dict(getattr(entry, "__dict__", {}))
+                for entry in entries
+            ],
+        }
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(path)
+    except Exception as exc:  # noqa: BLE001
+        LOG.debug("function-index persist skipped: %r", exc)
+
+
+def _read_function_index_persisted() -> list[FunctionIndexEntry]:
+    path = _function_index_disk_path()
+    if path is None or not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict) or data.get("version") != _FUNCTION_INDEX_DISK_VERSION:
+            return []
+        from ._models import FunctionIndexEntry as _Entry
+
+        out: list[FunctionIndexEntry] = []
+        for raw in data.get("entries") or []:
+            if not isinstance(raw, dict):
+                continue
+            try:
+                out.append(_Entry(**raw))
+            except Exception:  # noqa: BLE001 - skip one bad entry, keep rest
+                continue
+        return out
+    except Exception as exc:  # noqa: BLE001
+        LOG.debug("function-index disk read skipped: %r", exc)
+        return []
+
+
+def _refresh_function_index_in_background() -> None:
+    try:
+        with _FUNCTION_INDEX_BUILD_LOCK:
+            _build_function_index_locked()
+    except Exception as exc:  # noqa: BLE001
+        LOG.debug("function-index background refresh failed: %r", exc)
+
+
 def _load_function_index() -> list[FunctionIndexEntry]:
     """Return the cached function index, building it on first call.
 
     PERF-09: holds _FUNCTION_INDEX_BUILD_LOCK across the heavy registration
     walk so concurrent first-callers (e.g. lifespan warmup vs the first
     /api/function-index request) pay the ~56s cost once, not twice.
+
+    Owner requirement (2026-09-16): the home page must load under 1 s while
+    the cold walk imports 112 modules (~56 s). The last persisted build is
+    therefore served instantly and refreshed on a background thread - the
+    request path never waits on a cold walk again after the first boot.
     """
     global _FUNCTION_INDEX_CACHE
     with _FUNCTION_INDEX_LOCK:
         if _FUNCTION_INDEX_CACHE is not None:
             return list(_FUNCTION_INDEX_CACHE)
+    persisted = _read_function_index_persisted()
+    if persisted:
+        with _FUNCTION_INDEX_LOCK:
+            if _FUNCTION_INDEX_CACHE is None:
+                _FUNCTION_INDEX_CACHE = list(persisted)
+        threading.Thread(
+            target=_refresh_function_index_in_background,
+            name="showme-function-index-refresh",
+            daemon=True,
+        ).start()
+        return list(persisted)
     with _FUNCTION_INDEX_BUILD_LOCK:
         # Double-check after acquiring the build lock — a sibling thread may
         # have populated the cache while we were waiting for the lock.
@@ -1852,6 +1937,7 @@ def _build_function_index_locked() -> list[FunctionIndexEntry]:
     out.sort(key=lambda e: (e.category, e.code))
     with _FUNCTION_INDEX_LOCK:
         _FUNCTION_INDEX_CACHE = list(out)
+    _write_function_index_persisted(out)
     return out
 
 

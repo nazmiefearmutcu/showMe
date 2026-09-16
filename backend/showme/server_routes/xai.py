@@ -54,23 +54,17 @@ def _xsen_empty_payload(query: str) -> dict[str, Any]:
     }
 
 
-async def _xsen_stocktwits_fallback(query: str) -> dict[str, Any] | None:
-    """Serve a ticker-like query from the live Stocktwits stream.
-
-    Returns an analyze-shaped payload the XSEN pane renders, or ``None``
-    when Stocktwits has no labelled posts (fail-closed — never fabricate a
-    verdict from noise).
-    """
-    if to_stocktwits_symbol(query) is None:
-        return None
-    started = time.monotonic()
-    chip = await asyncio.to_thread(fetch_symbol_chip, query)
-    if not chip:
-        return None
+def _stocktwits_chip_payload(
+    query: str,
+    chip: dict[str, Any],
+    *,
+    started: float | None = None,
+) -> dict[str, Any]:
+    """Analyze-shaped payload from a Stocktwits chip (shared by callers)."""
     return {
         "query": query,
         "post_count": chip["post_count"],
-        "scrape_seconds": round(time.monotonic() - started, 2),
+        "scrape_seconds": round(time.monotonic() - started, 2) if started else 0.0,
         "fetched_at": chip.get("fetched_at"),
         "device": "stocktwits",
         "mood": chip["mood"],
@@ -88,6 +82,22 @@ async def _xsen_stocktwits_fallback(query: str) -> dict[str, Any] | None:
         "warning": _XSEN_FALLBACK_WARNING,
         "source": "stocktwits",
     }
+
+
+async def _xsen_stocktwits_fallback(query: str) -> dict[str, Any] | None:
+    """Serve a ticker-like query from the live Stocktwits stream.
+
+    Returns an analyze-shaped payload the XSEN pane renders, or ``None``
+    when Stocktwits has no labelled posts (fail-closed — never fabricate a
+    verdict from noise).
+    """
+    if to_stocktwits_symbol(query) is None:
+        return None
+    started = time.monotonic()
+    chip = await asyncio.to_thread(fetch_symbol_chip, query)
+    if not chip:
+        return None
+    return _stocktwits_chip_payload(query, chip, started=started)
 
 
 def register(app: FastAPI, deps: AppDeps) -> None:
@@ -228,6 +238,52 @@ def register(app: FastAPI, deps: AppDeps) -> None:
         since: str | None = Query(None, max_length=32),
         lang: str | None = Query("en", max_length=8),
     ) -> dict[str, Any]:
+        """Dashboard chip - cache-first and NEVER blocking on the scraper.
+
+        Reported (2026-09-16): the seeded watchlist fired 8 chips, each
+        waiting on the polite throttled Stocktwits fan-out (~15 s), and the
+        home page took 20 s. The route now answers instantly from the chip
+        cache (fresh OR stale), warms misses on a daemon thread, and a cold
+        miss returns an honest ``warming`` placeholder that the next poll
+        replaces with real data. Non-ticker queries keep the X path.
+        """
+        from showme.engine.services.stocktwits_sentiment import (
+            peek_symbol_chip,
+            warm_symbol_chip,
+        )
+
+        chip, fresh = peek_symbol_chip(symbol)
+        if chip is not None and fresh:
+            return _stocktwits_chip_payload(symbol, chip)
+        if to_stocktwits_symbol(symbol) is not None:
+            warm_symbol_chip(symbol)
+            if chip is not None:
+                payload = _stocktwits_chip_payload(symbol, chip)
+                payload["stale"] = True
+                return payload
+            return {
+                "query": symbol,
+                "post_count": 0,
+                "scrape_seconds": 0.0,
+                "fetched_at": None,
+                "device": "stocktwits",
+                "mood": "unavailable",
+                "warming": True,
+                "scores": {
+                    "bullish_score_avg": None,
+                    "bullish_score_engagement_weighted": None,
+                    "confidence": 0,
+                },
+                "distributions": {},
+                "dominant": {"sentiment": "unavailable", "emotion": "", "topic": ""},
+                "examples": [],
+                "summary": "Sentiment warming up",
+                "summary_en": "Sentiment warming up",
+                "summary_tr": "Duygu analizi hazırlanıyor",
+                "warning": _XSEN_FALLBACK_WARNING,
+                "source": "stocktwits",
+            }
+
         from showme.x_analysis import XAnalyzer
 
         try:
