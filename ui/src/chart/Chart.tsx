@@ -21,7 +21,12 @@ import { sidecarFetch } from "@/lib/sidecar";
 import { toast } from "@/lib/toast";
 import { Pill } from "@/design-system";
 import { INDICATORS, indicatorById } from "./indicators";
-import { TIMEFRAMES, timeframeById } from "./timeframes";
+import {
+  TIMEFRAMES,
+  fallbackIntervalFor,
+  intervalSupported,
+  timeframeById,
+} from "./timeframes";
 import { createPriceScale, createTimeScale } from "./scales";
 import {
   drawChart,
@@ -193,6 +198,8 @@ export function Chart({
   const [alertLog, setAlertLog] = useState<{ id: string; text: string; title: string }[]>([]);
   const pendingTrendRef = useRef<{ index: number; price: number } | null>(null);
   const priceTouchedRef = useRef(false);
+  /* "symbol|interval" keys already auto-corrected to a supported timeframe. */
+  const autoTfFixRef = useRef<string>("");
   const replayIdxRef = useRef(0);
   const compareSeqRef = useRef(0);
   const compareCacheRef = useRef<Map<string, Bar[]>>(new Map());
@@ -369,6 +376,24 @@ export function Chart({
         setReason(res.reason ?? null);
         setAsOf(res.asOf ?? null);
         setFetchError(null);
+        if (
+          next.length === 0 &&
+          res.reason &&
+          !intervalSupported(res.source ?? "", interval)
+        ) {
+          // A routed default or a restored layout can land on a timeframe the
+          // instrument's provider does not serve (e.g. 1s on a Yahoo equity
+          // after switching from a crypto symbol). Auto-correct ONCE per
+          // (symbol, interval) to the closest supported horizon — an empty
+          // chart with a stale picker defeats the pane. A later deliberate
+          // pick is respected because the fix key has already fired.
+          const fallback = fallbackIntervalFor(res.source ?? "");
+          const fixKey = `${symbol}|${interval}`;
+          if (fallback && fallback !== interval && autoTfFixRef.current !== fixKey) {
+            autoTfFixRef.current = fixKey;
+            setInterval(fallback);
+          }
+        }
         if (opts?.silent) {
           if (!priceTouchedRef.current) {
             fitPriceToVisible(
@@ -950,6 +975,7 @@ export function Chart({
           <button
             type="button"
             className="sm-chart__btn sm-chart__btn--tf"
+            data-testid="sm-chart-tf-toggle"
             aria-haspopup="listbox"
             aria-expanded={tfOpen}
             onClick={() => {
@@ -965,21 +991,32 @@ export function Chart({
                 <div key={group} className="sm-chart__menu-group">
                   <span className="sm-chart__menu-title">{group}</span>
                   <div className="sm-chart__menu-grid">
-                    {TIMEFRAMES.filter((t) => t.group === group).map((t) => (
-                      <button
-                        key={t.id}
-                        type="button"
-                        role="option"
-                        aria-selected={t.id === interval}
-                        className={`sm-chart__menu-item${t.id === interval ? " is-active" : ""}`}
-                        onClick={() => {
-                          setInterval(t.id);
-                          setTfOpen(false);
-                        }}
-                      >
-                        {t.label}
-                      </button>
-                    ))}
+                    {TIMEFRAMES.filter((t) => t.group === group).map((t) => {
+                      const unsupported = !!source && !intervalSupported(source, t.id);
+                      return (
+                        <button
+                          key={t.id}
+                          type="button"
+                          role="option"
+                          aria-selected={t.id === interval}
+                          disabled={unsupported}
+                          title={
+                            unsupported
+                              ? `${t.label} bars are not available for ${source} instruments`
+                              : undefined
+                          }
+                          className={`sm-chart__menu-item${t.id === interval ? " is-active" : ""}${
+                            unsupported ? " is-disabled" : ""
+                          }`}
+                          onClick={() => {
+                            setInterval(t.id);
+                            setTfOpen(false);
+                          }}
+                        >
+                          {t.label}
+                        </button>
+                      );
+                    })}
                   </div>
                 </div>
               ))}

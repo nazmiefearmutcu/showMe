@@ -58,6 +58,39 @@ export function timeframeById(id: string): TimeframeDef | undefined {
   return TIMEFRAMES_BY_ID.get(id);
 }
 
+/**
+ * Provider support mirrors the backend's maps in
+ * `showme/server_routes/bars.py` (same canonical ids the shell sends).
+ * Binance serves every catalog id except the 5s/15s/30s "recognized but
+ * unmapped" seconds; Yahoo serves minutes, 30m/1h and above — no seconds
+ * and no 3m/2h/4h/6h/8h/12h. Unknown/empty sources return true so the
+ * backend stays the single source of truth for honest refusals.
+ */
+const BINANCE_UNSUPPORTED: ReadonlySet<string> = new Set(["5s", "15s", "30s"]);
+const YAHOO_SUPPORTED: ReadonlySet<string> = new Set([
+  "1m",
+  "5m",
+  "15m",
+  "30m",
+  "1h",
+  "1D",
+  "1W",
+  "1M",
+]);
+
+export function intervalSupported(source: string, id: string): boolean {
+  if (source === "binance") return !BINANCE_UNSUPPORTED.has(id);
+  if (source === "yahoo") return YAHOO_SUPPORTED.has(id);
+  return true;
+}
+
+/** Closest supported horizon when a (source, interval) pair is refused. */
+export function fallbackIntervalFor(source: string): string | null {
+  if (source === "yahoo") return "1D";
+  if (source === "binance") return "1m";
+  return null;
+}
+
 /** Duration in seconds for a catalog id, or null when unknown. */
 export function timeframeSeconds(id: string): number | null {
   return TIMEFRAMES_BY_ID.get(id)?.seconds ?? null;

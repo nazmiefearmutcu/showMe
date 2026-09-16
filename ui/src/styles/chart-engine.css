@@ -250,6 +250,12 @@
   border-color: color-mix(in srgb, var(--accent) 40%, transparent);
 }
 
+.sm-chart__menu-item.is-disabled,
+.sm-chart__menu-item:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+}
+
 .sm-chart__menu--type .sm-chart__menu-item {
   display: block;
   text-align: left;
