@@ -1,12 +1,12 @@
-"""MEET — Meeting Briefings: world-events tracker.
+"""MEET â€” Meeting Briefings: world-events tracker.
 
 The pane tracks scheduled world events (central-bank decisions, CPI, GDP,
-… for every country on the calendar) and country-tagged world headlines
+â€¦ for every country on the calendar) and country-tagged world headlines
 (wars, elections, summits) in one list:
 
-  * upcoming events ascending — from now until the nearest upcoming
+  * upcoming events ascending â€” from now until the nearest upcoming
     high-impact event and beyond, each with a server-computed countdown,
-  * past events descending — the last ``days_back`` days,
+  * past events descending â€” the last ``days_back`` days,
   * a country index (every country that appeared + next event + state),
   * spot alerts for rate decisions / wars with configurable lead times
     (the UI persists them under ``showme.meet.alerts``).
@@ -23,8 +23,18 @@ terms; empty windows say so; nothing is fabricated when a provider fails.
 from __future__ import annotations
 
 import asyncio
+import time
 from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
+
+# World-headline fetch cache (module level, shared across MEET calls): the
+# GDELT-first + RSS-fallback chain can spend ~10 s before answering, and the
+# pane refetches on every country/world filter toggle. Filters apply over the
+# cached rows, so only the upstream fetch rides this TTL. Successes keep the
+# full window; empty/failed passes expire faster so an outage recovers.
+_WORLD_CACHE: tuple[float, tuple[list[dict[str, Any]], str, str | None], float] | None = None
+_WORLD_CACHE_TTL_S = 180.0
+_WORLD_CACHE_FAIL_TTL_S = 30.0
 
 from showme.engine.core.base_data_source import DataKind, DataRequest
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
@@ -36,10 +46,10 @@ from showme.engine.services import world_events as we
 @FunctionRegistry.register
 class MEETFunction(BaseFunction):
     code = "MEET"
-    name = "Meeting Briefings — World Events"
+    name = "Meeting Briefings â€” World Events"
     category = "comm"
     description = (
-        "World-events tracker — country calendar + tagged headlines with "
+        "World-events tracker â€” country calendar + tagged headlines with "
         "countdowns, affected FX pairs and spot alerts."
     )
 
@@ -69,7 +79,7 @@ class MEETFunction(BaseFunction):
             )
             if calendar_rows:
                 sources.append("forex_factory")
-        except Exception as exc:  # noqa: BLE001 — provider failure is surfaced, not hidden
+        except Exception as exc:  # noqa: BLE001 â€” provider failure is surfaced, not hidden
             warnings.append(f"forex_factory: {str(exc) or exc.__class__.__name__}")
 
         economic, dropped_no_time = we.economic_rows(calendar_rows, now=now, source="forex_factory")
@@ -194,7 +204,19 @@ class MEETFunction(BaseFunction):
     async def _world_headlines(
         self, *, now: datetime, timeout: float
     ) -> tuple[list[dict[str, Any]], str, str | None]:
-        """Fetch the keyless world headline stream (GDELT first, RSS fallback)."""
+        """Fetch the keyless world headline stream (GDELT first, RSS fallback).
+
+        Cached for ``_WORLD_CACHE_TTL_S`` (owner 2026-09-16: toggling a
+        country/world filter re-paid the full ~10 s GDELT-timeout + RSS
+        fallback on EVERY click and the pane sat on skeletons for 8+ s).
+        Filters apply to the cached rows; only the upstream fetch is cached.
+        """
+        global _WORLD_CACHE
+        now_mono = time.monotonic()
+        if _WORLD_CACHE is not None and (now_mono - _WORLD_CACHE[0]) < _WORLD_CACHE[2]:
+            cached_items, cached_source, cached_error = _WORLD_CACHE[1]
+            return list(cached_items), cached_source, cached_error
+
         gdelt = getattr(self.deps, "gdelt", None)
         rss = getattr(self.deps, "rss", None)
         error: str | None = None
@@ -210,7 +232,9 @@ class MEETFunction(BaseFunction):
                     timeout=timeout,
                 )
                 if items:
-                    return list(items), "gdelt", None
+                    result = (list(items), "gdelt", None)
+                    _WORLD_CACHE = (now_mono, result, _WORLD_CACHE_TTL_S)
+                    return result
                 error = "gdelt: empty result"
             except Exception as exc:  # noqa: BLE001
                 error = f"gdelt: {str(exc) or exc.__class__.__name__}"
@@ -226,15 +250,27 @@ class MEETFunction(BaseFunction):
                 )
                 if items:
                     # GDELT empty/failed is disclosed only when it was an error
-                    # — an empty-but-OK GDELT just means the fallback is used.
-                    return list(items), "rss", error if error and "empty" not in error else None
-                return [], "rss", error or "rss: empty result"
+                    # â€” an empty-but-OK GDELT just means the fallback is used.
+                    result = (
+                        list(items),
+                        "rss",
+                        error if error and "empty" not in error else None,
+                    )
+                    _WORLD_CACHE = (now_mono, result, _WORLD_CACHE_TTL_S)
+                    return result
+                result = ([], "rss", error or "rss: empty result")
+                _WORLD_CACHE = (now_mono, result, _WORLD_CACHE_FAIL_TTL_S)
+                return result
             except Exception as exc:  # noqa: BLE001
                 merged = f"{error}; rss: {str(exc) or exc.__class__.__name__}" if error else (
                     f"rss: {str(exc) or exc.__class__.__name__}"
                 )
-                return [], "rss", merged
-        return [], "", error or "news: neither gdelt nor rss is configured"
+                result = ([], "rss", merged)
+                _WORLD_CACHE = (now_mono, result, _WORLD_CACHE_FAIL_TTL_S)
+                return result
+        result = ([], "", error or "news: neither gdelt nor rss is configured")
+        _WORLD_CACHE = (now_mono, result, _WORLD_CACHE_FAIL_TTL_S)
+        return result
 
 
 def _shell(
@@ -285,8 +321,8 @@ def _shell(
         "methodology": (
             "Scheduled rows come from the keyless ForexFactory weekly calendar "
             "(reused from ECO): every country on the calendar is listed with its "
-            "UTC timestamp, impact and affected FX pairs (country → currency → "
-            "majors, e.g. TR → USDTRY/EURTRY). World rows come from the keyless "
+            "UTC timestamp, impact and affected FX pairs (country â†’ currency â†’ "
+            "majors, e.g. TR â†’ USDTRY/EURTRY). World rows come from the keyless "
             "GDELT headline stream (English-language wire, RSS fallback) tagged with "
             "a country gazetteer; "
             "a headline may concern several countries and carries the exact matched "
@@ -298,7 +334,7 @@ def _shell(
             "rows[].when_utc": "Event time in UTC (offset-aware provider timestamp).",
             "rows[].seconds_to_event": "Server-computed seconds from as_of (negative = past).",
             "rows[].age_minutes": "Minutes since the event for past rows.",
-            "rows[].countries": "ISO codes — a row may concern several countries.",
+            "rows[].countries": "ISO codes â€” a row may concern several countries.",
             "rows[].pairs": "Quoted FX pairs / indices derived from the country currency.",
             "rows[].spot": "True for central-bank decisions and wars (alert-worthy).",
             "rows[].pinned": "Spot rows plus high-impact prints from major markets.",

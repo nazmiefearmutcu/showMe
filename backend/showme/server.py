@@ -1095,6 +1095,20 @@ def build_app(engine_root: Path | None) -> FastAPI:
                         boot_state["function_factory_warmed"] = False
                         boot_state["function_factory_warm_error"] = str(exc) or type(exc).__name__
                     LOG.warning("function factory warmup failed: %r", exc)
+                # MEET prewarm (owner 2026-09-16): the world-headline chain
+                # (GDELT -> RSS fallback) spends ~10 s on its first call, and
+                # the pane sat on skeletons for it. Warm the module cache at
+                # boot so the first pane open and every filter toggle answer
+                # instantly.
+                try:
+                    await asyncio.wait_for(
+                        _execute_showme_function(
+                            "MEET", _route_function_params("MEET", {})
+                        ),
+                        timeout=45,
+                    )
+                except Exception as exc:  # noqa: BLE001 - non-fatal prewarm
+                    LOG.debug("MEET prewarm skipped: %r", exc)
 
             asyncio.create_task(_warm())
 

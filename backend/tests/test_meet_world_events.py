@@ -37,6 +37,16 @@ from showme.engine.services import world_events as we
 _TZ_TR = timezone(timedelta(hours=3))
 
 
+@pytest.fixture(autouse=True)
+def _reset_world_headline_cache():
+    """The headline fetch cache is module level (survives across cases);
+    each test starts from a cold cache so its provider fakes are the only
+    source of truth."""
+    meet_mod._WORLD_CACHE = None
+    yield
+    meet_mod._WORLD_CACHE = None
+
+
 def _run(coro):
     return asyncio.run(coro)
 
