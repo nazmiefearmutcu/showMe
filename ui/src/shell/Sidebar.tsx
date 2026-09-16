@@ -260,7 +260,10 @@ export function Sidebar() {
     [recentSnapshot, index],
   );
   const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
+    /* A leading command punctuation ("/settings", ">settings", "#settings")
+       is a natural way to type into a terminal search box but matched
+       nothing; strip it before matching so "/settings" finds SET Settings. */
+    const q = query.trim().toLowerCase().replace(/^[/>#\s]+/, "");
     if (!q) return index;
     return index.filter((entry) =>
       `${entry.code} ${entry.name} ${entry.category} ${entry.description}`

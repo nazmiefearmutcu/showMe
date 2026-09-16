@@ -84,7 +84,9 @@ describe("Titlebar top-nav — QA-2026-05-23 wire-up", () => {
 
   it("Prefs button navigates to /preferences", () => {
     render(<Titlebar />);
-    fireEvent.click(screen.getByRole("button", { name: /Preferences/i }));
+    /* Two entry points now exist (utility segment + the always-visible
+       settings button); pin the stable testid. */
+    fireEvent.click(screen.getByTestId("titlebar-settings"));
     expect(window.location.hash).toBe("#/preferences");
   });
 

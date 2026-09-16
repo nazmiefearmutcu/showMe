@@ -475,6 +475,19 @@ export function Titlebar() {
         >
           <span className="kbd">⌘K</span>
         </button>
+        {/* Always-visible Settings entry point: the utility segment (which
+            also links /preferences) hides on narrow windows, and the owner
+            could not find settings anywhere (2026-09-16). */}
+        <button
+          type="button"
+          className="btn btn--ghost interactive titlebar__settings-btn"
+          data-testid="titlebar-settings"
+          onClick={() => navigate("/preferences")}
+          title={t("shell.preferences")}
+          aria-label={t("shell.preferences")}
+        >
+          <span className="kbd">⚙</span>
+        </button>
         <PresetMenu />
       </TopbarSegment>
 

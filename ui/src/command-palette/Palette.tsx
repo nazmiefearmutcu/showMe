@@ -80,7 +80,9 @@ const STATIC_ENTRIES: FnPaletteEntry[] = [
   {
     id: "system.preferences",
     code: "PREF",
-    name: "Preferences",
+    /* "Settings" is the word users actually type (owner: "settings nerede");
+       both spellings must match the fuzzy haystack of code + name. */
+    name: "Settings (Preferences)",
     category: "system",
     hash: "/preferences",
     kind: "fn",
