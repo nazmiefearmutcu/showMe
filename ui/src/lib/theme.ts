@@ -197,13 +197,40 @@ function migrateStoredMidnightDefault(state: ThemeState): ThemeState {
 
 // ── Apply (push to <html>) ──────────────────────────────────────────────
 
+/** Perceived luminance of a #rgb/#rrggbb colour (0..1); null when unparsable. */
+function relativeLuma(hex: string | undefined): number | null {
+  if (!hex) return null;
+  const value = hex.trim().replace(/^#/, "");
+  const full =
+    value.length === 3
+      ? value
+          .split("")
+          .map((c) => c + c)
+          .join("")
+      : value;
+  if (!/^[0-9a-fA-F]{6}$/.test(full)) return null;
+  const r = parseInt(full.slice(0, 2), 16) / 255;
+  const g = parseInt(full.slice(2, 4), 16) / 255;
+  const b = parseInt(full.slice(4, 6), 16) / 255;
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
 export function applyState(state: ThemeState): void {
   if (typeof document === "undefined") return;
   const root = document.documentElement;
   root.setAttribute("data-preset", state.preset);
   root.setAttribute("data-density", state.density);
   // Maintain legacy data-theme so any holdover CSS still resolves.
-  root.setAttribute("data-theme", state.preset === "papyrus" ? "light" : "dark");
+  const customLuma = state.preset === "custom" ? relativeLuma(state.custom.bg) : null;
+  const isLightPreset =
+    state.preset === "papyrus" || (customLuma != null && customLuma >= 0.6);
+  root.setAttribute("data-theme", isLightPreset ? "light" : "dark");
+  /* Native chrome must match the preset family. Without this the WebView2 /
+   * browser backdrop, scrollbar corners and form controls keep the OS DARK
+   * default, which leaks through unpainted edges as black bands on light
+   * presets (owner 2026-09-16: "siyah boşluklar template ile uyumlu olacak
+   * dedim mi demedim mi"). */
+  root.style.colorScheme = isLightPreset ? "light" : "dark";
 
   if (state.preset === "custom") {
     root.style.setProperty("--bg", state.custom.bg);

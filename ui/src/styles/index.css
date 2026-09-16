@@ -9187,3 +9187,10 @@ body {
   height: auto;
   min-height: 240px;
 }
+
+/* Root container also paints the theme background (belt for sub-pixel /
+ * resize gaps on top of the html/body guard). */
+#root {
+  background: var(--bg);
+  min-height: 100vh;
+}
