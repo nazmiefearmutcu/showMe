@@ -386,6 +386,28 @@ const QUICK_CODES = [
   "WATCH",
   "SCAN",
 ];
+
+/**
+ * Owner request (2026-09-16): the pinned quick functions must be swappable
+ * at any time. The deck persists per browser; an invalid/empty stored deck
+ * falls back to the shipped defaults (restore only what validates).
+ */
+const QUICK_STORE_KEY = "showme.quick-functions.v1";
+
+function loadQuickCodes(): string[] {
+  try {
+    const raw = typeof window !== "undefined" ? window.localStorage.getItem(QUICK_STORE_KEY) : null;
+    if (!raw) return [...QUICK_CODES];
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [...QUICK_CODES];
+    const cleaned = parsed
+      .map((value) => String(value ?? "").trim().toUpperCase())
+      .filter(Boolean);
+    return cleaned.length ? cleaned.slice(0, QUICK_CODES.length) : [...QUICK_CODES];
+  } catch {
+    return [...QUICK_CODES];
+  }
+}
 /**
  * Demo-only movers shown when the `/api/fn/MOST` endpoint isn't registered
  * yet or returns nothing. Every row is rendered with a per-row DEMO pill so
@@ -669,6 +691,35 @@ export function Welcome() {
   const sentimentRetry = () => {
     refreshSentiment(sentimentSymbols);
   };
+
+  /* Quick-functions deck: swap any pinned shortcut from the panel header. */
+  const [quickCodes, setQuickCodes] = useState<string[]>(loadQuickCodes);
+  const [quickEditing, setQuickEditing] = useState(false);
+  const [quickSlot, setQuickSlot] = useState(0);
+  const [quickQuery, setQuickQuery] = useState("");
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(QUICK_STORE_KEY, JSON.stringify(quickCodes));
+    } catch {
+      /* private mode - the deck still works for this session */
+    }
+  }, [quickCodes]);
+  const quickMatches = useMemo(() => {
+    const q = quickQuery.trim().toLowerCase();
+    const pool = index.filter((entry) => !quickCodes.includes(entry.code));
+    const matches = q
+      ? pool.filter((entry) =>
+          `${entry.code} ${entry.name} ${entry.category}`.toLowerCase().includes(q),
+        )
+      : pool;
+    return matches.slice(0, 8);
+  }, [index, quickCodes, quickQuery]);
+  const assignQuickCode = (code: string) => {
+    setQuickCodes((prev) => prev.map((entry, i) => (i === quickSlot ? code : entry)));
+    setQuickQuery("");
+    setQuickSlot((slot) => (slot + 1) % quickCodes.length);
+  };
+
   const session = marketSession(now);
   const dateStamp = formatDateStamp(now, tz);
   const localTime = formatTime(now, { tz });
@@ -1108,26 +1159,97 @@ export function Welcome() {
           <div className="terminal-panel terminal-panel--commands">
             <div className="terminal-panel__header">
               <h3>Quick functions</h3>
-              <span>{index.length || "--"} registered</span>
+              <span className="terminal-panel__header-actions">
+                <span>{index.length || "--"} registered</span>
+                <button
+                  type="button"
+                  className={`terminal-quick-edit${quickEditing ? " is-active" : ""}`}
+                  data-testid="quick-functions-edit"
+                  aria-pressed={quickEditing}
+                  title={quickEditing ? "Finish editing quick functions" : "Edit quick functions"}
+                  aria-label={quickEditing ? "Finish editing quick functions" : "Edit quick functions"}
+                  onClick={() => {
+                    setQuickEditing((value) => !value);
+                    setQuickQuery("");
+                  }}
+                >
+                  <span aria-hidden>{quickEditing ? "✓" : "⌁"}</span>
+                </button>
+              </span>
             </div>
             <div className="terminal-command-grid">
-              {QUICK_CODES.map((code) => {
+              {quickCodes.map((code, i) => {
                 const fn = functionByCode.get(code) ?? fallbackEntry(code);
                 return (
                   <button
-                    key={code}
+                    key={`${i}-${code}`}
                     type="button"
-                    className="terminal-command"
-                    aria-label={`Open ${code} — ${fn.name}`}
-                    onClick={() => navigate(`/fn/${code}`)}
+                    className={`terminal-command${quickEditing && i === quickSlot ? " is-editing" : ""}`}
+                    aria-label={
+                      quickEditing
+                        ? `Replace ${code} — ${fn.name}`
+                        : `Open ${code} — ${fn.name}`
+                    }
+                    onClick={() =>
+                      quickEditing ? setQuickSlot(i) : navigate(`/fn/${code}`)
+                    }
                   >
                     <strong>{code}</strong>
-                    <span title={fn.name}>{shortName(fn)}</span>
-                    {nativeCodes.has(code) && <em>N</em>}
+                    <span title={fn.name}>{quickEditing ? "replace" : shortName(fn)}</span>
+                    {nativeCodes.has(code) && !quickEditing && <em>N</em>}
                   </button>
                 );
               })}
             </div>
+            {quickEditing && (
+              <div className="terminal-quick-editor" data-testid="quick-functions-editor">
+                <div className="terminal-quick-editor__row">
+                  <span className="terminal-quick-editor__hint">
+                    Slot {quickSlot + 1} — pick a function
+                  </span>
+                  <button
+                    type="button"
+                    className="terminal-quick-editor__reset"
+                    onClick={() => {
+                      setQuickCodes([...QUICK_CODES]);
+                      setQuickEditing(false);
+                    }}
+                  >
+                    Reset deck
+                  </button>
+                </div>
+                <input
+                  className="terminal-quick-editor__input"
+                  placeholder="Type a code or name…"
+                  value={quickQuery}
+                  onChange={(event) => setQuickQuery(event.target.value)}
+                  aria-label="Search functions to assign"
+                />
+                <div
+                  className="terminal-quick-editor__list"
+                  role="listbox"
+                  aria-label="Function candidates"
+                >
+                  {quickMatches.map((entry) => (
+                    <button
+                      key={entry.code}
+                      type="button"
+                      role="option"
+                      className="terminal-quick-editor__option"
+                      onClick={() => assignQuickCode(entry.code)}
+                    >
+                      <strong>{entry.code}</strong>
+                      <span>{entry.name}</span>
+                    </button>
+                  ))}
+                  {quickMatches.length === 0 && (
+                    <span className="terminal-quick-editor__empty">
+                      No matching function
+                    </span>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="terminal-panel terminal-panel--exposure">

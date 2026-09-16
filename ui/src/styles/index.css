@@ -8982,3 +8982,135 @@
     display: none;
   }
 }
+
+/* Quick-functions deck editor (owner 2026-09-16): a discreet mono glyph
+ * beside "N registered" toggles replace mode; slots highlight, then the
+ * search list assigns the pick. Theme-adaptive via tokens only. */
+.terminal-panel__header-actions {
+  align-items: center;
+  display: inline-flex;
+  gap: var(--space-3);
+}
+
+.terminal-quick-edit {
+  align-items: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--text-mute);
+  cursor: pointer;
+  display: inline-flex;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  height: 18px;
+  justify-content: center;
+  line-height: 1;
+  padding: 0 4px;
+}
+
+.terminal-quick-edit:hover {
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--border-subtle));
+  color: var(--accent);
+}
+
+.terminal-quick-edit.is-active {
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border-subtle));
+  color: var(--accent);
+}
+
+.terminal-command.is-editing {
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border-subtle));
+}
+
+.terminal-command.is-editing span {
+  color: var(--text-mute);
+}
+
+.terminal-quick-editor {
+  border-top: 1px solid var(--border-subtle);
+  display: grid;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+  padding-top: var(--space-3);
+}
+
+.terminal-quick-editor__row {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+}
+
+.terminal-quick-editor__hint {
+  color: var(--text-mute);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.terminal-quick-editor__reset {
+  background: transparent;
+  border: 0;
+  color: var(--accent);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-decoration: underline;
+}
+
+.terminal-quick-editor__input {
+  background: var(--surface-1);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  height: 24px;
+  padding: 0 var(--space-3);
+}
+
+.terminal-quick-editor__input:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 0;
+}
+
+.terminal-quick-editor__list {
+  display: grid;
+  gap: 2px;
+  max-height: 148px;
+  overflow: auto;
+}
+
+.terminal-quick-editor__option {
+  align-items: center;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  display: flex;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  gap: var(--space-3);
+  justify-content: flex-start;
+  padding: 3px var(--space-2);
+  text-align: left;
+}
+
+.terminal-quick-editor__option:hover {
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--border-subtle));
+  color: var(--text-primary);
+}
+
+.terminal-quick-editor__option strong {
+  color: var(--accent-strong);
+  font-size: 10px;
+  min-width: 44px;
+}
+
+.terminal-quick-editor__empty {
+  color: var(--text-mute);
+  font-size: 10px;
+  padding: 3px var(--space-2);
+}
