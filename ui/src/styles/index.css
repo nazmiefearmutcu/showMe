@@ -8884,3 +8884,101 @@
   outline-offset: 2px;
   border-radius: var(--radius-sm);
 }
+
+/* ── Titlebar responsiveness ─────────────────────────────────────────────
+ * Reported: shrinking the window made the bar run off the right edge instead
+ * of adapting. The bar keeps its highest-value controls longest (brand →
+ * command input → palette → status) and sheds the rest in stages. Segment
+ * hooks (.titlebar__seg-*) come from Titlebar.tsx.
+ * ──────────────────────────────────────────────────────────────────────── */
+.titlebar .ds-topbar-seg__caption {
+  white-space: nowrap;
+}
+
+/* The help strip can shrink freely; its text ellipsizes. */
+.titlebar__command-strip {
+  min-width: 0;
+}
+
+@media (max-width: 2500px) {
+  .titlebar__seg-utility {
+    display: none;
+  }
+}
+
+@media (max-width: 2250px) {
+  .titlebar__quick-actions {
+    display: none;
+  }
+}
+
+@media (max-width: 2080px) {
+  .titlebar .ds-topbar-seg__caption {
+    display: none;
+  }
+
+  .titlebar .titlebar-tape {
+    display: none;
+  }
+}
+
+@media (max-width: 1900px) {
+  .titlebar__pill-row-extra,
+  .titlebar__pill-row-extra--tracking {
+    display: none;
+  }
+
+  .titlebar__seg-cockpit .titlebar__btn-group button:not(:first-child) {
+    display: none;
+  }
+}
+
+@media (max-width: 1720px) {
+  .titlebar__market-nav-btn:nth-last-child(-n + 4) {
+    display: none;
+  }
+
+  .titlebar__command-strip > span:last-child {
+    display: none;
+  }
+}
+
+@media (max-width: 1500px) {
+  .titlebar .cmdline__hint {
+    display: none;
+  }
+
+  .titlebar .cmdline__input {
+    min-width: 110px;
+  }
+}
+
+@media (max-width: 1360px) {
+  .titlebar__market-nav-btn:nth-last-child(-n + 5) {
+    display: none;
+  }
+
+  .titlebar .cmdline__input {
+    min-width: 90px;
+  }
+}
+
+@media (max-width: 1180px) {
+  .titlebar__seg-status {
+    display: none;
+  }
+
+  .titlebar__command-strip {
+    display: none;
+  }
+}
+
+@media (max-width: 1040px) {
+  .titlebar__market-nav-btn:nth-last-child(-n + 6) {
+    display: none;
+  }
+
+  .titlebar__seg-cockpit {
+    display: none;
+  }
+}

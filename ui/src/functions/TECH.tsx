@@ -290,7 +290,12 @@ export function TECHPane({ code, symbol }: FunctionPaneProps) {
             </span>
           </FlashValue>
         </div>
-        <Chart symbol={effectiveSymbol} height={280} initialInterval="1D" />
+        <Chart
+        symbol={effectiveSymbol}
+        height={280}
+        layoutScope={code.toUpperCase()}
+        initialInterval="1D"
+      />
       </section>
       {showRsiStudy ? (
         <RsiStudyPane values={rsiStudy} period={params.rsi_period ?? 14} />

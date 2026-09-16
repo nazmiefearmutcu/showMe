@@ -64,6 +64,28 @@ describe("chart layout store", () => {
     expect(loadLayout("NOPE", s)).toBeNull();
   });
 
+  it("namespaces layouts per consuming scope (no cross-pane leakage)", () => {
+    const s = storage();
+    /* Reported: an intraday-pane entry (1s) leaked into the daily-studies
+       pane for the same symbol and made its chart look dead. Scoped reads
+       must not see entries saved under another scope — or under the legacy
+       symbol-only key. */
+    saveLayout("SOLUSDT", { ...fullLayout, interval: "1s" }, s, "GP");
+    expect(loadLayout("SOLUSDT", s, "CHGS")).toBeNull();
+    expect(loadLayout("SOLUSDT", s, "GP")?.interval).toBe("1s");
+    expect(loadLayout("SOLUSDT", s)).toBeNull();
+
+    /* Legacy symbol-only entries stay invisible to scoped panes. */
+    saveLayout("AAPL", { ...fullLayout, interval: "1s" }, s);
+    expect(loadLayout("AAPL", s, "CHGS")).toBeNull();
+    expect(loadLayout("AAPL", s)?.interval).toBe("1s");
+
+    /* Scoped clears only drop the scoped entry. */
+    clearLayout("SOLUSDT", s, "GP");
+    expect(loadLayout("SOLUSDT", s, "GP")).toBeNull();
+    expect(loadLayout("AAPL", s)?.interval).toBe("1s");
+  });
+
   it("returns null on corrupt JSON", () => {
     const s = storage();
     s.setItem(LAYOUT_STORE_KEY, "{oops");

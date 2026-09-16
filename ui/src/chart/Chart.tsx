@@ -109,6 +109,12 @@ export interface ChartProps {
   compact?: boolean;
   initialInterval?: string;
   initialType?: ChartType;
+  /**
+   * Layout-store namespace for this consuming surface (pane code). Keeps a
+   * timeframe picked in an intraday pane (e.g. GP at 1s) from leaking into a
+   * daily-studies pane (CHGS) for the same symbol. Omit for unscoped keys.
+   */
+  layoutScope?: string;
   /** Auto-refresh cadence; 0 disables. Defaults to 30s. */
   refreshMs?: number;
   /** Multi-symbol compare overlay (percent-normalized lines). Default []. */
@@ -132,6 +138,7 @@ export function Chart({
   compact = false,
   initialInterval = DEFAULT_TF,
   initialType = "candles",
+  layoutScope,
   refreshMs = 30_000,
   compareSymbols = [],
   className,
@@ -151,8 +158,10 @@ export function Chart({
   const rafRef = useRef(0);
 
   /* Layout restore (milestone 3): one snapshot read at mount; only fields
-     that were actually saved and passed validation are applied. */
-  const [restored] = useState(() => loadLayout(symbol));
+     that were actually saved and passed validation are applied. The read is
+     namespaced by the consuming surface so panes with different timeframe
+     defaults never inherit each other's saved state for a shared symbol. */
+  const [restored] = useState(() => loadLayout(symbol, undefined, layoutScope));
 
   const [interval, setInterval] = useState(restored?.interval ?? initialInterval);
   const [chartType, setChartType] = useState<ChartType>(restored?.chartType ?? initialType);
@@ -606,19 +615,24 @@ export function Chart({
       skipPersistRef.current = false;
       return;
     }
-    saveLayout(symbol, {
-      interval,
-      chartType,
-      priceMode,
-      showVolume,
-      indicators: instances,
-      drawings,
-      compareSymbols: compare,
-    });
-  }, [symbol, interval, chartType, priceMode, showVolume, instances, drawings, compare]);
+    saveLayout(
+      symbol,
+      {
+        interval,
+        chartType,
+        priceMode,
+        showVolume,
+        indicators: instances,
+        drawings,
+        compareSymbols: compare,
+      },
+      undefined,
+      layoutScope,
+    );
+  }, [symbol, interval, chartType, priceMode, showVolume, instances, drawings, compare, layoutScope]);
 
   const resetLayout = useCallback(() => {
-    clearLayout(symbol);
+    clearLayout(symbol, undefined, layoutScope);
     skipPersistRef.current = true;
     setInterval(initialInterval);
     setChartType(initialType);
@@ -639,7 +653,7 @@ export function Chart({
     saveAlertStore(symbol, { rules: [], fired: {} });
     priceTouchedRef.current = false;
     fitAll(false);
-  }, [symbol, initialInterval, initialType, fitAll]);
+  }, [symbol, initialInterval, initialType, fitAll, layoutScope]);
 
   useEffect(() => {
     schedule();

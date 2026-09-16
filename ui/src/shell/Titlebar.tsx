@@ -332,7 +332,7 @@ export function Titlebar() {
     <header className="titlebar" aria-label={t("app.name")}>
       {/* A11Y-05: visually-hidden h1 anchors the document outline. */}
       <h1 className="u-sr-only">showMe — Market Cockpit</h1>
-      <TopbarSegment>
+      <TopbarSegment className="titlebar__seg-home">
         <button
           type="button"
           className="interactive titlebar__home-btn"
@@ -345,7 +345,7 @@ export function Titlebar() {
         </button>
       </TopbarSegment>
 
-      <TopbarSegment caption="ShowMe 0.01" withDivider>
+      <TopbarSegment className="titlebar__seg-nav" caption="ShowMe 0.01" withDivider>
         <nav className="interactive titlebar__market-nav" aria-label="Market workspaces">
           {MARKET_NAV.map((item) => {
             const isActive = isMarketNavActive(item, route, activeCode);
@@ -379,7 +379,7 @@ export function Titlebar() {
         </nav>
       </TopbarSegment>
 
-      <TopbarSegment withDivider>
+      <TopbarSegment className="titlebar__seg-command" withDivider>
         <button
           type="button"
           className="interactive titlebar__command-strip"
@@ -412,7 +412,7 @@ export function Titlebar() {
         <TitlebarTape />
       </TopbarSegment>
 
-      <TopbarSegment caption="cockpit" withDivider>
+      <TopbarSegment className="titlebar__seg-cockpit" caption="cockpit" withDivider>
         <div className="interactive titlebar__btn-group" role="group" aria-label="Pane actions">
           <button
             type="button"
@@ -465,7 +465,7 @@ export function Titlebar() {
 
       <div className="interactive titlebar__filler" />
 
-      <TopbarSegment>
+      <TopbarSegment className="titlebar__seg-palette">
         <button
           type="button"
           className="btn btn--ghost interactive titlebar__palette-btn"
@@ -478,7 +478,7 @@ export function Titlebar() {
         <PresetMenu />
       </TopbarSegment>
 
-      <TopbarSegment withDivider>
+      <TopbarSegment className="titlebar__seg-status" withDivider>
         <Pill tone={tone} variant="soft">
           {status}
         </Pill>
@@ -501,7 +501,7 @@ export function Titlebar() {
         <MarketSessionPill kind={sessionKind} />
       </TopbarSegment>
 
-      <TopbarSegment withDivider>
+      <TopbarSegment className="titlebar__seg-utility" withDivider>
         <button
           type="button"
           className="btn btn--ghost interactive"

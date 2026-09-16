@@ -415,6 +415,7 @@ export function GPPane({ code, symbol }: FunctionPaneProps) {
                   <Chart
                     symbol={effectiveSymbol}
                     fill
+                    layoutScope={code.toUpperCase()}
                     initialInterval={mapInterval(interval)}
                     initialType={mapStyle(GP_CHART_STYLE)}
                   />

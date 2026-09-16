@@ -410,7 +410,12 @@ export function WEIPane({ code }: FunctionPaneProps) {
                 </button>
               </div>
               <div className="wei-chart-modal__body">
-                <Chart symbol={chartSymbol} fill initialInterval="15m" />
+                <Chart
+                  symbol={chartSymbol}
+                  fill
+                  layoutScope={code.toUpperCase()}
+                  initialInterval="15m"
+                />
               </div>
             </div>
           </div>

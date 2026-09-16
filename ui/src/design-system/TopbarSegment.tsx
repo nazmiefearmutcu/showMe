@@ -13,15 +13,19 @@ export function TopbarSegment({
   caption,
   withDivider = false,
   align = "start",
+  className,
 }: {
   children: ReactNode;
   caption?: ReactNode;
   withDivider?: boolean;
   align?: "start" | "end";
+  /** Extra hook for surface-specific styling (e.g. responsive titlebar). */
+  className?: string;
 }) {
   const classes = [
     "ds-topbar-seg",
     withDivider ? `ds-topbar-seg--divider-${align}` : null,
+    className ?? null,
   ]
     .filter(Boolean)
     .join(" ");

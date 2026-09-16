@@ -101,12 +101,24 @@ function sanitizeInstance(v: unknown): IndicatorInstance | null {
  * only the fields that were saved AND passed validation; null when the
  * store is missing/corrupt or the entry is not an object.
  */
+/**
+ * Layout store key. ``scope`` namespaces the entry by consuming surface
+ * (e.g. "CHGS" vs "GP") so a timeframe picked in an intraday pane can never
+ * leak into a daily-studies pane for the same symbol — the reported case: a
+ * stale 1s layout restored into CHGS made the daily chart look dead.
+ * Scope-less callers keep the historical symbol-only key.
+ */
+function storeKey(symbol: string, scope?: string): string {
+  return scope ? `${scope}:${symbol}` : symbol;
+}
+
 export function loadLayout(
   symbol: string,
   storage?: Storage | null,
+  scope?: string,
 ): Partial<ChartLayout> | null {
   const store = readMap(safeStorage(storage));
-  const entry = store[symbol];
+  const entry = store[storeKey(symbol, scope)];
   if (typeof entry !== "object" || entry === null || Array.isArray(entry)) return null;
   const raw = entry as Record<string, unknown>;
   const out: Partial<ChartLayout> = {};
@@ -150,12 +162,13 @@ export function saveLayout(
   symbol: string,
   layout: ChartLayout,
   storage?: Storage | null,
+  scope?: string,
 ): void {
   const s = safeStorage(storage);
   if (!s) return;
   try {
     const map = readMap(s);
-    map[symbol] = layout;
+    map[storeKey(symbol, scope)] = layout;
     s.setItem(LAYOUT_STORE_KEY, JSON.stringify(map));
   } catch {
     /* private mode / quota — the chart keeps working without persistence */
@@ -163,12 +176,16 @@ export function saveLayout(
 }
 
 /** Drop the saved layout for one symbol (Reset). Empty map removes the key. */
-export function clearLayout(symbol: string, storage?: Storage | null): void {
+export function clearLayout(
+  symbol: string,
+  storage?: Storage | null,
+  scope?: string,
+): void {
   const s = safeStorage(storage);
   if (!s) return;
   try {
     const map = readMap(s);
-    delete map[symbol];
+    delete map[storeKey(symbol, scope)];
     if (Object.keys(map).length === 0) s.removeItem(LAYOUT_STORE_KEY);
     else s.setItem(LAYOUT_STORE_KEY, JSON.stringify(map));
   } catch {

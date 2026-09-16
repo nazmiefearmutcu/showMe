@@ -494,7 +494,13 @@ export function DESPane({ code, symbol }: FunctionPaneProps) {
               currency={profile?.currency}
             />
             <div style={stripChartStyle}>
-              <Chart symbol={effectiveSymbol} compact height={170} initialInterval="1D" />
+              <Chart
+          symbol={effectiveSymbol}
+          compact
+          height={170}
+          layoutScope={code.toUpperCase()}
+          initialInterval="1D"
+        />
             </div>
           </div>
         )}

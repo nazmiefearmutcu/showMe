@@ -27,10 +27,12 @@ const DEFAULT_VIEWPORT: Viewport = {
 };
 
 /**
- * Deep zoom-out floor: 0.05 px per bar lets ~16k bars fit in an 800 px plot.
- * Extreme zoom-in cap: 1500 px per bar. These are the only zoom limits.
+ * Deep zoom-out floor: 1e-7 px per bar makes the visible range effectively
+ * unbounded (~10^10 bars in an 800 px plot) — zooming out reveals empty space
+ * instead of stopping at a magic span. Extreme zoom-in cap: 1500 px per bar.
+ * These are the only zoom limits.
  */
-const MIN_BAR_WIDTH = 0.05;
+const MIN_BAR_WIDTH = 1e-7;
 const MAX_BAR_WIDTH = 1500;
 
 /** Bars visible before the caller calls setRange. */

@@ -106,7 +106,7 @@ describe("createTimeScale", () => {
     expect(s.toX(index) - x0).toBeCloseTo(37.5 - 100, 6);
   });
 
-  it("clamps barWidth to the [0.05, 1500] px extremes only", () => {
+  it("clamps barWidth to the near-zero floor and the 1500 px cap only", () => {
     const s = createTimeScale();
     s.setViewport(VIEWPORT);
     s.setRange(0, 100);
@@ -115,14 +115,18 @@ describe("createTimeScale", () => {
     }
     expect(s.barWidth()).toBeCloseTo(1500, 6);
     expect(s.barWidth()).toBeLessThanOrEqual(1500 + 1e-6);
-    for (let k = 0; k < 120; k += 1) {
+    for (let k = 0; k < 240; k += 1) {
       s.zoomAt(PLOT_W / 2, 0.5);
     }
-    expect(s.barWidth()).toBeCloseTo(0.05, 9);
-    expect(s.barWidth()).toBeGreaterThanOrEqual(0.05 - 1e-9);
+    /* The zoom-out floor is effectively infinite (1e-7 px per bar) so the
+       range never clips: far past the old 0.05 floor the range keeps growing
+       and stays finite/ordered. */
+    expect(s.barWidth()).toBeCloseTo(1e-7, 12);
+    expect(s.barWidth()).toBeGreaterThanOrEqual(1e-7 - 1e-12);
     const r = s.range();
     expect(Number.isFinite(r.from) && Number.isFinite(r.to)).toBe(true);
     expect(r.to).toBeGreaterThan(r.from);
+    expect(r.to - r.from).toBeGreaterThan(1e6);
   });
 
   it("survives setViewport before/after ranges and resize", () => {

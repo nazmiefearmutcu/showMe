@@ -586,6 +586,7 @@ function ChartLayout({
           <Chart
             symbol={symbol}
             fill
+            layoutScope={chartId.toUpperCase()}
             initialInterval={mapInterval(interval)}
             initialType={mapStyle(HP_CHART_STYLE)}
           />

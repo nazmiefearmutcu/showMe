@@ -321,7 +321,12 @@ export function CHGSPane({ code, symbol }: FunctionPaneProps) {
           tone="neutral"
         />
       </section>
-      <Chart symbol={effectiveSymbol} height={CHART_H} initialInterval="1D" />
+      <Chart
+        symbol={effectiveSymbol}
+        height={CHART_H}
+        layoutScope={code.toUpperCase()}
+        initialInterval="1D"
+      />
       {studyTableRows.length > 0 ? (
         <DataGrid
           columns={STUDY_COLS}
