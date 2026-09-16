@@ -9162,3 +9162,13 @@
   font-size: 10px;
   padding: 3px var(--space-2);
 }
+
+/* Global surface guard (owner 2026-09-16: "kapkara boşluklar"): the document
+ * itself carries the themed background so any uncovered WebView / letterbox /
+ * overscroll area can never show the platform default BLACK. Every preset
+ * resolves --bg, so this stays template-compatible by construction. */
+html,
+body {
+  background: var(--bg);
+  color: var(--text-primary);
+}
