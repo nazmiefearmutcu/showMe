@@ -49,6 +49,33 @@ function _toNum(x: unknown): number | null {
   return x;
 }
 
+/**
+ * One quick follow-up pass when no chip had live posts yet (chips warm in
+ * the background server-side; 6 s is typically enough). Single-shot: the
+ * timer is cleared by every new refresh.
+ */
+let sentimentRetryTimer: ReturnType<typeof setTimeout> | null = null;
+
+function scheduleSentimentRetry(symbols: string[]): void {
+  if (sentimentRetryTimer != null) return;
+  try {
+    sentimentRetryTimer = setTimeout(() => {
+      sentimentRetryTimer = null;
+      void useSentimentStore.getState().refresh(symbols);
+    }, 6_000);
+  } catch {
+    sentimentRetryTimer = null;
+  }
+}
+
+/** Test hook - drops a pending warming retry between cases. */
+export function __clearSentimentRetryForTests(): void {
+  if (sentimentRetryTimer != null) {
+    clearTimeout(sentimentRetryTimer);
+    sentimentRetryTimer = null;
+  }
+}
+
 export const useSentimentStore = create<SentimentStoreShape>((set, get) => ({
   score: 0,
   label: "Neutral",
@@ -81,7 +108,12 @@ export const useSentimentStore = create<SentimentStoreShape>((set, get) => ({
     }
 
     // Cancel any in-flight refresh so concurrent calls don't clobber state in
-    // arbitrary order. Last caller wins.
+    // arbitrary order. Last caller wins. A pending warming retry is dropped
+    // too - this call IS the refresh.
+    if (sentimentRetryTimer != null) {
+      clearTimeout(sentimentRetryTimer);
+      sentimentRetryTimer = null;
+    }
     const prev = get()._inflight;
     if (prev) prev.abort();
     const controller = new AbortController();
@@ -114,12 +146,25 @@ export const useSentimentStore = create<SentimentStoreShape>((set, get) => ({
         totalMentions += mentions;
       }
 
-      // Aggregate score = mention-weighted average. Fall back to 0 (Neutral)
-      // when we have nothing.
-      const aggScore =
-        totalMentions > 0
-          ? Math.max(-1, Math.min(1, weighted / totalMentions))
-          : 0;
+      if (totalMentions === 0) {
+        // No chip carried live labeled posts this pass (the backend serves a
+        // fast "warming" placeholder while it back-fills Stocktwits, owner
+        // 2026-09-16). NEVER fabricate a 0%/Neutral reading: keep the last
+        // good value, surface the waiting state only when nothing was ever
+        // measured, and retry quickly so the next pass catches the warmed
+        // chips.
+        const hadReading = get().lastUpdated != null;
+        set({
+          loading: false,
+          error: hadReading ? null : "Waiting for live sentiment",
+          _inflight: null,
+        });
+        scheduleSentimentRetry(cleanedSymbols);
+        return;
+      }
+
+      // Aggregate score = mention-weighted average over live chips only.
+      const aggScore = Math.max(-1, Math.min(1, weighted / totalMentions));
 
       set({
         score: aggScore,

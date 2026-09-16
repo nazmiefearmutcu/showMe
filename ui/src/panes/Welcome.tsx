@@ -1282,18 +1282,24 @@ export function Welcome() {
               // state. Header copy marks it as a tape, not exposure.
               <div className="terminal-exposure" data-testid="exposure-live-tape">
                 {exposureTape.map((row) => (
-                  <div className="terminal-exposure__line" key={row.label}>
+                  <div
+                    className="terminal-exposure__line"
+                    key={row.label}
+                    data-asset={assetKey(row.label)}
+                  >
                     <div>
-                      <strong>{row.label.toLowerCase()}</strong>
+                      <strong>{assetLabel(row.label)}</strong>
                       <span>
                         {row.count} sym
                         {row.change == null
-                          ? " · —"
-                          : ` · ${formatPct(row.change)}`}
+                          ? " — -"
+                          : ` — ${formatPct(row.change)}`}
                       </span>
                     </div>
                     <span className="terminal-exposure__track" aria-hidden>
                       <span
+                        className="terminal-exposure__fill"
+                        data-asset={assetKey(row.label)}
                         style={{
                           width:
                             row.change == null
@@ -1568,6 +1574,31 @@ function DemoMoverRows({ kind }: { kind: "gainer" | "loser" }) {
   );
 }
 
+/**
+ * Semantic asset-class key for the fixed exposure-bar palette (owner
+ * 2026-09-16: bars must NOT change with the theme template - the class of
+ * each row has to be readable in every theme). Synonyms fold to one key.
+ */
+function assetKey(label: string): string {
+  const slug = String(label || "").trim().toLowerCase();
+  if (!slug) return "other";
+  if (slug.includes("crypto")) return "crypto";
+  if (slug.includes("equit") || slug.includes("stock")) return "equity";
+  if (slug.includes("fx") || slug.includes("forex") || slug.includes("curr")) return "fx";
+  if (slug.includes("bond") || slug.includes("fixed")) return "bond";
+  if (slug.includes("commod")) return "commodity";
+  if (slug.includes("index")) return "index";
+  if (slug.includes("etf") || slug.includes("fund")) return "etf";
+  return "other";
+}
+
+/** Display label for exposure rows (source data is lowercase - "crypto"). */
+function assetLabel(label: string): string {
+  const text = String(label || "").trim();
+  if (!text) return text;
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
 function ExposureLine({
   label,
   value,
@@ -1581,13 +1612,17 @@ function ExposureLine({
   return (
     <div className="terminal-exposure__line">
       <div>
-        <strong>{label}</strong>
+        <strong>{assetLabel(label)}</strong>
         <span>
           {formatCurrency(value, { compact: true })} / {pct.toFixed(1)}%
         </span>
       </div>
       <span className="terminal-exposure__track" aria-hidden>
-        <span style={{ width: `${pct}%` }} />
+        <span
+          className="terminal-exposure__fill"
+          data-asset={assetKey(label)}
+          style={{ width: `${pct}%` }}
+        />
       </span>
     </div>
   );

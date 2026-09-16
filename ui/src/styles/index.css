@@ -8681,6 +8681,54 @@
   height: 100%;
 }
 
+/* Exposure fill: theme-INDEPENDENT asset-class palette (owner 2026-09-16 -
+   "barların template'e göre rengi değişmesin"). crypto = light yellow,
+   equity = dark brown, fx = dark green; the rest follow the desk houses.
+   The ::after wash is a very light diagonal "highlighter swipe", not a
+   pattern - elegant at 10px bar height. */
+.terminal-exposure__track .terminal-exposure__fill {
+  position: relative;
+}
+
+.terminal-exposure__track .terminal-exposure__fill::after {
+  background: repeating-linear-gradient(
+    115deg,
+    rgba(255, 255, 255, 0.14) 0 6px,
+    rgba(255, 255, 255, 0) 6px 13px
+  );
+  content: "";
+  inset: 0;
+  position: absolute;
+}
+
+.terminal-exposure__track .terminal-exposure__fill[data-asset="crypto"] {
+  background: #e3c04a;
+}
+
+.terminal-exposure__track .terminal-exposure__fill[data-asset="equity"] {
+  background: #6b4423;
+}
+
+.terminal-exposure__track .terminal-exposure__fill[data-asset="fx"] {
+  background: #2f5d3a;
+}
+
+.terminal-exposure__track .terminal-exposure__fill[data-asset="bond"] {
+  background: #4a5d8a;
+}
+
+.terminal-exposure__track .terminal-exposure__fill[data-asset="commodity"] {
+  background: #b0722a;
+}
+
+.terminal-exposure__track .terminal-exposure__fill[data-asset="index"] {
+  background: #5c6672;
+}
+
+.terminal-exposure__track .terminal-exposure__fill[data-asset="etf"] {
+  background: #2f6b6b;
+}
+
 .terminal-empty {
   color: var(--terminal-muted);
   display: grid;

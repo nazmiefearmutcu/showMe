@@ -1,5 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { labelForScore, useSentimentStore } from "./sentiment-store";
+import {
+  __clearSentimentRetryForTests,
+  labelForScore,
+  useSentimentStore,
+} from "./sentiment-store";
 
 vi.mock("./sidecar", () => ({ sidecarFetch: vi.fn() }));
 import { sidecarFetch } from "./sidecar";
@@ -7,6 +11,7 @@ const mock = sidecarFetch as ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
   // hard reset between tests to avoid bleed-over from prior aborts
+  __clearSentimentRetryForTests();
   useSentimentStore.setState({
     score: 0,
     label: "Neutral",
@@ -101,8 +106,12 @@ describe("sentiment-store.refresh", () => {
     expect(s.label).toBe("Strongly Bullish");
   });
 
-  it("all-fail → score collapses to 0 / Neutral, no error", async () => {
-    // mention-less data → aggregate score = 0, label Neutral
+  it("all-warming → never fabricates 0%/Neutral (owner report)", async () => {
+    // The backend now answers instantly with warming placeholders while the
+    // chips back-fill. Before the fix this collapsed to a fake "Neutral 0%"
+    // (owner: "yanlış oran gösteriyordu ... spx %1 düşüş"). The store must
+    // instead keep the last good reading — or report the honest waiting
+    // state when nothing was ever measured.
     mock.mockResolvedValueOnce({ symbol: "A", ok: false, post_count: 0 });
     mock.mockResolvedValueOnce({ symbol: "B", ok: false, post_count: 0 });
     await useSentimentStore.getState().refresh(["A", "B"]);
@@ -110,7 +119,26 @@ describe("sentiment-store.refresh", () => {
     expect(s.score).toBe(0);
     expect(s.label).toBe("Neutral");
     expect(s.mentions).toBe(0);
+    expect(s.error).toBe("Waiting for live sentiment");
+  });
+
+  it("warming pass after a good reading keeps the last good value", async () => {
+    mock.mockResolvedValueOnce({
+      symbol: "A",
+      ok: true,
+      post_count: 40,
+      bullish_score: -0.6,
+    });
+    await useSentimentStore.getState().refresh(["A"]);
+    expect(useSentimentStore.getState().score).toBeCloseTo(-0.6, 5);
+
+    mock.mockResolvedValueOnce({ symbol: "A", ok: false, post_count: 0 });
+    await useSentimentStore.getState().refresh(["A"]);
+    const s = useSentimentStore.getState();
+    expect(s.score).toBeCloseTo(-0.6, 5);
+    expect(s.label).toBe("Cautiously Bearish");
     expect(s.error).toBeNull();
+    expect(s.lastUpdated).not.toBeNull();
   });
 
   it("error path: fetch rejects → sets error, keeps last good", async () => {
