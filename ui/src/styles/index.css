@@ -9172,3 +9172,18 @@ body {
   background: var(--bg);
   color: var(--text-primary);
 }
+
+/* Growth-of-$1 chart fills its card (owner 2026-09-16: "buyuk gelen
+ * prezervatife girmeye calisan" look). The panel becomes a column flex so
+ * the SVG stretches to the free height; preserveAspectRatio="none" +
+ * non-scaling strokes on the paths keep the series crisp. */
+.portfolio-table-panel {
+  display: flex;
+  flex-direction: column;
+}
+
+.portfolio-table-panel .portfolio-frontier {
+  flex: 1 1 auto;
+  height: auto;
+  min-height: 240px;
+}

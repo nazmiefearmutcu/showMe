@@ -334,15 +334,24 @@ function GrowthChart({ points, symbol }: { points: GrowthPoint[]; symbol: string
   const last = points[points.length - 1]?.date ?? "";
   return (
     <div className="u-mt-4">
+      {/* Owner 2026-09-16: the chart rendered as a tiny letterboxed plot
+          floating in a huge card (fixed viewBox + default aspect-preserve).
+          preserveAspectRatio="none" stretches the series to the card and
+          non-scaling strokes keep the line crisp under the non-uniform
+          scale. */}
       <svg
         viewBox={`0 0 ${width} ${height}`}
+        preserveAspectRatio="none"
         className="portfolio-frontier"
         role="img"
         aria-label={`Growth of 1 for ${symbol}, ${first} to ${last}`}
-        style={{ height: 170 }}
       >
-        <path d={area} style={{ fill: "var(--accent-soft)", stroke: "none" }} />
-        <path d={line} />
+        <path
+          d={area}
+          vectorEffect="non-scaling-stroke"
+          style={{ fill: "var(--accent-soft)", stroke: "none" }}
+        />
+        <path d={line} vectorEffect="non-scaling-stroke" />
         <line
           x1={8}
           y1={height - 12}
@@ -350,6 +359,7 @@ function GrowthChart({ points, symbol }: { points: GrowthPoint[]; symbol: string
           y2={height - 12}
           stroke="var(--border-subtle)"
           strokeWidth={1}
+          vectorEffect="non-scaling-stroke"
         />
       </svg>
       <div className="portfolio-frontier__axis">
