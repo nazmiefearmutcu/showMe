@@ -351,7 +351,11 @@ export function MEETPane({ code }: FunctionPaneProps) {
                 nowMs={nowMs}
                 alertConfig={alertConfig}
                 onSelect={setSelectedId}
-                emptyText="No upcoming events in the window."
+                emptyText={
+                kind === "world"
+                  ? "World headlines are past-dated - switch KIND to Calendar for scheduled events."
+                  : "No upcoming events in the window."
+              }
               />
               <EventSection
                 label={`PAST · ${past.length}`}

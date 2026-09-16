@@ -869,7 +869,15 @@ def default_asset_class_name(symbol: str | None, requested: Any = None) -> str:
     """
     if requested:
         return str(requested).upper()
-    resolved = resolve_crypto_symbol_alias(symbol, allow_network=False)
+    # Full desk alias chain (crypto -> commodity shorthand -> FX pairs) so a
+    # bare "XAU" resolves as GC=F -> COMMODITY instead of falling through to
+    # EQUITY (owner 2026-09-16: DES showed gold as an equity).
+    try:
+        from showme.quotes import clean_symbol
+
+        resolved = clean_symbol(symbol)
+    except Exception:  # noqa: BLE001 - fall back to the crypto-only alias
+        resolved = resolve_crypto_symbol_alias(symbol, allow_network=False)
     if looks_like_crypto_symbol(resolved):
         return "CRYPTO"
     if looks_like_fx_symbol(resolved):
