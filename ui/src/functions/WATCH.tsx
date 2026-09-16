@@ -277,14 +277,18 @@ export function WATCHPane({ code }: FunctionPaneProps) {
         key: "label",
         header: "Tag",
         width: 90,
-        render: (r) =>
-          r.label ? (
+        /* Owner 2026-09-16: the column sat empty ("—") for every row that
+           the user had not labelled manually. When no custom label exists,
+           derive a deterministic class tag from the symbol shape so the
+           column always reads. */
+        render: (r) => {
+          const tag = r.label || symbolTag(r.symbol);
+          return (
             <Pill tone="muted" variant="soft" withDot={false}>
-              {r.label}
+              {tag}
             </Pill>
-          ) : (
-            <span className="u-text-mute">—</span>
-          ),
+          );
+        },
       },
       {
         key: "last",
@@ -709,6 +713,23 @@ export function WATCHPane({ code }: FunctionPaneProps) {
       </Pane>
     </div>
   );
+}
+
+/**
+ * Deterministic class tag for watchlist rows without a custom label (owner
+ * 2026-09-16: the Tag column looked broken, "—" on every row). Mirrors the
+ * desk symbol conventions: crypto quotes pair against a stablecoin, Yahoo
+ * FX pairs end in "=X", futures in "=F", indexes start with "^".
+ */
+function symbolTag(symbol: string): string {
+  const s = String(symbol || "").trim().toUpperCase();
+  if (!s) return "—";
+  if (/(USDT|USDC|BUSD|FDUSD|TUSD)$/.test(s) || /-USD$/.test(s)) return "Crypto";
+  if (s.endsWith("=X")) return "FX";
+  if (s.endsWith("=F")) return "Commodity";
+  if (s.startsWith("^")) return "Index";
+  if (s.length === 6 && /^[A-Z]+$/.test(s)) return "FX";
+  return "Equity";
 }
 
 function formatFreshness(ms: number | null): string {
