@@ -27,10 +27,24 @@ interface SentimentStoreShape {
   loading: boolean;
   error: string | null;
   lastUpdated: Date | null;
+  /** Mean 24 h change of the same symbols when the tape was measurable. */
+  tapePct: number | null;
   /** in-flight controller so a new refresh aborts the previous one */
   _inflight: AbortController | null;
 
   refresh: (symbols: string[]) => Promise<void>;
+}
+
+/**
+ * Price-consistency guard (owner 2026-09-16: retail chatter must not read
+ * "Cautiously Bullish" on a -6 % tape day). Retail sentiment is structurally
+ * bullish-skewed; when the SAME symbols' mean 24 h change is negative the
+ * aggregate is damped toward neutral (-6 % tape pulls a full -0.5). A flat or
+ * rising tape leaves the reading untouched - nothing is fabricated upward.
+ */
+function tapePenalty(tapePct: number | null): number {
+  if (tapePct == null || !Number.isFinite(tapePct) || tapePct >= 0) return 0;
+  return Math.max(-0.5, tapePct / 12);
 }
 
 /** Maps `[-1, +1]` to a five-tier sentiment label. */
@@ -89,6 +103,7 @@ export const useSentimentStore = create<SentimentStoreShape>((set, get) => ({
   loading: false,
   error: null,
   lastUpdated: null,
+  tapePct: null,
   _inflight: null,
 
   refresh: async (symbols: string[]) => {
@@ -178,8 +193,40 @@ export const useSentimentStore = create<SentimentStoreShape>((set, get) => ({
       }
 
       // Aggregate score = mention-weighted average over live chips only.
-      const aggScore = Math.max(-1, Math.min(1, weighted / totalMentions));
+      const rawScore = Math.max(-1, Math.min(1, weighted / totalMentions));
       sentimentRetryAttempts = 0;
+
+      // Price-consistency: measure the tape for the SAME symbols (capped at
+      // six quotes) and damp bullish chatter on red days.
+      let tapePct: number | null = null;
+      try {
+        const tapeTargets = cleanedSymbols.slice(0, 6);
+        const quoteResults = await Promise.allSettled(
+          tapeTargets.map((sym) =>
+            sidecarFetch<{ data?: { change_pct?: number | null } }>(
+              `/api/quote/${encodeURIComponent(sym)}`,
+              { signal: controller.signal },
+            ),
+          ),
+        );
+        if (controller.signal.aborted) return;
+        const changes: number[] = [];
+        for (const r of quoteResults) {
+          if (r.status !== "fulfilled") continue;
+          const pct = _toNum(r.value?.data?.change_pct);
+          if (pct != null) changes.push(pct);
+        }
+        if (changes.length >= 2) {
+          tapePct = changes.reduce((sum, v) => sum + v, 0) / changes.length;
+        }
+      } catch {
+        tapePct = null;
+      }
+
+      const aggScore = Math.max(
+        -1,
+        Math.min(1, rawScore + tapePenalty(tapePct)),
+      );
 
       set({
         score: aggScore,
@@ -188,6 +235,7 @@ export const useSentimentStore = create<SentimentStoreShape>((set, get) => ({
         loading: false,
         error: null,
         lastUpdated: new Date(),
+        tapePct,
         _inflight: null,
       });
     } catch (e) {

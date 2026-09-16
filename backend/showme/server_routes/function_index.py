@@ -28,9 +28,11 @@ def register(app: FastAPI, deps: AppDeps) -> None:
         home_swr_capture,
         home_swr_enabled,
         home_swr_get,
+        home_swr_inflight_task,
         home_swr_key,
         home_swr_schedule,
         home_swr_store,
+        home_swr_track,
         json_safe,
         sanitize_function_payload,
     )
@@ -81,7 +83,30 @@ def register(app: FastAPI, deps: AppDeps) -> None:
                 if (_time.monotonic() - hit[0]) >= 60.0:
                     home_swr_schedule(code, params, swr_key)
                 return hit[1]
+            # Join an in-flight boot prewarm for the same key instead of
+            # racing it: during the first minute after sidecar start this
+            # avoids returning the warming envelope while the real payload
+            # lands moments later (empty news/movers panels).
+            joined = home_swr_inflight_task(swr_key)
+            if joined is not None:
+                try:
+                    result = await asyncio.wait_for(asyncio.shield(joined), timeout=3.5)
+                except Exception:
+                    result = None
+                if result is not None:
+                    payload = sanitize_function_payload(
+                        code, params, json_safe(result.to_dict())
+                    )
+                    home_swr_store(swr_key, payload)
+                    return payload
+                # Still running (or failed): never start a duplicate - the
+                # prewarm/capture will land the payload in this cache.
+                home_swr_capture(code, params, swr_key, joined)
+                return fallback_function_payload(
+                    code, params, "warming in background", "TimeoutError"
+                )
             task = asyncio.ensure_future(_execute_showme_function(code, params))
+            home_swr_track(swr_key, task)
             done, _pending = await asyncio.wait({task}, timeout=1.0)
             if task not in done:
                 home_swr_capture(code, params, swr_key, task)

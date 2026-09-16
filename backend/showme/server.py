@@ -358,6 +358,10 @@ _HOME_SWR_TTL_S = 60.0
 _HOME_SWR_WAIT_S = 1.0
 _home_swr: dict[str, tuple[float, Any]] = {}
 _home_swr_warming: set[str] = set()
+# key -> in-flight asyncio.Task so a request arriving DURING the boot prewarm
+# can join it instead of racing it (returning the warming envelope while the
+# real payload lands a moment later left panels empty - owner 2026-09-16).
+_home_swr_inflight: dict[str, Any] = {}
 _home_swr_lock = threading.Lock()
 # Exact params the Welcome dashboard sends (keys must match the routed merge).
 HOME_PREWARM_PARAMS: dict[str, dict[str, str]] = {
@@ -372,8 +376,23 @@ def home_swr_enabled() -> bool:
 
 
 def home_swr_key(code: str, params: dict[str, Any]) -> str:
+    """Stable SWR cache key for one dashboard function call.
+
+    - Underscore-prefixed params ("_epoch", "_") are cache busters: the
+      newsflow sends a per-mount epoch, which made every visit a cold call
+      (1 s warming envelope -> empty headlines / DEMO movers, owner
+      2026-09-16). They never split the key.
+    - Values are stringified (booleans lowercased) so a JSON-body caller
+      ("live": true, "limit": 24) and the GET-style prewarm ("true"/"24")
+      land on the SAME entry.
+    """
     try:
-        return str(code).upper() + "|" + json.dumps(params, sort_keys=True, default=str)
+        stable: dict[str, str] = {}
+        for k, v in params.items():
+            if str(k).startswith("_"):
+                continue
+            stable[str(k)] = str(v).lower() if isinstance(v, bool) else str(v)
+        return str(code).upper() + "|" + json.dumps(stable, sort_keys=True)
     except Exception:  # noqa: BLE001 - non-serializable params: skip caching
         return str(code).upper() + "|?"
 
@@ -386,6 +405,27 @@ def home_swr_get(key: str) -> tuple[float, Any] | None:
 def home_swr_store(key: str, payload: Any) -> None:
     with _home_swr_lock:
         _home_swr[key] = (time.monotonic(), payload)
+
+
+def home_swr_track(key: str, task: Any) -> None:
+    """Register an in-flight execution so peers can await the same work."""
+    with _home_swr_lock:
+        _home_swr_inflight[key] = task
+
+    def _done(_t: Any) -> None:
+        with _home_swr_lock:
+            if _home_swr_inflight.get(key) is task:
+                _home_swr_inflight.pop(key, None)
+
+    try:
+        task.add_done_callback(_done)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def home_swr_inflight_task(key: str) -> Any:
+    with _home_swr_lock:
+        return _home_swr_inflight.get(key)
 
 
 def home_swr_schedule(code: str, params: dict[str, Any], key: str) -> None:
@@ -449,12 +489,12 @@ async def warm_home_page_cache() -> None:
     for code, extra in HOME_PREWARM_PARAMS.items():
         try:
             params = _route_function_params(code, dict(extra))
-            result = await asyncio.wait_for(
-                _execute_showme_function(code, params),
-                timeout=25,
-            )
+            key = home_swr_key(code, params)
+            task = asyncio.ensure_future(_execute_showme_function(code, params))
+            home_swr_track(key, task)
+            result = await asyncio.wait_for(asyncio.shield(task), timeout=25)
             payload = sanitize_function_payload(code, params, json_safe(result.to_dict()))
-            home_swr_store(home_swr_key(code, params), payload)
+            home_swr_store(key, payload)
         except Exception as exc:  # noqa: BLE001
             LOG.debug("home prewarm skipped for %s: %r", code, exc)
 
@@ -1215,6 +1255,12 @@ def build_app(engine_root: Path | None) -> FastAPI:
                 # the pane sat on skeletons for it. Warm the module cache at
                 # boot so the first pane open and every filter toggle answer
                 # instantly.
+                # Home payloads FIRST (the dashboard is the landing surface;
+                # MEET can afford to warm a few seconds later), then MEET.
+                try:
+                    await asyncio.wait_for(warm_home_page_cache(), timeout=90)
+                except Exception as exc:  # noqa: BLE001 - non-fatal prewarm
+                    LOG.debug("home cache prewarm skipped: %r", exc)
                 try:
                     await asyncio.wait_for(
                         _execute_showme_function(
@@ -1224,12 +1270,6 @@ def build_app(engine_root: Path | None) -> FastAPI:
                     )
                 except Exception as exc:  # noqa: BLE001 - non-fatal prewarm
                     LOG.debug("MEET prewarm skipped: %r", exc)
-                # Home-page payloads (TOP/BRIEF/MOST) warm into the SWR cache
-                # so the dashboard's first visit is instant too.
-                try:
-                    await asyncio.wait_for(warm_home_page_cache(), timeout=90)
-                except Exception as exc:  # noqa: BLE001 - non-fatal prewarm
-                    LOG.debug("home cache prewarm skipped: %r", exc)
 
             asyncio.create_task(_warm())
 

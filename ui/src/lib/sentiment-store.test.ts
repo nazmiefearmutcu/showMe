@@ -58,7 +58,8 @@ describe("sentiment-store.refresh", () => {
     });
     await useSentimentStore.getState().refresh(["AAPL"]);
     const s = useSentimentStore.getState();
-    expect(mock).toHaveBeenCalledTimes(1);
+    /* First call = the chip fan-out; the follow-up tape call feeds the
+       price-consistency guard (all-warming -> no adjustment). */
     expect(mock.mock.calls[0][0]).toBe("/api/x/symbol_chip?symbol=AAPL");
     expect(s.score).toBeCloseTo(0.5, 5);
     expect(s.label).toBe("Cautiously Bullish");
@@ -228,6 +229,20 @@ describe("sentiment-store.refresh", () => {
     expect(s.mentions).toBe(200);
     expect(s.score).toBeCloseTo(-0.8, 5);
     expect(s.label).toBe("Strongly Bearish");
+  });
+
+  it("damps a bullish reading on a red tape (price-consistency guard)", async () => {
+    // Owner: a -6% NVDA day must not read "Cautiously Bullish". Raw 0.62 with
+    // a -6% mean tape -> penalty -0.5 -> 0.12 Neutral; no fabrication upward.
+    mock.mockResolvedValueOnce({ symbol: "A", ok: true, post_count: 200, bullish_score: 0.62 });
+    mock.mockResolvedValueOnce({ symbol: "B", ok: true, post_count: 200, bullish_score: 0.62 });
+    mock.mockResolvedValueOnce({ data: { change_pct: -6 } });
+    mock.mockResolvedValueOnce({ data: { change_pct: -6 } });
+    await useSentimentStore.getState().refresh(["A", "B"]);
+    const s = useSentimentStore.getState();
+    expect(s.tapePct).toBeCloseTo(-6, 5);
+    expect(s.score).toBeCloseTo(0.12, 2);
+    expect(s.label).toBe("Neutral");
   });
 });
 
