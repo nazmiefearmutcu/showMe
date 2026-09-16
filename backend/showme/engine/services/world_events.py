@@ -498,7 +498,11 @@ def world_rows(
                 "url": url or None,
                 "matched_terms": matched,
                 "impact_basis": "headline_keywords",
+                # The row expands in-place on click (owner 2026-09-16:
+                # "haberlere basınca haber büyüsün haber özeti gelsin").
+                "summary": summary or None,
             },
+            "summary": summary or None,
             "seconds_to_event": round(seconds, 1),
             "age_minutes": round(-seconds / 60, 1) if seconds < 0 else None,
         })

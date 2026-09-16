@@ -23,6 +23,8 @@ export interface MeetRowDetails {
   impact_basis?: string;
   url?: string | null;
   provider_country?: string | null;
+  /** Wire summary (world rows) for the in-place expansion. */
+  summary?: string | null;
 }
 
 export interface MeetRow {
@@ -42,6 +44,8 @@ export interface MeetRow {
   symbol_matches?: string[];
   /** "market_wide" for global macro rows riding along with a symbol. */
   symbol_relevance?: string;
+  /** Wire summary shown when the row expands on click. */
+  summary?: string | null;
   details?: MeetRowDetails;
   seconds_to_event?: number | null;
   age_minutes?: number | null;

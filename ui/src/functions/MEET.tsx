@@ -366,6 +366,7 @@ export function MEETPane({ code }: FunctionPaneProps) {
             <EventSection
               label={`YOUR SYMBOLS · ${symbolRows.length}`}
               rows={symbolRows}
+              selectedId={selectedId}
               nowMs={nowMs}
               alertConfig={alertConfig}
               onSelect={setSelectedId}
@@ -385,6 +386,7 @@ export function MEETPane({ code }: FunctionPaneProps) {
               <EventSection
                 label={`UPCOMING · ${upcoming.length}`}
                 rows={upcoming}
+                selectedId={selectedId}
                 nowMs={nowMs}
                 alertConfig={alertConfig}
                 onSelect={setSelectedId}
@@ -424,6 +426,7 @@ export function MEETPane({ code }: FunctionPaneProps) {
               <EventSection
                 label={`PAST · ${past.length}`}
                 rows={past}
+                selectedId={selectedId}
                 nowMs={nowMs}
                 alertConfig={alertConfig}
                 onSelect={setSelectedId}
@@ -726,6 +729,7 @@ function EventSection({
   alertConfig,
   onSelect,
   emptyText,
+  selectedId,
 }: {
   label: string;
   rows: MeetRow[];
@@ -733,6 +737,7 @@ function EventSection({
   alertConfig: MeetAlertConfig;
   onSelect: (id: string) => void;
   emptyText: string;
+  selectedId?: string | null;
 }) {
   return (
     <section aria-label={label} style={sectionStyle}>
@@ -750,6 +755,7 @@ function EventSection({
               nowMs={nowMs}
               spot={isSpotFor(row, alertConfig)}
               onSelect={onSelect}
+              expanded={row.id === selectedId}
             />
           ))}
         </ul>
@@ -763,11 +769,13 @@ function EventRow({
   nowMs,
   spot,
   onSelect,
+  expanded = false,
 }: {
   row: MeetRow;
   nowMs: number;
   spot: boolean;
   onSelect: (id: string) => void;
+  expanded?: boolean;
 }) {
   const seconds = secondsUntil(row, nowMs);
   const past = isPastRow(row, nowMs);
@@ -834,6 +842,27 @@ function EventRow({
           </Pill>
         ) : null}
       </button>
+      {/* In-place growth on click (owner 2026-09-16): the wire summary
+          appears under the row instead of only in the detail aside. */}
+      {expanded ? (
+        <div style={expandPanelStyle} data-testid="meet-row-summary">
+          <p style={expandSummaryStyle}>
+            {row.summary ??
+              row.details?.summary ??
+              "No summary in the wire payload for this item."}
+          </p>
+          {row.details?.url ? (
+            <a
+              href={row.details.url}
+              target="_blank"
+              rel="noreferrer"
+              style={expandLinkStyle}
+            >
+              Open source ↗
+            </a>
+          ) : null}
+        </div>
+      ) : null}
     </li>
   );
 }
@@ -1324,6 +1353,28 @@ const rowButtonStyle: CSSProperties = {
   borderRadius: 6,
 };
 const rowMainStyle: CSSProperties = { minWidth: 0, flex: 1, display: "grid", gap: 1 };
+/* Expanded wire summary under a selected row (owner: "haberlere basınca
+   haber büyüsün haber özeti gelsin"). */
+const expandPanelStyle: CSSProperties = {
+  background: "var(--bg-elev-2, var(--surface-1))",
+  border: "1px solid var(--border-subtle)",
+  borderRadius: 6,
+  display: "grid",
+  gap: 6,
+  marginTop: 4,
+  padding: "8px 10px",
+};
+const expandSummaryStyle: CSSProperties = {
+  color: "var(--text-secondary)",
+  fontSize: "var(--font-size-sm)",
+  lineHeight: 1.5,
+  margin: 0,
+  whiteSpace: "pre-wrap",
+};
+const expandLinkStyle: CSSProperties = {
+  color: "var(--accent)",
+  fontSize: "var(--font-size-sm)",
+};
 const countdownStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
   fontSize: "var(--font-size-sm)",

@@ -313,7 +313,12 @@ class MEETFunction(BaseFunction):
                         rss.fetch(
                             DataRequest(
                                 kind=DataKind.NEWS,
-                                extra={"feed_group": "market", "symbol": sym},
+                                extra={
+                                    "feed_group": "market",
+                                    "symbol": sym,
+                                    "per_feed_timeout_seconds": max(3.0, min(timeout, 5.0)),
+                                    "collection_timeout_seconds": max(3.0, min(timeout, 5.0)),
+                                },
                                 limit=30,
                             )
                         ),
@@ -381,7 +386,17 @@ class MEETFunction(BaseFunction):
                 items = await asyncio.wait_for(
                     rss.fetch(DataRequest(
                         kind=DataKind.NEWS,
-                        extra={"feed_group": "market"},
+                        # Explicit per-feed + collection budgets: the adapter's
+                        # 2 s defaults were fine for ten feeds, but the
+                        # fast-wire list (15 hosts) on a COLD connection pool
+                        # completed nothing inside the window -> zero
+                        # headlines right after a restart (observed
+                        # 2026-09-16, GDELT down at the same time).
+                        extra={
+                            "feed_group": "market",
+                            "per_feed_timeout_seconds": max(3.0, min(timeout, 5.0)),
+                            "collection_timeout_seconds": max(3.0, min(timeout, 5.0)),
+                        },
                         limit=50,
                     )),
                     timeout=timeout,
