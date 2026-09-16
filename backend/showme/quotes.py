@@ -167,8 +167,26 @@ def fallback_quote_snapshot(symbol: str, reason: str | None = None) -> dict[str,
     )
 
 
+# Desk shorthand → front-month futures. Without this a bare "XAU" resolved to
+# an unrelated Yahoo ticker (a ~$4 trust) and DES showed its junk fundamentals
+# instead of gold (owner 2026-09-16: "her şey bomboş"). The Welcome tiles
+# already document the desk convention (GC=F gold, CL=F WTI).
+_DESK_COMMODITY_ALIASES: dict[str, str] = {
+    "XAU": "GC=F",
+    "GOLD": "GC=F",
+    "XAG": "SI=F",
+    "SILVER": "SI=F",
+    "XPT": "PL=F",
+    "PALLADIUM": "PA=F",
+    "XPD": "PA=F",
+    "WTI": "CL=F",
+    "BRENT": "BZ=F",
+}
+
+
 def clean_symbol(symbol: str) -> str:
-    return resolve_crypto_symbol_alias(symbol, allow_network=False) or str(symbol or "").strip().upper()
+    raw = resolve_crypto_symbol_alias(symbol, allow_network=False) or str(symbol or "").strip().upper()
+    return _DESK_COMMODITY_ALIASES.get(raw, raw)
 
 
 def is_crypto_symbol(symbol: str) -> bool:

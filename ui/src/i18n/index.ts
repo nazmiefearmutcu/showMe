@@ -68,10 +68,10 @@ function pickInitial(): Locale {
       // ignore storage failure
     }
   }
-  if (typeof navigator !== "undefined") {
-    const lang = navigator.language?.slice(0, 2).toLowerCase();
-    if (lang && SUPPORTED.includes(lang as Locale)) return lang as Locale;
-  }
+  /* Owner (2026-09-16): the product is English-first - do NOT auto-follow the
+     OS/browser locale ("her şey ingilizce neden hâlâ türkçe şeyler var"):
+     a Turkish Windows profile used to flip every shell string to Turkish.
+     An explicitly chosen locale still wins via the stored key above. */
   return "en";
 }
 
