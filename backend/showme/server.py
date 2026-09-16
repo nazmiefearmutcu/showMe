@@ -43,10 +43,12 @@ _pin_bundled_cacert()
 import argparse
 import asyncio
 import contextlib
+import json
 import shutil
 import importlib
 import logging
 import os
+import time
 
 try:
     import resource
@@ -342,6 +344,108 @@ _FUNCTION_INDEX_LOCK = threading.Lock()
 # Python's import lock would serialize both walks anyway; without this we
 # pay 2x wall-clock when the warmup thread races the first request.
 _FUNCTION_INDEX_BUILD_LOCK = threading.Lock()
+
+
+# ── Home-page SWR cache (owner 2026-09-16: the dashboard must load < 1 s) ──
+# TOP/BRIEF/MOST are read-only aggregations that cost 3-10 s cold; the home
+# fires them on every visit. The route answers instantly from a warm entry,
+# keeps serving a stale entry while a background refresh runs, and gives a
+# cold call a ~1 s head start before falling back to the honest "warming"
+# envelope (that execution is captured into the cache when it finishes).
+# Disabled under pytest so tests always exercise the real function path.
+_HOME_SWR_CODES = frozenset({"TOP", "BRIEF", "MOST"})
+_HOME_SWR_TTL_S = 60.0
+_HOME_SWR_WAIT_S = 1.0
+_home_swr: dict[str, tuple[float, Any]] = {}
+_home_swr_warming: set[str] = set()
+_home_swr_lock = threading.Lock()
+# Exact params the Welcome dashboard sends (keys must match the routed merge).
+HOME_PREWARM_PARAMS: dict[str, dict[str, str]] = {
+    "TOP": {"query": "market", "limit": "24", "days": "7", "_epoch": "0"},
+    "BRIEF": {"limit": "6"},
+    "MOST": {"live": "true", "limit": "24"},
+}
+
+
+def home_swr_enabled() -> bool:
+    return "pytest" not in sys.modules
+
+
+def home_swr_key(code: str, params: dict[str, Any]) -> str:
+    try:
+        return str(code).upper() + "|" + json.dumps(params, sort_keys=True, default=str)
+    except Exception:  # noqa: BLE001 - non-serializable params: skip caching
+        return str(code).upper() + "|?"
+
+
+def home_swr_get(key: str) -> tuple[float, Any] | None:
+    with _home_swr_lock:
+        return _home_swr.get(key)
+
+
+def home_swr_store(key: str, payload: Any) -> None:
+    with _home_swr_lock:
+        _home_swr[key] = (time.monotonic(), payload)
+
+
+def home_swr_schedule(code: str, params: dict[str, Any], key: str) -> None:
+    """Refresh ``key`` in the background (deduped per key)."""
+    with _home_swr_lock:
+        if key in _home_swr_warming:
+            return
+        _home_swr_warming.add(key)
+
+    async def _refresh() -> None:
+        try:
+            result = await _execute_showme_function(code, params)
+            payload = sanitize_function_payload(code, params, json_safe(result.to_dict()))
+            home_swr_store(key, payload)
+        except Exception as exc:  # noqa: BLE001
+            LOG.debug("home swr refresh failed for %s: %r", code, exc)
+        finally:
+            with _home_swr_lock:
+                _home_swr_warming.discard(key)
+
+    try:
+        asyncio.get_running_loop().create_task(_refresh())
+    except Exception:  # noqa: BLE001 - no loop (tests): drop the warm
+        with _home_swr_lock:
+            _home_swr_warming.discard(key)
+
+
+def home_swr_capture(code: str, params: dict[str, Any], key: str, task: Any) -> None:
+    """Attach to an in-flight execution so its result lands in the cache."""
+
+    def _done(t: Any) -> None:
+        try:
+            result = t.result()
+        except Exception:  # noqa: BLE001 - failed warm: leave the cache empty
+            return
+        try:
+            payload = sanitize_function_payload(code, params, json_safe(result.to_dict()))
+            home_swr_store(key, payload)
+        except Exception:  # noqa: BLE001
+            return
+
+    try:
+        task.add_done_callback(_done)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+async def warm_home_page_cache() -> None:
+    """Boot prewarm for the dashboard payloads (non-fatal)."""
+    for code, extra in HOME_PREWARM_PARAMS.items():
+        try:
+            params = _route_function_params(code, dict(extra))
+            result = await asyncio.wait_for(
+                _execute_showme_function(code, params),
+                timeout=25,
+            )
+            payload = sanitize_function_payload(code, params, json_safe(result.to_dict()))
+            home_swr_store(home_swr_key(code, params), payload)
+        except Exception as exc:  # noqa: BLE001
+            LOG.debug("home prewarm skipped for %s: %r", code, exc)
 
 
 def _function_worker() -> _ShowMeFunctionWorker:
@@ -1109,6 +1213,12 @@ def build_app(engine_root: Path | None) -> FastAPI:
                     )
                 except Exception as exc:  # noqa: BLE001 - non-fatal prewarm
                     LOG.debug("MEET prewarm skipped: %r", exc)
+                # Home-page payloads (TOP/BRIEF/MOST) warm into the SWR cache
+                # so the dashboard's first visit is instant too.
+                try:
+                    await asyncio.wait_for(warm_home_page_cache(), timeout=90)
+                except Exception as exc:  # noqa: BLE001 - non-fatal prewarm
+                    LOG.debug("home cache prewarm skipped: %r", exc)
 
             asyncio.create_task(_warm())
 

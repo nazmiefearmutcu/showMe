@@ -25,6 +25,12 @@ def register(app: FastAPI, deps: AppDeps) -> None:
         _route_function_params,
         fallback_function_payload,
         function_warning_payload,
+        home_swr_capture,
+        home_swr_enabled,
+        home_swr_get,
+        home_swr_key,
+        home_swr_schedule,
+        home_swr_store,
         json_safe,
         sanitize_function_payload,
     )
@@ -60,6 +66,48 @@ def register(app: FastAPI, deps: AppDeps) -> None:
             except Exception:
                 params = {}
         params = _route_function_params(code, params)
+        # Home-page SWR (owner 2026-09-16: the dashboard must load < 1 s):
+        # TOP/BRIEF/MOST answer instantly from a warm cache entry, keep
+        # serving a stale entry while a background refresh runs, and give a
+        # cold call a short head start before returning the honest warming
+        # envelope (the in-flight execution is captured into the cache).
+        swr_key: str | None = None
+        if home_swr_enabled() and code.upper() in ("TOP", "BRIEF", "MOST"):
+            swr_key = home_swr_key(code, params)
+            hit = home_swr_get(swr_key)
+            if hit is not None:
+                import time as _time
+
+                if (_time.monotonic() - hit[0]) >= 60.0:
+                    home_swr_schedule(code, params, swr_key)
+                return hit[1]
+            task = asyncio.ensure_future(_execute_showme_function(code, params))
+            done, _pending = await asyncio.wait({task}, timeout=1.0)
+            if task not in done:
+                home_swr_capture(code, params, swr_key, task)
+                return fallback_function_payload(
+                    code, params, "warming in background", "TimeoutError"
+                )
+            if task.cancelled():
+                home_swr_capture(code, params, swr_key, task)
+                return fallback_function_payload(
+                    code, params, "warming in background", "TimeoutError"
+                )
+            try:
+                result = task.result()
+            except TimeoutError:
+                return fallback_function_payload(
+                    code,
+                    params,
+                    f"function timed out after {FUNCTION_TIMEOUT_SECONDS:.0f}s",
+                    "TimeoutError",
+                )
+            except Exception:  # noqa: BLE001 - shared path below reports it
+                result = None
+            if result is not None:
+                payload = sanitize_function_payload(code, params, json_safe(result.to_dict()))
+                home_swr_store(swr_key, payload)
+                return payload
         try:
             result = await _execute_showme_function(code, params)
             deps.boot_state["function_factory_warmed"] = True
