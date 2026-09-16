@@ -1,4 +1,4 @@
-"""DES — Description (şirket özeti / coin profili).
+"""DES - Description (company summary / coin profile).
 
 DATA PIPELINE:
   EQUITY/ETF/FUND/REIT: yfinance (primary) → Finnhub /stock/profile2 → SEC EDGAR
@@ -301,9 +301,17 @@ class DESFunction(BaseFunction):
         AssetClass.FUND,
         AssetClass.REIT,
         AssetClass.CRYPTO,
+        # Owner 2026-09-16: an INDEX (SPX/^GSPC) or a commodity/FX symbol
+        # used to hit the compatibility wall ("DES does not support INDEX")
+        # even though the DES pane renders a dedicated IndexView for exactly
+        # that case. Fundamentals remain honestly empty where they do not
+        # exist; the price context renders either way.
+        AssetClass.INDEX,
+        AssetClass.COMMODITY,
+        AssetClass.FX,
     )
     category = "equity"
-    description = "Şirket özeti / coin profili — market cap, açıklama, fundamental göstergeler."
+    description = "Company summary / coin profile - market cap, description, fundamentals."
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         if instrument is None:

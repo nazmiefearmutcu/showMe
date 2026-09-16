@@ -218,7 +218,7 @@ class ANRFunction(BaseFunction):
     name = "Analyst Recommendations"
     asset_classes = (AssetClass.EQUITY, AssetClass.CRYPTO)
     category = "equity"
-    description = "Equity analyst consensus; crypto için canlı market-consensus proxy."
+    description = "Equity analyst consensus; live market-consensus proxy for crypto."
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         """Equity analyst consensus pane.
