@@ -846,21 +846,52 @@ function EventRow({
           appears under the row instead of only in the detail aside. */}
       {expanded ? (
         <div style={expandPanelStyle} data-testid="meet-row-summary">
-          <p style={expandSummaryStyle}>
-            {row.summary ??
-              row.details?.summary ??
-              "No summary in the wire payload for this item."}
-          </p>
-          {row.details?.url ? (
-            <a
-              href={row.details.url}
-              target="_blank"
-              rel="noreferrer"
-              style={expandLinkStyle}
-            >
-              Open source ↗
-            </a>
-          ) : null}
+          {(() => {
+            const summary = row.summary ?? row.details?.summary ?? null;
+            const forecast = row.details?.forecast;
+            const previous = row.details?.previous;
+            const hasNumbers = forecast != null || previous != null;
+            const meta = [
+              row.country_names?.length ? row.country_names.join(", ") : null,
+              row.currencies?.length ? row.currencies.join(", ") : null,
+              row.pairs?.length ? `pairs ${row.pairs.join(", ")}` : null,
+              row.source || null,
+            ]
+              .filter(Boolean)
+              .join(" · ");
+            return (
+              <>
+                {summary ? <p style={expandSummaryStyle}>{summary}</p> : null}
+                {hasNumbers ? (
+                  <p style={expandSummaryStyle}>
+                    {forecast != null ? `Forecast: ${String(forecast)}` : "Forecast: —"}
+                    {" · "}
+                    {previous != null ? `Previous: ${String(previous)}` : "Previous: —"}
+                    {row.details?.unit ? ` (${row.details.unit})` : ""}
+                  </p>
+                ) : null}
+                {meta ? <p style={expandMutedStyle}>{meta}</p> : null}
+                {row.details?.url ? (
+                  <a
+                    href={row.details.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    style={expandLinkStyle}
+                  >
+                    Open source ↗
+                  </a>
+                ) : null}
+                {/* Calendar rows carry no article text; show the payload
+                    facts instead of a "no summary" dead end (owner
+                    2026-09-16: "hepsinde bu hatayı veriyor"). */}
+                {!summary && !hasNumbers && !meta && !row.details?.url ? (
+                  <p style={expandMutedStyle}>
+                    No extra details in the payload for this item.
+                  </p>
+                ) : null}
+              </>
+            );
+          })()}
         </div>
       ) : null}
     </li>
@@ -1374,6 +1405,12 @@ const expandSummaryStyle: CSSProperties = {
 const expandLinkStyle: CSSProperties = {
   color: "var(--accent)",
   fontSize: "var(--font-size-sm)",
+};
+const expandMutedStyle: CSSProperties = {
+  color: "var(--text-mute)",
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: "var(--font-size-xs, 10px)",
+  margin: 0,
 };
 const countdownStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
