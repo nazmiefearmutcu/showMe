@@ -480,13 +480,31 @@ def test_followed_symbols_surface_matching_world_events():
         .execute(symbols="BTC", limit=100)
     )
     rows = result.data["symbol_rows"]
-    assert len(rows) == 1
-    assert "Bitcoin" in rows[0]["title"]
+    headline_rows = [r for r in rows if r.get("symbol_relevance") != "market_wide"]
+    assert len(headline_rows) == 1
+    assert "Bitcoin" in headline_rows[0]["title"]
     assert result.data["symbols_requested"] == ["BTC"]
     # Matched term recorded (lowercase, from symbol_terms: the raw "BTC" and
     # the spelled-out "bitcoin").
-    assert rows[0]["symbol_matches"]
+    assert headline_rows[0]["symbol_matches"]
     # Without the parameter the section is empty (no behaviour drift).
     result2 = _run(_meet(FunctionDeps(gdelt=gdelt), _FakeFFClient()).execute(limit=100))
     assert result2.data["symbol_rows"] == []
 
+
+def test_followed_symbols_include_market_wide_high_impact_events():
+    """Owner follow-up: the upcoming FOMC decision affects every market; a
+    followed symbol's section must carry global high-impact macro rows
+    (tagged market_wide) even when no headline matches its ticker terms."""
+    result = _run(
+        _meet(FunctionDeps(gdelt=_FakeGDELT(articles=[]), rss=_FakeRSS(articles=[])), _FakeFFClient())
+        .execute(symbols="BTC", limit=100)
+    )
+    rows = result.data["symbol_rows"]
+    macro = [r for r in rows if r.get("symbol_relevance") == "market_wide"]
+    assert macro, "expected the high-impact calendar rows to ride along"
+    assert all(str(r.get("impact")).lower() == "high" for r in macro)
+    assert all("all markets" in (r.get("symbol_matches") or []) for r in macro)
+    # Soonest first - the countdown view reads top-down.
+    times = [r["when_utc"] for r in macro]
+    assert times == sorted(times)

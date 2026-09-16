@@ -174,6 +174,18 @@ class MEETFunction(BaseFunction):
         # crypto event has no FX-calendar country.
         symbol_rows: list[dict[str, Any]] = []
         if symbols:
+            # Market-wide movers first (owner follow-up: the upcoming FOMC
+            # rate decision affects EVERY market including BTC; a followed
+            # symbol's view must carry the global high-impact macro calendar
+            # too, tagged "all markets" so the relevance is explicit).
+            market_rows = [
+                {**row, "symbol_matches": ["all markets"], "symbol_relevance": "market_wide"}
+                for row in unfiltered_upcoming
+                if row.get("kind") == "economic"
+                and str(row.get("impact") or "").lower() == "high"
+            ]
+            market_rows.sort(key=lambda r: str(r.get("when_utc") or ""))
+            headline_rows: list[dict[str, Any]] = []
             try:
                 from showme.engine.services import news_intelligence as ni
 
@@ -190,15 +202,17 @@ class MEETFunction(BaseFunction):
                                 matched_terms.append(term)
                                 break
                     if matched_terms:
-                        symbol_rows.append(
+                        headline_rows.append(
                             {**row, "symbol_matches": matched_terms[:4]}
                         )
-                symbol_rows.sort(
+                headline_rows.sort(
                     key=lambda r: str(r.get("when_utc") or ""), reverse=True
                 )
-                symbol_rows = symbol_rows[:24]
             except Exception as exc:  # noqa: BLE001 - section is best-effort
                 warnings.append(f"symbol_events: {str(exc) or exc.__class__.__name__}")
+            # Market-wide macro first (soonest-upcoming order), then the
+            # ticker-matched headlines (newest first).
+            symbol_rows = (market_rows[:12] + headline_rows[:12])[:24]
 
         payload = _shell(
             now=now,

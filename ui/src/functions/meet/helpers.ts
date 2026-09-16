@@ -40,6 +40,8 @@ export interface MeetRow {
   pinned: boolean;
   /** Terms that matched a followed symbol (only on symbol_rows). */
   symbol_matches?: string[];
+  /** "market_wide" for global macro rows riding along with a symbol. */
+  symbol_relevance?: string;
   details?: MeetRowDetails;
   seconds_to_event?: number | null;
   age_minutes?: number | null;
