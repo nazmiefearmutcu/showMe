@@ -13,7 +13,15 @@
  * Honesty: every row shows its source; empty windows say so; the pane
  * never invents events.
  */
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type FormEvent,
+} from "react";
 import {
   Empty,
   Pane,
@@ -108,6 +116,9 @@ export function MEETPane({ code }: FunctionPaneProps) {
       query,
       include_world: true,
       limit: 400,
+      // Followed symbols ride along so the backend can surface matched world
+      // headlines as their own section (owner: BTC followed, no events shown).
+      symbols: alertConfig.symbols.join(","),
     },
   });
   const payload = data?.data;
@@ -136,11 +147,8 @@ export function MEETPane({ code }: FunctionPaneProps) {
     return byIso;
   }, [payload]);
 
-  const rows = useMemo(() => {
-    // Defensive normalisation: a sidecar restart can briefly serve a
-    // pre-world-events MEET payload — rows then lack the world fields and
-    // must degrade instead of crashing the pane.
-    const all = (payload?.rows ?? []).map((row) => ({
+  const normaliseRow = useCallback(
+    (row: MeetRow) => ({
       ...row,
       title: row.title ?? "—",
       countries: row.countries ?? [],
@@ -148,13 +156,30 @@ export function MEETPane({ code }: FunctionPaneProps) {
       pairs: row.pairs ?? [],
       spot: row.spot ?? false,
       pinned: row.pinned ?? false,
-    }));
+    }),
+    [],
+  );
+
+  /* Followed-symbol events (owner 2026-09-16: BTC was followed but its
+     events never appeared). The backend matches the tickers' terms against
+     the world headlines and ships them as their own section, independent of
+     the country filters. */
+  const symbolRows = useMemo(
+    () => (payload?.symbol_rows ?? []).map(normaliseRow),
+    [payload, normaliseRow],
+  );
+
+  const rows = useMemo(() => {
+    // Defensive normalisation: a sidecar restart can briefly serve a
+    // pre-world-events MEET payload — rows then lack the world fields and
+    // must degrade instead of crashing the pane.
+    const all = (payload?.rows ?? []).map(normaliseRow);
     // Server already filters; this second pass keeps the UI instant on
     // country toggles while the refetch is in flight.
     const wanted = new Set(alertConfig.spotCountries.map((c) => c.toUpperCase()));
     if (wanted.size === 0) return all;
     return all.filter((row) => row.countries.some((iso) => wanted.has(iso.toUpperCase())));
-  }, [payload, alertConfig.spotCountries]);
+  }, [payload, alertConfig.spotCountries, normaliseRow]);
 
   const { upcoming, past } = useMemo(() => groupRows(rows, nowMs), [rows, nowMs]);
   const selected = useMemo(
@@ -337,6 +362,18 @@ export function MEETPane({ code }: FunctionPaneProps) {
 
       <div style={gridStyle}>
         <div style={listColumnStyle}>
+          {alertConfig.symbols.length > 0 ? (
+            <EventSection
+              label={`YOUR SYMBOLS · ${symbolRows.length}`}
+              rows={symbolRows}
+              nowMs={nowMs}
+              alertConfig={alertConfig}
+              onSelect={setSelectedId}
+              emptyText={`No world headline matched your followed symbols (${alertConfig.symbols.join(
+                ", ",
+              )}) in the window.`}
+            />
+          ) : null}
           {payload?.filtered_empty ? (
             <Empty
               title="No events for this filter"

@@ -1,8 +1,8 @@
-"""MEET — world-events tracker pins (rebuilt 2026-09).
+﻿"""MEET â€” world-events tracker pins (rebuilt 2026-09).
 
 Contract:
   * scheduled rows come from the keyless ForexFactory weekly calendar
-    (reused from ECO — the HTTP leg is driven via the ``_http_client``
+    (reused from ECO â€” the HTTP leg is driven via the ``_http_client``
     injection seam) and are anchored to UTC with affected FX pairs,
   * world headlines come from the keyless news path and are tagged with a
     country gazetteer (multi-country allowed, matched terms recorded),
@@ -10,7 +10,7 @@ Contract:
     countdowns,
   * spot alerts cover rate decisions and wars,
   * an empty provider set yields an honest ``provider_unavailable``
-    envelope — events are never invented.
+    envelope â€” events are never invented.
 
 Fully offline: no test performs real network I/O.
 """
@@ -43,8 +43,10 @@ def _reset_world_headline_cache():
     each test starts from a cold cache so its provider fakes are the only
     source of truth."""
     meet_mod._WORLD_CACHE = None
+    meet_mod._SYMBOL_NEWS_CACHE = None
     yield
     meet_mod._WORLD_CACHE = None
+    meet_mod._SYMBOL_NEWS_CACHE = None
 
 
 def _run(coro):
@@ -149,7 +151,7 @@ class _FakeRSS:
     def __init__(self, articles=None):
         self.articles = articles if articles is not None else [
             {
-                "title": "Türkiye parliament debates budget as Ukraine truce holds",
+                "title": "TÃ¼rkiye parliament debates budget as Ukraine truce holds",
                 "link": "https://example.test/rss1",
                 "published_at": _iso_in(timedelta(hours=-1)),
             },
@@ -183,7 +185,7 @@ def _meet(deps=None, client=None):
 
 
 def test_tcmb_rate_decision_maps_to_tr_with_usdtry_pairs():
-    """TRY → TR and the affected pairs are the quoted lira crosses."""
+    """TRY â†’ TR and the affected pairs are the quoted lira crosses."""
     now = datetime.now(UTC)
     stamp = _iso_in(timedelta(hours=4), tz=_TZ_TR)
     rows, dropped = we.economic_rows([{
@@ -204,7 +206,7 @@ def test_tcmb_rate_decision_maps_to_tr_with_usdtry_pairs():
     assert row["currencies"] == ["TRY"]
     assert row["spot"] is True
     assert row["pinned"] is True
-    # Offset-aware provider timestamp → the same real UTC instant.
+    # Offset-aware provider timestamp â†’ the same real UTC instant.
     when = datetime.fromisoformat(row["when_utc"])
     assert when == datetime.fromisoformat(stamp)
     assert when.utcoffset() == timedelta(0)
@@ -226,7 +228,7 @@ def test_seconds_to_event_and_age_minutes_math():
     assert ppi["seconds_to_event"] == -10800.0
     assert ppi["age_minutes"] == 180.0
 
-    # 08:30-04:00 == 12:30 UTC → 3.5h before now.
+    # 08:30-04:00 == 12:30 UTC â†’ 3.5h before now.
     retail = next(r for r in rows if r["title"] == "Retail Sales")
     assert retail["when_utc"] == "2026-09-15T12:30:00+00:00"
     assert retail["seconds_to_event"] == pytest.approx(-84600.0)
@@ -270,7 +272,7 @@ def test_country_index_next_event_and_state():
     assert index["TR"]["upcoming_count"] == 1
     assert index["TR"]["past_count"] == 1
     assert index["TR"]["state"] == "soon"
-    # 5 minutes out → the live state.
+    # 5 minutes out â†’ the live state.
     assert index["CH"]["state"] == "live"
 
 
@@ -337,7 +339,7 @@ def test_gdelt_seendate_stamp_parses_to_utc():
 
 
 # ---------------------------------------------------------------------------
-# MEET execute() — end-to-end payload (offline fakes)
+# MEET execute() â€” end-to-end payload (offline fakes)
 # ---------------------------------------------------------------------------
 
 
@@ -383,7 +385,7 @@ def test_kind_economic_skips_world_fetch():
         _meet(FunctionDeps(gdelt=gdelt), _FakeFFClient())
         .execute(kind="economic")
     )
-    assert gdelt.calls == 0, "world kind excluded → news provider untouched"
+    assert gdelt.calls == 0, "world kind excluded â†’ news provider untouched"
     assert result.data["rows"]
     assert all(r["kind"] == "economic" for r in result.data["rows"])
 
@@ -441,7 +443,7 @@ def test_rss_fallback_when_gdelt_returns_empty():
     world_rows = [r for r in result.data["rows"] if r["kind"] == "world"]
     assert world_rows
     assert all(r["source"] == "rss" for r in world_rows)
-    # The empty GDELT result is not an error — no spurious warning.
+    # The empty GDELT result is not an error â€” no spurious warning.
     assert not any("gdelt" in w for w in result.warnings)
 
 
@@ -455,3 +457,36 @@ def test_dropped_no_time_is_reported():
     )
     assert result.data["dropped_no_time"] == 1
     assert all(r["kind"] != "economic" for r in result.data["rows"])
+
+def test_followed_symbols_surface_matching_world_events():
+    """Owner 2026-09-16: BTC was followed in the SYMBOLS strip but no events
+    were shown. Headlines matching the followed tickers' terms (BTC ->
+    bitcoin/btc) now ship as their own `symbol_rows` section, independent of
+    the country/kind filters; non-matching headlines stay out."""
+    gdelt = _FakeGDELT(articles=[
+        {
+            "title": "Bitcoin ETF inflows hit a record as BTC reclaims 75k",
+            "url": "https://example.test/btc1",
+            "published_at": _iso_in(timedelta(hours=-3)),
+        },
+        {
+            "title": "Germany unveils budget after ceasefire deal",
+            "url": "https://example.test/de1",
+            "published_at": _iso_in(timedelta(hours=-5)),
+        },
+    ])
+    result = _run(
+        _meet(FunctionDeps(gdelt=gdelt), _FakeFFClient())
+        .execute(symbols="BTC", limit=100)
+    )
+    rows = result.data["symbol_rows"]
+    assert len(rows) == 1
+    assert "Bitcoin" in rows[0]["title"]
+    assert result.data["symbols_requested"] == ["BTC"]
+    # Matched term recorded (lowercase, from symbol_terms: the raw "BTC" and
+    # the spelled-out "bitcoin").
+    assert rows[0]["symbol_matches"]
+    # Without the parameter the section is empty (no behaviour drift).
+    result2 = _run(_meet(FunctionDeps(gdelt=gdelt), _FakeFFClient()).execute(limit=100))
+    assert result2.data["symbol_rows"] == []
+

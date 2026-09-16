@@ -38,6 +38,8 @@ export interface MeetRow {
   source: string;
   spot: boolean;
   pinned: boolean;
+  /** Terms that matched a followed symbol (only on symbol_rows). */
+  symbol_matches?: string[];
   details?: MeetRowDetails;
   seconds_to_event?: number | null;
   age_minutes?: number | null;
@@ -99,6 +101,10 @@ export interface MeetData {
   rows?: MeetRow[];
   upcoming?: MeetRow[];
   past?: MeetRow[];
+  /** World headlines matched to the followed symbols (own section). */
+  symbol_rows?: MeetRow[];
+  /** The tickers the pane asked to track (already uppercased). */
+  symbols_requested?: string[];
   row_count?: number;
   upcoming_count?: number;
   past_count?: number;

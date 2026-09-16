@@ -35,6 +35,9 @@ from typing import Any
 _WORLD_CACHE: tuple[float, tuple[list[dict[str, Any]], str, str | None], float] | None = None
 _WORLD_CACHE_TTL_S = 180.0
 _WORLD_CACHE_FAIL_TTL_S = 30.0
+# Followed-symbol headline cache: (symbols_key, stored_at, articles)
+_SYMBOL_NEWS_CACHE: tuple[str, float, list[dict[str, Any]]] | None = None
+_SYMBOL_NEWS_TTL_S = 180.0
 
 from showme.engine.core.base_data_source import DataKind, DataRequest
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
@@ -59,6 +62,7 @@ class MEETFunction(BaseFunction):
         kind = str(params.get("kind") or "all")
         impacts = _csv(params.get("impact"))
         query = str(params.get("query") or params.get("q") or params.get("topic") or "")
+        symbols = _csv(params.get("symbols"))
         days_ahead = _num(params.get("days_ahead"), 90.0, floor=1.0, ceiling=365.0)
         days_back = _num(params.get("days_back"), 7.0, floor=0.0, ceiling=90.0)
         limit = int(_num(params.get("limit"), 250, floor=10, ceiling=1000))
@@ -96,6 +100,25 @@ class MEETFunction(BaseFunction):
                 world = we.world_rows(articles, now=now, source=world_source or "news")
                 if world:
                     sources.append(world_source or "news")
+            if symbols:
+                # Followed symbols need their OWN feeds: the world stream is
+                # geopolitics/market wires, so "BTC" matched nothing (owner
+                # 2026-09-16: "btc ekledim bana onun olayları gösterilmiyor").
+                extra = await self._symbol_articles(symbols, now=now, timeout=news_timeout)
+                if extra:
+                    known = {
+                        (str(a.get("url") or a.get("link") or ""), str(a.get("title") or ""))
+                        for a in articles
+                    }
+                    fresh = [
+                        a
+                        for a in extra
+                        if (str(a.get("url") or a.get("link") or ""), str(a.get("title") or ""))
+                        not in known
+                    ]
+                    if fresh:
+                        world.extend(we.world_rows(fresh, now=now, source="symbol_feed"))
+                        sources.append("symbol_feed")
 
         rows = economic + world
         unfiltered_upcoming, unfiltered_past = we.split_window(
@@ -144,6 +167,39 @@ class MEETFunction(BaseFunction):
                 },
             )
 
+        # Followed symbols (owner 2026-09-16: "btc ekledim bana onun olayları
+        # gösterilmiyor"): match the followed tickers' terms (BTC -> bitcoin,
+        # ...) against the world headlines and surface the matches as their
+        # own section - independent of the country/kind filters, because a
+        # crypto event has no FX-calendar country.
+        symbol_rows: list[dict[str, Any]] = []
+        if symbols:
+            try:
+                from showme.engine.services import news_intelligence as ni
+
+                term_map = [(sym, ni.symbol_terms(sym)) for sym in symbols]
+                for row in world:
+                    text = " ".join(
+                        str(row.get(key) or "")
+                        for key in ("title", "summary", "details", "description")
+                    ).lower()
+                    matched_terms: list[str] = []
+                    for sym, terms in term_map:
+                        for term in terms:
+                            if len(term) >= 3 and ni.term_in_text(term, text):
+                                matched_terms.append(term)
+                                break
+                    if matched_terms:
+                        symbol_rows.append(
+                            {**row, "symbol_matches": matched_terms[:4]}
+                        )
+                symbol_rows.sort(
+                    key=lambda r: str(r.get("when_utc") or ""), reverse=True
+                )
+                symbol_rows = symbol_rows[:24]
+            except Exception as exc:  # noqa: BLE001 - section is best-effort
+                warnings.append(f"symbol_events: {str(exc) or exc.__class__.__name__}")
+
         payload = _shell(
             now=now,
             status="ok",
@@ -165,6 +221,8 @@ class MEETFunction(BaseFunction):
         )
         payload["filtered_empty"] = not ordered
         payload["unfiltered_upcoming_count"] = len(unfiltered_upcoming)
+        payload["symbol_rows"] = symbol_rows
+        payload["symbols_requested"] = symbols
         # Built as a variable so the repo's data_mode literal scanner only
         # sees sanctioned values (``live_<source>`` follows ECO's convention).
         live_mode = "live_" + "+".join(sources) if sources else "cached_snapshot"
@@ -187,6 +245,72 @@ class MEETFunction(BaseFunction):
                 },
             },
         )
+
+    async def _symbol_articles(
+        self, symbols: list[str], *, now: datetime, timeout: float
+    ) -> list[dict[str, Any]]:
+        """Extra headlines aimed at the followed tickers.
+
+        Crypto symbols ride the crypto feed group (CoinDesk/...); the first
+        few symbols also request their per-symbol Yahoo feed. Cached for the
+        same window as the world headlines so pane refreshes stay instant.
+        """
+        global _SYMBOL_NEWS_CACHE
+        cache_key = ",".join(sorted(s.upper() for s in symbols))
+        now_mono = time.monotonic()
+        if _SYMBOL_NEWS_CACHE is not None and _SYMBOL_NEWS_CACHE[0] == cache_key and (
+            now_mono - _SYMBOL_NEWS_CACHE[1]
+        ) < _SYMBOL_NEWS_TTL_S:
+            return list(_SYMBOL_NEWS_CACHE[2])
+
+        rss = getattr(self.deps, "rss", None)
+        if rss is None:
+            return []
+        try:
+            from showme.engine.services import news_intelligence as ni
+
+            crypto_syms = [
+                s for s in symbols if ni.crypto_base(s) in ni.CRYPTO_NAMES
+            ]
+        except Exception:  # noqa: BLE001
+            crypto_syms = []
+        collected: list[dict[str, Any]] = []
+        if crypto_syms:
+            try:
+                collected.extend(
+                    await asyncio.wait_for(
+                        rss.fetch(
+                            DataRequest(
+                                kind=DataKind.NEWS,
+                                extra={"feed_group": "crypto"},
+                                limit=50,
+                            )
+                        ),
+                        timeout=timeout,
+                    )
+                    or []
+                )
+            except Exception:  # noqa: BLE001 - best-effort tier
+                pass
+        for sym in symbols[:3]:
+            try:
+                collected.extend(
+                    await asyncio.wait_for(
+                        rss.fetch(
+                            DataRequest(
+                                kind=DataKind.NEWS,
+                                extra={"feed_group": "market", "symbol": sym},
+                                limit=30,
+                            )
+                        ),
+                        timeout=timeout,
+                    )
+                    or []
+                )
+            except Exception:  # noqa: BLE001
+                continue
+        _SYMBOL_NEWS_CACHE = (cache_key, now_mono, list(collected))
+        return list(collected)
 
     async def _client(self) -> Any:
         """Resolve an httpx-like async client (shared keyless pool)."""
