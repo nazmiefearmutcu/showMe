@@ -99,11 +99,25 @@ describe("sentiment-store.refresh", () => {
       post_count: 50,
       bullish_score: 0.7,
     });
-    await useSentimentStore.getState().refresh(["A", "B"]);
+    /* Coverage floor (2026-09-16): 3-of-4 live chips clear it; the skipped
+       mention-less chip contributes nothing to the average. */
+    mock.mockResolvedValueOnce({
+      symbol: "C",
+      ok: true,
+      post_count: 50,
+      bullish_score: 0.1,
+    });
+    mock.mockResolvedValueOnce({
+      symbol: "D",
+      ok: true,
+      post_count: 50,
+      bullish_score: 0.1,
+    });
+    await useSentimentStore.getState().refresh(["A", "B", "C", "D"]);
     const s = useSentimentStore.getState();
-    expect(s.mentions).toBe(50);
-    expect(s.score).toBeCloseTo(0.7, 5);
-    expect(s.label).toBe("Strongly Bullish");
+    expect(s.mentions).toBe(150);
+    expect(s.score).toBeCloseTo(0.3, 5);
+    expect(s.label).toBe("Neutral");
   });
 
   it("all-warming → never fabricates 0%/Neutral (owner report)", async () => {

@@ -435,6 +435,17 @@ def home_swr_capture(code: str, params: dict[str, Any], key: str, task: Any) -> 
 
 async def warm_home_page_cache() -> None:
     """Boot prewarm for the dashboard payloads (non-fatal)."""
+    # Sentiment chips warm serially server-side (polite throttle); prewarm
+    # the dashboard's fallback deck so the gauge has a coverage-passing
+    # reading by the time the user looks at it (owner 2026-09-16).
+    try:
+        from showme.engine.services.stocktwits_sentiment import warm_symbol_chip
+
+        for sym in ("AAPL", "MSFT", "GOOG", "BTC", "ETH"):
+            warm_symbol_chip(sym)
+    except Exception as exc:  # noqa: BLE001 - non-fatal
+        LOG.debug("sentiment prewarm skipped: %r", exc)
+
     for code, extra in HOME_PREWARM_PARAMS.items():
         try:
             params = _route_function_params(code, dict(extra))

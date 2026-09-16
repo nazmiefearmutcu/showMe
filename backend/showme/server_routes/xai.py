@@ -68,6 +68,11 @@ def _stocktwits_chip_payload(
         "fetched_at": chip.get("fetched_at"),
         "device": "stocktwits",
         "mood": chip["mood"],
+        # Top-level mirror of the aggregate score: the sentiment store reads
+        # ``chip.bullish_score`` directly and silently skipped every chip
+        # (gauge stuck on "unavailable") when only the nested scores carried
+        # it (owner 2026-09-16).
+        "bullish_score": chip["bullish_score"],
         "scores": {
             "bullish_score_avg": chip["bullish_score"],
             "bullish_score_engagement_weighted": chip["bullish_score"],
@@ -269,6 +274,7 @@ def register(app: FastAPI, deps: AppDeps) -> None:
                 "device": "stocktwits",
                 "mood": "unavailable",
                 "warming": True,
+                "bullish_score": None,
                 "scores": {
                     "bullish_score_avg": None,
                     "bullish_score_engagement_weighted": None,

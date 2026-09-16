@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { Bar } from "./types";
-import { TIMEFRAMES, resampleBars, timeframeById, timeframeSeconds } from "./timeframes";
+import {
+  TIMEFRAMES,
+  liveRefreshMsFor,
+  resampleBars,
+  timeframeById,
+  timeframeSeconds,
+} from "./timeframes";
 
 function minuteBars(count: number, startMs = 0): Bar[] {
   return Array.from({ length: count }, (_, i) => {
@@ -141,5 +147,21 @@ describe("resampleBars", () => {
     const out = resampleBars(bars, 3600);
     expect(out).toEqual(bars);
     expect(out).not.toBe(bars);
+  });
+});
+
+describe("liveRefreshMsFor", () => {
+  it("polls EVERY timeframe at 500 ms so no chart reads as a stale website", () => {
+    /* Owner: "500ms bütün kapanış zamanları için geçerli olsun". The helper
+       no longer varies by interval - every horizon ticks at the same
+       real-time cadence, backed by the interval/source-aware cache. */
+    expect(liveRefreshMsFor(30_000)).toBe(500);
+    expect(liveRefreshMsFor(60_000)).toBe(500);
+    expect(liveRefreshMsFor(120_000)).toBe(500);
+  });
+
+  it("never exceeds the caller's cadence and never drops below 250 ms", () => {
+    expect(liveRefreshMsFor(1_000)).toBe(500);
+    expect(liveRefreshMsFor(100)).toBe(250);
   });
 });

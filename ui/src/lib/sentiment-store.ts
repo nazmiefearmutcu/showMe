@@ -55,9 +55,15 @@ function _toNum(x: unknown): number | null {
  * timer is cleared by every new refresh.
  */
 let sentimentRetryTimer: ReturnType<typeof setTimeout> | null = null;
+let sentimentRetryAttempts = 0;
 
 function scheduleSentimentRetry(symbols: string[]): void {
   if (sentimentRetryTimer != null) return;
+  /* Chips warm serially server-side (polite throttle, ~1-2 s each); a single
+     6 s retry caught only the first few. Keep re-arming (bounded) until a
+     coverage-passing reading lands. */
+  if (sentimentRetryAttempts >= 10) return;
+  sentimentRetryAttempts += 1;
   try {
     sentimentRetryTimer = setTimeout(() => {
       sentimentRetryTimer = null;
@@ -136,6 +142,7 @@ export const useSentimentStore = create<SentimentStoreShape>((set, get) => ({
 
       let totalMentions = 0;
       let weighted = 0;
+      let validSymbols = 0;
       for (const r of results) {
         if (r.status !== "fulfilled") continue;
         const chip = r.value;
@@ -144,9 +151,16 @@ export const useSentimentStore = create<SentimentStoreShape>((set, get) => ({
         if (score == null || mentions <= 0) continue;
         weighted += score * mentions;
         totalMentions += mentions;
+        validSymbols += 1;
       }
 
-      if (totalMentions === 0) {
+      /* Coverage floor: a reading off one stray chip is a skewed number, not
+         sentiment (owner 2026-09-16: the gauge showed a wrong ~55% euphoria
+         while markets were red). Require at least 3 live chips (or all of a
+         shorter request) before publishing a score. */
+      const minCoverage = Math.min(3, cleanedSymbols.length);
+
+      if (totalMentions === 0 || validSymbols < minCoverage) {
         // No chip carried live labeled posts this pass (the backend serves a
         // fast "warming" placeholder while it back-fills Stocktwits, owner
         // 2026-09-16). NEVER fabricate a 0%/Neutral reading: keep the last
@@ -165,6 +179,7 @@ export const useSentimentStore = create<SentimentStoreShape>((set, get) => ({
 
       // Aggregate score = mention-weighted average over live chips only.
       const aggScore = Math.max(-1, Math.min(1, weighted / totalMentions));
+      sentimentRetryAttempts = 0;
 
       set({
         score: aggScore,

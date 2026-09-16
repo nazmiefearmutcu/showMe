@@ -91,6 +91,19 @@ export function fallbackIntervalFor(source: string): string | null {
   return null;
 }
 
+/**
+ * Live auto-refresh cadence. EVERY interval polls at 500 ms (owner: "500ms
+ * bütün kapanış zamanları için geçerli olsun; kullanıcı mikaattan kalma bir
+ * web sitesini izliyor gibi seyretmesin") — a terminal must feel real-time
+ * on daily charts too, not only on 1s bars. The backend keeps matching cache
+ * windows (250 ms for Binance, 1 s for Yahoo) so each poll answers with
+ * fresh-or-near-fresh data without hammering the upstream venue. The 250 ms
+ * floor protects against sub-quarter-second cadences.
+ */
+export function liveRefreshMsFor(baseMs: number): number {
+  return Math.max(250, Math.min(baseMs, 500));
+}
+
 /** Duration in seconds for a catalog id, or null when unknown. */
 export function timeframeSeconds(id: string): number | null {
   return TIMEFRAMES_BY_ID.get(id)?.seconds ?? null;

@@ -25,6 +25,7 @@ import {
   TIMEFRAMES,
   fallbackIntervalFor,
   intervalSupported,
+  liveRefreshMsFor,
   timeframeById,
 } from "./timeframes";
 import { createPriceScale, createTimeScale } from "./scales";
@@ -209,6 +210,8 @@ export function Chart({
   const priceTouchedRef = useRef(false);
   /* "symbol|interval" keys already auto-corrected to a supported timeframe. */
   const autoTfFixRef = useRef<string>("");
+  /* Guards the sub-second silent poll loop against overlapping fetches. */
+  const silentInFlightRef = useRef(false);
   const replayIdxRef = useRef(0);
   const compareSeqRef = useRef(0);
   const compareCacheRef = useRef<Map<string, Bar[]>>(new Map());
@@ -371,7 +374,14 @@ export function Chart({
   const load = useCallback(
     async (opts?: { silent?: boolean }) => {
       if (!symbol) return;
-      if (!opts?.silent) setLoading(true);
+      if (opts?.silent) {
+        /* The 1s chart polls every 500 ms; if a fetch is still in flight the
+           tick is skipped instead of piling requests up. */
+        if (silentInFlightRef.current) return;
+        silentInFlightRef.current = true;
+      } else {
+        setLoading(true);
+      }
       try {
         const res = await sidecarFetch<BarsResponse>(
           `/api/bars?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(
@@ -403,6 +413,21 @@ export function Chart({
             setInterval(fallback);
           }
         }
+        if (next.length > 0) {
+          /* Live tail: when the view extends PAST the newest bar — after an
+             unlimited zoom-out or a pan into the future — the right region
+             stays empty forever because fetches are capped at the newest
+             bar. Pin the right edge to the newest bar (span preserved) so
+             fresh data keeps arriving at the visible edge; a view panned
+             into history keeps its window. */
+          const time = timeRef.current;
+          const r = time.range();
+          const last = next.length - 1;
+          if (r.to > last) {
+            const span = r.to - r.from;
+            time.setRange(last - span, last);
+          }
+        }
         if (opts?.silent) {
           if (!priceTouchedRef.current) {
             fitPriceToVisible(
@@ -421,6 +446,7 @@ export function Chart({
         setFetchError(err instanceof Error ? err.message : String(err));
         setReason(null);
       } finally {
+        silentInFlightRef.current = false;
         setLoading(false);
       }
     },
@@ -434,12 +460,16 @@ export function Chart({
 
   useEffect(() => {
     if (!refreshMs || !autoRefresh) return;
+    /* Real-time cadence for EVERY interval (owner requirement): 500 ms polls
+       with a per-poll in-flight guard; the backend's interval/source-aware
+       cache keeps upstream polite (250 ms Binance, 1 s Yahoo). */
+    const cadence = liveRefreshMsFor(refreshMs);
     const id = window.setInterval(() => {
       if (document.visibilityState !== "visible") return;
       void load({ silent: true });
-    }, refreshMs);
+    }, cadence);
     return () => window.clearInterval(id);
-  }, [refreshMs, autoRefresh, load]);
+  }, [refreshMs, autoRefresh, load, interval]);
 
   /* -- compare overlay data (milestone 3) ------------------------------ */
 

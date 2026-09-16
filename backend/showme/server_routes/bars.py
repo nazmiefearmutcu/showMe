@@ -8,9 +8,10 @@ Both providers are keyless and the route never fabricates data:
   ``bars`` list and an honest ``reason`` string the chart can render;
 * any provider failure degrades the same way instead of raising.
 
-A small process-local TTL cache (5 s, 256 entries, keyed on
-symbol+interval+limit) keeps a 1 s chart polling cheap: concurrent panes
-share one upstream call per key per window.
+A small process-local TTL cache (256 entries, keyed on symbol+interval+limit)
+keeps charts polling cheap: 250 ms for 1 s bars (they must refresh FASTER
+than the bar period), 1 s for other sub-minute intervals, 5 s otherwise;
+concurrent panes share one upstream call per key per window.
 
 The provider fetchers (``fetch_binance_bars`` / ``fetch_yahoo_bars``) are
 module-level on purpose — tests monkeypatch them at this seam.
@@ -108,9 +109,28 @@ def normalize_interval(value: Any, default: str = "1m") -> str:
 
 # ── 5 s process-local TTL cache (bounded, keyed symbol+interval+limit) ──────
 _BARS_CACHE_TTL_S = 5.0
+# The 1s chart polls every 500 ms; any cache window close to the bar period
+# serves stale payloads and makes the stream look frozen. The 1s interval
+# gets a 250 ms window (fresh bar per poll, upstream klines weight stays
+# trivial) and 5s bars a 1s window.
+_BARS_CACHE_TTL_FAST_S = 0.25
+_BARS_CACHE_TTL_MID_S = 1.0
 _BARS_CACHE_MAX_ENTRIES = 256
 _bars_cache: OrderedDict[tuple[str, str, int], tuple[float, dict[str, Any]]] = OrderedDict()
 _bars_cache_lock = threading.Lock()
+
+
+def bars_cache_ttl_for(interval_id: str, source: str = "binance") -> float:
+    """Cache window per provider (every chart now polls at 500 ms).
+
+    Binance takes a 250 ms window so each poll can observe a fresh bar (a
+    300-bar klines request is weight 2, so 2 req/s stays trivial); Yahoo's
+    public endpoint rate-limits harder and keeps a 1 s window. ``interval_id``
+    stays in the signature for future per-interval tuning.
+    """
+    if source == "yahoo":
+        return _BARS_CACHE_TTL_MID_S
+    return _BARS_CACHE_TTL_FAST_S
 
 
 def bars_cache_clear() -> None:
@@ -119,14 +139,14 @@ def bars_cache_clear() -> None:
         _bars_cache.clear()
 
 
-def _cache_get(key: tuple[str, str, int]) -> dict[str, Any] | None:
+def _cache_get(key: tuple[str, str, int], ttl: float = _BARS_CACHE_TTL_S) -> dict[str, Any] | None:
     now = time.monotonic()
     with _bars_cache_lock:
         entry = _bars_cache.get(key)
         if entry is None:
             return None
         set_at, payload = entry
-        if now - set_at >= _BARS_CACHE_TTL_S:
+        if now - set_at >= ttl:
             _bars_cache.pop(key, None)
             return None
         _bars_cache.move_to_end(key)
@@ -300,7 +320,7 @@ def register(app: FastAPI, deps: AppDeps) -> None:
         }
 
         key = (target, interval_id, int(limit))
-        cached = _cache_get(key)
+        cached = _cache_get(key, bars_cache_ttl_for(interval_id, source))
         if cached is not None:
             return cached
 
