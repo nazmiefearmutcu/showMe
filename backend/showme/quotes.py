@@ -184,9 +184,31 @@ _DESK_COMMODITY_ALIASES: dict[str, str] = {
 }
 
 
+# Major currency codes used to recognize six-letter FX pairs typed in desk
+# shorthand (TRYUSD, EURUSD, ...). Yahoo lists them with a "=X" suffix; a
+# bare "TRYUSD" used to fail every provider ("quote err" in the watchlist,
+# owner 2026-09-16).
+_FX_CURRENCIES = frozenset(
+    {
+        "USD", "EUR", "GBP", "JPY", "CHF", "CAD", "AUD", "NZD", "SEK", "NOK",
+        "DKK", "PLN", "CZK", "HUF", "TRY", "RUB", "CNY", "CNH", "HKD", "SGD",
+        "INR", "KRW", "MXN", "BRL", "ARS", "ZAR", "ILS", "SAR", "AED", "QAR",
+    }
+)
+
+
+def _fx_pair_alias(value: str) -> str | None:
+    if len(value) == 6 and value.isalpha() and value[:3] in _FX_CURRENCIES and value[3:] in _FX_CURRENCIES:
+        return f"{value}=X"
+    return None
+
+
 def clean_symbol(symbol: str) -> str:
     raw = resolve_crypto_symbol_alias(symbol, allow_network=False) or str(symbol or "").strip().upper()
-    return _DESK_COMMODITY_ALIASES.get(raw, raw)
+    commodity = _DESK_COMMODITY_ALIASES.get(raw)
+    if commodity:
+        return commodity
+    return _fx_pair_alias(raw) or raw
 
 
 def is_crypto_symbol(symbol: str) -> bool:
