@@ -32,6 +32,15 @@ _MARKET_FEEDS = [
     "https://www.prnewswire.com/rss/financial-services-latest-news/financial-services-latest-news-list.rss",
     "https://www.globenewswire.com/RssFeed/subjectcode/27-News-Releases/feedTitle/GlobeNewswire%20-%20News%20about%20Financial%20Services",
     "https://www.sec.gov/news/pressreleases.rss",
+    # Fast world wires (probed live 2026-09-16; newest-item age in minutes):
+    # NYT World ~3, Al Jazeera ~35, BBC Business ~48. The owner's complaint
+    # was that a story already viral on X took ~1.5 h to reach the terminal -
+    # these publish within minutes and ride the SAME world pipeline.
+    "https://rss.nytimes.com/services/xml/rss/nyt/World.xml",
+    "https://www.aljazeera.com/xml/rss/all.xml",
+    "https://feeds.bbci.co.uk/news/world/rss.xml",
+    "https://feeds.bbci.co.uk/news/business/rss.xml",
+    "https://www.theguardian.com/world/rss",
 ]
 
 _CRYPTO_FEEDS = [
