@@ -188,13 +188,16 @@ class MEETFunction(BaseFunction):
         # with_forecast/with_actual/surprise_only are applied just below on
         # economic rows only (world_events.py is untouched — Faz 1+2 tree).
         passthrough_filter = data_filter if data_filter in {"all", "spot", "pinned"} else "all"
+        # Limit is applied AFTER windowing (below): the feed arrives in
+        # week-chronological order (old rows first), so truncating here
+        # would let a small limit eat the entire upcoming section.
         filtered = we.apply_filters(
             rows,
             countries=countries,
             kind=effective_kind,
             impacts=impacts,
             query=query,
-            limit=limit,
+            limit=max(limit, len(rows)),
             tags=tags,
             assets=assets,
             data_filter=passthrough_filter,
@@ -202,6 +205,9 @@ class MEETFunction(BaseFunction):
         if data_filter in {"with_forecast", "with_actual", "surprise_only"}:
             filtered = [r for r in filtered if _passes_data_filter(r, data_filter)]
         upcoming, past = we.split_window(filtered, days_ahead=days_ahead, days_back=days_back)
+        # Upcoming-first priority within the limit.
+        upcoming = upcoming[:limit]
+        past = past[: max(0, limit - len(upcoming))]
         ordered = upcoming + past
         alerts = we.build_alerts(unfiltered_upcoming, lead_minutes=we.DEFAULT_ALERT_LEAD_MINUTES)
         country_index = we.build_country_index(unfiltered_upcoming + unfiltered_past, now=now)
@@ -463,8 +469,19 @@ class MEETFunction(BaseFunction):
 
         gdelt = getattr(self.deps, "gdelt", None)
         rss = getattr(self.deps, "rss", None)
-        error: str | None = None
-        if gdelt is not None:
+        rss_extra = {
+            "feed_group": "market",
+            # Explicit per-feed + collection budgets: the adapter's
+            # 2 s defaults were fine for ten feeds, but the
+            # fast-wire list (15 hosts) on a COLD connection pool
+            # completed nothing inside the window -> zero
+            # headlines right after a restart (observed
+            # 2026-09-16, GDELT down at the same time).
+            "per_feed_timeout_seconds": max(3.0, min(timeout, 5.0)),
+            "collection_timeout_seconds": max(3.0, min(timeout, 5.0)),
+        }
+
+        async def _gdelt_leg() -> tuple[list[dict[str, Any]], str | None]:
             try:
                 items = await asyncio.wait_for(
                     gdelt.fetch(DataRequest(
@@ -476,53 +493,77 @@ class MEETFunction(BaseFunction):
                     timeout=timeout,
                 )
                 if items:
-                    result = (list(items), "gdelt", None)
-                    _WORLD_CACHE = (now_mono, result, _WORLD_CACHE_TTL_S)
-                    return result
-                error = "gdelt: empty result"
+                    return list(items), None
+                return [], "gdelt: empty result"
             except Exception as exc:  # noqa: BLE001
-                error = f"gdelt: {str(exc) or exc.__class__.__name__}"
-        if rss is not None:
+                return [], f"gdelt: {str(exc) or exc.__class__.__name__}"
+
+        async def _rss_leg() -> tuple[list[dict[str, Any]], str | None]:
             try:
                 items = await asyncio.wait_for(
                     rss.fetch(DataRequest(
                         kind=DataKind.NEWS,
-                        # Explicit per-feed + collection budgets: the adapter's
-                        # 2 s defaults were fine for ten feeds, but the
-                        # fast-wire list (15 hosts) on a COLD connection pool
-                        # completed nothing inside the window -> zero
-                        # headlines right after a restart (observed
-                        # 2026-09-16, GDELT down at the same time).
-                        extra={
-                            "feed_group": "market",
-                            "per_feed_timeout_seconds": max(3.0, min(timeout, 5.0)),
-                            "collection_timeout_seconds": max(3.0, min(timeout, 5.0)),
-                        },
+                        extra=rss_extra,
                         limit=50,
                     )),
                     timeout=timeout,
                 )
                 if items:
-                    # GDELT empty/failed is disclosed only when it was an error
-                    # â€” an empty-but-OK GDELT just means the fallback is used.
-                    result = (
-                        list(items),
-                        "rss",
-                        error if error and "empty" not in error else None,
-                    )
-                    _WORLD_CACHE = (now_mono, result, _WORLD_CACHE_TTL_S)
-                    return result
-                result = ([], "rss", error or "rss: empty result")
-                _WORLD_CACHE = (now_mono, result, _WORLD_CACHE_FAIL_TTL_S)
-                return result
+                    return list(items), None
+                return [], "rss: empty result"
             except Exception as exc:  # noqa: BLE001
-                merged = f"{error}; rss: {str(exc) or exc.__class__.__name__}" if error else (
-                    f"rss: {str(exc) or exc.__class__.__name__}"
-                )
-                result = ([], "rss", merged)
-                _WORLD_CACHE = (now_mono, result, _WORLD_CACHE_FAIL_TTL_S)
+                return [], f"rss: {str(exc) or exc.__class__.__name__}"
+
+        if gdelt is None and rss is None:
+            result = ([], "", "news: neither gdelt nor rss is configured")
+            _WORLD_CACHE = (now_mono, result, _WORLD_CACHE_FAIL_TTL_S)
+            return result
+        # First-wins race (owner 2026-09-17: the serial GDELT-timeout +
+        # RSS-fallback chain cost ~13 s on a cold cache). GDELT keeps
+        # priority when both legs are already done with items; otherwise
+        # whoever answers first with items wins and the laggard is
+        # cancelled, so worst case is ~one leg instead of both legs.
+        legs: dict[asyncio.Task, str] = {}
+        if gdelt is not None:
+            legs[asyncio.create_task(_gdelt_leg())] = "gdelt"
+        if rss is not None:
+            legs[asyncio.create_task(_rss_leg())] = "rss"
+        results: dict[str, tuple[list[dict[str, Any]], str | None]] = {}
+        pending = set(legs)
+        while pending:
+            done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                try:
+                    results[legs[task]] = task.result()
+                except Exception as exc:  # noqa: BLE001 - legs guard already; last resort
+                    results[legs[task]] = ([], f"{legs[task]}: {str(exc) or exc.__class__.__name__}")
+            gdelt_res = results.get("gdelt")
+            if gdelt_res is not None and gdelt_res[0]:
+                for task in pending:
+                    task.cancel()
+                result = (gdelt_res[0], "gdelt", None)
+                _WORLD_CACHE = (now_mono, result, _WORLD_CACHE_TTL_S)
                 return result
-        result = ([], "", error or "news: neither gdelt nor rss is configured")
+            rss_res = results.get("rss")
+            if rss_res is not None and rss_res[0]:
+                for task in pending:
+                    task.cancel()
+                gdelt_err = gdelt_res[1] if gdelt_res else None
+                result = (
+                    rss_res[0],
+                    "rss",
+                    gdelt_err if gdelt_err and "empty" not in gdelt_err else None,
+                )
+                _WORLD_CACHE = (now_mono, result, _WORLD_CACHE_TTL_S)
+                return result
+        # Every leg settled without items.
+        gdelt_err = results.get("gdelt", ([], None))[1]
+        rss_err = results.get("rss", ([], None))[1]
+        if rss_err and "empty" not in rss_err:
+            merged = f"{gdelt_err}; {rss_err}" if gdelt_err else rss_err
+        else:
+            merged = gdelt_err or rss_err or "news: no world headlines returned"
+        result = ([], "rss" if rss is not None else "", merged)
         _WORLD_CACHE = (now_mono, result, _WORLD_CACHE_FAIL_TTL_S)
         return result
 
