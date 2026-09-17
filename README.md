@@ -52,8 +52,10 @@ Under the hood: a thin **Tauri 2** (Rust) shell with a signed updater, a **React
 #### A function in context — MAP, the world market heatmap
 ![MAP, the world market heatmap: 47 country tiles sized by move magnitude, breadth and best/worst callouts, a heat scale, and a fielded country table — served live from the exchange](docs/screenshots/03-world-market-map.png)
 
-#### Matrix theme
-![The same MAP heatmap under the Matrix theme: phosphor-green on near-black, with the matrix preset active in the status bar](docs/screenshots/04-matrix-theme.png)
+#### Themes — six presets + your own
+![Switching theme presets live in Settings › Appearance — Midnight, Matrix, Ice, Amber, Papyrus, Neon and a custom three-color build — with the whole desk re-skinning as each preset is picked](docs/screenshots/05-themes.gif)
+
+![The MAP heatmap under the Matrix theme: phosphor-green on near-black, with the matrix preset active in the status bar](docs/screenshots/04-matrix-theme.png)
 
 ## How the terminal works
 
