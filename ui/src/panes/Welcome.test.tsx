@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import {
   Welcome,
+  attachTrends,
   buildMarketTiles,
   buildMovers,
   buildPortfolioWatchRows,
@@ -365,5 +366,40 @@ describe("Welcome sparkline — no synthetic trend", () => {
     const { findByTestId } = render(<Welcome />);
     const placeholder = await findByTestId("spark-empty-AAPL");
     expect(placeholder.getAttribute("aria-label")).toBe("Trend data unavailable");
+  });
+});
+
+describe("attachTrends — real tick histories", () => {
+  const row = (symbol: string, trend: number[] = []) => ({
+    symbol,
+    name: symbol,
+    sector: "CRYPTO",
+    bid: "—",
+    ask: "—",
+    last: "—",
+    change: 0,
+    trend,
+    volume: "—",
+    notional: "—",
+  });
+
+  it("overlays recorded series case-insensitively, keeps the rest untouched", () => {
+    const rows = [row("btcusdt"), row("ETHUSDT")];
+    const out = attachTrends(rows, { BTCUSDT: [1, 2, 3] });
+    expect(out[0].trend).toEqual([1, 2, 3]);
+    expect(out[1].trend).toEqual([]);
+    expect(out[1]).toBe(rows[1]);
+  });
+
+  it("returns the same array reference when nothing attaches", () => {
+    const rows = [row("AAPL")];
+    expect(attachTrends(rows, {})).toBe(rows);
+    expect(attachTrends([], { AAPL: [1] })).toEqual([]);
+  });
+
+  it("never fabricates: empty series in, empty trend out", () => {
+    const rows = [row("SOLUSDT")];
+    const out = attachTrends(rows, { SOLUSDT: [] });
+    expect(out[0].trend).toEqual([]);
   });
 });

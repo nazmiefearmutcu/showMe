@@ -18,6 +18,7 @@ import {
   startKaosBot,
 } from "@/lib/first-run";
 import { useTickFlash } from "@/lib/tick-flash";
+import { useTickTrend } from "@/lib/useTickTrend";
 import {
   formatCompactNumber,
   formatCurrency,
@@ -523,6 +524,11 @@ export function Welcome() {
     enabled: status === "healthy" && liveQuoteSymbols.length > 0,
   });
 
+  // Honest sparklines: accumulate the real ticks already flowing through
+  // `liveQuotes` (no fabrication — symbols without ticks keep `trend: []`
+  // and the placeholder). See `@/lib/useTickTrend`.
+  const tickTrends = useTickTrend(liveQuotes);
+
   // Watchlist rows: portfolio wins if attached, else saved symbols rendered
   // live, else an empty list (UI shows the "Add symbols" CTA).
   const portfolioWatchRows = useMemo(
@@ -533,11 +539,15 @@ export function Welcome() {
     () => buildSavedWatchRows(savedWatchlist, liveQuotes),
     [savedWatchlist, liveQuotes],
   );
-  const watchRows = portfolioWatchRows.length
+  const baseWatchRows = portfolioWatchRows.length
     ? portfolioWatchRows
     : savedWatchRows.length
       ? savedWatchRows
       : DEFAULT_WATCHLIST;
+  const watchRows = useMemo(
+    () => attachTrends(baseWatchRows, tickTrends),
+    [baseWatchRows, tickTrends],
+  );
   const watchEmpty = watchRows.length === 0 && watchlistHydrated && positions.length === 0;
 
   // Live cross-asset tape for the Exposure panel while the local book is
@@ -1760,9 +1770,34 @@ export function buildPortfolioWatchRows(
 }
 
 /**
+ * Overlay real tick histories onto watch rows (see `useTickTrend`).
+ * Matching is case-insensitive on symbol. Rows without a recorded series
+ * keep their builder-supplied `trend` (usually `[]` → placeholder) — never
+ * fabricated. Returns the same array reference when nothing attaches, so
+ * downstream memos stay stable while histories are still empty.
+ */
+export function attachTrends(
+  rows: WatchRow[],
+  trends: Record<string, number[]>,
+): WatchRow[] {
+  if (rows.length === 0) return rows;
+  let changed = false;
+  const out = rows.map((row) => {
+    const series = trends[row.symbol.toUpperCase()];
+    if (series && series.length > 0 && series !== row.trend) {
+      changed = true;
+      return { ...row, trend: series };
+    }
+    return row;
+  });
+  return changed ? out : rows;
+}
+
+/**
  * Build watchlist rows from a saved-symbol list when no portfolio is
  * attached. Quote-only path — `bid`/`ask` come from the live snapshot,
- * never fabricated. `trend` stays empty until a tick history hook ships.
+ * never fabricated. `trend` stays empty here; the component overlays real
+ * tick histories via `attachTrends` + `useTickTrend`.
  */
 export function buildSavedWatchRows(
   saved: WatchlistRow[],
