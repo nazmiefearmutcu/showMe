@@ -55,7 +55,7 @@
     ],
     "category": "public.app-category.finance",
     "shortDescription": "Trader cockpit \u2014 native macOS",
-    "longDescription": "showMe is a native macOS Apple Silicon trader cockpit powered by a bundled 138+ function market engine in a Tauri shell with native menus, tray, notifications, biometric auth, and multi-window state.",
+    "longDescription": "showMe is a native macOS Apple Silicon trader cockpit powered by a bundled 141+ function market engine in a Tauri shell with native menus, tray, notifications, biometric auth, and multi-window state.",
     "macOS": {
       "minimumSystemVersion": "12.0",
       "frameworks": [],

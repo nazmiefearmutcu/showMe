@@ -12,7 +12,7 @@
 </p>
 
 <p align="center">
-  <b>A financial terminal for macOS.</b> Type a short code, get an analyst function — about <b>138</b> of them,
+  <b>A financial terminal for macOS.</b> Type a short code, get an analyst function — about <b>141</b> of them,
   from company financials to options gamma to central-bank rate odds. Open source, runs entirely on your own
   machine, no subscription, no broker lock-in.
 </p>
@@ -32,7 +32,7 @@
 showMe is a desktop **financial terminal** for macOS. Instead of hunting through menus, you drive it the way
 professional desks do: type a short **function code** into a command line and the matching analyst tool opens —
 `FA` for financial statements, `GEX` for options gamma exposure, `WIRP` for rate-hike odds, `ECO` for the
-economic calendar. There are about **138 functions** spanning equities, options, bonds, FX, commodities, macro,
+economic calendar. There are about **141 functions** spanning equities, options, bonds, FX, commodities, macro,
 news, and portfolio analytics.
 
 It's the kind of professional terminal workflow you'd otherwise pay for in a Bloomberg Terminal — rebuilt as
@@ -83,7 +83,7 @@ A taste of the breadth — twelve representative codes:
 
 ## Function catalog
 
-About **138 functions** across 14 categories. The exact set evolves; run `npm run audit:functions` for the live
+About **141 functions** across 14 categories. The exact set evolves; run `npm run audit:functions` for the live
 list. A representative slice by category:
 
 <details>
@@ -163,7 +163,7 @@ flowchart LR
     end
     subgraph backend["Python sidecar"]
       fastapi["FastAPI<br/>/api/health · /function-index · /fn/*"]
-      engine["Function engine<br/>~138 functions · 14 categories"]
+      engine["Function engine<br/>~141 functions · 14 categories"]
       data["Data layer<br/>providers · data-mode tagging"]
     end
     react -->|IPC| tauri
@@ -270,7 +270,7 @@ showMe/
 │   └── src/      shell · panes · functions · command-palette · i18n (12 langs) · design-system
 ├── backend/      Python FastAPI sidecar + function engine
 │   └── showme/   server · function_contracts · providers · brokers · agents
-│       └── engine/functions/   the ~138 functions, in 14 category folders
+│       └── engine/functions/   the ~141 functions, in 14 category folders
 ├── packaging/    build / sign / notarize / dmg
 ├── scripts/      audits & dev tools (npm run audit:functions, …)
 ├── tests/        cross-cutting Playwright e2e
