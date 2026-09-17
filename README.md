@@ -44,13 +44,16 @@ Under the hood: a thin **Tauri 2** (Rust) shell with a signed updater, a **React
 ## Preview
 
 #### Cockpit
-![showMe cockpit: a sector heat strip across the top, KPI tiles for headline indices, a daily brief and risks pane, a forecast gauge, a watchlist with price/change/spark cells, and a left sidebar listing analyst functions](docs/screenshots/01-cockpit.png)
+![showMe cockpit: a live market strip across the top (SPX, NDX, BTC, US10Y, DXY, VIX, WTI, XAU, EURUSD), a Today's Brief fed by live stories, movers and sentiment panes, a watchlist with live quotes, a 24-headline newsflow, and a left sidebar listing analyst functions](docs/screenshots/01-cockpit.png)
 
 #### Command palette — every function, one keystroke away
-![The function command palette open over the cockpit, listing function codes (GEX, NG, CPF, ESG, …) with their full names, filtered as you type](docs/screenshots/02-function-palette.png)
+![The function command palette open over the cockpit, showing recent functions (FLY, MAP, MGN, PFA, PORT) and recent symbols with their Ctrl+1–9 jump hotkeys, filtered as you type](docs/screenshots/02-function-palette.png)
 
-#### A function in context
-![A single-symbol function view for SPX showing the data-quality header, source pills, and a fielded layout](docs/screenshots/03-symbol-equity-view.png)
+#### A function in context — MAP, the world market heatmap
+![MAP, the world market heatmap: 47 country tiles sized by move magnitude, breadth and best/worst callouts, a heat scale, and a fielded country table — served live from the exchange](docs/screenshots/03-world-market-map.png)
+
+#### Matrix theme
+![The same MAP heatmap under the Matrix theme: phosphor-green on near-black, with the matrix preset active in the status bar](docs/screenshots/04-matrix-theme.png)
 
 ## How the terminal works
 
