@@ -147,6 +147,10 @@ export function onSidecarPort(cb: (port: number) => void): () => void {
   return () => subs.delete(cb);
 }
 
+/** Browser-only dev default. The Tauri shell always publishes a real port. */
+const DEFAULT_BROWSER_SIDECAR_PORT = 8765;
+const BROWSER_STORED_PORT_KEY = "showme.sidecarPort";
+
 export function sidecarBaseUrl(): string {
   if (_port) return `http://127.0.0.1:${_port}`;
   if (isInTauri()) return "http://127.0.0.1:0";
@@ -156,8 +160,8 @@ export function sidecarBaseUrl(): string {
     return `http://127.0.0.1:${storedPort}`;
   }
   // Fallback for browser-only dev.
-  publishPort(8765);
-  return "http://127.0.0.1:8765";
+  publishPort(DEFAULT_BROWSER_SIDECAR_PORT);
+  return `http://127.0.0.1:${DEFAULT_BROWSER_SIDECAR_PORT}`;
 }
 
 export function sidecarWsUrl(): string {
@@ -168,15 +172,45 @@ export function sidecarWsUrl(): string {
     publishPort(storedPort);
     return `ws://127.0.0.1:${storedPort}`;
   }
-  publishPort(8765);
-  return "ws://127.0.0.1:8765";
+  publishPort(DEFAULT_BROWSER_SIDECAR_PORT);
+  return `ws://127.0.0.1:${DEFAULT_BROWSER_SIDECAR_PORT}`;
 }
 
 function browserStoredSidecarPort(): number | null {
   if (isInTauri() || typeof window === "undefined") return null;
-  const raw = window.localStorage.getItem("showme.sidecarPort");
+  const raw = window.localStorage.getItem(BROWSER_STORED_PORT_KEY);
   const port = raw ? Number(raw) : NaN;
   return Number.isInteger(port) && port > 0 ? port : null;
+}
+
+/**
+ * Browser-mode self-heal for a stale `showme.sidecarPort` entry. The key is
+ * read from localStorage on every boot (a leftover from an earlier session or
+ * a dead dev sidecar); nothing in the current tree writes it, so once a dead
+ * port is stored the whole UI pins itself to it — health probes fail, every
+ * pane renders DEMO/CRASHED, and a perfectly healthy sidecar on the dev
+ * default port is never contacted.
+ *
+ * When the stored port fails its first health probe, probe the default port:
+ * if that answers, drop the stale key and let the caller retry the default.
+ * A stored port that IS alive is still honored, so pointing browser dev at a
+ * non-default sidecar keeps working.
+ */
+async function dropStaleStoredPortIfDefaultAlive(): Promise<boolean> {
+  if (isInTauri() || typeof window === "undefined") return false;
+  const stored = browserStoredSidecarPort();
+  if (stored == null || stored === DEFAULT_BROWSER_SIDECAR_PORT) return false;
+  try {
+    const res = await fetch(
+      `http://127.0.0.1:${DEFAULT_BROWSER_SIDECAR_PORT}/api/health`,
+    );
+    if (!res.ok) return false;
+  } catch {
+    return false;
+  }
+  window.localStorage.removeItem(BROWSER_STORED_PORT_KEY);
+  _port = null;
+  return true;
 }
 
 export async function waitForSidecarReady(timeoutMs = 12_000): Promise<string> {
@@ -189,6 +223,7 @@ export async function waitForSidecarReady(timeoutMs = 12_000): Promise<string> {
   }
   const deadline = Date.now() + timeoutMs;
   let lastError = "";
+  let stalePortChecked = false;
   do {
     const base = sidecarBaseUrl();
     try {
@@ -200,6 +235,12 @@ export async function waitForSidecarReady(timeoutMs = 12_000): Promise<string> {
       lastError = `${res.status} ${res.statusText}`;
     } catch (err) {
       lastError = err instanceof Error ? err.message : String(err);
+      // Connection refused on a stored browser port: the entry is stale.
+      // If the dev default answers instead, drop the entry and retry now.
+      if (!stalePortChecked) {
+        stalePortChecked = true;
+        if (await dropStaleStoredPortIfDefaultAlive()) continue;
+      }
     }
     await sleep(250);
   } while (Date.now() < deadline);
