@@ -18,6 +18,7 @@ import {
   startKaosBot,
 } from "@/lib/first-run";
 import { useTickFlash } from "@/lib/tick-flash";
+import { useDailyTrends } from "@/lib/useDailyTrend";
 import { useTickTrend } from "@/lib/useTickTrend";
 import {
   formatCompactNumber,
@@ -544,9 +545,21 @@ export function Welcome() {
     : savedWatchRows.length
       ? savedWatchRows
       : DEFAULT_WATCHLIST;
+  // Daily closes win over tick history (ticks are second-scale noise, not a
+  // trend); tick series stay as the fallback while candles load or fail.
+  const dailySymbols = useMemo(
+    () =>
+      Array.from(new Set(baseWatchRows.map((r) => r.symbol).filter(Boolean))).sort(),
+    [baseWatchRows],
+  );
+  const dailyTrends = useDailyTrends(dailySymbols, { enabled: status === "healthy" });
+  const trends = useMemo(
+    () => ({ ...tickTrends, ...dailyTrends }),
+    [tickTrends, dailyTrends],
+  );
   const watchRows = useMemo(
-    () => attachTrends(baseWatchRows, tickTrends),
-    [baseWatchRows, tickTrends],
+    () => attachTrends(baseWatchRows, trends),
+    [baseWatchRows, trends],
   );
   const watchEmpty = watchRows.length === 0 && watchlistHydrated && positions.length === 0;
 

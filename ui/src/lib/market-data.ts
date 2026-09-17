@@ -1045,7 +1045,7 @@ interface ChartSeriesInternalState {
 
 const CHART_DEFAULT_DEPTH = 1_000;
 
-function parseOhlcRows(input: unknown): OhlcBar[] {
+export function parseOhlcRows(input: unknown): OhlcBar[] {
   if (!input) return [];
   let rows: unknown[];
   if (Array.isArray(input)) {
