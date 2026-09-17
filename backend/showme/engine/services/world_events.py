@@ -173,10 +173,113 @@ _POLITICAL_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Crypto / macro impact backstops (Faz 2): a headline the asset/topic
+# gazetteers tag is never "low" impact — the war rule above still wins.
+_CRYPTO_RE = re.compile(
+    r"\b(bitcoin|btc|xbt|btcusd|ethereum|eth|ethusd|crypto\w*|etf|etp"
+    r"|halving|stablecoins?|usdt|usdc|on-?chain|inflows?|outflows?"
+    r"|grayscale|ibit|fbtc|gbtc)\b",
+    re.IGNORECASE,
+)
+
+_FINANCIAL_RE = re.compile(
+    r"\b(fed|federal reserve|fomc|powell|dot plot|ecb|lagarde|boj|ueda"
+    r"|cpi|ppi|pce|inflation|nfp|payrolls?|unemployment"
+    r"|rate decision|interest rate)\b",
+    re.IGNORECASE,
+)
+
+# Event-type classifiers (Faz 2 — details.event_type).
+_ETF_FLOW_RE = re.compile(r"\b(inflows?|outflows?)\b", re.IGNORECASE)
+_EMPLOYMENT_RE = re.compile(
+    r"\b(nfp|non[\s-]?farm|payrolls?|unemployment|jobs report|employment)\b",
+    re.IGNORECASE,
+)
+_INFLATION_RE = re.compile(r"\b(cpi|ppi|pce|inflation)\b", re.IGNORECASE)
+_REGULATION_RE = re.compile(
+    r"\b(sec|regulat\w*|lawsuit|lawsuits|sues?|suing|charges?|ban|bans|banned"
+    r"|approval|approve[sd]?|reject\w*|court|ruling)\b",
+    re.IGNORECASE,
+)
+_HACK_RE = re.compile(
+    r"\b(hack\w*|exploit\w*|security breach|stolen|bridge attack)\b",
+    re.IGNORECASE,
+)
+_HALVING_RE = re.compile(r"\bhalving\b", re.IGNORECASE)
+_RATE_MACRO_RE = re.compile(
+    r"\b(rates?|rate decision|decision|hike|hikes|cut|cuts|pause|holds?|steady|dot plot)\b",
+    re.IGNORECASE,
+)
+
+_EVENT_ASSET_MACRO_TOPICS = frozenset({"FED", "ECB", "BOJ"})
+
+
+def _classify_event_type(
+    text: str,
+    *,
+    asset_tags: list[str],
+    topic_tags: list[str],
+    war: bool,
+    political: bool,
+) -> str:
+    """Deterministic rule tagger for ``details.event_type``."""
+    blob = str(text or "")
+    tags = set(asset_tags or [])
+    topics = set(topic_tags or [])
+    if "ETF" in tags and _ETF_FLOW_RE.search(blob):
+        return "etf_flow"
+    if _RATE_DECISION_RE.search(blob) or (
+        topics & _EVENT_ASSET_MACRO_TOPICS and _RATE_MACRO_RE.search(blob)
+    ):
+        return "rate_decision"
+    if _EMPLOYMENT_RE.search(blob):
+        return "employment_print"
+    if _INFLATION_RE.search(blob):
+        return "inflation_print"
+    if _REGULATION_RE.search(blob):
+        return "regulation"
+    if _HACK_RE.search(blob):
+        return "hack"
+    if _HALVING_RE.search(blob):
+        return "halving"
+    if war or political:
+        return "geopolitics"
+    return "other"
+
+
+def _provider_tag_blob(item: dict[str, Any]) -> str:
+    """Join provider-carried tag fields (CoinTelegraph category, ...)."""
+    bits: list[str] = []
+    for key in ("asset_tags", "topic_tags", "tags", "category", "categories"):
+        value = item.get(key)
+        if isinstance(value, (list, tuple, set)):
+            bits.extend(str(v).strip() for v in value if str(v).strip())
+        elif value is not None and str(value).strip():
+            bits.append(str(value).strip())
+    return " ".join(bits)
+
+
+def _provider_raw_tags(item: dict[str, Any]) -> list[str]:
+    """Raw provider tag strings, for audit (never invented)."""
+    out: list[str] = []
+    for key in ("asset_tags", "topic_tags", "tags", "category", "categories"):
+        value = item.get(key)
+        if isinstance(value, (list, tuple, set)):
+            candidates = [str(v).strip() for v in value if str(v).strip()]
+        elif value is not None and str(value).strip():
+            candidates = [str(value).strip()]
+        else:
+            continue
+        for candidate in candidates:
+            if candidate not in out:
+                out.append(candidate)
+    return out
+
 _WORLD_QUERY = (
     "(war OR conflict OR ceasefire OR invasion OR missile OR airstrike OR sanctions"
     " OR election OR summit OR treaty OR coup OR protest OR nuclear OR mobilization"
-    " OR shelling OR offensive)"
+    " OR shelling OR offensive"
+    " OR bitcoin OR ethereum OR crypto OR ETF OR FOMC OR Fed OR rate decision OR CPI OR inflation)"
 )
 
 
@@ -313,6 +416,7 @@ def economic_rows(
             "spot": spot,
             "pinned": spot or (impact == "high" and iso in MAJOR_MARKET_ISO),
             "details": {
+                "actual": item.get("actual"),
                 "forecast": item.get("forecast"),
                 "previous": item.get("previous"),
                 "unit": item.get("unit") or "",
@@ -416,6 +520,86 @@ for _iso, _name in COUNTRY_CATALOG:
     _TERM_PATTERNS[_iso] = [_term_pattern(t) for t in terms]
 
 
+# ---------------------------------------------------------------------------
+# Asset / topic gazetteers (MEET Bloomberg Faz 2 — BTC+makro çekirdek).
+#
+# Country gazetteer ile aynı desen disiplini: <= 3 karakterli terimler
+# case-sensitive kelime-sınırı ile eşleşir ("US" kuralıyla aynı).
+# Bilinçli karar: "satoshi" BTC aliası DEĞİL (gürültü riski).
+# ---------------------------------------------------------------------------
+
+ASSET_TERMS: dict[str, tuple[str, ...]] = {
+    "BTC": ("BTC", "bitcoin", "XBT", "BTCUSD", "IBIT"),
+    "ETH": ("ETH", "ethereum", "ether", "ETHUSD"),
+    "ETF": ("ETF", "ETP", "inflow", "outflow", "GBTC", "IBIT", "FBTC"),
+    "CRYPTO": ("crypto", "cryptocurrency", "stablecoin", "USDT", "USDC", "halving", "onchain", "on-chain"),
+}
+
+TOPIC_TERMS: dict[str, tuple[str, ...]] = {
+    "FED": ("Fed", "Federal Reserve", "FOMC", "Powell", "dot plot"),
+    "ECB": ("ECB", "Lagarde"),
+    "BOJ": ("BOJ", "Ueda"),
+    "INFLATION": ("CPI", "PPI", "PCE", "inflation", "NFP", "payrolls", "unemployment"),
+}
+
+_ASSET_PATTERNS: dict[str, list[tuple[str, re.Pattern[str]]]] = {
+    asset: [(term, _term_pattern(term)) for term in terms]
+    for asset, terms in ASSET_TERMS.items()
+}
+
+_TOPIC_PATTERNS: dict[str, list[tuple[str, re.Pattern[str]]]] = {
+    topic: [(term, _term_pattern(term)) for term in terms]
+    for topic, terms in TOPIC_TERMS.items()
+}
+
+
+def match_assets(text: str) -> tuple[list[str], list[str]]:
+    """Return ``(asset_tags, matched_assets)`` for a headline.
+
+    Same pattern discipline as :func:`match_countries`: terms with
+    <= 3 characters match case-sensitively on word boundaries. One
+    headline may tag several assets (e.g. ``Bitcoin ETF inflows`` tags
+    both ``BTC`` and ``ETF``); each tag records the exact term that
+    matched.
+    """
+    haystack = str(text or "")
+    if not haystack:
+        return [], []
+    tags: list[str] = []
+    matched: list[str] = []
+    for asset, term_patterns in _ASSET_PATTERNS.items():
+        for term, pattern in term_patterns:
+            hit = pattern.search(haystack)
+            if hit:
+                if asset not in tags:
+                    tags.append(asset)
+                term_hit = hit.group(0)
+                if term_hit not in matched:
+                    matched.append(term_hit)
+                break
+    return tags, matched
+
+
+def match_topics(text: str) -> tuple[list[str], list[str]]:
+    """Return ``(topic_tags, matched_topics)`` for a headline."""
+    haystack = str(text or "")
+    if not haystack:
+        return [], []
+    tags: list[str] = []
+    matched: list[str] = []
+    for topic, term_patterns in _TOPIC_PATTERNS.items():
+        for term, pattern in term_patterns:
+            hit = pattern.search(haystack)
+            if hit:
+                if topic not in tags:
+                    tags.append(topic)
+                term_hit = hit.group(0)
+                if term_hit not in matched:
+                    matched.append(term_hit)
+                break
+    return tags, matched
+
+
 def match_countries(text: str) -> tuple[list[str], list[str]]:
     """Return ``(isos, matched_terms)`` for a headline.
 
@@ -464,9 +648,39 @@ def world_rows(
             continue
         summary = _clean_text(item.get("summary") or item.get("description"), 400)
         isos, matched = match_countries(f"{title} {summary}")
+        # Faz 2 tag hibriti: asset/topic gazetteers + provider-carried tags
+        # (CoinTelegraph category, symbol_feed tags, ...). Provider tags are
+        # unioned in — never overwritten — so provider ground truth survives.
+        provider_blob = _provider_tag_blob(item)
+        provider_raw = _provider_raw_tags(item)
+        asset_tags, matched_assets = match_assets(f"{title} {summary} {provider_blob}".strip())
+        topic_tags, _matched_topics = match_topics(f"{title} {summary} {provider_blob}".strip())
         war = bool(_WAR_RE.search(title))
         political = bool(_POLITICAL_RE.search(title))
-        impact = "high" if war else ("medium" if political else "low")
+        # Impact: the war rule wins; crypto/macro headlines are at least
+        # medium (never low/ülkesiz/kayıp).
+        crypto_hit = bool(asset_tags) or bool(_CRYPTO_RE.search(f"{title} {summary}"))
+        macro_hit = bool(topic_tags) or bool(_FINANCIAL_RE.search(f"{title} {summary}"))
+        if war:
+            impact = "high"
+        elif political or crypto_hit or macro_hit:
+            impact = "medium"
+        else:
+            impact = "low"
+        event_type = _classify_event_type(
+            f"{title} {summary}",
+            asset_tags=asset_tags,
+            topic_tags=topic_tags,
+            war=war,
+            political=political,
+        )
+        # Asset pairs ride alongside FX pairs (pairs_for is untouched — FX
+        # behaviour is preserved).
+        pairs: list[str] = []
+        if "BTC" in asset_tags and "BTCUSD" not in pairs:
+            pairs.append("BTCUSD")
+        if "ETH" in asset_tags and "ETHUSD" not in pairs:
+            pairs.append("ETHUSD")
         when = parse_when_utc(
             item.get("published_at") or item.get("seendate") or item.get("date")
             or item.get("published") or item.get("datetime")
@@ -490,13 +704,19 @@ def world_rows(
             "undated": undated,
             "impact": impact,
             "currencies": [],
-            "pairs": [],
+            "pairs": pairs,
             "source": source,
             "spot": war,
-            "pinned": war,
+            # Crypto+macro headlines pin alongside wars (Faz 2).
+            "pinned": war or (crypto_hit and macro_hit),
             "details": {
                 "url": url or None,
                 "matched_terms": matched,
+                "asset_tags": asset_tags,
+                "topic_tags": topic_tags,
+                "event_type": event_type,
+                "matched_assets": matched_assets,
+                **({"provider_tags": provider_raw} if provider_raw else {}),
                 "impact_basis": "headline_keywords",
                 # The row expands in-place on click (owner 2026-09-16:
                 # "haberlere basınca haber büyüsün haber özeti gelsin").
@@ -567,11 +787,19 @@ def apply_filters(
     impacts: Iterable[str] = (),
     query: str = "",
     limit: int = 250,
+    tags: Iterable[str] = (),
+    assets: Iterable[str] = (),
+    topics: Iterable[str] = (),
+    data_filter: str = "all",
 ) -> list[dict[str, Any]]:
     wanted_iso = {canonical_iso(c) or c.upper() for c in countries}
     wanted_impact = {str(i).strip().lower() for i in impacts if str(i).strip()}
     kind_key = str(kind or "all").strip().lower() or "all"
     q = str(query or "").strip().lower()
+    wanted_tags = [str(t).strip() for t in _csv(tags) if str(t).strip()]
+    wanted_assets = {str(a).strip().upper() for a in _csv(assets) if str(a).strip()}
+    wanted_topics = {str(t).strip().upper() for t in _csv(topics) if str(t).strip()}
+    data_key = str(data_filter or "all").strip().lower() or "all"
     if kind_key not in {"all", "economic", "world"}:
         kind_key = "all"
     out: list[dict[str, Any]] = []
@@ -592,6 +820,50 @@ def apply_filters(
             ]).lower()
             if q not in hay:
                 continue
+        details = row.get("details") or {}
+        if wanted_assets:
+            row_assets = {str(t).strip().upper() for t in (details.get("asset_tags") or []) if str(t).strip()}
+            if not (row_assets & wanted_assets):
+                continue
+        if wanted_topics:
+            row_topics = {str(t).strip().upper() for t in (details.get("topic_tags") or []) if str(t).strip()}
+            if not (row_topics & wanted_topics):
+                continue
+        if wanted_tags:
+            title_l = str(row.get("title") or "").lower()
+            summary_l = " ".join([
+                str(row.get("summary") or ""),
+                str(details.get("summary") or ""),
+            ]).lower()
+            terms_l = " ".join(
+                str(t) for t in ((details.get("matched_terms") or []) + (details.get("matched_assets") or []))
+            ).lower()
+            tagged_upper = {
+                str(t).strip().upper()
+                for t in (
+                    (details.get("matched_assets") or [])
+                    + (details.get("asset_tags") or [])
+                    + (details.get("topic_tags") or [])
+                    + (row.get("pairs") or [])
+                )
+                if str(t).strip()
+            }
+            tag_hit = False
+            for tag in wanted_tags:
+                if (
+                    tag.lower() in title_l
+                    or tag.lower() in summary_l
+                    or tag.lower() in terms_l
+                    or tag.upper() in tagged_upper
+                ):
+                    tag_hit = True
+                    break
+            if not tag_hit:
+                continue
+        if data_key == "spot" and not row.get("spot"):
+            continue
+        if data_key == "pinned" and not row.get("pinned"):
+            continue
         out.append(row)
         if len(out) >= limit:
             break
@@ -741,6 +1013,8 @@ def window_meta(
 
 
 __all__ = [
+    "ASSET_TERMS",
+    "TOPIC_TERMS",
     "COUNTRY_CATALOG",
     "COUNTRY_TERMS",
     "CURRENCY_TO_ISO",
@@ -756,7 +1030,9 @@ __all__ = [
     "country_name",
     "currency_for",
     "economic_rows",
+    "match_assets",
     "match_countries",
+    "match_topics",
     "next_high_impact",
     "normalize_impact",
     "pairs_for",

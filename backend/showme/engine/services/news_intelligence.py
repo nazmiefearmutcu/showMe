@@ -96,6 +96,8 @@ def symbol_terms(symbol: str | None, query: str | None = None) -> list[str]:
             out.append(base)
         if base in CRYPTO_NAMES:
             out.append(CRYPTO_NAMES[base])
+        if base == "BTC":
+            out.append("XBT")
         if base == "ETH":
             out.append("ether")
         for alias in EQUITY_ALIASES.get(raw, ()):
@@ -107,11 +109,20 @@ def symbol_terms(symbol: str | None, query: str | None = None) -> list[str]:
     return list(dict.fromkeys(t for t in out if t))
 
 
+# Wrapped tokens resolve to their base BEFORE quote-suffix stripping
+# (otherwise "WBTC" ends with "BTC" and collapses to "W").
+_WRAPPED_BASE: dict[str, str] = {"WBTC": "BTC", "WETH": "ETH"}
+
+
 def crypto_base(symbol: str) -> str:
     value = symbol.upper().replace("/", "").replace("-", "")
+    if value in _WRAPPED_BASE:
+        return _WRAPPED_BASE[value]
     for suffix in QUOTE_SUFFIXES:
         if value.endswith(suffix) and len(value) > len(suffix):
-            return value[: -len(suffix)]
+            base = value[: -len(suffix)]
+            # A stripped quote may reveal a wrapped token (WBTCUSDT -> BTC).
+            return _WRAPPED_BASE.get(base, base)
     return value
 
 

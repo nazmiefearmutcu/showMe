@@ -380,6 +380,10 @@ export function defaultQueryForFunction(code: string, category?: string): string
 
 export function defaultRuntimeParams(code: string): Record<string, unknown> {
   switch (code.toUpperCase()) {
+    case "MEET":
+      // Backend seed parity (meet_seed.py defaults): explicit mode=all wins
+      // over kind, empty tags and data_filter=all are server-side no-ops.
+      return { mode: "all", tags: "", data_filter: "all" };
     case "NALRT":
       return { live: true, health: true, threshold: 70, news_timeout: 6 };
     case "BETA":

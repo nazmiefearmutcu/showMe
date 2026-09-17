@@ -267,6 +267,11 @@ def params_for(entry: dict[str, Any], asset: str | None) -> dict[str, Any]:
         params["action"] = "list"
     elif code in {"MEET", "PEOP"}:
         params["query"] = "Satoshi Nakamoto" if asset == "CRYPTO" else "Apple"
+        if code == "MEET":
+            # Faz 3 contract inputs: no-op values so the audit exercises the
+            # new mode/tags/data_filter/symbols branches without narrowing
+            # (symbols="" is the no-op: any ticker would fire the symbol feed).
+            params.update({"mode": "all", "tags": "", "data_filter": "all", "symbols": ""})
     elif code in {"BTFW", "BMTX", "MLSIG"}:
         params.update({"strategy": "buy_and_hold", "days": 90})
     elif code == "BTUNE":

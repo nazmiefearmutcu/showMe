@@ -23,6 +23,9 @@ import {
   type FormEvent,
 } from "react";
 import {
+  DataGrid,
+  type DataGridColumn,
+  DeltaChip,
   Empty,
   Pane,
   PaneBody,
@@ -34,6 +37,7 @@ import {
   StatusSection,
 } from "@/design-system";
 import { useFunction } from "@/lib/useFunction";
+import { useVisibilityTick } from "@/lib/useVisibilityTick";
 import { useLiveQuote } from "@/lib/market-data";
 import { toast } from "@/lib/toast";
 import { formatPrice } from "@/lib/format";
@@ -42,21 +46,26 @@ import {
   LoadStatePill,
   RefreshButton,
 } from "./function-controls";
-import { usePersistentOption } from "./function-control-state";
+import { usePersistentOption, usePersistentString } from "./function-control-state";
 import type { FunctionPaneProps } from "./registry-types";
 import {
   MEET_ALERT_HISTORY_CAP,
   dueAlert,
+  flagOf,
   formatAge,
   formatCountdown,
+  formatPrint,
+  groupCalendarByDay,
   groupRows,
   impactTone,
   isPastRow,
   isSpotFor,
   leadLabel,
   loadMeetAlerts,
+  polarityOf,
   saveMeetAlerts,
   secondsUntil,
+  surpriseOf,
   type MeetAlertConfig,
   type MeetAlertHistoryItem,
   type MeetCountryEntry,
@@ -71,11 +80,33 @@ const KIND_OPTIONS = [
 ] as const;
 type KindFilter = (typeof KIND_OPTIONS)[number]["value"];
 
+/* Mode tabs (spec §3): all = mixed list, calendar = MQL5-parity table,
+   wire = world list + asset chips. Mode wins over kind (backend rule). */
+const MODE_OPTIONS = [
+  { value: "all", label: "All" },
+  { value: "calendar", label: "Calendar" },
+  { value: "wire", label: "Wire" },
+] as const;
+type ModeFilter = (typeof MODE_OPTIONS)[number]["value"];
+const MODE_VALUES = MODE_OPTIONS.map((m) => m.value);
+
+const DATA_FILTER_OPTIONS = ["all", "with_forecast", "with_actual", "surprise_only"] as const;
+type DataFilter = (typeof DATA_FILTER_OPTIONS)[number];
+
 const IMPACT_OPTIONS = ["high", "medium", "low", "holiday"] as const;
 type ImpactFilter = (typeof IMPACT_OPTIONS)[number];
 
 const AHEAD_DAYS = [7, 30, 90, 180] as const;
 const BACK_DAYS = [1, 7, 30] as const;
+
+/* Faz 5 realtime delta cursor (backend contract): hash/new_rows/removed_ids
+   ride on the payload; helpers.ts MeetData is untouched on purpose. */
+type MeetDeltaData = MeetData & {
+  hash?: string;
+  new_rows?: MeetRow[];
+  removed_ids?: string[];
+  since_echo?: string;
+};
 
 export function MEETPane({ code }: FunctionPaneProps) {
   const [kind, setKind] = usePersistentOption<KindFilter>(
@@ -83,6 +114,18 @@ export function MEETPane({ code }: FunctionPaneProps) {
     KIND_OPTIONS.map((k) => k.value),
     "all",
   );
+  const [mode, setMode] = usePersistentOption<ModeFilter>(
+    "showme.meet.mode",
+    MODE_VALUES,
+    "all",
+  );
+  const [dataFilter, setDataFilter] = usePersistentOption<DataFilter>(
+    "showme.meet.data-filter",
+    DATA_FILTER_OPTIONS,
+    "all",
+  );
+  const [tags, setTags] = usePersistentString("showme.meet.tags", "");
+  const [tagsDraft, setTagsDraft] = useState(tags);
   const [daysAhead, setDaysAhead] = usePersistentOption<number>(
     "showme.meet.days-ahead",
     AHEAD_DAYS,
@@ -105,11 +148,17 @@ export function MEETPane({ code }: FunctionPaneProps) {
 
   const countriesParam = alertConfig.spotCountries.join(",");
   const impactParam = impacts.join(",");
-  const { state, data, error, refetch } = useFunction<MeetData>({
+  const [deltaParams, setDeltaParams] = useState<{ since?: string; known_ids?: string }>(
+    {},
+  );
+  const { state, data, error, refetch } = useFunction<MeetDeltaData>({
     code,
     params: {
       countries: countriesParam,
       kind,
+      mode,
+      tags,
+      data_filter: dataFilter,
       impact: impactParam,
       days_ahead: daysAhead,
       days_back: daysBack,
@@ -119,9 +168,102 @@ export function MEETPane({ code }: FunctionPaneProps) {
       // Followed symbols ride along so the backend can surface matched world
       // headlines as their own section (owner: BTC followed, no events shown).
       symbols: alertConfig.symbols.join(","),
+      // Faz 5 realtime delta cursor (empty on first load — the backend then
+      // answers backward-compat with empty new_rows/removed_ids).
+      ...deltaParams,
     },
   });
-  const payload = data?.data;
+  const livePayload = data?.data;
+
+  /* Faz 5 realtime delta — 30 sn visibility-aware poll. The cursor
+     (since/known_ids) rides in params, so the fetch key changes every poll;
+     the displayed list is a hash-gated snapshot instead: an identical hash
+     leaves state untouched (no flicker), a new hash swaps the list and
+     drops fresh SPOT rows into the toast motor. */
+  const [shown, setShown] = useState<MeetDeltaData | null>(null);
+  const hashRef = useRef<string | null>(null);
+  const lastAsOfRef = useRef<string>("");
+  const lastIdsRef = useRef<string[]>([]);
+  const baselineKeyRef = useRef<string>("");
+  // Poll-pattern guard: the tick effect reads through a ref — `refetch`
+  // itself never enters a dependency array.
+  const refetchRef = useRef(refetch);
+  useEffect(() => {
+    refetchRef.current = refetch;
+  }, [refetch]);
+  const pollTick = useVisibilityTick(30_000);
+  const filterKey = JSON.stringify({
+    countries: countriesParam,
+    kind,
+    mode,
+    tags,
+    dataFilter,
+    impact: impactParam,
+    daysAhead,
+    daysBack,
+    query,
+    symbols: alertConfig.symbols.join(","),
+  });
+  // A filter change starts a new baseline: drop the cursor so the next poll
+  // re-baselines instead of diffing across two different windows.
+  useEffect(() => {
+    setDeltaParams({});
+  }, [filterKey]);
+  useEffect(() => {
+    if (pollTick === 0) return; // initial mount handled by useFunction's own load
+    const ids = lastIdsRef.current;
+    if (ids.length > 0) {
+      const asOf = lastAsOfRef.current;
+      setDeltaParams({
+        ...(asOf ? { since: asOf } : {}),
+        known_ids: ids.slice(-1000).join(","),
+      });
+    }
+    refetchRef.current();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- tick is the trigger
+  }, [pollTick]);
+  // Tab return (market-data.ts pattern): exactly one refresh so the first
+  // visible frame is not a full cadence stale.
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    const onVisible = () => {
+      if (document.visibilityState === "visible") refetchRef.current();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, []);
+  useEffect(() => {
+    const next = livePayload;
+    if (!next || typeof next !== "object") return;
+    const sameBaseline = baselineKeyRef.current === filterKey;
+    const hash = typeof next.hash === "string" ? next.hash : null;
+    if (sameBaseline && hash != null && hashRef.current != null && hash === hashRef.current) {
+      return; // unchanged window — leave state alone, no re-render
+    }
+    hashRef.current = hash;
+    baselineKeyRef.current = filterKey;
+    if (typeof next.as_of === "string") lastAsOfRef.current = next.as_of;
+    lastIdsRef.current = (next.rows ?? []).map((row) => row.id);
+    setShown(next);
+    if (!sameBaseline) return; // new filter window — adopt silently, no toast
+    if (!alertConfig.enabled || !Array.isArray(next.new_rows)) return;
+    for (const fresh of next.new_rows) {
+      const key = `delta:${fresh.id}`;
+      if (firedRef.current.has(key)) continue;
+      if (!isSpotFor(fresh, alertConfig)) continue;
+      firedRef.current.add(key);
+      toast.warn(
+        `MEET spot · ${fresh.title}`,
+        [
+          utcLabel(fresh.when_utc),
+          fresh.pairs?.length ? fresh.pairs.slice(0, 4).join(", ") : null,
+        ]
+          .filter(Boolean)
+          .join(" · "),
+      );
+    }
+  }, [livePayload, alertConfig, filterKey]);
+  const payload = shown ?? livePayload;
   const [symbolDraft, setSymbolDraft] = useState("");
 
   // Live clock: 1s tick drives countdowns + lead-time alerts.
@@ -273,19 +415,28 @@ export function MEETPane({ code }: FunctionPaneProps) {
     setQuery(queryDraft.trim());
   };
 
+  const submitTags = (event: FormEvent) => {
+    event.preventDefault();
+    setTags(tagsDraft.trim());
+  };
+
   const nextHighImpact = payload?.window?.next_high_impact ?? null;
   const nextHighSeconds = nextHighImpact?.when_utc
     ? (Date.parse(nextHighImpact.when_utc) - nowMs) / 1000
     : null;
 
-  const body = state === "loading" || state === "idle" ? (
+  // The 30 sn poll re-keys the fetch (cursor in params) so `loading` fires
+  // every cycle — keep the hash-gated snapshot on screen instead of
+  // flashing the skeleton (or the error card on a failed poll).
+  const keepStale = shown != null && (state === "loading" || state === "error");
+  const body = !keepStale && (state === "loading" || state === "idle") ? (
     <div className="u-grid-gap-8">
       <Skeleton height={52} />
       <Skeleton height={20} />
       <Skeleton height={20} />
       <Skeleton height={20} width="80%" />
     </div>
-  ) : state === "error" ? (
+  ) : !keepStale && state === "error" ? (
     <Empty
       title="Function error"
       body={error?.message ?? "—"}
@@ -310,6 +461,8 @@ export function MEETPane({ code }: FunctionPaneProps) {
   ) : (
     <div style={stackStyle}>
       <FilterBar
+        mode={mode}
+        onMode={setMode}
         kind={kind}
         onKind={setKind}
         impacts={impacts}
@@ -321,6 +474,12 @@ export function MEETPane({ code }: FunctionPaneProps) {
         queryDraft={queryDraft}
         onQueryDraft={setQueryDraft}
         onQuerySubmit={submitQuery}
+        tagsDraft={tagsDraft}
+        onTagsDraft={setTagsDraft}
+        onTagsSubmit={submitTags}
+        tagsApplied={tags}
+        dataFilter={dataFilter}
+        onDataFilter={setDataFilter}
         followedCountries={alertConfig.spotCountries}
         catalog={catalog}
         onToggleCountry={toggleCountry}
@@ -381,6 +540,23 @@ export function MEETPane({ code }: FunctionPaneProps) {
               body="The providers returned events, but none match the current filters — widen the window or clear a filter."
               icon="⌕"
             />
+          ) : mode === "calendar" ? (
+            <>
+              <CalendarSection
+                label={`UPCOMING · ${upcoming.length}`}
+                rows={upcoming}
+                nowMs={nowMs}
+                onSelect={setSelectedId}
+                emptyText="No upcoming releases in the window."
+              />
+              <CalendarSection
+                label={`PAST · ${past.length}`}
+                rows={past}
+                nowMs={nowMs}
+                onSelect={setSelectedId}
+                emptyText="No past releases in the window."
+              />
+            </>
           ) : (
             <>
               <EventSection
@@ -390,6 +566,7 @@ export function MEETPane({ code }: FunctionPaneProps) {
                 nowMs={nowMs}
                 alertConfig={alertConfig}
                 onSelect={setSelectedId}
+                showAssetTags={mode === "wire"}
                 emptyText={
                 kind === "world"
                   ? "World headlines are past-dated - switch KIND to Calendar for scheduled events."
@@ -397,9 +574,9 @@ export function MEETPane({ code }: FunctionPaneProps) {
               }
               />
               {/* Full-width rule between the two windows, labelled NOW at
-                  the centre (owner 2026-09-16: "çizgi çok ince içinde NOW
-                  yazsın biraz daha kalın olsun") - 2px segments keep it
-                  clearly visible without shouting. */}
+                 the centre (owner 2026-09-16: "çizgi çok ince içinde NOW
+                 yazsın biraz daha kalın olsun") - 2px segments keep it
+                 clearly visible without shouting. */}
               <div
                 aria-hidden
                 style={{
@@ -430,6 +607,7 @@ export function MEETPane({ code }: FunctionPaneProps) {
                 nowMs={nowMs}
                 alertConfig={alertConfig}
                 onSelect={setSelectedId}
+                showAssetTags={mode === "wire"}
                 emptyText="No past events in the window."
               />
             </>
@@ -514,6 +692,8 @@ export function MEETPane({ code }: FunctionPaneProps) {
 /* ── filter bar ────────────────────────────────────────────────────── */
 
 function FilterBar({
+  mode,
+  onMode,
   kind,
   onKind,
   impacts,
@@ -525,6 +705,12 @@ function FilterBar({
   queryDraft,
   onQueryDraft,
   onQuerySubmit,
+  tagsDraft,
+  onTagsDraft,
+  onTagsSubmit,
+  tagsApplied,
+  dataFilter,
+  onDataFilter,
   followedCountries,
   catalog,
   onToggleCountry,
@@ -534,6 +720,8 @@ function FilterBar({
   onAddSymbol,
   onRemoveSymbol,
 }: {
+  mode: ModeFilter;
+  onMode: (value: ModeFilter) => void;
   kind: KindFilter;
   onKind: (value: KindFilter) => void;
   impacts: ImpactFilter[];
@@ -545,6 +733,12 @@ function FilterBar({
   queryDraft: string;
   onQueryDraft: (value: string) => void;
   onQuerySubmit: (event: FormEvent) => void;
+  tagsDraft: string;
+  onTagsDraft: (value: string) => void;
+  onTagsSubmit: (event: FormEvent) => void;
+  tagsApplied: string;
+  dataFilter: DataFilter;
+  onDataFilter: (value: DataFilter) => void;
   followedCountries: string[];
   catalog: { iso: string; name: string }[];
   onToggleCountry: (iso: string) => void;
@@ -557,6 +751,53 @@ function FilterBar({
   const unfollowed = catalog.filter((c) => !followedCountries.includes(c.iso));
   return (
     <section style={filterBarStyle} aria-label="World-event filters">
+      <div style={filterRowStyle}>
+        <span style={stripLabelStyle}>MODE</span>
+        {MODE_OPTIONS.map((option) => (
+          <button
+            key={option.value}
+            type="button"
+            disabled={mode === option.value}
+            aria-pressed={mode === option.value}
+            className={`fn-segmented__opt${mode === option.value ? " fn-segmented__opt--active" : ""}`}
+            onClick={() => onMode(option.value)}
+          >
+            {option.label}
+          </button>
+        ))}
+        <span style={{ ...stripLabelStyle, marginLeft: 10 }}>DATA</span>
+        <select
+          aria-label="Data filter"
+          value={dataFilter}
+          style={selectStyle}
+          onChange={(event) => onDataFilter(event.target.value as DataFilter)}
+        >
+          {DATA_FILTER_OPTIONS.map((d) => (
+            <option key={d} value={d}>
+              {d}
+            </option>
+          ))}
+        </select>
+        <form onSubmit={onTagsSubmit} style={queryFormStyle}>
+          <input
+            type="text"
+            value={tagsDraft}
+            onChange={(event) => onTagsDraft(event.target.value)}
+            placeholder="tags: BTC, FOMC…"
+            aria-label="Filter by asset tags"
+            style={searchInputStyle}
+          />
+          {/* Empty submit clears the persisted filter: the button stays
+              active while applied tags exist, so the filter is escapable. */}
+          <button
+            type="submit"
+            className="btn"
+            disabled={!tagsDraft.trim() && !tagsApplied.trim()}
+          >
+            Tag
+          </button>
+        </form>
+      </div>
       <div style={filterRowStyle}>
         <span style={stripLabelStyle}>FOLLOW</span>
         {followedCountries.length === 0 ? (
@@ -730,6 +971,7 @@ function EventSection({
   onSelect,
   emptyText,
   selectedId,
+  showAssetTags = false,
 }: {
   label: string;
   rows: MeetRow[];
@@ -738,6 +980,7 @@ function EventSection({
   onSelect: (id: string) => void;
   emptyText: string;
   selectedId?: string | null;
+  showAssetTags?: boolean;
 }) {
   return (
     <section aria-label={label} style={sectionStyle}>
@@ -756,6 +999,7 @@ function EventSection({
               spot={isSpotFor(row, alertConfig)}
               onSelect={onSelect}
               expanded={row.id === selectedId}
+              showAssetTags={showAssetTags}
             />
           ))}
         </ul>
@@ -770,12 +1014,14 @@ function EventRow({
   spot,
   onSelect,
   expanded = false,
+  showAssetTags = false,
 }: {
   row: MeetRow;
   nowMs: number;
   spot: boolean;
   onSelect: (id: string) => void;
   expanded?: boolean;
+  showAssetTags?: boolean;
 }) {
   const seconds = secondsUntil(row, nowMs);
   const past = isPastRow(row, nowMs);
@@ -832,6 +1078,7 @@ function EventRow({
               .join(" · ")}
           </span>
         </span>
+        {showAssetTags ? <AssetChips row={row} /> : null}
         {spot ? (
           <Pill tone="warn" variant="filled" withDot>
             SPOT
@@ -895,6 +1142,187 @@ function EventRow({
         </div>
       ) : null}
     </li>
+  );
+}
+
+function assetTagsOf(row: MeetRow): string[] {
+  const tags = row.details?.asset_tags ?? row.asset_tags ?? [];
+  return Array.from(
+    new Set(tags.map((tag) => String(tag).toUpperCase()).filter(Boolean)),
+  );
+}
+
+/** Wire-mode asset chips (BTC/ETF/FED...) carried by the backend tagger. */
+function AssetChips({ row }: { row: MeetRow }) {
+  const tags = assetTagsOf(row);
+  if (tags.length === 0) return null;
+  return (
+    <span style={chipsWrapStyle} aria-label={`asset tags: ${tags.join(", ")}`}>
+      {tags.slice(0, 6).map((tag) => (
+        <span key={tag} style={pairChipStyle}>
+          {tag}
+        </span>
+      ))}
+    </span>
+  );
+}
+
+/* ── calendar table (MQL5 parity) ─────────────────────────────────── */
+
+function CalendarSection({
+  label,
+  rows,
+  nowMs,
+  onSelect,
+  emptyText,
+}: {
+  label: string;
+  rows: MeetRow[];
+  nowMs: number;
+  onSelect: (id: string) => void;
+  emptyText: string;
+}) {
+  const groups = useMemo(() => groupCalendarByDay(rows, nowMs), [rows, nowMs]);
+  const columns: DataGridColumn<MeetRow>[] = useMemo(
+    () => [
+      {
+        key: "time",
+        header: "Time",
+        width: 150,
+        render: (r) => {
+          const seconds = secondsUntil(r, nowMs);
+          const past = isPastRow(r, nowMs);
+          const countdown = r.undated
+            ? "wire"
+            : past
+              ? formatAge(seconds)
+              : formatCountdown(seconds);
+          return (
+            <span style={calTimeStyle}>
+              <span style={countdownStyle}>{countdown}</span>
+              <span style={monoMuteStyle}>
+                {r.undated ? "undated" : utcLabel(r.when_utc)}
+              </span>
+            </span>
+          );
+        },
+      },
+      {
+        key: "ccy",
+        header: "Ccy",
+        width: 92,
+        render: (r) => {
+          const ccy = r.currencies?.[0] ?? r.countries?.[0] ?? "—";
+          return (
+            <span style={monoStyle}>
+              {flagOf(ccy) ? `${flagOf(ccy)} ` : ""}
+              {ccy}
+            </span>
+          );
+        },
+      },
+      {
+        key: "event",
+        header: "Event",
+        render: (r) => <span style={titleStyle}>{r.title}</span>,
+      },
+      {
+        key: "actual",
+        header: "Actual",
+        numeric: true,
+        width: 118,
+        render: (r) => {
+          const value = r.details?.actual;
+          // Pending release: honest "—" plus a pending badge, never a guess.
+          if (value == null || String(value).trim() === "") {
+            return (
+              <span style={pendingCellStyle}>
+                <span style={monoMuteStyle}>—</span>
+                <Pill tone="muted" variant="soft" withDot={false}>
+                  pending
+                </Pill>
+              </span>
+            );
+          }
+          return (
+            <span style={primaryNumStyle}>{formatPrint(value, r.details?.unit)}</span>
+          );
+        },
+      },
+      {
+        key: "forecast",
+        header: "Forecast",
+        numeric: true,
+        width: 96,
+        render: (r) => (
+          <span style={mutedNumStyle}>{formatPrint(r.details?.forecast, r.details?.unit)}</span>
+        ),
+      },
+      {
+        key: "previous",
+        header: "Previous",
+        numeric: true,
+        width: 118,
+        // The backend ships the raw previous text (carries "Prev → Rev"
+        // when a revision exists); no second field is invented here.
+        render: (r) => (
+          <span style={mutedNumStyle}>{formatPrint(r.details?.previous, r.details?.unit)}</span>
+        ),
+      },
+      {
+        key: "surprise",
+        header: "Surprise",
+        numeric: true,
+        width: 110,
+        render: (r) => {
+          const surprise = surpriseOf(r.details);
+          if (surprise == null || !Number.isFinite(surprise)) {
+            return <span style={monoMuteStyle}>—</span>;
+          }
+          // Labour-market pain gauges read inversely: a higher print is
+          // bad news, so the chip flips colour (ECO DeltaChip pattern).
+          const up = surprise > 0 ? "up" : surprise < 0 ? "down" : "flat";
+          const inverse = polarityOf(r.title) === "inverse";
+          const direction =
+            inverse && up !== "flat" ? (up === "up" ? "down" : "up") : up;
+          return (
+            <DeltaChip value={surprise} direction={direction} format="raw" fractionDigits={2} />
+          );
+        },
+      },
+    ],
+    [nowMs],
+  );
+  return (
+    <section aria-label={label} style={sectionStyle}>
+      <div style={sectionHeadStyle}>
+        <span style={stripLabelStyle}>{label}</span>
+      </div>
+      {rows.length === 0 ? (
+        <div style={emptyRowStyle}>{emptyText}</div>
+      ) : (
+        <div style={calGroupsStyle}>
+          {groups.map((group) => (
+            <div key={group.key} style={calGroupStyle}>
+              <div style={sectionHeadStyle}>
+                <span style={stripLabelStyle}>
+                  {group.key} · {group.rows.length}
+                </span>
+              </div>
+              <DataGrid
+                columns={columns}
+                rows={group.rows}
+                rowKey={(r) => r.id}
+                density="compact"
+                ariaLabel={`${label} ${group.key}`}
+                onRowClick={(r) => onSelect(r.id)}
+              />
+            </div>
+          ))}
+          <span style={tzNoteStyle}>Times UTC</span>
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -980,7 +1408,8 @@ function DetailCard({
           <div>
             <span style={stripLabelStyle}>PRINT</span>
             <div style={metaStyle}>
-              forecast {fmtDetail(details.forecast)} · previous {fmtDetail(details.previous)}
+              actual {fmtDetail(details.actual)} · forecast {fmtDetail(details.forecast)} · previous{" "}
+              {fmtDetail(details.previous)}
               {details.unit ? ` ${String(details.unit)}` : ""}
             </div>
           </div>
@@ -1417,6 +1846,38 @@ const countdownStyle: CSSProperties = {
   fontSize: "var(--font-size-sm)",
   color: "var(--accent)",
   minWidth: 74,
+};
+/* Calendar-table (MQL5 parity) cells — mono tabular numerals like ECO. */
+const calTimeStyle: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "baseline",
+  gap: 8,
+  fontVariantNumeric: "tabular-nums",
+};
+const calGroupsStyle: CSSProperties = { display: "grid", gap: 10 };
+const calGroupStyle: CSSProperties = { display: "grid", gap: 4 };
+const pendingCellStyle: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 6,
+};
+const mutedNumStyle: CSSProperties = {
+  fontFamily: "JetBrains Mono, monospace",
+  fontVariantNumeric: "tabular-nums",
+  color: "var(--text-secondary)",
+};
+const primaryNumStyle: CSSProperties = {
+  fontFamily: "JetBrains Mono, monospace",
+  fontVariantNumeric: "tabular-nums",
+  color: "var(--text-display)",
+  fontWeight: 600,
+};
+const tzNoteStyle: CSSProperties = {
+  color: "var(--text-mute)",
+  fontSize: "var(--font-size-2xs)",
+  letterSpacing: "0.06em",
+  textTransform: "uppercase",
+  fontFamily: "JetBrains Mono, monospace",
 };
 const titleStyle: CSSProperties = {
   fontSize: "var(--font-size-md)",

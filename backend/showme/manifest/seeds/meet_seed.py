@@ -75,6 +75,36 @@ def meet() -> FunctionManifest:
                 description="Restrict to scheduled calendar events, world headlines, or both.",
             ),
             InputSpec(
+                name="mode",
+                label="Mode",
+                control=ControlKind.SELECT,
+                required=False,
+                options=["all", "calendar", "wire"],
+                description="calendar=sadece ekonomik takvim (dünya teli çekilmez), wire=sadece dünya haber teli. Verilirse kind'i ezer (backward-compat).",
+            ),
+            InputSpec(
+                name="tags",
+                label="Tags",
+                control=ControlKind.TEXT,
+                required=False,
+                description="Virgüllü etiket filtresi (BTC, FOMC...); title/summary/matched_assets/pairs içinde aranır.",
+            ),
+            InputSpec(
+                name="data_filter",
+                label="Data filter",
+                control=ControlKind.SELECT,
+                required=False,
+                options=["all", "with_forecast", "with_actual", "surprise_only"],
+                description="Sadece calendar satırlarına uygulanır.",
+            ),
+            InputSpec(
+                name="symbols",
+                label="Symbols",
+                control=ControlKind.TEXT,
+                required=False,
+                description="Takip edilen semboller (BTCUSDT...); ülke/kind filtrelerinden bağımsız symbol_rows üretir. calendar modunda symbol feed çekilmez.",
+            ),
+            InputSpec(
                 name="impact",
                 label="Impact",
                 control=ControlKind.MULTISELECT,
@@ -146,9 +176,29 @@ def meet() -> FunctionManifest:
                     DataMode.CACHED_SNAPSHOT.value,
                 ],
             ),
+            InputSpec(
+                name="since",
+                label="Since",
+                control=ControlKind.TEXT,
+                required=False,
+                description="Realtime delta cursor: the previous payload's as_of (ISO). Informational echo only; the diff is computed from known_ids.",
+            ),
+            InputSpec(
+                name="known_ids",
+                label="Known IDs",
+                control=ControlKind.TEXT,
+                required=False,
+                description="Realtime delta baseline: comma-separated row ids the client already shows (cap 1000). Rows outside this set ship in new_rows (cap 50); baseline ids missing from the window ship in removed_ids (cap 200).",
+            ),
         ],
         defaults={
             "kind": "all",
+            "mode": "all",
+            "tags": "",
+            "data_filter": "all",
+            "symbols": "",
+            "since": "",
+            "known_ids": "",
             "days_ahead": 90,
             "days_back": 7,
             "limit": 250,
@@ -216,7 +266,11 @@ def meet() -> FunctionManifest:
             " decisions (Fed/TCMB/ECB/…) and wars are spot-flagged and exposed in"
             " alerts[] with default lead times the UI can override. When every"
             " provider fails the payload is a provider_unavailable envelope with"
-            " EMPTY rows and a reason — no events are invented."
+            " EMPTY rows and a reason — no events are invented. mode selects"
+            " calendar-only (the world wire is never fetched), wire-only or both"
+            " and wins over kind; tags filters titles/summaries/matched assets"
+            " and pairs; data_filter narrows calendar rows to prints carrying"
+            " forecast/actual values."
         ),
         formula_dict={},
         field_dict={
@@ -227,6 +281,12 @@ def meet() -> FunctionManifest:
             "rows[].spot": FieldDef(description="True for central-bank decisions and wars — the alert-worthy class.", source="computed"),
             "rows[].impact": FieldDef(description="high | medium | low | holiday.", source="forex_factory"),
             "rows[].details.matched_terms": FieldDef(description="Exact gazetteer terms that tagged a world headline.", source="computed"),
+            "rows[].details.actual": FieldDef(description="Released value when available (Actual).", source="forex_factory"),
+            "rows[].details.forecast": FieldDef(description="Consensus estimate when available (Forecast).", source="forex_factory"),
+            "rows[].asset_tags": FieldDef(description="Asset tags (BTC, ETH, ETF...) matched in title/summary/provider tags and pairs.", source="computed"),
+            "rows[].event_type": FieldDef(description="Classified event type (etf_flow, rate_decision, inflation_print, ...).", source="computed"),
+            "rows[].details.asset_tags": FieldDef(description="Asset tags (BTC, ETH, ETF...) matched in title/summary/provider tags and pairs.", source="computed"),
+            "rows[].details.event_type": FieldDef(description="Classified event type (etf_flow, rate_decision, inflation_print, ...).", source="computed"),
             "country_index[].state": FieldDef(description="local status pill: live | imminent | soon | scheduled | quiet.", source="computed"),
             "alerts[]": FieldDef(description="Upcoming spot/pinned events with default lead times (minutes).", source="computed"),
             "country_catalog[]": FieldDef(description="Static country reference (ISO + name) so filters are complete even when a provider is down.", source="reference"),
@@ -304,6 +364,32 @@ def meet() -> FunctionManifest:
                     "rows_empty",
                     "reason_mentions_provider",
                     "metadata_live_false",
+                ],
+            ),
+            SemanticTest(
+                name="meet_mode_calendar_hides_world",
+                description=(
+                    "Given {mode: 'calendar'}, the world wire is never fetched and only"
+                    " economic calendar rows are listed — mode wins over kind."
+                ),
+                inputs={"mode": "calendar"},
+                assertions=[
+                    "world_provider_untouched",
+                    "only_economic_rows",
+                    "mode_wins_over_kind",
+                ],
+            ),
+            SemanticTest(
+                name="meet_tags_and_data_filter_narrow_rows",
+                description=(
+                    "Given {tags: 'BTC', data_filter: 'with_actual'}, rows carrying the"
+                    " BTC tag remain and calendar rows without a released actual value"
+                    " are dropped."
+                ),
+                inputs={"tags": "BTC", "data_filter": "with_actual"},
+                assertions=[
+                    "btc_tagged_rows_kept",
+                    "actual_less_calendar_rows_dropped",
                 ],
             ),
         ],

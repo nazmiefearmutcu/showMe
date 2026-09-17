@@ -23,6 +23,7 @@ terms; empty windows say so; nothing is fabricated when a provider fails.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import time
 from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
@@ -33,8 +34,11 @@ from typing import Any
 # cached rows, so only the upstream fetch rides this TTL. Successes keep the
 # full window; empty/failed passes expire faster so an outage recovers.
 _WORLD_CACHE: tuple[float, tuple[list[dict[str, Any]], str, str | None], float] | None = None
-_WORLD_CACHE_TTL_S = 180.0
-_WORLD_CACHE_FAIL_TTL_S = 30.0
+# Faz 5 realtime delta: the pane polls every 30 s with a since/known_ids
+# cursor, so the upstream window stays minute-fresh; failures expire faster
+# so an outage recovers. _SYMBOL_NEWS_TTL_S stays 180 s (less critical).
+_WORLD_CACHE_TTL_S = 60.0
+_WORLD_CACHE_FAIL_TTL_S = 15.0
 # Followed-symbol headline cache: (symbols_key, stored_at, articles)
 _SYMBOL_NEWS_CACHE: tuple[str, float, list[dict[str, Any]]] | None = None
 _SYMBOL_NEWS_TTL_S = 180.0
@@ -59,41 +63,97 @@ class MEETFunction(BaseFunction):
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         now = datetime.now(UTC)
         countries = _csv(params.get("countries"))
-        kind = str(params.get("kind") or "all")
+        kind = str(params.get("kind") or "all").strip().lower() or "all"
         impacts = _csv(params.get("impact"))
         query = str(params.get("query") or params.get("q") or params.get("topic") or "")
         symbols = _csv(params.get("symbols"))
+        tags = _csv(params.get("tags"))
+        assets = _csv(params.get("assets"))
+        data_filter = str(params.get("data_filter") or "all").strip().lower() or "all"
+        if data_filter not in _DATA_FILTERS:
+            data_filter = "all"
+        # Backward-compat: an explicit mode wins over kind; without mode the
+        # legacy kind implies the mode (economic->calendar, world->wire).
+        raw_mode = params.get("mode")
+        mode_given = raw_mode is not None and str(raw_mode).strip() != ""
+        if mode_given:
+            mode = str(raw_mode).strip().lower() or "all"
+            if mode not in {"all", "calendar", "wire"}:
+                mode = "all"
+        else:
+            mode = {"economic": "calendar", "world": "wire"}.get(kind, "all")
+        if mode == "calendar":
+            effective_kind = "economic"
+        elif mode == "wire":
+            effective_kind = "world"
+        elif mode_given:
+            # An explicit mode=all shows both worlds even if kind narrows.
+            effective_kind = "all"
+        else:
+            effective_kind = kind
+            if effective_kind not in {"all", "economic", "world"}:
+                effective_kind = "all"
         days_ahead = _num(params.get("days_ahead"), 90.0, floor=1.0, ceiling=365.0)
         days_back = _num(params.get("days_back"), 7.0, floor=0.0, ceiling=90.0)
         limit = int(_num(params.get("limit"), 250, floor=10, ceiling=1000))
+        # Faz 5 realtime delta (server stateless: the cursor rides in from the
+        # client). `since` is the previous `as_of` (informational echo only);
+        # `known_ids` is the client's row baseline (CSV, cap 1000).
+        since = str(params.get("since") or "")
+        known_ids = _csv(params.get("known_ids"))[:1000]
         news_timeout = _num(params.get("news_timeout") or params.get("timeout"), 8.0,
                             floor=2.0, ceiling=15.0)
-        include_world = _truthy(params.get("include_world", True)) and kind in {"", "all", "world"}
+        include_world = _truthy(params.get("include_world", True)) and effective_kind in {"", "all", "world"}
+        if mode == "calendar":
+            # Calendar mode never touches the world wire (GDELT/RSS).
+            include_world = False
 
         warnings: list[str] = []
         sources: list[str] = []
 
-        # --- scheduled calendar (keyless ForexFactory, shared ECO cache) ---
-        calendar_rows: list[Any] = []
-        try:
-            client = await self._client()
-            calendar_rows = await eco_mod._forex_factory_events(
-                client=client,
-                timeout=min(max(2.0, news_timeout), 12.0),
-            )
-            if calendar_rows:
-                sources.append("forex_factory")
-        except Exception as exc:  # noqa: BLE001 â€” provider failure is surfaced, not hidden
-            warnings.append(f"forex_factory: {str(exc) or exc.__class__.__name__}")
+        # --- parallel fetch: calendar + world + symbol (Faz 1 race) ---
+        # The three upstreams are independent; racing them with
+        # asyncio.gather cuts the cold-open chain (8-24s serial) to the
+        # slowest single leg. Timeouts and the honest envelope below are
+        # unchanged.
+        calendar_timeout = min(max(2.0, news_timeout), 12.0)
+
+        async def _calendar_fetch() -> tuple[list[Any], str | None]:
+            try:
+                client = await self._client()
+                rows = await eco_mod._forex_factory_events(
+                    client=client,
+                    timeout=calendar_timeout,
+                )
+                return rows, None
+            except Exception as exc:  # noqa: BLE001 — provider failure is surfaced, not hidden
+                return [], f"forex_factory: {str(exc) or exc.__class__.__name__}"
+
+        async def _world_fetch() -> tuple[list[dict[str, Any]], str, str | None]:
+            if not include_world:
+                return [], "", None
+            return await self._world_headlines(now=now, timeout=news_timeout)
+
+        async def _symbol_fetch() -> list[dict[str, Any]]:
+            if not (include_world and symbols):
+                return []
+            return await self._symbol_articles(symbols, now=now, timeout=news_timeout)
+
+        (calendar_rows, calendar_error), (articles, world_source, world_error), extra = await asyncio.gather(
+            _calendar_fetch(),
+            _world_fetch(),
+            _symbol_fetch(),
+        )
+        if calendar_error:
+            warnings.append(calendar_error)
+        if calendar_rows:
+            sources.append("forex_factory")
 
         economic, dropped_no_time = we.economic_rows(calendar_rows, now=now, source="forex_factory")
 
         # --- world headlines (keyless GDELT, RSS fallback) ---
         world: list[dict[str, Any]] = []
         if include_world:
-            articles, world_source, world_error = await self._world_headlines(
-                now=now, timeout=news_timeout
-            )
             if world_error:
                 warnings.append(world_error)
             if articles:
@@ -104,7 +164,6 @@ class MEETFunction(BaseFunction):
                 # Followed symbols need their OWN feeds: the world stream is
                 # geopolitics/market wires, so "BTC" matched nothing (owner
                 # 2026-09-16: "btc ekledim bana onun olayları gösterilmiyor").
-                extra = await self._symbol_articles(symbols, now=now, timeout=news_timeout)
                 if extra:
                     known = {
                         (str(a.get("url") or a.get("link") or ""), str(a.get("title") or ""))
@@ -125,14 +184,23 @@ class MEETFunction(BaseFunction):
             rows, days_ahead=days_ahead, days_back=days_back
         )
 
+        # Task 2 (spot/pinned) rides inside apply_filters; the spec's
+        # with_forecast/with_actual/surprise_only are applied just below on
+        # economic rows only (world_events.py is untouched — Faz 1+2 tree).
+        passthrough_filter = data_filter if data_filter in {"all", "spot", "pinned"} else "all"
         filtered = we.apply_filters(
             rows,
             countries=countries,
-            kind=kind,
+            kind=effective_kind,
             impacts=impacts,
             query=query,
             limit=limit,
+            tags=tags,
+            assets=assets,
+            data_filter=passthrough_filter,
         )
+        if data_filter in {"with_forecast", "with_actual", "surprise_only"}:
+            filtered = [r for r in filtered if _passes_data_filter(r, data_filter)]
         upcoming, past = we.split_window(filtered, days_ahead=days_ahead, days_back=days_back)
         ordered = upcoming + past
         alerts = we.build_alerts(unfiltered_upcoming, lead_minutes=we.DEFAULT_ALERT_LEAD_MINUTES)
@@ -144,6 +212,7 @@ class MEETFunction(BaseFunction):
                 if warnings else
                 "No world events were returned."
             )
+            empty_hash, empty_new, empty_removed = _delta([], known_ids)
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
@@ -156,6 +225,9 @@ class MEETFunction(BaseFunction):
                     alerts=[], countries=countries, kind=kind, impacts=impacts,
                     query=query, days_ahead=days_ahead, days_back=days_back,
                     limit=limit, dropped_no_time=dropped_no_time,
+                    mode=mode, tags=tags, data_filter=data_filter,
+                    hash=empty_hash, new_rows=empty_new,
+                    removed_ids=empty_removed, since_echo=since,
                 ),
                 sources=sources or ["no_live_source"],
                 warnings=warnings + ([reason] if warnings else []),
@@ -195,8 +267,29 @@ class MEETFunction(BaseFunction):
                         str(row.get(key) or "")
                         for key in ("title", "summary", "details", "description")
                     ).lower()
+                    # Faz 2: the row's own asset_tags count as a match (a
+                    # BTC-tagged headline belongs to the BTC view even when
+                    # the ticker text itself is absent). Provider-carried tags
+                    # are read-only here — never overwritten.
+                    row_details = row.get("details") or {}
+                    row_asset_tags: set[str] = set()
+                    for container in (row, row_details):
+                        carried = container.get("asset_tags")
+                        if isinstance(carried, (list, tuple, set)):
+                            row_asset_tags.update(
+                                str(t).strip().upper() for t in carried if str(t).strip()
+                            )
                     matched_terms: list[str] = []
                     for sym, terms in term_map:
+                        try:
+                            sym_base = ni.crypto_base(sym).upper()
+                        except Exception:  # noqa: BLE001 - best-effort section
+                            sym_base = str(sym or "").strip().upper()
+                        if (str(sym or "").strip().upper() in row_asset_tags
+                                or (sym_base and sym_base in row_asset_tags)):
+                            if str(sym or "").strip().upper() not in matched_terms:
+                                matched_terms.append(str(sym or "").strip().upper())
+                            continue
                         for term in terms:
                             if len(term) >= 3 and ni.term_in_text(term, text):
                                 matched_terms.append(term)
@@ -214,6 +307,7 @@ class MEETFunction(BaseFunction):
             # ticker-matched headlines (newest first).
             symbol_rows = (market_rows[:12] + headline_rows[:12])[:24]
 
+        delta_hash, delta_new, delta_removed = _delta(ordered, known_ids)
         payload = _shell(
             now=now,
             status="ok",
@@ -232,6 +326,13 @@ class MEETFunction(BaseFunction):
             days_back=days_back,
             limit=limit,
             dropped_no_time=dropped_no_time,
+            mode=mode,
+            tags=tags,
+            data_filter=data_filter,
+            hash=delta_hash,
+            new_rows=delta_new,
+            removed_ids=delta_removed,
+            since_echo=since,
         )
         payload["filtered_empty"] = not ordered
         payload["unfiltered_upcoming_count"] = len(unfiltered_upcoming)
@@ -445,11 +546,22 @@ def _shell(
     days_back: float,
     limit: int,
     dropped_no_time: int,
+    mode: str = "all",
+    tags: list[str] | None = None,
+    data_filter: str = "all",
+    hash: str = "",
+    new_rows: list[dict[str, Any]] | None = None,
+    removed_ids: list[str] | None = None,
+    since_echo: str = "",
 ) -> dict[str, Any]:
     return {
         "status": status,
         "reason": reason,
         "as_of": now.isoformat(),
+        "hash": hash,
+        "new_rows": list(new_rows or []),
+        "removed_ids": list(removed_ids or []),
+        "since_echo": since_echo,
         "rows": rows,
         "upcoming": upcoming,
         "past": past,
@@ -465,6 +577,9 @@ def _shell(
         "filters_applied": {
             "countries": countries,
             "kind": kind,
+            "mode": mode,
+            "tags": list(tags or []),
+            "data_filter": data_filter,
             "impact": impacts,
             "q": query,
             "days_ahead": days_ahead,
@@ -484,6 +599,10 @@ def _shell(
             "surface as warnings instead of invented events."
         ),
         "field_dictionary": {
+            "hash": "sha1 of the ordered row ids in this payload (realtime delta cursor).",
+            "new_rows": "Window rows absent from the client's known_ids (cap 50, window order).",
+            "removed_ids": "known_ids absent from this window (cap 200).",
+            "since_echo": "Informational echo of the client's since cursor.",
             "rows[].when_utc": "Event time in UTC (offset-aware provider timestamp).",
             "rows[].seconds_to_event": "Server-computed seconds from as_of (negative = past).",
             "rows[].age_minutes": "Minutes since the event for past rows.",
@@ -491,6 +610,9 @@ def _shell(
             "rows[].pairs": "Quoted FX pairs / indices derived from the country currency.",
             "rows[].spot": "True for central-bank decisions and wars (alert-worthy).",
             "rows[].pinned": "Spot rows plus high-impact prints from major markets.",
+            "rows[].details.actual": "Released value when available (Actual).",
+            "rows[].details.forecast": "Consensus estimate when available (Forecast).",
+            "rows[].details.previous": "Prior print when available (Previous).",
             "country_index[].state": "live | imminent | soon | scheduled | quiet.",
             "alerts[]": "Upcoming spot/pinned rows with default lead times (minutes).",
         },
@@ -511,12 +633,89 @@ def _truthy(value: Any) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
+# Binding ruling (Task 3): Task 2's all/spot/pinned AND the spec's
+# all/with_forecast/with_actual/surprise_only are supported together;
+# unknown values fall back to all (no-op).
+_DATA_FILTERS = frozenset({
+    "all", "spot", "pinned",
+    "with_forecast", "with_actual", "surprise_only",
+})
+
+
+def _has_detail(value: Any) -> bool:
+    """A calendar cell counts as present when it is not empty."""
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return True
+    return str(value).strip() != ""
+
+
+def _is_numeric_value(value: Any) -> bool:
+    """Numeric per the shared ForexFactory parser (K/M/B/T, %, capped)."""
+    if isinstance(value, bool) or value is None:
+        return False
+    if isinstance(value, (int, float)):
+        return True
+    try:
+        parsed, _, _ = eco_mod._parse_ff_number(value)
+    except Exception:  # noqa: BLE001 - best-effort filter
+        return False
+    return parsed is not None
+
+
+def _passes_data_filter(row: dict[str, Any], data_filter: str) -> bool:
+    """Spec data filters apply to calendar rows only."""
+    if row.get("kind") != "economic":
+        return False
+    details = row.get("details") or {}
+    has_actual = _has_detail(details.get("actual"))
+    has_forecast = _has_detail(details.get("forecast"))
+    if data_filter == "with_forecast":
+        return has_forecast
+    if data_filter == "with_actual":
+        return has_actual
+    if data_filter == "surprise_only":
+        return (
+            has_actual
+            and has_forecast
+            and _is_numeric_value(details.get("actual"))
+            and _is_numeric_value(details.get("forecast"))
+        )
+    return True
+
+
 def _csv(value: Any) -> list[str]:
     if value is None:
         return []
     if isinstance(value, (list, tuple, set)):
         return [str(v).strip() for v in value if str(v).strip()]
     return [p.strip() for p in str(value).split(",") if p.strip()]
+
+
+# Faz 5 realtime delta (caps: known_ids 1000 at parse, new_rows 50, removed 200).
+_NEW_ROWS_CAP = 50
+_REMOVED_IDS_CAP = 200
+
+
+def _delta(
+    ordered: list[dict[str, Any]], known_ids: list[str]
+) -> tuple[str, list[dict[str, Any]], list[str]]:
+    """Hash + diff of the already-ordered window (upcoming asc, past desc).
+
+    The full list always ships (cache-hit is cheap); the delta rides along.
+    Without a client baseline (paramsuz call) both lists are empty so old
+    callers see an additive-only change.
+    """
+    ids = [str(r.get("id") or "") for r in ordered]
+    digest = hashlib.sha1("\n".join(ids).encode("utf-8")).hexdigest()
+    if not known_ids:
+        return digest, [], []
+    known = set(known_ids)
+    current = set(ids)
+    new_rows = [r for r in ordered if str(r.get("id") or "") not in known][:_NEW_ROWS_CAP]
+    removed_ids = [i for i in known_ids if i not in current][:_REMOVED_IDS_CAP]
+    return digest, new_rows, removed_ids
 
 
 def _num(value: Any, default: float, *, floor: float, ceiling: float) -> float:

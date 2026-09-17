@@ -16,10 +16,18 @@ export type MeetKind = "economic" | "world";
 export type MeetCountryState = "live" | "imminent" | "soon" | "scheduled" | "quiet";
 
 export interface MeetRowDetails {
+  /** Released value when available (Actual). */
+  actual?: unknown;
   forecast?: unknown;
   previous?: unknown;
   unit?: string;
   matched_terms?: string[];
+  /** Asset tags (BTC, ETH, ETF...) matched in title/summary/provider tags. */
+  asset_tags?: string[];
+  topic_tags?: string[];
+  /** Classified event type (etf_flow, rate_decision, inflation_print, ...). */
+  event_type?: string;
+  matched_assets?: string[];
   impact_basis?: string;
   url?: string | null;
   provider_country?: string | null;
@@ -40,6 +48,9 @@ export interface MeetRow {
   source: string;
   spot: boolean;
   pinned: boolean;
+  /** Asset tags riding on the row (world rows carry them in details). */
+  asset_tags?: string[];
+  event_type?: string;
   /** Terms that matched a followed symbol (only on symbol_rows). */
   symbol_matches?: string[];
   /** "market_wide" for global macro rows riding along with a symbol. */
@@ -326,4 +337,149 @@ export function leadLabel(minutes: number): string {
   if (minutes >= 1440 && minutes % 1440 === 0) return `${minutes / 1440}d`;
   if (minutes >= 60 && minutes % 60 === 0) return `${minutes / 60}h`;
   return `${minutes}m`;
+}
+
+/* ── calendar table (MQL5 parity) ─────────────────────────────────── */
+
+/**
+ * Polarity-inverse indicators: for unemployment/claims-type prints a HIGHER
+ * actual is BAD news, so the surprise chip flips colour (MQL5 parity).
+ */
+export const INVERSE_POLARITY_RE =
+  /\b(unemployment|unemployed|jobless|initial claims|continuing claims|claimant|layoff|redundancy|işsizlik|issizlik)\b/i;
+
+export type SurprisePolarity = "normal" | "inverse";
+
+/** "inverse" when the title names a labour-market pain gauge, else "normal". */
+export function polarityOf(title: string | null | undefined): SurprisePolarity {
+  if (!title) return "normal";
+  return INVERSE_POLARITY_RE.test(title) ? "inverse" : "normal";
+}
+
+/**
+ * Parse an FF-style print ("180K", "1.40M", "<1.25%", "3.9%") to a number.
+ * Vote splits ("3-0-6") and non-numeric text yield null — never invented.
+ */
+export function parsePrintNumber(value: unknown): number | null {
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  if (typeof value !== "string") return null;
+  let s = value.trim();
+  if (!s) return null;
+  if (s.startsWith("<")) s = s.slice(1).trim(); // capped marker ("<1.25%")
+  s = (s.split("|")[0] ?? "").trim(); // raw "Prev | Rev" pipe text
+  if (/^\d+\s*-\s*\d+\s*-\s*\d+$/.test(s)) return null; // vote splits like 3-0-6
+  const m = /^(-?[\d.]+)\s*([KMBT])?\s*%?$/.exec(s.replace(/,/g, ""));
+  if (!m) return null;
+  const base = Number(m[1]);
+  if (!Number.isFinite(base)) return null;
+  const mult =
+    m[2] === "K" ? 1e3 : m[2] === "M" ? 1e6 : m[2] === "B" ? 1e9 : m[2] === "T" ? 1e12 : 1;
+  return base * mult;
+}
+
+/** Surprise = actual − forecast when both parse numeric, else null. */
+export function surpriseOf(
+  details: Pick<MeetRowDetails, "actual" | "forecast"> | null | undefined,
+): number | null {
+  if (!details) return null;
+  const a = parsePrintNumber(details.actual);
+  const f = parsePrintNumber(details.forecast);
+  if (a == null || f == null) return null;
+  return a - f;
+}
+
+/** Honest print cell: raw backend text + unit, "—" when absent. */
+export function formatPrint(value: unknown, unit?: string | null): string {
+  if (value == null || String(value).trim() === "") return "—";
+  return `${String(value)}${unit ? String(unit) : ""}`;
+}
+
+/**
+ * Calendar day bucket (UTC): Today / Tomorrow / Yesterday / YYYY-MM-DD.
+ * Past days get their real label too (Yesterday, else the date) so the PAST
+ * section never groups old releases under "Today".
+ * Unparseable timestamps land in "Undated" instead of a guessed day.
+ */
+export function dayKey(whenUtc: string | undefined | null, nowMs: number): string {
+  const ts = whenUtc ? Date.parse(whenUtc) : Number.NaN;
+  if (!Number.isFinite(ts)) return "Undated";
+  const dayStart = (t: number) => {
+    const d = new Date(t);
+    return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+  };
+  const diff = Math.round((dayStart(ts) - dayStart(nowMs)) / 86400000);
+  if (diff === 0) return "Today";
+  if (diff === 1) return "Tomorrow";
+  if (diff === -1) return "Yesterday";
+  return new Date(ts).toISOString().slice(0, 10);
+}
+
+/** Group calendar rows into ordered day buckets, preserving row order. */
+export function groupCalendarByDay(
+  rows: MeetRow[],
+  nowMs: number,
+): { key: string; rows: MeetRow[] }[] {
+  const groups: { key: string; rows: MeetRow[] }[] = [];
+  const index = new Map<string, MeetRow[]>();
+  for (const row of rows) {
+    const key = dayKey(row.when_utc, nowMs);
+    let bucket = index.get(key);
+    if (!bucket) {
+      bucket = [];
+      index.set(key, bucket);
+      groups.push({ key, rows: bucket });
+    }
+    bucket.push(row);
+  }
+  return groups;
+}
+
+/**
+ * Fiat currencies the calendar feed can quote (backend `PAIR_MAP` in
+ * `world_events.py`: USD/EUR/GBP/JPY/CHF/CAD/AUD/NZD + CNY/TRY/INR/BRL/MXN/
+ * ZAR/SEK/NOK/PLN/HUF/CZK/ILS/KRW/SGD/THB). Anything else (XAU, BTC, …)
+ * renders as a bare code — no invented flag.
+ */
+const FIAT_FLAG_ALLOWLIST: ReadonlySet<string> = new Set([
+  "USD",
+  "EUR",
+  "GBP",
+  "JPY",
+  "CHF",
+  "CAD",
+  "AUD",
+  "NZD",
+  "CNY",
+  "TRY",
+  "INR",
+  "BRL",
+  "MXN",
+  "ZAR",
+  "SEK",
+  "NOK",
+  "PLN",
+  "HUF",
+  "CZK",
+  "ILS",
+  "KRW",
+  "SGD",
+  "THB",
+]);
+
+/**
+ * Fiat code → flag emoji via regional indicators from the first two
+ * letters (USD→🇺🇸, GBP→🇬🇧, EUR→🇪🇺). Emoji only, no external assets.
+ * Non-fiat codes yield "" so the caller prints the bare code.
+ */
+export function flagOf(code: string | undefined | null): string {
+  if (!code) return "";
+  const clean = String(code).toUpperCase().replace(/[^A-Z]/g, "");
+  if (!FIAT_FLAG_ALLOWLIST.has(clean)) return "";
+  const letters = clean.slice(0, 2);
+  if (letters.length < 2) return "";
+  const base = 0x1f1e6;
+  return String.fromCodePoint(
+    base + (letters.charCodeAt(0) ?? 65) - 65,
+    base + (letters.charCodeAt(1) ?? 65) - 65,
+  );
 }

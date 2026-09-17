@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -222,8 +223,9 @@ async def _forex_factory_events(*, client: Any, timeout: float) -> list[dict[str
     resp.raise_for_status()
     raw = resp.json()
     rows = _normalize_ff_rows(raw)
-    _ff_cache["fetched_at"] = now
-    _ff_cache["rows"] = list(rows)
+    if rows:
+        _ff_cache["fetched_at"] = now
+        _ff_cache["rows"] = list(rows)
     return list(rows)
 
 
@@ -247,6 +249,9 @@ def _normalize_ff_rows(raw: Any) -> list[dict[str, Any]]:
             "forecast": item.get("forecast") or None,
             "actual": item.get("actual") or None,
             "previous": item.get("previous") or None,
+            "forecast_raw": item.get("forecast"),
+            "actual_raw": item.get("actual"),
+            "previous_raw": item.get("previous"),
             "unit": "",
         })
     return rows
@@ -370,8 +375,9 @@ def _normalize_events(events: list[Any], *, country: Any, importance: Any, days:
         event_date = _parse_date(date_text)
         if event_date and not (start <= event_date <= end):
             continue
-        forecast = _num(row.get("forecast"))
-        actual = _num(row.get("actual"))
+        forecast, _, _ = _parse_ff_number(row.get("forecast"))
+        actual, _, _ = _parse_ff_number(row.get("actual"))
+        previous, _, _ = _parse_ff_number(row.get("previous"))
         rows.append({
             "date": event_date.isoformat() if event_date else date_text[:16],
             "country": event_country or (wanted_country or "US"),
@@ -379,7 +385,7 @@ def _normalize_events(events: list[Any], *, country: Any, importance: Any, days:
             "importance": row.get("importance") or row.get("impact") or "medium",
             "forecast": forecast,
             "actual": actual,
-            "previous": _num(row.get("previous")),
+            "previous": previous,
             "surprise": round(actual - forecast, 6) if actual is not None and forecast is not None else None,
             "unit": row.get("unit") or "",
         })
@@ -406,13 +412,71 @@ def _parse_date(value: str) -> Any:
             return None
 
 
-def _num(value: Any) -> float | None:
-    if value in {None, ""}:
-        return None
+_FF_MULTIPLIERS: dict[str, float] = {"K": 1e3, "M": 1e6, "B": 1e9, "T": 1e12}
+
+_SCORE_RE = re.compile(r"^\d+-\d+-\d+$")
+
+
+def _parse_ff_number(raw: Any) -> tuple[float | None, str, bool]:
+    """Parse a ForexFactory numeric cell into ``(value, unit, capped)``.
+
+    Preserves the legacy ``%``/``,`` stripping, then applies ``K/M/B/T``
+    multipliers. A leading ``<`` is stripped and reported via
+    ``capped=True``. When the cell contains ``|`` only the part before it
+    is parsed. Score-like strings (``3-0-6``) are not numbers and yield
+    ``(None, raw, False)``.
+    """
+    if raw is None:
+        return (None, "", False)
+    if isinstance(raw, bool):
+        return (None, str(raw), False)
+    if isinstance(raw, (int, float)):
+        try:
+            return (round(float(raw), 6), "", False)
+        except (ValueError, OverflowError):
+            return (None, str(raw), False)
+    text = str(raw).strip()
+    if not text:
+        return (None, "", False)
+    if "|" in text:
+        text = text.split("|", 1)[0].strip()
+        if not text:
+            return (None, str(raw).strip(), False)
+    capped = False
+    work = text
+    if work.startswith("<"):
+        capped = True
+        work = work[1:].strip()
+    if _SCORE_RE.fullmatch(work):
+        return (None, work, False)
+    has_percent = "%" in work
+    cleaned = work.replace("%", "").replace(",", "").strip()
+    if not cleaned:
+        return (None, text, capped)
+    suffix = ""
+    multiplier = 1.0
+    if cleaned[-1] in "KMBTkmbt":
+        suffix = cleaned[-1].upper()
+        multiplier = _FF_MULTIPLIERS[suffix]
+        cleaned = cleaned[:-1].strip()
+        if not cleaned:
+            return (None, text, capped)
     try:
-        return round(float(str(value).replace("%", "").replace(",", "")), 6)
+        value = round(float(cleaned) * multiplier, 6)
     except ValueError:
-        return None
+        return (None, text, capped)
+    if has_percent:
+        unit = "%"
+    elif suffix:
+        unit = suffix
+    else:
+        unit = ""
+    return (value, unit, capped)
+
+
+def _num(value: Any) -> float | None:
+    value_parsed, _, _ = _parse_ff_number(value)
+    return value_parsed
 
 
 def _int_param(value: Any, *, default: int, floor: int, ceiling: int) -> int:
