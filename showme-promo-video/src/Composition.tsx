@@ -758,7 +758,7 @@ const HeroScene = ({ duration }: { duration: number }) => {
           gap: 18,
         }}
       >
-        <Metric value="3,370" label="symbols in the scan universe" delay={54} />
+        <Metric value="3,375" label="symbols in the scan universe" delay={54} />
         <Metric value="12 TF" label="timeframes scanned together" delay={66} />
         <Metric value="141" label="market-engine functions" delay={78} />
       </div>

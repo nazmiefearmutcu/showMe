@@ -22,7 +22,7 @@ keywords:
 abstract: >-
   ShowMe is a native macOS market cockpit. Tauri shell (Rust, signed
   updater) wraps a Python sidecar (FastAPI) that ships a 141-function
-  market engine, including a 12-timeframe consensus scan over 3 370
+  market engine, including a 12-timeframe consensus scan over 3 375
   symbols (crypto + equity + ETF + FX + commodity + bond) with 23
   per-market-calibrated technical indicators. React + TypeScript UI.
   Read-only by default; trading is explicit per-credential opt-in.
