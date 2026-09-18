@@ -92,6 +92,36 @@ def get_scan_progress() -> dict[str, Any]:
     snap["percent"] = round(100.0 * done / total, 2) if total else 0.0
     return snap
 
+
+# ── OHLCV fetch cache (2026-09-17) ───────────────────────────────────────
+# Every scan re-fetches each (symbol, timeframe) from the network. With the
+# ccxt instance pool a cold Crypto sweep is ~1 min, but a repeat scan inside
+# the TTL is near-free with this cache. Keyed by (market, symbol, timeframe);
+# frames are stored once and handed out as copies so a scan can never mutate
+# another scan's bars. Bounded so a BOND+EQUITY sweep cannot grow it without
+# limit.
+_FETCH_CACHE: dict[tuple[str, str, str], tuple[float, Any]] = {}
+_FETCH_CACHE_TTL_S = 300.0
+_FETCH_CACHE_MAX = 20000
+_FETCH_CACHE_LOCK = threading.Lock()
+
+
+def _cache_store(key: tuple[str, str, str], df: Any) -> None:
+    now = time.time()
+    with _FETCH_CACHE_LOCK:
+        if len(_FETCH_CACHE) >= _FETCH_CACHE_MAX:
+            expired = [
+                k for k, (ts, _) in _FETCH_CACHE.items()
+                if now - ts > _FETCH_CACHE_TTL_S
+            ]
+            for k in expired:
+                _FETCH_CACHE.pop(k, None)
+            if len(_FETCH_CACHE) >= _FETCH_CACHE_MAX:
+                oldest = sorted(_FETCH_CACHE.items(), key=lambda kv: kv[1][0])
+                for k, _ in oldest[: max(1, _FETCH_CACHE_MAX // 4)]:
+                    _FETCH_CACHE.pop(k, None)
+        _FETCH_CACHE[key] = (now, df)
+
 # ── Supported markets ────────────────────────────────────────────────────
 
 MIS_MARKETS: tuple[str, ...] = ("CRYPTO", "EQUITY", "ETF", "FX", "COMMODITY", "BOND")
@@ -139,6 +169,77 @@ _RESAMPLE_RULES: dict[str, tuple[str, str]] = {
     "8h": ("1h", "8h"),
     "12h": ("1h", "12h"),
 }
+
+# 2026-09-17: bars per (symbol, timeframe) fetch. Indicators need ~55 bars
+# (Ichimoku senkou_b 52); 300 keeps a wide margin while staying a single
+# cheap request per TF. Resampled TFs scale the SOURCE fetch by their ratio
+# so the resampled frame still clears the 55-bar floor (12h from 1h at 300
+# targets = 3600 source bars, capped at the 1000-bar kline request limit →
+# ~83 resampled bars). Before this, MIS went through the chart-history
+# wrapper and pulled 1080+ bars per fetch (6-11 s each measured), which is
+# why a full sweep crawled.
+_MIS_FETCH_BARS = 300
+_MIS_FETCH_BARS_MAX = 1000
+_RESAMPLE_SOURCE_RATIO: dict[str, int] = {
+    "3m": 3, "2h": 2, "4h": 4, "6h": 6, "8h": 8, "12h": 12,
+}
+
+# 2026-09-18: source-grouped fetch for non-crypto markets. Each target TF
+# maps onto ONE source cadence fetched once per symbol (was: one HTTP per
+# (symbol, TF) — ~27k yfinance calls for a full equity sweep through a
+# global 2/s token bucket, i.e. hours). Rules:
+#   * 1m group serves 1m + 3m (existing 3m<-1m rule);
+#   * 15m group serves 15m + 30m + 1h (all exact multiples of 15m);
+#   * 1h group serves 2h/4h/6h/8h/12h (existing rules; 60d of 15m could
+#     not cover 8h/12h to the 55-bar floor, but 180d of 1h can);
+#   * 5m and 1d stay native (cheap, exact).
+_GROUP_SOURCE_TF: dict[str, str] = {
+    "1m": "1m", "3m": "1m",
+    "5m": "5m",
+    "15m": "15m", "30m": "15m", "1h": "15m",
+    "2h": "1h", "4h": "1h", "6h": "1h", "8h": "1h", "12h": "1h",
+    "1d": "1d",
+}
+# Extra resample rules beyond _RESAMPLE_RULES (pandas offset aliases).
+_GROUP_EXTRA_RULES: dict[str, str] = {"30m": "30min", "1h": "h"}
+# Conservative Yahoo range maxima per source cadence (1m>7d errors).
+_SOURCE_MAX_DAYS: dict[str, int] = {
+    "1m": 7, "5m": 60, "15m": 60, "30m": 60, "1h": 730, "1d": 3650,
+}
+
+
+def _group_plan(tfs: list[str]) -> dict[str, dict[str, Any]] | None:
+    """Group targets by source cadence: one HTTP per source per symbol.
+
+    Returns ``{source_tf: {"days": int, "targets": [tf, ...]}}`` or None
+    when any TF has no group mapping (caller falls back to legacy).
+    """
+    plan: dict[str, dict[str, Any]] = {}
+    for tf in tfs:
+        src = _GROUP_SOURCE_TF.get(tf.lower())
+        if src is None:
+            return None
+        days = min(_days_for_timeframe(tf), _SOURCE_MAX_DAYS[src])
+        slot = plan.setdefault(src, {"days": 0, "targets": []})
+        slot["days"] = max(slot["days"], days)
+        slot["targets"].append(tf)
+    return plan
+
+
+def _derive_target(source_df: Any, source_tf: str, tf: str) -> Any:
+    """Carve one target TF out of its group's source frame."""
+    if source_df is None or len(source_df) == 0:
+        return None
+    if tf.lower() == source_tf:
+        frame = source_df
+    else:
+        rule = _RESAMPLE_RULES.get(tf, (None, None))[1] or _GROUP_EXTRA_RULES.get(tf)
+        if not rule:
+            return None
+        frame = _resample_ohlcv(source_df, rule)
+        if frame is None:
+            return None
+    return frame.tail(_MIS_FETCH_BARS) if len(frame) > _MIS_FETCH_BARS else frame
 
 # The active TF set per market — same keys, used to control which TFs
 # actually fire on each scan. Users can prune in Settings without
@@ -1167,6 +1268,12 @@ async def _fetch_ohlcv(deps: Any, symbol: str, market: str, timeframe: str, days
     12-TF ZAK matrix even though yfinance only natively serves 9 of
     those bar sizes.
     """
+    cache_key = (market, symbol, timeframe)
+    now = time.time()
+    with _FETCH_CACHE_LOCK:
+        hit = _FETCH_CACHE.get(cache_key)
+    if hit is not None and now - hit[0] <= _FETCH_CACHE_TTL_S:
+        return hit[1].copy()
     try:
         from showme.engine.core.base_data_source import DataKind, DataRequest
         from showme.engine.core.instrument import AssetClass, Instrument
@@ -1186,6 +1293,11 @@ async def _fetch_ohlcv(deps: Any, symbol: str, market: str, timeframe: str, days
         adapter = getattr(deps, "yfinance", None)
     if adapter is None:
         return None
+    # The factory wraps OHLCV adapters in OhlcvLongestHistoryWrapper (deep
+    # chart history). MIS needs ~300 recent bars per TF, not the longest
+    # history — the wrapper returned 1080+ bars per call (6-11 s measured).
+    # Unwrap so `limit` is honoured by the raw adapter.
+    adapter = getattr(adapter, "_inner", adapter)
 
     # Decide whether to fetch the requested TF directly or resample. CCXT
     # (CRYPTO) supports every TF in the ZAK matrix natively, so skip the
@@ -1193,6 +1305,7 @@ async def _fetch_ohlcv(deps: Any, symbol: str, market: str, timeframe: str, days
     fetch_tf = timeframe
     resample_rule: str | None = None
     fetch_days = days
+    limit_bars = _MIS_FETCH_BARS
     if market != "CRYPTO" and timeframe in _RESAMPLE_RULES:
         source_tf, rule = _RESAMPLE_RULES[timeframe]
         fetch_tf = source_tf
@@ -1201,12 +1314,15 @@ async def _fetch_ohlcv(deps: Any, symbol: str, market: str, timeframe: str, days
         # ``_days_for_timeframe`` already over-shoots, but bump again to
         # guarantee 55+ resampled bars even on illiquid tickers.
         fetch_days = max(_days_for_timeframe(source_tf), days)
+        ratio = _RESAMPLE_SOURCE_RATIO.get(timeframe, 1)
+        limit_bars = min(_MIS_FETCH_BARS_MAX, _MIS_FETCH_BARS * ratio)
 
     try:
         df = await adapter.fetch(DataRequest(
             kind=DataKind.OHLCV, instrument=inst,
             start=datetime.now(timezone.utc) - timedelta(days=fetch_days),
             interval=fetch_tf,
+            limit=limit_bars,
         ))
     except Exception as exc:  # noqa: BLE001
         LOG.debug("MIS OHLCV fetch failed %s/%s: %s", symbol, fetch_tf, exc)
@@ -1215,6 +1331,11 @@ async def _fetch_ohlcv(deps: Any, symbol: str, market: str, timeframe: str, days
         return None
     if resample_rule:
         df = _resample_ohlcv(df, resample_rule)
+        if df is None:
+            return None
+    # Store a copy: the caller keeps the original frame and can never poison
+    # the cache by mutating it downstream.
+    _cache_store(cache_key, df.copy())
     return df
 
 
@@ -1288,7 +1409,26 @@ def _last_change_pct(df) -> tuple[float | None, float | None]:
 
 # ── Main scan entry-point ────────────────────────────────────────────────
 
+# 2026-09-17: single-flight. The UI gates its own button, but a client that
+# timed out (sidecar default is 15 s) or a second window used to start a
+# RIVAL scan while the first was still running — two sweeps fought over the
+# 24-slot semaphore and the shared thread pool and both crawled (~1
+# fetch/s observed). Concurrent callers now join the in-flight scan and
+# share its result; the first call after completion starts a fresh sweep.
+_ACTIVE_SCAN: asyncio.Task[MisScanResult] | None = None
+
+
 async def run_mis_scan(req: MisScanRequest, deps: Any) -> MisScanResult:
+    """Single-flight wrapper around :func:`_run_mis_scan`."""
+    global _ACTIVE_SCAN
+    task = _ACTIVE_SCAN
+    if task is None or task.done():
+        task = asyncio.create_task(_run_mis_scan(req, deps))
+        _ACTIVE_SCAN = task
+    return await asyncio.shield(task)
+
+
+async def _run_mis_scan(req: MisScanRequest, deps: Any) -> MisScanResult:
     """Sweep every selected market with the full indicator stack across the
     market's full ZAK-weighted TF set.
 
@@ -1371,6 +1511,19 @@ async def run_mis_scan(req: MisScanRequest, deps: Any) -> MisScanResult:
         days = _days_for_timeframe(tf)
         async with semaphore:
             df = await _fetch_ohlcv(deps, symbol, market, tf, days)
+        return await _compute_tf(market_cfg, tf, weight, df)
+
+    async def _compute_tf(
+        market_cfg: dict[str, Any],
+        tf: str,
+        weight: int,
+        df: Any,
+    ) -> tuple[dict[str, Any] | None, Any]:
+        """Run the indicator stack + consensus on one TF frame.
+
+        Split out of ``_scan_one_tf`` so the source-grouped path can reuse
+        the exact same compute (and skipped-row contract) on derived frames.
+        """
         if df is None or len(df) < 55:
             return {
                 "tf": tf, "weight": int(weight),
@@ -1403,6 +1556,70 @@ async def run_mis_scan(req: MisScanRequest, deps: Any) -> MisScanResult:
             "score_data": consensus.get("score_data") or {},
         }, df
 
+    async def _fetch_group_source(
+        symbol: str, market: str, yf_adapter: Any, source_tf: str, days: int
+    ) -> Any:
+        """Fetch one source cadence for a symbol (shared by its group).
+
+        Same Yahoo chart endpoint as the legacy path, but the fetch skips
+        the adapter's global 2/s token bucket (measured 2026-09-18: a
+        24-wide chart burst completes in ~0.3 s with zero errors) and stays
+        under this scan's own semaphore instead. The breaker still guards.
+        """
+        try:
+            from showme.engine.core.base_data_source import DataKind, DataRequest
+            from showme.engine.core.instrument import AssetClass, Instrument
+        except Exception:  # noqa: BLE001
+            return None
+        ac_attr = getattr(AssetClass, _ASSET_CLASS_MAP.get(market, "EQUITY"), None)
+        if ac_attr is None:
+            ac_attr = AssetClass.EQUITY
+        end = datetime.now(timezone.utc)
+        inst = Instrument(symbol=symbol, asset_class=ac_attr)
+        async with semaphore:
+            try:
+                df = await yf_adapter.fetch(DataRequest(
+                    kind=DataKind.OHLCV, instrument=inst,
+                    start=end - timedelta(days=days), end=end,
+                    interval=source_tf, limit=None,
+                    extra={"bypass_rate_limit": True, "timeout": 30.0},
+                ))
+            except Exception:  # noqa: BLE001
+                return None
+        if df is None or len(df) == 0:
+            return None
+        return df
+
+    async def _one_grouped(
+        symbol: str,
+        market: str,
+        market_cfg: dict[str, Any],
+        tfs: list[str],
+        weights: dict[str, int],
+        yf_adapter: Any,
+    ) -> list[tuple[dict[str, Any] | None, Any]]:
+        """Grouped fetch + shared compute for one non-crypto symbol."""
+        plan = _group_plan(tfs) or {}
+        sources = await asyncio.gather(*(
+            _fetch_group_source(symbol, market, yf_adapter, src, slot["days"])
+            for src, slot in plan.items()
+        ))
+        src_frames = dict(zip(plan.keys(), sources))
+
+        async def _one_target(tf: str) -> tuple[dict[str, Any] | None, Any]:
+            weight = weights.get(tf, 50)
+            src = _GROUP_SOURCE_TF[tf.lower()]
+            df = _derive_target(src_frames.get(src), src, tf)
+            if df is None or len(df) < 55:
+                # Odd gap (short history, halted ticker): legacy single
+                # fetch for just this target so coverage never regresses.
+                days = _days_for_timeframe(tf)
+                async with semaphore:
+                    df = await _fetch_ohlcv(deps, symbol, market, tf, days)
+            return await _compute_tf(market_cfg, tf, weight, df)
+
+        return list(await asyncio.gather(*(_one_target(tf) for tf in tfs)))
+
     async def _one(symbol: str, market: str) -> None:
         market_cfg = (config["markets"] or {}).get(market) or _base_market_config(market)
         tfs, weights = _resolve_tfs(market, market_cfg)
@@ -1419,11 +1636,18 @@ async def run_mis_scan(req: MisScanRequest, deps: Any) -> MisScanResult:
             })
             return
 
-        # Schedule every TF in parallel; the semaphore keeps the fetch
-        # firehose under control.
-        tf_results = await asyncio.gather(
-            *(_scan_one_tf(symbol, market, market_cfg, tf, weights.get(tf, 50)) for tf in tfs)
-        )
+        # 2026-09-18: non-crypto symbols fetch each source cadence ONCE
+        # (5 HTTP per symbol instead of 11-12). Crypto keeps the legacy
+        # per-TF path (ccxt serves every TF natively and is fast enough).
+        yf_adapter = getattr(deps, "yfinance", None)
+        if market != "CRYPTO" and yf_adapter is not None and _group_plan(tfs):
+            tf_results = await _one_grouped(symbol, market, market_cfg, tfs, weights, yf_adapter)
+        else:
+            # Schedule every TF in parallel; the semaphore keeps the fetch
+            # firehose under control.
+            tf_results = await asyncio.gather(
+                *(_scan_one_tf(symbol, market, market_cfg, tf, weights.get(tf, 50)) for tf in tfs)
+            )
 
         per_tf_payload: list[dict[str, Any]] = []
         last_df = None
