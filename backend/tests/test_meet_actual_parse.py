@@ -22,10 +22,10 @@ _BACKEND_DIR = _HERE.parents[1]
 if str(_BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(_BACKEND_DIR))
 
-import pytest
+import pytest  # noqa: E402
 
-from showme.engine.functions.macro import eco as eco_mod
-from showme.engine.services import world_events as we
+from showme.engine.functions.macro import eco as eco_mod  # noqa: E402
+from showme.engine.services import world_events as we  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -121,6 +121,44 @@ def test_normalize_ff_rows_keeps_raw_fields():
     assert row["forecast_raw"] == "180K"
     assert row["actual_raw"] == "<1.25%"
     assert row["previous_raw"] == "175K"
+
+
+def test_normalize_ff_rows_preserves_numeric_zero_cells():
+    row = eco_mod._normalize_ff_rows([{
+        "title": "Zero print",
+        "country": "USD",
+        "date": "2026-09-19T12:00:00Z",
+        "actual": 0,
+        "forecast": 0.0,
+        "previous": 0,
+    }])[0]
+    assert row["actual"] == 0
+    assert row["forecast"] == 0.0
+    assert row["previous"] == 0
+
+
+@pytest.mark.parametrize(
+    "value",
+    [float("nan"), float("inf"), float("-inf"), "NaN", "Infinity", "-Infinity"],
+)
+def test_parse_ff_number_rejects_non_finite_values(value):
+    assert eco_mod._parse_ff_number(value)[0] is None
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), "NaN", "Infinity"])
+def test_normalize_ff_rows_clears_non_finite_cells_but_keeps_raw(value):
+    row = eco_mod._normalize_ff_rows([{
+        "title": "Invalid print",
+        "country": "USD",
+        "date": "2026-09-19T12:00:00Z",
+        "actual": value,
+        "forecast": value,
+        "previous": value,
+    }])[0]
+    assert row["actual"] is None
+    assert row["forecast"] is None
+    assert row["previous"] is None
+    assert row["actual_raw"] is value
 
 
 def test_normalize_events_parses_suffixes_and_surprise():

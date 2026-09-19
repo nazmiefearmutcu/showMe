@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import math
+import re
 import time
 from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
@@ -43,6 +45,20 @@ _WORLD_CACHE_FAIL_TTL_S = 15.0
 _SYMBOL_NEWS_CACHE: tuple[str, float, list[dict[str, Any]]] | None = None
 _SYMBOL_NEWS_TTL_S = 180.0
 
+_FINANCE_CALENDAR_URL = "https://www.financecalendar.com/wp-json/fc/v1/calendar"
+_FINANCE_CALENDAR_MAX_DAYS = 92
+_FINANCE_CALENDAR_TTL_S = 1800.0
+_FINANCE_CALENDAR_CACHE: dict[str, Any] = {
+    "fetched_at": 0.0,
+    "key": "",
+    "rows": [],
+    "attribution": None,
+}
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
 from showme.engine.core.base_data_source import DataKind, DataRequest
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from showme.engine.core.instrument import Instrument
@@ -61,7 +77,7 @@ class MEETFunction(BaseFunction):
     )
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
-        now = datetime.now(UTC)
+        now = _utc_now()
         countries = _csv(params.get("countries"))
         kind = str(params.get("kind") or "all").strip().lower() or "all"
         impacts = _csv(params.get("impact"))
@@ -121,16 +137,17 @@ class MEETFunction(BaseFunction):
         # unchanged.
         calendar_timeout = min(max(2.0, news_timeout), 12.0)
 
-        async def _calendar_fetch() -> tuple[list[Any], str | None]:
-            try:
-                client = await self._client()
-                rows = await eco_mod._forex_factory_events(
-                    client=client,
-                    timeout=calendar_timeout,
-                )
-                return rows, None
-            except Exception as exc:  # noqa: BLE001 — provider failure is surfaced, not hidden
-                return [], f"forex_factory: {str(exc) or exc.__class__.__name__}"
+        async def _calendar_fetch() -> tuple[
+            list[dict[str, Any]], list[str], list[str], list[str],
+            list[dict[str, str]], int, int,
+        ]:
+            if effective_kind == "world":
+                return [], [], [], [], [], 0, 0
+            return await self._calendar_events(
+                now=now,
+                days_ahead=days_ahead,
+                timeout=calendar_timeout,
+            )
 
         async def _world_fetch() -> tuple[list[dict[str, Any]], str, str | None]:
             if not include_world:
@@ -142,17 +159,25 @@ class MEETFunction(BaseFunction):
                 return []
             return await self._symbol_articles(symbols, now=now, timeout=news_timeout)
 
-        (calendar_rows, calendar_error), (articles, world_source, world_error), extra = await asyncio.gather(
+        calendar_bundle, (articles, world_source, world_error), extra = await asyncio.gather(
             _calendar_fetch(),
             _world_fetch(),
             _symbol_fetch(),
         )
-        if calendar_error:
-            warnings.append(calendar_error)
-        if calendar_rows:
-            sources.append("forex_factory")
+        (
+            calendar_rows,
+            calendar_sources,
+            calendar_warnings,
+            active_source_tiers,
+            attributions,
+            duplicate_rows_dropped,
+            rejected_primary_no_time,
+        ) = calendar_bundle
+        warnings.extend(calendar_warnings)
+        sources.extend(calendar_sources)
 
-        economic, dropped_no_time = we.economic_rows(calendar_rows, now=now, source="forex_factory")
+        economic, dropped_no_time = we.economic_rows(calendar_rows, now=now)
+        dropped_no_time += rejected_primary_no_time
 
         # --- world headlines (keyless GDELT, RSS fallback) ---
         world: list[dict[str, Any]] = []
@@ -160,27 +185,42 @@ class MEETFunction(BaseFunction):
             if world_error:
                 warnings.append(world_error)
             if articles:
-                world = we.world_rows(articles, now=now, source=world_source or "news")
+                deduped_articles, url_duplicates = _dedupe_articles(articles)
+                row_stats: dict[str, int] = {}
+                world = we.world_rows(
+                    deduped_articles, now=now, source=world_source or "news",
+                    limit=len(deduped_articles), stats=row_stats,
+                )[:60]
+                duplicate_rows_dropped += url_duplicates + row_stats.get("duplicate_rows_dropped", 0)
                 if world:
                     sources.append(world_source or "news")
+                    active_source_tiers.append(
+                        "wire_rss_fallback" if world_source == "rss" else "wire_gdelt_primary"
+                    )
             if symbols:
                 # Followed symbols need their OWN feeds: the world stream is
                 # geopolitics/market wires, so "BTC" matched nothing (owner
                 # 2026-09-16: "btc ekledim bana onun olayları gösterilmiyor").
                 if extra:
-                    known = {
-                        (str(a.get("url") or a.get("link") or ""), str(a.get("title") or ""))
-                        for a in articles
-                    }
+                    known_urls = {str(a.get("url") or a.get("link") or "").strip() for a in articles}
                     fresh = [
                         a
                         for a in extra
-                        if (str(a.get("url") or a.get("link") or ""), str(a.get("title") or ""))
-                        not in known
+                        if not str(a.get("url") or a.get("link") or "").strip()
+                        or str(a.get("url") or a.get("link") or "").strip() not in known_urls
                     ]
                     if fresh:
-                        world.extend(we.world_rows(fresh, now=now, source="symbol_feed"))
-                        sources.append("symbol_feed")
+                        deduped_fresh, url_duplicates = _dedupe_articles(fresh)
+                        row_stats = {}
+                        symbol_world = we.world_rows(
+                            deduped_fresh, now=now, source="symbol_feed",
+                            limit=len(deduped_fresh), stats=row_stats,
+                        )[:60]
+                        duplicate_rows_dropped += url_duplicates + row_stats.get("duplicate_rows_dropped", 0)
+                        if symbol_world:
+                            world.extend(symbol_world)
+                            sources.append("symbol_feed")
+                            active_source_tiers.append("wire_symbol_feed")
 
         rows = economic + world
         unfiltered_upcoming, unfiltered_past = we.split_window(
@@ -217,11 +257,18 @@ class MEETFunction(BaseFunction):
 
         if not rows:
             reason = (
-                "No world-events provider responded (forex_factory calendar + news)."
+                "No requested world-events provider responded."
                 if warnings else
                 "No world events were returned."
             )
             empty_hash, empty_new, empty_removed = _delta([], known_ids)
+            empty_quality = _data_quality(
+                [],
+                duplicate_rows_dropped=duplicate_rows_dropped,
+                dropped_no_time=dropped_no_time,
+                active_source_tiers=active_source_tiers,
+                attributions=attributions,
+            )
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
@@ -239,6 +286,7 @@ class MEETFunction(BaseFunction):
                     provider_mode=provider_mode,
                     hash=empty_hash, new_rows=empty_new,
                     removed_ids=empty_removed, since_echo=since,
+                    data_quality=empty_quality, attributions=attributions,
                 ),
                 sources=sources or ["no_live_source"],
                 warnings=warnings + ([reason] if warnings else []),
@@ -352,6 +400,14 @@ class MEETFunction(BaseFunction):
             new_rows=delta_new,
             removed_ids=delta_removed,
             since_echo=since,
+            data_quality=_data_quality(
+                ordered,
+                duplicate_rows_dropped=duplicate_rows_dropped,
+                dropped_no_time=dropped_no_time,
+                active_source_tiers=active_source_tiers,
+                attributions=attributions,
+            ),
+            attributions=attributions,
         )
         payload["filtered_empty"] = not ordered
         payload["unfiltered_upcoming_count"] = len(unfiltered_upcoming)
@@ -377,6 +433,111 @@ class MEETFunction(BaseFunction):
                 },
             },
         )
+
+    async def _calendar_events(
+        self, *, now: datetime, days_ahead: float, timeout: float
+    ) -> tuple[
+        list[dict[str, Any]], list[str], list[str], list[str],
+        list[dict[str, str]], int, int,
+    ]:
+        """Fetch the configured provider chain plus keyless future coverage."""
+
+        async def primary_chain() -> tuple[list[dict[str, Any]], str, list[str], str, int]:
+            errors: list[str] = []
+            rejected_no_time = 0
+            deadline = time.monotonic() + timeout
+            reserve_ff = min(2.0, timeout / 3)
+            te = getattr(self.deps, "tradingeconomics", None)
+            finnhub = getattr(self.deps, "finnhub", None)
+            keyed_left = sum((
+                _provider_configured(te, "tradingeconomics"),
+                _provider_configured(finnhub, "finnhub"),
+            ))
+
+            def keyed_budget() -> float:
+                nonlocal keyed_left
+                remaining = max(0.0, deadline - time.monotonic())
+                budget = min(4.0, max(0.1, (remaining - reserve_ff) / max(1, keyed_left)))
+                keyed_left -= 1
+                return budget
+
+            def usable(raw: Any, source: str) -> list[dict[str, Any]]:
+                nonlocal rejected_no_time
+                normalized = _normalize_calendar_rows(raw, source)
+                timed = [row for row in normalized if we.parse_when_utc(row.get("date")) is not None]
+                rejected = len(normalized) - len(timed)
+                rejected_no_time += rejected
+                if rejected:
+                    errors.append(f"{source}: {rejected} untimed rows rejected")
+                return timed
+
+            end = now + timedelta(days=min(days_ahead, _FINANCE_CALENDAR_MAX_DAYS))
+            date_args = {
+                "start": now.date().isoformat(),
+                "end": end.date().isoformat(),
+            }
+            if _provider_configured(te, "tradingeconomics"):
+                try:
+                    raw = await asyncio.wait_for(
+                        te.calendar(**date_args), timeout=keyed_budget()
+                    )
+                    rows = usable(raw, "tradingeconomics")
+                    if rows:
+                        return rows, "tradingeconomics", errors, "authenticated_primary", rejected_no_time
+                    errors.append("tradingeconomics: empty response")
+                except Exception as exc:  # noqa: BLE001
+                    errors.append(f"tradingeconomics: {str(exc) or exc.__class__.__name__}")
+
+            if _provider_configured(finnhub, "finnhub"):
+                try:
+                    raw = await asyncio.wait_for(
+                        finnhub.economic_calendar(**date_args), timeout=keyed_budget()
+                    )
+                    rows = usable(raw, "finnhub")
+                    if rows:
+                        return rows, "finnhub", errors, "authenticated_fallback", rejected_no_time
+                    errors.append("finnhub: empty response")
+                except Exception as exc:  # noqa: BLE001
+                    errors.append(f"finnhub: {str(exc) or exc.__class__.__name__}")
+
+            try:
+                remaining = max(0.1, deadline - time.monotonic())
+                async with asyncio.timeout(remaining):
+                    raw = await eco_mod._forex_factory_events(
+                        client=await self._client(), timeout=remaining
+                    )
+                rows = usable(raw, "forex_factory")
+                if rows:
+                    return rows, "forex_factory", errors, "keyless_fallback", rejected_no_time
+                errors.append("forex_factory: empty response")
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"forex_factory: {str(exc) or exc.__class__.__name__}")
+            return [], "", errors, "", rejected_no_time
+
+        primary_task = asyncio.create_task(primary_chain())
+        finance_task = asyncio.create_task(
+            _finance_calendar_events(
+                client=await self._client(), now=now,
+                days_ahead=days_ahead, timeout=timeout,
+            )
+        )
+        primary, finance = await asyncio.gather(primary_task, finance_task)
+        primary_rows, primary_source, warnings, primary_tier, rejected_primary_no_time = primary
+        finance_rows, attribution, finance_error = finance
+        if finance_error:
+            warnings.append(finance_error)
+
+        merged, duplicates, finance_contributed = _merge_calendar_rows(
+            primary_rows, finance_rows
+        )
+        sources = [primary_source] if primary_source else []
+        tiers = [primary_tier] if primary_tier else []
+        attributions: list[dict[str, str]] = []
+        if finance_contributed:
+            sources.append("financecalendar")
+            tiers.append("future_supplement")
+            attributions.append(attribution or _finance_calendar_attribution({}))
+        return merged, sources, warnings, tiers, attributions, duplicates, rejected_primary_no_time
 
     async def _symbol_articles(
         self, symbols: list[str], *, now: datetime, timeout: float
@@ -509,11 +670,11 @@ class MEETFunction(BaseFunction):
                     gdelt.fetch(DataRequest(
                         kind=DataKind.NEWS,
                         extra={"query": we.world_query()},
-                        start=now - timedelta(days=2),
-                        limit=75,
+                        start=now - timedelta(days=we.MEET_GDELT_LOOKBACK_DAYS),
+                        limit=we.MEET_GDELT_LIMIT,
                     )),
                     # gdelt leg capped so a wedged DOC endpoint fails fast into the RSS win
-                    timeout=min(timeout, 5.0),
+                    timeout=min(timeout, we.MEET_GDELT_TIMEOUT_SECONDS),
                 )
                 if items:
                     return list(items), None
@@ -595,6 +756,257 @@ class MEETFunction(BaseFunction):
         return result
 
 
+_CALENDAR_TITLE_COUNTRIES: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"\b(?:fomc|federal reserve|fed chair|powell)\b", re.I), "US"),
+    (re.compile(r"\b(?:bank of england|boe)\b", re.I), "GB"),
+    (re.compile(r"\b(?:european central bank|ecb)\b", re.I), "EU"),
+    (re.compile(r"\b(?:bank of japan|boj)\b", re.I), "JP"),
+    (re.compile(r"\b(?:people'?s bank of china|pboc)\b", re.I), "CN"),
+    (re.compile(r"\b(?:reserve bank of australia|rba)\b", re.I), "AU"),
+    (re.compile(r"\b(?:bank of canada|boc)\b", re.I), "CA"),
+    (re.compile(r"\b(?:reserve bank of new zealand|rbnz)\b", re.I), "NZ"),
+    (re.compile(r"\b(?:swiss national bank|snb)\b", re.I), "CH"),
+    (re.compile(r"\b(?:tcmb|central bank of the republic of t(?:u|ü)rkiye)\b", re.I), "TR"),
+    (re.compile(r"\briksbank\b", re.I), "SE"),
+    (re.compile(r"\bnorges bank\b", re.I), "NO"),
+)
+
+
+def _dedupe_articles(articles: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
+    """Keep the first article for an exact source URL; preserve URL-less rows."""
+    seen_urls: set[str] = set()
+    kept: list[dict[str, Any]] = []
+    dropped = 0
+    for article in articles:
+        url = str(article.get("url") or article.get("link") or "").strip()
+        if url and url in seen_urls:
+            dropped += 1
+            continue
+        if url:
+            seen_urls.add(url)
+        kept.append(article)
+    return kept, dropped
+
+
+def _provider_configured(provider: Any, name: str) -> bool:
+    if provider is None:
+        return False
+    if not hasattr(provider, "api_key"):
+        return True  # explicit injected provider/test double
+    key = str(getattr(provider, "api_key", "") or "").strip()
+    if not key:
+        return False
+    return not (name == "tradingeconomics" and key.casefold() == "guest:guest")
+
+
+def _ci(item: dict[str, Any], *names: str) -> Any:
+    folded = {str(key).casefold(): value for key, value in item.items()}
+    for name in names:
+        if name.casefold() in folded:
+            return folded[name.casefold()]
+    return None
+
+
+def _calendar_country(value: Any) -> str:
+    token = str(value or "").strip()
+    direct = we.canonical_iso(token)
+    if direct:
+        return direct
+    lookup = {
+        **{name.casefold(): iso for iso, name in we.COUNTRY_CATALOG},
+        **{name.casefold(): iso for iso, name in we.REGION_NAMES.items()},
+        "united states of america": "US",
+        "euro zone": "EU",
+        "eurozone": "EU",
+        "great britain": "GB",
+        "u.k.": "GB",
+    }
+    return lookup.get(token.casefold(), "")
+
+
+def _infer_calendar_country(title: str) -> str:
+    countries, _ = we.match_countries(title)
+    if len(countries) == 1:
+        return countries[0]
+    for pattern, iso in _CALENDAR_TITLE_COUNTRIES:
+        if pattern.search(title):
+            return iso
+    return ""
+
+
+def _importance(value: Any) -> str:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if float(value) >= 3:
+            return "high"
+        if float(value) >= 2:
+            return "medium"
+        return "low"
+    raw = str(value or "").strip()
+    try:
+        return _importance(float(raw))
+    except (TypeError, ValueError):
+        return we.normalize_impact(raw)
+
+
+def _normalize_calendar_rows(raw: Any, source: str) -> list[dict[str, Any]]:
+    if isinstance(raw, dict):
+        raw = raw.get("events") or raw.get("data") or raw.get("economicCalendar") or []
+    if not isinstance(raw, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        title = str(_ci(item, "event", "title", "name") or "").strip()
+        if not title:
+            continue
+        when = _ci(item, "time_utc", "date", "datetime", "time")
+        if source == "financecalendar" and (
+            _ci(item, "time_utc") in (None, "") or bool(_ci(item, "all_day"))
+        ):
+            when = None
+        provider_country = _ci(item, "country", "currency", "countryCode")
+        country = _calendar_country(provider_country)
+        country_basis = "provider" if country else None
+        if not country:
+            country = _infer_calendar_country(title)
+            if country:
+                country_basis = "title_inference"
+        out.append({
+            "country": country or str(provider_country or "").strip(),
+            "event": title,
+            "date": str(when or "").strip(),
+            "importance": _importance(_ci(item, "importance", "impact")),
+            "actual": _ci(item, "actual"),
+            "forecast": _ci(item, "forecast", "consensus", "estimate"),
+            "previous": _ci(item, "previous", "prior"),
+            "unit": str(_ci(item, "unit") or "").strip(),
+            "provider": source,
+            "provider_event_url": str(_ci(item, "url", "link") or "").strip() or None,
+            "country_basis": country_basis,
+            "provider_country_raw": provider_country,
+        })
+    return out
+
+
+def _finance_calendar_attribution(raw: Any) -> dict[str, str]:
+    item = raw if isinstance(raw, dict) else {}
+    url = str(item.get("url") or "https://www.financecalendar.com/").strip()
+    return {
+        "name": str(item.get("name") or item.get("source") or "FinanceCalendar.com"),
+        "url": url,
+        "text": str(
+            item.get("text") or item.get("terms")
+            or "Economic calendar data by FinanceCalendar.com"
+        ),
+    }
+
+
+async def _finance_calendar_events(
+    *, client: Any, now: datetime, days_ahead: float, timeout: float
+) -> tuple[list[dict[str, Any]], dict[str, str] | None, str | None]:
+    days = max(1, min(int(math.ceil(days_ahead)), _FINANCE_CALENDAR_MAX_DAYS))
+    date_from = now.date().isoformat()
+    date_to = (now + timedelta(days=days)).date().isoformat()
+    cache_key = f"{date_from}:{date_to}"
+    age = time.monotonic() - float(_FINANCE_CALENDAR_CACHE.get("fetched_at") or 0.0)
+    if (
+        _FINANCE_CALENDAR_CACHE.get("key") == cache_key
+        and _FINANCE_CALENDAR_CACHE.get("rows")
+        and age < _FINANCE_CALENDAR_TTL_S
+    ):
+        return (
+            list(_FINANCE_CALENDAR_CACHE["rows"]),
+            _FINANCE_CALENDAR_CACHE.get("attribution"),
+            None,
+        )
+    try:
+        async with asyncio.timeout(timeout):
+            try:
+                response = await client.get(
+                    _FINANCE_CALENDAR_URL,
+                    params={"from": date_from, "to": date_to},
+                    timeout=timeout,
+                )
+            except TypeError:
+                response = await client.get(_FINANCE_CALENDAR_URL, timeout=timeout)
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict) or not isinstance(payload.get("events"), list):
+            return [], None, "financecalendar: unexpected response shape"
+        rows = _normalize_calendar_rows(payload, "financecalendar")
+        attribution = _finance_calendar_attribution(
+            payload.get("attribution") if isinstance(payload, dict) else {}
+        )
+        if rows:
+            _FINANCE_CALENDAR_CACHE.update({
+                "fetched_at": time.monotonic(),
+                "key": cache_key,
+                "rows": list(rows),
+                "attribution": attribution,
+            })
+        return rows, attribution, None
+    except Exception as exc:  # noqa: BLE001
+        return [], None, f"financecalendar: {str(exc) or exc.__class__.__name__}"
+
+
+def _calendar_identity(item: dict[str, Any]) -> tuple[str, str, str]:
+    when = we.parse_when_utc(item.get("date") or item.get("when_utc"))
+    stamp = when.strftime("%Y-%m-%dT%H:%MZ") if when else ""
+    country = _calendar_country(item.get("country") or item.get("currency"))
+    title = re.sub(r"[^a-z0-9]+", " ", str(item.get("event") or item.get("title") or "").casefold()).strip()
+    return stamp, country, title
+
+
+def _merge_calendar_rows(
+    primary: list[dict[str, Any]], supplemental: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], int, bool]:
+    merged: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    dropped = 0
+    contributed = False
+    for tier, items in (("primary", primary), ("supplement", supplemental)):
+        for item in items:
+            key = _calendar_identity(item)
+            if key in seen:
+                dropped += 1
+                continue
+            seen.add(key)
+            merged.append(item)
+            if tier == "supplement":
+                contributed = True
+    return merged, dropped, contributed
+
+
+def _data_quality(
+    rows: list[dict[str, Any]], *, duplicate_rows_dropped: int,
+    dropped_no_time: int, active_source_tiers: list[str],
+    attributions: list[dict[str, str]],
+) -> dict[str, Any]:
+    timed = sum(1 for row in rows if row.get("when_utc") and not row.get("undated"))
+    undated = sum(1 for row in rows if row.get("undated") or not row.get("when_utc"))
+    source_traceable = sum(1 for row in rows if str(row.get("source") or "").strip())
+    url_traceable = sum(
+        1 for row in rows
+        if str((row.get("details") or {}).get("article_url") or (row.get("details") or {}).get("provider_event_url") or "").strip()
+    )
+    required = 1 if any(row.get("source") == "financecalendar" for row in rows) else 0
+    covered = 1 if required and any(a.get("url") for a in attributions) else 0
+    return {
+        "row_count": len(rows),
+        "timed_count": timed,
+        "undated_count": undated,
+        "source_traceable_count": source_traceable,
+        "url_traceable_count": url_traceable,
+        "attribution_required_count": required,
+        "attribution_covered_count": covered,
+        "duplicate_rows_dropped": duplicate_rows_dropped,
+        "rows_dropped_no_time": dropped_no_time,
+        "active_source_tiers": list(dict.fromkeys(active_source_tiers)),
+        "measures": "observable_completeness_not_factual_accuracy",
+    }
+
+
 def _shell(
     *,
     now: datetime,
@@ -623,6 +1035,8 @@ def _shell(
     new_rows: list[dict[str, Any]] | None = None,
     removed_ids: list[str] | None = None,
     since_echo: str = "",
+    data_quality: dict[str, Any] | None = None,
+    attributions: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     window = we.window_meta(rows, now=now, days_ahead=days_ahead, days_back=days_back)
     return {
@@ -649,6 +1063,14 @@ def _shell(
         "alerts": alerts,
         "alert_default_lead_minutes": list(we.DEFAULT_ALERT_LEAD_MINUTES),
         "dropped_no_time": dropped_no_time,
+        "data_quality": data_quality or _data_quality(
+            rows,
+            duplicate_rows_dropped=0,
+            dropped_no_time=dropped_no_time,
+            active_source_tiers=[],
+            attributions=[],
+        ),
+        "attributions": list(attributions or []),
         "filters_applied": {
             "countries": countries,
             "kind": kind,
@@ -663,8 +1085,11 @@ def _shell(
             "limit": limit,
         },
         "methodology": (
-            "Scheduled rows come from the keyless ForexFactory weekly calendar "
-            "(reused from ECO): every country on the calendar is listed with its "
+            "Scheduled rows prefer configured TradingEconomics, then configured "
+            "Finnhub, then the keyless ForexFactory weekly calendar. The keyless "
+            "FinanceCalendar.com feed supplements future coverage (maximum 92 days) "
+            "with required attribution and never replaces an overlapping primary row. "
+            "Every country on the calendar is listed with its "
             "UTC timestamp, impact and affected FX pairs (country → currency → "
             "majors, e.g. TR → USDTRY/EURTRY). World rows come from the keyless "
             "GDELT headline stream (English-language wire, RSS fallback) tagged with "
@@ -673,8 +1098,9 @@ def _shell(
             "terms for audit. Countdowns are computed server-side from the provider "
             "timestamp; nothing is shown at a guessed time and failed providers "
             "surface as warnings instead of invented events. The scheduled "
-            "calendar covers the ForexFactory weekly snapshot (current week "
-            "only); days_ahead beyond the week shows world headlines."
+            "calendar includes the best available provider window plus the bounded "
+            "FinanceCalendar.com supplement. Country tags inferred from titles are "
+            "explicitly marked country_basis=title_inference."
         ),
         "field_dictionary": {
             "hash": "sha1 of the ordered row ids in this payload (realtime delta cursor).",
@@ -702,6 +1128,14 @@ def _shell(
             "rows[].details.matched_assets": "Exact asset terms that produced the asset_tags.",
             "rows[].details.provider_tags": "Provider-carried tags unioned in, when present.",
             "rows[].details.url": "Source article URL (None when absent).",
+            "rows[].details.article_url": "Original article URL for world headlines (None when absent).",
+            "rows[].details.publisher": "Publisher/feed name supplied by the RSS adapter.",
+            "rows[].details.feed_url": "RSS feed URL used to retrieve the article.",
+            "rows[].details.provider": "Calendar provider that supplied the row.",
+            "rows[].details.provider_event_url": "Provider event page when supplied.",
+            "rows[].details.country_basis": "provider or title_inference; inferred country tags are never presented as provider facts.",
+            "data_quality": "Observable completeness counts; not a claim of factual accuracy.",
+            "attributions": "Visible attribution records required by active supplemental sources.",
             "rows[].details.is_global": "True for global (ALL) calendar rows (country_names Global, pairs empty).",
             "country_catalog[]": "Static country reference (ISO + name) so filters stay complete when a provider is down.",
             "country_index[].state": "live | imminent | soon | scheduled | quiet.",
@@ -739,7 +1173,12 @@ def _has_detail(value: Any) -> bool:
         return False
     if isinstance(value, bool):
         return True
-    return str(value).strip() != ""
+    if isinstance(value, (int, float)):
+        return math.isfinite(float(value))
+    text = str(value).strip()
+    return bool(text) and text.casefold() not in {
+        "nan", "inf", "+inf", "-inf", "infinity", "+infinity", "-infinity",
+    }
 
 
 def _is_numeric_value(value: Any) -> bool:
@@ -747,7 +1186,7 @@ def _is_numeric_value(value: Any) -> bool:
     if isinstance(value, bool) or value is None:
         return False
     if isinstance(value, (int, float)):
-        return True
+        return math.isfinite(float(value))
     try:
         parsed, _, _ = eco_mod._parse_ff_number(value)
     except Exception:  # noqa: BLE001 - best-effort filter

@@ -214,8 +214,14 @@ _RATE_DECISION_RE = re.compile(
 _WAR_RE = re.compile(
     r"\b(war|warfare|invasion|invade|airstrikes?|air strikes?|missiles?|drone strikes?"
     r"|offensive|ceasefire|cease-fire|truce|military|troops|soldiers|shelling"
-    r"|bombing|bombardment|conflict|escalation|nuclear|sanctions?|mobilization"
+    r"|bombing|bombardment|conflict|escalation|sanctions?|mobilization"
     r"|mobilisation|coup|martial law|frontline|front line)\b",
+    re.IGNORECASE,
+)
+
+_MILITARY_NUCLEAR_RE = re.compile(
+    r"\b(?:nuclear\s+(?:weapons?|warheads?|bombs?|missiles?|attacks?|strikes?|threats?|arsenals?|tests?)"
+    r"|(?:military|weapons?|warheads?|missiles?)\s+nuclear)\b",
     re.IGNORECASE,
 )
 
@@ -464,6 +470,7 @@ def economic_rows(
         if row_id in seen:
             continue
         seen.add(row_id)
+        row_source = str(item.get("provider") or source).strip() or source
         rows.append({
             "id": row_id,
             "kind": "economic",
@@ -474,7 +481,7 @@ def economic_rows(
             "impact": impact,
             "currencies": currencies,
             "pairs": [] if is_global else pairs_for(currencies),
-            "source": source,
+            "source": row_source,
             "spot": spot,
             "pinned": spot or (impact == "high" and iso in MAJOR_MARKET_ISO),
             "details": {
@@ -484,6 +491,10 @@ def economic_rows(
                 "unit": item.get("unit") or "",
                 "provider_country": provider_token or None,
                 "is_global": is_global,
+                "provider": row_source,
+                "provider_event_url": item.get("provider_event_url"),
+                "country_basis": item.get("country_basis"),
+                "provider_country_raw": item.get("provider_country_raw"),
             },
             "seconds_to_event": round(seconds, 1),
             "age_minutes": round(-seconds / 60, 1) if seconds < 0 else None,
@@ -509,8 +520,8 @@ COUNTRY_TERMS: dict[str, tuple[str, ...]] = {
     "CN": ("china", "chinese", "beijing", "xi jinping"),
     "TW": ("taiwan", "taipei"),
     "JP": ("japan", "japanese", "tokyo", "boj"),
-    "KR": ("south korea", "korean", "seoul"),
-    "KP": ("north korea", "pyongyang", "kim jong"),
+    "KR": ("south korea", "south korean", "korean", "seoul"),
+    "KP": ("north korea", "north korean", "pyongyang", "kim jong"),
     "IN": ("india", "indian", "delhi", "modi"),
     "PK": ("pakistan", "pakistani", "islamabad"),
     "IL": ("israel", "israeli", "jerusalem", "tel aviv", "netanyahu"),
@@ -573,7 +584,9 @@ COUNTRY_TERMS: dict[str, tuple[str, ...]] = {
 
 
 def _term_pattern(term: str) -> re.Pattern[str]:
-    flags = re.IGNORECASE if len(term) >= 4 else 0
+    # BOJ is routinely styled BOJ/BoJ/boj. Other short terms stay
+    # case-sensitive so words such as the English pronoun "us" remain safe.
+    flags = re.IGNORECASE if len(term) >= 4 or term.casefold() == "boj" else 0
     return re.compile(r"(?<![A-Za-z0-9])" + re.escape(term) + r"(?![A-Za-z0-9])", flags)
 
 
@@ -597,7 +610,7 @@ for _iso, _name in REGION_NAMES.items():
 ASSET_TERMS: dict[str, tuple[str, ...]] = {
     "BTC": ("BTC", "bitcoin", "XBT", "BTCUSD", "IBIT"),
     "ETH": ("ETH", "ethereum", "ether", "ETHUSD"),
-    "ETF": ("ETF", "ETP", "inflow", "inflows", "outflow", "outflows", "GBTC", "IBIT", "FBTC"),
+    "ETF": ("ETF", "ETP", "GBTC", "IBIT", "FBTC"),
     "CRYPTO": ("crypto", "cryptocurrency", "stablecoin", "USDT", "USDC", "halving", "onchain", "on-chain"),
 }
 
@@ -676,19 +689,35 @@ def match_countries(text: str) -> tuple[list[str], list[str]]:
     haystack = str(text or "")
     if not haystack:
         return [], []
-    isos: list[str] = []
-    matched: list[str] = []
+    hits: list[tuple[str, str]] = []
     for iso, patterns in _TERM_PATTERNS.items():
         for pattern in patterns:
             hit = pattern.search(haystack)
             if hit:
-                if iso not in isos:
-                    isos.append(iso)
-                term = hit.group(0)
-                if term not in matched:
-                    matched.append(term)
+                hits.append((iso, hit.group(0)))
                 break
-    return isos, matched
+    # "North Korean" contains the generic South-Korea alias "Korean".
+    # Keep KR only when it has its own unambiguous match (South Korea/Seoul).
+    if any(iso == "KP" for iso, _ in hits):
+        hits = [
+            (iso, term) for iso, term in hits
+            if not (iso == "KR" and term.casefold() == "korean")
+        ]
+    return [iso for iso, _ in hits], [term for _, term in hits]
+
+
+def _provider_canonical_tags(
+    item: dict[str, Any], key: str, known: dict[str, tuple[str, ...]]
+) -> list[str]:
+    """Canonicalize explicit provider tag fields through a strict allowlist."""
+    value = item.get(key)
+    values = value if isinstance(value, (list, tuple, set)) else [value]
+    out: list[str] = []
+    for candidate in values:
+        canonical = str(candidate or "").strip().upper()
+        if canonical in known and canonical not in out:
+            out.append(canonical)
+    return out
 
 
 def _clean_text(value: Any, limit: int = 240) -> str:
@@ -702,6 +731,7 @@ def world_rows(
     now: datetime,
     source: str = "gdelt",
     limit: int = 60,
+    stats: dict[str, int] | None = None,
 ) -> list[dict[str, Any]]:
     """Normalize headlines into country-tagged world-event rows."""
     rows: list[dict[str, Any]] = []
@@ -721,7 +751,13 @@ def world_rows(
         provider_raw = _provider_raw_tags(item)
         asset_tags, matched_assets = match_assets(f"{title} {summary} {provider_blob}".strip())
         topic_tags, _matched_topics = match_topics(f"{title} {summary} {provider_blob}".strip())
-        war = bool(_WAR_RE.search(title))
+        for tag in _provider_canonical_tags(item, "asset_tags", ASSET_TERMS):
+            if tag not in asset_tags:
+                asset_tags.append(tag)
+        for tag in _provider_canonical_tags(item, "topic_tags", TOPIC_TERMS):
+            if tag not in topic_tags:
+                topic_tags.append(tag)
+        war = bool(_WAR_RE.search(title) or _MILITARY_NUCLEAR_RE.search(title))
         political = bool(_POLITICAL_RE.search(title))
         event_type = _classify_event_type(
             f"{title} {summary}",
@@ -752,8 +788,7 @@ def world_rows(
             or item.get("published") or item.get("datetime")
         )
         undated = when is None
-        if when is None:
-            when = now
+        ordering_when = when or now
         url = str(item.get("url") or item.get("link") or "").strip()
         if undated:
             # Undated wire copy is anchored at now for ordering, but the id
@@ -762,18 +797,23 @@ def world_rows(
             stable = hashlib.sha1(f"{url}|{title}".encode("utf-8")).hexdigest()[:12]
             row_id = f"world:undated:{_slug(title)}:{stable}"
         else:
-            row_id = _row_id("world", when, isos, title)
+            row_id = _row_id("world", ordering_when, isos, title)
         if row_id in seen:
+            if stats is not None:
+                stats["duplicate_rows_dropped"] = stats.get("duplicate_rows_dropped", 0) + 1
             continue
         seen.add(row_id)
-        seconds = (when - now).total_seconds()
+        seconds = (ordering_when - now).total_seconds()
+        article_url = str(item.get("url") or item.get("link") or "").strip()
+        publisher = str(item.get("publisher") or item.get("feed") or "").strip()
+        feed_url = str(item.get("feed_url") or "").strip()
         rows.append({
             "id": row_id,
             "kind": "world",
             "title": title,
             "countries": isos,
             "country_names": [country_name(i) for i in isos],
-            "when_utc": when.isoformat(),
+            "when_utc": when.isoformat() if when is not None else None,
             "undated": undated,
             "impact": impact,
             "currencies": [],
@@ -784,6 +824,9 @@ def world_rows(
             "pinned": war or (crypto_hit and macro_hit),
             "details": {
                 "url": url or None,
+                "article_url": article_url or None,
+                "publisher": publisher or None,
+                "feed_url": feed_url or None,
                 "matched_terms": matched,
                 "asset_tags": asset_tags,
                 "topic_tags": topic_tags,
@@ -1071,6 +1114,11 @@ def next_high_impact(
                 "spot": bool(row.get("spot")),
             }
     return None
+
+
+MEET_GDELT_LOOKBACK_DAYS = 2
+MEET_GDELT_LIMIT = 75
+MEET_GDELT_TIMEOUT_SECONDS = 5.0
 
 
 def world_query() -> str:

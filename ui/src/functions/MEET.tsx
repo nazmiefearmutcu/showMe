@@ -188,17 +188,19 @@ export function MEETPane({ code }: FunctionPaneProps) {
     },
   });
   const livePayload = data?.data;
+  const livePayloadRef = useRef<MeetDeltaData | undefined>(livePayload);
+  livePayloadRef.current = livePayload;
 
   /* Faz 5 realtime delta — 30 sn visibility-aware poll. The cursor
-     (since/known_ids) rides in params, so the fetch key changes every poll;
-     the displayed list is a hash-gated snapshot instead: an identical hash
-     leaves state untouched (no flicker), a new hash swaps the list and
-     drops fresh SPOT rows into the toast motor. */
+     (since/known_ids) rides in params, while every complete response replaces
+     the displayed snapshot because mutable row fields and side sections may
+     change even when the backend row-ID hash does not. */
   const [shown, setShown] = useState<MeetDeltaData | null>(null);
-  const hashRef = useRef<string | null>(null);
   const lastAsOfRef = useRef<string>("");
   const lastIdsRef = useRef<string[]>([]);
   const baselineKeyRef = useRef<string>("");
+  const pendingBaselinePayloadRef = useRef<MeetDeltaData | null>(null);
+  const rebaselineFilterRef = useRef<string>("");
   // Poll-pattern guard: the tick effect reads through a ref — `refetch`
   // itself never enters a dependency array.
   const refetchRef = useRef(refetch);
@@ -222,6 +224,10 @@ export function MEETPane({ code }: FunctionPaneProps) {
   // A filter change starts a new baseline: drop the cursor so the next poll
   // re-baselines instead of diffing across two different windows.
   useEffect(() => {
+    if (baselineKeyRef.current && baselineKeyRef.current !== filterKey) {
+      pendingBaselinePayloadRef.current = livePayloadRef.current ?? null;
+      rebaselineFilterRef.current = filterKey;
+    }
     setDeltaParams({});
   }, [filterKey]);
   useEffect(() => {
@@ -250,23 +256,46 @@ export function MEETPane({ code }: FunctionPaneProps) {
   useEffect(() => {
     const next = livePayload;
     if (!next || typeof next !== "object") return;
-    const sameBaseline = baselineKeyRef.current === filterKey;
-    const hash = typeof next.hash === "string" ? next.hash : null;
-    if (sameBaseline && hash != null && hashRef.current != null && hash === hashRef.current) {
-      return; // unchanged window — leave state alone, no re-render
+    const awaitingRebaseline = rebaselineFilterRef.current === filterKey;
+    if (awaitingRebaseline && pendingBaselinePayloadRef.current === next) {
+      return; // still the previous filter's payload; wait for the new baseline
     }
-    hashRef.current = hash;
+    const sameBaseline = baselineKeyRef.current === filterKey && !awaitingRebaseline;
     baselineKeyRef.current = filterKey;
+    pendingBaselinePayloadRef.current = null;
     if (typeof next.as_of === "string") lastAsOfRef.current = next.as_of;
     lastIdsRef.current = (next.rows ?? []).map((row) => row.id);
     setShown(next);
-    if (!sameBaseline) return; // new filter window — adopt silently, no toast
+    if (!sameBaseline) {
+      if (awaitingRebaseline) {
+        rebaselineFilterRef.current = "";
+        // The response is a fresh baseline, not an arrival. Prime only the
+        // currently crossed keys so later, smaller leads can still fire.
+        for (const row of next.rows ?? []) {
+          const hit = dueAlert(row, alertConfig, Date.now(), firedRef.current);
+          if (hit) firedRef.current.add(hit.key);
+        }
+        for (const row of next.new_rows ?? []) {
+          firedRef.current.add(`delta:${row.id}`);
+        }
+      }
+      return; // initial/new filter window — adopt silently, no delta toast
+    }
     if (!alertConfig.enabled || !Array.isArray(next.new_rows)) return;
+    const arrivals: MeetAlertHistoryItem[] = [];
     for (const fresh of next.new_rows) {
       const key = `delta:${fresh.id}`;
       if (firedRef.current.has(key)) continue;
       if (!isSpotFor(fresh, alertConfig)) continue;
       firedRef.current.add(key);
+      arrivals.push({
+        key,
+        id: fresh.id,
+        title: fresh.title,
+        when_utc: fresh.when_utc ?? "",
+        lead: null,
+        fired_at: new Date().toISOString(),
+      });
       toast.warn(
         `MEET spot · ${fresh.title}`,
         [
@@ -276,6 +305,12 @@ export function MEETPane({ code }: FunctionPaneProps) {
           .filter(Boolean)
           .join(" · "),
       );
+    }
+    if (arrivals.length > 0) {
+      setAlertConfig((cfg) => ({
+        ...cfg,
+        history: [...arrivals, ...cfg.history].slice(0, MEET_ALERT_HISTORY_CAP),
+      }));
     }
   }, [livePayload, alertConfig, filterKey]);
   const payload = shown ?? livePayload;
@@ -339,9 +374,15 @@ export function MEETPane({ code }: FunctionPaneProps) {
   }, [payload, alertConfig.spotCountries, normaliseRow]);
 
   const { upcoming, past } = useMemo(() => groupRows(rows, nowMs), [rows, nowMs]);
+  const selectRow = useCallback((id: string) => {
+    setSelectedId((current) => (current === id ? null : id));
+  }, []);
   const selected = useMemo(
-    () => rows.find((row) => row.id === selectedId) ?? null,
-    [rows, selectedId],
+    () =>
+      rows.find((row) => row.id === selectedId) ??
+      symbolRows.find((row) => row.id === selectedId) ??
+      null,
+    [rows, selectedId, symbolRows],
   );
   const status = payload?.status ?? "—";
   const droppedNoTime = typeof payload?.dropped_no_time === "number"
@@ -361,7 +402,7 @@ export function MEETPane({ code }: FunctionPaneProps) {
   // Alert engine — fires once per (row, lead) pair; history persists.
   useEffect(() => {
     if (!alertConfig.enabled) return;
-    const due: MeetAlertHistoryItem[] = [];
+    const due: (MeetAlertHistoryItem & { lead: number })[] = [];
     for (const row of upcoming) {
       const hit = dueAlert(row, alertConfig, nowMs, firedRef.current);
       if (!hit) continue;
@@ -370,7 +411,7 @@ export function MEETPane({ code }: FunctionPaneProps) {
         key: hit.key,
         id: row.id,
         title: row.title,
-        when_utc: row.when_utc,
+        when_utc: row.when_utc ?? "",
         lead: hit.lead,
         fired_at: new Date(nowMs).toISOString(),
       });
@@ -444,7 +485,14 @@ export function MEETPane({ code }: FunctionPaneProps) {
     setTags(tagsDraft.trim());
   };
 
-  const nextHighImpact = payload?.window?.next_high_impact ?? null;
+  const serverNextHigh = payload?.window?.next_high_impact ?? null;
+  const serverNextHighSeconds = serverNextHigh?.when_utc
+    ? (Date.parse(serverNextHigh.when_utc) - nowMs) / 1000
+    : null;
+  const nextHighImpact =
+    serverNextHigh && serverNextHighSeconds != null && serverNextHighSeconds > 0
+      ? serverNextHigh
+      : upcoming.find((row) => String(row.impact).toLowerCase() === "high") ?? null;
   const nextHighSeconds = nextHighImpact?.when_utc
     ? (Date.parse(nextHighImpact.when_utc) - nowMs) / 1000
     : null;
@@ -465,6 +513,7 @@ export function MEETPane({ code }: FunctionPaneProps) {
       seconds: number;
       impact?: string;
     }[] = [];
+    const seen = new Set<string>();
     for (const entry of payload?.country_index ?? []) {
       const ne = entry.next_event;
       if (!ne) continue;
@@ -477,6 +526,11 @@ export function MEETPane({ code }: FunctionPaneProps) {
         : (ne.seconds_to_event ?? null);
       if (seconds == null || seconds < 0) continue;
       if (ne.id && shown.has(String(ne.id))) continue;
+      const eventKey = ne.id
+        ? String(ne.id)
+        : `${ne.when_utc ?? ""}\u0000${ne.title ?? ""}`;
+      if (seen.has(eventKey)) continue;
+      seen.add(eventKey);
       out.push({
         iso: entry.iso,
         name: entry.name,
@@ -493,17 +547,32 @@ export function MEETPane({ code }: FunctionPaneProps) {
     () => excludedUpcoming.find((e) => (e.impact ?? "").toLowerCase() === "high") ?? null,
     [excludedUpcoming],
   );
+  const excludedUpcomingCount =
+    unfilteredUpcoming == null
+      ? excludedUpcoming.length
+      : Math.max(
+          0,
+          unfilteredUpcoming -
+            (typeof payload?.upcoming_count === "number"
+              ? payload.upcoming_count
+              : upcoming.length),
+        );
+  const excludedUpcomingSummary = excludedUpcoming[0]
+    ? `: ${excludedUpcoming[0].title} (${excludedUpcoming[0].iso}, in ${formatCountdown(
+        excludedUpcoming[0].seconds,
+      )}).`
+    : ".";
   const upcomingEmptyText =
-    excludedUpcoming.length > 0
-      ? `No upcoming events match the current filters — ${excludedUpcoming.length} upcoming outside your filters: ${excludedUpcoming[0].title} (${excludedUpcoming[0].iso}, in ${formatCountdown(excludedUpcoming[0].seconds)}).`
+    excludedUpcomingCount > 0
+      ? `No upcoming events match the current filters — ${excludedUpcomingCount} upcoming outside your filters${excludedUpcomingSummary}`
       : "No upcoming events in the window.";
   const upcomingReleasesEmptyText =
-    excludedUpcoming.length > 0
-      ? `No upcoming releases match the current filters — ${excludedUpcoming.length} upcoming outside your filters: ${excludedUpcoming[0].title} (${excludedUpcoming[0].iso}, in ${formatCountdown(excludedUpcoming[0].seconds)}).`
+    excludedUpcomingCount > 0
+      ? `No upcoming releases match the current filters — ${excludedUpcomingCount} upcoming outside your filters${excludedUpcomingSummary}`
       : "No upcoming releases in the window.";
 
   // The 30 sn poll re-keys the fetch (cursor in params) so `loading` fires
-  // every cycle — keep the hash-gated snapshot on screen instead of
+  // every cycle — keep the latest complete snapshot on screen instead of
   // flashing the skeleton (or the error card on a failed poll).
   const keepStale = shown != null && (state === "loading" || state === "error");
   const body = !keepStale && (state === "loading" || state === "idle") ? (
@@ -570,6 +639,36 @@ export function MEETPane({ code }: FunctionPaneProps) {
         onRemoveSymbol={removeSymbol}
       />
 
+      {payload?.data_quality ? (
+        <section aria-label="MEET data quality" style={nextImpactStyle}>
+          <span style={stripLabelStyle}>DATA QUALITY</span>
+          <span style={monoMuteStyle}>
+            {payload.data_quality.row_count} rows · {payload.data_quality.timed_count} timed ·{" "}
+            {payload.data_quality.undated_count} undated ·{" "}
+            {payload.data_quality.source_traceable_count} source-traceable ·{" "}
+            {payload.data_quality.url_traceable_count} URL-traceable ·{" "}
+            {payload.data_quality.duplicate_rows_dropped} duplicates dropped
+          </span>
+          {payload.data_quality.active_source_tiers.map((tier) => (
+            <Pill key={tier} tone={tier.includes("fallback") ? "warn" : "neutral"} variant="soft" withDot={false}>
+              {tier.replaceAll("_", " ")}
+            </Pill>
+          ))}
+          {(payload.attributions ?? []).map((attribution) => (
+            <a
+              key={attribution.url}
+              href={attribution.url}
+              target="_blank"
+              rel="noreferrer"
+              style={linkStyle}
+              title={attribution.text}
+            >
+              {attribution.name} ↗
+            </a>
+          ))}
+        </section>
+      ) : null}
+
       <section style={nextImpactStyle} aria-label="Next high-impact event">
         <span style={stripLabelStyle}>NEXT HIGH IMPACT</span>
         {nextHighImpact ? (
@@ -622,7 +721,7 @@ export function MEETPane({ code }: FunctionPaneProps) {
               selectedId={selectedId}
               nowMs={nowMs}
               alertConfig={alertConfig}
-              onSelect={setSelectedId}
+              onSelect={selectRow}
               showWhyHere
               emptyText={`No world headline matched your followed symbols (${alertConfig.symbols.join(
                 ", ",
@@ -641,14 +740,14 @@ export function MEETPane({ code }: FunctionPaneProps) {
                 label={`UPCOMING · ${upcoming.length}`}
                 rows={upcoming}
                 nowMs={nowMs}
-                onSelect={setSelectedId}
+                onSelect={selectRow}
                 emptyText={upcomingReleasesEmptyText}
               />
               <CalendarSection
                 label={`PAST · ${past.length}`}
                 rows={past}
                 nowMs={nowMs}
-                onSelect={setSelectedId}
+                onSelect={selectRow}
                 emptyText="No past releases in the window."
               />
             </>
@@ -660,7 +759,7 @@ export function MEETPane({ code }: FunctionPaneProps) {
                 selectedId={selectedId}
                 nowMs={nowMs}
                 alertConfig={alertConfig}
-                onSelect={setSelectedId}
+                onSelect={selectRow}
                 showAssetTags={mode === "wire"}
                 emptyText={
                 kind === "world"
@@ -701,7 +800,7 @@ export function MEETPane({ code }: FunctionPaneProps) {
                 selectedId={selectedId}
                 nowMs={nowMs}
                 alertConfig={alertConfig}
-                onSelect={setSelectedId}
+                onSelect={selectRow}
                 showAssetTags={mode === "wire"}
                 emptyText="No past events in the window."
               />
@@ -713,6 +812,7 @@ export function MEETPane({ code }: FunctionPaneProps) {
           index={countryIndex}
           followed={alertConfig.spotCountries}
           nowMs={nowMs}
+          asOf={payload?.as_of}
           onToggle={toggleCountry}
         />
       </div>
@@ -740,6 +840,7 @@ export function MEETPane({ code }: FunctionPaneProps) {
                     catalog={catalog}
                     serverAlerts={payload?.alerts}
                     nowMs={nowMs}
+                    asOf={payload?.as_of}
                     onChange={setAlertConfig}
                     onClose={() => setAlertsOpen(false)}
                   />
@@ -1216,7 +1317,7 @@ function EventRow({
             ...monoMuteStyle,
             minWidth: 118,
           }}
-          title={row.when_utc}
+          title={row.when_utc ?? undefined}
         >
           {row.undated ? "undated" : utcLabel(row.when_utc)}
         </span>
@@ -1580,7 +1681,7 @@ function DetailCard({
       </div>
       <div style={titleStyle}>{row.title}</div>
       <div style={metaStyle}>
-        {utcLabel(row.when_utc)} UTC · {timing} ·{" "}
+        {row.undated ? "publish time unavailable" : `${utcLabel(row.when_utc)} UTC`} · {timing} ·{" "}
         {row.kind === "world" ? "world headline" : "scheduled release"} · source {row.source}
       </div>
       <div style={detailGridStyle}>
@@ -1652,9 +1753,24 @@ function DetailCard({
             </div>
           </div>
         ) : null}
+        {details.publisher ? (
+          <div>
+            <span style={stripLabelStyle}>PUBLISHER / FEED</span>
+            <div style={metaStyle}>
+              {String(details.publisher)}
+              {details.feed_url ? ` · ${String(details.feed_url)}` : ""}
+            </div>
+          </div>
+        ) : null}
+        {details.country_basis === "title_inference" ? (
+          <div>
+            <span style={stripLabelStyle}>COUNTRY BASIS</span>
+            <div style={metaStyle}>inferred from event title</div>
+          </div>
+        ) : null}
       </div>
-      {details.url ? (
-        <a href={String(details.url)} target="_blank" rel="noreferrer" style={linkStyle}>
+      {details.article_url || details.provider_event_url || details.url ? (
+        <a href={String(details.article_url || details.provider_event_url || details.url)} target="_blank" rel="noreferrer" style={linkStyle}>
           open source ↗
         </a>
       ) : null}
@@ -1669,12 +1785,14 @@ function CountrySidebar({
   index,
   followed,
   nowMs,
+  asOf,
   onToggle,
 }: {
   catalog: { iso: string; name: string }[];
   index: Map<string, MeetCountryEntry>;
   followed: string[];
   nowMs: number;
+  asOf?: string;
   onToggle: (iso: string) => void;
 }) {
   const [search, setSearch] = useState("");
@@ -1706,10 +1824,14 @@ function CountrySidebar({
         {entries.map((entry) => {
           const bucket = index.get(entry.iso);
           const active = followed.includes(entry.iso);
-          const stateKey = bucket?.state ?? "quiet";
-          const nextSeconds = bucket?.next_event?.when_utc
-            ? (Date.parse(String(bucket.next_event.when_utc)) - nowMs) / 1000
-            : null;
+          const nextSeconds = snapshotSeconds(
+            bucket?.next_event?.when_utc,
+            bucket?.next_event?.seconds_to_event,
+            nowMs,
+            asOf,
+          );
+          const hasCurrentNext = nextSeconds != null && nextSeconds > 0;
+          const stateKey = hasCurrentNext ? (bucket?.state ?? "quiet") : "quiet";
           return (
             <li key={entry.iso}>
               <button
@@ -1726,7 +1848,7 @@ function CountrySidebar({
               >
                 <span style={isoStyle}>{entry.iso}</span>
                 <span style={sidebarNameStyle}>{entry.name}</span>
-                {bucket && bucket.upcoming_count > 0 ? (
+                {bucket && bucket.upcoming_count > 0 && hasCurrentNext ? (
                   <span style={monoMuteStyle}>
                     {formatCountdown(nextSeconds)}
                   </span>
@@ -1778,6 +1900,7 @@ function MeetAlertsPopover({
   catalog,
   serverAlerts,
   nowMs,
+  asOf,
   onChange,
   onClose,
 }: {
@@ -1785,11 +1908,23 @@ function MeetAlertsPopover({
   catalog: { iso: string; name: string }[];
   serverAlerts?: MeetAlertEntry[];
   nowMs?: number;
+  asOf?: string;
   onChange: (next: MeetAlertConfig) => void;
   onClose: () => void;
 }) {
   const LEAD_CHOICES = [1440, 60, 5];
   const unfollowed = catalog.filter((c) => !config.spotCountries.includes(c.iso));
+  const activeServerAlerts = (serverAlerts ?? [])
+    .map((alert) => ({
+      alert,
+      seconds: snapshotSeconds(
+        alert.when_utc,
+        alert.seconds_to_event,
+        nowMs ?? Date.now(),
+        asOf,
+      ),
+    }))
+    .filter(({ seconds }) => seconds != null && seconds >= 0);
   return (
     <div
       role="dialog"
@@ -1812,15 +1947,11 @@ function MeetAlertsPopover({
           ✕
         </button>
       </div>
-      {serverAlerts && serverAlerts.length > 0 ? (
+      {activeServerAlerts.length > 0 ? (
         <div style={popoverBlockStyle}>
           <span style={stripLabelStyle}>SERVER SPOT (upcoming)</span>
           <ul style={historyListStyle}>
-            {serverAlerts.slice(0, 8).map((alert) => {
-              const ts = Date.parse(alert.when_utc ?? "");
-              const seconds = Number.isFinite(ts)
-                ? (ts - (nowMs ?? Date.now())) / 1000
-                : (alert.seconds_to_event ?? null);
+            {activeServerAlerts.slice(0, 8).map(({ alert, seconds }) => {
               const meta = [
                 (alert.country_names ?? []).join(", "),
                 (alert.pairs ?? []).slice(0, 4).join(", "),
@@ -1932,7 +2063,9 @@ function MeetAlertsPopover({
           <ul style={historyListStyle}>
             {config.history.slice(0, 8).map((item) => (
               <li key={item.key} style={historyItemStyle}>
-                <span style={monoMuteStyle}>{leadLabel(item.lead)}</span>
+                <span style={monoMuteStyle}>
+                  {item.lead == null ? "arrival" : leadLabel(item.lead)}
+                </span>
                 <span style={historyTitleStyle}>{item.title}</span>
                 <span style={monoMuteStyle}>{utcLabel(item.when_utc)}</span>
               </li>
@@ -1954,6 +2087,23 @@ function MeetAlertsPopover({
 }
 
 /* ── helpers / styles ──────────────────────────────────────────────── */
+
+function snapshotSeconds(
+  whenUtc: string | undefined,
+  snapshotSecondsToEvent: number | undefined,
+  nowMs: number,
+  asOf: string | undefined,
+): number | null {
+  const eventMs = whenUtc ? Date.parse(whenUtc) : Number.NaN;
+  if (Number.isFinite(eventMs)) return (eventMs - nowMs) / 1000;
+  const asOfMs = asOf ? Date.parse(asOf) : Number.NaN;
+  if (typeof snapshotSecondsToEvent !== "number" || !Number.isFinite(snapshotSecondsToEvent)) {
+    return null;
+  }
+  return Number.isFinite(asOfMs)
+    ? snapshotSecondsToEvent - (nowMs - asOfMs) / 1000
+    : snapshotSecondsToEvent;
+}
 
 function utcLabel(iso: string | undefined | null): string {
   if (!iso) return "—";

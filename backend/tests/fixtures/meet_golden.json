@@ -1,0 +1,944 @@
+[
+  {
+    "text": "ECB holds rates steady as Brussels approves eurozone budget",
+    "expected": {
+      "countries": [
+        "BE",
+        "EU"
+      ],
+      "asset_tags": [],
+      "topic_tags": [
+        "ECB"
+      ],
+      "event_type": "rate_decision",
+      "impact": "medium",
+      "pairs": []
+    }
+  },
+  {
+    "text": "Eurozone inflation eases as ECB eyes December rate cut",
+    "expected": {
+      "countries": [
+        "EU"
+      ],
+      "asset_tags": [],
+      "topic_tags": [
+        "ECB",
+        "INFLATION"
+      ],
+      "event_type": "rate_decision",
+      "impact": "medium",
+      "pairs": []
+    }
+  },
+  {
+    "text": "European Union leaders gather in Brussels for emergency summit",
+    "expected": {
+      "countries": [
+        "BE",
+        "EU"
+      ],
+      "asset_tags": [],
+      "topic_tags": [],
+      "event_type": "geopolitics",
+      "impact": "medium",
+      "pairs": []
+    }
+  },
+  {
+    "text": "EUR holds firm after Brussels seals euro area fiscal deal",
+    "expected": {
+      "countries": [
+        "BE",
+        "EU"
+      ],
+      "asset_tags": [],
+      "topic_tags": [],
+      "event_type": "other",
+      "impact": "low",
+      "pairs": []
+    }
+  },
+  {
+    "text": "Lagarde says ECB will act as eurozone CPI slows",
+    "expected": {
+      "countries": [
+        "EU"
+      ],
+      "asset_tags": [],
+      "topic_tags": [
+        "ECB",
+        "INFLATION"
+      ],
+      "event_type": "inflation_print",
+      "impact": "medium",
+      "pairs": []
+    }
+  },
+  {
+    "text": "UK Official Bank Rate decision lifts pound to weekly high",
+    "expected": {
+      "countries": [
+        "GB"
+      ],
+      "asset_tags": [],
+      "topic_tags": [],
+      "event_type": "rate_decision",
+      "impact": "medium",
+      "pairs": []
+    }
+  },
+  {
+    "text": "London stocks rally as British pound firms on rate bets",
+    "expected": {
+      "countries": [
+        "GB"
+      ],
+      "asset_tags": [],
+      "topic_tags": [],
+      "event_type": "other",
+      "impact": "low",
+      "pairs": []
+    }
+  },
+  {
+    "text": "Westminster unveils budget as UK borrowing falls",
+    "expected": {
+      "countries": [
+        "GB"
+      ],
+      "asset_tags": [],
+      "topic_tags": [],
+      "event_type": "other",
+      "impact": "low",
+      "pairs": []
+    }
+  },
+  {
+    "text": "US and China hold Taiwan talks as Beijing warns Washington",
+    "expected": {
+      "countries": [
+        "US",
+        "CN",
+        "TW"
+      ],
+      "asset_tags": [],
+      "topic_tags": [],
+      "event_type": "geopolitics",
+      "impact": "medium",
+      "pairs": []
+    }
+  },
+  {
+    "text": "Trump meets Xi Jinping to discuss Taiwan Strait tensions",
+    "expected": {
+      "countries": [
+        "US",
+        "CN",
+        "TW"
+      ],
+      "asset_tags": [],
+      "topic_tags": [],
+      "event_type": "other",
+      "impact": "low",
+      "pairs": []
+    }
+  },
+  {
+    "text": "Missile strikes hit power grid after invasion escalation",
+    "expected": {
+      "countries": [],
+      "asset_tags": [],
+      "topic_tags": [],
+      "event_type": "geopolitics",
+      "impact": "high",
+      "pairs": []
+    }
+  },
+  {
+    "text": "Bitcoin plunges as war fears grip crypto markets",
+    "expected": {
+      "countries": [],
+      "asset_tags": [
+        "BTC",
+        "CRYPTO"
+      ],
+      "topic_tags": [],
+      "event_type": "geopolitics",
+      "impact": "high",
+      "pairs": [
+        "BTCUSD"
+      ]
+    }
+  },
+  {
+    "text": "Ceasefire deal reached as troops withdraw from frontline",
+    "expected": {
+      "countries": [],
+      "asset_tags": [],
+      "topic_tags": [],
+      "event_type": "geopolitics",
+      "impact": "high",
+      "pairs": []
+    }
+  },
+  {
+    "text": "Russia warns Ukraine amid drone strikes near Kyiv",
+    "expected": {
+      "countries": [
+        "UA",
+        "RU"
+      ],
+      "asset_tags": [],
+      "topic_tags": [],
+      "event_type": "geopolitics",
+      "impact": "high",
+      "pairs": []
+    }
+  },
+  {
+    "text": "South Korea martial law fears rattle markets as troops deploy",
+    "expected": {
+      "countries": [
+        "KR"
+      ],
+      "asset_tags": [],
+      "topic_tags": [],
+      "event_type": "geopolitics",
+      "impact": "high",
+      "pairs": []
+    }
+  },
+  {
+    "text": "Crypto bridge hacked for $200M in major security breach",
+    "expected": {
+      "countries": [],
+      "asset_tags": [
+        "CRYPTO"
+      ],
+      "topic_tags": [],
+      "event_type": "hack",
+      "impact": "medium",
+      "pairs": []
+    }
+  },
+  {
+    "text": "Exchange exploit drains funds as stolen tokens move onchain",
+    "expected": {
+      "countries": [],
+      "asset_tags": [
+        "CRYPTO"
+      ],
+      "topic_tags": [],
+      "event_type": "hack",
+      "impact": "medium",
+      "pairs": []
+    }
+  },
+  {
+    "text": "Bitcoin ETF inflows hit record as BTC reclaims 75k",
+    "expected": {
+      "countries": [],
+      "asset_tags": [
+        "BTC",
+        "ETF"
+      ],
+      "topic_tags": [],
+      "event_type": "etf_flow",
+      "impact": "medium",
+      "pairs": [
+        "BTCUSD"
+      ]
+    }
+  },
+  {
+    "text": "Ethereum ETF outflows deepen on weak institutional demand",
+    "expected": {
+      "countries": [],
+      "asset_tags": [
+        "ETH",
+        "ETF"
+      ],
+      "topic_tags": [],
+      "event_type": "etf_flow",
+      "impact": "medium",
+      "pairs": [
+        "ETHUSD"
+      ]
+    }
+  },
+  {
+    "text": "Spot ETF inflows lift crypto markets to new highs",
+    "expected": {
+      "countries": [],
+      "asset_tags": [
+        "ETF",
+        "CRYPTO"
+      ],
+      "topic_tags": [],
+      "event_type": "etf_flow",
+      "impact": "medium",
+      "pairs": []
+    }
+  },
+  {
+    "text": "btc reclaims 75k on strong demand",
+    "expected": {
+      "countries": [],
+      "asset_tags": [],
+      "topic_tags": [],
+      "event_type": "other",
+      "impact": "medium",
+      "pairs": []
+    }
+  },
+  {
+    "text": "analysts say btc decoupling from tech stocks may fade",
+    "expected": {
+      "countries": [],
+      "asset_tags": [],
+      "topic_tags": [],
+      "event_type": "other",
+      "impact": "medium",
+      "pairs": []
+    }
+  },
+  {
+    "text": "TCMB faiz kararı sonrası dolar kuru yükseldi",
+    "expected": {
+      "countries": [
+        "TR"
+      ],
+      "asset_tags": [],
+      "topic_tags": [],
+      "event_type": "rate_decision",
+      "impact": "medium",
+      "pairs": []
+    }
+  },
+  {
+    "text": "Türkiye parliament debates budget as Ukraine truce holds",
+    "expected": {
+      "countries": [
+        "UA",
+        "TR"
+      ],
+      "asset_tags": [],
+      "topic_tags": [],
+      "event_type": "geopolitics",
+      "impact": "high",
+      "pairs": []
+    }
+  },
+  {
+    "text": "Ankara signals rate decision as Istanbul markets rally",
+    "expected": {
+      "countries": [
+        "TR"
+      ],
+      "asset_tags": [],
+      "topic_tags": [],
+      "event_type": "rate_decision",
+      "impact": "medium",
+      "pairs": []
+    }
+  },
+  {
+    "text": "Turkish lira slides as TCMB holds interest rate steady",
+    "expected": {
+      "countries": [
+        "TR"
+      ],
+      "asset_tags": [],
+      "topic_tags": [],
+      "event_type": "rate_decision",
+      "impact": "medium",
+      "pairs": []
+    }
+  },
+  {
+    "text": "Turkeyrate decision expected Thursday, traders say",
+    "expected": {
+      "countries": [],
+      "asset_tags": [],
+      "topic_tags": [],
+      "event_type": "other",
+      "impact": "low",
+      "pairs": []
+    }
+  },
+  {
+    "text": "Turkeyrate hike bets rise in offshore markets",
+    "expected": {
+      "countries": [],
+      "asset_tags": [],
+      "topic_tags": [],
+      "event_type": "other",
+      "impact": "low",
+      "pairs": []
+    }
+  },
+  {
+    "text": "US NFP payrolls beat forecasts as unemployment falls",
+    "expected": {
+      "countries": [
+        "US"
+      ],
+      "asset_tags": [],
+      "topic_tags": [
+        "INFLATION"
+      ],
+      "event_type": "employment_print",
+      "impact": "medium",
+      "pairs": []
+    }
+  },
+  {
+    "text": "Jobs report shows hiring surge across services",
+    "expected": {
+      "countries": [],
+      "asset_tags": [],
+      "topic_tags": [],
+      "event_type": "employment_print",
+      "impact": "low",
+      "pairs": []
+    }
+  },
+  {
+    "text": "Nonfarm payrolls revised higher in employment update",
+    "expected": {
+      "countries": [],
+      "asset_tags": [],
+      "topic_tags": [
+        "INFLATION"
+      ],
+      "event_type": "employment_print",
+      "impact": "medium",
+      "pairs": []
+    }
+  },
+  {
+    "text": "SEC sues crypto exchange over unregistered securities",
+    "expected": {
+      "countries": [],
+      "asset_tags": [
+        "CRYPTO"
+      ],
+      "topic_tags": [],
+      "event_type": "regulation",
+      "impact": "medium",
+      "pairs": []
+    }
+  },
+  {
+    "text": "Court rejects spot ETF approval bid on surveillance fears",
+    "expected": {
+      "countries": [],
+      "asset_tags": [
+        "ETF"
+      ],
+      "topic_tags": [],
+      "event_type": "regulation",
+      "impact": "medium",
+      "pairs": []
+    }
+  },
+  {
+    "text": "SEC approves options on spot bitcoin ETFs",
+    "expected": {
+      "countries": [],
+      "asset_tags": [
+        "BTC"
+      ],
+      "topic_tags": [],
+      "event_type": "regulation",
+      "impact": "medium",
+      "pairs": [
+        "BTCUSD"
+      ]
+    }
+  },
+  {
+    "text": "Bitcoin halving cuts miner rewards for fourth cycle",
+    "expected": {
+      "countries": [],
+      "asset_tags": [
+        "BTC",
+        "CRYPTO"
+      ],
+      "topic_tags": [],
+      "event_type": "halving",
+      "impact": "medium",
+      "pairs": [
+        "BTCUSD"
+      ]
+    }
+  },
+  {
+    "text": "Halving rally lifts onchain activity to records",
+    "expected": {
+      "countries": [],
+      "asset_tags": [
+        "CRYPTO"
+      ],
+      "topic_tags": [],
+      "event_type": "halving",
+      "impact": "medium",
+      "pairs": []
+    }
+  },
+  {
+    "text": "US CPI inflation cools to 2.4% in June",
+    "expected": {
+      "countries": [
+        "US"
+      ],
+      "asset_tags": [],
+      "topic_tags": [
+        "INFLATION"
+      ],
+      "event_type": "inflation_print",
+      "impact": "medium",
+      "pairs": []
+    }
+  },
+  {
+    "text": "FOMC announces rate decision as Powell speaks",
+    "expected": {
+      "countries": [],
+      "asset_tags": [],
+      "topic_tags": [
+        "FED"
+      ],
+      "event_type": "rate_decision",
+      "impact": "medium",
+      "pairs": []
+    }
+  },
+  {
+    "text": "PCE inflation holds steady as Fed weighs cuts",
+    "expected": {
+      "countries": [],
+      "asset_tags": [],
+      "topic_tags": [
+        "FED",
+        "INFLATION"
+      ],
+      "event_type": "rate_decision",
+      "impact": "medium",
+      "pairs": []
+    }
+  },
+  {
+    "text": "Powell dot plot signals fewer cuts",
+    "expected": {
+      "countries": [],
+      "asset_tags": [],
+      "topic_tags": [
+        "FED"
+      ],
+      "event_type": "rate_decision",
+      "impact": "medium",
+      "pairs": []
+    }
+  },
+  {
+    "text": "Trump extends restrictions on H-1B visa program",
+    "expected": {
+      "countries": [
+        "US"
+      ],
+      "asset_tags": [],
+      "topic_tags": [],
+      "event_type": "other",
+      "impact": "low",
+      "pairs": []
+    }
+  },
+  {
+    "text": "France and Germany agree cross-border accord in Paris",
+    "expected": {
+      "countries": [
+        "FR",
+        "DE"
+      ],
+      "asset_tags": [],
+      "topic_tags": [],
+      "event_type": "geopolitics",
+      "impact": "medium",
+      "pairs": []
+    }
+  },
+  {
+    "text": "Election upset in Argentina as peso slides",
+    "expected": {
+      "countries": [
+        "AR"
+      ],
+      "asset_tags": [],
+      "topic_tags": [],
+      "event_type": "geopolitics",
+      "impact": "medium",
+      "pairs": []
+    }
+  },
+  {
+    "text": "Paris summit yields new trade treaty",
+    "expected": {
+      "countries": [
+        "FR"
+      ],
+      "asset_tags": [],
+      "topic_tags": [],
+      "event_type": "geopolitics",
+      "impact": "medium",
+      "pairs": []
+    }
+  },
+  {
+    "text": "Ethereum upgrade lifts ether sentiment",
+    "expected": {
+      "countries": [],
+      "asset_tags": [
+        "ETH"
+      ],
+      "topic_tags": [],
+      "event_type": "other",
+      "impact": "medium",
+      "pairs": [
+        "ETHUSD"
+      ]
+    }
+  },
+  {
+    "text": "Grayscale GBTC outflows slow as IBIT keeps gaining",
+    "expected": {
+      "countries": [],
+      "asset_tags": [
+        "BTC",
+        "ETF"
+      ],
+      "topic_tags": [],
+      "event_type": "etf_flow",
+      "impact": "medium",
+      "pairs": [
+        "BTCUSD"
+      ]
+    }
+  },
+  {
+    "text": "Stablecoin USDT briefly depegs on heavy redemptions",
+    "expected": {
+      "countries": [],
+      "asset_tags": [
+        "CRYPTO"
+      ],
+      "topic_tags": [],
+      "event_type": "other",
+      "impact": "medium",
+      "pairs": []
+    }
+  },
+  {
+    "text": "BOJ's Ueda hints at hike as yen slides",
+    "expected": {
+      "countries": [
+        "JP"
+      ],
+      "asset_tags": [],
+      "topic_tags": [
+        "BOJ"
+      ],
+      "event_type": "rate_decision",
+      "impact": "medium",
+      "pairs": []
+    }
+  },
+  {
+    "text": "Fed holds rates steady in Powell press conference",
+    "expected": {
+      "countries": [],
+      "asset_tags": [],
+      "topic_tags": [
+        "FED"
+      ],
+      "event_type": "rate_decision",
+      "impact": "medium",
+      "pairs": []
+    }
+  },
+  {
+    "text": "Oracle's $18 billion data center debt under pressure, FT reports",
+    "expected": {
+      "countries": [],
+      "asset_tags": [],
+      "topic_tags": [],
+      "event_type": "other",
+      "impact": "low",
+      "pairs": []
+    }
+  },
+  {
+    "text": "Local bakery wins award for sourdough loaf",
+    "expected": {
+      "countries": [],
+      "asset_tags": [],
+      "topic_tags": [],
+      "event_type": "other",
+      "impact": "low",
+      "pairs": []
+    }
+  },
+  {
+    "text": "New study links morning coffee to longevity",
+    "expected": {
+      "countries": [],
+      "asset_tags": [],
+      "topic_tags": [],
+      "event_type": "other",
+      "impact": "low",
+      "pairs": []
+    }
+  },
+  {
+    "text": "China unveils stimulus as Shanghai stocks jump",
+    "expected": {
+      "countries": [
+        "CN"
+      ],
+      "asset_tags": [],
+      "topic_tags": [],
+      "event_type": "other",
+      "impact": "low",
+      "pairs": []
+    }
+  },
+  {
+    "text": "Japan's Nikkei hits record as yen weakens",
+    "expected": {
+      "countries": [
+        "JP"
+      ],
+      "asset_tags": [],
+      "topic_tags": [],
+      "event_type": "other",
+      "impact": "low",
+      "pairs": []
+    }
+  },
+  {
+    "text": "Swiss franc firms as Zurich markets rally",
+    "expected": {
+      "countries": [
+        "CH"
+      ],
+      "asset_tags": [],
+      "topic_tags": [],
+      "event_type": "other",
+      "impact": "low",
+      "pairs": []
+    }
+  },
+  {
+    "text": "Canada jobs data lifts loonie before CPI",
+    "expected": {
+      "countries": [
+        "CA"
+      ],
+      "asset_tags": [],
+      "topic_tags": [
+        "INFLATION"
+      ],
+      "event_type": "inflation_print",
+      "impact": "medium",
+      "pairs": []
+    }
+  },
+  {
+    "text": "Australia holds cash rate as Sydney housing cools",
+    "expected": {
+      "countries": [
+        "AU"
+      ],
+      "asset_tags": [],
+      "topic_tags": [],
+      "event_type": "other",
+      "impact": "low",
+      "pairs": []
+    }
+  },
+  {
+    "text": "Israel airstrikes target Gaza tunnels amid truce talks",
+    "expected": {
+      "countries": [
+        "IL",
+        "PS"
+      ],
+      "asset_tags": [],
+      "topic_tags": [],
+      "event_type": "geopolitics",
+      "impact": "high",
+      "pairs": []
+    }
+  },
+  {
+    "text": "Singapore stocks rally as Straits Times hits record",
+    "expected": {
+      "countries": [
+        "SG"
+      ],
+      "asset_tags": [],
+      "topic_tags": [],
+      "event_type": "other",
+      "impact": "low",
+      "pairs": []
+    }
+  },
+  {
+    "text": "Wales rugby win lifts spirits after rainy final",
+    "expected": {
+      "countries": [],
+      "asset_tags": [],
+      "topic_tags": [],
+      "event_type": "other",
+      "impact": "low",
+      "pairs": []
+    }
+  },
+  {
+    "text": "North Korean troops cross border",
+    "expected": {
+      "countries": ["KP"],
+      "asset_tags": [],
+      "topic_tags": [],
+      "event_type": "geopolitics",
+      "impact": "high",
+      "pairs": []
+    }
+  },
+  {
+    "text": "BOJ raises interest rate",
+    "expected": {
+      "countries": ["JP"],
+      "asset_tags": [],
+      "topic_tags": ["BOJ"],
+      "event_type": "rate_decision",
+      "impact": "medium",
+      "pairs": []
+    }
+  },
+  {
+    "text": "BoJ raises interest rate",
+    "expected": {
+      "countries": ["JP"],
+      "asset_tags": [],
+      "topic_tags": ["BOJ"],
+      "event_type": "rate_decision",
+      "impact": "medium",
+      "pairs": []
+    }
+  },
+  {
+    "text": "Provider policy update",
+    "provider": {
+      "topic_tags": ["FED"],
+      "asset_tags": ["eth", "ETF"]
+    },
+    "expected": {
+      "countries": [],
+      "asset_tags": ["ETH", "ETF"],
+      "topic_tags": ["FED"],
+      "event_type": "other",
+      "impact": "medium",
+      "pairs": ["ETHUSD"]
+    }
+  },
+  {
+    "text": "Capital inflows strengthen the currency",
+    "expected": {
+      "countries": [],
+      "asset_tags": [],
+      "topic_tags": [],
+      "event_type": "other",
+      "impact": "medium",
+      "pairs": []
+    }
+  },
+  {
+    "text": "Bank deposit outflows accelerate",
+    "expected": {
+      "countries": [],
+      "asset_tags": [],
+      "topic_tags": [],
+      "event_type": "other",
+      "impact": "medium",
+      "pairs": []
+    }
+  },
+  {
+    "text": "Global fund inflows rise in September",
+    "expected": {
+      "countries": [],
+      "asset_tags": [],
+      "topic_tags": [],
+      "event_type": "other",
+      "impact": "medium",
+      "pairs": []
+    }
+  },
+  {
+    "text": "Bitcoin ETF inflows surge",
+    "expected": {
+      "countries": [],
+      "asset_tags": ["BTC", "ETF"],
+      "topic_tags": [],
+      "event_type": "etf_flow",
+      "impact": "medium",
+      "pairs": ["BTCUSD"]
+    }
+  },
+  {
+    "text": "GBTC outflows continue",
+    "expected": {
+      "countries": [],
+      "asset_tags": ["ETF"],
+      "topic_tags": [],
+      "event_type": "etf_flow",
+      "impact": "medium",
+      "pairs": []
+    }
+  },
+  {
+    "text": "Nuclear power plant opens new reactor",
+    "expected": {
+      "countries": [],
+      "asset_tags": [],
+      "topic_tags": [],
+      "event_type": "other",
+      "impact": "low",
+      "pairs": []
+    }
+  },
+  {
+    "text": "Nuclear energy output reaches a record",
+    "expected": {
+      "countries": [],
+      "asset_tags": [],
+      "topic_tags": [],
+      "event_type": "other",
+      "impact": "low",
+      "pairs": []
+    }
+  },
+  {
+    "text": "Nuclear weapons threat escalates",
+    "expected": {
+      "countries": [],
+      "asset_tags": [],
+      "topic_tags": [],
+      "event_type": "geopolitics",
+      "impact": "high",
+      "pairs": []
+    }
+  }
+]

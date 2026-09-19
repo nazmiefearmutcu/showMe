@@ -32,6 +32,12 @@ export interface MeetRowDetails {
   matched_assets?: string[];
   impact_basis?: string;
   url?: string | null;
+  article_url?: string | null;
+  publisher?: string | null;
+  feed_url?: string | null;
+  provider?: string | null;
+  provider_event_url?: string | null;
+  country_basis?: "provider" | "title_inference" | string | null;
   provider_country?: string | null;
   /** Wire summary (world rows) for the in-place expansion. */
   summary?: string | null;
@@ -43,7 +49,7 @@ export interface MeetRow {
   title: string;
   countries: string[];
   country_names: string[];
-  when_utc: string;
+  when_utc: string | null;
   impact: MeetImpact;
   currencies?: string[];
   pairs: string[];
@@ -137,6 +143,20 @@ export interface MeetData {
   /** Calendar rows dropped for lack of a parseable timestamp. */
   dropped_no_time?: number;
   methodology?: string;
+  data_quality?: {
+    row_count: number;
+    timed_count: number;
+    undated_count: number;
+    source_traceable_count: number;
+    url_traceable_count: number;
+    attribution_required_count: number;
+    attribution_covered_count: number;
+    duplicate_rows_dropped: number;
+    rows_dropped_no_time: number;
+    active_source_tiers: string[];
+    measures: string;
+  };
+  attributions?: { name: string; url: string; text: string }[];
 }
 
 export interface MeetAlertHistoryItem {
@@ -144,7 +164,8 @@ export interface MeetAlertHistoryItem {
   id: string;
   title: string;
   when_utc: string;
-  lead: number;
+  /** Configured lead for scheduled alerts; null means a realtime arrival. */
+  lead: number | null;
   fired_at: string;
 }
 
@@ -202,7 +223,7 @@ export function formatCountdown(seconds: number | null | undefined): string {
 
 /** Live seconds until a row's `when_utc` (falls back to the server value). */
 export function secondsUntil(row: MeetRow, nowMs: number): number | null {
-  const ts = Date.parse(row.when_utc);
+  const ts = Date.parse(row.when_utc ?? "");
   if (Number.isFinite(ts)) return (ts - nowMs) / 1000;
   return typeof row.seconds_to_event === "number" ? row.seconds_to_event : null;
 }
@@ -220,7 +241,7 @@ export function formatAge(seconds: number | null | undefined): string {
 /** A row belongs to the past group once its time has passed (undated = past). */
 export function isPastRow(row: MeetRow, nowMs: number): boolean {
   if (row.undated) return true;
-  const ts = Date.parse(row.when_utc);
+  const ts = Date.parse(row.when_utc ?? "");
   if (!Number.isFinite(ts)) return (row.seconds_to_event ?? 0) < 0;
   return ts <= nowMs;
 }
@@ -232,6 +253,12 @@ export function groupRows(rows: MeetRow[], nowMs: number): { upcoming: MeetRow[]
   for (const row of rows) {
     (isPastRow(row, nowMs) ? past : upcoming).push(row);
   }
+  const timestamp = (row: MeetRow): number | null => {
+    const ts = Date.parse(row.when_utc ?? "");
+    return Number.isFinite(ts) ? ts : null;
+  };
+  upcoming.sort((a, b) => (timestamp(a) ?? Number.POSITIVE_INFINITY) - (timestamp(b) ?? Number.POSITIVE_INFINITY));
+  past.sort((a, b) => (timestamp(b) ?? Number.NEGATIVE_INFINITY) - (timestamp(a) ?? Number.NEGATIVE_INFINITY));
   return { upcoming, past };
 }
 
@@ -253,8 +280,11 @@ export function normalizeMeetAlerts(raw: unknown): MeetAlertConfig {
   const base = { ...DEFAULT_MEET_ALERTS, history: [] as MeetAlertHistoryItem[] };
   if (!raw || typeof raw !== "object") return base;
   const value = raw as Partial<MeetAlertConfig>;
-  const leads = Array.isArray(value.leadMinutes)
-    ? value.leadMinutes.filter((n) => Number.isFinite(n) && n > 0).map((n) => Math.round(n))
+  const leadsValid =
+    Array.isArray(value.leadMinutes) &&
+    value.leadMinutes.every((n) => typeof n === "number" && Number.isFinite(n) && n > 0);
+  const leads = leadsValid
+    ? Array.from(new Set(value.leadMinutes!.map((n) => Math.round(n))))
     : base.leadMinutes;
   const countries = Array.isArray(value.spotCountries)
     ? value.spotCountries.filter((c): c is string => typeof c === "string" && !!c.trim())
@@ -270,7 +300,7 @@ export function normalizeMeetAlerts(raw: unknown): MeetAlertConfig {
     : [];
   return {
     enabled: value.enabled !== false,
-    leadMinutes: leads.length ? leads : base.leadMinutes,
+    leadMinutes: leads,
     spotCountries: Array.from(new Set(countries.map((c) => c.toUpperCase()))),
     symbols: Array.from(new Set(symbols.map((s) => s.toUpperCase()))),
     history: history.slice(0, MEET_ALERT_HISTORY_CAP),
@@ -369,7 +399,9 @@ export function parsePrintNumber(value: unknown): number | null {
   if (typeof value !== "string") return null;
   let s = value.trim();
   if (!s) return null;
-  if (s.startsWith("<")) s = s.slice(1).trim(); // capped marker ("<1.25%")
+  // Bounds are not exact observations, so they cannot support exact sorting,
+  // surprise arithmetic, or directional colour.
+  if (/^[<>≤≥]/.test(s)) return null;
   s = (s.split("|")[0] ?? "").trim(); // raw "Prev | Rev" pipe text
   if (/^\d+\s*-\s*\d+\s*-\s*\d+$/.test(s)) return null; // vote splits like 3-0-6
   const m = /^(-?[\d.]+)\s*([KMBT])?\s*%?$/.exec(s.replace(/,/g, ""));

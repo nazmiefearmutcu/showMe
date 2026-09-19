@@ -247,8 +247,14 @@ adapters:
       - https://www.cnbc.com/id/100003114/device/rss/rss.html
       - https://www.investing.com/rss/news_25.rss
       - https://www.prnewswire.com/rss/financial-services-latest-news/financial-services-latest-news-list.rss
-      - https://www.globenewswire.com/RssFeed/subjectcode/27-News-Releases/feedTitle/GlobeNewswire%20-%20News%20about%20Financial%20Services
       - https://www.sec.gov/news/pressreleases.rss
+      # Fast world wires: NYT World, Al Jazeera, BBC World/Business, Guardian.
+      # MUST mirror RSSAdapter._MARKET_FEEDS (test_meet_feed_config pins it).
+      - https://rss.nytimes.com/services/xml/rss/nyt/World.xml
+      - https://www.aljazeera.com/xml/rss/all.xml
+      - https://feeds.bbci.co.uk/news/world/rss.xml
+      - https://feeds.bbci.co.uk/news/business/rss.xml
+      - https://www.theguardian.com/world/rss
     crypto_feeds:
       - https://cointelegraph.com/rss
       - https://decrypt.co/feed
@@ -263,8 +269,12 @@ adapters:
       - https://www.cnbc.com/id/100003114/device/rss/rss.html
       - https://www.investing.com/rss/news_25.rss
       - https://www.prnewswire.com/rss/financial-services-latest-news/financial-services-latest-news-list.rss
-      - https://www.globenewswire.com/RssFeed/subjectcode/27-News-Releases/feedTitle/GlobeNewswire%20-%20News%20about%20Financial%20Services
       - https://www.sec.gov/news/pressreleases.rss
+      - https://rss.nytimes.com/services/xml/rss/nyt/World.xml
+      - https://www.aljazeera.com/xml/rss/all.xml
+      - https://feeds.bbci.co.uk/news/world/rss.xml
+      - https://feeds.bbci.co.uk/news/business/rss.xml
+      - https://www.theguardian.com/world/rss
       - https://cointelegraph.com/rss
       - https://decrypt.co/feed
       - https://www.coindesk.com/arc/outboundfeeds/rss

@@ -1,0 +1,129 @@
+{
+  "card_slots": [
+    "next_high_impact",
+    "upcoming_count",
+    "past_count",
+    "alerts_count",
+    "countries_tracked",
+    "data_mode",
+    "as_of"
+  ],
+  "data_filter_values": [
+    "all",
+    "major_only",
+    "pinned",
+    "spot",
+    "surprise_only",
+    "with_actual",
+    "with_forecast"
+  ],
+  "inputs": [
+    {
+      "default": null,
+      "name": "countries",
+      "options": null
+    },
+    {
+      "default": "all",
+      "name": "kind",
+      "options": [
+        "all",
+        "economic",
+        "world"
+      ]
+    },
+    {
+      "default": "all",
+      "name": "mode",
+      "options": [
+        "all",
+        "calendar",
+        "wire"
+      ]
+    },
+    {
+      "default": "",
+      "name": "tags",
+      "options": null
+    },
+    {
+      "default": "all",
+      "name": "data_filter",
+      "options": [
+        "all",
+        "spot",
+        "pinned",
+        "major_only",
+        "with_forecast",
+        "with_actual",
+        "surprise_only"
+      ]
+    },
+    {
+      "default": "",
+      "name": "symbols",
+      "options": null
+    },
+    {
+      "default": null,
+      "name": "impact",
+      "options": [
+        "high",
+        "medium",
+        "low",
+        "holiday"
+      ]
+    },
+    {
+      "default": null,
+      "name": "query",
+      "options": null
+    },
+    {
+      "default": 90,
+      "name": "days_ahead",
+      "options": null
+    },
+    {
+      "default": 7,
+      "name": "days_back",
+      "options": null
+    },
+    {
+      "default": 250,
+      "name": "limit",
+      "options": null
+    },
+    {
+      "default": true,
+      "name": "include_world",
+      "options": null
+    },
+    {
+      "default": "live_official",
+      "name": "provider_mode",
+      "options": [
+        "live_official",
+        "cached_snapshot"
+      ]
+    },
+    {
+      "default": "",
+      "name": "since",
+      "options": null
+    },
+    {
+      "default": "",
+      "name": "known_ids",
+      "options": null
+    }
+  ],
+  "must_have": [
+    "status",
+    "rows",
+    "country_index",
+    "data_mode",
+    "data_quality",
+    "attributions"
+  ]
+}

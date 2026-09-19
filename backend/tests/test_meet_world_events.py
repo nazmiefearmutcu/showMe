@@ -1,8 +1,8 @@
-﻿"""MEET â€” world-events tracker pins (rebuilt 2026-09).
+﻿"""MEET — world-events tracker pins (rebuilt 2026-09).
 
 Contract:
   * scheduled rows come from the keyless ForexFactory weekly calendar
-    (reused from ECO â€” the HTTP leg is driven via the ``_http_client``
+    (reused from ECO — the HTTP leg is driven via the ``_http_client``
     injection seam) and are anchored to UTC with affected FX pairs,
   * world headlines come from the keyless news path and are tagged with a
     country gazetteer (multi-country allowed, matched terms recorded),
@@ -10,7 +10,7 @@ Contract:
     countdowns,
   * spot alerts cover rate decisions and wars,
   * an empty provider set yields an honest ``provider_unavailable``
-    envelope â€” events are never invented.
+    envelope — events are never invented.
 
 Fully offline: no test performs real network I/O.
 """
@@ -151,7 +151,7 @@ class _FakeRSS:
     def __init__(self, articles=None):
         self.articles = articles if articles is not None else [
             {
-                "title": "TÃ¼rkiye parliament debates budget as Ukraine truce holds",
+                "title": "Türkiye parliament debates budget as Ukraine truce holds",
                 "link": "https://example.test/rss1",
                 "published_at": _iso_in(timedelta(hours=-1)),
             },
@@ -185,7 +185,7 @@ def _meet(deps=None, client=None):
 
 
 def test_tcmb_rate_decision_maps_to_tr_with_usdtry_pairs():
-    """TRY â†’ TR and the affected pairs are the quoted lira crosses."""
+    """TRY → TR and the affected pairs are the quoted lira crosses."""
     now = datetime.now(UTC)
     stamp = _iso_in(timedelta(hours=4), tz=_TZ_TR)
     rows, dropped = we.economic_rows([{
@@ -206,7 +206,7 @@ def test_tcmb_rate_decision_maps_to_tr_with_usdtry_pairs():
     assert row["currencies"] == ["TRY"]
     assert row["spot"] is True
     assert row["pinned"] is True
-    # Offset-aware provider timestamp â†’ the same real UTC instant.
+    # Offset-aware provider timestamp → the same real UTC instant.
     when = datetime.fromisoformat(row["when_utc"])
     assert when == datetime.fromisoformat(stamp)
     assert when.utcoffset() == timedelta(0)
@@ -228,7 +228,7 @@ def test_seconds_to_event_and_age_minutes_math():
     assert ppi["seconds_to_event"] == -10800.0
     assert ppi["age_minutes"] == 180.0
 
-    # 08:30-04:00 == 12:30 UTC â†’ 3.5h before now.
+    # 08:30-04:00 == 12:30 UTC → 3.5h before now.
     retail = next(r for r in rows if r["title"] == "Retail Sales")
     assert retail["when_utc"] == "2026-09-15T12:30:00+00:00"
     assert retail["seconds_to_event"] == pytest.approx(-84600.0)
@@ -272,7 +272,7 @@ def test_country_index_next_event_and_state():
     assert index["TR"]["upcoming_count"] == 1
     assert index["TR"]["past_count"] == 1
     assert index["TR"]["state"] == "soon"
-    # 5 minutes out â†’ the live state.
+    # 5 minutes out → the live state.
     assert index["CH"]["state"] == "live"
 
 
@@ -339,7 +339,7 @@ def test_gdelt_seendate_stamp_parses_to_utc():
 
 
 # ---------------------------------------------------------------------------
-# MEET execute() â€” end-to-end payload (offline fakes)
+# MEET execute() — end-to-end payload (offline fakes)
 # ---------------------------------------------------------------------------
 
 
@@ -385,7 +385,7 @@ def test_kind_economic_skips_world_fetch():
         _meet(FunctionDeps(gdelt=gdelt), _FakeFFClient())
         .execute(kind="economic")
     )
-    assert gdelt.calls == 0, "world kind excluded â†’ news provider untouched"
+    assert gdelt.calls == 0, "world kind excluded → news provider untouched"
     assert result.data["rows"]
     assert all(r["kind"] == "economic" for r in result.data["rows"])
 
@@ -443,7 +443,7 @@ def test_rss_fallback_when_gdelt_returns_empty():
     world_rows = [r for r in result.data["rows"] if r["kind"] == "world"]
     assert world_rows
     assert all(r["source"] == "rss" for r in world_rows)
-    # The empty GDELT result is not an error â€” no spurious warning.
+    # The empty GDELT result is not an error — no spurious warning.
     assert not any("gdelt" in w for w in result.warnings)
 
 
@@ -508,3 +508,137 @@ def test_followed_symbols_include_market_wide_high_impact_events():
     # Soonest first - the countdown view reads top-down.
     times = [r["when_utc"] for r in macro]
     assert times == sorted(times)
+
+
+# ---------------------------------------------------------------------------
+# Audit 2026-09-18: provider-alias + routing-budget regressions
+# ---------------------------------------------------------------------------
+
+
+def test_uk_provider_token_folds_to_gb_with_gbp_pairs():
+    """ForexFactory (and ECO) tag United Kingdom rows "UK" while the MEET
+    catalog is ISO-based ("GB"). Without the fold every UK row lost its
+    country, pairs, follow-filtering and spot alerts."""
+    rows, dropped = we.economic_rows(
+        [{
+            "country": "UK",
+            "event": "Official Bank Rate",
+            "date": _iso_in(timedelta(hours=-30)),
+            "importance": "High",
+            "forecast": "3.75%",
+            "actual": "",
+            "previous": "4.00%",
+        }],
+        now=datetime.now(UTC),
+        source="forex_factory",
+    )
+    assert dropped == 0
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["countries"] == ["GB"]
+    assert row["country_names"] == ["United Kingdom"]
+    assert "GBPUSD" in row["pairs"]
+    assert row["impact"] == "high"
+
+
+def test_canonical_iso_aliases():
+    assert we.canonical_iso("UK") == "GB"
+    assert we.canonical_iso("GB") == "GB"
+    assert we.canonical_iso("EUR") == "EU"
+    assert we.canonical_iso("USD") == "US"
+    assert we.canonical_iso("XX") == ""
+
+
+def test_routed_meet_params_drop_peer_symbols_when_caller_sends_none():
+    """The agent peer default (BTC/ETH/SOL) must not leak into MEET's
+    ``symbols`` (user-followed tickers): it fanned out symbol feeds nobody
+    asked for and flakily breached the 14 s function timeout."""
+    from showme.server_routes._agent_runtime import _route_function_params
+
+    routed = _route_function_params("MEET", {"mode": "all", "limit": 100})
+    assert routed.get("symbols") in (None, "", [])
+
+
+def test_routed_meet_params_keep_explicit_symbols():
+    from showme.server_routes._agent_runtime import _route_function_params
+
+    routed = _route_function_params("MEET", {"symbols": "BTC", "limit": 100})
+    assert routed.get("symbols") == "BTC"
+
+
+def test_routed_meet_keeps_in_code_timeout_budget():
+    """MEET pops the generic timeout defaults (its branch below) so its
+    in-code 8 s budget applies; an explicit caller value still wins."""
+    from showme.server_routes._agent_runtime import _route_function_params
+
+    routed = _route_function_params("MEET", {"mode": "all"})
+    assert routed.get("news_timeout") is None
+    explicit = _route_function_params("MEET", {"mode": "all", "news_timeout": 12})
+    assert float(explicit.get("news_timeout")) == 12.0
+
+
+def test_symbol_articles_race_crypto_and_per_symbol_legs():
+    """The crypto-group leg and the per-symbol legs are independent: all of
+    them must contribute to the collected articles."""
+    seen = []
+
+    class _GroupRSS:
+        async def fetch(self, request):
+            extra = getattr(request, "extra", None) or {}
+            seen.append((extra.get("feed_group"), extra.get("symbol")))
+            if extra.get("feed_group") == "crypto":
+                return [{
+                    "title": "Bitcoin ETF inflows hit a record",
+                    "url": "https://example.test/c1",
+                    "published_at": _iso_in(timedelta(hours=-1)),
+                }]
+            return [{
+                "title": "%s market update" % (extra.get("symbol") or "asset"),
+                "url": "https://example.test/s1",
+                "published_at": _iso_in(timedelta(hours=-2)),
+            }]
+
+    result = _run(
+        _meet(FunctionDeps(rss=_GroupRSS()), _FakeFFClient()).execute(symbols="BTC", limit=100)
+    )
+    assert result.data["status"] == "ok"
+    groups = {g for g, _ in seen}
+    assert "crypto" in groups and "market" in groups
+
+
+# ---------------------------------------------------------------------------
+# Audit 2026-09-18: gazetteer precision
+# ---------------------------------------------------------------------------
+
+
+def test_gazetteer_terms_are_tuples_with_no_single_char_terms():
+    """A missing trailing comma turns ("singapore") into a bare string and
+    list() explodes it into single-letter "terms" that match everywhere
+    (audit: SG/HK tagged nearly every headline via 's'/' ')."""
+    for name in ("COUNTRY_TERMS", "ASSET_TERMS", "TOPIC_TERMS"):
+        table = getattr(we, name)
+        for key, value in table.items():
+            assert isinstance(value, (tuple, list)), (
+                "%s[%s] must be a tuple/list, not %s" % (name, key, type(value).__name__)
+            )
+            for term in value:
+                assert len(term) >= 2, "%s[%s] has single-char term %r" % (name, key, term)
+
+
+def test_singapore_and_hong_kong_do_not_tag_unrelated_headlines():
+    isos, _matched = we.match_countries(
+        "Oracle's $18 billion data center debt under pressure, FT reports"
+    )
+    assert "SG" not in isos
+    assert "HK" not in isos
+
+
+def test_singapore_tags_real_singapore_headline():
+    isos, matched = we.match_countries("Singapore stocks rally as Straits Times hits record")
+    assert "SG" in isos
+    assert any("ingapore" in m.lower() for m in matched)
+
+
+def test_trump_tags_united_states():
+    isos, _matched = we.match_countries("Trump extends restrictions on H-1B visa program")
+    assert "US" in isos

@@ -26,10 +26,10 @@ _BACKEND_DIR = _HERE.parents[1]
 if str(_BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(_BACKEND_DIR))
 
-from showme.engine.core.base_function import FunctionDeps
-from showme.engine.functions.comm import meet as meet_mod
-from showme.engine.functions.macro import eco as eco_mod
-from showme.engine.services import world_events as we
+from showme.engine.core.base_function import FunctionDeps  # noqa: E402
+from showme.engine.functions.comm import meet as meet_mod  # noqa: E402
+from showme.engine.functions.macro import eco as eco_mod  # noqa: E402
+from showme.engine.services import world_events as we  # noqa: E402
 
 _TZ_TR = timezone(timedelta(hours=3))
 
@@ -314,8 +314,8 @@ def test_hack_headline_is_medium_impact():
     assert rows[0]["impact"] == "medium"
 
 
-def test_etf_plural_inflows_tags_etf():
-    tags, _matched = we.match_assets("Bitcoin inflows hit record")
+def test_explicit_etf_plural_inflows_tags_etf():
+    tags, _matched = we.match_assets("Bitcoin ETF inflows hit record")
     assert "BTC" in tags
     assert "ETF" in tags
 
@@ -515,3 +515,74 @@ def test_pair_map_task_b_usd_crosses_and_legacy_untouched():
     assert we.pairs_for(["TRY"]) == ["USDTRY", "EURTRY"]
     assert we.pairs_for(["USD"]) == list(we.PAIR_MAP["USD"])
     assert we.pairs_for(["EUR"]) == ["EURUSD", "EURGBP", "EURJPY", "EURCHF"]
+
+
+# ---------------------------------------------------------------------------
+# Gate-1 — contract drift (generator + contracts/meet.json + backend parity)
+# ---------------------------------------------------------------------------
+
+import json as _json  # noqa: E402
+import subprocess as _subprocess  # noqa: E402
+
+from showme.manifest.seeds import meet_seed as _meet_seed  # noqa: E402
+
+_REPO_ROOT = _BACKEND_DIR.parent
+_CONTRACT_PATH = _REPO_ROOT / "contracts" / "meet.json"
+_GENERATOR = _REPO_ROOT / "scripts" / "gen_meet_contract.py"
+
+
+def _load_contract() -> dict:
+    return _json.loads(_CONTRACT_PATH.read_text(encoding="utf-8"))
+
+
+def _seed_manifest():
+    manifest = _meet_seed.meet
+    return manifest() if callable(manifest) else manifest
+
+
+def test_contract_json_fresh():
+    """contracts/meet.json must equal the generator's --stdout byte-for-byte."""
+    proc = _subprocess.run(
+        [sys.executable, str(_GENERATOR), "--stdout"],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout == _CONTRACT_PATH.read_text(encoding="utf-8")
+
+
+def test_shell_covers_contract():
+    """must_have + the 7 card slots exist as top-level _shell keys."""
+    contract = _load_contract()
+    payload = meet_mod._shell(
+        now=datetime.now(UTC),
+        status="ok",
+        reason=None,
+        rows=[],
+        upcoming=[],
+        past=[],
+        country_index=[],
+        country_catalog=[],
+        alerts=[],
+        countries=[],
+        kind="all",
+        impacts=[],
+        query="",
+        days_ahead=90.0,
+        days_back=7.0,
+        limit=250,
+        dropped_no_time=0,
+    )
+    for key in list(contract["must_have"]) + list(contract["card_slots"]):
+        assert key in payload, key
+
+
+def test_data_filter_parity():
+    """_DATA_FILTERS == seed data_filter options == JSON values (set-wise)."""
+    contract = _load_contract()
+    manifest = _seed_manifest()
+    seed_options = next(i for i in manifest.inputs if i.name == "data_filter").options
+    assert set(meet_mod._DATA_FILTERS) == set(seed_options) == set(
+        contract["data_filter_values"]
+    )

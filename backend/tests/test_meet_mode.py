@@ -28,9 +28,9 @@ _BACKEND_DIR = _HERE.parents[1]
 if str(_BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(_BACKEND_DIR))
 
-from showme.engine.core.base_function import FunctionDeps
-from showme.engine.functions.comm import meet as meet_mod
-from showme.engine.functions.macro import eco as eco_mod
+from showme.engine.core.base_function import FunctionDeps  # noqa: E402
+from showme.engine.functions.comm import meet as meet_mod  # noqa: E402
+from showme.engine.functions.macro import eco as eco_mod  # noqa: E402
 
 _TZ_TR = timezone(timedelta(hours=3))
 
@@ -332,6 +332,15 @@ def test_data_filter_surprise_only_keeps_both_present_numeric():
         )
     )
     assert [r["title"] for r in result.data["rows"]] == ["CPI y/y"]
+
+
+@pytest.mark.parametrize(
+    "bad", [float("nan"), float("inf"), float("-inf"), "NaN", "Infinity"]
+)
+def test_data_filter_surprise_only_rejects_non_finite_numbers(bad):
+    row = {"kind": "economic", "details": {"actual": bad, "forecast": 1.0}}
+    assert meet_mod._passes_data_filter(row, "surprise_only") is False
+    assert meet_mod._passes_data_filter(row, "with_actual") is False
 
 
 def test_data_filter_unknown_is_all_noop():

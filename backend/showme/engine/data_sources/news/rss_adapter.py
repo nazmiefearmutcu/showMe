@@ -50,6 +50,57 @@ _CRYPTO_FEEDS = [
 ]
 _DEFAULT_FEEDS = list(dict.fromkeys([*_MARKET_FEEDS, *_CRYPTO_FEEDS]))
 
+# Default market RSS is a wire: require both an event and market/world context.
+_WORLD_WIRE_EVENT_RE = re.compile(
+    r"\b(?:strikes?|attacks?|hits?|bombs?|invades?|invasion|ceasefire|sanctions?"
+    r"|resigns?|protests?|elections?|wins? election|tariffs?|trade war"
+    r"|to meet|talks?"
+    r"|cuts?|hikes?|raises?|holds? (?:interest )?rates?|rate decision"
+    r"|inflation (?:rises?|falls?|slows?|surges?)|cpi (?:rises?|falls?)"
+    r"|gdp (?:rises?|falls?|grows?|contracts?)|recession|unemployment (?:rises?|falls?)"
+    r"|shares? (?:jump|surge|rise|fall|drop|slide|plunge|rally)"
+    r"|stocks? (?:jump|surge|rise|fall|drop|slide|plunge|rally)"
+    r"|earnings (?:beat|miss)|market (?:selloff|rally)|bond yields? (?:rise|fall)"
+    r"|(?:bitcoin|ethereum|crypto|etf) .{0,45}(?:surge|jump|fall|drop|approval|approved)"
+    r"|sec (?:approves?|rejects?)|oil prices? (?:rise|fall|surge|drop))\b",
+    re.IGNORECASE,
+)
+_WORLD_WIRE_CONTEXT_RE = re.compile(
+    r"\b(?:russia|russian|ukraine|kyiv|israel|iran|china|taiwan|united states"
+    r"|u\.s\.|us treasury|treasury|united nations|un|white house|president"
+    r"|prime minister|parliament|war|nuclear|military|missile|airstrike|drone"
+    r"|ceasefire|sanctions?|tariffs?|trade war|election|nationwide protests?"
+    r"|central bank|federal reserve|fed|fomc|ecb|bank of england|bank of japan"
+    r"|riksbank|norges bank|interest rates?|inflation|cpi|ppi|pce|gdp"
+    r"|payrolls?|unemployment|recession|stock market|stocks?|shares|equities"
+    r"|bonds?|treasur(?:y|ies)|yields?|bitcoin|ethereum|crypto(?:currency)?"
+    r"|etfs?|sec approval|oil prices?|gold prices?|forex|currenc(?:y|ies))\b",
+    re.IGNORECASE,
+)
+_WORLD_WIRE_COMPANY_EVENT_RE = re.compile(
+    r"\b(?:lays? off [\d,]+ (?:workers|employees|staff)|layoffs? of [\d,]+"
+    r"|cuts? [\d,]+ jobs|reports? .{0,35}(?:earnings|revenue|results?)"
+    r" .{0,35}(?:beat|miss|surge|jump|fall|plunge|record))\b",
+    re.IGNORECASE,
+)
+_WORLD_WIRE_ADVICE_RE = re.compile(
+    r"\b(?:stocks? to buy|time to buy|stock investors?|dividend stock to buy"
+    r"|best stocks?|how to invest|investment tips|retirement advice"
+    r"|earnings call|conference call|webcast|declares? quarterly dividend"
+    r"|press release)\b",
+    re.IGNORECASE,
+)
+
+
+def _world_wire_relevant(article: dict[str, Any]) -> bool:
+    title = str(article.get("title") or "")
+    if not title or _WORLD_WIRE_ADVICE_RE.search(title):
+        return False
+    return bool(
+        (_WORLD_WIRE_EVENT_RE.search(title) and _WORLD_WIRE_CONTEXT_RE.search(title))
+        or _WORLD_WIRE_COMPANY_EVENT_RE.search(title)
+    )
+
 
 class RSSAdapter(BaseDataSource):
     name = "rss"
@@ -182,16 +233,25 @@ class RSSAdapter(BaseDataSource):
         articles: list[dict[str, Any]] = [a for batch in results for a in batch]
         terms = _request_terms(request)
         optional_terms = _request_terms(request, "optional_terms")
+        if (
+            str((request.extra or {}).get("feed_group") or "").lower() == "market"
+            and not terms
+            and not _request_symbol(request)
+        ):
+            articles = [a for a in articles if _world_wire_relevant(a)]
         if terms:
             scored = [
                 (_score_article(a, terms, optional_terms), a)
                 for a in articles
                 if _matches_terms(a, terms)
             ]
-            scored.sort(key=lambda item: (item[0], item[1].get("published_at", "")), reverse=True)
+            scored.sort(
+                key=lambda item: (item[0], str(item[1].get("published_at") or "")),
+                reverse=True,
+            )
             articles = [a for _, a in scored]
         else:
-            articles.sort(key=lambda x: x.get("published_at", ""), reverse=True)
+            articles.sort(key=lambda x: str(x.get("published_at") or ""), reverse=True)
         if request.limit:
             articles = articles[: request.limit]
         return articles
@@ -264,16 +324,15 @@ def _parse_feed(xml_text: str, url: str) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
         for entry in parsed.entries:
             published = entry.get("published_parsed") or entry.get("updated_parsed")
-            ts = (
-                datetime(*published[:6], tzinfo=timezone.utc)
-                if published else datetime.now(timezone.utc)
-            )
+            ts = datetime(*published[:6], tzinfo=timezone.utc) if published else None
             out.append({
                 "feed": parsed.feed.get("title", url),
+                "publisher": parsed.feed.get("title", url),
+                "feed_url": url,
                 "title": entry.get("title", ""),
                 "link": entry.get("link", ""),
                 "summary": entry.get("summary", ""),
-                "published_at": ts.isoformat(),
+                "published_at": ts.isoformat() if ts is not None else None,
                 "source": "rss",
             })
         if out:
@@ -312,10 +371,14 @@ def _parse_feed_stdlib(xml_text: str, url: str) -> list[dict[str, Any]]:
         )
         out.append({
             "feed": feed_title,
+            "publisher": feed_title,
+            "feed_url": url,
             "title": title,
             "link": link,
             "summary": summary,
-            "published_at": _parse_date(published_raw).isoformat(),
+            "published_at": (
+                parsed.isoformat() if (parsed := _parse_date(published_raw)) is not None else None
+            ),
             "source": "rss",
         })
     return out
@@ -337,7 +400,7 @@ def _float_extra(extra: dict[str, Any], key: str, default: float) -> float:
         return default
 
 
-def _parse_date(value: str) -> datetime:
+def _parse_date(value: str) -> datetime | None:
     if value:
         try:
             parsed = parsedate_to_datetime(value)
@@ -352,7 +415,7 @@ def _parse_date(value: str) -> datetime:
                 return parsed.astimezone(timezone.utc)
             except Exception:
                 pass
-    return datetime.now(timezone.utc)
+    return None
 
 
 def _matches_terms(article: dict[str, Any], terms: list[str]) -> bool:

@@ -1,0 +1,32 @@
+name: meet-probe
+
+# Gate-3 cron probe (informational only — never gates, never fails).
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: Install httpx (light — no uv sync)
+        run: pip install httpx
+      - name: Run MEET probe (quick, <60s)
+        run: python scripts/meet_probe.py --quick
+      - name: Upload probe report artifact
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: meet-probe-report
+          path: meet-probe-report.md
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Probe report to job summary
+        if: always()
+        run: cat meet-probe-report.md >> "$GITHUB_STEP_SUMMARY" || echo "meet probe report missing" >> "$GITHUB_STEP_SUMMARY"

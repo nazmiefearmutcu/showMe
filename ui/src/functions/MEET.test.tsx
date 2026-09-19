@@ -11,7 +11,7 @@
  *   - the lead-time toast + in-pane alert history.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { MEETPane } from "./MEET";
 import {
   dueAlert,
@@ -24,6 +24,7 @@ import {
   groupRows,
   isSpotFor,
   leadLabel,
+  loadMeetAlerts,
   normalizeMeetAlerts,
   parsePrintNumber,
   polarityOf,
@@ -258,32 +259,32 @@ describe("dueAlert — lead-time dedupe", () => {
   const spot = row({ id: "e1", spot: true, countries: ["TR"] });
 
   it("fires the smallest crossed lead exactly once", () => {
-    const nowMs = Date.parse(spot.when_utc) - 3 * 60_000; // 3 min out
+    const nowMs = Date.parse(spot.when_utc ?? "") - 3 * 60_000; // 3 min out
     const first = dueAlert(spot, config, nowMs, new Set());
     expect(first?.lead).toBe(5);
     const fired = new Set([first!.key]);
     expect(dueAlert(spot, config, nowMs + 1000, fired)).toBeNull();
     // It does not back-fill the larger leads after the imminent one fired.
-    expect(dueAlert(spot, config, Date.parse(spot.when_utc) - 60_000, fired)).toBeNull();
+    expect(dueAlert(spot, config, Date.parse(spot.when_utc ?? "") - 60_000, fired)).toBeNull();
   });
 
   it("moves to the next lead as the event approaches", () => {
-    const t60 = Date.parse(spot.when_utc) - 30 * 60_000; // 30 min out → only 60/1440 crossed
+    const t60 = Date.parse(spot.when_utc ?? "") - 30 * 60_000; // 30 min out → only 60/1440 crossed
     const hit = dueAlert(spot, config, t60, new Set());
     expect(hit?.lead).toBe(60);
     const fired = new Set([hit!.key]);
-    const later = dueAlert(spot, config, Date.parse(spot.when_utc) - 4 * 60_000, fired);
+    const later = dueAlert(spot, config, Date.parse(spot.when_utc ?? "") - 4 * 60_000, fired);
     expect(later?.lead).toBe(5);
   });
 
   it("ignores non-spot low-impact rows", () => {
     const calm = row({ id: "e2", impact: "low", spot: false, pinned: false });
-    expect(dueAlert(calm, config, Date.parse(calm.when_utc) - 60_000, new Set())).toBeNull();
+    expect(dueAlert(calm, config, Date.parse(calm.when_utc ?? "") - 60_000, new Set())).toBeNull();
   });
 
   it("respects the disabled toggle", () => {
     const off = { ...config, enabled: false };
-    expect(dueAlert(spot, off, Date.parse(spot.when_utc) - 60_000, new Set())).toBeNull();
+    expect(dueAlert(spot, off, Date.parse(spot.when_utc ?? "") - 60_000, new Set())).toBeNull();
   });
 });
 
@@ -312,13 +313,45 @@ describe("groupRows — upcoming/past split", () => {
     const undated = row({ id: "u", undated: true });
     expect(groupRows([undated], NOW).past).toHaveLength(1);
   });
+
+  it("re-sorts both sides of the clock when rows cross into the past", () => {
+    const early = row({ id: "early", when_utc: new Date(NOW + 1_000).toISOString() });
+    const late = row({ id: "late", when_utc: new Date(NOW + 3_000).toISOString() });
+    const old = row({ id: "old", when_utc: new Date(NOW - 5_000).toISOString() });
+
+    expect(groupRows([late, old, early], NOW).upcoming.map((r) => r.id)).toEqual([
+      "early",
+      "late",
+    ]);
+    expect(groupRows([late, old, early], NOW + 2_000).past.map((r) => r.id)).toEqual([
+      "early",
+      "old",
+    ]);
+  });
+});
+
+describe("alert config persistence", () => {
+  it("preserves an explicitly empty valid lead-time list", () => {
+    expect(normalizeMeetAlerts({ leadMinutes: [] }).leadMinutes).toEqual([]);
+    localStorage.setItem(
+      "showme.meet.alerts",
+      JSON.stringify({ enabled: true, leadMinutes: [], history: [] }),
+    );
+    expect(loadMeetAlerts().leadMinutes).toEqual([]);
+    expect(normalizeMeetAlerts({ leadMinutes: [0, "bad"] }).leadMinutes).toEqual([
+      1440,
+      60,
+      5,
+    ]);
+  });
 });
 
 describe("calendar helpers — MQL5 parity", () => {
-  it("parses FF-style prints (K/M/%, capped, vote splits)", () => {
+  it("parses exact FF-style prints but treats bounded prints as non-exact", () => {
     expect(parsePrintNumber("180K")).toBe(180000);
     expect(parsePrintNumber("1.40M")).toBe(1400000);
-    expect(parsePrintNumber("<1.25%")).toBe(1.25);
+    expect(parsePrintNumber("<1.25%")).toBeNull();
+    expect(parsePrintNumber(">2.0%")).toBeNull();
     expect(parsePrintNumber("3.9%")).toBe(3.9);
     expect(parsePrintNumber(4.2)).toBe(4.2);
     expect(parsePrintNumber("3-0-6")).toBeNull();
@@ -331,6 +364,7 @@ describe("calendar helpers — MQL5 parity", () => {
     expect(surpriseOf({ actual: null, forecast: "3.8%" })).toBeNull();
     expect(surpriseOf({ actual: "3.9%", forecast: null })).toBeNull();
     expect(surpriseOf(null)).toBeNull();
+    expect(surpriseOf({ actual: "<1.25%", forecast: "1.0%" })).toBeNull();
   });
 
   it("flags inverse polarity for labour-market pain gauges", () => {
@@ -764,8 +798,12 @@ describe("MEET pane — realtime delta (Faz 5)", () => {
     };
   }
 
-  it("poll tick sends since/known_ids and keeps the list on identical hash", () => {
+  it("poll tick sends since/known_ids and adopts non-row changes on identical hash", () => {
     mockTick.current = 0;
+    localStorage.setItem(
+      "showme.meet.alerts",
+      JSON.stringify({ symbols: ["BTC"], leadMinutes: [], history: [] }),
+    );
     const first = deltaFixture();
     setMockFn({
       state: "ok",
@@ -776,16 +814,96 @@ describe("MEET pane — realtime delta (Faz 5)", () => {
     // First load carries no delta cursor (backend backward-compat path).
     expect(mockFn.lastParams?.since).toBeUndefined();
     expect(mockFn.lastParams?.known_ids).toBeUndefined();
-    const before = container.textContent;
+    const refreshed = {
+      ...first,
+      status: "degraded",
+      reason: "fresh provider warning",
+      as_of: new Date(Date.parse(first.as_of) + 30_000).toISOString(),
+      rows: first.rows.map((item) =>
+        item.id === "economic:delta-a"
+          ? {
+              ...item,
+              details: {
+                ...item.details,
+                actual: "4.1%",
+                forecast: "4.0%",
+                previous: "3.8%",
+              },
+            }
+          : item,
+      ),
+      country_index: first.country_index.map((entry) =>
+        entry.iso === "TR" ? { ...entry, state: "live" } : entry,
+      ),
+      alerts: [
+        {
+          id: "economic:server-refresh",
+          kind: "economic",
+          title: "Fresh server alert",
+          when_utc: new Date(Date.now() + 3600_000).toISOString(),
+          seconds_to_event: 3600,
+          countries: ["TR"],
+          country_names: ["Turkey"],
+          pairs: ["USDTRY"],
+          impact: "high",
+          spot: true,
+          pinned: false,
+          source: "forex_factory",
+          lead_minutes: [60],
+        },
+      ],
+      symbol_rows: [
+        row({
+          id: "world:symbol-refresh",
+          kind: "world",
+          title: "Fresh symbol-only headline",
+          countries: [],
+          country_names: [],
+          source: "rss",
+          symbol_matches: ["BTC"],
+        }),
+      ],
+    };
     mockTick.current = 1;
+    setMockFn({
+      state: "ok",
+      data: { data: refreshed, sources: ["forex_factory"], elapsed_ms: 1 },
+    });
     rerender(<MEETPane code="MEET" />);
     expect(mockRefetch).toHaveBeenCalled();
     expect(mockFn.lastParams?.since).toBe(first.as_of);
     expect(String(mockFn.lastParams?.known_ids)).toContain("economic:delta-a");
     expect(String(mockFn.lastParams?.known_ids)).toContain("world:delta-b");
-    // Identical hash — no toast, displayed list untouched.
+    // Identical row hash still carries fresh mutable fields and side sections.
     expect(toastWarn).not.toHaveBeenCalled();
-    expect(container.textContent).toBe(before);
+    expect(container.textContent).toContain("Fresh symbol-only headline");
+    expect(container.textContent).toContain("degraded");
+    expect(container.textContent).toContain(refreshed.as_of.slice(11, 19));
+    expect(screen.getByRole("button", { name: "Follow Turkey" }).textContent).toContain("live");
+    fireEvent.click(screen.getByRole("button", { name: /Delta CPI y\/y/ }));
+    const detail = screen.getByLabelText("Event detail");
+    expect(detail.textContent).toContain("4.1%");
+    expect(detail.textContent).toContain("4.0%");
+    expect(detail.textContent).toContain("3.8%");
+    fireEvent.click(screen.getByRole("button", { name: "MEET alert settings" }));
+    expect(screen.getByTestId("meet-alerts-popover").textContent).toContain(
+      "Fresh server alert",
+    );
+
+    setMockFn({
+      state: "ok",
+      data: {
+        data: {
+          ...refreshed,
+          status: "provider_unavailable",
+          reason: "Fresh provider reason",
+        },
+        sources: [],
+        elapsed_ms: 1,
+      },
+    });
+    rerender(<MEETPane code="MEET" />);
+    expect(screen.getAllByText("Fresh provider reason").length).toBeGreaterThan(0);
   });
 
   it("toasts a fresh SPOT row arriving in new_rows", () => {
@@ -828,6 +946,78 @@ describe("MEET pane — realtime delta (Faz 5)", () => {
     expect(String(toastWarn.mock.calls[0]?.[0])).toContain("MEET spot");
     expect(String(toastWarn.mock.calls[0]?.[0])).toContain("Delta invasion escalation");
     expect(screen.getByText("Delta invasion escalation")).toBeInTheDocument();
+  });
+
+  it("persists delta arrivals as arrival history and dedupes them after remount", () => {
+    const first = deltaFixture();
+    setMockFn({
+      state: "ok",
+      data: { data: first, sources: ["forex_factory"], elapsed_ms: 1 },
+    });
+    const mounted = render(<MEETPane code="MEET" />);
+    const spot = row({
+      id: "world:persistent-arrival",
+      kind: "world",
+      title: "Persistent arrival",
+      countries: ["UA"],
+      country_names: ["Ukraine"],
+      source: "gdelt",
+      impact: "high",
+      spot: true,
+      when_utc: new Date(Date.now() + 3 * 86400_000).toISOString(),
+    });
+    const second = {
+      ...first,
+      hash: "hash-arrival",
+      rows: [...first.rows, spot],
+      upcoming: [...first.upcoming, spot],
+      new_rows: [spot],
+    };
+    setMockFn({
+      state: "ok",
+      data: { data: second, sources: ["forex_factory"], elapsed_ms: 1 },
+    });
+    mounted.rerender(<MEETPane code="MEET" />);
+    expect(toastWarn).toHaveBeenCalledTimes(1);
+    const stored = JSON.parse(localStorage.getItem("showme.meet.alerts") ?? "{}");
+    expect(stored.history[0]).toMatchObject({
+      key: "delta:world:persistent-arrival",
+      lead: null,
+      title: "Persistent arrival",
+    });
+
+    mounted.unmount();
+    setMockFn({
+      state: "ok",
+      data: { data: first, sources: ["forex_factory"], elapsed_ms: 1 },
+    });
+    const remounted = render(<MEETPane code="MEET" />);
+    setMockFn({
+      state: "ok",
+      data: { data: second, sources: ["forex_factory"], elapsed_ms: 1 },
+    });
+    remounted.rerender(<MEETPane code="MEET" />);
+    expect(toastWarn).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "MEET alert settings" }));
+    expect(screen.getByTestId("meet-alerts-popover").textContent).toContain("arrival");
+  });
+
+  it("does not toast delta rows while establishing a changed filter baseline", () => {
+    const first = deltaFixture();
+    setMockFn({ state: "ok", data: { data: first, sources: [], elapsed_ms: 1 } });
+    const { rerender } = render(<MEETPane code="MEET" />);
+    fireEvent.click(screen.getByRole("button", { name: "high" }));
+    const spot = row({ id: "world:rebaseline", title: "Rebaseline row", spot: true });
+    setMockFn({
+      state: "ok",
+      data: {
+        data: { ...first, hash: "hash-filter", rows: [spot], upcoming: [spot], new_rows: [spot] },
+        sources: [],
+        elapsed_ms: 1,
+      },
+    });
+    rerender(<MEETPane code="MEET" />);
+    expect(toastWarn).not.toHaveBeenCalled();
   });
 });
 
@@ -961,6 +1151,69 @@ describe("MEET pane — Task C UI parity", () => {
     expect(detail.textContent).toContain("BTC");
   });
 
+  it("shows RSS publisher and article provenance while keeping an undated row undated", () => {
+    const undated = row({
+      id: "world:undated:wire",
+      kind: "world",
+      title: "Undated wire item",
+      source: "rss",
+      undated: true,
+      when_utc: null,
+      details: {
+        publisher: "Example Wire",
+        feed_url: "https://example.test/feed.xml",
+        article_url: "https://example.test/story",
+      },
+    });
+    setMockFn({
+      state: "ok",
+      data: { data: { ...worldPayload(), rows: [undated] }, sources: ["rss"], elapsed_ms: 5 },
+    });
+    render(<MEETPane code="MEET" />);
+    fireEvent.click(screen.getByRole("button", { name: /Undated wire item/ }));
+    const detail = screen.getByLabelText("Event detail");
+    expect(detail.textContent).toContain("undated wire");
+    expect(detail.textContent).toContain("Example Wire");
+    expect(screen.getByRole("link", { name: /open source/i })).toHaveAttribute(
+      "href",
+      "https://example.test/story",
+    );
+  });
+
+  it("renders observable quality counts and required FinanceCalendar attribution", () => {
+    const payload = {
+      ...worldPayload(),
+      data_quality: {
+        row_count: 3,
+        timed_count: 2,
+        undated_count: 1,
+        source_traceable_count: 3,
+        url_traceable_count: 1,
+        attribution_required_count: 1,
+        attribution_covered_count: 1,
+        duplicate_rows_dropped: 2,
+        rows_dropped_no_time: 1,
+        active_source_tiers: ["keyless_fallback", "future_supplement"],
+        measures: "observable_completeness_not_factual_accuracy",
+      },
+      attributions: [{
+        name: "FinanceCalendar.com",
+        url: "https://www.financecalendar.com/",
+        text: "Economic calendar data by FinanceCalendar.com",
+      }],
+    };
+    setMockFn({ state: "ok", data: { data: payload, sources: ["forex_factory", "financecalendar"], elapsed_ms: 5 } });
+    render(<MEETPane code="MEET" />);
+    const quality = screen.getByLabelText("MEET data quality");
+    expect(quality.textContent).toContain("3 rows");
+    expect(quality.textContent).toContain("1 undated");
+    expect(quality.textContent).toContain("2 duplicates dropped");
+    expect(screen.getByRole("link", { name: /FinanceCalendar\.com/i })).toHaveAttribute(
+      "href",
+      "https://www.financecalendar.com/",
+    );
+  });
+
   it("explains per-row why a headline rides in YOUR SYMBOLS", () => {
     localStorage.setItem("showme.meet.alerts", JSON.stringify({ symbols: ["BTC"] }));
     const matched = row({
@@ -993,6 +1246,166 @@ describe("MEET pane — Task C UI parity", () => {
     const { container } = render(<MEETPane code="MEET" />);
     expect(container.textContent).toContain("why here: BTC");
     expect(container.textContent).toContain("why here: all markets · market_wide");
+  });
+
+  it("opens and toggles the detail card for a symbol-only row", () => {
+    localStorage.setItem(
+      "showme.meet.alerts",
+      JSON.stringify({ symbols: ["BTC"], leadMinutes: [], history: [] }),
+    );
+    const symbolOnly = row({
+      id: "world:symbol-only",
+      kind: "world",
+      title: "Symbol-only detail headline",
+      countries: [],
+      country_names: [],
+      source: "rss",
+      pairs: ["BTCUSD"],
+      symbol_matches: ["BTC"],
+      summary: "Only present in symbol_rows.",
+    });
+    const payload = { ...worldPayload(), symbol_rows: [symbolOnly] };
+    setMockFn({ state: "ok", data: { data: payload, sources: ["rss"], elapsed_ms: 5 } });
+    render(<MEETPane code="MEET" />);
+    const rowButton = screen.getByRole("button", { name: /Symbol-only detail headline/ });
+    fireEvent.click(rowButton);
+    expect(screen.getByLabelText("Event detail").textContent).toContain("BTCUSD");
+    fireEvent.click(rowButton);
+    expect(screen.queryByLabelText("Event detail")).toBeNull();
+  });
+
+  it("shows bounded actual text without an exact surprise direction", () => {
+    localStorage.setItem("showme.meet.mode", "calendar");
+    const bounded = row({
+      id: "economic:bounded",
+      title: "Bounded release",
+      when_utc: new Date(Date.now() + 86400_000).toISOString(),
+      details: { actual: "<1.25%", forecast: "1.00%", previous: "1.10%", unit: "" },
+    });
+    const payload = { ...worldPayload(), rows: [bounded], upcoming: [bounded], past: [] };
+    setMockFn({ state: "ok", data: { data: payload, sources: [], elapsed_ms: 5 } });
+    const { container } = render(<MEETPane code="MEET" />);
+    expect(container.textContent).toContain("<1.25%");
+    expect(container.textContent).not.toMatch(/[▲▼]/);
+  });
+
+  it("uses backend event totals for the outside-filter count without country duplication", () => {
+    const base = worldPayload();
+    const shared = {
+      id: "economic:shared",
+      title: "Shared multi-country event",
+      when_utc: new Date(Date.now() + 3600_000).toISOString(),
+      seconds_to_event: 3600,
+      impact: "high",
+      kind: "economic",
+    };
+    const payload = {
+      ...base,
+      rows: [],
+      upcoming: [],
+      past: [],
+      upcoming_count: 0,
+      unfiltered_upcoming_count: 1,
+      window: { ...base.window, upcoming_count: 0, next_high_impact: null },
+      country_index: [
+        { iso: "US", name: "United States", upcoming_count: 1, past_count: 0, state: "soon", next_event: shared },
+        { iso: "CA", name: "Canada", upcoming_count: 1, past_count: 0, state: "soon", next_event: shared },
+      ],
+      country_catalog: [
+        { iso: "US", name: "United States" },
+        { iso: "CA", name: "Canada" },
+      ],
+    };
+    setMockFn({ state: "ok", data: { data: payload, sources: [], elapsed_ms: 5 } });
+    const { container } = render(<MEETPane code="MEET" />);
+    expect(container.textContent).toContain("1 upcoming outside your filters");
+    expect(container.textContent).not.toContain("2 upcoming outside your filters");
+  });
+
+  it("expires next-high, country state, and server alerts from the live clock", () => {
+    vi.useFakeTimers();
+    try {
+      const baseNow = new Date("2026-09-19T12:00:00.000Z");
+      vi.setSystemTime(baseNow);
+      localStorage.setItem(
+        "showme.meet.alerts",
+        JSON.stringify({ leadMinutes: [], history: [] }),
+      );
+      const first = row({
+        id: "economic:first",
+        title: "First high event",
+        when_utc: new Date(baseNow.getTime() + 1_000).toISOString(),
+        impact: "high",
+      });
+      const second = row({
+        id: "economic:second",
+        title: "Second high event",
+        when_utc: new Date(baseNow.getTime() + 5_000).toISOString(),
+        impact: "high",
+      });
+      const payload = {
+        ...worldPayload(),
+        as_of: baseNow.toISOString(),
+        rows: [second, first],
+        upcoming: [second, first],
+        past: [],
+        window: {
+          upcoming_count: 2,
+          past_count: 0,
+          next_high_impact: {
+            id: first.id,
+            title: first.title,
+            when_utc: first.when_utc,
+            impact: "high",
+            country_names: ["United States"],
+          },
+        },
+        country_index: [
+          {
+            iso: "US",
+            name: "United States",
+            upcoming_count: 1,
+            past_count: 0,
+            state: "imminent",
+            next_event: { id: first.id, title: first.title, when_utc: first.when_utc, impact: "high" },
+          },
+        ],
+        country_catalog: [{ iso: "US", name: "United States" }],
+        alerts: [
+          {
+            id: first.id,
+            kind: "economic",
+            title: first.title,
+            when_utc: first.when_utc,
+            seconds_to_event: 1,
+            countries: ["US"],
+            country_names: ["United States"],
+            pairs: [],
+            impact: "high",
+            spot: true,
+            pinned: false,
+            source: "forex_factory",
+            lead_minutes: [5],
+          },
+        ],
+      };
+      setMockFn({ state: "ok", data: { data: payload, sources: [], elapsed_ms: 5 } });
+      render(<MEETPane code="MEET" />);
+      expect(screen.getByLabelText("Next high-impact event").textContent).toContain(first.title);
+      fireEvent.click(screen.getByRole("button", { name: "MEET alert settings" }));
+      expect(screen.getByTestId("meet-alerts-popover").textContent).toContain("SERVER SPOT");
+
+      act(() => vi.advanceTimersByTime(2_000));
+
+      expect(screen.getByLabelText("Next high-impact event").textContent).toContain(second.title);
+      expect(screen.getByLabelText("Next high-impact event").textContent).not.toContain(first.title);
+      expect(screen.getByLabelText("UPCOMING · 1")).toBeInTheDocument();
+      expect(screen.getByLabelText("PAST · 1")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Follow United States" }).textContent).toContain("quiet");
+      expect(screen.getByTestId("meet-alerts-popover").textContent).not.toContain("SERVER SPOT");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("discloses untimed drops, window coverage and methodology in the footer", () => {
@@ -1055,5 +1468,77 @@ describe("MEET pane — Task C UI parity", () => {
     fireEvent.change(select, { target: { value: "major_only" } });
     expect(mockFn.lastParams?.data_filter).toBe("major_only");
     expect(localStorage.getItem("showme.meet.data-filter")).toBe("major_only");
+  });
+});
+
+/* ── contracts/meet.json consumer (Gate-3) ─────────────────────────── */
+
+describe("MEET pane — contracts/meet.json consumer (Gate-3)", () => {
+  interface MeetContract {
+    data_filter_values: string[];
+    mode_options: string[];
+  }
+
+  async function readMeetContract(): Promise<MeetContract> {
+    // tsconfig'e dokunmadan (resolveJsonModule yok): fs + JSON.parse.
+    const { readFileSync } = await import("node:fs");
+    const { dirname, join } = await import("node:path");
+    const { fileURLToPath } = await import("node:url");
+    const contractPath = join(
+      dirname(fileURLToPath(import.meta.url)),
+      "..",
+      "..",
+      "..",
+      "contracts",
+      "meet.json",
+    );
+    const raw = JSON.parse(readFileSync(contractPath, "utf-8")) as {
+      data_filter_values?: unknown;
+      inputs?: Array<{ name?: unknown; options?: unknown }>;
+    };
+    const dataFilterValues = Array.isArray(raw.data_filter_values)
+      ? (raw.data_filter_values as unknown[]).map(String)
+      : [];
+    const modeInput = (Array.isArray(raw.inputs) ? raw.inputs : []).find(
+      (entry) => entry?.name === "mode",
+    );
+    const modeOptions = Array.isArray(modeInput?.options)
+      ? (modeInput.options as unknown[]).map(String)
+      : [];
+    return { data_filter_values: dataFilterValues, mode_options: modeOptions };
+  }
+
+  function okContractFixture() {
+    setMockFn({
+      state: "ok",
+      data: { data: worldPayload(), sources: ["forex_factory"], elapsed_ms: 5 },
+    });
+  }
+
+  it("DATA select options match contracts/meet.json data_filter_values (order-insensitive)", async () => {
+    const contract = await readMeetContract();
+    expect(contract.data_filter_values.length).toBeGreaterThan(0);
+    okContractFixture();
+    render(<MEETPane code="MEET" />);
+    const select = screen.getByLabelText("Data filter") as HTMLSelectElement;
+    const uiValues = Array.from(select.querySelectorAll("option")).map((o) => o.value);
+    expect([...uiValues].sort()).toEqual([...contract.data_filter_values].sort());
+  });
+
+  it("mode options match contracts/meet.json inputs mode options", async () => {
+    const contract = await readMeetContract();
+    expect(contract.mode_options.length).toBeGreaterThan(0);
+    okContractFixture();
+    const { container } = render(<MEETPane code="MEET" />);
+    const section = container.querySelector('section[aria-label="World-event filters"]');
+    expect(section).not.toBeNull();
+    // First filter row holds MODE (segmented buttons carry aria-pressed);
+    // the Tag submit has no aria-pressed so it is excluded.
+    const firstRow = section?.children[0];
+    expect(firstRow?.textContent).toContain("MODE");
+    const uiModes = Array.from(
+      firstRow?.querySelectorAll("button[aria-pressed]") ?? [],
+    ).map((b) => (b.textContent ?? "").trim().toLowerCase());
+    expect([...uiModes].sort()).toEqual([...contract.mode_options].sort());
   });
 });

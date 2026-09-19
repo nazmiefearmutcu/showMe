@@ -126,8 +126,8 @@ def meet() -> FunctionManifest:
                 required=False,
                 description=(
                     "Forward window. Upcoming events are always listed from now"
-                    " until at least the nearest high-impact event; the keyless"
-                    " weekly calendar publishes one week at a time."
+                    " through the available provider window. FinanceCalendar"
+                    " supplements future releases for at most 92 days."
                 ),
                 min=1,
                 max=365,
@@ -207,7 +207,7 @@ def meet() -> FunctionManifest:
         },
         provider_chain=ProviderChain(
             primary="internal",
-            fallbacks=["forex_factory", "gdelt", "rss"],
+            fallbacks=["tradingeconomics", "finnhub", "forex_factory", "financecalendar", "gdelt", "rss"],
             acceptable_modes=[
                 DataMode.LIVE_OFFICIAL,
                 DataMode.CACHED_SNAPSHOT,
@@ -216,7 +216,7 @@ def meet() -> FunctionManifest:
         ),
         caching=CachingPolicy(ttl_seconds=300, scope="per_input", persist=True),
         output_contract=OutputContract(
-            must_have=["status", "rows", "country_index", "data_mode"],
+            must_have=["status", "rows", "country_index", "data_mode", "data_quality", "attributions"],
             rows=True,
             series=False,
             cards=True,
@@ -249,9 +249,11 @@ def meet() -> FunctionManifest:
             ],
         ),
         methodology=(
-            "MEET composes a WORLD-EVENTS TRACKER from the repo's existing keyless"
-            " providers. Scheduled rows come from the ForexFactory weekly calendar"
-            " (reused from ECO): every country on the calendar is listed with its"
+            "MEET composes a WORLD-EVENTS TRACKER from live providers. Scheduled"
+            " rows prefer configured TradingEconomics, then configured Finnhub,"
+            " then the keyless ForexFactory weekly calendar. FinanceCalendar.com"
+            " supplements future releases up to 92 days with visible attribution;"
+            " overlapping primary rows win. Each timed calendar row is listed with its"
             " offset-aware timestamp parsed to UTC, impact bucket, and affected FX"
             " pairs derived country → currency → majors (e.g. TR → USDTRY/EURTRY,"
             " US → DXY/EURUSD/USDJPY). World rows come from the keyless GDELT"
@@ -270,30 +272,38 @@ def meet() -> FunctionManifest:
             " calendar-only (the world wire is never fetched), wire-only or both"
             " and wins over kind; tags filters titles/summaries/matched assets"
             " and pairs; data_filter narrows calendar rows to prints carrying"
-            " forecast/actual values. The scheduled calendar covers the"
-            " ForexFactory weekly snapshot (current week only); days_ahead"
-            " beyond the week shows world headlines."
+            " forecast/actual values. Wire-only requests skip calendar fetches."
+            " Untimed calendar rows are counted and omitted rather than placed"
+            " at an invented time; title-inferred country tags are marked."
         ),
         formula_dict={},
         field_dict={
-            "rows[].when_utc": FieldDef(description="Event time in UTC, parsed from the provider's offset-aware timestamp.", source="forex_factory"),
+            "rows[].when_utc": FieldDef(description="Provider event time in UTC; null for undated wire rows.", source="provider"),
             "rows[].seconds_to_event": FieldDef(unit="s", description="Server-computed seconds from as_of (negative = past); the UI renders the live countdown.", source="computed"),
             "rows[].age_minutes": FieldDef(unit="m", description="Minutes since the event for past rows.", source="computed"),
             "rows[].countries": FieldDef(description="ISO codes; a row may concern several countries.", source="computed"),
             "rows[].pairs": FieldDef(description="Quoted FX pairs / indices affected via the country currency.", source="computed"),
             "rows[].spot": FieldDef(description="True for central-bank decisions and wars — the alert-worthy class.", source="computed"),
             "rows[].pinned": FieldDef(description="Spot rows plus high-impact prints from major markets.", source="computed"),
-            "rows[].impact": FieldDef(description="high | medium | low | holiday.", source="forex_factory"),
+            "rows[].impact": FieldDef(description="high | medium | low | holiday; normalized from the active provider.", source="provider"),
             "rows[].details.matched_terms": FieldDef(description="Exact gazetteer terms that tagged a world headline.", source="computed"),
-            "rows[].details.actual": FieldDef(description="Released value when available (Actual).", source="forex_factory"),
-            "rows[].details.forecast": FieldDef(description="Consensus estimate when available (Forecast).", source="forex_factory"),
-            "rows[].details.previous": FieldDef(description="Prior print when available (Previous).", source="forex_factory"),
+            "rows[].details.actual": FieldDef(description="Released value when available (Actual).", source="provider"),
+            "rows[].details.forecast": FieldDef(description="Consensus estimate when available (Forecast).", source="provider"),
+            "rows[].details.previous": FieldDef(description="Prior print when available (Previous).", source="provider"),
             "rows[].summary": FieldDef(description="Headline summary text (world rows; mirrors details.summary).", source="computed"),
             "rows[].details.summary": FieldDef(description="Headline summary text, truncated (world rows).", source="computed"),
             "rows[].details.topic_tags": FieldDef(description="Macro topic tags (FED, ECB, INFLATION...) matched in the headline.", source="computed"),
             "rows[].details.matched_assets": FieldDef(description="Exact asset terms that produced the asset_tags.", source="computed"),
             "rows[].details.provider_tags": FieldDef(description="Provider-carried tags unioned in, when present.", source="computed"),
             "rows[].details.url": FieldDef(description="Source article URL (None when absent).", source="computed"),
+            "rows[].details.article_url": FieldDef(description="Original article URL for world headlines.", source="provider"),
+            "rows[].details.publisher": FieldDef(description="Publisher/feed name carried by RSS.", source="provider"),
+            "rows[].details.feed_url": FieldDef(description="RSS feed URL used to retrieve the article.", source="provider"),
+            "rows[].details.provider": FieldDef(description="Calendar provider that supplied the row.", source="provider"),
+            "rows[].details.provider_event_url": FieldDef(description="Provider event page when supplied.", source="provider"),
+            "rows[].details.country_basis": FieldDef(description="provider or title_inference; inferred country tags are explicitly marked.", source="computed"),
+            "data_quality": FieldDef(description="Observable delivered-row completeness, calendar and wire duplicate/drop counts, and active source tiers; not a factual-accuracy claim.", source="computed"),
+            "attributions": FieldDef(description="Required visible attribution records for active sources.", source="provider"),
             "rows[].details.is_global": FieldDef(description="True for global (ALL) calendar rows — country filters bypass, country index skips.", source="computed"),
             "rows[].asset_tags": FieldDef(description="Asset tags (BTC, ETH, ETF...) matched in title/summary/provider tags and pairs — world rows carry them under details.asset_tags.", source="computed"),
             "rows[].event_type": FieldDef(description="Classified event type (etf_flow, rate_decision, inflation_print, ...) — world rows carry it under details.event_type.", source="computed"),

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import re
 import time
 from datetime import datetime, timedelta, timezone
@@ -246,15 +247,28 @@ def _normalize_ff_rows(raw: Any) -> list[dict[str, Any]]:
             "event": title,
             "date": str(item.get("date") or "").strip(),
             "importance": str(item.get("impact") or "medium").strip().lower() or "medium",
-            "forecast": item.get("forecast") or None,
-            "actual": item.get("actual") or None,
-            "previous": item.get("previous") or None,
+            "forecast": _ff_cell(item.get("forecast")),
+            "actual": _ff_cell(item.get("actual")),
+            "previous": _ff_cell(item.get("previous")),
             "forecast_raw": item.get("forecast"),
             "actual_raw": item.get("actual"),
             "previous_raw": item.get("previous"),
             "unit": "",
         })
     return rows
+
+
+def _ff_cell(value: Any) -> Any:
+    """Preserve valid provider values, including numeric zero."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return value if math.isfinite(float(value)) else None
+    if isinstance(value, str) and value.strip().casefold() in {
+        "nan", "inf", "+inf", "-inf", "infinity", "+infinity", "-infinity",
+    }:
+        return None
+    return value
 
 
 def _truthy(value: Any) -> bool:
@@ -432,7 +446,8 @@ def _parse_ff_number(raw: Any) -> tuple[float | None, str, bool]:
         return (None, str(raw), False)
     if isinstance(raw, (int, float)):
         try:
-            return (round(float(raw), 6), "", False)
+            value = float(raw)
+            return (round(value, 6), "", False) if math.isfinite(value) else (None, str(raw), False)
         except (ValueError, OverflowError):
             return (None, str(raw), False)
     text = str(raw).strip()
@@ -464,6 +479,8 @@ def _parse_ff_number(raw: Any) -> tuple[float | None, str, bool]:
     try:
         value = round(float(cleaned) * multiplier, 6)
     except ValueError:
+        return (None, text, capped)
+    if not math.isfinite(value):
         return (None, text, capped)
     if has_percent:
         unit = "%"
