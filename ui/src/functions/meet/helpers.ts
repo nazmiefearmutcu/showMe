@@ -27,6 +27,8 @@ export interface MeetRowDetails {
   topic_tags?: string[];
   /** Classified event type (etf_flow, rate_decision, inflation_print, ...). */
   event_type?: string;
+  /** Provider-carried tags unioned in by the backend tagger (read-only). */
+  provider_tags?: string[];
   matched_assets?: string[];
   impact_basis?: string;
   url?: string | null;
@@ -132,6 +134,8 @@ export interface MeetData {
   alert_default_lead_minutes?: number[];
   filtered_empty?: boolean;
   unfiltered_upcoming_count?: number;
+  /** Calendar rows dropped for lack of a parseable timestamp. */
+  dropped_no_time?: number;
   methodology?: string;
 }
 

@@ -62,11 +62,13 @@ import {
   isSpotFor,
   leadLabel,
   loadMeetAlerts,
+  parsePrintNumber,
   polarityOf,
   saveMeetAlerts,
   secondsUntil,
   surpriseOf,
   type MeetAlertConfig,
+  type MeetAlertEntry,
   type MeetAlertHistoryItem,
   type MeetCountryEntry,
   type MeetData,
@@ -90,14 +92,22 @@ const MODE_OPTIONS = [
 type ModeFilter = (typeof MODE_OPTIONS)[number]["value"];
 const MODE_VALUES = MODE_OPTIONS.map((m) => m.value);
 
-const DATA_FILTER_OPTIONS = ["all", "with_forecast", "with_actual", "surprise_only"] as const;
+const DATA_FILTER_OPTIONS = ["all", "spot", "pinned", "major_only", "with_forecast", "with_actual", "surprise_only"] as const;
 type DataFilter = (typeof DATA_FILTER_OPTIONS)[number];
+
+/* major_only is a STRICT majors-only cut (backend Task B ruling): every low
+   row drops — even a tagged one — and medium rows survive only when grounded
+   (a country or an asset/topic tag). Labelled honestly wherever it renders. */
+const MAJOR_ONLY_TITLE =
+  "Majors-only cut: drops every low-impact row (even tagged); medium needs a country or asset/topic tag. Default all unchanged; spot/pinned rows survive.";
 
 const IMPACT_OPTIONS = ["high", "medium", "low", "holiday"] as const;
 type ImpactFilter = (typeof IMPACT_OPTIONS)[number];
 
 const AHEAD_DAYS = [7, 30, 90, 180] as const;
 const BACK_DAYS = [1, 7, 30] as const;
+
+const LIMIT_OPTIONS = [100, 250, 400, 1000] as const;
 
 /* Faz 5 realtime delta cursor (backend contract): hash/new_rows/removed_ids
    ride on the payload; helpers.ts MeetData is untouched on purpose. */
@@ -136,6 +146,11 @@ export function MEETPane({ code }: FunctionPaneProps) {
     BACK_DAYS,
     7,
   );
+  const [limit, setLimit] = usePersistentOption<number>(
+    "showme.meet.limit",
+    LIMIT_OPTIONS,
+    400,
+  );
   const [impacts, setImpacts] = useState<ImpactFilter[]>(() => readImpactFilter());
   const [queryDraft, setQueryDraft] = useState("");
   const [query, setQuery] = useState("");
@@ -163,8 +178,7 @@ export function MEETPane({ code }: FunctionPaneProps) {
       days_ahead: daysAhead,
       days_back: daysBack,
       query,
-      include_world: true,
-      limit: 400,
+      limit,
       // Followed symbols ride along so the backend can surface matched world
       // headlines as their own section (owner: BTC followed, no events shown).
       symbols: alertConfig.symbols.join(","),
@@ -202,6 +216,7 @@ export function MEETPane({ code }: FunctionPaneProps) {
     daysAhead,
     daysBack,
     query,
+    limit,
     symbols: alertConfig.symbols.join(","),
   });
   // A filter change starts a new baseline: drop the cursor so the next poll
@@ -329,6 +344,15 @@ export function MEETPane({ code }: FunctionPaneProps) {
     [rows, selectedId],
   );
   const status = payload?.status ?? "—";
+  const droppedNoTime = typeof payload?.dropped_no_time === "number"
+    ? payload.dropped_no_time
+    : 0;
+  const unfilteredUpcoming = typeof payload?.unfiltered_upcoming_count === "number"
+    ? payload.unfiltered_upcoming_count
+    : null;
+  const methodology = typeof payload?.methodology === "string" && payload.methodology
+    ? payload.methodology
+    : null;
   const spotCount = useMemo(
     () => upcoming.filter((row) => isSpotFor(row, alertConfig)).length,
     [upcoming, alertConfig],
@@ -425,6 +449,59 @@ export function MEETPane({ code }: FunctionPaneProps) {
     ? (Date.parse(nextHighImpact.when_utc) - nowMs) / 1000
     : null;
 
+  /* Filter-honest upcoming note: `country_index` is built from UNFILTERED
+     rows, so when the follow filter hides every upcoming event the rail
+     still shows SOON while the list says "0 upcoming". Surface the
+     filter-excluded events explicitly instead of contradicting the rail. */
+  const excludedUpcoming = useMemo(() => {
+    const shown = new Set<string>();
+    for (const r of payload?.upcoming ?? []) if (r.id) shown.add(String(r.id));
+    for (const r of payload?.past ?? []) if (r.id) shown.add(String(r.id));
+    const out: {
+      iso: string;
+      name: string;
+      title: string;
+      when_utc?: string;
+      seconds: number;
+      impact?: string;
+    }[] = [];
+    for (const entry of payload?.country_index ?? []) {
+      const ne = entry.next_event;
+      if (!ne) continue;
+      // One clock source with the list: prefer the client countdown from
+      // when_utc; the server seconds_to_event stays as a fallback for
+      // unparseable timestamps.
+      const ts = ne.when_utc ? Date.parse(ne.when_utc) : Number.NaN;
+      const seconds = Number.isFinite(ts)
+        ? (ts - nowMs) / 1000
+        : (ne.seconds_to_event ?? null);
+      if (seconds == null || seconds < 0) continue;
+      if (ne.id && shown.has(String(ne.id))) continue;
+      out.push({
+        iso: entry.iso,
+        name: entry.name,
+        title: ne.title ?? "—",
+        when_utc: ne.when_utc,
+        seconds,
+        impact: ne.impact,
+      });
+    }
+    out.sort((a, b) => a.seconds - b.seconds);
+    return out;
+  }, [payload, nowMs]);
+  const excludedHigh = useMemo(
+    () => excludedUpcoming.find((e) => (e.impact ?? "").toLowerCase() === "high") ?? null,
+    [excludedUpcoming],
+  );
+  const upcomingEmptyText =
+    excludedUpcoming.length > 0
+      ? `No upcoming events match the current filters — ${excludedUpcoming.length} upcoming outside your filters: ${excludedUpcoming[0].title} (${excludedUpcoming[0].iso}, in ${formatCountdown(excludedUpcoming[0].seconds)}).`
+      : "No upcoming events in the window.";
+  const upcomingReleasesEmptyText =
+    excludedUpcoming.length > 0
+      ? `No upcoming releases match the current filters — ${excludedUpcoming.length} upcoming outside your filters: ${excludedUpcoming[0].title} (${excludedUpcoming[0].iso}, in ${formatCountdown(excludedUpcoming[0].seconds)}).`
+      : "No upcoming releases in the window.";
+
   // The 30 sn poll re-keys the fetch (cursor in params) so `loading` fires
   // every cycle — keep the hash-gated snapshot on screen instead of
   // flashing the skeleton (or the error card on a failed poll).
@@ -471,9 +548,12 @@ export function MEETPane({ code }: FunctionPaneProps) {
         onDaysAhead={setDaysAhead}
         daysBack={daysBack}
         onDaysBack={setDaysBack}
+        limit={limit}
+        onLimit={setLimit}
         queryDraft={queryDraft}
         onQueryDraft={setQueryDraft}
         onQuerySubmit={submitQuery}
+        queryApplied={query}
         tagsDraft={tagsDraft}
         onTagsDraft={setTagsDraft}
         onTagsSubmit={submitTags}
@@ -505,6 +585,20 @@ export function MEETPane({ code }: FunctionPaneProps) {
                 : ""}
             </span>
           </>
+        ) : excludedHigh ? (
+          <>
+            <Pill tone="warn" variant="soft" withDot>
+              {formatCountdown(
+                excludedHigh.when_utc
+                  ? (Date.parse(excludedHigh.when_utc) - nowMs) / 1000
+                  : excludedHigh.seconds,
+              )}
+            </Pill>
+            <span style={titleStyle}>{excludedHigh.title}</span>
+            <span style={monoMuteStyle}>
+              {utcLabel(excludedHigh.when_utc)} · {excludedHigh.iso} · outside filters
+            </span>
+          </>
         ) : (
           <span style={monoMuteStyle}>no upcoming high-impact event in the window</span>
         )}
@@ -529,6 +623,7 @@ export function MEETPane({ code }: FunctionPaneProps) {
               nowMs={nowMs}
               alertConfig={alertConfig}
               onSelect={setSelectedId}
+              showWhyHere
               emptyText={`No world headline matched your followed symbols (${alertConfig.symbols.join(
                 ", ",
               )}) in the window.`}
@@ -547,7 +642,7 @@ export function MEETPane({ code }: FunctionPaneProps) {
                 rows={upcoming}
                 nowMs={nowMs}
                 onSelect={setSelectedId}
-                emptyText="No upcoming releases in the window."
+                emptyText={upcomingReleasesEmptyText}
               />
               <CalendarSection
                 label={`PAST · ${past.length}`}
@@ -570,7 +665,7 @@ export function MEETPane({ code }: FunctionPaneProps) {
                 emptyText={
                 kind === "world"
                   ? "World headlines are past-dated - switch KIND to Calendar for scheduled events."
-                  : "No upcoming events in the window."
+                  : upcomingEmptyText
               }
               />
               {/* Full-width rule between the two windows, labelled NOW at
@@ -643,6 +738,8 @@ export function MEETPane({ code }: FunctionPaneProps) {
                   <MeetAlertsPopover
                     config={alertConfig}
                     catalog={catalog}
+                    serverAlerts={payload?.alerts}
+                    nowMs={nowMs}
                     onChange={setAlertConfig}
                     onClose={() => setAlertsOpen(false)}
                   />
@@ -683,6 +780,34 @@ export function MEETPane({ code }: FunctionPaneProps) {
             value={alertConfig.spotCountries.join(", ") || "all countries"}
             tone="accent"
           />
+          {droppedNoTime > 0 ? (
+            <>
+              <StatusDivider />
+              <StatusSection label="untimed" value={`${droppedNoTime} untimed rows hidden`} />
+            </>
+          ) : null}
+          {unfilteredUpcoming != null ? (
+            <>
+              <StatusDivider />
+              <StatusSection
+                label="window"
+                value={`showing ${upcoming.length} of ${unfilteredUpcoming} upcoming`}
+              />
+            </>
+          ) : null}
+          {methodology ? (
+            <>
+              <StatusDivider />
+              <span
+                role="img"
+                aria-label="Methodology"
+                title={methodology}
+                style={monoMuteStyle}
+              >
+                ⓘ
+              </span>
+            </>
+          ) : null}
         </PaneFooter>
       </Pane>
     </div>
@@ -702,9 +827,12 @@ function FilterBar({
   onDaysAhead,
   daysBack,
   onDaysBack,
+  limit,
+  onLimit,
   queryDraft,
   onQueryDraft,
   onQuerySubmit,
+  queryApplied,
   tagsDraft,
   onTagsDraft,
   onTagsSubmit,
@@ -730,9 +858,12 @@ function FilterBar({
   onDaysAhead: (value: number) => void;
   daysBack: number;
   onDaysBack: (value: number) => void;
+  limit: number;
+  onLimit: (value: number) => void;
   queryDraft: string;
   onQueryDraft: (value: string) => void;
   onQuerySubmit: (event: FormEvent) => void;
+  queryApplied: string;
   tagsDraft: string;
   onTagsDraft: (value: string) => void;
   onTagsSubmit: (event: FormEvent) => void;
@@ -770,11 +901,16 @@ function FilterBar({
           aria-label="Data filter"
           value={dataFilter}
           style={selectStyle}
+          title={`Calendar print filter. major_only is a majors-only cut: ${MAJOR_ONLY_TITLE}`}
           onChange={(event) => onDataFilter(event.target.value as DataFilter)}
         >
           {DATA_FILTER_OPTIONS.map((d) => (
-            <option key={d} value={d}>
-              {d}
+            <option
+              key={d}
+              value={d}
+              title={d === "major_only" ? MAJOR_ONLY_TITLE : undefined}
+            >
+              {d === "major_only" ? "major_only · majors-only cut" : d}
             </option>
           ))}
         </select>
@@ -842,15 +978,21 @@ function FilterBar({
           <button
             key={option.value}
             type="button"
-            disabled={kind === option.value}
+            disabled={kind === option.value || mode !== "all"}
             aria-pressed={kind === option.value}
             className={`fn-segmented__opt${kind === option.value ? " fn-segmented__opt--active" : ""}`}
             onClick={() => onKind(option.value)}
+            title={mode !== "all" ? "KIND applies in All mode (MODE overrides it)" : undefined}
           >
             {option.label}
           </button>
         ))}
-        <span style={{ ...stripLabelStyle, marginLeft: 10 }}>IMPACT</span>
+        <span
+          style={{ ...stripLabelStyle, marginLeft: 10 }}
+          title="Single-focus: a click focuses exactly one impact band; clicking the focused band again restores all."
+        >
+          IMPACT (single-focus)
+        </span>
         {IMPACT_OPTIONS.map((option) => (
           <button
             key={option}
@@ -888,6 +1030,19 @@ function FilterBar({
             </option>
           ))}
         </select>
+        <select
+          aria-label="Result limit"
+          value={String(limit)}
+          style={selectStyle}
+          title="Rows requested per load (upcoming-first priority)"
+          onChange={(event) => onLimit(Number(event.target.value))}
+        >
+          {LIMIT_OPTIONS.map((n) => (
+            <option key={n} value={n}>
+              limit {n}
+            </option>
+          ))}
+        </select>
         <form onSubmit={onQuerySubmit} style={queryFormStyle}>
           <input
             type="text"
@@ -897,7 +1052,7 @@ function FilterBar({
             aria-label="Search world events"
             style={searchInputStyle}
           />
-          <button type="submit" className="btn" disabled={!queryDraft.trim()}>
+          <button type="submit" className="btn" disabled={!queryDraft.trim() && !queryApplied.trim()}>
             Find
           </button>
         </form>
@@ -972,6 +1127,7 @@ function EventSection({
   emptyText,
   selectedId,
   showAssetTags = false,
+  showWhyHere = false,
 }: {
   label: string;
   rows: MeetRow[];
@@ -981,6 +1137,7 @@ function EventSection({
   emptyText: string;
   selectedId?: string | null;
   showAssetTags?: boolean;
+  showWhyHere?: boolean;
 }) {
   return (
     <section aria-label={label} style={sectionStyle}>
@@ -1000,6 +1157,7 @@ function EventSection({
               onSelect={onSelect}
               expanded={row.id === selectedId}
               showAssetTags={showAssetTags}
+              whyHere={showWhyHere ? whyHereOf(row) : null}
             />
           ))}
         </ul>
@@ -1015,6 +1173,7 @@ function EventRow({
   onSelect,
   expanded = false,
   showAssetTags = false,
+  whyHere = null,
 }: {
   row: MeetRow;
   nowMs: number;
@@ -1022,6 +1181,7 @@ function EventRow({
   onSelect: (id: string) => void;
   expanded?: boolean;
   showAssetTags?: boolean;
+  whyHere?: string | null;
 }) {
   const seconds = secondsUntil(row, nowMs);
   const past = isPastRow(row, nowMs);
@@ -1077,6 +1237,11 @@ function EventRow({
               .filter(Boolean)
               .join(" · ")}
           </span>
+          {whyHere ? (
+            <span style={metaStyle} aria-label={`match rationale: ${whyHere}`}>
+              {whyHere}
+            </span>
+          ) : null}
         </span>
         {showAssetTags ? <AssetChips row={row} /> : null}
         {spot ? (
@@ -1152,6 +1317,16 @@ function assetTagsOf(row: MeetRow): string[] {
   );
 }
 
+/** Per-row caption explaining why a symbol-section row is here ("why here:
+ *  BTC · market_wide"). Null when the backend shipped no rationale — the row
+ *  then renders exactly as before (backward compatible). */
+function whyHereOf(row: MeetRow): string | null {
+  const matches = (row.symbol_matches ?? []).map((m) => String(m)).filter(Boolean);
+  const relevance = row.symbol_relevance ? String(row.symbol_relevance) : null;
+  if (matches.length === 0 && !relevance) return null;
+  return `why here: ${[...matches, ...(relevance ? [relevance] : [])].join(" · ")}`;
+}
+
 /** Wire-mode asset chips (BTC/ETF/FED...) carried by the backend tagger. */
 function AssetChips({ row }: { row: MeetRow }) {
   const tags = assetTagsOf(row);
@@ -1189,6 +1364,11 @@ function CalendarSection({
         key: "time",
         header: "Time",
         width: 150,
+        sortable: true,
+        sortValue: (r) => {
+          const ts = Date.parse(r.when_utc ?? "");
+          return Number.isFinite(ts) ? ts : null;
+        },
         render: (r) => {
           const seconds = secondsUntil(r, nowMs);
           const past = isPastRow(r, nowMs);
@@ -1211,6 +1391,8 @@ function CalendarSection({
         key: "ccy",
         header: "Ccy",
         width: 92,
+        sortable: true,
+        sortValue: (r) => r.currencies?.[0] ?? r.countries?.[0] ?? "",
         render: (r) => {
           const ccy = r.currencies?.[0] ?? r.countries?.[0] ?? "—";
           return (
@@ -1224,6 +1406,8 @@ function CalendarSection({
       {
         key: "event",
         header: "Event",
+        sortable: true,
+        sortValue: (r) => r.title ?? "",
         render: (r) => <span style={titleStyle}>{r.title}</span>,
       },
       {
@@ -1231,6 +1415,8 @@ function CalendarSection({
         header: "Actual",
         numeric: true,
         width: 118,
+        sortable: true,
+        sortValue: (r) => parsePrintNumber(r.details?.actual),
         render: (r) => {
           const value = r.details?.actual;
           // Pending release: honest "—" plus a pending badge, never a guess.
@@ -1254,6 +1440,8 @@ function CalendarSection({
         header: "Forecast",
         numeric: true,
         width: 96,
+        sortable: true,
+        sortValue: (r) => parsePrintNumber(r.details?.forecast),
         render: (r) => (
           <span style={mutedNumStyle}>{formatPrint(r.details?.forecast, r.details?.unit)}</span>
         ),
@@ -1263,6 +1451,8 @@ function CalendarSection({
         header: "Previous",
         numeric: true,
         width: 118,
+        sortable: true,
+        sortValue: (r) => parsePrintNumber(r.details?.previous),
         // The backend ships the raw previous text (carries "Prev → Rev"
         // when a revision exists); no second field is invented here.
         render: (r) => (
@@ -1289,6 +1479,26 @@ function CalendarSection({
             <DeltaChip value={surprise} direction={direction} format="raw" fractionDigits={2} />
           );
         },
+      },
+      {
+        key: "source",
+        header: "Source",
+        width: 118,
+        sortable: true,
+        sortValue: (r) => r.source ?? "",
+        render: (r) => <span style={monoMuteStyle}>{r.source || "—"}</span>,
+      },
+      {
+        key: "impact",
+        header: "Impact",
+        width: 96,
+        sortable: true,
+        sortValue: (r) => r.impact ?? "",
+        render: (r) => (
+          <Pill tone={impactTone(String(r.impact || "low"))} variant="soft" withDot={false}>
+            {String(r.impact || "low")}
+          </Pill>
+        ),
       },
     ],
     [nowMs],
@@ -1342,6 +1552,10 @@ function DetailCard({
   const timing = row.undated ? "undated wire" : past ? `${formatAge(seconds)}` : `in ${formatCountdown(seconds)}`;
   const details = row.details ?? {};
   const matched = details.matched_terms ?? [];
+  const eventType = details.event_type ?? row.event_type ?? null;
+  const providerTags = Array.isArray(details.provider_tags)
+    ? details.provider_tags.map((t) => String(t)).filter(Boolean)
+    : [];
   return (
     <aside role="region" aria-label="Event detail" style={detailStyle}>
       <div style={detailHeadStyle}>
@@ -1418,6 +1632,24 @@ function DetailCard({
           <div>
             <span style={stripLabelStyle}>MATCHED TERMS</span>
             <div style={metaStyle}>{matched.join(" · ")}</div>
+          </div>
+        ) : null}
+        {eventType ? (
+          <div>
+            <span style={stripLabelStyle}>EVENT TYPE</span>
+            <div style={metaStyle}>{String(eventType)}</div>
+          </div>
+        ) : null}
+        {providerTags.length > 0 ? (
+          <div>
+            <span style={stripLabelStyle}>PROVIDER TAGS</span>
+            <div style={chipsWrapStyle}>
+              {providerTags.slice(0, 6).map((tag) => (
+                <span key={tag} style={pairChipStyle}>
+                  {tag}
+                </span>
+              ))}
+            </div>
           </div>
         ) : null}
       </div>
@@ -1544,11 +1776,15 @@ function AlertsButton({
 function MeetAlertsPopover({
   config,
   catalog,
+  serverAlerts,
+  nowMs,
   onChange,
   onClose,
 }: {
   config: MeetAlertConfig;
   catalog: { iso: string; name: string }[];
+  serverAlerts?: MeetAlertEntry[];
+  nowMs?: number;
   onChange: (next: MeetAlertConfig) => void;
   onClose: () => void;
 }) {
@@ -1564,7 +1800,45 @@ function MeetAlertsPopover({
         if (event.key === "Escape") onClose();
       }}
     >
-      <div style={popoverTitleStyle}>MEET SPOT ALERTS</div>
+      <div style={{ ...popoverTitleStyle, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <span>MEET SPOT ALERTS</span>
+        <button
+          type="button"
+          className="btn btn--ghost"
+          onClick={onClose}
+          aria-label="Close alert settings"
+          title="Close"
+        >
+          ✕
+        </button>
+      </div>
+      {serverAlerts && serverAlerts.length > 0 ? (
+        <div style={popoverBlockStyle}>
+          <span style={stripLabelStyle}>SERVER SPOT (upcoming)</span>
+          <ul style={historyListStyle}>
+            {serverAlerts.slice(0, 8).map((alert) => {
+              const ts = Date.parse(alert.when_utc ?? "");
+              const seconds = Number.isFinite(ts)
+                ? (ts - (nowMs ?? Date.now())) / 1000
+                : (alert.seconds_to_event ?? null);
+              const meta = [
+                (alert.country_names ?? []).join(", "),
+                (alert.pairs ?? []).slice(0, 4).join(", "),
+                (alert.lead_minutes ?? []).map((m) => leadLabel(m)).join(" · "),
+              ]
+                .filter(Boolean)
+                .join(" · ");
+              return (
+                <li key={alert.id} style={historyItemStyle}>
+                  <span style={monoMuteStyle}>{formatCountdown(seconds)}</span>
+                  <span style={historyTitleStyle}>{alert.title}</span>
+                  {meta ? <span style={monoMuteStyle}>{meta}</span> : null}
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      ) : null}
       <label style={popoverRowStyle}>
         <input
           type="checkbox"
@@ -1709,14 +1983,19 @@ function stateTone(state: string): "warn" | "accent" | "positive" | "muted" | "n
 }
 
 function readImpactFilter(): ImpactFilter[] {
-  if (typeof localStorage === "undefined") return [];
+  // No stored selection means "all bands" — return the full list (not [])
+  // so the chips render active. Backend-equivalent either way (empty and
+  // full both disable impact filtering), but [] looked deselected.
+  const all = [...IMPACT_OPTIONS];
+  if (typeof localStorage === "undefined") return all;
   const raw = localStorage.getItem("showme.meet.impact") ?? "";
-  return raw
+  const parsed = raw
     .split(",")
     .map((value) => value.trim().toLowerCase())
     .filter((value): value is ImpactFilter =>
       (IMPACT_OPTIONS as readonly string[]).includes(value),
     );
+  return parsed.length > 0 ? parsed : all;
 }
 
 const stackStyle: CSSProperties = { display: "grid", gap: 12 };

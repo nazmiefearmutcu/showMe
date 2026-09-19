@@ -1,12 +1,12 @@
-"""MEET â€” Meeting Briefings: world-events tracker.
+"""MEET — Meeting Briefings: world-events tracker.
 
 The pane tracks scheduled world events (central-bank decisions, CPI, GDP,
-â€¦ for every country on the calendar) and country-tagged world headlines
+… for every country on the calendar) and country-tagged world headlines
 (wars, elections, summits) in one list:
 
-  * upcoming events ascending â€” from now until the nearest upcoming
+  * upcoming events ascending — from now until the nearest upcoming
     high-impact event and beyond, each with a server-computed countdown,
-  * past events descending â€” the last ``days_back`` days,
+  * past events descending — the last ``days_back`` days,
   * a country index (every country that appeared + next event + state),
   * spot alerts for rate decisions / wars with configurable lead times
     (the UI persists them under ``showme.meet.alerts``).
@@ -29,7 +29,7 @@ from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
 # World-headline fetch cache (module level, shared across MEET calls): the
-# GDELT-first + RSS-fallback chain can spend ~10 s before answering, and the
+# first-with-items-wins (tie→GDELT) chain can spend ~10 s before answering, and the
 # pane refetches on every country/world filter toggle. Filters apply over the
 # cached rows, so only the upstream fetch rides this TTL. Successes keep the
 # full window; empty/failed passes expire faster so an outage recovers.
@@ -53,10 +53,10 @@ from showme.engine.services import world_events as we
 @FunctionRegistry.register
 class MEETFunction(BaseFunction):
     code = "MEET"
-    name = "Meeting Briefings â€” World Events"
+    name = "Meeting Briefings — World Events"
     category = "comm"
     description = (
-        "World-events tracker â€” country calendar + tagged headlines with "
+        "World-events tracker — country calendar + tagged headlines with "
         "countdowns, affected FX pairs and spot alerts."
     )
 
@@ -72,6 +72,9 @@ class MEETFunction(BaseFunction):
         data_filter = str(params.get("data_filter") or "all").strip().lower() or "all"
         if data_filter not in _DATA_FILTERS:
             data_filter = "all"
+        # Caller preference echo only (Task 1: the keyless chain is unchanged;
+        # the choice is surfaced via filters_applied + metadata.requested_mode).
+        provider_mode = str(params.get("provider_mode") or "live_official").strip().lower() or "live_official"
         # Backward-compat: an explicit mode wins over kind; without mode the
         # legacy kind implies the mode (economic->calendar, world->wire).
         raw_mode = params.get("mode")
@@ -187,7 +190,7 @@ class MEETFunction(BaseFunction):
         # Task 2 (spot/pinned) rides inside apply_filters; the spec's
         # with_forecast/with_actual/surprise_only are applied just below on
         # economic rows only (world_events.py is untouched — Faz 1+2 tree).
-        passthrough_filter = data_filter if data_filter in {"all", "spot", "pinned"} else "all"
+        passthrough_filter = data_filter if data_filter in {"all", "spot", "pinned", "major_only"} else "all"
         # Limit is applied AFTER windowing (below): the feed arrives in
         # week-chronological order (old rows first), so truncating here
         # would let a small limit eat the entire upcoming section.
@@ -232,6 +235,8 @@ class MEETFunction(BaseFunction):
                     query=query, days_ahead=days_ahead, days_back=days_back,
                     limit=limit, dropped_no_time=dropped_no_time,
                     mode=mode, tags=tags, data_filter=data_filter,
+                    data_mode="provider_unavailable" if warnings else "empty",
+                    provider_mode=provider_mode,
                     hash=empty_hash, new_rows=empty_new,
                     removed_ids=empty_removed, since_echo=since,
                 ),
@@ -241,6 +246,7 @@ class MEETFunction(BaseFunction):
                     "live": False,
                     "fallback": True,
                     "data_mode": "provider_unavailable" if warnings else "empty",
+                    "requested_mode": provider_mode,
                     "provider_errors": warnings,
                 },
             )
@@ -314,6 +320,11 @@ class MEETFunction(BaseFunction):
             symbol_rows = (market_rows[:12] + headline_rows[:12])[:24]
 
         delta_hash, delta_new, delta_removed = _delta(ordered, known_ids)
+        # Built as a variable so the repo's data_mode literal scanner only
+        # sees sanctioned values (``live_<source>`` follows ECO's convention).
+        live_mode = "live_" + "+".join(sources) if sources else "cached_snapshot"
+        if provider_mode == "cached_snapshot" and live_mode.startswith("live_"):
+            warnings.append(f"requested cached_snapshot, served {live_mode}")
         payload = _shell(
             now=now,
             status="ok",
@@ -335,6 +346,8 @@ class MEETFunction(BaseFunction):
             mode=mode,
             tags=tags,
             data_filter=data_filter,
+            data_mode=live_mode,
+            provider_mode=provider_mode,
             hash=delta_hash,
             new_rows=delta_new,
             removed_ids=delta_removed,
@@ -344,9 +357,6 @@ class MEETFunction(BaseFunction):
         payload["unfiltered_upcoming_count"] = len(unfiltered_upcoming)
         payload["symbol_rows"] = symbol_rows
         payload["symbols_requested"] = symbols
-        # Built as a variable so the repo's data_mode literal scanner only
-        # sees sanctioned values (``live_<source>`` follows ECO's convention).
-        live_mode = "live_" + "+".join(sources) if sources else "cached_snapshot"
         return FunctionResult(
             code=self.code,
             instrument=instrument,
@@ -357,6 +367,7 @@ class MEETFunction(BaseFunction):
                 "live": bool(sources),
                 "fallback": not sources,
                 "data_mode": live_mode,
+                "requested_mode": provider_mode,
                 "provider_errors": warnings,
                 "counts": {
                     "rows": len(ordered),
@@ -395,10 +406,15 @@ class MEETFunction(BaseFunction):
             ]
         except Exception:  # noqa: BLE001
             crypto_syms = []
-        collected: list[dict[str, Any]] = []
-        if crypto_syms:
+        # The crypto-group leg and the per-symbol legs are independent — race
+        # them concurrently. Sequential awaits here used to stack 4 × timeout
+        # (~32 s worst case) against the 14 s function timeout and flakily
+        # killed MEET whenever the caller followed symbols on a slow network.
+        async def _crypto_leg() -> list[dict[str, Any]]:
+            if not crypto_syms:
+                return []
             try:
-                collected.extend(
+                return list(
                     await asyncio.wait_for(
                         rss.fetch(
                             DataRequest(
@@ -412,10 +428,11 @@ class MEETFunction(BaseFunction):
                     or []
                 )
             except Exception:  # noqa: BLE001 - best-effort tier
-                pass
-        for sym in symbols[:3]:
+                return []
+
+        async def _symbol_leg(sym: str) -> list[dict[str, Any]]:
             try:
-                collected.extend(
+                return list(
                     await asyncio.wait_for(
                         rss.fetch(
                             DataRequest(
@@ -434,7 +451,12 @@ class MEETFunction(BaseFunction):
                     or []
                 )
             except Exception:  # noqa: BLE001
-                continue
+                return []
+
+        legs = [_crypto_leg(), *(_symbol_leg(sym) for sym in symbols[:3])]
+        collected: list[dict[str, Any]] = []
+        for result in await asyncio.gather(*legs):
+            collected.extend(result)
         _SYMBOL_NEWS_CACHE = (cache_key, now_mono, list(collected))
         return list(collected)
 
@@ -490,7 +512,8 @@ class MEETFunction(BaseFunction):
                         start=now - timedelta(days=2),
                         limit=75,
                     )),
-                    timeout=timeout,
+                    # gdelt leg capped so a wedged DOC endpoint fails fast into the RSS win
+                    timeout=min(timeout, 5.0),
                 )
                 if items:
                     return list(items), None
@@ -549,10 +572,14 @@ class MEETFunction(BaseFunction):
                 for task in pending:
                     task.cancel()
                 gdelt_err = gdelt_res[1] if gdelt_res else None
+                if gdelt_err and "empty" not in gdelt_err:
+                    gdelt_note: str | None = f"{gdelt_err} (rss served)"
+                else:
+                    gdelt_note = None
                 result = (
                     rss_res[0],
                     "rss",
-                    gdelt_err if gdelt_err and "empty" not in gdelt_err else None,
+                    gdelt_note,
                 )
                 _WORLD_CACHE = (now_mono, result, _WORLD_CACHE_TTL_S)
                 return result
@@ -590,15 +617,22 @@ def _shell(
     mode: str = "all",
     tags: list[str] | None = None,
     data_filter: str = "all",
+    data_mode: str = "",
+    provider_mode: str = "live_official",
     hash: str = "",
     new_rows: list[dict[str, Any]] | None = None,
     removed_ids: list[str] | None = None,
     since_echo: str = "",
 ) -> dict[str, Any]:
+    window = we.window_meta(rows, now=now, days_ahead=days_ahead, days_back=days_back)
     return {
         "status": status,
         "reason": reason,
         "as_of": now.isoformat(),
+        "data_mode": data_mode,
+        "alerts_count": len(alerts),
+        "countries_tracked": len(country_index),
+        "next_high_impact": window["next_high_impact"],
         "hash": hash,
         "new_rows": list(new_rows or []),
         "removed_ids": list(removed_ids or []),
@@ -609,7 +643,7 @@ def _shell(
         "row_count": len(rows),
         "upcoming_count": len(upcoming),
         "past_count": len(past),
-        "window": we.window_meta(rows, now=now, days_ahead=days_ahead, days_back=days_back),
+        "window": window,
         "country_index": country_index,
         "country_catalog": country_catalog,
         "alerts": alerts,
@@ -621,6 +655,7 @@ def _shell(
             "mode": mode,
             "tags": list(tags or []),
             "data_filter": data_filter,
+            "provider_mode": provider_mode,
             "impact": impacts,
             "q": query,
             "days_ahead": days_ahead,
@@ -630,14 +665,16 @@ def _shell(
         "methodology": (
             "Scheduled rows come from the keyless ForexFactory weekly calendar "
             "(reused from ECO): every country on the calendar is listed with its "
-            "UTC timestamp, impact and affected FX pairs (country â†’ currency â†’ "
-            "majors, e.g. TR â†’ USDTRY/EURTRY). World rows come from the keyless "
+            "UTC timestamp, impact and affected FX pairs (country → currency → "
+            "majors, e.g. TR → USDTRY/EURTRY). World rows come from the keyless "
             "GDELT headline stream (English-language wire, RSS fallback) tagged with "
             "a country gazetteer; "
             "a headline may concern several countries and carries the exact matched "
             "terms for audit. Countdowns are computed server-side from the provider "
             "timestamp; nothing is shown at a guessed time and failed providers "
-            "surface as warnings instead of invented events."
+            "surface as warnings instead of invented events. The scheduled "
+            "calendar covers the ForexFactory weekly snapshot (current week "
+            "only); days_ahead beyond the week shows world headlines."
         ),
         "field_dictionary": {
             "hash": "sha1 of the ordered row ids in this payload (realtime delta cursor).",
@@ -647,13 +684,26 @@ def _shell(
             "rows[].when_utc": "Event time in UTC (offset-aware provider timestamp).",
             "rows[].seconds_to_event": "Server-computed seconds from as_of (negative = past).",
             "rows[].age_minutes": "Minutes since the event for past rows.",
-            "rows[].countries": "ISO codes â€” a row may concern several countries.",
+            "rows[].countries": "ISO codes — a row may concern several countries.",
             "rows[].pairs": "Quoted FX pairs / indices derived from the country currency.",
             "rows[].spot": "True for central-bank decisions and wars (alert-worthy).",
             "rows[].pinned": "Spot rows plus high-impact prints from major markets.",
+            "rows[].asset_tags": "Asset tags (BTC, ETH, ETF...) — world rows carry them under details.asset_tags.",
+            "rows[].event_type": "Classified event type — world rows carry it under details.event_type.",
+            "rows[].details.matched_terms": "Exact gazetteer terms that tagged a world headline.",
+            "rows[].details.asset_tags": "Asset tags (BTC, ETH, ETF...) matched in title/summary/provider tags.",
+            "rows[].details.event_type": "Classified event type (etf_flow, rate_decision, inflation_print, hack, ...).",
             "rows[].details.actual": "Released value when available (Actual).",
             "rows[].details.forecast": "Consensus estimate when available (Forecast).",
             "rows[].details.previous": "Prior print when available (Previous).",
+            "rows[].summary": "Headline summary text (world rows; mirrors details.summary).",
+            "rows[].details.summary": "Headline summary text, truncated (world rows).",
+            "rows[].details.topic_tags": "Macro topic tags (FED, ECB, INFLATION...) matched in the headline.",
+            "rows[].details.matched_assets": "Exact asset terms that produced the asset_tags.",
+            "rows[].details.provider_tags": "Provider-carried tags unioned in, when present.",
+            "rows[].details.url": "Source article URL (None when absent).",
+            "rows[].details.is_global": "True for global (ALL) calendar rows (country_names Global, pairs empty).",
+            "country_catalog[]": "Static country reference (ISO + name) so filters stay complete when a provider is down.",
             "country_index[].state": "live | imminent | soon | scheduled | quiet.",
             "alerts[]": "Upcoming spot/pinned rows with default lead times (minutes).",
         },
@@ -678,7 +728,7 @@ def _truthy(value: Any) -> bool:
 # all/with_forecast/with_actual/surprise_only are supported together;
 # unknown values fall back to all (no-op).
 _DATA_FILTERS = frozenset({
-    "all", "spot", "pinned",
+    "all", "spot", "pinned", "major_only",
     "with_forecast", "with_actual", "surprise_only",
 })
 

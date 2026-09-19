@@ -94,8 +94,8 @@ def meet() -> FunctionManifest:
                 label="Data filter",
                 control=ControlKind.SELECT,
                 required=False,
-                options=["all", "with_forecast", "with_actual", "surprise_only"],
-                description="Sadece calendar satırlarına uygulanır.",
+                options=["all", "spot", "pinned", "major_only", "with_forecast", "with_actual", "surprise_only"],
+                description="Sadece calendar satırlarına uygulanır (major_only hariç: tüm satırlara opt-in noise cut; default all unchanged).",
             ),
             InputSpec(
                 name="symbols",
@@ -270,21 +270,33 @@ def meet() -> FunctionManifest:
             " calendar-only (the world wire is never fetched), wire-only or both"
             " and wins over kind; tags filters titles/summaries/matched assets"
             " and pairs; data_filter narrows calendar rows to prints carrying"
-            " forecast/actual values."
+            " forecast/actual values. The scheduled calendar covers the"
+            " ForexFactory weekly snapshot (current week only); days_ahead"
+            " beyond the week shows world headlines."
         ),
         formula_dict={},
         field_dict={
             "rows[].when_utc": FieldDef(description="Event time in UTC, parsed from the provider's offset-aware timestamp.", source="forex_factory"),
             "rows[].seconds_to_event": FieldDef(unit="s", description="Server-computed seconds from as_of (negative = past); the UI renders the live countdown.", source="computed"),
+            "rows[].age_minutes": FieldDef(unit="m", description="Minutes since the event for past rows.", source="computed"),
             "rows[].countries": FieldDef(description="ISO codes; a row may concern several countries.", source="computed"),
             "rows[].pairs": FieldDef(description="Quoted FX pairs / indices affected via the country currency.", source="computed"),
             "rows[].spot": FieldDef(description="True for central-bank decisions and wars — the alert-worthy class.", source="computed"),
+            "rows[].pinned": FieldDef(description="Spot rows plus high-impact prints from major markets.", source="computed"),
             "rows[].impact": FieldDef(description="high | medium | low | holiday.", source="forex_factory"),
             "rows[].details.matched_terms": FieldDef(description="Exact gazetteer terms that tagged a world headline.", source="computed"),
             "rows[].details.actual": FieldDef(description="Released value when available (Actual).", source="forex_factory"),
             "rows[].details.forecast": FieldDef(description="Consensus estimate when available (Forecast).", source="forex_factory"),
-            "rows[].asset_tags": FieldDef(description="Asset tags (BTC, ETH, ETF...) matched in title/summary/provider tags and pairs.", source="computed"),
-            "rows[].event_type": FieldDef(description="Classified event type (etf_flow, rate_decision, inflation_print, ...).", source="computed"),
+            "rows[].details.previous": FieldDef(description="Prior print when available (Previous).", source="forex_factory"),
+            "rows[].summary": FieldDef(description="Headline summary text (world rows; mirrors details.summary).", source="computed"),
+            "rows[].details.summary": FieldDef(description="Headline summary text, truncated (world rows).", source="computed"),
+            "rows[].details.topic_tags": FieldDef(description="Macro topic tags (FED, ECB, INFLATION...) matched in the headline.", source="computed"),
+            "rows[].details.matched_assets": FieldDef(description="Exact asset terms that produced the asset_tags.", source="computed"),
+            "rows[].details.provider_tags": FieldDef(description="Provider-carried tags unioned in, when present.", source="computed"),
+            "rows[].details.url": FieldDef(description="Source article URL (None when absent).", source="computed"),
+            "rows[].details.is_global": FieldDef(description="True for global (ALL) calendar rows — country filters bypass, country index skips.", source="computed"),
+            "rows[].asset_tags": FieldDef(description="Asset tags (BTC, ETH, ETF...) matched in title/summary/provider tags and pairs — world rows carry them under details.asset_tags.", source="computed"),
+            "rows[].event_type": FieldDef(description="Classified event type (etf_flow, rate_decision, inflation_print, ...) — world rows carry it under details.event_type.", source="computed"),
             "rows[].details.asset_tags": FieldDef(description="Asset tags (BTC, ETH, ETF...) matched in title/summary/provider tags and pairs.", source="computed"),
             "rows[].details.event_type": FieldDef(description="Classified event type (etf_flow, rate_decision, inflation_print, ...).", source="computed"),
             "country_index[].state": FieldDef(description="local status pill: live | imminent | soon | scheduled | quiet.", source="computed"),
@@ -382,9 +394,10 @@ def meet() -> FunctionManifest:
             SemanticTest(
                 name="meet_tags_and_data_filter_narrow_rows",
                 description=(
-                    "Given {tags: 'BTC', data_filter: 'with_actual'}, rows carrying the"
-                    " BTC tag remain and calendar rows without a released actual value"
-                    " are dropped."
+                    "Given {tags: 'BTC', data_filter: 'with_actual'}, calendar"
+                    " BTC-with-actual rows remain; world BTC rows are dropped by"
+                    " the calendar-only with_actual filter and calendar rows"
+                    " without a released actual value are dropped."
                 ),
                 inputs={"tags": "BTC", "data_filter": "with_actual"},
                 assertions=[

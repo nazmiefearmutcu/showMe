@@ -157,6 +157,9 @@ def test_manifest_declares_mode_tags_data_filter_symbols():
     assert by_name["mode"].options == ["all", "calendar", "wire"]
     assert by_name["data_filter"].options == [
         "all",
+        "spot",
+        "pinned",
+        "major_only",
         "with_forecast",
         "with_actual",
         "surprise_only",

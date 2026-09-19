@@ -25,6 +25,7 @@ Honesty rules:
 
 from __future__ import annotations
 
+import hashlib
 import re
 from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta, timezone
@@ -104,6 +105,12 @@ CURRENCY_TO_ISO: dict[str, str] = {
 # explicitly collapsed onto the region token.
 _REGION_CURRENCIES = {"EUR": "EU"}
 
+# Provider aliases that are neither currency codes nor ISO codes.
+# ForexFactory (and ECO's own convention) tags United Kingdom rows "UK"
+# while this catalog is ISO-based ("GB") — without this fold every UK
+# row loses its country, pairs, follow-filtering and spot alerts.
+_ISO_ALIASES = {"UK": "GB"}
+
 # ---------------------------------------------------------------------------
 # Affected instruments: currency -> quoted majors / index.
 # ---------------------------------------------------------------------------
@@ -132,6 +139,50 @@ PAIR_MAP: dict[str, tuple[str, ...]] = {
     "KRW": ("USDKRW",),
     "SGD": ("USDSGD",),
     "THB": ("USDTHB",),
+    "RUB": ("USDRUB",),
+    "UAH": ("USDUAH",),
+    "HKD": ("USDHKD",),
+    "SAR": ("USDSAR",),
+    "AED": ("USDAED",),
+    "QAR": ("USDQAR",),
+    "RON": ("USDRON",),
+    "BGN": ("USDBGN",),
+    "HRK": ("USDHRK",),
+    "DKK": ("USDDKK",),
+    # D2 Task B.4: kalan USD çaprazları (CNH yok — CNY ile aynı ülke).
+    "RSD": ("USDRSD",),
+    "ISK": ("USDISK",),
+    "GEL": ("USDGEL",),
+    "AMD": ("USDAMD",),
+    "AZN": ("USDAZN",),
+    "KWD": ("USDKWD",),
+    "BHD": ("USDBHD",),
+    "OMR": ("USDOMR",),
+    "JOD": ("USDJOD",),
+    "EGP": ("USDEGP",),
+    "TND": ("USDTND",),
+    "DZD": ("USDDZD",),
+    "MAD": ("USDMAD",),
+    "NGN": ("USDNGN",),
+    "KES": ("USDKES",),
+    "GHS": ("USDGHS",),
+    "ETB": ("USDETB",),
+    "PKR": ("USDPKR",),
+    "BDT": ("USDBDT",),
+    "LKR": ("USDLKR",),
+    "TWD": ("USDTWD",),
+    "MNT": ("USDMNT",),
+    "KZT": ("USDKZT",),
+    "UZS": ("USDUZS",),
+    "VND": ("USDVND",),
+    "MYR": ("USDMYR",),
+    "IDR": ("USDIDR",),
+    "PHP": ("USDPHP",),
+    "MMK": ("USDMMK",),
+    "ARS": ("USDARS",),
+    "CLP": ("USDCLP",),
+    "COP": ("USDCOP",),
+    "PEN": ("USDPEN",),
 }
 
 # Countries whose high-impact prints are pinned by default (major markets).
@@ -148,12 +199,14 @@ _IMPACT_ORDER = {"high": 3, "medium": 2, "low": 1, "holiday": 0}
 _IMPACT_MAP = {"high": "high", "medium": "medium", "low": "low", "holiday": "holiday"}
 
 # Central-bank / market-moving scheduled decisions (spot-tracked).
+# D2 Task B.3 (Türkçe minimal): faiz + para politikası kalıpları.
 _RATE_DECISION_RE = re.compile(
-    r"(interest rate decision|rate decision|rate statement|rate announcement"
+    r"\b(?:interest rate decision|rate decision|rate statement|rate announcement"
     r"|fomc statement|fomc economic projections|fomc press conference"
     r"|monetary policy (?:decision|statement|summary)"
     r"|official (?:cash|bank) rate|bank rate|main refinancing|deposit facility"
-    r"|interest rate|press conference)",
+    r"|interest rate|press conference"
+    r"|faiz kararı|faiz indirimi|faiz artırımı|faiz artirimi|para politikas\w*)",
     re.IGNORECASE,
 )
 
@@ -185,7 +238,8 @@ _CRYPTO_RE = re.compile(
 _FINANCIAL_RE = re.compile(
     r"\b(fed|federal reserve|fomc|powell|dot plot|ecb|lagarde|boj|ueda"
     r"|cpi|ppi|pce|inflation|nfp|payrolls?|unemployment"
-    r"|rate decision|interest rate)\b",
+    r"|rate decision|interest rate"
+    r"|faiz|enflasyon|işsizlik|tüfe)\b",
     re.IGNORECASE,
 )
 
@@ -226,6 +280,8 @@ def _classify_event_type(
     blob = str(text or "")
     tags = set(asset_tags or [])
     topics = set(topic_tags or [])
+    if war:
+        return "geopolitics"
     if "ETF" in tags and _ETF_FLOW_RE.search(blob):
         return "etf_flow"
     if _RATE_DECISION_RE.search(blob) or (
@@ -242,7 +298,7 @@ def _classify_event_type(
         return "hack"
     if _HALVING_RE.search(blob):
         return "halving"
-    if war or political:
+    if political:
         return "geopolitics"
     return "other"
 
@@ -295,6 +351,8 @@ def canonical_iso(token: Any) -> str:
         return ""
     if raw in _REGION_CURRENCIES:
         return _REGION_CURRENCIES[raw]
+    if raw in _ISO_ALIASES:
+        return _ISO_ALIASES[raw]
     if raw in ISO_NAMES or raw in REGION_NAMES:
         return raw
     return CURRENCY_TO_ISO.get(raw, "")
@@ -306,7 +364,7 @@ def country_name(iso: str) -> str:
 
 def currency_for(iso: str) -> str:
     for currency, mapped in CURRENCY_TO_ISO.items():
-        if mapped == iso and currency.endswith("_") is False:
+        if mapped == iso:
             return currency
     return ""
 
@@ -391,11 +449,15 @@ def economic_rows(
             dropped += 1
             continue
         provider_token = str(item.get("country") or item.get("currency") or "").strip().upper()
+        # D2 Task B.1: the calendar's synthetic "ALL" token is a GLOBAL row
+        # (every-country releases). No ISO, renders as "Global", touches no
+        # single FX pair; country filters bypass it, the index skips it.
+        is_global = provider_token == "ALL"
         iso = canonical_iso(provider_token)
-        isos = [iso] if iso else []
+        isos = [] if is_global else ([iso] if iso else [])
         impact = normalize_impact(item.get("importance") or item.get("impact"))
         currency = currency_for(iso) or (provider_token if provider_token in PAIR_MAP else "")
-        currencies = [currency] if currency else []
+        currencies = [] if is_global else ([currency] if currency else [])
         seconds = (when - now).total_seconds()
         spot = impact == "high" and bool(_RATE_DECISION_RE.search(title))
         row_id = _row_id("economic", when, isos, title)
@@ -407,11 +469,11 @@ def economic_rows(
             "kind": "economic",
             "title": title,
             "countries": isos,
-            "country_names": [country_name(i) for i in isos],
+            "country_names": ["Global"] if is_global else [country_name(i) for i in isos],
             "when_utc": when.isoformat(),
             "impact": impact,
             "currencies": currencies,
-            "pairs": pairs_for(currencies),
+            "pairs": [] if is_global else pairs_for(currencies),
             "source": source,
             "spot": spot,
             "pinned": spot or (impact == "high" and iso in MAJOR_MARKET_ISO),
@@ -421,6 +483,7 @@ def economic_rows(
                 "previous": item.get("previous"),
                 "unit": item.get("unit") or "",
                 "provider_country": provider_token or None,
+                "is_global": is_global,
             },
             "seconds_to_event": round(seconds, 1),
             "age_minutes": round(-seconds / 60, 1) if seconds < 0 else None,
@@ -437,9 +500,9 @@ def economic_rows(
 # that actually dominate wire copy. Terms with <= 3 characters are matched
 # case-sensitively (so the English pronoun "us" never tags United States).
 COUNTRY_TERMS: dict[str, tuple[str, ...]] = {
-    "US": ("US", "U.S.", "united states", "usa", "america", "american", "washington", "white house", "pentagon"),
+    "US": ("US", "U.S.", "united states", "usa", "america", "american", "washington", "white house", "pentagon", "trump"),
     "GB": ("UK", "U.K.", "united kingdom", "britain", "british", "england", "london", "westminster"),
-    "EU": ("EU", "european union", "eurozone", "euro area", "brussels", "ecb"),
+    "EU": ("EU", "european union", "eurozone", "euro area", "brussels", "ecb", "ECB", "EUR"),
     "TR": ("turkey", "türkiye", "turkiye", "turkish", "ankara", "istanbul", "tcmb"),
     "RU": ("russia", "russian", "moscow", "kremlin", "putin"),
     "UA": ("ukraine", "ukrainian", "kyiv", "kiev", "zelensky"),
@@ -477,7 +540,7 @@ COUNTRY_TERMS: dict[str, tuple[str, ...]] = {
     "FI": ("finland", "finnish", "helsinki"),
     "CH": ("switzerland", "swiss", "zurich", "geneva"),
     "AT": ("austria", "austrian", "vienna"),
-    "BE": ("belgium", "belgian", "brussels summit"),
+    "BE": ("belgium", "belgian", "brussels", "brussels summit"),
     "IE": ("ireland", "irish", "dublin"),
     "GR": ("greece", "greek", "athens"),
     "CZ": ("czech", "prague"),
@@ -497,8 +560,8 @@ COUNTRY_TERMS: dict[str, tuple[str, ...]] = {
     "PH": ("philippines", "filipino", "manila"),
     "ID": ("indonesia", "indonesian", "jakarta"),
     "MY": ("malaysia", "kuala lumpur"),
-    "SG": ("singapore"),
-    "HK": ("hong kong"),
+    "SG": ("singapore",),
+    "HK": ("hong kong",),
     "MM": ("myanmar", "burma", "naypyidaw"),
     "ET": ("ethiopia", "ethiopian", "addis ababa"),
     "SD": ("sudan", "khartoum"),
@@ -518,6 +581,9 @@ _TERM_PATTERNS: dict[str, list[re.Pattern[str]]] = {}
 for _iso, _name in COUNTRY_CATALOG:
     terms = list(COUNTRY_TERMS.get(_iso, ())) + [_name]
     _TERM_PATTERNS[_iso] = [_term_pattern(t) for t in terms]
+for _iso, _name in REGION_NAMES.items():
+    terms = list(COUNTRY_TERMS.get(_iso, ())) + [_name]
+    _TERM_PATTERNS[_iso] = [_term_pattern(t) for t in terms]
 
 
 # ---------------------------------------------------------------------------
@@ -531,7 +597,7 @@ for _iso, _name in COUNTRY_CATALOG:
 ASSET_TERMS: dict[str, tuple[str, ...]] = {
     "BTC": ("BTC", "bitcoin", "XBT", "BTCUSD", "IBIT"),
     "ETH": ("ETH", "ethereum", "ether", "ETHUSD"),
-    "ETF": ("ETF", "ETP", "inflow", "outflow", "GBTC", "IBIT", "FBTC"),
+    "ETF": ("ETF", "ETP", "inflow", "inflows", "outflow", "outflows", "GBTC", "IBIT", "FBTC"),
     "CRYPTO": ("crypto", "cryptocurrency", "stablecoin", "USDT", "USDC", "halving", "onchain", "on-chain"),
 }
 
@@ -657,16 +723,6 @@ def world_rows(
         topic_tags, _matched_topics = match_topics(f"{title} {summary} {provider_blob}".strip())
         war = bool(_WAR_RE.search(title))
         political = bool(_POLITICAL_RE.search(title))
-        # Impact: the war rule wins; crypto/macro headlines are at least
-        # medium (never low/ülkesiz/kayıp).
-        crypto_hit = bool(asset_tags) or bool(_CRYPTO_RE.search(f"{title} {summary}"))
-        macro_hit = bool(topic_tags) or bool(_FINANCIAL_RE.search(f"{title} {summary}"))
-        if war:
-            impact = "high"
-        elif political or crypto_hit or macro_hit:
-            impact = "medium"
-        else:
-            impact = "low"
         event_type = _classify_event_type(
             f"{title} {summary}",
             asset_tags=asset_tags,
@@ -674,6 +730,16 @@ def world_rows(
             war=war,
             political=political,
         )
+        # Impact: the war rule wins; crypto/macro headlines are at least
+        # medium (never low/ülkesiz/kayıp); a hack event is medium too.
+        crypto_hit = bool(asset_tags) or bool(_CRYPTO_RE.search(f"{title} {summary}"))
+        macro_hit = bool(topic_tags) or bool(_FINANCIAL_RE.search(f"{title} {summary}"))
+        if war:
+            impact = "high"
+        elif event_type == "hack" or political or crypto_hit or macro_hit:
+            impact = "medium"
+        else:
+            impact = "low"
         # Asset pairs ride alongside FX pairs (pairs_for is untouched — FX
         # behaviour is preserved).
         pairs: list[str] = []
@@ -689,7 +755,14 @@ def world_rows(
         if when is None:
             when = now
         url = str(item.get("url") or item.get("link") or "").strip()
-        row_id = _row_id("world", when, isos, title)
+        if undated:
+            # Undated wire copy is anchored at now for ordering, but the id
+            # must not carry the second-resolution stamp — every poll would
+            # otherwise mint fresh ids and churn the delta hash.
+            stable = hashlib.sha1(f"{url}|{title}".encode("utf-8")).hexdigest()[:12]
+            row_id = f"world:undated:{_slug(title)}:{stable}"
+        else:
+            row_id = _row_id("world", when, isos, title)
         if row_id in seen:
             continue
         seen.add(row_id)
@@ -807,9 +880,11 @@ def apply_filters(
         if kind_key != "all" and row.get("kind") != kind_key:
             continue
         if wanted_iso:
-            row_iso = {str(c).upper() for c in (row.get("countries") or [])}
-            if not (row_iso & wanted_iso):
-                continue
+            # D2 Task B.1: is_global satırlar ülke filtresini bypass eder.
+            if not bool((row.get("details") or {}).get("is_global")):
+                row_iso = {str(c).upper() for c in (row.get("countries") or [])}
+                if not (row_iso & wanted_iso):
+                    continue
         if wanted_impact and str(row.get("impact") or "").lower() not in wanted_impact:
             continue
         if q:
@@ -864,6 +939,19 @@ def apply_filters(
             continue
         if data_key == "pinned" and not row.get("pinned"):
             continue
+        # D2 Task B.2 (opt-in noise cut; default all değişmez): spot, pinned
+        # ve high kalır; medium ancak ülke veya asset/topic tag'iyle
+        # topraklanmışsa kalır; geri kalan her satır (tüm low dahil) düşer.
+        if data_key == "major_only":
+            impact_v = str(row.get("impact") or "").lower()
+            grounded = bool(row.get("countries")) or bool(details.get("asset_tags")) or bool(details.get("topic_tags"))
+            if not (
+                row.get("spot")
+                or row.get("pinned")
+                or impact_v == "high"
+                or (impact_v == "medium" and grounded)
+            ):
+                continue
         out.append(row)
         if len(out) >= limit:
             break
@@ -874,6 +962,9 @@ def build_country_index(rows: list[dict[str, Any]], *, now: datetime) -> list[di
     """Aggregate every country that appears in the unfiltered row set."""
     buckets: dict[str, dict[str, Any]] = {}
     for row in rows:
+        # D2 Task B.1: is_global satırların ISO'su yok — index'e girmez.
+        if (row.get("details") or {}).get("is_global"):
+            continue
         for iso in row.get("countries") or []:
             bucket = buckets.setdefault(iso, {
                 "iso": iso,

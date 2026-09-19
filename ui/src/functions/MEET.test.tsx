@@ -508,16 +508,87 @@ describe("MEET pane — world-events body", () => {
     expect(sidebar.textContent).toContain("quiet");
     expect(screen.getByRole("button", { name: /Follow Ukraine/ })).toBeInTheDocument();
   });
+
+  it("names filter-excluded upcoming events instead of claiming none exist", () => {
+    // Regression: the rail (unfiltered country_index) showed EU SOON while
+    // the follow-filtered list said "No upcoming events in the window".
+    const base = worldPayload();
+    const quiet = (iso: string, name: string) => ({
+      iso,
+      name,
+      upcoming_count: 0,
+      past_count: 1,
+      state: "quiet",
+      next_event: null,
+    });
+    const payload = {
+      ...base,
+      rows: base.past,
+      upcoming: [],
+      past: base.past,
+      row_count: base.past.length,
+      upcoming_count: 0,
+      past_count: base.past.length,
+      unfiltered_upcoming_count: 1,
+      window: {
+        ...base.window,
+        upcoming_count: 0,
+        past_count: base.past.length,
+        earliest_upcoming_utc: null,
+        next_high_impact: null,
+      },
+      country_index: [
+        quiet("TR", "Turkey"),
+        quiet("US", "United States"),
+        quiet("RU", "Russia"),
+        quiet("UA", "Ukraine"),
+        {
+          iso: "EU",
+          name: "Euro Area",
+          upcoming_count: 1,
+          past_count: 0,
+          state: "soon",
+          next_event: {
+            id: "economic:ecofin",
+            title: "ECOFIN Meetings",
+            when_utc: new Date(NOW + 13 * 3600_000).toISOString(),
+            seconds_to_event: 46800,
+            impact: "low",
+            spot: false,
+            kind: "economic",
+          },
+        },
+      ],
+    };
+    setMockFn({
+      state: "ok",
+      data: { data: payload, sources: ["forex_factory"], elapsed_ms: 80 },
+    });
+    const { container } = render(<MEETPane code="MEET" />);
+    expect(container.textContent).toContain("outside your filters");
+    expect(container.textContent).toContain("ECOFIN Meetings");
+  });
 });
 
 describe("MEET pane — mode tabs (calendar / wire)", () => {
   function calendarPayload() {
+    // Anchor CPI to tomorrow 12:00 UTC: a fixed "+26h" offset lands on the
+    // day after tomorrow when the suite runs after 22:00 UTC and the
+    // "Tomorrow" bucket assertion flakes by time of day.
+    const nowMs = Date.now();
+    const nowDate = new Date(nowMs);
+    const dayStart = Date.UTC(
+      nowDate.getUTCFullYear(),
+      nowDate.getUTCMonth(),
+      nowDate.getUTCDate(),
+    );
+    const tomorrowNoon = dayStart + 36 * 3600_000;
     const cpi = row({
       id: "economic:us-cpi",
       title: "CPI y/y",
       currencies: ["USD"],
-      when_utc: new Date(Date.now() + 26 * 3600_000).toISOString(),
-      seconds_to_event: 26 * 3600,
+      when_utc: new Date(tomorrowNoon).toISOString(),
+      seconds_to_event: Math.round((tomorrowNoon - nowMs) / 1000),
       details: { actual: "3.9%", forecast: "3.8%", previous: "3.7%", unit: "" },
     });
     const pending = row({
@@ -757,5 +828,232 @@ describe("MEET pane — realtime delta (Faz 5)", () => {
     expect(String(toastWarn.mock.calls[0]?.[0])).toContain("MEET spot");
     expect(String(toastWarn.mock.calls[0]?.[0])).toContain("Delta invasion escalation");
     expect(screen.getByText("Delta invasion escalation")).toBeInTheDocument();
+  });
+});
+
+describe("MEET pane - filter bar fixes", () => {
+  function okFixture() {
+    setMockFn({
+      state: "ok",
+      data: { data: worldPayload(), sources: ["forex_factory"], elapsed_ms: 5 },
+    });
+  }
+
+  it("query Find submits and empty submit clears the filter", () => {
+    okFixture();
+    render(<MEETPane code="MEET" />);
+    const input = screen.getByLabelText("Search world events");
+    expect(screen.getByRole("button", { name: "Find" })).toBeDisabled();
+    fireEvent.change(input, { target: { value: "cpi" } });
+    fireEvent.click(screen.getByRole("button", { name: "Find" }));
+    expect(mockFn.lastParams?.query).toBe("cpi");
+    // Clearing the draft must NOT disable Find while a query is applied,
+    // otherwise the filter is a trap with no way out.
+    fireEvent.change(input, { target: { value: "" } });
+    const findAgain = screen.getByRole("button", { name: "Find" });
+    expect(findAgain).not.toBeDisabled();
+    fireEvent.click(findAgain);
+    expect(mockFn.lastParams?.query).toBe("");
+  });
+
+  it("disables KIND while MODE overrides it", () => {
+    okFixture();
+    render(<MEETPane code="MEET" />);
+    fireEvent.click(screen.getByRole("button", { name: "Wire" }));
+    expect(mockFn.lastParams?.mode).toBe("wire");
+    expect(screen.getByRole("button", { name: "World" })).toBeDisabled();
+  });
+
+  it("alert settings popover has an explicit close button", () => {
+    okFixture();
+    render(<MEETPane code="MEET" />);
+    fireEvent.click(screen.getByRole("button", { name: "MEET alert settings" }));
+    expect(screen.getByTestId("meet-alerts-popover")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Close alert settings" }));
+    expect(screen.queryByTestId("meet-alerts-popover")).toBeNull();
+  });
+});
+
+describe("MEET pane — Task C UI parity", () => {
+  function okFixture() {
+    setMockFn({
+      state: "ok",
+      data: { data: worldPayload(), sources: ["forex_factory"], elapsed_ms: 5 },
+    });
+  }
+
+  function serverAlert(overrides: Record<string, unknown> = {}) {
+    return {
+      id: "economic:tcmb",
+      kind: "economic",
+      title: "TCMB Interest Rate Decision",
+      when_utc: new Date(NOW + 2 * 3600_000).toISOString(),
+      seconds_to_event: 7200,
+      countries: ["TR"],
+      country_names: ["Turkey"],
+      pairs: ["USDTRY", "EURTRY"],
+      impact: "high",
+      spot: true,
+      pinned: true,
+      source: "forex_factory",
+      lead_minutes: [1440, 60, 5],
+      ...overrides,
+    };
+  }
+
+  it("shows the read-only SERVER SPOT section when the backend ships alerts", () => {
+    const payload = worldPayload();
+    (payload as Record<string, unknown>).alerts = [serverAlert()];
+    setMockFn({
+      state: "ok",
+      data: { data: payload, sources: ["forex_factory"], elapsed_ms: 5 },
+    });
+    render(<MEETPane code="MEET" />);
+    fireEvent.click(screen.getByRole("button", { name: "MEET alert settings" }));
+    const popover = screen.getByTestId("meet-alerts-popover");
+    expect(popover.textContent).toContain("SERVER SPOT (upcoming)");
+    expect(popover.textContent).toContain("TCMB Interest Rate Decision");
+    expect(popover.textContent).toContain("Turkey");
+    expect(popover.textContent).toContain("USDTRY");
+    // Lead minutes ride along read-only (1d · 1h · 5m).
+    expect(popover.textContent).toContain("1d");
+  });
+
+  it("hides the SERVER SPOT section when the backend ships no alerts", () => {
+    okFixture(); // worldPayload() carries alerts: []
+    render(<MEETPane code="MEET" />);
+    fireEvent.click(screen.getByRole("button", { name: "MEET alert settings" }));
+    expect(screen.getByTestId("meet-alerts-popover")).toBeInTheDocument();
+    expect(screen.queryByText(/SERVER SPOT/)).toBeNull();
+  });
+
+  it("shows event_type and provider tags in the detail card audit row", () => {
+    const tagged = row({
+      id: "world:btc-etf",
+      kind: "world",
+      title: "Bitcoin ETF inflows hit record",
+      countries: [],
+      country_names: [],
+      impact: "medium",
+      source: "rss",
+      pairs: ["BTCUSD"],
+      when_utc: new Date(NOW - 3600_000).toISOString(),
+      seconds_to_event: -3600,
+      details: {
+        event_type: "etf_flow",
+        provider_tags: ["ETF", "BTC"],
+        asset_tags: ["BTC", "ETF"],
+        topic_tags: [],
+        summary: "ETF inflows",
+      },
+      summary: "ETF inflows",
+    });
+    const payload = { ...worldPayload(), rows: [tagged] };
+    setMockFn({
+      state: "ok",
+      data: { data: payload, sources: ["rss"], elapsed_ms: 5 },
+    });
+    render(<MEETPane code="MEET" />);
+    fireEvent.click(screen.getByRole("button", { name: /Bitcoin ETF inflows/ }));
+    const detail = screen.getByLabelText("Event detail");
+    expect(detail.textContent).toContain("etf_flow");
+    expect(detail.textContent).toContain("ETF");
+    expect(detail.textContent).toContain("BTC");
+  });
+
+  it("explains per-row why a headline rides in YOUR SYMBOLS", () => {
+    localStorage.setItem("showme.meet.alerts", JSON.stringify({ symbols: ["BTC"] }));
+    const matched = row({
+      id: "world:btc",
+      kind: "world",
+      title: "Bitcoin ETF inflows hit record",
+      countries: [],
+      country_names: [],
+      impact: "medium",
+      source: "rss",
+      pairs: ["BTCUSD"],
+      when_utc: new Date(NOW - 3600_000).toISOString(),
+      seconds_to_event: -3600,
+      symbol_matches: ["BTC"],
+    });
+    const marketWide = row({
+      id: "economic:fomc",
+      title: "FOMC Interest Rate Decision",
+      impact: "high",
+      when_utc: new Date(NOW + 5 * 86400_000).toISOString(),
+      seconds_to_event: 5 * 86400,
+      symbol_matches: ["all markets"],
+      symbol_relevance: "market_wide",
+    });
+    const payload = { ...worldPayload(), symbol_rows: [matched, marketWide] };
+    setMockFn({
+      state: "ok",
+      data: { data: payload, sources: ["forex_factory", "rss"], elapsed_ms: 5 },
+    });
+    const { container } = render(<MEETPane code="MEET" />);
+    expect(container.textContent).toContain("why here: BTC");
+    expect(container.textContent).toContain("why here: all markets · market_wide");
+  });
+
+  it("discloses untimed drops, window coverage and methodology in the footer", () => {
+    const payload = {
+      ...worldPayload(),
+      dropped_no_time: 2,
+      unfiltered_upcoming_count: 5,
+      methodology: "Keyless calendar plus gazetteer-tagged wire.",
+    };
+    setMockFn({
+      state: "ok",
+      data: { data: payload, sources: ["forex_factory"], elapsed_ms: 5 },
+    });
+    render(<MEETPane code="MEET" />);
+    expect(screen.getByText("2 untimed rows hidden")).toBeInTheDocument();
+    expect(screen.getByText("showing 2 of 5 upcoming")).toBeInTheDocument();
+    const info = screen.getByLabelText("Methodology");
+    expect(info.getAttribute("title")).toContain("gazetteer-tagged wire");
+  });
+
+  it("offers a persisted limit select defaulting to 400", () => {
+    okFixture();
+    render(<MEETPane code="MEET" />);
+    const select = screen.getByLabelText("Result limit") as HTMLSelectElement;
+    expect(select.value).toBe("400");
+    for (const n of ["100", "250", "400", "1000"]) {
+      expect(select.querySelector(`option[value="${n}"]`)).not.toBeNull();
+    }
+    expect(mockFn.lastParams?.limit).toBe(400);
+    fireEvent.change(select, { target: { value: "1000" } });
+    expect(mockFn.lastParams?.limit).toBe(1000);
+    expect(localStorage.getItem("showme.meet.limit")).toBe("1000");
+  });
+
+  it("no longer sends include_world (backend defaults it true)", () => {
+    okFixture();
+    render(<MEETPane code="MEET" />);
+    expect(mockFn.lastParams).not.toHaveProperty("include_world");
+  });
+
+  it("offers major_only as an honestly-labelled majors-only cut", () => {
+    okFixture();
+    render(<MEETPane code="MEET" />);
+    const select = screen.getByLabelText("Data filter") as HTMLSelectElement;
+    const values = Array.from(select.querySelectorAll("option")).map((o) => o.value);
+    expect(values).toEqual([
+      "all",
+      "spot",
+      "pinned",
+      "major_only",
+      "with_forecast",
+      "with_actual",
+      "surprise_only",
+    ]);
+    const option = select.querySelector('option[value="major_only"]');
+    expect(option).not.toBeNull();
+    expect(option?.textContent).toContain("majors-only cut");
+    expect(select.title).toContain("majors-only cut");
+    expect(select.title).toContain("spot/pinned rows survive");
+    fireEvent.change(select, { target: { value: "major_only" } });
+    expect(mockFn.lastParams?.data_filter).toBe("major_only");
+    expect(localStorage.getItem("showme.meet.data-filter")).toBe("major_only");
   });
 });
