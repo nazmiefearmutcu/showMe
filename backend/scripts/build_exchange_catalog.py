@@ -103,9 +103,9 @@ def main() -> None:
                          allow_unicode=True)
     out = Path(args.output)
     if args.crypto_only:
-        out.write_text(CCXT_HEADER + body)
+        out.write_text(CCXT_HEADER + body, encoding="utf-8")
         return
-    existing = out.read_text() if out.exists() else ""
+    existing = out.read_text(encoding="utf-8") if out.exists() else ""
     trad = ""
     if MARKER in existing:
         trad = MARKER + existing.split(MARKER, 1)[1]
@@ -130,7 +130,7 @@ def main() -> None:
             "    create_order: true\n"
             "    cancel_order: true\n"
         )
-    out.write_text(CCXT_HEADER + body + "\n" + trad)
+    out.write_text(CCXT_HEADER + body + "\n" + trad, encoding="utf-8")
 
 
 if __name__ == "__main__":

@@ -81,13 +81,20 @@ async def test_run_job_handles_nonexistent_command_without_leak(
         args={"cmd": "/this/path/definitely/does/not/exist-xyz arg"},
     )
 
-    # The fix wraps the spawn in try/except so even FileNotFoundError is
-    # turned into a non-zero exit code rather than bubbling up.
+    # Shell-kind jobs run through the system shell, so a bogus path no
+    # longer raises FileNotFoundError at spawn: the shell itself exits
+    # non-zero (127 on POSIX sh, 1 on cmd) after writing its own "not
+    # found / not recognized" diagnostic to the log. The contract that
+    # matters here is leak-freedom: DB updated, log file closed+readable.
     result = await run_job("bad-cmd")
     assert result["exit_code"] != 0
     # Log file path was registered and the file exists.
     log_path = Path(result["log_path"])
     assert log_path.exists()
-    # The failure note should have been appended.
-    content = log_path.read_text()
-    assert "failed" in content.lower() or content == ""
+    # The shell's diagnostic is in the log (or, if spawn itself raised,
+    # the runner's failure note) — either way the file is closed and
+    # readable, proving no FD leak. Read as bytes: child output uses the
+    # console OEM code page (e.g. cp857), which the ANSI locale decoder
+    # cannot parse — decoding is a viewer concern, not this contract's.
+    content = log_path.read_bytes()
+    assert content.strip() != b""

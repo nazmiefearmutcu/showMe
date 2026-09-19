@@ -27,8 +27,8 @@ def test_catalog_crypto_section_matches_generator(tmp_path: Path) -> None:
         check=True, capture_output=True, text=True,
     )
     assert result.returncode == 0, result.stderr
-    in_repo = (REPO / "showme" / "brokers" / "catalog" / "exchanges.yml").read_text()
-    regenerated = out.read_text()
+    in_repo = (REPO / "showme" / "brokers" / "catalog" / "exchanges.yml").read_text(encoding="utf-8")
+    regenerated = out.read_text(encoding="utf-8")
     assert _crypto_section(in_repo).strip() == regenerated.strip(), (
         "Crypto section of exchanges.yml drifted from generator output. "
         "Run scripts/build_exchange_catalog.py --output showme/brokers/catalog/exchanges.yml"

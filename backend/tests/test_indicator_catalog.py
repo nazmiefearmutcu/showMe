@@ -41,7 +41,7 @@ YAML = """
 
 def test_load_parses(tmp_path: Path):
     f = tmp_path / "ind.yml"
-    f.write_text(YAML)
+    f.write_text(YAML, encoding="utf-8")
     cat = load_indicator_catalog(f)
     assert isinstance(cat, IndicatorCatalog)
     assert len(cat.entries) == 2
@@ -55,7 +55,7 @@ def test_load_parses(tmp_path: Path):
 
 def test_by_id_missing_raises(tmp_path: Path):
     f = tmp_path / "ind.yml"
-    f.write_text(YAML)
+    f.write_text(YAML, encoding="utf-8")
     cat = load_indicator_catalog(f)
     with pytest.raises(KeyError):
         cat.by_id("missing")
@@ -63,7 +63,7 @@ def test_by_id_missing_raises(tmp_path: Path):
 
 def test_search_by_family(tmp_path: Path):
     f = tmp_path / "ind.yml"
-    f.write_text(YAML)
+    f.write_text(YAML, encoding="utf-8")
     cat = load_indicator_catalog(f)
     hits = cat.search("momentum")
     assert {e.id for e in hits} == {"rsi", "macd"}
@@ -71,7 +71,7 @@ def test_search_by_family(tmp_path: Path):
 
 def test_filter_by_family(tmp_path: Path):
     f = tmp_path / "ind.yml"
-    f.write_text(YAML)
+    f.write_text(YAML, encoding="utf-8")
     cat = load_indicator_catalog(f)
     hits = cat.filter(family="momentum")
     assert {e.id for e in hits} == {"rsi", "macd"}

@@ -166,13 +166,24 @@ async def run_job(name: str) -> dict[str, Any]:
 
     rc: int = -1
     # Context-manage the log file so a crashed worker cannot leak the FD.
+    # "shell"-kind jobs run through the system shell (cmd /c on Windows,
+    # /bin/sh -c on POSIX) so builtins like `echo` and quoting work on
+    # every platform; structured kinds keep the safer argv-exec path.
+    use_shell = kind == "shell"
     try:
         with open(log_path, "wb") as log_fh:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=log_fh,
-                stderr=asyncio.subprocess.STDOUT,
-            )
+            if use_shell:
+                proc = await asyncio.create_subprocess_shell(
+                    args_json.get("cmd", ""),
+                    stdout=log_fh,
+                    stderr=asyncio.subprocess.STDOUT,
+                )
+            else:
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=log_fh,
+                    stderr=asyncio.subprocess.STDOUT,
+                )
             rc = await proc.wait()
     except Exception as exc:  # noqa: BLE001
         rc = -1
