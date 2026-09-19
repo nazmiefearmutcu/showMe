@@ -249,7 +249,7 @@ def _probe_gdelt(client, timeout: float, maxrecords: int) -> dict:
         "query": we.world_query(),
         "mode": "ArtList",
         "format": "json",
-        "maxrecords": we.MEET_GDELT_LIMIT,
+        "maxrecords": maxrecords,
         "sort": "DateDesc",
         "startdatetime": (datetime.now(timezone.utc) - timedelta(days=we.MEET_GDELT_LOOKBACK_DAYS)).strftime("%Y%m%d%H%M%S"),
     }

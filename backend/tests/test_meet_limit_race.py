@@ -31,11 +31,13 @@ from showme.engine.functions.macro import eco as eco_mod
 @pytest.fixture(autouse=True)
 def _reset_caches():
     meet_mod._WORLD_CACHE = None
+    meet_mod._gdelt_429_until = 0.0
     meet_mod._SYMBOL_NEWS_CACHE = None
     eco_mod._ff_cache["fetched_at"] = 0.0
     eco_mod._ff_cache["rows"] = []
     yield
     meet_mod._WORLD_CACHE = None
+    meet_mod._gdelt_429_until = 0.0
     meet_mod._SYMBOL_NEWS_CACHE = None
     eco_mod._ff_cache["fetched_at"] = 0.0
     eco_mod._ff_cache["rows"] = []
@@ -170,6 +172,7 @@ def test_world_race_gdelt_keeps_priority_when_both_ready():
     """Two instantly-ready legs must deterministically prefer GDELT."""
     for _ in range(5):
         meet_mod._WORLD_CACHE = None
+        meet_mod._gdelt_429_until = 0.0
         gdelt = _InstantNews([
             {"title": "GDELT wire on talks", "url": "https://example.test/g",
              "published_at": _iso_in(timedelta(hours=-1))}

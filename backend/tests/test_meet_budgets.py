@@ -41,11 +41,13 @@ import pytest
 @pytest.fixture(autouse=True)
 def _reset_caches():
     meet_mod._WORLD_CACHE = None
+    meet_mod._gdelt_429_until = 0.0
     meet_mod._SYMBOL_NEWS_CACHE = None
     eco_mod._ff_cache["fetched_at"] = 0.0
     eco_mod._ff_cache["rows"] = []
     yield
     meet_mod._WORLD_CACHE = None
+    meet_mod._gdelt_429_until = 0.0
     meet_mod._SYMBOL_NEWS_CACHE = None
     eco_mod._ff_cache["fetched_at"] = 0.0
     eco_mod._ff_cache["rows"] = []

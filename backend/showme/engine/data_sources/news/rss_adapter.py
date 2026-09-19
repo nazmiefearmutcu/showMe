@@ -19,6 +19,7 @@ from xml.etree import ElementTree as ET
 import httpx
 
 from showme.engine.core.base_data_source import BaseDataSource, DataKind, DataRequest
+from showme.engine.services import world_events as we
 
 
 _MARKET_FEEDS = [
@@ -62,7 +63,9 @@ _WORLD_WIRE_EVENT_RE = re.compile(
     r"|stocks? (?:jump|surge|rise|fall|drop|slide|plunge|rally)"
     r"|earnings (?:beat|miss)|market (?:selloff|rally)|bond yields? (?:rise|fall)"
     r"|(?:bitcoin|ethereum|crypto|etf) .{0,45}(?:surge|jump|fall|drop|approval|approved)"
-    r"|sec (?:approves?|rejects?)|oil prices? (?:rise|fall|surge|drop))\b",
+    r"|sec (?:approves?|rejects?)|oil prices? (?:rise|fall|surge|drop)"
+    r"|coup|martial law|summits?|nuclear tests?|earthquakes?"
+    r"|missile tests?|assassinations?|defen[cs]e bills?|defense spending)\b",
     re.IGNORECASE,
 )
 _WORLD_WIRE_CONTEXT_RE = re.compile(
@@ -74,7 +77,8 @@ _WORLD_WIRE_CONTEXT_RE = re.compile(
     r"|riksbank|norges bank|interest rates?|inflation|cpi|ppi|pce|gdp"
     r"|payrolls?|unemployment|recession|stock market|stocks?|shares|equities"
     r"|bonds?|treasur(?:y|ies)|yields?|bitcoin|ethereum|crypto(?:currency)?"
-    r"|etfs?|sec approval|oil prices?|gold prices?|forex|currenc(?:y|ies))\b",
+    r"|etfs?|sec approval|oil prices?|gold prices?|forex|currenc(?:y|ies)"
+    r"|nato|putin|north korea|pyongyang|kim jong)\b",
     re.IGNORECASE,
 )
 _WORLD_WIRE_COMPANY_EVENT_RE = re.compile(
@@ -93,13 +97,67 @@ _WORLD_WIRE_ADVICE_RE = re.compile(
 
 
 def _world_wire_relevant(article: dict[str, Any]) -> bool:
-    title = str(article.get("title") or "")
-    if not title or _WORLD_WIRE_ADVICE_RE.search(title):
-        return False
-    return bool(
-        (_WORLD_WIRE_EVENT_RE.search(title) and _WORLD_WIRE_CONTEXT_RE.search(title))
-        or _WORLD_WIRE_COMPANY_EVENT_RE.search(title)
-    )
+    score, _ = _world_wire_score(str(article.get("title") or ""))
+    return score >= _WORLD_WIRE_THRESHOLD
+
+
+# Additive relevance scoring. Weights are calibrated so every
+# historically-pinned outcome is preserved (see
+# backend/tests/fixtures/meet_gate_labels.json, asserted at 100%):
+# a lone event (35) or lone context (30) decides nothing by itself;
+# company events (40) stand alone as before; the country gazetteer (+25)
+# boosts only event/company stories (Tokyo quake: 35+25) — never a bare
+# context match, so leader-travel trivia ("Putin visits Beijing": 30)
+# still fails; advice (-20) kills pure noise (30-20=10) but can no longer
+# bury a real event+context story (35+30-20=45), and never touches a
+# company event (layoff news ships inside press releases).
+_EVENT_WEIGHT = 35
+_COMPANY_WEIGHT = 40
+_CONTEXT_WEIGHT = 30
+_COUNTRY_WEIGHT = 25
+_ADVICE_PENALTY = -20
+_WORLD_WIRE_THRESHOLD = 40
+
+
+def _world_wire_score(title: str) -> tuple[int, list[str]]:
+    """Score a headline for world-wire relevance; threshold decides.
+
+    Returns ``(score, reasons)`` — reasons name the fired signals so the
+    decision stays auditable (same honesty rule as matched_terms).
+    """
+    reasons: list[str] = []
+    text = str(title or "")
+    if not text.strip():
+        return 0, ["empty"]
+    score = 0
+    grounded = False
+    company_hit = False
+    if _WORLD_WIRE_EVENT_RE.search(text):
+        score += _EVENT_WEIGHT
+        grounded = True
+        reasons.append("event")
+    if _WORLD_WIRE_COMPANY_EVENT_RE.search(text):
+        score += _COMPANY_WEIGHT
+        grounded = True
+        company_hit = True
+        reasons.append("company")
+    if _WORLD_WIRE_CONTEXT_RE.search(text):
+        score += _CONTEXT_WEIGHT
+        reasons.append("context")
+    if grounded:
+        try:
+            isos, _ = we.match_countries(text)
+        except Exception:  # noqa: BLE001 - gazetteer unavailable, no bonus
+            isos = []
+        if isos:
+            score += _COUNTRY_WEIGHT
+            reasons.append("countries:" + ",".join(isos))
+    # Advice/PR boilerplate penalizes — unless a company event fired:
+    # real layoff/earnings news routinely ships inside a press release.
+    if _WORLD_WIRE_ADVICE_RE.search(text) and not company_hit:
+        score += _ADVICE_PENALTY
+        reasons.append("advice")
+    return score, reasons
 
 
 class RSSAdapter(BaseDataSource):

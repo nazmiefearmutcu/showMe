@@ -71,6 +71,7 @@ class _StalledProvider(_Provider):
 @pytest.fixture(autouse=True)
 def _reset_caches():
     meet_mod._WORLD_CACHE = None
+    meet_mod._gdelt_429_until = 0.0
     meet_mod._SYMBOL_NEWS_CACHE = None
     eco_mod._ff_cache["fetched_at"] = 0.0
     eco_mod._ff_cache["rows"] = []
@@ -213,6 +214,7 @@ def test_quality_metrics_are_observable_counts_not_accuracy_claims():
         "attribution_covered_count": 1,
         "duplicate_rows_dropped": 2,
         "rows_dropped_no_time": 1,
+        "rows_capped_at_limit": 0,
         "active_source_tiers": ["keyless_fallback", "future_supplement"],
         "measures": "observable_completeness_not_factual_accuracy",
     }
@@ -355,3 +357,62 @@ def test_symbol_limit_truncation_is_not_counted_as_duplicate(monkeypatch):
     result = asyncio.run(fn.execute(mode="wire", symbols="BTC"))
     assert len(result.data["rows"]) == 60
     assert result.data["data_quality"]["duplicate_rows_dropped"] == 0
+
+
+@pytest.mark.parametrize("title", [
+    "Military coup in Myanmar as troops seize power",
+    "NATO summit opens in Vilnius with Ukraine on agenda",
+    "Putin declares martial law in border regions",
+    "White House confirms nuclear test by North Korea",
+    "Taiwan parliament passes sweeping defence bill",
+    "Massive earthquake hits Tokyo, thousands feared dead",
+])
+def test_market_wire_recall_critical_patterns(title):
+    assert rss_adapter._world_wire_relevant({"title": title}) is True
+
+
+def test_market_wire_event_with_advice_pattern_still_kept():
+    assert rss_adapter._world_wire_relevant(
+        {"title": "Federal Reserve cuts rates: best stocks to buy now"}
+    ) is True
+
+
+def test_world_rows_limit_counts_capped_unique_rows():
+    articles = [
+        {"title": f"Federal Reserve rate decision update {i}",
+         "url": f"https://x.test/cap/{i}",
+         "published_at": NOW.isoformat()}
+        for i in range(10)
+    ]
+    stats: dict[str, int] = {}
+    rows = we.world_rows(articles, now=NOW, source="rss", limit=3, stats=stats)
+    assert len(rows) == 3
+    assert stats.get("rows_capped_at_limit") == 7
+    assert stats.get("duplicate_rows_dropped", 0) == 0
+
+
+def test_meet_truncation_counts_capped_not_duplicate(monkeypatch):
+    monkeypatch.setattr(meet_mod, "_utc_now", lambda: NOW)
+    fn = meet_mod.MEETFunction()
+    async def headlines(*, now, timeout):
+        return [], "", "news: unavailable"
+    async def symbol_articles(symbols, *, now, timeout):
+        return [
+            {"title": f"Bitcoin market update {i}", "url": f"https://x.test/{i}",
+             "published_at": NOW.isoformat()}
+            for i in range(61)
+        ]
+    monkeypatch.setattr(fn, "_world_headlines", headlines)
+    monkeypatch.setattr(fn, "_symbol_articles", symbol_articles)
+    result = asyncio.run(fn.execute(mode="wire", symbols="BTC"))
+    assert len(result.data["rows"]) == 60
+    assert result.data["data_quality"]["rows_capped_at_limit"] == 1
+    assert result.data["data_quality"]["duplicate_rows_dropped"] == 0
+
+
+def test_economic_id_dedupe_counts_duplicate():
+    row = {"title": "CPI", "country": "USD", "date": NOW.isoformat(), "impact": "High"}
+    stats: dict[str, int] = {}
+    rows, _ = we.economic_rows([row, dict(row)], now=NOW, stats=stats)
+    assert len(rows) == 1
+    assert stats.get("duplicate_rows_dropped") == 1

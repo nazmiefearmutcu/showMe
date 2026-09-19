@@ -41,6 +41,13 @@ _WORLD_CACHE: tuple[float, tuple[list[dict[str, Any]], str, str | None], float] 
 # so an outage recovers. _SYMBOL_NEWS_TTL_S stays 180 s (less critical).
 _WORLD_CACHE_TTL_S = 60.0
 _WORLD_CACHE_FAIL_TTL_S = 15.0
+# GDELT 429 backoff: the DOC endpoint rate-limits per IP (observed live:
+# full query burns the whole timeout then 429s). Hammering it every cache
+# miss wastes seconds and quota, so a 429 parks the GDELT leg for a while
+# and the pane serves RSS directly with an explicit backoff note.
+_GDELT_429_BACKOFF_S = 300.0
+_gdelt_429_until: float = 0.0
+_gdelt_429_note: str | None = None
 # Followed-symbol headline cache: (symbols_key, stored_at, articles)
 _SYMBOL_NEWS_CACHE: tuple[str, float, list[dict[str, Any]]] | None = None
 _SYMBOL_NEWS_TTL_S = 180.0
@@ -176,8 +183,12 @@ class MEETFunction(BaseFunction):
         warnings.extend(calendar_warnings)
         sources.extend(calendar_sources)
 
-        economic, dropped_no_time = we.economic_rows(calendar_rows, now=now)
+        economic_stats: dict[str, int] = {}
+        economic, dropped_no_time = we.economic_rows(calendar_rows, now=now, stats=economic_stats)
+        duplicate_rows_dropped += economic_stats.get("duplicate_rows_dropped", 0)
         dropped_no_time += rejected_primary_no_time
+        _attach_numerics(economic)
+        rows_capped_at_limit = 0
 
         # --- world headlines (keyless GDELT, RSS fallback) ---
         world: list[dict[str, Any]] = []
@@ -187,10 +198,13 @@ class MEETFunction(BaseFunction):
             if articles:
                 deduped_articles, url_duplicates = _dedupe_articles(articles)
                 row_stats: dict[str, int] = {}
-                world = we.world_rows(
+                full_world = we.world_rows(
                     deduped_articles, now=now, source=world_source or "news",
                     limit=len(deduped_articles), stats=row_stats,
-                )[:60]
+                )
+                rows_capped_at_limit += row_stats.get("rows_capped_at_limit", 0)
+                rows_capped_at_limit += len(full_world) - len(full_world[:60])
+                world = full_world[:60]
                 duplicate_rows_dropped += url_duplicates + row_stats.get("duplicate_rows_dropped", 0)
                 if world:
                     sources.append(world_source or "news")
@@ -212,10 +226,13 @@ class MEETFunction(BaseFunction):
                     if fresh:
                         deduped_fresh, url_duplicates = _dedupe_articles(fresh)
                         row_stats = {}
-                        symbol_world = we.world_rows(
+                        full_symbol_world = we.world_rows(
                             deduped_fresh, now=now, source="symbol_feed",
                             limit=len(deduped_fresh), stats=row_stats,
-                        )[:60]
+                        )
+                        rows_capped_at_limit += row_stats.get("rows_capped_at_limit", 0)
+                        rows_capped_at_limit += len(full_symbol_world) - len(full_symbol_world[:60])
+                        symbol_world = full_symbol_world[:60]
                         duplicate_rows_dropped += url_duplicates + row_stats.get("duplicate_rows_dropped", 0)
                         if symbol_world:
                             world.extend(symbol_world)
@@ -268,6 +285,7 @@ class MEETFunction(BaseFunction):
                 dropped_no_time=dropped_no_time,
                 active_source_tiers=active_source_tiers,
                 attributions=attributions,
+                rows_capped_at_limit=rows_capped_at_limit,
             )
             return FunctionResult(
                 code=self.code,
@@ -406,6 +424,7 @@ class MEETFunction(BaseFunction):
                 dropped_no_time=dropped_no_time,
                 active_source_tiers=active_source_tiers,
                 attributions=attributions,
+                rows_capped_at_limit=rows_capped_at_limit,
             ),
             attributions=attributions,
         )
@@ -644,7 +663,7 @@ class MEETFunction(BaseFunction):
         fallback on EVERY click and the pane sat on skeletons for 8+ s).
         Filters apply to the cached rows; only the upstream fetch is cached.
         """
-        global _WORLD_CACHE
+        global _WORLD_CACHE, _gdelt_429_until
         now_mono = time.monotonic()
         if _WORLD_CACHE is not None and (now_mono - _WORLD_CACHE[0]) < _WORLD_CACHE[2]:
             cached_items, cached_source, cached_error = _WORLD_CACHE[1]
@@ -652,11 +671,17 @@ class MEETFunction(BaseFunction):
 
         gdelt = getattr(self.deps, "gdelt", None)
         rss = getattr(self.deps, "rss", None)
+        if gdelt is not None and now_mono < _gdelt_429_until and rss is not None:
+            gdelt = None
+            origin = f" ({_gdelt_429_note})" if _gdelt_429_note else ""
+            gdelt_backoff_note = f"gdelt: HTTP 429 backoff{origin} (rss served)"
+        else:
+            gdelt_backoff_note = None
         rss_extra = {
             "feed_group": "market",
             # Explicit per-feed + collection budgets: the adapter's
             # 2 s defaults were fine for ten feeds, but the
-            # fast-wire list (15 hosts) on a COLD connection pool
+            # fast-wire list (14 hosts) on a COLD connection pool
             # completed nothing inside the window -> zero
             # headlines right after a restart (observed
             # 2026-09-16, GDELT down at the same time).
@@ -680,7 +705,12 @@ class MEETFunction(BaseFunction):
                     return list(items), None
                 return [], "gdelt: empty result"
             except Exception as exc:  # noqa: BLE001
-                return [], f"gdelt: {str(exc) or exc.__class__.__name__}"
+                err = f"gdelt: {str(exc) or exc.__class__.__name__}"
+                if re.search(r"\b429\b", err):
+                    global _gdelt_429_until, _gdelt_429_note
+                    _gdelt_429_until = time.monotonic() + _GDELT_429_BACKOFF_S
+                    _gdelt_429_note = err[:160]
+                return [], err
 
         async def _rss_leg() -> tuple[list[dict[str, Any]], str | None]:
             try:
@@ -733,8 +763,10 @@ class MEETFunction(BaseFunction):
                 for task in pending:
                     task.cancel()
                 gdelt_err = gdelt_res[1] if gdelt_res else None
-                if gdelt_err and "empty" not in gdelt_err:
-                    gdelt_note: str | None = f"{gdelt_err} (rss served)"
+                if gdelt_backoff_note:
+                    gdelt_note: str | None = gdelt_backoff_note
+                elif gdelt_err and "empty" not in gdelt_err:
+                    gdelt_note = f"{gdelt_err} (rss served)"
                 else:
                     gdelt_note = None
                 result = (
@@ -982,7 +1014,9 @@ def _data_quality(
     rows: list[dict[str, Any]], *, duplicate_rows_dropped: int,
     dropped_no_time: int, active_source_tiers: list[str],
     attributions: list[dict[str, str]],
+    rows_capped_at_limit: int = 0,
 ) -> dict[str, Any]:
+    """Observable completeness counts; duplicate_rows_dropped counts exact URL/row-id matches only."""
     timed = sum(1 for row in rows if row.get("when_utc") and not row.get("undated"))
     undated = sum(1 for row in rows if row.get("undated") or not row.get("when_utc"))
     source_traceable = sum(1 for row in rows if str(row.get("source") or "").strip())
@@ -1002,6 +1036,7 @@ def _data_quality(
         "attribution_covered_count": covered,
         "duplicate_rows_dropped": duplicate_rows_dropped,
         "rows_dropped_no_time": dropped_no_time,
+        "rows_capped_at_limit": rows_capped_at_limit,
         "active_source_tiers": list(dict.fromkeys(active_source_tiers)),
         "measures": "observable_completeness_not_factual_accuracy",
     }
@@ -1122,6 +1157,16 @@ def _shell(
             "rows[].details.actual": "Released value when available (Actual).",
             "rows[].details.forecast": "Consensus estimate when available (Forecast).",
             "rows[].details.previous": "Prior print when available (Previous).",
+            "rows[].details.actual_num": "Parsed Actual as float (None when non-numeric).",
+            "rows[].details.forecast_num": "Parsed Forecast as float (None when non-numeric).",
+            "rows[].details.previous_num": "Parsed Previous as float (None when non-numeric).",
+            "rows[].details.unit": "Resolved unit (%, K/M/B/T) from the printed cells.",
+            "rows[].details.surprise": "Actual minus Forecast — only when both parse and units are comparable; else None (never invented across scales).",
+            "rows[].details.surprise_pct": "Surprise relative to |Forecast| (None when Forecast is 0 or surprise is None).",
+            "rows[].details.surprise_basis": "actual_minus_forecast | capped_estimate | unit_mismatch | non_numeric | missing_value.",
+            "rows[].details.capped": "True when a printed cell was censored with '<' (surprise is an estimate).",
+            "rows[].details.revised": "True when a same-snapshot duplicate carried a differing Actual (later value wins).",
+            "rows[].details.provider_tz_offset": "Provider timestamp's own UTC offset (when_utc is always +00:00).",
             "rows[].summary": "Headline summary text (world rows; mirrors details.summary).",
             "rows[].details.summary": "Headline summary text, truncated (world rows).",
             "rows[].details.topic_tags": "Macro topic tags (FED, ECB, INFLATION...) matched in the headline.",
@@ -1194,6 +1239,80 @@ def _is_numeric_value(value: Any) -> bool:
     return parsed is not None
 
 
+# Units the FF parser scales to absolute numbers — K vs M is comparable
+# (both already scaled); % vs absolute is not.
+_SCALED_UNITS = frozenset({"K", "M", "B", "T"})
+
+
+def _safe_parse_number(value: Any) -> tuple[float | None, str, bool]:
+    """Parse a calendar cell into (value, unit, capped); never raises."""
+    if isinstance(value, bool) or value is None:
+        return None, "", False
+    if isinstance(value, (int, float)):
+        return (round(float(value), 6), "", False) if math.isfinite(float(value)) else (None, "", False)
+    try:
+        parsed, unit, capped = eco_mod._parse_ff_number(value)
+    except Exception:  # noqa: BLE001 - best-effort enrichment
+        return None, "", False
+    return parsed, unit, capped
+
+
+def _attach_numerics(rows: list[dict[str, Any]]) -> None:
+    """Enrich economic rows with parsed numerics + unit-aware surprise.
+
+    Raw provider strings stay untouched (UI renders them); the numeric
+    layer rides alongside: ``actual_num`` / ``forecast_num`` /
+    ``previous_num``, resolved ``unit``, and ``surprise`` (actual minus
+    forecast) ONLY when both sides parse AND their units are comparable
+    (equal, or both K/M/B/T which the parser pre-scales). A ``%`` print
+    against a unitless consensus yields no surprise — inventing one
+    across scales would be worse than reporting none. ``surprise_pct``
+    is surprise relative to |forecast| (None when forecast is 0).
+    """
+    for row in rows:
+        if row.get("kind") != "economic":
+            continue
+        details = row.get("details")
+        if not isinstance(details, dict):
+            continue
+        raw_a, raw_f, raw_p = details.get("actual"), details.get("forecast"), details.get("previous")
+        a, au, ac = _safe_parse_number(raw_a)
+        f, fu, fc = _safe_parse_number(raw_f)
+        p, pu, _ = _safe_parse_number(raw_p)
+        details["actual_num"] = a
+        details["forecast_num"] = f
+        details["previous_num"] = p
+        # Unit comes only from a side that actually parsed — the raw
+        # provider string ("N/A", "abc") is never a unit.
+        if au and a is not None:
+            details["unit"] = au
+        elif fu and f is not None:
+            details["unit"] = fu
+        elif pu and p is not None:
+            details["unit"] = pu
+        details["capped"] = bool((ac and a is not None) or (fc and f is not None))
+        if a is None or f is None:
+            if (_has_detail(raw_a) and a is None) or (_has_detail(raw_f) and f is None):
+                details["surprise"] = None
+                details["surprise_basis"] = "non_numeric"
+            else:
+                details["surprise"] = None
+                details["surprise_basis"] = "missing_value"
+            details["surprise_pct"] = None
+            continue
+        if au != fu and not ({au, fu} <= _SCALED_UNITS):
+            details["surprise"] = None
+            details["surprise_pct"] = None
+            details["surprise_basis"] = "unit_mismatch"
+            continue
+        surprise = round(a - f, 6)
+        details["surprise"] = surprise
+        details["surprise_pct"] = round(surprise / abs(f), 6) if f != 0 else None
+        details["surprise_basis"] = (
+            "capped_estimate" if details["capped"] else "actual_minus_forecast"
+        )
+
+
 def _passes_data_filter(row: dict[str, Any], data_filter: str) -> bool:
     """Spec data filters apply to calendar rows only."""
     if row.get("kind") != "economic":
@@ -1206,12 +1325,9 @@ def _passes_data_filter(row: dict[str, Any], data_filter: str) -> bool:
     if data_filter == "with_actual":
         return has_actual
     if data_filter == "surprise_only":
-        return (
-            has_actual
-            and has_forecast
-            and _is_numeric_value(details.get("actual"))
-            and _is_numeric_value(details.get("forecast"))
-        )
+        # A computable surprise (unit-compatible numerics on both sides);
+        # unit-mismatched or non-numeric prints carry no surprise value.
+        return details.get("surprise") is not None
     return True
 
 

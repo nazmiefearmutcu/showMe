@@ -308,7 +308,8 @@ describe("groupRows — upcoming/past split", () => {
   it("splits on the live clock and keeps undated wire copy in the past", () => {
     const payload = worldPayload();
     const { upcoming, past } = groupRows(payload.rows as MeetRow[], NOW);
-    expect(upcoming.map((r) => r.id)).toEqual(["economic:tcmb", "economic:us-cpi"]);
+    // Hourglass around NOW: upcoming runs farthest → nearest.
+    expect(upcoming.map((r) => r.id)).toEqual(["economic:us-cpi", "economic:tcmb"]);
     expect(past.map((r) => r.id)).toEqual(["world:war"]);
     const undated = row({ id: "u", undated: true });
     expect(groupRows([undated], NOW).past).toHaveLength(1);
@@ -319,14 +320,30 @@ describe("groupRows — upcoming/past split", () => {
     const late = row({ id: "late", when_utc: new Date(NOW + 3_000).toISOString() });
     const old = row({ id: "old", when_utc: new Date(NOW - 5_000).toISOString() });
 
+    // Upcoming: farthest first, the soonest event last (just above NOW).
     expect(groupRows([late, old, early], NOW).upcoming.map((r) => r.id)).toEqual([
-      "early",
       "late",
+      "early",
     ]);
+    // Past: freshest first (just below NOW), older last.
     expect(groupRows([late, old, early], NOW + 2_000).past.map((r) => r.id)).toEqual([
       "early",
       "old",
     ]);
+  });
+
+  it("converges both groups on NOW (hourglass layout)", () => {
+    const rows = [
+      row({ id: "far-future", when_utc: new Date(NOW + 10 * 86400_000).toISOString() }),
+      row({ id: "near-future", when_utc: new Date(NOW + 60_000).toISOString() }),
+      row({ id: "near-past", when_utc: new Date(NOW - 60_000).toISOString() }),
+      row({ id: "far-past", when_utc: new Date(NOW - 10 * 86400_000).toISOString() }),
+    ];
+    const { upcoming, past } = groupRows(rows, NOW);
+    // Above the divider: far future → soonest (nearest to NOW at the bottom).
+    expect(upcoming.map((r) => r.id)).toEqual(["far-future", "near-future"]);
+    // Below the divider: freshest (nearest to NOW at the top) → far past.
+    expect(past.map((r) => r.id)).toEqual(["near-past", "far-past"]);
   });
 });
 

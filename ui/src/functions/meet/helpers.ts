@@ -246,7 +246,19 @@ export function isPastRow(row: MeetRow, nowMs: number): boolean {
   return ts <= nowMs;
 }
 
-/** Split the backend-ordered row list into [upcoming, past] live groups. */
+/**
+ * Split the backend-ordered row list into [upcoming, past] live groups.
+ *
+ * Both groups converge on the NOW divider (owner 2026-09-19: "UPCOMING en
+ * uzaktan en yakına, PAST en yakından en uzağa") so the pane reads as one
+ * reverse-chronological column around NOW:
+ *
+ *   upcoming: farthest → nearest (the soonest event sits just above NOW)
+ *   past:     nearest  → farthest (the freshest event sits just below NOW)
+ *
+ * Rows without a parseable timestamp sink to the bottom of their group
+ * instead of pretending to sit at an end of the timeline.
+ */
 export function groupRows(rows: MeetRow[], nowMs: number): { upcoming: MeetRow[]; past: MeetRow[] } {
   const upcoming: MeetRow[] = [];
   const past: MeetRow[] = [];
@@ -257,8 +269,16 @@ export function groupRows(rows: MeetRow[], nowMs: number): { upcoming: MeetRow[]
     const ts = Date.parse(row.when_utc ?? "");
     return Number.isFinite(ts) ? ts : null;
   };
-  upcoming.sort((a, b) => (timestamp(a) ?? Number.POSITIVE_INFINITY) - (timestamp(b) ?? Number.POSITIVE_INFINITY));
-  past.sort((a, b) => (timestamp(b) ?? Number.NEGATIVE_INFINITY) - (timestamp(a) ?? Number.NEGATIVE_INFINITY));
+  const byTimeDesc = (a: MeetRow, b: MeetRow): number => {
+    const ta = timestamp(a);
+    const tb = timestamp(b);
+    if (ta == null && tb == null) return 0;
+    if (ta == null) return 1; // unknown time sinks to the bottom
+    if (tb == null) return -1;
+    return tb - ta;
+  };
+  upcoming.sort(byTimeDesc);
+  past.sort(byTimeDesc);
   return { upcoming, past };
 }
 

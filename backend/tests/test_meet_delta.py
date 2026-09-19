@@ -111,11 +111,13 @@ import pytest  # noqa: E402
 @pytest.fixture(autouse=True)
 def _reset_caches():
     meet_mod._WORLD_CACHE = None
+    meet_mod._gdelt_429_until = 0.0
     meet_mod._SYMBOL_NEWS_CACHE = None
     eco_mod._ff_cache["fetched_at"] = 0.0
     eco_mod._ff_cache["rows"] = []
     yield
     meet_mod._WORLD_CACHE = None
+    meet_mod._gdelt_429_until = 0.0
     meet_mod._SYMBOL_NEWS_CACHE = None
     eco_mod._ff_cache["fetched_at"] = 0.0
     eco_mod._ff_cache["rows"] = []
@@ -177,6 +179,7 @@ def test_since_echo_and_filters_applied_excludes_plumbing():
 def test_hash_stable_without_window_change():
     first = _base_call()
     meet_mod._WORLD_CACHE = None
+    meet_mod._gdelt_429_until = 0.0
     eco_mod._ff_cache["fetched_at"] = 0.0
     second = _base_call()
     assert first.data["hash"] == second.data["hash"]
@@ -210,6 +213,7 @@ def test_hash_changes_and_new_row_lands_in_new_rows():
         ]
     )
     meet_mod._WORLD_CACHE = None
+    meet_mod._gdelt_429_until = 0.0
     second = _run(
         _meet(FunctionDeps(gdelt=gdelt), _FakeFFClient()).execute(
             limit=100, known_ids=",".join(ids)

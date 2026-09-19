@@ -435,6 +435,7 @@ def economic_rows(
     *,
     now: datetime,
     source: str = "forex_factory",
+    stats: dict[str, int] | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     """Normalize calendar rows into world-event rows.
 
@@ -443,17 +444,19 @@ def economic_rows(
     """
     rows: list[dict[str, Any]] = []
     dropped = 0
-    seen: set[str] = set()
+    seen: dict[str, dict[str, Any]] = {}
     for item in calendar_rows:
         if not isinstance(item, dict):
             continue
         title = str(item.get("event") or item.get("title") or "").strip()
         if not title:
             continue
-        when = parse_when_utc(item.get("date") or item.get("when_utc") or item.get("datetime"))
+        raw_when = item.get("date") or item.get("when_utc") or item.get("datetime")
+        when = parse_when_utc(raw_when)
         if when is None:
             dropped += 1
             continue
+        provider_tz = _provider_tz_offset(raw_when)
         provider_token = str(item.get("country") or item.get("currency") or "").strip().upper()
         # D2 Task B.1: the calendar's synthetic "ALL" token is a GLOBAL row
         # (every-country releases). No ISO, renders as "Global", touches no
@@ -468,10 +471,21 @@ def economic_rows(
         spot = impact == "high" and bool(_RATE_DECISION_RE.search(title))
         row_id = _row_id("economic", when, isos, title)
         if row_id in seen:
+            if stats is not None:
+                stats["duplicate_rows_dropped"] = stats.get("duplicate_rows_dropped", 0) + 1
+            # Same-snapshot revision: a row carrying a released Actual wins
+            # over one without; a differing Actual marks the row revised.
+            # (Cross-poll revision tracking is out of scope — the function
+            # is stateless; only same-snapshot collisions resolve here.)
+            prev = seen[row_id]
+            prev_actual = (prev.get("details") or {}).get("actual")
+            new_actual = item.get("actual")
+            if _has_cell_value(new_actual) and str(new_actual) != str(prev_actual):
+                prev["details"]["actual"] = new_actual
+                prev["details"]["revised"] = True
             continue
-        seen.add(row_id)
         row_source = str(item.get("provider") or source).strip() or source
-        rows.append({
+        row = {
             "id": row_id,
             "kind": "economic",
             "title": title,
@@ -490,6 +504,7 @@ def economic_rows(
                 "previous": item.get("previous"),
                 "unit": item.get("unit") or "",
                 "provider_country": provider_token or None,
+                "provider_tz_offset": provider_tz,
                 "is_global": is_global,
                 "provider": row_source,
                 "provider_event_url": item.get("provider_event_url"),
@@ -498,8 +513,39 @@ def economic_rows(
             },
             "seconds_to_event": round(seconds, 1),
             "age_minutes": round(-seconds / 60, 1) if seconds < 0 else None,
-        })
+        }
+        seen[row_id] = row
+        rows.append(row)
     return rows, dropped
+
+
+def _has_cell_value(value: Any) -> bool:
+    """A calendar cell counts as present when it is not empty."""
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return True
+    return str(value).strip() != ""
+
+
+def _provider_tz_offset(value: Any) -> str:
+    """Keep the provider timestamp's own UTC offset for audit.
+
+    ``when_utc`` is always normalized to +00:00; the original offset
+    (e.g. ``-04:00``) records which market clock the provider spoke in.
+    """
+    text = value.isoformat() if isinstance(value, datetime) else str(value or "").strip()
+    if not text:
+        return ""
+    if text.endswith(("Z", "z")):
+        return "Z"
+    tail = text[-6:]
+    if (
+        len(tail) == 6 and tail[0] in "+-"
+        and tail[3] == ":" and tail[1:3].isdigit() and tail[4:].isdigit()
+    ):
+        return tail
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -736,7 +782,8 @@ def world_rows(
     """Normalize headlines into country-tagged world-event rows."""
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for item in articles:
+    items = list(articles) if stats is not None else articles
+    for idx, item in enumerate(items):
         if not isinstance(item, dict):
             continue
         title = _clean_text(item.get("title") or item.get("headline") or item.get("name"))
@@ -843,6 +890,19 @@ def world_rows(
             "age_minutes": round(-seconds / 60, 1) if seconds < 0 else None,
         })
         if len(rows) >= limit:
+            if stats is not None:
+                remaining = 0
+                for rest in items[idx + 1:]:
+                    if not isinstance(rest, dict):
+                        continue
+                    rest_title = _clean_text(
+                        rest.get("title") or rest.get("headline") or rest.get("name")
+                    )
+                    if not rest_title:
+                        continue
+                    remaining += 1
+                if remaining:
+                    stats["rows_capped_at_limit"] = stats.get("rows_capped_at_limit", 0) + remaining
             break
     return rows
 

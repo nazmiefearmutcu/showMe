@@ -189,6 +189,7 @@ def test_symbol_view_matches_on_asset_tags():
             return _Resp()
 
     meet_mod._WORLD_CACHE = None
+    meet_mod._gdelt_429_until = 0.0
     meet_mod._SYMBOL_NEWS_CACHE = None
     try:
         fn = meet_mod.MEETFunction(deps=FunctionDeps(gdelt=_FakeGDELT()))
@@ -196,6 +197,7 @@ def test_symbol_view_matches_on_asset_tags():
         result = _run(fn.execute(symbols="BTC", limit=100))
     finally:
         meet_mod._WORLD_CACHE = None
+        meet_mod._gdelt_429_until = 0.0
         meet_mod._SYMBOL_NEWS_CACHE = None
     headline_rows = [
         r for r in result.data["symbol_rows"]

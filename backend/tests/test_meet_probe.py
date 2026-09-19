@@ -101,7 +101,7 @@ def test_gdelt_probe_request_matches_meet_query_window_and_limit(monkeypatch):
     probe._probe_gdelt(client, 1, 5)
     params = client.params
     assert params["query"] == we.world_query()
-    assert params["maxrecords"] == we.MEET_GDELT_LIMIT
+    assert params["maxrecords"] == 5
     assert params["startdatetime"] == (fixed_now - probe.timedelta(days=we.MEET_GDELT_LOOKBACK_DAYS)).strftime("%Y%m%d%H%M%S")
     assert params["mode"] == "ArtList"
     assert params["sort"] == "DateDesc"
