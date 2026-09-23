@@ -204,7 +204,11 @@ export function MarketHeatmapPane({ code }: FunctionPaneProps) {
     const v = changeOf(r);
     return v != null && v < 0;
   }).length;
-  const breadthRatio = rows.length ? totalUp / rows.length : 0;
+  // HNT-02: breadth is up/(up+down) over REPORTING rows — a null-change row
+  // is "not reported" (see above), not a down leg, so it must stay out of
+  // the denominator too.
+  const reported = totalUp + totalDown;
+  const breadthRatio = reported ? totalUp / reported : 0;
 
   return (
     <div className="u-pane-host">

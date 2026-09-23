@@ -23,7 +23,7 @@ mod window;
 use parking_lot::RwLock;
 use serde::Serialize;
 use std::sync::Arc;
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 use tauri_plugin_log::{Target, TargetKind, RotationStrategy};
 
 /// Shared application state passed to every Tauri command.
@@ -38,6 +38,11 @@ pub struct AppState {
     /// every HTTP/WS call so a co-resident process on loopback cannot
     /// hit the broker/portfolio endpoints (ARCH-05 P2).
     pub sidecar_auth_token: Arc<RwLock<Option<String>>>,
+    /// HNT-07 — set by `sidecar::shutdown` right before the child is
+    /// torn down. The sidecar backoff/retry loop and the crash-restart
+    /// path poll it so a quit during a backoff window never leaves a
+    /// freshly-spawned orphaned Python process behind.
+    pub sidecar_shutdown: std::sync::atomic::AtomicBool,
 }
 
 #[derive(Default, Clone, Debug, Serialize)]
@@ -93,16 +98,19 @@ fn install_panic_hook() {
             let body = format!(
                 "showMe panic at {location}\npayload: {payload}\nbacktrace:\n{bt}\n"
             );
-            // Write to the configured app data dir, falling back to /tmp so
+            // Write to the configured app data dir, falling back to temp dir so
             // even a panic before `ensure_layout` ran lands somewhere.
-            let candidate_root = dirs_home()
-                .map(|h| h.join("Library/Application Support/showMe"))
-                .unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
+            let candidate_root = app_data_root_fallback();
             let crash_dir = candidate_root.join("logs/crash");
             let _ = std::fs::create_dir_all(&crash_dir);
             let stamp = chrono_like_stamp();
             let path = crash_dir.join(format!("panic-{stamp}.log"));
             let _ = std::fs::write(&path, body.as_bytes());
+            // HNT-07 — release builds use `panic = "abort"`, so this hook
+            // is the last code that runs before the process dies: no
+            // `ExitRequested`, no `sidecar::shutdown`. Kill the sidecar
+            // best-effort or it stays orphaned holding the DuckDB lock.
+            crate::sidecar::kill_child_best_effort();
             // Best-effort log + delegate.
             log::error!("panic captured to {}: {payload}", path.display());
             prev(info);
@@ -123,7 +131,43 @@ fn chrono_like_stamp() -> String {
 }
 
 fn dirs_home() -> Option<std::path::PathBuf> {
-    std::env::var_os("HOME").map(std::path::PathBuf::from)
+    if let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) {
+        return Some(home);
+    }
+    // Windows: HOME is usually unset — fall back to USERPROFILE.
+    std::env::var_os("USERPROFILE").map(std::path::PathBuf::from)
+}
+
+/// Cross-platform fallback for the app data root used by the panic hook
+/// (no Tauri handle available there).
+fn app_data_root_fallback() -> std::path::PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(appdata) = std::env::var_os("APPDATA").map(std::path::PathBuf::from) {
+            return appdata.join("showMe");
+        }
+        if let Some(home) = dirs_home() {
+            return home.join("AppData/Roaming/showMe");
+        }
+        return std::env::temp_dir().join("showMe");
+    }
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(home) = dirs_home() {
+            return home.join("Library/Application Support/showMe");
+        }
+        return std::env::temp_dir().join("showMe");
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
+            return std::path::PathBuf::from(xdg).join("showMe");
+        }
+        if let Some(home) = dirs_home() {
+            return home.join(".local/share/showMe");
+        }
+        return std::env::temp_dir().join("showMe");
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -227,13 +271,17 @@ pub fn run() {
         })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { .. } = event {
-                window::persist_state(window);
+                window::persist_state(window.app_handle());
             }
         })
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|handle, event| {
             if let tauri::RunEvent::ExitRequested { .. } = event {
+                // HNT-04 — Cmd+Q and the tray "Quit" item close windows
+                // without a `CloseRequested` event, so geometry for every
+                // open window is persisted here before teardown.
+                window::persist_state(handle);
                 sidecar::shutdown(handle);
             }
         });

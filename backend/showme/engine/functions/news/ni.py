@@ -34,7 +34,19 @@ class NIFunction(BaseFunction):
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         explicit_query = str(params.get("query") or "").strip()
         topic = (params.get("topic") or explicit_query or "MACRO").upper()
-        query = explicit_query or _TOPIC_QUERIES.get(topic, topic)
+        mapped_query = _TOPIC_QUERIES.get(topic)
+        # 2026-09-17: the UI mirrors the topic text into `query`
+        # (topicParams = {topic: "MACRO", query: "MACRO"}). Taking that as an
+        # explicit query bypassed the curated preset mapping and searched
+        # for the literal word — "macro" matches nothing in a day's
+        # headlines, so the pane rendered "No headlines yet" forever. A
+        # query that merely repeats the topic keeps the mapped query; any
+        # genuinely different explicit text still wins.
+        if mapped_query and (not explicit_query
+                             or explicit_query.upper() == topic):
+            query = mapped_query
+        else:
+            query = explicit_query or mapped_query or topic
         asset_class = str(
             params.get("asset_class")
             or getattr(getattr(instrument, "asset_class", None), "value", "")

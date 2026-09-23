@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import math
 from typing import Any
 
@@ -159,8 +160,11 @@ class PORTFunction(BaseFunction):
         prices: dict[str, float] = {}
         rows: list[dict[str, Any]] = []
         used_sources = {"portfolio_state"}
-        for pos in portfolio.positions:
-            sym = pos.instrument.symbol
+
+        # HNT-05: fetch quotes concurrently (ACCT's `_q` pattern). A
+        # sequential per-position fetch easily blew the 14 s worker budget
+        # on mid-sized books with a slow network.
+        async def _quote(pos: Any) -> float:
             last = _position_last_price(pos)
             try:
                 # Crypto is no longer excluded: the yfinance data source's
@@ -176,6 +180,11 @@ class PORTFunction(BaseFunction):
                     used_sources.add("yfinance")
             except Exception:
                 pass
+            return last
+
+        lasts = await asyncio.gather(*(_quote(pos) for pos in portfolio.positions))
+        for pos, last in zip(portfolio.positions, lasts):
+            sym = pos.instrument.symbol
             prices[sym] = last
             mv = pos.quantity * last
             unrl = (last - pos.avg_cost) * pos.quantity

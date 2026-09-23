@@ -255,6 +255,21 @@ describe("PORTX generic renderer shape fixes (F3)", () => {
     expect(hero?.textContent).toBe("12.30%");
   });
 
+  // HNT-04: return-family fields are FRACTIONS by backend contract
+  // (total_return = final equity / initial − 1). A multi-year return > 2
+  // (e.g. 3.5 = +350%) must not fall through a magnitude heuristic and
+  // render 100× small as "3.50%".
+  it("formats a >2 total_return as a fraction percent (350.00%, not 3.50%)", () => {
+    mockOk({
+      status: "ok",
+      rows: [{ symbol: "AAPL", total_return: 3.5, sharpe: 1.2 }],
+    });
+    const { container } = render(<PortfolioAnalyticsPane code="TRA" symbol="" />);
+    const text = container.textContent ?? "";
+    expect(text).toContain("350.00%");
+    expect(text).not.toContain("3.50%");
+  });
+
   it("defaults PORT_WHATIF to a 100-share ticket, not 10,000", () => {
     mockOk({ status: "ok", rows: [{ metric: "cost", before: 0, after: 10000 }] });
     render(<PortfolioAnalyticsPane code="PORT_WHATIF" symbol="" />);

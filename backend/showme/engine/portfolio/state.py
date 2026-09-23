@@ -9,12 +9,12 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from showme.app_paths import runtime_path as _canonical_runtime_path
 from showme.engine.core.instrument import AssetClass, Instrument
 from showme.engine.utils.logger import get_logger
 
@@ -257,24 +257,26 @@ def _legacy_import_enabled() -> bool:
     return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _default_app_home() -> Path | None:
-    override = os.environ.get("SHOWME_HOME")
-    if override:
-        return Path(override).expanduser()
-    if sys.platform == "darwin":
-        return Path.home() / "Library" / "Application Support" / "showMe"
-    return None
-
-
 def _runtime_path(path: str | Path) -> Path:
+    """Resolve a portfolio-tree path via the canonical app runtime root.
+
+    HNT-08: the private macOS-only resolver returned ``None`` on
+    Windows/Linux, so the default ``runtime/portfolio.json`` was written
+    cwd-relative — a SECOND, parallel runtime tree next to the APPDATA
+    one every other store (orders, exec_monitor, symbols, margin_config)
+    uses. Absolute paths pass through untouched; relative paths and
+    ``runtime/``-prefixed paths now go through ``showme.app_paths.
+    runtime_path`` (SHOWME_HOME / APPDATA / XDG aware, per ARCH-09).
+    """
     raw = Path(path)
     if raw.is_absolute():
         return raw
     if raw.parts and raw.parts[0] == "runtime":
-        app_home = _default_app_home()
-        if app_home is not None:
-            return app_home / raw
-    return raw
+        rest = raw.parts[1:]
+        if not rest:
+            return _canonical_runtime_path(".")
+        return _canonical_runtime_path(Path(*rest))
+    return _canonical_runtime_path(raw)
 
 
 def _legacy_position_metadata(pos: dict[str, Any]) -> dict[str, Any]:

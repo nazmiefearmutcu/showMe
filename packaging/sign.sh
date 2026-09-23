@@ -56,7 +56,20 @@ if [[ -d "$APP_PATH/Contents/MacOS/_internal" ]]; then
 fi
 
 echo "→ signing sidecar"
-sign_one "$APP_PATH/Contents/MacOS/showme-backend"
+# HNT-08 — two supported sidecar layouts (see tauri/src/sidecar.rs):
+#   1. preferred --onedir: launcher at Contents/Resources/binaries/
+#      showme-backend/showme-backend — an extensionless Mach-O the
+#      *.dylib/*.so find above never matches; leaving it unsigned
+#      breaks notarization for the preferred layout.
+#   2. legacy --onefile: single binary under Contents/MacOS/.
+# Guard both with -f so a bundle that only carries one layout still
+# signs cleanly.
+if [[ -f "$APP_PATH/Contents/Resources/binaries/showme-backend/showme-backend" ]]; then
+  sign_one "$APP_PATH/Contents/Resources/binaries/showme-backend/showme-backend"
+fi
+if [[ -f "$APP_PATH/Contents/MacOS/showme-backend" ]]; then
+  sign_one "$APP_PATH/Contents/MacOS/showme-backend"
+fi
 
 echo "→ signing main bundle (no --deep)"
 codesign --force --options runtime \

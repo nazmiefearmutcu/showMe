@@ -202,7 +202,10 @@ class MAPFunction(BaseFunction):
 
         live_rows = [row for row in rows if row.get("last") is not None]
         if not live_rows:
-            fallback_rows = _map_template()
+            # HNT-19: a total provider outage must not ship fabricated
+            # prices — the strict-zero gate keeps rows empty (the labelled
+            # model remains available via the explicit live=false control)
+            # and next_actions explain what to do.
             return FunctionResult(
                 code=self.code,
                 instrument=None,
@@ -210,14 +213,13 @@ class MAPFunction(BaseFunction):
                     "status": "provider_unavailable",
                     "reason": "World ETF quote provider returned no usable live rows.",
                     "period": "1D",
-                    "rows": fallback_rows,
+                    "rows": [],
                     "next_actions": [
                         "Retry MAP after the public quote provider recovers.",
-                        "Rows shown are a deterministic country ETF model, not live quotes.",
-                        "Use the Live/Model control to switch to the deterministic fallback intentionally.",
+                        "Use the Live/Model control to switch to the deterministic model intentionally.",
                     ],
                 },
-                sources=["showme_quotes", "world_market_model"],
+                sources=["showme_quotes"],
                 metadata={
                     "fallback": True,
                     "degraded": True,

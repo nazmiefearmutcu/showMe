@@ -33,9 +33,18 @@ def register(app: FastAPI, deps: AppDeps) -> None:
         except Exception as exc:  # noqa: BLE001
             LOG.warning("health: function index load failed: %s", exc)
         degraded = function_count < expected_min
+        # HNT-12: /api/health is auth-exempt, so the raw ``str(exc)`` values
+        # the lifespan writes into ``*_warm_error`` keys (file paths,
+        # library tracebacks) must not leak to unauthenticated local
+        # callers. Reduce them to a booleans-only presence signal; the
+        # token-gated /api/sidecar/info still returns full detail.
+        engine_state = {
+            key: (bool(value) if key.endswith("_warm_error") else value)
+            for key, value in deps.boot_state.items()
+        }
         return {
             "ok": True,
-            "engine": deps.boot_state,
+            "engine": engine_state,
             "function_count": function_count,
             "expected_min": expected_min,
             "degraded": degraded,

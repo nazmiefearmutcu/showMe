@@ -37,6 +37,14 @@ export interface StreamHandle {
    * Optional so test doubles can ignore it.
    */
   reconnect?: () => void;
+  /**
+   * HNT-04: tighten the stale-tick threshold on a live wrapper (only
+   * lowers, never widens). The quote multiplexer calls this when a later
+   * subscriber asks for a shorter staleTickMs than the upstream was opened
+   * with, so every listener gets the behaviour it asked for. Optional so
+   * test doubles can ignore it.
+   */
+  setStaleMs?: (ms: number) => void;
 }
 
 export interface StreamOpts {

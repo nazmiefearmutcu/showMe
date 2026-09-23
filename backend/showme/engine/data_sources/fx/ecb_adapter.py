@@ -82,7 +82,12 @@ class ECBAdapter(BaseDataSource):
                 out["high"] = out["close"]
                 out["low"] = out["close"]
                 out["volume"] = 0
-                return out[["open", "high", "low", "close", "volume"]]
+                candles = out[["open", "high", "low", "close", "volume"]]
+                # ECB publishes a single daily reference rate; the OHLCV
+                # shape above is synthetic (open=high=low=close, no volume).
+                # Tag it so consumers never read these as real candles.
+                candles.attrs["data_mode"] = "modeled"
+                return candles
             from showme.engine.core.quote import Quote, utcnow
             return Quote(
                 symbol=sym,

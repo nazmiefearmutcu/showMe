@@ -198,7 +198,7 @@ class FXIPFunction(BaseFunction):
                 "and an optional Yahoo/ECB price history. IV is an explicit ATM volatility assumption unless a vendor is configured."
             ),
             "field_dictionary": {
-                "daily_change_pct": "Last history close change versus previous close, in percent.",
+                "daily_change_pct": "Last history close change versus previous close, in percent; null when no usable history exists.",
                 "one_month_forward": "1M covered-interest-parity forward.",
                 "three_month_forward": "3M covered-interest-parity forward.",
                 "implied_vol_atm_1m": "ATM volatility assumption for 1M, in percent.",
@@ -850,13 +850,15 @@ def _frame_rows(frame: Any, limit: int = 90) -> list[dict[str, Any]]:
     return rows
 
 
-def _daily_change(history: list[dict[str, Any]]) -> float:
+def _daily_change(history: list[dict[str, Any]]) -> float | None:
+    """HNT-09 fix (WCRS pattern): no usable history → None, never the old
+    placeholder 0.0 that read as "the rate did not move"."""
     if len(history) < 2:
-        return 0.0
+        return None
     prev = _num(history[-2].get("close"))
     last = _num(history[-1].get("close"))
     if not prev or last is None:
-        return 0.0
+        return None
     return round((last / prev - 1.0) * 100.0, 4)
 
 

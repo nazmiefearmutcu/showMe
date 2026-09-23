@@ -653,6 +653,54 @@ describe("subscribeQuoteMultiplexed", () => {
     expect(transport).toHaveBeenCalledWith("live");
   });
 
+  it("a late subscriber with a smaller staleTickMs tightens the shared upstream (HNT-04)", () => {
+    vi.useFakeTimers();
+    const onTransport = vi.fn();
+    const { subscriber, handles } = makeFakeSubscriber();
+    subscribeQuoteMultiplexed("AAPL", {
+      onTick: () => undefined,
+      onTransportState: onTransport,
+      subscriber,
+      staleTickMs: 10_000,
+    });
+    // Second pane on the same symbol wants a 2 s stale window; the upstream
+    // was opened with 10 s and must not ignore the tighter bound.
+    subscribeQuoteMultiplexed("AAPL", {
+      onTick: () => undefined,
+      onTransportState: () => undefined,
+      subscriber,
+      staleTickMs: 2_000,
+    });
+    handles[0].emitStatus("live");
+    vi.advanceTimersByTime(2_500);
+    const transitions = onTransport.mock.calls.map((c) => c[0]);
+    expect(transitions).toContain("stale");
+  });
+
+  it("a late subscriber with a wider staleTickMs leaves the upstream threshold alone (HNT-04)", () => {
+    vi.useFakeTimers();
+    const onTransport = vi.fn();
+    const { subscriber, handles } = makeFakeSubscriber();
+    // First subscriber runs on the 15 s default; the joiner's 30 s wish
+    // must not relax it, and the default must keep applying (no stale at
+    // 2.5 s).
+    subscribeQuoteMultiplexed("AAPL", {
+      onTick: () => undefined,
+      onTransportState: onTransport,
+      subscriber,
+    });
+    subscribeQuoteMultiplexed("AAPL", {
+      onTick: () => undefined,
+      onTransportState: () => undefined,
+      subscriber,
+      staleTickMs: 30_000,
+    });
+    handles[0].emitStatus("live");
+    vi.advanceTimersByTime(2_500);
+    const transitions = onTransport.mock.calls.map((c) => c[0]);
+    expect(transitions).not.toContain("stale");
+  });
+
   it("closes the upstream socket only after the last listener unsubscribes", () => {
     const { subscriber, handles } = makeFakeSubscriber();
     const a = subscribeQuoteMultiplexed("AAPL", {

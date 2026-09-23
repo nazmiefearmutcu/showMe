@@ -4,6 +4,7 @@ Indicators consume from here directly — single-digit-microsecond reads.
 WS manager is the single writer; readers are concurrent.
 """
 
+import bisect
 import threading
 import time
 from collections import defaultdict, deque
@@ -48,11 +49,40 @@ class MarketCache:
     # ── candles ──────────────────────────────────────────────
 
     def update_candle(self, symbol: str, timeframe: str, row: dict[str, Any]) -> None:
-        """Append/replace a kline row. Same open_time → replace (live tick update)."""
+        """Append/replace a kline row, merged by ``open_time``.
+
+        HNT-04: the old rule only replaced when the row matched the LAST
+        buffer entry — a gap-fill batch starting before the live tail was
+        appended wholesale, leaving duplicate + out-of-order candles that
+        poisoned every indicator read. Now: the live tail still replaces
+        in place (fast path), an out-of-order row replaces an existing
+        ``open_time`` or is inserted in sorted position when it falls
+        inside the retained window, and rows older than the window are
+        dropped.
+        """
         with self._lock:
             buf = self._candles[(symbol, timeframe)]
-            if buf and buf[-1].get("open_time") == row.get("open_time"):
+            ot = row.get("open_time")
+            tail_ot = buf[-1].get("open_time") if buf else None
+            if buf and tail_ot == ot:
                 buf[-1] = row
+            elif buf and ot is not None and tail_ot is not None and ot < tail_ot:
+                oldest = buf[0].get("open_time")
+                if oldest is None or ot >= oldest:
+                    times = [r.get("open_time") for r in buf]
+                    idx = bisect.bisect_left(times, ot)
+                    if idx < len(buf) and times[idx] == ot:
+                        buf[idx] = row
+                    else:
+                        # FR-02: ``deque.insert`` on a buffer already at
+                        # ``maxlen`` raises IndexError — slide the window
+                        # first (the oldest candle drops off, shifting the
+                        # insert position down by one).
+                        if buf.maxlen is not None and len(buf) >= buf.maxlen:
+                            buf.popleft()
+                            idx -= 1
+                        buf.insert(idx, row)
+                # else: older than the retained window — drop it.
             else:
                 buf.append(row)
             self._stats["last_kline_ms"] = int(time.time() * 1000)

@@ -259,6 +259,8 @@ class RSSAdapter(BaseDataSource):
         if group == "crypto" or asset_class == "CRYPTO":
             return self.crypto_feeds
         if group == "market":
+            if (request.extra or {}).get("symbol_only") and symbol:
+                return _with_symbol_feeds([], symbol)
             return _with_symbol_feeds(self.market_feeds, symbol)
         return self.feeds
 
@@ -274,7 +276,7 @@ class RSSAdapter(BaseDataSource):
         per_feed_timeout = _float_extra(
             extra,
             "per_feed_timeout_seconds",
-            collection_timeout,
+            self.per_feed_timeout_seconds,
         )
         symbol_feed_timeout = _float_extra(
             extra,
@@ -345,9 +347,11 @@ def _request_terms(request: DataRequest, key: str = "terms") -> list[str]:
     )
     if not query:
         return []
+    # Split on a standalone OR / | only — a bare split("OR") carves up
+    # words like "NORDSTROM" into "n" + "dstrom".
     return [
         part.strip().strip('"').lower()
-        for part in str(query).replace("|", " OR ").split("OR")
+        for part in re.split(r"\s+(?:OR|\|)\s+", str(query), flags=re.IGNORECASE)
         if part.strip()
     ]
 

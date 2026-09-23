@@ -13,6 +13,7 @@ DATA PIPELINE:
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import xml.etree.ElementTree as ET
@@ -178,21 +179,35 @@ class SEC13FAdapter(BaseDataSource):
         df["filer_cik"] = cik.zfill(10)
         df["accession"] = accession
         df["report_date"] = report_date or ""
+        # DuckDB's ``INSERT INTO t SELECT *`` matches positionally, so the
+        # DataFrame columns must be ordered exactly like the holdings table
+        # (parse order is issuer/cusip/... first, filer metadata last).
+        df = df.reindex(columns=[
+            "filer_cik", "accession", "report_date",
+            "issuer", "cusip", "value_x1000", "shares", "share_type",
+        ])
+        await asyncio.to_thread(self._write_holdings, df, cik.zfill(10), accession)
+        return int(len(df))
+
+    @staticmethod
+    def _write_holdings(df: pd.DataFrame, filer_cik: str, accession: str) -> None:
+        import duckdb  # type: ignore
         _db_path().parent.mkdir(parents=True, exist_ok=True)
         con = duckdb.connect(str(_db_path()))
-        con.execute("""
-            CREATE TABLE IF NOT EXISTS holdings (
-                filer_cik TEXT, accession TEXT, report_date TEXT,
-                issuer TEXT, cusip TEXT, value_x1000 DOUBLE,
-                shares DOUBLE, share_type TEXT
-            )""")
-        con.register("incoming", df)
-        con.execute("""
-            DELETE FROM holdings WHERE filer_cik = ? AND accession = ?
-        """, [cik.zfill(10), accession])
-        con.execute("INSERT INTO holdings SELECT * FROM incoming")
-        con.close()
-        return int(len(df))
+        try:
+            con.execute("""
+                CREATE TABLE IF NOT EXISTS holdings (
+                    filer_cik TEXT, accession TEXT, report_date TEXT,
+                    issuer TEXT, cusip TEXT, value_x1000 DOUBLE,
+                    shares DOUBLE, share_type TEXT
+                )""")
+            con.register("incoming", df)
+            con.execute("""
+                DELETE FROM holdings WHERE filer_cik = ? AND accession = ?
+            """, [filer_cik, accession])
+            con.execute("INSERT INTO holdings SELECT * FROM incoming")
+        finally:
+            con.close()
 
     async def query_holdings_by_security(self, cusip: str | None = None,
                                           issuer: str | None = None,
@@ -204,7 +219,6 @@ class SEC13FAdapter(BaseDataSource):
             return pd.DataFrame()
         if not _db_path().exists():
             return pd.DataFrame()
-        con = duckdb.connect(str(_db_path()))
         sql = "SELECT filer_cik, report_date, SUM(value_x1000)*1000 AS value_usd, SUM(shares) AS shares FROM holdings WHERE 1=1"
         params: list[Any] = []
         if cusip:
@@ -215,6 +229,13 @@ class SEC13FAdapter(BaseDataSource):
             sql += " AND report_date LIKE ?"; params.append(f"{quarter}%")
         sql += " GROUP BY filer_cik, report_date ORDER BY value_usd DESC LIMIT ?"
         params.append(top_n)
-        df = con.execute(sql, params).fetchdf()
-        con.close()
-        return df
+        return await asyncio.to_thread(self._run_holdings_query, sql, params)
+
+    @staticmethod
+    def _run_holdings_query(sql: str, params: list[Any]) -> pd.DataFrame:
+        import duckdb  # type: ignore
+        con = duckdb.connect(str(_db_path()))
+        try:
+            return con.execute(sql, params).fetchdf()
+        finally:
+            con.close()

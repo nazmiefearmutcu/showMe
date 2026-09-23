@@ -619,6 +619,28 @@ class FeedHub:
                     self._sessions.pop(key, None)
             session.stop()
 
+    async def aclose(self) -> None:
+        """Tear down every live session: stop feeds, cancel run tasks.
+
+        Called from the FastAPI lifespan shutdown (``app.state.flowmap_hub``)
+        so open Binance WSS connections and pump tasks don't linger as
+        "task was destroyed but it is pending" noise at process exit.
+        Idempotent: a second call sees an empty registry.
+        """
+        sessions = list(self._sessions.values())
+        self._sessions.clear()
+        for session in sessions:
+            session.stop()
+        pending = [
+            s.run_task
+            for s in sessions
+            if s.run_task is not None and not s.run_task.done()
+        ]
+        if pending:
+            # Retrieve cancellations (and any late crash) so nothing is
+            # left un-awaited at loop close.
+            await asyncio.gather(*pending, return_exceptions=True)
+
     def _make_remover(self, key: tuple[str, str]) -> Callable[[FlowSession], None]:
         def _remove(_session: FlowSession) -> None:
             if self._sessions.get(key) is _session:

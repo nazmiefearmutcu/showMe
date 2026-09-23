@@ -313,6 +313,81 @@ describe("ECO pane — display honesty", () => {
     expect(screen.getAllByText("—").length).toBeGreaterThan(0);
   });
 
+  it("HNT-03 — surprise KPIs aggregate only %-unit prints (no K/M unit mixing)", () => {
+    // CPI YoY (%: surprise +0.1) next to a printed NFP row (K: surprise +30).
+    // Averaging across units would show "+15.05"; the K print must stay out.
+    const cpi = events[0];
+    const nfp = {
+      country: "US",
+      event: "Non Farm Payrolls",
+      date: isoOffset(0),
+      importance: "high",
+      forecast: 180,
+      actual: 210,
+      previous: 175,
+      surprise: 30,
+      unit: "K",
+    };
+    setMockFn({
+      state: "ok",
+      data: {
+        data: {
+          events: [cpi, nfp],
+          rows: [cpi, nfp],
+          source_mode: "tradingeconomics",
+          as_of: AS_OF,
+        },
+        sources: ["tradingeconomics"],
+        elapsed_ms: 5,
+      },
+    });
+    render(<ECOPane code="ECO" />);
+    // Avg surprise comes from the CPI % print only.
+    const avgCard = screen.getByText("Avg surprise").closest(".stat-card") as HTMLElement;
+    expect(avgCard).toBeTruthy();
+    expect(within(avgCard).getByText("+0.10")).toBeInTheDocument();
+    // Scope is disclosed in the caption.
+    expect(within(avgCard).getByText(/% PRINTS ONLY/i)).toBeInTheDocument();
+    // Largest surprise is the CPI print, not the numerically larger NFP.
+    const maxCard = screen.getByText("Largest surprise").closest(".stat-card") as HTMLElement;
+    expect(within(maxCard).getByText("+0.10")).toBeInTheDocument();
+    expect(within(maxCard).getByText("CPI YoY")).toBeInTheDocument();
+    // The unit-mixed average / K-scaled max never render.
+    expect(screen.queryByText("+15.05")).toBeNull();
+    expect(screen.queryByText("+30.00")).toBeNull();
+  });
+
+  it("HNT-03 — shows '—' for Avg surprise when no %-unit print exists", () => {
+    const nfpOnly = {
+      country: "US",
+      event: "Non Farm Payrolls",
+      date: isoOffset(0),
+      importance: "high",
+      forecast: 180,
+      actual: 210,
+      previous: 175,
+      surprise: 30,
+      unit: "K",
+    };
+    setMockFn({
+      state: "ok",
+      data: {
+        data: {
+          events: [nfpOnly],
+          rows: [nfpOnly],
+          source_mode: "tradingeconomics",
+          as_of: AS_OF,
+        },
+        sources: ["tradingeconomics"],
+        elapsed_ms: 5,
+      },
+    });
+    render(<ECOPane code="ECO" />);
+    const avgCard = screen.getByText("Avg surprise").closest(".stat-card") as HTMLElement;
+    expect(within(avgCard).getByText("—")).toBeInTheDocument();
+    expect(screen.queryByText("+30.00")).toBeNull();
+  });
+
   it("advances the Next prints rail as the clock passes a release (AUDIT A10 [L])", () => {
     setMockFn({ state: "ok", ...syntheticPayload() });
     const { container } = render(<ECOPane code="ECO" />);

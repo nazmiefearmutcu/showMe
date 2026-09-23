@@ -60,7 +60,7 @@ def reba() -> FunctionManifest:
                 description="Account whose current weights drive the diff.",
             ),
             InputSpec(
-                name="target_weights",
+                name="targets",
                 label="Target weights",
                 control=ControlKind.CONSTRAINT_SET,
                 required=True,
@@ -70,15 +70,17 @@ def reba() -> FunctionManifest:
                 ),
             ),
             InputSpec(
-                name="drift_tolerance_pct",
+                name="min_drift_pct",
                 label="Drift tolerance",
                 control=ControlKind.NUMBER,
                 required=True,
-                description="Per-symbol absolute drift below which no trade is suggested.",
+                description=(
+                    "Per-symbol absolute weight drift (fraction) below which "
+                    "no trade is suggested."
+                ),
                 min=0.0,
-                max=10.0,
-                step=0.1,
-                unit="%",
+                max=1.0,
+                step=0.005,
             ),
             InputSpec(
                 name="min_trade_size",
@@ -126,7 +128,11 @@ def reba() -> FunctionManifest:
             ),
         ],
         defaults={
-            "drift_tolerance_pct": 1.0,
+            # HNT-11: names aligned with the handler — REBA reads
+            # `targets` / `min_drift_pct` (fraction), so the old
+            # `target_weights` / `drift_tolerance_pct` names were silently
+            # ignored by the generic manifest pane.
+            "min_drift_pct": 0.005,
             "min_trade_size": 100,
             "lot_rounding": "whole",
             "tax_aware": False,
@@ -189,7 +195,7 @@ def reba() -> FunctionManifest:
         methodology=(
             "REBA computes the per-symbol weight drift = current_weight − "
             "target_weight from PORT for the chosen credential. Symbols "
-            "with |drift| < drift_tolerance_pct are suppressed (with "
+            "with |drift| < min_drift_pct are suppressed (with "
             "suppressed_reason='within_tolerance'). Remaining trades sized "
             "as qty_delta = -drift × total_equity / last_price; sign "
             "determines side (positive drift → sell, negative → buy). "
@@ -238,7 +244,7 @@ def reba() -> FunctionManifest:
             SemanticTest(
                 name="reba_within_tolerance_no_trade",
                 description="Symbols whose drift is within tolerance are suppressed.",
-                inputs={"drift_tolerance_pct": 1.0},
+                inputs={"min_drift_pct": 1.0},
                 assertions=["no trade for symbols with abs(drift) < 1.0"],
             ),
             SemanticTest(

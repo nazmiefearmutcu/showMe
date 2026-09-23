@@ -290,26 +290,18 @@ def _rolling_vol_history(rets: Any, window: int) -> list[dict[str, Any]]:
 
 
 def _reference_hvt(symbol: str, spot: float, *, reason: str) -> dict[str, Any]:
-    template = _vol_template(symbol, spot)
-    rows = [
-        {
-            "metric": key.replace("_annualized", "").upper(),
-            "window_days": int(key.split("_")[1].replace("d", "")),
-            "realized_vol": value,
-            "realized_vol_pct": value * 100,
-            "samples": 0,
-            "formula": "stdev(daily close returns) * sqrt(252)",
-        }
-        for key, value in template.items()
-        if key.startswith("rv_")
-    ]
+    # HNT-14 fix: the provider_unavailable envelope must not carry
+    # fabricated realized-vol rows (the old shape filled ``rows`` with
+    # seed-derived constants that rendered like real numbers despite the
+    # warning banner). Only the reason + next_actions remain; the
+    # formula/methodology text is kept so the pane can still explain what
+    # HVT would compute.
     return {
         "status": "provider_unavailable",
         "reason": reason,
         "symbol": symbol,
-        "spot": spot,
-        "rows": rows,
-        "summary": {"source_mode": "reference", "windows": len(rows)},
+        "rows": [],
+        "summary": {"source_mode": "provider_unavailable", "windows": 0},
         "methodology": "Live daily close history is required for HVT. The realized-vol formula is stdev(daily close returns) * sqrt(252).",
         "field_dictionary": _HVT_FIELDS,
         "next_actions": ["Retry with a supported symbol or configure the yfinance data adapter."],
@@ -388,12 +380,15 @@ class OSAFunction(BaseFunction):
         step = (spot_high - spot_low) / (n_grid - 1) if n_grid > 1 else 0.0
         spots = [spot_low + i * step for i in range(n_grid)]
         pnl_curve: list[dict] = []
-        # H18: PV-discount the initial debit so it lives in the same time-
-        # basis as the expiration payoff. Otherwise we double-count the
-        # carrying cost — expiry_payoff is at T, net_debit is at t=0.
+        # H18 (revised by HNT-03): compound the initial debit FORWARD to the
+        # expiration horizon so the P&L curve compares cash flows at the same
+        # point in time. ``expiry_payoff`` is a T-moment cash flow; the t=0
+        # debit must carry the financing cost net_debit * exp(+r * max_T).
+        # The old PV discount (exp(-rT)) understated the cost and inflated
+        # every pnl point by roughly r*T*net_debit.
         max_T = max((float(leg.get("expiry") or leg.get("years_to_expiry") or 0.25)
                      for leg in legs), default=0.25)
-        pv_debit = net_debit * math.exp(-r * max_T)
+        fv_debit = net_debit * math.exp(r * max_T)
         for s in spots:
             expiry_payoff = 0.0
             for leg in legs:
@@ -404,10 +399,10 @@ class OSAFunction(BaseFunction):
                 expiry_payoff += qty * payoff
             pnl_curve.append({
                 "spot": s,
-                "pnl": expiry_payoff - pv_debit,
+                "pnl": expiry_payoff - fv_debit,
                 "payoff": expiry_payoff,
                 "net_debit": net_debit,
-                "pv_debit": pv_debit,
+                "fv_debit": fv_debit,
             })
         pnls = [row["pnl"] for row in pnl_curve]
         return FunctionResult(code=self.code, instrument=instrument,
@@ -431,7 +426,7 @@ class OSAFunction(BaseFunction):
                                           if (prev <= 0 <= cur) or (prev >= 0 >= cur)
                                       ),
                                   },
-                                  "methodology": "Expiration P&L = sum(qty * intrinsic payoff at spot) - pv_debit; pv_debit = net_debit * exp(-r * max_T) so payoff and cost share the same time basis. Premiums use Black-Scholes-Merton with per-leg IV (solved from market_price if supplied, else input vol, else default 0.25).",
+                                  "methodology": "Expiration P&L = sum(qty * intrinsic payoff at spot) - fv_debit; fv_debit = net_debit * exp(+r * max_T) carries the initial debit forward to the expiry horizon so payoff and cost share the same time basis. Premiums use Black-Scholes-Merton with per-leg IV (solved from market_price if supplied, else input vol, else default 0.25).",
                                   "field_dictionary": {
                                       "net_debit": "Positive value means the strategy costs premium up front; negative means a credit.",
                                       "curve.pnl": "Estimated expiration profit/loss at each underlying spot.",

@@ -160,6 +160,39 @@ def test_fetch_longest_history_picks_oldest_first_bar(monkeypatch: pytest.Monkey
     assert considered_names == {"yahoo", "binance", "stooq"}
 
 
+def test_fetch_longest_history_metadata_reports_deep_history_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """HNT-17: ``deep_history`` metadata must reflect the actual request —
+    a shallow (user-window) race must not claim it pulled deep history."""
+    monkeypatch.delenv("STOOQ_API_KEY", raising=False)
+    yahoo_result = DeepHistoryResult(
+        rows=[
+            {"date": "2024-01-01T00:00:00+00:00", "time": 1_704_067_200, "close": 1.0},
+        ],
+        source="yahoo_chart",
+        metadata={},
+    )
+    with patch(
+        "showme.chart_history.fetch_yahoo_history",
+        new=AsyncMock(return_value=yahoo_result),
+    ):
+        deep = asyncio.run(
+            fetch_longest_history(
+                symbol="AAPL", asset_class="EQUITY",
+                interval="1d", days=90, bars=100, deep_history=True,
+            )
+        )
+        shallow = asyncio.run(
+            fetch_longest_history(
+                symbol="AAPL", asset_class="EQUITY",
+                interval="1d", days=90, bars=100, deep_history=False,
+            )
+        )
+    assert deep.metadata["deep_history"] is True
+    assert shallow.metadata["deep_history"] is False
+
+
 def test_fetch_longest_history_falls_back_when_some_providers_fail(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -35,6 +35,7 @@ use parking_lot::Mutex;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 use tauri::path::BaseDirectory;
@@ -46,9 +47,23 @@ static CHILD: once_cell::sync::Lazy<Arc<Mutex<Option<Child>>>> =
 const MAX_RETRIES: u32 = 3;
 
 pub fn spawn(handle: AppHandle) {
+    spawn_with_restarts(handle, 0);
+}
+
+/// Boot the sidecar, retrying spawn failures with exponential backoff
+/// (250 / 750 / 2250 ms). `base_attempt` carries the restart count across
+/// crash-triggered reboots (see `on_sidecar_exit`) so `MAX_RETRIES` bounds
+/// the total boot attempts per session, not per crash.
+fn spawn_with_restarts(handle: AppHandle, base_attempt: u32) {
     std::thread::spawn(move || {
-        for attempt in 0..=MAX_RETRIES {
-            match boot_one(&handle) {
+        for attempt in base_attempt..=MAX_RETRIES {
+            // HNT-07 — never spawn a fresh sidecar once the app has
+            // started tearing down, or the process outlives the app and
+            // keeps the DuckDB file lock.
+            if is_shutting_down(&handle) {
+                return;
+            }
+            match boot_one(&handle, attempt) {
                 Ok(()) => return,
                 Err(err) => {
                     log::warn!("sidecar attempt {attempt} failed: {err}");
@@ -68,14 +83,37 @@ pub fn spawn(handle: AppHandle) {
                         return;
                     }
                     let backoff = 250u64 * 3u64.pow(attempt);
-                    std::thread::sleep(Duration::from_millis(backoff));
+                    sleep_while_alive(&handle, Duration::from_millis(backoff));
                 }
             }
         }
     });
 }
 
-fn boot_one(handle: &AppHandle) -> Result<(), String> {
+fn is_shutting_down(handle: &AppHandle) -> bool {
+    handle
+        .state::<AppState>()
+        .sidecar_shutdown
+        .load(Ordering::SeqCst)
+}
+
+/// HNT-07 — sleep in small steps so a shutdown request arriving during a
+/// backoff window aborts the retry loop promptly instead of spawning a
+/// new sidecar after the app has already quit.
+fn sleep_while_alive(handle: &AppHandle, total: Duration) {
+    let step = Duration::from_millis(100);
+    let mut waited = Duration::ZERO;
+    while waited < total {
+        if is_shutting_down(handle) {
+            return;
+        }
+        let chunk = step.min(total - waited);
+        std::thread::sleep(chunk);
+        waited += chunk;
+    }
+}
+
+fn boot_one(handle: &AppHandle, attempt: u32) -> Result<(), String> {
     // Mint a random auth token for this sidecar boot. The Python process
     // reads it from `SHOWME_AUTH_TOKEN` and rejects any request missing the
     // `X-ShowMe-Token` header. Stash it in `AppState` so the frontend can
@@ -109,6 +147,18 @@ fn boot_one(handle: &AppHandle) -> Result<(), String> {
     let stdout = child.stdout.take().ok_or("no stdout")?;
     let stderr = child.stderr.take();
     *CHILD.lock() = Some(child);
+    // FR-04 — close the shutdown↔spawn race: shutdown() may have set the
+    // flag and drained the OLD child between the check in
+    // spawn_with_restarts and this store. Re-check now so the freshly
+    // spawned sidecar can't outlive the app holding the DuckDB file lock.
+    if is_shutting_down(handle) {
+        let mut guard = CHILD.lock();
+        if let Some(mut child) = guard.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        return Err("shutdown during spawn".into());
+    }
     let handle = handle.clone();
 
     // Notify the frontend immediately so it can attach the header on the
@@ -150,29 +200,76 @@ fn boot_one(handle: &AppHandle) -> Result<(), String> {
                 }
             }
         }
-        // stdout closed → process exited.
-        let state = handle.state::<AppState>();
-        if state.sidecar_health.read().status == SidecarStatus::Healthy {
-            let mut h = state.sidecar_health.write();
-            h.status = SidecarStatus::Stopped;
-        }
-        let _ = handle.emit("sidecar:status", health_snapshot(&handle));
+        // stdout closed → the process exited.
+        on_sidecar_exit(&handle, attempt);
     });
 
     Ok(())
 }
 
+/// HNT-03 — the sidecar process died. Distinguish an app-shutdown exit
+/// from a crash:
+///   * during shutdown: record the final `Stopped` status and stop;
+///   * otherwise (regardless of the previous status — including
+///     `Booting`, which used to hang forever): clear the stale port so
+///     the frontend stops talking to a dead socket, mark the sidecar
+///     `Crashed` with a `last_error`, and schedule a backoff restart
+///     while retries remain.
+fn on_sidecar_exit(handle: &AppHandle, attempt: u32) {
+    let state = handle.state::<AppState>();
+    if is_shutting_down(handle) {
+        // Expected exit during teardown — `shutdown()` already reaped
+        // the child; just record the final state.
+        {
+            let mut h = state.sidecar_health.write();
+            if h.status != SidecarStatus::Crashed {
+                h.status = SidecarStatus::Stopped;
+            }
+        }
+        let _ = handle.emit("sidecar:status", health_snapshot(handle));
+        return;
+    }
+    let next_attempt = attempt + 1;
+    *state.sidecar_port.write() = None;
+    {
+        let mut h = state.sidecar_health.write();
+        h.status = SidecarStatus::Crashed;
+        h.restarts = next_attempt;
+        h.last_error = Some("sidecar process exited unexpectedly".into());
+    }
+    let _ = handle.emit("sidecar:status", health_snapshot(handle));
+    if next_attempt > MAX_RETRIES {
+        let _ = handle.emit(
+            "sidecar:fatal",
+            "Python backend crashed repeatedly and exhausted retries".to_string(),
+        );
+        return;
+    }
+    let backoff = 250u64 * 3u64.pow(attempt);
+    log::warn!("sidecar exited unexpectedly; restart {next_attempt} in {backoff} ms");
+    sleep_while_alive(handle, Duration::from_millis(backoff));
+    if is_shutting_down(handle) {
+        return;
+    }
+    spawn_with_restarts(handle.clone(), next_attempt);
+}
+
 fn build_command(handle: &AppHandle) -> Result<Command, String> {
     if cfg!(debug_assertions) {
-        // Dev mode: assume a python venv with the `showme` package on PATH.
-        let mut cmd = Command::new("python3");
+        // Dev / debug-exe mode: run the Python sidecar from source.
+        // SHOWME_PYTHON overrides everything; otherwise prefer the
+        // repo venv (`backend/.venv`) so a double-clicked debug exe
+        // works without manual PATH setup. Fall back to system python.
+        let cwd = default_sidecar_cwd();
+        let python = resolve_dev_python(&cwd);
+        let mut cmd = Command::new(python);
         cmd.arg("-m").arg("showme.server")
             .arg("--host").arg("127.0.0.1")
             .arg("--port").arg("0")
             .arg("--engine-path")
-            .arg(default_engine_path())
+            .arg(default_engine_path(&cwd))
             .env("PYTHONUNBUFFERED", "1")
-            .current_dir(default_sidecar_cwd());
+            .current_dir(cwd);
         Ok(cmd)
     } else {
         // Bundle mode: pick the PyInstaller layout that's actually
@@ -194,6 +291,10 @@ fn build_command(handle: &AppHandle) -> Result<Command, String> {
 /// `backend/showme-backend.spec` from `--onefile` to `--onedir` without
 /// requiring a coordinated change here, and a bisect across the two
 /// layouts always has at least one working binary.
+///
+/// Windows: the launcher carries a `.exe` suffix
+/// (`resources/binaries/showme-backend/showme-backend.exe` for onedir,
+/// `showme-backend.exe` next to the app exe for onefile).
 fn resolve_bundled_sidecar(handle: &AppHandle) -> Result<std::path::PathBuf, String> {
     let resolver = handle.path();
     let force_onefile = std::env::var("SHOWME_FORCE_ONEFILE")
@@ -201,33 +302,74 @@ fn resolve_bundled_sidecar(handle: &AppHandle) -> Result<std::path::PathBuf, Str
         .unwrap_or(false);
 
     if !force_onefile {
-        // Layout 1: `--onedir` under Contents/Resources/.
-        // Tauri's `BaseDirectory::Resource` resolves to `Contents/Resources`
-        // on macOS; the spec's COLLECT step places the launcher in a
-        // subdirectory of the same name so `_internal/` sits beside it.
-        if let Ok(candidate) =
-            resolver.resolve("binaries/showme-backend/showme-backend", BaseDirectory::Resource)
-        {
-            if candidate.exists() {
-                log::info!("sidecar: using --onedir layout at {}", candidate.display());
-                return Ok(candidate);
+        // Layout 1: `--onedir` under Resources/.
+        // macOS: `Contents/Resources/binaries/showme-backend/showme-backend`.
+        // Windows: `resources/binaries/showme-backend/showme-backend.exe`.
+        #[cfg(target_os = "windows")]
+        const ONEDIR_CANDIDATES: &[&str] = &[
+            "binaries/showme-backend/showme-backend.exe",
+            "binaries/showme-backend/showme-backend",
+        ];
+        #[cfg(not(target_os = "windows"))]
+        const ONEDIR_CANDIDATES: &[&str] = &["binaries/showme-backend/showme-backend"];
+        for candidate_rel in ONEDIR_CANDIDATES {
+            if let Ok(candidate) =
+                resolver.resolve(candidate_rel, BaseDirectory::Resource)
+            {
+                if candidate.is_file() {
+                    log::info!("sidecar: using --onedir layout at {}", candidate.display());
+                    return Ok(candidate);
+                }
             }
         }
     }
 
-    // Layout 2: legacy `--onefile` under Contents/MacOS/.
-    let resource_path = resolver
-        .resource_dir()
-        .map_err(|e| format!("resource_dir: {e}"))?;
-    let legacy = resource_path.join("../MacOS/showme-backend");
-    if legacy.exists() {
-        log::info!("sidecar: using --onefile layout at {}", legacy.display());
-        return Ok(legacy);
+    // Layout 1b: Windows onefile next to the app exe.
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(resource_dir) = resolver.resource_dir() {
+            for name in ["showme-backend.exe", "showme-backend"] {
+                let candidate = resource_dir.join(name);
+                if candidate.is_file() {
+                    log::info!("sidecar: using windows onefile at {}", candidate.display());
+                    return Ok(candidate);
+                }
+                // PyInstaller onedir may also land directly under resources/.
+                let nested = resource_dir.join("binaries/showme-backend").join(name);
+                if nested.is_file() {
+                    log::info!("sidecar: using windows nested at {}", nested.display());
+                    return Ok(nested);
+                }
+            }
+        }
     }
-    Err(format!(
-        "no sidecar binary found (looked under Resources/binaries/showme-backend/ and {})",
-        legacy.display()
-    ))
+
+    // Layout 2: legacy `--onefile` under Contents/MacOS/ (macOS only).
+    #[cfg(target_os = "macos")]
+    {
+        let resource_path = resolver
+            .resource_dir()
+            .map_err(|e| format!("resource_dir: {e}"))?;
+        let legacy = resource_path.join("../MacOS/showme-backend");
+        if legacy.exists() {
+            log::info!("sidecar: using --onefile layout at {}", legacy.display());
+            return Ok(legacy);
+        }
+        return Err(format!(
+            "no sidecar binary found (looked under Resources/binaries/showme-backend/ and {})",
+            legacy.display()
+        ));
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let resource_path = resolver
+            .resource_dir()
+            .map_err(|e| format!("resource_dir: {e}"))?;
+        return Err(format!(
+            "no sidecar binary found under {} (looked for binaries/showme-backend/showme-backend.exe)",
+            resource_path.display()
+        ));
+    }
 }
 
 fn wait_for_health(port: u16) -> bool {
@@ -267,22 +409,119 @@ fn health_probe_once(addr: SocketAddr) -> bool {
 
 fn default_sidecar_cwd() -> std::path::PathBuf {
     // Post-unification the sidecar lives at <repo>/backend/.
-    // Tauri dev mode launches us from <repo>/tauri/, so backend/ is one level
-    // up. SHOWME_BACKEND_PATH overrides the location entirely.
+    // SHOWME_BACKEND_PATH overrides the location entirely.
     if let Ok(p) = std::env::var("SHOWME_BACKEND_PATH") {
         return std::path::PathBuf::from(p);
     }
+    // Candidate 1: cwd-relative (tauri dev launches from <repo>/tauri/).
+    if let Ok(cwd) = std::env::current_dir() {
+        let candidate = cwd.join("../backend");
+        if candidate.join("showme/server.py").exists() {
+            return candidate;
+        }
+    }
+    // Candidate 2: exe-relative (double-clicked debug exe at
+    // <repo>/tauri/target/debug/showme.exe → <repo>/backend/).
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            // Walk up to 4 levels looking for backend/showme/server.py
+            // (covers target/debug, target/release, and nested layouts).
+            let mut cur = dir.to_path_buf();
+            for _ in 0..5 {
+                let candidate = cur.join("backend");
+                if candidate.join("showme/server.py").exists() {
+                    return candidate;
+                }
+                // Also handle <repo>/tauri/target/debug → <repo>/backend
+                // via direct ../../../backend join.
+                if let Some(parent) = cur.parent() {
+                    cur = parent.to_path_buf();
+                } else {
+                    break;
+                }
+            }
+            // Direct join for the known debug layout.
+            let direct = dir.join("../../../backend");
+            if direct.join("showme/server.py").exists() {
+                return direct;
+            }
+        }
+    }
+    // Fallback: original cwd-relative (may not exist, spawn will error).
     std::env::current_dir()
         .map(|d| d.join("../backend"))
         .unwrap_or_else(|_| std::path::PathBuf::from("../backend"))
 }
 
-fn default_engine_path() -> String {
+/// Resolve the Python interpreter for dev/debug sidecar boots.
+///
+/// Priority: SHOWME_PYTHON env → repo venv (`backend/.venv`) → system
+/// python (`python` on Windows, `python3` elsewhere).
+fn resolve_dev_python(sidecar_cwd: &std::path::Path) -> String {
+    if let Ok(p) = std::env::var("SHOWME_PYTHON") {
+        if !p.trim().is_empty() {
+            return p;
+        }
+    }
+    #[cfg(target_os = "windows")]
+    const VENV_RELS: &[&str] = &[
+        ".venv/Scripts/python.exe",
+        "../backend/.venv/Scripts/python.exe",
+    ];
+    #[cfg(not(target_os = "windows"))]
+    const VENV_RELS: &[&str] = &[
+        ".venv/bin/python",
+        "../backend/.venv/bin/python",
+    ];
+    for rel in VENV_RELS {
+        let candidate = sidecar_cwd.join(rel);
+        if candidate.is_file() {
+            return candidate.to_string_lossy().into_owned();
+        }
+    }
+    // Also try exe-relative venv (debug exe launched from target/).
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let mut cur = dir.to_path_buf();
+            for _ in 0..5 {
+                #[cfg(target_os = "windows")]
+                let venv = cur.join("backend/.venv/Scripts/python.exe");
+                #[cfg(not(target_os = "windows"))]
+                let venv = cur.join("backend/.venv/bin/python");
+                if venv.is_file() {
+                    return venv.to_string_lossy().into_owned();
+                }
+                if let Some(parent) = cur.parent() {
+                    cur = parent.to_path_buf();
+                } else {
+                    break;
+                }
+            }
+        }
+    }
+    if cfg!(target_os = "windows") {
+        "python".to_string()
+    } else {
+        "python3".to_string()
+    }
+}
+
+fn default_engine_path(sidecar_cwd: &std::path::Path) -> String {
     // The engine is now a regular Python subpackage (showme.engine), but we
     // still publish SHOWME_ENGINE_PATH so engine code that loads adjacent
     // config/*.yaml files keeps resolving the right directory.
-    std::env::var("SHOWME_ENGINE_PATH")
-        .unwrap_or_else(|_| "../backend/showme/engine".to_string())
+    if let Ok(p) = std::env::var("SHOWME_ENGINE_PATH") {
+        if !p.trim().is_empty() {
+            return p;
+        }
+    }
+    // Absolute path based on the resolved sidecar cwd so a double-clicked
+    // debug exe (cwd = target/debug) still points at <repo>/backend/showme/engine.
+    let abs = sidecar_cwd.join("showme/engine");
+    if abs.is_dir() {
+        return abs.to_string_lossy().into_owned();
+    }
+    "../backend/showme/engine".to_string()
 }
 
 /// Graceful sidecar shutdown — REL-04 P1.
@@ -298,7 +537,14 @@ fn default_engine_path() -> String {
 /// Instead we send SIGTERM via `libc::kill` (Rust stable doesn't expose
 /// SIGTERM directly), poll `try_wait` for up to 5 seconds, and only
 /// escalate to SIGKILL if the sidecar still hasn't exited.
-pub fn shutdown(_handle: &AppHandle) {
+pub fn shutdown(handle: &AppHandle) {
+    // HNT-07 — flip the shutdown flag first so the backoff/retry loop
+    // and the crash-restart path stop respawning while we tear the
+    // child down.
+    handle
+        .state::<AppState>()
+        .sidecar_shutdown
+        .store(true, Ordering::SeqCst);
     let mut guard = CHILD.lock();
     if let Some(mut child) = guard.take() {
         let pid = child.id();
@@ -347,4 +593,19 @@ pub fn shutdown(_handle: &AppHandle) {
 
 fn health_snapshot(handle: &AppHandle) -> SidecarHealth {
     handle.state::<AppState>().sidecar_health.read().clone()
+}
+
+/// HNT-07 — best-effort child kill for the process-wide panic hook.
+/// Release builds use `panic = "abort"`, so a Rust panic kills the
+/// process before `ExitRequested`/`shutdown` can run; without this the
+/// Python sidecar is orphaned holding the DuckDB file lock. Uses
+/// `try_lock` so a panic fired while the `CHILD` lock is held can never
+/// deadlock the hook.
+pub fn kill_child_best_effort() {
+    if let Some(mut guard) = CHILD.try_lock() {
+        if let Some(mut child) = guard.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
 }

@@ -26,7 +26,13 @@ const REGIONS = ["global", "us", "eu", "asia"] as const;
 
 /** Does this credential field hold a secret? (drives type=password + toggle). */
 function isSecretField(field: string): boolean {
-  return field.includes("secret") || field.includes("passphrase");
+  // HNT-06: api_key is a sensitive exchange identifier — mask it like the
+  // secret/passphrase fields (type=password + show/hide toggle).
+  return (
+    field.includes("secret") ||
+    field.includes("passphrase") ||
+    field.includes("key")
+  );
 }
 
 function Initials({ name, fallbackId }: { name: string; fallbackId?: string }) {

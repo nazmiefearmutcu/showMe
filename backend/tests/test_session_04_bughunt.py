@@ -144,6 +144,38 @@ def test_dcfs_tornado_marks_invalid_perturbation() -> None:
     )
 
 
+def test_dcfs_tornado_includes_terminal_and_high_growth_inputs() -> None:
+    """HNT-04: the tornado must perturb g_terminal and g_high. The old
+    growth_terminal/growth_high lookups missed the DCF payload keys, so the
+    two most sensitive inputs never rendered a bar."""
+
+    from showme.engine.functions.equity.dcfs import DCFSensitivityFunction
+
+    deps = FunctionDeps()
+    fn = DCFSensitivityFunction(deps)
+    result = asyncio.run(
+        fn.execute(
+            _equity_instrument(),
+            fcfe=1_000_000_000,
+            shares_outstanding=10_000_000,
+            wacc=0.10,
+            growth_high=0.08,
+            growth_terminal=0.02,
+            years=5,
+        )
+    )
+    tornado = result.data.get("tornado") or []
+    inputs = {row.get("input") for row in tornado}
+    assert {"g_terminal", "g_high"} <= inputs, (
+        f"g_terminal/g_high tornado bars missing: {sorted(str(i) for i in inputs)}"
+    )
+    for row in tornado:
+        if row.get("input") in {"g_terminal", "g_high"}:
+            assert row.get("delta") is not None, (
+                f"growth perturbation should produce a fair-value delta: {row}"
+            )
+
+
 # ─────────────────────────────────────────────────────────────────────
 # DARK — _stale_reason malformed-date handling
 # ─────────────────────────────────────────────────────────────────────

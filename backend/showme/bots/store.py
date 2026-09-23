@@ -87,7 +87,7 @@ class BotStore:
         out: list[BotMeta] = []
         for f in self._iter_files():
             try:
-                raw = f.read_text()
+                raw = f.read_text(encoding="utf-8")
                 if not raw.strip():
                     # Faz 2 / S6 — defensive: skip a 0-byte file with a
                     # WARNING instead of silently dropping the record.
@@ -116,7 +116,7 @@ class BotStore:
         p = self._path(bot_id)
         if not p.exists():
             raise UnknownBot(bot_id)
-        rec = BotRecord.from_json(p.read_text())
+        rec = BotRecord.from_json(p.read_text(encoding="utf-8"))
         if rec.id != bot_id:
             rec = rec.model_copy(update={"id": bot_id})
             try:
@@ -130,7 +130,7 @@ class BotStore:
         now = datetime.now(tz=timezone.utc).isoformat()
         if p.exists():
             try:
-                existing = BotRecord.from_json(p.read_text())
+                existing = BotRecord.from_json(p.read_text(encoding="utf-8"))
                 rec = rec.model_copy(update={
                     "created_at": existing.created_at,
                     "updated_at": now,

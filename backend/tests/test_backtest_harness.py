@@ -10,6 +10,8 @@ Validates:
 """
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -207,6 +209,37 @@ def test_metrics_include_sharpe_profit_factor_max_dd():
     assert "max_consecutive_losses" in m
     assert "expectancy" in m
     assert m["trade_count"] >= 1
+
+
+def test_sharpe_annualisation_scales_with_bars_per_year():
+    """HNT-16: Sharpe runs over the per-bar return series and annualises
+    with ``sqrt(bars_per_year)`` — same replay, different timeframe
+    assumption must yield a different (sqrt-scaled) Sharpe."""
+    n = 200
+    idx = pd.date_range("2026-01-01", periods=n, freq="h")
+    closes = np.linspace(100.0, 150.0, n)
+    df = pd.DataFrame({
+        "open": closes, "high": closes + 0.5,
+        "low": closes - 0.5, "close": closes,
+        "volume": [1000.0] * n,
+    }, index=idx)
+    spec = StrategySpec(
+        name="bh_sharpe",
+        entry_rules=[Rule(kind="greater_than", left="close", right="literal:100")],
+        exit_rules=[Rule(kind="less_than", left="close", right="literal:0")],
+        position=Position(side="long", sizing_kind="fixed_quote", sizing_value=100.0),
+    )
+    hourly = backtest(spec, df, warmup_bars=5, starting_equity=10_000.0,
+                      fee_rate=0.0, bars_per_year=365.0 * 24.0)
+    daily = backtest(spec, df, warmup_bars=5, starting_equity=10_000.0,
+                     fee_rate=0.0, bars_per_year=365.0)
+    assert hourly.metrics["trade_count"] == daily.metrics["trade_count"]
+    assert isinstance(hourly.metrics["sharpe"], float)
+    assert hourly.metrics["sharpe"] > 0
+    # sqrt(24) × the daily-bars Sharpe.
+    assert hourly.metrics["sharpe"] == pytest.approx(
+        daily.metrics["sharpe"] * math.sqrt(24.0), rel=1e-6,
+    )
 
 
 def test_commission_deducted_from_net_pnl():

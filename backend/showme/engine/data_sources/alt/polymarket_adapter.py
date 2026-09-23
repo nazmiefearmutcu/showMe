@@ -8,6 +8,7 @@ DATA PIPELINE:
 from __future__ import annotations
 
 from typing import Any
+from datetime import datetime, timezone
 
 import httpx
 
@@ -35,21 +36,12 @@ class PolymarketAdapter(BaseDataSource):
 
     async def search(self, query: str | None = None, *,
                      active: bool = True, closed: bool = False,
-                     limit: int = 30, tag_id: int | None = None) -> list[dict[str, Any]]:
+                     limit: int = 30, tag_id: int | None = None,
+                     min_liquidity: float = 0) -> list[dict[str, Any]]:
         client = await self._client_()
-        params: dict[str, Any] = {"limit": limit, "order": "volume",
-                                    "ascending": "false"}
-        if active:
-            params["active"] = "true"
-        if closed:
-            params["closed"] = "true"
-        if tag_id:
-            params["tag_id"] = tag_id
-        if query:
-            params["search"] = query
-        r = await client.get("/markets", params=params)
-        r.raise_for_status()
-        return r.json() or []
+        return await fetch_markets(client, query, limit=limit, active=active,
+                                   closed=closed, tag_id=tag_id,
+                                   min_liquidity=min_liquidity)
 
     async def market(self, slug: str) -> dict[str, Any]:
         client = await self._client_()
@@ -62,3 +54,49 @@ class PolymarketAdapter(BaseDataSource):
             request.symbols[0] if request.symbols else None
         )
         return await self.search(q, limit=request.limit or 30)
+
+
+async def fetch_markets(client: httpx.AsyncClient, query: str | None = None, *,
+                        active: bool = True, closed: bool = False,
+                        limit: int = 100, tag_id: int | None = None,
+                        min_liquidity: float = 0) -> list[dict[str, Any]]:
+    """Filter before the provider limit, and page through its 100-row windows."""
+    target = min(max(limit, 1), 400)
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    offset = 0
+    for _ in range(4):
+        params: dict[str, Any] = {"limit": min(100, target - len(rows)),
+                                 "offset": offset, "order": "volume24hr",
+                                 "ascending": "false", "archived": "false",
+                                 "closed": str(closed).lower(),
+                                 "liquidity_num_min": max(0, min_liquidity)}
+        if active:
+            params["active"] = "true"
+        if active and not closed:
+            params["end_date_min"] = datetime.now(timezone.utc).isoformat()
+        if tag_id:
+            params["tag_id"] = tag_id
+        if query:
+            params["search"] = query
+        r = await client.get("https://gamma-api.polymarket.com/markets", params=params)
+        r.raise_for_status()
+        page = r.json() or []
+        if isinstance(page, dict):
+            page = page.get("data") or page.get("markets") or []
+        if not isinstance(page, list) or not page:
+            break
+        offset += len(page)
+        added = 0
+        for row in page:
+            if not isinstance(row, dict):
+                continue
+            key = str(row.get("id") or row.get("slug") or row.get("question"))
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append(row)
+            added += 1
+        if len(rows) >= target or not added:
+            break
+    return rows[:target]

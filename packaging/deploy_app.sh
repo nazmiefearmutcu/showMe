@@ -21,10 +21,18 @@ if [[ ! -d "$SOURCE" ]]; then
 fi
 
 cleanup_legacy_backups() {
+  # HNT-17 / SEC-07 parity with the Rust installer
+  # (commands.rs cleanup_legacy_app_backups): skip symlinked entries so a
+  # pre-created `showMe.app.bak-*` symlink pointing outside /Applications
+  # can never be followed. `find`'s `! -type l` filters the -exec batch
+  # and the aggregate dir gets an explicit test -L guard.
   find /Applications -maxdepth 1 \
     \( -name 'showMe.app.bak-*' -o -name 'showMe.app.backup-*' \) \
+    ! -type l \
     -exec rm -rf {} +
-  rm -rf "$LEGACY_BACKUPS_DIR"
+  if [[ ! -L "$LEGACY_BACKUPS_DIR" ]]; then
+    rm -rf "$LEGACY_BACKUPS_DIR"
+  fi
 }
 
 # REL-04 P12 — Developer-ID sign + notarize, when credentials are present.

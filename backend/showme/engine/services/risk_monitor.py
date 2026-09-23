@@ -42,6 +42,10 @@ class RiskMonitor:
         self.max_var_pct = max_var_pct
         self.notifiers = list(notifiers or [])
         self._task: asyncio.Task | None = None
+        # HNT-14: strong references for fire-and-forget notifier tasks —
+        # the loop only keeps weak refs, so an unreferenced task can be
+        # GC'd mid-flight and the risk notification silently vanishes.
+        self._bg: set[asyncio.Task] = set()
 
     def add_notifier(self, fn) -> None:
         self.notifiers.append(fn)
@@ -70,7 +74,9 @@ class RiskMonitor:
             try:
                 r = n(evt)
                 if asyncio.iscoroutine(r):
-                    asyncio.create_task(r)
+                    t = asyncio.create_task(r)
+                    self._bg.add(t)
+                    t.add_done_callback(self._bg.discard)
             except Exception:
                 continue
 

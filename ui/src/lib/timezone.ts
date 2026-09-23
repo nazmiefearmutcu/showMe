@@ -191,7 +191,7 @@ export function useTimezoneMode(): TimezoneMode {
  * adapters in the engine sometimes hand us naive strings; this is the
  * single chokepoint for hardening them.
  */
-function safeDate(value: Date | string | number | null | undefined): Date | null {
+export function safeDate(value: Date | string | number | null | undefined): Date | null {
   if (value == null) return null;
   if (value instanceof Date) {
     return Number.isNaN(value.getTime()) ? null : value;

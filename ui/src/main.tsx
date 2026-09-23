@@ -9,6 +9,31 @@ import "./styles/index.css";
 const root = document.getElementById("root");
 if (!root) throw new Error("#root missing in index.html");
 
+/**
+ * Platform chrome flag — the in-app titlebar reserves 88px on the left
+ * for macOS traffic lights. On Windows/Linux there are no traffic
+ * lights, so that padding is dead space. We stamp the OS on <html>
+ * (Tauri plugin-os when available, UA sniff as fallback) and let CSS
+ * collapse the gutter on non-mac platforms.
+ */
+function applyPlatformChrome(): void {
+  const apply = (platform: string) => {
+    document.documentElement.dataset.platform = platform;
+  };
+  // Synchronous best guess so first paint is already close.
+  const ua = navigator.userAgent || "";
+  if (/Macintosh|Mac OS X/i.test(ua)) apply("macos");
+  else if (/Windows/i.test(ua)) apply("windows");
+  else apply("linux");
+  // Authoritative value from the Tauri shell when running natively.
+  import("@tauri-apps/plugin-os")
+    .then(async (os) => apply(await os.platform()))
+    .catch(() => {
+      /* browser/preview — UA guess stands */
+    });
+}
+applyPlatformChrome();
+
 ReactDOM.createRoot(root).render(
   <React.StrictMode>
     <AppErrorBoundary>

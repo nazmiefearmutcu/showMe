@@ -214,10 +214,13 @@ def test_quote_route_returns_unavailable_envelope_on_provider_error(
     ``transport_state=offline``) instead of looking like a live snapshot."""
     from showme import quotes
 
+    quotes.quote_cache_clear()
+    calls = {"n": 0}
+
     async def boom(_symbol: str) -> dict[str, Any]:
+        calls["n"] += 1
         raise quotes.QuoteFetchError("simulated provider outage")
 
-    quotes.quote_cache_clear()
     monkeypatch.setattr(quotes, "fetch_quote_snapshot", boom)
     resp = client.get("/api/quote/AAPL")
     assert resp.status_code == 200
@@ -232,13 +235,18 @@ def test_quote_route_returns_unavailable_envelope_on_provider_error(
     assert body["source_kind"] is None
     assert body["degraded"] is True
     assert body["synthetic"] is False
-    # A repeat call hits the cached failure — cache_hit flips, data shape stays.
+    # HNT-16: error envelopes are NOT cached any more. A transient failure
+    # used to pin the symbol as "unavailable" for the full positive TTL;
+    # the retry inside that window returned the cached failure with
+    # ``cache_hit: true`` without touching the provider. Now every retry
+    # re-fetches honestly.
     resp2 = client.get("/api/quote/AAPL")
     body2 = resp2.json()
     assert body2["ok"] is False
-    assert body2["cache_hit"] is True
+    assert body2["cache_hit"] is False
     assert body2["data_state"] == "unavailable"
     assert body2["transport_state"] == "offline"
+    assert calls["n"] == 2
     quotes.quote_cache_clear()
 
 

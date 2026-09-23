@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
@@ -110,7 +111,10 @@ class PEOPFunction(BaseFunction):
         live_sources: list[str] = []
         provider_error: str | None = None
         if not items:
-            live = ps.search_people(query, limit=limit)
+            # HNT-01: search_people is synchronous (sync httpx + up to 1 req/s
+            # throttle sleep + ThreadPoolExecutor fan-out); calling it inline
+            # froze the shared worker loop for every other pane. Offload it.
+            live = await asyncio.to_thread(ps.search_people, query, limit=limit)
             if live.get("ok") and live.get("items"):
                 items = live["items"]
                 live_sources = list(live.get("sources") or [])

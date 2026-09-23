@@ -111,7 +111,7 @@ def load_template_catalog(path: str | Path) -> TemplateCatalog:
     if not p.exists():
         raise TemplateCatalogError(f"template catalog not found: {p}")
     try:
-        raw_list = yaml.safe_load(p.read_text()) or []
+        raw_list = yaml.safe_load(p.read_text(encoding="utf-8")) or []
     except yaml.YAMLError as exc:
         raise TemplateCatalogError(f"YAML parse error: {exc}") from exc
     if not isinstance(raw_list, list):

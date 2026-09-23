@@ -110,8 +110,14 @@ class PaperBroker(BaseBroker):
             notes=notes,
         )
         if t == OrderType.MARKET:
-            price = self._hint_price(symbol, notes) or limit_price or 0.0
-            self._fill(order, price)
+            # HNT-01: a market order without a resolvable price would fill
+            # at 0.0 and silently corrupt the paper book — reject instead.
+            price = self._hint_price(symbol, notes) or limit_price
+            if price is None or float(price) <= 0:
+                raise BrokerError(
+                    "paper market order requires a 'last:' price hint or limit_price"
+                )
+            self._fill(order, float(price))
         else:
             order.status = OrderStatus.ACCEPTED
         self._orders[order.id] = order
@@ -196,6 +202,23 @@ class PaperBroker(BaseBroker):
                     )
                     existing.realized_pnl += realized
                 self._positions.pop(sym, None)
+            elif (new_qty > 0) != (existing.side == OrderSide.BUY):
+                # HNT-02: flip — the order first closes the existing
+                # position (realizing its P&L), then the remainder opens a
+                # fresh position in the new direction at this fill price.
+                if existing.entry_price is not None:
+                    realized = (
+                        (float(price) - float(existing.entry_price))
+                        * existing.quantity
+                        * (1 if existing.side == OrderSide.BUY else -1)
+                    )
+                    existing.realized_pnl += realized
+                existing.quantity = abs(new_qty)
+                existing.side = (
+                    OrderSide.BUY if new_qty > 0 else OrderSide.SELL
+                )
+                existing.entry_price = float(price)
+                existing.current_price = float(price)
             else:
                 # Recompute avg entry on additions, keep on reductions.
                 add_qty = order.quantity if (

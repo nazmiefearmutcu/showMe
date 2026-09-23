@@ -40,9 +40,9 @@ class POLYFunction(BaseFunction):
             include_closed = True
         active = not include_closed
         try:
-            limit = int(params.get("limit", 25))
+            limit = int(params.get("limit", 100))
         except (TypeError, ValueError):
-            limit = 25
+            limit = 100
         limit = max(1, min(limit, 100))
         timeout = float(params.get("timeout", 8))
         try:
@@ -57,7 +57,8 @@ class POLYFunction(BaseFunction):
         if adapter is not None and hasattr(adapter, "search"):
             try:
                 raw_rows = await asyncio.wait_for(
-                    adapter.search(query, limit=limit, active=active, closed=include_closed),
+                    adapter.search(query, limit=max(limit * 4, 100), active=active,
+                                   closed=include_closed, min_liquidity=min_liq),
                     timeout=timeout,
                 )
             except Exception as e:  # noqa: BLE001 - fall through to keyless HTTP
@@ -68,7 +69,8 @@ class POLYFunction(BaseFunction):
         if raw_rows is None:
             try:
                 raw_rows = await asyncio.wait_for(
-                    _fetch_gamma_markets(query, limit=limit, active=active, closed=include_closed),
+                    _fetch_gamma_markets(query, limit=limit, active=active,
+                                         closed=include_closed, min_liquidity=min_liq),
                     timeout=timeout,
                 )
             except Exception as e:  # noqa: BLE001 - real network outage
@@ -84,9 +86,9 @@ class POLYFunction(BaseFunction):
                 )
 
         compact: list[dict[str, Any]] = []
-        for r in raw_rows[:100]:
+        for r in raw_rows:
             row = _shape_market(r)
-            if not include_closed and _is_past(row.get("end_date")):
+            if not include_closed and (r.get("closed") is True or _is_past(row.get("end_date"))):
                 continue
             if min_liq and (row.get("liquidity") is None or row["liquidity"] < min_liq):
                 continue
@@ -163,35 +165,21 @@ class POLYFunction(BaseFunction):
             },
             sources=["polymarket"],
             warnings=result_warnings,
-            metadata={"query": query, "matched": len(compact), "provider_errors": provider_errors},
+            metadata={"query": query, "matched": len(compact), "provider_errors": provider_errors,
+                      "fetched": len(raw_rows), "limit": limit, "min_liquidity_usd": min_liq},
         )
 
 
 async def _fetch_gamma_markets(
-    query: Any, *, limit: int, active: bool, closed: bool
+    query: Any, *, limit: int, active: bool, closed: bool, min_liquidity: float = 0
 ) -> list[dict[str, Any]]:
     """Fetch live markets from the keyless Polymarket Gamma API."""
     from showme.providers._http import get_client
+    from showme.engine.data_sources.alt.polymarket_adapter import fetch_markets
 
     client = await get_client()
-    # Over-fetch so client-side query/liquidity filtering still yields `limit` rows.
-    params: dict[str, Any] = {
-        "limit": max(limit * 4, 100),
-        "order": "volume24hr",
-        "ascending": "false",
-        "archived": "false",
-    }
-    if active and not closed:
-        params["active"] = "true"
-        params["closed"] = "false"
-    elif closed and not active:
-        params["closed"] = "true"
-    resp = await client.get(_GAMMA_MARKETS_URL, params=params)
-    resp.raise_for_status()
-    payload = resp.json()
-    if isinstance(payload, dict):
-        payload = payload.get("data") or payload.get("markets") or []
-    return [row for row in payload if isinstance(row, dict)]
+    return await fetch_markets(client, query, limit=max(limit * 4, 100),
+                               active=active, closed=closed, min_liquidity=min_liquidity)
 
 
 def _matches_query(row: dict[str, Any], query: Any) -> bool:

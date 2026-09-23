@@ -17,6 +17,7 @@ process-wide singleton:
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import math
@@ -32,6 +33,7 @@ from typing import Any
 from collections.abc import Iterable
 
 from showme.x_spontaneous import Post, SpontaneousXScraper, clean_text
+from showme.model_loading import serialized_model_load
 from showme.engine.services.stocktwits_sentiment import (
     fetch_symbol_chip as _stocktwits_fetch_chip,
 )
@@ -175,6 +177,7 @@ class XAnalyzer:
             "scraper": self._scraper.diagnostics(),
         }
 
+    @serialized_model_load
     def _ensure_loaded(self) -> None:
         if self._loaded:
             return
@@ -811,7 +814,10 @@ def _instant_priority_label(score: int) -> str:
 
 def _dedupe_key(item: dict[str, Any], sentiment: str, query: str) -> str:
     base = item.get("url") or item.get("text") or ""
-    return f"x::{sentiment}::{query}::{abs(hash(base)) % 10**12}"
+    # Deterministic digest — builtin hash() is salted per process
+    # (PYTHONHASHSEED), so restarts re-keyed the same tweet and duplicated
+    # INSTANT events for persistent consumers (brief.py pattern).
+    return f"x::{sentiment}::{query}::{hashlib.sha1(base.encode()).hexdigest()[:12]}"
 
 
 __all__ = ["XAnalyzer", "find_model_dir"]

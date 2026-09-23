@@ -104,8 +104,12 @@ class RVFunction(BaseFunction):
 
 
 def _rank_rows(rows: list[dict[str, Any]], target: str) -> list[dict[str, Any]]:
+    # HNT-11 fix: a negative trailing P/E (loss-making company) means N/A,
+    # not "cheapest" — it used to sort first and earn percentile 0. Only
+    # positive finite PEs participate in the ranking; the raw value still
+    # shows in the row.
     valid = sorted(
-        [r for r in rows if finite(r.get("pe")) is not None],
+        [r for r in rows if (finite(r.get("pe")) or 0) > 0],
         key=lambda r: finite(r.get("pe")) or 0,
     )
     n = max(1, len(valid) - 1)

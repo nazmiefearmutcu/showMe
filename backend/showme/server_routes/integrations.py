@@ -1,5 +1,6 @@
 """Routes: /api/integrations/* — GitHub search + HF classify/explain."""
 from __future__ import annotations
+import asyncio
 from typing import Any
 from fastapi import APIRouter, FastAPI, HTTPException
 from . import AppDeps
@@ -40,7 +41,11 @@ def register(app: FastAPI, deps: AppDeps) -> None:
         text = (payload or {}).get("text") or ""
         if not text.strip():
             raise HTTPException(400, detail="text is required")
-        return classify(text)
+        # HNT-05: classify cold-loads the RoBERTa pipeline and runs torch
+        # inference synchronously — on the event loop that blocks /api/health,
+        # WS ticks and every other request. xai.py wraps the same model in
+        # to_thread; do the same here.
+        return await asyncio.to_thread(classify, text)
 
     @router.post("/api/integrations/hf/explain")
     async def hf_explain(payload: dict[str, Any]) -> dict[str, Any]:

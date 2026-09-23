@@ -29,7 +29,10 @@ _KNOWN_INDICATORS = {
 }
 
 _SYMBOL_RE = re.compile(r"\b([A-Z]{2,8}/[A-Z]{2,8})\b")
-_TIMEFRAME_RE = re.compile(r"\b(1m|5m|15m|30m|1h|2h|4h|6h|1d|1w)\b", re.IGNORECASE)
+# HNT-18: keep in lockstep with StrategySpec.timeframe's Literal — the
+# parser must only emit timeframes the spec validator accepts. Anything
+# else (30m/2h/6h/1w/...) falls through to the honest 1h default note.
+_TIMEFRAME_RE = re.compile(r"\b(1m|5m|15m|1h|4h|1d)\b", re.IGNORECASE)
 _NUMBER_RE = re.compile(r"(\d+(?:\.\d+)?)")
 
 # Curated map of concepts the parser CANNOT model → human label for the

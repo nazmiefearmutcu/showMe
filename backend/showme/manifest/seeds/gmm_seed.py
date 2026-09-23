@@ -54,36 +54,24 @@ def gmm() -> FunctionManifest:
             AssetClass.BOND,
         ],
         inputs=[
-            InputSpec(
-                name="window",
-                label="Window",
-                control=ControlKind.SELECT,
-                required=True,
-                description="Lookback window for ranking macro surprises.",
-                options=["24h", "1w", "1m", "3m"],
-            ),
+            # HNT-10 (2026-09-23 bug hunt): the `window` and `categories`
+            # InputSpecs were removed — the World Bank matrix handler only
+            # reads countries/top_n/timeout, so those controls silently did
+            # nothing. The honest contract is the smaller input set.
             InputSpec(
                 name="countries",
                 label="Countries",
                 control=ControlKind.MULTISELECT,
                 required=False,
-                description="ISO 3166-1 alpha-2 list; empty = all G20.",
+                description="ISO 3166-1 alpha-2 list; empty = all majors.",
                 options=["US", "EZ", "GB", "JP", "CN", "TR", "BR", "IN", "CA", "AU", "CH", "MX", "KR"],
-            ),
-            InputSpec(
-                name="categories",
-                label="Categories",
-                control=ControlKind.MULTISELECT,
-                required=False,
-                description="Release type filter; empty = all categories.",
-                options=["cpi", "gdp", "employment", "central_bank", "pmi", "retail_sales", "trade_balance"],
             ),
             InputSpec(
                 name="top_n",
                 label="Top N",
                 control=ControlKind.NUMBER,
                 required=False,
-                description="How many movers to rank (5..50).",
+                description="How many economies to rank (5..50).",
                 min=5,
                 max=50,
                 step=5,
@@ -102,9 +90,7 @@ def gmm() -> FunctionManifest:
             ),
         ],
         defaults={
-            "window": "1w",
             "countries": [],
-            "categories": [],
             "top_n": 15,
             "provider_mode": DataMode.LIVE_OFFICIAL.value,
         },
@@ -207,19 +193,19 @@ def gmm() -> FunctionManifest:
             SemanticTest(
                 name="gmm_movers_sorted_by_abs_surprise_desc",
                 description="Asserts movers array is sorted by |surprise| descending.",
-                inputs={"window": "1w"},
+                inputs={},
                 assertions=["movers_sorted_by_abs_surprise_desc"],
             ),
             SemanticTest(
                 name="gmm_excludes_releases_without_consensus",
                 description="Asserts no mover row has consensus == null (no-consensus releases are dropped from the ranking).",
-                inputs={"window": "1w"},
+                inputs={},
                 assertions=["every_mover_has_non_null_consensus"],
             ),
             SemanticTest(
                 name="gmm_empty_window_explained",
                 description="When the calendar feed has no releases in the window, asserts movers=[] and warning explains the empty window.",
-                inputs={"window": "24h", "_mock": "calendar_empty"},
+                inputs={"_mock": "calendar_empty"},
                 assertions=["movers_empty_array", "warning_mentions_empty_window"],
             ),
             SemanticTest(

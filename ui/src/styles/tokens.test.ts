@@ -195,6 +195,17 @@ describe("design tokens", () => {
     // without hue; must stay ≥ 10 L* points apart.
     expect(Math.abs(lStar("#117a44") - lStar("#992140"))).toBeGreaterThanOrEqual(10);
   });
+
+  it("applies the light-family text ladder when custom preset picks a light bg (HNT-01)", () => {
+    // The custom preset sets data-preset="custom" alongside theme.ts's
+    // data-theme="light" — the papyrus override selector must also match
+    // that pair or every text token falls back to the dark ladder.
+    expect(css).toMatch(/\[data-theme="light"\]\[data-preset="custom"\]/);
+    const parts = css.split('[data-theme="light"][data-preset="custom"]');
+    expect(parts.length).toBeGreaterThanOrEqual(3);
+    const block = parts.slice(1).join('[data-theme="light"][data-preset="custom"]');
+    expect(block).toMatch(/--text-primary:\s*#1a1612/);
+  });
 });
 
 // Bare-bones WCAG 2.1 relative-luminance contrast — copied from

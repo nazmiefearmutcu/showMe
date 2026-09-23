@@ -1391,7 +1391,9 @@ function exportMatrixCsv(matrix: MatrixCell[]) {
   link.href = url;
   link.download = "showme-corr-impact-matrix.csv";
   link.click();
-  URL.revokeObjectURL(url);
+  // WKWebView starts blob downloads asynchronously; revoking on the next
+  // macrotask can cancel the download (same fix as HP/TXNS export).
+  window.setTimeout(() => URL.revokeObjectURL(url), 1500);
 }
 
 function csvEscape(value: string) {

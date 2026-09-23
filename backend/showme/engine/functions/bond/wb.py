@@ -123,22 +123,42 @@ class WBFunction(BaseFunction):
             self.deps.fred, client=getattr(self, "_http_client", None)
         )
         out: dict[str, float] = {}
+        provider_errors: list[str] = []
         timeout = float(params.get("fred_timeout", 8))
         async def _one(country, fred_id):
             try:
                 df = await asyncio.wait_for(fred.series(fred_id), timeout=timeout)
-                return country, float(df["value"].iloc[-1])
-            except Exception:
-                return country, float("nan")
+                return country, float(df["value"].iloc[-1]), None
+            except Exception as exc:
+                return country, float("nan"), f"fred {country} ({fred_id}): {exc}"
         results = await asyncio.gather(*(
             _one(c, fid) for c, fid in fred_ids.items()
         ))
-        for c, y in results:
+        for c, y, err in results:
             out[c] = y
+            if y != y:
+                # HNT-12 fix: failed/NaN countries are surfaced via
+                # provider_errors + missing_countries instead of being
+                # silently dropped from the heatmap.
+                provider_errors.append(err or f"fred {c}: series returned no usable observation")
+        missing_countries = sorted(c for c, y in out.items() if y != y)
         out = {c: y for c, y in out.items() if y == y}
         if not out:
             out = _world_bond_template()
             return FunctionResult(code=self.code, instrument=None, data=_rows_from_yields(out, "sovereign_yield_model"), sources=["sovereign_yield_model"],
-                                  warnings=["Live sovereign yields unavailable (keyed FRED adapter or keyless CSV); showing the labelled reference template."])
-        return FunctionResult(code=self.code, instrument=None, data=_rows_from_yields(out, "fred"), sources=["fred"],
-                              metadata={"live": True, "data_mode": "live_official"})
+                                  warnings=["Live sovereign yields unavailable (keyed FRED adapter or keyless CSV); showing the labelled reference template.",
+                                            *provider_errors])
+        data = _rows_from_yields(out, "fred")
+        if missing_countries:
+            # HNT-12 fix: partial coverage is visible in the payload, not
+            # a silently shrunken heatmap.
+            data["missing_countries"] = missing_countries
+            data["summary"]["missing_countries"] = len(missing_countries)
+            data["field_dictionary"]["missing_countries"] = (
+                "Requested countries whose live FRED series failed or returned no usable observation."
+            )
+        metadata: dict[str, Any] = {"live": True, "data_mode": "live_official"}
+        if provider_errors:
+            metadata["provider_errors"] = provider_errors
+        return FunctionResult(code=self.code, instrument=None, data=data, sources=["fred"],
+                              metadata=metadata)

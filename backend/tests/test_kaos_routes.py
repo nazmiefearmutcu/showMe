@@ -15,8 +15,8 @@ def client(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("SHOWME_HOME", str(tmp_path))
     monkeypatch.setenv("SHOWME_AUTH_TOKEN", "test-token")
     monkeypatch.setenv("SHOWME_CREDENTIAL_BACKEND", "memory")
-    # /api/templates/* is dev-only (mounted only when SHOWME_DEV is truthy).
-    monkeypatch.setenv("SHOWME_DEV", "1")
+    # HNT-02: /api/templates/* is mounted unconditionally now — no
+    # SHOWME_DEV gate required.
     from showme.brokers import factory as factory_mod
     factory_mod._DYNAMIC.clear()
     factory_mod._LIVE.clear()

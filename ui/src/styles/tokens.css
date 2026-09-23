@@ -554,8 +554,16 @@
 
 /* ============================================================
  * Light preset overrides (papyrus) — UX-09 + A11Y-01 fixes
+ *
+ * The same light-family tokens also cover the "custom" preset when
+ * theme.ts detects a light background (data-theme="light" is set
+ * alongside data-preset="custom"). Without this selector the custom
+ * preset falls back to the :root dark text ladder on a light bg —
+ * light-on-light, ~1.1:1 contrast, the whole screen unreadable
+ * (bug hunt HNT-01).
  * ============================================================ */
-[data-preset="papyrus"] {
+[data-preset="papyrus"],
+[data-theme="light"][data-preset="custom"] {
   --text-display: #1a1612;
   --text-primary: #1a1612;
   --text-secondary: #4a4439;
@@ -605,6 +613,16 @@
   --heat-neg-3: rgba(153, 33, 64, 0.38);
   --heat-neg-4: rgba(153, 33, 64, 0.50);
   --heat-neg-5: rgba(153, 33, 64, 0.62);
+}
+
+/* HNT-01 companion — the custom preset has no slot block, so the derived
+   `--text` alias and the `--text-faint` slot keep their dark-theme
+   fallbacks even under the light-family overrides above (the design-export
+   artifact still reads them). Mirror the papyrus slot values so the
+   ladder descends consistently on a light custom bg. */
+[data-theme="light"][data-preset="custom"] {
+  --text: #2e261c;
+  --text-faint: #6b634e;
 }
 
 /* Density */

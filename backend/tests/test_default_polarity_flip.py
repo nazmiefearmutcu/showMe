@@ -298,6 +298,25 @@ def test_ee_default_live_with_mocked_provider():
     assert result.data["rows"][0]["actual"] == 1.5
 
 
+def test_ee_small_yahoo_surprise_is_not_inflated_100x():
+    """HNT-02: the Yahoo ``Surprise(%)`` column is already in percent units.
+    The old |v| <= 1 → *100 heuristic turned a routine %0.67 EPS beat into
+    %67; the value must now pass through exactly as reported."""
+    from showme.engine.functions.equity.ee import _earnings_rows
+
+    frame = pd.DataFrame({
+        "Earnings Date": ["2026-06-30", "2026-03-31"],
+        "EPS Estimate": [1.50, 1.40],
+        "Reported EPS": [1.51, 1.35],
+        "Surprise(%)": [0.67, -3.57],
+    })
+    rows = _earnings_rows("AAPL", None, {"earnings_dates": frame}, 8)
+    assert rows, "earnings_dates rows must be consumed"
+    by_period = {row["period"]: row for row in rows}
+    assert by_period["2026-06-30"]["surprisePercent"] == pytest.approx(0.67)
+    assert by_period["2026-03-31"]["surprisePercent"] == pytest.approx(-3.57)
+
+
 def test_appl_default_live_with_mocked_provider():
     from showme.engine.functions.misc._bonus import APPLFunction
     refdata = SimpleNamespace(

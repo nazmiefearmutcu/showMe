@@ -381,7 +381,10 @@ def _normalize_events(events: list[Any], *, country: Any, importance: Any, days:
         row = {str(k).lower(): v for k, v in raw.items()}
         event_country = _canonical_country(row.get("country") or row.get("region"))
         event_importance = str(row.get("importance") or row.get("impact") or "").lower()
-        if wanted_country and event_country and event_country != wanted_country:
+        # HNT-13: a row with no country label must not leak through a
+        # country filter (nor be re-labelled as the wanted country) —
+        # unknown provenance fails the filter honestly.
+        if wanted_country and event_country != wanted_country:
             continue
         if wanted_importance and wanted_importance != "all" and event_importance and wanted_importance not in event_importance:
             continue
@@ -389,19 +392,34 @@ def _normalize_events(events: list[Any], *, country: Any, importance: Any, days:
         event_date = _parse_date(date_text)
         if event_date and not (start <= event_date <= end):
             continue
-        forecast, _, _ = _parse_ff_number(row.get("forecast"))
-        actual, _, _ = _parse_ff_number(row.get("actual"))
-        previous, _, _ = _parse_ff_number(row.get("previous"))
+        forecast, forecast_unit, _ = _parse_ff_number(row.get("forecast"))
+        actual, actual_unit, _ = _parse_ff_number(row.get("actual"))
+        previous, previous_unit, _ = _parse_ff_number(row.get("previous"))
+        # ForexFactory rows carry their unit as a cell suffix ("%", "K", …)
+        # rather than a dedicated key — keep the parsed suffix so downstream
+        # consumers (ECO "Avg surprise" KPI) can compare like-unit prints.
+        # The unit slot is only meaningful when the value actually parsed;
+        # failure paths stuff the raw text there.
+        ff_unit = ""
+        for value, unit in (
+            (forecast, forecast_unit),
+            (actual, actual_unit),
+            (previous, previous_unit),
+        ):
+            if value is not None and unit:
+                ff_unit = unit
+                break
         rows.append({
             "date": event_date.isoformat() if event_date else date_text[:16],
-            "country": event_country or (wanted_country or "US"),
+            # HNT-13: no "US" default — a countryless row stays countryless.
+            "country": event_country,
             "event": row.get("event") or row.get("name") or row.get("title") or "Economic event",
             "importance": row.get("importance") or row.get("impact") or "medium",
             "forecast": forecast,
             "actual": actual,
             "previous": previous,
             "surprise": round(actual - forecast, 6) if actual is not None and forecast is not None else None,
-            "unit": row.get("unit") or "",
+            "unit": str(row.get("unit") or ff_unit or ""),
         })
     return sorted(rows, key=lambda item: str(item.get("date") or ""))
 

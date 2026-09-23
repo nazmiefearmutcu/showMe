@@ -138,6 +138,19 @@ class PVARFunction(BaseFunction):
                     self.code, confidence, params, instrument,
                     "no live return history (yfinance returned no data)",
                 )
+            # HNT-15: a symbol whose history failed to download silently
+            # left the headline VaR/ES covering only a subset of the book —
+            # surface the uncovered symbols instead.
+            uncovered = [
+                p.instrument.symbol for p in eligible
+                if p.instrument.symbol not in rets_df.columns
+            ]
+            if uncovered:
+                warnings.append(
+                    "PVAR: no live return history for "
+                    + ", ".join(uncovered)
+                    + " — VaR/ES dollars cover only the remaining positions."
+                )
         else:
             from showme.engine.functions.portfolio.rpar import _template_returns
             rets_df = _template_returns([p.instrument.symbol for p in eligible], days)
@@ -276,6 +289,9 @@ class PVARFunction(BaseFunction):
                 "portfolio_daily_var_dollar": -param_var_pct * total,
                 "samples": int(len(rets_df)),
                 "positions_analyzed": int(len(rets_df.columns)),
+                # HNT-15: analysed share of the eligible book so a subset
+                # VaR is visible at a glance (1.0 = full coverage).
+                "coverage_pct": round(len(rets_df.columns) / len(eligible), 4) if eligible else None,
                 "max_positions": max_positions,
                 "rows": rows,
                 "series": series,
@@ -285,6 +301,7 @@ class PVARFunction(BaseFunction):
                     "method": method,
                     "horizon": params.get("horizon", "1d"),
                     "positions_analyzed": int(len(rets_df.columns)),
+                    "coverage_pct": round(len(rets_df.columns) / len(eligible), 4) if eligible else None,
                     "var": var_dollar,
                     "expected_shortfall": es_dollar,
                 },
@@ -309,6 +326,7 @@ class PVARFunction(BaseFunction):
                     "marginal_contribution_to_risk": "Derivative of portfolio volatility wrt symbol weight.",
                     "component_pct_of_portfolio_risk": "Symbol share of portfolio risk contribution.",
                     "notional_usd": "Position notional used for portfolio weights.",
+                    "coverage_pct": "Share of eligible positions whose live return history loaded (1.0 = full book covered).",
                 },
             },
             sources=["yfinance"] if live else ["portfolio_state", "risk_model"],

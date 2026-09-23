@@ -24,19 +24,50 @@ class MGNFunction(BaseFunction):
             return FunctionResult(code=self.code, instrument=None,
                                   data={"accounts": margin_engine.list_accounts()})
         if action == "upsert":
+            # HNT-08: a missing `name` used to raise KeyError and surface as
+            # a raw exception envelope; EXEC's _missing_fields contract
+            # (exec.py) returns a clean input_error instead.
+            name = str(params.get("name") or "").strip()
+            if not name:
+                return FunctionResult(
+                    code=self.code,
+                    instrument=None,
+                    data={
+                        "status": "input_error",
+                        "reason": "MGN upsert requires a non-empty 'name'.",
+                        "missing_fields": ["name"],
+                        "rows": [],
+                    },
+                    sources=["margin_engine"],
+                    metadata={"error": True, "status": "input_error"},
+                )
             info = margin_engine.upsert_account(
-                name=params["name"],
+                name=name,
                 margin_type=params.get("margin_type", "reg_t"),
                 cash=float(params.get("cash", 0)),
                 currency=params.get("currency", "USD"),
                 overrides=params.get("overrides") or {},
             )
             return FunctionResult(code=self.code, instrument=None,
-                                  data={"account": params["name"], **info})
+                                  data={"account": name, **info})
         if action == "delete":
-            ok = margin_engine.delete_account(params["name"])
+            name = str(params.get("name") or "").strip()
+            if not name:
+                return FunctionResult(
+                    code=self.code,
+                    instrument=None,
+                    data={
+                        "status": "input_error",
+                        "reason": "MGN delete requires a non-empty 'name'.",
+                        "missing_fields": ["name"],
+                        "rows": [],
+                    },
+                    sources=["margin_engine"],
+                    metadata={"error": True, "status": "input_error"},
+                )
+            ok = margin_engine.delete_account(name)
             return FunctionResult(code=self.code, instrument=None,
-                                  data={"deleted": ok, "name": params["name"]})
+                                  data={"deleted": ok, "name": name})
         # default: calc
         refresh_prices = bool(params.get("refresh_prices") or params.get("live_prices"))
         include_saved = bool(params.get("include_saved") or params.get("saved_portfolio"))

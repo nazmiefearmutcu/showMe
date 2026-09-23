@@ -175,7 +175,7 @@ class FinnhubAdapter(BaseDataSource):
         if end:
             params["to"] = end
         res = await self._get("/calendar/economic", **params)
-        raw_events = res.get("economicCalendar") if isinstance(res, dict) else (res or [])
+        raw_events = (res.get("economicCalendar") if isinstance(res, dict) else res) or []
         mapped_events = []
         for item in raw_events:
             if not isinstance(item, dict):

@@ -13,11 +13,10 @@ from showme.server import build_app
 def client(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("SHOWME_HOME", str(tmp_path))
     monkeypatch.setenv("SHOWME_AUTH_TOKEN", "test-token")
-    # 2026-05-24 rebuild: /api/templates/* is dev-only — the production
-    # gate at backend/showme/server_routes/__init__.py only mounts the
-    # router when SHOWME_DEV is truthy. Force it on for this test suite
-    # so the dev-only route is reachable.
-    monkeypatch.setenv("SHOWME_DEV", "1")
+    # HNT-02: /api/templates/* is mounted unconditionally now (the
+    # catalog is package-internal and the UI calls it in production
+    # builds). No SHOWME_DEV gate is set — these tests double as the
+    # regression proof that the routes exist without it.
     # Reset singleton
     import showme.server_routes.templates as tmod
     tmod._CATALOG = None
@@ -113,12 +112,33 @@ def test_instantiate_rejects_newline_symbol(client):
 
 
 def test_instantiate_rejects_unformatted_symbol(client):
-    """H-API-5 — ``BTCUSDT`` (no slash) and ``BTC-USDT`` fail format check."""
-    for bad in ("BTCUSDT", "BTC-USDT", "BTC", "/USDT", "BTC/"):
+    """H-API-5 + HNT-03 — plain tickers (``AAPL``), pairs (``BTC/USDT``,
+    ``BTC-USDT``) and perp settles (``BTC/USDT:USDT``) are valid; structurally
+    broken shapes still 422."""
+    for bad in ("/USDT", "BTC/", "BTC//USDT", "BTC/USDT:", "BTC:USDT:USDT:USDT", "BTC/USDT/USDT:USDT:"):
         r = client.post("/api/templates/rsi-mean-revert/instantiate", json={
             "symbol": bad,
         })
         assert r.status_code == 422, f"expected 422 for {bad!r}, got {r.status_code}"
+
+
+def test_instantiate_accepts_catalog_symbol_shapes(client):
+    """HNT-03 — the regex must accept every shape templates.yml itself
+    recommends: equities (AAPL/SPY), spot pairs (BTC/USDT), dash pairs,
+    and the perp settle suffix (BTC/USDT:USDT)."""
+    for good, expected in (
+        ("AAPL", "AAPL"),
+        ("SPY", "SPY"),
+        ("BTC/USDT", "BTC/USDT"),
+        ("BTC-USDT", "BTC-USDT"),
+        ("BTC/USDT:USDT", "BTC/USDT:USDT"),
+    ):
+        r = client.post("/api/templates/rsi-mean-revert/instantiate", json={
+            "symbol": good,
+        })
+        assert r.status_code == 200, f"expected 200 for {good!r}, got {r.status_code}: {r.text}"
+        spec = r.json()["strategy"]
+        assert spec["asset_filter"]["symbols"] == [expected]
 
 
 def test_instantiate_normalises_symbol_case_and_whitespace(client):

@@ -23,6 +23,7 @@ tests that need a deterministic fake-pipeline backend.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import ipaddress
 import logging
@@ -203,8 +204,13 @@ async def transcribe(audio_path: str | Path,
     # Tier 1: whisper.cpp / openai-whisper
     try:
         import whisper  # type: ignore
-        m = whisper.load_model(model_name)
-        result = m.transcribe(str(p), language=language)
+
+        # HNT-06: load_model + transcribe are heavy synchronous calls —
+        # run them off the event loop so the sidecar's other endpoints
+        # stay responsive while Whisper works.
+        result = await asyncio.to_thread(
+            lambda: whisper.load_model(model_name).transcribe(str(p), language=language)
+        )
         text = result.get("text", "").strip()
         cache.parent.mkdir(parents=True, exist_ok=True)
         cache.write_text(text)
@@ -218,9 +224,14 @@ async def transcribe(audio_path: str | Path,
     # Tier 2: faster-whisper
     try:
         from faster_whisper import WhisperModel  # type: ignore
-        m = WhisperModel(model_name, device="cpu", compute_type="int8")
-        segments, info = m.transcribe(str(p), language=language)
-        seg_list = list(segments)
+
+        def _tier2() -> tuple[list[Any], Any]:
+            m = WhisperModel(model_name, device="cpu", compute_type="int8")
+            segments, info = m.transcribe(str(p), language=language)
+            return list(segments), info
+
+        # HNT-06: same off-loop treatment as Tier 1.
+        seg_list, info = await asyncio.to_thread(_tier2)
         text = " ".join(s.text for s in seg_list).strip()
         cache.parent.mkdir(parents=True, exist_ok=True)
         cache.write_text(text)

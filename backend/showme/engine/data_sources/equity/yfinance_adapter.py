@@ -237,18 +237,27 @@ class YFinanceAdapter(BaseDataSource):
         except Exception:
             pass
         ticker = await asyncio.to_thread(self._ticker, sym)
-        info = await asyncio.to_thread(getattr, ticker, "fast_info", {}) or {}
+        raw_info = await asyncio.to_thread(getattr, ticker, "fast_info", {}) or {}
+        # FastInfo is not a dict and (version-dependently) may lack .get;
+        # normalize via dict() so every field below reads real values.
+        try:
+            info = dict(raw_info)
+        except Exception:
+            info = {}
+        last = info.get("last_price")
+        if last is None:
+            raise DataSourceError(f"yfinance fast_info has no price for {sym}")
         return Quote(
             symbol=sym,
             timestamp=utcnow(),
-            bid=info.get("bid") if hasattr(info, "get") else None,
-            ask=info.get("ask") if hasattr(info, "get") else None,
-            last=info.get("last_price") if hasattr(info, "get") else None,
-            volume_24h=info.get("last_volume") if hasattr(info, "get") else None,
-            open_24h=info.get("open") if hasattr(info, "get") else None,
-            high_24h=info.get("day_high") if hasattr(info, "get") else None,
-            low_24h=info.get("day_low") if hasattr(info, "get") else None,
-            close_prev=info.get("previous_close") if hasattr(info, "get") else None,
+            bid=info.get("bid"),
+            ask=info.get("ask"),
+            last=last,
+            volume_24h=info.get("last_volume"),
+            open_24h=info.get("open"),
+            high_24h=info.get("day_high"),
+            low_24h=info.get("day_low"),
+            close_prev=info.get("previous_close"),
             source=self.name,
         )
 
@@ -345,9 +354,13 @@ class YFinanceAdapter(BaseDataSource):
 
     @staticmethod
     def _stooq_symbol(symbol: str) -> str:
-        clean = symbol.strip().lower().replace("-", ".")
+        """Map a raw ticker to Stooq's quote form: US equities need a
+        ``.us`` suffix and class shares use a dash (``BRK.B`` / ``BRK-B``
+        → ``brk-b.us``), never a dot."""
+        clean = str(symbol or "").strip().lower()
         if not clean:
             return ""
+        clean = re.sub(r"[.\-]([a-z])$", r"-\1", clean)
         if "." not in clean:
             return f"{clean}.us"
         return clean

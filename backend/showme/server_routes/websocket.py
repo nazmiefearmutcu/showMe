@@ -5,6 +5,7 @@ provider injected via ``AppDeps.get_stream_hub``.
 """
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import hmac
 import logging
@@ -162,9 +163,38 @@ def register(app: FastAPI, deps: AppDeps) -> None:
             await websocket.close()
             return
         async with sub as queue:
+            # HNT-04: a client that disconnects while the channel is silent
+            # (Binance WSS reconnect backoff, thinly-traded polling symbol)
+            # only surfaces on the RECEIVE side — the old handler never read
+            # the socket after accept, so it parked on queue.get() forever
+            # and leaked the queue + handler coroutine + channel
+            # subscription. Mirror flowmap_ws: one receive-side watcher
+            # task races the queue in asyncio.wait; on disconnect the
+            # finally below cancels the watcher and the ``async with sub``
+            # releases the hub subscription.
+            async def _watch_disconnect() -> None:
+                while True:
+                    message = await websocket.receive()
+                    if message["type"] == "websocket.disconnect":
+                        return
+                    # This channel is server-push only; any inbound text
+                    # or binary frame is ignored (kept for liveness).
+
+            watcher = asyncio.create_task(
+                _watch_disconnect(), name=f"ws-quote-recv-{symbol}"
+            )
             try:
                 while True:
-                    tick = await queue.get()
+                    tick_task = asyncio.ensure_future(queue.get())
+                    done, _pending = await asyncio.wait(
+                        {watcher, tick_task},
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if tick_task not in done:
+                        # Watcher finished first: the client is gone.
+                        tick_task.cancel()
+                        return
+                    tick = tick_task.result()
                     await websocket.send_json(tick.to_dict())
             except WebSocketDisconnect:
                 return
@@ -172,5 +202,8 @@ def register(app: FastAPI, deps: AppDeps) -> None:
                 LOG.warning("ws_quote %s: %s", symbol, exc)
                 with contextlib.suppress(Exception):
                     await websocket.close()
+            finally:
+                watcher.cancel()
+                await asyncio.gather(watcher, return_exceptions=True)
 
     app.include_router(router)

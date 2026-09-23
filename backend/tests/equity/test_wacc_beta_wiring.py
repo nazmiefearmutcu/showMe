@@ -8,7 +8,10 @@ no warning. WACC now:
   - Always invokes ``BetaFunction.execute`` (sharing the same adapter),
     asking for 5Y/2Y/1Y windows and preferring the longest one available.
   - Surfaces ``data_state="synthetic_beta"`` + a warning when the lookup
-    failed and we had to fall back to β=1.0.
+    failed and we had to fall back to β=1.0; ``data_state=
+    "provider_unavailable"`` when the BetaFunction payload itself was a
+    provider outage (HNT-01 — fabricated baselines must never flow into
+    CAPM as "beta_2y"/"live").
 
 This file pins both branches.
 """
@@ -144,7 +147,12 @@ def test_wacc_labels_synthetic_when_beta_lookup_fails(monkeypatch) -> None:
     assert "synthetic_beta" in result.sources
 
 
-def test_wacc_labels_synthetic_when_beta_returns_empty_payload(monkeypatch) -> None:
+def test_wacc_labels_provider_unavailable_when_beta_payload_is_outage(monkeypatch) -> None:
+    """HNT-01: a BetaFunction provider-failure payload (status
+    provider_unavailable / provider_errors) must never be accepted as a
+    live β. WACC keeps computing with β=1.0 but stamps
+    data_state="provider_unavailable" — never "beta_2y" + "live"."""
+
     class _StubBetaEmpty:
         def __init__(self, deps=None) -> None:
             self.deps = deps
@@ -161,8 +169,42 @@ def test_wacc_labels_synthetic_when_beta_returns_empty_payload(monkeypatch) -> N
     monkeypatch.setattr(wacc_mod, "BetaFunction", _StubBetaEmpty)
     result = asyncio.run(WACCFunction().execute(_aapl()))
     assert result.data["beta"] == 1.0
-    assert result.data["data_state"] == "synthetic_beta"
-    assert any("synthetic" in w.lower() for w in result.warnings)
+    assert result.data["data_state"] == "provider_unavailable"
+    assert result.data["beta_source"] == "synthetic_beta"
+    assert result.data["beta_window"] is None
+    assert any("provider" in w.lower() for w in result.warnings)
+    assert "synthetic_beta" in result.sources
+
+
+def test_wacc_never_accepts_fabricated_baselines_as_live(monkeypatch) -> None:
+    """HNT-01 belt-and-suspenders: even if a (now-retired) baseline-shaped
+    payload came back carrying non-empty betas with a provider-error
+    marker, WACC must not resolve them as beta_2y/live."""
+
+    class _StubBetaBaselineGhost:
+        def __init__(self, deps=None) -> None:
+            self.deps = deps
+
+        async def execute(self, instrument, **params):
+            from showme.engine.core.base_function import FunctionResult
+            return FunctionResult(
+                code="BETA",
+                instrument=instrument,
+                data={
+                    "status": "computed_market_model",
+                    "betas": {"2Y": {"beta": 1.36, "correlation": 0.62}},
+                },
+                sources=["beta_market_model"],
+                metadata={"provider_errors": ["yfinance target: boom"]},
+            )
+
+    monkeypatch.setattr(wacc_mod, "BetaFunction", _StubBetaBaselineGhost)
+    result = asyncio.run(WACCFunction().execute(_aapl()))
+    assert result.data["beta"] == 1.0
+    assert result.data["data_state"] == "provider_unavailable"
+    assert result.data["beta_source"] == "synthetic_beta"
+    assert result.data["beta_window"] is None
+    assert result.data["beta_source"] != "beta_2y"
 
 
 def test_wacc_user_supplied_beta_overrides_lookup(monkeypatch) -> None:

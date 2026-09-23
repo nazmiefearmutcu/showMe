@@ -42,3 +42,34 @@ describe("Statusbar.shortenPath — strip macOS user home", () => {
     expect(shortenPath(path)).toBe("~/Desktop/x");
   });
 });
+
+describe("Statusbar.shortenPath — strip Windows user home (HNT-05)", () => {
+  it("collapses C:\\Users\\<account>\\ to ~\\", () => {
+    const path = "C:\\Users\\Kullanıcı\\AppData\\Local\\showme\\engine\\data";
+    expect(shortenPath(path)).toBe("~\\AppData\\Local\\showme\\engine\\data");
+  });
+
+  it("collapses any drive letter and any account name", () => {
+    expect(shortenPath("D:\\Users\\alice\\Desktop\\x")).toBe("~\\Desktop\\x");
+    expect(shortenPath("c:\\users\\bob\\projects\\showme")).toBe("~\\projects\\showme");
+  });
+
+  it("handles forward-slash Windows paths without rewriting the remainder", () => {
+    expect(shortenPath("C:/Users/alice/Desktop/x")).toBe("~\\Desktop/x");
+  });
+
+  it("leaves non-home Windows paths intact", () => {
+    expect(shortenPath("C:\\Program Files\\showme")).toBe("C:\\Program Files\\showme");
+    expect(shortenPath("C:\\Users")).toBe("C:\\Users");
+  });
+
+  it("does not leak the account name for any home form", () => {
+    for (const path of [
+      "C:\\Users\\Kullanıcı\\Desktop\\x",
+      "D:/Users/alice/Desktop/x",
+    ]) {
+      expect(shortenPath(path)).not.toContain("Kullanıcı");
+      expect(shortenPath(path)).not.toContain("alice");
+    }
+  });
+});

@@ -308,7 +308,9 @@ def _agent_function_params(entry: FunctionIndexEntry, candidate: dict[str, str])
     # newsflow, BRIEF, NI, ...). Give the news category its own budget that
     # still sits safely under FUNCTION_TIMEOUT_SECONDS (14s); an explicit
     # caller timeout/news_timeout still wins because ``merged`` updates the
-    # defaults after this point.
+    # defaults after this point. (MEET is intentionally excluded here: its
+    # branch below pops the generic timeout defaults so its in-code 8 s
+    # budget applies, and its symbol fan-out runs concurrently.)
     if category == "news":
         params["timeout"] = 10
         params["news_timeout"] = 10
@@ -795,6 +797,13 @@ def _route_function_params(code: str, params: dict[str, Any]) -> dict[str, Any]:
         # MOSS must scan its FULL default cross-asset universe instead of
         # being silently restricted to the route's peer group.
         defaults.pop("symbols", None)
+    if code.upper() == "MEET" and not merged.get("symbols"):
+        # MEET's ``symbols`` means user-followed tickers (own UI section +
+        # symbol feeds). The agent peer default (BTC/ETH/SOL) would fan out
+        # a crypto-group fetch plus three sequential per-symbol Yahoo feeds
+        # nobody asked for — worst case ~32 s serial against the 14 s
+        # function timeout. Drop it when the caller sent none.
+        defaults.pop("symbols", None)
     if code.upper() == "ICX" and defaults.get("query") and not merged.get("index"):
         defaults["index"] = str(defaults["query"]).strip().upper()
     if code.upper() == "TRQA" and defaults.get("query") and not merged.get("questions"):
@@ -1190,7 +1199,10 @@ async def _run_best_symbol_agent(request: dict[str, Any]) -> dict[str, Any]:
                             json_safe({"code": entry.code, "data": result}),
                         )
                 except Exception as exc:  # noqa: BLE001
-                    status = "pass"
+                    # HNT-01: the failure path must mark the row "fail" —
+                    # "pass" here inflated pass_count and let fallback
+                    # payloads earn full ranking weight in live mode.
+                    status = "fail"
                     reason = str(exc) or type(exc).__name__
                     payload = fallback_function_payload(entry.code, params, reason, type(exc).__name__)
             else:

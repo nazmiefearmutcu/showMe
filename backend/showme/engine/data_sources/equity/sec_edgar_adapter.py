@@ -56,10 +56,7 @@ class SECEdgarAdapter(BaseDataSource):
     async def _load_cik_table(self) -> dict[str, str]:
         if self._ticker_to_cik is not None:
             return self._ticker_to_cik
-        client = await self._client_()
-        r = await client.get(_TICKER_TO_CIK_URL)
-        r.raise_for_status()
-        data = r.json()
+        data = await self._get_json(_TICKER_TO_CIK_URL)
         # values look like {"0": {"cik_str": 320193, "ticker": "AAPL", "title": "Apple Inc."}, ...}
         out: dict[str, str] = {}
         for v in data.values():
@@ -68,34 +65,34 @@ class SECEdgarAdapter(BaseDataSource):
         return out
 
     @throttle(rps=8.0)
+    async def _get_json(self, url: str) -> dict[str, Any]:
+        """Single shared throttle point for every EDGAR GET.
+
+        Per-method ``@throttle`` decorators keep independent budgets, so
+        concurrent submissions + company_facts calls could push ~32 rps
+        against SEC's 10 rps fair-use limit. Funneling every request
+        through this one helper caps the adapter at 8 rps total."""
+        client = await self._client_()
+        r = await client.get(url)
+        r.raise_for_status()
+        return r.json()
+
     async def cik_for(self, ticker: str) -> str | None:
         table = await self._load_cik_table()
         return table.get(ticker.upper())
 
-    @throttle(rps=8.0)
     async def submissions(self, cik: str) -> dict[str, Any]:
-        client = await self._client_()
-        r = await client.get(f"{self.base_url}/submissions/CIK{cik}.json")
-        r.raise_for_status()
-        return r.json()
+        return await self._get_json(f"{self.base_url}/submissions/CIK{cik}.json")
 
-    @throttle(rps=8.0)
     async def company_facts(self, cik: str) -> dict[str, Any]:
-        client = await self._client_()
-        r = await client.get(f"{self.base_url}/api/xbrl/companyfacts/CIK{cik}.json")
-        r.raise_for_status()
-        return r.json()
+        return await self._get_json(f"{self.base_url}/api/xbrl/companyfacts/CIK{cik}.json")
 
-    @throttle(rps=8.0)
     async def company_concept(
         self, cik: str, taxonomy: str, concept: str
     ) -> dict[str, Any]:
-        client = await self._client_()
-        r = await client.get(
+        return await self._get_json(
             f"{self.base_url}/api/xbrl/companyconcept/CIK{cik}/{taxonomy}/{concept}.json"
         )
-        r.raise_for_status()
-        return r.json()
 
     async def recent_filings(
         self, cik: str, *, form: str | None = None, limit: int = 40
@@ -104,17 +101,24 @@ class SECEdgarAdapter(BaseDataSource):
         sub = await self.submissions(cik)
         recent = (sub.get("filings") or {}).get("recent") or {}
         accs = recent.get("accessionNumber") or []
+
+        def nth(key: str, i: int) -> Any:
+            # Parallel arrays can be ragged on truncated payloads; the old
+            # `or [None]` guard only covered a missing key, not a short list.
+            lst = recent.get(key) or []
+            return lst[i] if i < len(lst) else None
+
         out: list[dict[str, Any]] = []
         for i in range(len(accs)):
             row = {
                 "accession": accs[i],
-                "filingDate": (recent.get("filingDate") or [None])[i],
-                "reportDate": (recent.get("reportDate") or [None])[i],
-                "form": (recent.get("form") or [None])[i],
-                "primaryDocument": (recent.get("primaryDocument") or [None])[i],
-                "primaryDocDescription": (recent.get("primaryDocDescription") or [None])[i],
-                "size": (recent.get("size") or [None])[i],
-                "isXBRL": (recent.get("isXBRL") or [None])[i],
+                "filingDate": nth("filingDate", i),
+                "reportDate": nth("reportDate", i),
+                "form": nth("form", i),
+                "primaryDocument": nth("primaryDocument", i),
+                "primaryDocDescription": nth("primaryDocDescription", i),
+                "size": nth("size", i),
+                "isXBRL": nth("isXBRL", i),
             }
             if form and (row["form"] or "").upper() != form.upper():
                 continue

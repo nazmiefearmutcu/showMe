@@ -172,7 +172,10 @@ def _resolve_countries(requested: Any) -> dict[str, str]:
     if not requested:
         return dict(_DEFAULT_COUNTRIES)
     if isinstance(requested, str):
-        codes = [requested]
+        # HNT-10: a GET-style string like "US,CN" is a LIST of countries —
+        # treating it as one code sent "US,CN" to the World Bank URL and
+        # produced an all-null row with status=ok.
+        codes = [part.strip() for part in requested.split(",") if part.strip()]
     else:
         try:
             codes = list(requested)

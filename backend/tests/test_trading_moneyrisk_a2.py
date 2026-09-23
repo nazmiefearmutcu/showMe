@@ -16,6 +16,8 @@ import sys
 from pathlib import Path
 from typing import Any, Optional
 
+import pytest
+
 BACKEND = Path(__file__).resolve().parents[1]
 if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
@@ -250,8 +252,9 @@ def test_live_close_without_fill_commission_falls_back_to_configured_fee() -> No
 
     assert result["executed"] is True
     record = pm.trade_history[-1]
-    # (entry*qty + exit*qty) * 0.001 configured fee
-    assert record.fee == (100.0 * 1.0 + 90.0 * 1.0) * 0.001
+    # HNT-07: fallback fee covers the EXIT leg only (exit*qty*fee_pct) —
+    # the entry leg is charged where the entry order executes.
+    assert record.fee == 90.0 * 1.0 * 0.001
 
 
 def test_live_close_dust_guard_blocks_order_and_keeps_position() -> None:
@@ -322,7 +325,8 @@ def test_close_position_default_signature_unchanged() -> None:
 
     assert record is not None
     assert record.quantity == 2.0
-    assert record.fee == (100.0 * 2.0 + 90.0 * 2.0) * 0.002
+    # HNT-07: exit-leg fee only (entry fee is charged at open).
+    assert record.fee == 90.0 * 2.0 * 0.002
     assert pm.get_position("BTCUSDT") is None
 
 
@@ -372,9 +376,11 @@ def test_paper_profitable_short_increases_balance() -> None:
     )
     assert close_res["executed"] is True
     record = pm.trade_history[-1]
-    assert record.pnl == 9.81  # gross 10 - round-trip fee 0.19
-    # 10099.9 - (buyback 90 + fee 0.19) = 10009.71  → balance grew by 9.71
-    assert engine.paper_balance == 10_009.71
+    # HNT-07: close books the EXIT-leg fee only — gross 10 - exit fee 0.09.
+    assert record.pnl == 9.91
+    # 10099.9 - (buyback 90 + exit fee 0.09) = 10009.81 → balance grew by 9.81
+    # (gross 10 - entry fee 0.1 - exit fee 0.09).
+    assert engine.paper_balance == pytest.approx(10_009.81)
     assert engine.paper_balance > 10_000.0
 
 
@@ -385,8 +391,8 @@ def test_paper_losing_short_decreases_balance() -> None:
         TradeAction.CLOSE_SHORT, "BTCUSDT", 1.0, 110.0, "c", leverage=1
     )
     assert close_res["executed"] is True
-    # 10099.9 - (110 + 0.21) = 9989.69 → loss hits the balance
-    assert engine.paper_balance == 9_989.69
+    # 10099.9 - (110 + exit fee 0.11) = 9989.79 → loss hits the balance
+    assert engine.paper_balance == pytest.approx(9_989.79)
 
 
 # ──────────────── F4: liquidation-aware leverage clamp wiring ──────────────

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import types
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -126,8 +127,16 @@ def test_fetch_fred_csv_series_failure_returns_none():
 
 
 def test_fred_with_keyless_fallback_prefers_keyed_adapter():
-    sentinel = object()
+    """HNT-03: only an adapter that actually carries an api_key is preferred —
+    the factory wires a keyless FREDAdapter instance (raises on every call),
+    which previously kept the CSV shim unreachable in production."""
+    sentinel = types.SimpleNamespace(api_key=" abc123 ")
     assert fred_with_keyless_fallback(sentinel) is sentinel
+    # A wired-but-keyless adapter must fall through to the CSV shim.
+    keyless_adapter = types.SimpleNamespace(api_key="")
+    assert isinstance(fred_with_keyless_fallback(keyless_adapter), _KeylessFredCSV)
+    # So must anything without an api_key attribute at all.
+    assert isinstance(fred_with_keyless_fallback(object()), _KeylessFredCSV)
     shim = fred_with_keyless_fallback(None)
     assert isinstance(shim, _KeylessFredCSV)
 
@@ -193,6 +202,35 @@ def test_wb_default_live_keyless_and_offline_fallback_labelled():
     assert result.warnings
 
 
+def test_wb_partial_failure_surfaces_missing_countries():
+    """HNT-12: countries whose FRED series fails must be reported via
+    ``missing_countries`` + provider_errors instead of being silently
+    dropped from the heatmap."""
+    from showme.engine.functions.bond.wb import WBFunction
+
+    class _PartialClient:
+        def __init__(self):
+            self.calls: list[str] = []
+
+        async def get(self, url, timeout=None):
+            self.calls.append(url)
+            if "IRLTLT01DEM156N" in url:  # the DE long-bond series fails
+                raise RuntimeError("series gone")
+            return _FakeResp("observation_date,value\n2026-09-04,2.58\n")
+
+    fn = WBFunction(FunctionDeps())
+    fn._http_client = _PartialClient()
+    result = _run(fn.execute(countries="US,DE"))
+    data = result.data
+    assert result.sources == ["fred"]
+    assert result.metadata.get("live") is True
+    assert data["missing_countries"] == ["DE"]
+    assert data["summary"]["missing_countries"] == 1
+    assert {row["country"] for row in data["rows"]} == {"US"}
+    errors = result.metadata.get("provider_errors") or []
+    assert any("DE" in str(e) for e in errors), errors
+
+
 def test_yas_benchmark_uses_keyless_csv_by_default():
     from showme.engine.functions.bond.yas import YASFunction
 
@@ -214,3 +252,23 @@ def test_wacc_risk_free_uses_keyless_csv_without_api_key():
     ))
     assert "fred" in result.sources
     assert result.data["rf"] == pytest.approx(0.042, abs=1e-9)
+
+
+def test_wacc_user_rf_override_wins_and_skips_fred():
+    """HNT-07: a user-supplied ``rf`` must never be overwritten by the FRED
+    fetch (healthy or dead) — the beta/rd override pattern."""
+    from showme.engine.core.instrument import AssetClass, Instrument
+    from showme.engine.functions.equity.wacc import WACCFunction
+
+    fn = WACCFunction(FunctionDeps())
+    client = _FakeClient()
+    fn._http_client = client
+    result = _run(fn.execute(
+        instrument=Instrument(symbol="AAPL", asset_class=AssetClass.EQUITY),
+        beta=1.1, rf=0.03, tax_rate=0.15,
+    ))
+    assert result.data["rf"] == pytest.approx(0.03, abs=1e-12)
+    assert "fred" not in result.sources
+    assert "user_input" in result.sources
+    # The DGS10 risk-free leg must not even be consulted.
+    assert not any("DGS10" in url for url in client.calls), client.calls

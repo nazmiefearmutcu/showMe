@@ -245,9 +245,12 @@ def register(app: FastAPI, deps: AppDeps) -> None:
     ) -> dict[str, Any]:
         """Delete a strategy. Without ``force=true``, refuses with 409 when
         any bot still references the strategy. With ``force=true``, the
-        referencing bots are cascade-disabled (their store records flipped
-        to ``enabled=False`` + their asyncio task cancelled) BEFORE the
-        strategy file is removed. C-INT-2 / FIX_CONTRACT.md C3.
+        strategy file is removed FIRST and the referencing bots are then
+        cascade-disabled (their store records flipped to ``enabled=False``
+        + their asyncio task cancelled). C-INT-2 / FIX_CONTRACT.md C3.
+        HNT-14: the delete is the commit point — a stale 404 must never
+        run after the cascade already disabled bots, because 404 promises
+        "nothing changed".
         """
         # Validate id early so 400 wins over 404/409 race.
         try:
@@ -268,15 +271,17 @@ def register(app: FastAPI, deps: AppDeps) -> None:
                     "hint": "Use ?force=true to cascade-disable referencing bots.",
                 },
             )
-        cascade_results: list[dict[str, str]] = []
-        if refs and force:
-            cascade_results = await _cascade_disable_bots([m.id for m in refs])
         try:
             ok = _store().delete(strategy_id)
         except ValueError:
             raise HTTPException(400, detail="invalid strategy id")
         if not ok:
             raise HTTPException(404, detail=f"unknown strategy: {strategy_id}")
+        # HNT-14: only after the delete has committed may the cascade
+        # side effect run.
+        cascade_results: list[dict[str, str]] = []
+        if refs and force:
+            cascade_results = await _cascade_disable_bots([m.id for m in refs])
         return {
             "ok": True,
             "cascade": cascade_results,

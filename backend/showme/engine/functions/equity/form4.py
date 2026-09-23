@@ -326,8 +326,9 @@ def _form4_summary_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
                 net_shares -= abs(shares)
             elif direction > 0:
                 net_shares += abs(shares)
-            else:
-                net_shares += shares
+            # HNT-16 fix: neutral transactions (gifts, J-other, unknown
+            # direction) no longer shift the net — a gifted position must
+            # not read as insider buying.
             has_shares = True
 
         value = finite(row.get("value") or row.get("notional") or row.get("signed_value"))
@@ -336,16 +337,14 @@ def _form4_summary_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
                 net_notional -= abs(value)
             elif direction > 0:
                 net_notional += abs(value)
-            else:
-                net_notional += value
             has_notional = True
         elif shares is not None:
             price = finite(row.get("price") or row.get("unit_price") or row.get("price_per_share"))
-            if price is not None:
+            if price is not None and direction != 0:
                 notional = shares * price
                 if direction < 0:
                     notional = -abs(notional)
-                elif direction > 0:
+                else:
                     notional = abs(notional)
                 net_notional += notional
                 has_notional = True
@@ -384,7 +383,11 @@ def _infer_direction(row: dict[str, Any]) -> int:
         or row.get("direction")
         or ""
     ).strip().lower()
-    if code in {"p", "a", "g", "j", "e"}:
+    # HNT-16 fix: SEC Form 4 ``G`` (gift) and ``J`` (other) transactions are
+    # not market purchases — classifying them as +1 inflated "net insider
+    # buying" whenever an executive gifted shares. They now count as
+    # neutral (direction 0), like the description-path default.
+    if code in {"p", "a", "e"}:
         return 1
     if code in {"s", "d", "x", "v", "r"}:
         return -1
@@ -402,7 +405,9 @@ def _infer_direction(row: dict[str, Any]) -> int:
 
     if any(keyword in description for keyword in ("sell", "disposition", "disposed", "forfeit", "surrender", "issue out", "cancel")):
         return -1
-    if any(keyword in description for keyword in ("buy", "purchase", "acquire", "award", "exercise", "subscription", "option", "grant", "issue", "receive", "vest", "transfer in")):
+    # HNT-16 fix: "grant" descriptions (yfinance Transaction="Grant" rows)
+    # follow the G-code treatment — neutral, not net insider buying.
+    if any(keyword in description for keyword in ("buy", "purchase", "acquire", "award", "exercise", "subscription", "option", "issue", "receive", "vest", "transfer in")):
         return 1
     return 0
 

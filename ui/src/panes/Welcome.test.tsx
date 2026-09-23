@@ -27,8 +27,17 @@ import type { QuoteView, NormalizedTick } from "@/lib/market-data";
 import type { QuoteSnapshot } from "@/lib/quotes";
 
 // Default-no-op useFunction prevents jsdom from chasing the sidecar.
+// Mutable via fnMockState so individual tests can inject payloads.
+const fnMockState = vi.hoisted(() => ({
+  value: { state: "idle", data: null, error: null } as {
+    state: string;
+    data: unknown;
+    error: unknown;
+  },
+  refetch: vi.fn(),
+}));
 vi.mock("@/lib/useFunction", () => ({
-  useFunction: () => ({ state: "idle", data: null, error: null, refetch: () => {} }),
+  useFunction: () => ({ ...fnMockState.value, refetch: fnMockState.refetch }),
 }));
 
 // Default-empty market-data stub. Individual tests override the mock to
@@ -47,6 +56,8 @@ vi.mock("@/lib/watchlist", async () => {
 
 beforeEach(() => {
   localStorage.clear();
+  fnMockState.value = { state: "idle", data: null, error: null };
+  fnMockState.refetch.mockClear();
   useAppStore.setState({
     sidecarStatus: "booting",
     sidecarPort: null,
@@ -164,6 +175,8 @@ describe("Welcome watchlist — empty state + CTA", () => {
     expect(rows[0]!.bid).toBe("—");
     expect(rows[0]!.ask).toBe("—");
     expect(rows[0]!.last).toBe("—");
+    // HNT-06: no fake flat "0.00%" day either — change stays null ("—").
+    expect(rows[0]!.change).toBeNull();
     expect(rows[0]!.notional).toBe("—");
     expect(rows[1]!.name).toBe("Microsoft");
   });
@@ -249,7 +262,82 @@ describe("Welcome BRIEF panel — elevated demo banner", () => {
     const banner = await findByTestId("brief-demo-banner");
     expect(banner.getAttribute("role")).toBe("status");
     expect(banner.textContent).toMatch(/Demo data/i);
-    expect(banner.textContent).toMatch(/not yet wired|illustrative/i);
+    expect(banner.textContent).toMatch(/even after retries|illustrative/i);
+  });
+
+  it("retries a non-live brief a few times instead of settling on demo", async () => {
+    vi.useFakeTimers();
+    try {
+      useAppStore.setState({
+        sidecarStatus: "healthy",
+        functionIndex: [
+          { code: "BRIEF", name: "Daily Brief", category: "news", description: "" },
+        ],
+      });
+      const { rerender, getByTestId } = render(<Welcome />);
+      // Each retry needs a visible round-trip (idle -> loading -> idle) for
+      // the effect to re-arm, mirroring the real useFunction transitions.
+      const roundTrip = async (waitMs: number, callCount: number) => {
+        await act(async () => {
+          vi.advanceTimersByTime(waitMs);
+        });
+        expect(fnMockState.refetch).toHaveBeenCalledTimes(callCount);
+        act(() => {
+          fnMockState.value = { state: "loading", data: null, error: null };
+          rerender(<Welcome />);
+        });
+        act(() => {
+          fnMockState.value = { state: "idle", data: null, error: null };
+          rerender(<Welcome />);
+        });
+      };
+      await roundTrip(7000, 1);
+      await roundTrip(15000, 2);
+      await roundTrip(30000, 3);
+      // Budget exhausted: no further retries, demo banner stays.
+      await act(async () => {
+        vi.advanceTimersByTime(120000);
+      });
+      expect(fnMockState.refetch).toHaveBeenCalledTimes(3);
+      expect(getByTestId("brief-demo-banner")).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops retrying once the brief goes live", async () => {
+    vi.useFakeTimers();
+    try {
+      useAppStore.setState({
+        sidecarStatus: "healthy",
+        functionIndex: [
+          { code: "BRIEF", name: "Daily Brief", category: "news", description: "" },
+        ],
+      });
+      const { rerender, getByTestId } = render(<Welcome />);
+      await act(async () => {
+        vi.advanceTimersByTime(7000);
+      });
+      expect(fnMockState.refetch).toHaveBeenCalledTimes(1);
+      // Live payload lands: retries stop, live ribbons render.
+      fnMockState.value = {
+        state: "ok",
+        data: {
+          data: {
+            articles: [{ title: "Fed holds rates steady", matched_symbol: "MACRO" }],
+          },
+        },
+        error: null,
+      };
+      rerender(<Welcome />);
+      expect(getByTestId("brief-live-banner")).toBeInTheDocument();
+      await act(async () => {
+        vi.advanceTimersByTime(120000);
+      });
+      expect(fnMockState.refetch).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

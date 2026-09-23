@@ -162,9 +162,11 @@ def _earnings_rows(symbol: str, finnhub_data: Any, yf_data: Any, history: int) -
         for item in frame_rows((yf_data or {}).get("earnings_dates"), limit=history):
             actual = finite(item.get("Reported EPS") or item.get("reportedEPS") or item.get("actual"))
             estimate = finite(item.get("EPS Estimate") or item.get("epsEstimate") or item.get("estimate"))
+            # HNT-02 fix: the Yahoo ``Surprise(%)`` column is already in
+            # percent units. The old |v| <= 1 → *100 heuristic multiplied
+            # routine sub-1% EPS surprises by 100 (a %0.67 beat rendered as
+            # %67). The value is used exactly as the provider reports it.
             surprise = finite(item.get("Surprise(%)") or item.get("surprisePercent"))
-            if surprise is not None and abs(surprise) <= 1:
-                surprise *= 100
             rows.append({
                 "symbol": symbol,
                 "period": date_label(item.get("Earnings Date") or item.get("index") or item.get("date")),

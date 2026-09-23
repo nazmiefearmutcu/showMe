@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from typing import Any
 
@@ -48,14 +49,16 @@ class AlpacaBrokerAdapter(BaseBroker):
             symbol=order.instrument.symbol, qty=order.quantity, side=side, time_in_force=tif,
             **({"limit_price": order.price} if order.order_type == OrderType.LIMIT else {})
         )
-        result = self._client.submit_order(req)
+        # alpaca-py's TradingClient is a sync HTTP SDK — never call it on
+        # the event loop; a slow order request would stall every stream.
+        result = await asyncio.to_thread(self._client.submit_order, req)
         return str(result.id)
 
     async def cancel_order(self, order_id: str) -> bool:
         if not self._client:
             return False
         try:
-            self._client.cancel_order_by_id(order_id)
+            await asyncio.to_thread(self._client.cancel_order_by_id, order_id)
             return True
         except Exception:
             return False
@@ -64,7 +67,8 @@ class AlpacaBrokerAdapter(BaseBroker):
         if not self._client:
             return []
         try:
-            return [o.model_dump() for o in self._client.get_orders()]
+            orders = await asyncio.to_thread(self._client.get_orders)
+            return [o.model_dump() for o in orders]
         except Exception:
             return []
 
@@ -73,6 +77,7 @@ class AlpacaBrokerAdapter(BaseBroker):
             return []
         try:
             from showme.engine.core.instrument import Instrument, AssetClass
+            positions = await asyncio.to_thread(self._client.get_all_positions)
             return [
                 BrokerPosition(
                     instrument=Instrument(symbol=p.symbol, asset_class=AssetClass.EQUITY,
@@ -80,7 +85,7 @@ class AlpacaBrokerAdapter(BaseBroker):
                                            currency="USD"),
                     quantity=float(p.qty), avg_price=float(p.avg_entry_price),
                     unrealized_pnl=float(p.unrealized_pl or 0),
-                ) for p in self._client.get_all_positions()
+                ) for p in positions
             ]
         except Exception:
             return []
@@ -89,7 +94,7 @@ class AlpacaBrokerAdapter(BaseBroker):
         if not self._client:
             return []
         try:
-            acc = self._client.get_account()
+            acc = await asyncio.to_thread(self._client.get_account)
             return [BrokerBalance(currency="USD", total=float(acc.equity),
                                    available=float(acc.cash))]
         except Exception:

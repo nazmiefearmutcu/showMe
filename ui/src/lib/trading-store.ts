@@ -60,14 +60,18 @@ export type ConfirmKind = "submit" | "close" | "cancel";
  * Backend `Position.side` may carry futures-style "long"/"short" instead of
  * the spot "buy"/"sell" the broker write APIs expect. Normalize so PORT.tsx
  * can hand any backend payload to `closePosition` without casting.
+ *
+ * HNT-03: an UNRECOGNIZED side returns null instead of defaulting to
+ * "buy" — guessing the direction of a close order (real money) is worse
+ * than refusing to send one. `closePosition` rejects null sides.
  */
-export function normalizeSide(s: string | null | undefined): OrderSide {
+export function normalizeSide(s: string | null | undefined): OrderSide | null {
   const v = (s ?? "").trim().toLowerCase();
   if (v === "buy" || v === "long") return "buy";
   if (v === "sell" || v === "short") return "sell";
   // eslint-disable-next-line no-console
-  console.warn(`[trading-store] normalizeSide: unknown side "${s}", defaulting to "buy"`);
-  return "buy";
+  console.warn(`[trading-store] normalizeSide: unknown side "${s}", refusing to default`);
+  return null;
 }
 
 export interface TicketState {
@@ -124,7 +128,7 @@ interface TradingStoreShape {
     accountLabel: string,
     symbol?: string,
   ) => void;
-  closePosition: (brokerName: string, symbol: string, currentSide: OrderSide, quantity: number, accountLabel?: string) => void;
+  closePosition: (brokerName: string, symbol: string, currentSide: OrderSide | null, quantity: number, accountLabel?: string) => void;
   confirm: (typedLabel: string) => Promise<void>;
   dismissConfirm: () => void;
   clearLastResult: () => void;
@@ -242,6 +246,20 @@ export const useTradingStore = create<TradingStoreShape>((set, get) => ({
 
   closePosition: (brokerName, symbol, currentSide, quantity, accountLabel = "") => {
     if (get().submitting) return;
+    // HNT-03: an unrecognized position side must never be guessed into a
+    // directional close order — surface the error and refuse to stage the
+    // confirmation. PORT's lastResult bridge turns this into a toast.
+    if (currentSide == null) {
+      set({
+        lastResult: {
+          ok: false,
+          kind: "close",
+          symbol,
+          error: "unknown position side: refusing to submit a close order",
+        },
+      });
+      return;
+    }
     const opposite: OrderSide = currentSide === "buy" ? "sell" : "buy";
     set({
       pendingConfirm: {

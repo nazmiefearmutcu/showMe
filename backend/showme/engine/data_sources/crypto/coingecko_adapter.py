@@ -50,7 +50,14 @@ class CoinGeckoAdapter(BaseDataSource):
     def __init__(self, config: dict[str, Any] | None = None) -> None:
         super().__init__(config)
         self.api_key = os.environ.get("COINGECKO_API_KEY", "")
-        self.base_url = (config or {}).get("base_url", "https://api.coingecko.com/api/v3")
+        # Pro keys are only valid on the pro host; sending them to the free
+        # endpoint leaves the 30/min anonymous quota in place while the
+        # adapter assumes the 500/min paid budget.
+        default_base = (
+            "https://pro-api.coingecko.com/api/v3" if self.api_key
+            else "https://api.coingecko.com/api/v3"
+        )
+        self.base_url = (config or {}).get("base_url", default_base)
         if self.api_key:
             self.rate_limit_rps = 8.0
         self._client: httpx.AsyncClient | None = None
@@ -65,9 +72,15 @@ class CoinGeckoAdapter(BaseDataSource):
             )
         return self._client
 
-    @staticmethod
-    def _to_id(symbol: str) -> str:
-        return _ID_MAP.get(symbol.upper(), symbol.lower())
+    @classmethod
+    def _to_id(cls, symbol: str) -> str:
+        # Pre-clean Yahoo-style separators ("BTC-USD", "BTC/USDT") so the
+        # curated map and the bare-base fallback both see the Binance-style
+        # form; an unstripped dash would fabricate ids like "btc-usd".
+        s = str(symbol or "").upper().replace("-", "").replace("/", "")
+        if s in _ID_MAP:
+            return _ID_MAP[s]
+        return _ID_MAP.get(cls._base_symbol(s), s.lower())
 
     @staticmethod
     def _is_mapped(symbol: str) -> bool:
@@ -93,13 +106,39 @@ class CoinGeckoAdapter(BaseDataSource):
     async def quote(self, symbol: str, vs: str = "usd") -> dict[str, Any]:
         client = await self._client_()
         cg_id = self._to_id(symbol)
-        r = await client.get("/simple/price", params={
-            "ids": cg_id, "vs_currencies": vs,
-            "include_24hr_change": "true", "include_24hr_vol": "true",
-            "include_market_cap": "true",
+        if self._is_mapped(symbol):
+            r = await client.get("/simple/price", params={
+                "ids": cg_id, "vs_currencies": vs,
+                "include_24hr_change": "true", "include_24hr_vol": "true",
+                "include_market_cap": "true",
+            })
+            r.raise_for_status()
+            return (r.json() or {}).get(cg_id, {})
+        # Unmapped symbols resolve through the id-fallback, which can land
+        # on a DIFFERENT asset (e.g. "GAS" → id "gas" = neogas). /simple/price
+        # never echoes the coin's canonical symbol, so route unmapped quotes
+        # through /coins/{id} and apply the same mismatch guard as REFDATA —
+        # refuse to present another asset's price under the requested ticker.
+        r = await client.get(f"/coins/{cg_id}", params={
+            "localization": "false", "tickers": "false",
+            "community_data": "false", "developer_data": "false",
         })
         r.raise_for_status()
-        return (r.json() or {}).get(cg_id, {})
+        payload = self._guard_refdata_symbol(symbol, r.json())
+        if isinstance(payload, dict) and payload.get("status") == "provider_unavailable":
+            raise DataSourceError(
+                str(payload.get("reason") or f"CoinGecko symbol mismatch for {symbol}")
+            )
+        market = (payload.get("market_data") or {}) if isinstance(payload, dict) else {}
+        return {
+            vs: (market.get("current_price") or {}).get(vs),
+            f"{vs}_24h_vol": (market.get("total_volume") or {}).get(vs),
+            f"{vs}_24h_change": (
+                (market.get("price_change_percentage_24h_in_currency") or {}).get(vs)
+                or market.get("price_change_percentage_24h")
+            ),
+            f"{vs}_market_cap": (market.get("market_cap") or {}).get(vs),
+        }
 
     async def ohlc(self, symbol: str, vs: str = "usd",
                    days: int = 30) -> pd.DataFrame:

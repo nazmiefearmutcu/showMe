@@ -55,7 +55,7 @@ describe("useVisibilityTick", () => {
     expect(result.current).toBe(1);
   });
 
-  it("resumes when the tab becomes visible again", () => {
+  it("resumes when the tab becomes visible again (bumping immediately — HNT-12)", () => {
     const { result } = renderHook(() => useVisibilityTick(1000));
     act(() => {
       setVisibility("hidden");
@@ -64,9 +64,20 @@ describe("useVisibilityTick", () => {
     expect(result.current).toBe(0);
     act(() => {
       setVisibility("visible");
+    });
+    // HNT-12: the visibility transition itself bumps the tick so consumers
+    // refetch right away instead of waiting out a full interval on stale
+    // data.
+    expect(result.current).toBe(1);
+    act(() => {
       vi.advanceTimersByTime(2000);
     });
-    expect(result.current).toBe(2);
+    expect(result.current).toBe(3);
+  });
+
+  it("does NOT bump on first mount (HNT-12 — no double-fire)", () => {
+    const { result } = renderHook(() => useVisibilityTick(1000));
+    expect(result.current).toBe(0);
   });
 
   it("clears its interval on unmount", () => {

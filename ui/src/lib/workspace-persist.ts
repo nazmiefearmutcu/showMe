@@ -432,6 +432,14 @@ export function startWorkspaceAutosave(): () => void {
 
   return () => {
     unsubStore();
+    // HNT-08: cancel any pending debounce write — without this, a dispose
+    // followed by the 400 ms timer firing would still flush a (stale)
+    // serializeWorkspace() to disk from a torn-down subscription
+    // (StrictMode double-mount / test teardown determinism).
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+    }
     if (typeof window !== "undefined") {
       window.removeEventListener("beforeunload", browserFlush);
     }

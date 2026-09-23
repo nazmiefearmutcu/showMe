@@ -341,7 +341,7 @@ def test_market_wire_requires_material_context_and_event(title, expected):
     assert rss_adapter._world_wire_relevant({"title": title}) is expected
 
 
-def test_symbol_limit_truncation_is_not_counted_as_duplicate(monkeypatch):
+def test_symbol_window_is_not_prematurely_truncated(monkeypatch):
     monkeypatch.setattr(meet_mod, "_utc_now", lambda: NOW)
     fn = meet_mod.MEETFunction()
     async def headlines(*, now, timeout):
@@ -355,7 +355,7 @@ def test_symbol_limit_truncation_is_not_counted_as_duplicate(monkeypatch):
     monkeypatch.setattr(fn, "_world_headlines", headlines)
     monkeypatch.setattr(fn, "_symbol_articles", symbol_articles)
     result = asyncio.run(fn.execute(mode="wire", symbols="BTC"))
-    assert len(result.data["rows"]) == 60
+    assert len(result.data["rows"]) == 61
     assert result.data["data_quality"]["duplicate_rows_dropped"] == 0
 
 
@@ -404,7 +404,7 @@ def test_meet_truncation_counts_capped_not_duplicate(monkeypatch):
         ]
     monkeypatch.setattr(fn, "_world_headlines", headlines)
     monkeypatch.setattr(fn, "_symbol_articles", symbol_articles)
-    result = asyncio.run(fn.execute(mode="wire", symbols="BTC"))
+    result = asyncio.run(fn.execute(mode="wire", symbols="BTC", limit=60))
     assert len(result.data["rows"]) == 60
     assert result.data["data_quality"]["rows_capped_at_limit"] == 1
     assert result.data["data_quality"]["duplicate_rows_dropped"] == 0

@@ -214,9 +214,25 @@ export function rowsToTimePoints(
         ...(compareY !== null ? { compareY } : {}),
       };
     })
-  return points
-    .filter((point): point is ChartPoint => point !== null)
-    .sort((a, b) => chartTimeSortValue(a.time) - chartTimeSortValue(b.time));
+  const valid = points.filter((point): point is ChartPoint => point !== null);
+  /* HNT-07: lightweight-charts requires ONE Time type per series. A column
+     mixing date-only cells ("2026-01-15" → string BusinessDay) with
+     date-time cells ("2026-01-16 00:00" → unix-seconds number) used to
+     produce a mixed series (and the sort compared Date.parse milliseconds
+     against unix seconds). When both kinds are present, normalize every
+     string date to unix seconds so the type and the sort share one plane. */
+  const hasNumber = valid.some((point) => typeof point.time === "number");
+  const hasString = valid.some((point) => typeof point.time === "string");
+  const normalized = (hasNumber && hasString
+    ? valid.map((point) => ({
+        ...point,
+        time:
+          typeof point.time === "string"
+            ? (Math.floor(Date.parse(point.time) / 1000) as Time)
+            : point.time,
+      }))
+    : valid);
+  return normalized.sort((a, b) => chartTimeSortValue(a.time) - chartTimeSortValue(b.time));
 }
 
 export function rowsHaveOhlc(fields: string[]): boolean {

@@ -181,11 +181,19 @@ export async function saveMisConfig(
   });
 }
 
-export async function runMisScan(req: MisScanRequest): Promise<MisScanResult> {
+export async function runMisScan(
+  req: MisScanRequest,
+  opts: { signal?: AbortSignal } = {},
+): Promise<MisScanResult> {
+  // A full sweep runs for minutes (24-way fetches × hundreds of symbols) —
+  // well past sidecarFetch's 15 s default. Passing a caller signal makes the
+  // call deadline caller-owned; MIS.tsx supplies a long one so the progress
+  // bar can actually reach 100 % instead of "request timed out after 15000ms".
   return sidecarFetch<MisScanResult>("/api/mis/scan", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(req),
+    signal: opts.signal,
   });
 }
 

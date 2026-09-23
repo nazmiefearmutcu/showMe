@@ -12,6 +12,7 @@ DATA PIPELINE:
 from __future__ import annotations
 
 import asyncio
+import threading
 from typing import Any
 
 import httpx
@@ -25,6 +26,15 @@ from showme.engine.core.quote import Quote, utcnow
 
 _FALLBACK_CHAIN = ["binance", "bybit", "okx", "coinbase", "kraken"]
 
+# 2026-09-17: reuse ccxt exchange instances. A fresh instance pays
+# ``load_markets`` on its first OHLCV call — measured 2.6-3.2 s on this
+# machine vs 0.26 s once warm — and MIS issues one fetch per
+# (symbol, timeframe), so per-call construction was the dominant scan
+# cost (a Crypto sweep crawled at ~1 fetch/s). A small pool per exchange
+# keeps the warm-markets win while bounding how many threads share one
+# sync ccxt client (MIS runs ~24 fetches through ``asyncio.to_thread``).
+_EXCHANGE_POOL_SIZE = 8
+
 
 class CCXTFailoverAdapter(BaseDataSource):
     name = "ccxt_failover"
@@ -37,6 +47,33 @@ class CCXTFailoverAdapter(BaseDataSource):
         self.chain: list[str] = (config or {}).get("chain", _FALLBACK_CHAIN)
         self._client: httpx.AsyncClient | None = None
         self._ccxt: Any = None
+        self._ccxt_pool: dict[str, list[Any]] = {}
+        self._ccxt_pool_idx: dict[str, int] = {}
+        self._pool_lock = threading.Lock()
+
+    def _ensure_ccxt(self) -> Any:
+        if self._ccxt is None:
+            import ccxt  # type: ignore
+
+            self._ccxt = ccxt
+        return self._ccxt
+
+    def _exchange(self, name: str) -> Any:
+        """Round-robin over a pool of reused ccxt instances for ``name``."""
+        with self._pool_lock:
+            pool = self._ccxt_pool.get(name)
+            if pool is None:
+                cls = getattr(self._ensure_ccxt(), name)
+                pool = [
+                    cls({"enableRateLimit": True})
+                    for _ in range(_EXCHANGE_POOL_SIZE)
+                ]
+                self._ccxt_pool[name] = pool
+                self._ccxt_pool_idx[name] = 0
+            idx = self._ccxt_pool_idx.get(name, 0)
+            inst = pool[idx % len(pool)]
+            self._ccxt_pool_idx[name] = (idx + 1) % len(pool)
+            return inst
 
     async def _client_(self) -> httpx.AsyncClient:
         if self._client is None:
@@ -45,13 +82,10 @@ class CCXTFailoverAdapter(BaseDataSource):
 
     async def _try_ccxt(self, exchange: str, symbol: str) -> dict[str, Any] | None:
         try:
-            if self._ccxt is None:
-                import ccxt  # type: ignore
-                self._ccxt = ccxt
-            ex_cls = getattr(self._ccxt, exchange, None)
+            ex_cls = getattr(self._ensure_ccxt(), exchange, None)
             if ex_cls is None:
                 return None
-            ex = ex_cls({"enableRateLimit": True})
+            ex = self._exchange(exchange)
             sym_normalized = self._normalize_symbol(exchange, symbol)
             t = await asyncio.to_thread(ex.fetch_ticker, sym_normalized)
             return t
@@ -63,6 +97,10 @@ class CCXTFailoverAdapter(BaseDataSource):
         s = sym.upper()
         if "/" in s:
             return s
+        # Pre-clean Yahoo-style dash pairs ("BTC-USD") — without this the
+        # suffix strip below fabricates "BTC-/USD" and every exchange
+        # rejects the symbol.
+        s = s.replace("-", "")
         # Convert "BTCUSDT" → "BTC/USDT" for CCXT.
         for q in ("USDT", "USDC", "USD", "BTC", "ETH", "EUR"):
             if s.endswith(q) and len(s) > len(q):
@@ -186,18 +224,15 @@ class CCXTFailoverAdapter(BaseDataSource):
                     )
             raise DataSourceError(f"all crypto exchanges failed for {sym}")
         if request.kind == DataKind.OHLCV:
-            # CCXT-backed only
+            # CCXT-backed only (reused instance pool — see _exchange)
             try:
-                if self._ccxt is None:
-                    import ccxt  # type: ignore
-                    self._ccxt = ccxt
+                self._ensure_ccxt()
             except Exception:
                 raise DataSourceError("ccxt not installed (pip install ccxt)")
             for ex in self.chain:
                 try:
-                    cls = getattr(self._ccxt, ex)
                     ohlc = await asyncio.to_thread(
-                        cls({"enableRateLimit": True}).fetch_ohlcv,
+                        self._exchange(ex).fetch_ohlcv,
                         self._normalize_symbol(ex, sym),
                         request.interval or "1h",
                         None, request.limit or 200,

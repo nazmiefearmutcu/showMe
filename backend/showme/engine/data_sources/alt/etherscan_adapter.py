@@ -61,8 +61,11 @@ class EtherscanAdapter(BaseDataSource):
     async def balance(self, address: str, chain: str = "ETH") -> float:
         data = await self._get(chain, module="account", action="balance",
                                  address=address, tag="latest")
-        wei = int(data.get("result") or 0)
-        return wei / 10**18
+        # Etherscan-family APIs report errors as HTTP 200 + status "0" with
+        # the message in "result" — int("Error! ...") would raise ValueError.
+        if data.get("status") != "1":
+            raise DataSourceError(str(data.get("result") or "Etherscan balance error"))
+        return int(data.get("result") or 0) / 10**18
 
     async def gas_oracle(self, chain: str = "ETH") -> dict[str, Any]:
         return (await self._get(chain, module="gastracker", action="gasoracle")).get("result", {})
@@ -72,7 +75,10 @@ class EtherscanAdapter(BaseDataSource):
         data = await self._get(chain, module="account", action="txlist",
                                  address=address, sort="desc",
                                  page=page, offset=offset)
-        return data.get("result") or []
+        if data.get("status") != "1":
+            raise DataSourceError(str(data.get("result") or "Etherscan txlist error"))
+        result = data.get("result")
+        return result if isinstance(result, list) else []
 
     async def fetch(self, request: DataRequest) -> Any:
         chain = (request.extra or {}).get("chain", "ETH")

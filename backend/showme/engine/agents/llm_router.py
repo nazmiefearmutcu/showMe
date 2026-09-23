@@ -11,16 +11,75 @@ Logs every call to ``runtime/llm_calls.jsonl``.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Any
 
 from showme.app_paths import runtime_path
 
 LOG = logging.getLogger("showme.engine.agents.llm_router")
+
+# HNT-16: module-singleton SDK clients. Every complete() call used to
+# construct a fresh AsyncAnthropic/AsyncOpenAI (a new httpx AsyncClient
+# with its own socket pool) and never close it — fd accumulation over a
+# long-lived sidecar. Keyed by api_key so a rotation rebuilds the client.
+_ANTHROPIC_CLIENT: tuple[str, Any] | None = None
+_OPENAI_CLIENT: tuple[str, Any] | None = None
+
+
+async def _aclose_quietly(client: Any) -> None:
+    try:
+        closer = getattr(client, "close", None) or getattr(client, "aclose", None)
+        if closer is not None:
+            result = closer()
+            if asyncio.iscoroutine(result):
+                await result
+    except Exception:  # noqa: BLE001 — close is best-effort
+        pass
+
+
+def _retire_client(entry: tuple[str, Any] | None) -> None:
+    """Best-effort close of a superseded cached client (key rotation)."""
+    if entry is None:
+        return
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(_aclose_quietly(entry[1]))
+    except RuntimeError:
+        pass  # no running loop — the GC reclaims the socket pool
+
+
+def _get_anthropic_client(anthropic_module: Any, api_key: str | None) -> Any:
+    global _ANTHROPIC_CLIENT
+    if _ANTHROPIC_CLIENT is None or _ANTHROPIC_CLIENT[0] != api_key:
+        new_client = anthropic_module.AsyncAnthropic(api_key=api_key)
+        _retire_client(_ANTHROPIC_CLIENT)
+        _ANTHROPIC_CLIENT = (api_key, new_client)
+    return _ANTHROPIC_CLIENT[1]
+
+
+def _get_openai_client(openai_module: Any, api_key: str | None) -> Any:
+    global _OPENAI_CLIENT
+    if _OPENAI_CLIENT is None or _OPENAI_CLIENT[0] != api_key:
+        new_client = openai_module.AsyncOpenAI(api_key=api_key)
+        _retire_client(_OPENAI_CLIENT)
+        _OPENAI_CLIENT = (api_key, new_client)
+    return _OPENAI_CLIENT[1]
+
+
+async def aclose_clients() -> None:
+    """Close the cached SDK clients — wire into app lifespan shutdown."""
+    global _ANTHROPIC_CLIENT, _OPENAI_CLIENT
+    for entry in (_ANTHROPIC_CLIENT, _OPENAI_CLIENT):
+        if entry is not None:
+            await _aclose_quietly(entry[1])
+    _ANTHROPIC_CLIENT = None
+    _OPENAI_CLIENT = None
 
 
 def _log_path():
@@ -177,7 +236,7 @@ class LLMRouter:
             "claude-sonnet": "claude-sonnet-4-6",
             "claude-opus":   "claude-opus-4-7",
         }
-        client = anthropic.AsyncAnthropic(api_key=self.anthropic_key)
+        client = _get_anthropic_client(anthropic, self.anthropic_key)
         msg = await client.messages.create(
             model=model_map[model], max_tokens=req.max_tokens,
             system=req.system or "You are a precise financial assistant.",
@@ -189,10 +248,10 @@ class LLMRouter:
 
     async def _call_openai(self, model: str, req: LLMRequest) -> tuple[str, int, int]:
         try:
-            from openai import AsyncOpenAI  # type: ignore
+            import openai  # type: ignore
         except Exception as e:
             raise RuntimeError(f"openai SDK missing: {e}")
-        client = AsyncOpenAI(api_key=self.openai_key)
+        client = _get_openai_client(openai, self.openai_key)
         r = await client.chat.completions.create(
             model=model, max_tokens=req.max_tokens, temperature=req.temperature,
             messages=[

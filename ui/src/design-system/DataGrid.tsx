@@ -279,6 +279,12 @@ function DataGridImpl<T>({
     [viewRows.length, columns.length, shouldVirtualize, rowVirtualizer],
   );
 
+  // HNT-11: focus callback must be referentially stable or every parent
+  // render breaks every row's React.memo.
+  const handleCellFocus = useCallback((r: number, c: number) => {
+    setActiveCell({ row: r, col: c });
+  }, []);
+
   const cellText = useCallback(
     (row: T, column: DataGridColumn<T>, index: number): string => {
       if (getCellText) return getCellText(row, column, index);
@@ -598,23 +604,31 @@ function DataGridImpl<T>({
     );
   }
 
-  const renderRow = (row: T, idx: number) => (
-    <DataGridRow
-      key={rowKey ? rowKey(row, idx) : idx}
-      row={row}
-      idx={idx}
-      columns={columns}
-      rowHeight={rowHeight}
-      rowClassName={rowClassName?.(row, idx)}
-      onRowClick={onRowClick}
-      onRowDoubleClick={onRowDoubleClick}
-      keyboardNavigable={keyboardNavigable}
-      activeCell={keyboardNavigable ? activeCell : null}
-      navFocused={navFocused}
-      onCellFocus={(r, c) => setActiveCell({ row: r, col: c })}
-      onCellKeyDown={keyboardNavigable ? handleCellKeyDown : undefined}
-    />
-  );
+  const renderRow = (row: T, idx: number) => {
+    // HNT-11: pass per-row primitives instead of the activeCell object —
+    // handing the same object to every row broke React.memo on every
+    // arrow key. Only the row that owns the active cell (and, while it is
+    // active, its column) sees a prop change now.
+    const rowIsActive = keyboardNavigable && activeCell != null && activeCell.row === idx;
+    return (
+      <DataGridRow
+        key={rowKey ? rowKey(row, idx) : idx}
+        row={row}
+        idx={idx}
+        columns={columns}
+        rowHeight={rowHeight}
+        rowClassName={rowClassName?.(row, idx)}
+        onRowClick={onRowClick}
+        onRowDoubleClick={onRowDoubleClick}
+        keyboardNavigable={keyboardNavigable}
+        isActiveRow={rowIsActive}
+        activeCol={rowIsActive && activeCell ? activeCell.col : null}
+        navFocused={navFocused}
+        onCellFocus={handleCellFocus}
+        onCellKeyDown={keyboardNavigable ? handleCellKeyDown : undefined}
+      />
+    );
+  };
 
   let body: ReactNode;
   if (shouldVirtualize) {
@@ -667,7 +681,9 @@ interface DataGridRowProps<T> {
   onRowClick?: (row: T, idx: number) => void;
   onRowDoubleClick?: (row: T, idx: number) => void;
   keyboardNavigable?: boolean;
-  activeCell?: { row: number; col: number } | null;
+  /** HNT-11: primitives instead of an activeCell object (memo stability). */
+  isActiveRow?: boolean;
+  activeCol?: number | null;
   navFocused?: boolean;
   onCellFocus?: (row: number, col: number) => void;
   onCellKeyDown?: (
@@ -687,7 +703,8 @@ function DataGridRowImpl<T>({
   onRowClick,
   onRowDoubleClick,
   keyboardNavigable = false,
-  activeCell,
+  isActiveRow = false,
+  activeCol = null,
   navFocused = false,
   onCellFocus,
   onCellKeyDown,
@@ -732,10 +749,7 @@ function DataGridRowImpl<T>({
           ? c.render(row, idx)
           : (row as unknown as Record<string, ReactNode>)[c.key];
         const isActive =
-          keyboardNavigable &&
-          activeCell != null &&
-          activeCell.row === idx &&
-          activeCell.col === colIdx;
+          keyboardNavigable && isActiveRow && activeCol === colIdx;
         return (
           <td
             key={c.key}

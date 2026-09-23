@@ -47,8 +47,14 @@ class EODHDAdapter(BaseDataSource):
         if not sym:
             raise DataSourceError("EODHD needs symbol")
         if request.kind == DataKind.OHLCV:
-            data = await self._get(f"/eod/{sym}", from_=request.start.strftime("%Y-%m-%d") if request.start else None,
-                                   to=request.end.strftime("%Y-%m-%d") if request.end else None)
+            params: dict[str, Any] = {}
+            if request.start:
+                # EODHD expects literal ``from``/``to`` query params; a
+                # ``from_`` kwarg leaks to the wire and is ignored upstream.
+                params["from"] = request.start.strftime("%Y-%m-%d")
+            if request.end:
+                params["to"] = request.end.strftime("%Y-%m-%d")
+            data = await self._get(f"/eod/{sym}", **params)
             df = pd.DataFrame(data)
             if df.empty:
                 return df

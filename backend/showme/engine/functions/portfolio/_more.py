@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import os
+import tempfile
+import uuid
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -29,7 +33,16 @@ class PORTWhatIfFunction(BaseFunction):
         cost = float(params.get("cost", 0))
         baseline = PortfolioState()
         baseline.import_legacy_crypto()
-        whatif = PortfolioState(path="/tmp/_showme_whatif.json")
+        # HNT-17: the old fixed "/tmp/_showme_whatif.json" path created a
+        # literal C:\tmp on Windows and was shared by concurrent calls. Use
+        # a unique never-created path under the real temp dir — nothing is
+        # ever saved to it (positions are assigned in memory), so uniqueness
+        # is all the isolation this scratch state needs.
+        whatif_path = (
+            Path(tempfile.gettempdir())
+            / f"_showme_whatif_{os.getpid()}_{uuid.uuid4().hex}.json"
+        )
+        whatif = PortfolioState(path=whatif_path)
         whatif.positions = list(baseline.positions) + [PortfolioPosition(
             instrument=instrument, quantity=qty, avg_cost=cost,
         )]

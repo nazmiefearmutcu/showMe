@@ -1,5 +1,6 @@
 """Execution engine - handles order placement for paper and live modes."""
 
+import math
 from typing import Any, Optional
 
 from showme.engine.api.binance_client import BinanceClient
@@ -434,8 +435,9 @@ class ExecutionEngine:
             return max(quantity, 0.0)
 
         # Q4 audit H22: pure floor-by-step. No second round() — the step
-        # itself defines the precision.
-        steps = int(quantity / step_size)
+        # itself defines the precision. The +1e-9 epsilon keeps an exact
+        # step multiple from flooring one step low (0.3/0.1 == 2.999…).
+        steps = math.floor(quantity / step_size + 1e-9)
         adjusted = steps * step_size
         # Avoid float drift like 0.30000000000000004 by re-applying the
         # step's natural decimal precision when present.

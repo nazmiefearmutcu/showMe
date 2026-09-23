@@ -157,8 +157,17 @@ export function INSTANTPane({ code }: FunctionPaneProps) {
   // cancelling), and a separate one-shot effect cancels only on unmount or
   // when audio is toggled off.
   //
-  // Use a ref to hold the latest events/threshold so the speak effect can
-  // see fresh data without depending on those values.
+  // HNT-01: `events` is a dep again. A tick only STARTS the fetch — it
+  // resolves after this effect already ran, so a loop keyed on
+  // [audio, tick] kept reading the PREVIOUS cycle's batch and spoke fresh
+  // high-score headlines up to one full poll (~30s) after they landed, out
+  // of sync with the FIX-2 visual flash. Re-running on `events` speaks the
+  // new batch the moment the fetch commits; the loop is idempotent
+  // (spokenRef LRU-dedupes keys) and still has no cancelling cleanup, so
+  // AUDIO-01's queue preservation is intact.
+  //
+  // Refs still hold the latest events/threshold so a threshold change alone
+  // never re-triggers the loop.
   const audioEventsRef = useRef(events);
   const audioThresholdRef = useRef(audioThreshold);
   useEffect(() => {
@@ -199,7 +208,7 @@ export function INSTANTPane({ code }: FunctionPaneProps) {
       window.speechSynthesis.speak(utterance);
     }
     // No-op cleanup on input/tick change so queued utterances keep going.
-  }, [audio, tick]);
+  }, [audio, tick, events]);
 
   // Single cancel point: only on unmount or when audio is explicitly toggled
   // off. Triggering this from the speak effect was the source of cut-off

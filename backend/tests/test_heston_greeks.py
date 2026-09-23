@@ -63,6 +63,25 @@ def test_heston_mc_does_not_blow_up_with_high_volvol() -> None:
     assert math.isfinite(out["stderr"])
 
 
+def test_heston_mc_survives_degenerate_path_counts() -> None:
+    """HNT-13: ``paths=1`` (and odd paths under antithetic halving) used to
+    build empty arrays → NaN price from ``payoff.mean()`` plus a
+    ZeroDivision stderr. Path counts are clamped to a workable minimum."""
+    import math
+
+    p = HestonParams(kappa=2.0, theta=0.04, sigma=0.4, rho=-0.6, v0=0.04)
+    out = heston_mc(S=100, K=100, T=0.5, r=0.045, q=0.0, params=p,
+                    paths=1, steps=10)
+    assert math.isfinite(out["price"])
+    assert math.isfinite(out["stderr"])
+    assert out["paths"] >= 2
+    odd = heston_mc(S=100, K=100, T=0.5, r=0.045, q=0.0, params=p,
+                    paths=3, steps=10, antithetic=True)
+    assert math.isfinite(odd["price"])
+    assert math.isfinite(odd["stderr"])
+    assert odd["paths"] >= 2
+
+
 def test_heston_price_converges_near_bs_for_small_volvol() -> None:
     """In the sigma->0 limit Heston should approximate BS with sqrt(v0)
     flat vol. Loose tolerance since MC has noise."""

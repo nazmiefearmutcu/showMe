@@ -206,7 +206,7 @@ def _probe_fc(client, timeout: float) -> dict:
     try:
         resp = client.get(
             FC_URL,
-            params={"from": now.date().isoformat(), "to": (now + timedelta(days=92)).date().isoformat()},
+            params={"from": now.date().isoformat(), "to": (now + timedelta(days=92)).date().isoformat(), "limit": 500},
             timeout=timeout,
         )
         row["latency_ms"] = int((time.perf_counter() - t0) * 1000)

@@ -137,6 +137,7 @@ class CORRFunction(BaseFunction):
         live = _truthy(params.get("live_correlation") or params.get("live"))
         sources = ["computed_return_model"]
         coverage_status: dict[str, dict[str, Any]] = {}
+        dropped_live: list[str] = []
 
         if live:
             price_series, coverage_status, used_yfinance = await self._live_price_series(symbols, days)
@@ -144,32 +145,29 @@ class CORRFunction(BaseFunction):
                 sources = ["yfinance"]
             missing_symbols = [s for s in symbols if s not in {series["asset"]["symbol"] for series in price_series}]
             if missing_symbols:
-                fallback_series = _generate_sample_price_series(_build_assets(missing_symbols), days)
-                price_series.extend(fallback_series)
-                if "computed_return_model" not in sources:
-                    sources.append("computed_return_model")
+                # HNT-04 (2026-09-23 bug hunt): a failed live fetch used to be
+                # patched with a deterministic synthetic series that then fed
+                # the same heatmap/top-pairs tables as the real cells, with no
+                # per-cell marker. Drop the symbol from the live matrix
+                # universe instead and report it honestly in coverage_status.
+                dropped_live = list(missing_symbols)
                 for symbol in missing_symbols:
                     previous = coverage_status.get(symbol, {})
-                    previous_source = previous.get("source") or "live_provider"
-                    previous_message = previous.get("message") or "no usable live close rows"
                     coverage_status[symbol] = {
-                        "status": "computed_fallback",
-                        "source": f"{previous_source}+computed_return_model",
+                        "status": "dropped_live_unavailable",
+                        "source": previous.get("source") or "live_provider",
                         "provider_symbol": _provider_symbol(symbol),
-                        "message": f"Live price series unavailable ({previous_message}); deterministic reference series used.",
+                        "message": (
+                            "Live price series unavailable ("
+                            + (previous.get("message") or "no usable live close rows")
+                            + "); symbol dropped from the live correlation matrix."
+                        ),
                     }
             if not price_series:
-                price_series = _generate_sample_price_series(_build_assets(symbols), days)
-                sources = ["computed_return_model"]
-                coverage_status = {
-                    symbol: {
-                        "status": "computed_fallback",
-                        "source": "computed_return_model",
-                        "provider_symbol": _provider_symbol(symbol),
-                        "message": "Live price engine returned no usable rows.",
-                    }
-                    for symbol in symbols
-                }
+                return _live_unavailable_result(
+                    symbols, days, coverage_status, instrument, frequency,
+                    return_method, missing_policy,
+                )
         else:
             price_series = _generate_sample_price_series(_build_assets(symbols), days)
             coverage_status = {
@@ -186,32 +184,67 @@ class CORRFunction(BaseFunction):
         thin_symbols = [
             symbol
             for symbol in symbols
-            if symbol not in frame or int(frame[symbol].dropna().shape[0]) < 2
+            if symbol not in dropped_live
+            and (symbol not in frame or int(frame[symbol].dropna().shape[0]) < 2)
         ]
         if thin_symbols:
-            price_series = [
-                series
-                for series in price_series
-                if series.get("asset", {}).get("symbol") not in set(thin_symbols)
-            ]
-            price_series.extend(_generate_sample_price_series(_build_assets(thin_symbols), days))
-            if "computed_return_model" not in sources:
-                sources.append("computed_return_model")
-            for symbol in thin_symbols:
-                previous = coverage_status.get(symbol, {})
-                previous_source = previous.get("source") or "live_provider"
-                previous_message = previous.get("message") or "live series did not produce two returns"
-                coverage_status[symbol] = {
-                    "status": "computed_fallback",
-                    "source": f"{previous_source}+computed_return_model",
-                    "provider_symbol": previous.get("provider_symbol") or _provider_symbol(symbol),
-                    "message": (
-                        f"Live series produced fewer than two usable returns ({previous_message}); "
-                        "deterministic reference series used."
-                    ),
-                }
-            frame = _build_return_frame(price_series, frequency, return_method, missing_policy)
+            if live:
+                # HNT-04: same honesty rule for symbols whose live series
+                # produced fewer than two usable returns — drop, don't
+                # synthesize.
+                price_series = [
+                    series
+                    for series in price_series
+                    if series.get("asset", {}).get("symbol") not in set(thin_symbols)
+                ]
+                dropped_live.extend(thin_symbols)
+                for symbol in thin_symbols:
+                    previous = coverage_status.get(symbol, {})
+                    coverage_status[symbol] = {
+                        "status": "dropped_live_unavailable",
+                        "source": previous.get("source") or "live_provider",
+                        "provider_symbol": previous.get("provider_symbol") or _provider_symbol(symbol),
+                        "message": (
+                            "Live series produced fewer than two usable returns ("
+                            + (previous.get("message") or "")
+                            + "); symbol dropped from the live correlation matrix."
+                        ),
+                    }
+                frame = _build_return_frame(price_series, frequency, return_method, missing_policy)
+                if frame.empty:
+                    return _live_unavailable_result(
+                        symbols, days, coverage_status, instrument, frequency,
+                        return_method, missing_policy,
+                    )
+            else:
+                price_series = [
+                    series
+                    for series in price_series
+                    if series.get("asset", {}).get("symbol") not in set(thin_symbols)
+                ]
+                price_series.extend(_generate_sample_price_series(_build_assets(thin_symbols), days))
+                if "computed_return_model" not in sources:
+                    sources.append("computed_return_model")
+                for symbol in thin_symbols:
+                    previous = coverage_status.get(symbol, {})
+                    previous_source = previous.get("source") or "live_provider"
+                    previous_message = previous.get("message") or "live series did not produce two returns"
+                    coverage_status[symbol] = {
+                        "status": "computed_fallback",
+                        "source": f"{previous_source}+computed_return_model",
+                        "provider_symbol": previous.get("provider_symbol") or _provider_symbol(symbol),
+                        "message": (
+                            f"Live series produced fewer than two usable returns ({previous_message}); "
+                            "deterministic reference series used."
+                        ),
+                    }
+                frame = _build_return_frame(price_series, frequency, return_method, missing_policy)
         if frame.empty:
+            if live:
+                return _live_unavailable_result(
+                    symbols, days, coverage_status, instrument, frequency,
+                    return_method, missing_policy,
+                )
             price_series = _generate_sample_price_series(_build_assets(symbols), days)
             frame = _build_return_frame(price_series, frequency, return_method, missing_policy)
             sources = ["computed_return_model"]
@@ -257,11 +290,19 @@ class CORRFunction(BaseFunction):
         # B6: surface the dropped list both on the payload and as a warning
         # so the UI can render a chip.
         data["dropped_symbols"] = list(dropped_symbols)
+        if dropped_live:
+            data["dropped_live_symbols"] = list(dropped_live)
         warnings = [
             item["message"]
             for item in data.get("impactor", {}).get("bug_analysis", [])
             if item.get("severity") in {"warning", "critical"}
         ][:8]
+        if dropped_live:
+            warnings.insert(
+                0,
+                f"Dropped {len(dropped_live)} live-unavailable symbol(s): "
+                f"{', '.join(dropped_live)}",
+            )
         if dropped_symbols:
             warnings.insert(
                 0,
@@ -364,6 +405,66 @@ class CORRFunction(BaseFunction):
         return price_series, coverage_status, used_yfinance
 
 
+def _live_unavailable_result(
+    symbols: list[str],
+    days: int,
+    coverage_status: dict[str, dict[str, Any]],
+    instrument: Instrument | None,
+    frequency: str,
+    return_method: str,
+    missing_policy: str,
+) -> FunctionResult:
+    """HNT-04: total live outage → honest provider_unavailable envelope.
+
+    Live mode never fabricates a matrix: when no requested symbol produced
+    a usable close series, the payload is empty with an explicit reason and
+    next_actions instead of a synthetic correlation table.
+    """
+    return FunctionResult(
+        code="CORR",
+        instrument=instrument,
+        data={
+            "status": "provider_unavailable",
+            "reason": "Live price providers returned no usable close rows for any requested symbol.",
+            "symbols": list(symbols),
+            "pearson": {},
+            "spearman": {},
+            "downside": {},
+            "annualized_vol": {},
+            "surface": [],
+            "rows": [],
+            "samples": 0,
+            "coverage_status": coverage_status,
+            "dropped_symbols": list(symbols),
+            "dropped_live_symbols": list(symbols),
+            "next_actions": [
+                "Retry once the live price provider recovers.",
+                "Check that the requested symbols resolve on the configured providers.",
+                "Run with live_correlation=false for the deterministic reference matrix.",
+            ],
+            "methodology": (
+                "CORR live mode requires real close series; when the live providers "
+                "serve none of the requested symbols, no correlation matrix is computed "
+                "and the payload stays empty rather than synthetic."
+            ),
+            "field_dictionary": {
+                "coverage_status": "Per-symbol live fetch outcome (live / dropped_live_unavailable).",
+            },
+        },
+        sources=[],
+        metadata={
+            "days": days,
+            "symbols": list(symbols),
+            "live": True,
+            "return_method": return_method,
+            "frequency": frequency,
+            "missing_data_policy": missing_policy,
+            "impactor_integrated": True,
+        },
+        warnings=["CORR live: no usable price series for any requested symbol"],
+    )
+
+
 def _correlation_payload(
     *,
     symbols: list[str],
@@ -413,6 +514,9 @@ def _correlation_payload(
         "downside": downside,
         "annualized_vol": vol,
         "samples": int(impactor["observation_range"]["max"]),
+        # HNT-04: per-symbol fetch outcome, including dropped_live_unavailable
+        # rows for symbols removed from the live matrix universe.
+        "coverage_status": coverage_status,
         "surface": _matrix_surface(pearson, spearman, downside),
         "rows": [
             {

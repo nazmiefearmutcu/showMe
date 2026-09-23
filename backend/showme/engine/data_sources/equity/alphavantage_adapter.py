@@ -60,11 +60,17 @@ class AlphaVantageAdapter(BaseDataSource):
             raise DataSourceError("AlphaVantage needs symbol")
         if request.kind == DataKind.QUOTE:
             data = await self._get(function="GLOBAL_QUOTE", symbol=sym)
-            q = data.get("Global Quote", {})
+            q = data.get("Global Quote") or {}
+            # Invalid/delisted symbols come back as HTTP 200 + an empty
+            # Global Quote — surface that as PROVIDER_UNAVAILABLE instead
+            # of fabricating a zero-priced Quote.
+            price = q.get("05. price")
+            if not q or price in (None, ""):
+                raise DataSourceError(f"AlphaVantage no quote for {sym}")
             from showme.engine.core.quote import Quote, utcnow
             return Quote(
                 symbol=sym, timestamp=utcnow(),
-                last=float(q.get("05. price", 0) or 0),
+                last=float(price),
                 open_24h=float(q.get("02. open", 0) or 0),
                 high_24h=float(q.get("03. high", 0) or 0),
                 low_24h=float(q.get("04. low", 0) or 0),

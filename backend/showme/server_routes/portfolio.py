@@ -19,7 +19,14 @@ _SYMBOL_RE = re.compile(r"^[A-Z0-9.^=\-]{1,24}$")
 
 
 def _resolve_asset_class(requested: str, symbol: str) -> Any:
-    """Validate a caller-supplied asset class or infer it from the symbol."""
+    """Validate a caller-supplied asset class or infer it from the symbol.
+
+    HNT-15: inference now uses the server's full heuristic ladder
+    (``default_asset_class_name``: crypto -> FX -> commodity -> index ->
+    bond -> equity) instead of the USDT/USDC-only sniff. ``EURUSD=X``,
+    ``GC=F`` and ``^GSPC`` used to persist as EQUITY instruments, sending
+    later pricing/risk math down the equity path.
+    """
     from showme.engine.core.instrument import AssetClass
 
     if requested:
@@ -27,10 +34,12 @@ def _resolve_asset_class(requested: str, symbol: str) -> Any:
             return AssetClass(requested)
         except ValueError:
             return None
-    upper = symbol.upper()
-    if upper.endswith("USDT") or upper.endswith("USDC"):
-        return AssetClass.CRYPTO
-    return AssetClass.EQUITY
+    from showme.server import default_asset_class_name
+
+    try:
+        return AssetClass(default_asset_class_name(symbol))
+    except ValueError:
+        return AssetClass.EQUITY
 
 
 def register(app: FastAPI, deps: AppDeps) -> None:

@@ -74,6 +74,33 @@ def test_eqs_alias_normalisation_map_folds_known_spellings():
     assert rewritten == "dividend_yield > 0.04 AND marketCap > 1e9 AND pe < 15 AND pb < 3"
 
 
+# ── EQS: scientific notation + strict tokenizer (HNT-10) ─────────────────────
+
+
+def test_eqs_scientific_notation_parses_as_one_number():
+    """HNT-10: ``marketCap > 1e9`` used to tokenize as NUM(1) + ID(e9), so
+    the filter silently became ``marketCap > 1`` and matched everything."""
+    df = pd.DataFrame([
+        {"symbol": "BIG", "marketCap": 5.0e11},
+        {"symbol": "SMALL", "marketCap": 5.0e8},
+    ])
+    out = eqs_mod.filter_dataframe(df, "marketCap > 1e9")
+    assert list(out["symbol"]) == ["BIG"]
+    out = eqs_mod.filter_dataframe(df, "marketCap > 1E9")
+    assert list(out["symbol"]) == ["BIG"]
+    # Exponent with sign and fractional mantissa also stays one token.
+    out = eqs_mod.filter_dataframe(df, "marketCap > 1.5e-9")
+    assert list(out["symbol"]) == ["BIG", "SMALL"]
+
+
+def test_eqs_unexpected_character_raises_parse_error():
+    """HNT-10: unrecognized characters used to be silently skipped; the
+    tokenizer now fails loudly so garbage queries surface as
+    dsl_parse_error instead of quietly matching the wrong thing."""
+    with pytest.raises(ValueError, match="unexpected character"):
+        eqs_mod.parse_dsl("marketCap > 1e9 # comment")
+
+
 def test_eqs_live_dividend_yield_is_decimal_fraction():
     """Percent-form provider values (MMM 1.93) become 0.0193; decimal stays."""
     assert eqs_mod._normalize_raw_fields({"dividendYield": 1.93})["dividend_yield"] == pytest.approx(0.0193)

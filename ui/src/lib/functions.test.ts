@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runFunction, FunctionCallError } from "./functions";
+import { __resetSidecarReadyCacheForTests } from "./sidecar";
 
 const successPayload = {
   code: "PORT",
@@ -13,6 +14,10 @@ const successPayload = {
 };
 
 beforeEach(() => {
+  // HNT-06: waitForSidecarReady memoizes its healthy probe for a short
+  // TTL — reset it so each case's queued mockHealth() is consumed by the
+  // probe (not skipped, which would shift the queue onto /api/fn/...).
+  __resetSidecarReadyCacheForTests();
   vi.spyOn(globalThis, "fetch" as never);
 });
 afterEach(() => vi.restoreAllMocks());

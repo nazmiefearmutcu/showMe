@@ -170,21 +170,24 @@ def list_parents(*, status: str | None = None, symbol: str | None = None,
         sql += " ORDER BY started_at DESC LIMIT ?"
         params.append(limit)
         rows = conn.execute(sql, params).fetchall()
-    out = []
-    for r in rows:
-        d = dict(r)
-        try:
-            d["metadata"] = json.loads(d.pop("metadata_json", "{}") or "{}")
-        except Exception:
-            d["metadata"] = {}
-        _add_time_labels(d)
-        slices = [dict(rr) for rr in _connect().execute(
-            "SELECT slice_idx, ts, qty, avg_px, benchmark_px, vwap_running "
-            "FROM slices WHERE parent_id=? ORDER BY slice_idx",
-            (d["parent_id"],)).fetchall()]
-        d["metrics"] = compute_metrics(d, slices)
-        _decorate_execution_status(d)
-        out.append(d)
+        out = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["metadata"] = json.loads(d.pop("metadata_json", "{}") or "{}")
+            except Exception:
+                d["metadata"] = {}
+            _add_time_labels(d)
+            # HNT-02: query slices on the SAME connection — the old code
+            # opened a fresh _connect() per parent row and never closed it,
+            # leaking one sqlite handle per listed order on every poll.
+            slices = [dict(rr) for rr in conn.execute(
+                "SELECT slice_idx, ts, qty, avg_px, benchmark_px, vwap_running "
+                "FROM slices WHERE parent_id=? ORDER BY slice_idx",
+                (d["parent_id"],)).fetchall()]
+            d["metrics"] = compute_metrics(d, slices)
+            _decorate_execution_status(d)
+            out.append(d)
     return out
 
 

@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from typing import Any, Iterable
 
 from showme.app_paths import runtime_path
+from showme.persistence_helpers import open_sqlite
 
 
 def _db_file():
@@ -25,7 +26,10 @@ _LT_THRESHOLD_DAYS = 365
 
 
 def _db() -> sqlite3.Connection:
-    con = sqlite3.connect(str(_db_file()))
+    # HNT-13: open_sqlite gives WAL + busy_timeout — the bare connect
+    # could crash with "database is locked" when the API and a background
+    # job hit the ledger at the same time.
+    con = open_sqlite(_db_file())
     con.execute("""
         CREATE TABLE IF NOT EXISTS lots (
             lot_id TEXT PRIMARY KEY,
@@ -178,8 +182,11 @@ def realized_summary(*, year: int | None = None) -> dict[str, Any]:
            "FROM realized WHERE 1=1")
     params: list[Any] = []
     if year:
-        start = datetime(year, 1, 1).timestamp()
-        end = datetime(year + 1, 1, 1).timestamp()
+        # HNT-13: UTC year boundaries — naive datetimes shifted the cutoff
+        # by the local offset (UTC+3 leaked 3h of the new year into the
+        # previous year's summary).
+        start = datetime(year, 1, 1, tzinfo=timezone.utc).timestamp()
+        end = datetime(year + 1, 1, 1, tzinfo=timezone.utc).timestamp()
         sql += " AND ts >= ? AND ts < ?"; params += [int(start), int(end)]
     sql += " GROUP BY term"
     rows = con.execute(sql, params).fetchall()

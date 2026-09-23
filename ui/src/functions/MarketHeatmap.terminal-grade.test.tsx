@@ -379,6 +379,28 @@ describe("MarketHeatmap — missing change honesty (F8)", () => {
       screen.getByRole("table", { name: /sector heatmap rows/i }),
     ).toBeInTheDocument();
   });
+
+  // HNT-02: breadth = up/(up+down) over REPORTING rows. A null-change row is
+  // "not reported" — it must stay out of the denominator, or a mostly-failed
+  // quote batch reads as a broad decline.
+  it("computes the breadth ratio over rows that reported a change only", () => {
+    mockOk({
+      period: "1D",
+      rows: [
+        countryRow({ country: "US", etf: "SPY", change_pct: 0.84 }),
+        countryRow({ country: "JP", etf: "EWJ", change_pct: -1.4 }),
+        countryRow({ country: "DE", etf: "EWG", change_pct: null }),
+      ],
+    });
+    const { container } = render(<MarketHeatmapPane code="MAP" />);
+    const fill = container.querySelector(".mh-breadth-fill") as HTMLElement;
+    expect(fill).toBeTruthy();
+    // 1 up / (1 up + 1 down) = 50% — not 1/3 with the failed row counted.
+    expect(fill.style.getPropertyValue("--u-pct")).toBe("50%");
+    // The ▲/▼ counts still show the raw up/down tallies.
+    expect(screen.getByText("▲ 1")).toBeTruthy();
+    expect(screen.getByText("▼ 1")).toBeTruthy();
+  });
 });
 
 /* ── Live adoption: visibility poll + per-cell flash ─────────────────── */

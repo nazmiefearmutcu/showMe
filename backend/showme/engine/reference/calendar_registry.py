@@ -12,6 +12,16 @@ from zoneinfo import ZoneInfo
 
 from showme.engine.reference.exchange_registry import EXCHANGES
 
+# HNT-14: ShowMe exchange codes that exist under a different name in the
+# ``exchange_calendars`` package. Unmapped codes (and crypto venues) keep
+# the weekday-only behavior.
+_EC_ALIASES = {
+    "FWB": "XETR",
+    "TYO": "JPX",
+    "HKEX": "XHKG",
+    "BIST": "XIST",
+}
+
 
 class CalendarRegistry:
     """Minimal calendar surface: is_open, next_open/close, sessions(list[date])."""
@@ -24,6 +34,32 @@ class CalendarRegistry:
         except Exception:
             self._ec = None
 
+    def _session_calendar(self, exchange_code: str):
+        """Return the exchange_calendars calendar for the code, or None."""
+        if self._ec is None:
+            return None
+        code = _EC_ALIASES.get(exchange_code.upper(), exchange_code.upper())
+        try:
+            if code not in self._ec.get_calendar_names():
+                return None
+            return self._ec.get_calendar(code)
+        except Exception:
+            return None
+
+    def _is_session(self, exchange_code: str, day: date) -> bool:
+        """Authoritative session check; True when no calendar is available.
+
+        A missing/unmappable calendar or a raised lookup keeps the legacy
+        weekday-only behavior instead of guessing a holiday.
+        """
+        cal = self._session_calendar(exchange_code)
+        if cal is None:
+            return True
+        try:
+            return bool(cal.is_session(day))
+        except Exception:
+            return True
+
     def is_open(self, exchange_code: str, when: datetime | None = None) -> bool:
         ex = EXCHANGES.get(exchange_code.upper())
         if ex is None:
@@ -33,6 +69,11 @@ class CalendarRegistry:
             return True  # crypto = 24/7
         local = when.astimezone(ZoneInfo(ex.timezone))
         if local.weekday() >= 5:
+            return False
+        # HNT-14: weekend check alone reported exchanges "open" on official
+        # holidays (Thanksgiving/Christmas); consult the authoritative
+        # session calendar when the package provides one.
+        if not self._is_session(ex.code, local.date()):
             return False
         h_o, m_o = (int(x) for x in ex.open_local.split(":"))
         h_c, m_c = (int(x) for x in ex.close_local.split(":"))
@@ -50,8 +91,14 @@ class CalendarRegistry:
         cand = local.replace(hour=h_o, minute=m_o, second=0, microsecond=0)
         if cand <= local:
             cand = cand + timedelta(days=1)
-        while cand.weekday() >= 5:
+        # HNT-14: skip weekends AND non-session (holiday) dates; bounded so a
+        # calendar with no future sessions can never spin forever.
+        for _ in range(60):
+            if cand.weekday() < 5 and self._is_session(ex.code, cand.date()):
+                break
             cand = cand + timedelta(days=1)
+        else:
+            return None
         return cand.astimezone(timezone.utc)
 
     def next_close(self, exchange_code: str, after: datetime | None = None) -> datetime | None:
@@ -73,8 +120,14 @@ class CalendarRegistry:
         cand = local.replace(hour=h_c, minute=m_c, second=0, microsecond=0)
         if cand <= local:
             cand = cand + timedelta(days=1)
-        while cand.weekday() >= 5:
+        # HNT-14: skip weekends AND non-session (holiday) dates; bounded so a
+        # calendar with no future sessions can never spin forever.
+        for _ in range(60):
+            if cand.weekday() < 5 and self._is_session(ex.code, cand.date()):
+                break
             cand = cand + timedelta(days=1)
+        else:
+            return None
         return cand.astimezone(timezone.utc)
 
     def session_dates(self, exchange_code: str, start: date, end: date) -> list[date]:

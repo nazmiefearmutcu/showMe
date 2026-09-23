@@ -287,4 +287,59 @@ describe("INSTANT terminal-grade", () => {
       ),
     ).toBeNull();
   });
+
+  // HNT-01: a Refresh tick only STARTS the fetch — it resolves after the
+  // speak effect already ran. A high-score headline that lands with the
+  // fetch must be spoken in THAT cycle, not on the next 30s poll tick.
+  it("speaks a newly-fetched high-score event in the cycle it lands (no poll lag)", async () => {
+    const speak = vi.fn();
+    Object.defineProperty(window, "speechSynthesis", {
+      configurable: true,
+      value: { speak, cancel: vi.fn() },
+    });
+    (window as unknown as { SpeechSynthesisUtterance: unknown }).SpeechSynthesisUtterance =
+      class {
+        constructor(public text: string) {}
+        rate = 1;
+      };
+
+    try {
+      vi.spyOn(instant, "fetchInstantStatus").mockResolvedValue(baseStatus);
+      const batch1 = {
+        events: [
+          makeEvent({ dedupe_key: "alpha", title: "Alpha headline", priority_score: 90 }),
+        ],
+      } as never;
+      const batch2 = {
+        events: [
+          makeEvent({ dedupe_key: "alpha", title: "Alpha headline", priority_score: 90 }),
+          makeEvent({ dedupe_key: "gamma", title: "Gamma headline", priority_score: 90 }),
+        ],
+      } as never;
+      vi.spyOn(instant, "fetchInstantEvents")
+        .mockResolvedValueOnce(batch1)
+        .mockResolvedValue(batch2);
+
+      const { getByText, getByLabelText } = render(
+        <INSTANTPane code="INSTANT" symbol={undefined} />,
+      );
+
+      // Baseline batch lands, then the audio line is switched on.
+      await waitFor(() => expect(getByText("Alpha headline")).toBeTruthy());
+      fireEvent.click(getByLabelText("Audio"));
+      // Alpha (score 90 ≥ threshold 72) is spoken as soon as audio is on.
+      await waitFor(() => expect(speak).toHaveBeenCalledTimes(1));
+
+      // One Refresh: the fetch resolves and Gamma lands with it. Gamma must
+      // be spoken in this same cycle — with no further tick/refresh.
+      fireEvent.click(getByText("Refresh"));
+      await waitFor(() => expect(getByText("Gamma headline")).toBeTruthy());
+      await waitFor(() => expect(speak).toHaveBeenCalledTimes(2));
+      expect(
+        String((speak.mock.calls[1][0] as { text: string }).text),
+      ).toContain("Gamma headline");
+    } finally {
+      delete (window as unknown as { speechSynthesis?: unknown }).speechSynthesis;
+    }
+  });
 });

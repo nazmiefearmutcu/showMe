@@ -1,7 +1,9 @@
 """Broker routes: account info, positions, orders, cancel."""
 from __future__ import annotations
 
+import asyncio
 import logging
+import math
 from typing import Any
 
 from fastapi import APIRouter, FastAPI, HTTPException
@@ -51,6 +53,33 @@ def _expected_confirmation_token(broker_name: str | None) -> str:
 
 def register(app: FastAPI, deps: AppDeps) -> None:
     router = APIRouter()
+
+    async def _paper_market_hint(symbol: str) -> float | None:
+        """E2: resolve a live ``last`` price for a paper market order.
+
+        W3 made the paper broker reject market orders without a resolvable
+        fill price (``last:`` hint / limit_price) instead of filling at 0.
+        To keep that from regressing the UI's paper flow, the route fetches
+        a real quote and appends a ``last: <price>`` hint to the notes.
+        Returns None when no honest price is available — the order then
+        fails with the broker's own 400 rather than a fabricated price.
+        """
+        from showme.quotes import fetch_quote_snapshot
+
+        try:
+            snapshot = await asyncio.wait_for(
+                fetch_quote_snapshot(symbol), timeout=5.0
+            )
+        except Exception as exc:  # noqa: BLE001 — no quote, no hint
+            LOG.debug("paper hint quote fetch failed for %s: %s", symbol, exc)
+            return None
+        try:
+            price = float((snapshot or {}).get("last"))
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(price) or price <= 0:
+            return None
+        return price
 
     @router.get("/api/broker/info")
     async def broker_info(name: str | None = None) -> dict[str, Any]:
@@ -126,7 +155,7 @@ def register(app: FastAPI, deps: AppDeps) -> None:
 
     @router.post("/api/broker/orders")
     async def broker_submit_order(payload: OrderRequest) -> dict[str, Any]:
-        from showme.brokers import BrokerError, get_broker
+        from showme.brokers import BrokerError, PaperBroker, get_broker
         try:
             broker = get_broker(payload.broker)
         except KeyError as exc:
@@ -166,6 +195,22 @@ def register(app: FastAPI, deps: AppDeps) -> None:
                     "match the active account."
                 ),
             )
+        # E2: paper market orders need a resolvable fill price. When the
+        # caller supplied none (no ``last:`` hint, no limit_price), fetch
+        # a live quote and append the hint ourselves so the honest-reject
+        # change in the paper broker does not break the default UI flow.
+        notes = payload.notes or ""
+        is_market = str(payload.order_type).strip().lower() == "market"
+        is_paper = isinstance(broker, PaperBroker) or broker.name == "paper"
+        if (
+            is_paper
+            and is_market
+            and "last:" not in notes
+            and payload.limit_price is None
+        ):
+            hint_price = await _paper_market_hint(payload.symbol)
+            if hint_price is not None:
+                notes = f"{notes} last:{hint_price}".strip()
         try:
             order = await broker.submit_order(
                 symbol=payload.symbol.upper(),
@@ -175,7 +220,7 @@ def register(app: FastAPI, deps: AppDeps) -> None:
                 time_in_force=payload.time_in_force,
                 limit_price=payload.limit_price,
                 stop_price=payload.stop_price,
-                notes=payload.notes,
+                notes=notes,
             )
         except BrokerError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc

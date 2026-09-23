@@ -91,9 +91,11 @@ pub fn install(app: &App) -> tauri::Result<()> {
         t.alerts = Some(alerts_live);
     }
 
-    let _ = TrayIconBuilder::with_id("showme-tray")
+    // HNT-10 — `default_window_icon` is `None` when no icon is embedded
+    // (config regression, degenerated build); fall back to a tray
+    // without an explicit icon instead of panicking during setup.
+    let mut tray_builder = TrayIconBuilder::with_id("showme-tray")
         .menu(&menu)
-        .icon(app.default_window_icon().unwrap().clone())
         .icon_as_template(true)
         .on_menu_event(|app, event| match event.id().as_ref() {
             "tray.open" => {
@@ -117,8 +119,12 @@ pub fn install(app: &App) -> tauri::Result<()> {
             if let TrayIconEvent::Click { .. } = event {
                 let _ = Emitter::emit(tray.app_handle(), "tray:click", ());
             }
-        })
-        .build(app)?;
+        });
+    if let Some(icon) = app.default_window_icon() {
+        tray_builder = tray_builder.icon(icon.clone());
+    }
+
+    let _ = tray_builder.build(app)?;
 
     spawn_ticker(app.handle().clone());
     Ok(())
@@ -130,8 +136,11 @@ fn spawn_ticker<R: Runtime>(handle: AppHandle<R>) {
         tokio::time::sleep(Duration::from_secs(2)).await;
         loop {
             let port = *handle.state::<AppState>().sidecar_port.read();
+            // HNT-02 — the ticker endpoint sits behind the sidecar auth
+            // middleware; send the per-boot token or every request 401s.
+            let token = handle.state::<AppState>().sidecar_auth_token.read().clone();
             if let Some(port) = port {
-                if let Ok(t) = fetch_ticker(port).await {
+                if let Ok(t) = fetch_ticker(port, token.as_deref()).await {
                     apply_ticker(&handle, &t);
                 }
             }
@@ -140,9 +149,27 @@ fn spawn_ticker<R: Runtime>(handle: AppHandle<R>) {
     });
 }
 
-async fn fetch_ticker(port: u16) -> Result<Ticker, String> {
+/// HNT-12 — shared client with a total request timeout so a half-dead
+/// sidecar (accepts TCP, never answers) can't stall the ticker loop
+/// forever. reqwest has no default timeout.
+static HTTP: once_cell::sync::Lazy<Option<reqwest::Client>> = once_cell::sync::Lazy::new(|| {
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+        .ok()
+});
+
+async fn fetch_ticker(port: u16, token: Option<&str>) -> Result<Ticker, String> {
+    let Some(client) = HTTP.as_ref() else {
+        return Err("ticker http client unavailable".into());
+    };
+    let client = client.clone();
     let url = format!("http://127.0.0.1:{port}/api/sidecar/ticker");
-    let resp = reqwest::get(&url).await.map_err(|e| e.to_string())?;
+    let mut request = client.get(&url);
+    if let Some(token) = token {
+        request = request.header("X-ShowMe-Token", token);
+    }
+    let resp = request.send().await.map_err(|e| e.to_string())?;
     if !resp.status().is_success() {
         return Err(format!("status {}", resp.status()));
     }

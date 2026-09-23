@@ -324,6 +324,11 @@
   -webkit-app-region: no-drag;
   app-region: no-drag;
 }
+/* Non-mac shells have no traffic lights — reclaim the 88px gutter. */
+html[data-platform="windows"] .titlebar,
+html[data-platform="linux"] .titlebar {
+  padding-left: var(--space-5);
+}
 
 .statusbar {
   display: flex;
@@ -3797,6 +3802,34 @@
   font-family:
     JetBrains Mono,
     monospace;
+}
+
+/* MEET's variable-length source and coverage fields must not overlap. */
+.meet-pane .ds-pane-footer {
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  flex-shrink: 0;
+}
+.meet-pane .ds-pane-footer > .ds-status {
+  flex: 0 0 auto;
+  max-width: 100%;
+  height: auto;
+  padding: 0;
+}
+.meet-pane .ds-pane-footer > .ds-status:first-child {
+  max-width: min(100%, 320px);
+}
+.meet-pane .ds-pane-footer .ds-status__label {
+  flex-shrink: 0;
+}
+.meet-pane .ds-pane-footer .ds-status__value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.meet-pane .ds-pane-footer > .ds-status-divider {
+  display: none;
 }
 
 /* Symbol Bar / Toolbar / Splash absorbers. */

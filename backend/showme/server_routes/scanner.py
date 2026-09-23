@@ -16,6 +16,21 @@ def register(app: FastAPI, deps: AppDeps) -> None:
 
     router = APIRouter()
 
+    def _as_int(value: Any, default: int, *, low: int | None = None, high: int | None = None) -> int:
+        # mis.py parity (HNT-13): ``top_n: "fast"`` or ``fine_top_k: [1]``
+        # used to raise ValueError/TypeError -> 500. Validate to a clean 400.
+        try:
+            out = int(value) if value not in (None, "") else default
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=400, detail=f"invalid integer value: {value!r} ({exc})"
+            ) from exc
+        if low is not None:
+            out = max(low, out)
+        if high is not None:
+            out = min(high, out)
+        return out
+
     @router.get("/api/scanner/universes")
     async def scanner_universes() -> list[dict[str, Any]]:
         from showme.scanner import list_universes
@@ -39,14 +54,20 @@ def register(app: FastAPI, deps: AppDeps) -> None:
         phases = body.get("phases")
         if isinstance(phases, list):
             phases = ",".join(str(p) for p in phases)
+        top_n = _as_int(body.get("top_n"), 20, low=1, high=500)
+        fine_top_k = (
+            _as_int(body["fine_top_k"], 20, low=1, high=500)
+            if body.get("fine_top_k") not in (None, "")
+            else None
+        )
         req = ScanRequest(
             intent=str(body.get("intent") or ""),
             universe=body.get("universe"),
             asset_class=body.get("asset_class"),
             timeframes=body.get("timeframes"),
-            top_n=int(body.get("top_n", 20)),
+            top_n=top_n,
             phases=str(phases) if phases else "A,B",
-            fine_top_k=int(body["fine_top_k"]) if body.get("fine_top_k") else None,
+            fine_top_k=fine_top_k,
         )
         result = await run_scan(req, getattr(factory, "deps", None))
         return result.to_dict()

@@ -11,6 +11,7 @@ DATA PIPELINE:
 
 from __future__ import annotations
 
+import asyncio
 import os
 import sqlite3
 from pathlib import Path
@@ -47,6 +48,10 @@ class GranolaAdapter(BaseDataSource):
     async def list_recent(self, limit: int = 25) -> list[dict[str, Any]]:
         if not self._has_local_db():
             return []
+        # sqlite3 is sync — keep file I/O off the event loop.
+        return await asyncio.to_thread(self._read_local_db, limit)
+
+    def _read_local_db(self, limit: int) -> list[dict[str, Any]]:
         try:
             con = sqlite3.connect(self.db_path)  # type: ignore[arg-type]
             tables = [r[0] for r in con.execute(

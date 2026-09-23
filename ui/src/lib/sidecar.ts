@@ -213,7 +213,22 @@ async function dropStaleStoredPortIfDefaultAlive(): Promise<boolean> {
   return true;
 }
 
+// HNT-06: short-TTL memo of the last healthy probe result — hot poll loops
+// (useLiveQuotesInternal fans out one fetchQuote per watchlist symbol) no
+// longer double their request volume with a /api/health probe per call.
+let sidecarReadyCache: { base: string; at: number } | null = null;
+const SIDECAR_READY_TTL_MS = 7_500;
+
 export async function waitForSidecarReady(timeoutMs = 12_000): Promise<string> {
+  // HNT-06: serve the memoized healthy result while fresh. Any port change
+  // invalidates the cached base immediately.
+  if (
+    sidecarReadyCache != null &&
+    sidecarReadyCache.base === sidecarBaseUrl() &&
+    Date.now() - sidecarReadyCache.at < SIDECAR_READY_TTL_MS
+  ) {
+    return sidecarReadyCache.base;
+  }
   if (isInTauri() && !_port) {
     await bootstrapSidecarPort(Math.min(timeoutMs, 45_000));
   }
@@ -230,6 +245,7 @@ export async function waitForSidecarReady(timeoutMs = 12_000): Promise<string> {
       const res = await fetch(`${base}/api/health`);
       if (res.ok) {
         useAppStore.getState().setSidecarStatus("healthy");
+        sidecarReadyCache = { base, at: Date.now() };
         return base;
       }
       lastError = `${res.status} ${res.statusText}`;
@@ -246,6 +262,11 @@ export async function waitForSidecarReady(timeoutMs = 12_000): Promise<string> {
   } while (Date.now() < deadline);
   useAppStore.getState().setSidecarStatus(_port ? "crashed" : "booting");
   throw new Error(`ShowMe sidecar unavailable at ${sidecarBaseUrl()}: ${lastError}`);
+}
+
+/** Test hook — drop the healthy-result memo between cases. */
+export function __resetSidecarReadyCacheForTests(): void {
+  sidecarReadyCache = null;
 }
 
 export async function sidecarFetch<T>(path: string, init?: RequestInit): Promise<T> {

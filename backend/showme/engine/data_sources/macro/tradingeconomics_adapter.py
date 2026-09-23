@@ -1,4 +1,4 @@
-"""TradingEconomics adapter (demo: guest:guest)."""
+"""TradingEconomics adapter (authenticated API key required)."""
 
 from __future__ import annotations
 
@@ -12,13 +12,14 @@ from showme.engine.core.base_data_source import BaseDataSource, DataKind, DataRe
 
 class TradingEconomicsAdapter(BaseDataSource):
     name = "tradingeconomics"
-    supported_kinds = (DataKind.ECON_SERIES, DataKind.EVENTS, DataKind.QUOTE)
+    supported_kinds = (DataKind.ECON_SERIES, DataKind.EVENTS)
     rate_limit_rps = 1.0
-    requires_api_key = False  # demo guest:guest
+    requires_api_key = True
+    api_key_env = "TRADINGECONOMICS_API_KEY"
 
     def __init__(self, config: dict[str, Any] | None = None) -> None:
         super().__init__(config)
-        self.api_key = os.environ.get("TRADINGECONOMICS_API_KEY", "guest:guest")
+        self.api_key = os.environ.get(self.api_key_env, "").strip()
         self.base_url = (config or {}).get("base_url", "https://api.tradingeconomics.com")
         self._client: httpx.AsyncClient | None = None
 
@@ -30,6 +31,8 @@ class TradingEconomicsAdapter(BaseDataSource):
     async def calendar(self, country: str | None = None,
                        importance: int | None = None,
                        start: str | None = None, end: str | None = None) -> list[dict[str, Any]]:
+        if not self.api_key or self.api_key.casefold() == "guest:guest":
+            raise DataSourceError("TRADINGECONOMICS_API_KEY not set")
         client = await self._client_()
         params = {"c": self.api_key, "f": "json"}
         path = "/calendar"
@@ -38,7 +41,10 @@ class TradingEconomicsAdapter(BaseDataSource):
         if importance:
             params["importance"] = importance
         if start and end:
-            path = f"{path}/{start}/{end}" if not country else path
+            # /calendar/country/{country}/{start}/{end} is valid too —
+            # dropping the range just because a country was given returns
+            # the full country calendar instead of the requested window.
+            path = f"{path}/{start}/{end}"
         r = await client.get(path, params=params)
         r.raise_for_status()
         return r.json() or []
@@ -49,6 +55,8 @@ class TradingEconomicsAdapter(BaseDataSource):
             return await self.calendar(country=country, importance=request.extra.get("importance"),
                                         start=request.extra.get("start"), end=request.extra.get("end"))
         if request.kind == DataKind.ECON_SERIES:
+            if not self.api_key or self.api_key.casefold() == "guest:guest":
+                raise DataSourceError("TRADINGECONOMICS_API_KEY not set")
             ind = request.extra.get("indicator", "gdp")
             country = request.extra.get("country", "united states")
             client = await self._client_()

@@ -65,6 +65,7 @@ pub struct Capabilities {
 
 #[derive(Serialize, Clone, Copy, Debug, Default)]
 #[serde(rename_all = "snake_case")]
+#[allow(dead_code)]
 pub enum BiometryKind {
     #[default]
     None,

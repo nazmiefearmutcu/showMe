@@ -37,4 +37,21 @@ describe("relativeTimeLabel", () => {
   it("converts relative inputs into comparable timestamps (Turkish aliases still parse)", () => {
     expect(newsTimestampMs("3 saat önce", NOW)).toBe(NOW - 3 * 60 * 60 * 1000);
   });
+
+  it("parses naive datetimes as UTC, not host-local (HNT-02)", () => {
+    // "2026-05-02 13:30:00" has no offset — the engine's RSS adapters hand
+    // us naive UTC strings, so it must read as 13:30Z regardless of the
+    // machine's timezone (a local parse drifts by the UTC offset).
+    expect(newsTimestampMs("2026-05-02 13:30:00", NOW)).toBe(
+      Date.parse("2026-05-02T13:30:00Z"),
+    );
+    expect(relativeTimeLabel("2026-05-02 13:30:00", NOW)).toBe("3 hours ago");
+    // Explicit zone markers are still honoured verbatim.
+    expect(newsTimestampMs("2026-05-02T13:30:00+03:00", NOW)).toBe(
+      Date.parse("2026-05-02T13:30:00+03:00"),
+    );
+    expect(newsTimestampMs("2026-05-02T13:30:00Z", NOW)).toBe(
+      Date.parse("2026-05-02T13:30:00Z"),
+    );
+  });
 });

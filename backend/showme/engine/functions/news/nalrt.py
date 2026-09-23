@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any
 
 from showme.engine.core.base_data_source import DataKind, DataRequest
@@ -14,6 +15,11 @@ from showme.engine.services.news_intelligence import (
     health_summary,
     symbol_terms,
 )
+
+# HNT-09: the shared worker kills functions at ~14 s; keep the whole NALRT
+# fetch/retry chain under this ceiling so slow providers degrade stage by
+# stage instead of cancelling the function mid-flight.
+_FUNCTION_BUDGET_S = 12.0
 
 
 @FunctionRegistry.register
@@ -92,9 +98,22 @@ class NewsAlertFunction(BaseFunction):
                 min(timeout, 4.5),
             ))
 
+        # HNT-09: the whole chain (initial fetch → rss retry → health retry →
+        # deep gdelt) used to stack sequential wait_for timeouts worth ~30 s
+        # worst case while the worker kills the function at ~14 s — the user
+        # got a timeout envelope instead of the partial results already in
+        # hand. Budget the retries against a ~12 s ceiling so every stage
+        # degrades instead of the whole function.
+        started = time.perf_counter()
+
+        def _remaining() -> float:
+            return _FUNCTION_BUDGET_S - (time.perf_counter() - started)
+
         for name, task, task_timeout in pending:
             try:
-                items = await asyncio.wait_for(task, timeout=task_timeout)
+                items = await asyncio.wait_for(
+                    task, timeout=min(task_timeout, max(0.5, _remaining()))
+                )
                 if items:
                     results.extend(items)
                     sources.append(name)
@@ -105,12 +124,12 @@ class NewsAlertFunction(BaseFunction):
             try:
                 provider_health = await asyncio.wait_for(
                     health_task,
-                    timeout=min(timeout + 1.0, 6.0),
+                    timeout=min(timeout + 1.0, 6.0, max(0.5, _remaining())),
                 )
             except Exception as exc:  # noqa: BLE001
                 warnings.append(f"rss_health: {_error_message(exc)}")
 
-        if not results and self.deps.rss and rss_request is not None:
+        if not results and self.deps.rss and rss_request is not None and _remaining() > 1.0:
             retry_extra = dict(rss_request.extra or {})
             retry_extra.update({
                 "collection_timeout_seconds": min(timeout + 2.0, 6.0),
@@ -130,23 +149,30 @@ class NewsAlertFunction(BaseFunction):
             try:
                 items = await asyncio.wait_for(
                     self.deps.rss.fetch(retry_request),
-                    timeout=min(timeout + 3.0, 9.0),
+                    timeout=min(timeout + 3.0, 9.0, max(0.5, _remaining())),
                 )
                 if items:
                     results.extend(items)
                     sources.append("rss")
             except Exception as exc:  # noqa: BLE001
                 warnings.append(f"rss_retry: {_error_message(exc)}")
-            if include_health and _health_ok_rate(provider_health) < 0.5:
+            if include_health and _health_ok_rate(provider_health) < 0.5 and _remaining() > 1.0:
                 try:
                     provider_health = await asyncio.wait_for(
                         self.deps.rss.probe_feeds(retry_request, timeout=min(timeout + 2.0, 5.0)),
-                        timeout=min(timeout + 3.0, 9.0),
+                        timeout=min(timeout + 3.0, 9.0, max(0.5, _remaining())),
                     )
                 except Exception as exc:  # noqa: BLE001
                     warnings.append(f"rss_health_retry: {_error_message(exc)}")
 
-        if results and include_health and self.deps.rss and rss_request is not None and _health_ok_rate(provider_health) < 0.5:
+        if (
+            results
+            and include_health
+            and self.deps.rss
+            and rss_request is not None
+            and _health_ok_rate(provider_health) < 0.5
+            and _remaining() > 1.0
+        ):
             retry_extra = dict(rss_request.extra or {})
             retry_extra.update({
                 "collection_timeout_seconds": min(timeout + 2.0, 6.0),
@@ -168,26 +194,29 @@ class NewsAlertFunction(BaseFunction):
                         ),
                         timeout=min(timeout + 2.0, 5.0),
                     ),
-                    timeout=min(timeout + 3.0, 9.0),
+                    timeout=min(timeout + 3.0, 9.0, max(0.5, _remaining())),
                 )
             except Exception as exc:  # noqa: BLE001
                 warnings.append(f"rss_health_retry: {_error_message(exc)}")
 
         if _truthy(params.get("deep")) and self.deps.gdelt:
-            try:
-                gdelt_items = await asyncio.wait_for(
-                    self.deps.gdelt.fetch(DataRequest(
-                        kind=DataKind.NEWS,
-                        limit=scan_limit,
-                        extra={"query": query},
-                    )),
-                    timeout=timeout,
-                )
-                if gdelt_items:
-                    results.extend(gdelt_items)
-                    sources.append("gdelt")
-            except Exception as exc:  # noqa: BLE001
-                warnings.append(f"gdelt: {_error_message(exc)}")
+            if _remaining() > 1.0:
+                try:
+                    gdelt_items = await asyncio.wait_for(
+                        self.deps.gdelt.fetch(DataRequest(
+                            kind=DataKind.NEWS,
+                            limit=scan_limit,
+                            extra={"query": query},
+                        )),
+                        timeout=min(timeout, max(0.5, _remaining())),
+                    )
+                    if gdelt_items:
+                        results.extend(gdelt_items)
+                        sources.append("gdelt")
+                except Exception as exc:  # noqa: BLE001
+                    warnings.append(f"gdelt: {_error_message(exc)}")
+            else:
+                warnings.append("gdelt: skipped — function time budget exhausted")
 
         ranked = enrich_articles(
             _dedupe(results),
@@ -224,6 +253,7 @@ class NewsAlertFunction(BaseFunction):
                 ),
             },
             sources=sources,
+            warnings=warnings,
             metadata={
                 "provider_errors": [*warnings, *feed_errors],
                 "method": "deterministic_impact_score_v2",

@@ -98,21 +98,47 @@ class BetaFunction(BaseFunction):
         results = await asyncio.gather(target_task, bench_task, return_exceptions=True)
         target_df, bench_df = results
         if isinstance(target_df, Exception):
+            # HNT-01 fix: the deterministic _beta_baseline (β fabricated
+            # from the ticker's ASCII sum) is gone. A provider failure must
+            # surface as provider_unavailable with EMPTY betas, never as a
+            # plausible-looking regression result flowing into WACC as
+            # "live" CAPM input.
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
-                data=_beta_baseline(instrument.symbol, benchmark_sym),
-                sources=["beta_market_model"],
-                metadata={"provider_errors": [f"yfinance target: {target_df}"]},
+                data={
+                    "status": "provider_unavailable",
+                    "reason": f"yfinance target fetch failed: {target_df}",
+                    "benchmark": benchmark_sym,
+                    "betas": {},
+                    "rows": [],
+                    "next_actions": [
+                        "Retry BETA once the yfinance provider recovers.",
+                        "Verify the symbol resolves on yfinance.",
+                    ],
+                },
+                sources=["no_live_source"],
+                metadata={"fallback": True, "provider_errors": [f"yfinance target: {target_df}"]},
             )
         sources.append("yfinance")
         if isinstance(bench_df, Exception):
+            # HNT-01 fix: same honest outage envelope for the benchmark leg.
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
-                data=_beta_baseline(instrument.symbol, benchmark_sym),
-                sources=["beta_market_model"],
-                metadata={"provider_errors": [f"yfinance benchmark: {bench_df}"]},
+                data={
+                    "status": "provider_unavailable",
+                    "reason": f"yfinance benchmark fetch failed: {bench_df}",
+                    "benchmark": benchmark_sym,
+                    "betas": {},
+                    "rows": [],
+                    "next_actions": [
+                        "Retry BETA once the yfinance provider recovers.",
+                        "Verify the benchmark symbol resolves on yfinance.",
+                    ],
+                },
+                sources=["no_live_source"],
+                metadata={"fallback": True, "provider_errors": [f"yfinance benchmark: {bench_df}"]},
             )
 
         # Audit Q3 #20 — intersect on TRADING DAYS *before* pct_change so a
@@ -121,12 +147,24 @@ class BetaFunction(BaseFunction):
         # frames through `_intersected_returns()` which aligns then computes.
         joined = _intersected_returns(target_df, bench_df)
         if len(joined) < 30:
+            # HNT-01 fix: insufficient overlap is a data outage, not a
+            # licence to fabricate a per-symbol seeded baseline.
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
-                data=_beta_baseline(instrument.symbol, benchmark_sym),
-                sources=["beta_market_model"],
-                metadata={"provider_errors": ["insufficient overlapping return history"]},
+                data={
+                    "status": "provider_unavailable",
+                    "reason": f"insufficient overlapping return history ({len(joined)} bars < 30 required)",
+                    "benchmark": benchmark_sym,
+                    "betas": {},
+                    "rows": [],
+                    "next_actions": [
+                        "Try a longer history window or a more liquid benchmark.",
+                        "Retry once the provider returns fuller price history.",
+                    ],
+                },
+                sources=["no_live_source"],
+                metadata={"fallback": True, "provider_errors": ["insufficient overlapping return history"]},
             )
         out: dict[str, Any] = {}
         rows: list[dict[str, Any]] = []
@@ -251,26 +289,6 @@ def _rolling_beta_history(joined: pd.DataFrame, window: int) -> list[dict[str, A
     return rows[-120:]
 
 
-def _beta_baseline(symbol: str, benchmark: str) -> dict[str, Any]:
-    seed = (sum(ord(ch) for ch in symbol.upper()) % 55) / 100
-    base = 0.82 + seed
-    return {
-        "benchmark": benchmark,
-        "betas": {
-            "1Y": {
-                "beta": round(base, 4),
-                "correlation": 0.62,
-                "samples": 252,
-                "annualized_volatility_target": round(0.22 + seed / 5, 4),
-                "annualized_volatility_bench": 0.18,
-            },
-            "2Y": {
-                "beta": round(base * 0.96, 4),
-                "correlation": 0.59,
-                "samples": 504,
-                "annualized_volatility_target": round(0.21 + seed / 6, 4),
-                "annualized_volatility_bench": 0.17,
-            },
-        },
-        "status": "computed_market_model",
-    }
+# HNT-01 fix: ``_beta_baseline`` (deterministic β seeded from the symbol's
+# ASCII character sum, status "computed_market_model") was removed. Provider
+# failures now return the honest provider_unavailable envelope above.

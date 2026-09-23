@@ -54,7 +54,7 @@ _SYMBOL_NEWS_TTL_S = 180.0
 
 _FINANCE_CALENDAR_URL = "https://www.financecalendar.com/wp-json/fc/v1/calendar"
 _FINANCE_CALENDAR_MAX_DAYS = 92
-_FINANCE_CALENDAR_TTL_S = 1800.0
+_FINANCE_CALENDAR_TTL_S = 300.0
 _FINANCE_CALENDAR_CACHE: dict[str, Any] = {
     "fetched_at": 0.0,
     "key": "",
@@ -153,6 +153,7 @@ class MEETFunction(BaseFunction):
             return await self._calendar_events(
                 now=now,
                 days_ahead=days_ahead,
+                days_back=days_back,
                 timeout=calendar_timeout,
             )
 
@@ -203,13 +204,13 @@ class MEETFunction(BaseFunction):
                     limit=len(deduped_articles), stats=row_stats,
                 )
                 rows_capped_at_limit += row_stats.get("rows_capped_at_limit", 0)
-                rows_capped_at_limit += len(full_world) - len(full_world[:60])
-                world = full_world[:60]
+                world = full_world
                 duplicate_rows_dropped += url_duplicates + row_stats.get("duplicate_rows_dropped", 0)
                 if world:
                     sources.append(world_source or "news")
                     active_source_tiers.append(
-                        "wire_rss_fallback" if world_source == "rss" else "wire_gdelt_primary"
+                        "wire_rss_fallback" if world_source == "rss" else
+                        "wire_gdelt_article_list" if "gdelt_gal" in world_source else "wire_gdelt_primary"
                     )
             if symbols:
                 # Followed symbols need their OWN feeds: the world stream is
@@ -231,8 +232,7 @@ class MEETFunction(BaseFunction):
                             limit=len(deduped_fresh), stats=row_stats,
                         )
                         rows_capped_at_limit += row_stats.get("rows_capped_at_limit", 0)
-                        rows_capped_at_limit += len(full_symbol_world) - len(full_symbol_world[:60])
-                        symbol_world = full_symbol_world[:60]
+                        symbol_world = full_symbol_world
                         duplicate_rows_dropped += url_duplicates + row_stats.get("duplicate_rows_dropped", 0)
                         if symbol_world:
                             world.extend(symbol_world)
@@ -265,6 +265,7 @@ class MEETFunction(BaseFunction):
         if data_filter in {"with_forecast", "with_actual", "surprise_only"}:
             filtered = [r for r in filtered if _passes_data_filter(r, data_filter)]
         upcoming, past = we.split_window(filtered, days_ahead=days_ahead, days_back=days_back)
+        rows_capped_at_limit += max(0, len(upcoming) + len(past) - limit)
         # Upcoming-first priority within the limit.
         upcoming = upcoming[:limit]
         past = past[: max(0, limit - len(upcoming))]
@@ -340,7 +341,9 @@ class MEETFunction(BaseFunction):
                 from showme.engine.services import news_intelligence as ni
 
                 term_map = [(sym, ni.symbol_terms(sym)) for sym in symbols]
-                for row in world:
+                for row in unfiltered_upcoming + unfiltered_past:
+                    if row.get("kind") != "world":
+                        continue
                     text = " ".join(
                         str(row.get(key) or "")
                         for key in ("title", "summary", "details", "description")
@@ -454,7 +457,7 @@ class MEETFunction(BaseFunction):
         )
 
     async def _calendar_events(
-        self, *, now: datetime, days_ahead: float, timeout: float
+        self, *, now: datetime, days_ahead: float, timeout: float, days_back: float = 0
     ) -> tuple[
         list[dict[str, Any]], list[str], list[str], list[str],
         list[dict[str, str]], int, int,
@@ -490,9 +493,9 @@ class MEETFunction(BaseFunction):
                     errors.append(f"{source}: {rejected} untimed rows rejected")
                 return timed
 
-            end = now + timedelta(days=min(days_ahead, _FINANCE_CALENDAR_MAX_DAYS))
+            end = now + timedelta(days=days_ahead)
             date_args = {
-                "start": now.date().isoformat(),
+                "start": (now - timedelta(days=days_back)).date().isoformat(),
                 "end": end.date().isoformat(),
             }
             if _provider_configured(te, "tradingeconomics"):
@@ -537,7 +540,7 @@ class MEETFunction(BaseFunction):
         finance_task = asyncio.create_task(
             _finance_calendar_events(
                 client=await self._client(), now=now,
-                days_ahead=days_ahead, timeout=timeout,
+                days_ahead=days_ahead, timeout=timeout, days_back=days_back,
             )
         )
         primary, finance = await asyncio.gather(primary_task, finance_task)
@@ -563,8 +566,8 @@ class MEETFunction(BaseFunction):
     ) -> list[dict[str, Any]]:
         """Extra headlines aimed at the followed tickers.
 
-        Crypto symbols ride the crypto feed group (CoinDesk/...); the first
-        few symbols also request their per-symbol Yahoo feed. Cached for the
+        Crypto symbols ride the crypto feed group (CoinDesk/...); every
+        followed symbol also requests its dedicated feed. Cached for the
         same window as the world headlines so pane refreshes stay instant.
         """
         global _SYMBOL_NEWS_CACHE
@@ -600,7 +603,7 @@ class MEETFunction(BaseFunction):
                             DataRequest(
                                 kind=DataKind.NEWS,
                                 extra={"feed_group": "crypto"},
-                                limit=50,
+                                limit=1000,
                             )
                         ),
                         timeout=timeout,
@@ -620,10 +623,11 @@ class MEETFunction(BaseFunction):
                                 extra={
                                     "feed_group": "market",
                                     "symbol": sym,
+                                    "symbol_only": True,
                                     "per_feed_timeout_seconds": max(3.0, min(timeout, 5.0)),
                                     "collection_timeout_seconds": max(3.0, min(timeout, 5.0)),
                                 },
-                                limit=30,
+                                limit=1000,
                             )
                         ),
                         timeout=timeout,
@@ -633,7 +637,7 @@ class MEETFunction(BaseFunction):
             except Exception:  # noqa: BLE001
                 return []
 
-        legs = [_crypto_leg(), *(_symbol_leg(sym) for sym in symbols[:3])]
+        legs = [_crypto_leg(), *(_symbol_leg(sym) for sym in dict.fromkeys(symbols))]
         collected: list[dict[str, Any]] = []
         for result in await asyncio.gather(*legs):
             collected.extend(result)
@@ -665,18 +669,32 @@ class MEETFunction(BaseFunction):
         """
         global _WORLD_CACHE, _gdelt_429_until
         now_mono = time.monotonic()
+        gdelt_adapter = getattr(self.deps, "gdelt", None)
+        snapshot, snapshot_source, snapshot_note = [], "", None
+        # Real adapter owns the refresh task; a fast RSS response must not
+        # cancel a slow TLS handshake or discard a completed GAL snapshot.
+        from showme.engine.data_sources.news.gdelt_adapter import GDELTAdapter
+        if isinstance(gdelt_adapter, GDELTAdapter):
+            snapshot, snapshot_source, snapshot_note = await gdelt_adapter.world_snapshot(we.world_query(), now)
+            if snapshot and getattr(self.deps, "rss", None) is None:
+                return snapshot, snapshot_source, snapshot_note
         if _WORLD_CACHE is not None and (now_mono - _WORLD_CACHE[0]) < _WORLD_CACHE[2]:
             cached_items, cached_source, cached_error = _WORLD_CACHE[1]
+            if snapshot:
+                merged, _ = _dedupe_articles(list(cached_items) + snapshot)
+                return merged, "+".join(dict.fromkeys([cached_source, snapshot_source])), snapshot_note or cached_error
             return list(cached_items), cached_source, cached_error
 
         gdelt = getattr(self.deps, "gdelt", None)
+        if isinstance(gdelt, GDELTAdapter):
+            gdelt = None  # refreshed independently; RSS serves the cold-open
         rss = getattr(self.deps, "rss", None)
         if gdelt is not None and now_mono < _gdelt_429_until and rss is not None:
             gdelt = None
             origin = f" ({_gdelt_429_note})" if _gdelt_429_note else ""
             gdelt_backoff_note = f"gdelt: HTTP 429 backoff{origin} (rss served)"
         else:
-            gdelt_backoff_note = None
+            gdelt_backoff_note = snapshot_note if isinstance(gdelt_adapter, GDELTAdapter) else None
         rss_extra = {
             "feed_group": "market",
             # Explicit per-feed + collection budgets: the adapter's
@@ -718,7 +736,9 @@ class MEETFunction(BaseFunction):
                     rss.fetch(DataRequest(
                         kind=DataKind.NEWS,
                         extra=rss_extra,
-                        limit=50,
+                        # Keep the source window available for country/tag filters.
+                        # The requested display limit is applied after filtering.
+                        limit=1000,
                     )),
                     timeout=timeout,
                 )
@@ -729,7 +749,8 @@ class MEETFunction(BaseFunction):
                 return [], f"rss: {str(exc) or exc.__class__.__name__}"
 
         if gdelt is None and rss is None:
-            result = ([], "", "news: neither gdelt nor rss is configured")
+            result = ([], "", snapshot_note if isinstance(gdelt_adapter, GDELTAdapter)
+                      else "news: neither gdelt nor rss is configured")
             _WORLD_CACHE = (now_mono, result, _WORLD_CACHE_FAIL_TTL_S)
             return result
         # First-wins race (owner 2026-09-17: the serial GDELT-timeout +
@@ -770,8 +791,8 @@ class MEETFunction(BaseFunction):
                 else:
                     gdelt_note = None
                 result = (
-                    rss_res[0],
-                    "rss",
+                    _dedupe_articles(rss_res[0] + snapshot)[0],
+                    "rss+" + snapshot_source if snapshot else "rss",
                     gdelt_note,
                 )
                 _WORLD_CACHE = (now_mono, result, _WORLD_CACHE_TTL_S)
@@ -779,6 +800,8 @@ class MEETFunction(BaseFunction):
         # Every leg settled without items.
         gdelt_err = results.get("gdelt", ([], None))[1]
         rss_err = results.get("rss", ([], None))[1]
+        if snapshot:
+            return snapshot, snapshot_source, "; ".join(n for n in (snapshot_note, rss_err) if n) or None
         if rss_err and "empty" not in rss_err:
             merged = f"{gdelt_err}; {rss_err}" if gdelt_err else rss_err
         else:
@@ -789,7 +812,7 @@ class MEETFunction(BaseFunction):
 
 
 _CALENDAR_TITLE_COUNTRIES: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"\b(?:fomc|federal reserve|fed chair|powell)\b", re.I), "US"),
+    (re.compile(r"\b(?:fomc|federal reserve|fed chair|powell|beige book)\b", re.I), "US"),
     (re.compile(r"\b(?:bank of england|boe)\b", re.I), "GB"),
     (re.compile(r"\b(?:european central bank|ecb)\b", re.I), "EU"),
     (re.compile(r"\b(?:bank of japan|boj)\b", re.I), "JP"),
@@ -935,10 +958,11 @@ def _finance_calendar_attribution(raw: Any) -> dict[str, str]:
 
 
 async def _finance_calendar_events(
-    *, client: Any, now: datetime, days_ahead: float, timeout: float
+    *, client: Any, now: datetime, days_ahead: float, timeout: float, days_back: float = 0
 ) -> tuple[list[dict[str, Any]], dict[str, str] | None, str | None]:
-    days = max(1, min(int(math.ceil(days_ahead)), _FINANCE_CALENDAR_MAX_DAYS))
-    date_from = now.date().isoformat()
+    days = max(1, min(int(math.ceil(days_ahead)), 365))
+    start_date = (now - timedelta(days=days_back)).date()
+    date_from = start_date.isoformat()
     date_to = (now + timedelta(days=days)).date().isoformat()
     cache_key = f"{date_from}:{date_to}"
     age = time.monotonic() - float(_FINANCE_CALENDAR_CACHE.get("fetched_at") or 0.0)
@@ -953,31 +977,55 @@ async def _finance_calendar_events(
             None,
         )
     try:
-        async with asyncio.timeout(timeout):
+        async def fetch_window(start, end):
             try:
                 response = await client.get(
                     _FINANCE_CALENDAR_URL,
-                    params={"from": date_from, "to": date_to},
+                    params={"from": start.isoformat(), "to": end.isoformat(), "limit": 500},
                     timeout=timeout,
                 )
             except TypeError:
                 response = await client.get(_FINANCE_CALENDAR_URL, timeout=timeout)
-        response.raise_for_status()
-        payload = response.json()
-        if not isinstance(payload, dict) or not isinstance(payload.get("events"), list):
-            return [], None, "financecalendar: unexpected response shape"
-        rows = _normalize_calendar_rows(payload, "financecalendar")
-        attribution = _finance_calendar_attribution(
-            payload.get("attribution") if isinstance(payload, dict) else {}
+            response.raise_for_status()
+            payload = response.json()
+            if not isinstance(payload, dict) or not isinstance(payload.get("events"), list):
+                raise ValueError("unexpected response shape")
+            return payload
+
+        # Each inclusive request spans at most 92 days. History must not
+        # silently displace the requested future window at the provider.
+        windows = []
+        end_date = (now + timedelta(days=days)).date()
+        cursor = start_date
+        while cursor <= end_date:
+            last = min(cursor + timedelta(days=_FINANCE_CALENDAR_MAX_DAYS - 1), end_date)
+            windows.append((cursor, last))
+            cursor = last + timedelta(days=1)
+        payloads = await asyncio.gather(
+            *(asyncio.wait_for(fetch_window(a, b), timeout=timeout) for a, b in windows),
+            return_exceptions=True,
         )
-        if rows:
+        rows = []
+        attribution = None
+        errors = []
+        for payload in payloads:
+            if isinstance(payload, BaseException):
+                errors.append(f"financecalendar: {str(payload) or type(payload).__name__}")
+                continue
+            normalized = _normalize_calendar_rows(payload, "financecalendar")
+            # Some providers ignore date bounds; avoid duplicating overlapping
+            # responses across windows while retaining same-response revisions.
+            earlier = {_calendar_identity(row) for row in rows}
+            rows.extend(row for row in normalized if _calendar_identity(row) not in earlier)
+            attribution = attribution or _finance_calendar_attribution(payload.get("attribution"))
+        if rows and not errors:
             _FINANCE_CALENDAR_CACHE.update({
                 "fetched_at": time.monotonic(),
                 "key": cache_key,
                 "rows": list(rows),
                 "attribution": attribution,
             })
-        return rows, attribution, None
+        return rows, attribution, "; ".join(errors) or None
     except Exception as exc:  # noqa: BLE001
         return [], None, f"financecalendar: {str(exc) or exc.__class__.__name__}"
 
@@ -1122,7 +1170,7 @@ def _shell(
         "methodology": (
             "Scheduled rows prefer configured TradingEconomics, then configured "
             "Finnhub, then the keyless ForexFactory weekly calendar. The keyless "
-            "FinanceCalendar.com feed supplements future coverage (maximum 92 days) "
+            "FinanceCalendar.com supplements past/future coverage (92 days per request) "
             "with required attribution and never replaces an overlapping primary row. "
             "Every country on the calendar is listed with its "
             "UTC timestamp, impact and affected FX pairs (country → currency → "

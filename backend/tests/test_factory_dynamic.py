@@ -1,6 +1,7 @@
 """Dynamic credential→broker registration via factory."""
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -20,6 +21,18 @@ YAML = """
   regions: [global]
   adapter: ccxt
   ccxt_id: binance
+  requires: [api_key, api_secret]
+  optional: []
+  capabilities: {fetch_balance: true, fetch_positions: true, fetch_open_orders: true, create_order: true, cancel_order: true}
+"""
+
+ALPACA_YAML = """
+- id: alpaca
+  display_name: Alpaca Paper
+  aliases: []
+  asset_classes: [equity]
+  regions: [us]
+  adapter: alpaca
   requires: [api_key, api_secret]
   optional: []
   capabilities: {fetch_balance: true, fetch_positions: true, fetch_open_orders: true, create_order: true, cancel_order: true}
@@ -106,3 +119,33 @@ def test_unregister_credential_removes_broker(monkeypatch, env):
     assert name in factory_mod.list_brokers()
     factory_mod.unregister_credential(rec.id)
     assert name not in factory_mod.list_brokers()
+
+
+def test_register_alpaca_credential_uses_saved_secrets(monkeypatch, env):
+    """HNT-04: an alpaca-adapter credential must build its broker from the
+    SAVED secrets (not env keys) and enforce the permission gate."""
+    yml = env / "alpaca.yml"
+    yml.write_text(ALPACA_YAML)
+    monkeypatch.setattr(factory_mod, "_CATALOG", load_catalog(yml))
+    monkeypatch.delenv("ALPACA_PAPER_KEY", raising=False)
+    monkeypatch.delenv("ALPACA_PAPER_SECRET", raising=False)
+    store = CredentialStore.fresh()
+    rec = store.add(
+        exchange_id="alpaca", account_label="main",
+        secrets={"api_key": "saved-key", "api_secret": "saved-secret"},
+        permissions=("read",),
+    )
+    factory_mod.register_credential(
+        rec, {"api_key": "saved-key", "api_secret": "saved-secret"},
+    )
+    broker = factory_mod.get_broker(f"alpaca:{rec.id}")
+    assert broker.api_key == "saved-key"
+    assert broker.secret == "saved-secret"
+    # Read-only credential → the trade gate must refuse orders.
+    from showme.brokers import NotSupported
+
+    async def _try_submit() -> None:
+        await broker.submit_order(symbol="AAPL", side="buy", quantity=1)
+
+    with pytest.raises(NotSupported, match="trade"):
+        asyncio.run(_try_submit())

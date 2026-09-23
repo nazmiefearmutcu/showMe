@@ -56,6 +56,11 @@ class WSManager:
 
         self.shards = self._build_shards()
         self.last_kline_ms: dict[tuple[str, str], int] = {}
+        # HNT-11: shards currently connected — "connected" used to be a
+        # cumulative connect counter that never decreased, so the health
+        # panel read "11 connected" for a single-shard manager after 10
+        # reconnects.
+        self._connected_shards: set[int] = set()
         self.health = {
             "shards": len(self.shards),
             "connected": 0,
@@ -113,7 +118,8 @@ class WSManager:
                     url, ping_interval=180, ping_timeout=600,
                     max_size=2**24, close_timeout=10,
                 ) as ws:
-                    self.health["connected"] += 1
+                    self._connected_shards.add(shard_id)
+                    self.health["connected"] = len(self._connected_shards)
                     logger.info("WS shard #%s connected (%s streams)", shard_id, len(streams))
                     backoff = 1.0
                     await self._gap_fill_on_reconnect(streams)
@@ -139,6 +145,11 @@ class WSManager:
                 except asyncio.CancelledError:
                     break
                 backoff *= 2
+            finally:
+                # HNT-11: reflect "shards connected right now" — drop this
+                # shard on every exit path (clean close, error, backoff).
+                self._connected_shards.discard(shard_id)
+                self.health["connected"] = len(self._connected_shards)
 
     async def _dispatch(self, msg: dict[str, Any]) -> None:
         stream = msg.get("stream", "")
@@ -252,8 +263,38 @@ class WSManager:
 
     # ── gap-fill ───────────────────────────────────────────
 
+    def _fetch_gap_rows(self, sym: str, tf: str, limit: int) -> list[dict[str, Any]]:
+        """REST fetch for missing candles (sync — runs in a worker thread)."""
+        klines = self.rest_client.get_klines(symbol=sym, interval=tf, limit=limit)
+        rows: list[dict[str, Any]] = []
+        for k in klines or []:
+            rows.append({
+                "symbol": sym, "timeframe": tf,
+                "open_time": int(k[0]),
+                "open": float(k[1]), "high": float(k[2]),
+                "low": float(k[3]), "close": float(k[4]),
+                "volume": float(k[5]), "quote_volume": float(k[7]),
+                "trades": int(k[8]),
+                "taker_buy_base": float(k[9]),
+                "taker_buy_quote": float(k[10]),
+                "is_closed": True,
+            })
+        return rows
+
+    def _write_gap_rows(self, sym: str, tf: str, rows: list[dict[str, Any]]) -> None:
+        """Merge gap rows into the cache and store (sync — worker thread)."""
+        for r in rows:
+            self.cache.update_candle(sym, tf, r)
+            self.store.write_candle(r)
+
     async def _gap_fill_on_reconnect(self, streams: list[str]) -> None:
-        """If we have last_kline_ms and reconnect happens later, REST-fill missing candles."""
+        """If we have last_kline_ms and reconnect happens later, REST-fill missing candles.
+
+        HNT-05: the sync REST call (python-binance requests + retry
+        backoffs with time.sleep) and the DuckDB writes run in a worker
+        thread via ``asyncio.to_thread`` — on the loop they froze every
+        shard's live dispatch for as long as the gap-fill took.
+        """
         if self.rest_client is None or self.store is None:
             return
         now_ms = int(time.time() * 1000)
@@ -272,25 +313,12 @@ class WSManager:
             if missing <= 1:
                 continue
             try:
-                klines = self.rest_client.get_klines(symbol=sym, interval=tf, limit=min(int(missing) + 5, 1000))
-                if not klines:
+                rows = await asyncio.to_thread(
+                    self._fetch_gap_rows, sym, tf, min(int(missing) + 5, 1000)
+                )
+                if not rows:
                     continue
-                rows = []
-                for k in klines:
-                    rows.append({
-                        "symbol": sym, "timeframe": tf,
-                        "open_time": int(k[0]),
-                        "open": float(k[1]), "high": float(k[2]),
-                        "low": float(k[3]), "close": float(k[4]),
-                        "volume": float(k[5]), "quote_volume": float(k[7]),
-                        "trades": int(k[8]),
-                        "taker_buy_base": float(k[9]),
-                        "taker_buy_quote": float(k[10]),
-                        "is_closed": True,
-                    })
-                for r in rows:
-                    self.cache.update_candle(sym, tf, r)
-                    self.store.write_candle(r)
+                await asyncio.to_thread(self._write_gap_rows, sym, tf, rows)
                 self.health["gap_fills"] += 1
                 logger.info("Gap-filled %s candles for %s/%s", len(rows), sym, tf)
             except Exception as e:

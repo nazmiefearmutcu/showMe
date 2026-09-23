@@ -98,6 +98,34 @@ def test_erev_live_provider_returns_weighted_trend():
 
 
 # ---------------------------------------------------------------------------
+# RV — negative P/E is N/A, not "cheapest" (HNT-11)
+# ---------------------------------------------------------------------------
+
+
+def test_rv_negative_pe_is_excluded_from_ranking():
+    from showme.engine.functions.equity.rv import _rank_rows
+
+    rows = [
+        {"symbol": "LOSSMAKER", "pe": -5.0},
+        {"symbol": "CHEAP", "pe": 8.0},
+        {"symbol": "PRICEY", "pe": 40.0},
+        {"symbol": "NOPE", "pe": None},
+    ]
+    ranked = _rank_rows(rows, "LOSSMAKER")
+    by_symbol = {r["symbol"]: r for r in ranked}
+    # Positive PEs keep their ascending rank / percentile.
+    assert by_symbol["CHEAP"]["rank_pe"] == 1
+    assert by_symbol["CHEAP"]["percentile_pe"] == 0.0
+    assert by_symbol["PRICEY"]["rank_pe"] == 2
+    assert by_symbol["PRICEY"]["percentile_pe"] == 100.0
+    # The loss-maker and the missing-PE row are rank-excluded (raw value
+    # still visible) — never ranked as the cheapest name in the set.
+    assert "rank_pe" not in by_symbol["LOSSMAKER"]
+    assert "percentile_pe" not in by_symbol["LOSSMAKER"]
+    assert "rank_pe" not in by_symbol["NOPE"]
+
+
+# ---------------------------------------------------------------------------
 # DVD — Model mode returns labelled reference rows
 # ---------------------------------------------------------------------------
 

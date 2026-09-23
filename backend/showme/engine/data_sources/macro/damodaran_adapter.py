@@ -14,6 +14,7 @@ DATA PIPELINE:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from showme.app_paths import runtime_path
@@ -27,6 +28,10 @@ from showme.engine.core.base_data_source import BaseDataSource, DataKind, DataRe
 def _cache_path():
     return runtime_path("damodaran_erp.json")
 _CACHE_TTL = 30 * 24 * 3600  # 30 gün
+# A failed scrape serves the fallback from MEMORY only, for this long —
+# a transient network error (or a missing openpyxl) must not stamp the
+# January snapshot with ts=now and lock out the real scrape for 30 days.
+_FALLBACK_RETRY_SECONDS = 3600  # 1 saat
 
 
 # Hard-coded fallback (Jan 2025 snapshot) — kütüphane gibi kullanılır
@@ -57,6 +62,7 @@ class DamodaranAdapter(BaseDataSource):
     def __init__(self, config: dict[str, Any] | None = None) -> None:
         super().__init__(config)
         self._client: httpx.AsyncClient | None = None
+        self._fallback_until = 0.0
 
     async def _client_(self) -> httpx.AsyncClient:
         if self._client is None:
@@ -78,10 +84,54 @@ class DamodaranAdapter(BaseDataSource):
         _cache_path().parent.mkdir(parents=True, exist_ok=True)
         _cache_path().write_text(json.dumps({"ts": int(time.time()), "payload": payload}))
 
+    def _parse_workbook(self, content: bytes) -> dict[str, float] | None:
+        """Parse the ctryprem.xlsx payload; ``None`` when unusable.
+
+        Runs via ``asyncio.to_thread`` — openpyxl parsing is sync CPU/IO
+        that would stall the event loop for hundreds of ms."""
+        from io import BytesIO
+        from openpyxl import load_workbook  # type: ignore
+        wb = load_workbook(BytesIO(content), read_only=True, data_only=True)
+        ws = wb.active
+        # Header row varies; we scan for a 'Country' column then 'Total Equity Risk Premium'.
+        rows = list(ws.iter_rows(values_only=True))
+        header_idx = None
+        country_col = None
+        erp_col = None
+        for i, row in enumerate(rows[:20]):
+            if not row:
+                continue
+            cells = [str(c) if c is not None else "" for c in row]
+            if any("country" in c.lower() for c in cells):
+                header_idx = i
+                for j, c in enumerate(cells):
+                    cl = c.lower()
+                    if "country" in cl and country_col is None:
+                        country_col = j
+                    elif ("total" in cl and "equity" in cl) or "erp" in cl:
+                        erp_col = j
+                break
+        if header_idx is None or country_col is None or erp_col is None:
+            return None
+        out = dict(_ERP_FALLBACK)
+        for row in rows[header_idx + 1:]:
+            if not row or row[country_col] is None:
+                continue
+            country = str(row[country_col]).strip()
+            try:
+                erp = float(row[erp_col]) * (100 if float(row[erp_col]) < 1 else 1)
+            except (TypeError, ValueError):
+                continue
+            # Keep both ISO-2 and full name
+            out[country] = erp
+        return out
+
     async def country_erp(self) -> dict[str, float]:
         cached = self._cache_load()
         if cached is not None:
             return cached
+        if time.time() < self._fallback_until:
+            return dict(_ERP_FALLBACK)
         # Best-effort scrape — Damodaran's table layout varies by year.
         # We grab the 'ctryprem.xls' binary if reachable; otherwise fallback.
         try:
@@ -92,50 +142,15 @@ class DamodaranAdapter(BaseDataSource):
                 follow_redirects=True,
             )
             if r.status_code == 200 and r.content:
-                # Try to parse with openpyxl if available; otherwise just keep fallback.
-                try:
-                    from io import BytesIO
-                    from openpyxl import load_workbook  # type: ignore
-                    wb = load_workbook(BytesIO(r.content), read_only=True, data_only=True)
-                    ws = wb.active
-                    # Header row varies; we scan for a 'Country' column then 'Total Equity Risk Premium'.
-                    rows = list(ws.iter_rows(values_only=True))
-                    header_idx = None
-                    country_col = None
-                    erp_col = None
-                    for i, row in enumerate(rows[:20]):
-                        if not row:
-                            continue
-                        cells = [str(c) if c is not None else "" for c in row]
-                        if any("country" in c.lower() for c in cells):
-                            header_idx = i
-                            for j, c in enumerate(cells):
-                                cl = c.lower()
-                                if "country" in cl and country_col is None:
-                                    country_col = j
-                                elif ("total" in cl and "equity" in cl) or "erp" in cl:
-                                    erp_col = j
-                            break
-                    out = dict(_ERP_FALLBACK)
-                    if header_idx is not None and country_col is not None and erp_col is not None:
-                        for row in rows[header_idx + 1:]:
-                            if not row or row[country_col] is None:
-                                continue
-                            country = str(row[country_col]).strip()
-                            try:
-                                erp = float(row[erp_col]) * (100 if float(row[erp_col]) < 1 else 1)
-                            except (TypeError, ValueError):
-                                continue
-                            # Keep both ISO-2 and full name
-                            out[country] = erp
+                out = await asyncio.to_thread(self._parse_workbook, r.content)
+                if out is not None:
                     self._cache_save(out)
                     return out
-                except Exception:
-                    pass
         except Exception:
             pass
-        # Fallback path
-        self._cache_save(_ERP_FALLBACK)
+        # Fallback stays in memory with a short TTL so the real scrape is
+        # retried after an hour instead of being locked out for 30 days.
+        self._fallback_until = time.time() + _FALLBACK_RETRY_SECONDS
         return dict(_ERP_FALLBACK)
 
     async def fetch(self, request: DataRequest) -> Any:

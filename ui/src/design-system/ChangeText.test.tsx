@@ -22,6 +22,15 @@ describe("<ChangeText>", () => {
     expect(screen.getByText("—")).toBeInTheDocument();
   });
 
+  it("renders em-dash for Infinity/-Infinity (HNT-10)", () => {
+    const { unmount } = render(<ChangeText value={Infinity} />);
+    expect(screen.getByText("—")).toBeInTheDocument();
+    expect(screen.queryByText(/∞/)).toBeNull();
+    unmount();
+    render(<ChangeText value={-Infinity} />);
+    expect(screen.getByText("—")).toBeInTheDocument();
+  });
+
   it("supports prefix/suffix without sign when signed=false", () => {
     render(<ChangeText value={42} prefix="$" digits={0} signed={false} />);
     expect(screen.getByText(/\$42/)).toBeInTheDocument();

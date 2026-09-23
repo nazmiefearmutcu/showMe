@@ -18,15 +18,21 @@ LOG = logging.getLogger("showme.server_routes.templates")
 # ``"['BTC', 'ETH']"``), control chars, newline injection, and empty input.
 # MEDIUM (whitespace symbol reject): trim + reject empty.
 # LOW (control char reject): reject anything outside printable ASCII.
-_SYMBOL_FORMAT_RE = re.compile(r"^[A-Z0-9]+/[A-Z0-9]+$")
+# HNT-03: the format accepts every shape the template catalog itself
+# recommends: plain equities/ETFs (``AAPL``, ``SPY``), ccxt spot pairs
+# (``BTC/USDT``), dash-separated pairs (``BTC-USDT``), and perp settle
+# suffixes (``BTC/USDT:USDT``). The old ``BASE/QUOTE``-only regex 422'd
+# the catalog's own recommended_symbols on the default UI flow.
+_SYMBOL_FORMAT_RE = re.compile(r"^[A-Z0-9]{1,20}([/-][A-Z0-9]{1,20})*(:[A-Z0-9]{1,20})?$")
 
 
 def _coerce_symbol(raw: Any) -> str:
     """Coerce ``raw`` to a clean symbol string or raise HTTPException(422).
 
     Pulled out as a helper so the templates and (future) other routes can
-    share the contract. Accepted shape: ``BASE/QUOTE`` where each side is
-    ``[A-Z0-9]+``.
+    share the contract. Accepted shapes: ``AAPL`` (equity/ETF),
+    ``BTC/USDT`` / ``BTC-USDT`` (pair), ``BTC/USDT:USDT`` (perp settle
+    suffix) — each side ``[A-Z0-9]{1,20}``.
     """
     if isinstance(raw, (list, tuple, dict, bool)):
         raise HTTPException(
@@ -35,7 +41,7 @@ def _coerce_symbol(raw: Any) -> str:
     if not isinstance(raw, str):
         raise HTTPException(422, detail="symbol must be a string")
     # Reject newline / tab / control chars (defense-in-depth, log injection).
-    if any(ord(c) < 0x20 or ord(c) == 0x7f for c in raw):
+    if any(ord(c) < 0x20 or c == 0x7f for c in raw):
         raise HTTPException(422, detail="symbol contains control characters")
     cleaned = raw.strip().upper()
     if not cleaned:
@@ -43,7 +49,7 @@ def _coerce_symbol(raw: Any) -> str:
     if not _SYMBOL_FORMAT_RE.fullmatch(cleaned):
         raise HTTPException(
             422,
-            detail=f"symbol format must be BASE/QUOTE (got {raw!r})",
+            detail=f"symbol format must be TICKER, BASE/QUOTE, or BASE/QUOTE:SETTLE (got {raw!r})",
         )
     return cleaned
 

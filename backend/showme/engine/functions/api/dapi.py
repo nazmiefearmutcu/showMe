@@ -131,6 +131,10 @@ DAPI_CURATED_ROUTES: list[dict[str, str]] = [
     # ── portfolio ──
     {"method": "GET", "path": "/api/portfolio/aggregate", "purpose": "Aggregate positions/orders across registered broker credentials.", "request_body": "-", "response_shape": "{ ... }", "mutates_state": "no", "example": "/api/portfolio/aggregate"},
     {"method": "POST", "path": "/api/portfolio/positions", "purpose": "Add a manual position to the local portfolio book.", "request_body": "{ symbol, quantity, avg_cost, account?, notes? }", "response_shape": "{ ok, position, positions_count }", "mutates_state": "yes", "example": "/api/portfolio/positions"},
+    # ── templates ──
+    {"method": "GET", "path": "/api/templates", "purpose": "List workflow templates from the bundled catalog.", "request_body": "-", "response_shape": "{ templates[] }", "mutates_state": "no", "example": "/api/templates"},
+    {"method": "GET", "path": "/api/templates/{template_id}", "purpose": "Detail for one workflow template.", "request_body": "-", "response_shape": "TemplateDetail", "mutates_state": "no", "example": "/api/templates/kaos-multibot"},
+    {"method": "POST", "path": "/api/templates/{template_id}/instantiate", "purpose": "Instantiate a template into a persisted strategy spec.", "request_body": "{ symbol_override?, params? }", "response_shape": "{ strategy_id, spec }", "mutates_state": "yes", "example": "/api/templates/kaos-multibot/instantiate"},
     # ── strategies ──
     {"method": "GET", "path": "/api/strategies", "purpose": "List stored strategy specs.", "request_body": "-", "response_shape": "{ records[] }", "mutates_state": "no", "example": "/api/strategies"},
     {"method": "POST", "path": "/api/strategies", "purpose": "Create a strategy spec (indicator-catalog validated).", "request_body": "StrategySpec", "response_shape": "StrategySpec", "mutates_state": "yes", "example": "/api/strategies"},

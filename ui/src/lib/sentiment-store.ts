@@ -32,7 +32,7 @@ interface SentimentStoreShape {
   /** in-flight controller so a new refresh aborts the previous one */
   _inflight: AbortController | null;
 
-  refresh: (symbols: string[]) => Promise<void>;
+  refresh: (symbols: string[], opts?: { fromRetry?: boolean }) => Promise<void>;
 }
 
 /**
@@ -81,7 +81,7 @@ function scheduleSentimentRetry(symbols: string[]): void {
   try {
     sentimentRetryTimer = setTimeout(() => {
       sentimentRetryTimer = null;
-      void useSentimentStore.getState().refresh(symbols);
+      void useSentimentStore.getState().refresh(symbols, { fromRetry: true });
     }, 6_000);
   } catch {
     sentimentRetryTimer = null;
@@ -94,6 +94,7 @@ export function __clearSentimentRetryForTests(): void {
     clearTimeout(sentimentRetryTimer);
     sentimentRetryTimer = null;
   }
+  sentimentRetryAttempts = 0;
 }
 
 export const useSentimentStore = create<SentimentStoreShape>((set, get) => ({
@@ -106,7 +107,7 @@ export const useSentimentStore = create<SentimentStoreShape>((set, get) => ({
   tapePct: null,
   _inflight: null,
 
-  refresh: async (symbols: string[]) => {
+  refresh: async (symbols, opts) => {
     const cleanedSymbols = Array.isArray(symbols)
       ? symbols.map((sym) => sym.replace(/[^A-Za-z0-9._:=-]/g, "")).filter(Boolean)
       : [];
@@ -135,6 +136,12 @@ export const useSentimentStore = create<SentimentStoreShape>((set, get) => ({
       clearTimeout(sentimentRetryTimer);
       sentimentRetryTimer = null;
     }
+    // HNT-09: the retry budget is per refresh cycle, not per process —
+    // a fresh EXTERNAL call (60 s poll, manual reload) re-arms the fast
+    // warmup retries even after a previous cycle burned through all 10.
+    // Retry-timer-driven calls pass fromRetry so the budget keeps counting
+    // down within one warmup cycle (otherwise the loop would never stop).
+    if (!opts?.fromRetry) sentimentRetryAttempts = 0;
     const prev = get()._inflight;
     if (prev) prev.abort();
     const controller = new AbortController();

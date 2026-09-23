@@ -140,7 +140,7 @@ def _iso_from_epoch(value: Any) -> str | None:
 
 
 def load_state(state_json: Path) -> dict[str, Any]:
-    return json.loads(state_json.read_text())
+    return json.loads(state_json.read_text(encoding="utf-8"))
 
 
 def import_state(

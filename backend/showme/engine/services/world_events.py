@@ -225,6 +225,13 @@ _MILITARY_NUCLEAR_RE = re.compile(
     re.IGNORECASE,
 )
 
+_DRONE_ATTACK_RE = re.compile(
+    r"\b(?:drone\s+(?:attacks?|strikes?)|drones\s+(?:attack|strike|target|hit|kill)\w*)\b",
+    re.IGNORECASE,
+)
+_ARMED_GROUP_RE = re.compile(r"\b(?:houthis?|al[ -]qaeda|hamas|hezbollah)\b", re.IGNORECASE)
+_ARMED_ACTION_RE = re.compile(r"\b(?:attacks?|strikes?|bombs?|bombings?)\b", re.IGNORECASE)
+
 # Political / diplomatic terms (world headlines, medium impact).
 _POLITICAL_RE = re.compile(
     r"\b(election|elections|referendum|summit|treaty|parliament|president|prime minister"
@@ -252,7 +259,7 @@ _FINANCIAL_RE = re.compile(
 # Event-type classifiers (Faz 2 — details.event_type).
 _ETF_FLOW_RE = re.compile(r"\b(inflows?|outflows?)\b", re.IGNORECASE)
 _EMPLOYMENT_RE = re.compile(
-    r"\b(nfp|non[\s-]?farm|payrolls?|unemployment|jobs report|employment)\b",
+    r"\b(nfp|non[\s-]?farm|payrolls?|unemployment|jobs report|employment|jobless claims|initial claims|continuing claims)\b",
     re.IGNORECASE,
 )
 _INFLATION_RE = re.compile(r"\b(cpi|ppi|pce|inflation)\b", re.IGNORECASE)
@@ -664,7 +671,8 @@ TOPIC_TERMS: dict[str, tuple[str, ...]] = {
     "FED": ("Fed", "Federal Reserve", "FOMC", "Powell", "dot plot"),
     "ECB": ("ECB", "Lagarde"),
     "BOJ": ("BOJ", "Ueda"),
-    "INFLATION": ("CPI", "PPI", "PCE", "inflation", "NFP", "payrolls", "unemployment"),
+    "INFLATION": ("CPI", "PPI", "PCE", "inflation"),
+    "EMPLOYMENT": ("NFP", "nonfarm", "non-farm", "payrolls", "unemployment", "employment", "jobless claims", "initial claims", "continuing claims"),
 }
 
 _ASSET_PATTERNS: dict[str, list[tuple[str, re.Pattern[str]]]] = {
@@ -804,7 +812,11 @@ def world_rows(
         for tag in _provider_canonical_tags(item, "topic_tags", TOPIC_TERMS):
             if tag not in topic_tags:
                 topic_tags.append(tag)
-        war = bool(_WAR_RE.search(title) or _MILITARY_NUCLEAR_RE.search(title))
+        war = bool(
+            _WAR_RE.search(title) or _MILITARY_NUCLEAR_RE.search(title)
+            or _DRONE_ATTACK_RE.search(title)
+            or (_ARMED_GROUP_RE.search(title) and _ARMED_ACTION_RE.search(title))
+        )
         political = bool(_POLITICAL_RE.search(title))
         event_type = _classify_event_type(
             f"{title} {summary}",
@@ -865,7 +877,7 @@ def world_rows(
             "impact": impact,
             "currencies": [],
             "pairs": pairs,
-            "source": source,
+            "source": item.get("source") if item.get("source") in {"gdelt", "gdelt_gal", "rss"} else source,
             "spot": war,
             # Crypto+macro headlines pin alongside wars (Faz 2).
             "pinned": war or (crypto_hit and macro_hit),
@@ -881,6 +893,8 @@ def world_rows(
                 "matched_assets": matched_assets,
                 **({"provider_tags": provider_raw} if provider_raw else {}),
                 "impact_basis": "headline_keywords",
+                **({"language_basis": item["language_basis"]} if item.get("language_basis") else {}),
+                **({"timestamp_basis": item["timestamp_basis"]} if item.get("timestamp_basis") else {}),
                 # The row expands in-place on click (owner 2026-09-16:
                 # "haberlere basınca haber büyüsün haber özeti gelsin").
                 "summary": summary or None,
@@ -1198,7 +1212,12 @@ def window_meta(
     days_back: float,
 ) -> dict[str, Any]:
     upcoming, past = split_window(rows, days_ahead=days_ahead, days_back=days_back)
-    newest_past = past[0]["when_utc"] if past else None
+    # HNT-19: undated wire copy leads the past list with when_utc=None —
+    # skip it so a single undated headline doesn't null out the window's
+    # newest_past_utc while dated, newer rows exist behind it.
+    newest_past = next(
+        (r["when_utc"] for r in past if not r.get("undated")), None
+    )
     return {
         "days_ahead": days_ahead,
         "days_back": days_back,

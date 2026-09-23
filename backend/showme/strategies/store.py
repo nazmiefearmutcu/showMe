@@ -76,7 +76,7 @@ class StrategyStore:
         out: list[StrategyMeta] = []
         for f in self._iter_files():
             try:
-                raw = f.read_text()
+                raw = f.read_text(encoding="utf-8")
                 if not raw.strip():
                     # Faz 2 / S6 — defensive: skip a 0-byte file with a
                     # WARNING instead of silently dropping the record.
@@ -102,7 +102,7 @@ class StrategyStore:
         p = self._path(strategy_id)
         if not p.exists():
             raise UnknownStrategy(strategy_id)
-        spec = StrategySpec.from_json(p.read_text())
+        spec = StrategySpec.from_json(p.read_text(encoding="utf-8"))
         if spec.id != strategy_id:
             spec = spec.model_copy(update={"id": strategy_id})
             try:
@@ -116,7 +116,7 @@ class StrategyStore:
         now = datetime.now(tz=timezone.utc).isoformat()
         if p.exists():
             try:
-                existing = StrategySpec.from_json(p.read_text())
+                existing = StrategySpec.from_json(p.read_text(encoding="utf-8"))
                 spec = spec.model_copy(update={
                     "created_at": existing.created_at,
                     "updated_at": now,

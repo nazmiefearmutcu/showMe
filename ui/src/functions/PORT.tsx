@@ -429,6 +429,10 @@ function CredentialGroup({ g }: { g: PortfolioGroup }) {
               const current = positionCurrentPrice(p);
               const qty = Number(p.quantity) || 0;
               const notional = qty * (current ?? entry ?? 0);
+              // HNT-03: refuse to close when the broker reports a side we
+              // can't map — a guessed direction is a wrong-way live order.
+              const side = normalizeSide(p.side);
+              const sideUnknown = side == null;
               return (
               <tr key={`${g.credential_id ?? "g"}-${p.symbol}-${i}`}>
                 <td>{p.symbol}</td>
@@ -455,15 +459,18 @@ function CredentialGroup({ g }: { g: PortfolioGroup }) {
                   {g.permissions.includes("trade") && (
                     <button
                       type="button"
+                      disabled={sideUnknown}
                       onClick={() => useTradingStore.getState().closePosition(
                         `${g.exchange_id}:${g.credential_id}`,
                         p.symbol,
-                        normalizeSide(p.side),
+                        side,
                         p.quantity,
                         g.account_label,
                       )}
                       data-testid={`port-broker-close-${p.symbol}`}
-                      title="Closes the position at the real broker (irreversible)"
+                      title={sideUnknown
+                        ? "Cannot close: unknown position side from broker"
+                        : "Closes the position at the real broker (irreversible)"}
                       className="btn btn--ghost port-danger-btn"
                     >
                       Close

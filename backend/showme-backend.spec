@@ -119,6 +119,7 @@ hiddenimports = [
     "ccxt.async_support",
     "ccxt.base.exchange",
     "keyring.backends.macOS",
+    "keyring.backends.Windows",
     "keyring.backends.fail",
     "keyring.backends.null",
     # SEC-11: yfinance 1.3+ switched HTTP backend to curl_cffi which
@@ -200,6 +201,17 @@ pyz = PYZ(a.pure)
 # the COLLECT() block below into ``dist/showme-backend/``. PyInstaller
 # automatically wires the launcher to load everything from its parent
 # directory, so cold start no longer pays for an unzip into ``/tmp``.
+#
+# target_arch is platform-aware: arm64 on Apple Silicon, x86_64 on
+# Windows/Linux Intel, None (native) everywhere else so the same spec
+# works on macOS + Windows CI without forking.
+import sys as _sys  # noqa: E402
+if _sys.platform == "darwin":
+    _target_arch = "arm64"
+elif _sys.platform.startswith("win"):
+    _target_arch = "x86_64"
+else:
+    _target_arch = None
 exe = EXE(
     pyz,
     a.scripts,
@@ -213,7 +225,7 @@ exe = EXE(
     console=True,
     disable_windowed_traceback=False,
     argv_emulation=False,
-    target_arch="arm64",
+    target_arch=_target_arch,
     codesign_identity=None,
     entitlements_file=None,
 )

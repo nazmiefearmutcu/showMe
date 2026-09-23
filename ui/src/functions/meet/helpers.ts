@@ -152,6 +152,7 @@ export interface MeetData {
     attribution_required_count: number;
     attribution_covered_count: number;
     duplicate_rows_dropped: number;
+    rows_capped_at_limit?: number;
     rows_dropped_no_time: number;
     active_source_tiers: string[];
     measures: string;
@@ -424,12 +425,13 @@ export function parsePrintNumber(value: unknown): number | null {
   if (/^[<>≤≥]/.test(s)) return null;
   s = (s.split("|")[0] ?? "").trim(); // raw "Prev | Rev" pipe text
   if (/^\d+\s*-\s*\d+\s*-\s*\d+$/.test(s)) return null; // vote splits like 3-0-6
-  const m = /^(-?[\d.]+)\s*([KMBT])?\s*%?$/.exec(s.replace(/,/g, ""));
+  const m = /^([+-]?(?:\d+(?:\.\d*)?|\.\d+))\s*([KMBT])?\s*%?$/i.exec(s.replace(/,/g, ""));
   if (!m) return null;
   const base = Number(m[1]);
   if (!Number.isFinite(base)) return null;
+  const suffix = m[2]?.toUpperCase();
   const mult =
-    m[2] === "K" ? 1e3 : m[2] === "M" ? 1e6 : m[2] === "B" ? 1e9 : m[2] === "T" ? 1e12 : 1;
+    suffix === "K" ? 1e3 : suffix === "M" ? 1e6 : suffix === "B" ? 1e9 : suffix === "T" ? 1e12 : 1;
   return base * mult;
 }
 
@@ -441,13 +443,21 @@ export function surpriseOf(
   const a = parsePrintNumber(details.actual);
   const f = parsePrintNumber(details.forecast);
   if (a == null || f == null) return null;
+  const unitOf = (v: unknown): string =>
+    typeof v === "string" ? /([KMBT%])\s*$/i.exec(v.split("|")[0].trim())?.[1]?.toUpperCase() ?? "" : "";
+  const au = unitOf(details.actual);
+  const fu = unitOf(details.forecast);
+  if (au !== fu && !(/^[KMBT]$/.test(au) && /^[KMBT]$/.test(fu))) return null;
   return a - f;
 }
 
 /** Honest print cell: raw backend text + unit, "—" when absent. */
 export function formatPrint(value: unknown, unit?: string | null): string {
   if (value == null || String(value).trim() === "") return "—";
-  return `${String(value)}${unit ? String(unit) : ""}`;
+  const text = String(value).trim();
+  // Raw prints already carrying a suffix retain their own scale.
+  if (/[KMBT%]\s*$/i.test(text) || parsePrintNumber(text) == null) return text;
+  return `${text}${unit ? String(unit) : ""}`;
 }
 
 /**

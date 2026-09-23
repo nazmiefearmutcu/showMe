@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from typing import Any
 
@@ -25,7 +26,10 @@ class IBKRBrokerAdapter(BaseBroker):
         try:
             from ib_insync import IB  # type: ignore
             self._ib = IB()
-            self._ib.connect(self.host, self.port, clientId=self.client_id)
+            # ib_insync is a sync SDK — keep its socket handshake off the loop.
+            await asyncio.to_thread(
+                self._ib.connect, self.host, self.port, clientId=self.client_id
+            )
             self._connected = True
         except Exception:
             self._connected = False
@@ -33,7 +37,7 @@ class IBKRBrokerAdapter(BaseBroker):
     async def disconnect(self) -> None:
         try:
             if self._ib:
-                self._ib.disconnect()
+                await asyncio.to_thread(self._ib.disconnect)
         finally:
             self._connected = False
             self._ib = None
@@ -50,16 +54,16 @@ class IBKRBrokerAdapter(BaseBroker):
             ib_order = LimitOrder(action, order.quantity, order.price)
         else:
             ib_order = MarketOrder(action, order.quantity)
-        trade = self._ib.placeOrder(contract, ib_order)
+        trade = await asyncio.to_thread(self._ib.placeOrder, contract, ib_order)
         return str(trade.order.orderId)
 
     async def cancel_order(self, order_id: str) -> bool:
         if not self._ib:
             return False
         try:
-            for trade in self._ib.openTrades():
+            for trade in await asyncio.to_thread(self._ib.openTrades):
                 if str(trade.order.orderId) == order_id:
-                    self._ib.cancelOrder(trade.order)
+                    await asyncio.to_thread(self._ib.cancelOrder, trade.order)
                     return True
         except Exception:
             return False

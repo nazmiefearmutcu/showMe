@@ -34,6 +34,9 @@ import logging
 import threading
 from typing import Any, ClassVar
 
+from showme.contrarian import correct_direction
+from showme.model_loading import serialized_model_load
+
 
 LOG = logging.getLogger("showme.finbert")
 
@@ -54,7 +57,10 @@ class FinBertAnalyzer:
 
     _instance: ClassVar["FinBertAnalyzer | None"] = None
     _instance_lock: ClassVar[threading.Lock] = threading.Lock()
+    _load_failed: ClassVar[bool] = False
+    _load_error: ClassVar[str | None] = None
 
+    @serialized_model_load
     def __init__(self) -> None:
         # Heavy imports happen ONLY inside __init__ so a bare
         # `from showme.finbert_analyzer import FinBertAnalyzer` stays cheap.
@@ -71,11 +77,47 @@ class FinBertAnalyzer:
         self._infer_lock = threading.Lock()
 
     @classmethod
-    def instance(cls) -> "FinBertAnalyzer":
+    def instance(cls) -> "FinBertAnalyzer | None":
+        """Return the singleton, or ``None`` if loading the model failed.
+
+        HNT-08: a failed load latches for the rest of the process lifetime
+        (WhisperAnalyzer pattern) — retrying a ~300 MB model load on every
+        news request would burn ~10 s each time and hammer HuggingFace.
+        """
         with cls._instance_lock:
-            if cls._instance is None:
+            # Honor an explicitly injected instance before consulting the
+            # load-failure latch: tests (and only tests) swap ``_instance``
+            # directly, and an earlier unrelated load failure in the same
+            # process must not veto the injected stub. Production never
+            # sets ``_instance`` outside this method, so the latch still
+            # holds there.
+            if cls._instance is not None:
+                return cls._instance
+            if cls._load_failed:
+                return None
+            try:
                 cls._instance = cls()
+                cls._load_error = None
+            except Exception as exc:  # noqa: BLE001
+                cls._load_failed = True
+                cls._load_error = str(exc) or exc.__class__.__name__
+                LOG.warning("finbert load failed (news stamping will "
+                            "fall back to neutral): %r", exc)
+                return None
             return cls._instance
+
+    @classmethod
+    def load_error(cls) -> str | None:
+        """Last load error string for diagnostics. ``None`` while ok."""
+        return cls._load_error
+
+    @classmethod
+    def reset_for_tests(cls) -> None:
+        """Test-only helper — drop the singleton + clear the latch."""
+        with cls._instance_lock:
+            cls._instance = None
+            cls._load_failed = False
+            cls._load_error = None
 
     # ── Inference (sync; callers wrap in to_thread) ──────────────────────
     def _label_sync(self, text: str) -> dict[str, Any]:
@@ -200,6 +242,13 @@ async def stamp_items(
     pipeline that already ran) keeps precedence. Set the flag to True only
     in tests / migrations.
 
+    Each FinBERT verdict also goes through the contrarian corrector
+    (``showme.contrarian``): a neg verdict on a whitelisted bottom-call /
+    fear-pivot phrasing ("cycle bottom may already be in", "braced for a
+    wipeout but …") is flipped to pos and stamped
+    ``sentiment_model="finbert+contrarian"`` plus a ``sentiment_note`` —
+    a corrected row never masquerades as raw model output.
+
     If the model load fails, every item is stamped ``sentiment="neutral"``
     + ``sentiment_score=0.0`` so the UI never sees a missing field.
     """
@@ -224,6 +273,8 @@ async def stamp_items(
     warning: str | None = None
     try:
         analyzer = await asyncio.to_thread(FinBertAnalyzer.instance)
+        if analyzer is None:
+            raise RuntimeError(FinBertAnalyzer.load_error() or "model load failed")
         results = await analyzer.label_many(texts)
     except Exception as exc:  # noqa: BLE001 - fall through to neutral stamp
         LOG.warning("finbert: model unavailable, stamping neutral: %r", exc)
@@ -235,14 +286,21 @@ async def stamp_items(
     # existing schema (see manifest/seeds/top_seed.py + cn_seed.py) speaks.
     long_form = {"pos": "positive", "neg": "negative", "neu": "neutral"}
 
-    for slot, result in zip(pending_idx, results):
+    for slot, text, result in zip(pending_idx, texts, results):
         item = items[slot]
+        result, contrarian_note = correct_direction(text, result)
         long_label = long_form.get(result["label"], "neutral")
         item["sentiment"] = long_label
         item["sentiment_score"] = float(result.get("score_signed") or 0.0)
         # Preserve raw FinBERT scores for downstream UIs that want to draw
-        # a 3-bar histogram (positive / neutral / negative).
-        item["sentiment_model"] = "finbert" if warning is None else "neutral_fallback"
+        # a 3-bar histogram (positive / neutral / negative). A contrarian-
+        # corrected row is stamped separately so it never reads as raw
+        # FinBERT output.
+        if contrarian_note is not None:
+            item["sentiment_model"] = "finbert+contrarian"
+            item["sentiment_note"] = contrarian_note
+        else:
+            item["sentiment_model"] = "finbert" if warning is None else "neutral_fallback"
         item.setdefault("sentiment_all_scores", result.get("all_scores") or [])
     return items, warning
 

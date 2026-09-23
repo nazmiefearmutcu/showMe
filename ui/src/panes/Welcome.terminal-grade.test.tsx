@@ -12,7 +12,7 @@
  *   C6. Numeric cells carry the tabular-figures class.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, waitFor } from "@testing-library/react";
+import { act, cleanup, render, waitFor } from "@testing-library/react";
 import { useAppStore } from "@/lib/store";
 import { useSentimentStore } from "@/lib/sentiment-store";
 import { Welcome } from "./Welcome";
@@ -105,9 +105,19 @@ describe("A2. BRIEF live wiring", () => {
 
   it("shows the demo banner when BRIEF has no live articles", async () => {
     briefPayload = { data: { status: "empty", articles: [] } };
-    const { findByTestId } = render(<Welcome />);
-    const banner = await findByTestId("brief-demo-banner");
-    expect(banner.textContent).toMatch(/Demo data/i);
+    // A brief retry is scheduled first (loading skeleton); once it fires
+    // with still no live data, the honest demo banner settles in.
+    vi.useFakeTimers();
+    try {
+      const { getByTestId } = render(<Welcome />);
+      await act(async () => {
+        vi.advanceTimersByTime(8000);
+      });
+      const banner = getByTestId("brief-demo-banner");
+      expect(banner.textContent).toMatch(/Demo data/i);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("hides the demo banner and renders live ribbons when articles arrive", async () => {

@@ -134,8 +134,14 @@ class AlertEngine:
         for src in chain:
             if src is None:
                 continue
+            # HNT-15: a hung adapter used to freeze the whole alert loop —
+            # bound every fetch with the source's own timeout (10s default).
+            timeout = float(getattr(src, "timeout_seconds", 10) or 10)
             try:
-                q = await src.fetch(DataRequest(kind=DataKind.QUOTE, instrument=inst))
+                q = await asyncio.wait_for(
+                    src.fetch(DataRequest(kind=DataKind.QUOTE, instrument=inst)),
+                    timeout=timeout,
+                )
                 if q is not None:
                     return q
             except Exception:
@@ -253,7 +259,11 @@ class AlertEngine:
         # Dispatch
         for n in self.notifiers:
             try:
-                res = n(event)
+                # HNT-15: invoke every notifier off-loop — sync notifiers
+                # (SMTP / urllib posts) blocked the alert loop for their
+                # full network round-trip before. A coroutine result (from
+                # an async notifier called in the thread) is awaited as before.
+                res = await asyncio.to_thread(n, event)
                 if asyncio.iscoroutine(res):
                     await res
             except Exception:

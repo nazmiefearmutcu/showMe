@@ -90,7 +90,7 @@ adapters:
   stooq:
     base_url: https://stooq.com/q/d/l
     rate_limit_rps: 0.5
-    api_key_env: STOOQ_API_KEY
+    api_key_env: null           # keyless CSV service
     supported_kinds: [OHLCV]
 
   sec_edgar:
@@ -142,7 +142,7 @@ adapters:
     base_url: https://api.tradingeconomics.com
     rate_limit_rps: 1
     api_key_env: TRADINGECONOMICS_API_KEY  # demo with "guest:guest"
-    supported_kinds: [ECON_SERIES, EVENTS, QUOTE]
+    supported_kinds: [ECON_SERIES, EVENTS]
 
   ecb:
     base_url: https://data-api.ecb.europa.eu/service/data
@@ -367,13 +367,12 @@ adapters:
 
 
 # ── Provider-chain definitions used by DataRouter ──
+# Names MUST match FunctionFactory instance names — unknown names are
+# silently dropped by factory.chain(), degrading the declared chain.
 chains:
   crypto:
-    quote: [binance, bybit, okx, coingecko]
-    ohlcv: [binance, bybit, okx, coingecko]
-    orderbook: [binance, bybit]
-    trades: [binance, bybit]
-    options: [deribit]
+    quote: [ccxt_failover, coingecko]
+    ohlcv: [ccxt_failover, coingecko]
   equity:
     quote: [polygon, finnhub, alphavantage, yfinance]
     ohlcv: [polygon, eodhd, alphavantage, yfinance, stooq]
@@ -382,26 +381,25 @@ chains:
     ratings: [finnhub, yfinance]
     holdings: [sec_edgar, yfinance]
     dividends: [yfinance, eodhd]
-    news: [benzinga, finnhub_news, newsapi, gdelt, rss]
+    news: [finnhub_news, gdelt, rss]
     options: [yfinance, polygon]
     social: [stocktwits, reddit]
   bond:
     yield_curve: [fred, ustreasury, ecb, worldbank]
     sovereign_yield: [fred, tradingeconomics, worldbank]
   fx:
-    quote: [exchangerate_host, ecb, oanda, twelvedata]
-    ohlcv: [ecb, yfinance, oanda]
+    quote: [exchangerate_host, ecb]
+    ohlcv: [ecb, yfinance]
   commodity:
-    energy: [eia, quandl, yfinance]
-    agri: [usda, quandl]
-    metal: [yfinance, quandl]
-    weather: [openweathermap, open_meteo, noaa]
+    energy: [eia, yfinance]
+    metal: [yfinance]
+    weather: [openweather, open_meteo]
   macro:
-    series: [fred, worldbank, imf, oecd, tradingeconomics, bls, eurostat]
+    series: [fred, worldbank, imf, oecd, tradingeconomics]
     calendar: [tradingeconomics, finnhub]
     forecast: [oecd, imf, tradingeconomics]
   news:
-    global: [rss, finnhub_news, gdelt, benzinga, newsapi]
+    global: [rss, finnhub_news, gdelt]
 
 
 # ── Daily LLM/API budget caps ──

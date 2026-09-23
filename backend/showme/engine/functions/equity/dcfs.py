@@ -79,22 +79,27 @@ class DCFSensitivityFunction(BaseFunction):
         base_fv = base_data.get("fair_value_per_share")
         tornado: list[dict[str, Any]] = []
         if base_fv is not None and base_fv > 0:
-            label_to_key = [
-                ("wacc",       "wacc"),
-                ("g_terminal", "growth_terminal"),
-                ("g_high",     "growth_high"),
-                ("years",      "years"),
-                ("fcfe",       "fcfe"),
+            # HNT-04 fix: the DCF payload publishes ``g_terminal``/``g_high``
+            # (dcf.py output keys) — the old growth_terminal/growth_high
+            # lookups always returned None → ``continue``, so the two most
+            # sensitive DCF inputs silently never rendered a tornado bar.
+            # The execute() PARAM names differ for the growth pair
+            # (growth_terminal / growth_high), so each entry carries
+            # (label, output_key, param_key) separately.
+            label_to_keys = [
+                ("wacc",       "wacc",          "wacc"),
+                ("g_terminal", "g_terminal",    "growth_terminal"),
+                ("g_high",     "g_high",        "growth_high"),
+                ("years",      "years",         "years"),
+                ("fcfe",       "starting_fcfe", "fcfe"),
             ]
-            for label, key in label_to_key:
-                base_v = base_data.get(
-                    key if key != "fcfe" else "starting_fcfe"
-                ) or 0
+            for label, out_key, param_key in label_to_keys:
+                base_v = base_data.get(out_key) or 0
                 if base_v == 0:
                     continue
                 try:
-                    low = await base.execute(instrument, **{**base_params, **shared, key: base_v * 0.8})
-                    high = await base.execute(instrument, **{**base_params, **shared, key: base_v * 1.2})
+                    low = await base.execute(instrument, **{**base_params, **shared, param_key: base_v * 0.8})
+                    high = await base.execute(instrument, **{**base_params, **shared, param_key: base_v * 1.2})
                     lv = (low.data or {}).get("fair_value_per_share")
                     hv = (high.data or {}).get("fair_value_per_share")
                     # Skip the perturbation entirely when either endpoint failed

@@ -43,13 +43,18 @@ class REGMFunction(BaseFunction):
                 )
                 if isinstance(t10, Exception) or isinstance(t2, Exception):
                     raise RuntimeError("fred curve unavailable")
-                if t10 and t2 and t10.data is not None and t2.data is not None:
-                    val10 = float(t10.data.iloc[-1].get("value")) \
-                        if hasattr(t10.data, "iloc") else None
-                    val2 = float(t2.data.iloc[-1].get("value")) \
-                        if hasattr(t2.data, "iloc") else None
-                    if val10 is not None and val2 is not None:
-                        spread_bp = (val10 - val2) * 100  # in basis points
+                # HNT-07: FREDAdapter.fetch returns the DataFrame directly —
+                # the old `t10.data` attribute never existed, so the keyed
+                # primary path always raised AttributeError and silently
+                # dropped the curve to UNKNOWN.
+                if (
+                    t10 is not None and t2 is not None
+                    and not getattr(t10, "empty", True)
+                    and not getattr(t2, "empty", True)
+                ):
+                    val10 = float(t10["value"].iloc[-1])
+                    val2 = float(t2["value"].iloc[-1])
+                    spread_bp = (val10 - val2) * 100  # in basis points
             except Exception:
                 spread_bp = None
         if spread_bp is None:

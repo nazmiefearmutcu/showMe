@@ -17,7 +17,6 @@ import {
   pinItem,
   togglePinnedItem,
   usePinnedItems,
-  writePinnedDragData,
 } from "@/lib/pins";
 import { useLiveQuote } from "@/lib/market-data";
 import {
@@ -171,8 +170,9 @@ export function PaneChrome({ leafId, code, symbol, linkGroup }: PaneChromeProps)
 
   return (
     <header
-      draggable={false}
-      onDragStart={(e) => writePinnedDragData(e.dataTransfer, pinTarget)}
+      /* HNT-03: the HTML5 drag path (draggable/onDragStart) was dead code —
+         `draggable` was hard-false so the browser never started a native
+         drag. Pinning runs through the mouse-drag flow below. */
       onMouseDownCapture={(e) => {
         setFocused(leafId);
         beginPanePinDrag(e);

@@ -261,8 +261,12 @@ export function Titlebar() {
       assetClass,
     };
   }, [focusedSymbol]);
+  // HNT-08: only PUSH a real security. A null transition (focusing a
+  // symbol-less pane like PREF) must not erase an imperatively-set context
+  // (deep link, command line, another lane) — the chip falls back to it
+  // instead of clearing to "—".
   useEffect(() => {
-    setActiveSecurity(derivedSecurity);
+    if (derivedSecurity) setActiveSecurity(derivedSecurity);
   }, [derivedSecurity]);
   const { active: contextSecurity } = useSecurityContext();
   const security = derivedSecurity ?? contextSecurity;

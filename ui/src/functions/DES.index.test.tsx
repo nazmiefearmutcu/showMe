@@ -157,9 +157,7 @@ describe("DES index branch — rendered snapshot", () => {
     expect(screen.getByText("$4,257.00")).toBeInTheDocument();
     expect(screen.getByText(/52w range/i)).toBeInTheDocument();
     // The broken-looking legacy fallbacks are gone.
-    expect(
-      screen.queryByText(/Provider did not return a business summary/i),
-    ).toBeNull();
+    expect(screen.queryByText(/Provider did not return a business summary/i)).toBeNull();
     expect(screen.queryByText(/Business summary/i)).toBeNull();
     expect(screen.queryByText(/^Market cap$/)).toBeNull();
   });
@@ -171,9 +169,7 @@ describe("DES index branch — rendered snapshot", () => {
     ).toBeInTheDocument();
     expect(screen.getByTestId("des-index-profile")).toBeInTheDocument();
     // Never a fake business description.
-    expect(
-      screen.queryByText(/Provider did not return a business summary/i),
-    ).toBeNull();
+    expect(screen.queryByText(/Provider did not return a business summary/i)).toBeNull();
   });
 
   it("falls back to the factual not-applicable line for unknown indices", async () => {
@@ -184,6 +180,8 @@ describe("DES index branch — rendered snapshot", () => {
       await screen.findByText(/Index instrument — fundamentals not applicable/),
     ).toBeInTheDocument();
     expect(screen.getByText(/Index snapshot unavailable/i)).toBeInTheDocument();
+    // Missing-data density (2026-09-17): no bars -> no empty "-" metric strip.
+    expect(screen.queryByTestId("des-index-snapshot")).toBeNull();
   });
 });
 
@@ -199,9 +197,7 @@ describe("DES equity branch — unchanged", () => {
     // The index bars fetch must not fire for equities (other panes' chips
     // may still call the sidecar — only /api/bars is the boundary here).
     expect(
-      sidecarFetchMock.mock.calls.some(([path]) =>
-        String(path).startsWith("/api/bars"),
-      ),
+      sidecarFetchMock.mock.calls.some(([path]) => String(path).startsWith("/api/bars")),
     ).toBe(false);
   });
 });

@@ -286,6 +286,9 @@ export function subscribeQuoteStream(
   let staleTimer: ReturnType<typeof setTimeout> | null = null;
   let currentState: TransportState = "idle";
   let closed = false;
+  // HNT-04: mutable so a later multiplex subscriber can tighten the
+  // threshold via the handle's setStaleMs without reopening the socket.
+  let staleTickMs = opts.staleTickMs ?? DEFAULT_STALE_TICK_MS;
   // UI-ROBUSTNESS F3: a half-open socket never fires `onclose`, so `stale`
   // used to be terminal — the pill was honest but no reconnect was ever
   // attempted. After STALE_RECONNECT_AFTER_INTERVALS consecutive stale
@@ -311,7 +314,7 @@ export function subscribeQuoteStream(
 
   const armStaleTimer = () => {
     clearStaleTimer();
-    const wait = opts.staleTickMs ?? DEFAULT_STALE_TICK_MS;
+    const wait = staleTickMs;
     if (wait <= 0) return;
     staleTimer = setTimeout(() => {
       staleTimer = null;
@@ -377,6 +380,17 @@ export function subscribeQuoteStream(
       clearStaleTimer();
       upstreamHandle?.close();
     },
+    setStaleMs: (ms: number) => {
+      if (closed) return;
+      if (!Number.isFinite(ms) || ms <= 0) return;
+      // Only tighten — a wider threshold from a late joiner must never
+      // relax the contract earlier subscribers asked for.
+      if (ms >= staleTickMs) return;
+      staleTickMs = ms;
+      // Restart a pending countdown so the tighter bound applies now,
+      // not after the old (longer) timer fires.
+      if (staleTimer != null) armStaleTimer();
+    },
   };
 }
 
@@ -393,6 +407,8 @@ interface MultiplexEntry {
   listeners: Set<MultiplexListener>;
   lastTransportState: TransportState;
   lastTick: NormalizedTick | null;
+  /** HNT-04: the effective stale threshold the upstream is running with. */
+  staleTickMs: number;
 }
 
 /**
@@ -475,6 +491,7 @@ export function subscribeQuoteMultiplexed(
       listeners: new Set(),
       lastTransportState: "idle",
       lastTick: null,
+      staleTickMs: opts.staleTickMs ?? DEFAULT_STALE_TICK_MS,
     };
     bucket.set(target, newEntry);
     // Tape health: a subscription exists from the moment the upstream opens,
@@ -515,6 +532,16 @@ export function subscribeQuoteMultiplexed(
       },
     });
     entry = newEntry;
+  } else if (
+    opts.staleTickMs != null &&
+    opts.staleTickMs > 0 &&
+    opts.staleTickMs < entry.staleTickMs
+  ) {
+    // HNT-04: a late joiner asking for a shorter stale window must not be
+    // silently ignored — tighten the shared upstream's threshold. The
+    // wrapper only ever lowers it, so first-subscriber semantics hold.
+    entry.staleTickMs = opts.staleTickMs;
+    entry.upstream.setStaleMs?.(opts.staleTickMs);
   }
 
   const listener: MultiplexListener = {

@@ -55,6 +55,27 @@ def test_form4_fallback_emits_empty_rows_and_actionable_next_actions() -> None:
     assert isinstance(payload.get("next_actions"), list) and payload["next_actions"]
 
 
+def test_form4_gift_and_other_codes_are_neutral_not_buys() -> None:
+    """HNT-16: SEC Form 4 ``G`` (gift) and ``J`` (other) transactions are
+    not market purchases — they must classify as neutral so a gifted
+    position cannot inflate the "net insider buying" summary."""
+    assert form4_mod._infer_direction({"acquiredDisposedCode": "G"}) == 0
+    assert form4_mod._infer_direction({"transactionCode": "j"}) == 0
+    # Real purchases / sales keep their signs.
+    assert form4_mod._infer_direction({"acquiredDisposedCode": "P"}) == 1
+    assert form4_mod._infer_direction({"acquiredDisposedCode": "A"}) == 1
+    assert form4_mod._infer_direction({"acquiredDisposedCode": "S"}) == -1
+    # And the net summary must not move on a pure gift.
+    gift_rows = [
+        {"acquiredDisposedCode": "G", "shares": 1000, "price": 50.0,
+         "insider": "CEO", "filingDate": "2026-09-01T00:00:00+00:00"},
+    ]
+    summary = form4_mod._form4_summary_rows(gift_rows)
+    assert summary["net_shares"] == 0
+    assert summary.get("net_notional", 0) == 0
+    assert "buyer_count" not in summary
+
+
 # ─── 3. FTS no-adapter path returns empty rows ───────────────────────────
 
 def test_fts_no_adapter_returns_empty_rows() -> None:

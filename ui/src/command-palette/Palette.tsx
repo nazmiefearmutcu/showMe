@@ -452,10 +452,13 @@ export function CommandPalette() {
         stepHistory(1);
         return;
       }
-      if (!query.trim()) {
+      if (!query.trim() && historyDraftRef.current) {
         stepHistory(1);
         return;
       }
+      // HNT-05: empty query + no history draft (fresh palette) — the
+      // recents list is what's on screen, so ArrowDown walks it instead of
+      // dead-ending (history mode is entered via ArrowUp only).
       setCursor((c) => Math.min(c + 1, filtered.length - 1));
     } else if (e.key === "ArrowUp") {
       e.preventDefault();

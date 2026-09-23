@@ -78,12 +78,16 @@ class MarketDataProvider:
 
     def get_ohlcv(self, symbol: str) -> Optional[pd.DataFrame]:
         """Resolve OHLCV from cache → store → REST in order, per feature flag."""
+        # HNT-21: the acceptance floor must track candle_limit — a fixed
+        # 50-row gate made every cache/store frame "insufficient" when
+        # candle_limit < 100, silently disabling the WS pipeline.
+        min_rows = max(20, int(self.candle_limit * 0.5))
         # 1. Live cache (live tick + recent closed candles)
         if self.use_ws_cache and self.cache is not None:
             df = self._from_cache(symbol)
             if (
                 df is not None
-                and len(df) >= max(50, int(self.candle_limit * 0.5))
+                and len(df) >= min_rows
                 and not self._is_stale(df, symbol, source="cache")
             ):
                 return self._finalize(df, symbol)
@@ -93,7 +97,7 @@ class MarketDataProvider:
             df = self._from_store(symbol)
             if (
                 df is not None
-                and len(df) >= 50
+                and len(df) >= min_rows
                 and not self._is_stale(df, symbol, source="store")
             ):
                 return self._finalize(df, symbol)

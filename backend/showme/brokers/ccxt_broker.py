@@ -7,6 +7,7 @@ parameter; production passes the real ``ccxt`` package.
 from __future__ import annotations
 
 import logging
+import uuid
 from typing import Any, Sequence
 
 from .base import (
@@ -177,7 +178,11 @@ class CcxtBroker(BaseBroker):
         if stop_price is not None:
             params["stopPrice"] = stop_price
         if notes:
-            params["clientOrderId"] = notes
+            # HNT-13: exchanges (e.g. Binance) require clientOrderId to be
+            # unique among ACTIVE orders; a fixed notes-derived id made
+            # repeated close_position calls collide. Suffix a short uuid —
+            # the plain note stays available on Order.notes.
+            params["clientOrderId"] = f"{notes}:{uuid.uuid4().hex[:8]}"
         try:
             raw = await self._ex.create_order(
                 symbol=symbol,

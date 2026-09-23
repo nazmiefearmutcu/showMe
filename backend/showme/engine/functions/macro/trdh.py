@@ -94,7 +94,8 @@ class TRDHFunction(BaseFunction):
                 "close in UTC. seconds_until_open / seconds_until_close are computed from the current UTC "
                 "timestamp. `value` is the seconds-to-close-of-current-session for open exchanges, otherwise "
                 "seconds-to-next-open; this makes the UI countdown point at the next state change. "
-                "Holiday coverage depends on the local calendar registry."
+                "Holiday coverage consults the exchange_calendars package when it provides the "
+                "venue (weekday-only behaviour otherwise), so official holidays report closed."
             ),
             "field_dictionary": {
                 "is_open_now": "Whether the exchange is currently inside a regular session.",

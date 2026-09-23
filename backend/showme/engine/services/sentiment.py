@@ -9,18 +9,37 @@ Lazy-loaded. CPU-only OK; first call ~2-5s warmup.
 
 from __future__ import annotations
 
+import time
 from typing import Any
+
+from showme.model_loading import serialized_model_load
 
 
 _MODEL = None
 _MODEL_KIND: str | None = None
 _VADER = None
+# HNT-17: when every tier fails we latch to the keyword heuristic — but
+# only for _KEYWORD_TTL_SECONDS. A transient offline moment at first call
+# used to pin the process to keyword scoring for its whole lifetime.
+_KEYWORD_SINCE: float | None = None
+_KEYWORD_TTL_SECONDS = 600.0
 
 
+@serialized_model_load
 def _load_model() -> tuple[Any, str]:
-    global _MODEL, _MODEL_KIND
+    global _MODEL, _MODEL_KIND, _KEYWORD_SINCE
     if _MODEL is not None:
-        return _MODEL, _MODEL_KIND  # type: ignore[return-value]
+        if (
+            _MODEL_KIND == "keyword"
+            and _KEYWORD_SINCE is not None
+            and time.monotonic() - _KEYWORD_SINCE > _KEYWORD_TTL_SECONDS
+        ):
+            # TTL expired — retry the upper tiers instead of staying latched.
+            _MODEL = None
+            _MODEL_KIND = None
+            _KEYWORD_SINCE = None
+        else:
+            return _MODEL, _MODEL_KIND  # type: ignore[return-value]
     try:
         from transformers import pipeline  # type: ignore
         # FinBERT (ProsusAI) is the gold standard for financial sentiment.
@@ -49,6 +68,7 @@ def _load_model() -> tuple[Any, str]:
         pass
     _MODEL = "keyword"
     _MODEL_KIND = "keyword"
+    _KEYWORD_SINCE = time.monotonic()
     return _MODEL, _MODEL_KIND
 
 

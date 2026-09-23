@@ -244,6 +244,31 @@ describe("sentiment-store.refresh", () => {
     expect(s.score).toBeCloseTo(0.12, 2);
     expect(s.label).toBe("Neutral");
   });
+
+  it("HNT-09: a fresh external refresh re-arms the warmup retry budget after it is exhausted", async () => {
+    vi.useFakeTimers();
+    try {
+      mock.mockResolvedValue({ symbol: "A", ok: false, post_count: 0 });
+      await useSentimentStore.getState().refresh(["A"]);
+      expect(mock).toHaveBeenCalledTimes(1);
+      // Burn through the whole 10-attempt warmup budget via internal retries.
+      for (let i = 0; i < 10; i++) {
+        await vi.advanceTimersByTimeAsync(6_000);
+      }
+      expect(mock).toHaveBeenCalledTimes(11);
+      // Budget exhausted: no further retries fire, even after a long wait.
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(mock).toHaveBeenCalledTimes(11);
+      // A fresh EXTERNAL call (60 s poll) resets the budget...
+      await useSentimentStore.getState().refresh(["A"]);
+      expect(mock).toHaveBeenCalledTimes(12);
+      // ...so the fast warmup retry loop runs again.
+      await vi.advanceTimersByTimeAsync(6_000);
+      expect(mock).toHaveBeenCalledTimes(13);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 type XSymbolChipLike = {

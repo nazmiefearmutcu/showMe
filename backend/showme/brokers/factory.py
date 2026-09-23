@@ -157,12 +157,20 @@ def register_credential(record: "CredentialRecord", secrets: dict[str, str]) -> 
     elif entry.adapter == "alpaca":
         from .alpaca import AlpacaPaperBroker
 
-        def _factory() -> BaseBroker:
-            # Live Alpaca shares the paper adapter's class — adapter
-            # constructor picks base URL from env. Future: dedicated
-            # AlpacaLiveBroker that accepts the saved `secrets`; for now
-            # we keep the wiring trivial and the secrets argument unused.
-            return AlpacaPaperBroker()
+        def _factory(
+            _secrets: dict[str, str] = dict(secrets),
+            _perms: tuple[str, ...] = perms,
+        ) -> BaseBroker:
+            # HNT-04: build the broker from the SAVED credential secrets
+            # (falls back to env keys only when the secret field is empty)
+            # and enforce the credential's permission set — previously the
+            # secrets argument was unused and orders silently went to
+            # whatever account the env keys pointed at.
+            return AlpacaPaperBroker(
+                api_key=_secrets.get("api_key") or None,
+                secret=_secrets.get("api_secret") or None,
+                permissions=_perms,
+            )
     else:
         raise KeyError(f"unsupported adapter '{entry.adapter}' in catalog entry {record.exchange_id}")
 

@@ -118,7 +118,7 @@ def load_catalog(path: str | Path) -> Catalog:
     if not p.exists():
         raise CatalogError(f"catalog not found: {p}")
     try:
-        raw_list = yaml.safe_load(p.read_text()) or []
+        raw_list = yaml.safe_load(p.read_text(encoding="utf-8")) or []
     except yaml.YAMLError as exc:
         raise CatalogError(f"catalog YAML parse error: {exc}") from exc
     if not isinstance(raw_list, list):

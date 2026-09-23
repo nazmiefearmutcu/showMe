@@ -39,8 +39,10 @@ class StockTwitsAdapter(BaseDataSource):
             raise DataSourceError("StockTwits needs symbol")
         data = await self.stream(sym)
         msgs = data.get("messages", []) or []
-        bullish = sum(1 for m in msgs if (m.get("entities") or {}).get("sentiment", {}).get("basic") == "Bullish")
-        bearish = sum(1 for m in msgs if (m.get("entities") or {}).get("sentiment", {}).get("basic") == "Bearish")
+        # Untagged messages carry "sentiment": null — .get("sentiment", {})
+        # does not cover an explicit null, so coerce with `or {}`.
+        bullish = sum(1 for m in msgs if ((m.get("entities") or {}).get("sentiment") or {}).get("basic") == "Bullish")
+        bearish = sum(1 for m in msgs if ((m.get("entities") or {}).get("sentiment") or {}).get("basic") == "Bearish")
         return {
             "symbol": sym,
             "messages": msgs[: request.limit or 30],

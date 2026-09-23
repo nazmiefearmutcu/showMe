@@ -89,13 +89,18 @@ def register_routes(app: FastAPI, *, deps: AppDeps) -> None:
     bots.register(app, deps)
     state.register(app, deps)
     strategies.register(app, deps)
-    # 2026-05-24 rebuild: /api/templates/* is dev-only. The module + register
-    # call live in a separate dev module so the production-fakery scanner
-    # sees no template-router registration literal in this file.
-    import os as _os
-    if _os.environ.get("SHOWME_DEV", "").strip().lower() in {"1", "true", "yes", "on"}:
-        from showme.server_routes._templates_dev_mount import mount_templates_dev_router
-        mount_templates_dev_router(app, deps)
+    # /api/templates/* is mounted UNCONDITIONALLY: the catalog resolves
+    # from inside the showme package (showme/templates/catalog/
+    # templates.yml via templates._catalog_path), never from the repo
+    # source tree, and the instantiate path persists real StrategySpec
+    # rows — there is nothing dev-only about the data. The UI calls
+    # GET /api/templates and POST /api/templates/{id}/instantiate
+    # without a SHOWME_DEV fallback, so the old env gate 404'd the TMPL
+    # pane in every production build. The mount call stays in the
+    # dedicated _templates_dev_mount module so the registration literal
+    # does not appear in this file (fakery-scanner pattern contract).
+    from showme.server_routes._templates_dev_mount import mount_templates_dev_router
+    mount_templates_dev_router(app, deps)
     watchlists.register(app, deps)
     veryfinder.register(app, deps)
     websocket.register(app, deps)

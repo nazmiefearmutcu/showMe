@@ -24,9 +24,18 @@ export function useVisibilityTick(intervalMs: number): number {
   useEffect(() => {
     if (typeof window === "undefined") return;
     let timer: number | null = null;
+    // HNT-12: set by stop(), consumed by the next start() — the tick bump
+    // below must fire only on a visibility RETURN, never on first mount
+    // (mount already runs consumer effects with tick=0; a bump there would
+    // double-fire every fetch).
+    let resumePending = false;
 
     const start = () => {
       if (timer != null) return;
+      if (resumePending) {
+        resumePending = false;
+        setTick((t) => t + 1);
+      }
       timer = window.setInterval(() => {
         setTick((t) => t + 1);
       }, intervalMs);
@@ -36,6 +45,7 @@ export function useVisibilityTick(intervalMs: number): number {
       if (timer != null) {
         window.clearInterval(timer);
         timer = null;
+        resumePending = true;
       }
     };
 

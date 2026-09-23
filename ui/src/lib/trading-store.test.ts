@@ -161,14 +161,22 @@ describe("trading-store", () => {
     expect(normalizeSide("LONG")).toBe("buy");
   });
 
-  it("normalizeSide warns + defaults to buy on unknown input", () => {
+  it("normalizeSide returns null on unknown input instead of guessing (HNT-03)", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    expect(normalizeSide("garbage")).toBe("buy");
-    expect(normalizeSide(undefined)).toBe("buy");
-    expect(normalizeSide(null)).toBe("buy");
-    expect(normalizeSide("")).toBe("buy");
+    expect(normalizeSide("garbage")).toBeNull();
+    expect(normalizeSide(undefined)).toBeNull();
+    expect(normalizeSide(null)).toBeNull();
+    expect(normalizeSide("")).toBeNull();
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
+  });
+
+  it("closePosition refuses to stage an order when the side is unknown (HNT-03)", () => {
+    useTradingStore.getState().closePosition("binance:abc", "BTC/USDT", null, 0.5, "main");
+    expect(useTradingStore.getState().pendingConfirm).toBeNull();
+    expect(useTradingStore.getState().lastResult?.ok).toBe(false);
+    expect(useTradingStore.getState().lastResult?.kind).toBe("close");
+    expect(useTradingStore.getState().lastResult?.error).toMatch(/unknown position side/);
   });
 
   // ─── QA-2026-05-23 — close result wires symbol + kind for toast ──────────

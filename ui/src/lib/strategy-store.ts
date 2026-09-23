@@ -3,6 +3,7 @@
  */
 import { create } from "zustand";
 import { sidecarFetch } from "./sidecar";
+import { confirmAction } from "./confirm";
 
 export interface IndicatorRef {
   alias: string;
@@ -253,10 +254,17 @@ export const useStrategyStore = create<StrategyStoreShape>((set, get) => ({
       // Endpoint not yet deployed — proceed with legacy DELETE.
     }
     if (!skipConfirm && deps.bot_count > 0) {
-      const ok = window.confirm(
-        `${deps.bot_count} bot(s) are attached to this strategy. ` +
+      // HNT-07: native window.confirm is forbidden by ui_standards §6
+      // (blocks the JS thread, a11y dead-end). confirmAction routes to the
+      // Tauri NSAlert in the shell and an in-app overlay in the browser.
+      const ok = await confirmAction({
+        title: "Delete strategy",
+        body:
+          `${deps.bot_count} bot(s) are attached to this strategy. ` +
           `They will be stopped automatically. Continue?`,
-      );
+        primary: "Delete",
+        destructive: true,
+      });
       if (!ok) {
         set({ removing: false });
         return false;

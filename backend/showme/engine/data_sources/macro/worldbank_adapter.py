@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import httpx
@@ -10,6 +11,12 @@ import pandas as pd
 from showme.engine.core.base_data_source import (
     BaseDataSource, DataKind, DataRequest, DataSourceError
 )
+
+
+def _row_year(value: Any) -> int | None:
+    """Extract the year from a WB period ("2024", "2024M01", "2024Q1")."""
+    match = re.match(r"(\d{4})", str(value or ""))
+    return int(match.group(1)) if match else None
 
 
 class WorldBankAdapter(BaseDataSource):
@@ -44,10 +51,17 @@ class WorldBankAdapter(BaseDataSource):
         if not isinstance(data, list) or len(data) < 2:
             return pd.DataFrame()
         rows = data[1] or []
-        df = pd.DataFrame([
-            {"year": int(row["date"]), "value": row["value"]}
-            for row in rows if row.get("value") is not None
-        ])
+        # Monthly/quarterly series carry "2024M01"/"2024Q1" dates — int()
+        # would crash on those; take the year and skip undatable rows.
+        records = []
+        for row in rows:
+            if row.get("value") is None:
+                continue
+            year = _row_year(row.get("date"))
+            if year is None:
+                continue
+            records.append({"year": year, "value": row["value"]})
+        df = pd.DataFrame(records)
         return df.set_index("year").sort_index() if not df.empty else df
 
     async def fetch(self, request: DataRequest) -> Any:

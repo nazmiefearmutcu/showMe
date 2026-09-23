@@ -141,7 +141,10 @@ async def _resolve_equity_with_source(
         )
         return float(fallback_usd), "fallback_10k"
     try:
-        for k in ("equity", "cash", "buying_power"):
+        # HNT-20: buying_power is deliberately NOT an equity fallback —
+        # margin accounts report 4× leverage there, which would inflate
+        # risk_pct sizing fourfold on a fully-invested account.
+        for k in ("equity", "cash"):
             v = acct.get(k) if isinstance(acct, dict) else None
             if v and float(v) > 0:
                 return float(v), "broker"

@@ -3,7 +3,6 @@ import {
   useMemo,
   useRef,
   useState,
-  type DragEvent,
   type MouseEvent,
   type MutableRefObject,
 } from "react";
@@ -13,13 +12,10 @@ import { navigate, useRoute } from "@/lib/router";
 import { t, useLocale } from "@/i18n";
 import { listRecentCodes } from "@/lib/palette-recents";
 import {
-  PIN_DRAG_MIME,
   makePinnedItemForFunctionEntry,
   pinItem,
-  readPinnedDragData,
   unpinItem,
   usePinnedItems,
-  writePinnedDragData,
   type PinnedItem,
 } from "@/lib/pins";
 
@@ -652,7 +648,6 @@ function SidebarPanel({
             droppable
             visualDropActive={Boolean(dragPreview?.overPinned)}
             dropZoneRef={pinnedDropZoneRef}
-            onDropItem={pinItem}
             onRemove={(item) => unpinItem(item.id)}
             onMousePinDragStart={beginMousePinDrag}
             shouldSuppressClick={shouldSuppressClick}
@@ -721,8 +716,6 @@ function SidebarPanel({
                 key={it.code}
                 id={flatIndex >= 0 ? `sidebar-opt-${flatIndex}` : undefined}
                 href={href}
-                draggable={false}
-                onDragStart={(e) => writePinnedDragData(e.dataTransfer, draggablePin)}
                 onMouseDown={(e) => beginMousePinDrag(e, draggablePin, "source")}
                 onClick={(e) => {
                   if (shouldSuppressClick()) {
@@ -761,7 +754,6 @@ function SidebarShortcutGroup({
   droppable,
   visualDropActive,
   dropZoneRef,
-  onDropItem,
   onRemove,
   onMousePinDragStart,
   shouldSuppressClick,
@@ -775,7 +767,6 @@ function SidebarShortcutGroup({
   droppable?: boolean;
   visualDropActive?: boolean;
   dropZoneRef?: MutableRefObject<HTMLElement | null>;
-  onDropItem?: (item: PinnedItem) => void;
   onRemove?: (item: PinnedItem) => void;
   onMousePinDragStart?: (
     event: MouseEvent<HTMLElement>,
@@ -786,38 +777,21 @@ function SidebarShortcutGroup({
   testId?: string;
   emptyHint?: string;
 }) {
-  const sectionRef = useRef<HTMLElement | null>(null);
-  const [dropActive, setDropActive] = useState(false);
+  /* HNT-03: the HTML5 drag-drop path (draggable/onDragStart/onDrop) was dead
+     code — `draggable` was always false, so the browser never started a
+     native drag and the PIN_DRAG_MIME payload never existed. Pinning runs
+     exclusively through the mouse-drag flow (`beginMousePinDrag`); only the
+     drop-zone geometry (this ref) and the visual highlight remain. */
   const setSectionRef = (node: HTMLElement | null) => {
-    sectionRef.current = node;
     if (dropZoneRef) dropZoneRef.current = node;
-  };
-
-  const handleDrop = (event: DragEvent<HTMLElement>) => {
-    if (!droppable || !onDropItem) return;
-    const item = readPinnedDragData(event.dataTransfer);
-    if (!item) return;
-    event.preventDefault();
-    onDropItem(item);
-    setDropActive(false);
-  };
-
-  const handleDragOver = (event: DragEvent<HTMLElement>) => {
-    if (!droppable || !hasPinDragPayload(event)) return;
-    event.preventDefault();
-    event.dataTransfer.dropEffect = "copy";
-    setDropActive(true);
   };
 
   return (
     <section
       ref={setSectionRef}
-      className={`sidebar-shortcut-group${dropActive || visualDropActive ? " sidebar-shortcut-group--drop-active" : ""}`}
+      className={`sidebar-shortcut-group${visualDropActive ? " sidebar-shortcut-group--drop-active" : ""}`}
       aria-label={droppable ? `${title} drop zone` : title}
       data-testid={testId}
-      onDragOver={handleDragOver}
-      onDragLeave={() => setDropActive(false)}
-      onDrop={handleDrop}
     >
       <h3 className="sidebar__group-head">
         {title}
@@ -839,11 +813,9 @@ function SidebarShortcutGroup({
           >
             <a
               href={item.href}
-              draggable={false}
               className="sidebar-shortcut"
               aria-label={"ariaLabel" in item ? item.ariaLabel : undefined}
               aria-current={isActive ? "page" : undefined}
-              onDragStart={(e) => writePinnedDragData(e.dataTransfer, draggablePin)}
               onMouseDown={(e) =>
                 onMousePinDragStart?.(
                   e,
@@ -851,11 +823,6 @@ function SidebarShortcutGroup({
                   "id" in item ? "pinned" : "source",
                 )
               }
-              onDragEnd={(e) => {
-                if (!onRemove || !("id" in item)) return;
-                if (isPointInsideSection(sectionRef.current, e.clientX, e.clientY)) return;
-                onRemove(item);
-              }}
               onClick={(e) => {
                 if (shouldSuppressClick?.()) {
                   e.preventDefault();
@@ -947,16 +914,15 @@ function filterShortcutItems(
   });
 }
 
-function hasPinDragPayload(event: DragEvent<HTMLElement>): boolean {
-  return Array.from(event.dataTransfer.types).includes(PIN_DRAG_MIME);
-}
-
 function isPointInsideSection(
   section: HTMLElement | null,
   clientX: number,
   clientY: number,
 ): boolean {
-  if (!section) return true;
+  /* HNT-04: a missing section (Pinned is hidden while the search filter is
+     active) means the drop zone is NOT on screen — treat any release as
+     outside it, matching PaneChrome's isPointInsidePinnedDropZone. */
+  if (!section) return false;
   const rect = section.getBoundingClientRect();
   return (
     clientX >= rect.left &&

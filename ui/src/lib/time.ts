@@ -1,3 +1,5 @@
+import { safeDate } from "./timezone";
+
 export function relativeTimeLabel(value: string | null | undefined, nowMs = Date.now()): string | null {
   const raw = String(value ?? "").trim();
   if (!raw) return null;
@@ -42,8 +44,10 @@ function parseNewsDate(value: string): Date | null {
     const [, year, month, day] = dateOnly;
     return new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
   }
-  const date = new Date(trimmed);
-  return Number.isNaN(date.getTime()) ? null : date;
+  // HNT-02: naive datetimes ("2026-05-15 12:48:00", no offset) must parse
+  // as UTC, not host-local — same contract as timezone.ts::safeDate, which
+  // handles the + "Z" normalization for every other consumer.
+  return safeDate(trimmed);
 }
 
 function normalizeRelativeInput(value: string): string | null {

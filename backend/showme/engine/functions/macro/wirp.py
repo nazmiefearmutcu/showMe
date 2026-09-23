@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import time
 from datetime import date, datetime, timezone
 from typing import Any
 
@@ -111,6 +112,13 @@ class WIRPFunction(BaseFunction):
             timeout = float(params.get("timeout", 8.0) or 8.0)
         except (TypeError, ValueError):
             timeout = 8.0
+        # HNT-06: the whole function runs under a ~14 s worker budget. The
+        # FRED legs and the (optional, already non-raising) ^IRX refinement
+        # used to run sequentially with independent timeouts (8 s + 20 s),
+        # so a slow IRX pull got the entire function cancelled at the
+        # deadline instead of degrading the anchor. Track elapsed time and
+        # cap IRX at the remaining budget.
+        fred_started = time.monotonic()
         try:
             upper, lower, effr = await asyncio.gather(
                 _fetch_fred_latest(FRED_TARGET_UPPER_CSV, timeout=timeout),
@@ -124,8 +132,16 @@ class WIRPFunction(BaseFunction):
                 f"{exc.__class__.__name__}: {exc}"
             )
 
+        irx_budget = min(20.0, max(1.0, 13.0 - (time.monotonic() - fred_started)))
         try:
-            implied_rate, irx_asof = await _fetch_irx_implied_rate()
+            implied_rate, irx_asof = await asyncio.wait_for(
+                _fetch_irx_implied_rate(), timeout=irx_budget
+            )
+        except asyncio.TimeoutError:
+            implied_rate, irx_asof = None, None
+            warnings.append(
+                f"^IRX implied-rate refinement unavailable: timed out after {irx_budget:.1f}s"
+            )
         except Exception as exc:  # noqa: BLE001 — already non-raising, belt+braces
             implied_rate, irx_asof = None, None
             warnings.append(
@@ -202,7 +218,10 @@ class WIRPFunction(BaseFunction):
             status = "empty"
             data_mode = "provider_unavailable"
             source_mode = "provider_unavailable"
-            warnings.append("no forward meetings produced for the requested horizon")
+            warnings.append(
+                "FOMC decision calendar exhausted (last known entry "
+                f"{_FOMC_CALENDAR_2026[-1]}); update _FOMC_CALENDAR_2026"
+            )
 
         return _result(
             self.code, central_bank, rows, status, data_mode, source_mode,
@@ -435,13 +454,15 @@ def _live_fed_rows(
 
 
 def _forward_fomc_dates(limit: int) -> list[str]:
-    """Return upcoming FOMC decision dates from today, capped at ``limit``."""
+    """Return upcoming FOMC decision dates from today, capped at ``limit``.
+
+    HNT-18: the calendar is exhausted past its last entry — serving the
+    stale dates as "forward meetings" would mislabel past decisions as
+    upcoming. Return ``[]`` instead; ``execute()`` reports the empty
+    calendar with an explicit update warning.
+    """
     today = datetime.now(timezone.utc).date()
     upcoming = [d for d in _FOMC_CALENDAR_2026 if (_parse_date(d) is not None and _parse_date(d) >= today)]  # type: ignore[operator]
-    if not upcoming:
-        # Calendar exhausted — keep the contract alive with the last-known dates
-        # so the UI still renders; probabilities remain live-derived.
-        upcoming = list(_FOMC_CALENDAR_2026)
     return upcoming[:limit]
 
 

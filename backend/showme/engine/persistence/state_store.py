@@ -1,6 +1,7 @@
 """State persistence - save/load bot state to/from disk."""
 
 import json
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +33,10 @@ class StateStore:
     def __init__(self, state_path: str = "runtime/state.json") -> None:
         self.state_path = Path(state_path)
         self.state: dict[str, Any] = DEFAULT_STATE.copy()
+        # HNT-03: update+save run from the main cycle thread AND the scan
+        # threads concurrently — an RLock serialises the read-modify-write
+        # and the disk swap so state.json can never be torn.
+        self._lock = threading.RLock()
         self._ensure_dir()
 
     def _ensure_dir(self) -> None:
@@ -76,20 +81,27 @@ class StateStore:
 
     def save(self) -> None:
         """Save current state to disk."""
-        try:
-            self.state["last_save_time"] = iso_now()
-            tmp_path = self.state_path.with_suffix(".tmp")
-            with open(tmp_path, "w") as f:
-                json.dump(self.state, f, indent=2, default=str)
-            tmp_path.replace(self.state_path)
-            logger.debug("State saved to disk")
-        except Exception as e:
-            logger.error("Error saving state: %s", e)
+        with self._lock:
+            try:
+                self.state["last_save_time"] = iso_now()
+                # HNT-03: per-thread tmp name — two concurrent writers used
+                # to open the SAME state.json.tmp and interleave writes
+                # before replace() landed corrupt JSON atomically on disk.
+                tmp_path = self.state_path.parent / (
+                    self.state_path.name + f".tmp.{threading.get_ident()}"
+                )
+                with open(tmp_path, "w") as f:
+                    json.dump(self.state, f, indent=2, default=str)
+                tmp_path.replace(self.state_path)
+                logger.debug("State saved to disk")
+            except Exception as e:
+                logger.error("Error saving state: %s", e)
 
     def update(self, **kwargs: Any) -> None:
         """Update specific state fields and save."""
-        self.state.update(kwargs)
-        self.save()
+        with self._lock:
+            self.state.update(kwargs)
+            self.save()
 
     def get(self, key: str, default: Any = None) -> Any:
         """Get a state value."""
@@ -97,8 +109,9 @@ class StateStore:
 
     def reset(self, starting_balance: float = 10000.0) -> None:
         """Reset state to defaults."""
-        self.state = DEFAULT_STATE.copy()
-        self.state["paper_balance"] = starting_balance
-        self.state["daily_start_balance"] = starting_balance
-        self.save()
-        logger.info("State reset with balance=%s", starting_balance)
+        with self._lock:
+            self.state = DEFAULT_STATE.copy()
+            self.state["paper_balance"] = starting_balance
+            self.state["daily_start_balance"] = starting_balance
+            self.save()
+            logger.info("State reset with balance=%s", starting_balance)

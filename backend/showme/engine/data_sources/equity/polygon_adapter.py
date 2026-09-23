@@ -12,7 +12,7 @@ import pandas as pd
 from showme.engine.core.base_data_source import (
     BaseDataSource, DataKind, DataRequest, DataSourceError
 )
-from showme.engine.utils.throttle import throttle
+from showme.engine.utils.throttle import TokenBucket
 
 
 class PolygonAdapter(BaseDataSource):
@@ -21,7 +21,7 @@ class PolygonAdapter(BaseDataSource):
         DataKind.QUOTE, DataKind.OHLCV, DataKind.TRADES,
         DataKind.OPTIONS_CHAIN, DataKind.NEWS,
     )
-    rate_limit_rps = 0.083    # 5/min free; ~1/s when paid plan
+    rate_limit_rps = 0.083    # 5/min free — the default even with a key
     requires_api_key = True
     api_key_env = "POLYGON_API_KEY"
 
@@ -30,8 +30,13 @@ class PolygonAdapter(BaseDataSource):
         self.api_key = os.environ.get(self.api_key_env, "")
         self.base_url = (config or {}).get("base_url", "https://api.polygon.io")
         self._client: httpx.AsyncClient | None = None
-        if self.api_key:
-            self.rate_limit_rps = 1.0  # paid tiers raise quota
+        # A key alone does not imply a paid plan — a free key throttled at
+        # 1 rps would 429-storm. Paid users opt in via POLYGON_PAID=1.
+        if self.api_key and os.environ.get("POLYGON_PAID", "").strip().lower() in {"1", "true", "yes"}:
+            self.rate_limit_rps = 1.0
+        # Instance-level bucket so every _get shares ONE budget (a static
+        # @throttle cannot follow the free/paid rps switch above).
+        self._bucket = TokenBucket(rate=self.rate_limit_rps, capacity=5)
 
     async def _client_(self) -> httpx.AsyncClient:
         if self._client is None:
@@ -40,10 +45,10 @@ class PolygonAdapter(BaseDataSource):
             )
         return self._client
 
-    @throttle(rps=1.0)
     async def _get(self, path: str, **params: Any) -> Any:
         if not self.api_key:
             raise DataSourceError("POLYGON_API_KEY not set")
+        await self._bucket.acquire()
         client = await self._client_()
         params.setdefault("apiKey", self.api_key)
         r = await client.get(path, params=params)

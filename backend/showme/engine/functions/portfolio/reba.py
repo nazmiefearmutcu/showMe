@@ -72,7 +72,8 @@ class REBAFunction(BaseFunction):
             portfolio.import_legacy_crypto()
         # Resolve current prices for both portfolio & target symbols
         target_syms = {str(sym).upper() for sym in targets.keys()}
-        all_syms = set(target_syms)
+        portfolio_syms = {p.instrument.symbol.upper() for p in portfolio.positions}
+        all_syms = set(target_syms) | portfolio_syms
         prices: dict[str, float] = {}
         async def _px(sym: str) -> tuple[str, float]:
             try:
@@ -81,8 +82,21 @@ class REBAFunction(BaseFunction):
                     timeout=max(0.5, min(float(params.get("resolve_timeout", 1.5)), 2.0)),
                 ) if self.deps.symbol_registry else None
                 if not inst:
-                    inst = Instrument(symbol=sym, asset_class=AssetClass.EQUITY)
-                src = self.deps.yfinance if inst.asset_class.value != "CRYPTO" else None
+                    # Registry miss: infer crypto from the exchange-style
+                    # suffix so the yfinance adapter's BTC-USD mapping still
+                    # applies (same heuristic family as exec.py).
+                    sym_up = sym.upper()
+                    asset_class = (
+                        AssetClass.CRYPTO
+                        if sym_up.endswith(("USDT", "USDC", "BUSD", "-USD")) and len(sym_up) > 4
+                        else AssetClass.EQUITY
+                    )
+                    inst = Instrument(symbol=sym, asset_class=asset_class)
+                # HNT-02: crypto is no longer skipped — the yfinance adapter's
+                # `_yf_symbol` maps exchange pairs (BTCUSDT) to Yahoo's
+                # "BTC-USD" spot form (same as PORT), so crypto targets and
+                # positions can take a live mark too.
+                src = self.deps.yfinance
                 if src is None:
                     return sym, 0.0
                 q = await asyncio.wait_for(
@@ -143,12 +157,16 @@ class REBAFunction(BaseFunction):
             current_notional = cur_value.get(sym, 0)
             delta_notional = target_notional - current_notional
             px = prices.get(sym) or 0
-            qty = delta_notional / px if px else 0
+            # HNT-02: px == 0 means "no quote available" — emit the row with
+            # quantity=None + an explicit flag instead of a meaningless
+            # "SELL 0" (or, pre-fix, a notional/1 unit count).
+            qty = delta_notional / px if px else None
             orders.append({
                 "symbol": sym,
-                "action": "BUY" if qty > 0 else "SELL",
-                "quantity": abs(qty),
-                "price": px,
+                "action": "BUY" if (qty if qty is not None else drift) > 0 else "SELL",
+                "quantity": abs(qty) if qty is not None else None,
+                "price": px if px else None,
+                "price_unavailable": not px,
                 "notional_delta": delta_notional,
                 "current_weight_pct": cur_w * 100,
                 "target_weight_pct": target_w * 100,
@@ -160,10 +178,15 @@ class REBAFunction(BaseFunction):
         liquidations = []
         for sym in cur_weights:
             if sym not in (k.upper() for k in targets):
-                qty = cur_value[sym] / (prices.get(sym) or 1)
+                # HNT-02: the old `prices.get(sym) or 1` divided the dollar
+                # value by 1 and produced absurd unit counts (16250 "BTC").
+                # No quote → quantity=None + "price unavailable" marker.
+                px = prices.get(sym) or 0
+                qty = cur_value[sym] / px if px else None
                 liquidations.append({
                     "symbol": sym, "action": "SELL", "quantity": qty,
-                    "price": prices.get(sym) or 0,
+                    "price": px if px else None,
+                    "price_unavailable": not px,
                     "notional_delta": -cur_value[sym],
                     "current_weight_pct": cur_weights[sym] * 100,
                     "target_weight_pct": 0,
@@ -253,5 +276,5 @@ def _field_dictionary() -> dict[str, str]:
         "target_weight_pct": "Desired portfolio weight after rebalance.",
         "drift_pct": "Target weight minus current weight.",
         "notional_delta": "Dollar buy/sell amount required to move toward target.",
-        "quantity": "Estimated units based on the displayed price.",
+        "quantity": "Estimated units based on the displayed price; null with price_unavailable=true when no live quote resolved.",
     }

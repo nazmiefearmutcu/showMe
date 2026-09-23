@@ -648,6 +648,9 @@ export function MEETPane({ code }: FunctionPaneProps) {
             {payload.data_quality.source_traceable_count} source-traceable ·{" "}
             {payload.data_quality.url_traceable_count} URL-traceable ·{" "}
             {payload.data_quality.duplicate_rows_dropped} duplicates dropped
+            {payload.data_quality.rows_capped_at_limit
+              ? ` · ${payload.data_quality.rows_capped_at_limit} excluded by result limit`
+              : ""}
           </span>
           {payload.data_quality.active_source_tiers.map((tier) => (
             <Pill key={tier} tone={tier.includes("fallback") ? "warn" : "neutral"} variant="soft" withDot={false}>
@@ -820,7 +823,7 @@ export function MEETPane({ code }: FunctionPaneProps) {
   );
 
   return (
-    <div className="u-pane-host">
+    <div className="u-pane-host meet-pane">
       <Pane>
         <PaneHeader
           code={code}
@@ -857,7 +860,11 @@ export function MEETPane({ code }: FunctionPaneProps) {
         />
         <PaneBody>{body}</PaneBody>
         <PaneFooter>
-          <StatusSection label="sources" value={data?.sources?.join(", ") || "—"} />
+          <StatusSection
+            label="sources"
+            value={data?.sources?.join(", ") || "—"}
+            title={data?.sources?.join(", ") || "—"}
+          />
           <StatusDivider />
           <StatusSection label="status" value={status} />
           <StatusDivider />

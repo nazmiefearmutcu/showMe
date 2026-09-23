@@ -132,6 +132,9 @@ class BotService:
             pass
         self._scan_threads: list[threading.Thread] = []
         self._scan_lock = threading.Lock()
+        # HNT-09: monotonic start marker for the in-flight scan batch —
+        # used with the progress file's started_at to detect a stuck scan.
+        self._scan_started_monotonic: float | None = None
         self._multi_scan_done_count = 0
         self._multi_scan_results: dict[str, list] = {}  # tf → top15 results
         self._multi_scan_full: dict[str, list] = {}    # tf → ALL results
@@ -350,6 +353,11 @@ class BotService:
         )
         self.consensus_engine = ConsensusEngine(new_config)
         self.leverage_manager = LeverageManager(new_config, self.binance_client)
+        # HNT-18: drop the per-TF SignalService / ConsensusEngine caches —
+        # they were built from the OLD config and kept computing the live
+        # multi-TF signal panel with stale thresholds after a reload.
+        self._signal_service_cache = {}
+        self._consensus_engine_cache = ConsensusEngine(new_config)
         # Update position manager's risk config so max_open_positions etc. take effect
         self.position_manager.risk_config = new_config.get("risk", {})
         # Also keep the full config (paper.fee_pct in open_position) current.
@@ -845,6 +853,36 @@ class BotService:
             pass
         return False
 
+    # HNT-09: a scan batch older than this is considered stuck (a hung
+    # get_klines TCP call never increments done_count) and gets force-reset.
+    _SCAN_STALE_AFTER_SECONDS = 2 * 3600
+
+    def _scan_started_at_age(self) -> float | None:
+        """Age in seconds of the in-flight scan, from the progress file."""
+        try:
+            runtime_dir = Path(self.config.get("dashboard_status_path", "runtime/dashboard_status.json")).parent
+            p = runtime_dir / "auto_scan_progress.json"
+            if not p.exists():
+                return None
+            d = json.loads(p.read_text())
+            ts = d.get("started_at")
+            if not ts:
+                return None
+            started = datetime.fromisoformat(ts)
+            if started.tzinfo is None:
+                started = started.replace(tzinfo=timezone.utc)
+            return (datetime.now(timezone.utc) - started).total_seconds()
+        except Exception:
+            return None
+
+    def _scan_is_stale(self) -> bool:
+        """HNT-09: a scan whose start is older than the max lifetime is stuck."""
+        started = self._scan_started_monotonic
+        if started is not None and time.time() - started > self._SCAN_STALE_AFTER_SECONDS:
+            return True
+        age = self._scan_started_at_age()
+        return age is not None and age > self._SCAN_STALE_AFTER_SECONDS
+
     def _auto_scan_market(self) -> None:
         """Launch multi-TF auto-scan in background threads (non-blocking).
 
@@ -870,7 +908,19 @@ class BotService:
 
         # Fast check: is a scan already in progress?
         if self._scanning_active:
-            if any(t.is_alive() for t in self._scan_threads):
+            if self._scan_is_stale():
+                # HNT-09: force-reset a stuck scan batch instead of letting
+                # it block auto-scan forever (a hung get_klines thread keeps
+                # _scanning_active True with done_count frozen below total).
+                logger.error(
+                    "Auto-scan stuck for >2h — force-resetting scanning state; "
+                    "a scan thread is likely hung on a network call"
+                )
+                self._scanning_active = False
+                self._scan_threads = []
+                self._scan_started_monotonic = None
+                self._write_auto_scan_progress({"scanning": False, "stalled": True})
+            elif any(t.is_alive() for t in self._scan_threads):
                 return
             # Threads finished but flag wasn't cleared (shouldn't happen, safety net)
             self._scanning_active = False
@@ -943,6 +993,7 @@ class BotService:
 
             # Write initial progress file — preserve last completed scan data
             self._auto_scan_start_time = iso_now()
+            self._scan_started_monotonic = time.time()
             self._auto_scan_scanners: dict[str, ScannerService] = {}
             prev_progress = {}
             try:
@@ -983,8 +1034,31 @@ class BotService:
             # Background thread to update progress based on per-coin scanning
             def _progress_writer():
                 import time as _t
+                # HNT-09: cap the writer's lifetime — if a scan thread hangs,
+                # done_count never reaches total and the old loop wrote
+                # "scanning": True every 3s forever.
+                deadline = _t.monotonic() + self._SCAN_STALE_AFTER_SECONDS
                 while True:
                     _t.sleep(3)
+                    if _t.monotonic() >= deadline:
+                        logger.error(
+                            "Auto-scan progress writer hit its lifetime cap — "
+                            "forcing scanning:false (a scan thread is stuck)"
+                        )
+                        self._scanning_active = False
+                        self._scan_started_monotonic = None
+                        self._write_auto_scan_progress({
+                            "scanning": False,
+                            "stalled": True,
+                            "total": total_tfs,
+                            "done": self._multi_scan_done_count,
+                            "started_at": self._auto_scan_start_time,
+                            "last_auto_scan": prev_progress.get("last_auto_scan"),
+                            "last_scan_results": prev_progress.get("last_scan_results"),
+                            "last_scan_hot_count": prev_progress.get("last_scan_hot_count"),
+                            "last_scan_total": prev_progress.get("last_scan_total"),
+                        })
+                        break
                     with self._scan_lock:
                         done_count = self._multi_scan_done_count
                         done_tfs = list(self._multi_scan_results.keys())
@@ -1340,6 +1414,7 @@ class BotService:
         finally:
             self._last_auto_scan_time = time.time()
             self._scanning_active = False
+            self._scan_started_monotonic = None
 
     def _write_auto_scan_progress(self, data: dict) -> None:
         """Write auto-scan progress to a JSON file for the dashboard to read."""
@@ -1380,7 +1455,10 @@ class BotService:
         result = {sym: all_prices[sym] for sym in positions if sym in all_prices}
         active_symbol = self.symbol_controller.get_current_symbol()
         if active_symbol and self._last_price:
-            result[active_symbol] = self._last_price
+            # HNT-22: keep the fresh bulk price when present — the direct
+            # assignment overwrote it with the cycle-start price, so the
+            # active position's dashboard PnL lagged a full cycle.
+            result.setdefault(active_symbol, self._last_price)
         return result
 
     def _export_dashboard_status(self, balance: float) -> None:
@@ -1431,6 +1509,22 @@ class BotService:
     def _shutdown(self) -> None:
         """Graceful shutdown - save state and export stopped status."""
         logger.info("Shutting down bot...")
+        # HNT-12: drain the WS loop and close DuckDB before the process
+        # dies — both used to stay open until OS teardown, so a stop mid
+        # candle-write could drop the last closed candles.
+        if self.ws_manager is not None and self._ws_loop is not None:
+            try:
+                fut = asyncio.run_coroutine_threadsafe(
+                    self.ws_manager.stop(), self._ws_loop
+                )
+                fut.result(timeout=5)
+            except Exception as e:
+                logger.warning(f"WS manager stop failed during shutdown: {e}")
+        if self.market_store is not None:
+            try:
+                self.market_store.close()
+            except Exception as e:
+                logger.warning(f"Market store close failed during shutdown: {e}")
         self.state_store.save()
         try:
             self.status_exporter.export_stopped(self.config, self.state_store.state)

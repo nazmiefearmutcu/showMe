@@ -58,9 +58,10 @@ async def test_failed_symbols_still_render_as_unavailable_rows(monkeypatch: Any)
     assert any("unavailable" in str(e) for e in errors), errors
 
 
-async def test_all_symbols_failing_ships_template_fallback(monkeypatch: Any) -> None:
-    """No live last at all → the unchanged ``provider_unavailable`` envelope
-    with the deterministic template rows (never a silently empty list)."""
+async def test_all_symbols_failing_ships_empty_rows(monkeypatch: Any) -> None:
+    """No live last at all → the ``provider_unavailable`` envelope with EMPTY
+    rows (HNT-19: the strict-zero gate — fabricated template prices must not
+    ride an outage envelope; the labelled model stays behind live=false)."""
 
     async def _boom(symbol: str) -> dict[str, Any]:
         raise RuntimeError("quote service down")
@@ -70,11 +71,11 @@ async def test_all_symbols_failing_ships_template_fallback(monkeypatch: Any) -> 
 
     assert res.data["status"] == "provider_unavailable"
     assert res.data["period"] == "1D"
-    assert len(res.data["rows"]) == FULL_SIZE
-    assert all(row["quote_type"] == "model" for row in res.data["rows"])
+    assert res.data["rows"] == []
+    assert res.data["next_actions"]
     assert res.metadata.get("fallback") is True
     assert res.metadata.get("degraded") is True
-    assert "world_market_model" in res.sources
+    assert "world_market_model" not in res.sources
 
 
 async def test_bist_row_is_present_and_quotes_xu100(monkeypatch: Any) -> None:

@@ -1,11 +1,13 @@
-"""D03-2026-05-24 (H17+H18+H19): OSA fixes — grid range, PV discount,
+"""D03-2026-05-24 (H17+H18+H19): OSA fixes — grid range, debit carry-forward,
 per-leg IV solver.
 
 H17: spot grid now derived from strike list, not hardcoded 50-150% of S.
      Low-priced underlyings (S=20) with wing strikes (e.g. 50) used to
      fall off the chart.
-H18: initial net_debit is paid at t=0; expiry_payoff is at T. PV-discount
-     the debit so they share the same time basis.
+H18 (revised by HNT-03): initial net_debit is paid at t=0; expiry_payoff is
+     at T. Compound the debit FORWARD (fv_debit = net_debit * exp(+r*T)) so
+     they share the same future time basis. The old PV-discount version
+     understated the cost by exp(-2rT).
 H19: per-leg vol resolution — caller can pass ``market_price`` per leg
      and the function back-solves the implied vol.
 """
@@ -57,12 +59,12 @@ def test_grid_covers_wing_strikes_on_low_priced_underlying() -> None:
     assert max(spots) >= 50  # max strike reached
 
 
-# ---------------- H18: PV-discounted debit ----------------
+# ---------------- H18 (HNT-03): debit compounded to expiry ----------------
 
 
-def test_pv_debit_discount_at_long_maturity() -> None:
-    """A long-dated debit spread should have curve.pnl reflect
-    PV-discounted cost, not raw net_debit."""
+def test_fv_debit_compound_at_long_maturity() -> None:
+    """A long-dated debit spread should have curve.pnl reflect the debit
+    carried forward to expiry (fv_debit), not raw net_debit."""
     legs = [
         {"qty": 1, "strike": 100, "type": "CALL", "expiry": 2.0, "vol": 0.25},
         {"qty": -1, "strike": 110, "type": "CALL", "expiry": 2.0, "vol": 0.25},
@@ -71,11 +73,15 @@ def test_pv_debit_discount_at_long_maturity() -> None:
     curve = res.data["curve"]
     assert curve, "curve should be non-empty"
     row = curve[0]
-    pv_debit = row["pv_debit"]
+    fv_debit = row["fv_debit"]
     net_debit = row["net_debit"]
-    # 2-yr 5% discount factor ≈ exp(-0.10) = 0.905
-    expected_factor = math.exp(-0.05 * 2.0)
-    assert pv_debit == pytest.approx(net_debit * expected_factor, rel=1e-6)
+    # 2-yr 5% carry factor ≈ exp(+0.10) = 1.105
+    expected_factor = math.exp(0.05 * 2.0)
+    assert fv_debit == pytest.approx(net_debit * expected_factor, rel=1e-6)
+    # pnl must be payoff minus the FUTURE-value debit (HNT-03).
+    assert row["pnl"] == pytest.approx(row["payoff"] - fv_debit, rel=1e-6)
+    # The old PV key is gone.
+    assert "pv_debit" not in row
 
 
 # ---------------- H19: per-leg IV from market_price ----------------

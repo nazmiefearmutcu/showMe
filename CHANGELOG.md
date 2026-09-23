@@ -6,6 +6,29 @@ All notable changes to showMe are documented here. This project follows
 ## [Unreleased]
 
 ### Fixed
+- **FinBERT bear-listed contrarian headlines ("cycle bottom may already be
+  in at $56K").** FinBERT scores the tone of the words, not the direction a
+  headline argues for, so completed-bottom calls and fear-pivot headlines
+  ("traders braced for a total wipeout but Bitcoin had other plans") landed
+  in the CN/NI BEAR bucket — built from bear-market vocabulary ("bottom",
+  a price anchor far below spot) despite making a bullish claim. A new
+  deterministic corrector (`showme/contrarian.py`) now runs inside
+  `stamp_items`: whitelisted completed-bottom / fear-pivot phrasings flip a
+  neg verdict to pos with a score floored at 0.6 (clears the UI bull
+  bucket), pos/neu rows are never touched, and flipped rows are visibly
+  stamped `sentiment_model="finbert+contrarian"` + `sentiment_note` so a
+  corrected row never masquerades as raw model output. All news handlers
+  (CN, NI, TOP, BRIEF, SOSC, TSAR, instant) inherit the fix. Covered by
+  `tests/test_finbert_contrarian.py`.
+- **DES rendered empty placeholder cells instead of nothing.** When the
+  provider had no fundamentals for an instrument (the owner's XAU/YHD run), the
+  pane showed a seven-cell fundamentals strip of "—" cards, a Snapshot card
+  full of "—" rows, and a "Provider did not return a business summary."
+  dead-end — a wall of blank space. Metrics, snapshot rows and the summary card
+  with no provider value are now omitted entirely; only real data renders (the
+  crypto "∞" max-supply sentinel is preserved). The index branch behaves the
+  same way when its bars are unavailable. Covered by
+  `DES.missing-data.test.tsx`.
 - **BTFW was not a walk-forward backtest.** `backtest_framework.py` was
   docstring'd "Walk-forward backtest framework", BTFW shipped
   `"methodology": "Single-symbol walk-forward backtest"` to the user, and the
@@ -30,6 +53,38 @@ All notable changes to showMe are documented here. This project follows
   install present only on the author's machine, one made a live World Bank call,
   and one had hardcoded dates that aged past a 45-day freshness filter.
   `e2e-smoke` and `e2e-audit` had consequently never executed a single step.
+- **Repo-wide bug hunt (10 parallel audit agents + sequential fix waves).** A
+  full-tree review of the Rust shell, the Python sidecar (server routes,
+  engine core, data sources, all ~141 functions) and the React UI surfaced 171
+  defects; ~145 are fixed in this change. Highlights, by severity: WebAuthn
+  authentication is now verified server-side (it previously trusted a
+  client-posted `{"ok": true}`, letting anyone authenticate as any user);
+  Alpaca partial closes send `qty` as a query parameter (the JSON body was
+  ignored, liquidating the whole position) and stored credentials are actually
+  used, gated by their permissions. The BETA function no longer fabricates a
+  seed-derived beta on provider failure — the fake value flowed into the
+  WACC/DCF/DDM chain tagged "live"; the strict-zero gate was likewise restored
+  across EE surprise scaling (×100 on small prints), CORR's synthetic series
+  (dropped from the live matrix instead of mixed in), MAP/HVT fallback rows and
+  the ASK briefing scanner (real scan instead of index-modulated fake
+  signals). Paper-trading money paths were repaired: market orders without a
+  price hint are rejected instead of filling at 0.0, position flips realize
+  the closed leg, the duplicated entry fee is gone, and REBA no longer
+  computes crypto liquidation quantity as notional/1. The sidecar's WS
+  gap-fill no longer poisons the candle cache with out-of-order duplicates,
+  StateStore writes are lock-protected (a write race could corrupt state.json
+  and wipe all positions on restart), and the Rust shell gained
+  char-boundary-safe log truncation (a >4 KB multi-byte message aborted the
+  whole app), sidecar crash-restart with a shutdown flag (no orphaned
+  processes holding the DuckDB lock), and window-state persistence on Cmd+Q.
+  Blocking calls (Whisper, FinBERT, HF classify, PEOP, crypto-alias network
+  resolution, Alpaca/IBKR SDK) moved off the event loop. Windows development
+  got utf-8 catalog/store loaders, APPDATA-correct portfolio state and the
+  NSIS bundle config. The UI gained chart symbol-swap state restoration with
+  fetch-race guards, a readable custom light preset, UTC parsing for naive
+  datetimes (news ordering was off by the local UTC offset), and the INSTANT
+  squawk no longer lags one poll cycle behind the visual flash. Backend 3277,
+  UI 3624 and Rust 25 tests green after the change.
 
 ### Changed
 - BTFW now emits `oos_equity_curve`, `per_step_metrics` and an out-of-sample

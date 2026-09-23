@@ -43,6 +43,8 @@ import threading
 from pathlib import Path
 from typing import Any, ClassVar
 
+from showme.model_loading import serialized_model_load
+
 
 LOG = logging.getLogger("showme.whisper")
 
@@ -61,6 +63,7 @@ class WhisperAnalyzer:
     _load_failed: ClassVar[bool] = False
     _load_error: ClassVar[str | None] = None
 
+    @serialized_model_load
     def __init__(self) -> None:
         # Heavy imports happen ONLY inside __init__.
         from transformers import pipeline  # noqa: PLC0415 - intentional lazy import

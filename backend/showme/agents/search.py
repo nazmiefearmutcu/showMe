@@ -7,11 +7,12 @@ summarizer can still narrate.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
 from .planner import Plan
-from ..scanner import ScanRequest, UNIVERSES, run_scan
+from ..scanner import ScanRequest, run_scan
 
 LOG = logging.getLogger("showme.agents.search")
 
@@ -41,7 +42,7 @@ async def search(plan: Plan, deps: Any) -> dict[str, Any]:
 async def _scan(plan: Plan, deps: Any) -> dict[str, Any]:
     args = plan.args or {}
     if args.get("quick") or args.get("fast"):
-        return _quick_scan(plan)
+        return await _quick_scan(plan, deps)
     req = ScanRequest(
         intent=plan.action,
         asset_class=args.get("asset_class"),
@@ -73,66 +74,99 @@ async def _scan(plan: Plan, deps: Any) -> dict[str, Any]:
     }
 
 
-def _quick_scan(plan: Plan) -> dict[str, Any]:
+async def _quick_scan(plan: Plan, deps: Any) -> dict[str, Any]:
+    """Bounded live scan for the ASK briefing fan-out leg.
+
+    HNT-14: this used to return synthetic LONG/SHORT rows keyed off the
+    symbol list's index — fabricated directions and confidences with no
+    relation to market data. It now runs the REAL scanner under a hard
+    8s timeout; on timeout/error the leg degrades to an honest
+    ``provider_unavailable`` envelope with zero rows instead of invented
+    signals.
+    """
     args = plan.args or {}
-    asset_class = str(args.get("asset_class") or "CRYPTO").upper()
-    universe_key = {
-        "CRYPTO": "CRYPTO:MAJORS",
-        "FX": "FX:G10",
-        "COMMODITY": "COMMODITY:CORE",
-        "ETF": "ETF:US:CORE",
-    }.get(asset_class, "EQUITY:US:LARGE")
-    symbols = list(UNIVERSES.get(universe_key, []))[:8]
-    rows: list[dict[str, Any]] = []
-    for idx, symbol in enumerate(symbols):
-        direction = "LONG" if idx % 3 != 2 else "SHORT"
-        confidence = max(45, 82 - idx * 5)
-        rows.append({
-            "symbol": symbol,
-            "asset_class": asset_class,
-            "direction": direction,
-            "score": round((1 if direction == "LONG" else -1) * confidence / 100, 4),
-            "confidence": confidence,
-            "timeframes": ["1d"],
-            "source": "showme_scanner_reference_model",
-            "fine": {
-                "overextension": {
-                    "overextended": idx in {0, 5},
-                    "deviation_label": "WATCH" if idx in {0, 5} else "OK",
-                }
-            },
-        })
+    req = ScanRequest(
+        intent=plan.action,
+        asset_class=args.get("asset_class"),
+        top_n=int(args.get("top_n", 8)),
+        phases=str(args.get("phases", "A")),
+        fine_top_k=int(args.get("fine_top_k") or 4),
+    )
+    try:
+        result = await asyncio.wait_for(run_scan(req, deps), timeout=8.0)
+    except asyncio.TimeoutError:
+        return _quick_scan_unavailable(plan, "scan timed out after 8.0s")
+    except Exception as exc:  # noqa: BLE001
+        LOG.warning("briefing quick scan failed: %r", exc)
+        return _quick_scan_unavailable(plan, f"scan failed: {exc}")
+    direction = (args.get("direction") or "").upper() or None
+    rows = list(result.rows)
+    if direction:
+        rows = [r for r in rows if r.get("direction") == direction]
+    return {
+        "kind": "scan",
+        "data": {
+            "intent": result.intent,
+            "universe_key": result.universe_key,
+            "asset_class": result.asset_class,
+            "timeframes": result.timeframes,
+            "rows": rows,
+            "phases": [{
+                "name": p.name, "elapsed_ms": p.elapsed_ms,
+                "output": p.output,
+            } for p in result.phases],
+            "warnings": result.warnings,
+            "elapsed_ms": result.elapsed_ms,
+            "mode": "live_quick_scan",
+            "sources": ["showme_scanner"],
+        },
+        "warnings": result.warnings,
+        "evidence": [{
+            "code": "SCAN",
+            "sources": ["showme_scanner"],
+            "status": "live_quick_scan",
+            "rows": len(rows),
+            "top": [row.get("symbol") for row in rows[:5]],
+            "elapsed_ms": result.elapsed_ms,
+            "reason": "ASK briefing runs the live scanner under a hard 8s bound.",
+        }],
+    }
+
+
+def _quick_scan_unavailable(plan: Plan, reason: str) -> dict[str, Any]:
+    """Honest degradation envelope for the briefing scan leg (no rows)."""
+    warning = f"scan provider unavailable: {reason}"
     return {
         "kind": "scan",
         "data": {
             "intent": plan.action,
-            "universe_key": universe_key,
-            "asset_class": asset_class,
-            "timeframes": ["1d"],
-            "rows": rows,
+            "universe_key": None,
+            "asset_class": (plan.args or {}).get("asset_class"),
+            "timeframes": [],
+            "rows": [],
             "phases": [{
                 "name": "fast_briefing_scan",
                 "elapsed_ms": 0.0,
                 "output": {
-                    "mode": "reference_model",
-                    "n_evaluated": len(symbols),
-                    "n_with_signal": len(rows),
+                    "mode": "provider_unavailable",
+                    "n_evaluated": 0,
+                    "n_with_signal": 0,
                 },
             }],
-            "warnings": [],
+            "warnings": [warning],
             "elapsed_ms": 0.0,
-            "mode": "fast_briefing_model",
-            "sources": ["showme_scanner_reference_model"],
+            "mode": "provider_unavailable",
+            "sources": [],
         },
-        "warnings": [],
+        "warnings": [warning],
         "evidence": [{
             "code": "SCAN",
-            "sources": ["showme_scanner_reference_model"],
-            "status": "fast_briefing_model",
-            "rows": len(rows),
-            "top": [row["symbol"] for row in rows[:5]],
+            "sources": [],
+            "status": "provider_unavailable",
+            "rows": 0,
+            "top": [],
             "elapsed_ms": 0.0,
-            "reason": "ASK briefing uses a bounded reference scan so the agent cannot hang on broad live scanner IO.",
+            "reason": warning,
         }],
     }
 

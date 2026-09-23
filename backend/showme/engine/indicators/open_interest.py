@@ -74,6 +74,13 @@ class OpenInterestIndicator(BaseIndicator):
                     f"OI history insufficient ({len(history) if history else 0})",
                 )
             try:
+                # HNT-08 fix: some Binance /futures/data/* endpoints return
+                # newest-first when called with only ``limit``. Normalize to
+                # ascending timestamp (same as the store path above) so the
+                # oi_change sign cannot silently flip.
+                history = sorted(
+                    history, key=lambda r: float(r.get("timestamp") or 0)
+                )
                 oi_values = [float(r["sumOpenInterest"]) for r in history]
             except Exception:
                 return self._make_result(Signal.NEUTRAL, "OI parse failed")

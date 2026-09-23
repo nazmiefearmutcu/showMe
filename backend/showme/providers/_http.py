@@ -78,11 +78,16 @@ async def get_client() -> httpx.AsyncClient:
         return _client
     async with _loop_lock():
         if _client is None or _client.is_closed or _client_loop is not loop:
-            # Best-effort close of a client stranded on a previous loop so we
-            # don't leak its transport; never let cleanup mask the rebuild.
+            # Best-effort close of a stale client so we don't leak its
+            # transport — including one stranded on a previous (possibly
+            # closed) loop, where aclose() itself may raise. Never let
+            # cleanup mask the rebuild.
             stale = _client
-            if stale is not None and not stale.is_closed and _client_loop is loop:
-                await stale.aclose()
+            if stale is not None and not stale.is_closed:
+                try:
+                    await stale.aclose()
+                except Exception:
+                    pass
             _client = _build_client()
             _client_loop = loop
         return _client

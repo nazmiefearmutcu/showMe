@@ -15,6 +15,7 @@
  */
 import "./templates.css";
 import { useMemo } from "react";
+import { safeDate } from "@/lib/timezone";
 import { Pane, PaneBody, PaneHeader, Pill, Skeleton, SkeletonRow } from "@/design-system";
 import { useFunction } from "@/lib/useFunction";
 import {
@@ -784,14 +785,11 @@ function formatHoursDelta(value: unknown): string {
 
 function formatFeedTime(value: string): string {
   if (!value) return "";
-  // Try ISO -> short relative or HH:MM
-  try {
-    const d = new Date(value);
-    if (!Number.isNaN(d.getTime())) {
-      return d.toISOString().slice(11, 16) + "Z";
-    }
-  } catch {
-    // fall through
+  // Try ISO -> short relative or HH:MM. HNT-02: naive datetimes (no
+  // offset) parse as UTC via safeDate, not host-local wall time.
+  const d = safeDate(value);
+  if (d) {
+    return d.toISOString().slice(11, 16) + "Z";
   }
   return value.slice(0, 16);
 }

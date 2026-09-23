@@ -13,6 +13,8 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+import numpy as np
+import pandas as pd
 import pytest
 
 from showme import server
@@ -166,6 +168,65 @@ def test_beta_returns_provider_unavailable_when_no_yfinance() -> None:
     assert result.sources == ["no_live_source"]
     assert result.metadata["fallback"] is True
     assert "yfinance" in " ".join(result.metadata["provider_errors"]).lower()
+
+
+def test_beta_provider_failure_returns_unavailable_not_baseline() -> None:
+    """HNT-01: when the yfinance target/benchmark fetch hard-fails, BETA
+    must return an honest provider_unavailable envelope with EMPTY betas.
+    The deterministic per-symbol seeded baseline (fake β/correlation/
+    samples with status "computed_market_model") is gone."""
+
+    class _BoomYF:
+        async def fetch(self, request: Any) -> Any:
+            raise RuntimeError("yfinance down")
+
+    fn = BetaFunction()
+    fn.deps = FunctionDeps(yfinance=_BoomYF())
+    inst = Instrument(symbol="AAPL", asset_class=AssetClass.EQUITY)
+    result = _run(fn.execute(instrument=inst))
+    assert result.data["status"] == "provider_unavailable"
+    assert result.data["betas"] == {}
+    assert result.data["rows"] == []
+    assert result.data["reason"]
+    assert result.sources == ["no_live_source"]
+    assert result.metadata["fallback"] is True
+    assert any("yfinance" in str(e).lower() for e in result.metadata["provider_errors"])
+
+
+def test_beta_rolling_history_has_multiple_points_on_healthy_data() -> None:
+    """FR-01: ``_rolling_beta_history``'s ``return`` had slipped into the
+    ``for`` loop body, so the BETA payload's history (rolling-beta
+    sparkline) never carried more than one point and the UI pane showed
+    "No rolling beta history returned" even for healthy symbols."""
+
+    class _HistYF:
+        """yfinance stand-in serving 400 daily bars for target + benchmark."""
+
+        def __init__(self) -> None:
+            self._calls = 0
+
+        async def fetch(self, request: Any) -> Any:
+            n = 400
+            idx = pd.date_range("2025-01-01", periods=n, freq="D", tz="UTC")
+            rng = np.random.default_rng(1000 + self._calls)
+            self._calls += 1
+            closes = 100.0 * np.exp(np.cumsum(rng.normal(0.0002, 0.01, n)))
+            return pd.DataFrame(
+                {"open": closes, "high": closes, "low": closes,
+                 "close": closes, "volume": 1_000_000.0},
+                index=idx,
+            )
+
+    fn = BetaFunction()
+    fn.deps = FunctionDeps(yfinance=_HistYF())
+    inst = Instrument(symbol="AAPL", asset_class=AssetClass.EQUITY)
+    result = _run(fn.execute(instrument=inst))
+    assert result.data["status"] == "ok"
+    history = result.data["history"]
+    assert len(history) >= 2, (
+        f"rolling-beta sparkline must carry multiple points, got {len(history)}"
+    )
+    assert {"date", "beta", "rolling_window", "samples"} <= set(history[0])
 
 
 # ── BBGT (EMSX subclass) ────────────────────────────────────────────────────

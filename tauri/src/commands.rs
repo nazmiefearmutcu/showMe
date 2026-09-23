@@ -72,7 +72,7 @@ pub struct InstallResult {
 }
 
 #[tauri::command]
-pub fn install_to_applications<R: Runtime>(
+pub async fn install_to_applications<R: Runtime>(
     app: AppHandle<R>,
     auth_token: String,
 ) -> Result<InstallResult, String> {
@@ -82,6 +82,17 @@ pub fn install_to_applications<R: Runtime>(
     // `request_biometric` first and forward the returned `token`.
     biometric::consume_token(&auth_token)?;
 
+    // HNT-06 — the ditto copy of a multi-hundred-MB .app bundle blocks
+    // for seconds; run the whole install on the blocking pool so the
+    // main thread stays responsive.
+    tauri::async_runtime::spawn_blocking(move || install_to_applications_blocking(app))
+        .await
+        .map_err(|e| format!("install task failed: {e}"))?
+}
+
+fn install_to_applications_blocking<R: Runtime>(
+    app: AppHandle<R>,
+) -> Result<InstallResult, String> {
     let source = current_app_bundle().ok_or("showMe.app bundle not found")?;
     // SEC-07 P0 — canonicalize the source so a launching DMG that aliases
     // its `.app` to attacker-controlled content cannot have `ditto` copy
@@ -163,7 +174,7 @@ pub fn open_devtools<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn request_biometric(reason: String) -> biometric::BiometricResult {
+pub async fn request_biometric(reason: String) -> biometric::BiometricResult {
     if let Err(err) = ipc::check("request_biometric") {
         log::warn!("request_biometric rate-limited: {err}");
         return biometric::BiometricResult {
@@ -174,7 +185,25 @@ pub fn request_biometric(reason: String) -> biometric::BiometricResult {
             token: None,
         };
     }
-    biometric::evaluate(&reason)
+    // HNT-06 — `biometric::evaluate` blocks on the OS prompt for up to
+    // 120 s; run it on the blocking pool so the main thread (menus,
+    // windows, webview) stays responsive while the prompt is open.
+    let reason_for_task = reason.clone();
+    match tauri::async_runtime::spawn_blocking(move || biometric::evaluate(&reason_for_task))
+        .await
+    {
+        Ok(result) => result,
+        Err(err) => {
+            log::error!("request_biometric task failed: {err}");
+            biometric::BiometricResult {
+                allowed: false,
+                reason,
+                via: biometric::BioVia::Denied,
+                capabilities: biometric::capabilities(),
+                token: None,
+            }
+        }
+    }
 }
 
 #[tauri::command]
@@ -202,7 +231,16 @@ pub fn write_log_entry(level: String, msg: String) {
     // SEC-04 P1 — cap and validate inputs before they hit the log target.
     let mut msg = msg;
     if msg.len() > MAX_LOG_MSG_BYTES {
-        msg.truncate(MAX_LOG_MSG_BYTES);
+        // HNT-01 — `String::truncate` panics when the byte cut lands
+        // inside a multi-byte UTF-8 char (Turkçe text, emoji), and
+        // `panic = "abort"` in release turns that into instant process
+        // death. Cut on a char boundary instead: keep only the chars
+        // that fully fit inside the byte budget.
+        msg = msg
+            .char_indices()
+            .take_while(|(i, c)| i + c.len_utf8() <= MAX_LOG_MSG_BYTES)
+            .map(|(_, c)| c)
+            .collect();
         msg.push_str("…[truncated]");
     }
     let level = level.to_ascii_lowercase();
@@ -312,7 +350,10 @@ pub async fn open_window<R: Runtime>(
             .min_inner_size(720.0, 480.0)
             .resizable(true)
             .decorations(true)
-            .transparent(true)
+            // Transparent + Overlay is a macOS-vibrancy look. On Windows it
+            // leaves a see-through strip above the UI in WebView2, so only
+            // macOS gets it.
+            .transparent(cfg!(target_os = "macos"))
             .shadow(true);
     #[cfg(target_os = "macos")]
     {
@@ -330,9 +371,19 @@ fn open_folder_in_finder(path: &str) -> Result<(), String> {
             .spawn()
             .map_err(|e| e.to_string())?;
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
     {
-        return Err(format!("not implemented for this OS: {}", path));
+        std::process::Command::new("explorer")
+            .arg(path)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(path)
+            .spawn()
+            .map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -351,6 +402,7 @@ fn same_path(a: &Path, b: &Path) -> bool {
     }
 }
 
+#[allow(dead_code)]
 fn remove_path(path: &Path) -> Result<(), String> {
     if !path.exists() {
         return Ok(());
@@ -527,18 +579,24 @@ pub fn notify<R: Runtime>(app: AppHandle<R>, args: NotifyArgs) -> Result<(), Str
 // ── Workspace tree persistence (per-window) ──────────────────────────────
 
 /// Sanitize a window label so it cannot escape the state dir.
-fn safe_label(label: &str) -> String {
+/// HNT-15 — also caps the byte length (mirroring `MAX_WINDOW_LABEL`
+/// for `open_window`) so a renderer cannot force an OS-limit-exceeding
+/// filename with a huge workspace label.
+fn safe_label(label: &str) -> Result<String, String> {
     let trimmed = label.trim();
     if trimmed.is_empty() {
-        return "main".into();
+        return Ok("main".into());
     }
-    trimmed
+    if trimmed.len() > MAX_WINDOW_LABEL {
+        return Err(format!("label exceeds {MAX_WINDOW_LABEL} bytes"));
+    }
+    Ok(trimmed
         .chars()
         .map(|c| match c {
             'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_' => c,
             _ => '_',
         })
-        .collect()
+        .collect())
 }
 
 fn workspace_state_path<R: Runtime>(
@@ -551,7 +609,10 @@ fn workspace_state_path<R: Runtime>(
         .read()
         .clone()
         .ok_or("data root not initialized")?;
-    let safe = label.map(safe_label).unwrap_or_else(|| "main".to_string());
+    let safe = match label {
+        Some(l) => safe_label(l)?,
+        None => "main".to_string(),
+    };
     Ok(root.join(format!("state/workspace-{safe}.json")))
 }
 
@@ -749,6 +810,43 @@ pub struct KeychainEntry {
 
 // ── Migration (Faz B) ─────────────────────────────────────────────────────
 
+/// Resolve the bundled migration binary, handling both `--onefile`
+/// (single file) and `--onedir` (directory with launcher inside) layouts
+/// on all platforms (`.exe` suffix on Windows).
+fn resolve_migration_binary<R: Runtime>(paths: &tauri::path::PathResolver<R>) -> Option<PathBuf> {
+    // Candidates in priority order.
+    #[cfg(target_os = "windows")]
+    const CANDIDATES: &[&str] = &[
+        "binaries/showme-backend/showme-backend.exe",
+        "binaries/showme-backend/showme-backend",
+        "binaries/showme-backend.exe",
+    ];
+    #[cfg(not(target_os = "windows"))]
+    const CANDIDATES: &[&str] = &[
+        "binaries/showme-backend/showme-backend",
+        "binaries/showme-backend",
+    ];
+    for rel in CANDIDATES {
+        if let Ok(p) = paths.resolve(rel, BaseDirectory::Resource) {
+            if p.is_file() {
+                return Some(p);
+            }
+            // Onedir layout: `rel` may resolve to a directory containing
+            // the launcher (e.g. `binaries/showme-backend/`).
+            if p.is_dir() {
+                #[cfg(target_os = "windows")]
+                let launcher = p.join("showme-backend.exe");
+                #[cfg(not(target_os = "windows"))]
+                let launcher = p.join("showme-backend");
+                if launcher.is_file() {
+                    return Some(launcher);
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Run the portfolio-DB migration via the bundled sidecar binary.
 ///
 /// SEC-04 P0 / SEC-07 P1 — the previous version shelled out to `python3`
@@ -802,11 +900,13 @@ pub async fn run_migration<R: Runtime>(
     }
 
     // Resolve the migration entry point: prefer the bundled sidecar
-    // binary. In dev (debug builds), accept a `python3` from a known
+    // binary. In dev (debug builds), accept a `python` from a known
     // system location.
-    let mut cmd = match app.path().resolve("binaries/showme-backend", BaseDirectory::Resource) {
-        Ok(bin) if bin.exists() => {
-            let mut c = std::process::Command::new(bin);
+    let mut cmd = match resolve_migration_binary(app.path()) {
+        Some(bin) => {
+            // HNT-06 — tokio's Command so `.output().await` yields the
+            // worker instead of blocking it for the whole migration.
+            let mut c = tokio::process::Command::new(bin);
             c.arg("--migrate")
                 .arg("--to")
                 .arg(target.as_os_str());
@@ -815,19 +915,57 @@ pub async fn run_migration<R: Runtime>(
         _ => {
             #[cfg(debug_assertions)]
             {
-                // Dev fallback — only honor python3 from a vetted prefix so
+                // Dev fallback — only honor python from a vetted prefix so
                 // a poisoned $PATH cannot run attacker code.
-                let py = which::which("python3")
-                    .map_err(|e| format!("python3 not found: {e}"))?;
-                let allowed_prefixes =
-                    ["/usr/bin/", "/usr/local/bin/", "/opt/homebrew/bin/"];
+                let py = which::which("python")
+                    .or_else(|_| which::which("python3"))
+                    .map_err(|e| format!("python not found: {e}"))?;
+                #[cfg(not(target_os = "windows"))]
+                let allowed_prefixes = [
+                    "/usr/bin/",
+                    "/usr/local/bin/",
+                    "/opt/homebrew/bin/",
+                ];
                 let py_str = py.to_string_lossy().to_string();
-                if !allowed_prefixes.iter().any(|p| py_str.starts_with(p)) {
-                    return Err(format!(
-                        "python3 at {py_str} is outside the trusted prefixes"
-                    ));
+                #[cfg(target_os = "windows")]
+                {
+                    // HNT-13 — real prefix check. The old contains-based
+                    // test reduced to "path contains 'python'" (the inner
+                    // `contains("python")` repeated the outer condition),
+                    // so any poisoned PATH entry named `...\python\python.exe`
+                    // passed as "trusted".
+                    let lowered = py_str.to_lowercase();
+                    let localappdata = std::env::var("LOCALAPPDATA")
+                        .unwrap_or_default()
+                        .to_lowercase();
+                    let mut ok = lowered.starts_with("c:\\python")
+                        || lowered.starts_with("c:\\program files\\python")
+                        || lowered.starts_with("c:\\program files (x86)\\python")
+                        // Repo venvs (`backend/.venv`) can live anywhere
+                        // the repo is cloned — match the path segment.
+                        || lowered.contains("\\.venv\\");
+                    if !ok && !localappdata.is_empty() {
+                        // %LOCALAPPDATA%\Programs\Python (python.org
+                        // per-user installs) and %LOCALAPPDATA%\uv (uv
+                        // managed interpreters).
+                        ok = lowered.starts_with(&format!("{localappdata}\\programs\\python"))
+                            || lowered.starts_with(&format!("{localappdata}\\uv"));
+                    }
+                    if !ok {
+                        return Err(format!(
+                            "python at {py_str} is outside the trusted prefixes"
+                        ));
+                    }
                 }
-                let mut c = std::process::Command::new(py);
+                #[cfg(not(target_os = "windows"))]
+                {
+                    if !allowed_prefixes.iter().any(|p| py_str.starts_with(p)) {
+                        return Err(format!(
+                            "python at {py_str} is outside the trusted prefixes"
+                        ));
+                    }
+                }
+                let mut c = tokio::process::Command::new(py);
                 c.arg("-m")
                     .arg("showme.migration")
                     .arg("--to")
@@ -859,7 +997,10 @@ pub async fn run_migration<R: Runtime>(
         cmd.current_dir(&app_data_root);
     }
 
-    let output = cmd.output().map_err(|e| format!("spawn migration: {e}"))?;
+    let output = cmd
+        .output()
+        .await
+        .map_err(|e| format!("spawn migration: {e}"))?;
     if !output.status.success() {
         return Err(format!(
             "migration exited {}: {}",
@@ -867,12 +1008,21 @@ pub async fn run_migration<R: Runtime>(
             String::from_utf8_lossy(&output.stderr).trim()
         ));
     }
-    // Last line of stdout is the JSON summary.
+    // The migration prints its summary as a pretty-printed JSON object
+    // (indent=2) whose opening `{` sits alone on its own line.
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let summary_text = stdout.lines().rev().find(|l| l.trim().starts_with("{"));
-    if let Some(_line) = summary_text {
-        // Migration prints a multi-line pretty JSON; reparse the whole tail.
-        let start = stdout.rfind("{").unwrap_or(0);
+    // HNT-11 — locate that line and parse from there to the end of
+    // stdout. The previous `rfind("{")` could land on a `{` inside a
+    // warning string or a nested field and yield an unparseable
+    // mid-JSON slice.
+    let lines: Vec<&str> = stdout.lines().collect();
+    if let Some(idx) = lines.iter().rposition(|l| l.trim() == "{") {
+        let blob = lines[idx..].join("\n");
+        return serde_json::from_str(&blob)
+            .map_err(|e| format!("parse summary: {e} — raw: {blob}"));
+    }
+    // Fallback for a single-line (non-pretty) JSON summary.
+    if let Some(start) = stdout.rfind('{') {
         let blob = &stdout[start..];
         return serde_json::from_str(blob)
             .map_err(|e| format!("parse summary: {e} — raw: {blob}"));

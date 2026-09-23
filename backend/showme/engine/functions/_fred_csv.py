@@ -25,11 +25,14 @@ honestly.
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pandas as pd
+
+LOG = logging.getLogger("showme.fred_csv")
 
 _FRED_CSV_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
 _DEFAULT_TIMEOUT_S = 8.0
@@ -166,6 +169,18 @@ class _KeylessFredCSV:
         frequency: str | None = None,
         vintage: str | None = None,
     ) -> pd.DataFrame:
+        # HNT-20: fredgraph.csv serves the series at its native frequency and
+        # always the latest vintage — the keyed adapter's frequency/vintage
+        # parameters cannot be honoured here. Say so instead of silently
+        # ignoring the caller's request.
+        ignored = [name for name, value in (("frequency", frequency), ("vintage", vintage)) if value]
+        if ignored:
+            LOG.warning(
+                "keyless FRED CSV shim ignores %s for series %r "
+                "(fredgraph.csv serves native-frequency latest-vintage observations only)",
+                "/".join(ignored),
+                series_id,
+            )
         lookback = None
         if start:
             if isinstance(start, datetime):
@@ -202,13 +217,19 @@ class _KeylessFredCSV:
 
 
 def fred_with_keyless_fallback(fred: Any, client: Any = None) -> Any:
-    """Return the keyed adapter when wired, else the keyless CSV shim.
+    """Return the keyed adapter when actually keyed, else the keyless shim.
 
     A single call site line — ``fred = fred_with_keyless_fallback(deps.fred)``
     — is enough to give an existing keyed FRED consumer a no-key live path;
     all downstream ``series()``/``yield_curve()`` calls and their failure
     handling stay byte-identical.
+
+    HNT-03: the factory wires a ``FREDAdapter`` instance even when
+    ``FRED_API_KEY`` is unset (that adapter raises ``DataSourceError`` on
+    every call), so the old bare ``if fred:`` truthiness check kept the
+    keyless CSV shim unreachable in production. Only an adapter carrying a
+    non-empty ``api_key`` is preferred now.
     """
-    if fred:
+    if fred and str(getattr(fred, "api_key", "") or "").strip():
         return fred
     return _KeylessFredCSV(client)

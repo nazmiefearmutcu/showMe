@@ -53,7 +53,13 @@ ENTROPY_SRC = ENTROPY_ROOT / "src"
 ENTROPY_SITE = ENTROPY_ROOT / ".venv" / "Lib" / "site-packages"
 
 BAR_NS = 900 * 1_000_000_000  # 15-minute bars, like the live runner
-SYM = "TEST/USDT:USDT"
+# HNT-12: the vendored classifier maps ccxt perp notation
+# (``BASE/USDT:USDT``) to CRYPTO_FUTURES while Entropy's original still
+# treats it as spot, so a ``:USDT`` fixture would compare divergent cost
+# regimes. Parity uses a ``-PERP`` symbol both classifiers agree is
+# futures — the intentional divergence is covered by
+# test_vendored_perp_notation_classified_futures.
+SYM = "TESTUSDT-PERP"
 
 
 def _try_import_entropy() -> bool:
@@ -277,6 +283,18 @@ def test_vendored_config_validation():
         KaosStrategy(KaosConfig(ema_fast=30, ema_slow=21))
     with pytest.raises(ValueError):
         KaosStrategy(KaosConfig(max_hold_bars=2, min_hold_bars=5))
+
+
+def test_vendored_perp_notation_classified_futures():
+    """HNT-12: ccxt unified perp symbols (``BTC/USDT:USDT`` — the default
+    crypto venue's symbol set) must be costed as CRYPTO_FUTURES, not spot."""
+    from showme.bots.kaos.costs import MarketClass, classify_symbol
+
+    assert classify_symbol("BTC/USDT:USDT") is MarketClass.CRYPTO_FUTURES
+    assert classify_symbol("ETH/USDT:USDT") is MarketClass.CRYPTO_FUTURES
+    # Spot forms stay spot.
+    assert classify_symbol("BTC/USDT") is MarketClass.CRYPTO_SPOT
+    assert classify_symbol("BTCUSDT") is MarketClass.CRYPTO_SPOT
 
 
 def test_vendored_sigma_barriers_mapping():

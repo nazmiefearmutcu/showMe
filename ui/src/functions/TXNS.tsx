@@ -606,5 +606,8 @@ function downloadCsv(label: string, rows: StateTrade[]): void {
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
-  setTimeout(() => URL.revokeObjectURL(url), 0);
+  // HNT-05: WKWebView (Tauri/macOS) starts blob downloads asynchronously;
+  // revoking on the next macro-task can cancel the in-flight download.
+  // Give the download a moment to start before freeing the URL.
+  setTimeout(() => URL.revokeObjectURL(url), 1500);
 }

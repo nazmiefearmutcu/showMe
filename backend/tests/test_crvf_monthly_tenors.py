@@ -78,6 +78,10 @@ def test_crvf_keyed_adapter_monthly_ids_end_to_end():
     the monthly bills produces live rows for ALL of them."""
 
     class _KeyedFred:
+        # HNT-03: fred_with_keyless_fallback only prefers adapters that
+        # actually carry an api_key — declare one so this keyed fake wins.
+        api_key = "test-key"
+
         async def yield_curve(self) -> dict[str, float]:
             curve = {sid: 4.2 for sid in _SERIES_TO_TENOR}
             curve["DGS1MO"] = 5.31

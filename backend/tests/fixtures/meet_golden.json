@@ -386,7 +386,7 @@
       ],
       "asset_tags": [],
       "topic_tags": [
-        "INFLATION"
+        "EMPLOYMENT"
       ],
       "event_type": "employment_print",
       "impact": "medium",
@@ -410,7 +410,7 @@
       "countries": [],
       "asset_tags": [],
       "topic_tags": [
-        "INFLATION"
+        "EMPLOYMENT"
       ],
       "event_type": "employment_print",
       "impact": "medium",

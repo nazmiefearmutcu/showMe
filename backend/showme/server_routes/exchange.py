@@ -143,11 +143,13 @@ def register(app: FastAPI, deps: AppDeps) -> None:
         """Delete a credential. C-INT-1 / FIX_CONTRACT.md C3.
 
         Without ``force=true``: refuses with 409 when any bot still
-        references the credential. With ``force=true``: cascade-disables
-        the referencing bots (asyncio task cancelled, ``enabled=False``
-        persisted) BEFORE removing the credential from the vault and
-        unregistering the broker. This prevents the C-INT-1 zombie-task
-        scenario from the audit.
+        references the credential. With ``force=true``: removes the
+        credential from the vault and unregisters the broker, THEN
+        cascade-disables the referencing bots (asyncio task cancelled,
+        ``enabled=False`` persisted). HNT-14: the delete/unregister must
+        be finalized BEFORE the cascade side effect — a stale 404 must
+        never return after bots were already disabled, because 404
+        promises "nothing changed".
         """
         from showme.brokers import CredentialStore, factory as factory_mod
         store = CredentialStore.fresh()
@@ -163,12 +165,14 @@ def register(app: FastAPI, deps: AppDeps) -> None:
                     "hint": "Use ?force=true to cascade-disable referencing bots.",
                 },
             )
-        cascade_results: list[dict[str, str]] = []
-        if refs and force:
-            cascade_results = await _cascade_disable_bots([m.id for m in refs])
+        # HNT-14: the resource deletion is the commit point — only after it
+        # succeeds may the cascade side effect run.
         if not store.delete(credential_id):
             raise HTTPException(404, detail="credential not found")
         factory_mod.unregister_credential(credential_id)
+        cascade_results: list[dict[str, str]] = []
+        if refs and force:
+            cascade_results = await _cascade_disable_bots([m.id for m in refs])
         return {
             "ok": True,
             "cascade": cascade_results,

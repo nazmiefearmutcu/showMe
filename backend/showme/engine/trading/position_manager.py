@@ -288,8 +288,12 @@ class PositionManager:
             (SL/TP keep guarding it).
 
         ``fee_amount``: absolute fee override (real exchange commission
-            summed from order fills). When omitted the round-trip fee is
-            computed from ``fee_pct`` on both legs' notional, as before.
+            summed from order fills). When omitted the fee is computed
+            from ``fee_pct`` on the EXIT leg's notional only — the entry
+            leg is already debited where the entry order executes (paper
+            opens charge ``notional * fee_pct`` up front, live entries
+            book the real fill commission), so charging it again here
+            double-counted it on every round trip (HNT-07).
         """
         position = self.positions.get(symbol)
         if not position:
@@ -313,7 +317,8 @@ class PositionManager:
         if fee_amount is not None:
             fee = float(fee_amount)
         else:
-            fee = (position.entry_price * close_qty + exit_price * close_qty) * fee_pct
+            # HNT-07: exit-leg fee only — the entry fee is charged at open.
+            fee = exit_price * close_qty * fee_pct
         net_pnl = gross_pnl - fee
 
         record = TradeRecord(

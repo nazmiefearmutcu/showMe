@@ -177,6 +177,26 @@ def test_timeframe_parsed_note_when_specified():
     assert not any("default — not specified" in n for n in notes)
 
 
+def test_unsupported_timeframe_falls_back_to_default():
+    """HNT-18: the parser only emits timeframes StrategySpec accepts
+    (1m/5m/15m/1h/4h/1d) — 30m/2h/6h/1w fall through to the honest 1h
+    default instead of producing a spec the validator rejects."""
+    for unsupported in ("30m", "2h", "6h", "1w"):
+        spec, notes = parse_request(f"MACD {unsupported} strateji")
+        assert spec is not None, unsupported
+        assert spec["timeframe"] == "1h", unsupported
+        assert any(
+            n == "Timeframe: 1h (default — not specified)" for n in notes
+        ), unsupported
+
+
+def test_supported_timeframes_accepted():
+    for supported in ("1m", "5m", "15m", "1h", "4h", "1d"):
+        spec, _ = parse_request(f"MACD {supported} strateji")
+        assert spec is not None, supported
+        assert spec["timeframe"] == supported
+
+
 def test_position_defaults_are_disclosed():
     spec, notes = parse_request("RSI strateji")
     assert spec is not None

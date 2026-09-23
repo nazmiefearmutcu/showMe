@@ -35,6 +35,11 @@ class OANDABrokerAdapter(BaseBroker):
         self._connected = bool(self.token and self.account_id)
 
     async def disconnect(self) -> None:
+        if self._client:
+            # Drop the keep-alive pool — connect/disconnect cycles otherwise
+            # leak an open client per reconnect.
+            await self._client.aclose()
+            self._client = None
         self._connected = False
 
     async def place_order(self, order: BrokerOrder) -> str:

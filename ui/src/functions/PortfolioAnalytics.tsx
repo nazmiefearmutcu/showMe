@@ -1099,8 +1099,14 @@ function formatSmart(key: string, value: unknown): string {
   if (k === "weight" || k.endsWith("_weight") || k.includes("fraction")) {
     return formatPercent(value, { fromFraction: Math.abs(value) <= 1 });
   }
+  // HNT-04: the return/vol/rate/alpha family is a FRACTION by backend
+  // contract (bmtx/btune total_return = final equity / initial − 1, rpar
+  // portfolio_vol, tlh tax rates, psc win_rate). The old magnitude
+  // heuristic (|v| ≤ 2 → fraction) read multi-year/crypto returns > 2 as
+  // already-percent and rendered them 100× small. Percent-unit fields carry
+  // an explicit pct/percent suffix and were handled above.
   if (k.includes("return") || k.includes("vol") || k.includes("rate") || k.includes("alpha")) {
-    return formatPercent(value, { fromFraction: Math.abs(value) <= 2 });
+    return formatPercent(value, { fromFraction: true });
   }
   if (
     k.includes("pnl") ||

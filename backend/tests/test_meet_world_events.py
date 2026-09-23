@@ -43,9 +43,11 @@ def _reset_world_headline_cache():
     each test starts from a cold cache so its provider fakes are the only
     source of truth."""
     meet_mod._WORLD_CACHE = None
+    meet_mod._gdelt_429_until = 0.0
     meet_mod._SYMBOL_NEWS_CACHE = None
     yield
     meet_mod._WORLD_CACHE = None
+    meet_mod._gdelt_429_until = 0.0
     meet_mod._SYMBOL_NEWS_CACHE = None
 
 

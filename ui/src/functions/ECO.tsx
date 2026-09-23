@@ -318,6 +318,7 @@ interface EcoStats {
   medium: number;
   countries: number;
   surpriseAvg: number;
+  surpriseCount: number;
   surpriseMax: { abs: number; signed: number; event: string } | null;
   trendImpact: number[];
 }
@@ -330,6 +331,7 @@ function deriveEcoStats(events: EcoEvent[]): EcoStats {
       medium: 0,
       countries: 0,
       surpriseAvg: 0,
+      surpriseCount: 0,
       surpriseMax: null,
       trendImpact: [],
     };
@@ -347,7 +349,11 @@ function deriveEcoStats(events: EcoEvent[]): EcoStats {
     else if (text.includes("med") || text === "2" || Number(e.importance) === 2) medium += 1;
     cset.add((e.country ?? e.region ?? "").toUpperCase());
     const surprise = computeSurprise(e);
-    if (surprise != null && Number.isFinite(surprise)) {
+    // HNT-03: eco.py's contract is surprise = actual − forecast in the
+    // EVENT's own unit, so % points must not be averaged with K/M counts.
+    // Surprise stats cover only %-unit prints; the caption discloses the
+    // scope.
+    if (surprise != null && Number.isFinite(surprise) && isPercentUnit(e)) {
       surpAcc += surprise;
       surpN += 1;
       const abs = Math.abs(surprise);
@@ -367,6 +373,7 @@ function deriveEcoStats(events: EcoEvent[]): EcoStats {
     medium,
     countries: cset.size,
     surpriseAvg: surpN ? surpAcc / surpN : 0,
+    surpriseCount: surpN,
     surpriseMax,
     trendImpact: trend.slice(-22),
   };
@@ -391,10 +398,20 @@ function KPIRibbon({ stats, stamp }: { stats: EcoStats; stamp: string }) {
       />
       <StatCard
         label="Avg surprise"
-        value={`${stats.surpriseAvg >= 0 ? "+" : ""}${stats.surpriseAvg.toFixed(2)}`}
-        caption="VS CONSENSUS"
-        tone={stats.surpriseAvg >= 0 ? "positive" : "negative"}
-        trend={stats.trendImpact}
+        value={
+          stats.surpriseCount
+            ? `${stats.surpriseAvg >= 0 ? "+" : ""}${stats.surpriseAvg.toFixed(2)}`
+            : "—"
+        }
+        caption="VS CONSENSUS · % PRINTS ONLY"
+        tone={
+          stats.surpriseCount
+            ? stats.surpriseAvg >= 0
+              ? "positive"
+              : "negative"
+            : "neutral"
+        }
+        trend={stats.surpriseCount ? stats.trendImpact : []}
       />
       <StatCard
         label="Largest surprise"
@@ -620,6 +637,15 @@ function computeSurprise(e: EcoEvent): number | null {
   const a = numeric(e.actual);
   if (f != null && a != null) return a - f;
   return null;
+}
+
+/**
+ * Percent-unit print? eco.py ships each event's own `unit` ("%", "K", …).
+ * Only %-unit surprises share one scale, so those are the only rows the
+ * surprise KPIs may aggregate (HNT-03).
+ */
+function isPercentUnit(e: EcoEvent): boolean {
+  return String(e.unit ?? "").trim().toLowerCase().startsWith("%");
 }
 
 /**

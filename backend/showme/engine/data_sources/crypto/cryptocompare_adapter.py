@@ -40,7 +40,10 @@ class CryptoCompareAdapter(BaseDataSource):
 
     @staticmethod
     def _split(symbol: str) -> tuple[str, str]:
-        s = symbol.upper()
+        # Pre-clean Yahoo-style separators ("BTC-USD" / "BTC/USDT") so the
+        # suffix strip sees the Binance-style form ("BTC-" would otherwise
+        # leak into the base symbol).
+        s = str(symbol or "").upper().replace("-", "").replace("/", "")
         for q in ("USDT", "USDC", "USD", "BTC", "ETH", "EUR"):
             if s.endswith(q) and len(s) > len(q):
                 return s[: -len(q)], q

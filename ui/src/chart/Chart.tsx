@@ -217,9 +217,59 @@ export function Chart({
   const compareCacheRef = useRef<Map<string, Bar[]>>(new Map());
   const firedRef = useRef<Record<string, AlertFireState>>(loadAlertStore(symbol).fired);
   const skipPersistRef = useRef(false);
+  /* HNT-02: request sequence for `load` — a slower response for a previous
+     symbol/interval must never overwrite a newer request's state. */
+  const loadSeqRef = useRef(0);
+  /* HNT-01: one-shot skips for the alert effects on the flush where the
+     symbol prop changed — that render still holds the previous symbol's
+     rules/bars, and firedRef already carries the new symbol's dedupe state
+     (evaluating the stale pair would re-fire old crossings; persisting them
+     would write them under the new symbol's key). */
+  const skipAlertEvalRef = useRef(false);
+  const skipAlertPersistRef = useRef(false);
 
   const settingsInstance = instances.find((i) => i.id === settingsFor) ?? null;
   const settingsDef = settingsInstance ? indicatorById(settingsInstance.indicator) : undefined;
+
+  /* HNT-01: the workspace swaps a leaf's symbol WITHOUT remounting the pane
+     (the leaf id is kept), so symbol-bound state must be re-read from the
+     per-symbol stores instead of leaking the previous symbol's alerts and
+     layout into the new one. Declared before the alert/layout effects so
+     the one-shot skip flags are consumed in the same flush; bars/source are
+     cleared so the previous symbol's prices never render under the new
+     symbol while its fetch is in flight. */
+  const lastSymbolRef = useRef(symbol);
+  useEffect(() => {
+    if (lastSymbolRef.current === symbol) return;
+    lastSymbolRef.current = symbol;
+    const alerts = loadAlertStore(symbol);
+    setAlertRules(alerts.rules);
+    firedRef.current = alerts.fired;
+    skipAlertEvalRef.current = true;
+    skipAlertPersistRef.current = true;
+    const next = loadLayout(symbol, undefined, layoutScope);
+    skipPersistRef.current = true;
+    setInterval(next?.interval ?? initialInterval);
+    setChartType(next?.chartType ?? initialType);
+    setPriceMode(next?.priceMode ?? "linear");
+    setShowVolume(next?.showVolume ?? true);
+    setInstances(next?.indicators ?? []);
+    setDrawings(next?.drawings ?? []);
+    const seen = new Set<string>();
+    const restoredCompare: string[] = [];
+    for (const raw of next?.compareSymbols ?? compareSymbols) {
+      const s = raw.trim();
+      if (!s || seen.has(s)) continue;
+      seen.add(s);
+      restoredCompare.push(s);
+    }
+    setCompare(restoredCompare);
+    setBars([]);
+    barsRef.current = [];
+    setSource("");
+    setAsOf(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [symbol]);
 
   /* -- rendering primitives (declared before every consumer) ------ */
 
@@ -382,12 +432,16 @@ export function Chart({
       } else {
         setLoading(true);
       }
+      /* HNT-02: seq guard — symbol/interval swaps can overlap fetches; only
+         the newest request's response may touch bars/source state. */
+      const seq = ++loadSeqRef.current;
       try {
         const res = await sidecarFetch<BarsResponse>(
           `/api/bars?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(
             interval,
           )}&limit=${DEFAULT_BARS}`,
         );
+        if (seq !== loadSeqRef.current) return;
         const next = Array.isArray(res.bars) ? res.bars : [];
         setBars(next);
         barsRef.current = next;
@@ -443,11 +497,12 @@ export function Chart({
           fitAll(false);
         }
       } catch (err) {
+        if (seq !== loadSeqRef.current) return;
         setFetchError(err instanceof Error ? err.message : String(err));
         setReason(null);
       } finally {
         silentInFlightRef.current = false;
-        setLoading(false);
+        if (seq === loadSeqRef.current) setLoading(false);
       }
     },
     [symbol, interval, fitAll, draw, replayOn],
@@ -588,6 +643,13 @@ export function Chart({
   /* -- indicator alerts (milestone 3) ---------------------------------- */
 
   useEffect(() => {
+    if (skipAlertEvalRef.current) {
+      /* One run after a symbol swap (HNT-01): this render still pairs the
+         previous symbol's rules/bars while firedRef already holds the new
+         symbol's dedupe state — evaluating would re-fire old crossings. */
+      skipAlertEvalRef.current = false;
+      return;
+    }
     if (alertRules.length === 0 || bars.length === 0) return;
     const fires: { rule: AlertRule; barT: number | null }[] = [];
     const nextFired = { ...firedRef.current };
@@ -633,6 +695,13 @@ export function Chart({
   }, [bars, instances, alertRules, symbol]);
 
   useEffect(() => {
+    if (skipAlertPersistRef.current) {
+      /* One run after a symbol swap (HNT-01): the rules in this render still
+         belong to the previous symbol — the restore effect above has already
+         queued the new symbol's store; do not save the stale pair here. */
+      skipAlertPersistRef.current = false;
+      return;
+    }
     saveAlertStore(symbol, { rules: alertRules, fired: firedRef.current });
   }, [symbol, alertRules]);
 
@@ -640,8 +709,9 @@ export function Chart({
 
   useEffect(() => {
     if (skipPersistRef.current) {
-      /* One run after Reset: the store was just cleared — do not re-save
-         the default state over the empty key. */
+      /* One run after Reset (the store was just cleared — do not re-save
+         the default state over the empty key) or after a symbol swap
+         (HNT-01: this render still holds the previous symbol's layout). */
       skipPersistRef.current = false;
       return;
     }

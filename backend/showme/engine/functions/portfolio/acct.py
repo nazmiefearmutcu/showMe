@@ -111,12 +111,18 @@ class ACCTFunction(BaseFunction):
         symbols = {p.instrument.symbol: p for p in portfolio.positions}
         async def _q(sym: str) -> tuple[str, float]:
             pos = symbols[sym]
-            if pos.instrument.asset_class == AssetClass.CRYPTO:
-                return sym, float(pos.avg_cost or 0)
             try:
-                inst = await self.deps.symbol_registry.resolve(sym) if self.deps.symbol_registry else None
-                if not inst:
-                    inst = Instrument(symbol=sym, asset_class=AssetClass.EQUITY)
+                # HNT-16: crypto positions are quoted live too — the yfinance
+                # adapter maps exchange pairs (BTCUSDT) to Yahoo's "BTC-USD"
+                # spot form (the PORT pattern), so account totals agree with
+                # the PORT pane instead of mixing live marks with stale
+                # avg_cost. The position's own instrument is authoritative
+                # for the asset class; the registry refines equities only.
+                inst = pos.instrument
+                if inst.asset_class != AssetClass.CRYPTO and self.deps.symbol_registry:
+                    resolved = await self.deps.symbol_registry.resolve(sym)
+                    if resolved:
+                        inst = resolved
                 if not self.deps.yfinance:
                     return sym, float(pos.avg_cost or 0)
                 quote = await asyncio.wait_for(

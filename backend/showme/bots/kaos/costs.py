@@ -64,6 +64,12 @@ def classify_symbol(symbol: str, *, market_hint: str | None = None) -> MarketCla
     up = symbol.upper()
     if up.endswith(("-PERP", "-SWAP")) or _DATED_FUTURES_RE.search(up) is not None:
         return MarketClass.CRYPTO_FUTURES
+    if up.endswith(":USDT"):
+        # ccxt unified perp notation (e.g. ``BTC/USDT:USDT`` — settle
+        # currency after the colon). These are the default crypto venue's
+        # symbols; without this branch they fell through to the generic
+        # USDT-suffix spot match and were costed as CRYPTO_SPOT.
+        return MarketClass.CRYPTO_FUTURES
     if up.endswith(("-USD", "-USDT", "-USDC")):
         return MarketClass.CRYPTO_SPOT
     if any(up.endswith(q) for q in _CRYPTO_QUOTES):

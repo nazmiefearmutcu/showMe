@@ -893,9 +893,12 @@ class CPFFunction(BaseFunction):
             )
 
         # Forecast at ~12-month horizon for the card.
+        # HNT-06 fix: the old ``min(1, ...)`` picked the 2ND monthly point;
+        # the documented ~12-month target lives at index 11. Shorter
+        # horizons clamp to the last available point.
         forecast_1y: float | None = None
         if forecast_series:
-            forecast_1y = _finite(forecast_series[min(1, len(forecast_series) - 1)].get("value"))
+            forecast_1y = _finite(forecast_series[min(11, len(forecast_series) - 1)].get("value"))
 
         # Build the flat table rows the manifest table_schema expects:
         # {date, kind, value, vintage}.

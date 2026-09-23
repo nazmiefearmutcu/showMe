@@ -15,7 +15,9 @@ export function ChangeText({
   suffix?: string;
   signed?: boolean;
 }) {
-  if (value == null || Number.isNaN(value)) {
+  // HNT-10: Number.isFinite guard (same sentinel contract as lib/format.ts)
+  // — Infinity must render the em-dash, not "∞".
+  if (value == null || !Number.isFinite(value)) {
     return <span className="u-text-mute">—</span>;
   }
   const color =

@@ -5,6 +5,8 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useStrategyStore } from "./strategy-store";
+import { __resetSidecarReadyCacheForTests } from "./sidecar";
+import { confirmAction } from "./confirm";
 
 const mockFetch = vi.fn();
 vi.stubGlobal("fetch", mockFetch as never);
@@ -16,8 +18,22 @@ vi.mock("./tauri", () => ({
   isInTauri: () => false,
 }));
 
+// HNT-07: remove() confirms through confirmAction (Tauri NSAlert /
+// in-app overlay) instead of the forbidden native window.confirm.
+vi.mock("./confirm", () => ({
+  confirmAction: vi.fn(async () => true),
+}));
+
+const confirmMock = vi.mocked(confirmAction);
+
 beforeEach(() => {
   mockFetch.mockReset();
+  // HNT-06: waitForSidecarReady memoizes its healthy result for a short
+  // TTL — start each case with a cold cache so the queued fetch sequence
+  // below (health probe first) stays deterministic.
+  __resetSidecarReadyCacheForTests();
+  confirmMock.mockReset();
+  confirmMock.mockResolvedValue(true);
   useStrategyStore.setState({
     strategies: [], draft: null, draftIsNew: false, dirty: false,
     loading: false, removing: false, error: null, lastPreview: null,
@@ -50,20 +66,19 @@ function makeErr(status: number): Response {
 
 describe("strategy-store cascade delete", () => {
   it("queries dependents and uses force=true when bots bound", async () => {
-    // 1: health probe; 2: dependents fetch returns count>0; 3: DELETE; 4: loadList.
+    // 1: health probe (cold cache); 2: dependents fetch returns count>0;
+    // 3: DELETE; 4: loadList. (HNT-06: subsequent sidecarFetch calls
+    // reuse the memoized healthy probe instead of re-fetching /api/health.)
     mockFetch
       .mockResolvedValueOnce(makeOk({ ok: true }))                // health
       .mockResolvedValueOnce(makeOk({ bot_count: 2, bot_ids: ["b1", "b2"] }))
-      .mockResolvedValueOnce(makeOk({ ok: true }))                // health for DELETE
-      .mockResolvedValueOnce(makeOk({ ok: true }))                // DELETE itself
-      .mockResolvedValueOnce(makeOk({ ok: true }))                // health for loadList
-      .mockResolvedValueOnce(makeOk({ records: [] }));            // loadList result
+      .mockResolvedValueOnce(makeOk({ ok: true }))                // DELETE
+      .mockResolvedValueOnce(makeOk({ records: [] }));            // loadList
 
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
     const ok = await useStrategyStore.getState().remove("strat-1");
 
-    expect(confirmSpy).toHaveBeenCalled();
-    expect(confirmSpy.mock.calls[0][0]).toMatch(/2 bot/);
+    expect(confirmMock).toHaveBeenCalledTimes(1);
+    expect(confirmMock.mock.calls[0][0]?.body).toMatch(/2 bot/);
     expect(ok).toBe(true);
     // Verify the DELETE URL includes force=true.
     const calls = mockFetch.mock.calls.map((c) => c[0] as string);
@@ -76,7 +91,7 @@ describe("strategy-store cascade delete", () => {
       .mockResolvedValueOnce(makeOk({ ok: true }))                                          // health
       .mockResolvedValueOnce(makeOk({ bot_count: 1, bot_ids: ["b1"] }));                    // dependents
 
-    vi.spyOn(window, "confirm").mockReturnValue(false);
+    confirmMock.mockResolvedValueOnce(false);
     const ok = await useStrategyStore.getState().remove("strat-1");
 
     expect(ok).toBe(false);
@@ -88,15 +103,12 @@ describe("strategy-store cascade delete", () => {
     mockFetch
       .mockResolvedValueOnce(makeOk({ ok: true }))                // health
       .mockResolvedValueOnce(makeErr(404))                        // dependents not deployed
-      .mockResolvedValueOnce(makeOk({ ok: true }))                // health for DELETE
       .mockResolvedValueOnce(makeOk({ ok: true }))                // DELETE
-      .mockResolvedValueOnce(makeOk({ ok: true }))                // health for loadList
-      .mockResolvedValueOnce(makeOk({ records: [] }));            // loadList result
+      .mockResolvedValueOnce(makeOk({ records: [] }));            // loadList
 
-    const confirmSpy = vi.spyOn(window, "confirm");
     const ok = await useStrategyStore.getState().remove("strat-1");
 
-    expect(confirmSpy).not.toHaveBeenCalled();
+    expect(confirmMock).not.toHaveBeenCalled();
     expect(ok).toBe(true);
     const calls = mockFetch.mock.calls.map((c) => c[0] as string);
     const deleteCall = calls.find((u) => u.endsWith("/api/strategies/strat-1"));
@@ -107,9 +119,7 @@ describe("strategy-store cascade delete", () => {
     mockFetch
       .mockResolvedValueOnce(makeOk({ ok: true }))                // health
       .mockResolvedValueOnce(makeOk({ bot_count: 0, bot_ids: [] })) // dependents
-      .mockResolvedValueOnce(makeOk({ ok: true }))                // health
       .mockResolvedValueOnce(makeOk({ ok: true }))                // DELETE
-      .mockResolvedValueOnce(makeOk({ ok: true }))                // health
       .mockResolvedValueOnce(makeOk({ records: [] }));            // loadList
 
     const p = useStrategyStore.getState().remove("strat-1");

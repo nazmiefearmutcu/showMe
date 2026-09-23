@@ -43,8 +43,12 @@ def heston_mc(
         rng = np.random.default_rng(seed)
     else:
         rng = np.random.default_rng()
+    # HNT-13 fix: clamp degenerate path counts. ``paths=1`` (or any value
+    # where antithetic halving floors to 0) used to build empty arrays →
+    # NaN price from ``payoff.mean()`` plus a ZeroDivision stderr.
+    paths = max(2, int(paths))
     dt = T / steps
-    n = paths if not antithetic else paths // 2
+    n = paths if not antithetic else max(1, paths // 2)
     Z1 = rng.standard_normal((steps, n))
     Z2 = params.rho * Z1 + math.sqrt(1 - params.rho ** 2) * rng.standard_normal((steps, n))
     if antithetic:

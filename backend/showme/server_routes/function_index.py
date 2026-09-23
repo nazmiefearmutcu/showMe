@@ -67,7 +67,9 @@ def register(app: FastAPI, deps: AppDeps) -> None:
                     params = body
             except Exception:
                 params = {}
-        params = _route_function_params(code, params)
+        # HNT-09: param normalisation may resolve a crypto alias over the
+        # network — keep it off the event loop.
+        params = await asyncio.to_thread(_route_function_params, code, params)
         # Home-page SWR (owner 2026-09-16: the dashboard must load < 1 s):
         # TOP/BRIEF/MOST answer instantly from a warm cache entry, keep
         # serving a stale entry while a background refresh runs, and give a
@@ -127,8 +129,12 @@ def register(app: FastAPI, deps: AppDeps) -> None:
                     f"function timed out after {FUNCTION_TIMEOUT_SECONDS:.0f}s",
                     "TimeoutError",
                 )
-            except Exception:  # noqa: BLE001 - shared path below reports it
-                result = None
+            except Exception as exc:  # noqa: BLE001
+                # HNT-08: the first (1s-head-start) execution already
+                # failed deterministically — re-running it with the full
+                # budget double-charges rate-limited news providers just
+                # to fail the same way. Report the exception directly.
+                return function_warning_payload(code, params, exc)
             if result is not None:
                 payload = sanitize_function_payload(code, params, json_safe(result.to_dict()))
                 home_swr_store(swr_key, payload)

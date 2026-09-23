@@ -30,11 +30,7 @@ import { SymbolBar } from "@/shell/SymbolBar";
 import { Chart } from "@/chart/Chart";
 import type { Bar } from "@/chart/types";
 import { sidecarFetch } from "@/lib/sidecar";
-import {
-  FunctionControlGroup,
-  LoadStatePill,
-  RefreshButton,
-} from "./function-controls";
+import { FunctionControlGroup, LoadStatePill, RefreshButton } from "./function-controls";
 import { XSenChip } from "./XSenChip";
 import type { FunctionPaneProps } from "./registry-types";
 import {
@@ -127,6 +123,38 @@ const fmtDate = (iso?: string | null) => {
   if (Number.isNaN(d.getTime())) return iso.slice(0, 10) || formatMissing;
   return d.toISOString().slice(0, 10);
 };
+
+/* ── display-density helpers ──────────────────────────────────────────
+ * Missing-data fields are omitted from the pane entirely (owner report,
+ * 2026-09-17): a grid of "—" cells and a dead-end "provider did not return…"
+ * card read as broken. These helpers drop the missing sentinel at the
+ * source, so the pane renders only provider-returned values — or nothing.
+ */
+
+type MetricTone = "neutral" | "positive" | "negative" | "accent" | "warn";
+
+interface MetricDef {
+  label: string;
+  value: string;
+  tone?: MetricTone;
+}
+
+interface SnapshotTerm {
+  k: string;
+  v: string;
+}
+
+/** Drop metric cells whose formatted value is the missing sentinel. */
+function filterMissing(defs: MetricDef[]): MetricDef[] {
+  return defs.filter((d) => d.value !== formatMissing);
+}
+
+/** Drop snapshot rows that have no provider value. */
+function filterMissingTerms(
+  terms: Array<{ k: string; v?: string | null }>,
+): SnapshotTerm[] {
+  return terms.filter((t): t is SnapshotTerm => !!t.v && t.v !== formatMissing);
+}
 
 /* ── index instruments ────────────────────────────────────────────────
  * Indices have no company fundamentals (no market cap, P/E, employees or
@@ -229,9 +257,7 @@ interface IndexSnapshot {
  * session range, trailing 52-week range and 1M/3M/6M/YTD returns. Returns
  * nulls when the inputs are missing — the UI renders "—", never a guess.
  */
-export function computeIndexSnapshot(
-  bars: Bar[],
-): IndexSnapshot {
+export function computeIndexSnapshot(bars: Bar[]): IndexSnapshot {
   const empty: IndexSnapshot = {
     last: null,
     dayLow: null,
@@ -334,11 +360,7 @@ function returnTone(value: number | null): "positive" | "negative" | "neutral" {
   return value >= 0 ? "positive" : "negative";
 }
 
-function fmtRange(
-  low: number | null,
-  high: number | null,
-  currency?: string,
-): string {
+function fmtRange(low: number | null, high: number | null, currency?: string): string {
   if (low == null || high == null) return formatMissing;
   return `${fmtCurrency(low, currency)} – ${fmtCurrency(high, currency)}`;
 }
@@ -378,8 +400,7 @@ export function DESPane({ code, symbol }: FunctionPaneProps) {
     enabled: !!effectiveSymbol,
   });
   const transportState: TransportState = liveQuote.transportState;
-  const snapshotOnly =
-    payloadStatus === "ok" && last != null && transportState === "idle";
+  const snapshotOnly = payloadStatus === "ok" && last != null && transportState === "idle";
   const indexInstrument = isIndexInstrument(effectiveSymbol, profile);
   const indexName = INDEX_PROFILES[effectiveSymbol.toUpperCase()]?.name;
 
@@ -468,10 +489,7 @@ export function DESPane({ code, symbol }: FunctionPaneProps) {
             <div className="u-flex u-items-center u-gap-12 u-min-w-0">
               <span style={tickerStyle}>{effectiveSymbol}</span>
               {(profile?.longName || profile?.shortName) && (
-                <span
-                  style={nameStyle}
-                  title={profile?.longName || profile?.shortName}
-                >
+                <span style={nameStyle} title={profile?.longName || profile?.shortName}>
                   {profile?.longName || profile?.shortName}
                 </span>
               )}
@@ -495,12 +513,12 @@ export function DESPane({ code, symbol }: FunctionPaneProps) {
             />
             <div style={stripChartStyle}>
               <Chart
-          symbol={effectiveSymbol}
-          compact
-          height={170}
-          layoutScope={code.toUpperCase()}
-          initialInterval="1D"
-        />
+                symbol={effectiveSymbol}
+                compact
+                height={170}
+                layoutScope={code.toUpperCase()}
+                initialInterval="1D"
+              />
             </div>
           </div>
         )}
@@ -550,35 +568,45 @@ function TransportPill({
   if (state === "live") {
     return (
       <span data-testid="des-transport-pill" data-state="live">
-        <Pill tone="positive" variant="soft">RT LIVE</Pill>
+        <Pill tone="positive" variant="soft">
+          RT LIVE
+        </Pill>
       </span>
     );
   }
   if (state === "stale") {
     return (
       <span data-testid="des-transport-pill" data-state="stale">
-        <Pill tone="warn" variant="soft">STALE</Pill>
+        <Pill tone="warn" variant="soft">
+          STALE
+        </Pill>
       </span>
     );
   }
   if (state === "reconnecting" || state === "connecting") {
     return (
       <span data-testid="des-transport-pill" data-state={state}>
-        <Pill tone="warn" variant="soft">RECONNECTING</Pill>
+        <Pill tone="warn" variant="soft">
+          RECONNECTING
+        </Pill>
       </span>
     );
   }
   if (state === "offline" || state === "error") {
     return (
       <span data-testid="des-transport-pill" data-state="offline">
-        <Pill tone="negative" variant="soft">OFFLINE</Pill>
+        <Pill tone="negative" variant="soft">
+          OFFLINE
+        </Pill>
       </span>
     );
   }
   if (snapshotOnly) {
     return (
       <span data-testid="des-transport-pill" data-state="snapshot">
-        <Pill tone="warn" variant="soft">SNAPSHOT ONLY</Pill>
+        <Pill tone="warn" variant="soft">
+          SNAPSHOT ONLY
+        </Pill>
       </span>
     );
   }
@@ -652,16 +680,13 @@ const SUMMARY_CLAMP_CHARS = 480;
  * yfinance summary would otherwise blow out the pane) collapse to a few lines
  * with a "Show more" / "Show less" toggle. Short summaries render in full with
  * no affordance.
+ *
+ * Missing-data density (2026-09-17): callers render this only when a real
+ * summary exists — there is no dead-end "provider did not return…" fallback.
  */
-function BusinessSummary({
-  summary,
-  fallback,
-}: {
-  summary: string | null;
-  fallback: string;
-}) {
+function BusinessSummary({ summary }: { summary: string }) {
   const [expanded, setExpanded] = useState(false);
-  const clampable = !!summary && summary.length > SUMMARY_CLAMP_CHARS;
+  const clampable = summary.length > SUMMARY_CLAMP_CHARS;
 
   const summaryId = "des-business-summary";
 
@@ -677,7 +702,7 @@ function BusinessSummary({
             : summaryParagraphStyle
         }
       >
-        {summary ?? fallback}
+        {summary}
       </p>
       {clampable && (
         <button
@@ -698,7 +723,7 @@ function BusinessSummary({
 function DESView({ data, symbol }: { data?: DESData; symbol: string }) {
   if (!data) return <Empty title="No description data" />;
   // Indices: no company fundamentals exist. Render the honest client-side
-  // snapshot + curated profile line instead of the all-"—" equity grid and
+  // snapshot + curated profile line instead of the all-"-" equity grid and
   // the "provider did not return a business summary" dead end.
   if (isIndexInstrument(symbol, data)) {
     return <IndexView data={data} symbol={indexSymbolOf(symbol, data)} />;
@@ -707,84 +732,103 @@ function DESView({ data, symbol }: { data?: DESData; symbol: string }) {
   const degraded = data.status && data.status !== "ok";
   const crypto = isCryptoProfile(data);
 
+  // Missing-data density (owner, 2026-09-17): cells and panels with no value
+  // are omitted entirely — never a wall of "-" placeholders or a dead-end
+  // "provider did not return…" card. Only real provider data is rendered.
+  const snapshotTerms = crypto ? cryptoSnapshotTerms(data) : equitySnapshotTerms(data);
+  const hasSummaryCard =
+    !!summary ||
+    !!data.website ||
+    (crypto && (!!data.github_repo || (data.categories?.length ?? 0) > 0));
+  const hasGrid = hasSummaryCard || snapshotTerms.length > 0;
+
   return (
     <div className="u-grid-gap-12">
       {degraded ? <DESStatusPanel data={data} /> : null}
       {crypto ? <CryptoMetrics data={data} /> : <EquityMetrics data={data} />}
 
-      <div style={mainGridStyle}>
-        <Card>
-          <CardHeader
-            trailing={
-              summary ? (
-                <Pill tone="muted" withDot={false}>
-                  {summary.length.toLocaleString("en-US")} chars
-                </Pill>
-              ) : null
-            }
-          >
-            {crypto ? "About the asset" : "Business summary"}
-          </CardHeader>
-          <CardBody>
-            <BusinessSummary
-              summary={summary}
-              fallback={
-                crypto
-                  ? "CoinGecko did not return a profile summary for this asset."
-                  : "Provider did not return a business summary."
-              }
-            />
-            {data.website && (
-              <div style={websiteRowStyle}>
-                <span style={websiteLabelStyle}>Website</span>
-                <a
-                  href={data.website}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  aria-label="Company website (opens in new tab)"
-                  className="des-link"
-                  style={websiteLinkStyle}
-                >
-                  {data.website}
-                </a>
-              </div>
-            )}
-            {crypto && data.github_repo && (
-              <div style={websiteRowStyle}>
-                <span style={websiteLabelStyle}>Repo</span>
-                <a
-                  href={data.github_repo}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  aria-label="GitHub repository (opens in new tab)"
-                  className="des-link"
-                  style={websiteLinkStyle}
-                >
-                  {data.github_repo}
-                </a>
-              </div>
-            )}
-            {crypto && data.categories && data.categories.length > 0 && (
-              <div style={categoriesRowStyle}>
-                {data.categories.slice(0, 6).map((c) => (
-                  <Pill key={c} tone="accent" variant="soft" withDot={false}>
-                    {c}
-                  </Pill>
-                ))}
-              </div>
-            )}
-          </CardBody>
-        </Card>
+      {hasGrid ? (
+        <div
+          style={
+            hasSummaryCard && snapshotTerms.length > 0
+              ? mainGridStyle
+              : singleColumnGridStyle
+          }
+        >
+          {hasSummaryCard ? (
+            <Card>
+              <CardHeader
+                trailing={
+                  summary ? (
+                    <Pill tone="muted" withDot={false}>
+                      {summary.length.toLocaleString("en-US")} chars
+                    </Pill>
+                  ) : null
+                }
+              >
+                {crypto ? "About the asset" : "Business summary"}
+              </CardHeader>
+              <CardBody>
+                {summary ? <BusinessSummary summary={summary} /> : null}
+                {data.website && (
+                  <div style={websiteRowStyle}>
+                    <span style={websiteLabelStyle}>Website</span>
+                    <a
+                      href={data.website}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      aria-label="Company website (opens in new tab)"
+                      className="des-link"
+                      style={websiteLinkStyle}
+                    >
+                      {data.website}
+                    </a>
+                  </div>
+                )}
+                {crypto && data.github_repo && (
+                  <div style={websiteRowStyle}>
+                    <span style={websiteLabelStyle}>Repo</span>
+                    <a
+                      href={data.github_repo}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      aria-label="GitHub repository (opens in new tab)"
+                      className="des-link"
+                      style={websiteLinkStyle}
+                    >
+                      {data.github_repo}
+                    </a>
+                  </div>
+                )}
+                {crypto && data.categories && data.categories.length > 0 && (
+                  <div style={categoriesRowStyle}>
+                    {data.categories.slice(0, 6).map((c) => (
+                      <Pill key={c} tone="accent" variant="soft" withDot={false}>
+                        {c}
+                      </Pill>
+                    ))}
+                  </div>
+                )}
+              </CardBody>
+            </Card>
+          ) : null}
 
-        <Card>
-          <CardHeader>Snapshot</CardHeader>
-          <CardBody>
-            <dl style={dlStyle}>
-              {crypto ? <CryptoSnapshotTerms data={data} /> : <EquitySnapshotTerms data={data} />}
-            </dl>
-          </CardBody>
-        </Card>
-      </div>
+          {snapshotTerms.length > 0 ? (
+            <Card>
+              <CardHeader>Snapshot</CardHeader>
+              <CardBody>
+                <dl style={dlStyle}>
+                  {snapshotTerms.map((t) => (
+                    <Term key={t.k} k={t.k}>
+                      {t.v}
+                    </Term>
+                  ))}
+                </dl>
+              </CardBody>
+            </Card>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -801,35 +845,44 @@ function IndexView({ data, symbol }: { data?: DESData; symbol: string }) {
   const currency = data?.currency ?? "USD";
   const indexName = INDEX_PROFILES[symbol.toUpperCase()]?.name;
 
-  const note = loading && bars.length === 0
-    ? "Loading daily bars…"
-    : bars.length === 0
-      ? `Index snapshot unavailable${reason ? ` — ${reason}` : ""}`
-      : `Index snapshot — computed from daily bars${source ? ` · ${source}` : ""}${
-          asOf ? ` · as of ${asOf.slice(0, 10)}` : ""
-        }`;
+  const note =
+    loading && bars.length === 0
+      ? "Loading daily bars…"
+      : bars.length === 0
+        ? `Index snapshot unavailable${reason ? ` — ${reason}` : ""}`
+        : `Index snapshot — computed from daily bars${source ? ` · ${source}` : ""}${
+            asOf ? ` · as of ${asOf.slice(0, 10)}` : ""
+          }`;
+
+  // Missing-data density (owner, 2026-09-17): a failed/partial snapshot
+  // renders no empty metric cells or placeholder rows — only real values.
+  const shownMetrics: MetricDef[] = filterMissing([
+    { label: "Last", value: fmtCurrency(snapshot.last, currency), tone: "accent" },
+    { label: "Day range", value: fmtRange(snapshot.dayLow, snapshot.dayHigh, currency) },
+    { label: "52w range", value: fmtRange(snapshot.low52, snapshot.high52, currency) },
+    { label: "1M", value: fmtPct(snapshot.r1m), tone: returnTone(snapshot.r1m) },
+    { label: "3M", value: fmtPct(snapshot.r3m), tone: returnTone(snapshot.r3m) },
+    { label: "6M", value: fmtPct(snapshot.r6m), tone: returnTone(snapshot.r6m) },
+    { label: "YTD", value: fmtPct(snapshot.ytd), tone: returnTone(snapshot.ytd) },
+  ]);
+  const indexTerms = filterMissingTerms([
+    { k: "Index", v: indexName ?? symbol },
+    { k: "Symbol", v: symbol },
+    { k: "Currency", v: currency },
+    { k: "Bars", v: bars.length ? bars.length.toLocaleString("en-US") : null },
+    { k: "Source", v: source },
+    { k: "As of", v: asOf ? asOf.slice(0, 10) : null },
+  ]);
 
   return (
     <div className="u-grid-gap-12">
-      <div style={metricsStripStyle} data-testid="des-index-snapshot">
-        <SnapshotMetric
-          label="Last"
-          value={fmtCurrency(snapshot.last, currency)}
-          tone="accent"
-        />
-        <SnapshotMetric
-          label="Day range"
-          value={fmtRange(snapshot.dayLow, snapshot.dayHigh, currency)}
-        />
-        <SnapshotMetric
-          label="52w range"
-          value={fmtRange(snapshot.low52, snapshot.high52, currency)}
-        />
-        <SnapshotMetric label="1M" value={fmtPct(snapshot.r1m)} tone={returnTone(snapshot.r1m)} />
-        <SnapshotMetric label="3M" value={fmtPct(snapshot.r3m)} tone={returnTone(snapshot.r3m)} />
-        <SnapshotMetric label="6M" value={fmtPct(snapshot.r6m)} tone={returnTone(snapshot.r6m)} />
-        <SnapshotMetric label="YTD" value={fmtPct(snapshot.ytd)} tone={returnTone(snapshot.ytd)} />
-      </div>
+      {shownMetrics.length > 0 ? (
+        <div style={metricsStripStyle} data-testid="des-index-snapshot">
+          {shownMetrics.map((m) => (
+            <SnapshotMetric key={m.label} label={m.label} value={m.value} tone={m.tone} />
+          ))}
+        </div>
+      ) : null}
 
       <p style={indexNoteStyle} data-testid="des-index-note">
         {note}
@@ -837,42 +890,40 @@ function IndexView({ data, symbol }: { data?: DESData; symbol: string }) {
 
       <div style={mainGridStyle}>
         <Card>
-          <CardHeader trailing={<Pill tone="muted" withDot={false}>index</Pill>}>
+          <CardHeader
+            trailing={
+              <Pill tone="muted" withDot={false}>
+                index
+              </Pill>
+            }
+          >
             Index profile
           </CardHeader>
           <CardBody>
-            <p
-              data-testid="des-index-profile"
-              style={summaryParagraphStyle}
-            >
+            <p data-testid="des-index-profile" style={summaryParagraphStyle}>
               {indexProfileLine(symbol)}
             </p>
             <p style={indexMutedNoteStyle}>
-              Indices have no company fundamentals — market cap, P/E, employees
-              and dividend fields are not applicable by definition.
+              Indices have no company fundamentals — market cap, P/E, employees and dividend
+              fields are not applicable by definition.
             </p>
           </CardBody>
         </Card>
 
-        <Card>
-          <CardHeader>Snapshot</CardHeader>
-          <CardBody>
-            <dl style={dlStyle}>
-              <Term k="Index">{indexName ?? symbol}</Term>
-              <Term k="Symbol">{symbol}</Term>
-              <Term k="Currency">{currency}</Term>
-              <Term k="Bars">
-                {bars.length
-                  ? bars.length.toLocaleString("en-US")
-                  : formatMissing}
-              </Term>
-              <Term k="Source">{source ?? formatMissing}</Term>
-              <Term k="As of">
-                {asOf ? asOf.slice(0, 10) : formatMissing}
-              </Term>
-            </dl>
-          </CardBody>
-        </Card>
+        {indexTerms.length > 0 ? (
+          <Card>
+            <CardHeader>Snapshot</CardHeader>
+            <CardBody>
+              <dl style={dlStyle}>
+                {indexTerms.map((t) => (
+                  <Term key={t.k} k={t.k}>
+                    {t.v}
+                  </Term>
+                ))}
+              </dl>
+            </CardBody>
+          </Card>
+        ) : null}
       </div>
     </div>
   );
@@ -884,25 +935,30 @@ function EquityMetrics({ data }: { data: DESData }) {
     data.dividendYield != null && Number.isFinite(Number(data.dividendYield))
       ? Number(data.dividendYield) * 100
       : null;
+  // Missing-data density (owner, 2026-09-17): cells the provider left empty
+  // are dropped, not rendered as "-" cards. All-missing -> no strip at all.
+  const shown: MetricDef[] = filterMissing([
+    { label: "Market cap", value: fmtMcap(marketCap), tone: "accent" },
+    { label: "P/E (TTM)", value: fmtNum(data.trailingPE) },
+    { label: "Forward P/E", value: fmtNum(data.forwardPE) },
+    {
+      label: "Beta",
+      value: fmtNum(data.beta),
+      tone:
+        data.beta != null && Number.isFinite(data.beta) && data.beta > 1.2
+          ? "warn"
+          : "neutral",
+    },
+    { label: "Dividend yield", value: fmtPct(dividendPct), tone: "positive" },
+    { label: "52w high", value: fmtCurrency(data.fiftyTwoWeekHigh, data.currency) },
+    { label: "52w low", value: fmtCurrency(data.fiftyTwoWeekLow, data.currency) },
+  ]);
+  if (shown.length === 0) return null;
   return (
     <div style={metricsStripStyle}>
-      <SnapshotMetric label="Market cap" value={fmtMcap(marketCap)} tone="accent" />
-      <SnapshotMetric label="P/E (TTM)" value={fmtNum(data.trailingPE)} />
-      <SnapshotMetric label="Forward P/E" value={fmtNum(data.forwardPE)} />
-      <SnapshotMetric
-        label="Beta"
-        value={fmtNum(data.beta)}
-        tone={
-          data.beta != null && Number.isFinite(data.beta)
-            ? data.beta > 1.2
-              ? "warn"
-              : "neutral"
-            : "neutral"
-        }
-      />
-      <SnapshotMetric label="Dividend yield" value={fmtPct(dividendPct)} tone="positive" />
-      <SnapshotMetric label="52w high" value={fmtCurrency(data.fiftyTwoWeekHigh, data.currency)} />
-      <SnapshotMetric label="52w low" value={fmtCurrency(data.fiftyTwoWeekLow, data.currency)} />
+      {shown.map((m) => (
+        <SnapshotMetric key={m.label} label={m.label} value={m.value} tone={m.tone} />
+      ))}
     </div>
   );
 }
@@ -910,81 +966,83 @@ function EquityMetrics({ data }: { data: DESData }) {
 function CryptoMetrics({ data }: { data: DESData }) {
   const marketCap = data.marketCap ?? data.market_cap;
   const last = data.regularMarketPrice ?? data.currentPrice ?? data.price ?? null;
+  const changePct = data.regularMarketChangePercent ?? null;
+  const shown: MetricDef[] = filterMissing([
+    { label: "Market cap", value: fmtMcap(marketCap), tone: "accent" },
+    { label: "Last price", value: fmtCurrency(last, "USD") },
+    {
+      label: "24h change",
+      value: fmtPct(changePct),
+      tone: changePct != null ? (changePct >= 0 ? "positive" : "negative") : "neutral",
+    },
+    { label: "All-time high", value: fmtCurrency(data.all_time_high, "USD") },
+    { label: "All-time low", value: fmtCurrency(data.all_time_low, "USD") },
+    { label: "Circ supply", value: fmtSupply(data.circulating_supply) },
+    {
+      label: "Max supply",
+      value: data.max_supply == null ? "∞" : fmtSupply(data.max_supply),
+    },
+  ]);
+  if (shown.length === 0) return null;
   return (
     <div style={metricsStripStyle}>
-      <SnapshotMetric label="Market cap" value={fmtMcap(marketCap)} tone="accent" />
-      <SnapshotMetric label="Last price" value={fmtCurrency(last ?? null, "USD")} />
-      <SnapshotMetric
-        label="24h change"
-        value={fmtPct(data.regularMarketChangePercent ?? null)}
-        tone={
-          data.regularMarketChangePercent != null
-            ? data.regularMarketChangePercent >= 0
-              ? "positive"
-              : "negative"
-            : "neutral"
-        }
-      />
-      <SnapshotMetric label="All-time high" value={fmtCurrency(data.all_time_high, "USD")} />
-      <SnapshotMetric label="All-time low" value={fmtCurrency(data.all_time_low, "USD")} />
-      <SnapshotMetric label="Circ supply" value={fmtSupply(data.circulating_supply)} />
-      <SnapshotMetric
-        label="Max supply"
-        value={data.max_supply == null ? "∞" : fmtSupply(data.max_supply)}
-      />
+      {shown.map((m) => (
+        <SnapshotMetric key={m.label} label={m.label} value={m.value} tone={m.tone} />
+      ))}
     </div>
   );
 }
 
-function EquitySnapshotTerms({ data }: { data: DESData }) {
+/**
+ * Equity snapshot terms as data. Missing values are dropped — the pane never
+ * renders a "—" row (owner, 2026-09-17); only provider-returned fields show.
+ */
+function equitySnapshotTerms(data: DESData): SnapshotTerm[] {
   const employees = data.fullTimeEmployees ?? data.employees;
   const hq =
-    data.headquarters ??
-    ([data.city, data.country].filter(Boolean).join(", ") || "—");
-  const exchange = data.exchange_name ?? data.exchange ?? "—";
-  const ipo = data.ipoDate ?? data.ipo_date ?? "—";
-  return (
-    <>
-      <Term k="Sector">{data.sector ?? "—"}</Term>
-      <Term k="Industry">{data.industry ?? "—"}</Term>
-      <Term k="HQ">{hq}</Term>
-      <Term k="Employees">
-        {employees != null
-          ? Number(employees).toLocaleString("en-US", { maximumFractionDigits: 0 })
-          : "—"}
-      </Term>
-      <Term k="Exchange">{exchange}</Term>
-      <Term k="Currency">{data.currency ?? "—"}</Term>
-      <Term k="IPO">{ipo}</Term>
-      <Term k="52w high">{fmtCurrency(data.fiftyTwoWeekHigh, data.currency)}</Term>
-      <Term k="52w low">{fmtCurrency(data.fiftyTwoWeekLow, data.currency)}</Term>
-    </>
-  );
+    data.headquarters ?? ([data.city, data.country].filter(Boolean).join(", ") || null);
+  return filterMissingTerms([
+    { k: "Sector", v: data.sector },
+    { k: "Industry", v: data.industry },
+    { k: "HQ", v: hq },
+    {
+      k: "Employees",
+      v:
+        employees != null
+          ? Number(employees).toLocaleString("en-US", {
+              maximumFractionDigits: 0,
+            })
+          : null,
+    },
+    { k: "Exchange", v: data.exchange_name ?? data.exchange },
+    { k: "Currency", v: data.currency },
+    { k: "IPO", v: data.ipoDate ?? data.ipo_date },
+    { k: "52w high", v: fmtCurrency(data.fiftyTwoWeekHigh, data.currency) },
+    { k: "52w low", v: fmtCurrency(data.fiftyTwoWeekLow, data.currency) },
+  ]);
 }
 
-function CryptoSnapshotTerms({ data }: { data: DESData }) {
-  return (
-    <>
-      <Term k="Rank">{data.rank != null ? `#${data.rank}` : "—"}</Term>
-      <Term k="Symbol">{data.symbol ?? "—"}</Term>
-      <Term k="Algorithm">{data.hashing_algorithm ?? "—"}</Term>
-      <Term k="Block time">
-        {data.block_time_in_minutes != null
-          ? `${data.block_time_in_minutes} min`
-          : "—"}
-      </Term>
-      <Term k="Genesis">{fmtDate(data.genesis_date)}</Term>
-      <Term k="Circ supply">{fmtSupply(data.circulating_supply)}</Term>
-      <Term k="Total supply">{fmtSupply(data.total_supply)}</Term>
-      <Term k="Max supply">
-        {data.max_supply == null ? "∞" : fmtSupply(data.max_supply)}
-      </Term>
-      <Term k="ATH">{fmtCurrency(data.all_time_high, "USD")}</Term>
-      <Term k="ATH date">{fmtDate(data.all_time_high_date)}</Term>
-      <Term k="ATL">{fmtCurrency(data.all_time_low, "USD")}</Term>
-      <Term k="ATL date">{fmtDate(data.all_time_low_date)}</Term>
-    </>
-  );
+function cryptoSnapshotTerms(data: DESData): SnapshotTerm[] {
+  return filterMissingTerms([
+    { k: "Rank", v: data.rank != null ? `#${data.rank}` : null },
+    { k: "Symbol", v: data.symbol },
+    { k: "Algorithm", v: data.hashing_algorithm },
+    {
+      k: "Block time",
+      v: data.block_time_in_minutes != null ? `${data.block_time_in_minutes} min` : null,
+    },
+    { k: "Genesis", v: fmtDate(data.genesis_date) },
+    { k: "Circ supply", v: fmtSupply(data.circulating_supply) },
+    { k: "Total supply", v: fmtSupply(data.total_supply) },
+    {
+      k: "Max supply",
+      v: data.max_supply == null ? "∞" : fmtSupply(data.max_supply),
+    },
+    { k: "ATH", v: fmtCurrency(data.all_time_high, "USD") },
+    { k: "ATH date", v: fmtDate(data.all_time_high_date) },
+    { k: "ATL", v: fmtCurrency(data.all_time_low, "USD") },
+    { k: "ATL date", v: fmtDate(data.all_time_low_date) },
+  ]);
 }
 
 function SnapshotMetric({
@@ -994,7 +1052,7 @@ function SnapshotMetric({
 }: {
   label: string;
   value: string;
-  tone?: "neutral" | "positive" | "negative" | "accent" | "warn";
+  tone?: MetricTone;
 }) {
   const valueColor =
     tone === "positive"
@@ -1015,8 +1073,7 @@ function SnapshotMetric({
 }
 
 function DESStatusPanel({ data }: { data: DESData }) {
-  const actions =
-    data.next_actions ?? (data.nextAction ? [data.nextAction] : []);
+  const actions = data.next_actions ?? (data.nextAction ? [data.nextAction] : []);
   const providerErrors = data.provider_errors ?? [];
   return (
     <Card
@@ -1159,6 +1216,15 @@ const snapshotValueStyle: CSSProperties = {
 const mainGridStyle: CSSProperties = {
   display: "grid",
   gridTemplateColumns: "minmax(0, 2fr) minmax(0, 1fr)",
+  gap: 12,
+};
+
+// One-card layout (summary or snapshot card missing entirely): a single
+// column so the surviving card never leaves an empty half-grid behind
+// (owner, 2026-09-17).
+const singleColumnGridStyle: CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "minmax(0, 1fr)",
   gap: 12,
 };
 

@@ -24,7 +24,7 @@
  *   - Clicking the backdrop fires onCancel().
  *   - Confirm button styled `destructive` red when `destructive=true`.
  */
-import { useEffect, useRef } from "react";
+import { useEffect, useId, useRef } from "react";
 
 export interface ConfirmDialogProps {
   open: boolean;
@@ -52,6 +52,9 @@ export function ConfirmDialog({
   const confirmBtnRef = useRef<HTMLButtonElement>(null);
   const cancelBtnRef = useRef<HTMLButtonElement>(null);
   const previouslyFocused = useRef<HTMLElement | null>(null);
+  // HNT-13: instance-unique id — a fixed string collided when two dialogs
+  // were open at once, pointing aria-labelledby at the wrong title.
+  const titleId = useId();
 
   useEffect(() => {
     if (!open) return;
@@ -98,7 +101,7 @@ export function ConfirmDialog({
     <div
       role="dialog"
       aria-modal="true"
-      aria-labelledby="confirm-dialog-title"
+      aria-labelledby={titleId}
       data-testid="confirm-dialog-backdrop"
       onClick={(e) => {
         if (e.target === e.currentTarget && !busy) onCancel();
@@ -124,7 +127,7 @@ export function ConfirmDialog({
           display: "flex", flexDirection: "column", gap: 12,
         }}
       >
-        <strong id="confirm-dialog-title" style={{ fontSize: 14 }}>{title}</strong>
+        <strong id={titleId} style={{ fontSize: 14 }}>{title}</strong>
         {body && (
           <div
             data-testid="confirm-dialog-body-text"

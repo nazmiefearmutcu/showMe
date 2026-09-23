@@ -76,12 +76,18 @@ describe("CONN terminal-grade — F1 secret show/hide", () => {
     ).toHaveAttribute("aria-pressed", "true");
   });
 
-  it("non-secret api_key has no show/hide toggle and stays text", () => {
+  it("masks the api_key input with a show/hide toggle (HNT-06)", () => {
     render(<CONNPane />);
     fireEvent.click(screen.getByText("Binance"));
     const key = screen.getByLabelText(/^api_key$/i) as HTMLInputElement;
-    expect(key.type).toBe("text");
-    expect(screen.queryByRole("button", { name: /show: api_key/i })).toBeNull();
+    expect(key.type).toBe("password");
+    const toggle = screen.getByRole("button", { name: /show: api_key/i });
+    expect(toggle).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(toggle);
+    expect((screen.getByLabelText(/^api_key$/i) as HTMLInputElement).type).toBe("text");
+    expect(
+      screen.getByRole("button", { name: /hide: api_key/i }),
+    ).toHaveAttribute("aria-pressed", "true");
   });
 });
 

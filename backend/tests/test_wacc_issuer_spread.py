@@ -46,6 +46,10 @@ class _FakeYf:
 
 
 class _FakeFred:
+    # HNT-03: fred_with_keyless_fallback only prefers adapters that actually
+    # carry an api_key — declare one so this keyed fake wins over the shim.
+    api_key = "test-key"
+
     def __init__(self, by_series: dict[str, float]) -> None:
         self._by = by_series
 

@@ -77,7 +77,7 @@ pub fn ensure_layout(app: &tauri::App) -> tauri::Result<()> {
         }
     }
 
-    // Surface logs in Console.app via ~/Library/Logs/showMe.
+    // Surface logs in Console.app via ~/Library/Logs/showMe (macOS only).
     //
     // SEC-07 P1 — verify the link target before trusting it. If a
     // pre-existing entry at the link path is anything other than a
@@ -85,6 +85,7 @@ pub fn ensure_layout(app: &tauri::App) -> tauri::Result<()> {
     // refuse to use it. That stops an attacker who pre-creates
     // `~/Library/Logs/showMe` as a symlink into `/etc` from receiving
     // every line we write.
+    #[cfg(target_os = "macos")]
     if let Some(home) = dirs_home() {
         let console_link = home.join("Library/Logs/showMe");
         let logs_dir = root.join("logs");
@@ -126,6 +127,11 @@ pub fn ensure_layout(app: &tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
+#[allow(dead_code)]
 fn dirs_home() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(PathBuf::from)
+    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+        return Some(home);
+    }
+    // Windows: HOME is usually unset — fall back to USERPROFILE.
+    std::env::var_os("USERPROFILE").map(PathBuf::from)
 }

@@ -35,10 +35,12 @@ def _detect_feedparser() -> bool:
 _HAVE_FEEDPARSER = _detect_feedparser()
 
 
-def _coerce_iso(value: Any) -> str:
-    """Best-effort: turn whatever a feed gave us into an ISO 8601 UTC string."""
-    if not value:
-        return datetime.now(timezone.utc).isoformat()
+def _coerce_iso(value: Any) -> str | None:
+    """Best-effort: turn whatever a feed gave us into an ISO 8601 UTC string.
+
+    Returns ``None`` when the value is missing or unparseable — fabricating
+    "now" would push stale entries to the top of the newest-first sort
+    (the engine-layer parser is equally honest about this)."""
     if isinstance(value, datetime):
         if value.tzinfo is None:
             value = value.replace(tzinfo=timezone.utc)
@@ -60,14 +62,14 @@ def _coerce_iso(value: Any) -> str:
             return dt.astimezone(timezone.utc).isoformat()
         except Exception:
             pass
-    return datetime.now(timezone.utc).isoformat()
+    return None
 
 
-def _parse_with_feedparser(xml_text: str, source_hint: str) -> list[dict[str, str]]:
+def _parse_with_feedparser(xml_text: str, source_hint: str) -> list[dict[str, str | None]]:
     import feedparser  # type: ignore
     parsed = feedparser.parse(xml_text)
     source = (parsed.feed.get("title") if parsed.feed else None) or source_hint
-    out: list[dict[str, str]] = []
+    out: list[dict[str, str | None]] = []
     for entry in parsed.entries:
         published = entry.get("published") or entry.get("updated") or ""
         struct = entry.get("published_parsed") or entry.get("updated_parsed")
@@ -85,7 +87,7 @@ def _parse_with_feedparser(xml_text: str, source_hint: str) -> list[dict[str, st
     return out
 
 
-def _parse_with_stdlib(xml_text: str, source_hint: str) -> list[dict[str, str]]:
+def _parse_with_stdlib(xml_text: str, source_hint: str) -> list[dict[str, str | None]]:
     try:
         root = ET.fromstring(xml_text.encode("utf-8"))
     except Exception:
@@ -109,7 +111,7 @@ def _parse_with_stdlib(xml_text: str, source_hint: str) -> list[dict[str, str]]:
             "{http://www.w3.org/2005/Atom}summary",
         )
     source = feed_title or source_hint
-    out: list[dict[str, str]] = []
+    out: list[dict[str, str | None]] = []
     for node in items:
         title_node = node.find(getters[0])
         link_node = node.find(getters[1])
@@ -147,11 +149,12 @@ class RssAdapter(ProviderAdapter):
     def capabilities(self) -> set[str]:
         return {"feed_fetch", "feed_aggregate"}
 
-    async def fetch(self, url: str) -> list[dict[str, str]]:
+    async def fetch(self, url: str) -> list[dict[str, str | None]]:
         """Fetch a single feed URL.
 
         Returns a list of dicts with keys: ``title``, ``link``,
-        ``published`` (ISO 8601 UTC string), ``summary``, ``source``.
+        ``published`` (ISO 8601 UTC string, or ``None`` when the feed
+        carried no parseable date), ``summary``, ``source``.
         """
         client = await get_client()
         t0 = time.perf_counter()
@@ -176,7 +179,7 @@ class RssAdapter(ProviderAdapter):
         self,
         urls: list[str],
         dedupe_by: str = "link",
-    ) -> list[dict[str, str]]:
+    ) -> list[dict[str, str | None]]:
         """Fetch several feeds concurrently; merge, dedupe, sort.
 
         Args:
@@ -185,10 +188,10 @@ class RssAdapter(ProviderAdapter):
                 ``"title"`` also useful for feeds with synthetic links).
 
         Returns:
-            List of entry dicts, newest-first (by ``published``).
-            Failed feeds are silently skipped — the adapter's
-            ``mode()`` only flips on a total-stack failure (no entries
-            recovered AND every fetch failed).
+            List of entry dicts, newest-first (by ``published``); entries
+            without a parseable date sort last. Failed feeds are silently
+            skipped — the adapter's ``mode()`` only flips on a total-stack
+            failure (no entries recovered AND every fetch failed).
         """
         if not urls:
             return []
@@ -196,7 +199,7 @@ class RssAdapter(ProviderAdapter):
             *(self.fetch(u) for u in urls),
             return_exceptions=True,
         )
-        merged: list[dict[str, str]] = []
+        merged: list[dict[str, str | None]] = []
         all_failed = True
         for r in results:
             if isinstance(r, BaseException):
@@ -210,7 +213,7 @@ class RssAdapter(ProviderAdapter):
         self._last_error = None
 
         seen: set[str] = set()
-        deduped: list[dict[str, str]] = []
+        deduped: list[dict[str, str | None]] = []
         for entry in merged:
             key = (entry.get(dedupe_by) or "").strip()
             if not key:
@@ -221,5 +224,9 @@ class RssAdapter(ProviderAdapter):
             seen.add(key)
             deduped.append(entry)
 
-        deduped.sort(key=lambda e: e.get("published", ""), reverse=True)
+        # Newest first; undated entries (``published is None``) sort last.
+        deduped.sort(
+            key=lambda e: (e.get("published") is not None, e.get("published") or ""),
+            reverse=True,
+        )
         return deduped

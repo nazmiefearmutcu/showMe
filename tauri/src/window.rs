@@ -139,18 +139,20 @@ fn resolve_position(
     (frame.x, frame.y)
 }
 
-pub fn persist_state(window: &Window) {
-    let app = window.app_handle();
+pub fn persist_state(app: &tauri::AppHandle) {
     let Some(path) = state_path(app) else { return };
     let mut frames: HashMap<String, WindowFrame> = std::fs::read_to_string(&path)
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok())
         .unwrap_or_default();
     for (label, w) in app.webview_windows() {
-        // REL-04 P2 — persist **inner** position+size as logical DIPs so
-        // restore is symmetric and Retina-safe. `outer_position()` +
-        // `LogicalPosition::new` was a units mismatch.
-        let pos: Option<PhysicalPosition<i32>> = w.inner_position().ok();
+        // REL-04 P2 — persist logical DIPs so restore is Retina-safe.
+        // HNT-05 — `set_position` targets the OUTER frame, so persist
+        // `outer_position()` to keep position symmetric (the previous
+        // inner/outer mix shifted the window down by a title-bar on
+        // every relaunch). Size stays inner/inner (`set_size` is
+        // inner), which is already symmetric.
+        let pos: Option<PhysicalPosition<i32>> = w.outer_position().ok();
         let size = w.inner_size().ok();
         let scale = w.scale_factor().unwrap_or(1.0).max(0.1);
         if let (Some(pos), Some(size)) = (pos, size) {

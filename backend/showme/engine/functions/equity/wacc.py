@@ -63,22 +63,31 @@ class WACCFunction(BaseFunction):
                 erp = 0.05
         erp = float(erp)
         # Risk-free
-        rf = float(params.get("rf")) if params.get("rf") not in (None, "") else float("nan")
-        # Keyless FRED CSV fallback (S2 c#3): the risk-free anchor is
-        # attempted even without a keyed adapter.
-        try:
-            fred = fred_with_keyless_fallback(
-                self.deps.fred, client=getattr(self, "_http_client", None)
-            )
-            df = await asyncio.wait_for(
-                fred.series("DGS10", frequency="d"),
-                timeout=float(params.get("fred_timeout", 8)),
-            )
-            rf = float(df["value"].iloc[-1]) / 100.0 if not df.empty else 0.04
-            sources.append("fred")
-        except Exception as e:
-            warnings.append(f"fred: {e}")
-            rf = 0.04
+        # HNT-07 fix: a user-supplied ``rf`` must win unconditionally, the
+        # same way the beta/rd overrides already do. FRED is only consulted
+        # when the caller did not pin a scenario rate; previously a healthy
+        # FRED fetch silently overwrote the user's rf (and a dead one
+        # replaced it with the 0.04 constant).
+        rf_user = params.get("rf") not in (None, "")
+        rf = float(params.get("rf")) if rf_user else float("nan")
+        if rf_user:
+            sources.append("user_input")
+        else:
+            # Keyless FRED CSV fallback (S2 c#3): the risk-free anchor is
+            # attempted even without a keyed adapter.
+            try:
+                fred = fred_with_keyless_fallback(
+                    self.deps.fred, client=getattr(self, "_http_client", None)
+                )
+                df = await asyncio.wait_for(
+                    fred.series("DGS10", frequency="d"),
+                    timeout=float(params.get("fred_timeout", 8)),
+                )
+                rf = float(df["value"].iloc[-1]) / 100.0 if not df.empty else 0.04
+                sources.append("fred")
+            except Exception as e:
+                warnings.append(f"fred: {e}")
+                rf = 0.04
         # Beta — Bug #17: never silently fall back to 1.0 without labelling.
         #
         # The WACC pane reported β=1.0 for AAPL while the dedicated BETA
@@ -108,29 +117,52 @@ class WACCFunction(BaseFunction):
                     beta_fn.execute(instrument, windows=["5Y", "2Y", "1Y"]),
                     timeout=float(params.get("beta_timeout", 8)),
                 )
-                betas = ((beta_res.data or {}).get("betas") or {})
+                beta_payload = beta_res.data or {}
+                betas = beta_payload.get("betas") or {}
+                beta_status = str(beta_payload.get("status") or "")
+                beta_errors = (beta_res.metadata or {}).get("provider_errors")
+                # HNT-01 fix: never accept a provider-failure payload as a
+                # live β. A provider_unavailable status (or any provider
+                # error marker — including the retired
+                # "computed_market_model" baseline label) means the numbers
+                # must not flow into CAPM tagged "beta_2y" + data_state
+                # "live". Empty-betas payloads are handled below.
+                beta_provider_failed = bool(
+                    beta_status in ("provider_unavailable", "input_required", "computed_market_model")
+                    or beta_errors
+                )
                 resolved: float | None = None
-                for window in ("5Y", "2Y", "1Y"):
-                    entry = betas.get(window) if isinstance(betas, dict) else None
-                    if isinstance(entry, dict):
-                        candidate = entry.get("beta")
-                        if isinstance(candidate, (int, float)) and float(candidate) == float(candidate):
-                            resolved = float(candidate)
-                            beta_window_used = window
-                            break
+                if not beta_provider_failed:
+                    for window in ("5Y", "2Y", "1Y"):
+                        entry = betas.get(window) if isinstance(betas, dict) else None
+                        if isinstance(entry, dict):
+                            candidate = entry.get("beta")
+                            if isinstance(candidate, (int, float)) and float(candidate) == float(candidate):
+                                resolved = float(candidate)
+                                beta_window_used = window
+                                break
                 if resolved is not None:
                     beta = resolved
                     beta_source = f"beta_{beta_window_used.lower()}" if beta_window_used else "beta"
                     sources.append("beta")
                 else:
-                    # BetaFunction returned but had no usable window (e.g. it
-                    # took the deterministic _beta_baseline path because
-                    # yfinance failed). Surface that honestly.
-                    beta_data_state = "synthetic_beta"
-                    warnings.append(
-                        "beta unavailable: BetaFunction returned no live window; "
-                        "WACC is using a synthetic β=1.0"
-                    )
+                    # BetaFunction returned but had no usable window — either
+                    # the provider hard-failed (HNT-01) or no window had
+                    # enough history. Surface that honestly; WACC keeps
+                    # computing with a synthetic β=1.0 but never labels it
+                    # "live".
+                    if beta_provider_failed:
+                        beta_data_state = "provider_unavailable"
+                        warnings.append(
+                            "beta unavailable: BetaFunction provider failed "
+                            f"({beta_status or 'provider error'}); WACC is using a synthetic β=1.0"
+                        )
+                    else:
+                        beta_data_state = "synthetic_beta"
+                        warnings.append(
+                            "beta unavailable: BetaFunction returned no live window; "
+                            "WACC is using a synthetic β=1.0"
+                        )
                     sources.append("synthetic_beta")
             except Exception as e:
                 beta_data_state = "synthetic_beta"
@@ -281,7 +313,7 @@ class WACCFunction(BaseFunction):
                     "debt_weight": "Debt share of capital structure.",
                     "beta_source": "Source of β used in CAPM (user_input, beta_5y, beta_2y, beta_1y, or synthetic_beta).",
                     "beta_window": "Trailing window used by BetaFunction when β was sourced from it.",
-                    "data_state": "live when β was sourced from a real BetaFunction window; synthetic_beta when WACC fell back to β=1.0.",
+                    "data_state": "live when β was sourced from a real BetaFunction window; provider_unavailable when the beta provider failed; synthetic_beta when WACC fell back to β=1.0 with no live window.",
                 },
                 "beta_source": beta_source,
                 "beta_window": beta_window_used,

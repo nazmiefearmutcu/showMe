@@ -290,6 +290,7 @@ def _finalize_bars(rows: Any, limit: int) -> list[dict[str, Any]]:
 
 
 def register(app: FastAPI, deps: AppDeps) -> None:
+    from showme.chart_history import INDEX_YAHOO_TICKERS
     from showme.crypto_aliases import is_crypto_symbol
     from showme.quotes import clean_symbol
 
@@ -310,6 +311,10 @@ def register(app: FastAPI, deps: AppDeps) -> None:
         target = clean_symbol(symbol)
         interval_id = normalize_interval(interval)
         crypto = is_crypto_symbol(target)
+        if not crypto and target.upper() in INDEX_YAHOO_TICKERS:
+            # Desk index codes (SPX/NDX/DJI/…) have no bare Yahoo ticker —
+            # chart_history.INDEX_YAHOO_TICKERS is the single map.
+            target = INDEX_YAHOO_TICKERS[target.upper()]
         source = "binance" if crypto else "yahoo"
         payload: dict[str, Any] = {
             "symbol": target,

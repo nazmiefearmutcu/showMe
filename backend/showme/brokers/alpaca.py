@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import os
 from typing import Any
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 
 from .base import (
     BaseBroker,
@@ -48,10 +48,43 @@ def _alpaca_status(text: str) -> OrderStatus:
     return mapping.get((text or "").lower(), OrderStatus.NEW)
 
 
+def _to_side(text: str) -> OrderSide:
+    return OrderSide.BUY if (text or "").lower() in {"buy", "long"} else OrderSide.SELL
+
+
+def _to_type(text: str) -> OrderType:
+    mapping = {
+        "market": OrderType.MARKET,
+        "limit": OrderType.LIMIT,
+        "stop": OrderType.STOP,
+        "stop_limit": OrderType.STOP_LIMIT,
+        "stop-limit": OrderType.STOP_LIMIT,
+        "trailing_stop": OrderType.MARKET,
+        "trailing_stop_limit": OrderType.STOP_LIMIT,
+    }
+    return mapping.get((text or "market").lower(), OrderType.MARKET)
+
+
+def _to_tif(text: str) -> TimeInForce:
+    mapping = {
+        "day": TimeInForce.DAY,
+        "gtc": TimeInForce.GTC,
+        "ioc": TimeInForce.IOC,
+        "fok": TimeInForce.FOK,
+        "opg": TimeInForce.DAY,
+        "cls": TimeInForce.DAY,
+    }
+    return mapping.get((text or "day").lower(), TimeInForce.DAY)
+
+
 def _to_order(payload: dict[str, Any]) -> Order:
-    side = OrderSide(payload.get("side", "buy").lower())
-    order_type = OrderType(payload.get("type", "market").lower())
-    tif = TimeInForce(payload.get("time_in_force", "day").lower())
+    # HNT-05: tolerant mappings — Alpaca returns order types / TIF values
+    # (trailing_stop, opg, cls, ...) that have no enum member; a hard
+    # OrderType(...) would crash list_orders. Unknown values stay visible
+    # in ``raw`` (ccxt_broker pattern).
+    side = _to_side(str(payload.get("side", "buy")))
+    order_type = _to_type(str(payload.get("type", "market")))
+    tif = _to_tif(str(payload.get("time_in_force", "day")))
     qty = float(payload.get("qty") or payload.get("quantity") or 0)
     filled = float(payload.get("filled_qty") or 0)
     avg = payload.get("filled_avg_price")
@@ -100,6 +133,7 @@ class AlpacaPaperBroker(BaseBroker):
         secret: str | None = None,
         base_url: str | None = None,
         http_call: HttpCall | None = None,
+        permissions: Sequence[str] | None = None,
     ) -> None:
         self.api_key = api_key or os.environ.get("ALPACA_PAPER_KEY", "")
         self.secret = secret or os.environ.get("ALPACA_PAPER_SECRET", "")
@@ -107,6 +141,20 @@ class AlpacaPaperBroker(BaseBroker):
             base_url or os.environ.get("ALPACA_PAPER_BASE_URL") or DEFAULT_BASE_URL
         ).rstrip("/")
         self._http_call = http_call
+        # HNT-04: permission gate — ``None`` keeps the legacy env-key
+        # behaviour ungated; a credential-scoped broker (factory passes the
+        # saved credential's permissions) enforces the same "trade" gate
+        # as CcxtBroker so a read-only key cannot submit orders.
+        self._permissions: tuple[str, ...] | None = (
+            tuple(permissions) if permissions is not None else None
+        )
+
+    def _require(self, perm: str) -> None:
+        if self._permissions is not None and perm not in self._permissions:
+            raise NotSupported(
+                f"credential lacks '{perm}' permission "
+                f"(has: {','.join(self._permissions) or 'none'})"
+            )
 
     # ── HTTP transport (injectable) ──────────────────────────────────────
 
@@ -180,6 +228,7 @@ class AlpacaPaperBroker(BaseBroker):
     ) -> Order:
         if quantity <= 0:
             raise BrokerError("quantity must be positive")
+        self._require("trade")
         body: dict[str, Any] = {
             "symbol": symbol.upper(),
             "qty": quantity,
@@ -197,6 +246,7 @@ class AlpacaPaperBroker(BaseBroker):
         return _to_order(data)
 
     async def cancel_order(self, order_id: str) -> bool:
+        self._require("trade")
         try:
             await self._call("DELETE", f"/v2/orders/{order_id}")
         except BrokerError as exc:
@@ -209,14 +259,19 @@ class AlpacaPaperBroker(BaseBroker):
     async def close_position(
         self, symbol: str, *, quantity: float | None = None,
     ) -> Order:
-        body: dict[str, Any] | None = (
+        self._require("trade")
+        # HNT-03: Alpaca's DELETE /v2/positions/{symbol} reads the partial
+        # close size from the QUERY STRING (the official SDK routes DELETE
+        # bodies to params); a JSON body is ignored and the whole position
+        # gets liquidated.
+        query: dict[str, Any] | None = (
             {"qty": quantity} if quantity is not None else None
         )
         try:
             data = await self._call(
                 "DELETE",
                 f"/v2/positions/{symbol.upper()}",
-                json_body=body,
+                query=query,
             )
         except BrokerError as exc:
             raise NotSupported(str(exc)) from exc

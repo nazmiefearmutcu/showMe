@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Pill, Skeleton, Sparkline } from "@/design-system";
 import { navigate } from "@/lib/router";
 import { toast } from "@/lib/toast";
@@ -97,7 +97,12 @@ interface WatchRow {
   /** Ask price as displayed; "—" when no live quote is available. */
   ask: string;
   last: string;
-  change: number;
+  /**
+   * One-day percent change. `null` = no live quote yet — the row renders the
+   * missing sentinel ("—") instead of a fabricated "0.00%" flat day (same
+   * honesty contract as the market tiles above).
+   */
+  change: number | null;
   /** Optional trend series — empty array means "no history; render placeholder". */
   trend: number[];
   volume: string;
@@ -655,6 +660,35 @@ export function Welcome() {
   const briefIsLive = briefItems.length > 0;
   const briefLoading = briefFn.state === "loading";
 
+  // DEMO is a last resort, not a first paint: a cold BRIEF key answers the
+  // 1 s SWR "warming" envelope while the real composition lands in cache
+  // ~6 s later. Retry a few times before settling on the demo banner —
+  // without this the banner stuck until remount even though live data was
+  // moments away.
+  const BRIEF_RETRY_DELAYS_MS = useMemo(() => [7000, 15000, 30000], []);
+  const briefRetryCount = useRef(0);
+  const [briefRetryWait, setBriefRetryWait] = useState(false);
+  const briefRefetchRef = useRef(briefFn.refetch);
+  briefRefetchRef.current = briefFn.refetch;
+  useEffect(() => {
+    if (briefIsLive) {
+      briefRetryCount.current = 0;
+      setBriefRetryWait(false);
+      return;
+    }
+    if (briefLoading || !briefAvailable || status !== "healthy") return;
+    if (briefRetryCount.current >= BRIEF_RETRY_DELAYS_MS.length) return;
+    const delay = BRIEF_RETRY_DELAYS_MS[briefRetryCount.current];
+    briefRetryCount.current += 1;
+    setBriefRetryWait(true);
+    const id = window.setTimeout(() => {
+      setBriefRetryWait(false);
+      briefRefetchRef.current();
+    }, delay);
+    return () => window.clearTimeout(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [briefIsLive, briefLoading, briefAvailable, status]);
+
   const tz = useTimezone();
   const [now, setNow] = useState(() => new Date());
   useEffect(() => {
@@ -833,7 +867,7 @@ export function Welcome() {
                 </div>
               ))}
             </div>
-          ) : briefLoading ? (
+          ) : briefLoading || briefRetryWait ? (
             <div
               className="terminal-brief-loading"
               role="status"
@@ -868,9 +902,9 @@ export function Welcome() {
                   Demo data
                 </Pill>
                 <span>
-                  No live brief yet — BRIEF returned no headlines (start the
-                  sidecar / check the news provider). Copy below is illustrative
-                  only and not yet wired to live editorial.
+                  No live brief yet — BRIEF returned no headlines even after
+                  retries (start the sidecar / check the news provider). Copy
+                  below is illustrative only.
                 </span>
               </div>
               <p className="terminal-brief-copy">
@@ -1104,7 +1138,9 @@ export function Welcome() {
                     tabIndex={0}
                     aria-label={`View ${row.symbol}${
                       row.name && row.name !== row.symbol ? ` (${row.name})` : ""
-                    } — last ${row.last}, change ${formatPct(row.change)}`}
+                    } — last ${row.last}, change ${
+                      row.change == null ? "—" : formatPct(row.change)
+                    }`}
                     onClick={() => navigate(`/symbol/${row.symbol}/DES`)}
                     onKeyDown={(e) => {
                       if (e.key === "Enter" || e.key === " ") {
@@ -1131,9 +1167,9 @@ export function Welcome() {
                     </span>
                     <span
                       role="gridcell"
-                      className={`${toneClass("terminal-change", row.change)} terminal-grid-numeric`}
+                      className={`${toneClass("terminal-change", row.change ?? 0)} terminal-grid-numeric`}
                     >
-                      {formatPct(row.change)}
+                      {row.change == null ? formatMissing : formatPct(row.change)}
                     </span>
                     <span role="gridcell" className="terminal-watchlist__spark">
                       {row.trend.length > 0 ? (
@@ -1141,7 +1177,7 @@ export function Welcome() {
                           values={row.trend}
                           width={78}
                           height={24}
-                          tone={row.change >= 0 ? "positive" : "negative"}
+                          tone={(row.change ?? 0) >= 0 ? "positive" : "negative"}
                           ariaLabel={`${row.symbol} trend`}
                         />
                       ) : (
@@ -1819,7 +1855,9 @@ export function buildSavedWatchRows(
   return saved.slice(0, 12).map((row) => {
     const quote = liveQuotes[row.symbol.toUpperCase()];
     const price = quote?.price ?? null;
-    const changePct = quote?.changePct ?? 0;
+    // HNT-06: missing changePct stays null (renders "—") rather than faking
+    // a flat 0.00% day — aligned with the market-tile policy.
+    const changePct = quote?.changePct ?? null;
     const bid = quote?.lastTick?.bid ?? quote?.snapshot?.bid ?? null;
     const ask = quote?.lastTick?.ask ?? quote?.snapshot?.ask ?? null;
     const notionalValue =

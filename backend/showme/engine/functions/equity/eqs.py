@@ -50,7 +50,7 @@ _TOKEN = re.compile(
     r'|(\bAND\b|\bOR\b|\band\b|\bor\b|\bAnd\b|\bOr\b)'        # 4 BOOL — first
     r'|([<>]=?|!=|==|=)'                                     # 5 comparison
     r'|([A-Za-z_][\w\.]*\s*\([^)]*\)|[A-Za-z_][\w\.]*)'      # 6 func/ident
-    r'|(-?\d+(?:\.\d+)?)'                                    # 7 number
+    r'|(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)'                   # 7 number (HNT-10: exponent)
     r')'
 )
 
@@ -61,8 +61,16 @@ def _tokenize(s: str) -> list[tuple[str, str]]:
     while i < len(s):
         m = _TOKEN.match(s, i)
         if not m:
-            i += 1
-            continue
+            # HNT-10 fix: unrecognized characters used to be silently
+            # skipped, so "marketCap > 1e9" parsed as "marketCap > 1"
+            # (the "e9" became a dangling ID token). Whitespace is still
+            # skippable; anything else fails loudly.
+            if s[i].isspace():
+                i += 1
+                continue
+            raise ValueError(
+                f"unexpected character {s[i]!r} at position {i} in query"
+            )
         for idx, kind in enumerate(("LP", "RP", "STR", "BOOL", "OP", "ID", "NUM"), 1):
             if m.group(idx):
                 out.append((kind, m.group(idx)))
@@ -108,7 +116,10 @@ def _parse_primary(tokens: list[tuple[str, str]], pos: int) -> tuple[Any, int]:
         val = raw[1:-1]
     else:
         try:
-            val = float(raw) if "." in raw else int(raw)
+            # HNT-10 fix: scientific-notation NUM tokens ("1e9") must
+            # convert to a float, not fall back to a string that silently
+            # matches nothing in comparisons.
+            val = float(raw) if ("." in raw or "e" in raw or "E" in raw) else int(raw)
         except ValueError:
             val = raw
     return Cond(field=field, op=op, value=val), pos

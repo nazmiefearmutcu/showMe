@@ -199,13 +199,17 @@ export function Statusbar() {
 }
 
 /**
- * Replace any `/Users/<account>/` prefix with `~/` so the bar never leaks a
- * developer's macOS short-name into screenshots, demos, or screen-share
- * sessions. Prior implementation hard-coded `/Users/nazmi/`, which silently
- * no-op'd on every other machine and exposed Nazmi's home folder.
+ * Replace a user-home prefix with `~` so the bar never leaks a developer's
+ * account name into screenshots, demos, or screen-share sessions — on both
+ * macOS (`/Users/<account>/`) and Windows (`C:\Users\<account>\`). The rest
+ * of the path is preserved verbatim (no separator rewriting). Prior
+ * implementation hard-coded `/Users/nazmi/`, which silently no-op'd on
+ * every other machine and exposed Nazmi's home folder.
  */
 export function shortenPath(path: string): string {
-  const match = path.match(/^\/Users\/[^/]+\//);
-  if (match) return `~/${path.slice(match[0].length)}`;
+  const mac = path.match(/^\/Users\/[^/]+\//);
+  if (mac) return `~/${path.slice(mac[0].length)}`;
+  const win = path.match(/^[A-Za-z]:[\\/]users[\\/][^\\/]+[\\/]/i);
+  if (win) return `~\\${path.slice(win[0].length)}`;
   return path;
 }

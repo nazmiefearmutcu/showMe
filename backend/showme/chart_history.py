@@ -82,6 +82,32 @@ BINANCE_PAGE_LIMIT = 1_000
 # reaching its deepest available bar — independent of the user's range pill.
 RACE_LOOKBACK_DAYS = 365 * 60
 
+# Desk index codes → Yahoo caret tickers. The HP/GP chart race queries
+# Yahoo's chart endpoint directly, and Yahoo has no bare "SPX" (the
+# endpoint answers 200 with an empty result). Without this map every
+# index chart renders "No bars". The codes are desk-reserved (see
+# ``server.INDEX_SYMBOLS``), so the map applies regardless of the
+# caller-supplied asset class.
+INDEX_YAHOO_TICKERS: dict[str, str] = {
+    "SPX": "^GSPC",
+    "GSPC": "^GSPC",
+    "NDX": "^NDX",
+    "DJI": "^DJI",
+    "DJIA": "^DJI",
+    "RUT": "^RUT",
+    "VIX": "^VIX",
+    "IXIC": "^IXIC",
+}
+
+# Same desk codes → Stooq slugs (Stooq leg of the race; key-gated).
+INDEX_STOOQ_SLUGS: dict[str, str] = {
+    "SPX": "^spx",
+    "GSPC": "^spx",
+    "NDX": "^ndq",
+    "DJI": "^dji",
+    "DJIA": "^dji",
+}
+
 
 @dataclass
 class DeepHistoryResult:
@@ -295,7 +321,7 @@ async def fetch_longest_history(
             "winner_first_ts_ms": winner_first_ts,
             "bars_available": len(winner.rows),
             "bars_returned": len(trimmed_rows),
-            "deep_history": True,
+            "deep_history": bool(deep_history),
         }
     )
 
@@ -697,6 +723,8 @@ def _stooq_symbol(symbol: str, asset_class: str) -> str:
         clean = clean.removesuffix("=X")
         return clean.lower()
     if asset in {"INDEX", "INDICES"}:
+        if clean in INDEX_STOOQ_SLUGS:
+            return INDEX_STOOQ_SLUGS[clean]
         if not clean.startswith("^"):
             clean = "^" + clean
         return clean.lower()
@@ -715,6 +743,8 @@ def _stooq_symbol(symbol: str, asset_class: str) -> str:
 
 def _yahoo_symbol(symbol: str, asset_class: str) -> str:
     clean = str(symbol or "").strip().upper()
+    if clean in INDEX_YAHOO_TICKERS:
+        return INDEX_YAHOO_TICKERS[clean]
     if asset_class == "FX" and "=" not in clean:
         return f"{clean}=X"
     if asset_class == "CRYPTO":
@@ -803,8 +833,11 @@ def _rows_from_binance_klines(page: list[Any]) -> list[dict[str, Any]]:
     for item in page:
         try:
             open_ms = int(item[0])
+            stamp = _utc_from_ts(open_ms // 1000)
+            if stamp is None:
+                continue
             rows.append({
-                "date": datetime.fromtimestamp(open_ms / 1000, tz=timezone.utc).isoformat(),
+                "date": stamp.isoformat(),
                 "time": open_ms // 1000,
                 "open": _num(item[1]),
                 "high": _num(item[2]),
@@ -833,9 +866,12 @@ def _rows_from_yahoo_chart(payload: dict[str, Any]) -> list[dict[str, Any]]:
         close = _num(_at(closes, idx))
         if close is None:
             continue
+        stamp = _utc_from_ts(ts)
+        if stamp is None:
+            continue
         rows.append({
-            "date": datetime.fromtimestamp(int(ts), tz=timezone.utc).isoformat(),
-            "time": int(ts),
+            "date": stamp.isoformat(),
+            "time": int(float(ts)),
             "open": _num(_at(opens, idx)),
             "high": _num(_at(highs, idx)),
             "low": _num(_at(lows, idx)),
@@ -915,6 +951,24 @@ def _num(value: Any) -> float | None:
     except Exception:
         return None
     return number if math.isfinite(number) else None
+
+
+def _utc_from_ts(ts: Any) -> datetime | None:
+    """Epoch → aware UTC datetime, safe on every platform.
+
+    ``datetime.fromtimestamp`` rejects pre-1970 (negative) values on
+    Windows (OSError [Errno 22]) — and ^GSPC history starts in 1927, so
+    the S&P chart always blew up there while NDX (from 1985) worked.
+    Epoch arithmetic has no such floor.
+    """
+    try:
+        seconds = int(float(ts))
+    except Exception:
+        return None
+    try:
+        return datetime(1970, 1, 1, tzinfo=timezone.utc) + timedelta(seconds=seconds)
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------------------

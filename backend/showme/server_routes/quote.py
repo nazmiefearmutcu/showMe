@@ -91,14 +91,20 @@ def register(app: FastAPI, deps: AppDeps) -> None:
         try:
             data = await asyncio.wait_for(fetch_quote_snapshot(symbol), timeout=5)
             payload = _build_quote_envelope(ok=True, data=data, error=None)
+            quote_cache_set(symbol, payload)
         except (QuoteFetchError, TimeoutError, asyncio.TimeoutError) as exc:
             payload = _build_quote_envelope(ok=False, data=None, error=str(exc))
-        quote_cache_set(symbol, payload)
+            # HNT-16: do NOT cache the error envelope. A single transient
+            # network failure used to pin the symbol as "unavailable" for
+            # the full positive TTL (5s crypto / 15s equity) — every retry
+            # inside the window returned the cached failure with
+            # ``cache_hit: true`` without ever touching the provider.
         return payload
 
     @router.get("/api/symbol/resolve")
     async def resolve_symbol(symbol: str, asset_class: str | None = None) -> dict[str, Any]:
-        canonical = _canonical_route_symbol(symbol, asset_class)
+        # HNT-09: alias resolution may hit the network — keep it off the loop.
+        canonical = await asyncio.to_thread(_canonical_route_symbol, symbol, asset_class)
         inferred = default_asset_class_name(canonical, asset_class)
         return {
             "input": symbol,

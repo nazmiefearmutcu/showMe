@@ -144,7 +144,12 @@ class SOSCFunction(BaseFunction):
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         sym = (getattr(instrument, "symbol", None) or params.get("symbol") or "AAPL").upper()
         # crypto symbols arrive as BTCUSDT / BTC-USD — strip to the base token
-        base = sym.replace("USDT", "").replace("-USD", "").replace("USD", "") or sym
+        # (HNT-21: suffix-anchored so FX-style "USDJPY" is not mangled to "JPY")
+        base = (
+            sym.removesuffix("USDT")
+            .removesuffix("-USD")
+            .removesuffix("USD")
+        ) or sym
         days = int(params.get("days", 3) or 3)
         timespan = f"{max(1, min(days, 14))}d"
         maxrecords = max(20, min(int(params.get("limit", 75) or 75), 250))

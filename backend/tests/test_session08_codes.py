@@ -110,10 +110,12 @@ def test_stubs_truthy_handles_false_string() -> None:
 def test_hvt_non_live_marks_reference_and_live_false() -> None:
     """de-garbage 2026-06-01: HVT now fetches the realized-vol term structure
     LIVE from yfinance by default (no opt-in flag). With no yfinance adapter the
-    default path degrades HONESTLY to ``provider_unavailable`` (live=False) and
-    still carries a labelled reference vol-window table so the UI renders. The
-    explicit ``reference=true`` opt-in (tests / air-gapped demos) still yields
-    the canonical ``reference`` shape — never silently substituted as default."""
+    default path degrades HONESTLY to ``provider_unavailable`` (live=False).
+    HNT-14 (2026-09-22): the provider_unavailable envelope no longer carries
+    the seed-derived reference vol-window rows — a provider outage must ship
+    EMPTY rows + reason, never fabricated realized-vol numbers. The explicit
+    ``reference=true`` opt-in (tests / air-gapped demos) still yields the
+    canonical ``reference`` shape."""
     from showme.engine.core.instrument import AssetClass, Instrument
     from showme.engine.functions.derivative._stubs import HVTFunction
 
@@ -124,9 +126,10 @@ def test_hvt_non_live_marks_reference_and_live_false() -> None:
     res = asyncio.run(fn.execute(instrument=inst))
     assert res.data["status"] == "provider_unavailable"
     assert res.metadata is not None and res.metadata.get("live") is False
-    # A labelled reference vol-window table must still render.
-    assert isinstance(res.data["rows"], list) and len(res.data["rows"]) >= 1
-    assert res.data["summary"]["source_mode"] == "reference"
+    # HNT-14: no fabricated realized-vol rows inside the outage envelope.
+    assert res.data["rows"] == []
+    assert res.data["reason"]
+    assert res.data["next_actions"]
 
     # Explicit opt-in reference template stays the canonical "reference" shape.
     ref = asyncio.run(fn.execute(instrument=inst, reference=True))

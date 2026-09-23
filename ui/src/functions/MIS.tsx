@@ -64,6 +64,11 @@ import type { FunctionPaneProps } from "./registry-types";
 
 const TOP_N_OPTIONS: number[] = [25, 50, 100, 200, 500];
 
+/** Client deadline for the scan POST. The backend keeps scanning after an
+ * abort (and single-flights concurrent callers), so this bounds only the UI
+ * wait — clicking Scan again joins the still-running sweep. */
+const SCAN_DEADLINE_MS = 30 * 60 * 1000;
+
 type TabId = "results" | "settings";
 
 const TABS = [
@@ -135,6 +140,10 @@ export function MISPane({ code }: FunctionPaneProps) {
   // but stops cleanly on unmount or scan completion".
   const [progress, setProgress] = useState<MisScanProgress | null>(null);
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Scans legitimately run for minutes; this controller owns the POST
+  // deadline (see SCAN_DEADLINE_MS) so sidecarFetch's 15 s default can't
+  // kill a healthy sweep with "request timed out after 15000ms".
+  const scanAbortRef = useRef<AbortController | null>(null);
 
   const stopPolling = useCallback(() => {
     if (pollTimerRef.current != null) {
@@ -145,8 +154,10 @@ export function MISPane({ code }: FunctionPaneProps) {
 
   // Hard-stop the poll on unmount — otherwise a stale interval keeps
   // fetching after the user navigates away. Belt-and-suspenders to the
-  // ``finally`` in ``run`` below.
+  // ``finally`` in ``run`` below. The in-flight POST is aborted too so the
+  // pane doesn't hold a connection open after navigation.
   useEffect(() => stopPolling, [stopPolling]);
+  useEffect(() => () => scanAbortRef.current?.abort(), []);
 
   // Per-row drill-down: which symbols have their full indicator breakdown
   // expanded. Keyed by ``market:symbol`` so two markets can't collide.
@@ -273,6 +284,13 @@ export function MISPane({ code }: FunctionPaneProps) {
     setProgressNote(
       `${selected.size} markets × ~${totalUniverse} symbols scanning — may take seconds to minutes`,
     );
+    // Own the POST deadline: a sweep runs for minutes and must not inherit
+    // sidecarFetch's 15 s default. Re-running aborts the previous POST (the
+    // backend keeps its single-flight scan alive either way).
+    scanAbortRef.current?.abort();
+    const ac = new AbortController();
+    scanAbortRef.current = ac;
+    const scanDeadline = window.setTimeout(() => ac.abort(), SCAN_DEADLINE_MS);
     // Seed an optimistic snapshot so the bar appears at 0% the instant
     // the user clicks "Tara" — the first real poll lands ~250ms later.
     setProgress({
@@ -312,14 +330,17 @@ export function MISPane({ code }: FunctionPaneProps) {
         const override = tfSets[m];
         if (override && override.length) tfSetPayload[m] = override;
       }
-      const r = await runMisScan({
-        markets: Array.from(selected),
-        tf_set: tfSetPayload,
-        top_n: topN,
-        min_confidence: minConfidence,
-        only_signals: onlySignals,
-        max_symbols_per_market: maxPerMarket,
-      });
+      const r = await runMisScan(
+        {
+          markets: Array.from(selected),
+          tf_set: tfSetPayload,
+          top_n: topN,
+          min_confidence: minConfidence,
+          only_signals: onlySignals,
+          max_symbols_per_market: maxPerMarket,
+        },
+        { signal: ac.signal },
+      );
       setResult(r);
       const totalProcessed = Object.values(r.per_market_counts).reduce(
         (a, b) => a + (b.completed ?? 0) + (b.skipped ?? 0),
@@ -330,10 +351,15 @@ export function MISPane({ code }: FunctionPaneProps) {
         `${totalProcessed} symbols scanned · ${r.rows.length} matches`,
       );
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const msg = ac.signal.aborted
+        ? `Scan deadline reached (${Math.round(SCAN_DEADLINE_MS / 60000)} min) — the backend sweep continues; press Scan again to join it.`
+        : e instanceof Error
+          ? e.message
+          : String(e);
       setError(msg);
       toast.error("MIS failed", msg);
     } finally {
+      window.clearTimeout(scanDeadline);
       setRunning(false);
       setProgressNote("");
       stopPolling();

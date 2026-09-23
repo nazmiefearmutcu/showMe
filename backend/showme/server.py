@@ -478,17 +478,26 @@ async def warm_home_page_cache() -> None:
     # Sentiment chips warm serially server-side (polite throttle); prewarm
     # the dashboard's fallback deck so the gauge has a coverage-passing
     # reading by the time the user looks at it (owner 2026-09-16).
-    try:
-        from showme.engine.services.stocktwits_sentiment import warm_symbol_chip
+    # HNT-11: the chip warmer is fully synchronous (curl_cffi fetch +
+    # time.sleep throttle) — run it in a worker thread so a slow/unreachable
+    # Stocktwits can't stall the event loop (and boot) for the timeout
+    # window of every symbol.
+    def _prewarm_chips() -> None:
+        try:
+            from showme.engine.services.stocktwits_sentiment import warm_symbol_chip
 
-        for sym in ("AAPL", "MSFT", "GOOG", "BTC", "ETH"):
-            warm_symbol_chip(sym)
-    except Exception as exc:  # noqa: BLE001 - non-fatal
-        LOG.debug("sentiment prewarm skipped: %r", exc)
+            for sym in ("AAPL", "MSFT", "GOOG", "BTC", "ETH"):
+                warm_symbol_chip(sym)
+        except Exception as exc:  # noqa: BLE001 - non-fatal
+            LOG.debug("sentiment prewarm skipped: %r", exc)
+
+    await asyncio.to_thread(_prewarm_chips)
 
     for code, extra in HOME_PREWARM_PARAMS.items():
         try:
-            params = _route_function_params(code, dict(extra))
+            # HNT-09: param normalisation may resolve a crypto alias over
+            # the network — keep it off the event loop.
+            params = await asyncio.to_thread(_route_function_params, code, dict(extra))
             key = home_swr_key(code, params)
             task = asyncio.ensure_future(_execute_showme_function(code, params))
             home_swr_track(key, task)
@@ -559,7 +568,11 @@ async def _execute_showme_function_on_worker(code: str, params: dict[str, Any]) 
             AssetClass = instrument_mod.AssetClass
             Instrument = instrument_mod.Instrument
             requested_asset_class = local_params.pop("asset_class", None)
-            canonical_symbol = _canonical_route_symbol(symbol, requested_asset_class)
+            # HNT-09: the canonical resolver may hit the network (crypto
+            # alias resolution) — keep it off the event loop.
+            canonical_symbol = await asyncio.to_thread(
+                _canonical_route_symbol, symbol, requested_asset_class,
+            )
             ac_name = default_asset_class_name(canonical_symbol, requested_asset_class)
             ac = getattr(AssetClass, ac_name, AssetClass.EQUITY)
             instrument = Instrument(symbol=canonical_symbol, asset_class=ac)
@@ -1039,6 +1052,23 @@ def _install_middlewares(app: FastAPI) -> None:
     @app.middleware("http")
     async def body_size_limit_middleware(request: Request, call_next):
         if request.method in {"POST", "PUT", "PATCH"}:
+            # HNT-11: a chunked body carries no Content-Length, so the
+            # size check below was bypassable with ``Transfer-Encoding:
+            # chunked``. Reject it with 411 instead of guessing the
+            # streamed size — every legitimate client of this sidecar
+            # (fetch/httpx JSON POSTs) always sends Content-Length.
+            if not request.headers.get("content-length") and "chunked" in (
+                request.headers.get("transfer-encoding") or ""
+            ).lower():
+                return JSONResponse(
+                    status_code=411,
+                    content={
+                        "detail": (
+                            "Content-Length required: chunked request bodies "
+                            "are not accepted by this server"
+                        ),
+                    },
+                )
             cl = request.headers.get("content-length")
             if cl and cl.isdigit() and int(cl) > max_body_size_bytes:
                 return JSONResponse(
@@ -1131,7 +1161,10 @@ def _make_stream_hub_provider() -> Callable[[], Any]:
     return get_stream_hub
 
 
-async def _shutdown_cleanup(stream_hub_provider: Callable[[], Any]) -> None:
+async def _shutdown_cleanup(
+    stream_hub_provider: Callable[[], Any],
+    app: FastAPI | None = None,
+) -> None:
     """Graceful-shutdown helper called from the lifespan finally block.
 
     Each step is wrapped in try/except + ``LOG.exception`` so a failure in
@@ -1150,6 +1183,18 @@ async def _shutdown_cleanup(stream_hub_provider: Callable[[], Any]) -> None:
                     await result
     except Exception:  # noqa: BLE001
         LOG.exception("stream hub shutdown failed")
+    # HNT-09: close the flowmap FeedHub (live Binance WSS sessions + pump
+    # tasks) wired on ``app.state.flowmap_hub`` by flowmap_ws.register.
+    try:
+        flowmap_hub = getattr(getattr(app, "state", None), "flowmap_hub", None) if app is not None else None
+        if flowmap_hub is not None:
+            aclose = getattr(flowmap_hub, "aclose", None)
+            if aclose is not None:
+                result = aclose()
+                if asyncio.iscoroutine(result):
+                    await result
+    except Exception:  # noqa: BLE001
+        LOG.exception("flowmap hub shutdown failed")
     # 2) Flush order-history persistence, if the helper exists.
     try:
         order_history_mod = _safe_import("showme.engine.services.order_history")
@@ -1184,6 +1229,15 @@ async def _shutdown_cleanup(stream_hub_provider: Callable[[], Any]) -> None:
                     await result
     except Exception:  # noqa: BLE001
         LOG.exception("provider httpx shutdown failed")
+    try:
+        factory_mod = sys.modules.get("showme.engine.services.function_factory")
+        factory = getattr(factory_mod, "_factory", None)
+        if factory is not None:
+            gdelt = factory.adapter("gdelt")
+            if gdelt is not None and hasattr(gdelt, "aclose"):
+                await gdelt.aclose()
+    except Exception:  # noqa: BLE001
+        LOG.exception("GDELT background refresh shutdown failed")
     # 5) Close the analytical DuckDB pool so the file lock releases cleanly.
     try:
         analytical_mod = _safe_import("showme.analytical")
@@ -1193,6 +1247,16 @@ async def _shutdown_cleanup(stream_hub_provider: Callable[[], Any]) -> None:
                 close_fn()
     except Exception:  # noqa: BLE001
         LOG.exception("analytical pool shutdown failed")
+    # 6) E1: close the module-singleton LLM SDK clients (Anthropic/OpenAI)
+    #    cached by engine.agents.llm_router so their socket pools don't
+    #    linger past shutdown.
+    try:
+        llm_router_mod = _safe_import("showme.engine.agents.llm_router")
+        aclose_clients = getattr(llm_router_mod, "aclose_clients", None)
+        if aclose_clients is not None:
+            await aclose_clients()
+    except Exception:  # noqa: BLE001
+        LOG.exception("llm router client shutdown failed")
 
 
 def build_app(engine_root: Path | None) -> FastAPI:
@@ -1333,10 +1397,15 @@ def build_app(engine_root: Path | None) -> FastAPI:
             try:
                 from showme.finbert_analyzer import FinBertAnalyzer
 
-                await asyncio.wait_for(
+                instance = await asyncio.wait_for(
                     asyncio.to_thread(FinBertAnalyzer.instance),
                     timeout=90,
                 )
+                if instance is None:
+                    # Latched load failure — instance() returns None.
+                    raise RuntimeError(
+                        FinBertAnalyzer.load_error() or "finbert load failed"
+                    )
                 boot_state["finbert_warmed"] = True
                 boot_state.pop("finbert_warm_error", None)
             except Exception as exc:  # noqa: BLE001
@@ -1402,7 +1471,7 @@ def build_app(engine_root: Path | None) -> FastAPI:
                 await bot_shutdown()
             except Exception:  # noqa: BLE001
                 LOG.exception("bot runner shutdown failed")
-            await _shutdown_cleanup(get_stream_hub)
+            await _shutdown_cleanup(get_stream_hub, app)
 
     app = FastAPI(
         title="showMe sidecar",
@@ -1864,10 +1933,19 @@ def unavailable_function_data(
     status: str = "provider_unavailable",
     extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    symbol = _canonical_route_symbol(params.get("symbol") or params.get("topic") or "BTCUSDT", params.get("asset_class"))
+    # HNT-07: echo only what the caller actually requested. The old
+    # ``or "BTCUSDT"`` fallback invented a symbol the user never asked for,
+    # and a free-text ``topic`` ("market news") was uppercased into the
+    # ``symbol`` field — neither belongs in an honest diagnostics echo.
+    raw_symbol = params.get("symbol")
+    symbol = _canonical_route_symbol(raw_symbol, params.get("asset_class")) if raw_symbol else None
+    if symbol or params.get("asset_class"):
+        asset_class: str | None = default_asset_class_name(symbol, params.get("asset_class"))
+    else:
+        asset_class = None
     requested = {
         "symbol": symbol,
-        "asset_class": default_asset_class_name(symbol, params.get("asset_class")),
+        "asset_class": asset_class,
         "query": params.get("query"),
         "topic": params.get("topic"),
         "limit": params.get("limit") or params.get("top_n"),
@@ -2147,15 +2225,28 @@ def _kickoff_function_index_warmup() -> None:
     ).start()
 
 
-def _pick_port(requested: int) -> int:
-    """If the user passed --port 0, bind a fresh socket so uvicorn reuses it."""
+def _pick_port(requested: int) -> tuple[int, socket.socket | None]:
+    """If the user passed --port 0, reserve a port and KEEP the socket.
+
+    HNT-10 (TOCTOU): the old flow closed the probe socket and handed only
+    the port number to uvicorn — between ``close()`` and uvicorn's bind
+    another process could steal the port, and the Tauri shell (which has
+    already read ``SIDECAR_PORT=<p>`` from stdout) would wait forever on a
+    dead port. We now mirror ``uvicorn.Config.bind_socket``: create the
+    socket, set SO_REUSEADDR, bind it, and return it so ``main`` can hand
+    it to ``uvicorn.Server.serve(sockets=[sock])``. The OS never releases
+    the reservation; asyncio's ``create_server`` performs the ``listen()``
+    on the pre-bound socket (same path uvicorn's CLI uses).
+    """
     if requested != 0:
-        return requested
+        return requested, None
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    # Parity with uvicorn.Config.bind_socket (Windows-safe: no SO_REUSEPORT).
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind(("127.0.0.1", 0))
+    sock.set_inheritable(True)
     port = sock.getsockname()[1]
-    sock.close()
-    return port
+    return port, sock
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -2185,7 +2276,7 @@ def main(argv: list[str] | None = None) -> int:
         LOG.warning("ShowMe engine not found; sidecar will run with limited capabilities.")
 
     app = build_app(engine_root)
-    port = _pick_port(args.port)
+    port, reserved_sock = _pick_port(args.port)
 
     config = uvicorn.Config(app, host=args.host, port=port, log_level=args.log_level,
                             access_log=False, lifespan="on")
@@ -2194,15 +2285,22 @@ def main(argv: list[str] | None = None) -> int:
     # The Tauri shell discovers us via this exact stdout line.
     print(f"SIDECAR_PORT={port}", flush=True)
 
-    asyncio.run(_serve(server))
+    asyncio.run(_serve(server, [reserved_sock] if reserved_sock else None))
     return 0
 
 
-async def _serve(server: uvicorn.Server) -> None:
+async def _serve(server: uvicorn.Server, sockets: list[socket.socket] | None = None) -> None:
     try:
-        await server.serve()
+        # HNT-10: when --port 0 reserved a bound socket, hand it straight
+        # to uvicorn instead of re-binding by port number — the OS keeps
+        # the reservation and the TOCTOU window disappears.
+        await server.serve(sockets=sockets)
     except (KeyboardInterrupt, asyncio.CancelledError):
         pass
+    finally:
+        for sock in sockets or []:
+            with contextlib.suppress(OSError):
+                sock.close()
 
 
 if __name__ == "__main__":

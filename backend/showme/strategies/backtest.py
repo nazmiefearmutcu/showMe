@@ -101,9 +101,13 @@ def _compute_metrics(
     equity_curve: list[dict[str, Any]],
     starting_equity: float,
     bars_per_year: float = 365.0 * 24.0,  # default crypto-hourly assumption
+    bar_equities: list[float] | None = None,
 ) -> dict[str, Any]:
     """Q4 audit H20: full metrics suite (Sharpe/Sortino/Calmar/profit factor).
 
+    Sharpe / Sortino annualise over the PER-BAR return series
+    (``bar_equities`` — equity marked to each evaluated bar's close,
+    including unrealised PnL on open positions): ``mean/std * sqrt(bars_per_year)``.
     Bars-per-year defaults to crypto-hourly; callers should override based
     on the spec's timeframe (e.g. 252 for daily equities).
     """
@@ -156,22 +160,27 @@ def _compute_metrics(
             if peak > 0:
                 max_dd_pct = (dd / peak) * 100.0
 
-    # Sharpe / Sortino on trade-level returns (net PnL as % of starting equity).
-    if starting_equity > 0:
-        trade_returns = [p / starting_equity for p in net_pnls]
-    else:
-        trade_returns = [0.0 for _ in net_pnls]
-    if len(trade_returns) > 1:
-        mean_r = float(np.mean(trade_returns))
-        std_r = float(np.std(trade_returns, ddof=1))
-        # Annualise: average trade frequency (avg trades per year) ≈ n / (window/bars_per_year).
-        # For a robust default we use sqrt(n) — same intuition as Sharpe annualisation
-        # using observation count.
-        sharpe = (mean_r / std_r * math.sqrt(n)) if std_r > 0 else 0.0
-        downside = [r for r in trade_returns if r < 0]
+    # Sharpe / Sortino on the per-bar return series (HNT-16: real
+    # annualisation — mean/std * sqrt(bars_per_year)). The per-bar marks
+    # include unrealised PnL while a position is open, so the series
+    # reflects actual equity path, not just realized trade jumps. Trades
+    # still feed the win-rate / profit-factor / expectancy block below.
+    marks = bar_equities if bar_equities else [
+        float(pt["equity"]) for pt in equity_curve
+    ]
+    bar_returns = [
+        (marks[i] - marks[i - 1]) / marks[i - 1]
+        for i in range(1, len(marks))
+        if marks[i - 1] > 0
+    ]
+    if len(bar_returns) > 1:
+        mean_r = float(np.mean(bar_returns))
+        std_r = float(np.std(bar_returns, ddof=1))
+        sharpe = (mean_r / std_r * math.sqrt(bars_per_year)) if std_r > 0 else 0.0
+        downside = [r for r in bar_returns if r < 0]
         if downside:
             down_std = float(np.std(downside, ddof=1)) if len(downside) > 1 else abs(downside[0])
-            sortino = (mean_r / down_std * math.sqrt(n)) if down_std > 0 else 0.0
+            sortino = (mean_r / down_std * math.sqrt(bars_per_year)) if down_std > 0 else 0.0
         else:
             sortino = float("inf") if mean_r > 0 else 0.0
     else:
@@ -318,6 +327,10 @@ def backtest(
     open_position_funding = 0.0
     running_equity = float(starting_equity)
     equity_curve: list[dict[str, Any]] = [{"t": "start", "equity": running_equity}]
+    # HNT-16: equity marked to each evaluated bar's close (unrealised PnL
+    # included while a position is open) — the per-bar return series the
+    # Sharpe/Sortino annualisation runs over.
+    bar_equities: list[float] = [float(starting_equity)]
 
     n = len(df)
     last_evaluable = n - 1  # we fill on i+1 so the last bar can't open a new pos
@@ -331,6 +344,14 @@ def backtest(
         bar_close = float(close[i])
         if math.isnan(bar_close):
             continue
+
+        mark = running_equity
+        if in_position:
+            if side == "long":
+                mark += (bar_close - entry_fill_price) * entry_qty
+            else:
+                mark += (entry_fill_price - bar_close) * entry_qty
+        bar_equities.append(mark)
 
         if in_position:
             # Accrue funding on this bar's notional (perp only).
@@ -447,6 +468,7 @@ def backtest(
     result.metrics = _compute_metrics(
         result.trades, equity_curve, starting_equity,
         bars_per_year=bars_per_year_resolved,
+        bar_equities=bar_equities,
     )
     return result
 
