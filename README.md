@@ -144,4 +144,4 @@ Signing, notarization and updater publishing require the corresponding credentia
 
 [MIT](LICENSE). Financial outputs are research tools and estimates, provided without investment advice or a guarantee of accuracy.
 
-Created By Nazmi Efe Armutcu (Aylin)
+Created By Aylin (Nazmi Efe Armutcu)
