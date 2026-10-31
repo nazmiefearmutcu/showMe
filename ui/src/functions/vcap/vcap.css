@@ -1,0 +1,291 @@
+.vcap-pane {
+  min-width: 0;
+  color: var(--text);
+}
+.vcap-body {
+  display: grid;
+  align-content: start;
+  gap: 14px;
+}
+.vcap-pane h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+.vcap-pane p {
+  margin: 5px 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.vcap-actions,
+.vcap-file-tools,
+.vcap-scopes,
+.vcap-section-title {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+.vcap-scopes {
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 10px;
+}
+.vcap-scopes button[aria-pressed="true"] {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.vcap-controls {
+  border: 1px solid var(--line);
+  padding: 12px;
+  background: var(--surface);
+  min-width: 0;
+}
+.vcap-source-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px 16px;
+  border: 0;
+  padding: 0 0 10px;
+  margin: 0;
+}
+.vcap-source-picker legend {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 0 0 6px;
+}
+.vcap-source-picker label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+}
+.vcap-filter-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 9px;
+  align-items: end;
+}
+.vcap-filter-grid label {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  font-size: 11px;
+}
+.vcap-filter-grid input,
+.vcap-filter-grid select {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 6px;
+  height: 31px;
+  font: inherit;
+}
+.vcap-geographies,
+.vcap-vintage,
+.vcap-financing {
+  grid-column: span 2;
+}
+.vcap-apply {
+  min-height: 31px;
+}
+.vcap-muted,
+.vcap-section-title > span {
+  color: var(--text-secondary, var(--text));
+  font-size: 11px;
+  opacity: 0.8;
+}
+.vcap-pane button:focus-visible,
+.vcap-pane input:focus-visible,
+.vcap-pane select:focus-visible,
+.vcap-pane summary:focus-visible,
+.vcap-pane a:focus-visible,
+.vcap-table-scroll:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+.vcap-file-input,
+.vcap-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.vcap-exports {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-left: auto;
+}
+.vcap-message {
+  padding: 8px 10px;
+  border-left: 2px solid var(--accent);
+  background: var(--surface);
+  overflow-wrap: anywhere;
+}
+.vcap-error {
+  border-left-color: var(--danger, #ce7064);
+}
+.vcap-result-caption {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 12px;
+}
+.vcap-chart {
+  padding: 12px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  min-width: 0;
+}
+.vcap-chart-scroll {
+  overflow-x: auto;
+}
+.vcap-chart svg {
+  display: block;
+  width: 100%;
+  min-width: 520px;
+  height: auto;
+}
+.vcap-axis-label {
+  fill: var(--text-secondary, var(--text));
+  font-size: 11px;
+  font-family: inherit;
+}
+.vcap-grid-line {
+  stroke: var(--line);
+  stroke-width: 1;
+}
+.vcap-legend {
+  list-style: none;
+  padding: 0;
+  margin: 8px 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+}
+.vcap-legend li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+}
+.vcap-legend li > span {
+  display: inline-block;
+  width: 13px;
+  height: 6px;
+  flex: 0 0 13px;
+}
+.vcap-section-title {
+  margin-bottom: 8px;
+  justify-content: space-between;
+}
+.vcap-table-scroll {
+  overflow: auto;
+  max-height: 420px;
+  border: 1px solid var(--line);
+}
+.vcap-pane table {
+  border-collapse: collapse;
+  width: 100%;
+  min-width: 1300px;
+  font-size: 11px;
+}
+.vcap-pane th,
+.vcap-pane td {
+  text-align: left;
+  border-bottom: 1px solid var(--line);
+  padding: 6px 8px;
+  vertical-align: top;
+}
+.vcap-pane thead th {
+  position: sticky;
+  top: 0;
+  background: var(--surface);
+  z-index: 1;
+}
+.vcap-pane td > span {
+  display: block;
+}
+.vcap-number {
+  font-family: var(--font-mono, "JetBrains Mono", monospace);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.vcap-coverage {
+  min-width: 200px;
+  max-width: 300px;
+  overflow-wrap: anywhere;
+}
+.vcap-sources,
+.vcap-details,
+.vcap-empty {
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+.vcap-sources > details {
+  border-bottom: 1px solid var(--line);
+  padding: 9px 0;
+}
+.vcap-pane summary {
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.vcap-sources summary > span {
+  margin-left: 8px;
+}
+.vcap-source-body {
+  padding: 5px 0 0 15px;
+  max-width: 1000px;
+}
+.vcap-source-body a {
+  color: var(--accent);
+  font-size: 12px;
+}
+.vcap-history {
+  max-height: 220px;
+  overflow-y: auto;
+  padding-left: 20px;
+  font-size: 11px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.vcap-pane .ds-pane-footer {
+  flex-wrap: wrap;
+  gap: 8px 18px;
+}
+@media (max-width: 960px) {
+  .vcap-pane .ds-pane-header {
+    flex-wrap: wrap;
+  }
+  .vcap-pane .ds-pane-header__trailing {
+    margin-left: 0;
+    flex-wrap: wrap;
+  }
+  .vcap-filter-grid {
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  }
+  .vcap-exports {
+    margin-left: 0;
+  }
+}
+@media (max-width: 480px) {
+  .vcap-filter-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .vcap-controls,
+  .vcap-chart {
+    padding: 9px;
+  }
+  .vcap-source-picker label {
+    width: 100%;
+  }
+}

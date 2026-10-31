@@ -50,7 +50,8 @@ describe("function pane registry", () => {
     // T
     "TAUC", "TCA", "TECH", "TLDR", "TLH", "TMPL", "TOP", "TRA", "TRAN",
     "TRDH", "TRQA", "TSAR", "TSOX", "TXNS",
-    // W / X / Y
+    // V / W / X / Y
+    "VCAP",
     "WACC", "WATCH", "WB", "WCRS", "WEI", "WETR", "WHAL", "WIRP",
     "XSEN", "YAS",
   ];
@@ -121,11 +122,11 @@ describe("function pane registry", () => {
   });
 });
 
-describe("157-function merged catalog invariant", () => {
-  // The static index ships 142 codes from the backend catalog; the native
+describe("158-function merged catalog invariant", () => {
+  // The static index ships 143 codes from the backend catalog; the native
   // registry contributes 15 codes not in the static index (AGENT, ASK,
   // BDA, BOT, BOTS, CONN, INDX, INSTANT, MIS, PERF, STRA, TMPL, WATCH,
-  // XSEN, TXNS — CN and FLW overlap and are dedup'd). Total 157. This is
+  // XSEN, TXNS — CN and FLW overlap and are dedup'd). Total 158. This is
   // the contract the sidebar, command palette, and FunctionStub fallback
   // all depend on. CONN was added in T9 of the multi-exchange portfolio foundation;
   // INDX was added in F4 of the indicator-depot sub-system; STRA was
@@ -138,12 +139,12 @@ describe("157-function merged catalog invariant", () => {
   // index as a native pane. All are native panes with no backend-side stub fallback.
   const NATIVE_ONLY = ["AGENT", "ASK", "BDA", "BOT", "BOTS", "CONN", "INDX", "INSTANT", "MIS", "PERF", "STRA", "TMPL", "WATCH", "XSEN", "TXNS"];
 
-  it("static index is exactly 142 entries", () => {
-    expect(STATIC_FUNCTION_INDEX).toHaveLength(142);
+  it("static index is exactly 143 entries", () => {
+    expect(STATIC_FUNCTION_INDEX).toHaveLength(143);
   });
 
-  it("merged catalog is exactly 157 entries", () => {
-    expect(mergeNativeFunctionIndex(STATIC_FUNCTION_INDEX)).toHaveLength(157);
+  it("merged catalog is exactly 158 entries", () => {
+    expect(mergeNativeFunctionIndex(STATIC_FUNCTION_INDEX)).toHaveLength(158);
   });
 
   it("every native-only entry is appended after merge", () => {

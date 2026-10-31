@@ -806,6 +806,12 @@ export const STATIC_FUNCTION_INDEX: FunctionEntry[] = [
     "description": ""
   },
   {
+    "code": "VCAP",
+    "name": "Venture Capital Research",
+    "category": "macro",
+    "description": "Source-aware global, country, Turkey and crypto investment research, provenance and release history."
+  },
+  {
     "code": "WACC",
     "name": "Weighted Average Cost of Capital",
     "category": "equity",

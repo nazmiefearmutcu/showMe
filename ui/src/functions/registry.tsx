@@ -71,6 +71,7 @@ const ESGPane = lazy(() => import("./ESG").then((m) => ({ default: m.ESGPane }))
 const TRQAPane = lazy(() => import("./TRQA").then((m) => ({ default: m.TRQAPane })));
 const TSARPane = lazy(() => import("./TSAR").then((m) => ({ default: m.TSARPane })));
 const TSOXPane = lazy(() => import("./TSOX").then((m) => ({ default: m.TSOXPane })));
+const VCAPPane = lazy(() => import("./VCAP").then((m) => ({ default: m.VCAPPane })));
 const WACCPane = lazy(() => import("./WACC").then((m) => ({ default: m.WACCPane })));
 const WBPane = lazy(() => import("./WB").then((m) => ({ default: m.WBPane })));
 const WETRPane = lazy(() => import("./WETR").then((m) => ({ default: m.WETRPane })));
@@ -257,6 +258,7 @@ const PANES: Record<string, PaneComponent> = {
   TRQA: TRQAPane,
   TSAR: TSARPane,
   TSOX: TSOXPane,
+  VCAP: VCAPPane,
   WACC: WACCPane,
   WB: WBPane,
   WETR: WETRPane,
