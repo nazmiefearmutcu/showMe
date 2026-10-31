@@ -4,8 +4,12 @@
 }
 .vcap-body {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   align-content: start;
   gap: 14px;
+}
+.vcap-body > * {
+  min-width: 0;
 }
 .vcap-pane h3 {
   margin: 0;
@@ -43,6 +47,8 @@
 }
 .vcap-source-picker {
   display: flex;
+  min-width: 0;
+  max-width: 100%;
   flex-wrap: wrap;
   gap: 7px 16px;
   border: 0;

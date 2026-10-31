@@ -354,6 +354,41 @@ describe("VCAP evidence and states", () => {
   });
 });
 describe("VCAP local import workflow", () => {
+  it("selects at most 64 imported geographies and discloses the remaining coverage", async () => {
+    const geographies = Array.from(
+      { length: 65 },
+      (_, i) =>
+        `A${String.fromCharCode(65 + Math.floor(i / 26))}${String.fromCharCode(65 + (i % 26))}`,
+    );
+    const wideDataset = {
+      ...dataset,
+      observations: geographies.map((geography) => ({
+        ...dataset.observations[0],
+        geography,
+      })),
+    };
+    mocks.runFunction.mockResolvedValue({ data: payload({ snapshot_id: snapshot }) });
+    render(<VCAPPane code="VCAP" />);
+    chooseFile(JSON.stringify(wideDataset), "wide.json");
+    await waitFor(() =>
+      expect(screen.getByText(/Imported release saved locally:/)).toBeInTheDocument(),
+    );
+    expect(lastParams().geographies).toEqual(geographies.slice(0, 64));
+    expect(mocks.runFunction.mock.calls[0][1].params.dataset.observations).toHaveLength(65);
+    expect(screen.getByText(/Imported release saved locally:/)).toHaveTextContent(
+      "Showing 64 of 65 geographies",
+    );
+    expect(screen.getByText(/Imported release saved locally:/)).toHaveTextContent(
+      "1 additional geography remains available",
+    );
+    const priorParams = lastParams();
+    fireEvent.change(screen.getByLabelText("Geographies"), {
+      target: { value: geographies.join(",") },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("maximum 64");
+    expect(lastParams()).toEqual(priorParams);
+  });
   it.each(["json", "csv"])(
     "imports %s and selects its exact saved release and measurement",
     async (format) => {

@@ -143,7 +143,10 @@ function identity(query?: Query) {
 function describe(query: Query) {
   return `${SCOPE_LABELS[query.scope]} · ${query.geographies.join(", ")} · ${query.frequency} ${query.metric} · ${query.stage} · ${query.start_year}–${query.end_year} · ${query.unit}${query.scope === "crypto" ? (query.financing_scope === "vc" ? " · strict VC" : " · all reported raises") : ""}`;
 }
-function queryForImport(dataset: Dataset, snapshot: string): Query {
+function queryForImport(
+  dataset: Dataset,
+  snapshot: string,
+): { query: Query; totalGeographies: number } {
   const first = dataset.observations[0];
   const query = defaultQuery(first.scope as Scope);
   const matching = dataset.observations.filter(
@@ -157,20 +160,24 @@ function queryForImport(dataset: Dataset, snapshot: string): Query {
         (first.financing_scope ?? dataset.financing_scope ?? "vc"),
   );
   const years = matching.map((row) => Number(String(row.period).slice(0, 4)));
+  const geographies = [...new Set(matching.map((row) => String(row.geography)))].sort();
   return {
-    ...query,
-    source_ids: [dataset.source_id],
-    geographies: [...new Set(matching.map((row) => String(row.geography)))].sort(),
-    metric: first.metric as Metric,
-    stage: String(first.stage),
-    unit: first.unit as Unit,
-    frequency: String(first.period).includes("-Q") ? "quarterly" : "annual",
-    start_year: Math.min(new Date().getFullYear(), ...years),
-    end_year: Math.min(new Date().getFullYear(), Math.max(...years)),
-    financing_scope: (first.financing_scope ??
-      dataset.financing_scope ??
-      "vc") as Query["financing_scope"],
-    vintage: snapshot,
+    totalGeographies: geographies.length,
+    query: {
+      ...query,
+      source_ids: [dataset.source_id],
+      geographies: geographies.slice(0, 64),
+      metric: first.metric as Metric,
+      stage: String(first.stage),
+      unit: first.unit as Unit,
+      frequency: String(first.period).includes("-Q") ? "quarterly" : "annual",
+      start_year: Math.min(new Date().getFullYear(), ...years),
+      end_year: Math.min(new Date().getFullYear(), Math.max(...years)),
+      financing_scope: (first.financing_scope ??
+        dataset.financing_scope ??
+        "vc") as Query["financing_scope"],
+      vintage: snapshot,
+    },
   };
 }
 
@@ -291,9 +298,15 @@ export function VCAPPane({ code }: FunctionPaneProps) {
         );
       setCatalogue(result.data.sources);
       setHistory(result.data.snapshots);
-      selectQuery(queryForImport(dataset, result.data.snapshot_id));
+      const selection = queryForImport(dataset, result.data.snapshot_id);
+      selectQuery(selection.query);
+      const remaining = selection.totalGeographies - selection.query.geographies.length;
+      const coverageNotice =
+        remaining > 0
+          ? ` Showing ${selection.query.geographies.length} of ${selection.totalGeographies} geographies in this measurement group; ${remaining} additional ${remaining === 1 ? "geography remains" : "geographies remain"} available. Replace codes in the geography control to view the remaining coverage (up to 64 at once).`
+          : "";
       setNotice(
-        `${result.data.idempotent ? "Existing identical release selected" : "Imported release saved locally"}: ${dataset.source_name || dataset.source_id}, ${dataset.observations.length.toLocaleString("en-US")} observations. Showing the first measurement group; use the controls for other groups. Each import replaces the selected source release's coverage; prior releases remain in history.`,
+        `${result.data.idempotent ? "Existing identical release selected" : "Imported release saved locally"}: ${dataset.source_name || dataset.source_id}, ${dataset.observations.length.toLocaleString("en-US")} observations. Showing the first measurement group; use the controls for other groups.${coverageNotice} Each import replaces the selected source release's coverage; prior releases remain in history.`,
       );
       // Same idempotent release may already be selected; refresh its query too.
       refetch();
