@@ -357,3 +357,95 @@ def test_vcap_body_allowance_is_narrow_and_chunked_stays_rejected(monkeypatch):
     assert client.post("/api/fn/ECFC", content=large).status_code == 413
     assert client.post("/api/fn/VCAP", content=b" " * 2_100_001).status_code == 413
     assert client.post("/api/fn/VCAP", content=iter([b"{}"])) .status_code == 411
+
+
+@pytest.mark.parametrize("published", [
+    "2025-01-01T00:00:00+00:60", "2025-01-01T00:00:00+01:99",
+    "2025-01-01T00:00:00-24:00", "0001-01-01T00:00:00+01:00",
+    "9999-12-31T23:59:59-01:00",
+])
+def test_invalid_timezone_publication_is_structured_and_does_not_persist(published):
+    from showme.engine.functions.macro.vcap import VCAPFunction
+    from showme.engine.services.vcap.models import timestamp
+    with pytest.raises(InputError):
+        timestamp(published)
+    result = asyncio.run(VCAPFunction().execute(action="import", dataset=dataset(published=published)))
+    assert result.data["status"] == "input_error"
+    assert result.data["snapshots"] == []
+
+
+def test_valid_timezone_is_normalized_without_changing_publication_instant():
+    from showme.engine.services.vcap.models import timestamp
+    assert timestamp("2025-01-01T01:00:00+01:00") == "2025-01-01T00:00:00+00:00"
+
+
+@pytest.mark.parametrize("as_of,annual_partial,quarter_partial", [
+    ("2026-06-30T23:59:59.999999+00:00", True, True),
+    ("2026-07-01T00:00:00+00:00", True, False),
+    ("2026-12-31T23:59:59.999999+00:00", True, False),
+    ("2027-01-01T00:00:00+00:00", False, False),
+])
+def test_raises_calendar_completion_and_cutoff_use_controlled_utc_clock(as_of, annual_partial, quarter_partial):
+    from showme.engine.services.vcap.providers import parse_defillama
+    clock = datetime.fromisoformat(as_of)
+    announced = datetime(2026, 6, 30, 12, tzinfo=timezone.utc).timestamp()
+    result = parse_defillama({"raises": [{"name": "A", "date": announced, "amount": 8}]}, as_of=clock)
+    for frequency, partial in (("annual", annual_partial), ("quarterly", quarter_partial)):
+        rows = [r for r in result["observations"] if r["frequency"] == frequency]
+        assert all(r["is_partial"] == partial for r in rows)
+        assert {r["status"] for r in rows} == ({"provisional"} if partial else {"reported"})
+        assert all(datetime.fromisoformat(r["coverage_cutoff"]) <= clock for r in rows)
+        assert all("partial" in r["coverage_note"].lower() for r in rows) if partial else all("completed calendar period" in r["coverage_note"].lower() for r in rows)
+        assert next(r for r in rows if r["metric"] == "investment")["value"] == 8_000_000
+        if partial:
+            assert {r["coverage_cutoff"] for r in rows} == {as_of}
+
+
+def test_future_raises_are_excluded_and_exclusions_survive_outside_row_notes():
+    from showme.engine.services.vcap.providers import parse_defillama
+    clock = datetime(2026, 10, 31, 12, tzinfo=timezone.utc)
+    records = [
+        {"name": "accepted-now", "date": clock.timestamp(), "amount": 8},
+        {"name": "future-this-year", "date": datetime(2026, 12, 31, tzinfo=timezone.utc).timestamp(), "amount": 90},
+        {"name": "future-next-year", "date": datetime(2027, 1, 1, tzinfo=timezone.utc).timestamp(), "amount": 90},
+    ]
+    result = parse_defillama({"raises": records}, as_of=clock)
+    assert result["validation_summary"]["excluded_records"] == 2
+    assert result["validation_summary"]["future_records"] == 2
+    annual = [r for r in result["observations"] if r["frequency"] == "annual"]
+    assert next(r for r in annual if r["metric"] == "investment")["value"] == 8_000_000
+    assert next(r for r in annual if r["metric"] == "deals")["value"] == 1
+    service = VCAPService()
+    service.store.save(result, origin="reference")
+    source = next(s for s in service.base()["sources"] if s["source_id"] == "defillama")
+    assert source["validation_summary"]["future_records"] == 2
+
+
+@pytest.mark.parametrize("invalid_record", [
+    {"name": "bad-date", "date": "schema-changed", "amount": 8},
+    {"name": "future-this-year", "date": 1798718400, "amount": 8},
+    {"name": "future-next-year", "date": 1798761600, "amount": 8},
+])
+def test_all_invalid_raises_preserve_previous_release_and_return_stale(monkeypatch, invalid_record):
+    import showme.engine.services.vcap.providers as module
+    from showme.engine.services.vcap.providers import Providers, parse_defillama
+    clock = datetime(2026, 10, 31, 12, tzinfo=timezone.utc)
+    class ControlledDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return clock if tz else clock.replace(tzinfo=None)
+    monkeypatch.setattr(module, "datetime", ControlledDateTime)
+    monkeypatch.setenv("SHOWME_DEFILLAMA_API_KEY", "private-api-secret")
+    store = SnapshotStore()
+    original = store.save(parse_defillama({"raises": [{"name": "A", "date": 1704067200, "amount": 8}]}), origin="reference")
+    with httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(200, json={"raises": [invalid_record]}))) as client:
+        provider = Providers(store, client)
+        state = asyncio.run(provider.ensure("defillama", refresh=True))
+        assert state["access_status"] == "stale" and state["stale"] is True
+        assert "none passed validation" in state["reason"]
+        assert store.latest("defillama", "reference")["snapshot_id"] == original["snapshot_id"]
+        assert len(store.versions()) == 1
+        data, meta = asyncio.run(VCAPService(store, provider).query(Query.parse({"scope": "crypto", "financing_scope": "all_raises"})))
+        assert data["status"] == "ok" and data["rows"][0]["value"] == 8_000_000
+        assert meta["stale"] is True and data["cache_note"]
+        assert data["warnings"] and "private-api-secret" not in json.dumps([data, meta])

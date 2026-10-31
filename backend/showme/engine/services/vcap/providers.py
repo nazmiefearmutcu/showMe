@@ -12,7 +12,7 @@ import re
 import threading
 import time
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
@@ -110,7 +110,7 @@ def parse_oecd(body: str, retrieved_at: str | None = None, last_modified: str | 
     return data
 
 
-def parse_defillama(payload: Any) -> Dataset:
+def parse_defillama(payload: Any, *, as_of: datetime | None = None) -> Dataset:
     """Documented SDK amount unit: millions USD. This is funding, not strict VC.
 
     The documented raises schema has no equity/token instrument or headquarters
@@ -121,9 +121,15 @@ def parse_defillama(payload: Any) -> Dataset:
         raise ProviderError("DefiLlama returned an incompatible raises schema")
     if len(payload["raises"]) > 100_000:
         raise ProviderError("DefiLlama raises limit exceeded")
+    # One captured instant governs future-record filtering and every derived
+    # calendar bucket; midnight/quarter rollover cannot split one response.
+    observed_at = (as_of or datetime.now(timezone.utc)).astimezone(timezone.utc)
     buckets: dict[tuple[str, str], list[float | None]] = defaultdict(list)
     seen: set[str] = set()
     excluded = 0
+    future = 0
+    duplicates = 0
+    accepted = 0
     for raw in payload["raises"]:
         if not isinstance(raw, dict):
             excluded += 1
@@ -132,6 +138,7 @@ def parse_defillama(payload: Any) -> Dataset:
         # remain distinct. This adapter does not claim deduplicated companies.
         identity = json.dumps(raw, sort_keys=True, separators=(",", ":"))
         if identity in seen:
+            duplicates += 1
             continue
         seen.add(identity)
         try:
@@ -139,8 +146,11 @@ def parse_defillama(payload: Any) -> Dataset:
             if type(raw_date) not in (int, float) or not math.isfinite(raw_date):
                 raise ValueError("date")
             announced = datetime.fromtimestamp(raw_date, timezone.utc)
-            if not 1900 <= announced.year <= datetime.now(timezone.utc).year:
+            if announced.year < 1900:
                 raise ValueError("date")
+            if announced > observed_at:
+                future += 1
+                raise ValueError("future date")
             amount = raw.get("amount")
             if amount is not None and (type(amount) not in (int, float) or not math.isfinite(amount) or amount < 0):
                 raise ValueError("amount")
@@ -150,22 +160,34 @@ def parse_defillama(payload: Any) -> Dataset:
         except (ValueError, OverflowError, OSError, TypeError):
             excluded += 1
             continue
+        accepted += 1
         year = str(announced.year)
         quarter = f"{year}-Q{(announced.month - 1) // 3 + 1}"
         for period in (year, quarter):
             buckets[(period, "total")].append(usd)
+    if payload["raises"] and accepted == 0:
+        raise ProviderError(f"DefiLlama returned {len(payload['raises'])} raises but none passed validation ({excluded} invalid records excluded, including {future} future records).")
     data = _base("defillama")
     data.update(date_basis="announced", sector="crypto",
-        methodology="Reported crypto financing (incl token sales). DefiLlama raises by announcement date; SDK amount in million USD scaled to USD. No instrument or company-HQ classification exists in documented schema, so these rows cannot populate strict VC or country totals. Deal counts include announcements with undisclosed amounts; investment is disclosed funding only. No empty period is invented.",
-        methodology_version="defillama-raises-all-v1-sdk-f0d43119")
+        methodology="Reported crypto financing (incl token sales). DefiLlama raises by announcement date; SDK amount in million USD scaled to USD. No instrument or company-HQ classification exists in documented schema, so these rows cannot populate strict VC or country totals. Deal counts include announcements with undisclosed amounts; investment is disclosed funding only. Unfinished calendar buckets are provisional with a UTC coverage cutoff; future announcements are excluded. No empty period is invented or partial value annualized.",
+        methodology_version="defillama-raises-all-v2-sdk-f0d43119",
+        validation_summary={"input_records": len(payload["raises"]), "accepted_records": accepted,
+                            "excluded_records": excluded, "future_records": future, "duplicate_records": duplicates})
     for (period, stage), values in sorted(buckets.items()):
+        bounds = period_fields(period)
+        period_after = datetime.fromisoformat(bounds["period_end"] + "T00:00:00+00:00") + timedelta(days=1)
+        partial = observed_at < period_after
+        cutoff = min(observed_at, period_after - timedelta(microseconds=1)).isoformat()
         disclosed = [v for v in values if v is not None]
         note = f"Reported crypto financing (incl token sales); {len(disclosed)}/{len(values)} announcements have disclosed amounts; {excluded} invalid records excluded. Strict VC classification and geography unavailable."
+        note += (f" Partial {'year-to-date' if bounds['frequency'] == 'annual' else 'quarter-to-date'} aggregate; observations through {cutoff}; not annualized."
+                 if partial else f" Completed calendar period; observations through {cutoff}; source coverage/revisions still apply.")
         for metric, unit, value in (("investment", "USD", sum(disclosed) if disclosed else None), ("deals", "COUNT", len(values))):
             data["observations"].append({"scope": "crypto", "geography": "WORLD", "period": period,
-                **period_fields(period), "metric": metric, "stage": stage, "unit": unit,
-                "value": value, "status": "reported" if value is not None else "missing",
+                **bounds, "metric": metric, "stage": stage, "unit": unit,
+                "value": value, "status": "missing" if value is None else "provisional" if partial else "reported",
                 "financing_scope": "all_raises", "coverage_note": note,
+                "is_partial": partial, "coverage_cutoff": cutoff,
                 "disclosed_amount_count": len(disclosed), "announcement_count": len(values)})
     return data
 

@@ -36,6 +36,16 @@ class Observation(TypedDict, total=False):
     status: str
     coverage_note: str
     financing_scope: str
+    is_partial: bool
+    coverage_cutoff: str
+
+
+class ValidationSummary(TypedDict):
+    input_records: int
+    accepted_records: int
+    excluded_records: int
+    future_records: int
+    duplicate_records: int
 
 
 class Dataset(TypedDict, total=False):
@@ -50,6 +60,7 @@ class Dataset(TypedDict, total=False):
     date_basis: str
     sector: str
     observations: list[Observation]
+    validation_summary: ValidationSummary
 
 
 def utcnow() -> str:
@@ -91,11 +102,14 @@ def timestamp(value: Any) -> str:
     value = text(value, "published_at", 64)
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})?)?", value):
         raise InputError("published_at must be an ISO date or datetime")
+    offset = re.search(r"[+-](\d{2}):(\d{2})$", value)
+    if offset and (int(offset[1]) > 23 or int(offset[2]) > 59):
+        raise InputError("published_at timezone offset requires hours 00-23 and minutes 00-59")
     try:
         result = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError as exc:
-        raise InputError("published_at is not a valid calendar date") from exc
-    return result.replace(tzinfo=result.tzinfo or timezone.utc).astimezone(timezone.utc).isoformat()
+        return result.replace(tzinfo=result.tzinfo or timezone.utc).astimezone(timezone.utc).isoformat()
+    except (ValueError, OverflowError) as exc:
+        raise InputError("published_at is not a valid calendar date or representable UTC instant") from exc
 
 
 def safe_url(value: Any) -> str:

@@ -73,6 +73,8 @@ def catalogue(snapshots: list[dict[str, Any]], access: dict[str, dict[str, Any]]
         entry["snapshot_id"] = snapshot["snapshot_id"]
         entry["published_at"] = data.get("published_at")
         entry["retrieved_at"] = snapshot["retrieved_at"]
+        if "validation_summary" in data:
+            entry["validation_summary"] = data["validation_summary"]
     if not os.environ.get("SHOWME_DEFILLAMA_API_KEY") and entries["defillama"]["status"] != "available":
         entries["defillama"].update(status="not_configured", access_status="not_configured")
     for sid, status in (access or {}).items():
