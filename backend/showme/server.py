@@ -1045,8 +1045,8 @@ def _install_middlewares(app: FastAPI) -> None:
 
     # Per SEC-05 P1: cap inbound POST/PUT bodies so a local caller cannot
     # tip the worker pool over with a multi-megabyte JSON payload. 256 KB is
-    # comfortably above every legitimate body in this app (largest is the
-    # function-index POST which is small).
+    # comfortably above ordinary function requests. VCAP has a separate bounded
+    # 2 MB local dataset contract plus a small JSON envelope allowance.
     max_body_size_bytes = int(os.environ.get("SHOWME_MAX_BODY_BYTES", "262144"))
 
     @app.middleware("http")
@@ -1070,13 +1070,18 @@ def _install_middlewares(app: FastAPI) -> None:
                     },
                 )
             cl = request.headers.get("content-length")
-            if cl and cl.isdigit() and int(cl) > max_body_size_bytes:
+            request_limit = (
+                2_100_000
+                if request.method == "POST" and request.url.path.rstrip("/").upper() == "/API/FN/VCAP"
+                else max_body_size_bytes
+            )
+            if cl and cl.isdigit() and int(cl) > request_limit:
                 return JSONResponse(
                     status_code=413,
                     content={
                         "detail": (
                             f"request body exceeds limit "
-                            f"({cl} > {max_body_size_bytes} bytes)"
+                            f"({cl} > {request_limit} bytes)"
                         ),
                     },
                 )

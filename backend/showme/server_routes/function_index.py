@@ -60,6 +60,8 @@ def register(app: FastAPI, deps: AppDeps) -> None:
         params: dict[str, Any] = {}
         if request.method == "GET":
             params = dict(request.query_params)
+            if code.upper() == "VCAP" and params.get("action") == "import":
+                raise HTTPException(status_code=405, detail="VCAP imports require POST with a dataset object")
         else:
             try:
                 body = await request.json()

@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "source_id": "custom_example",
+  "source_name": "Replace with publisher name",
+  "source_url": "https://example.org/replace-with-research-reference",
+  "published_at": "2026-10-31",
+  "methodology": "Replace with the licensed dataset's coverage and measurement methodology.",
+  "methodology_version": "replace-with-publication-methodology-version",
+  "geography_basis": "company_hq",
+  "date_basis": "announced",
+  "sector": "all",
+  "observations": []
+}
