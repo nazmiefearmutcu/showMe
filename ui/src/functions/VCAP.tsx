@@ -4,6 +4,7 @@ import { useFunction } from "@/lib/useFunction";
 import { runFunction } from "@/lib/functions";
 import type { FunctionPaneProps } from "./registry-types";
 import { VCAPChart } from "./vcap/VcapChart";
+import { CalendarViews } from "./vcap/CalendarViews";
 import { ImportHelp } from "./vcap/ImportHelp";
 import { latestComparableDifference } from "./vcap/comparison";
 import { exactValue } from "./vcap/chart";
@@ -183,6 +184,9 @@ function queryForImport(
 
 export function VCAPPane({ code }: FunctionPaneProps) {
   const [query, setQuery] = useState(initialQuery);
+  const [view, setView] = useState<"chart" | "table">(() =>
+    query.scope === "global" ? "table" : "chart",
+  );
   const [draft, setDraft] = useState(() => draftFor(query));
   const [forceRefresh, setForceRefresh] = useState(false);
   const [catalogue, setCatalogue] = useState<Source[]>([]);
@@ -258,6 +262,7 @@ export function VCAPPane({ code }: FunctionPaneProps) {
     draft.query.source_ids.includes(snapshot.source_id),
   );
   const selectQuery = (next: Query) => {
+    if (next.scope !== query.scope) setView(next.scope === "global" ? "table" : "chart");
     setQuery(next);
     setDraft(draftFor(next));
     setForceRefresh(false);
@@ -381,7 +386,11 @@ export function VCAPPane({ code }: FunctionPaneProps) {
                 className="btn"
                 disabled={importing}
                 onClick={() => {
-                  selectQuery(defaultQuery(scope));
+                  selectQuery({
+                    ...defaultQuery(scope),
+                    start_year: query.start_year,
+                    end_year: query.end_year,
+                  });
                   setNotice("");
                 }}
               >
@@ -681,9 +690,78 @@ export function VCAPPane({ code }: FunctionPaneProps) {
               {latestPeriod && <span>Data through {latestPeriod}</span>}
             </div>
           )}
+          {query.scope === "countries" &&
+            query.source_ids.includes("oecd") &&
+            !query.source_ids.includes("nsf_ncses_2020") &&
+            query.start_year < 2007 &&
+            query.frequency === "annual" &&
+            query.metric === "investment" &&
+            query.stage === "total" &&
+            query.unit === "USD" &&
+            sources.some(
+              (source) =>
+                source.source_id === "nsf_ncses_2020" &&
+                source.scopes.includes("countries"),
+            ) && (
+              <div className="vcap-message">
+                <p>
+                  The selected OECD series does not provide the earlier historical years. An
+                  additional published report offers 1999–2018 coverage for its reported
+                  countries. Coverage varies by country; no unavailable value is implied.
+                </p>
+                <button
+                  className="btn"
+                  disabled={transition || importing || query.source_ids.length >= 64}
+                  onClick={() =>
+                    selectQuery({
+                      ...query,
+                      source_ids: [...query.source_ids, "nsf_ncses_2020"].sort(),
+                      vintage: null,
+                    })
+                  }
+                >
+                  Add historical 1999–2018 source
+                </button>
+              </div>
+            )}
+          {!rows.length &&
+            query.scope === "global" &&
+            query.source_ids.every((id) =>
+              ["kpmg_pitchbook", "crunchbase"].includes(id),
+            ) && (
+              <div className="vcap-message">
+                <p>
+                  This saved selection needs an owned or licensed import. Published global
+                  report editions are also available with their own coverage and
+                  definitions.
+                </p>
+                <button
+                  className="btn"
+                  disabled={transition || importing}
+                  onClick={() =>
+                    selectQuery({
+                      ...defaultQuery("global"),
+                      start_year: query.start_year,
+                      end_year: query.end_year,
+                    })
+                  }
+                >
+                  Load published global data
+                </button>
+              </div>
+            )}
+          {payload?.query && (
+            <CalendarViews
+              key={identity(payload.query)}
+              payload={payload}
+              query={payload.query}
+              view={view}
+              onView={setView}
+              chart={<VCAPChart rows={rows} query={payload.query} />}
+            />
+          )}
           {rows.length > 0 ? (
             <>
-              <VCAPChart rows={rows} />
               <ObservationTable rows={rows} page={page} onPage={setPage} />
               <Comparison payload={payload!} />
             </>
@@ -843,7 +921,17 @@ function ObservationTable({
                   )}
                   {row.coverage_note && <span>{row.coverage_note}</span>}
                 </td>
-                <td>{row.published_at ?? "Unknown"}</td>
+                <td>
+                  <span>{row.published_at ?? "Unknown"}</span>
+                  {row.publication_id && (
+                    <span>
+                      {row.publication_id} · {row.publication_table}
+                    </span>
+                  )}
+                  {row.underlying_access_date && (
+                    <span>Underlying data accessed {row.underlying_access_date}</span>
+                  )}
+                </td>
                 <td>{row.retrieved_at ?? "Unknown"}</td>
                 <td>
                   <span title={row.snapshot_id}>
@@ -889,6 +977,14 @@ function SourceDetails({ sources, selected }: { sources: Source[]; selected: str
               Lineage: {source.lineage ?? source.source_name}. Observed geographies:{" "}
               {source.available_geographies?.join(", ") || "none loaded"}.
             </p>
+            {source.published_at && (
+              <p>
+                Published {source.published_at}.
+                {source.underlying_access_date && (
+                  <> Underlying data accessed {source.underlying_access_date}.</>
+                )}
+              </p>
+            )}
             {source.validation_summary && (
               <p>
                 Source record validation:{" "}

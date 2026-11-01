@@ -30,6 +30,10 @@ const FIELDS: (keyof Observation)[] = [
   "coverage_note",
   "source_url",
   "data_mode",
+  "underlying_access_date",
+  "publication_id",
+  "publication_table",
+  "global_total_basis",
 ];
 export function csvCell(value: unknown): string {
   if (value == null) return "";
@@ -72,6 +76,7 @@ export function exportJSON(payload: Payload): string {
       query: payload.query,
       status: payload.status,
       methodology: payload.methodology,
+      coverage: payload.coverage,
       rows: exportRows(payload),
       comparison: payload.comparison,
       sources: payload.sources.map((source) => ({
@@ -83,6 +88,8 @@ export function exportJSON(payload: Payload): string {
         terms_url: safeReference(source.terms_url),
         lineage: source.lineage,
         validation_summary: source.validation_summary,
+        published_at: source.published_at,
+        underlying_access_date: source.underlying_access_date,
       })),
       snapshots: payload.snapshots,
     },

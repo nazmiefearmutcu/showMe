@@ -1,11 +1,11 @@
 import { useId, useMemo } from "react";
-import type { Observation } from "./types";
+import type { Observation, Query } from "./types";
 import { CHART_COLORS, chartGeometry, exactValue, axisValue } from "./chart";
 
-export function VCAPChart({ rows }: { rows: Observation[] }) {
+export function VCAPChart({ rows, query }: { rows: Observation[]; query?: Query }) {
   // Bound the SVG as well as the exact-value table. Exports retain every row.
   const shown = useMemo(() => (rows.length > 3000 ? rows.slice(-3000) : rows), [rows]);
-  const geometry = useMemo(() => chartGeometry(shown), [shown]);
+  const geometry = useMemo(() => chartGeometry(shown, query), [shown, query]);
   const id = useId();
   const {
     width,

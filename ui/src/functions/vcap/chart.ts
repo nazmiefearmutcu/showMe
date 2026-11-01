@@ -1,4 +1,5 @@
 import type { Observation } from "./types";
+import { calendarPeriods, type CalendarQuery } from "./calendar";
 
 export const CHART_COLORS = [
   "var(--accent)",
@@ -30,17 +31,20 @@ export function axisValue(value: number) {
       : 2;
   return value.toLocaleString("en-US", { maximumFractionDigits: digits });
 }
-export function chartGeometry(rows: Observation[]) {
+export function chartGeometry(rows: Observation[], query?: CalendarQuery) {
   const width = 960,
     height = 290,
     left = 88,
     right = 20,
     top = 28,
     bottom = 48;
+  const calendar = query ? calendarPeriods(query) : [];
   const points = rows
     .flatMap((row) => {
       const time = periodTime(row);
-      return time === null ? [] : [{ row, time }];
+      return time === null || (query && !calendar.includes(row.period))
+        ? []
+        : [{ row, time }];
     })
     .sort((a, b) => a.time - b.time || seriesKey(a.row).localeCompare(seriesKey(b.row)));
   const series = [
@@ -54,10 +58,15 @@ export function chartGeometry(rows: Observation[]) {
       ]),
     ).values(),
   ];
-  const times = [...new Set(points.map((point) => point.time))];
+  const periods = query ? calendar : [...new Set(points.map((point) => point.row.period))];
+  const times = periods.map((period) => periodTime({ period })!);
   const min = times[0] ?? Date.UTC(2025, 0, 1);
   const max = times[times.length - 1] ?? min;
-  const nominal = rows.some((row) => row.frequency === "quarterly")
+  const nominal = (
+    query
+      ? query.frequency === "quarterly"
+      : rows.some((row) => row.frequency === "quarterly")
+  )
     ? 91.3125 * 86400000
     : 365.25 * 86400000;
   const rangeStart = min - nominal * 0.5,
@@ -72,7 +81,7 @@ export function chartGeometry(rows: Observation[]) {
     0,
   );
   const ceiling = maxValue || 1;
-  const unit = rows[0]?.unit ?? "USD";
+  const unit = rows[0]?.unit ?? query?.unit ?? "USD";
   const divisor = unit === "USD" ? (maxValue >= 1e9 ? 1e9 : maxValue >= 1e6 ? 1e6 : 1) : 1;
   const axisLabel =
     unit === "USD"
@@ -107,7 +116,7 @@ export function chartGeometry(rows: Observation[]) {
     .filter((_, i) => i % tickStep === 0 || i === times.length - 1)
     .map((time) => ({
       x: x(time),
-      label: points.find((point) => point.time === time)!.row.period,
+      label: periods[times.indexOf(time)],
     }));
   return {
     width,

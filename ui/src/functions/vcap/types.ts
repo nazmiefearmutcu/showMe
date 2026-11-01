@@ -43,6 +43,10 @@ export interface Observation {
   is_partial?: boolean;
   coverage_cutoff?: string;
   data_mode?: string;
+  underlying_access_date?: string;
+  publication_id?: string;
+  publication_table?: string;
+  global_total_basis?: string;
 }
 export interface Source {
   source_id: string;
@@ -63,6 +67,7 @@ export interface Source {
   published_at?: string | null;
   retrieved_at?: string;
   validation_summary?: Record<string, number>;
+  underlying_access_date?: string;
 }
 export interface Snapshot {
   snapshot_id: string;
@@ -92,6 +97,21 @@ export interface Payload {
   snapshot_id?: string;
   imported_snapshot?: Snapshot;
   idempotent?: boolean;
+  coverage?: {
+    requested_start: string;
+    requested_end: string;
+    series: CoverageSeries[];
+  };
+}
+export interface CoverageSeries {
+  source_id: string;
+  source_name: string;
+  geography: string;
+  first_period: string | null;
+  last_period: string | null;
+  periods: string[];
+  snapshot_id?: string;
+  published_at?: string | null;
 }
 export interface Dataset {
   schema_version: number;
@@ -116,7 +136,7 @@ export const SCOPE_LABELS: Record<Scope, string> = {
 export function defaultQuery(scope: Scope = "countries"): Query {
   const sources = {
     countries: ["oecd"],
-    global: ["kpmg_pitchbook", "crunchbase"],
+    global: ["nsf_ncses_2020", "nsf_ncses"],
     turkey: ["startups_watch"],
     crypto: ["defillama", "galaxy"],
   };
@@ -126,9 +146,9 @@ export function defaultQuery(scope: Scope = "countries"): Query {
     geographies: [scope === "countries" ? "USA" : scope === "turkey" ? "TUR" : "WORLD"],
     metric: "investment",
     stage: "total",
-    frequency: scope === "countries" ? "annual" : "quarterly",
+    frequency: scope === "countries" || scope === "global" ? "annual" : "quarterly",
     unit: "USD",
-    start_year: 2007,
+    start_year: scope === "global" ? 1999 : 2007,
     end_year: new Date().getFullYear(),
     financing_scope: "vc",
   };

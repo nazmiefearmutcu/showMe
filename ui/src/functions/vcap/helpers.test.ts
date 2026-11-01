@@ -10,7 +10,7 @@ import {
   parseImport,
   validateDataset,
 } from "./imports";
-import { safeReference, type Observation, type Payload } from "./types";
+import { defaultQuery, safeReference, type Observation, type Payload } from "./types";
 
 const dataset = {
   schema_version: 1,
@@ -139,12 +139,19 @@ describe("VCAP local import", () => {
   });
 });
 describe("VCAP export safety and provenance", () => {
-  it.each(["=SUM(A1)", "+cmd", "-cmd", "@sum", "\tformula", "\rformula", " \t=1", " \ttext", "\u007ftext"])(
-    "neutralizes spreadsheet text %j",
-    (text) => {
-      expect(csvCell(text).replace(/^"/, "").startsWith("'")).toBe(true);
-    },
-  );
+  it.each([
+    "=SUM(A1)",
+    "+cmd",
+    "-cmd",
+    "@sum",
+    "\tformula",
+    "\rformula",
+    " \t=1",
+    " \ttext",
+    "\u007ftext",
+  ])("neutralizes spreadsheet text %j", (text) => {
+    expect(csvCell(text).replace(/^"/, "").startsWith("'")).toBe(true);
+  });
   it("escapes commas/quotes/newlines without changing actual numbers or missing values", () => {
     expect(csvCell('a,"b"\nc')).toBe('"a,""b""\nc"');
     expect(csvCell(null)).toBe("");
@@ -182,6 +189,26 @@ describe("VCAP export safety and provenance", () => {
   });
 });
 describe("VCAP chronological chart geometry", () => {
+  it("uses applied calendar boundaries even when observations start later or are empty", () => {
+    const query = { ...defaultQuery(), start_year: 1999, end_year: 2026 };
+    const old = chartGeometry([row("2025", 100)], defaultQuery());
+    const expanded = chartGeometry([row("2025", 100)], query);
+    expect(expanded.ticks[0].label).toBe("1999");
+    expect(expanded.ticks.at(-1)!.label).toBe("2026");
+    expect(expanded.marks[0].x).toBeGreaterThan(old.marks[0].x);
+    const empty = chartGeometry([], query);
+    expect(empty.marks).toEqual([]);
+    expect(empty.ticks[0].label).toBe("1999");
+    expect(empty.ticks.at(-1)!.label).toBe("2026");
+  });
+  it("defaults global research to separate annual NSF report editions", () => {
+    expect(defaultQuery("global")).toMatchObject({
+      source_ids: ["nsf_ncses_2020", "nsf_ncses"],
+      frequency: "annual",
+      start_year: 1999,
+      geographies: ["WORLD"],
+    });
+  });
   it("keeps small percent-GDP axis values distinguishable from zero", () => {
     expect(axisValue(0.000125)).toBe("0.00013");
     expect(axisValue(0)).toBe("0");

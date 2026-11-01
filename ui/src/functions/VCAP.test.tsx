@@ -67,6 +67,22 @@ const sources: Source[] = [
     validation_summary: { input_records: 10, accepted_records: 8, future_records: 2 },
   },
   {
+    source_id: "nsf_ncses_2020",
+    source_name: "NSF NCSES / PitchBook — 2020 historical report",
+    scopes: ["global", "countries"],
+    access_mode: "automatic",
+    access_status: "available",
+    published_at: "2020-01-15",
+  },
+  {
+    source_id: "nsf_ncses",
+    source_name: "NSF NCSES / PitchBook — 2026 report",
+    scopes: ["global", "countries"],
+    access_mode: "automatic",
+    access_status: "available",
+    published_at: "2026-05-01",
+  },
+  {
     source_id: "galaxy",
     source_name: "Galaxy",
     scopes: ["crypto"],
@@ -194,19 +210,19 @@ describe("VCAP measurement controls", () => {
     );
   });
   it.each([
-    ["Global", "global", ["kpmg_pitchbook", "crunchbase"], "WORLD"],
-    ["Turkey", "turkey", ["startups_watch"], "TUR"],
-    ["Crypto & Web3", "crypto", ["defillama", "galaxy"], "WORLD"],
+    ["Global", "global", ["nsf_ncses_2020", "nsf_ncses"], "WORLD", "annual"],
+    ["Turkey", "turkey", ["startups_watch"], "TUR", "quarterly"],
+    ["Crypto & Web3", "crypto", ["defillama", "galaxy"], "WORLD", "quarterly"],
   ])(
     "switches %s with coherent source/geography/frequency defaults",
-    (label, scope, ids, geo) => {
+    (label, scope, ids, geo, frequency) => {
       render(<VCAPPane code="VCAP" />);
       fireEvent.click(screen.getByRole("button", { name: String(label) }));
       expect(lastParams()).toMatchObject({
         scope,
         source_ids: ids,
         geographies: [geo],
-        frequency: "quarterly",
+        frequency,
         unit: "USD",
         financing_scope: "vc",
       });
@@ -256,6 +272,302 @@ describe("VCAP measurement controls", () => {
   });
 });
 describe("VCAP evidence and states", () => {
+  it("keeps the chart on applied dates until Apply, then expands to 1999 even with unchanged source rows", () => {
+    const component = render(<VCAPPane code="VCAP" />);
+    const x = () =>
+      Number(screen.getByTestId("vcap-chart").querySelector("rect")!.getAttribute("x"));
+    const old = x();
+    fireEvent.change(screen.getByLabelText("Start year"), { target: { value: "1999" } });
+    expect(screen.getByTestId("vcap-chart")).not.toHaveTextContent("1999");
+    expect(x()).toBe(old);
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+    expect(lastParams().start_year).toBe(1999);
+    // The old payload remains honestly labelled until the response arrives.
+    expect(x()).toBe(old);
+    result.data!.data = payload({ query: { ...defaultQuery(), start_year: 1999 } });
+    component.rerender(<VCAPPane code="VCAP" />);
+    expect(screen.getByTestId("vcap-chart")).toHaveTextContent("1999");
+    expect(x()).toBeGreaterThan(old);
+    fireEvent.click(screen.getByRole("button", { name: "Year table" }));
+    expect(
+      within(screen.getByTestId("vcap-year-table")).getByRole("rowheader", {
+        name: "1999",
+      }),
+    ).toBeInTheDocument();
+  });
+  it("shows authoritative 2007 source boundaries and an explicit historical action for an empty 1999 request", () => {
+    const query = {
+      ...defaultQuery(),
+      source_ids: ["oecd", "crunchbase"],
+      geographies: ["GBR", "USA"],
+      start_year: 1999,
+      end_year: 2000,
+      vintage: snapshot,
+    };
+    localStorage.setItem("showme.vcap.query", JSON.stringify(query));
+    result.data!.data = payload({
+      query,
+      rows: [],
+      coverage: {
+        requested_start: "1999",
+        requested_end: "2000",
+        series: query.geographies.map((geography) => ({
+          source_id: "oecd",
+          source_name: "OECD",
+          geography,
+          first_period: "2007",
+          last_period: "2025",
+          periods: ["2007", "2025"],
+        })),
+      },
+    });
+    render(<VCAPPane code="VCAP" />);
+    expect(lastParams().source_ids).toEqual(["crunchbase", "oecd"]);
+    expect(screen.getByTestId("vcap-coverage-summary")).toHaveTextContent(
+      "No data before 2007",
+    );
+    expect(screen.getByTestId("vcap-chart")).toHaveTextContent("1999");
+    expect(screen.getByTestId("vcap-chart").querySelectorAll("rect")).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "Year table" }));
+    expect(screen.getByTestId("vcap-year-table")).toHaveTextContent(
+      "Unavailable before 2007",
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Add historical 1999–2018 source" }),
+    );
+    expect(lastParams()).toMatchObject({
+      source_ids: ["crunchbase", "nsf_ncses_2020", "oecd"],
+      geographies: ["GBR", "USA"],
+      start_year: 1999,
+      end_year: 2000,
+      vintage: null,
+    });
+  });
+  it.each([
+    { frequency: "quarterly" },
+    { metric: "deals", unit: "COUNT" },
+    { stage: "seed" },
+    { unit: "PERCENT_GDP" },
+  ])("offers no historical action for an incompatible measurement %j", (changes) => {
+    const query = { ...defaultQuery(), start_year: 1999, ...changes };
+    localStorage.setItem("showme.vcap.query", JSON.stringify(query));
+    render(<VCAPPane code="VCAP" />);
+    expect(
+      screen.queryByRole("button", { name: "Add historical 1999–2018 source" }),
+    ).not.toBeInTheDocument();
+  });
+  it("preserves applied years across scope changes and discards unsubmitted draft years", () => {
+    localStorage.setItem(
+      "showme.vcap.query",
+      JSON.stringify({ ...defaultQuery(), start_year: 1999, end_year: 2024 }),
+    );
+    render(<VCAPPane code="VCAP" />);
+    fireEvent.change(screen.getByLabelText("Start year"), { target: { value: "1980" } });
+    for (const scope of ["Global", "Countries", "Turkey", "Crypto & Web3"]) {
+      fireEvent.click(screen.getByRole("button", { name: scope }));
+      expect(lastParams()).toMatchObject({ start_year: 1999, end_year: 2024 });
+    }
+  });
+  it("opens global research as separate NSF edition columns with a real 1999 amount and preserves actual exports", () => {
+    const query = defaultQuery("global");
+    localStorage.setItem("showme.vcap.query", JSON.stringify(query));
+    const nsfRows = [
+      {
+        ...row,
+        scope: "global" as const,
+        geography: "WORLD",
+        period: "1999",
+        source_id: "nsf_ncses_2020",
+        source_name: sources[5].source_name,
+        value: 24_548_000_000,
+        published_at: "2020-01-15",
+        underlying_access_date: "2019-09-21",
+        publication_id: "NSB-2020-4",
+        publication_table: "S8-62",
+        global_total_basis: "Published Global total row",
+      },
+      {
+        ...row,
+        scope: "global" as const,
+        geography: "WORLD",
+        period: "2024",
+        source_id: "nsf_ncses",
+        source_name: sources[6].source_name,
+        value: 354_144_000_000,
+        published_at: "2026-05-01",
+      },
+    ];
+    result.data!.data = payload({
+      query,
+      rows: nsfRows,
+      coverage: {
+        requested_start: "1999",
+        requested_end: String(query.end_year),
+        series: [
+          {
+            source_id: "nsf_ncses_2020",
+            source_name: nsfRows[0].source_name,
+            geography: "WORLD",
+            first_period: "1999",
+            last_period: "2018",
+            periods: ["1999", "2018"],
+            published_at: "2020-01-15",
+          },
+          {
+            source_id: "nsf_ncses",
+            source_name: nsfRows[1].source_name,
+            geography: "WORLD",
+            first_period: "2013",
+            last_period: "2024",
+            periods: ["2013", "2024"],
+            published_at: "2026-05-01",
+          },
+        ],
+      },
+    });
+    render(<VCAPPane code="VCAP" />);
+    const table = screen.getByTestId("vcap-year-table");
+    expect(within(table).getAllByRole("columnheader")).toHaveLength(3);
+    expect(table).toHaveTextContent("2020 historical report");
+    expect(table).toHaveTextContent("2026 report");
+    expect(table).toHaveTextContent("24548000000 USD");
+    expect(table).toHaveTextContent("354144000000 USD");
+    expect(table).toHaveTextContent("Unavailable after 2024");
+    expect(within(table).getAllByRole("rowheader")).toHaveLength(query.end_year - 1999 + 1);
+    expect(screen.queryByTestId("vcap-chart")).not.toBeInTheDocument();
+    expect(screen.getByTestId("vcap-observation-table")).toHaveTextContent(
+      "Underlying data accessed 2019-09-21",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Export JSON" }));
+    const exported = JSON.parse(mocks.download.mock.calls[0][0]);
+    expect(exported.rows).toHaveLength(2);
+    expect(exported.rows[0]).toMatchObject({
+      underlying_access_date: "2019-09-21",
+      publication_id: "NSB-2020-4",
+      publication_table: "S8-62",
+      global_total_basis: "Published Global total row",
+    });
+    expect(exported.coverage.series).toHaveLength(2);
+  });
+  it("distinguishes reported zero, explicit missing amount, absent year and outside coverage", () => {
+    const query = { ...defaultQuery(), start_year: 2020, end_year: 2026 };
+    localStorage.setItem("showme.vcap.query", JSON.stringify(query));
+    result.data!.data = payload({
+      query,
+      rows: [
+        { ...row, period: "2021", value: 0 },
+        { ...row, period: "2022", value: null, status: "missing" },
+        row,
+      ],
+      coverage: {
+        requested_start: "2020",
+        requested_end: "2026",
+        series: [
+          {
+            source_id: "oecd",
+            source_name: "OECD",
+            geography: "USA",
+            first_period: "2021",
+            last_period: "2025",
+            periods: ["2021", "2022", "2025"],
+          },
+        ],
+      },
+    });
+    render(<VCAPPane code="VCAP" />);
+    fireEvent.click(screen.getByRole("button", { name: "Year table" }));
+    const table = screen.getByTestId("vcap-year-table");
+    for (const [period, text] of [
+      ["2020", "Unavailable before 2021"],
+      ["2021", "0 USD"],
+      ["2022", "Missing amount"],
+      ["2023", "Not reported"],
+      ["2026", "Unavailable after 2025"],
+    ]) {
+      expect(
+        within(table).getByRole("rowheader", { name: period }).closest("tr"),
+      ).toHaveTextContent(text);
+    }
+    fireEvent.click(screen.getByRole("button", { name: "Export CSV" }));
+    expect(mocks.download.mock.calls[0][0].split("\r\n")).toHaveLength(4);
+  });
+  it("offers an explicit published global preset for an empty legacy saved selection, preserving dates", () => {
+    const query = {
+      ...defaultQuery("global"),
+      source_ids: ["kpmg_pitchbook", "crunchbase"],
+      frequency: "quarterly" as const,
+      start_year: 1999,
+      end_year: 2024,
+    };
+    localStorage.setItem("showme.vcap.query", JSON.stringify(query));
+    result.data!.data = payload({ query, rows: [], status: "empty" });
+    render(<VCAPPane code="VCAP" />);
+    expect(lastParams().source_ids).toEqual(["crunchbase", "kpmg_pitchbook"]);
+    fireEvent.click(screen.getByRole("button", { name: "Load published global data" }));
+    expect(lastParams()).toMatchObject({
+      source_ids: ["nsf_ncses_2020", "nsf_ncses"],
+      start_year: 1999,
+      end_year: 2024,
+      frequency: "annual",
+    });
+    expect(lastParams().vintage).toBeUndefined();
+  });
+  it("bounds long quarterly windows and wide series selections with independent paging", () => {
+    const geographies = ["USA", "GBR", "DEU", "FRA", "IND", "JPN", "CAN"];
+    const query = {
+      ...defaultQuery(),
+      start_year: 1900,
+      frequency: "quarterly" as const,
+      geographies,
+    };
+    localStorage.setItem("showme.vcap.query", JSON.stringify(query));
+    result.data!.data = payload({ query, rows: [] });
+    render(<VCAPPane code="VCAP" />);
+    fireEvent.click(screen.getByRole("button", { name: "Year table" }));
+    const table = screen.getByTestId("vcap-year-table");
+    expect(within(table).getAllByRole("rowheader")).toHaveLength(32);
+    expect(within(table).getAllByRole("columnheader")).toHaveLength(7);
+    expect(table).toHaveTextContent("1900-Q1");
+    fireEvent.click(screen.getByRole("button", { name: "Next periods" }));
+    expect(table).toHaveTextContent("1908-Q1");
+    fireEvent.click(screen.getByRole("button", { name: "Next series" }));
+    expect(within(table).getAllByRole("columnheader")).toHaveLength(2);
+    expect(table).toHaveTextContent("CAN");
+  });
+  it("does not warn about unavailable time before Q1 of the same applied start year", () => {
+    const query = {
+      ...defaultQuery(),
+      start_year: 2025,
+      end_year: 2025,
+      frequency: "quarterly" as const,
+    };
+    localStorage.setItem("showme.vcap.query", JSON.stringify(query));
+    result.data!.data = payload({
+      query,
+      rows: [],
+      coverage: {
+        requested_start: "2025-Q1",
+        requested_end: "2025-Q4",
+        series: [
+          {
+            source_id: "oecd",
+            source_name: "OECD",
+            geography: "USA",
+            first_period: "2025-Q1",
+            last_period: "2025-Q4",
+            periods: ["2025-Q1", "2025-Q2", "2025-Q3", "2025-Q4"],
+          },
+        ],
+      },
+    });
+    render(<VCAPPane code="VCAP" />);
+    expect(screen.getByTestId("vcap-coverage-summary")).not.toHaveTextContent(
+      "No data before",
+    );
+    expect(screen.getByTestId("vcap-coverage-summary")).not.toHaveTextContent(
+      "No data after",
+    );
+  });
   it("distinguishes the actual latest measurement from the requested year range", () => {
     render(<VCAPPane code="VCAP" />);
     expect(screen.getByText("Data through 2025")).toBeInTheDocument();

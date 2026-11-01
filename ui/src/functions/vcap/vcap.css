@@ -219,6 +219,43 @@
 .vcap-pane td > span {
   display: block;
 }
+.vcap-pane th > span {
+  display: block;
+  font-weight: 400;
+  margin-top: 3px;
+}
+.vcap-year-table table {
+  min-width: 480px;
+}
+.vcap-year-table td,
+.vcap-year-table thead th {
+  min-width: 170px;
+}
+.vcap-year-table th:first-child {
+  min-width: 65px;
+}
+.vcap-coverage-summary {
+  border: 1px solid var(--line);
+  background: var(--surface);
+  padding: 12px;
+  overflow-wrap: anywhere;
+}
+.vcap-coverage-summary ul {
+  margin: 5px 0;
+  padding-left: 18px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.vcap-calendar-paging {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  margin-bottom: 8px;
+}
+.vcap-actions button[aria-pressed="true"] {
+  color: var(--accent);
+  border-color: var(--accent);
+}
 .vcap-number {
   font-family: var(--font-mono, "JetBrains Mono", monospace);
   font-variant-numeric: tabular-nums;
