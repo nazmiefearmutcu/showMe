@@ -406,23 +406,40 @@ export function startWorkspaceAutosave(): () => void {
   // Flush-on-close: the 400 ms debounce silently drops the user's last edit
   // when they hit ⌘W or quit immediately after a mutation. Wire both the
   // browser-native `beforeunload` and (when running inside Tauri) the
-  // `tauri://close-requested` event to flush before teardown.
+  // supported close-request handler to flush before teardown.
   // See FUNC-04 P0 in the quality audit.
+  const flushOnClose = async () => {
+    try {
+      await flushWorkspaceAutosave();
+    } catch (err) {
+      // A failed native save and localStorage fallback must not trap the
+      // user in the window by rejecting Tauri's close-request handler.
+      console.warn("workspace flush failed during close", err);
+    }
+  };
   const browserFlush = () => {
-    void flushWorkspaceAutosave();
+    void flushOnClose();
   };
   if (typeof window !== "undefined") {
     window.addEventListener("beforeunload", browserFlush);
   }
 
-  // Tauri close-requested listener is async; capture the unlisten handle so
-  // we can detach in the disposer. Browser-mode (`isInTauri()` false) skips
-  // this entirely — the dynamic import would throw otherwise.
+  // onCloseRequested waits for the save, then destroys the window. A raw
+  // close-requested listener suppresses native closing without completing it.
+  // Registration can finish after disposal (e.g. StrictMode); detach then too.
+  let disposed = false;
   let unlistenTauri: (() => void) | null = null;
   if (isInTauri()) {
     void import("@tauri-apps/api/window")
-      .then((mod) => mod.getCurrentWindow().listen("tauri://close-requested", browserFlush))
+      .then((mod) =>
+        disposed ? null : mod.getCurrentWindow().onCloseRequested(flushOnClose),
+      )
       .then((unlisten) => {
+        if (!unlisten) return;
+        if (disposed) {
+          unlisten();
+          return;
+        }
         unlistenTauri = unlisten;
       })
       .catch((err) => {
@@ -431,6 +448,8 @@ export function startWorkspaceAutosave(): () => void {
   }
 
   return () => {
+    if (disposed) return;
+    disposed = true;
     unsubStore();
     // HNT-08: cancel any pending debounce write — without this, a dispose
     // followed by the 400 ms timer firing would still flush a (stale)
