@@ -9,9 +9,11 @@ import logging
 import math
 import os
 import re
+import sys
 import threading
 import time
 from collections import defaultdict
+from concurrent.futures import Future
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -26,6 +28,19 @@ MAX_RESPONSE_BYTES = 8_000_000
 TTL_SECONDS = 86400
 COOLDOWN_SECONDS = 60
 _LOCKS: dict[tuple[str, str], threading.Lock] = {}
+_INFLIGHT: dict[tuple[str, str], Future[dict[str, Any]]] = {}
+_INFLIGHT_LOCK = threading.Lock()
+
+
+def _wait_budget_seconds() -> float:
+    # Read the worker's loaded configuration when running in the server. A
+    # standalone adapter uses the same environment/default without importing
+    # the server (which imports function adapters itself).
+    server = sys.modules.get("showme.server")
+    worker_budget = getattr(server, "FUNCTION_TIMEOUT_SECONDS", None)
+    if worker_budget is None:
+        worker_budget = float(os.environ.get("SHOWME_FUNCTION_TIMEOUT_SECONDS", "14.0"))
+    return min(10.0, worker_budget * 0.75)
 
 
 class _RedactKeyedEndpoint(logging.Filter):
@@ -204,7 +219,50 @@ class Providers:
         self.client = client
 
     async def ensure(self, source: str, refresh: bool = False) -> dict[str, Any]:
-        return await asyncio.to_thread(self._ensure, source, refresh)
+        key = (str(self.store.path.resolve()), source)
+        with _INFLIGHT_LOCK:
+            future = _INFLIGHT.get(key)
+            joined = future is not None
+            if future is None:
+                future = Future()
+                _INFLIGHT[key] = future
+
+                def run() -> None:
+                    try:
+                        future.set_result(self._ensure(source, refresh))
+                    except BaseException as exc:
+                        future.set_exception(exc)
+                    finally:
+                        with _INFLIGHT_LOCK:
+                            if _INFLIGHT.get(key) is future:
+                                del _INFLIGHT[key]
+
+                # A per-loop to_thread task would be cancelled by wait_for and
+                # asyncio.run would still wait for its executor at shutdown.
+                # This process-local Future survives caller/loop cancellation;
+                # the real refresh owns its slot until synchronous work ends.
+                try:
+                    threading.Thread(target=run, name="vcap-refresh", daemon=True).start()
+                except BaseException:
+                    del _INFLIGHT[key]
+                    raise
+        budget = _wait_budget_seconds()
+        try:
+            result = await asyncio.wait_for(
+                asyncio.shield(asyncio.wrap_future(future)), timeout=budget,
+            )
+            if joined and result.get("access_status") == "available":
+                return {**result, "cached": True}
+            return result
+        except TimeoutError:
+            origin = "official" if source == "oecd" else "reference"
+            cached = self.store.latest(source, origin) is not None
+            status = "stale" if cached else "provider_unavailable"
+            # Timing out the await does not stop a socket/thread or complete a
+            # fetch attempt. Only the real job records success/failure/cooldown.
+            return {"access_status": status, "status": status, "cached": cached,
+                    "stale": cached, "refresh_in_progress": True,
+                    "reason": f"{SOURCE_CATALOG[source]['source_name']} refresh is still running after the {budget:g} second wait; retry later. Saved releases are retained."}
 
     def _ensure(self, source: str, refresh: bool) -> dict[str, Any]:
         lock = _LOCKS.setdefault((str(self.store.path.resolve()), source), threading.Lock())
@@ -240,12 +298,23 @@ class Providers:
 
     def _download(self, url: str) -> tuple[bytes, dict[str, str]]:
         owns = self.client is None
-        client = self.client or httpx.Client(timeout=httpx.Timeout(15, connect=5), follow_redirects=False)
+        budget = _wait_budget_seconds()
+        phase_timeout = min(2.0, budget * 0.2)
+        timeout = httpx.Timeout(phase_timeout)
+        client = self.client or httpx.Client(timeout=timeout, follow_redirects=False)
         started = time.monotonic()
+
+        def check_elapsed() -> None:
+            # Checked between headers/chunks; this cannot interrupt a blocked
+            # HTTP read. The independent caller wait above is the hard boundary.
+            if time.monotonic() - started > budget * 0.8:
+                raise ProviderError("Provider response exceeded its streaming time budget")
+
         try:
-            with client.stream("GET", url, timeout=httpx.Timeout(15, connect=5), follow_redirects=False,
+            with client.stream("GET", url, timeout=timeout, follow_redirects=False,
                                headers={"Accept": "text/csv" if "sdmx.oecd.org" in url else "application/json", "User-Agent": "ShowMe-VCAP/1.0"}) as response:
                 response.raise_for_status()
+                check_elapsed()
                 length = response.headers.get("content-length")
                 if length and int(length) > MAX_RESPONSE_BYTES:
                     raise ProviderError("Provider response exceeds the 8 MB limit")
@@ -255,8 +324,7 @@ class Providers:
                     total += len(chunk)
                     if total > MAX_RESPONSE_BYTES:
                         raise ProviderError("Provider response exceeds the 8 MB limit")
-                    if time.monotonic() - started > 30:
-                        raise ProviderError("Provider request exceeded the 30 second deadline")
+                    check_elapsed()
                     chunks.append(chunk)
                 return b"".join(chunks), dict(response.headers)
         finally:
