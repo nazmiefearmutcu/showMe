@@ -41,6 +41,13 @@ struct WindowFrame {
     monitor: Option<String>,
 }
 
+fn restored_size(frame: &WindowFrame, min_width: f64, min_height: f64) -> Option<(f64, f64)> {
+    if !frame.w.is_finite() || !frame.h.is_finite() || frame.w <= 0.0 || frame.h <= 0.0 {
+        return None;
+    }
+    Some((frame.w.max(min_width), frame.h.max(min_height)))
+}
+
 fn state_path(app: &tauri::AppHandle) -> Option<PathBuf> {
     app.path().app_data_dir().ok().map(|p| p.join("state/window-state.json"))
 }
@@ -61,6 +68,16 @@ pub fn restore_state(app: &App) {
     };
     for (label, frame) in frames {
         if let Some(window) = handle.get_webview_window(&label) {
+            let config = handle.config().app.windows.iter().find(|w| w.label == label);
+            let min_width = config.and_then(|w| w.min_width).unwrap_or(1.0);
+            let min_height = config.and_then(|w| w.min_height).unwrap_or(1.0);
+            let Some((width, height)) = restored_size(&frame, min_width, min_height) else {
+                // Windows can report a zero client area while minimized.
+                // An old saved zero must leave the configured startup frame intact.
+                log::warn!("window::restore_state: ignoring invalid saved size for {label}");
+                continue;
+            };
+            let frame = WindowFrame { w: width, h: height, ..frame };
             // REL-04 P2 — validate the saved frame against currently
             // available monitors before restoring. If the monitor it was
             // saved on is gone, snap to primary.
@@ -68,7 +85,7 @@ pub fn restore_state(app: &App) {
             let primary = window.primary_monitor().ok().flatten();
             let (target_x, target_y) = resolve_position(&monitors, primary.as_ref(), &frame);
             let _ = window.set_position(LogicalPosition::new(target_x, target_y));
-            let _ = window.set_size(LogicalSize::new(frame.w, frame.h));
+            let _ = window.set_size(LogicalSize::new(width, height));
         }
     }
 }
@@ -146,6 +163,11 @@ pub fn persist_state(app: &tauri::AppHandle) {
         .and_then(|t| serde_json::from_str(&t).ok())
         .unwrap_or_default();
     for (label, w) in app.webview_windows() {
+        // A minimized window is not a new usable layout. Preserve the last
+        // normal frame rather than storing its zero size or off-screen position.
+        if w.is_minimized().unwrap_or(false) {
+            continue;
+        }
         // REL-04 P2 — persist logical DIPs so restore is Retina-safe.
         // HNT-05 — `set_position` targets the OUTER frame, so persist
         // `outer_position()` to keep position symmetric (the previous
@@ -156,6 +178,9 @@ pub fn persist_state(app: &tauri::AppHandle) {
         let size = w.inner_size().ok();
         let scale = w.scale_factor().unwrap_or(1.0).max(0.1);
         if let (Some(pos), Some(size)) = (pos, size) {
+            if size.width == 0 || size.height == 0 {
+                continue;
+            }
             let monitor_name = w
                 .current_monitor()
                 .ok()
@@ -208,6 +233,29 @@ pub fn handle_event(_window: &Window, _event: &WindowEvent) {
 mod tests {
     use super::*;
     use serde_json;
+
+    #[test]
+    fn invalid_saved_size_keeps_configured_startup_frame() {
+        for (w, h) in [
+            (0.0, 0.0),
+            (1440.0, 0.0),
+            (-1.0, 900.0),
+            (f64::NAN, 900.0),
+            (1440.0, f64::INFINITY),
+        ] {
+            let frame = WindowFrame { w, h, ..Default::default() };
+            assert_eq!(restored_size(&frame, 960.0, 600.0), None);
+        }
+    }
+
+    #[test]
+    fn restored_size_respects_configured_minimum_and_preserves_normal_size() {
+        let mut frame = WindowFrame { w: 1.0, h: 1.0, ..Default::default() };
+        assert_eq!(restored_size(&frame, 960.0, 600.0), Some((960.0, 600.0)));
+        frame.w = 1440.0;
+        frame.h = 900.0;
+        assert_eq!(restored_size(&frame, 960.0, 600.0), Some((1440.0, 900.0)));
+    }
 
     #[test]
     fn roundtrip_logical_frame() {

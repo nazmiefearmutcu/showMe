@@ -1,5 +1,5 @@
-// Prevents additional console window on Windows in release.
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// A double-clicked desktop build must not open a console, including debug builds.
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 fn main() {
     showme_lib::run()
