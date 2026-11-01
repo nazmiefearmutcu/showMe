@@ -21,6 +21,7 @@ import httpx
 
 from .catalog import SOURCE_CATALOG
 from .models import Dataset, InputError, period_fields, utcnow
+from .nsf import NSF_URLS, NSFParseError, parse_nsf
 from .store import SnapshotStore
 
 OECD_URL = "https://sdmx.oecd.org/public/rest/v1/data/OECD.SDD.TPS,DSD_VC@DF_VC_INV,1.0/.?startPeriod=2007&format=csvfile"
@@ -255,7 +256,7 @@ class Providers:
                 return {**result, "cached": True}
             return result
         except TimeoutError:
-            origin = "official" if source == "oecd" else "reference"
+            origin = "official" if source == "oecd" or source in NSF_URLS else "reference"
             cached = self.store.latest(source, origin) is not None
             status = "stale" if cached else "provider_unavailable"
             # Timing out the await does not stop a socket/thread or complete a
@@ -267,7 +268,7 @@ class Providers:
     def _ensure(self, source: str, refresh: bool) -> dict[str, Any]:
         lock = _LOCKS.setdefault((str(self.store.path.resolve()), source), threading.Lock())
         with lock:
-            origin = "official" if source == "oecd" else "reference"
+            origin = "official" if source == "oecd" or source in NSF_URLS else "reference"
             release = self.store.latest(source, origin)
             state = self.store.fetch_state(source)
             age = _seconds_since(state.get("last_success"))
@@ -281,9 +282,11 @@ class Providers:
                         "cached": cached, "stale": stale, "refresh_cooldown": True if refresh else False,
                         "reason": state.get("error") or ("Refresh cooldown: retry after 60 seconds." if refresh else None)}
             try:
-                url = OECD_URL if source == "oecd" else "https://pro-api.llama.fi/" + os.environ["SHOWME_DEFILLAMA_API_KEY"] + "/api/raises"
+                url = (OECD_URL if source == "oecd" else NSF_URLS[source] if source in NSF_URLS
+                       else "https://pro-api.llama.fi/" + os.environ["SHOWME_DEFILLAMA_API_KEY"] + "/api/raises")
                 body, headers = self._download(url)
-                data = parse_oecd(body.decode("utf-8-sig"), last_modified=headers.get("last-modified")) if source == "oecd" else parse_defillama(json.loads(body))
+                data = (parse_oecd(body.decode("utf-8-sig"), last_modified=headers.get("last-modified")) if source == "oecd"
+                        else parse_nsf(body, source) if source in NSF_URLS else parse_defillama(json.loads(body)))
                 self.store.save(data, origin=origin)
                 self.store.record_fetch(source, True)
                 return {"access_status": "available", "status": "available", "cached": False, "stale": False,
@@ -291,7 +294,7 @@ class Providers:
             except Exception as exc:
                 # httpx exceptions contain the keyed URL; only our own fixed messages
                 # may cross this boundary. No raw exception is returned or logged.
-                reason = str(exc) if isinstance(exc, ProviderError) else f"{SOURCE_CATALOG[source]['source_name']} request failed ({type(exc).__name__}); retry later."
+                reason = str(exc) if isinstance(exc, (ProviderError, NSFParseError)) else f"{SOURCE_CATALOG[source]['source_name']} request failed ({type(exc).__name__}); retry later."
                 self.store.record_fetch(source, False, reason)
                 return {"access_status": "stale" if cached else "provider_unavailable", "status": "stale" if cached else "provider_unavailable",
                         "cached": cached, "stale": cached, "reason": reason}
@@ -312,7 +315,7 @@ class Providers:
 
         try:
             with client.stream("GET", url, timeout=timeout, follow_redirects=False,
-                               headers={"Accept": "text/csv" if "sdmx.oecd.org" in url else "application/json", "User-Agent": "ShowMe-VCAP/1.0"}) as response:
+                               headers={"Accept": "text/csv" if url == OECD_URL else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" if url in NSF_URLS.values() else "application/json", "User-Agent": "ShowMe-VCAP/1.0"}) as response:
                 response.raise_for_status()
                 check_elapsed()
                 length = response.headers.get("content-length")

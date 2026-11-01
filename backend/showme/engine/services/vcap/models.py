@@ -61,6 +61,10 @@ class Dataset(TypedDict, total=False):
     sector: str
     observations: list[Observation]
     validation_summary: ValidationSummary
+    underlying_access_date: str
+    publication_id: str
+    publication_table: str
+    global_total_basis: str
 
 
 def utcnow() -> str:
@@ -174,7 +178,7 @@ class Query:
     def parse(cls, params: dict[str, Any]) -> Query:
         scope = choice(params.get("scope", "countries"), SCOPES, "scope")
         defaults = {"countries": ["USA"], "global": ["WORLD"], "turkey": ["TUR"], "crypto": ["WORLD"]}
-        sources = {"countries": ["oecd"], "global": ["kpmg_pitchbook"], "turkey": ["startups_watch"], "crypto": ["defillama"]}
+        sources = {"countries": ["oecd"], "global": ["nsf_ncses", "nsf_ncses_2020"], "turkey": ["startups_watch"], "crypto": ["defillama"]}
         geos = _list(params.get("geographies", defaults[scope]), "geographies", geography)
         for geo in geos:
             validate_scope_geo(scope, geo)
@@ -182,7 +186,7 @@ class Query:
         unit = choice(params.get("unit", "USD"), UNITS, "unit")
         validate_metric_unit(metric, unit)
         years = []
-        for field, default in (("start_year", 2007), ("end_year", datetime.now(timezone.utc).year)):
+        for field, default in (("start_year", 1999 if scope == "global" else 2007), ("end_year", datetime.now(timezone.utc).year)):
             raw = params.get(field, default)
             if isinstance(raw, str) and re.fullmatch(r"\d{4}", raw):
                 raw = int(raw)

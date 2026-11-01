@@ -1,14 +1,16 @@
 """Queries preserve source boundaries and observation vintages."""
 from __future__ import annotations
 
+import asyncio
+import os
 from collections import defaultdict
 from dataclasses import asdict
 from itertools import combinations
-import os
 from typing import Any
 
 from .catalog import SOURCE_CATALOG, catalogue
 from .models import InputError, Query, source_id, validate_dataset
+from .nsf import NSF_URLS
 from .providers import Providers
 from .store import SnapshotStore
 
@@ -71,8 +73,14 @@ class VCAPService:
         # other selected sources keep their independently latest release.
         self.store.selected(query.source_ids, query.vintage)
         pinned_source = next((s["source_id"] for s in self.store.versions() if s["snapshot_id"] == query.vintage), None)
+        eligible = []
         for sid in query.source_ids:
-            if sid not in {"oecd", "defillama"} or sid == pinned_source:
+            if sid not in {"oecd", "defillama", *NSF_URLS} or sid == pinned_source:
+                continue
+            if sid in NSF_URLS and (query.scope not in {"global", "countries"} or query.metric != "investment"
+                    or query.frequency != "annual" or query.stage != "total" or query.unit != "USD"
+                    or query.financing_scope != "vc"):
+                access[sid] = {"access_status": "unsupported", "status": "unsupported", "reason": "NCSES published reports support annual total-stage VC investment in USD, WORLD or explicitly reported countries only; no quarterly, stage breakdown, deals, fundraising or percent-GDP conversion."}
                 continue
             if sid == "oecd" and (query.scope != "countries" or query.metric != "investment" or query.frequency != "annual" or query.unit not in {"USD", "PERCENT_GDP"}):
                 access[sid] = {"access_status": "unsupported", "status": "unsupported", "reason": "OECD supports annual country investment in USD or percent GDP; no automated Turkey/world total."}
@@ -84,23 +92,40 @@ class VCAPService:
                 access[sid] = {"access_status": "unsupported" if self.store.latest(sid) else "not_configured" if not os.environ.get("SHOWME_DEFILLAMA_API_KEY") else "unsupported",
                     "status": "unsupported", "reason": "Strict VC is unavailable from the documented raises schema (no equity/token classification). Select all_raises for reported crypto financing incl token sales, or import a classified series."}
                 continue
-            access[sid] = await self.providers.ensure(sid, query.refresh)
+            eligible.append(sid)
+        # Independent source waits share one worker window. Each ensure retains
+        # its existing cross-loop single-flight, cooldown and bounded fallback.
+        access.update(zip(eligible, await asyncio.gather(*(
+            self.providers.ensure(sid, query.refresh) for sid in eligible
+        ))))
         releases = self.store.selected(query.source_ids, query.vintage)
         data = self.base(access)
         rows: list[dict[str, Any]] = []
         used = []
+        coverage: dict[tuple[str, str], dict[str, Any]] = {
+            (sid, geo): {"source_id": sid, "source_name": next(
+                source["source_name"] for source in data["sources"] if source["source_id"] == sid),
+                "geography": geo, "first_period": None, "last_period": None, "periods": []}
+            for sid in query.source_ids for geo in query.geographies
+        }
         for release in releases:
             dataset = release["dataset"]
             selected = []
+            for geo in query.geographies:
+                coverage[(dataset["source_id"], geo)].update(
+                    snapshot_id=release["snapshot_id"], published_at=dataset.get("published_at"))
             for observation in dataset["observations"]:
                 if (observation["scope"] != query.scope or observation["geography"] not in query.geographies
                         or observation["metric"] != query.metric or observation["stage"] != query.stage
                         or observation["frequency"] != query.frequency or observation["unit"] != query.unit
-                        or observation.get("financing_scope", "vc") != query.financing_scope
-                        or not query.start_year <= int(observation["period"][:4]) <= query.end_year):
+                        or observation.get("financing_scope", "vc") != query.financing_scope):
+                    continue
+                coverage[(dataset["source_id"], observation["geography"])]["periods"].append(observation["period"])
+                if not query.start_year <= int(observation["period"][:4]) <= query.end_year:
                     continue
                 selected.append({**observation,
                     **{key: dataset.get(key) for key in ("source_id", "source_name", "published_at", "methodology_version", "geography_basis", "date_basis", "sector", "source_url")},
+                    **{key: dataset[key] for key in ("underlying_access_date", "publication_id", "publication_table", "global_total_basis") if key in dataset},
                     "retrieved_at": release["retrieved_at"], "snapshot_id": release["snapshot_id"],
                     "vintage": release["snapshot_id"], "coverage_note": observation.get("coverage_note"),
                     "data_mode": "imported" if release["origin"] == "imported" else "official",
@@ -109,12 +134,19 @@ class VCAPService:
                 used.append(release)
                 rows.extend(selected)
         rows.sort(key=lambda r: (r["source_id"], r["geography"], r["period_start"], r["stage"], r["metric"], r["unit"]))
+        for item in coverage.values():
+            item["periods"] = sorted(set(item["periods"]))
+            if item["periods"]:
+                item.update(first_period=item["periods"][0], last_period=item["periods"][-1])
         series = _series(rows)
         warnings = [f"{sid}: {value['reason']}" for sid, value in sorted(access.items()) if value.get("reason")]
         stale = any(v.get("stale") for v in access.values())
         cached = any(v.get("cached") for v in access.values()) or bool(used) and not any(s in access and not access[s].get("cached", True) for s in query.source_ids)
         status = "ok" if rows else "provider_unavailable" if access and all(v.get("access_status") in {"provider_unavailable", "not_configured"} for v in access.values()) else "empty"
         data.update(status=status, action="query", query=asdict(query), rows=rows, series=series,
+            coverage={"requested_start": f"{query.start_year}-Q1" if query.frequency == "quarterly" else str(query.start_year),
+                      "requested_end": f"{query.end_year}-Q4" if query.frequency == "quarterly" else str(query.end_year),
+                      "series": list(coverage.values())},
             comparison=_comparison(series), warnings=warnings,
             summary={"observation_count": len(rows), "missing_count": sum(r["value"] is None for r in rows),
                      "series_count": len(series), "total": None,

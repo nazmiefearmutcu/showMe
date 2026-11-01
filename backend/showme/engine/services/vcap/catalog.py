@@ -24,6 +24,16 @@ SOURCE_CATALOG = {
     "oecd": _source("oecd", "OECD Venture Capital Investments", ["countries"],
         "https://data-explorer.oecd.org/", "https://www.oecd.org/en/about/terms-conditions.html",
         "Automatic fixed SDMX CSV; annual country investment, USD and percent GDP. Actual observed country coverage only; never a derived world total. Non-production dataflow: consult source methodology and observation flags.", "automatic"),
+    "nsf_ncses_2020": _source("nsf_ncses_2020", "NSF NCSES / PitchBook — 2020 historical report", ["global", "countries"],
+        "https://ncses.nsf.gov/pubs/nsb20204/assets/supplemental-tables/tables/nsb20204-tabs08-062.xlsx",
+        "https://ncses.nsf.gov/indicators/permissions",
+        "Automatic published NCSES aggregate table S8-62 (NSB-2020-4), 1999–2018, millions current USD. Explicit Global total and individually named countries only; EU28/regions/Other excluded. China includes Hong Kong. Published 2020-01-15; underlying PitchBook database accessed 2019-09-21. Separate report edition: revised overlaps must not be spliced. NCSES permits aggregate reuse unless copyright noted; this is not a license to raw PitchBook deals/API.",
+        "automatic", lineage="NSF NCSES / PitchBook"),
+    "nsf_ncses": _source("nsf_ncses", "NSF NCSES / PitchBook — 2026 report", ["global", "countries"],
+        "https://ncses.nsf.gov/pubs/nsb20262/assets/business-dynamics-and-investment/figures/nsb20262-figtrn-028.xlsx",
+        "https://ncses.nsf.gov/indicators/permissions",
+        "Automatic published NCSES figure TRN-28 (NSB-2026-2), 2013–2024. Explicit World total and six named countries; Rest of world excluded. Millions of dollars interpreted as USD from publication context, with no constant-price base stated. Company HQ; completed deals, all VC stages; China includes Hong Kong; underlying country coverage may be incomplete. Published 2026-05-01; PitchBook special tabulations accessed May 2025. Separate edition, never spliced with the historical report. Aggregate reuse permission does not license raw commercial deals/API.",
+        "automatic", lineage="NSF NCSES / PitchBook"),
     "defillama": _source("defillama", "DefiLlama Raises", ["crypto"],
         "https://defillama.com/raises", "https://api-docs.defillama.com/",
         "Optional server-side SHOWME_DEFILLAMA_API_KEY (Pro). Announcement-date raises include equity, tokens and ICOs. API lacks instrument/HQ classification: only explicitly labelled all_raises is automated; strict VC needs classified imports. No geographic inference.", "optional_key"),
@@ -52,6 +62,10 @@ SOURCE_CATALOG = {
 }
 SOURCE_CATALOG["oecd"].update(metrics=["investment"], frequencies=["annual"], units=["USD", "PERCENT_GDP"])
 SOURCE_CATALOG["defillama"].update(metrics=["investment", "deals"], units=["USD", "COUNT"])
+for _sid, _published, _accessed in (("nsf_ncses_2020", "2020-01-15", "2019-09-21"),
+                                   ("nsf_ncses", "2026-05-01", "2025-05")):
+    SOURCE_CATALOG[_sid].update(metrics=["investment"], frequencies=["annual"],
+        stages=["total"], units=["USD"], published_at=_published, underlying_access_date=_accessed)
 SOURCE_CATALOG["custom"]["references"] = []
 
 

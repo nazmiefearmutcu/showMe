@@ -9,6 +9,7 @@ import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import httpx
 import pytest
@@ -17,7 +18,6 @@ from fastapi.testclient import TestClient
 
 from showme.engine.services.vcap.providers import Providers, parse_oecd
 from showme.engine.services.vcap.store import SnapshotStore
-
 
 CSV = """REF_AREA,MEASURE,BUSINESS_DEVELOPMENT_STAGE,UNIT_MEASURE,FREQ,TIME_PERIOD,OBS_VALUE,OBS_STATUS,UNIT_MULT
 USA,VC_INV_MKT,_T,USD_EXC,A,2023,8,A,6
@@ -194,6 +194,86 @@ def test_inner_wait_includes_existing_source_lock_and_survives_loop_shutdown(mon
             assert not thread.is_alive()
     assert len(downloads) == 1 and len(store.versions()) == 1
     assert asyncio.run(Providers(store).ensure("oecd"))["cached"] is True
+
+
+@pytest.mark.parametrize("seeded", [False, True], ids=["cold", "stale"])
+@pytest.mark.parametrize("succeeds", [True, False], ids=["eventual-success", "eventual-failure"])
+def test_default_global_two_sources_share_actual_http_worker_deadline(monkeypatch, seeded, succeeds):
+    from showme import server
+    from showme.engine.functions.macro.vcap import VCAPFunction
+    from showme.engine.services.vcap.nsf import NSF_URLS, parse_nsf
+    from showme.server_routes import AppDeps, function_index
+
+    fixture_dir = Path(__file__).parent / "fixtures" / "vcap"
+    bodies = {"nsf_ncses_2020": (fixture_dir / "nsb20204-tabs08-062.xlsx").read_bytes(),
+              "nsf_ncses": (fixture_dir / "nsb20262-figtrn-028.xlsx").read_bytes()}
+    store = SnapshotStore()
+    if seeded:
+        for source in NSF_URLS:
+            store.save(parse_nsf(bodies[source], source), origin="official")
+    originals = store.versions()
+    entered = {source: threading.Event() for source in NSF_URLS}
+    release = threading.Event()
+    downloads = []
+
+    def delayed_download(self, url):
+        source = next(sid for sid, fixed in NSF_URLS.items() if fixed == url)
+        downloads.append(threading.current_thread())
+        entered[source].set()
+        assert release.wait(timeout=5)
+        if not succeeds:
+            raise httpx.ReadTimeout("private upstream failure")
+        return bodies[source], {}
+
+    async def dispatch(code, params):
+        assert code == "VCAP"
+        return await VCAPFunction().execute(**params)
+
+    worker_budget = 0.6
+    monkeypatch.setattr(server, "FUNCTION_TIMEOUT_SECONDS", worker_budget)
+    monkeypatch.setattr(server, "_execute_showme_function_on_worker", dispatch)
+    monkeypatch.setattr(Providers, "_download", delayed_download)
+    worker = server._ShowMeFunctionWorker()
+    monkeypatch.setattr(server, "_FUNCTION_WORKER", worker)
+    app = FastAPI()
+    function_index.register(app, AppDeps(boot_state={"engine_attached": True}))
+    try:
+        with TestClient(app) as client:
+            assert client.post("/api/fn/VCAP", json={"action": "versions"}).status_code == 200
+            started = time.monotonic()
+            response = client.post("/api/fn/VCAP", json={"scope": "global", "refresh": True})
+            assert time.monotonic() - started < worker_budget
+            assert response.status_code == 200
+            payload = response.json()
+            data, meta = payload["data"], payload["metadata"]
+            assert data["status"] == ("ok" if seeded else "provider_unavailable")
+            assert data["query"]["start_year"] == 1999
+            assert set(meta["source_access"]) == set(NSF_URLS)
+            assert all(event.is_set() for event in entered.values())
+            assert len(downloads) == 2 and all(thread.is_alive() for thread in downloads)
+            assert all(state["refresh_in_progress"] is True for state in meta["source_access"].values())
+            assert meta["cached"] is seeded and meta["stale"] is seeded
+            assert len(data["rows"]) == (32 if seeded else 0)
+            assert len(data["coverage"]["series"]) == 2
+            assert data["snapshots"] == originals and data["summary"]["total"] is None
+            assert "private upstream" not in json.dumps(payload)
+            release.set()
+            for thread in downloads:
+                thread.join(timeout=2)
+                assert not thread.is_alive()
+            completed = client.post("/api/fn/VCAP", json={"scope": "global"}).json()
+            assert len(downloads) == 2
+            assert completed["data"]["status"] == ("ok" if seeded or succeeds else "provider_unavailable")
+            assert completed["metadata"]["stale"] is (seeded and not succeeds)
+            assert len(store.versions()) == (2 if seeded or succeeds else 0)
+            for original in originals:
+                assert store.selected([original["source_id"]], original["snapshot_id"])[0]["snapshot_id"] == original["snapshot_id"]
+    finally:
+        release.set()
+        for thread in downloads:
+            thread.join(timeout=3)
+            assert not thread.is_alive()
+        stop_worker(worker)
 
 
 @pytest.mark.parametrize("configured,expected_worker,expected_wait", [
