@@ -65,7 +65,7 @@ def psc() -> FunctionManifest:
                 label="Account size",
                 control=ControlKind.NUMBER,
                 required=False,
-                description="Equity used for the risk budget.",
+                description="Equity used for the risk budget; defaults to the local portfolio book value.",
                 min=1.0,
                 step=100.0,
             ),
@@ -84,7 +84,7 @@ def psc() -> FunctionManifest:
                 label="Entry",
                 control=ControlKind.NUMBER,
                 required=False,
-                description="Planned entry price.",
+                description="Planned entry price; defaults to the symbol's live last price.",
                 min=0.0,
                 step=0.01,
             ),
@@ -92,7 +92,7 @@ def psc() -> FunctionManifest:
                 name="stop",
                 label="Stop",
                 control=ControlKind.NUMBER,
-                required=False,
+                required=True,
                 description="Stop price; unit risk = |entry − stop|.",
                 min=0.0,
                 step=0.01,
@@ -132,13 +132,10 @@ def psc() -> FunctionManifest:
                 description="Research-only: PSC is compute-only and never fires a live order.",
             ),
         ],
+        # 2026-11-07: no demo trade pre-filled (account 10,000 / entry 100 /
+        # stop 95 / target 115 / win 0.55 used to size a made-up trade).
         defaults={
-            "account": 10000.0,
             "risk_pct": 0.01,
-            "entry": 100.0,
-            "stop": 95.0,
-            "target": 115.0,
-            "win_rate": 0.55,
             "side": "LONG",
             "paper_mode": True,
         },
@@ -205,13 +202,15 @@ def psc() -> FunctionManifest:
             ],
         ),
         methodology=(
-            "PSC is pure computation over operator-supplied inputs — no provider call. "
-            "risk budget = account × risk_pct; unit risk = |entry − stop|; shares = risk "
-            "budget / unit risk; notional = shares × entry; implied leverage = notional / "
-            "account. R multiple = |target − entry| / unit risk. The simple Kelly fraction "
-            "= max(0, (win_rate × R − (1 − win_rate)) / R) using the same R multiple. When "
-            "entry == stop the handler returns an empty payload with a 'can't size' warning "
-            "instead of dividing by zero. paper_mode defaults true: PSC never executes."
+            "PSC computes over operator inputs; nothing is invented. Entry defaults to the "
+            "symbol's live last price and account to the local portfolio book value (both "
+            "labelled); the stop is required. risk budget = account × risk_pct (1% default); "
+            "unit risk = |entry − stop|; shares = risk budget / unit risk; notional = shares × "
+            "entry; implied leverage = notional / account. With a target, R multiple = "
+            "|target − entry| / unit risk; with a win rate as well, the simple Kelly fraction "
+            "= max(0, (win_rate × R − (1 − win_rate)) / R). When entry == stop the handler "
+            "returns an input_error with a 'can't size' warning instead of dividing by zero. "
+            "paper_mode defaults true: PSC never executes."
         ),
         formula_dict={
             "RiskBudget": Formula(
