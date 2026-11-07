@@ -24,16 +24,46 @@ _DEPENDENTS = (
 )
 
 
+def _set_parent_attr(name: str, module) -> None:
+    parent_name, _, child = name.rpartition(".")
+    parent = sys.modules.get(parent_name)
+    if parent is None:
+        return
+    if module is None:
+        if hasattr(parent, child):
+            delattr(parent, child)
+    else:
+        setattr(parent, child, module)
+
+
 @pytest.fixture
 def no_binance(monkeypatch):
-    """Simulate an environment where python-binance is not installed."""
+    """Simulate an environment where python-binance is not installed.
+
+    Every ``showme.*`` module (re)imported under the blocked environment is
+    dropped afterwards and the originals are put back — including the
+    parent-package attributes — so no later test sees the stub variant.
+    """
+    showme_before = {k: v for k, v in sys.modules.items() if k.startswith("showme")}
     for name in _BLOCKED:
         # A ``None`` entry in sys.modules makes ``import name`` raise ImportError.
         monkeypatch.setitem(sys.modules, name, None)
     for name in _DEPENDENTS:
-        # Force a fresh import under the blocked environment; monkeypatch
-        # restores the original module objects afterwards.
-        monkeypatch.delitem(sys.modules, name, raising=False)
+        sys.modules.pop(name, None)  # force a fresh import under the blocked env
+    yield
+    for name in [k for k in sys.modules if k.startswith("showme")]:
+        if sys.modules[name] is not showme_before.get(name):
+            del sys.modules[name]
+            _set_parent_attr(name, None)
+    for name, module in showme_before.items():
+        sys.modules[name] = module
+        _set_parent_attr(name, module)
+
+
+def test_fixture_blocks_python_binance(no_binance):
+    """Sanity pin for the fixture itself: blocked imports really are blocked."""
+    with pytest.raises(ImportError):
+        importlib.import_module("binance.client")
 
 
 @pytest.mark.parametrize("module_name", _DEPENDENTS)

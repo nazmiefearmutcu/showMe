@@ -37,6 +37,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Legacy TBV3 Binance bot/scanner path only (BinanceClient). The 141-function
+# catalog does not need it. Install with: uv sync --extra binance
+binance = [
+    "python-binance>=1.0.19",
+]
 dev = [
     "pytest>=8",
     "pytest-asyncio>=0.24",

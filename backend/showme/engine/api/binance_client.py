@@ -53,8 +53,8 @@ class BinanceClient:
         """Initialize the Binance client connection."""
         if not BINANCE_AVAILABLE:
             raise BinanceUnavailableError(
-                "python-binance is not installed; install it (pip install python-binance) "
-                "to enable Binance market data and order routing"
+                "python-binance is not installed; run `uv sync --extra binance` in backend/ "
+                "to enable the Binance bot/scanner client"
             )
         if self.mode == "paper":
             api_key = os.getenv("BINANCE_API_KEY", "")
