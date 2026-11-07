@@ -75,17 +75,21 @@ def start_sidecar(
     log: list[str] = []
     threading.Thread(target=_pump, args=(proc.stdout, lines, log), daemon=True).start()
     deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if proc.poll() is not None:
-            raise SidecarError(f"sidecar exited with {proc.returncode}:\n{''.join(log[-40:])}")
-        try:
-            line = lines.get(timeout=0.5)
-        except queue.Empty:
-            continue
-        if line.startswith("SIDECAR_PORT="):
-            return proc, int(line.split("=", 1)[1].strip()), log
-    stop_sidecar(proc)
-    raise SidecarError(f"no SIDECAR_PORT line within {timeout:.0f}s:\n{''.join(log[-40:])}")
+    try:
+        while time.monotonic() < deadline:
+            if proc.poll() is not None:
+                raise SidecarError(f"sidecar exited with {proc.returncode}:\n{''.join(log[-40:])}")
+            try:
+                line = lines.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            if line.startswith("SIDECAR_PORT="):
+                return proc, int(line.split("=", 1)[1].strip()), log
+        raise SidecarError(f"no SIDECAR_PORT line within {timeout:.0f}s:\n{''.join(log[-40:])}")
+    except BaseException:
+        # Never leave a half-started sidecar behind (timeout, Ctrl+C, bad port line).
+        stop_sidecar(proc)
+        raise
 
 
 def stop_sidecar(proc: subprocess.Popen, *, grace: float = 10.0) -> None:
@@ -121,7 +125,7 @@ def wait_healthy(base: str, *, timeout: float = 120.0) -> dict[str, Any]:
             last = body
             if status == 200 and isinstance(body, dict) and body.get("ok"):
                 return body
-        except OSError as exc:
+        except (OSError, ValueError) as exc:  # ValueError: non-JSON body
             last = repr(exc)
         time.sleep(1.0)
     raise SidecarError(f"/api/health not ok within {timeout:.0f}s: {last}")
@@ -156,7 +160,7 @@ def main(argv: list[str] | None = None) -> int:
             f"functions={len(index)} boot={elapsed:.1f}s"
         )
         return 0
-    except SidecarError as exc:
+    except (SidecarError, OSError, ValueError) as exc:
         print(f"FAIL {exc}", file=sys.stderr)
         return 1
     finally:
