@@ -164,5 +164,10 @@
       "DE"
     ]
   },
-  "_placeholder_doc": "Matching is key-scoped (key regex + exact value), so ordinary constants such as 252 or 365 never match and no separate literal allow-list is needed. scope: where a rule applies (source = AST defaults, response = served values); default both."
+  "_placeholder_doc": "Matching is key-scoped (key regex + exact value), so ordinary constants such as 252 or 365 never match and no separate literal allow-list is needed. scope: where a rule applies (source = AST defaults, response = served values); default both.",
+  "canary": {
+    "code": "DAPI",
+    "max_seconds": 5.0,
+    "_doc": "Network-free, instant function used to tell a stalled sidecar from a slow function."
+  }
 }

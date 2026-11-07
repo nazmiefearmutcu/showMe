@@ -244,3 +244,58 @@ def test_sandbox_forces_every_bot_off(tmp_path):
     assert live["enabled"] is False and live["mode"] == "shadow"
     assert json.loads((bots / "list.json").read_text(encoding="utf-8"))[0]["enabled"] is False
     assert not (bots / "broken.json").exists()
+
+
+def test_server_side_timeout_envelope_is_a_red_timeout(tmp_path):
+    def server_timeout(code, params, attempt):
+        if code == "TOP":
+            return 200, {"code": "TOP", "status": "provider_unavailable",
+                         "reason": "function timed out after 14s", "nextAction": "retry"}
+        return healthy(code, params, attempt)
+
+    ledger = make_runner(tmp_path, FakeSidecar(server_timeout)).run()
+    case = ledger["functions"]["TOP"]["cases"][0]
+    assert case["grade"] == "RED"
+    assert "timeout" in {f["rule"] for f in case["findings"]}
+
+
+def test_stalled_sidecar_is_restarted_and_case_retried(tmp_path):
+    state = {"stalled": True}
+
+    def stalled_until_restart(code, params, attempt):
+        if state["stalled"]:
+            if code == "DAPI":
+                raise TimeoutError("canary stuck")
+            if code == "TOP":
+                return 200, {"code": "TOP", "status": "provider_unavailable",
+                             "reason": "function timed out after 14s", "nextAction": "retry"}
+        return healthy(code, params, attempt)
+
+    side = FakeSidecar(stalled_until_restart)
+    original_restart = side.restart
+
+    def restart():
+        original_restart()
+        state["stalled"] = False
+
+    side.restart = restart
+    ledger = make_runner(tmp_path, side, only={"TOP"}).run()
+    case = ledger["functions"]["TOP"]["cases"][0]
+    assert side.restarts == 1
+    assert case["sidecar_stall_recovered"] is True
+    assert case["grade"] == "GREEN"
+
+
+def test_slow_function_with_healthy_canary_stays_red(tmp_path):
+    def only_top_slow(code, params, attempt):
+        if code == "TOP":
+            return 200, {"code": "TOP", "status": "provider_unavailable",
+                         "reason": "function timed out after 14s", "nextAction": "retry"}
+        if code == "DAPI":
+            return 200, {"code": "DAPI", "status": "ok"}
+        return healthy(code, params, attempt)
+
+    side = FakeSidecar(only_top_slow)
+    ledger = make_runner(tmp_path, side, only={"TOP"}).run()
+    assert side.restarts == 0
+    assert ledger["functions"]["TOP"]["cases"][0]["grade"] == "RED"

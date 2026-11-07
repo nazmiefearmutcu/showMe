@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import time
 import urllib.error
@@ -76,6 +77,15 @@ def is_transient(exc: BaseException) -> bool:
     return isinstance(_unwrap(exc), (TimeoutError, ConnectionError))
 
 
+_SERVER_TIMEOUT = re.compile(r"\btimed out after \d+(\.\d+)?s\b", re.I)
+
+
+def server_timed_out(body: Any) -> bool:
+    """The sidecar's own FUNCTION_TIMEOUT envelope (``provider_unavailable``)."""
+    return (isinstance(body, dict) and str(body.get("status") or "").lower() == "provider_unavailable"
+            and bool(_SERVER_TIMEOUT.search(str(body.get("reason") or ""))))
+
+
 @dataclass
 class Call:
     status: int
@@ -112,6 +122,8 @@ def grade_case(
         body = a.body
         status = str(body.get("status") or "").lower() if isinstance(body, dict) else ""
         findings += truth.check_contract(body, http_status=a.status)
+        if server_timed_out(body):
+            findings += truth.check_latency(code, a.seconds, warm=False, cfg=cfg, timed_out=True)
         if isinstance(body, dict) and a.status < 400:
             findings += truth.check_provenance(body, code=code, category=category, cfg=cfg, now=now)
             findings += truth.check_response_placeholders(body, request_params=params, cfg=cfg)
@@ -223,6 +235,14 @@ class StrictRunner:
         params = safe_params(params_for(entry, asset))
         self._write_json(self.out_dir / "requests" / f"{case_id}.json", params)
         a = self._call(code, params)
+        stall = False
+        if (a.timed_out or server_timed_out(a.body)) and not self._canary_ok():
+            # Not this function's fault: the sidecar itself is stalled (or the
+            # machine lost the network). Restart and give the case one more go.
+            stall = True
+            self.log(f"  {case_id}: canary failed too — sidecar stalled; restarting and retrying")
+            self.restart()
+            a = self._call(code, params)
         self._write_json(self.out_dir / "responses" / f"{case_id}.json", a.body)
         warm = b = None
         if not a.error and isinstance(a.body, dict) and a.status < 400:
@@ -237,8 +257,23 @@ class StrictRunner:
                     self._write_json(self.out_dir / "requests" / f"{case_id}-B.json", params_b)
                     b = self._call(code, params_b)
                     self._write_json(self.out_dir / "responses" / f"{case_id}-B.json", b.body)
-        return grade_case(entry=entry, asset=asset, params=params, a=a, warm=warm, b=b,
+        case = grade_case(entry=entry, asset=asset, params=params, a=a, warm=warm, b=b,
                           keyless_known=code in self.keyless, cfg=self.cfg, now=self.now())
+        case["sidecar_stall_recovered"] = stall
+        return case
+
+    def _canary_ok(self) -> bool:
+        canary = self.cfg.raw.get("canary") or {}
+        code = canary.get("code")
+        if not code:
+            return True
+        started = time.perf_counter()
+        try:
+            status, body = self.request(code, {}, float(canary.get("max_seconds", 5.0)) * 2)
+        except Exception:  # noqa: BLE001
+            return False
+        fast = time.perf_counter() - started <= float(canary.get("max_seconds", 5.0))
+        return fast and status < 400 and not server_timed_out(body)
 
     @staticmethod
     def function_grade(cases: list[dict[str, Any]], offline: list[dict[str, Any]]) -> str:
