@@ -51,8 +51,9 @@ gerçek durumunu ölçen, tekrarlanabilir bir kapı ve öncelikli bir hata liste
 2. **Backend testleri yeşil.** Windows'ta `npm run test:backend` 0 hata.
    Yalnızca gerçekten platforma özgü testler (POSIX `resource`, sembolik link,
    `/Applications` yolu vb.) gerekçeli `skipif(sys.platform == "win32")` alır;
-   diğer her hata kökünden düzeltilir. Atlanan her test spec ekindeki listeye
-   gerekçesiyle yazılır.
+   diğer her hata kökünden düzeltilir. Atlanan her test
+   `docs/audit/windows-skips.md`'ye gerekçesiyle yazılır; bilinçli opsiyonel
+   bırakılan paketler `docs/audit/optional-deps.md`'ye.
 3. **UI.** `npm --workspace ui run test`, `tsc --noEmit`, `npm run lint` temiz.
 4. **Sidecar.** `--port 0` ile açılış; `/api/health` `ok: true` ve
    `/api/function-index` ≥141 kayıt. Port meşgulse tek satırlık anlaşılır
@@ -77,7 +78,7 @@ modu eklenir. Varsayılan davranış değişmez.
 | T1 | Sözleşme | Mevcut: geçerli durum, sebep, `nextAction`, yasaklı ifadeler | hayır |
 | T2 | Kaynak | `ok` yanıtında ≥1 gerçek kaynak + as-of zaman damgası; `NONE`, `PAPER_TICKET` ve benzeri uydurma kaynaklar geçersiz; veri yaşı beklenen güncelleme sıklığının (fonksiyon başına tablo: intraday/günlük/haftalık/aylık/çeyreklik) 3 katını aşmaz | hayır |
 | T3 | Girdi duyarlılığı | Fonksiyon iki farklı birincil girdiyle (ör. AAPL/MSFT, US/DE, EURUSD/USDJPY) çalıştırılır; sayısal yük (satır/seri/kart sayıları dahil, gürültü toleransı 1e-9) birebir aynıysa `suspect_static` | hayır |
-| T4 | Örnek değer izi | Yanıtta ve fonksiyon modülünde (AST: çıktıya akan sayısal literal'ler) bilinen örnek değerler: hesap 10000, entry 100, strike 105 / spot 100, quantity 0, hisse istenmişken BTC/ETH/SOL varsayılan evreni, `smoke-1` id'leri. İzin listesi (gerçek sabitler: 252 işlem günü, 365, bps=1e-4 …) koddadır | **evet** (AST) + hayır (yanıt) |
+| T4 | Örnek değer izi | Yanıtta ve fonksiyon modülünde (AST: çıktıya akan sayısal literal'ler) bilinen örnek değerler: hesap 10000, entry 100, strike 105 / spot 100, quantity 0, hisse istenmişken BTC/ETH/SOL varsayılan evreni, `smoke-1` id'leri. Örnek değer ve izin listeleri (gerçek sabitler: 252 işlem günü, 365, bps=1e-4 …) `contracts/truth_audit.json`'dadır | **evet** (AST) + hayır (yanıt) |
 | T5 | Varlık uyumu | Katalogdaki `asset_classes` ile fonksiyonun varsayılan girdisinin sınıfı uyumlu; yanıttaki varlık sınıfı istenenle aynı | **evet** (katalog) + hayır (yanıt) |
 | T6 | Yardım metni | Şablon kalıplar yasak ("Run the function", "inspect/rerun", "N position(s) function" …); metin en az bir girdi adı ve yöntem/kaynak anahtar kelimesi içerir; pane'in kapsam etiketi katalogdaki `scope` ile aynı | **evet** |
 | T7 | Sayısal tutarlılık | NaN/±inf yok; volatilite ≥0; ağırlık toplamı 1±1e-6 (ağırlık dönen fonksiyonlarda); olasılıklar [0,1]; getiriler makul aralıkta (günlük |r|<1); tarihler gelecekte değil (takvim fonksiyonları hariç) | hayır |
