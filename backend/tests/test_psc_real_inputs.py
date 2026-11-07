@@ -60,14 +60,14 @@ def test_entry_defaults_to_the_live_price():
 
 
 def test_account_defaults_to_the_portfolio_book(monkeypatch):
-    monkeypatch.setattr(psc, "_portfolio_book_value", lambda: 25_000.0)
+    monkeypatch.setattr(psc, "_portfolio_book_value", lambda: (25_000.0, []))
     res = _run(_fn(), instrument=AAPL, entry=200, stop=190)
     assert res.data["account"] == pytest.approx(25_000)
     assert res.data["account_source"] == "portfolio_book_value_at_cost"
 
 
 def test_empty_portfolio_without_account_is_an_input_error(monkeypatch):
-    monkeypatch.setattr(psc, "_portfolio_book_value", lambda: 0.0)
+    monkeypatch.setattr(psc, "_portfolio_book_value", lambda: (0.0, []))
     res = _run(_fn(), instrument=AAPL, entry=200, stop=190)
     assert res.data["status"] == "input_error"
     assert "account" in res.data["reason"]
@@ -87,3 +87,59 @@ def test_manifest_no_longer_prefills_a_demo_trade():
         assert key not in manifest.defaults
     stop = next(i for i in manifest.inputs if i.name == "stop")
     assert stop.required is True
+
+
+# ── review follow-ups (2026-11-08) ────────────────────────────────────────
+
+
+@pytest.mark.parametrize("params, needle", [
+    ({"side": "LONG", "entry": 200, "stop": 210}, "LONG stop"),
+    ({"side": "LONG", "entry": 200, "stop": 190, "target": 180}, "LONG target"),
+    ({"side": "SHORT", "entry": 200, "stop": 190}, "SHORT stop"),
+    ({"side": "SHORT", "entry": 200, "stop": 210, "target": 230}, "SHORT target"),
+    ({"entry": 200, "stop": 190, "target": 230, "win_rate": 55}, "win_rate"),
+    ({"entry": 200, "stop": 190, "risk_pct": 2}, "risk_pct"),
+    ({"entry": "abc", "stop": 190}, "entry is not a number"),
+    ({"entry": 200, "stop": 190, "account": "lots"}, "account is not a number"),
+    ({"entry": 200, "stop": 200}, "stop equals entry"),
+    ({"side": "SIDEWAYS", "entry": 200, "stop": 190}, "side"),
+])
+def test_invalid_trades_are_input_errors(params, needle):
+    res = _run(_fn(last=999.0), instrument=AAPL, **{"account": 10_000, **params})
+    assert res.data["status"] == "input_error"
+    assert needle in res.data["reason"]
+
+
+def test_typed_garbage_never_falls_back_to_a_default(monkeypatch):
+    monkeypatch.setattr(psc, "_portfolio_book_value", lambda: (99_999.0, []))
+    res = _run(_fn(last=271.5), instrument=AAPL, entry="abc", account="xyz", stop=190)
+    assert res.data["status"] == "input_error"
+    assert "entry is not a number" in res.data["reason"]
+    assert "account is not a number" in res.data["reason"]
+
+
+def test_valid_short_trade():
+    res = _run(_fn(), instrument=AAPL, side="SHORT", account=10_000, entry=200, stop=210, target=170, win_rate=0.4)
+    d = res.data
+    assert d["shares"] == pytest.approx(10)          # 100 risk / 10 unit risk
+    assert d["r_multiple"] == pytest.approx(3.0)
+    assert d["kelly_fraction"] == pytest.approx(max(0.0, (0.4 * 3 - 0.6) / 3))
+
+
+def test_book_value_never_sums_currencies(monkeypatch):
+    from showme.engine.portfolio.state import PortfolioPosition
+
+    class _State:
+        def __init__(self):
+            self.positions = [
+                PortfolioPosition(instrument=AAPL, quantity=10, avg_cost=100.0, currency="USD"),
+                PortfolioPosition(instrument=Instrument(symbol="SAP.DE", asset_class=AssetClass.EQUITY),
+                                  quantity=10, avg_cost=200.0, currency="EUR"),
+            ]
+            self.cash = {"USD": 500.0, "EUR": 1000.0}
+
+    import showme.engine.portfolio.state as state_mod
+    monkeypatch.setattr(state_mod, "PortfolioState", _State)
+    value, other = psc._portfolio_book_value()
+    assert value == pytest.approx(1500.0)
+    assert other == ["EUR"]
