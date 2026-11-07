@@ -60,6 +60,11 @@ SANCTIONED_DATA_MODES = frozenset({
     "delayed_reference",
     "reference",
     "cached_snapshot",
+    # VCAP (2026-10-31): versioned local releases. ``official`` = a stored
+    # release fetched from an official publisher (OECD/NCSES/...);
+    # ``imported`` = a user-owned dataset imported from a local file.
+    "official",
+    "imported",
     # computed / model states
     "modeled",
     "user_input",
@@ -118,6 +123,7 @@ DYNAMICALLY_EMITTED_MODES = frozenset({
     "live_ecb_reference",       # fx spot keyed ECB tier
     "live_exchangerate_host",   # WCRS cross-matrix keyed tier
     "reference_cross_rate_matrix",  # WCRS labelled reference matrix
+    "official",                 # VCAP rows: ``"imported" if origin == "imported" else "official"``
 })
 
 

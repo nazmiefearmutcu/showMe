@@ -618,6 +618,8 @@ const MODE_TONE: Record<string, string> = {
   delayed_reference: "neutral",
   modeled: "warn",
   cached_snapshot: "neutral",
+  official: "neutral",
+  imported: "neutral",
   provider_unavailable: "negative",
   not_configured: "muted",
 };
@@ -628,6 +630,8 @@ const MODE_LABEL: Record<string, string> = {
   delayed_reference: "DELAYED",
   modeled: "MODELED",
   cached_snapshot: "CACHED",
+  official: "OFFICIAL RELEASE",
+  imported: "IMPORTED · LOCAL",
   provider_unavailable: "PROVIDER DOWN",
   not_configured: "NOT CONFIGURED",
 };
