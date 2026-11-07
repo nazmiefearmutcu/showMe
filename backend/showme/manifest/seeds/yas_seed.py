@@ -129,12 +129,11 @@ def yas() -> FunctionManifest:
                 ],
             ),
         ],
+        # 2026-11-07: no pre-filled demo bond; generic US tenors read the live
+        # FRED constant-maturity yield, other bonds need price/coupon/maturity.
         defaults={
             "face": 100.0,
-            "price": 99.75,
-            "coupon": 0.045,
             "frequency": 2,
-            "years_to_maturity": 10.0,
             "benchmark": "UST10Y",
             "provider_mode": DataMode.MODELED.value,
         },

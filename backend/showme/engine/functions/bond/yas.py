@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import re
 from typing import Any
 
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
@@ -128,6 +129,36 @@ def _rate_decimal(value: Any, fallback: float, *,
     return rate / 100 if abs(rate) > 1 else rate
 
 
+_US_TENOR = re.compile(r"^US(\d{1,2})([MY])$")
+# Treasury constant-maturity (CMT) par yields, FRED series per tenor.
+_CMT_SERIES = {
+    ("1", "M"): "DGS1MO", ("3", "M"): "DGS3MO", ("6", "M"): "DGS6MO",
+    ("1", "Y"): "DGS1", ("2", "Y"): "DGS2", ("3", "Y"): "DGS3", ("5", "Y"): "DGS5",
+    ("7", "Y"): "DGS7", ("10", "Y"): "DGS10", ("20", "Y"): "DGS20", ("30", "Y"): "DGS30",
+}
+_BENCHMARK_SERIES = "DGS10"
+
+
+def _first_param(params: dict[str, Any], *names: str) -> Any:
+    for name in names:
+        value = params.get(name)
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def generic_treasury(symbol: str) -> tuple[str, float] | None:
+    """``US2Y`` → (``DGS2``, 2.0 years); ``None`` for anything else."""
+    match = _US_TENOR.match(symbol.strip().upper())
+    if not match:
+        return None
+    series = _CMT_SERIES.get((match.group(1), match.group(2)))
+    if series is None:
+        return None
+    n = float(match.group(1))
+    return series, (n / 12.0 if match.group(2) == "M" else n)
+
+
 @FunctionRegistry.register
 class YASFunction(BaseFunction):
     code = "YAS"
@@ -135,75 +166,126 @@ class YASFunction(BaseFunction):
     asset_classes = (AssetClass.BOND,)
     category = "bond"
 
+    async def _cmt(self, series_id: str, timeout: float) -> tuple[float, str] | None:
+        """Latest observation of a FRED CMT series as (decimal yield, ISO date)."""
+        fred = fred_with_keyless_fallback(self.deps.fred, client=getattr(self, "_http_client", None))
+        try:
+            df = await asyncio.wait_for(fred.series(series_id, frequency="d"), timeout=timeout)
+        except Exception:  # noqa: BLE001 - caller reports the outage
+            return None
+        if df is None or getattr(df, "empty", True) or "value" not in df:
+            return None
+        values = df["value"].dropna()
+        if values.empty:
+            return None
+        when = values.index[-1]
+        return float(values.iloc[-1]) / 100.0, str(getattr(when, "date", lambda: when)())
+
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
+        """Yield/duration/convexity/spread for a bond.
+
+        2026-11-07 (strict truth audit): the handler ignored the symbol and
+        priced one static bond (price 99.5, coupon 4.25%, 10y) for every
+        input, with a static 4.45% benchmark fallback. Now:
+          * generic US Treasuries (US1M … US30Y) use the live FRED
+            constant-maturity par yield for that tenor — a par bond (price
+            100, coupon = CMT yield, maturity = tenor);
+          * any explicitly supplied price/coupon/maturity overrides that;
+          * any other bond needs price, coupon and maturity (no default bond);
+          * the benchmark is the live 10Y CMT unless given; if unavailable
+            the spread is not reported (no static benchmark).
+        Manifest names (years_to_maturity, frequency, benchmark) are accepted
+        alongside the handler's historical names.
+        """
         if instrument is None:
             instrument = Instrument(symbol=str(params.get("symbol") or "US10Y").upper(), asset_class=AssetClass.BOND)
-        face = float(params.get("face", 100.0))
-        price = float(params.get("price", 99.5))
-        # H15: assume_decimal=true bypasses the legacy "x>1 → /100" auto-
-        # convert and lets callers send distressed yields >100% as raw
-        # decimals (e.g. 1.50 for 150% annual yield).
+        symbol = instrument.symbol.upper()
+        timeout = float(params.get("fred_timeout", 8))
         assume_dec = bool(params.get("assume_decimal", False))
-        coupon = _rate_decimal(params.get("coupon"), 0.0425,
-                               assume_decimal=assume_dec)
-        maturity_years = float(params.get("maturity_years", params.get("years", 10)))
-        freq = int(params.get("freq", 2))
+        face = float(params.get("face", 100.0))
+        freq = int(_first_param(params, "freq", "frequency") or 2)
+        price = _first_param(params, "price")
+        coupon_raw = _first_param(params, "coupon")
+        maturity = _first_param(params, "maturity_years", "years_to_maturity", "years")
+        bench_raw = _first_param(params, "benchmark_rate", "benchmark", "ust10y")
+        try:
+            float(bench_raw) if bench_raw is not None else None
+        except (TypeError, ValueError):
+            bench_raw = None  # a name such as "UST10Y" selects the live 10Y benchmark
+
+        sources: list[str] = []
+        warnings: list[str] = []
+        metadata: dict[str, Any] = {}
+        generic = generic_treasury(symbol)
+        cmt_date = None
+        if generic and (price is None or coupon_raw is None or maturity is None):
+            series_id, tenor_years = generic
+            cmt = await self._cmt(series_id, timeout)
+            if cmt is None:
+                return FunctionResult(
+                    code=self.code, instrument=instrument,
+                    data={"status": "provider_unavailable",
+                          "reason": f"FRED {series_id} (constant-maturity {symbol}) is unavailable.",
+                          "next_actions": ["Retry later, or enter price, coupon and maturity to analyse a specific bond."],
+                          "rows": []},
+                    warnings=[f"FRED {series_id} unavailable"],
+                )
+            par_yield, cmt_date = cmt
+            sources.append("fred")
+            metadata.update({"cmt_series": series_id, "cmt_date": cmt_date,
+                             "construction": "par bond at the constant-maturity yield"})
+            price = face if price is None else price
+            coupon_raw = par_yield if coupon_raw is None else coupon_raw
+            maturity = tenor_years if maturity is None else maturity
+            if coupon_raw == par_yield:
+                assume_dec = True  # CMT already converted to a decimal
+        missing = [name for name, value in (("price", price), ("coupon", coupon_raw), ("maturity", maturity))
+                   if value is None]
+        if missing:
+            return FunctionResult(
+                code=self.code, instrument=instrument,
+                data={"status": "input_error",
+                      "reason": f"{symbol} is not a generic US Treasury tenor; YAS needs {', '.join(missing)}.",
+                      "next_actions": ["Enter the bond's price (per 100), coupon and years to maturity, "
+                                       "or pick a generic tenor such as US2Y or US10Y."],
+                      "rows": []},
+            )
+        price = float(price)
+        coupon = _rate_decimal(coupon_raw, 0.0, assume_decimal=assume_dec)
+        maturity_years = float(maturity)
         n_periods = int(params.get("n_periods", max(1, round(maturity_years * freq))))
         metrics = _ytm_macaulay_modified_duration(face, price, coupon, n_periods, freq)
-        benchmark = _rate_decimal(params.get("benchmark_rate", params.get("ust10y")),
-                                  0.0445, assume_decimal=assume_dec)
-        sources = ["yield_spread_model"]
-        warnings: list[str] = []
-        metadata: dict[str, Any] = {
-            "note": "closed-form yield analytics; set live_benchmark=true for FRED"
-        }
-        # Keyless FRED CSV (survey S2 c#3): the 10Y benchmark anchor is
-        # attempted live by default — keyed adapter when wired, otherwise
-        # the keyless fredgraph.csv endpoint. The static 0.0445 assumption
-        # above only survives as a labelled fallback when FRED is
-        # unreachable (an explicit benchmark_rate still wins).
-        if not params.get("benchmark_rate") and not params.get("ust10y"):
-            fred = fred_with_keyless_fallback(
-                self.deps.fred, client=getattr(self, "_http_client", None)
-            )
-            try:
-                df = await asyncio.wait_for(
-                    fred.series("DGS10", frequency="d"),
-                    timeout=float(params.get("fred_timeout", 8)),
-                )
-                bench = float(df["value"].iloc[-1]) / 100 if not df.empty else None
-                if bench is not None:
-                    benchmark = bench
-                    sources = ["fred"]
-                else:
-                    warnings.append(
-                        "FRED returned no 10Y observations; spread uses the "
-                        "static 4.45% benchmark assumption."
-                    )
-                    metadata["data_mode"] = "modeled"
-            except Exception:
-                # R2 M-3: the static anchor survives, but it must say so —
-                # an unlabelled 2024-era benchmark poisons every spread row.
-                warnings.append(
-                    "Live 10Y benchmark unavailable; spread uses the static "
-                    "4.45% benchmark assumption."
-                )
-                metadata["data_mode"] = "modeled"
-        spread = metrics["ytm"] - benchmark
+        if not sources:
+            sources.append("yield_spread_model")
+
+        benchmark = None
+        if bench_raw is not None:
+            benchmark = _rate_decimal(bench_raw, 0.0, assume_decimal=bool(params.get("assume_decimal", False)))
+            metadata["benchmark"] = "input"
+        else:
+            bench = await self._cmt(_BENCHMARK_SERIES, timeout)
+            if bench is None:
+                warnings.append("Live 10Y benchmark (FRED DGS10) unavailable; the spread is not reported.")
+            else:
+                benchmark = bench[0]
+                metadata.update({"benchmark": _BENCHMARK_SERIES, "benchmark_date": bench[1]})
+                if "fred" not in sources:
+                    sources.append("fred")
+        spread = metrics["ytm"] - benchmark if benchmark is not None else None
         curve = []
         for offset_bps in [-100, -50, -25, 0, 25, 50, 100]:
-            ytm = metrics["ytm"] + offset_bps / 10_000
-            # Simple duration/convexity approximation around current price.
-            delta_y = ytm - metrics["ytm"]
+            delta_y = offset_bps / 10_000
             est_price = price * (
                 1
                 - metrics["modified_duration"] * delta_y
                 + 0.5 * metrics["convexity"] * delta_y * delta_y
             )
-            curve.append({"ytm_pct": ytm * 100, "price": est_price, "shock_bps": offset_bps})
+            curve.append({"ytm_pct": (metrics["ytm"] + delta_y) * 100, "price": est_price, "shock_bps": offset_bps})
         rows = [
             {"metric": "yield_to_maturity", "value": metrics["ytm"], "display_pct": metrics["ytm"] * 100, "unit": "decimal"},
-            {"metric": "spread_vs_benchmark", "value": spread, "display_pct": spread * 100, "spread_bps": spread * 10_000, "unit": "decimal"},
+            {"metric": "spread_vs_benchmark", "value": spread,
+             "display_pct": None if spread is None else spread * 100,
+             "spread_bps": None if spread is None else spread * 10_000, "unit": "decimal"},
             {"metric": "macaulay_duration", "value": metrics["macaulay_duration"], "unit": "years"},
             {"metric": "modified_duration", "value": metrics["modified_duration"], "unit": "years"},
             {"metric": "convexity", "value": metrics["convexity"], "unit": "price convexity"},
@@ -214,7 +296,7 @@ class YASFunction(BaseFunction):
                 "rows": rows,
                 "curve": curve,
                 "summary": {
-                    "bond": instrument.symbol,
+                    "bond": symbol,
                     "price": price,
                     "face": face,
                     "coupon_rate": coupon,
@@ -222,21 +304,30 @@ class YASFunction(BaseFunction):
                     "maturity_years": maturity_years,
                     "frequency": freq,
                     "benchmark_rate": benchmark,
-                    "benchmark_pct": benchmark * 100,
+                    "benchmark_pct": None if benchmark is None else benchmark * 100,
                     "ytm": metrics["ytm"],
                     "ytm_pct": metrics["ytm"] * 100,
                     "spread_vs_benchmark": spread,
-                    "spread_bps": spread * 10_000,
+                    "spread_bps": None if spread is None else spread * 10_000,
+                    "as_of": cmt_date,
                 },
-                "methodology": "YAS solves yield-to-maturity with Newton iteration, then computes Macaulay duration, modified duration, convexity, and spread versus the selected benchmark. Coupon and benchmark inputs accept either decimals (0.0425) or percentages (4.25); frequency is coupon payments per year.",
+                "methodology": (
+                    "Generic US Treasury tenors (US1M-US30Y) are analysed as a par bond at the live FRED "
+                    "constant-maturity yield for that tenor; other bonds need price, coupon and maturity. "
+                    "YAS solves yield-to-maturity with Newton iteration (bisection fallback), then computes "
+                    "Macaulay duration, modified duration, convexity, and the spread versus the live 10Y CMT "
+                    "benchmark (or a supplied one). Coupon and benchmark inputs accept decimals (0.0425) or "
+                    "percentages (4.25); frequency is coupon payments per year."
+                ),
                 "field_dictionary": {
                     "ytm": "Yield-to-maturity as a decimal annual rate.",
-                    "spread_vs_benchmark": "YTM minus benchmark rate, both normalized to decimal annual rates.",
+                    "spread_vs_benchmark": "YTM minus benchmark rate (null when no benchmark is available).",
                     "spread_bps": "Spread versus benchmark in basis points.",
                     "modified_duration": "Approximate percent price sensitivity to a 100 bp yield move.",
                     "convexity": "Second-order price sensitivity to yield changes.",
                     "ytm_pct": "Yield used on the sensitivity-curve x-axis.",
-                    "price": "Observed or model price per 100 face.",
+                    "price": "Observed or model price per 100 face (100 for a par CMT bond).",
+                    "as_of": "Observation date of the constant-maturity yield, when used.",
                 },
             },
             sources=sources,
