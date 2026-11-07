@@ -531,4 +531,15 @@ describe("PORTX REBA live book + order CSV (G3)", () => {
     expect(screen.getByLabelText("Stop")).toBeInTheDocument();
     expect(screen.getByLabelText("Target")).toBeInTheDocument();
   });
+
+  it("PSC never sends a demo trade: blank fields are not sent (strict truth audit)", () => {
+    mockOk({ status: "input_error", rows: [] });
+    render(<PortfolioAnalyticsPane code="PSC" symbol="AAPL" />);
+    expect(mockArgs.current?.params).toEqual({ risk_pct: 0.01 });
+    expect((screen.getByLabelText("Account") as HTMLInputElement).value).toBe("");
+    expect((screen.getByLabelText("Stop") as HTMLInputElement).placeholder).toBe("required");
+    fireEvent.change(screen.getByLabelText("Stop"), { target: { value: "260" } });
+    expect(mockArgs.current?.params).toEqual({ risk_pct: 0.01, stop: 260 });
+    expect(mockArgs.current?.symbol).toBe("AAPL");
+  });
 });

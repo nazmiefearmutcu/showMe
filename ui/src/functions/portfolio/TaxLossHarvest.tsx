@@ -5,10 +5,12 @@
  * bracket / rate metrics, the wash-sale window callout (with the backend's
  * §1091 note), and the candidate table (basis, last, unrealized loss, holding
  * period, tax rate applied, estimated savings, replacement ETF, wash window).
- * LIVE reads real positions; MODEL serves the labelled single-row baseline
- * (`tax_loss_model`) which the shared data-quality badge discloses.
+ * It always reads the real local portfolio (2026-11-07, strict truth
+ * audit: the LIVE/MODEL toggle selected an invented single-row baseline —
+ * cost 100, price 92 — which the backend no longer has, so the toggle is
+ * gone). An empty book shows the backend's empty state.
  */
-import { useMemo, useState, type CSSProperties } from "react";
+import { useMemo, type CSSProperties } from "react";
 import {
   DataGrid,
   type DataGridColumn,
@@ -232,7 +234,6 @@ const CANDIDATE_COLUMNS: DataGridColumn<Row>[] = [
 ];
 
 export function TaxLossHarvestPane({ code }: FunctionPaneProps) {
-  const [live, setLive] = useState(true);
   // User-controlled tax assumptions (persisted). These were previously
   // hardcoded and presented as authoritative; now the operator sets the
   // bracket / LT rate in PERCENT and they are sent to the backend as
@@ -247,12 +248,11 @@ export function TaxLossHarvestPane({ code }: FunctionPaneProps) {
   );
   const params = useMemo(
     () => ({
-      live_tax: live,
       include_legacy: true,
       tax_bracket: clampPct(bracketPct) / 100,
       lt_cap_rate: clampPct(ltRatePct) / 100,
     }),
-    [live, bracketPct, ltRatePct],
+    [bracketPct, ltRatePct],
   );
   const { state, data, error, refetch } = useFunction<TlhPayload>({ code, params });
   const payload = data?.data;
@@ -282,9 +282,9 @@ export function TaxLossHarvestPane({ code }: FunctionPaneProps) {
     />
   );
   const empty = emptyCopy(payload as Row | undefined);
-  const emptyTitle = empty.title === "No data available" && live ? "No harvest candidates" : empty.title;
+  const emptyTitle = empty.title === "No data available" ? "No harvest candidates" : empty.title;
   const emptyBody =
-    empty.title === "No data available" && live
+    empty.title === "No data available"
       ? "No position is currently below its cost basis, so there is nothing to harvest."
       : empty.body;
 
@@ -376,15 +376,6 @@ export function TaxLossHarvestPane({ code }: FunctionPaneProps) {
           subtitle="Harvest candidates and wash-sale risk"
           trailing={
             <FunctionControlGroup>
-              <button
-                type="button"
-                className={`btn btn--ghost portfolio-analytics-live${live ? " portfolio-analytics-live--on" : ""}`}
-                onClick={() => setLive((value) => !value)}
-                aria-pressed={live}
-                title="Toggle real positions vs the labelled single-row baseline"
-              >
-                {live ? "LIVE" : "MODEL"}
-              </button>
               <label
                 style={assumptionStyle}
                 title="Assumed marginal tax bracket on short-term losses (percent)"

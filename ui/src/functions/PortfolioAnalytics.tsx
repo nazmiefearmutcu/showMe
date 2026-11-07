@@ -236,12 +236,16 @@ export function PortfolioAnalyticsPane({ code, symbol }: FunctionPaneProps) {
   // REBA capital: the rebalance order deltas are computed against this
   // notional, so it must be an explicit user input (was hardcoded 100000).
   const [capital, setCapital] = useState("100000");
-  // PORT_WHATIF relabels `account` as Quantity; its own default is a plain
-  // 100-share ticket, not the 10,000 sizing-unit default of PSC.
-  const [account, setAccount] = useState(() => (upper === "PORT_WHATIF" ? "100" : "10000"));
-  const [entry, setEntry] = useState("100");
-  const [stop, setStop] = useState("95");
-  const [target, setTarget] = useState("115");
+  // PORT_WHATIF relabels `account` as Quantity (a plain 100-share ticket).
+  // PSC starts EMPTY (2026-11-07, strict truth audit): it used to size a
+  // demo trade (account 10,000 / entry 100 / stop 95 / target 115). Blank
+  // fields are not sent — the backend uses the live price for entry and
+  // the portfolio value for account, and requires the stop.
+  const isPsc = upper === "PSC";
+  const [account, setAccount] = useState(() => (isPsc ? "" : "100"));
+  const [entry, setEntry] = useState(() => (isPsc ? "" : "100"));
+  const [stop, setStop] = useState("");
+  const [target, setTarget] = useState("");
 
   const effectiveSymbol = config.usesSymbol ? (symbol || symbolInput || config.defaultSymbol) : symbol;
   const params = useMemo(
@@ -500,21 +504,46 @@ function PortfolioControls({
         <>
           <label className="portfolio-control-field" htmlFor={fid("account")}>
             <span>{code === "PSC" ? "Account" : "Quantity"}</span>
-            <input id={fid("account")} value={account} onChange={(e) => setAccount(e.target.value)} inputMode="decimal" />
+            <input
+              id={fid("account")}
+              value={account}
+              onChange={(e) => setAccount(e.target.value)}
+              inputMode="decimal"
+              placeholder={code === "PSC" ? "portfolio value" : undefined}
+            />
           </label>
           <label className="portfolio-control-field" htmlFor={fid("entry")}>
             <span>Entry</span>
-            <input id={fid("entry")} value={entry} onChange={(e) => setEntry(e.target.value)} inputMode="decimal" />
+            <input
+              id={fid("entry")}
+              value={entry}
+              onChange={(e) => setEntry(e.target.value)}
+              inputMode="decimal"
+              placeholder={code === "PSC" ? "live price" : undefined}
+            />
           </label>
           {code === "PSC" ? (
             <>
               <label className="portfolio-control-field" htmlFor={fid("stop")}>
                 <span>Stop</span>
-                <input id={fid("stop")} value={stop} onChange={(e) => setStop(e.target.value)} inputMode="decimal" />
+                <input
+                  id={fid("stop")}
+                  value={stop}
+                  onChange={(e) => setStop(e.target.value)}
+                  inputMode="decimal"
+                  placeholder="required"
+                  aria-required="true"
+                />
               </label>
               <label className="portfolio-control-field" htmlFor={fid("target")}>
                 <span>Target</span>
-                <input id={fid("target")} value={target} onChange={(e) => setTarget(e.target.value)} inputMode="decimal" />
+                <input
+                  id={fid("target")}
+                  value={target}
+                  onChange={(e) => setTarget(e.target.value)}
+                  inputMode="decimal"
+                  placeholder="optional"
+                />
               </label>
             </>
           ) : null}
@@ -994,14 +1023,17 @@ function buildParams(
       return { confidence: 0.95, max_positions: 12, live_risk: state.live };
     case "PCAS":
       return { live: state.live, live_prices: state.live, include_legacy: true };
-    case "PSC":
-      return {
-        account: num(state.account, 10000),
-        entry: num(state.entry, 100),
-        stop: num(state.stop, 95),
-        target: num(state.target, 115),
-        risk_pct: 0.01,
-      };
+    case "PSC": {
+      // Only what the user typed is sent; blanks fall to the backend's real
+      // defaults (live price / portfolio value) or its input request (stop).
+      const out: Record<string, unknown> = { risk_pct: 0.01 };
+      const fields = { account: state.account, entry: state.entry, stop: state.stop, target: state.target };
+      for (const [key, raw] of Object.entries(fields)) {
+        const value = optionalNumber(raw);
+        if (value !== undefined) out[key] = value;
+      }
+      return out;
+    }
     case "PORT_WHATIF":
       return { quantity: num(state.account, 100), cost: num(state.entry, 100) };
     case "TRA":
@@ -1196,6 +1228,13 @@ function isMetricValue(value: unknown): boolean {
 
 function numberValue(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+/** A typed number, or undefined for a blank/invalid field (never a default). */
+export function optionalNumber(raw: string): number | undefined {
+  if (raw.trim() === "") return undefined;
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : undefined;
 }
 
 function num(raw: string, fallback: number): number {
