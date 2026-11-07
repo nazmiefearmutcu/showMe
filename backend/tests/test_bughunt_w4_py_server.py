@@ -365,9 +365,22 @@ def test_pick_port_returns_bound_reserved_socket() -> None:
         if sock is not None:
             sock.close()
 
-    explicit_port, explicit_sock = server._pick_port(8080)
-    assert explicit_port == 8080
-    assert explicit_sock is None
+    # 2026-11-07: explicit ports are pre-bound too (fail fast before the
+    # discovery line instead of after the app boots). Use a port that is
+    # known to be free rather than a fixed one like 8080.
+    import socket as _socket
+
+    probe = _socket.socket()
+    probe.bind(("127.0.0.1", 0))
+    free_port = probe.getsockname()[1]
+    probe.close()
+    explicit_port, explicit_sock = server._pick_port(free_port)
+    try:
+        assert explicit_port == free_port
+        assert explicit_sock is not None
+        assert explicit_sock.getsockname()[1] == free_port
+    finally:
+        explicit_sock.close()
 
 
 # ── HNT-11: chunked request bodies are rejected with 411 ─────────────────

@@ -43,6 +43,7 @@ _pin_bundled_cacert()
 import argparse
 import asyncio
 import contextlib
+import errno
 import json
 import shutil
 import importlib
@@ -2230,28 +2231,96 @@ def _kickoff_function_index_warmup() -> None:
     ).start()
 
 
-def _pick_port(requested: int) -> tuple[int, socket.socket | None]:
-    """If the user passed --port 0, reserve a port and KEEP the socket.
+class PortInUseError(RuntimeError):
+    """An explicitly requested ``--port`` cannot be bound."""
+
+
+# WSAEADDRINUSE / WSAEACCES (another socket holds the port exclusively, or
+# the port sits in an OS-reserved range such as Hyper-V's exclusions).
+_WIN_PORT_UNAVAILABLE = {10048, 10013}
+
+
+def _describe_port_owner(port: int) -> str | None:
+    """Best-effort ``"PID n (image.exe)"`` for whoever holds ``port``.
+
+    Windows only (``netstat -ano``); returns ``None`` when it cannot tell.
+    Never raises — this only decorates an error message.
+    """
+    if sys.platform != "win32":
+        return None
+    import subprocess
+
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        out = subprocess.run(
+            ["netstat", "-ano", "-p", "TCP"], capture_output=True, text=True,
+            errors="replace", timeout=5, creationflags=flags,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    pid = None
+    for line in out.splitlines():
+        parts = line.split()
+        if (len(parts) >= 5 and parts[0].upper() == "TCP"
+                and parts[1].endswith(f":{port}") and parts[-1].isdigit() and parts[-1] != "0"):
+            pid = parts[-1]
+            break
+    if pid is None:
+        return None
+    name = None
+    try:
+        task = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+            capture_output=True, text=True, errors="replace", timeout=5, creationflags=flags,
+        ).stdout.strip()
+        if task.startswith('"'):
+            name = task.split('","', 1)[0].strip('"')
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return f"PID {pid}" + (f" ({name})" if name else "")
+
+
+def _pick_port(requested: int, host: str = "127.0.0.1") -> tuple[int, socket.socket]:
+    """Bind the listening socket up front and KEEP it; return ``(port, sock)``.
 
     HNT-10 (TOCTOU): the old flow closed the probe socket and handed only
     the port number to uvicorn — between ``close()`` and uvicorn's bind
     another process could steal the port, and the Tauri shell (which has
     already read ``SIDECAR_PORT=<p>`` from stdout) would wait forever on a
-    dead port. We now mirror ``uvicorn.Config.bind_socket``: create the
-    socket, set SO_REUSEADDR, bind it, and return it so ``main`` can hand
-    it to ``uvicorn.Server.serve(sockets=[sock])``. The OS never releases
-    the reservation; asyncio's ``create_server`` performs the ``listen()``
-    on the pre-bound socket (same path uvicorn's CLI uses).
+    dead port. We bind here and hand the socket to
+    ``uvicorn.Server.serve(sockets=[sock])``; asyncio's ``create_server``
+    performs the ``listen()`` on the pre-bound socket.
+
+    2026-11-07: explicit ports are pre-bound too. Previously ``--port N``
+    printed ``SIDECAR_PORT=N`` *before* binding and booted the whole app,
+    then died inside uvicorn — anything reading the discovery line talked
+    to whichever process really owned N. On Windows the socket uses
+    ``SO_EXCLUSIVEADDRUSE``: ``SO_REUSEADDR`` there lets a bind succeed on a
+    port another socket is already using. A taken explicit port raises
+    :class:`PortInUseError`.
     """
-    if requested != 0:
-        return requested, None
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    # Parity with uvicorn.Config.bind_socket (Windows-safe: no SO_REUSEPORT).
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    sock.bind(("127.0.0.1", 0))
+    if sys.platform == "win32":
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+    else:
+        # Parity with uvicorn.Config.bind_socket (POSIX semantics are safe).
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        sock.bind((host, requested))
+    except OSError as exc:
+        sock.close()
+        in_use = (getattr(exc, "winerror", None) in _WIN_PORT_UNAVAILABLE
+                  or exc.errno in {errno.EADDRINUSE, errno.EACCES})
+        if requested != 0 and in_use:
+            owner = _describe_port_owner(requested)
+            holder = f"already in use by {owner}" if owner else "already in use or reserved by the OS"
+            raise PortInUseError(
+                f"port {requested} on {host} is unavailable ({holder}); "
+                "pass --port 0 to let the OS pick a free port"
+            ) from None
+        raise
     sock.set_inheritable(True)
-    port = sock.getsockname()[1]
-    return port, sock
+    return sock.getsockname()[1], sock
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -2271,6 +2340,13 @@ def main(argv: list[str] | None = None) -> int:
     from showme.logging_setup import configure_logging, install_crash_hook
     configure_logging(args.log_level)
     install_crash_hook()
+    # Bind before anything heavy: a taken --port must fail fast, before the
+    # engine boots and before any discovery line is printed.
+    try:
+        port, reserved_sock = _pick_port(args.port, host=args.host)
+    except PortInUseError as exc:
+        print(f"showme.server: error: {exc}", file=sys.stderr, flush=True)
+        return 2
     app_home = prepare_writable_cwd() or ensure_app_home_env()
     if app_home:
         LOG.info("Using app home at %s", app_home)
@@ -2281,7 +2357,6 @@ def main(argv: list[str] | None = None) -> int:
         LOG.warning("ShowMe engine not found; sidecar will run with limited capabilities.")
 
     app = build_app(engine_root)
-    port, reserved_sock = _pick_port(args.port)
 
     config = uvicorn.Config(app, host=args.host, port=port, log_level=args.log_level,
                             access_log=False, lifespan="on")
@@ -2290,7 +2365,7 @@ def main(argv: list[str] | None = None) -> int:
     # The Tauri shell discovers us via this exact stdout line.
     print(f"SIDECAR_PORT={port}", flush=True)
 
-    asyncio.run(_serve(server, [reserved_sock] if reserved_sock else None))
+    asyncio.run(_serve(server, [reserved_sock]))
     return 0
 
 
