@@ -109,6 +109,19 @@ def _ytm_macaulay_modified_duration(face: float, price: float, coupon: float,
             "modified_duration": modified, "convexity": convexity}
 
 
+def _single_cashflow_metrics(face: float, price: float, coupon: float, years: float) -> dict[str, float]:
+    """One payment ``face * (1 + coupon * T)`` at T, simple-interest yield.
+
+    P = F(1 + cT) / (1 + yT)  ⇒  y = (F(1 + cT) / P − 1) / T
+    Macaulay = T; modified = T / (1 + yT); convexity = 2T² / (1 + yT)².
+    """
+    redemption = face * (1 + coupon * years)
+    ytm = (redemption / price - 1) / years
+    growth = 1 + ytm * years
+    return {"ytm": ytm, "macaulay_duration": years,
+            "modified_duration": years / growth, "convexity": 2 * years * years / (growth * growth)}
+
+
 def _rate_decimal(value: Any, fallback: float, *,
                   assume_decimal: bool = False) -> float:
     """Coerce a rate input to decimal form.
@@ -253,8 +266,15 @@ class YASFunction(BaseFunction):
         price = float(price)
         coupon = _rate_decimal(coupon_raw, 0.0, assume_decimal=assume_dec)
         maturity_years = float(maturity)
-        n_periods = int(params.get("n_periods", max(1, round(maturity_years * freq))))
-        metrics = _ytm_macaulay_modified_duration(face, price, coupon, n_periods, freq)
+        if maturity_years * freq < 1 and "n_periods" not in params:
+            # Shorter than one coupon period (US1M/US3M bills): a single cash
+            # flow at maturity. Rounding to one full period used to put it 6
+            # months out (1M bill modified duration 0.49y instead of ~0.083y).
+            metrics = _single_cashflow_metrics(face, price, coupon, maturity_years)
+            metadata["cashflow_model"] = "single payment at maturity (simple interest)"
+        else:
+            n_periods = int(params.get("n_periods", max(1, round(maturity_years * freq))))
+            metrics = _ytm_macaulay_modified_duration(face, price, coupon, n_periods, freq)
         if not sources:
             sources.append("yield_spread_model")
 

@@ -100,3 +100,29 @@ def test_named_benchmark_selects_the_live_10y():
     res = _run(_fn(fred), instrument=_bond("US2Y"), benchmark="UST10Y")
     assert res.data["summary"]["benchmark_rate"] == pytest.approx(0.0411)
     assert "DGS10" in fred.calls
+
+
+@pytest.mark.parametrize("sym, rate, years", [("US1M", 4.33, 1 / 12), ("US3M", 4.30, 0.25)])
+def test_bills_shorter_than_a_coupon_period_have_bill_durations(sym, rate, years):
+    series = {"US1M": "DGS1MO", "US3M": "DGS3MO"}[sym]
+    res = _run(_fn(_FRED({series: rate, "DGS10": 4.11})), instrument=_bond(sym))
+    rows = {r["metric"]: r["value"] for r in res.data["rows"]}
+    y = rate / 100
+    assert res.data["summary"]["ytm"] == pytest.approx(y, abs=1e-12)
+    assert rows["macaulay_duration"] == pytest.approx(years)
+    assert rows["modified_duration"] == pytest.approx(years / (1 + y * years))
+    assert rows["convexity"] == pytest.approx(2 * years**2 / (1 + y * years) ** 2)
+
+
+def test_six_month_bill_keeps_the_coupon_period_model():
+    res = _run(_fn(_FRED({"DGS6MO": 4.2, "DGS10": 4.11})), instrument=_bond("US6M"))
+    rows = {r["metric"]: r["value"] for r in res.data["rows"]}
+    assert rows["macaulay_duration"] == pytest.approx(0.5)
+
+
+def test_price_only_override_keeps_live_coupon_and_maturity():
+    res = _run(_fn(_FRED()), instrument=_bond("US10Y"), price=98.0)
+    s = res.data["summary"]
+    assert s["coupon_rate"] == pytest.approx(0.0411)
+    assert s["maturity_years"] == 10.0
+    assert s["ytm"] > 0.0411  # bought below par
