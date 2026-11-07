@@ -1,0 +1,581 @@
+{
+  "_doc": "Offline truth-gate ratchet (backend/showme/audit/gate.py). Per function: count per '<check>:<rule>'. Counts may only go down. Regenerate downward with SHOWME_UPDATE_TRUTH_BASELINE=1 pytest tests/test_function_truth_gate.py.",
+  "total": 323,
+  "counts": {
+    "ACCT": {
+      "T6:generic_inputs": 1
+    },
+    "AIM": {
+      "T4:placeholder_default": 1,
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "ALLQ": {
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "ALRT": {
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "ANR": {
+      "T6:generic_inputs": 1
+    },
+    "APPL": {
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "AV": {
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "BBGT": {
+      "T4:placeholder_default": 1,
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "BETA": {
+      "T6:generic_inputs": 1
+    },
+    "BGAS": {
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "BIO": {
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "BMC": {
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "BOIL": {
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "BQL": {
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "BQUANT": {
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "BRIEF": {
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "BTMM": {
+      "T6:generic_inputs": 1
+    },
+    "CACT": {
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "CDE": {
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "CHGS": {
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "CN": {
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "CORR": {
+      "T6:generic_inputs": 1
+    },
+    "COUN": {
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "CPF": {
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "CRPR": {
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "CRVF": {
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "CSRC": {
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "DAPI": {
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "DARK": {
+      "T6:generic_inputs": 1
+    },
+    "DCF": {
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "DCFS": {
+      "T6:generic_inputs": 1
+    },
+    "DDIS": {
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "DDM": {
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "DEBT": {
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "DES": {
+      "T6:generic_inputs": 1
+    },
+    "DINE": {
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "DPF": {
+      "T6:generic_inputs": 1
+    },
+    "DVD": {
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "ECFC": {
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "ECO": {
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "ECST": {
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "EE": {
+      "T6:generic_inputs": 1
+    },
+    "EMSX": {
+      "T4:placeholder_default": 1,
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "EQS": {
+      "T6:generic_inputs": 1
+    },
+    "EREV": {
+      "T6:generic_inputs": 1
+    },
+    "ESG": {
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "EVTS": {
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "EXEC": {
+      "T6:generic_inputs": 1
+    },
+    "FA": {
+      "T6:generic_inputs": 1
+    },
+    "FLDS": {
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "FLY": {
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "FORM4": {
+      "T6:generic_inputs": 1
+    },
+    "FRD": {
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "FRH": {
+      "T6:generic_inputs": 1
+    },
+    "FSRC": {
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "FTS": {
+      "T6:generic_inputs": 1
+    },
+    "FXFC": {
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "FXGO": {
+      "T4:placeholder_default": 1,
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "FXH": {
+      "T6:generic_inputs": 1
+    },
+    "FXIP": {
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "GC3D": {
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "GEX": {
+      "T4:placeholder_default": 1
+    },
+    "GLCO": {
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "GMM": {
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "GP": {
+      "T6:generic_inputs": 1
+    },
+    "GRAB": {
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "GREEKS": {
+      "T6:generic_inputs": 1
+    },
+    "HDS": {
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "HFS": {
+      "T6:generic_inputs": 1
+    },
+    "HP": {
+      "T6:generic_inputs": 1
+    },
+    "HVT": {
+      "T4:placeholder_default": 8,
+      "T6:empty_description": 1
+    },
+    "ICX": {
+      "T6:generic_inputs": 1
+    },
+    "ISIN": {
+      "T6:generic_inputs": 1
+    },
+    "IVOL": {
+      "T4:placeholder_default": 8,
+      "T6:empty_description": 1
+    },
+    "LANG": {
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "LITM": {
+      "T6:generic_inputs": 1
+    },
+    "LOTS": {
+      "T6:generic_inputs": 1
+    },
+    "MAP": {
+      "T6:generic_inputs": 1
+    },
+    "MARS": {
+      "T4:placeholder_default": 1,
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "MEET": {
+      "T6:generic_inputs": 1
+    },
+    "MGN": {
+      "T4:placeholder_default": 1,
+      "T6:generic_inputs": 1
+    },
+    "MICRO": {
+      "T6:generic_inputs": 1
+    },
+    "MOSS": {
+      "T6:generic_inputs": 1
+    },
+    "MOST": {
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "NALRT": {
+      "T6:generic_inputs": 1
+    },
+    "NGAS": {
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "NI": {
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "NSE": {
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "OMON": {
+      "T6:empty_description": 1
+    },
+    "ONCH": {
+      "T6:generic_inputs": 1
+    },
+    "OSA": {
+      "T4:placeholder_default": 8,
+      "T6:empty_description": 1
+    },
+    "OVDV": {
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "OVME": {
+      "T4:placeholder_default": 1,
+      "T6:empty_description": 1
+    },
+    "PCAS": {
+      "T6:generic_inputs": 1
+    },
+    "PEOP": {
+      "T6:generic_inputs": 1
+    },
+    "PFA": {
+      "T6:generic_inputs": 1
+    },
+    "PIB": {
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "POLY": {
+      "T6:generic_inputs": 1
+    },
+    "PORT": {
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "PORT_OPT": {
+      "T6:generic_inputs": 1
+    },
+    "PORT_WHATIF": {
+      "T4:placeholder_default": 1,
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "PSC": {
+      "T4:placeholder_default": 2,
+      "T6:generic_inputs": 1
+    },
+    "PVAR": {
+      "T6:generic_inputs": 1
+    },
+    "READ": {
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "REBA": {
+      "T6:generic_inputs": 1
+    },
+    "REGM": {
+      "T6:generic_inputs": 1
+    },
+    "RPAR": {
+      "T6:generic_inputs": 1
+    },
+    "RV": {
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "SAT": {
+      "T6:generic_inputs": 1
+    },
+    "SECF": {
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "SECT": {
+      "T6:generic_inputs": 1
+    },
+    "SOSC": {
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "SPLC": {
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "SRCH": {
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "SRSK": {
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "STRS": {
+      "T6:generic_inputs": 1
+    },
+    "TAUC": {
+      "T6:generic_inputs": 1
+    },
+    "TCA": {
+      "T6:generic_inputs": 1
+    },
+    "TECH": {
+      "T6:generic_inputs": 1
+    },
+    "TLDR": {
+      "T6:generic_inputs": 1
+    },
+    "TLH": {
+      "T6:generic_inputs": 1
+    },
+    "TOP": {
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "TRA": {
+      "T4:placeholder_default": 1,
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "TRAN": {
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "TRDH": {
+      "T6:generic_inputs": 1
+    },
+    "TRQA": {
+      "T6:generic_inputs": 1
+    },
+    "TSAR": {
+      "T6:generic_inputs": 1
+    },
+    "TSOX": {
+      "T4:placeholder_default": 1,
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "VCAP": {
+      "T6:generic_inputs": 1
+    },
+    "WACC": {
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "WB": {
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "WCRS": {
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "WEI": {
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "WETR": {
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "WHAL": {
+      "T6:generic_inputs": 1
+    },
+    "WIRP": {
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    },
+    "YAS": {
+      "T6:empty_description": 1,
+      "T6:generic_inputs": 1,
+      "T6:template_purpose": 1
+    }
+  }
+}
