@@ -1,12 +1,11 @@
 {
   "_doc": "Offline truth-gate ratchet (backend/showme/audit/gate.py). Per function: count per '<check>:<rule>'. Counts may only go down. Regenerate downward with SHOWME_UPDATE_TRUTH_BASELINE=1 pytest tests/test_function_truth_gate.py.",
-  "total": 323,
+  "total": 303,
   "counts": {
     "ACCT": {
       "T6:generic_inputs": 1
     },
     "AIM": {
-      "T4:placeholder_default": 1,
       "T6:empty_description": 1,
       "T6:generic_inputs": 1,
       "T6:template_purpose": 1
@@ -35,7 +34,6 @@
       "T6:template_purpose": 1
     },
     "BBGT": {
-      "T4:placeholder_default": 1,
       "T6:empty_description": 1,
       "T6:generic_inputs": 1,
       "T6:template_purpose": 1
@@ -195,7 +193,6 @@
       "T6:generic_inputs": 1
     },
     "EMSX": {
-      "T4:placeholder_default": 1,
       "T6:empty_description": 1,
       "T6:generic_inputs": 1,
       "T6:template_purpose": 1
@@ -311,7 +308,7 @@
       "T6:generic_inputs": 1
     },
     "HVT": {
-      "T4:placeholder_default": 8,
+      "T4:placeholder_default": 6,
       "T6:empty_description": 1
     },
     "ICX": {
@@ -321,7 +318,7 @@
       "T6:generic_inputs": 1
     },
     "IVOL": {
-      "T4:placeholder_default": 8,
+      "T4:placeholder_default": 1,
       "T6:empty_description": 1
     },
     "LANG": {
@@ -339,7 +336,6 @@
       "T6:generic_inputs": 1
     },
     "MARS": {
-      "T4:placeholder_default": 1,
       "T6:empty_description": 1,
       "T6:generic_inputs": 1,
       "T6:template_purpose": 1
@@ -387,7 +383,7 @@
       "T6:generic_inputs": 1
     },
     "OSA": {
-      "T4:placeholder_default": 8,
+      "T4:placeholder_default": 3,
       "T6:empty_description": 1
     },
     "OVDV": {
@@ -511,7 +507,6 @@
       "T6:template_purpose": 1
     },
     "TRA": {
-      "T4:placeholder_default": 1,
       "T6:empty_description": 1,
       "T6:generic_inputs": 1,
       "T6:template_purpose": 1
@@ -531,7 +526,6 @@
       "T6:generic_inputs": 1
     },
     "TSOX": {
-      "T4:placeholder_default": 1,
       "T6:empty_description": 1,
       "T6:generic_inputs": 1,
       "T6:template_purpose": 1

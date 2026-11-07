@@ -1460,11 +1460,16 @@ def build_app(engine_root: Path | None) -> FastAPI:
         # happens here (inside the running loop) so the bots can actually
         # schedule themselves — build_app() runs synchronously and has no
         # loop available for asyncio.create_task().
-        try:
-            from showme.bots.lifespan import startup as bot_startup
-            await bot_startup()
-        except Exception as exc:  # noqa: BLE001 — non-fatal; log + continue
-            LOG.warning("bot runner startup skipped: %s", exc)
+        # SHOWME_DISABLE_BOTS=1: audit/smoke sidecars run against copies of
+        # (or empty) app homes and must never start a bot that could trade.
+        if os.environ.get("SHOWME_DISABLE_BOTS", "").strip().lower() in {"1", "true", "yes"}:
+            LOG.info("bot runner disabled by SHOWME_DISABLE_BOTS")
+        else:
+            try:
+                from showme.bots.lifespan import startup as bot_startup
+                await bot_startup()
+            except Exception as exc:  # noqa: BLE001 — non-fatal; log + continue
+                LOG.warning("bot runner startup skipped: %s", exc)
         try:
             yield
         finally:

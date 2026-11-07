@@ -162,10 +162,12 @@ def test_artifact_layout_and_offline_checks(tmp_path):
     assert any((run_dir / "responses").glob("GP-EQUITY*.json"))
     saved = json.loads((run_dir / "ledger.json").read_text(encoding="utf-8"))
     assert saved["counts"] == ledger["counts"]
-    # TOP's catalog help is a template -> T6 red even though the call is fine
+    # TOP's catalog help is a template -> T6 documentation debt (amber): it is
+    # reported, but never turns an honest function RED.
     top_rules = {f["rule"] for f in ledger["functions"]["TOP"]["offline_findings"]}
     assert {"empty_description", "template_purpose"} <= top_rules
-    assert ledger["functions"]["TOP"]["grade"] == "RED"
+    assert ledger["functions"]["TOP"]["grade"] == "AMBER"
+    assert "Help-text debt" in (run_dir / "summary.md").read_text(encoding="utf-8")
 
 
 def test_native_codes_are_listed_not_silently_dropped(tmp_path):
@@ -191,3 +193,54 @@ def test_trade_params_are_forced_preview_only():
 ])
 def test_transient_error_classification(exc, transient):
     assert runner.is_transient(exc) is transient
+
+
+def test_warm_and_second_input_failures_are_recorded(tmp_path):
+    def second_calls_fail(code, params, attempt):
+        if code == "GP" and (attempt > 1 or params.get("symbol") == "MSFT"):
+            raise ValueError("boom")
+        return healthy(code, params, attempt)
+
+    ledger = make_runner(tmp_path, FakeSidecar(second_calls_fail)).run()
+    rules = {f["rule"] for f in ledger["functions"]["GP"]["cases"][0]["findings"]}
+    assert {"warm_call_failed", "second_input_failed"} <= rules
+
+
+def test_request_timeout_follows_the_latency_budget(tmp_path):
+    r = make_runner(tmp_path, FakeSidecar(healthy))
+    assert r.timeout_for("GP") == 24.0      # 2 x 12s default cold budget
+    assert r.timeout_for("BRIEF") == 30.0   # 2 x 30s capped at --timeout 30
+
+
+def test_only_limits_the_run(tmp_path):
+    side = FakeSidecar(healthy)
+    ledger = make_runner(tmp_path, side, only={"top"}).run()
+    assert set(ledger["functions"]) == {"TOP"}
+    assert all(c == "TOP" for c, _ in side.calls)
+
+
+def test_regrade_reproduces_a_run_from_saved_responses(tmp_path):
+    def static(code, params, attempt):
+        if code == "GP":
+            return 200, body(params["symbol"], 100.0)
+        return healthy(code, params, attempt)
+
+    first = make_runner(tmp_path, FakeSidecar(static)).run()
+    calls_before = FakeSidecar(healthy)
+    regraded = make_runner(tmp_path, calls_before).regrade()
+    assert calls_before.calls == []
+    assert regraded["counts"] == first["counts"]
+    assert regraded["functions"]["GP"]["grade"] == "RED"
+
+
+def test_sandbox_forces_every_bot_off(tmp_path):
+    bots = tmp_path / "bots"
+    bots.mkdir()
+    (bots / "live.json").write_text(json.dumps({"id": "a", "mode": "live", "enabled": True}), encoding="utf-8")
+    (bots / "list.json").write_text(json.dumps([{"id": "b", "mode": "shadow", "enabled": True}]), encoding="utf-8")
+    (bots / "broken.json").write_text("{not json", encoding="utf-8")
+    assert runner.disable_bots(tmp_path) == 3
+    live = json.loads((bots / "live.json").read_text(encoding="utf-8"))
+    assert live["enabled"] is False and live["mode"] == "shadow"
+    assert json.loads((bots / "list.json").read_text(encoding="utf-8"))[0]["enabled"] is False
+    assert not (bots / "broken.json").exists()

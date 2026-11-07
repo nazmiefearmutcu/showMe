@@ -145,7 +145,7 @@ def main(argv: list[str] | None = None) -> int:
     home = tempfile.TemporaryDirectory(prefix="showme-smoke-", ignore_cleanup_errors=True)
     try:
         proc, port, log = start_sidecar(args.python, timeout=args.timeout,
-                                        extra_env={"SHOWME_HOME": home.name})
+                                        extra_env={"SHOWME_HOME": home.name, "SHOWME_DISABLE_BOTS": "1"})
     except SidecarError as exc:
         print(f"FAIL start: {exc}", file=sys.stderr)
         home.cleanup()

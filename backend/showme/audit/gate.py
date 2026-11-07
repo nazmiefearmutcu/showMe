@@ -33,40 +33,60 @@ def catalog_entries() -> list[dict[str, Any]]:
     return out
 
 
-def registry_sources() -> dict[str, tuple[str, str]]:
-    """``{CODE: (source_text, "file.py")}`` for every registered function class."""
+# Functions implemented inside the server itself rather than as engine
+# classes (no registry entry, so no source to scan).
+SERVER_NATIVE_CODES = frozenset({"GP", "HP"})
+
+Source = tuple[str, str, str]  # (source text, "file.py", class name)
+
+
+def registry_sources() -> tuple[dict[str, Source], dict[str, str]]:
+    """``({CODE: (text, "file.py", ClassName)}, {module: import error})``.
+
+    Import errors are returned, not swallowed: a module that stops importing
+    would otherwise silently drop its findings from the ratchet.
+    """
     import showme.engine.functions as functions_pkg
     from showme.engine.core.base_function import FunctionRegistry
 
+    errors: dict[str, str] = {}
     for mod in pkgutil.walk_packages(functions_pkg.__path__, functions_pkg.__name__ + "."):
         try:
             importlib.import_module(mod.name)
-        except Exception:  # noqa: BLE001 - import errors surface in the live audit
-            pass
-    files: dict[str, tuple[str, str]] = {}
+        except Exception as exc:  # noqa: BLE001 - reported to the caller
+            errors[mod.name] = f"{type(exc).__name__}: {exc}"
+    files: dict[str, Source] = {}
     for code, cls in FunctionRegistry._instances.items():
         try:
             path = Path(inspect.getsourcefile(cls) or "")
-            files[code.upper()] = (path.read_text(encoding="utf-8"), path.name)
-        except (OSError, TypeError):
-            continue
-    return files
+            files[code.upper()] = (path.read_text(encoding="utf-8"), path.name, cls.__name__)
+        except (OSError, TypeError) as exc:
+            errors[f"{cls.__module__}.{cls.__name__}"] = f"source unavailable: {exc}"
+    return files, errors
+
+
+def offline_findings_for(
+    entry: dict[str, Any], source: Source | None, cfg: truth.TruthConfig
+) -> list[truth.Finding]:
+    """T5 catalog + T6 help + T4 AST (scoped to the function's class)."""
+    items = truth.check_catalog_entry_assets(entry) + truth.check_help_text(entry, cfg=cfg)
+    if source is not None:
+        text, filename, class_name = source
+        items += truth.scan_source_placeholders(text, filename, cfg=cfg, class_name=class_name)
+    return items
 
 
 def collect_offline_findings(
     entries: list[dict[str, Any]],
-    source_lookup: Callable[[str], tuple[str, str] | None],
+    source_lookup: Callable[[str], Source | None],
     cfg: truth.TruthConfig,
 ) -> dict[str, list[truth.Finding]]:
-    found: dict[str, list[truth.Finding]] = {}
-    for entry in entries:
-        code = str(entry.get("code", "")).upper()
-        items = truth.check_catalog_entry_assets(entry) + truth.check_help_text(entry, cfg=cfg)
-        source = source_lookup(code)
-        if source is not None:
-            items += truth.scan_source_placeholders(source[0], source[1], cfg=cfg)
-        found[code] = items
-    return found
+    return {
+        str(entry.get("code", "")).upper(): offline_findings_for(
+            entry, source_lookup(str(entry.get("code", "")).upper()), cfg
+        )
+        for entry in entries
+    }
 
 
 def to_counts(findings: dict[str, list[truth.Finding]]) -> Counts:

@@ -311,3 +311,57 @@ def test_grade_honest_unavailable_depends_on_known_alternative():
 
 def test_grade_network_flake_is_separate():
     assert truth.grade([], status="ok", keyless_alternative_known=False, network_flake=True) == "NETWORK_FLAKE"
+
+
+# ── review follow-ups (2026-11-08) ────────────────────────────────────────
+
+
+def test_huge_integers_do_not_crash_any_check(cfg):
+    huge = 10**400
+    body = ok_body(rows=[{"value": huge, "account": huge}], cards=[{"n": huge, "m": 1, "k": 2}])
+    truth.check_numeric_sanity(body, code="GP", cfg=cfg, now=NOW)
+    truth.check_response_placeholders(body, request_params={}, cfg=cfg)
+    assert truth.check_input_sensitivity(body, body)  # identical, no OverflowError
+
+
+def test_sources_given_as_a_string(cfg):
+    body = ok_body(sources="NONE", sourceDetails=None)
+    assert "fake_source" in rules(truth.check_provenance(body, code="X", category="misc", cfg=cfg, now=NOW))
+
+
+def test_quarter_periods_are_dated(cfg):
+    stale = ok_body(rows=[{"period": "2025-Q1", "gdp": 1.0}])
+    found = truth.check_provenance(stale, code="GDPX", category="macro", cfg=cfg, now=NOW)
+    assert "stale_data" in rules(found)
+
+
+def test_honest_zero_quantity_in_a_response_is_not_a_placeholder(cfg):
+    body = ok_body(rows=[{"symbol": "AAPL", "quantity": 0, "status": "closed"}])
+    assert truth.check_response_placeholders(body, request_params={}, cfg=cfg) == []
+
+
+SHARED_MODULE = '''
+def helper(spot=100):
+    return spot
+
+class StubA:
+    def execute(self, strike=105):
+        return strike
+
+class StubB:
+    def execute(self, account=10000):
+        return account
+'''
+
+
+def test_ast_scan_is_scoped_to_the_function_class(cfg):
+    a = truth.scan_source_placeholders(SHARED_MODULE, "_stubs.py", cfg=cfg, class_name="StubA")
+    locations = {f.location for f in a}
+    assert "_stubs.py:2" in locations  # shared module-level helper counts
+    assert "_stubs.py:6" in locations  # its own class
+    assert "_stubs.py:10" not in locations  # the neighbour's default does not
+
+
+def test_help_text_findings_are_documentation_amber(cfg):
+    entry = {"code": "MARS", "description": "", "usage": {"purpose": "Multi-Asset Risk function.", "inputs": []}}
+    assert {f.severity for f in truth.check_help_text(entry, cfg=cfg)} == {"amber"}

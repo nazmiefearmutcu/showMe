@@ -7,23 +7,31 @@ and source lookup are injected so the orchestration is unit-tested without
 a sidecar (``backend/tests/test_truth_audit_runner.py``).
 
 Per case (function × primary asset):
-  * call A (cold) with the audit's standard params, call A again (warm
-    latency), and — for symbol-taking functions — call B with the asset's
-    second input from ``contracts/truth_audit.json:input_pairs`` (T3);
+  * call A (cold) with the audit's standard params (forced preview-only for
+    anything ticket-shaped), call A again (warm latency), and — for
+    symbol-taking functions — call B with the asset's second input from
+    ``contracts/truth_audit.json:input_pairs`` (T3);
+  * the request timeout is per function: twice its cold latency budget,
+    capped by ``--timeout``;
   * a refused connection restarts the sidecar once and repeats the call;
-  * any other transient error is retried once; a persistent read timeout
-    is a red T8 ``timeout`` (the local function was too slow), a persistent
+    any other transient error is retried once; a persistent read timeout is
+    a red T8 ``timeout`` (the local function was too slow), a persistent
     reset/abort is ``NETWORK_FLAKE`` (reported apart, never red).
 
+Self-booted sidecars run with ``SHOWME_DISABLE_BOTS=1`` against a sandbox
+copy of the app home (bots forced off, credential files left out), so an
+audit can neither trade nor write into the user's data.
+
 Output under ``artifacts/showme-truth-audit/<UTC>/``: ``ledger.json``,
-``summary.md``, ``requests/`` and ``responses/``; progress is written to
-``ledger.partial.json`` after every case so ``--resume <dir>`` continues.
+``summary.md``, ``requests/`` and ``responses/`` plus ``ledger.partial.json``
+after every case (``--resume <dir>``). ``--regrade <dir>`` re-grades a run's
+saved responses with the current rules without calling any function.
 """
 from __future__ import annotations
 
-import inspect
 import json
 import os
+import shutil
 import time
 import urllib.error
 import urllib.parse
@@ -35,21 +43,17 @@ from typing import Any, Callable
 
 from audit_functions import entry_uses_symbol, params_for, primary_assets, request_json
 
-from showme.audit import truth
+from showme.audit import gate, truth
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUT = ROOT / "artifacts" / "showme-truth-audit"
 KEYLESS_PATH = ROOT / "contracts" / "keyless_alternatives.json"
 NATIVE_CODES = {"AGENT", "ASK", "WATCH"}
 GRADE_ORDER = {"RED": 4, "NETWORK_FLAKE": 3, "AMBER": 2, "GREEN": 1, "NOT_AUDITED": 0}
+SANDBOX_SKIP = ("logs", "*.lock", "*credential*", "*secret*", "*.key", "*.pem", "keyring*")
 
 RequestFn = Callable[[str, dict[str, Any], float], tuple[int, Any]]
-
-
-def _unwrap(exc: BaseException) -> BaseException:
-    if isinstance(exc, urllib.error.URLError) and isinstance(exc.reason, BaseException):
-        return exc.reason
-    return exc
+SourceLookup = Callable[[str], "gate.Source | None"]
 
 
 def safe_params(params: dict[str, Any]) -> dict[str, Any]:
@@ -59,6 +63,12 @@ def safe_params(params: dict[str, Any]) -> dict[str, Any]:
         out["submit"] = False
         out["paper_mode"] = True
     return out
+
+
+def _unwrap(exc: BaseException) -> BaseException:
+    if isinstance(exc, urllib.error.URLError) and isinstance(exc.reason, BaseException):
+        return exc.reason
+    return exc
 
 
 def is_transient(exc: BaseException) -> bool:
@@ -76,6 +86,68 @@ class Call:
     flake: bool = False
 
 
+def grade_case(
+    *,
+    entry: dict[str, Any],
+    asset: str | None,
+    params: dict[str, Any],
+    a: Call,
+    warm: Call | None,
+    b: Call | None,
+    keyless_known: bool,
+    cfg: truth.TruthConfig,
+    now: datetime,
+) -> dict[str, Any]:
+    """Findings + grade for one case from its calls (live run and --regrade)."""
+    code = str(entry.get("code", "")).upper()
+    category = str(entry.get("category", ""))
+    findings: list[truth.Finding] = []
+    status = ""
+    if a.error:
+        if a.timed_out:
+            findings += truth.check_latency(code, a.seconds, warm=False, cfg=cfg, timed_out=True)
+        elif not a.flake:
+            findings += truth.check_contract(None, error=a.error)
+    else:
+        body = a.body
+        status = str(body.get("status") or "").lower() if isinstance(body, dict) else ""
+        findings += truth.check_contract(body, http_status=a.status)
+        if isinstance(body, dict) and a.status < 400:
+            findings += truth.check_provenance(body, code=code, category=category, cfg=cfg, now=now)
+            findings += truth.check_response_placeholders(body, request_params=params, cfg=cfg)
+            findings += truth.check_response_assets(body, requested_asset=asset, cfg=cfg)
+            findings += truth.check_numeric_sanity(body, code=code, cfg=cfg, now=now)
+            if warm is not None:
+                if warm.error and not warm.timed_out:
+                    findings.append(truth.Finding("T8", "warm_call_failed", "amber",
+                                                  f"repeat call failed: {warm.error}"))
+                else:
+                    findings += truth.check_latency(code, warm.seconds, warm=True, cfg=cfg,
+                                                    timed_out=warm.timed_out)
+            if b is not None:
+                if b.error or not isinstance(b.body, dict):
+                    findings.append(truth.Finding("T3", "second_input_failed", "amber",
+                                                  f"call with the second input failed: {b.error or 'no body'}"))
+                else:
+                    findings += truth.check_input_sensitivity(body, b.body)
+    return {
+        "case_id": f"{code}-{asset or 'GLOBAL'}",
+        "asset": asset or "GLOBAL",
+        "grade": truth.grade(findings, status=status, keyless_alternative_known=keyless_known,
+                             network_flake=a.flake),
+        "status": status or None,
+        "http_status": a.status,
+        "error": a.error,
+        "timed_out": a.timed_out,
+        "flake": a.flake,
+        "seconds_cold": round(a.seconds, 3),
+        "seconds_warm": None if warm is None else round(warm.seconds, 3),
+        "warm_error": None if warm is None else warm.error,
+        "second_input": b is not None,
+        "findings": [f.to_dict() for f in findings],
+    }
+
+
 class StrictRunner:
     def __init__(
         self,
@@ -83,13 +155,14 @@ class StrictRunner:
         catalog: list[dict[str, Any]],
         request: RequestFn,
         restart: Callable[[], None],
-        source_lookup: Callable[[str], tuple[str, str] | None],
+        source_lookup: SourceLookup,
         keyless_alternatives: dict[str, Any],
         out_dir: Path,
         now: Callable[[], datetime] | None = None,
         cfg: truth.TruthConfig | None = None,
         timeout: float = 30.0,
         resume: bool = False,
+        only: set[str] | None = None,
         log: Callable[[str], None] = lambda _msg: None,
     ) -> None:
         self.catalog = catalog
@@ -100,8 +173,9 @@ class StrictRunner:
         self.out_dir = Path(out_dir)
         self.now = now or (lambda: datetime.now(timezone.utc))
         self.cfg = cfg or truth.load_config()
-        self.timeout = timeout
+        self.timeout_cap = timeout
         self.resume = resume
+        self.only = {c.upper() for c in only} if only else None
         self.log = log
         self.partial_path = self.out_dir / "ledger.partial.json"
         self.done: dict[str, dict[str, Any]] = {}
@@ -114,12 +188,17 @@ class StrictRunner:
         tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False, default=str) + "\n", encoding="utf-8")
         os.replace(tmp, path)
 
+    def timeout_for(self, code: str) -> float:
+        budget = {**self.cfg.latency_budget_s, **self.cfg.latency_overrides.get(code.upper(), {})}
+        return min(self.timeout_cap, 2.0 * float(budget["cold"]))
+
     def _call(self, code: str, params: dict[str, Any]) -> Call:
         retried = restarted = False
+        timeout = self.timeout_for(code)
         while True:
             started = time.perf_counter()
             try:
-                status, body = self.request(code, params, self.timeout)
+                status, body = self.request(code, params, timeout)
                 return Call(status, body, None, time.perf_counter() - started)
             except Exception as exc:  # noqa: BLE001 - classified below
                 elapsed = time.perf_counter() - started
@@ -136,76 +215,35 @@ class StrictRunner:
                 return Call(0, None, f"{type(inner).__name__}: {inner}", elapsed,
                             timed_out=timed_out, flake=is_transient(inner) and not timed_out)
 
-    # ── grading ──────────────────────────────────────────────────────────
-
-    def _offline_findings(self, entry: dict[str, Any]) -> list[truth.Finding]:
-        code = str(entry.get("code", "")).upper()
-        found = truth.check_catalog_entry_assets(entry) + truth.check_help_text(entry, cfg=self.cfg)
-        source = self.source_lookup(code)
-        if source is not None:
-            text, filename = source
-            found += truth.scan_source_placeholders(text, filename, cfg=self.cfg)
-        return found
+    # ── per case ─────────────────────────────────────────────────────────
 
     def _case(self, entry: dict[str, Any], asset: str | None) -> dict[str, Any]:
         code = str(entry.get("code", "")).upper()
-        category = str(entry.get("category", ""))
         case_id = f"{code}-{asset or 'GLOBAL'}"
         params = safe_params(params_for(entry, asset))
         self._write_json(self.out_dir / "requests" / f"{case_id}.json", params)
         a = self._call(code, params)
         self._write_json(self.out_dir / "responses" / f"{case_id}.json", a.body)
-        findings: list[truth.Finding] = []
-        status = ""
-        warm_seconds: float | None = None
-        if a.error:
-            if a.timed_out:
-                findings += truth.check_latency(code, a.seconds, warm=False, cfg=self.cfg, timed_out=True)
-            elif not a.flake:
-                findings += truth.check_contract(None, error=a.error)
-        else:
-            body = a.body
-            status = str(body.get("status") or "").lower() if isinstance(body, dict) else ""
-            findings += truth.check_contract(body, http_status=a.status)
-            if isinstance(body, dict) and a.status < 400:
-                now = self.now()
-                findings += truth.check_provenance(body, code=code, category=category, cfg=self.cfg, now=now)
-                findings += truth.check_response_placeholders(body, request_params=params, cfg=self.cfg)
-                findings += truth.check_response_assets(body, requested_asset=asset, cfg=self.cfg)
-                findings += truth.check_numeric_sanity(body, code=code, cfg=self.cfg, now=now)
-                warm = self._call(code, params)
-                warm_seconds = warm.seconds
-                findings += truth.check_latency(code, warm.seconds, warm=True, cfg=self.cfg,
-                                                timed_out=warm.timed_out)
-                if asset and entry_uses_symbol(entry):
-                    pair = self.cfg.input_pairs.get(asset.upper()) or []
-                    alt = next((s for s in pair if s != params.get("symbol")), None)
-                    if alt:
-                        params_b = dict(params, symbol=alt)
-                        if "topic" in params_b:
-                            params_b["topic"] = alt
-                        b = self._call(code, params_b)
-                        self._write_json(self.out_dir / "responses" / f"{case_id}-B.json", b.body)
-                        if not b.error:
-                            findings += truth.check_input_sensitivity(body, b.body)
-        grade = truth.grade(findings, status=status, keyless_alternative_known=code in self.keyless,
-                            network_flake=a.flake)
-        return {
-            "case_id": case_id,
-            "asset": asset or "GLOBAL",
-            "grade": grade,
-            "status": status or None,
-            "http_status": a.status,
-            "error": a.error,
-            "seconds_cold": round(a.seconds, 3),
-            "seconds_warm": None if warm_seconds is None else round(warm_seconds, 3),
-            "findings": [f.to_dict() for f in findings],
-        }
+        warm = b = None
+        if not a.error and isinstance(a.body, dict) and a.status < 400:
+            warm = self._call(code, params)
+            if asset and entry_uses_symbol(entry):
+                pair = self.cfg.input_pairs.get(asset.upper()) or []
+                alt = next((s for s in pair if s != params.get("symbol")), None)
+                if alt:
+                    params_b = dict(params, symbol=alt)
+                    if "topic" in params_b:
+                        params_b["topic"] = alt
+                    self._write_json(self.out_dir / "requests" / f"{case_id}-B.json", params_b)
+                    b = self._call(code, params_b)
+                    self._write_json(self.out_dir / "responses" / f"{case_id}-B.json", b.body)
+        return grade_case(entry=entry, asset=asset, params=params, a=a, warm=warm, b=b,
+                          keyless_known=code in self.keyless, cfg=self.cfg, now=self.now())
 
     @staticmethod
-    def _function_grade(cases: list[dict[str, Any]], offline: list[truth.Finding]) -> str:
+    def function_grade(cases: list[dict[str, Any]], offline: list[dict[str, Any]]) -> str:
         grades = [c["grade"] for c in cases]
-        if any(f.severity == "red" for f in offline):
+        if any(f["severity"] == "red" for f in offline):
             grades.append("RED")
         elif offline:
             grades.append("AMBER")
@@ -213,12 +251,18 @@ class StrictRunner:
 
     # ── main loop ────────────────────────────────────────────────────────
 
+    def _entries(self) -> list[dict[str, Any]]:
+        entries = sorted(self.catalog, key=lambda e: (str(e.get("category", "")), str(e.get("code", ""))))
+        if self.only:
+            entries = [e for e in entries if str(e.get("code", "")).upper() in self.only]
+        return entries
+
     def run(self) -> dict[str, Any]:
         self.out_dir.mkdir(parents=True, exist_ok=True)
         if self.resume and self.partial_path.exists():
             self.done = json.loads(self.partial_path.read_text(encoding="utf-8"))
         functions: dict[str, dict[str, Any]] = {}
-        for entry in sorted(self.catalog, key=lambda e: (str(e.get("category", "")), str(e.get("code", "")))):
+        for entry in self._entries():
             code = str(entry.get("code", "")).upper()
             record: dict[str, Any] = {"name": entry.get("name", ""), "category": entry.get("category", "")}
             if code in NATIVE_CODES:
@@ -226,7 +270,7 @@ class StrictRunner:
                               cases=[], offline_findings=[])
                 functions[code] = record
                 continue
-            offline = self._offline_findings(entry)
+            offline = [f.to_dict() for f in gate.offline_findings_for(entry, self.source_lookup(code), self.cfg)]
             cases = []
             for asset in primary_assets(entry):
                 case_id = f"{code}-{asset or 'GLOBAL'}"
@@ -238,9 +282,11 @@ class StrictRunner:
                     self.log(f"{case['grade']:<13} {case_id:<22} {case['seconds_cold']:>6.1f}s "
                              f"{', '.join(sorted({f['rule'] for f in case['findings']}))}")
                 cases.append(case)
-            record.update(grade=self._function_grade(cases, offline), cases=cases,
-                          offline_findings=[f.to_dict() for f in offline])
+            record.update(grade=self.function_grade(cases, offline), cases=cases, offline_findings=offline)
             functions[code] = record
+        return self._finish(functions)
+
+    def _finish(self, functions: dict[str, dict[str, Any]]) -> dict[str, Any]:
         ledger = {
             "generated_at": self.now().isoformat(),
             "counts": dict(Counter(r["grade"] for r in functions.values())),
@@ -250,6 +296,55 @@ class StrictRunner:
         (self.out_dir / "summary.md").write_text(render_summary(ledger), encoding="utf-8")
         return ledger
 
+    def regrade(self) -> dict[str, Any]:
+        """Re-grade the saved requests/responses of this run with the current rules."""
+        done = json.loads(self.partial_path.read_text(encoding="utf-8"))
+        functions: dict[str, dict[str, Any]] = {}
+        for entry in self._entries():
+            code = str(entry.get("code", "")).upper()
+            if code in NATIVE_CODES:
+                functions[code] = {"name": entry.get("name", ""), "category": entry.get("category", ""),
+                                   "grade": "NOT_AUDITED", "cases": [], "offline_findings": [],
+                                   "reason": "native endpoint (not /api/fn); covered by the legacy audit"}
+                continue
+            offline = [f.to_dict() for f in gate.offline_findings_for(entry, self.source_lookup(code), self.cfg)]
+            cases = []
+            for asset in primary_assets(entry):
+                case_id = f"{code}-{asset or 'GLOBAL'}"
+                old = done.get(case_id)
+                if old is None:
+                    continue
+                req = self._read(f"requests/{case_id}.json") or {}
+                a = Call(old.get("http_status") or 0, self._read(f"responses/{case_id}.json"), old.get("error"),
+                         old.get("seconds_cold") or 0.0, timed_out=bool(old.get("timed_out")),
+                         flake=bool(old.get("flake")))
+                warm = None
+                if old.get("seconds_warm") is not None:
+                    warm = Call(200, None, old.get("warm_error"), old["seconds_warm"],
+                                timed_out=str(old.get("warm_error") or "").startswith("TimeoutError"))
+                b = None
+                if (self.out_dir / "responses" / f"{case_id}-B.json").exists():
+                    body_b = self._read(f"responses/{case_id}-B.json")
+                    b = Call(200 if body_b is not None else 0, body_b, None if body_b is not None else "no body", 0.0)
+                cases.append(grade_case(entry=entry, asset=asset, params=req, a=a, warm=warm, b=b,
+                                        keyless_known=code in self.keyless, cfg=self.cfg, now=self.now()))
+            functions[code] = {"name": entry.get("name", ""), "category": entry.get("category", ""),
+                               "grade": self.function_grade(cases, offline), "cases": cases,
+                               "offline_findings": offline}
+        return self._finish(functions)
+
+    def _read(self, rel: str) -> Any:
+        path = self.out_dir / rel
+        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+
+
+def _rules(rec: dict[str, Any], severity: str, *, checks: set[str] | None = None, exclude: set[str] = frozenset()) -> set[str]:
+    out = set()
+    for f in rec.get("offline_findings", []) + [f for c in rec.get("cases", []) for f in c["findings"]]:
+        if f["severity"] == severity and (checks is None or f["check"] in checks) and f["check"] not in exclude:
+            out.add(f["rule"])
+    return out
+
 
 def render_summary(ledger: dict[str, Any]) -> str:
     functions = ledger["functions"]
@@ -258,6 +353,9 @@ def render_summary(ledger: dict[str, Any]) -> str:
         "",
         f"Generated: {ledger['generated_at']}",
         "",
+        "Grades measure data truth (T1-T5, T7, T8 timeouts). Help-text debt (T6) is amber and",
+        "listed in its own column; it never decides RED.",
+        "",
         "| Grade | Functions |",
         "|---|---:|",
     ]
@@ -265,81 +363,104 @@ def render_summary(ledger: dict[str, Any]) -> str:
         lines.append(f"| {grade} | {ledger['counts'].get(grade, 0)} |")
     by_cat: dict[str, Counter] = {}
     for rec in functions.values():
-        by_cat.setdefault(str(rec.get("category", "")), Counter())[rec["grade"]] += 1
-    lines += ["", "## By category", "", "| Category | GREEN | AMBER | RED | FLAKE | N/A |", "|---|---:|---:|---:|---:|---:|"]
+        c = by_cat.setdefault(str(rec.get("category", "")), Counter())
+        c[rec["grade"]] += 1
+        if _rules(rec, "amber", checks={"T6"}):
+            c["DOC"] += 1
+    lines += ["", "## By category", "",
+              "| Category | GREEN | AMBER | RED | FLAKE | N/A | Help-text debt |",
+              "|---|---:|---:|---:|---:|---:|---:|"]
     for cat in sorted(by_cat):
         c = by_cat[cat]
-        lines.append(f"| {cat} | {c['GREEN']} | {c['AMBER']} | {c['RED']} | {c['NETWORK_FLAKE']} | {c['NOT_AUDITED']} |")
+        lines.append(f"| {cat} | {c['GREEN']} | {c['AMBER']} | {c['RED']} | {c['NETWORK_FLAKE']} "
+                     f"| {c['NOT_AUDITED']} | {c['DOC']} |")
     rule_counts: Counter = Counter()
     for rec in functions.values():
-        for f in rec.get("offline_findings", []):
+        for f in rec.get("offline_findings", []) + [f for c in rec.get("cases", []) for f in c["findings"]]:
             rule_counts[(f["check"], f["rule"], f["severity"])] += 1
-        for case in rec.get("cases", []):
-            for f in case["findings"]:
-                rule_counts[(f["check"], f["rule"], f["severity"])] += 1
     lines += ["", "## Findings by rule", "", "| Check | Rule | Severity | Count |", "|---|---|---|---:|"]
     for (check, rule, sev), n in sorted(rule_counts.items(), key=lambda kv: (-kv[1], kv[0])):
         lines.append(f"| {check} | {rule} | {sev} | {n} |")
-    lines += ["", "## RED functions", "", "| Code | Category | Rules |", "|---|---|---|"]
+    lines += ["", "## RED functions", "", "| Code | Category | Red rules | Statuses |", "|---|---|---|---|"]
     for code, rec in sorted(functions.items()):
         if rec["grade"] != "RED":
             continue
-        rules = sorted({f["rule"] for f in rec.get("offline_findings", []) if f["severity"] == "red"}
-                       | {f["rule"] for c in rec.get("cases", []) for f in c["findings"] if f["severity"] == "red"}
-                       | ({"status:" + str(c["status"]) for c in rec.get("cases", [])
-                           if c["status"] in {"calc_error", "input_error"}}))
-        lines.append(f"| {code} | {rec.get('category', '')} | {', '.join(rules)} |")
+        statuses = sorted({str(c["status"]) for c in rec.get("cases", []) if c.get("status")})
+        lines.append(f"| {code} | {rec.get('category', '')} | {', '.join(sorted(_rules(rec, 'red'))) or '—'} "
+                     f"| {', '.join(statuses) or '—'} |")
     return "\n".join(lines) + "\n"
 
 
 # ── CLI glue (used by showme_function_audit.py --strict) ─────────────────
 
 
-def registry_source_lookup() -> Callable[[str], tuple[str, str] | None]:
-    import importlib
-    import pkgutil
-
-    import showme.engine.functions as functions_pkg
-    from showme.engine.core.base_function import FunctionRegistry
-
-    for mod in pkgutil.walk_packages(functions_pkg.__path__, functions_pkg.__name__ + "."):
-        try:
-            importlib.import_module(mod.name)
-        except Exception:  # noqa: BLE001 - a broken module is reported by the live call
-            pass
-    files: dict[str, tuple[str, str]] = {}
-    for code, cls in FunctionRegistry._instances.items():
-        try:
-            path = Path(inspect.getsourcefile(cls) or "")
-            files[code.upper()] = (path.read_text(encoding="utf-8"), path.name)
-        except (OSError, TypeError):
-            continue
-    return files.get
-
-
 def sandbox_app_home(out_dir: Path) -> Path:
     """Copy the user's app home into the run directory (once) and return it.
 
-    The audit sidecar runs against the copy: functions still see the real
-    portfolio/watchlists, but whatever they write (paper tickets, tax lots,
-    alerts, imports, bot state) lands in the copy, never in the user's data.
+    Functions see the real portfolio/watchlists, but whatever they write
+    lands in the copy. Every bot in the copy is forced ``enabled=false`` and
+    ``mode=shadow`` (belt and braces next to ``SHOWME_DISABLE_BOTS=1``), and
+    credential-looking files are not copied.
     """
-    import shutil
-
     from showme.app_paths import app_home
 
     target = out_dir / "app-home"
     if not target.exists():
         source = app_home()
         if source.exists():
-            shutil.copytree(source, target, ignore=shutil.ignore_patterns("logs", "*.lock"))
+            shutil.copytree(source, target, ignore=shutil.ignore_patterns(*SANDBOX_SKIP))
         else:
             target.mkdir(parents=True)
+    disable_bots(target)
     return target
+
+
+def disable_bots(home: Path) -> int:
+    """Force every bot definition under ``home/bots`` off; return how many were changed."""
+    changed = 0
+    for path in sorted((home / "bots").glob("*.json")) if (home / "bots").is_dir() else []:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            path.unlink()  # unreadable bot file: drop it from the sandbox rather than risk it
+            changed += 1
+            continue
+        items = data if isinstance(data, list) else data.get("bots", [data]) if isinstance(data, dict) else []
+        for bot in items:
+            if isinstance(bot, dict) and (bot.get("enabled") is not False or bot.get("mode") != "shadow"):
+                bot["enabled"] = False
+                bot["mode"] = "shadow"
+                changed += 1
+        path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    return changed
+
+
+def _catalog_and_lookup(base: str) -> tuple[list[dict[str, Any]], SourceLookup]:
+    status, catalog = request_json(f"{base}/api/function-index", timeout=60)
+    if status >= 400 or not isinstance(catalog, list):
+        raise SystemExit(f"function-index failed: {status} {catalog}")
+    sources, errors = gate.registry_sources()
+    for module, error in errors.items():
+        print(f"warning: {module}: {error}", flush=True)
+    return catalog, sources.get
 
 
 def run_cli(args: Any) -> int:
     from sidecar_smoke import start_sidecar, stop_sidecar, wait_healthy
+
+    keyless = json.loads(KEYLESS_PATH.read_text(encoding="utf-8")) if KEYLESS_PATH.exists() else {}
+    only = {c.strip().upper() for c in (args.only or "").split(",") if c.strip()} or None
+
+    if getattr(args, "regrade", None):
+        out_dir = Path(args.regrade)
+        catalog = [e.model_dump() for e in __import__("showme.server", fromlist=["x"])._load_function_index()]
+        sources, _errors = gate.registry_sources()
+        runner = StrictRunner(catalog=catalog, request=lambda *a: (0, None), restart=lambda: None,
+                              source_lookup=sources.get, keyless_alternatives=keyless, out_dir=out_dir,
+                              only=only)
+        ledger = runner.regrade()
+        print(f"counts: {ledger['counts']}\nsummary: {out_dir / 'summary.md'}")
+        return 0
 
     if args.resume:
         out_dir = Path(args.resume)
@@ -352,32 +473,30 @@ def run_cli(args: Any) -> int:
     def boot() -> None:
         if state["proc"] is not None:
             stop_sidecar(state["proc"])
+            state["proc"] = None
         home = sandbox_app_home(out_dir)
-        proc, port, _log = start_sidecar(extra_env={"SHOWME_HOME": str(home)})
+        proc, port, _log = start_sidecar(extra_env={"SHOWME_HOME": str(home), "SHOWME_DISABLE_BOTS": "1"})
         state.update(proc=proc, base=f"http://127.0.0.1:{port}")
         wait_healthy(state["base"])
-        print(f"sidecar {state['base']} (SHOWME_HOME={home})", flush=True)
+        print(f"sidecar {state['base']} (SHOWME_HOME={home}, bots disabled)", flush=True)
 
     def restart() -> None:
         if state["proc"] is None:
             raise SystemExit("sidecar at --base/--port refused the connection; restart it and use --resume")
         boot()
 
-    if not state["base"]:
-        boot()
     try:
-        status, catalog = request_json(f"{state['base']}/api/function-index", timeout=60)
-        if status >= 400 or not isinstance(catalog, list):
-            raise SystemExit(f"function-index failed: {status} {catalog}")
-        keyless = json.loads(KEYLESS_PATH.read_text(encoding="utf-8")) if KEYLESS_PATH.exists() else {}
+        if not state["base"]:
+            boot()
+        catalog, lookup = _catalog_and_lookup(state["base"])
 
         def request(code: str, params: dict[str, Any], timeout: float) -> tuple[int, Any]:
             return request_json(f"{state['base']}/api/fn/{urllib.parse.quote(code)}", params, timeout=timeout)
 
         runner = StrictRunner(
-            catalog=catalog, request=request, restart=restart, source_lookup=registry_source_lookup(),
+            catalog=catalog, request=request, restart=restart, source_lookup=lookup,
             keyless_alternatives=keyless, out_dir=out_dir, timeout=args.timeout, resume=bool(args.resume),
-            log=lambda msg: print(msg, flush=True),
+            only=only, log=lambda msg: print(msg, flush=True),
         )
         ledger = runner.run()
         print(f"counts: {ledger['counts']}")

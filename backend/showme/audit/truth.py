@@ -12,7 +12,9 @@ Spec: docs/superpowers/specs/2026-11-07-foundation-and-function-audit-design.md 
 
 Severity: ``red`` = the function shows something untrue or is broken;
 ``amber`` = a weakness that is not by itself a lie (a placeholder default
-in code, a slow call, generic inputs).
+in code, a slow call, missing/template help text). Help-text (T6) findings
+are documentation debt: amber, reported in their own column, and ratcheted
+by the offline gate — they never mask or inflate the data-truth grade.
 """
 from __future__ import annotations
 
@@ -79,7 +81,8 @@ class TruthConfig:
     fake_source_names: set[str]
     fake_source_substrings: tuple[str, ...]
     computed_source_names: set[str]
-    placeholder_rules: list[tuple[re.Pattern[str], tuple[Any, ...], str]]
+    # (key pattern, values, why, scopes) — scopes ⊆ {"source", "response"}
+    placeholder_rules: list[tuple[re.Pattern[str], tuple[Any, ...], str, frozenset[str]]]
     crypto_demo_universe: set[str]
     template_patterns: list[re.Pattern[str]]
     input_pairs: dict[str, list[str]]
@@ -99,7 +102,8 @@ def load_config(path: Path | str | None = None) -> TruthConfig:
         fake_source_substrings=tuple(s.lower() for s in raw.get("fake_source_substrings", [])),
         computed_source_names={s.lower() for s in raw.get("computed_source_names", [])},
         placeholder_rules=[
-            (re.compile(r["key"], re.I), tuple(r["values"]), r.get("why", ""))
+            (re.compile(r["key"], re.I), tuple(r["values"]), r.get("why", ""),
+             frozenset(r.get("scope", ["source", "response"])))
             for r in raw.get("placeholder_values", [])
         ],
         crypto_demo_universe={s.upper() for s in raw.get("crypto_demo_universe", [])},
@@ -141,19 +145,29 @@ def _is_number(v: Any) -> bool:
     return isinstance(v, (int, float)) and not isinstance(v, bool)
 
 
+def _finite(v: Any) -> bool:
+    """``math.isfinite`` without OverflowError on huge ints (ints are always finite)."""
+    return isinstance(v, int) or math.isfinite(v)
+
+
 def _status(body: dict[str, Any]) -> str:
     data = body.get("data") if isinstance(body.get("data"), dict) else {}
     return str(body.get("status") or data.get("status") or "").lower()
 
 
 def _parse_when(value: Any) -> datetime | None:
-    if _is_number(value) and math.isfinite(value):
+    if _is_number(value) and _finite(value):
         if 1e12 <= value < 1e14:
             return datetime.fromtimestamp(value / 1000, tz=timezone.utc)
         if 1e9 <= value < 1e11:
             return datetime.fromtimestamp(value, tz=timezone.utc)
         return None
-    if isinstance(value, str) and re.match(r"^\d{4}-\d{2}(-\d{2})?", value):
+    if isinstance(value, str):
+        quarter = re.fullmatch(r"\s*(\d{4})-?Q([1-4])\s*", value, re.I)
+        if quarter:  # period end of the quarter
+            year, q = int(quarter.group(1)), int(quarter.group(2))
+            return datetime(year, 3 * q, 1, tzinfo=timezone.utc) + timedelta(days=31 if q in (1, 4) else 30) - timedelta(days=1)
+    if isinstance(value, str) and re.match(r"^\d{4}-\d{2}(-\d{2})?", value.strip()):
         text = value.strip().replace("Z", "+00:00")
         if re.fullmatch(r"\d{4}-\d{2}", text):
             text += "-01"
@@ -180,10 +194,14 @@ def _payload_dates(body: dict[str, Any]) -> list[tuple[datetime, str]]:
 
 def _source_names(body: dict[str, Any]) -> list[str]:
     names: list[str] = []
-    for s in body.get("sources") or []:
+    raw_sources = body.get("sources") or []
+    if isinstance(raw_sources, str):
+        raw_sources = [raw_sources]
+    for s in raw_sources if isinstance(raw_sources, list) else []:
         if isinstance(s, str) and s.strip():
             names.append(s.strip())
-    for d in body.get("sourceDetails") or []:
+    details = body.get("sourceDetails")
+    for d in details if isinstance(details, list) else []:
         if isinstance(d, dict) and isinstance(d.get("name"), str) and d["name"].strip():
             names.append(d["name"].strip())
     return list(dict.fromkeys(names))
@@ -284,8 +302,8 @@ def _fingerprint(body: dict[str, Any]) -> list[tuple[str, float]]:
             continue
         if any(part.lower() in VOLATILE_KEYS for part in re.split(r"[.\[\]]", path) if part):
             continue
-        if _is_number(value) and math.isfinite(value):
-            out.append((path, round(float(value), 9)))
+        if _is_number(value) and _finite(value):
+            out.append((path, value if isinstance(value, int) else round(float(value), 9)))
     return out
 
 
@@ -310,13 +328,15 @@ def _value_matches(value: Any, candidates: tuple[Any, ...]) -> bool:
         if isinstance(c, str):
             if isinstance(value, str) and value == c:
                 return True
-        elif _is_number(value) and _is_number(c) and float(value) == float(c):
+        elif _is_number(value) and _is_number(c) and _finite(value) and value == c:
             return True
     return False
 
 
 def _norm(value: Any) -> Any:
-    return float(value) if _is_number(value) else value
+    if _is_number(value) and not isinstance(value, int) and math.isfinite(value) and float(value).is_integer():
+        return int(value)  # 10000.0 and 10000 are the same requested value
+    return value
 
 
 def check_response_placeholders(
@@ -331,8 +351,8 @@ def check_response_placeholders(
         pair = (key.lower(), _norm(value))
         if pair in requested or pair in seen:
             continue
-        for pattern, values, why in cfg.placeholder_rules:
-            if pattern.search(key) and _value_matches(value, values):
+        for pattern, values, why, scopes in cfg.placeholder_rules:
+            if "response" in scopes and pattern.search(key) and _value_matches(value, values):
                 seen.add(pair)
                 out.append(Finding("T4", "placeholder_value", "red",
                                    f"{key}={value!r} looks like a {why} the request did not supply", path))
@@ -353,20 +373,36 @@ def _const(node: ast.AST | None) -> tuple[bool, Any]:
     return False, None
 
 
-def scan_source_placeholders(source: str, filename: str, *, cfg: TruthConfig) -> list[Finding]:
-    """AST scan for placeholder defaults (``account=10_000``, ``.get("strike", 105)`` ...)."""
+def scan_source_placeholders(
+    source: str, filename: str, *, cfg: TruthConfig, class_name: str | None = None
+) -> list[Finding]:
+    """AST scan for placeholder defaults (``account=10_000``, ``.get("strike", 105)`` ...).
+
+    With ``class_name`` the scan covers that class plus module-level code
+    (shared helpers) but skips the bodies of *other* top-level classes, so a
+    module holding several functions does not charge one function's
+    defaults to its neighbours.
+    """
     try:
         tree = ast.parse(source)
     except SyntaxError as exc:
         return [Finding("T4", "unparseable_source", "amber", str(exc), filename)]
     out: list[Finding] = []
+    foreign = [
+        (node.lineno, node.end_lineno or node.lineno)
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and class_name is not None and node.name != class_name
+    ]
 
     def hit(name: str | None, node: ast.AST | None) -> None:
         ok, value = _const(node)
         if not ok or not name:
             return
-        for pattern, values, why in cfg.placeholder_rules:
-            if pattern.search(name) and _value_matches(value, values):
+        line = getattr(node, "lineno", 0)
+        if any(start <= line <= end for start, end in foreign):
+            return
+        for pattern, values, why, scopes in cfg.placeholder_rules:
+            if "source" in scopes and pattern.search(name) and _value_matches(value, values):
                 out.append(Finding("T4", "placeholder_default", "amber",
                                    f"{name}={value!r} ({why}) hard-coded as a default",
                                    f"{filename}:{getattr(node, 'lineno', '?')}"))
@@ -452,11 +488,11 @@ def check_help_text(entry: dict[str, Any], *, cfg: TruthConfig) -> list[Finding]
     purpose = str(usage.get("purpose") or "").strip()
     out: list[Finding] = []
     if not description:
-        out.append(Finding("T6", "empty_description", "red", "catalog description is empty"))
+        out.append(Finding("T6", "empty_description", "amber", "catalog description is empty"))
     elif any(p.search(description) for p in cfg.template_patterns):
-        out.append(Finding("T6", "template_description", "red", f"template description: {description[:120]!r}"))
+        out.append(Finding("T6", "template_description", "amber", f"template description: {description[:120]!r}"))
     if not purpose or any(p.search(purpose) for p in cfg.template_patterns):
-        out.append(Finding("T6", "template_purpose", "red", f"template purpose: {purpose[:120]!r}"))
+        out.append(Finding("T6", "template_purpose", "amber", f"template purpose: {purpose[:120]!r}"))
     inputs = [str(i).strip().lower() for i in usage.get("inputs") or []]
     if not inputs or set(inputs) <= GENERIC_INPUTS:
         out.append(Finding("T6", "generic_inputs", "amber", f"inputs documented as {inputs}"))
@@ -471,7 +507,7 @@ def check_numeric_sanity(body: dict[str, Any], *, code: str, cfg: TruthConfig, n
     for key, value, path in _payload_leaves(body):
         if not _is_number(value):
             continue
-        if not math.isfinite(value):
+        if not _finite(value):
             out.append(Finding("T7", "non_finite", "red", f"{key or 'value'}={value}", path))
             continue
         if key is None:

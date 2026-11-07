@@ -21,25 +21,37 @@ from showme.audit import gate, truth
 
 
 @pytest.fixture(scope="module")
-def current_counts():
-    cfg = truth.load_config()
-    sources = gate.registry_sources()
-    findings = gate.collect_offline_findings(gate.catalog_entries(), sources.get, cfg)
+def registry():
+    return gate.registry_sources()
+
+
+@pytest.fixture(scope="module")
+def current_counts(registry):
+    sources, _errors = registry
+    findings = gate.collect_offline_findings(gate.catalog_entries(), sources.get, truth.load_config())
     return gate.to_counts(findings)
 
 
-def test_catalog_and_sources_are_scanned(current_counts):
-    entries = gate.catalog_entries()
-    assert len(entries) >= 141
-    assert len(gate.registry_sources()) >= 130
+def test_every_catalog_function_is_scanned(registry):
+    """Coverage cannot shrink silently: no import errors, a source per function."""
+    sources, errors = registry
+    assert not errors, f"function modules failed to import: {errors}"
+    codes = {str(e.get("code", "")).upper() for e in gate.catalog_entries()}
+    assert len(codes) >= 141
+    missing = sorted(codes - set(sources) - gate.SERVER_NATIVE_CODES)
+    assert not missing, f"catalog functions with no scannable source: {missing}"
 
 
 def test_no_new_offline_truth_findings(current_counts):
+    updating = os.environ.get("SHOWME_UPDATE_TRUTH_BASELINE") == "1"
     baseline = gate.load_baseline()
     if baseline is None:
+        if not updating:
+            pytest.fail(f"{gate.BASELINE_PATH} is missing; seed it deliberately with "
+                        "SHOWME_UPDATE_TRUTH_BASELINE=1 (deleting it must not reset the ratchet)")
         gate.write_baseline(current_counts)
-        pytest.skip(f"seeded {gate.BASELINE_PATH.name}; re-run to enforce")
-    if os.environ.get("SHOWME_UPDATE_TRUTH_BASELINE") == "1":
+        baseline = current_counts
+    if updating:
         gate.write_baseline(gate.lowered_baseline(current_counts, baseline))
         baseline = gate.load_baseline()
     rises = gate.regressions(current_counts, baseline)
