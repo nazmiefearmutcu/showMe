@@ -106,3 +106,81 @@ def test_sources_are_honest():
         {"symbol": "AAPL", "kind": "call", "quantity": 1, "spot": 250, "strike": 240, "vol": 0.28, "T": 0.5, "r": 0.04},
     ])
     assert res.sources == ["black_scholes_model"]
+
+
+# ── review follow-ups (2026-11-08) ────────────────────────────────────────
+
+class _FRED:
+    api_key = "test"
+
+    async def series(self, series_id, frequency="d"):
+        assert series_id == "DGS3MO"
+        return pd.DataFrame({"value": [4.30, 4.33]}, index=pd.to_datetime(["2026-11-05", "2026-11-06"]))
+
+
+class _DepsFred(_Deps):
+    def __init__(self, yfinance=None):
+        super().__init__(yfinance)
+        self.fred = _FRED()
+
+
+BASE = {"symbol": "AAPL", "type": "call", "qty": 1, "spot": 250, "strike": 240, "vol": 0.28, "T": 0.5}
+
+
+@pytest.mark.parametrize("override, needle", [
+    ({"strike": "abc"}, "strike"),
+    ({"vol": 0}, "vol"),
+    ({"vol": -0.2}, "vol"),
+    ({"qty": 0}, "qty"),
+    ({"spot": -5}, "spot"),
+    ({"T": "soon"}, "expiry"),
+])
+def test_invalid_numbers_are_input_errors(override, needle):
+    res = _run(GREEKSFunction(_Deps()), positions=[{**BASE, "rate": 0.04, **override}])
+    assert res.data["status"] == "input_error"
+    assert needle in res.data["reason"]
+
+
+def test_missing_rate_uses_the_live_tbill_and_labels_it():
+    res = _run(GREEKSFunction(_DepsFred()), positions=[dict(BASE)])
+    row = res.data["positions"][0]
+    assert row["rate_source"] == "fred_DGS3MO_2026-11-06"
+    assert "fred" in res.sources
+    with_rate = _run(GREEKSFunction(_Deps()), positions=[{**BASE, "rate": 0.0433}])
+    assert row["rho"] == pytest.approx(with_rate.data["positions"][0]["rho"])
+
+
+def test_missing_rate_without_fred_is_an_input_error(monkeypatch):
+    from showme.engine.functions.portfolio import greeks as mod
+
+    async def _down(*a, **k):
+        return None
+
+    monkeypatch.setattr(mod, "_risk_free_rate", _down)
+    res = _run(GREEKSFunction(_Deps()), positions=[dict(BASE)])
+    assert res.data["status"] == "input_error"
+    assert "rate" in res.data["reason"]
+
+
+def test_percent_rate_is_converted():
+    pct = _run(GREEKSFunction(_Deps()), positions=[{**BASE, "rate": 4.5}])
+    dec = _run(GREEKSFunction(_Deps()), positions=[{**BASE, "rate": 0.045}])
+    assert pct.data["positions"][0]["rho"] == pytest.approx(dec.data["positions"][0]["rho"])
+    assert pct.data["positions"][0]["rate_source"] == "input_percent"
+
+
+def test_a_position_that_fails_pricing_fails_the_book(monkeypatch):
+    from showme.engine.services import greeks as svc
+
+    real = svc.position_greeks
+
+    def flaky(pos):
+        if pos.get("symbol") == "BAD":
+            raise ValueError("boom")
+        return real(pos)
+
+    monkeypatch.setattr(svc, "position_greeks", flaky)
+    res = _run(GREEKSFunction(_Deps()), positions=[{**BASE, "rate": 0.04}, {**BASE, "symbol": "BAD", "rate": 0.04}])
+    assert res.data["status"] == "calc_error"
+    assert "BAD" in res.data["reason"]
+    assert "totals" not in res.data

@@ -19,6 +19,7 @@ from typing import Any
 from showme.engine.core.base_data_source import DataKind, DataRequest
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from showme.engine.core.instrument import AssetClass, Instrument
+from showme.engine.functions._fred_csv import fred_with_keyless_fallback
 from showme.engine.services import greeks as greeks_svc
 
 _ALIASES: dict[str, tuple[str, ...]] = {
@@ -56,8 +57,22 @@ def _years_until(value: Any, today: date) -> float | None:
     return (when - today).days / 365.25
 
 
+def _positive(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) and number > 0 else None
+
+
 def normalize_position(position: dict[str, Any], today: date | None = None) -> tuple[dict[str, Any], list[str]]:
-    """Canonical service keys + a list of what is still missing."""
+    """Canonical service keys + a list of what is missing or invalid.
+
+    Nothing is defaulted here: a missing ``rate`` is flagged with
+    ``_needs_rate`` (the caller fetches the live risk-free rate), a missing
+    spot/vol is left for the price-history step, everything else must be a
+    valid number.
+    """
     today = today or datetime.now(timezone.utc).date()
     out = dict(position)
     for canonical, names in _ALIASES.items():
@@ -70,18 +85,74 @@ def normalize_position(position: dict[str, Any], today: date | None = None) -> t
         if position.get("expiry") not in (None, ""):
             out["T"] = _years_until(position["expiry"], today)
         elif position.get("expiry_days") not in (None, ""):
-            out["T"] = float(position["expiry_days"]) / 365.0
-    missing = []
+            days = _positive(position["expiry_days"])
+            out["T"] = days / 365.25 if days else None
+    problems = []
     if out["kind"] not in {"call", "put"}:
-        missing.append("type (call/put)")
-    if out.get("strike") in (None, ""):
-        missing.append("strike")
-    if out.get("T") in (None, "") or float(out["T"]) <= 0:
-        missing.append("expiry (future date or years)")
+        problems.append("type (call/put)")
+    for key, label in (("strike", "strike"), ("T", "expiry (future date or years)")):
+        number = _positive(out.get(key))
+        if number is None:
+            problems.append(label if out.get(key) in (None, "") else f"{label} must be a positive number")
+        else:
+            out[key] = number
+    try:
+        qty = float(out.get("quantity"))
+        if not math.isfinite(qty) or qty == 0:
+            raise ValueError
+        out["quantity"] = qty
+    except (TypeError, ValueError):
+        problems.append("qty (non-zero number)")
+    if out.get("contract_size") not in (None, ""):
+        size = _positive(out["contract_size"])
+        if size is None:
+            problems.append("contract_size must be a positive number")
+        else:
+            out["contract_size"] = size
+    if out.get("spot") not in (None, ""):
+        spot = _positive(out["spot"])
+        if spot is None:
+            problems.append("spot must be a positive number")
+        else:
+            out["spot"] = spot
+    if out.get("vol") not in (None, ""):
+        vol = _positive(out["vol"])
+        if vol is None or vol > 5:
+            problems.append("vol must be a decimal in (0, 5] (0.25 = 25%)")
+        else:
+            out["vol"] = vol
     if out.get("r") in (None, ""):
-        out["r"] = 0.0
-        out.setdefault("_notes", []).append("rate not supplied: r=0")
-    return out, missing
+        out["_needs_rate"] = True
+    else:
+        try:
+            rate = float(out["r"])
+            if not math.isfinite(rate):
+                raise ValueError
+        except (TypeError, ValueError):
+            problems.append("rate must be a number")
+        else:
+            if abs(rate) > 1:  # 4.5 means 4.5%; no real risk-free rate exceeds 100%
+                rate /= 100.0
+                out["rate_source"] = "input_percent"
+            out["r"] = rate
+            out.setdefault("rate_source", "input")
+    return out, problems
+
+
+async def _risk_free_rate(deps: Any, client: Any = None) -> tuple[float, str] | None:
+    """Live 3-month US T-bill yield (FRED DGS3MO) as a decimal, with its date."""
+    fred = fred_with_keyless_fallback(getattr(deps, "fred", None), client=client)
+    try:
+        df = await asyncio.wait_for(fred.series("DGS3MO", frequency="d"), timeout=8.0)
+    except Exception:  # noqa: BLE001 - reported as a missing input
+        return None
+    if df is None or getattr(df, "empty", True) or "value" not in df:
+        return None
+    values = df["value"].dropna()
+    if values.empty:
+        return None
+    when = values.index[-1]
+    return float(values.iloc[-1]) / 100.0, str(getattr(when, "date", lambda: when)())
 
 
 async def _history_stats(deps: Any, symbol: str) -> tuple[float, float] | None:
@@ -188,6 +259,17 @@ class GREEKSFunction(BaseFunction):
             else:
                 pos.setdefault("vol_source", "input")
 
+        used_rate = False
+        if not problems and any(pos.get("_needs_rate") for pos in normalized):
+            rf = await _risk_free_rate(self.deps, client=getattr(self, "_http_client", None))
+            if rf is None:
+                problems.append("rate: not supplied and the live 3-month T-bill rate (FRED DGS3MO) is unavailable")
+            else:
+                used_rate = True
+                for pos in normalized:
+                    if pos.pop("_needs_rate", False):
+                        pos["r"], pos["rate_source"] = rf[0], f"fred_DGS3MO_{rf[1]}"
+
         if problems:
             return FunctionResult(
                 code=self.code,
@@ -222,12 +304,24 @@ class GREEKSFunction(BaseFunction):
                 },
                 warnings=[f"aggregate: {e}"],
             )
+        failed = [row for row in agg.get("positions", []) if row.get("error")]
+        if failed:
+            # Never serve totals that silently leave a position out.
+            reasons = [f"{row.get('symbol', '?')}: {row['error']}" for row in failed]
+            return FunctionResult(
+                code=self.code, instrument=None,
+                data={"status": "calc_error",
+                      "reason": "Greeks could not be computed for: " + "; ".join(reasons),
+                      "next_actions": ["Fix or remove the failing positions and re-run."],
+                      "rows": [], "methodology": _methodology(), "field_dictionary": _field_dictionary()},
+                warnings=reasons,
+            )
         for row, pos in zip(agg.get("positions", []), normalized):
-            for key in ("spot_source", "vol_source"):
+            for key in ("spot_source", "vol_source", "rate_source"):
                 if key in pos:
                     row[key] = pos[key]
         totals = agg.get("totals") or {}
-        warnings = sorted({note for pos in normalized for note in pos.get("_notes", [])})
+        warnings: list[str] = []
         data = {
             **agg,
             # NOTE: no separate input-echo `rows` key — the payload's `positions`
@@ -243,7 +337,8 @@ class GREEKSFunction(BaseFunction):
             "methodology": _methodology(),
             "field_dictionary": _field_dictionary(),
         }
-        sources = ["black_scholes_model"] + (["yfinance"] if used_history else [])
+        sources = (["black_scholes_model"] + (["yfinance"] if used_history else [])
+                   + (["fred"] if used_rate else []))
         return FunctionResult(code=self.code, instrument=None, data=data, sources=sources, warnings=warnings)
 
 
@@ -252,8 +347,10 @@ def _methodology() -> str:
         "Aggregate contract-level Black-Scholes Greeks across the option book. Each row is scaled by "
         "quantity and contract size; portfolio delta/gamma/vega/theta/rho are the sums across positions. "
         "A missing spot uses the symbol's last daily close and a missing vol its 30-day realized "
-        "volatility (log returns, annualized with 252 days); both are labelled per row. Expiry is never "
-        "assumed."
+        "volatility (log returns, annualized with 252 days), and a missing rate the live 3-month T-bill "
+        "yield (FRED DGS3MO); each is labelled per row (spot_source / vol_source / rate_source). A rate "
+        "above 1 is read as a percent. Expiry is never assumed, and a position that cannot be priced "
+        "fails the whole book instead of being left out of the totals."
     )
 
 
