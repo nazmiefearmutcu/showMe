@@ -92,20 +92,24 @@ def test_chgs_keyless_default_is_not_template_shaped():
 # ── TLH tax assumptions ──────────────────────────────────────────────────
 
 
-def test_tlh_model_path_honours_custom_tax_params():
-    fn = TLHFunction(FunctionDeps())
-    res = _run(
-        fn.execute(live_tax=False, tax_bracket=0.32, lt_cap_rate=0.18)
-    )
+# 2026-11-07: the invented-candidate "model path" is gone (strict truth
+# audit); custom tax rates on real positions are pinned in
+# test_tlh_real_portfolio.py::test_losses_are_ranked_with_the_right_tax_rate.
+
+
+def test_tlh_custom_tax_params_are_echoed(monkeypatch):
+    from showme.engine.functions.portfolio import tlh as tlh_mod
+
+    monkeypatch.setattr(tlh_mod, "PortfolioState", lambda: type("S", (), {"positions": []})())
+    res = _run(TLHFunction(FunctionDeps()).execute(tax_bracket=0.32, lt_cap_rate=0.18))
     assert res.data["tax_bracket_used"] == 0.32
     assert res.data["lt_cap_rate_used"] == 0.18
-    candidate = res.data["candidates"][0]
-    assert candidate["tax_rate_applied"] == 0.18
-    assert abs(candidate["estimated_tax_savings"] - 8.0 * 0.18) < 1e-9
 
 
-def test_tlh_defaults_stay_24_15_when_params_absent():
-    fn = TLHFunction(FunctionDeps())
-    res = _run(fn.execute(live_tax=False))
+def test_tlh_defaults_stay_24_15_when_params_absent(monkeypatch):
+    from showme.engine.functions.portfolio import tlh as tlh_mod
+
+    monkeypatch.setattr(tlh_mod, "PortfolioState", lambda: type("S", (), {"positions": []})())
+    res = _run(TLHFunction(FunctionDeps()).execute())
     assert res.data["tax_bracket_used"] == 0.24
     assert res.data["lt_cap_rate_used"] == 0.15
