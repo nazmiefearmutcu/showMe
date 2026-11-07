@@ -18,14 +18,15 @@
     "deploy:app": "bash packaging/deploy_app.sh",
     "sidecar:dev": "cd backend && uv run python -m showme.server",
     "sidecar:build": "bash packaging/build_sidecar.sh",
-    "audit:functions": "python3 scripts/showme_function_audit.py",
-    "audit:legacy-functions": "python3 scripts/audit_functions.py",
-    "audit:sentinels": "python3 scripts/showme_sentinel_audit.py",
+    "audit:functions": "uv run --project backend python scripts/showme_function_audit.py",
+    "audit:legacy-functions": "uv run --project backend python scripts/audit_functions.py",
+    "audit:sentinels": "uv run --project backend python scripts/showme_sentinel_audit.py",
+    "sidecar:smoke": "uv run --project backend python scripts/sidecar_smoke.py",
     "audit:rust": "cd tauri && cargo audit --deny warnings",
     "audit:npm": "npm audit --omit=dev --audit-level=high",
     "test:e2e": "npx playwright test --config tests/e2e/playwright.config.ts",
-    "test:e2e:smoke": "PLAYWRIGHT_E2E_MODE=smoke npx playwright test --config tests/e2e/playwright.config.ts --project=smoke",
-    "test:e2e:smoke:fast": "SHOWME_E2E_SKIP_BUILD=1 PLAYWRIGHT_E2E_MODE=smoke npx playwright test --config tests/e2e/playwright.config.ts --project=smoke",
+    "test:e2e:smoke": "cross-env PLAYWRIGHT_E2E_MODE=smoke playwright test --config tests/e2e/playwright.config.ts --project=smoke",
+    "test:e2e:smoke:fast": "cross-env SHOWME_E2E_SKIP_BUILD=1 PLAYWRIGHT_E2E_MODE=smoke playwright test --config tests/e2e/playwright.config.ts --project=smoke",
     "test:e2e:audit": "npx playwright test --config tests/e2e/playwright.config.ts --project=audit",
     "test:e2e:list": "npx playwright test --config tests/e2e/playwright.config.ts --list",
     "test:backend": "cd backend && uv run pytest",
@@ -37,7 +38,8 @@
   "devDependencies": {
     "@playwright/test": "1.49.1",
     "@tauri-apps/cli": "2.1.0",
-    "vitest": "^2.1.9",
-    "jsdom": "^29.1.1"
+    "cross-env": "^7.0.3",
+    "jsdom": "^29.1.1",
+    "vitest": "^2.1.9"
   }
 }

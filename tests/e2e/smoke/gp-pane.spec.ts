@@ -8,20 +8,23 @@
  * were never exercised because `useLiveQuote` never received a tick.
  *
  * Required by the goal:
- *   * fixture candles render the chart host (real branch, not skeleton)
+ *   * fixture bars from `/api/bars` render the chart canvas (no "No bars"
+ *     overlay) and the `/api/fn/GP` payload drives the candle count
  *   * a quote snapshot is consumed
  *   * a fake WebSocket tick lifts `transportState` → live, so the
  *     `gp-transport-pill[data-state="live"]` chip appears
- *   * Compare and Export remain visibly disabled (we explicitly chose
- *     the "honest" route over a fake hookup — the gate locks that in)
+ *   * Compare works for real (input → chip + its own `/api/bars` fetch);
+ *     the old honest-disabled Compare/Export chips were removed with the
+ *     chart-engine rebuild
  *   * the GP-specific news rail shows the empty state, not invented
  *     headlines (S03-R regression guard)
- *   * no critical request (`/api/fn/GP`, `/api/quote/*`,
+ *   * no critical request (`/api/fn/GP`, `/api/quote/*`, `/api/bars`,
  *     `/api/stream/stats`) silently falls through to the catch-all
  */
 import { expect, test } from "@playwright/test";
 import { installFakeQuoteSocket } from "./_fixtures/fake-quote-socket";
 import {
+  barsFixture,
   gpFunctionFixture,
   STREAM_STATS_FIXTURE,
 } from "./_fixtures/sidecar-fixtures";
@@ -46,6 +49,7 @@ test.describe("GP pane — fixture-backed release gate", () => {
     const tracker = await stubSidecar(page, {
       quotes: { AAPL: { price: 187.42, previousClose: 185.0, source: "fixture" } },
       functions: { GP: candleFixture },
+      bars: { AAPL: barsFixture({ symbol: "AAPL", count: 60, startPrice: 187.42 }) },
     });
 
     // Fake WS so the transport pill can advance to `live`.
@@ -61,14 +65,17 @@ test.describe("GP pane — fixture-backed release gate", () => {
 
     await page.goto("/#/symbol/AAPL/GP");
 
-    // ── Chart host (real, not skeleton). The host is rendered only
-    //    when `ohlc.length > 0`, so visibility here proves `/api/fn/GP`
-    //    was consumed end-to-end.
-    const chartHost = page.locator('[data-testid="gp-chart-host"]');
-    await expect(chartHost).toBeVisible({ timeout: 10_000 });
+    // ── Chart canvas (real, not skeleton). Since the chart-engine rebuild
+    //    (`ui/src/chart/Chart.tsx`) the chart fetches `/api/bars` itself;
+    //    the canvas is labelled "Price chart for <SYM>, …" and the
+    //    `sm-chart__empty` "No bars" overlay must be absent once the
+    //    fixture bars arrive — proving `/api/bars` was consumed end-to-end.
+    const chartCanvas = page.getByRole("img", { name: /^Price chart for AAPL/ });
+    await expect(chartCanvas).toBeVisible({ timeout: 10_000 });
+    await expect(page.locator(".sm-chart__empty")).toHaveCount(0, { timeout: 10_000 });
 
-    // ── Candle count banner ("60 candles · drag/scroll to inspect history")
-    //    lives in the fit-toolbar inside the chart. Match the count.
+    // ── Candle count in the pane subtitle ("1Y · 1d · 60 candles") comes
+    //    from the `/api/fn/GP` payload. Match the count.
     const candleCount = candleFixture.data.ohlcv.length;
     await expect(page.locator("body")).toContainText(
       new RegExp(`${candleCount}\\s+candles`, "i"),
@@ -102,19 +109,19 @@ test.describe("GP pane — fixture-backed release gate", () => {
     await expect(liveTransport).toBeVisible({ timeout: 8_000 });
     await expect(liveTransport).toContainText(/RT LIVE/i);
 
-    // ── Compare / Export are explicitly honest-disabled (S03 decision —
-    //    we ship the chip greyed instead of pretending the action works).
-    //    aria-disabled is the contract; `:disabled` alone wouldn't catch
-    //    a regression that swapped `<button disabled>` for a span/div.
-    const compareBtn = page.locator('[data-testid="gp-compare-button"]');
-    await expect(compareBtn).toBeVisible();
-    await expect(compareBtn).toHaveAttribute("aria-disabled", "true");
-    await expect(compareBtn).toBeDisabled();
-
-    const exportBtn = page.locator('[data-testid="gp-export-button"]');
-    await expect(exportBtn).toBeVisible();
-    await expect(exportBtn).toHaveAttribute("aria-disabled", "true");
-    await expect(exportBtn).toBeDisabled();
+    // ── Compare is a real feature since the chart-engine rebuild (the old
+    //    S03 honest-disabled Compare/Export chips were removed in 707afac):
+    //    adding a symbol fetches its own `/api/bars` and renders a chip.
+    //    Export no longer exists on the GP pane, so it is not asserted.
+    const compareInput = page.locator('[data-testid="sm-chart-compare-add"]');
+    await expect(compareInput).toBeVisible();
+    await expect(compareInput).toBeEnabled();
+    await compareInput.fill("MSFT");
+    await compareInput.press("Enter");
+    await expect(page.locator('[data-testid="sm-chart-compare-chip-MSFT"]')).toBeVisible();
+    await expect
+      .poll(() => tracker.handled.some((p) => p.startsWith("/api/bars")))
+      .toBeTruthy();
 
     // ── News rail empty state — protects S03-R "no mock news". If a
     //    future change re-introduces fabricated headlines, this gate

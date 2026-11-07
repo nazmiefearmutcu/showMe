@@ -142,6 +142,36 @@ export function quoteSnapshotFixture(input: QuoteFixtureInput) {
  * intentionally long enough (>=15 bars) to trip the RSI / MACD branches in
  * `computeIndicators` so the rail isn't all em-dashes.
  */
+/**
+ * GET /api/bars body for the shared chart engine (`ui/src/chart/Chart.tsx`
+ * owns its own bar fetching since the chart rebuild). Derived from the
+ * same deterministic candles as {@link gpFunctionFixture} so the pane
+ * subtitle and the drawn chart agree. `t` is epoch milliseconds, matching
+ * `backend/showme/server_routes/bars.py`.
+ */
+export function barsFixture(opts: {
+  symbol: string;
+  interval?: string;
+  count?: number;
+  startPrice?: number;
+}) {
+  const { data } = gpFunctionFixture(opts);
+  return {
+    symbol: opts.symbol,
+    interval: opts.interval ?? "1d",
+    bars: data.ohlcv.map((bar) => ({
+      t: Date.parse(`${bar.date}T00:00:00Z`),
+      o: bar.open,
+      h: bar.high,
+      l: bar.low,
+      c: bar.close,
+      v: bar.volume,
+    })),
+    source: "fixture-deterministic",
+    asOf: new Date("2026-05-20T15:00:00Z").toISOString(),
+  };
+}
+
 export function gpFunctionFixture(opts: {
   symbol: string;
   count?: number;

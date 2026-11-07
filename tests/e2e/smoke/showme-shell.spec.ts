@@ -181,18 +181,19 @@ test.describe("showMe shell smoke", () => {
   test("theme toggle button is reachable and clickable", async ({ page }) => {
     await page.goto("/");
     await expect(page.locator("body")).toBeVisible();
-    // Theme toggle exposes either an aria-label or visible text "Light" /
-    // "Dark"; we tolerate either.
-    const toggle = page
-      .getByRole("button", { name: /light|dark|theme/i })
-      .first();
-    if (await toggle.isVisible().catch(() => false)) {
-      await toggle.click();
-    }
-    // We just need to confirm the click didn't throw; a successful click
-    // mutates a `data-theme` attribute on `html`.
-    const html = page.locator("html");
-    await expect(html).toBeVisible();
+    // The quick theme flip must be visible at a normal desktop width. It
+    // used to sit only in the titlebar utility segment, which the
+    // responsive CSS hides below 2500px; this test then silently skipped
+    // the click (`if (isVisible)`) and passed without testing anything.
+    const toggle = page.getByTestId("titlebar-theme-toggle");
+    await expect(toggle).toBeVisible();
+    await expect(page.locator('[aria-label="showMe loading"]')).toHaveCount(0, {
+      timeout: 6_000,
+    });
+    const before = await toggle.getAttribute("aria-label");
+    await toggle.click();
+    // A successful flip switches the preset, which the label reports.
+    await expect(toggle).not.toHaveAttribute("aria-label", before ?? "");
   });
 
   test("sidecar offline banner appears when health 503s", async ({ page }) => {

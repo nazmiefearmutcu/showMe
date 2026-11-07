@@ -37,6 +37,7 @@ import {
   SIDECAR_INFO_FIXTURE,
   STREAM_STATS_FIXTURE,
   TICKER_FIXTURE,
+  barsFixture,
   gpFunctionFixture,
   quoteSnapshotFixture,
   type QuoteFixtureInput,
@@ -52,6 +53,7 @@ const CRITICAL_PATTERNS: RegExp[] = [
   /^\/api\/fn\/GP(?:\/|$|\?)/i,
   /^\/api\/quote\/[^/]+/i,
   /^\/api\/stream\/stats(?:\/|$|\?)/i,
+  /^\/api\/bars(?:\/|$|\?)/i,
 ];
 
 export interface StubSidecarOptions {
@@ -59,6 +61,8 @@ export interface StubSidecarOptions {
   quotes?: Record<string, Omit<QuoteFixtureInput, "symbol"> | undefined>;
   /** Map of `code` → exact FunctionCallResult body to return for `/api/fn/<code>`. */
   functions?: Record<string, unknown>;
+  /** Map of symbol → exact `/api/bars` body. Unlisted symbols get {@link barsFixture}. */
+  bars?: Record<string, unknown>;
   /** When true (default), the catch-all sets status to 200; flip to false to fail loud. */
   benignCatchAll?: boolean;
 }
@@ -189,6 +193,23 @@ export async function stubSidecar(
           source: override?.source,
         }),
       ),
+    });
+  });
+
+  // ── 4b. Critical: /api/bars — the shared chart engine fetches its own
+  // bars (GP and every other chart pane). Deterministic candles by default.
+  await page.route(/\/api\/bars(?:\/|\?|$)/, (route) => {
+    const req = route.request();
+    markHandled(req);
+    const url = new URL(req.url());
+    const symbol = (url.searchParams.get("symbol") ?? "AAPL").toUpperCase();
+    const body =
+      opts.bars?.[symbol] ??
+      barsFixture({ symbol, interval: url.searchParams.get("interval") ?? "1d" });
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(body),
     });
   });
 

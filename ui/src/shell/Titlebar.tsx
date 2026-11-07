@@ -492,6 +492,19 @@ export function Titlebar() {
         >
           <span className="kbd">⚙</span>
         </button>
+        {/* Always-visible theme flip: it used to live only in the utility
+            segment, which the responsive rules hide below 2500px — i.e. on
+            virtually every display (2026-11-07). */}
+        <button
+          type="button"
+          className="btn btn--ghost interactive titlebar__theme-btn"
+          data-testid="titlebar-theme-toggle"
+          onClick={flipTheme}
+          title={`${t("shell.theme.toggle")} (${PRESET_LABELS[themeState.preset]})`}
+          aria-label={`${t("shell.theme.toggle")} (currently ${PRESET_LABELS[themeState.preset]})`}
+        >
+          <span className="kbd" aria-hidden="true">◐</span>
+        </button>
         <PresetMenu />
       </TopbarSegment>
 
@@ -527,15 +540,6 @@ export function Titlebar() {
           aria-label={t("shell.titlebar.new_window")}
         >
           {t("shell.titlebar.new_window")}
-        </button>
-        <button
-          type="button"
-          className="btn btn--ghost interactive"
-          onClick={flipTheme}
-          title={`${t("shell.theme.toggle")} (${PRESET_LABELS[themeState.preset]})`}
-          aria-label={`${t("shell.theme.toggle")} (currently ${PRESET_LABELS[themeState.preset]})`}
-        >
-          {PRESET_LABELS[themeState.preset]}
         </button>
         <button
           type="button"
