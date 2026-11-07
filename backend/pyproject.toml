@@ -29,6 +29,11 @@ dependencies = [
     "safetensors>=0.4",
     "ccxt>=4.4.0",
     "keyring>=25.0",
+    # Holiday-aware exchange sessions; without it calendar_registry falls back
+    # to weekday-only sessions (holiday-blind market status / trading hours).
+    "exchange-calendars>=4.5",
+    # Parses Damodaran's keyless country-risk-premium workbook (ctryprem.xlsx).
+    "openpyxl>=3.1",
 ]
 
 [project.optional-dependencies]
@@ -36,6 +41,7 @@ dev = [
     "pytest>=8",
     "pytest-asyncio>=0.24",
     "pytest-cov>=5",
+    "pytest-timeout>=2.3",
     "ruff>=0.7",
     "pyinstaller>=6.11",
 ]
