@@ -1626,7 +1626,7 @@ _NON_LIVE_BLOCKLIST_MARKERS = (
 # are listed explicitly — before this a paper-ticket preview, the local
 # portfolio book or the margin engine all pilled as LIVE.
 _LOCAL_RECORD_SOURCE_MARKERS = ("portfolio_state", "order_history", "tax_lots", "local_store")
-_COMPUTED_SOURCE_MARKERS = ("paper_ticket", "margin_engine", "empty_book", "black_scholes")
+_COMPUTED_SOURCE_MARKERS = ("paper_ticket", "margin_engine", "empty_book", "black_scholes", "heston", "_formula")
 
 
 def _classify_source_state(source: Any) -> str:

@@ -26,3 +26,8 @@ def test_local_records_are_reference(name):
 @pytest.mark.parametrize("name", ["yfinance", "yahoo_chart", "fred", "polymarket", "wikipedia"])
 def test_real_providers_stay_live(name):
     assert _classify_source_state(name) == "live"
+
+
+@pytest.mark.parametrize("name", ["heston_formula", "black_scholes_formula", "heston_mc"])
+def test_closed_form_and_model_pricers_are_model(name):
+    assert _classify_source_state(name) == "model"

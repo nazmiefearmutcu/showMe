@@ -87,6 +87,10 @@ class MGNFunction(BaseFunction):
                 }
             }
             account = margin_engine.calc_account("paper", positions, cfg=cfg)
+            at_cost = sorted({
+                str(p.get("symbol") or "?") for p in positions
+                if not isinstance(p, dict) or not _positive_number(p.get("last"))
+            })
             total = {
                 "equity": account["equity"],
                 "initial_margin": account["initial_margin"],
@@ -106,7 +110,9 @@ class MGNFunction(BaseFunction):
                     "field_dictionary": _field_dictionary(),
                 },
                 sources=["margin_engine"],
-                metadata={"live": False, "positions_source": "supplied"},
+                warnings=([f"Marked at average cost (no 'last' price supplied): {', '.join(at_cost)}."]
+                          if at_cost else []),
+                metadata={"live": False, "positions_source": "supplied", "marked_at_cost": at_cost},
             )
 
         from showme.engine.portfolio.state import PortfolioState
@@ -172,6 +178,13 @@ class MGNFunction(BaseFunction):
                 return sym, None
         results = await asyncio.gather(*(_q(s) for s in symbols))
         return {sym: px for sym, px in results if px is not None}
+
+
+def _positive_number(value: Any) -> bool:
+    try:
+        return float(value) > 0
+    except (TypeError, ValueError):
+        return False
 
 
 def _margin_type_for_positions(positions: list[dict[str, Any]]) -> str:

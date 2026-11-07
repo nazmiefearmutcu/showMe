@@ -53,7 +53,8 @@ class TLHFunction(BaseFunction):
         lt_rate = float(params.get("lt_cap_rate", 0.15))     # long-term cap gains
         lt_threshold_days = int(params.get("lt_threshold_days", 365))
         min_loss = abs(float(params.get("min_loss_threshold", 0) or 0))
-        wash_days = max(0, int(params.get("wash_sale_window_days", 30) or 30))
+        raw_wash = params.get("wash_sale_window_days")
+        wash_days = 30 if raw_wash in (None, "") else max(0, int(raw_wash))
         suggest_replacement = _truthy(params.get("suggest_replacement", True))
         base = {
             "tax_bracket_used": bracket,
@@ -130,7 +131,8 @@ class TLHFunction(BaseFunction):
                 continue
             opened = pos.opened_at if pos.opened_at.tzinfo else pos.opened_at.replace(tzinfo=timezone.utc)
             held_days = max(1, (now - opened).days)
-            is_long = held_days >= lt_threshold_days
+            # US rule: long-term means held MORE than one year (366+ days).
+            is_long = held_days > lt_threshold_days
             tax_rate = lt_rate if is_long else bracket
             replacement = _SECTOR_REPLACEMENT.get(sector) if (sector and suggest_replacement) else None
             if replacement and replacement.upper() == pos.instrument.symbol.upper():

@@ -42,6 +42,11 @@ def test_saved_portfolio_is_marked_live_and_unquoted_symbols_are_disclosed(monke
             pass
 
     monkeypatch.setattr(state_mod, "PortfolioState", _State)
+    # margin_engine binds its own PortfolioState at import: patch it too so
+    # the valuation really runs on this book (review 2026-11-08).
+    import showme.engine.services.margin_engine as me
+    monkeypatch.setattr(me, "PortfolioState", _State)
+    monkeypatch.setattr(me, "_save_config", lambda *a, **k: None, raising=False)
 
     class _YF:
         async def fetch(self, request):
@@ -52,3 +57,14 @@ def test_saved_portfolio_is_marked_live_and_unquoted_symbols_are_disclosed(monke
     assert res.data["marked_at_cost"] == ["ZZZZ"]
     assert any("ZZZZ" in w and "average cost" in w for w in res.warnings)
     assert res.sources == ["portfolio_state", "margin_engine", "yfinance"]
+    marks = {p["symbol"]: p["last"] for a in res.data["accounts"] for p in a.get("positions", [])}
+    assert marks["AAPL"] == pytest.approx(150.0)   # live quote, not the 100 cost
+    assert marks["ZZZZ"] == pytest.approx(20.0)    # disclosed cost mark
+
+
+def test_supplied_positions_without_a_price_are_disclosed():
+    positions = [{"symbol": "AAPL", "asset_class": "EQUITY", "quantity": 10, "avg_cost": 100, "last": 110},
+                 {"symbol": "MSFT", "asset_class": "EQUITY", "quantity": 5, "avg_cost": 300}]
+    res = _run(MGNFunction(FunctionDeps()).execute(positions=positions))
+    assert res.metadata["marked_at_cost"] == ["MSFT"]
+    assert any("MSFT" in w for w in res.warnings)
