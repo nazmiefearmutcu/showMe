@@ -24,7 +24,9 @@ from showme.engine.functions.commodity._funcs import (
 
 
 def _run(coro):
-    return asyncio.get_event_loop().run_until_complete(coro)
+    # asyncio.run: a fresh loop per call. ``get_event_loop()`` raises
+    # "no current event loop" on Python 3.12+/3.13 (see test_session03_codes).
+    return asyncio.run(coro)
 
 
 def _make_handler():

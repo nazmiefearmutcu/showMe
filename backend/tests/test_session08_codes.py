@@ -36,7 +36,9 @@ class _DummyDeps:
 
 
 def _run(coro):
-    return asyncio.get_event_loop().run_until_complete(coro) if not asyncio.get_event_loop().is_closed() else asyncio.new_event_loop().run_until_complete(coro)
+    # asyncio.run: a fresh loop per call. ``get_event_loop()`` raises
+    # "no current event loop" on Python 3.12+/3.13 (see test_session03_codes).
+    return asyncio.run(coro)
 
 
 # ---------- GREEKS ----------
