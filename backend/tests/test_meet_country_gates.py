@@ -295,8 +295,12 @@ class _InstantRSS:
         return []
 
 
-def test_meet_execute_runs_country_gates_and_ships_report():
+def test_meet_execute_runs_country_gates_and_ships_report(monkeypatch):
     _clear_caches()
+    # Pin MEET's clock to the fixture date: the Nager rows are fixed
+    # October-2026 dates, so an unpinned clock turns this into a time bomb
+    # (it started failing once the real date left the window).
+    monkeypatch.setattr(meet_mod, "_utc_now", lambda: _NOW)
     nager = _FakeResponse(json_data=[
         {"date": "2026-10-08", "name": "Republic Day"},
     ])
@@ -336,8 +340,12 @@ def test_meet_execute_runs_country_gates_and_ships_report():
     assert "gate shortfall" in " ".join(result.warnings)
 
 
-def test_meet_execute_calendar_mode_keeps_holidays_drops_wire():
+def test_meet_execute_calendar_mode_keeps_holidays_drops_wire(monkeypatch):
     _clear_caches()
+    # Pin MEET's clock to the fixture date: the Nager rows are fixed
+    # October-2026 dates, so an unpinned clock turns this into a time bomb
+    # (it started failing once the real date left the window).
+    monkeypatch.setattr(meet_mod, "_utc_now", lambda: _NOW)
     nager = _FakeResponse(json_data=[
         {"date": "2026-10-08", "name": "Republic Day"},
     ])
