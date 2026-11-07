@@ -426,12 +426,15 @@ describe("calendar helpers — MQL5 parity", () => {
   });
 
   it("groups calendar rows by day preserving order", () => {
-    const a = row({ id: "a", when_utc: new Date(NOW + 3600_000).toISOString() });
-    const b = row({ id: "b", when_utc: new Date(NOW + 2 * 86400_000).toISOString() });
-    const groups = groupCalendarByDay([a, b], NOW);
+    // Fixed midday clock: with Date.now() the "+1h" row crossed UTC midnight
+    // whenever the suite ran between 23:00 and 24:00 UTC and became "Tomorrow".
+    const noon = Date.UTC(2026, 10, 4, 12, 0, 0);
+    const a = row({ id: "a", when_utc: new Date(noon + 3600_000).toISOString() });
+    const b = row({ id: "b", when_utc: new Date(noon + 2 * 86400_000).toISOString() });
+    const groups = groupCalendarByDay([a, b], noon);
     expect(groups.map((g) => g.key)).toEqual([
       "Today",
-      new Date(NOW + 2 * 86400_000).toISOString().slice(0, 10),
+      new Date(noon + 2 * 86400_000).toISOString().slice(0, 10),
     ]);
     expect(groups[0]?.rows.map((r) => r.id)).toEqual(["a"]);
   });
