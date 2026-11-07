@@ -1,0 +1,59 @@
+{
+  "_doc": "Data tables for the strict function truth audit (backend/showme/audit/truth.py). Spec: docs/superpowers/specs/2026-11-07-foundation-and-function-audit-design.md section 2.",
+  "max_age_days": {
+    "intraday": 4,
+    "daily": 6,
+    "weekly": 21,
+    "monthly": 100,
+    "quarterly": 200,
+    "annual": 800
+  },
+  "cadence_by_category": {
+    "chart": "daily",
+    "equity": "daily",
+    "derivative": "daily",
+    "bond": "daily",
+    "fx": "daily",
+    "commodity": "daily",
+    "news": "intraday",
+    "comm": "intraday",
+    "macro": "monthly"
+  },
+  "cadence_overrides": {},
+  "calendar_codes": ["ECO", "EVTS", "TAUC", "MEET", "DVD", "EE", "CACT", "TRDH", "NALRT", "BTMM"],
+  "latency_budget_s": {"cold": 12.0, "warm": 3.0},
+  "latency_overrides": {
+    "BRIEF": {"cold": 30.0, "warm": 6.0},
+    "SPLC": {"cold": 30.0, "warm": 6.0},
+    "ICX": {"cold": 30.0, "warm": 6.0},
+    "MEET": {"cold": 20.0, "warm": 6.0}
+  },
+  "fake_source_names": ["NONE", "PAPER_TICKET"],
+  "fake_source_substrings": ["demo", "mock", "fixture", "placeholder", "sample", "dummy", "synthetic", "fake"],
+  "computed_source_names": ["greeks", "position_sizing_model", "portfolio_state", "order_history", "black_scholes"],
+  "placeholder_values": [
+    {"key": "^(account|account_size|account_value|equity|capital|balance|cash|nav)$", "values": [10000, 100000], "why": "demo account size"},
+    {"key": "^(entry|entry_price|spot|underlying|underlying_price)$", "values": [100], "why": "demo price"},
+    {"key": "^(strike)$", "values": [105, 110], "why": "demo strike"},
+    {"key": "^(quantity|qty)$", "values": [0], "why": "zero-quantity ticket"},
+    {"key": "^(id|order_id|exec_id|ticket_id)$", "values": ["smoke-1"], "why": "smoke id"}
+  ],
+  "crypto_demo_universe": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"],
+  "template_help_patterns": [
+    "^\\s*$",
+    "^[\\w &/'().,-]+ function\\.$",
+    "run the function",
+    "inspect/rerun",
+    "\\d+ position\\(s\\) function"
+  ],
+  "input_pairs": {
+    "EQUITY": ["AAPL", "MSFT"],
+    "ETF": ["SPY", "QQQ"],
+    "CRYPTO": ["BTCUSDT", "ETHUSDT"],
+    "FX": ["EURUSD", "USDJPY"],
+    "COMMODITY": ["GC=F", "CL=F"],
+    "INDEX": ["^GSPC", "^NDX"],
+    "BOND": ["US10Y", "US2Y"],
+    "GLOBAL": ["US", "DE"]
+  }
+}
