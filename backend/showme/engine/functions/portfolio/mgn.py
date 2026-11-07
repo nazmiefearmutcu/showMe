@@ -69,25 +69,18 @@ class MGNFunction(BaseFunction):
             return FunctionResult(code=self.code, instrument=None,
                                   data={"deleted": ok, "name": name})
         # default: calc
-        refresh_prices = bool(params.get("refresh_prices") or params.get("live_prices"))
-        include_saved = bool(params.get("include_saved") or params.get("saved_portfolio"))
-        if not refresh_prices and not include_saved:
-            supplied_positions = params.get("positions")
-            if supplied_positions:
-                positions = supplied_positions
-                sample_mode = False
-            else:
-                # No positions supplied: compute a SAMPLE book so the pane has
-                # a shape, but label it on every level (status/source_mode/
-                # sources/metadata) so no consumer can mistake the fabricated
-                # 0.25 BTC @ 65000 numbers for account-specific margin truth.
-                positions = _sample_margin_positions(instrument, params)
-                sample_mode = True
+        # 2026-11-07 (strict truth audit): no more illustrative SAMPLE book
+        # (0.25 BTC @ 65,000 with 10,000 cash). Margin is computed for the
+        # positions the caller supplies, otherwise for the saved portfolio
+        # marked to live quotes; an empty book is an honest empty state.
+        supplied_positions = params.get("positions")
+        if supplied_positions:
+            positions = supplied_positions
             cfg = {
                 "accounts": {
                     "paper": {
                         "margin_type": params.get("margin_type") or _margin_type_for_positions(positions),
-                        "cash": float(params.get("cash", 10000.0)),
+                        "cash": float(params.get("cash", 0) or 0),
                         "currency": params.get("currency", "USD"),
                         "overrides": params.get("overrides") or {},
                     }
@@ -102,63 +95,69 @@ class MGNFunction(BaseFunction):
                 "excess_initial": account["excess_initial"],
                 "maintenance_cushion_pct": account["maintenance_cushion_pct"],
             }
-            data: dict[str, Any] = {
-                "accounts": [account],
-                "rows": [_account_row(account)],
-                "total": total,
-                "methodology": _methodology(),
-                "field_dictionary": _field_dictionary(),
-            }
-            sources = ["margin_engine"]
-            warnings: list[str] = []
-            metadata: dict[str, Any] = {"live": False}
-            if sample_mode:
-                data.update({
-                    "status": "sample",
-                    "source_mode": "sample_margin_positions",
-                    "is_sample": True,
-                    "disclaimer": (
-                        "No positions were supplied — these margin figures are "
-                        "computed for an illustrative SAMPLE position, not your "
-                        "account. Pass positions=[...] for real margin numbers."
-                    ),
-                })
-                sources = ["margin_engine", "sample_margin_positions"]
-                warnings = [str(data["disclaimer"])]
-                metadata = {"live": False, "is_sample": True}
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
-                data=data,
-                sources=sources,
-                warnings=warnings,
-                metadata=metadata,
+                data={
+                    "accounts": [account],
+                    "rows": [_account_row(account)],
+                    "total": total,
+                    "methodology": _methodology(),
+                    "field_dictionary": _field_dictionary(),
+                },
+                sources=["margin_engine"],
+                metadata={"live": False, "positions_source": "supplied"},
             )
 
         from showme.engine.portfolio.state import PortfolioState
         portfolio = PortfolioState()
-        prices = (
-            await self._quote_many([p.instrument.symbol for p in portfolio.positions])
-            if refresh_prices
-            else {}
-        )
+        if not portfolio.positions:
+            return FunctionResult(
+                code=self.code,
+                instrument=None,
+                data={
+                    "status": "empty",
+                    "reason": "The local portfolio has no positions, so there is no margin to compute.",
+                    "next_actions": [
+                        "Add positions in PORT, or pass positions=[...] with quantity, avg_cost and last.",
+                    ],
+                    "accounts": [],
+                    "rows": [],
+                    "methodology": _methodology(),
+                    "field_dictionary": _field_dictionary(),
+                },
+                sources=["portfolio_state"],
+            )
+        refresh = params.get("refresh_prices", params.get("live_prices", True))
+        refresh = refresh if isinstance(refresh, bool) else str(refresh).strip().lower() in {"1", "true", "yes", "on"}
+        symbols = [p.instrument.symbol for p in portfolio.positions]
+        prices = await self._quote_many(symbols) if refresh else {}
+        at_cost = sorted({s for s in symbols if s not in prices})
         result = margin_engine.calc_all_accounts(
             prices=prices,
             include_legacy=bool(params.get("include_legacy") or params.get("legacy")),
         )
         accounts = result.get("accounts", []) if isinstance(result, dict) else []
+        warnings: list[str] = []
+        if at_cost:
+            why = "no live quote" if refresh else "refresh_prices=false"
+            warnings.append(f"Marked at average cost ({why}): {', '.join(at_cost)}.")
+        sources = ["portfolio_state", "margin_engine"] + (["yfinance"] if prices else [])
         return FunctionResult(code=self.code, instrument=None,
                               data={**result,
                                     "rows": [_account_row(account) for account in accounts],
+                                    "marked_at_cost": at_cost,
                                     "methodology": _methodology(),
                                     "field_dictionary": _field_dictionary()},
-                              sources=["yfinance"] if refresh_prices else ["portfolio_state"],
-                              warnings=[])
+                              sources=sources,
+                              warnings=warnings)
 
     async def _quote_many(self, symbols: list[str]) -> dict[str, float]:
+        """Live last prices; symbols without a positive quote are left out."""
         if not self.deps.yfinance or not symbols:
             return {}
-        async def _q(sym: str) -> tuple[str, float]:
+
+        async def _q(sym: str) -> tuple[str, float | None]:
             try:
                 inst = Instrument(symbol=sym, asset_class=AssetClass.EQUITY)
                 if self.deps.symbol_registry:
@@ -167,47 +166,12 @@ class MGNFunction(BaseFunction):
                         inst = r
                 quote = await self.deps.yfinance.fetch(DataRequest(
                     kind=DataKind.QUOTE, instrument=inst))
-                return sym, float(quote.last or 0)
-            except Exception:
-                return sym, 0.0
+                last = float(quote.last) if quote is not None and quote.last else None
+                return sym, last if last and last > 0 else None
+            except Exception:  # noqa: BLE001 - reported as marked-at-cost
+                return sym, None
         results = await asyncio.gather(*(_q(s) for s in symbols))
-        return dict(results)
-
-
-def _sample_margin_positions(
-    instrument: Instrument | None,
-    params: dict[str, Any],
-) -> list[dict[str, Any]]:
-    symbol = str(params.get("symbol") or (instrument.symbol if instrument else "BTCUSDT")).upper()
-    asset_class = (
-        instrument.asset_class.value
-        if instrument is not None
-        else str(params.get("asset_class") or "CRYPTO").upper()
-    )
-    if asset_class == "FX":
-        quantity = 100000.0
-        avg_cost = 1.08
-        last = 1.09
-    elif asset_class == "COMMODITY":
-        quantity = 2.0
-        avg_cost = 2300.0
-        last = 2350.0
-    elif asset_class in {"EQUITY", "ETF"}:
-        quantity = 50.0
-        avg_cost = 190.0
-        last = 205.0
-    else:
-        quantity = 0.25
-        avg_cost = 65000.0
-        last = 78500.0
-    return [{
-        "symbol": symbol,
-        "asset_class": asset_class,
-        "quantity": quantity,
-        "avg_cost": avg_cost,
-        "last": last,
-        "currency": params.get("currency", "USD"),
-    }]
+        return {sym: px for sym, px in results if px is not None}
 
 
 def _margin_type_for_positions(positions: list[dict[str, Any]]) -> str:

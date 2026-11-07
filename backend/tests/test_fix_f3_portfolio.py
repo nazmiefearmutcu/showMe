@@ -44,18 +44,17 @@ def equity() -> Instrument:
 # ── MGN: sample book disclosure ─────────────────────────────────────────
 
 
-def test_mgn_sample_book_is_labelled_on_every_surface(deps):
-    """No positions supplied → the fabricated book must be unmistakably SAMPLE."""
+def test_mgn_without_positions_never_fabricates_a_sample_book(deps, monkeypatch):
+    """2026-11-07 (strict truth audit): the labelled SAMPLE book is gone; an
+    empty portfolio is an honest empty state with a next action."""
+    import showme.engine.portfolio.state as state_mod
+
+    monkeypatch.setattr(state_mod, "PortfolioState", lambda: type("S", (), {"positions": []})())
     res = _run(MGNFunction(deps).execute())
-    assert res.data["status"] == "sample"
-    assert res.data["is_sample"] is True
-    assert res.data["source_mode"] == "sample_margin_positions"
-    assert "sample_margin_positions" in res.sources
-    assert res.metadata["live"] is False
-    assert res.metadata["is_sample"] is True
-    assert res.warnings and "illustrative SAMPLE position" in res.warnings[0]
-    # The table still renders — disclosure must not require wiping the rows.
-    assert res.data["rows"]
+    assert res.data["status"] == "empty"
+    assert res.data["rows"] == []
+    assert res.data["next_actions"]
+    assert "sample_margin_positions" not in res.sources
 
 
 def test_mgn_supplied_positions_are_not_labelled_sample(deps):
