@@ -57,6 +57,14 @@ def test_mixed_employment_and_inflation_keeps_both_topics():
 def test_country_filter_can_find_headline_after_sixtieth_row(monkeypatch):
     fn = meet.MEETFunction()
     monkeypatch.setattr(meet, "_utc_now", lambda: NOW)
+    # The country gates added 2026-10-04 fill a followed country short of the
+    # 20-events floor with live Google News rows; this audit pin is about the
+    # country-filter/limit mechanics, so the gate leg is stubbed offline.
+    async def _gate_off(*args, **kwargs):
+        return [], {"gate": "country_rss", "fired": False, "rows_added": 0,
+                    "notes": ["stubbed offline in this audit pin"]}
+
+    monkeypatch.setattr(meet.cg, "google_news_articles", _gate_off)
     articles = [
         {"title": f"Federal Reserve rate decision {i}", "url": f"https://example.test/{i}",
          "published_at": (NOW - timedelta(minutes=i + 1)).isoformat()}

@@ -16,6 +16,13 @@ Providers are the repo's existing KEYLESS paths:
     (``showme.engine.functions.macro.eco._forex_factory_events``), and
   * the keyless GDELT (or RSS fallback) news adapter for world headlines.
 
+Country gates (``showme.engine.services.country_gates``) add keyless
+per-country coverage for followed countries the shared calendar cannot
+tag: Nager.Date holidays (+ Google holiday ICS fallback), a country-scoped
+GDELT wire query, and a Google News RSS pass for countries still short of
+the 20-events-per-7-days floor. Gate outcomes ship in ``data_gates`` and
+``country_gate_report``; unfilled floors surface as explicit warnings.
+
 Honesty: every row carries its source; country tags carry the matched
 terms; empty windows say so; nothing is fabricated when a provider fails.
 """
@@ -70,6 +77,7 @@ from showme.engine.core.base_data_source import DataKind, DataRequest
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from showme.engine.core.instrument import Instrument
 from showme.engine.functions.macro import eco as eco_mod
+from showme.engine.services import country_gates as cg
 from showme.engine.services import world_events as we
 
 
@@ -167,10 +175,46 @@ class MEETFunction(BaseFunction):
                 return []
             return await self._symbol_articles(symbols, now=now, timeout=news_timeout)
 
-        calendar_bundle, (articles, world_source, world_error), extra = await asyncio.gather(
+        # Country gates (keyless per-country coverage): followed countries
+        # outside the ~10-currency keyless calendar set (TR, IN, BR, ...) used
+        # to render an empty pane. Holidays cover past+future for ~80
+        # countries; the GDELT country wire covers the past side; a stage-2
+        # Google News RSS pass fires below when a country is still short.
+        async def _gates_fetch() -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+            if not countries or effective_kind == "world":
+                return [], [], []
+            gate_statuses: list[dict[str, Any]] = []
+            holiday_rows: list[dict[str, Any]] = []
+            wire_articles: list[dict[str, Any]] = []
+            try:
+                holiday_rows, holiday_status = await cg.holiday_gate_rows(
+                    await self._client(), countries,
+                    now=now, days_back=days_back, days_ahead=days_ahead,
+                )
+                gate_statuses.append(holiday_status)
+            except Exception as exc:  # noqa: BLE001 - gate is best-effort
+                gate_statuses.append({
+                    "gate": "holidays", "fired": False, "rows_added": 0,
+                    "notes": [f"{str(exc) or exc.__class__.__name__}"],
+                })
+            if include_world:
+                try:
+                    wire_articles, wire_status = await cg.country_wire_articles(
+                        getattr(self.deps, "gdelt", None), countries, now=now,
+                    )
+                    gate_statuses.append(wire_status)
+                except Exception as exc:  # noqa: BLE001 - gate is best-effort
+                    gate_statuses.append({
+                        "gate": "country_wire", "fired": False, "rows_added": 0,
+                        "notes": [f"{str(exc) or exc.__class__.__name__}"],
+                    })
+            return holiday_rows, wire_articles, gate_statuses
+
+        calendar_bundle, (articles, world_source, world_error), extra, gate_bundle = await asyncio.gather(
             _calendar_fetch(),
             _world_fetch(),
             _symbol_fetch(),
+            _gates_fetch(),
         )
         (
             calendar_rows,
@@ -183,6 +227,27 @@ class MEETFunction(BaseFunction):
         ) = calendar_bundle
         warnings.extend(calendar_warnings)
         sources.extend(calendar_sources)
+        gate_holiday_rows, gate_wire_articles, gate_statuses = gate_bundle
+        if gate_holiday_rows:
+            # Holidays ride the calendar pipeline (kind=economic rows with a
+            # real ISO country and provider-labelled source).
+            calendar_rows = list(calendar_rows) + gate_holiday_rows
+            gate_holiday_providers = [
+                p for s in gate_statuses if s.get("gate") == "holidays"
+                for p in (s.get("providers") or [])
+            ]
+            for provider in dict.fromkeys(gate_holiday_providers):
+                if provider not in sources:
+                    sources.append(provider)
+                active_source_tiers.append("gate_holidays")
+        if gate_wire_articles:
+            # Country wire rows carry item-level source ("gdelt") through
+            # world_rows; label the pane source only when the shared world
+            # stream did not already attach one.
+            articles = list(articles) + gate_wire_articles
+            active_source_tiers.append("gate_country_wire")
+            if not world_source:
+                world_source = "gdelt"
 
         economic_stats: dict[str, int] = {}
         economic, dropped_no_time = we.economic_rows(calendar_rows, now=now, stats=economic_stats)
@@ -239,10 +304,46 @@ class MEETFunction(BaseFunction):
                             sources.append("symbol_feed")
                             active_source_tiers.append("wire_symbol_feed")
 
+        # Stage-2 country RSS gate: a followed country still short of the
+        # 20-events-per-7-days floor on the past side gets one Google News
+        # RSS pass (keyless, TTL-cached) before the shortfall is reported.
+        gate_report: list[dict[str, Any]] = []
+        if include_world and countries:
+            pre_report = cg.gate_window_counts(economic + world, countries, now=now)
+            short_isos = [e["iso"] for e in pre_report if not e["past_met"]]
+            if short_isos:
+                try:
+                    gn_articles, gn_status = await cg.google_news_articles(
+                        await self._client(), short_isos
+                    )
+                    gate_statuses.append(gn_status)
+                    if gn_articles:
+                        deduped_gn, gn_dups = _dedupe_articles(gn_articles)
+                        gn_row_stats: dict[str, int] = {}
+                        gn_world = we.world_rows(
+                            deduped_gn, now=now, source="rss",
+                            limit=len(deduped_gn), stats=gn_row_stats,
+                        )
+                        rows_capped_at_limit += gn_row_stats.get("rows_capped_at_limit", 0)
+                        duplicate_rows_dropped += gn_dups + gn_row_stats.get("duplicate_rows_dropped", 0)
+                        if gn_world:
+                            world.extend(gn_world)
+                            if "google_news" not in sources:
+                                sources.append("google_news")
+                            active_source_tiers.append("gate_country_rss")
+                except Exception as exc:  # noqa: BLE001 - gate is best-effort
+                    gate_statuses.append({
+                        "gate": "country_rss", "fired": False, "rows_added": 0,
+                        "notes": [f"{str(exc) or exc.__class__.__name__}"],
+                    })
+
         rows = economic + world
         unfiltered_upcoming, unfiltered_past = we.split_window(
             rows, days_ahead=days_ahead, days_back=days_back
         )
+        if countries:
+            gate_report = cg.gate_window_counts(rows, countries, now=now)
+            warnings.extend(cg.shortfall_warnings(gate_report))
 
         # Task 2 (spot/pinned) rides inside apply_filters; the spec's
         # with_forecast/with_actual/surprise_only are applied just below on
@@ -288,25 +389,27 @@ class MEETFunction(BaseFunction):
                 attributions=attributions,
                 rows_capped_at_limit=rows_capped_at_limit,
             )
+            empty_data = _shell(
+                now=now,
+                status="provider_unavailable" if warnings else "empty",
+                reason=reason,
+                rows=[], upcoming=[], past=[],
+                country_index=[], country_catalog=_catalog(),
+                alerts=[], countries=countries, kind=kind, impacts=impacts,
+                query=query, days_ahead=days_ahead, days_back=days_back,
+                limit=limit, dropped_no_time=dropped_no_time,
+                mode=mode, tags=tags, data_filter=data_filter,
+                data_mode="provider_unavailable" if warnings else "empty",
+                provider_mode=provider_mode,
+                hash=empty_hash, new_rows=empty_new,
+                removed_ids=empty_removed, since_echo=since,
+                data_quality=empty_quality, attributions=attributions,
+            )
+            empty_data["data_gates"] = gate_statuses
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
-                data=_shell(
-                    now=now,
-                    status="provider_unavailable" if warnings else "empty",
-                    reason=reason,
-                    rows=[], upcoming=[], past=[],
-                    country_index=[], country_catalog=_catalog(),
-                    alerts=[], countries=countries, kind=kind, impacts=impacts,
-                    query=query, days_ahead=days_ahead, days_back=days_back,
-                    limit=limit, dropped_no_time=dropped_no_time,
-                    mode=mode, tags=tags, data_filter=data_filter,
-                    data_mode="provider_unavailable" if warnings else "empty",
-                    provider_mode=provider_mode,
-                    hash=empty_hash, new_rows=empty_new,
-                    removed_ids=empty_removed, since_echo=since,
-                    data_quality=empty_quality, attributions=attributions,
-                ),
+                data=empty_data,
                 sources=sources or ["no_live_source"],
                 warnings=warnings + ([reason] if warnings else []),
                 metadata={
@@ -435,6 +538,12 @@ class MEETFunction(BaseFunction):
         payload["unfiltered_upcoming_count"] = len(unfiltered_upcoming)
         payload["symbol_rows"] = symbol_rows
         payload["symbols_requested"] = symbols
+        payload["data_gates"] = gate_statuses
+        payload["country_gate_report"] = {
+            "min_events_per_7d": cg.MEET_GATE_MIN_EVENTS,
+            "window_days": cg.MEET_GATE_WINDOW_DAYS,
+            "countries": gate_report,
+        }
         return FunctionResult(
             code=self.code,
             instrument=instrument,
@@ -1172,8 +1281,12 @@ def _shell(
             "Finnhub, then the keyless ForexFactory weekly calendar. The keyless "
             "FinanceCalendar.com supplements past/future coverage (92 days per request) "
             "with required attribution and never replaces an overlapping primary row. "
-            "Every country on the calendar is listed with its "
-            "UTC timestamp, impact and affected FX pairs (country → currency → "
+            "For followed countries the keyless country gates add coverage the shared "
+            "calendar cannot: Nager.Date public holidays (Google public-holiday ICS "
+            "fallback) for past+future, a country-scoped GDELT wire query over the "
+            "7-day lookback, and a Google News RSS pass when a country is still short "
+            "of the 20-events-per-7-days floor. Every country on the calendar is listed "
+            "with its UTC timestamp, impact and affected FX pairs (country → currency → "
             "majors, e.g. TR → USDTRY/EURTRY). World rows come from the keyless "
             "GDELT headline stream (English-language wire, RSS fallback) tagged with "
             "a country gazetteer; "
@@ -1233,6 +1346,8 @@ def _shell(
             "country_catalog[]": "Static country reference (ISO + name) so filters stay complete when a provider is down.",
             "country_index[].state": "live | imminent | soon | scheduled | quiet.",
             "alerts[]": "Upcoming spot/pinned rows with default lead times (minutes).",
+            "data_gates[]": "Per-country gate statuses: gate name, provider, rows added, failure notes (keyless holiday / country-wire / country-RSS gates).",
+            "country_gate_report.countries[]": "Past-7d and future-7d event counts per followed country against the 20-event floor (past_met / future_met).",
         },
     }
 

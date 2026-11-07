@@ -157,7 +157,9 @@ class GDELTAdapter(BaseDataSource):
                 return accepted[:limit]
 
             async def doc():
-                return await self.search(query, start=(now - timedelta(days=2)).replace(second=0, microsecond=0), max_records=75)
+                # 7-day slice, matching the MEET pane's per-country floor
+                # (showme.engine.services.world_events.MEET_GDELT_LOOKBACK_DAYS).
+                return await self.search(query, start=(now - timedelta(days=7)).replace(second=0, microsecond=0), max_records=75)
 
             tasks = {asyncio.create_task(gal()): "gdelt_gal", asyncio.create_task(doc()): "gdelt"}
             results, errors = {}, []
