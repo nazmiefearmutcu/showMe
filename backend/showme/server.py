@@ -1620,6 +1620,15 @@ _NON_LIVE_BLOCKLIST_MARKERS = (
 )
 
 
+# 2026-11-07 (strict truth audit): sources that are real but are not live
+# market data. Unknown names still default to ``live`` (real provider names
+# vary too much to enumerate), so the app's own local/computed source names
+# are listed explicitly — before this a paper-ticket preview, the local
+# portfolio book or the margin engine all pilled as LIVE.
+_LOCAL_RECORD_SOURCE_MARKERS = ("portfolio_state", "order_history", "tax_lots", "local_store")
+_COMPUTED_SOURCE_MARKERS = ("paper_ticket", "margin_engine", "empty_book", "black_scholes")
+
+
 def _classify_source_state(source: Any) -> str:
     """Return one of: ``live``, ``synthetic``, ``reference``, ``model``.
 
@@ -1643,7 +1652,9 @@ def _classify_source_state(source: Any) -> str:
         return "synthetic"
     if any(marker in text for marker in _OTHER_SYNTHETIC_MARKERS):
         return "synthetic"
-    if any(marker in text for marker in _MODEL_SOURCE_MARKERS):
+    if any(marker in text for marker in _LOCAL_RECORD_SOURCE_MARKERS):
+        return "reference"
+    if any(marker in text for marker in _MODEL_SOURCE_MARKERS + _COMPUTED_SOURCE_MARKERS):
         return "model"
     return "live"
 
