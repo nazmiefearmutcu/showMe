@@ -268,11 +268,17 @@ def check_provenance(
     names = _source_names(body)
     if not names:
         out.append(Finding("T2", "no_source", "red", "ok response names no source"))
+    state = str(body.get("data_state") or "").lower()
     for name in names:
         lowered = name.lower()
-        if name.upper() in cfg.fake_source_names or any(s in lowered for s in cfg.fake_source_substrings):
-            out.append(Finding("T2", "fake_source", "red", f"source {name!r} is not a real provider"))
-    state = str(body.get("data_state") or "").lower()
+        if any(s in lowered for s in cfg.fake_source_substrings):
+            out.append(Finding("T2", "fake_source", "red", f"source {name!r} is sample/demo data"))
+        elif name.upper() in cfg.fake_source_names:
+            if state.startswith("live"):
+                out.append(Finding("T2", "fake_source", "red", f"data_state={state} but the source is {name!r}"))
+            else:  # honest about not being a provider, just unlabeled (local/user data)
+                out.append(Finding("T2", "unlabeled_source", "amber",
+                                   f"source is {name!r} (data_state={state or '-'}); name the local origin"))
     if names and state == "live" and all(n.lower() in cfg.computed_source_names for n in names):
         out.append(Finding("T2", "live_claim_without_provider", "red",
                            f"data_state=live but sources are computed only: {names}"))
@@ -340,13 +346,14 @@ def _norm(value: Any) -> Any:
 
 
 def check_response_placeholders(
-    body: dict[str, Any], *, request_params: dict[str, Any], cfg: TruthConfig
+    body: dict[str, Any], *, request_params: dict[str, Any], cfg: TruthConfig, code: str = ""
 ) -> list[Finding]:
     requested = {(k.lower(), _norm(v)) for k, v, _ in _walk(request_params or {}) if k is not None}
+    allowed = {k.lower() for k in (cfg.raw.get("placeholder_allow") or {}).get(code.upper(), [])}
     out: list[Finding] = []
     seen: set[tuple[str, Any]] = set()  # rows/cards/data often repeat the same value
     for key, value, path in _payload_leaves(body):
-        if key is None:
+        if key is None or key.lower() in allowed:
             continue
         pair = (key.lower(), _norm(value))
         if pair in requested or pair in seen:
@@ -504,6 +511,7 @@ def check_help_text(entry: dict[str, Any], *, cfg: TruthConfig) -> list[Finding]
 
 def check_numeric_sanity(body: dict[str, Any], *, code: str, cfg: TruthConfig, now: datetime) -> list[Finding]:
     out: list[Finding] = []
+    unit_flagged: set[str] = set()
     for key, value, path in _payload_leaves(body):
         if not _is_number(value):
             continue
@@ -515,9 +523,14 @@ def check_numeric_sanity(body: dict[str, Any], *, code: str, cfg: TruthConfig, n
         if _VOL_KEY.search(key) and value < 0:
             out.append(Finding("T7", "negative_volatility", "red", f"{key}={value}", path))
         if _PROB_KEY.search(key):
-            upper = 100.0 if _PCT_KEY.search(key) else 1.0
-            if not 0.0 <= value <= upper:
-                out.append(Finding("T7", "probability_out_of_range", "red", f"{key}={value} not in [0,{upper:g}]", path))
+            if value < 0.0 or value > 100.0:
+                out.append(Finding("T7", "probability_out_of_range", "red", f"{key}={value} not in [0,100]", path))
+            elif _PCT_KEY.search(key) is None and value > 1.0 and key.lower() not in unit_flagged:
+                unit_flagged.add(key.lower())
+                # A percent-scale value under a unit-less name: not untrue, but a
+                # reader (or a chart) can take 11.3 for 1130%.
+                out.append(Finding("T7", "probability_unit_unlabeled", "amber",
+                                   f"{key}={value} looks percent-scale; name it *_pct or send a fraction", path))
         if key.lower() in _DAILY_RETURN_KEYS and abs(value) >= 1.0:
             out.append(Finding("T7", "implausible_daily_return", "red", f"{key}={value}", path))
     rows = body.get("rows") if isinstance(body.get("rows"), list) else []

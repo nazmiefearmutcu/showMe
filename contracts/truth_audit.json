@@ -19,18 +19,25 @@
     "comm": "intraday",
     "macro": "monthly"
   },
-  "cadence_overrides": {},
+  "cadence_overrides": {
+    "VCAP": "annual"
+  },
   "calendar_codes": [
-    "ECO",
-    "EVTS",
-    "TAUC",
-    "MEET",
-    "DVD",
-    "EE",
+    "BTMM",
     "CACT",
-    "TRDH",
+    "CPF",
+    "DVD",
+    "ECFC",
+    "ECO",
+    "EE",
+    "EVTS",
+    "FXFC",
+    "MEET",
     "NALRT",
-    "BTMM"
+    "TAUC",
+    "TRDH",
+    "WETR",
+    "WIRP"
   ],
   "latency_budget_s": {
     "cold": 12.0,
@@ -55,8 +62,7 @@
     }
   },
   "fake_source_names": [
-    "NONE",
-    "PAPER_TICKET"
+    "NONE"
   ],
   "fake_source_substrings": [
     "demo",
@@ -69,11 +75,12 @@
     "fake"
   ],
   "computed_source_names": [
+    "black_scholes",
     "greeks",
-    "position_sizing_model",
-    "portfolio_state",
     "order_history",
-    "black_scholes"
+    "paper_ticket",
+    "portfolio_state",
+    "position_sizing_model"
   ],
   "placeholder_values": [
     {
@@ -97,7 +104,10 @@
         105,
         110
       ],
-      "why": "demo strike"
+      "why": "demo strike",
+      "scope": [
+        "source"
+      ]
     },
     {
       "key": "^(quantity|qty)$",
@@ -169,5 +179,26 @@
     "code": "DAPI",
     "max_seconds": 5.0,
     "_doc": "Network-free, instant function used to tell a stalled sidecar from a slow function."
+  },
+  "_calendar_doc": "Calendar/forecast functions: future dates are legitimate and freshness is not judged.",
+  "placeholder_allow": {
+    "BTFW": [
+      "equity"
+    ],
+    "BTUNE": [
+      "equity"
+    ],
+    "BMTX": [
+      "equity"
+    ],
+    "_doc": "Per-function keys where a matching value is a documented convention (backtest initial capital normalised to 10,000)."
+  },
+  "t3_skip": {
+    "DCF": "audit supplies explicit cash-flow inputs; output is independent of the symbol by design",
+    "DDM": "audit supplies explicit dividend inputs; output is independent of the symbol by design",
+    "BBGT": "ticket preview echoes the supplied quantity/price",
+    "EMSX": "ticket preview echoes the supplied quantity/price",
+    "FXGO": "ticket preview echoes the supplied quantity/price",
+    "TSOX": "ticket preview echoes the supplied quantity/price"
   }
 }

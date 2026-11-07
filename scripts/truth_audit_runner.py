@@ -126,7 +126,7 @@ def grade_case(
             findings += truth.check_latency(code, a.seconds, warm=False, cfg=cfg, timed_out=True)
         if isinstance(body, dict) and a.status < 400:
             findings += truth.check_provenance(body, code=code, category=category, cfg=cfg, now=now)
-            findings += truth.check_response_placeholders(body, request_params=params, cfg=cfg)
+            findings += truth.check_response_placeholders(body, request_params=params, cfg=cfg, code=code)
             findings += truth.check_response_assets(body, requested_asset=asset, cfg=cfg)
             findings += truth.check_numeric_sanity(body, code=code, cfg=cfg, now=now)
             if warm is not None:
@@ -136,7 +136,7 @@ def grade_case(
                 else:
                     findings += truth.check_latency(code, warm.seconds, warm=True, cfg=cfg,
                                                     timed_out=warm.timed_out)
-            if b is not None:
+            if b is not None and code not in (cfg.raw.get("t3_skip") or {}):
                 if b.error or not isinstance(b.body, dict):
                     findings.append(truth.Finding("T3", "second_input_failed", "amber",
                                                   f"call with the second input failed: {b.error or 'no body'}"))
@@ -247,7 +247,7 @@ class StrictRunner:
         warm = b = None
         if not a.error and isinstance(a.body, dict) and a.status < 400:
             warm = self._call(code, params)
-            if asset and entry_uses_symbol(entry):
+            if asset and entry_uses_symbol(entry) and code not in (self.cfg.raw.get("t3_skip") or {}):
                 pair = self.cfg.input_pairs.get(asset.upper()) or []
                 alt = next((s for s in pair if s != params.get("symbol")), None)
                 if alt:

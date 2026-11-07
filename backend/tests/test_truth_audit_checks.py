@@ -93,8 +93,11 @@ def test_t2_missing_or_fake_source(cfg):
         truth.check_provenance(ok_body(sources=[], sourceDetails=[]), code="GP", category="chart", cfg=cfg, now=NOW)
     )
     assert "fake_source" in rules(
-        truth.check_provenance(ok_body(sources=["NONE"]), code="FLDS", category="api", cfg=cfg, now=NOW)
+        truth.check_provenance(ok_body(sources=["NONE"], sourceDetails=[]), code="FLDS", category="api", cfg=cfg, now=NOW)
     )
+    local = ok_body(sources=["none"], sourceDetails=[], data_state="reference")
+    found = truth.check_provenance(local, code="ALRT", category="misc", cfg=cfg, now=NOW)
+    assert "unlabeled_source" in rules(found) and "fake_source" not in rules(found)
     assert "fake_source" in rules(
         truth.check_provenance(ok_body(sources=["demo_feed"]), code="X", category="misc", cfg=cfg, now=NOW)
     )
@@ -262,7 +265,9 @@ def test_t7_clean_numbers_pass(cfg):
         ([{"vol": math.nan}], "non_finite"),
         ([{"value": math.inf}], "non_finite"),
         ([{"volatility": -0.2}], "negative_volatility"),
-        ([{"probability": 1.4}], "probability_out_of_range"),
+        ([{"probability": 140.0}], "probability_out_of_range"),
+        ([{"probability": -0.1}], "probability_out_of_range"),
+        ([{"implied_prob": 10.75}], "probability_unit_unlabeled"),
         ([{"weight": 0.5}, {"weight": 0.2}], "weights_not_normalized"),
         ([{"date": "2027-03-01", "close": 1.0}], "future_date"),
     ],
@@ -365,3 +370,21 @@ def test_ast_scan_is_scoped_to_the_function_class(cfg):
 def test_help_text_findings_are_documentation_amber(cfg):
     entry = {"code": "MARS", "description": "", "usage": {"purpose": "Multi-Asset Risk function.", "inputs": []}}
     assert {f.severity for f in truth.check_help_text(entry, cfg=cfg)} == {"amber"}
+
+
+
+def test_backtest_initial_capital_is_an_allowed_convention(cfg):
+    body = ok_body(series=[{"date": "2026-11-06", "equity": 10000.0}])
+    assert truth.check_response_placeholders(body, request_params={}, cfg=cfg, code="BTFW") == []
+    assert truth.check_response_placeholders(body, request_params={}, cfg=cfg, code="PSC") != []
+
+
+def test_real_option_chain_strikes_are_not_placeholders(cfg):
+    body = ok_body(rows=[{"strike": 105.0}, {"strike": 110.0}])
+    assert truth.check_response_placeholders(body, request_params={}, cfg=cfg) == []
+
+
+def test_percent_probability_reported_once_per_key(cfg):
+    body = ok_body(rows=[{"implied_prob": 10.75}, {"implied_prob": 89.25}])
+    found = truth.check_numeric_sanity(body, code="POLY", cfg=cfg, now=NOW)
+    assert [f.rule for f in found] == ["probability_unit_unlabeled"]
