@@ -52,6 +52,15 @@ def _unwrap(exc: BaseException) -> BaseException:
     return exc
 
 
+def safe_params(params: dict[str, Any]) -> dict[str, Any]:
+    """Never let an audit call arm an order: preview-only, paper mode."""
+    out = dict(params)
+    if "submit" in out or "quantity" in out or "side" in out:
+        out["submit"] = False
+        out["paper_mode"] = True
+    return out
+
+
 def is_transient(exc: BaseException) -> bool:
     """Errors worth one retry: timeouts and dropped/refused connections."""
     return isinstance(_unwrap(exc), (TimeoutError, ConnectionError))
@@ -142,7 +151,7 @@ class StrictRunner:
         code = str(entry.get("code", "")).upper()
         category = str(entry.get("category", ""))
         case_id = f"{code}-{asset or 'GLOBAL'}"
-        params = params_for(entry, asset)
+        params = safe_params(params_for(entry, asset))
         self._write_json(self.out_dir / "requests" / f"{case_id}.json", params)
         a = self._call(code, params)
         self._write_json(self.out_dir / "responses" / f"{case_id}.json", a.body)
@@ -308,17 +317,46 @@ def registry_source_lookup() -> Callable[[str], tuple[str, str] | None]:
     return files.get
 
 
+def sandbox_app_home(out_dir: Path) -> Path:
+    """Copy the user's app home into the run directory (once) and return it.
+
+    The audit sidecar runs against the copy: functions still see the real
+    portfolio/watchlists, but whatever they write (paper tickets, tax lots,
+    alerts, imports, bot state) lands in the copy, never in the user's data.
+    """
+    import shutil
+
+    from showme.app_paths import app_home
+
+    target = out_dir / "app-home"
+    if not target.exists():
+        source = app_home()
+        if source.exists():
+            shutil.copytree(source, target, ignore=shutil.ignore_patterns("logs", "*.lock"))
+        else:
+            target.mkdir(parents=True)
+    return target
+
+
 def run_cli(args: Any) -> int:
     from sidecar_smoke import start_sidecar, stop_sidecar, wait_healthy
 
+    if args.resume:
+        out_dir = Path(args.resume)
+    else:
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        out_dir = Path(args.out_strict or DEFAULT_OUT) / stamp
+    out_dir.mkdir(parents=True, exist_ok=True)
     state: dict[str, Any] = {"proc": None, "base": (args.base_url or (f"http://127.0.0.1:{args.port}" if args.port else "")).rstrip("/")}
 
     def boot() -> None:
         if state["proc"] is not None:
             stop_sidecar(state["proc"])
-        proc, port, _log = start_sidecar()
+        home = sandbox_app_home(out_dir)
+        proc, port, _log = start_sidecar(extra_env={"SHOWME_HOME": str(home)})
         state.update(proc=proc, base=f"http://127.0.0.1:{port}")
         wait_healthy(state["base"])
+        print(f"sidecar {state['base']} (SHOWME_HOME={home})", flush=True)
 
     def restart() -> None:
         if state["proc"] is None:
@@ -332,11 +370,6 @@ def run_cli(args: Any) -> int:
         if status >= 400 or not isinstance(catalog, list):
             raise SystemExit(f"function-index failed: {status} {catalog}")
         keyless = json.loads(KEYLESS_PATH.read_text(encoding="utf-8")) if KEYLESS_PATH.exists() else {}
-        if args.resume:
-            out_dir = Path(args.resume)
-        else:
-            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-            out_dir = Path(args.out_strict or DEFAULT_OUT) / stamp
 
         def request(code: str, params: dict[str, Any], timeout: float) -> tuple[int, Any]:
             return request_json(f"{state['base']}/api/fn/{urllib.parse.quote(code)}", params, timeout=timeout)

@@ -178,6 +178,13 @@ def test_native_codes_are_listed_not_silently_dropped(tmp_path):
     assert ledger["functions"]["ASK"]["grade"] == "NOT_AUDITED"
 
 
+def test_trade_params_are_forced_preview_only():
+    params = runner.safe_params({"symbol": "AAPL", "quantity": 1.0, "side": "BUY", "submit": True})
+    assert params["submit"] is False and params["paper_mode"] is True
+    untouched = runner.safe_params({"symbol": "AAPL", "range": "1M"})
+    assert "submit" not in untouched and "paper_mode" not in untouched
+
+
 @pytest.mark.parametrize("exc, transient", [
     (TimeoutError("t"), True), (ConnectionResetError("r"), True),
     (ConnectionRefusedError("x"), True), (ValueError("bad json"), False),

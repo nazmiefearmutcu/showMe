@@ -21,6 +21,7 @@ import os
 import queue
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -139,10 +140,15 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     started = time.monotonic()
+    # Boot against a throwaway app home: a smoke check must never touch the
+    # user's portfolio, bots or settings (the sidecar starts the bot runner).
+    home = tempfile.TemporaryDirectory(prefix="showme-smoke-", ignore_cleanup_errors=True)
     try:
-        proc, port, log = start_sidecar(args.python, timeout=args.timeout)
+        proc, port, log = start_sidecar(args.python, timeout=args.timeout,
+                                        extra_env={"SHOWME_HOME": home.name})
     except SidecarError as exc:
         print(f"FAIL start: {exc}", file=sys.stderr)
+        home.cleanup()
         return 1
     base = f"http://127.0.0.1:{port}"
     try:
@@ -165,6 +171,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     finally:
         stop_sidecar(proc)
+        home.cleanup()
 
 
 if __name__ == "__main__":
