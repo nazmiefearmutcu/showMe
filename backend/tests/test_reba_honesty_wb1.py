@@ -127,9 +127,11 @@ def test_reba4_cash_only_book_is_sized_against_cash(monkeypatch):
 def test_reba4_cash_is_in_denominator_and_own_weight(monkeypatch):
     # 10 AAPL at 342.37 = 3,423.70 invested plus 25,000 cash = 28,423.70 NAV.
     _patch_book(monkeypatch, _Book([_Pos("AAPL", 10, 100.0)], cash={"USD": 25_000.0}))
+    # Fractional lots isolate the cash/NAV behaviour from whole-share rounding.
     res = _run(REBAFunction(FunctionDeps(yfinance=_PriceYf({
         "AAPL": 342.37, "SPY": 100.0,
-    }))).execute(targets={"AAPL": 0.2, "CASH": 0.8}, live_portfolio=True))
+    }))).execute(targets={"AAPL": 0.2, "CASH": 0.8}, live_portfolio=True,
+                 lot_rounding="fractional"))
     nav = 10 * 342.37 + 25_000.0
     assert res.data["total_value"] == pytest.approx(nav)
     assert res.data["current_weights_pct"]["AAPL"] == pytest.approx(10 * 342.37 / nav * 100)
@@ -157,3 +159,102 @@ def test_reba4_non_usd_cash_is_excluded_and_named(monkeypatch):
     assert res.data["total_value"] == pytest.approx(10 * 342.37)
     assert "CASH" not in res.data["current_weights_pct"]
     assert any("EUR" in w for w in res.warnings)
+
+
+# ── REBA#5: manifest controls must match the handler ─────────────────────
+
+
+def test_reba5_min_trade_size_suppresses_small_orders(monkeypatch):
+    # AAPL 10 @ 100 = 1,000 NAV. Targets 95/5 mean trades of 50 each.
+    _patch_book(monkeypatch, _Book([_Pos("AAPL", 10, 100.0)]))
+    prices = {"AAPL": 100.0, "SPY": 100.0}
+    # Fractional lots so the 50-notional trades reach the min-trade check.
+    res = _run(REBAFunction(FunctionDeps(yfinance=_PriceYf(prices))).execute(
+        targets={"AAPL": 0.95, "SPY": 0.05}, live_portfolio=True, min_trade_size=100,
+        lot_rounding="fractional",
+    ))
+    assert res.data["orders"] == []
+    reasons = {s["symbol"]: s["reason"] for s in res.data["suppressed"]}
+    assert reasons == {"AAPL": "below_min", "SPY": "below_min"}
+
+    res2 = _run(REBAFunction(FunctionDeps(yfinance=_PriceYf(prices))).execute(
+        targets={"AAPL": 0.95, "SPY": 0.05}, live_portfolio=True, min_trade_size=10,
+        lot_rounding="fractional",
+    ))
+    assert {o["symbol"] for o in res2.data["orders"]} == {"AAPL", "SPY"}
+
+
+def test_reba5_whole_lot_rounding_floors_equity_quantity(monkeypatch):
+    # 1,000 of SPY at 300 = 3.33 shares -> 3 whole shares, notional 900.
+    _patch_book(monkeypatch, _Book([], cash={"USD": 1_000.0}))
+    res = _run(REBAFunction(FunctionDeps(yfinance=_PriceYf({"SPY": 300.0}))).execute(
+        targets={"SPY": 1.0}, live_portfolio=True, lot_rounding="whole",
+    ))
+    order = res.data["orders"][0]
+    assert order["quantity"] == pytest.approx(3.0)
+    assert order["notional_delta"] == pytest.approx(900.0)
+
+
+def test_reba5_fractional_lot_rounding_keeps_fraction(monkeypatch):
+    _patch_book(monkeypatch, _Book([], cash={"USD": 1_000.0}))
+    res = _run(REBAFunction(FunctionDeps(yfinance=_PriceYf({"SPY": 300.0}))).execute(
+        targets={"SPY": 1.0}, live_portfolio=True, lot_rounding="fractional",
+    ))
+    assert res.data["orders"][0]["quantity"] == pytest.approx(1_000.0 / 300.0)
+
+
+def test_reba5_whole_rounding_to_zero_is_suppressed(monkeypatch):
+    # 100 of SPY at 300 is 0.33 shares: whole rounding gives 0, so no order.
+    _patch_book(monkeypatch, _Book([], cash={"USD": 100.0}))
+    res = _run(REBAFunction(FunctionDeps(yfinance=_PriceYf({"SPY": 300.0}))).execute(
+        targets={"SPY": 1.0}, live_portfolio=True, min_trade_size=0,
+    ))
+    assert res.data["orders"] == []
+    assert [s["symbol"] for s in res.data["suppressed"]] == ["SPY"]
+    assert res.data["suppressed"][0]["reason"] == "below_lot"
+    # Reports the intended notional that could not be executed in whole shares.
+    assert res.data["suppressed"][0]["notional_delta"] == pytest.approx(100.0)
+
+
+def test_reba5_crypto_stays_fractional_under_whole_rounding(monkeypatch):
+    _patch_book(monkeypatch, _Book([], cash={"USD": 1_000.0}))
+    res = _run(REBAFunction(FunctionDeps(yfinance=_PriceYf({"BTCUSDT": 65_000.0}))).execute(
+        targets={"BTCUSDT": 1.0}, live_portfolio=True, lot_rounding="whole",
+    ))
+    assert res.data["orders"][0]["quantity"] == pytest.approx(1_000.0 / 65_000.0)
+    assert any("BTCUSDT" in w and "fractional" in w for w in res.warnings)
+
+
+def test_reba5_unsupported_contract_rounding_is_named(monkeypatch):
+    _patch_book(monkeypatch, _Book([], cash={"USD": 1_000.0}))
+    res = _run(REBAFunction(FunctionDeps(yfinance=_PriceYf({"SPY": 300.0}))).execute(
+        targets={"SPY": 1.0}, live_portfolio=True, lot_rounding="contract",
+    ))
+    assert any("contract" in w for w in res.warnings)
+    assert res.data["orders"][0]["quantity"] == pytest.approx(3.0)
+
+
+def test_reba5_paper_mode_false_and_credential_are_not_silent(monkeypatch):
+    _patch_book(monkeypatch, _Book([], cash={"USD": 1_000.0}))
+    res = _run(REBAFunction(FunctionDeps(yfinance=_PriceYf({"SPY": 100.0}))).execute(
+        targets={"SPY": 1.0}, live_portfolio=True, paper_mode=False,
+        credential_id="cred-123",
+    ))
+    assert res.data["execution"] == "preview_only"
+    assert any("paper_mode" in w for w in res.warnings)
+    assert any("credential_id" in w and "not applied" in w for w in res.warnings)
+
+
+def test_reba5_manifest_declares_only_honoured_controls():
+    from showme.manifest import REGISTRY
+    from showme.manifest.seeds import load_seeds
+
+    load_seeds()
+    reba = REGISTRY.get("REBA")
+    by_name = {i.name: i for i in reba.inputs}
+    assert "tax_aware" not in by_name, "no lot-level tax data: control cannot be honoured"
+    assert "provider_mode" not in by_name, "live quotes come from yfinance only"
+    assert "contract" not in (by_name["lot_rounding"].options or [])
+    assert by_name["credential_id"].required is False
+    assert reba.defaults["min_trade_size"] == 100
+    assert reba.defaults["lot_rounding"] == "whole"

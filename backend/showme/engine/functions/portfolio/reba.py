@@ -9,6 +9,7 @@ Out: list of {symbol, action, quantity, notional, current_weight, target_weight}
 from __future__ import annotations
 
 import asyncio
+import math
 from typing import Any
 
 from showme.engine.core.base_data_source import DataKind, DataRequest
@@ -28,6 +29,10 @@ class REBAFunction(BaseFunction):
         targets: dict[str, float] = params.get("targets") or {}
         threshold = float(params.get("min_drift_pct", 0.005))
         cash_cap = params.get("max_notional")
+        # REBA#5: honour the manifest controls the handler can execute.
+        min_trade = _num_param(params.get("min_trade_size"), 100.0)
+        lot_mode, lot_warnings = _lot_mode(params.get("lot_rounding"))
+        notes = [*_input_notes(params), *lot_warnings]
         if not targets:
             return FunctionResult(code=self.code, instrument=None, data={},
                                   warnings=["targets dict required: {SYM: weight_fraction}"])
@@ -62,9 +67,10 @@ class REBAFunction(BaseFunction):
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
-                data=_rebalance_model(targets, threshold, cash_cap),
+                data=_rebalance_model(targets, threshold, cash_cap, min_trade),
                 sources=["rebalance_model"],
                 metadata={"live": False},
+                warnings=notes,
             )
 
         portfolio = PortfolioState()
@@ -75,39 +81,45 @@ class REBAFunction(BaseFunction):
         portfolio_syms = {p.instrument.symbol.upper() for p in portfolio.positions}
         all_syms = set(target_syms) | portfolio_syms
         prices: dict[str, float] = {}
-        async def _px(sym: str) -> tuple[str, float]:
+        asset_classes: dict[str, AssetClass] = {
+            p.instrument.symbol.upper(): p.instrument.asset_class for p in portfolio.positions
+        }
+
+        async def _px(sym: str) -> tuple[str, float, AssetClass]:
+            # Registry miss: infer crypto from the exchange-style suffix so the
+            # yfinance adapter's BTC-USD mapping still applies (same heuristic
+            # family as exec.py).
+            sym_up = sym.upper()
+            asset_class = (
+                AssetClass.CRYPTO
+                if sym_up.endswith(("USDT", "USDC", "BUSD", "-USD")) and len(sym_up) > 4
+                else AssetClass.EQUITY
+            )
             try:
                 inst = await asyncio.wait_for(
                     self.deps.symbol_registry.resolve(sym),
                     timeout=max(0.5, min(float(params.get("resolve_timeout", 1.5)), 2.0)),
                 ) if self.deps.symbol_registry else None
                 if not inst:
-                    # Registry miss: infer crypto from the exchange-style
-                    # suffix so the yfinance adapter's BTC-USD mapping still
-                    # applies (same heuristic family as exec.py).
-                    sym_up = sym.upper()
-                    asset_class = (
-                        AssetClass.CRYPTO
-                        if sym_up.endswith(("USDT", "USDC", "BUSD", "-USD")) and len(sym_up) > 4
-                        else AssetClass.EQUITY
-                    )
                     inst = Instrument(symbol=sym, asset_class=asset_class)
+                asset_class = inst.asset_class
                 # HNT-02: crypto is no longer skipped — the yfinance adapter's
                 # `_yf_symbol` maps exchange pairs (BTCUSDT) to Yahoo's
                 # "BTC-USD" spot form (same as PORT), so crypto targets and
                 # positions can take a live mark too.
                 src = self.deps.yfinance
                 if src is None:
-                    return sym, 0.0
+                    return sym, 0.0, asset_class
                 q = await asyncio.wait_for(
                     src.fetch(DataRequest(kind=DataKind.QUOTE, instrument=inst)),
                     timeout=max(1.0, min(float(params.get("quote_timeout", 2.5)), 3.0)),
                 )
-                return sym, float(q.last or 0)
+                return sym, float(q.last or 0), asset_class
             except Exception:
-                return sym, 0.0
-        for sym, px in await asyncio.gather(*(_px(s) for s in all_syms)):
+                return sym, 0.0, asset_class
+        for sym, px, asset_class in await asyncio.gather(*(_px(s) for s in all_syms)):
             prices[sym] = px
+            asset_classes.setdefault(sym, asset_class)
         # REBA#3: a held position with no live quote used to be valued at
         # average cost, so the weights mixed cost with live marks and the
         # orders were sized against a wrong total. Withhold the preview
@@ -187,7 +199,7 @@ class REBAFunction(BaseFunction):
             total = min(total, float(cash_cap))
         cur_weights = {s: v / total for s, v in cur_value.items()}
         cash_weight = cash_usd / total
-        warnings: list[str] = []
+        warnings: list[str] = list(notes)
         if other_cash:
             named = ", ".join(f"{amt:,.2f} {ccy}" for ccy, amt in sorted(other_cash.items()))
             warnings.append(
@@ -201,6 +213,8 @@ class REBAFunction(BaseFunction):
             )
         # Compute order list
         orders = []
+        suppressed: list[dict[str, Any]] = []
+        fractional_syms: set[str] = set()
         for sym, target_w in targets.items():
             sym = sym.upper()
             if sym == "CASH":
@@ -217,7 +231,23 @@ class REBAFunction(BaseFunction):
             # HNT-02: px == 0 means "no quote available" — emit the row with
             # quantity=None + an explicit flag instead of a meaningless
             # "SELL 0" (or, pre-fix, a notional/1 unit count).
-            qty = delta_notional / px if px else None
+            qty = None
+            if px:
+                ac = asset_classes.get(sym)
+                if lot_mode == "whole" and ac not in _WHOLE_LOT_CLASSES:
+                    fractional_syms.add(sym)
+                qty = _round_lot(delta_notional / px, ac, lot_mode)
+                if qty == 0:
+                    suppressed.append({
+                        "symbol": sym, "reason": "below_lot", "notional_delta": delta_notional,
+                    })
+                    continue
+                delta_notional = qty * px
+            if abs(delta_notional) < min_trade:
+                suppressed.append({
+                    "symbol": sym, "reason": "below_min", "notional_delta": delta_notional,
+                })
+                continue
             orders.append({
                 "symbol": sym,
                 "action": "BUY" if (qty if qty is not None else drift) > 0 else "SELL",
@@ -248,6 +278,11 @@ class REBAFunction(BaseFunction):
                     "current_weight_pct": cur_weights[sym] * 100,
                     "target_weight_pct": 0,
                 })
+        if fractional_syms:
+            warnings.append(
+                "REBA: lot_rounding=whole applies to equities and ETFs; kept fractional for "
+                + ", ".join(sorted(fractional_syms)) + "."
+            )
         # Funding check: buys must be covered by USD cash plus sell proceeds.
         buys = sum(o["notional_delta"] for o in orders if o["notional_delta"] > 0)
         proceeds = -sum(o["notional_delta"] for o in orders + liquidations if o["notional_delta"] < 0)
@@ -270,17 +305,69 @@ class REBAFunction(BaseFunction):
                 "orders": orders,
                 "liquidations": liquidations,
                 "rows": orders + liquidations,
+                "suppressed": suppressed,
                 "summary": {
                     "n_orders": len(orders),
                     "n_liquidations": len(liquidations),
+                    "n_suppressed": len(suppressed),
                     "gross_notional": sum(abs(o["notional_delta"]) for o in orders + liquidations),
                 },
+                "min_trade_size": min_trade,
+                "lot_rounding": lot_mode,
+                "execution": "preview_only",
                 "methodology": _methodology(),
                 "field_dictionary": _field_dictionary(),
             },
             sources=["portfolio_state", "yfinance"],
             warnings=warnings,
         )
+
+
+_WHOLE_LOT_CLASSES = {AssetClass.EQUITY, AssetClass.ETF}
+_LOT_MODES = ("whole", "fractional")
+
+
+def _num_param(value: Any, default: float) -> float:
+    if value in (None, ""):
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _lot_mode(value: Any) -> tuple[str, list[str]]:
+    mode = str(value or "whole").strip().lower()
+    if mode in _LOT_MODES:
+        return mode, []
+    return "whole", [
+        f"REBA: lot_rounding '{value}' is not supported; using whole-share rounding "
+        "for equities and ETFs."
+    ]
+
+
+def _round_lot(qty: float, asset_class: Any, mode: str) -> float:
+    """Whole mode floors the size toward zero for whole-share instruments.
+    Other asset classes (crypto, FX, ...) stay fractional."""
+    if mode == "fractional" or asset_class not in _WHOLE_LOT_CLASSES:
+        return qty
+    return math.copysign(math.floor(abs(qty)), qty)
+
+
+def _input_notes(params: dict[str, Any]) -> list[str]:
+    notes: list[str] = []
+    paper = params.get("paper_mode")
+    if paper not in (None, "") and not _truthy(paper):
+        notes.append(
+            "REBA: paper_mode=false has no effect; REBA only previews and never submits "
+            "orders. Hand-off to EMSX is an explicit user step."
+        )
+    if str(params.get("credential_id") or "").strip():
+        notes.append(
+            "REBA: credential_id is accepted but not applied yet; live weights come from "
+            "the local portfolio book."
+        )
+    return notes
 
 
 def _cash_balances(portfolio: Any) -> tuple[float, dict[str, float]]:
@@ -311,18 +398,25 @@ def _rebalance_model(
     targets: dict[str, float],
     threshold: float,
     cash_cap: Any,
+    min_trade: float = 0.0,
 ) -> dict[str, Any]:
     total = float(cash_cap or 100000.0)
     current_weights = {sym.upper(): round(max(0.0, weight - 0.04), 4) for sym, weight in targets.items()}
     orders: list[dict[str, Any]] = []
+    suppressed: list[dict[str, Any]] = []
     for idx, (sym, target_w) in enumerate(targets.items()):
         sym = sym.upper()
+        if sym == "CASH":
+            continue
         cur_w = current_weights.get(sym, 0.0)
         drift = target_w - cur_w
         if abs(drift) < threshold:
             continue
         px = 100.0 + idx * 25.0
         delta_notional = drift * total
+        if abs(delta_notional) < min_trade:
+            suppressed.append({"symbol": sym, "reason": "below_min", "notional_delta": delta_notional})
+            continue
         qty = delta_notional / px if px else 0.0
         orders.append({
             "symbol": sym,
@@ -341,11 +435,15 @@ def _rebalance_model(
         "orders": orders,
         "liquidations": [],
         "rows": orders,
+        "suppressed": suppressed,
         "summary": {
             "n_orders": len(orders),
             "n_liquidations": 0,
+            "n_suppressed": len(suppressed),
             "gross_notional": sum(abs(o["notional_delta"]) for o in orders),
         },
+        "min_trade_size": min_trade,
+        "execution": "preview_only",
         "methodology": _methodology(),
         "field_dictionary": _field_dictionary(),
     }
@@ -353,9 +451,10 @@ def _rebalance_model(
 
 def _methodology() -> str:
     return (
-        "Normalize target weights, estimate current weights from position market values, then propose "
-        "BUY/SELL deltas where target minus current weight exceeds the drift threshold. Output is a preview, "
-        "not an executed order."
+        "Normalize target weights (a CASH target keeps cash), estimate current weights from position market "
+        "values plus USD cash, then propose BUY/SELL deltas where target minus current weight exceeds the drift "
+        "threshold. Trades below min_trade_size are suppressed; live whole-share lots are floored for equities "
+        "and ETFs. Output is a preview, not an executed order."
     )
 
 

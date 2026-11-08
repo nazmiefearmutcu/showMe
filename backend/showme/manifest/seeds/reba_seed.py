@@ -56,8 +56,11 @@ def reba() -> FunctionManifest:
                 name="credential_id",
                 label="Account",
                 control=ControlKind.SELECT,
-                required=True,
-                description="Account whose current weights drive the diff.",
+                required=False,
+                description=(
+                    "Not applied yet: live weights come from the local portfolio book. "
+                    "Accepted for forward compatibility; a warning is returned when set."
+                ),
             ),
             InputSpec(
                 name="targets",
@@ -87,7 +90,7 @@ def reba() -> FunctionManifest:
                 label="Min trade size",
                 control=ControlKind.NUMBER,
                 required=False,
-                description="Skip trades below this notional.",
+                description="Skip trades whose notional is below this amount (live and model previews).",
                 min=0,
                 max=100000,
                 step=10,
@@ -98,33 +101,23 @@ def reba() -> FunctionManifest:
                 label="Lot rounding",
                 control=ControlKind.SELECT,
                 required=False,
-                description="Round qty to whole shares, fractional, or contract.",
-                options=["whole", "fractional", "contract"],
+                description=(
+                    "Live preview only. whole floors equity and ETF quantities to whole shares; "
+                    "crypto and other classes stay fractional. fractional keeps every quantity."
+                ),
+                options=["whole", "fractional"],
             ),
-            InputSpec(
-                name="tax_aware",
-                label="Tax-aware",
-                control=ControlKind.BOOLEAN,
-                required=False,
-                description="When true, prefer selling lots that minimize realized tax.",
-            ),
+            # tax_aware is not declared: REBA has no lot-level cost data, so it
+            # cannot prefer low-tax lots. provider_mode is not declared: live
+            # quotes come from yfinance only, with no cached-snapshot path.
             InputSpec(
                 name="paper_mode",
                 label="Paper mode (safe)",
                 control=ControlKind.BOOLEAN,
                 required=True,
-                description="Preview-only by default. No live execution path from REBA.",
-            ),
-            InputSpec(
-                name="provider_mode",
-                label="Data mode",
-                control=ControlKind.PROVIDER_MODE,
-                required=False,
-                description="Preferred data mode for live quotes.",
-                options=[
-                    DataMode.LIVE_EXCHANGE.value,
-                    DataMode.CACHED_SNAPSHOT.value,
-                ],
+                description=(
+                    "Preview-only. REBA never submits orders; setting this to false has no effect."
+                ),
             ),
         ],
         defaults={
@@ -135,9 +128,7 @@ def reba() -> FunctionManifest:
             "min_drift_pct": 0.005,
             "min_trade_size": 100,
             "lot_rounding": "whole",
-            "tax_aware": False,
             "paper_mode": True,
-            "provider_mode": DataMode.LIVE_EXCHANGE.value,
         },
         provider_chain=ProviderChain(
             primary="internal",
@@ -193,19 +184,17 @@ def reba() -> FunctionManifest:
             ],
         ),
         methodology=(
-            "REBA computes the per-symbol weight drift = current_weight − "
-            "target_weight from PORT for the chosen credential. Symbols "
-            "with |drift| < min_drift_pct are suppressed (with "
-            "suppressed_reason='within_tolerance'). Remaining trades sized "
-            "as qty_delta = -drift × total_equity / last_price; sign "
-            "determines side (positive drift → sell, negative → buy). "
-            "lot_rounding rounds qty to the venue's tradeable increment. "
-            "Trades below min_trade_size are dropped with "
-            "suppressed_reason='below_min'. tax_aware (when enabled) "
-            "selects lots to sell that minimize estimated_tax_impact "
-            "(prefers long-term lots and lots near zero gain). The output "
-            "is strictly a preview — REBA does not submit. Users hand-off "
-            "to EMSX explicitly, where paper_mode=false is required."
+            "REBA computes the per-symbol weight drift = current_weight − target_weight. "
+            "Current weights come from the local portfolio book (positions valued at live "
+            "marks, plus USD cash in the NAV); credential_id is not applied yet. Symbols with "
+            "|drift| < min_drift_pct are suppressed (suppressed_reason='within_tolerance'). "
+            "Remaining trades are sized as notional = target_weight × NAV − current_value, "
+            "and quantity = notional / last_price on the live path. lot_rounding=whole floors "
+            "equity and ETF quantities to whole shares. Trades below min_trade_size are "
+            "dropped with suppressed_reason='below_min'. If whole-share rounding leaves zero "
+            "shares, the trade is dropped with suppressed_reason='below_lot'. Live preview "
+            "holdings with no quote withhold the preview (status='provider_unavailable'). "
+            "The output is strictly a preview: REBA does not submit orders."
         ),
         formula_dict={
             "Drift": Formula(
