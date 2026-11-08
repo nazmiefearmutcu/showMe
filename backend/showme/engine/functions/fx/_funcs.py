@@ -10,6 +10,7 @@ from typing import Any
 from showme.engine.core.base_data_source import DataKind, DataRequest
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from showme.engine.core.instrument import AssetClass, Instrument
+from showme.engine.functions._fred_csv import fetch_fred_csv_series
 from showme.engine.functions.fx._frankfurter import fetch_frankfurter_rate, fetch_frankfurter_rates_dated
 
 
@@ -362,7 +363,12 @@ class WCRSFunction(BaseFunction):
 
 @FunctionRegistry.register
 class FRDFunction(BaseFunction):
-    """FRD - Forward rates via covered interest parity."""
+    """FRD - Forward rates via covered interest parity.
+
+    Policy-rate legs come from keyless FRED series when live, otherwise from a
+    labelled reference constant with a warning (FRD#1). Manifest input names
+    are honoured (FRD#2). Day count and forward-point units are stated (FRD#4).
+    """
 
     code = "FRD"
     name = "FX Forward Rates"
@@ -370,15 +376,64 @@ class FRDFunction(BaseFunction):
     category = "fx"
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
-        base, quote, pair = _pair_from(instrument, params)
+        params = _frd_canonical_params(params)
+        base, quote, pair = _frd_pair(instrument, params)
         spot, spot_source, source_mode = await _resolve_spot(self, pair, params)
-        r_base = _rate_for(base, params.get("r_base"))
-        r_quote = _rate_for(quote, params.get("r_quote"))
+        base_leg, quote_leg = await asyncio.gather(
+            _frd_policy_rate(self, base, params.get("r_base"), params),
+            _frd_policy_rate(self, quote, params.get("r_quote"), params),
+        )
+        rate_sources = {"base": base_leg["source"], "quote": quote_leg["source"]}
+        rate_as_of = {"base": base_leg["as_of"], "quote": quote_leg["as_of"]}
+        rate_warnings = [leg["warning"] for leg in (base_leg, quote_leg) if leg["warning"]]
+        spot_warnings = (
+            []
+            if source_mode == "live_yfinance_quote"
+            else [
+                f"live spot unavailable; using labelled reference spot (vintage {_REFERENCE_AS_OF})"
+                if source_mode == "reference_model"
+                else f"spot is {source_mode}, not a live exchange quote"
+            ]
+        )
+        warnings = spot_warnings + rate_warnings
+        sources = _unique(
+            [spot_source, "covered_interest_parity_formula", base_leg["source"], quote_leg["source"]]
+        )
+        metadata = (
+            {"data_mode": "delayed_reference", "reference_as_of": _REFERENCE_AS_OF}
+            if source_mode == "reference_model"
+            else {"data_mode": source_mode}
+        )
+        if base_leg["rate"] is None or quote_leg["rate"] is None:
+            # No honest rate for a leg: return an explicit state, never a made-up rate.
+            return FunctionResult(
+                code=self.code,
+                instrument=instrument or Instrument(symbol=pair, asset_class=AssetClass.FX),
+                data={
+                    "status": "provider_unavailable",
+                    "reason": "a currency leg has no live policy rate and no labelled reference rate; no forward computed",
+                    "pair": pair,
+                    "base": base,
+                    "quote": quote,
+                    "S": round(spot, 6),
+                    "rows": [],
+                    "curve": [],
+                    "rate_sources": rate_sources,
+                    "rate_as_of": rate_as_of,
+                    "day_count": _FRD_DAY_COUNT,
+                },
+                sources=sources,
+                warnings=warnings,
+                metadata=metadata,
+            )
+        r_base = float(base_leg["rate"])
+        r_quote = float(quote_leg["rate"])
         tenors = _parse_tenors(params.get("tenors"), default=("1W", "1M", "3M", "6M", "1Y"))
+        pip_factor = 100.0 if quote == "JPY" else 10000.0
         rows = []
         for tenor in tenors:
             t = tenor["years"]
-            fwd = _forward(spot, r_base, r_quote, t)
+            fwd = _forward(spot, r_base, r_quote, t, _FRD_DAY_COUNT)
             rows.append(
                 {
                     "pair": pair,
@@ -387,6 +442,7 @@ class FRDFunction(BaseFunction):
                     "spot": round(spot, 6),
                     "forward": round(fwd, 6),
                     "forward_points": round(fwd - spot, 6),
+                    "forward_points_pips": round((fwd - spot) * pip_factor, 4),
                     "base_rate": r_base,
                     "quote_rate": r_quote,
                     "source_mode": source_mode,
@@ -400,42 +456,153 @@ class FRDFunction(BaseFunction):
             "F": rows[2]["forward"] if len(rows) > 2 else rows[-1]["forward"],
             "r_base": r_base,
             "r_quote": r_quote,
+            "rate_sources": rate_sources,
+            "rate_as_of": rate_as_of,
+            "rate_units": "decimal annual",
             "T": rows[2]["tenor_years"] if len(rows) > 2 else rows[-1]["tenor_years"],
+            "day_count": _FRD_DAY_COUNT,
+            "forward_points_unit": (
+                "price (quote currency per base); forward_points_pips gives pips "
+                "(x10000, x100 for a JPY quote)"
+            ),
             "rows": rows,
             "curve": rows,
             "methodology": (
                 "Covered interest parity: F = S * (1 + r_quote * T) / (1 + r_base * T). "
-                "S is quote currency per base currency. Rates are annual decimals and T is year fraction."
+                "S is quote currency per base currency. Rates are annual decimals; T is the "
+                "tenor year fraction on ACT/360 (house convention for both legs). Each rate "
+                "is a live FRED series where rate_sources shows fred:<series>, otherwise a "
+                "labelled reference constant."
             ),
             "field_dictionary": {
                 "S": "Spot rate, quote currency per one base currency.",
                 "F": "Forward rate for the highlighted/default tenor.",
-                "r_base": "Annual risk-free/reference rate for the base currency.",
-                "r_quote": "Annual risk-free/reference rate for the quote currency.",
+                "r_base": "Annual policy/overnight reference rate for the base currency.",
+                "r_quote": "Annual policy/overnight reference rate for the quote currency.",
+                "rate_sources": (
+                    "Source of each rate leg: caller_input, fred:<series id>, or "
+                    "reference_policy_rate_constant (labelled 2024-06 reference)."
+                ),
                 "T": "Tenor in years.",
-                "forward_points": "Forward - spot.",
+                "forward_points": "Forward - spot, in price units (quote currency per base).",
+                "forward_points_pips": "(Forward - spot) in pips: x10000, or x100 for a JPY quote.",
+                "day_count": "Day-count convention applied to both rate legs.",
             },
         }
         return FunctionResult(
             code=self.code,
             instrument=instrument or Instrument(symbol=pair, asset_class=AssetClass.FX),
             data=data,
-            sources=[spot_source, "covered_interest_parity_formula", "reference_policy_rate"],
-            warnings=(
-                []
-                if source_mode == "live_yfinance_quote"
-                else [
-                    f"live spot unavailable; using labelled reference spot (vintage {_REFERENCE_AS_OF})"
-                    if source_mode == "reference_model"
-                    else f"spot is {source_mode}, not a live exchange quote"
-                ]
-            ),
-            metadata=(
-                {"data_mode": "delayed_reference", "reference_as_of": _REFERENCE_AS_OF}
-                if source_mode == "reference_model"
-                else {"data_mode": source_mode}
-            ),
+            sources=sources,
+            warnings=warnings,
+            metadata=metadata,
         )
+
+
+# WB1-G11 FRD-only helpers. The shared _rate_for / _pair_from / _forward helpers
+# are deliberately left unchanged because FXIP and FXFC use them.
+_FRD_DAY_COUNT = "ACT/360"
+_FRD_POLICY_LOOKBACK_DAYS = 400
+_FRD_FETCH_TIMEOUT_S = 6.0
+# Keyless FRED series for each currency's policy / overnight reference rate.
+# Values are percent and are converted to decimals. A series with no
+# observation inside the lookback window falls back to the labelled constant.
+_FRD_POLICY_SERIES: dict[str, str] = {
+    "USD": "DFF",  # effective federal funds rate, daily
+    "EUR": "ECBDFR",  # ECB deposit facility rate, daily
+    "GBP": "IUDSOIA",  # SONIA overnight rate, daily
+    "JPY": "IRSTCI01JPM156N",  # call/interbank rate, monthly (OECD via FRED)
+    "AUD": "IRSTCI01AUM156N",  # call rate, monthly (OECD via FRED)
+    "CAD": "IRSTCI01CAM156N",  # call rate, monthly (OECD via FRED)
+    "CHF": "IRSTCI01CHM156N",  # call rate, monthly (last observation 2024-03)
+}
+
+
+def _frd_canonical_params(params: dict[str, Any]) -> dict[str, Any]:
+    """Map manifest input names onto the handler's parameter names (FRD#2)."""
+    out = dict(params)
+    if out.get("r_base") in (None, "") and out.get("r_dom") not in (None, ""):
+        out["r_base"] = out["r_dom"]
+    if out.get("r_quote") in (None, "") and out.get("r_for") not in (None, ""):
+        out["r_quote"] = out["r_for"]
+    if out.get("spot") in (None, "") and out.get("spot_override") not in (None, ""):
+        out["spot"] = out["spot_override"]
+    if out.get("tenors") in (None, "") and out.get("tenor") not in (None, ""):
+        out["tenors"] = out["tenor"]
+    return out
+
+
+def _ccy_code(value: Any) -> str | None:
+    text = str(value or "").strip().upper()
+    return text if len(text) == 3 and text.isalpha() else None
+
+
+def _frd_pair(instrument: Instrument | None, params: dict[str, Any]) -> tuple[str, str, str]:
+    """Pair precedence: explicit pair, then base+quote inputs, then symbol/instrument."""
+    if not params.get("pair"):
+        base_ccy = _ccy_code(params.get("base"))
+        quote_ccy = _ccy_code(params.get("quote"))
+        if base_ccy and quote_ccy and base_ccy != quote_ccy:
+            return base_ccy, quote_ccy, base_ccy + quote_ccy
+    return _pair_from(instrument, params)
+
+
+async def _frd_policy_rate(
+    fn: BaseFunction, currency: str, explicit: Any, params: dict[str, Any]
+) -> dict[str, Any]:
+    """Resolve one rate leg: caller input, then live keyless FRED, then labelled constant.
+
+    Returns ``{"rate", "source", "as_of", "warning"}``. ``rate`` is None only when
+    the currency has neither a live series nor a labelled reference rate.
+    """
+    ccy = currency.upper()
+    if explicit not in (None, ""):
+        try:
+            value = float(explicit)
+        except (TypeError, ValueError):
+            value = math.nan
+        if math.isfinite(value):
+            return {"rate": value, "source": "caller_input", "as_of": None, "warning": None}
+    series_id = _FRD_POLICY_SERIES.get(ccy)
+    if series_id and _truthy(params.get("live", True)):
+        try:
+            frame = await asyncio.wait_for(
+                fetch_fred_csv_series(
+                    series_id,
+                    client=getattr(fn, "_http_client", None),
+                    timeout=_FRD_FETCH_TIMEOUT_S,
+                    lookback_days=_FRD_POLICY_LOOKBACK_DAYS,
+                ),
+                timeout=_FRD_FETCH_TIMEOUT_S + 1,
+            )
+            if frame is not None and not frame.empty:
+                value = float(frame["value"].iloc[-1])
+                if math.isfinite(value) and -5.0 <= value <= 50.0:
+                    return {
+                        "rate": value / 100.0,
+                        "source": f"fred:{series_id}",
+                        "as_of": frame.index[-1].strftime("%Y-%m-%d"),
+                        "warning": None,
+                    }
+        except Exception:  # noqa: BLE001 - any fetch/parse failure means no live rate
+            pass
+    reference = _REFERENCE_RATES.get(ccy)
+    if reference is None:
+        return {
+            "rate": None,
+            "source": "unavailable",
+            "as_of": None,
+            "warning": f"{ccy} policy rate unavailable: no live FRED series and no labelled reference rate",
+        }
+    return {
+        "rate": float(reference),
+        "source": "reference_policy_rate_constant",
+        "as_of": _REFERENCE_AS_OF,
+        "warning": (
+            f"{ccy} policy rate unavailable live; using labelled reference constant "
+            f"(vintage {_REFERENCE_AS_OF})"
+        ),
+    }
 
 
 @FunctionRegistry.register
