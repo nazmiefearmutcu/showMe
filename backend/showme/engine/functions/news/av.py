@@ -498,7 +498,38 @@ class AVFunction(BaseFunction):
                 metadata={"provider_errors": errors, "live": True, "data_mode": "live_official"},
                 warnings=[*warnings, reason],
             )
+        if not items and parsed_feeds:
+            # At least one feed answered and parsed, so nothing is down. The
+            # query or the media_type filter simply matched no episode.
+            reason = (
+                f"No podcast episodes match this query or media_type filter{_window_note(days)}."
+            )
+            return FunctionResult(
+                code=self.code,
+                instrument=instrument,
+                data={
+                    "status": "empty",
+                    "rows": [],
+                    "items": [],
+                    "query": query,
+                    "symbol": symbol,
+                    "feed_count": parsed_feeds,
+                    **window,
+                    "methodology": _METHODOLOGY,
+                    "field_dictionary": _FIELD_DICTIONARY,
+                    "cards": _cards([], data_mode="live_official"),
+                    "reason": reason,
+                    "next_actions": [
+                        "Clear or broaden the media query.",
+                        "Clear the media_type filter to see all podcast episodes.",
+                    ],
+                },
+                sources=["podcast_rss"],
+                metadata={"provider_errors": errors, "live": True, "data_mode": "live_official"},
+                warnings=[*warnings, reason],
+            )
         if not items:
+            # No feed could be read at all: a genuine outage.
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
@@ -508,14 +539,14 @@ class AVFunction(BaseFunction):
                     "items": [],
                     "query": query,
                     "symbol": symbol,
-                    "feed_count": parsed_feeds,
+                    "feed_count": 0,
                     **window,
                     "methodology": _METHODOLOGY,
                     "field_dictionary": _FIELD_DICTIONARY,
                     "cards": _cards([], data_mode="not_configured"),
-                    "reason": "Podcast RSS feeds returned no matching playable media.",
+                    "reason": "None of the podcast RSS feeds could be read.",
                     "next_actions": [
-                        "Clear or broaden the media query.",
+                        "Retry in a moment once the podcast feeds are reachable.",
                         "Open Raw function payload to inspect RSS provider errors.",
                     ],
                 },
