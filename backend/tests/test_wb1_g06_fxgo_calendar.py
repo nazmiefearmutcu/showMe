@@ -239,3 +239,29 @@ def test_is_open_honours_nyse_half_day_early_close():
     after_early_close = datetime(2026, 11, 27, 18, 30, tzinfo=timezone.utc)  # 13:30 ET
     assert cal.is_open("NYSE", before_close) is True
     assert cal.is_open("NYSE", after_early_close) is False
+
+
+# --------------------------------------------------------------------------- #
+# FXGO#2 (follow-up) — a null latest daily bar must not shift the prior session
+# --------------------------------------------------------------------------- #
+def test_fxgo_previous_close_skips_null_latest_bar(monkeypatch):
+    """Newest daily bar (2026-11-09) has no close yet; the quote printed on
+    2026-11-09 00:30 UTC. The prior session is 2026-11-06, not 11-05."""
+    from showme.engine.functions.trade._funcs import FXGOFunction
+
+    closes = [
+        (2, 1.11569), (3, 1.11900), (4, 1.12100), (5, 1.12349), (6, 1.12283),
+        (9, None),
+    ]
+    payload = _chart_payload(
+        closes,
+        regular_price=1.1230,
+        regular_time=_epoch(9, 0, 30),
+        chart_prev=1.11569,
+    )
+    monkeypatch.setattr(requests, "get", lambda url, **kw: _Resp(payload))
+    res = _run(_mk_fxgo().execute(pairs="EURUSD"))
+    row = res.data["rows"][0]
+    assert row["previous_close"] == pytest.approx(1.12283, abs=1e-6)
+    assert row["previous_close_date"] == "2026-11-06"
+    assert row["change"] == pytest.approx(1.1230 - 1.12283, abs=1e-6)

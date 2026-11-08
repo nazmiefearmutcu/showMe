@@ -642,10 +642,6 @@ class FXGOFunction(EMSXFunction):
         # chartPreviousClose / previousClose for range=5d is the close BEFORE
         # the whole 5-session window, so it must never stand in for the
         # one-day previous close.
-        prev = closes[-2] if len(closes) >= 2 else None
-        prev_date = None
-        if len(bars) >= 2 and bars[-2][0] is not None:
-            prev_date = datetime.fromtimestamp(int(bars[-2][0]), tz=timezone.utc).date().isoformat()
         # regularMarketTime is when the quoted price printed; it is the honest
         # as-of for the mid, not the moment we fetched it.
         quote_time = None
@@ -654,6 +650,29 @@ class FXGOFunction(EMSXFunction):
                 quote_time = datetime.fromtimestamp(int(meta["regularMarketTime"]), tz=timezone.utc)
         except (TypeError, ValueError, OverflowError, OSError):
             quote_time = None
+        # FXGO#2: the base is the last daily bar dated BEFORE the quote's UTC
+        # session date. Taking "the second-to-last close" was wrong when the
+        # newest bar has no close yet (null bars are dropped), which moved the
+        # base two sessions back and presented a two-session move as one day.
+        prev = None
+        prev_date = None
+        if quote_time is not None:
+            quote_day = quote_time.date()
+            prior = [
+                (ts, c) for ts, c in bars
+                if ts is not None
+                and datetime.fromtimestamp(int(ts), tz=timezone.utc).date() < quote_day
+            ]
+            if prior:
+                prior_ts, prev = prior[-1]
+                prev_date = datetime.fromtimestamp(int(prior_ts), tz=timezone.utc).date().isoformat()
+        elif len(bars) >= 2:
+            # No quote time, so the session cannot be pinned. The row is already
+            # flagged as unknown freshness; its previous_close_date states the
+            # bar actually used.
+            prev_ts, prev = bars[-2]
+            if prev_ts is not None:
+                prev_date = datetime.fromtimestamp(int(prev_ts), tz=timezone.utc).date().isoformat()
         return (
             float(mid) if mid is not None else None,
             float(prev) if prev is not None else None,
