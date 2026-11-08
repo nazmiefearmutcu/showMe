@@ -154,11 +154,14 @@ class TSARFunction(BaseFunction):
 
         # ── 3. Score every utterance with each requested model ────────────────
         texts = [u["utterance"] for u in utterances_raw]
-        finbert_scores, finbert_warn = await self._score_finbert(texts)
-        if finbert_warn:
-            warnings.append(finbert_warn)
+        if "finbert" in models:
+            finbert_scores, finbert_warn = await self._score_finbert(texts)
+            if finbert_warn:
+                warnings.append(finbert_warn)
+            else:
+                sources.append("finbert")
         else:
-            sources.append("finbert")
+            finbert_scores = [None] * len(texts)
 
         xsen_scores: list[float | None] = [None] * len(texts)
         if "xsen_roberta" in models:
@@ -177,11 +180,11 @@ class TSARFunction(BaseFunction):
                     score = finbert_scores[idx]
                 elif model_id == "xsen_roberta":
                     score = xsen_scores[idx]
-                    if score is None:
-                        # XSEN failed → still emit a row with a model id but an
-                        # honest neutral so provenance stays auditable.
-                        score = 0.0
                 else:
+                    continue
+                if score is None:
+                    # wc1-g33 (TSAR#2): a model that failed emits no row; a
+                    # zero row would count as a neutral reading in the aggregate.
                     continue
                 position += 1
                 utterances.append(
@@ -197,6 +200,11 @@ class TSARFunction(BaseFunction):
                         "model": model_id,
                     }
                 )
+
+        if not utterances:
+            # wc1-g33 (TSAR#2): every requested model failed. Report that
+            # explicitly; never a neutral score built from nothing.
+            return self._unscored(instrument, models, started, sources, warnings)
 
         # ── 4. Aggregations: net score, speaker rollups, dominant tone ────────
         # The primary aggregate is over the FinBERT pass (canonical), so a
@@ -374,15 +382,19 @@ class TSARFunction(BaseFunction):
         return "", None
 
     # ── scoring ──────────────────────────────────────────────────────────
-    async def _score_finbert(self, texts: list[str]) -> tuple[list[float], str | None]:
+    async def _score_finbert(self, texts: list[str]) -> tuple[list[float | None], str | None]:
+        # wc1-g33 (TSAR#2): a failed pass returns None per utterance, never a
+        # 0.0 that would be averaged into the call tone as a neutral reading.
         try:
             from showme.finbert_analyzer import FinBertAnalyzer  # noqa: PLC0415
 
             analyzer = await asyncio.to_thread(FinBertAnalyzer.instance)
             results = await analyzer.label_many(texts)
-            return [float(r.get("score_signed") or 0.0) for r in results], None
+            if len(results) != len(texts):
+                raise ValueError("finbert returned a mismatched batch")
+            return [_optional_float(r.get("score_signed")) for r in results], None
         except Exception as exc:  # noqa: BLE001
-            return [0.0] * len(texts), f"finbert unavailable: {exc.__class__.__name__}"
+            return [None] * len(texts), f"finbert unavailable: {exc.__class__.__name__}"
 
     async def _score_xsen(self, texts: list[str]) -> tuple[list[float | None], str | None]:
         # XSEN's multi-head RoBERTa (sentiment / emotion / topic) — the same
@@ -394,9 +406,44 @@ class TSARFunction(BaseFunction):
 
             analyzer = await asyncio.to_thread(XAnalyzer.instance)
             results = await asyncio.to_thread(lambda: analyzer.classify(list(texts)))
+            if len(results) != len(texts):
+                raise ValueError("xsen returned a mismatched batch")
             return [_xsen_signed(r) for r in results], None
         except Exception as exc:  # noqa: BLE001
             return [None] * len(texts), f"xsen_roberta unavailable: {exc.__class__.__name__}"
+
+    # ── provider_unavailable (every requested model failed to score) ─────
+    def _unscored(
+        self,
+        instrument: Instrument | None,
+        models: list[str],
+        started: float,
+        sources: list[str],
+        warnings: list[str],
+    ) -> FunctionResult:
+        return FunctionResult(
+            code=self.code,
+            instrument=instrument,
+            data={
+                "status": "provider_unavailable",
+                "data_mode": "not_configured",
+                "summary": _empty_summary(models),
+                "speaker_rollups": [],
+                "utterances": [],
+                "rows": [],
+                "series": [],
+                "cards": _empty_cards(models),
+                "methodology": _METHODOLOGY,
+                "field_dictionary": _FIELD_DICT,
+                "reason": "no requested sentiment model produced a score for this transcript",
+                "next_actions": [
+                    "Check the FinBERT/XSEN model install in the sidecar and rerun the analysis.",
+                ],
+            },
+            sources=sources or ["transcripts_archive"],
+            warnings=warnings or ["no sentiment model produced a score"],
+            metadata={"latency_ms": _ms(started), "models": models},
+        )
 
     # ── not_configured (Whisper missing) ──────────────────────────────────
     def _not_configured(
@@ -872,15 +919,27 @@ def _quote_ladder(rows: list[dict[str, Any]], top: int = 3) -> dict[str, list[di
     }
 
 
-def _xsen_signed(result: dict[str, Any]) -> float:
+def _optional_float(value: Any) -> float | None:
+    """A finite float, or None when the model returned no usable number."""
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number == number and abs(number) != float("inf") else None
+
+
+def _xsen_signed(result: dict[str, Any]) -> float | None:
     """Coerce an XSEN (showme.x_analysis.XAnalyzer) result dict → signed [-1,+1].
 
     XAnalyzer.classify() returns {sentiment: label, sentiment_score: conf,
     sentiment_probs: [...]} per item. We also tolerate the generic
-    label/score/compound and probability-vector shapes.
+    label/score/compound and probability-vector shapes. wc1-g33 (TSAR#2): an
+    uninterpretable result returns None, never a neutral 0.0.
     """
     if not isinstance(result, dict):
-        return 0.0
+        return None
     # Pre-signed forms first.
     for key in ("score_signed", "signed_score", "compound"):
         if result.get(key) is not None:
@@ -913,12 +972,14 @@ def _xsen_signed(result: dict[str, Any]) -> float:
             return max(-1.0, min(1.0, float(probs[-1]) - float(probs[0])))
         except (TypeError, ValueError):
             pass
+    if result.get("positive") is None and result.get("negative") is None:
+        return None
     try:
         p = float(result.get("positive") or 0.0)
         n = float(result.get("negative") or 0.0)
         return max(-1.0, min(1.0, p - n))
     except (TypeError, ValueError):
-        return 0.0
+        return None
 
 
 def _whisper_available() -> bool:
@@ -940,11 +1001,13 @@ def _whisper_error() -> str | None:
 
 
 def _empty_summary(models: list[str]) -> dict[str, Any]:
+    # wc1-g33 (TSAR#2): nothing was scored, so no tone or score is reported
+    # (None), not a neutral 0.0 that looks like a reading.
     return {
-        "dominant_tone": "neutral",
-        "net_score": 0.0,
-        "management_score": 0.0,
-        "analyst_score": 0.0,
+        "dominant_tone": None,
+        "net_score": None,
+        "management_score": None,
+        "analyst_score": None,
         "utterance_count": 0,
         "model_set": models,
         "source": None,
@@ -953,10 +1016,10 @@ def _empty_summary(models: list[str]) -> dict[str, Any]:
 
 def _empty_cards(models: list[str]) -> dict[str, Any]:
     return {
-        "dominant_tone": "neutral",
-        "net_score": 0.0,
-        "management_score": 0.0,
-        "analyst_score": 0.0,
+        "dominant_tone": None,
+        "net_score": None,
+        "management_score": None,
+        "analyst_score": None,
         "utterance_count": 0,
         "model_set": ", ".join(models),
         "data_mode": "not_configured",
@@ -985,10 +1048,10 @@ _METHODOLOGY = (
 )
 
 _FIELD_DICT = {
-    "status": "ok / empty / no_text / not_configured.",
-    "data_mode": "live_official when FinBERT scored, modeled when fallback-neutral, not_configured for missing Whisper.",
+    "status": "ok / empty / no_text / not_configured / provider_unavailable (every requested model failed to score).",
+    "data_mode": "live_official when FinBERT scored, modeled when only XSEN scored, not_configured when no model scored or Whisper is missing.",
     "summary.dominant_tone": "positive / negative / neutral from net_score with +/-0.12 hysteresis.",
-    "summary.net_score": "[-1,+1] char-length weighted mean of all utterance scores.",
+    "summary.net_score": "[-1,+1] char-length weighted mean of all utterance scores; null when nothing was scored.",
     "summary.management_score": "[-1,+1] weighted mean over management-role utterances.",
     "summary.analyst_score": "[-1,+1] weighted mean over analyst-role utterances.",
     "summary.utterance_count": "Number of distinct utterances scored.",
