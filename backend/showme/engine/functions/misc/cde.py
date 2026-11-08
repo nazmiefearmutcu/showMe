@@ -95,7 +95,16 @@ class CDEFunction(BaseFunction):
             store[name] = formula
             _save(store)
         elif action == "remove":
-            store.pop(str(params.get("name") or ""), None)
+            name = str(params.get("name") or "").strip()
+            # CDE#4: removing an absent name used to report ready and rewrite
+            # the store, so a typo looked like a successful removal.
+            if name not in store:
+                return FunctionResult(
+                    code=self.code,
+                    instrument=None,
+                    data=_payload(store, status="input_error", reason=f"unknown field {name or '(blank)'}"),
+                )
+            store.pop(name)
             _save(store)
         elif action == "evaluate":
             name = str(params.get("name") or "").strip()

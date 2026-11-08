@@ -50,3 +50,21 @@ def test_cde_remove_refuses_to_write_when_store_is_not_an_object(tmp_path, monke
     result = _run(cde_mod.CDEFunction(), action="remove", name="anything")
     assert result.data["status"] == "input_error"
     assert store.read_text() == original
+
+
+# ── CDE#4: unknown remove is reported; NaN counts as missing ────────────────
+
+
+def test_cde_remove_unknown_name_is_reported_and_writes_nothing(tmp_path, monkeypatch) -> None:
+    original = '{"keep_me": "pe < 25"}'
+    store = _store_at(tmp_path, monkeypatch, original)
+    result = _run(cde_mod.CDEFunction(), action="remove", name="ghost")
+    assert result.data["status"] == "input_error"
+    assert "ghost" in result.data["reason"]
+    assert store.read_text() == original
+
+
+def test_nan_row_value_is_missing_not_unequal() -> None:
+    ast = parse_dsl("pe != 20")
+    assert _eval(ast, {"pe": float("nan")}) is False
+    assert _eval(parse_dsl("pe < 25"), {"pe": float("nan")}) is False

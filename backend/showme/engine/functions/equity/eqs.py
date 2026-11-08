@@ -128,10 +128,15 @@ def _parse_primary(tokens: list[tuple[str, str]], pos: int) -> tuple[Any, int]:
     return Cond(field=field, op=op, value=val), pos
 
 
+def _is_missing(value: Any) -> bool:
+    """None and NaN both mean "no value"; NaN must not compare as unequal."""
+    return value is None or (isinstance(value, float) and value != value)
+
+
 def _eval(node: Any, row: dict[str, Any]) -> bool:
     if isinstance(node, Cond):
         v = row.get(node.field)
-        if v is None:
+        if _is_missing(v):
             return False
         try:
             if node.op in ("=", "=="): return v == node.value
