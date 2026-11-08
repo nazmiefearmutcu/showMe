@@ -143,7 +143,10 @@ async def _crypto_whales(
     if pair is None:
         return (
             {
-                "status": "provider_unavailable",
+                # WHAL#5 follow-up: an unrecognised symbol is an input error. No provider
+                # was called, so it must not read as a provider outage.
+                "status": "input_error",
+                "reason": f"{symbol} is not a recognised Binance spot or USD-M pair; no provider was queried.",
                 "provider": "binance_public",
                 "provider_symbol": None,
                 "rows": [],
