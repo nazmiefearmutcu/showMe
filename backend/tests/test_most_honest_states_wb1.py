@@ -144,8 +144,10 @@ def test_abs_change_board_ranks_liquid_movers_before_thin_ones() -> None:
          "change_pct": 0.5, "quote_state": "live"},
     ]
     ranked = _rank_most_active_rows(rows, "abs_change")
-    assert [row["symbol"] for row in ranked] == ["LIQ", "EURUSD=X", "THIN"]
-    assert ranked[-1]["symbol"] == "THIN", "a sub-floor mover is demoted, not dropped"
+    # FX publishes no notional, so it has no liquidity evidence and sits below
+    # a known sub-floor mover: missing data is never treated as liquidity.
+    assert [row["symbol"] for row in ranked] == ["LIQ", "THIN", "EURUSD=X"]
+    assert ranked[1]["symbol"] == "THIN", "a sub-floor mover is demoted, not dropped"
     assert len(ranked) == 3
 
 
@@ -162,7 +164,21 @@ def test_abs_change_board_never_ranks_unavailable_rows_above_thin_movers() -> No
          "change_pct": 0.5, "quote_state": "live"},
     ]
     ranked = _rank_most_active_rows(rows, "abs_change")
-    assert [row["symbol"] for row in ranked] == ["LIQ", "FXP", "THIN", "UNAVAIL"]
+    # FXP has unknown notional (null volume after MOST#5), so it ranks below the
+    # known thin mover; the unknown-notional rows then order by absolute change.
+    assert [row["symbol"] for row in ranked] == ["LIQ", "THIN", "FXP", "UNAVAIL"]
+
+
+def test_fx_rows_with_unknown_notional_never_outrank_known_movers() -> None:
+    """wb1-g17 / MOST#4: an FX row without notional is not liquid, however large its move."""
+    rows = [
+        {"symbol": "EURUSD=X", "asset_class": "fx", "last": 1.08, "volume": None,
+         "dollar_volume": None, "change_pct": 9.0, "quote_state": "live"},
+        {"symbol": "THIN", "asset_class": "crypto", "last": 0.0018, "volume": 1.0,
+         "dollar_volume": 3_834_192.0, "change_pct": -1.0, "quote_state": "live"},
+    ]
+    ranked = _rank_most_active_rows(rows, "abs_change")
+    assert [row["symbol"] for row in ranked] == ["THIN", "EURUSD=X"]
 
 
 def test_abs_change_board_ranks_unknown_notional_below_known_thin_movers() -> None:

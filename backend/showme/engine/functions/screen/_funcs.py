@@ -2356,10 +2356,9 @@ def _mover_liquidity_tier(row: dict[str, Any]) -> int:
     Missing data is never treated as liquidity: a row whose 24h notional is
     unknown (or an unavailable row with null market fields) sorts below rows
     with a known notional, thin or not. Spot FX publishes no traded volume, so
-    the notional floor cannot apply and FX rows rank as liquid.
+    its notional is unknown and FX rows sit in tier 0 with the other rows that
+    have no liquidity evidence (wb1-g17 / MOST#4).
     """
-    if _normalize_most_asset_class(row.get("asset_class")) == "fx":
-        return 2
     dollar = row.get("dollar_volume")
     if dollar is None:
         return 0
