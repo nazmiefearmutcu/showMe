@@ -107,7 +107,7 @@ describe("PCAS PCA Stress pane", () => {
     expect(badge.textContent).toContain("PARTIAL LIVE DATA");
   });
 
-  it("discloses template returns via the shared badge", () => {
+  it("still renders the shared data badge when the envelope names a template source", () => {
     ok(LIVE_PAYLOAD, { sources: ["portfolio_state_template_returns"] });
     render(<PcaStressPane code="PCAS" />);
     expect(screen.getByTestId("portx-data-badge")).toBeInTheDocument();
