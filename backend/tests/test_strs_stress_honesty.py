@@ -183,7 +183,9 @@ def test_strs3_treasury_takes_measured_gfc_return(monkeypatch):
     assert row["shock_source"] == "measured_window"
     assert "yfinance_history" in res.sources
     # The window requested is the named one, not a hard-coded constant.
-    assert hist.requests[0].start.date() == date(2008, 9, 15)
+    # Sector lookups (REFDATA, STRS#2 default-on) share the fake; pick the price history.
+    history_requests = [r for r in hist.requests if r.start is not None]
+    assert history_requests[0].start.date() == date(2008, 9, 15)
 
 
 def test_strs3_treasury_takes_measured_covid_return(monkeypatch):

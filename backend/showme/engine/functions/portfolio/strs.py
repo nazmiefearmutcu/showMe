@@ -68,7 +68,10 @@ class STRSFunction(BaseFunction):
         refresh_prices = _truthy(params.get("refresh_prices") or params.get("live_prices"))
         prices = await self._quote_many(symbols, timeout=quote_timeout) if refresh_prices else {}
         sector_lookup: dict[str, str] = {}
-        include_sectors = _truthy(params.get("include_sectors"))
+        # Sector shocks are on by default (STRS#2): the pane sends no include_sectors,
+        # and with the lookup off no sector shock ever reached a position.
+        raw_include = params.get("include_sectors")
+        include_sectors = True if raw_include is None else _truthy(raw_include)
         if include_sectors and self.deps.yfinance:
             await self._sectors(symbols, sector_lookup, timeout=min(quote_timeout, 2.0))
         positions_payload: list[dict[str, Any]] = []

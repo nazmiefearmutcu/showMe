@@ -215,6 +215,26 @@ def custom_scenario(
     )
 
 
+# Yahoo Finance sector labels mapped to the GICS-style keys used by
+# ``StressScenario.sector_shocks``. Names already in the scenario taxonomy pass through.
+_YAHOO_TO_SCENARIO_SECTOR: dict[str, str] = {
+    "Technology": "Information Technology",
+    "Financial Services": "Financials",
+    "Consumer Cyclical": "Consumer Discretionary",
+    "Consumer Defensive": "Consumer Staples",
+    "Healthcare": "Health Care",
+    "Basic Materials": "Materials",
+}
+
+
+def normalize_sector(sector: Any) -> str | None:
+    """A position's sector in the scenario taxonomy, or ``None`` when unknown."""
+    name = str(sector or "").strip()
+    if not name:
+        return None
+    return _YAHOO_TO_SCENARIO_SECTOR.get(name, name)
+
+
 def resolve_shock_bucket(symbol: str, asset_class: str) -> str:
     """Asset-class bucket a position is shocked under.
 
@@ -285,7 +305,7 @@ def apply_scenario(
     for p in positions:
         sym = p["symbol"]
         ac = resolve_shock_bucket(sym, p.get("asset_class", "EQUITY"))
-        sector = p.get("sector") or sector_lookup.get(sym)
+        sector = normalize_sector(p.get("sector") or sector_lookup.get(sym))
         mv = float(p.get("market_value", 0) or 0)
         if measured is not None and ac == "BOND" and str(sym).upper() in BOND_ETF_SYMBOLS:
             shock: float | None = measured.get(sym)
@@ -303,6 +323,13 @@ def apply_scenario(
                 shock = None
                 source = "unavailable"
             elif shock is None:
+                if sector and scenario.sector_shocks and sector not in scenario.sector_shocks:
+                    # Known sector, no row for it in this scenario: the asset-class
+                    # shock is used, and that is reported.
+                    warnings.append(
+                        f"{sym}: sector {sector} has no shock in {scenario.name}; "
+                        f"asset-class shock {ac} used"
+                    )
                 shock = scenario.asset_class_shocks.get(ac, 0.0)
         if shock is None:
             unpriced += 1
