@@ -102,9 +102,14 @@ def _int_param(params: dict[str, Any], keys: tuple[str, ...], default: int) -> i
     return int(number)
 
 
+def _requested_strategy(params: dict[str, Any]) -> str:
+    """The strategy the caller asked for, under the declared or legacy name."""
+    return str(params.get("strategy_id") or params.get("strategy") or "sma_crossover").strip()
+
+
 def _run_config(params: dict[str, Any]) -> _RunConfig:
     """Resolve the declared BTFW inputs. Raises _InputError for a bad value."""
-    strategy = str(params.get("strategy_id") or params.get("strategy") or "sma_crossover").strip()
+    strategy = _requested_strategy(params)
     notes: list[str] = []
 
     key, window = _first_present(params, ("window_length",))
@@ -161,7 +166,7 @@ class BTFWFunction(BaseFunction):
         try:
             cfg = _run_config(params)
         except _InputError as exc:
-            return _input_error(instrument, str(exc))
+            return _input_error(instrument, str(exc), _requested_strategy(params))
         try:
             import asyncio
             result = await asyncio.wait_for(
@@ -339,9 +344,9 @@ def _truthy(value: Any) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _input_error(instrument: Instrument, reason: str) -> FunctionResult:
+def _input_error(instrument: Instrument, reason: str, strategy: str) -> FunctionResult:
     """A typed input that cannot be run: named, with no measured values."""
-    data = _walk_forward_template(instrument.symbol, "sma_crossover", 10_000.0)
+    data = _walk_forward_template(instrument.symbol, strategy, 10_000.0)
     data["status"] = "input_error"
     data["reason"] = reason
     data["next_actions"] = ["Correct the named BTFW input and run again."]

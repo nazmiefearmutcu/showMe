@@ -127,6 +127,18 @@ def test_invalid_typed_input_is_an_explicit_input_error(params):
     assert res.data["equity_curve"] == []
 
 
+@pytest.mark.parametrize("params, expected", [
+    ({"strategy_id": "rsi_meanrev", "train_pct": "abc"}, "rsi_meanrev"),
+    ({"strategy": "buy_and_hold", "walk_steps": 1}, "buy_and_hold"),
+    ({"train_pct": "abc"}, "sma_crossover"),
+])
+def test_input_error_names_the_requested_strategy(params, expected):
+    res = _run(**params)
+    assert res.data["status"] == "input_error"
+    assert res.data["strategy"] == expected
+    assert res.data["summary"]["strategy"] == expected
+
+
 def test_registry_strategies_are_the_selectable_options():
     from showme.manifest.registry import REGISTRY
     from showme.manifest.seeds import load_seeds
