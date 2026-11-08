@@ -94,18 +94,14 @@ def boil() -> FunctionManifest:
             next_actions=True,
         ),
         chart_grammar=ChartGrammar(
-            kind=ChartKind.TIME_SERIES_CANDLES,
+            kind=ChartKind.TIME_SERIES_LINE,
             x_axis=AxisSpec(type="time", unit="ms", label="Time"),
-            y_axis=[
-                AxisSpec(type="numeric", unit="USD/bbl", label="Price"),
-                AxisSpec(type="numeric", unit="contracts", label="Volume"),
-            ],
+            y_axis=AxisSpec(type="numeric", unit="USD/bbl", label="Close"),
             panes=[
-                PaneGrammar(name="price", series_kind="candle", height_pct=70),
-                PaneGrammar(name="volume", series_kind="histogram", height_pct=30),
+                PaneGrammar(name="price", series_kind="line", height_pct=100),
             ],
-            overlay_support=True,
-            compare_support=True,
+            overlay_support=False,
+            compare_support=False,
         ),
         table_schema=TableSchema(
             columns=[
