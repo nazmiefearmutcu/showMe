@@ -293,6 +293,7 @@ class OMONFunction(BaseFunction):
         underlier: str,
         expiry: str | None,
         reason: str,
+        next_actions: list[str] | None = None,
     ) -> FunctionResult:
         return FunctionResult(
             code=self.code,
@@ -301,12 +302,14 @@ class OMONFunction(BaseFunction):
                 "status": "provider_unavailable",
                 "underlier": underlier,
                 "expiry": expiry,
+                "spot": None,
+                "spot_source": "unavailable",
                 "rows": [],
                 "series": [],
                 "cards": [],
                 "methodology": self._METHODOLOGY,
                 "field_dictionary": self._FIELD_DICTIONARY,
-                "next_actions": [
+                "next_actions": next_actions or [
                     "Verify the underlier ticker has listed options.",
                     "Retry once network access to yfinance is restored.",
                 ],
@@ -356,6 +359,20 @@ class OMONFunction(BaseFunction):
         if spot is not None and spot <= 0:
             spot = None
             spot_source = "unavailable"
+        if spot is None:
+            # No spot from any signal: moneyness and deltas cannot be priced honestly,
+            # so report the gap instead of a placeholder.
+            return self._unavailable(
+                instrument,
+                underlier,
+                expiry,
+                "no underlying spot: the chain has none, the yfinance quote is unavailable "
+                "and no spot param was given",
+                next_actions=[
+                    "Pass an explicit spot price for the underlier.",
+                    "Retry once the yfinance quote for the underlier is reachable.",
+                ],
+            )
         # No real spot: moneyness, ATM IV and delta stay blank rather than being
         # computed around an invented price, and the chain is not labelled live.
         spot_unavailable = spot is None
