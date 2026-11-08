@@ -267,6 +267,10 @@ def _assemble(
     reason = None
     if status == "provider_unavailable":
         reason = "; ".join(dict.fromkeys(leg.reason or "" for leg in unavailable)) or "awareness unavailable"
+    # Rows shown are live, but a failed leg means coverage is incomplete: say so at the
+    # top level, not only in legs[].reason, so `live` never vouches for a missing symbol.
+    partial = status != "provider_unavailable" and bool(unavailable)
+    missing = [leg.tag for leg in unavailable] if partial else []
 
     providers = _merge_providers(answered)
     notes = list(dict.fromkeys(note for leg in answered for note in _as_list(leg.metadata.get("notes"))))
@@ -307,6 +311,8 @@ def _assemble(
         "symbols_searched": list(symbols_searched or []),
         "article_count": len(articles),
         "legs": leg_summary,
+        "partial": partial,
+        "missing_legs": missing,
         "methodology": _METHODOLOGY,
         "field_dictionary": _FIELD_DICTIONARY,
         "cards": _cards(watchlist, len(articles), data_mode, positions_covered),
@@ -341,6 +347,7 @@ def _assemble(
             "provider_errors": provider_errors,
             "live": live,
             "data_mode": data_mode,
+            "partial": partial,
             "fallback": status == "provider_unavailable",
             "as_of": datetime.now(timezone.utc).isoformat(),
         },
@@ -371,7 +378,9 @@ _METHODOLOGY = (
     "quality verdict, the sentiment label and model Awareness assigned, and the story id. BRIEF never "
     "re-scores sentiment and shows none for a row that has none. If every leg is unavailable the status "
     "is provider_unavailable with Awareness's reason. A leg served from a cached snapshot marks the brief "
-    "cached_snapshot with live false. An empty brief means Awareness answered and no headline matched."
+    "cached_snapshot with live false. If some legs fail while others answer, the brief stays live but "
+    "sets partial true and names the missing legs. An empty brief means Awareness answered and no "
+    "headline matched."
 )
 
 _FIELD_DICTIONARY: dict[str, str] = {
@@ -393,6 +402,8 @@ _FIELD_DICTIONARY: dict[str, str] = {
     "symbols_searched": "Symbols that received a symbol-scoped CN call (capped at 12).",
     "article_count": "Number of cited articles.",
     "legs": "One entry per Awareness call: status, row count, stale flag and reason when unavailable.",
+    "partial": "True when some legs failed while others answered: the rows are live, coverage is incomplete.",
+    "missing_legs": "Legs (MACRO or symbols) that did not answer when partial is true.",
     "meta": "Awareness provider health (providers, generated_at, notes, feed_health) for the provider strip.",
     "next_actions": "Suggested follow-up actions when Awareness is unavailable or no headline matched.",
 }

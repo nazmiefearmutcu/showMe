@@ -224,6 +224,9 @@ def test_brief_partial_outage_keeps_answered_legs_and_names_the_gap() -> None:
     gap = next(leg for leg in data["legs"] if leg["leg"] == "AAPL")
     assert gap["status"] == "provider_unavailable" and gap["reason"]
     assert "Coverage gaps" in data["markdown"] and "AAPL (unavailable)" in data["markdown"]
+    # The rows are live, but the top level must not vouch for the missing symbol.
+    assert data["partial"] is True and data["missing_legs"] == ["AAPL"]
+    assert result.metadata["partial"] is True
 
 
 def test_brief_answered_but_no_rows_is_empty_not_unavailable() -> None:
