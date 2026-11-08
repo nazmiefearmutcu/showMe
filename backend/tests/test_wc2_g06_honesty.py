@@ -168,3 +168,15 @@ def test_ovme_heston_non_finite_parameter_is_an_input_error() -> None:
                     model="heston", rho="nan", paths=2000, steps=20)
     assert res.data["status"] == "input_error"
     assert any("rho" in w for w in res.warnings)
+
+
+def test_agent_usage_example_for_ovme_carries_no_demo_contract() -> None:
+    from showme.server_routes import _agent_runtime as runtime
+
+    usage = runtime._function_usage(
+        "OVME", "Option Valuation", "derivative", "Option value and Greeks.", ["DERIVATIVE"],
+    )
+    example = usage["example"]
+    for key in ("spot", "strike", "years_to_expiry", "vol"):
+        assert key not in example or isinstance(example[key], str), (key, example)
+        assert not isinstance(example.get(key), (int, float)), (key, example)

@@ -585,7 +585,15 @@ def _function_usage(
                 "Run to read price, delta, gamma, theta, vega, rho, d1, d2, and a spot sensitivity curve.",
                 "Open Advanced only for optional model overrides such as Heston parameters.",
             ],
-            "example": {"spot": 100, "strike": 105, "years_to_expiry": 0.25, "vol": 0.28, "rate": 0.045, "type": "CALL"},
+            # Placeholders only: a copied example must not price a demo contract.
+            "example": {
+                "spot": "<underlying price>",
+                "strike": "<strike>",
+                "years_to_expiry": "<years to expiry>",
+                "vol": "<volatility as a decimal>",
+                "rate": "<optional rate as a decimal>",
+                "type": "CALL",
+            },
         }
     if upper == "OSA":
         return {
