@@ -243,6 +243,9 @@ class DCFFunction(BaseFunction):
                     data={"status": status, "reason": reason, "next_actions": next_actions,
                           "wacc": None, "wacc_source": None, "g_high": g_high, "g_terminal": g_terminal,
                           "years": N, "starting_fcfe": None, "fcfe_source": None, "shares_source": None,
+                          "assumptions": {"wacc": None, "wacc_source": None, "growth_high": g_high,
+                                  "growth_terminal": g_terminal, "years": N,
+                                  "fcfe_source": None, "shares_source": None},
                           "shares_outstanding": None, "equity_value": None, "fair_value_per_share": None,
                           "rows": [], "bridge": [],
                           "methodology": "Two-stage FCFE DCF; WACC is required and is never substituted with a constant.",
@@ -310,9 +313,13 @@ class DCFFunction(BaseFunction):
                       "wacc": wacc, "wacc_source": wacc_source, "g_high": g_high, "g_terminal": g_terminal,
                       "years": N, "starting_fcfe": None,
                       "fcfe_source": "missing",
+                      "assumptions": {"wacc": wacc, "wacc_source": wacc_source,
+                                      "growth_high": g_high, "growth_terminal": g_terminal,
+                                      "years": N, "fcfe_source": "missing",
+                                      "shares_source": "user_override" if shares is not None else None},
                       "shares_source": "user_override" if shares is not None else None,
                       "shares_outstanding": shares,
-                      "fair_value_per_share": None,
+                      "equity_value": None, "fair_value_per_share": None,
                       "rows": [], "bridge": [],
                       "methodology": "Two-stage FCFE DCF; FCFE is required and is never substituted with a placeholder.",
                       "field_dictionary": FIELD_DICTIONARIES["valuation"]},
@@ -325,7 +332,11 @@ class DCFFunction(BaseFunction):
             )
         if wacc <= g_terminal:
             return FunctionResult(code=self.code, instrument=instrument,
-                                  data={"error": "wacc must exceed terminal growth"},
+                                  data={"error": "wacc must exceed terminal growth",
+                        "assumptions": {"wacc": wacc, "wacc_source": wacc_source,
+                                        "growth_high": g_high, "growth_terminal": g_terminal,
+                                        "years": N, "fcfe_source": fcfe_source,
+                                        "shares_source": None}},
                                   warnings=["wacc ≤ g_terminal"])
         # Stage 1: explicit forecast
         cashflows = []
@@ -387,6 +398,10 @@ class DCFFunction(BaseFunction):
                    "years": N, "starting_fcfe": fcfe,
                    "fcfe_source": fcfe_source,
                    "shares_source": shares_source or "missing",
+                   "assumptions": {"wacc": wacc, "wacc_source": wacc_source,
+                                   "growth_high": g_high, "growth_terminal": g_terminal,
+                                   "years": N, "fcfe_source": fcfe_source,
+                                   "shares_source": shares_source or "missing"},
                    "pv_explicit": pv_explicit,
                    "terminal_value": tv, "pv_terminal": pv_tv,
                    "equity_value": equity_value,
