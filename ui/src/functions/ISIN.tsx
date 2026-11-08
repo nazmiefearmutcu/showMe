@@ -373,7 +373,15 @@ export function ISINPane({ code, symbol }: FunctionPaneProps) {
               >
                 CSV
               </button>
-              <LoadStatePill state={state} status={status} />
+              {state === "ok" && status === "partial" ? (
+                // Partial is a warning: some identifiers resolved, others did not.
+                // LoadStatePill would show an ok-state as positive.
+                <Pill tone="warn" variant="soft" withDot={false}>
+                  partial
+                </Pill>
+              ) : (
+                <LoadStatePill state={state} status={status} />
+              )}
               <RefreshButton
                 loading={state === "loading"}
                 onClick={refetch}
