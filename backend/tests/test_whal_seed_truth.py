@@ -1,8 +1,9 @@
 """WHAL#6 — the manifest seed must describe what the handler actually ships.
 
 The seed is what the catalogue shows. It must name the alert types the handler
-emits, the SEC forms it reads (3, 4, 5, 13D, 13G; not 13F or 8-K), and the
-crypto lookback behaviour (latest 1000 Binance trades, filtered to the window).
+emits, the SEC forms the handler reads (the `interesting` set in whal.py: 3, 4,
+5, 13F-HR, 13D, 13G; never 8-K), and the crypto lookback behaviour (latest 1000
+Binance trades, filtered to the window).
 """
 from __future__ import annotations
 
@@ -29,7 +30,6 @@ STALE_TERMS = (
     r"\blarge_volume\b",
     r"\bsec_filing\b",
     r"\btop_holder\b",
-    r"13F",
     r"8-K",
     r"yfinance",
     r"cached_snapshot",
@@ -59,10 +59,24 @@ def test_seed_has_no_stale_taxonomy_or_sources() -> None:
         assert not re.search(term, text), f"seed still describes {term}"
 
 
+def _handler_sec_forms() -> set[str]:
+    source = HANDLER.read_text(encoding="utf-8")
+    match = re.search(r"interesting = \{([^}]*)\}", source)
+    assert match, "whal.py no longer declares the SEC form set"
+    return set(re.findall(r'"([^"]+)"', match.group(1)))
+
+
 def test_seed_describes_the_shipped_sec_form_set() -> None:
     methodology = whal.methodology
-    for form in ("Forms 3, 4, 5", "13D", "13G"):
+    for form in ("Forms 3, 4, 5", "13D", "13G", "13F-HR"):
         assert form in methodology, f"methodology should name SEC {form}"
+
+
+def test_every_sec_form_the_handler_reads_is_named_in_the_seed() -> None:
+    methodology = whal.methodology
+    for form in _handler_sec_forms():
+        bare = form.replace("SC ", "")
+        assert bare in methodology, f"handler reads SEC form {form} but the seed does not name {bare}"
 
 
 def test_runtime_crypto_methodology_matches_the_shipped_rows() -> None:
