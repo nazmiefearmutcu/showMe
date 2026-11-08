@@ -158,10 +158,12 @@ const TOOL_CONFIG: Record<string, ToolConfig> = {
     subtitle: "Modeled initial and maintenance margin, excess equity, and buying power",
   },
   MLSIG: {
+    // XPORT-R1: the handler classifies ONE instrument. It gets its own
+    // symbol control instead of silently taking the linked dock symbol.
+    usesSymbol: true,
     title: "ML Signals",
     subtitle: "Next-day direction classifier for one symbol, scored against always-long",
     defaultSymbol: "AAPL",
-    usesSymbol: true,
     usesHorizon: true,
     supportsLive: true,
   },
@@ -209,6 +211,9 @@ const TOOL_CONFIG: Record<string, ToolConfig> = {
     supportsLive: true,
   },
   RPAR: {
+    // XPORT-R1: the universe is the symbols input; the dock symbol must not
+    // replace an empty universe with a single-asset one.
+    sendsDockSymbol: false,
     title: "Risk Parity",
     subtitle: "Equal-risk-contribution (default) and inverse-vol allocation",
     defaultSymbols: "AAPL,MSFT,BTCUSDT,EURUSD,GC=F",
