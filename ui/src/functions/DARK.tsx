@@ -38,7 +38,6 @@ import {
   type GridCsvColumn,
 } from "@/design-system/grid-csv";
 import { useFunction } from "@/lib/useFunction";
-import { defaultSymbolForFunction } from "@/lib/symbols";
 import {
   FunctionControlGroup,
   LoadStatePill,
@@ -107,7 +106,9 @@ const WEEKS_IDS = WEEKS_OPTIONS.map((o) => o.value);
 /* ── pane ──────────────────────────────────────────────────────────── */
 
 export function DARKPane({ code, symbol }: FunctionPaneProps) {
-  const effectiveSymbol = symbol || defaultSymbolForFunction(code, ["EQUITY", "ETF"]);
+  // No default ticker: a pane with no linked symbol shows "Pick a symbol" and
+  // makes no request, instead of silently querying a recent or fallback name.
+  const effectiveSymbol = (symbol ?? "").trim();
   const [weeks, setWeeks] = usePersistentOption<number>(
     "showme.dark.weeks",
     WEEKS_IDS,
@@ -141,7 +142,9 @@ export function DARKPane({ code, symbol }: FunctionPaneProps) {
   );
   const status = payload?.status ?? "—";
   const isLive = state === "ok" && status === "ok";
-  const degraded = !isLive && venues.length > 0; // stale / partial — still renderable
+  // stale / partial — still renderable; a backend warning (e.g. a withheld
+  // over-100% ratio) is shown even when the payload itself is ok.
+  const degraded = (!isLive && venues.length > 0) || warnings.length > 0;
   const totalOffExchange = num(payload?.total_shares_off_exchange);
   const latestWeek =
     payload?.cards?.as_of ?? payload?.summary?.latest_week ?? byWeek[0]?.weekStartDate ?? null;
