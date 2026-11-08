@@ -98,15 +98,25 @@ export function OVMEPane({ code }: FunctionPaneProps) {
   const [volPct, setVolPct] = usePersistentNumber("showme.ovme.vol", 30);
   const [ratePct, setRatePct] = usePersistentNumber("showme.ovme.rate", 4.5);
   const [divPct, setDivPct] = usePersistentNumber("showme.ovme.div", 0);
+  // The option itself is never priced from a prefilled number: spot, strike,
+  // expiry and vol reach the sidecar only once the user has entered each one.
+  const [spotSet, setSpotSet] = usePersistentOption<"0" | "1">("showme.ovme.spot.set", ["0", "1"], "0");
+  const [strikeSet, setStrikeSet] = usePersistentOption<"0" | "1">("showme.ovme.strike.set", ["0", "1"], "0");
+  const [yearsSet, setYearsSet] = usePersistentOption<"0" | "1">("showme.ovme.years.set", ["0", "1"], "0");
+  const [volSet, setVolSet] = usePersistentOption<"0" | "1">("showme.ovme.vol.set", ["0", "1"], "0");
+  const sentSpot = spotSet === "1" ? spot : null;
+  const sentStrike = strikeSet === "1" ? strike : null;
+  const sentYears = yearsSet === "1" ? years : null;
+  const sentVol = volSet === "1" ? volPct / 100 : null;
 
   const { state, data, error, refetch } = useFunction<OvmeData>({
     code,
     params: {
       asset_class: "DERIVATIVE",
-      spot,
-      strike,
-      years_to_expiry: years,
-      vol: volPct / 100,
+      spot: sentSpot,
+      strike: sentStrike,
+      years_to_expiry: sentYears,
+      vol: sentVol,
       rate: ratePct / 100,
       div_yield: divPct / 100,
       type,
@@ -242,7 +252,10 @@ export function OVMEPane({ code }: FunctionPaneProps) {
             step={1}
             width={96}
             ariaLabel="Underlying spot price"
-            onChange={setSpot}
+            onChange={(v) => {
+              setSpot(v);
+              setSpotSet("1");
+            }}
           />
           <NumField
             label="Strike"
@@ -251,7 +264,10 @@ export function OVMEPane({ code }: FunctionPaneProps) {
             step={1}
             width={96}
             ariaLabel="Option strike price"
-            onChange={setStrike}
+            onChange={(v) => {
+              setStrike(v);
+              setStrikeSet("1");
+            }}
           />
           <NumField
             label="T (y)"
@@ -260,7 +276,10 @@ export function OVMEPane({ code }: FunctionPaneProps) {
             step={0.05}
             width={84}
             ariaLabel="Years to expiry"
-            onChange={setYears}
+            onChange={(v) => {
+              setYears(v);
+              setYearsSet("1");
+            }}
           />
           <NumField
             label="Vol %"
@@ -269,7 +288,10 @@ export function OVMEPane({ code }: FunctionPaneProps) {
             step={1}
             width={84}
             ariaLabel="Implied volatility percent"
-            onChange={setVolPct}
+            onChange={(v) => {
+              setVolPct(v);
+              setVolSet("1");
+            }}
           />
           <NumField
             label="Rate %"
