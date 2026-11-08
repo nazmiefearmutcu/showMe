@@ -112,7 +112,7 @@ def esg() -> FunctionManifest:
             "keyless, delayed reference (the handler tags these rows source_mode=delayed_reference and "
             "data_mode=delayed_reference; they are not real-time). Fallback when Yahoo publishes "
             "no sustainability table for the ticker: a DERIVED SEC EDGAR proxy counting "
-            "environmental, social and governance phrases in recent 10-K filings via the keyless "
+            "environmental, social and governance phrases in 10-K filings from the last 3 years via the keyless "
             "EDGAR full-text search (source_mode=sec_text_proxy, data_mode=live_official: a live fetch of SEC filings, "
             "not a cached snapshot). Proxy values are filing-mention "
             "counts, not risk scores, and are not comparable to vendor ratings. No paid vendor "
