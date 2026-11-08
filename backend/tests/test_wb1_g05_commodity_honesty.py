@@ -283,3 +283,44 @@ def test_wetr5_open_meteo_live_rows_do_not_claim_live_official() -> None:
     assert result.data["status"] == "ok"
     assert result.metadata.get("data_mode") != "live_official"
     assert result.metadata.get("data_mode") == "live"
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# WETR-R1 catalog — the seed text must describe the no-synthetic-rows outage
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def test_wetr_r1_catalog_does_not_describe_synthetic_outage_rows() -> None:
+    from showme.manifest.seeds import wetr_seed
+
+    manifest = wetr_seed.wetr
+    docstring = wetr_seed.__doc__ or ""
+    methodology = manifest.methodology
+    descriptions = " ".join(t.description for t in manifest.semantic_tests)
+
+    # The module docstring and methodology must not promise the seasonal model
+    # on an outage; only reference=true serves it.
+    assert "outage serves the labelled seasonal-model fallback" not in docstring
+    assert "outage downgrades" not in methodology
+    assert "status is provider_unavailable" in methodology
+    # The outage semantic test describes the empty provider_unavailable state.
+    assert "labelled source_mode=seasonal_model" not in descriptions
+    assert "returns status=provider_unavailable with no weather rows" in descriptions
+    # The risk_flag label lists the real taxonomy (WETR#3), not the old one.
+    risk_label = manifest.field_dict["rows[].risk_flag"].description
+    assert "severe | hot | cold" not in risk_label
+    assert "dry_heat_watch" in risk_label
+
+
+def test_ngas_catalog_describes_only_henry_hub_units() -> None:
+    from showme.manifest.seeds import ngas_seed
+
+    manifest = ngas_seed.ngas
+    docstring = ngas_seed.__doc__ or ""
+    unit_label = manifest.field_dict["contract_unit"].description
+
+    # NGAS#1: TTF is not served, so the seed text must not present it as a
+    # served European cousin or quote its unit as if it were.
+    assert "European TTF cousin as a price-action pane" not in docstring
+    assert "TTF" not in unit_label
+    assert "USD/MMBtu" in unit_label

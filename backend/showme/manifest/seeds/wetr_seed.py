@@ -5,9 +5,9 @@ relevant regions (US northeast for heating, US Gulf for hurricanes,
 EU NW / Asia East for cooling demand) with HDD/CDD and a curated
 commodity-impact label. Provider chain: keyed OpenWeatherMap when
 configured, otherwise the KEYLESS Open-Meteo adapter (the default) —
-so rows are genuinely live. Only ``reference=true`` or a provider
-outage serves the labelled seasonal-model fallback — never a
-fabricated live forecast.
+so rows are genuinely live. Only ``reference=true`` serves the labelled
+seasonal-model rows; a provider outage serves no weather rows
+(status provider_unavailable) — never a fabricated live forecast.
 """
 from __future__ import annotations
 
@@ -151,10 +151,12 @@ def wetr() -> FunctionManifest:
             "CDD = max(0, temp - 18°C) per UK Met Office convention. Each "
             "region carries a curated commodity_context (US_NORTHEAST → "
             "NatGas heating, US_GULF → refined-product hurricane risk, "
-            "BRAZIL_SE → coffee/sugar). Only reference=true or a provider "
-            "outage downgrades the chain to seasonal_weather_model — a "
-            "labelled climatological average — and source_mode flips so "
-            "consumers can render the seasonal-model banner. There is no "
+            "BRAZIL_SE → coffee/sugar). Only reference=true serves the "
+            "labelled seasonal_weather_model rows (a deterministic model, not "
+            "a measured normal), and source_mode flips to seasonal_model so "
+            "consumers can render the seasonal-model banner. A provider outage "
+            "serves no weather rows: status is provider_unavailable with "
+            "source_mode provider_unavailable. There is no "
             "synthesized 'live' forecast: the handler refuses to fake "
             "live provider output."
         ),
@@ -177,9 +179,9 @@ def wetr() -> FunctionManifest:
             "rows[].precip_mm": FieldDef(unit="mm", description="Daily total precipitation.", source="provider"),
             "rows[].hdd": FieldDef(description="Heating degree days (18°C base).", source="computed"),
             "rows[].cdd": FieldDef(description="Cooling degree days (18°C base).", source="computed"),
-            "rows[].risk_flag": FieldDef(description="severe | hot | cold | normal.", source="rules"),
+            "rows[].risk_flag": FieldDef(description="heating_demand | cooling_demand | wet_weather | dry_heat_watch | normal (one taxonomy for live and model rows).", source="rules"),
             "rows[].commodity_impact": FieldDef(description="Human-readable impact note (e.g. 'bullish NatGas').", source="rules"),
-            "source_mode": FieldDef(description="live_openweathermap | live_open_meteo | seasonal_model | cached.", source="envelope"),
+            "source_mode": FieldDef(description="live_openweathermap | live_open_meteo | seasonal_model (reference=true only) | provider_unavailable | unsupported_region.", source="envelope"),
         },
         provenance=ProvenanceSpec(
             require_source_list=True,
@@ -203,13 +205,13 @@ def wetr() -> FunctionManifest:
                 description=(
                     "When NO weather provider can serve (no OpenWeather key "
                     "AND the keyless Open-Meteo adapter is unwired or fails), "
-                    "WETR returns status=provider_unavailable with labelled "
-                    "source_mode=seasonal_model — never a fabricated live "
-                    "forecast."
+                    "WETR returns status=provider_unavailable with no weather "
+                    "rows (source_mode=provider_unavailable) — never a fabricated "
+                    "live forecast or a synthetic seasonal model."
                 ),
                 inputs={"location": "US_NORTHEAST", "_mock": "no_openweather_key"},
                 assertions=[
-                    "status_is_provider_unavailable_or_source_mode_is_seasonal_model",
+                    "status_is_provider_unavailable_with_no_rows",
                     "no_synthetic_live_forecast",
                     "next_actions_mention_api_key",
                 ],

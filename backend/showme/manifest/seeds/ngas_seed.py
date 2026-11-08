@@ -1,7 +1,8 @@
 """NGAS — Natural Gas (Henry Hub) futures monitor.
 
-Tracks the Henry Hub natural gas futures contract (NG=F) and its
-European TTF cousin as a price-action pane. Contract unit
+Tracks the Henry Hub natural gas futures contract (NG=F) as a
+price-action pane; other contracts such as TTF=F are reported as
+unsupported, never substituted. Contract unit
 (USD/MMBtu) and front-month expiry are declared explicitly so the
 viewer never confuses a $/MMBtu print for a per-therm or per-mcf
 price.
@@ -159,7 +160,7 @@ def ngas() -> FunctionManifest:
         },
         field_dict={
             "contract": FieldDef(description="Natural-gas futures ticker (NG=F, Henry Hub).", source="input"),
-            "contract_unit": FieldDef(description="Quoted unit (USD/MMBtu for both NG and TTF).", source="curated"),
+            "contract_unit": FieldDef(description="Quoted unit (USD/MMBtu, Henry Hub NG=F).", source="curated"),
             "expiry_month": FieldDef(description="Front-month delivery (e.g. 2026-06).", source="provider"),
             "candles[].c": FieldDef(unit="USD/MMBtu", description="Close price.", source="provider"),
             "open_interest": FieldDef(unit="contracts", description="Listed open interest.", source="provider"),
