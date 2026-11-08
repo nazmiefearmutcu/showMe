@@ -62,7 +62,6 @@ def cpf() -> FunctionManifest:
                     "DHHNGSP",
                     "PCOPPUSDM",
                     "PGOLD",
-                    "PNGASEUUSDM",
                 ],
             ),
             InputSpec(

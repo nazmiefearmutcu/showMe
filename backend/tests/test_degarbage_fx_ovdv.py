@@ -5,16 +5,19 @@ constant. After the fix the ATM term structure is derived from LIVE FX
 realized volatility (yfinance daily history -> annualized stdev per tenor),
 with the 25d RR/BF smile overlaid around that real anchor.
 
-The tests are network-guarded: when yfinance returns history they assert the
-live-anchored contract (varying ATM curve, not the flat 0.085); when history
-is unavailable they assert the honest, clearly-labelled reference fallback.
+Network is patched: ``_close_series`` returns a deterministic close path so the
+live-realized branch runs with no provider call. With no history the surface is
+not produced at all (status provider_unavailable); see
+test_g6_ovdv_no_history_unavailable.py.
 """
 from __future__ import annotations
 
 import asyncio
+import math
 
 import pytest
 
+from showme.engine.functions.fx import _funcs as fx
 from showme.engine.functions.fx._funcs import OVDVFunction
 
 # The pre-fix garbage pinned every tenor's ATM to this single constant.
@@ -23,6 +26,21 @@ GARBAGE_ATM_VOL_PCT = 8.5  # 0.085 * 100
 
 def _run(coro):
     return asyncio.run(coro)
+
+
+def _closes(n: int = 400, start: float = 1.10) -> list[float]:
+    out = [start]
+    for i in range(1, n):
+        out.append(out[-1] * math.exp(0.004 * math.sin(i / 7.0) + (0.0005 if i % 3 else -0.0003)))
+    return out
+
+
+@pytest.fixture(autouse=True)
+def live_history(monkeypatch):
+    async def _fake_close_series(fn, pair, params):  # noqa: ARG001
+        return _closes()
+
+    monkeypatch.setattr(fx, "_close_series", _fake_close_series)
 
 
 def _atm_vols_pct(surface: list[dict]) -> list[float]:
@@ -36,12 +54,8 @@ def _atm_vols_pct(surface: list[dict]) -> list[float]:
     return out
 
 
-def _is_reference_fallback(result) -> bool:
-    return result.data.get("vol_source") == "reference_fx_vol_model"
-
-
 def test_ovdv_contract_shape_present():
-    """OVDV must satisfy the seed output contract regardless of network."""
+    """OVDV must satisfy the seed output contract on the live realized path."""
     fn = OVDVFunction()
     result = _run(fn.execute(pair="EURUSD"))
 
@@ -76,17 +90,11 @@ def test_ovdv_atm_anchored_to_live_realized_vol_not_constant():
     result = _run(fn.execute(pair="EURUSD"))
     data = result.data
 
-    if _is_reference_fallback(result):
-        # Honest, clearly-labelled outage path.
-        assert data["data_mode"] == "modeled"  # H-9: lowercase vocabulary
-        assert result.warnings, "reference fallback must carry a warning"
-        assert data.get("next_actions")
-        pytest.skip("yfinance history unavailable - validated labelled reference fallback")
-
     # Live path: anchored to yfinance realized vol.
     assert data["vol_source"] == "live_realized_vol"
     assert data["data_mode"] == "delayed_reference"  # H-9: lowercase vocabulary
     assert "yfinance" in result.sources
+    assert data.get("status", "ok") == "ok"
 
     atm = _atm_vols_pct(data["surface"])
     assert len(atm) >= 3, "expected a multi-tenor ATM term structure"
@@ -101,26 +109,34 @@ def test_ovdv_atm_anchored_to_live_realized_vol_not_constant():
         assert 0.0 < v < 100.0
 
 
-def test_ovdv_smile_is_anchored_around_atm():
-    """For each tenor, 25C/25P straddle the ATM cell (smile is a perturbation
-    of the real ATM, not independent constants)."""
+def test_ovdv_unquoted_surface_is_atm_only_no_invented_smile():
+    """Without caller-supplied 25d RR/BF quotes there is no keyless source, so
+    no wing cells are emitted (the former model-invented 25C/25P were not
+    market data and are not shown as implied vol)."""
     fn = OVDVFunction()
     result = _run(fn.execute(pair="GBPUSD"))
-    if _is_reference_fallback(result):
-        pytest.skip("yfinance history unavailable")
 
     surface = result.data["surface"]
+    assert surface
+    assert {row["delta"] for row in surface} == {"ATM"}
+    assert result.data["risk_reversal_25d_pct"] is None
+    assert result.data["butterfly_25d_pct"] is None
+
+
+def test_ovdv_quoted_smile_straddles_atm():
+    """With both user quotes the 25C/25P wings straddle the ATM cell."""
+    fn = OVDVFunction()
+    result = _run(
+        fn.execute(pair="GBPUSD", risk_reversal_25d=-0.005, butterfly_25d=0.002)
+    )
     by_tenor: dict[str, dict[str, float]] = {}
-    for row in surface:
+    for row in result.data["surface"]:
         by_tenor.setdefault(row["tenor"], {})[row["delta"]] = float(row["vol_decimal"])
 
     assert by_tenor
     for tenor, cells in by_tenor.items():
         atm = cells["ATM"]
-        # butterfly premium keeps both 25-delta wings near (not collapsed onto)
-        # the ATM; they must be finite, positive vols.
         assert cells["25C"] > 0 and cells["25P"] > 0
-        # average of the two 25d wings sits at/above ATM by the butterfly.
         wing_avg = 0.5 * (cells["25C"] + cells["25P"])
         assert wing_avg >= atm - 1e-9, f"{tenor}: wings below ATM minus tolerance"
 

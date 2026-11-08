@@ -204,7 +204,7 @@ def test_fxgo_default_board_live_or_graceful_real_network():
             assert key in first
         assert first["bid"] > 0 and first["ask"] > 0
         assert first["ask"] >= first["bid"]
-        assert data["data_mode"] == "live_exchange"
+        assert data["data_mode"] == "live_yfinance_quote"
     else:
         # Offline / rate-limited: honest unavailable shape, no numbers.
         assert data["data_mode"] == "provider_unavailable"
@@ -225,7 +225,7 @@ def test_fxgo_default_board_ok_with_stub(monkeypatch):
     res = _run(h.execute())
     data = res.data
     assert data["status"] == "ok"
-    assert data["data_mode"] == "live_exchange"
+    assert data["data_mode"] == "live_yfinance_quote"
     assert len(data["rows"]) == len(FXGOFunction._BOARD_PAIRS)
     assert "yfinance" in res.sources
     first = data["rows"][0]
@@ -269,7 +269,7 @@ def test_fxgo_board_via_injected_spot(monkeypatch):
     res = _run(h.execute(pairs="EURUSD"))
     data = res.data
     assert data["status"] == "ok"
-    assert data["data_mode"] == "live_exchange"
+    assert data["data_mode"] == "live_yfinance_quote"
     row = data["rows"][0]
     assert row["pair"] == "EURUSD"
     assert row["mid"] == pytest.approx(1.0850, abs=1e-6)

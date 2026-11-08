@@ -431,7 +431,8 @@ class TSOXFunction(EMSXFunction):
     """TSOX — Treasury / Bond order ticket."""
     code = "TSOX"
     name = "Treasury Order Entry"
-    asset_classes = (AssetClass.BOND,)
+    # Cash Treasuries (BOND) and CME Treasury futures (DERIVATIVE, e.g. ZN=F).
+    asset_classes = (AssetClass.BOND, AssetClass.DERIVATIVE)
 
 
 @FunctionRegistry.register
@@ -451,8 +452,9 @@ class FXGOFunction(EMSXFunction):
 
     _BOARD_FIELD_DICTIONARY = {
         "pair": "FX pair (base/quote).",
-        "bid": "Best bid (quote per base) — last minus half synthetic spread.",
-        "ask": "Best ask (quote per base) — last plus half synthetic spread.",
+        "bid": "Indicative bid (quote per base) — mid minus half a synthetic spread; not a quoted venue bid.",
+        "ask": "Indicative ask (quote per base) — mid plus half a synthetic spread; not a quoted venue ask.",
+        "bid_ask_basis": "synthetic_indicative — bid/ask are derived from the spot mid, never a broker or venue quote.",
         "mid": "Mid price (last traded spot).",
         "spread": "Ask minus bid, in quote units.",
         "spread_pips": "Spread expressed in pips.",
@@ -476,7 +478,13 @@ class FXGOFunction(EMSXFunction):
         # ``pairs`` cannot smuggle path segments / query chars into the Yahoo
         # chart URL. Returns "" when nothing alphabetic survives so the caller
         # can skip the pair rather than request a malformed ``=X`` symbol.
-        base = re.sub(r"[^A-Za-z]", "", pair).upper().replace("=X", "")
+        # The Yahoo ``=X`` suffix must be removed BEFORE the non-letter strip:
+        # the strip deletes "=" first, so ``GBPUSD=X`` used to become
+        # ``GBPUSDX`` and requested the non-existent ``GBPUSDX=X`` (404).
+        text = str(pair or "").strip().upper()
+        if text.endswith("=X"):
+            text = text[:-2]
+        base = re.sub(r"[^A-Z]", "", text)
         if not base:
             return ""
         return f"{base}=X"
@@ -548,6 +556,7 @@ class FXGOFunction(EMSXFunction):
             "symbol": pair.upper(),
             "bid": bid,
             "ask": ask,
+            "bid_ask_basis": "synthetic_indicative",
             "mid": round(mid, 6),
             "spread": round(ask - bid, 6),
             "spread_pips": round((ask - bid) / pip, 2),
@@ -648,7 +657,9 @@ class FXGOFunction(EMSXFunction):
                 "quotes; the rest failed upstream and are NOT shown."
             )
         else:
-            board_mode = "live_exchange"
+            # Yahoo spot quotes with an indicative spread - not a venue's
+            # two-way board, so never "live_exchange".
+            board_mode = "live_yfinance_quote"
 
         # Card summary mirrors the EMSX/manifest card slots while reflecting the
         # live board: show the top pair's indicative two-way quote.
@@ -682,6 +693,7 @@ class FXGOFunction(EMSXFunction):
                 "rows": rows,
                 "cards": cards,
                 "data_mode": board_mode,
+                "bid_ask_basis": "synthetic_indicative",
                 "as_of": as_of,
                 "methodology": self._BOARD_METHODOLOGY,
                 "field_dictionary": self._BOARD_FIELD_DICTIONARY,

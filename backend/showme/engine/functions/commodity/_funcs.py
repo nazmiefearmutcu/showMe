@@ -167,11 +167,27 @@ LOCATION_PRESETS: dict[str, dict[str, Any]] = {
         "lon": -87.63,
         "commodity_context": "corn, soybeans, and crop weather",
     },
-    "EUROPE_GAS": {
-        "label": "Northwest Europe",
-        "lat": 52.52,
-        "lon": 13.4,
-        "commodity_context": "European gas and heating demand",
+    # EUROPE_GAS was removed: its "Northwest Europe" label carried Berlin
+    # coordinates (52.52, 13.4). EU_NW below is the Rotterdam preset.
+    # WETR#1: the pane and manifest offer these regions; each needs its own
+    # coordinates (they previously fell back to New York weather).
+    "EU_NW": {
+        "label": "Northwest Europe (Rotterdam)",
+        "lat": 51.92,
+        "lon": 4.48,
+        "commodity_context": "European gas, power and heating demand",
+    },
+    "ASIA_EAST": {
+        "label": "East Asia (Shanghai)",
+        "lat": 31.23,
+        "lon": 121.47,
+        "commodity_context": "East Asian power and cooling demand",
+    },
+    "BRAZIL_SE": {
+        "label": "Southeast Brazil (Sao Paulo)",
+        "lat": -23.55,
+        "lon": -46.63,
+        "commodity_context": "coffee and sugar crop weather",
     },
 }
 
@@ -789,7 +805,8 @@ CPF_SERIES_MAP: dict[str, dict[str, Any]] = {
     "WTISPLC": {"name": "WTI crude oil", "futures": "CL=F", "unit": "USD/bbl"},
     "DCOILWTICO": {"name": "WTI crude oil", "futures": "CL=F", "unit": "USD/bbl"},
     "DHHNGSP": {"name": "Henry Hub natural gas", "futures": "NG=F", "unit": "USD/MMBtu"},
-    "PNGASEUUSDM": {"name": "European natural gas", "futures": "NG=F", "unit": "USD/MMBtu"},
+    # PNGASEUUSDM (European gas) is deliberately NOT mapped: NG=F is the Henry
+    # Hub contract, so routing it there served US prices under a European label.
     "PCOPPUSDM": {"name": "Copper", "futures": "HG=F", "unit": "USD/lb"},
     "PGOLD": {"name": "Gold", "futures": "GC=F", "unit": "USD/oz"},
 }
@@ -805,12 +822,45 @@ class CPFFunction(BaseFunction):
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         series_id = str(params.get("series_id") or "WTISPLC").strip().upper()
-        meta = CPF_SERIES_MAP.get(series_id) or CPF_SERIES_MAP["WTISPLC"]
         horizon = str(params.get("horizon") or "1Y").strip().upper()
         show_actual = _truthy(params.get("show_actual_history", True))
         horizon_months = {"6M": 6, "1Y": 12, "2Y": 24, "5Y": 60}.get(horizon, 12)
         timeout = max(1.0, min(float(params.get("quote_timeout", params.get("yfinance_timeout", 5))), 8.0))
         now = datetime.now(timezone.utc)
+
+        # CPF#1: an unsupported series is an explicit input error. It is never
+        # served with another instrument's prices (the old fallback fetched WTI).
+        meta = CPF_SERIES_MAP.get(series_id)
+        if meta is None:
+            supported = sorted(CPF_SERIES_MAP)
+            return FunctionResult(
+                code=self.code,
+                instrument=None,
+                data={
+                    "status": "input_error",
+                    "series_id": series_id,
+                    "actual": [],
+                    "forecast": [],
+                    "forecast_vintage": None,
+                    "as_of": now.isoformat(),
+                    "data_mode": "unsupported_series",
+                    "rows": [],
+                    "series": [],
+                    "cards": {},
+                    "reason": (
+                        f"{series_id} has no live price source in CPF; "
+                        "no other instrument's prices are substituted."
+                    ),
+                    "methodology": _cpf_methodology(),
+                    "field_dictionary": _cpf_field_dictionary(),
+                    "next_actions": [
+                        "Pick a supported series_id: " + ", ".join(supported) + ".",
+                    ],
+                },
+                sources=[],
+                warnings=[f"unsupported series_id {series_id}"],
+                metadata={"supported_series": supported},
+            )
 
         provider_errors: list[str] = []
 
@@ -1188,7 +1238,41 @@ class WETRFunction(BaseFunction):
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         days = _int_param(params, "days", 7, 3, 16)
         location_key = str(params.get("location") or "US_NORTHEAST").strip().upper()
-        preset = LOCATION_PRESETS.get(location_key, LOCATION_PRESETS["US_NORTHEAST"])
+        preset = LOCATION_PRESETS.get(location_key)
+        if preset is None:
+            # WETR#1: an unknown region is an explicit input error. It must not
+            # fall back to US Northeast weather labelled as the requested region.
+            supported = sorted(LOCATION_PRESETS)
+            return FunctionResult(
+                code=self.code,
+                instrument=None,
+                data={
+                    "status": "input_error",
+                    "reason": (
+                        f"{location_key} is not a supported WETR region; "
+                        "no other region's weather is substituted."
+                    ),
+                    "location": location_key,
+                    "lat": None,
+                    "lon": None,
+                    "commodity_context": None,
+                    "source_mode": "unsupported_region",
+                    "rows": [],
+                    "history": [],
+                    "risk_flags": [],
+                    "methodology": (
+                        "WETR serves only the curated regions listed in its "
+                        "preset table; each carries its own coordinates."
+                    ),
+                    "field_dictionary": {},
+                    "next_actions": [
+                        "Pick a supported region: " + ", ".join(supported) + ".",
+                    ],
+                },
+                sources=[],
+                warnings=[f"unsupported location {location_key}"],
+                metadata={"supported_locations": supported},
+            )
         lat = _finite(params.get("lat")) if params.get("lat") not in (None, "") else None
         lon = _finite(params.get("lon")) if params.get("lon") not in (None, "") else None
         lat = lat if lat is not None else float(preset["lat"])

@@ -49,6 +49,7 @@ import shutil
 import importlib
 import logging
 import os
+import re
 import time
 
 try:
@@ -113,6 +114,10 @@ FX_CURRENCIES = {
 COMMODITY_FUTURES = {"GC", "SI", "CL", "BZ", "NG", "HG", "PL", "ZC", "ZW", "ZS"}
 INDEX_SYMBOLS = {"SPX", "NDX", "DJI", "RUT", "VIX", "GSPC", "IXIC", "DJIA"}
 BOND_SYMBOLS = {"US1M", "US3M", "US6M", "US1Y", "US2Y", "US3Y", "US5Y", "US7Y", "US10Y", "US20Y", "US30Y"}
+# CME Treasury futures roots (Yahoo ``ZN=F`` style). These are bond
+# instruments: TSOX ("Treasury Order Entry") defaults to ZN=F and its quick
+# picks use TU/ZF/ZB, so they must classify as BOND, not EQUITY.
+TREASURY_FUTURES_ROOTS = {"ZT", "TU", "ZF", "ZN", "TN", "ZB", "UB"}
 RUNTIME_MIRROR_SUFFIXES = {".json", ".sqlite", ".db", ".duckdb"}
 RUNTIME_MIRROR_SKIP_PREFIXES = (
     "bot.log",
@@ -900,6 +905,11 @@ def default_asset_class_name(symbol: str | None, requested: Any = None) -> str:
         return "COMMODITY"
     if looks_like_index_symbol(resolved):
         return "INDEX"
+    # CME Treasury futures are rates *derivatives*: classing them BOND sent
+    # them through bond margin/stress tables (15% of notional) instead of the
+    # per-contract futures rules (review of TSOX#1, 2026-11-08).
+    if looks_like_treasury_future(resolved):
+        return "DERIVATIVE"
     if looks_like_bond_symbol(resolved):
         return "BOND"
     return "EQUITY"
@@ -963,8 +973,15 @@ def looks_like_bond_symbol(symbol: str | None) -> bool:
     """Return True for known sovereign bond tickers (``US10Y``, ``DE10Y``)."""
     if not symbol:
         return False
+    return symbol.upper().replace("-", "") in BOND_SYMBOLS
+
+
+def looks_like_treasury_future(symbol: str | None) -> bool:
+    """Return True for CME Treasury futures (``ZN=F``, ``ZB=F``, ``UB=F`` ...)."""
+    if not symbol:
+        return False
     value = symbol.upper().replace("-", "")
-    return value in BOND_SYMBOLS
+    return value.endswith("=F") and value[:-2] in TREASURY_FUTURES_ROOTS
 
 
 # Per SEC-05: Pydantic request models live in `server_routes._models` so the
@@ -1624,6 +1641,10 @@ _NON_LIVE_BLOCKLIST_MARKERS = (
     "illustrative",
     "hardcoded",
 )
+# Markers match at the start of a word only: "test_data"/"testing" are
+# blocklisted, but "local_backtest_model" (a model run on real history) and
+# "latest_close" must not be branded synthetic.
+_NON_LIVE_BLOCKLIST_RE = re.compile(r"(?<![a-z])(?:" + "|".join(_NON_LIVE_BLOCKLIST_MARKERS) + ")")
 
 
 # 2026-11-07 (strict truth audit): sources that are real but are not live
@@ -1632,6 +1653,15 @@ _NON_LIVE_BLOCKLIST_MARKERS = (
 # are listed explicitly — before this a paper-ticket preview, the local
 # portfolio book or the margin engine all pilled as LIVE.
 _LOCAL_RECORD_SOURCE_MARKERS = ("portfolio_state", "order_history", "tax_lots", "local_store")
+# In-app catalogs, registries and other static/local origins: accurate, but
+# never *live market* data. Unknown names default to live, so without these
+# the offline audit (T10, 2026-11-08) saw FLDS/LANG/BMC/BQUANT/DAPI/GRAB/BIO/
+# BTMM answer "live" with every connection refused. ("showme_quotes" is the
+# live quote aggregator, so no blanket "showme_" marker.)
+_LOCAL_STATIC_SOURCE_MARKERS = (
+    "local_", "local fallback", "_catalog", "registry", "curriculum", "manifest", "_curated",
+    "fastapi_routes", "exchange_calendars", "capture_plan",
+)
 _COMPUTED_SOURCE_MARKERS = ("paper_ticket", "margin_engine", "empty_book", "black_scholes", "heston", "_formula")
 
 
@@ -1654,14 +1684,14 @@ def _classify_source_state(source: Any) -> str:
         return "synthetic"
     if any(marker in text for marker in _REFERENCE_SOURCE_MARKERS):
         return "reference"
-    if any(marker in text for marker in _NON_LIVE_BLOCKLIST_MARKERS):
+    if _NON_LIVE_BLOCKLIST_RE.search(text):
         return "synthetic"
     if any(marker in text for marker in _OTHER_SYNTHETIC_MARKERS):
         return "synthetic"
-    if any(marker in text for marker in _LOCAL_RECORD_SOURCE_MARKERS):
-        return "reference"
     if any(marker in text for marker in _MODEL_SOURCE_MARKERS + _COMPUTED_SOURCE_MARKERS):
         return "model"
+    if any(marker in text for marker in _LOCAL_RECORD_SOURCE_MARKERS + _LOCAL_STATIC_SOURCE_MARKERS):
+        return "reference"
     return "live"
 
 

@@ -137,7 +137,10 @@ def recv_until_close(ws, *, deadline_s: float = 5.0):
     return out, None
 
 
-def wait_until(pred, timeout_s: float = 5.0) -> bool:
+def wait_until(pred, timeout_s: float = 30.0) -> bool:
+    # Positive waits only (returns as soon as pred holds): a generous ceiling
+    # keeps the suite green on a loaded machine, where the disconnect ->
+    # receive-loop -> release path was measured above 5 s (2026-11-08).
     end = time.monotonic() + timeout_s
     while time.monotonic() < end:
         if pred():
