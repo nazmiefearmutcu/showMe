@@ -129,6 +129,12 @@ class PIBFunction(BaseFunction):
                 "next_actions": ["Retry SEC EDGAR or open DES/FA/CN for the linked public-info sections."],
             }
             sources = []  # no provider returned filings; nothing to attribute
+        data.update({
+            "symbol": instrument.symbol,
+            "as_of": datetime.now(timezone.utc).isoformat(),
+            "filing_count": len(rows) if has_feed else None,
+            "latest_filing_date": rows[0]["filingDate"] if rows else None,
+        })
         return FunctionResult(
             code=self.code, instrument=instrument,
             data=data,

@@ -79,11 +79,12 @@ def pib() -> FunctionManifest:
                 label="Data mode",
                 control=ControlKind.PROVIDER_MODE,
                 required=False,
-                description="Preferred provider mode; chain may downgrade and report it.",
+                description=(
+                    "Accepted for compatibility only: the sole source is SEC EDGAR (live official "
+                    "filings); the handler does not read this input."
+                ),
                 options=[
                     DataMode.LIVE_OFFICIAL.value,
-                    DataMode.DELAYED_REFERENCE.value,
-                    DataMode.CACHED_SNAPSHOT.value,
                 ],
             ),
         ],
@@ -94,11 +95,9 @@ def pib() -> FunctionManifest:
         },
         provider_chain=ProviderChain(
             primary="sec_edgar",
-            fallbacks=["cached_snapshot"],
+            fallbacks=[],
             acceptable_modes=[
                 DataMode.LIVE_OFFICIAL,
-                DataMode.DELAYED_REFERENCE,
-                DataMode.CACHED_SNAPSHOT,
                 DataMode.PROVIDER_UNAVAILABLE,
             ],
         ),
@@ -134,9 +133,10 @@ def pib() -> FunctionManifest:
         ),
         methodology=(
             "PIB walks SEC EDGAR for the issuer's recent filings within the lookback window. Each "
-            "row is normalized into (filing_date, form_type, description, filing_url) and ranked "
-            "by filing date descending. The months and form_types filters are applied server-side "
-            "before the row cap. include_summary is not implemented: the handler reports "
+            "row carries symbol, section, form, filingDate, reportDate, accession, url (the absolute "
+            "EDGAR primary-document link, or null when the CIK is unknown) and source_mode. Rows are "
+            "ranked by filingDate descending. The months and form_types filters are applied "
+            "server-side before the row cap. include_summary is not implemented: the handler reports "
             "summary_status not_implemented and attaches no summary text."
         ),
         field_dict={

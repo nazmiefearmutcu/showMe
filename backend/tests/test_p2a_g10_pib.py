@@ -105,3 +105,56 @@ def test_pib_seed_table_columns_match_emitted_row_keys():
     emitted = {"symbol", "section", "form", "filingDate", "reportDate", "accession", "url", "source_mode"}
     for col in pib.table_schema.columns:
         assert col.key in emitted, col.key
+
+
+# ── Review 2026-11-08: PIB seed must describe the emitted contract (PIB#3) ──
+
+
+def test_pib_seed_provider_chain_is_only_the_sec_feed():
+    from showme.manifest.enums import DataMode
+    from showme.manifest.seeds.pib_seed import pib
+
+    assert pib.provider_chain.primary == "sec_edgar"
+    assert pib.provider_chain.fallbacks == []
+    modes = {m.value for m in pib.provider_chain.acceptable_modes}
+    assert modes <= {DataMode.LIVE_OFFICIAL.value, DataMode.PROVIDER_UNAVAILABLE.value}
+    options = {i.name: i for i in pib.inputs}["provider_mode"].options or []
+    assert set(options) <= {DataMode.LIVE_OFFICIAL.value}
+
+
+def test_pib_seed_methodology_names_the_emitted_row_keys():
+    from showme.manifest.seeds.pib_seed import pib
+
+    import re
+
+    for stale in ("filing_date", "form_type", "description", "filing_url"):
+        assert not re.search(rf"\b{stale}\b", pib.methodology), stale
+    for key in ("filingDate", "form", "url"):
+        assert key in pib.methodology
+
+
+def test_pib_seed_must_have_and_as_of_are_returned_by_every_branch():
+    from showme.manifest.seeds.pib_seed import pib
+
+    today = datetime.now(timezone.utc)
+    runs = [
+        _pib_res(FunctionDeps(sec_edgar=_FakeEdgar(_filings(today))), months=12),
+        _pib_res(FunctionDeps(sec_edgar=_FakeEdgar(_filings(today))), months=1, form_types=["S-1"]),
+        _pib_res(FunctionDeps(sec_edgar=None)),
+    ]
+    assert [r.data["status"] for r in runs] == ["ok", "empty", "provider_unavailable"]
+    for res in runs:
+        missing = [k for k in pib.output_contract.must_have if k not in res.data]
+        assert missing == [], (res.data["status"], missing)
+        assert "as_of" in res.data
+
+
+def test_pib_seed_top_level_field_dict_keys_are_emitted():
+    from showme.manifest.seeds.pib_seed import pib
+
+    today = datetime.now(timezone.utc)
+    res = _pib_res(FunctionDeps(sec_edgar=_FakeEdgar(_filings(today))), months=12)
+    top = [k for k in pib.field_dict if "." not in k and "[" not in k]
+    assert [k for k in top if k not in res.data] == []
+    assert res.data["filing_count"] == len(res.data["rows"])
+    assert res.data["latest_filing_date"] == res.data["rows"][0]["filingDate"]
