@@ -37,10 +37,6 @@ _SEC_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 _SEC_FACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
 _WORLDBANK_URL = "https://api.worldbank.org/v2/country/{iso}/indicator/{code}"
 _WB_DEBT_TO_GDP = "GC.DOD.TOTL.GD.ZS"
-_FISCALDATA_AVG_RATES = (
-    "https://api.fiscaldata.treasury.gov/services/api/fiscal_service/"
-    "v2/accounting/od/avg_interest_rates"
-)
 
 # ALLQ per-tenor anchors from the keyless US Treasury daily par-yield curve
 # (``engine/data_sources/bond/ustreasury_adapter.py``). FiscalData only
@@ -109,21 +105,6 @@ def _is_sovereign(token: str) -> bool:
 def _is_equity_instrument(instrument: Instrument | None) -> bool:
     return instrument is not None and getattr(instrument, "asset_class", None) == AssetClass.EQUITY
 
-
-def _treasury_security_type(symbol: str) -> str | None:
-    """Map a Treasury alias like ``US2Y`` / ``US30Y`` to its FiscalData type.
-
-    H-8: notes cover tenors up to 10Y, bonds beyond. Returns ``None`` when
-    no tenor suffix is parseable, leaving the anchor selection unchanged.
-    """
-    match = re.search(r"(\d{1,2})Y\s*$", str(symbol).upper())
-    if not match:
-        return None
-    try:
-        years = float(match.group(1))
-    except ValueError:
-        return None
-    return "Treasury Bonds" if years > 10.0 else "Treasury Notes"
 
 
 async def _sec_lookup_cik(client: Any, ticker: str) -> str | None:
