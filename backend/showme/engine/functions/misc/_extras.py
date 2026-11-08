@@ -287,7 +287,8 @@ class FLYFunction(BaseFunction):
         # reported as an input error, never as an OpenSky outage.
         try:
             limit = max(1, min(int(params.get("limit") or 25), 100))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
+            # OverflowError: JSON 1e400 parses to float('inf'), which int() rejects.
             return _flight_input_error(self.code, "limit", params.get("limit"), "a whole number from 1 to 100")
         try:
             timeout = max(1.0, min(float(params.get("flight_timeout", params.get("timeout", 3))), 5.0))
@@ -321,6 +322,7 @@ class FLYFunction(BaseFunction):
                                             "data_mode": "provider_unavailable",
                                             "provider_errors": [f"opensky: {exc}"]})
         rows = _normalize_opensky(data, callsign_filter, country_filter, limit)
+        source_time = _unix_to_iso(data.get("time")) if isinstance(data, dict) else None
         if not rows:
             payload = _flight_unavailable(callsign_filter, country_filter)
             payload["status"] = "empty"
@@ -343,9 +345,13 @@ class FLYFunction(BaseFunction):
                     for row in rows
                     if row.get("altitude_ft") is not None
                 ],
+                # Top-level keys mirror the seed's card_schema slot keys
+                # (aircraft_count, source_time); cards carry the same keys.
+                "aircraft_count": len(rows),
+                "source_time": source_time,
                 "cards": [
-                    {"label": "Aircraft", "value": len(rows)},
-                    {"label": "Source time", "value": _unix_to_iso(data.get("time")) if isinstance(data, dict) else None},
+                    {"key": "aircraft_count", "label": "Aircraft", "value": len(rows)},
+                    {"key": "source_time", "label": "Source time", "value": source_time},
                 ],
                 "methodology": (
                     "FLY reads OpenSky /states/all and normalizes aircraft state vectors into callsign, "
