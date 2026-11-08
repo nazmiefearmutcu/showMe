@@ -7,9 +7,9 @@
  * (from the payload cards) + projected-mempool-block bar chart (inline SVG)
  * + compact metric table (metric, value, source, context).
  *
- * Honesty: the backend marks this feed data_mode "delayed_reference" even
- * when live — the pane shows that mode verbatim instead of claiming
- * "live_official". The auto-refresh control polls the sidecar on an
+ * Honesty: the backend marks this feed data_mode "live" when every row was
+ * fetched in the same call, and "provider_unavailable" on an outage; the pane
+ * shows that mode verbatim. The auto-refresh control polls the sidecar on an
  * interval (15/30/60s) only while the pane is mounted; "Off" is the
  * default. Provider outages arrive as status "provider_unavailable" with
  * warnings — surfaced verbatim, never backfilled with synthetic vitals.
@@ -243,7 +243,7 @@ export function ONCHPane({ code }: FunctionPaneProps) {
             <FunctionControlGroup>
               <Pill
                 tone={
-                  dataMode === "live_official"
+                  dataMode === "live" || dataMode === "live_official"
                     ? "positive"
                     : dataMode === "delayed_reference"
                       ? "warn"
