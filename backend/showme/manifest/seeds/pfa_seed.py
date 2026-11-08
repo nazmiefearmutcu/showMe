@@ -58,8 +58,9 @@ def pfa() -> FunctionManifest:
                 control=ControlKind.CONSTRAINT_SET,
                 required=True,
                 description=(
-                    "Sector to portfolio weight, as fractions summing to 1.0 (the pane takes percent). "
-                    "Required: the attribution does not infer weights."
+                    "Sector to portfolio weight as a decimal fraction (0.45 for 45%), summing to 1.0 within 1e-4. "
+                    "A percent-scale map (summing to 100) is rejected as input_error. The PFA editor takes percent "
+                    "and divides by 100 before sending. Required: the attribution does not infer weights."
                 ),
             ),
             InputSpec(
@@ -122,21 +123,22 @@ def pfa() -> FunctionManifest:
         table_schema=TableSchema(
             columns=[
                 ColumnSpec(key="sector", label="Sector", kind="tag"),
-                ColumnSpec(key="port_weight", label="Port w", kind="percent", unit="%", format="%.2f"),
-                ColumnSpec(key="bench_weight", label="Bench w", kind="percent", unit="%", format="%.2f"),
-                ColumnSpec(key="allocation_effect", label="Allocation", kind="percent", unit="%", format="%.4f"),
-                ColumnSpec(key="selection_effect", label="Selection", kind="percent", unit="%", format="%.4f"),
-                ColumnSpec(key="interaction_effect", label="Interaction", kind="percent", unit="%", format="%.4f"),
+                # Percent columns read the *_pct twins (value x 100); the handler's decimals are not % values.
+                ColumnSpec(key="port_weight_pct", label="Port w", kind="percent", unit="%", format="%.2f"),
+                ColumnSpec(key="bench_weight_pct", label="Bench w", kind="percent", unit="%", format="%.2f"),
+                ColumnSpec(key="allocation_effect_pct", label="Allocation", kind="percent", unit="%", format="%.4f"),
+                ColumnSpec(key="selection_effect_pct", label="Selection", kind="percent", unit="%", format="%.4f"),
+                ColumnSpec(key="interaction_effect_pct", label="Interaction", kind="percent", unit="%", format="%.4f"),
             ],
             sortable=True,
             filterable=True,
         ),
         card_schema=CardSchema(
             slots=[
-                CardSlot(key="active_return", label="Active return", kind="big_number", unit="%"),
-                CardSlot(key="allocation", label="Allocation", kind="kpi", unit="%"),
-                CardSlot(key="selection", label="Selection", kind="kpi", unit="%"),
-                CardSlot(key="interaction", label="Interaction", kind="kpi", unit="%"),
+                CardSlot(key="active_return_pct", label="Active return", kind="big_number", unit="%"),
+                CardSlot(key="allocation_pct", label="Allocation", kind="kpi", unit="%"),
+                CardSlot(key="selection_pct", label="Selection", kind="kpi", unit="%"),
+                CardSlot(key="interaction_pct", label="Interaction", kind="kpi", unit="%"),
                 CardSlot(key="sectors", label="Sectors", kind="kpi"),
             ],
         ),

@@ -123,6 +123,12 @@ class PFAFunction(BaseFunction):
                 "selection_effect": se,
                 "interaction_effect": ie,
                 "total_effect": ae + se + ie,
+                # Percent-point twins (value x 100) for display columns; the decimals above stay the contract.
+                "port_weight_pct": wp * 100.0,
+                "bench_weight_pct": wb * 100.0,
+                "allocation_effect_pct": ae * 100.0,
+                "selection_effect_pct": se * 100.0,
+                "interaction_effect_pct": ie * 100.0,
             })
         return FunctionResult(
             code=self.code, instrument=None,
@@ -142,6 +148,10 @@ class PFAFunction(BaseFunction):
                     "allocation": ae_total,
                     "selection": se_total,
                     "interaction": ie_total,
+                    "active_return_pct": (rp_total - rb_total) * 100.0,
+                    "allocation_pct": ae_total * 100.0,
+                    "selection_pct": se_total * 100.0,
+                    "interaction_pct": ie_total * 100.0,
                     "sectors": len(rows),
                 },
                 "methodology": (
@@ -154,6 +164,7 @@ class PFAFunction(BaseFunction):
                     "selection_effect": "benchmark_weight * (portfolio_sector_return - benchmark_sector_return).",
                     "interaction_effect": "(portfolio_weight - benchmark_weight) * (portfolio_sector_return - benchmark_sector_return).",
                     "total_effect": "Allocation + selection + interaction for the sector.",
+                    "*_pct": "The same value in percent points (decimal x 100); used for percent-formatted display.",
                 },
             },
             sources=["brinson_model"],
