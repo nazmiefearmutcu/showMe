@@ -67,7 +67,7 @@ def _norm_ppf(p: float) -> float:
 
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from showme.engine.core.instrument import Instrument
-from showme.engine.functions.portfolio.return_series import align_return_series, close_to_daily_returns
+from showme.engine.functions.portfolio.return_series import close_to_daily_returns
 from showme.engine.portfolio.state import PortfolioState
 
 
@@ -155,10 +155,10 @@ class PVARFunction(BaseFunction):
                 except Exception:
                     return p.instrument.symbol, pd.Series(dtype=float), None
             rs = await asyncio.gather(*(_ret(p) for p in eligible))
-            # PVAR#4: one common return calendar. Pairwise alignment on the union
-            # of dates zero-filled equity returns on crypto-only days, so the
-            # one-day P&L mixed a weekday and a weekend sample. Intersection keeps
-            # only the dates every position traded, and `samples` reports that count.
+            # PVAR#4: one common return calendar. Each symbol's returns span its
+            # own trading days, so they are not comparable on shared dates until
+            # re-based onto the dates every position traded (see
+            # _common_calendar_returns).
             aligned_input = [(s, r) for s, r, _ in rs]
             if not any(not r.empty for _, r in aligned_input):
                 # Genuine network/data outage — never fabricate numbers.
@@ -166,7 +166,7 @@ class PVARFunction(BaseFunction):
                     self.code, confidence, params, instrument,
                     "no live return history (yfinance returned no data)",
                 )
-            rets_df = align_return_series(aligned_input, policy="intersection")
+            rets_df = _common_calendar_returns(aligned_input)
             last_map = {s: px for s, _, px in rs if px is not None}
             if len(rets_df) < _MIN_COMMON_SAMPLES:
                 # Too few shared dates for a meaningful covariance; say so rather
@@ -474,6 +474,32 @@ def _download_returns(symbol: str, days: int, timeout: float) -> tuple[pd.Series
         return returns, float(close.iloc[-1])
     except Exception:
         return pd.Series(dtype=float), None
+
+
+def _common_calendar_returns(pairs: list[tuple[str, pd.Series]]) -> pd.DataFrame:
+    """Daily returns for every symbol over the dates all of them traded.
+
+    Each per-symbol return spans that symbol's own previous close. Compounding
+    a symbol's returns gives a price path (up to a constant), and the ratio of
+    that path at two dates is the exact close-to-close move between them. So
+    re-basing each path onto the common dates yields returns that all span the
+    same calendar interval (for example Friday to Monday for both an equity and
+    a crypto asset). The first common date only anchors the path and gives no
+    return.
+    """
+    paths: dict[str, pd.Series] = {}
+    for symbol, series in pairs:
+        if series is None or series.empty:
+            continue
+        clean = pd.to_numeric(series, errors="coerce").dropna()
+        if clean.empty:
+            continue
+        paths[str(symbol)] = (1.0 + clean).cumprod()
+    if not paths:
+        return pd.DataFrame()
+    frame = pd.concat(paths, axis=1, sort=True).sort_index()
+    common = frame.dropna(how="any")
+    return common.pct_change().dropna(how="any")
 
 
 def _yf_symbol(symbol: str) -> str:
