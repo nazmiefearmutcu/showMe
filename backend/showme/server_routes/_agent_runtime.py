@@ -819,7 +819,9 @@ def _route_function_params(code: str, params: dict[str, Any]) -> dict[str, Any]:
         # values; a caller-supplied limit/days/range still wins.
         if "limit" not in merged:
             defaults.pop("limit", None)
-        if "days" not in merged and "range" not in merged:
+        # An unrecognised caller range (no days mapping) must not keep the
+        # injected 120 days either; only a recognised range sets days.
+        if "days" not in merged and _days_from_range(merged.get("range")) is None:
             defaults.pop("days", None)
     if code.upper() == "FRH" and "symbols" not in merged:
         defaults.pop("symbols", None)
