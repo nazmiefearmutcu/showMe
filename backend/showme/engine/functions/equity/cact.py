@@ -181,7 +181,8 @@ class CACTFunction(BaseFunction):
         corporate_call = aw_get(self, "/calendar/corporate", {**window, "types": "dividend,split", "symbols": symbol})
         filings_call = aw_get(self, "/filings", {
             "symbols": symbol,
-            "forms": "8-K",
+            # Amendments carry items too (an 8-K/A often reports the 5.02 officer change).
+            "forms": "8-K,8-K/A",
             "days": min(max(days_back, 1), _FILINGS_MAX_DAYS),
             "limit": 200,
         })

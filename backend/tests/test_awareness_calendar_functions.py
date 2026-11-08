@@ -587,6 +587,8 @@ def test_cact_requests_365_days_of_8k_filings_and_warns_only_beyond_that() -> No
     result = _run(fn.execute(symbol="AAPL"))
     filings_params = [p for path, p in fn._awareness.calls if path == "/filings"][0]
     assert filings_params["days"] == 365
+    # Amendments carry items too: AAPL's 2026-09-01 5.02 officer change was an 8-K/A.
+    assert set(filings_params["forms"].split(",")) == {"8-K", "8-K/A"}
     assert not any("cover the most recent" in w for w in result.warnings)
 
     fn = CACTFunction(FunctionDeps())
