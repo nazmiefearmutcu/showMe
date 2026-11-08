@@ -53,3 +53,17 @@ def test_fxh1_mixed_sides_top_level_side_is_none() -> None:
         ],
     ))
     assert result.data["exposure_side"] is None
+
+
+# ── FXH#2: manifest units match the home (quote) currency the handler uses ──
+
+
+def test_fxh2_pnl_and_cost_units_are_home_quote_currency_not_base() -> None:
+    """Was: hedge_cost/pnl_* declared unit='base_ccy' and the methodology said
+    'base currency', while the handler computes them in home (quote) currency."""
+    from showme.manifest.seeds.fxh_seed import fxh
+
+    for key in ("hedge_cost", "pnl_unhedged", "pnl_hedged"):
+        assert fxh.field_dict[key].unit == "quote_ccy", key
+    assert "base currency" not in fxh.methodology.lower()
+    assert "home" in fxh.methodology.lower()
