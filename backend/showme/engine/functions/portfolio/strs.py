@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from showme.engine.core.base_data_source import DataKind, DataRequest
@@ -84,6 +85,27 @@ class STRSFunction(BaseFunction):
         sources = ["stress_scenarios", "portfolio_state"]
         if refresh_prices or include_sectors:
             sources.insert(0, "yfinance")
+        # Bond funds in the GFC/COVID windows take their own measured window return.
+        # Fetch it only for the windows this request runs; custom shocks use none.
+        bond_symbols = sorted({
+            p["symbol"] for p in positions_payload
+            if stress.resolve_shock_bucket(p["symbol"], p["asset_class"]) == "BOND"
+        })
+        if action == "compare":
+            window_keys = list(stress.MEASURED_WINDOWS)
+        elif action == "custom":
+            window_keys = []
+        else:
+            named = (params.get("scenario") or params.get("key") or "GFC_2008").upper()
+            window_keys = [named] if named in stress.MEASURED_WINDOWS else []
+        measured_by_key: dict[str, dict[str, float | None]] = {}
+        if bond_symbols and window_keys:
+            history_timeout = float(params.get("history_timeout", 8))
+            measured_by_key = await self._measured_window_returns(
+                bond_symbols, window_keys, timeout=history_timeout,
+            )
+            if any(v is not None for win in measured_by_key.values() for v in win.values()):
+                sources.insert(0, "yfinance_history")
         if action == "compare":
             keys = params.get("scenarios") or list(stress.SCENARIOS)
             data = stress.compare_scenarios(
@@ -91,6 +113,7 @@ class STRSFunction(BaseFunction):
                 keys,
                 sector_lookup=sector_lookup,
                 scale=scale,
+                measured_by_key=measured_by_key,
             )
             compare_warnings = _unique_warnings(row.get("warnings", []) for row in data)
             return FunctionResult(code=self.code, instrument=None,
@@ -102,6 +125,9 @@ class STRSFunction(BaseFunction):
                                             "positions": len(positions_payload),
                                             "worst_total_pnl": data[0]["total_pnl"] if data else 0,
                                             "price_source": "live_quote" if refresh_prices else "portfolio_state_cost",
+                                            "unpriced_positions": max(
+                                                (row["unpriced_positions"] for row in data), default=0,
+                                            ),
                                         },
                                         "methodology": _methodology(),
                                         "field_dictionary": _field_dictionary()},
@@ -128,7 +154,10 @@ class STRSFunction(BaseFunction):
         if not sc:
             return FunctionResult(code=self.code, instrument=None, data={},
                                   warnings=[f"unknown scenario {key}"])
-        data = stress.apply_scenario(positions_payload, sc, sector_lookup=sector_lookup, scale=scale)
+        data = stress.apply_scenario(
+            positions_payload, sc, sector_lookup=sector_lookup, scale=scale,
+            measured=measured_by_key.get(key) if key in stress.MEASURED_WINDOWS else None,
+        )
         return FunctionResult(code=self.code, instrument=None,
                               warnings=list(data.get("warnings", [])),
                               data={**data, "rows": data.get("positions", []),
@@ -156,6 +185,41 @@ class STRSFunction(BaseFunction):
                 return sym, 0.0
         results = await asyncio.gather(*(_q(s) for s in symbols))
         return dict(results)
+
+    async def _measured_window_returns(
+        self, symbols: list[str], keys: list[str], timeout: float = 8.0,
+    ) -> dict[str, dict[str, float | None]]:
+        """Measured price return of each bond fund over each named window.
+
+        A failed or thin history yields ``None`` for that fund and window, which the
+        scenario reports as unavailable. Nothing is estimated or substituted.
+        """
+        out: dict[str, dict[str, float | None]] = {k: {s: None for s in symbols} for k in keys}
+        if not self.deps.yfinance:
+            return out
+
+        async def _one(sym: str, key: str) -> None:
+            start, end = stress.MEASURED_WINDOWS[key]
+            request = DataRequest(
+                kind=DataKind.OHLCV,
+                instrument=Instrument(symbol=sym, asset_class=AssetClass.ETF),
+                start=datetime(start.year, start.month, start.day, tzinfo=timezone.utc),
+                end=datetime(end.year, end.month, end.day, tzinfo=timezone.utc) + timedelta(days=1),
+                interval="1d",
+                extra={"timeout": max(0.5, timeout)},
+            )
+            try:
+                df = await asyncio.wait_for(
+                    self.deps.yfinance.fetch(request),
+                    timeout=max(0.75, timeout + 0.25),
+                )
+                closes = [(_as_date(idx), close) for idx, close in zip(df.index, df["close"])]
+                out[key][sym] = stress.measured_window_return(closes, start, end)
+            except Exception:
+                out[key][sym] = None
+
+        await asyncio.gather(*(_one(s, k) for s in symbols for k in keys))
+        return out
 
     async def _sectors(self, symbols: list[str], lookup: dict[str, str], timeout: float = 2.0) -> None:
         async def _s(sym: str) -> None:
@@ -186,6 +250,12 @@ def _asset_class_for_quote(symbol: str) -> AssetClass:
     if len(upper) == 6 and upper.endswith(("USD", "EUR", "JPY", "GBP", "CHF", "CAD", "AUD")):
         return AssetClass.FX
     return AssetClass.EQUITY
+
+
+def _as_date(value: Any) -> Any:
+    """Calendar date of a history index entry (pandas Timestamp or datetime)."""
+    day = getattr(value, "date", None)
+    return day() if callable(day) else value
 
 
 def _unique_warnings(groups: Any) -> list[str]:
@@ -219,4 +289,6 @@ def _field_dictionary() -> dict[str, str]:
         "horizon_days": "Historical or assumed scenario horizon.",
         "shock": "Applied return shock for a position.",
         "market_value_post": "Position market value after the shock.",
+        "shock_source": "How the shock was set: hand_set, measured_window, or unavailable (not estimated).",
+        "unpriced_positions": "Positions left unshocked because their measured window return was unavailable.",
     }

@@ -1,27 +1,46 @@
-"""Stress test scenarios — predefined historical shocks + custom shocks.
+"""Stress test scenarios — hand-set parametric shocks + custom shocks.
 
 Each scenario is a mapping: asset-class / sector / symbol → return shock (decimal).
 The engine applies the shock to a portfolio's positions, recomputing market value
 under the stressed regime. Custom shocks may be combined linearly with a scaling
 factor.
+
+Bond funds in the GFC_2008 and COVID_2020 windows are the one exception to the
+hand-set table: they take their own measured window return (``MEASURED_WINDOWS``),
+computed by the caller from price history. When that return is unavailable the
+position is left unshocked and flagged, never estimated.
 """
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Any
 
 
 # Smallest shock a long position can take (a full loss of its market value).
 MIN_SHOCK = -1.0
 
-# Treasury / government / aggregate bond funds. They are typed ETF or FUND by
-# the instrument master, but they must take the BOND shock, not the equity-style
-# ETF/FUND shock (TLT rose in both the GFC and COVID windows).
+# Treasury and aggregate bond funds. They are typed ETF or FUND by the instrument
+# master, but they must not take the equity-style ETF/FUND shock. Credit (HYG, JNK,
+# LQD) and inflation-linked (TIP) funds are deliberately not here: the BOND row does
+# not describe them and they keep their ETF/FUND bucket.
 BOND_ETF_SYMBOLS: frozenset[str] = frozenset({
     "TLT", "IEF", "SHY", "GOVT", "VGLT", "VGIT", "VGSH", "SPTL", "EDV", "ZROZ",
-    "TIP", "BND", "AGG", "LQD", "HYG", "JNK",
+    "BND", "AGG",
 })
+
+# Scenario windows whose bond-fund shocks are measured, not hand-set. Both ends are
+# inclusive calendar dates. The caller fetches each bond fund's history over the
+# window and passes the price return to ``apply_scenario(measured=...)``.
+MEASURED_WINDOWS: dict[str, tuple[date, date]] = {
+    "GFC_2008": (date(2008, 9, 15), date(2009, 3, 9)),
+    "COVID_2020": (date(2020, 2, 19), date(2020, 3, 23)),
+}
+
+# Largest gap allowed between a window boundary and the first / last close used.
+MEASURED_WINDOW_MAX_GAP_DAYS = 5
 
 
 @dataclass
@@ -38,8 +57,8 @@ class StressScenario:
 # ─────────────────────────────────────────────────────────────────
 # Predefined scenarios. Shocks are hand-set parametric decimals calibrated to
 # each scenario's narrative (not replayed from return history; not investment
-# advice). Exceptions: TLT in GFC_2008 and COVID_2020 carries the measured Yahoo
-# close price return over the named window (inclusive end dates).
+# advice). Bond funds in GFC_2008 and COVID_2020 are measured instead (see
+# MEASURED_WINDOWS), so the BOND row there is not used for them.
 # ─────────────────────────────────────────────────────────────────
 SCENARIOS: dict[str, StressScenario] = {
     "GFC_2008": StressScenario(
@@ -51,8 +70,6 @@ SCENARIOS: dict[str, StressScenario] = {
             "COMMODITY": -0.50, "BOND": -0.05, "FX": -0.10,
             "FUND": -0.45, "DERIVATIVE": -0.40,
         },
-        # TLT: measured Yahoo chart close return 2008-09-15 -> 2009-03-09 (inclusive).
-        symbol_shocks={"TLT": 0.0574},
         sector_shocks={
             "Financials": -0.78, "Real Estate": -0.70, "Energy": -0.55,
             "Materials": -0.50, "Consumer Discretionary": -0.45,
@@ -70,8 +87,6 @@ SCENARIOS: dict[str, StressScenario] = {
             "COMMODITY": -0.65, "BOND": +0.07, "FX": -0.05,
             "FUND": -0.30, "DERIVATIVE": -0.30,
         },
-        # TLT: measured Yahoo chart close return 2020-02-19 -> 2020-03-23 (inclusive).
-        symbol_shocks={"TLT": 0.1407},
         sector_shocks={
             "Energy": -0.65, "Financials": -0.45, "Industrials": -0.40,
             "Real Estate": -0.40, "Consumer Discretionary": -0.35,
@@ -203,12 +218,43 @@ def custom_scenario(
 def resolve_shock_bucket(symbol: str, asset_class: str) -> str:
     """Asset-class bucket a position is shocked under.
 
-    Bond funds typed as ETF/FUND move to the BOND bucket.
+    Treasury and aggregate bond funds typed as ETF/FUND move to the BOND bucket.
     """
     ac = str(asset_class or "EQUITY").upper()
     if ac in {"ETF", "FUND"} and str(symbol or "").upper() in BOND_ETF_SYMBOLS:
         return "BOND"
     return ac
+
+
+def measured_window_return(
+    closes: Any,
+    start: date,
+    end: date,
+    *,
+    max_gap_days: int = MEASURED_WINDOW_MAX_GAP_DAYS,
+) -> float | None:
+    """Price return from the first to the last close inside ``[start, end]``.
+
+    ``closes`` is an iterable of ``(date, close)``. Returns ``None`` when fewer than
+    two finite positive closes fall inside the window, or when the first or last
+    close sits more than ``max_gap_days`` from the window boundary (a coverage gap,
+    not the window itself).
+    """
+    inside: list[tuple[date, float]] = []
+    for day, close in closes:
+        if close is None:
+            continue
+        value = float(close)
+        if math.isfinite(value) and value > 0 and start <= day <= end:
+            inside.append((day, value))
+    if len(inside) < 2:
+        return None
+    inside.sort()
+    first_day, first_close = inside[0]
+    last_day, last_close = inside[-1]
+    if (first_day - start).days > max_gap_days or (end - last_day).days > max_gap_days:
+        return None
+    return last_close / first_close - 1.0
 
 
 def apply_scenario(
@@ -217,11 +263,17 @@ def apply_scenario(
     *,
     sector_lookup: dict[str, str] | None = None,
     scale: float = 1.0,
+    measured: dict[str, float | None] | None = None,
 ) -> dict[str, Any]:
     """Apply a stress scenario to a list of position dicts.
 
     ``positions`` items must contain: ``symbol``, ``asset_class``, ``market_value``.
     Optional: ``sector`` (or use ``sector_lookup`` keyed by symbol).
+
+    ``measured`` is set only for a scenario in ``MEASURED_WINDOWS``. It maps each
+    bond-fund symbol to its measured window return, or ``None`` when that return
+    could not be obtained. A bond fund in the BOND bucket then takes the measured
+    value, or is left unshocked (``shock_source == "unavailable"``) with a warning.
     Returns a stressed portfolio + per-position breakdown.
     """
     sector_lookup = sector_lookup or {}
@@ -229,17 +281,40 @@ def apply_scenario(
     total_pre = 0.0
     total_post = 0.0
     warnings: list[str] = []
+    unpriced = 0
     for p in positions:
         sym = p["symbol"]
         ac = resolve_shock_bucket(sym, p.get("asset_class", "EQUITY"))
         sector = p.get("sector") or sector_lookup.get(sym)
         mv = float(p.get("market_value", 0) or 0)
-        # Resolve shock — symbol > sector > asset_class.
-        shock = scenario.symbol_shocks.get(sym)
-        if shock is None and sector:
-            shock = scenario.sector_shocks.get(sector)
+        if measured is not None and ac == "BOND" and str(sym).upper() in BOND_ETF_SYMBOLS:
+            shock: float | None = measured.get(sym)
+            source = "measured_window" if shock is not None else "unavailable"
+        else:
+            # Resolve shock — symbol > sector > asset_class.
+            shock = scenario.symbol_shocks.get(sym)
+            if shock is None and sector:
+                shock = scenario.sector_shocks.get(sector)
+            if shock is None:
+                shock = scenario.asset_class_shocks.get(ac, 0.0)
+            source = "hand_set"
         if shock is None:
-            shock = scenario.asset_class_shocks.get(ac, 0.0)
+            unpriced += 1
+            warnings.append(
+                f"{sym}: measured window return unavailable for {scenario.name}; "
+                "position left unshocked (not estimated)"
+            )
+            rows.append({
+                "symbol": sym, "asset_class": ac, "sector": sector,
+                "shock": None, "shock_unfloored": None, "floored": False,
+                "shock_source": source,
+                "market_value_pre": mv,
+                "market_value_post": mv,
+                "pnl": 0.0,
+            })
+            total_pre += mv
+            total_post += mv
+            continue
         raw_shock = float(shock) * scale
         # A long position cannot lose more than its market value: floor the
         # scaled shock at -100% and say so, instead of returning negative MV.
@@ -254,6 +329,7 @@ def apply_scenario(
         rows.append({
             "symbol": sym, "asset_class": ac, "sector": sector,
             "shock": shock, "shock_unfloored": raw_shock, "floored": floored,
+            "shock_source": source,
             "market_value_pre": mv,
             "market_value_post": mv_post,
             "pnl": mv_post - mv,
@@ -269,6 +345,7 @@ def apply_scenario(
         "total_market_value_post": total_post,
         "total_pnl": total_post - total_pre,
         "total_return_pct": (total_post / total_pre - 1.0) * 100 if total_pre else 0.0,
+        "unpriced_positions": unpriced,
         "positions": rows,
         "warnings": warnings,
     }
@@ -280,6 +357,7 @@ def compare_scenarios(
     *,
     sector_lookup: dict[str, str] | None = None,
     scale: float = 1.0,
+    measured_by_key: dict[str, dict[str, float | None]] | None = None,
 ) -> list[dict[str, Any]]:
     keys = keys or list(SCENARIOS)
     out = []
@@ -287,12 +365,18 @@ def compare_scenarios(
         sc = SCENARIOS.get(k.upper())
         if not sc:
             continue
-        r = apply_scenario(positions, sc, sector_lookup=sector_lookup, scale=scale)
+        measured = None
+        if measured_by_key is not None and k.upper() in MEASURED_WINDOWS:
+            measured = measured_by_key.get(k.upper(), {})
+        r = apply_scenario(
+            positions, sc, sector_lookup=sector_lookup, scale=scale, measured=measured,
+        )
         out.append({
             "key": k, "name": sc.name,
             "horizon_days": sc.horizon_days,
             "total_pnl": r["total_pnl"],
             "total_return_pct": r["total_return_pct"],
+            "unpriced_positions": r["unpriced_positions"],
             "warnings": r["warnings"],
         })
     out.sort(key=lambda x: x["total_pnl"])
