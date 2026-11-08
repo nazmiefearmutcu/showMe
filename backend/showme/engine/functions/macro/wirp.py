@@ -1,20 +1,18 @@
-"""WIRP — World Interest Rate Probability (live, keyless CME-FedWatch math).
+"""WIRP — World Interest Rate Probability.
 
-Priority of sources for the Fed row:
+Probabilities come only from a real market-implied source:
 
 1. ``deps.cme_fedwatch`` adapter when wired — the canonical FedWatch feed.
-2. **Live keyless market data** (the de-garbage default):
-     * current target range  → FRED ``DFEDTARU`` / ``DFEDTARL`` CSV (no key)
-     * effective funds rate    → FRED ``DFF`` CSV (no key)
-     * market-implied near-term rate → 13-week T-bill ``^IRX`` (yfinance)
-   From these we recover the market-implied policy move and discretize it into
-   cut / hold / hike buckets per forward FOMC meeting using the standard
-   CME-FedWatch convention (normal CDF over 25 bp buckets).
-3. A clearly-labelled reference snapshot — **only** on a genuine outage of both
-   (1) and (2).
 
-ECB / BoE have no robust *keyless* market-implied rate source, so they are
-reported honestly as ``provider_unavailable`` rather than padded with constants.
+Without that adapter there is no keyless fed funds / SOFR futures feed, so the
+keyless path reports honest anchor values only: the FRED target range
+(``DFEDTARU`` / ``DFEDTARL``), EFFR (``DFF``) and the 13-week T-bill yield
+(``^IRX``, yfinance). A T-bill yield is a bill basis, not a policy-rate
+expectation, so no hike/cut odds are derived from it. That state is reported
+as ``provider_unavailable`` with zero rows.
+
+ECB / BoE have no keyless market-implied source either and are reported as
+``provider_unavailable``. Nothing is padded with constants.
 """
 
 from __future__ import annotations
@@ -22,7 +20,6 @@ from __future__ import annotations
 import asyncio
 import math
 import time
-from datetime import date, datetime, timezone
 from typing import Any
 
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
@@ -32,21 +29,6 @@ FRED_TARGET_UPPER_CSV = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=DFED
 FRED_TARGET_LOWER_CSV = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=DFEDTARL"
 FRED_EFFR_CSV = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=DFF"
 
-# Standard-deviation of the implied path used to spread a point move across
-# the cut/hold/hike buckets. 12.5 bp = half a 25 bp step, the market default.
-_PATH_SIGMA_BP = 12.5
-
-# Forward FOMC decision-day calendar (second meeting day). Maintained ~quarterly
-# against https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm
-# Used only to *date* the forward meetings; the probabilities themselves come
-# from live market data, never from this table.
-_FOMC_CALENDAR_2026 = [
-    "2026-06-17",
-    "2026-07-29",
-    "2026-09-16",
-    "2026-10-28",
-    "2026-12-09",
-]
 
 
 @FunctionRegistry.register
@@ -151,81 +133,45 @@ class WIRPFunction(BaseFunction):
         target_mid = None
         if upper is not None and lower is not None:
             target_mid = (upper[1] + lower[1]) / 2.0
-        elif effr is not None:
-            # Fall back to EFFR rounded to the standing 25 bp grid.
-            target_mid = round(effr[1] * 4) / 4
-
-        # Only a *total* outage (no FRED target range AND no implied rate) is
-        # honestly provider_unavailable. If FRED gave us a target range but
-        # ^IRX did not, we still build real rows anchored on the FRED midpoint.
-        if target_mid is None and implied_rate is None:
-            status = "provider_unavailable"
-            data_mode = "provider_unavailable"
-            source_mode = "provider_unavailable"
-            warnings.append(
-                "live futures-implied probability source returned no usable "
-                "target range or implied near-term rate"
-            )
-            return _result(
-                self.code, central_bank, [], status, data_mode, source_mode,
-                anchor, warnings, sources, meetings_limit,
-            )
-
-        if target_mid is None:
-            # Implied rate present but no FRED range: anchor the target on the
-            # implied rate snapped to the 25 bp grid so the move math stays sane.
-            target_mid = round(implied_rate * 4) / 4
-            warnings.append(
-                "FRED target range unavailable; anchoring on the implied "
-                "near-term rate rounded to the 25 bp grid"
-            )
 
         irx_available = implied_rate is not None
-        if not irx_available:
-            # Honest fallback: with no ^IRX reading we use the current FRED
-            # target midpoint as the near-term anchor (zero implied move). This
-            # is a real, live FRED-derived number, not a constant.
-            implied_rate = target_mid
-            source_mode = "live_fred_target_no_irx"
-            warnings.append(
-                "^IRX 13-week T-bill near-term rate unavailable; anchoring on "
-                "the live FRED target midpoint (no implied move applied)"
-            )
-
-        rows = _live_fed_rows(
-            target_mid=target_mid,
-            implied_rate=implied_rate,
-            meetings_limit=meetings_limit,
-        )
-        sources.append("fred")
-        if irx_available:
-            sources.append("yfinance")
-        anchor = {
-            "current_target_mid": round(target_mid, 4),
+        # Keyless inputs are reference rates, not a market policy path. The
+        # target midpoint is never substituted from EFFR or the T-bill yield.
+        anchor: dict[str, Any] = {
+            "current_target_mid": round(target_mid, 4) if target_mid is not None else None,
             "current_target_upper": round(upper[1], 4) if upper else None,
             "current_target_lower": round(lower[1], 4) if lower else None,
             "effr": round(effr[1], 4) if effr else None,
-            "implied_near_term_rate": round(implied_rate, 4) if implied_rate is not None else None,
-            "implied_near_term_source": (
-                "^IRX 13-week T-bill" if irx_available else "FRED target midpoint (IRX unavailable)"
+            "effr_as_of": effr[0] if effr else None,
+            "tbill_13w_pct": round(implied_rate, 4) if irx_available else None,
+            "tbill_as_of": irx_asof,
+            "tbill_minus_target_mid_bp": (
+                round((implied_rate - target_mid) * 100.0, 2)
+                if irx_available and target_mid is not None
+                else None
             ),
-            "as_of": irx_asof,
+            "basis_note": (
+                "The 13-week T-bill yield and EFFR are reference rates, not a market "
+                "policy-rate expectation; hike/cut odds are not derived from them."
+            ),
         }
-        if effr:
-            anchor["effr_as_of"] = effr[0]
+        if upper or lower or effr:
+            sources.append("fred")
+        if irx_available:
+            sources.append("yfinance")
 
-        if not rows:
-            status = "empty"
-            data_mode = "provider_unavailable"
-            source_mode = "provider_unavailable"
+        if target_mid is None and not irx_available:
             warnings.append(
-                "FOMC decision calendar exhausted (last known entry "
-                f"{_FOMC_CALENDAR_2026[-1]}); update _FOMC_CALENDAR_2026"
+                "live keyless sources returned no usable target range or 13-week T-bill rate"
             )
-
+        warnings.append(
+            "Hike/cut probabilities unavailable: no keyless market-implied policy-rate source. They need fed funds "
+            "or SOFR futures (CME FedWatch), which need a key. Showing the "
+            "FRED target range, EFFR and 13-week T-bill basis only."
+        )
         return _result(
-            self.code, central_bank, rows, status, data_mode, source_mode,
-            anchor, warnings, sources, meetings_limit,
+            self.code, central_bank, [], "provider_unavailable", "provider_unavailable",
+            "provider_unavailable", anchor, warnings, sources, meetings_limit,
         )
 
 
@@ -255,31 +201,24 @@ def _result(
             })
 
     methodology = (
-        "WIRP shows market-implied probabilities of the next central-bank "
-        "decisions. For each meeting cut+hold+hike sum to 1; implied_change_bp "
-        "is (-25 * cut_25bp) + (25 * hike_25bp). The Fed row is built live and "
-        "keyless: the current target range comes from FRED DFEDTARU/DFEDTARL, "
-        "the effective rate from FRED DFF, and the market-implied near-term "
-        "policy rate from the 13-week T-bill (^IRX) via yfinance. The implied "
-        "move (implied rate minus the current target midpoint) is discretized "
-        "across the cut/hold/hike buckets with the standard CME-FedWatch normal "
-        f"convention (sigma = {_PATH_SIGMA_BP:g} bp), then scaled along the "
-        "forward FOMC calendar so later meetings carry a wider implied move. "
-        "When a CME FedWatch adapter is wired it takes precedence as the "
-        "canonical feed. ECB/BoE have no robust keyless implied-rate source and "
-        "are reported as provider_unavailable rather than padded with constants."
+        "WIRP shows market-implied probabilities of the next central-bank decisions. "
+        "For each meeting cut+hold+hike sum to 1 and implied_change_bp is "
+        "(-25 * cut_25bp) + (25 * hike_25bp). Probabilities come only from the CME "
+        "FedWatch adapter when it is wired. The keyless path reports the FRED target "
+        "range, EFFR (FRED DFF) and the 13-week T-bill (^IRX) as reference anchors and "
+        "does not derive hike/cut odds from them. ECB/BoE have no robust keyless "
+        "implied-rate source and are reported as provider_unavailable rather than padded."
     )
 
     cards: list[dict[str, Any]] = [
         {"label": "Central bank", "value": central_bank},
         {"label": "Meetings", "value": len(rows)},
-        {"label": "Next hold %", "value": round(rows[0]["hold"] * 100, 2) if rows else None},
         {"label": "Mode", "value": data_mode},
     ]
     if anchor.get("current_target_mid") is not None:
         cards.append({"label": "Target mid %", "value": anchor["current_target_mid"]})
-    if anchor.get("implied_near_term_rate") is not None:
-        cards.append({"label": "Implied near-term %", "value": anchor["implied_near_term_rate"]})
+    if anchor.get("tbill_13w_pct") is not None:
+        cards.append({"label": "13w T-bill %", "value": anchor["tbill_13w_pct"]})
 
     return FunctionResult(
         code=code,
@@ -380,7 +319,7 @@ async def _fetch_irx_implied_rate() -> tuple[float | None, str | None]:
 
 
 # --------------------------------------------------------------------------- #
-# CME-FedWatch bucket math (live FRED/yfinance path)
+# Bucket helper (pure math; not used by the keyless path)
 # --------------------------------------------------------------------------- #
 def _normal_cdf(x: float) -> float:
     """Standard normal CDF via the error function (stdlib only)."""
@@ -409,68 +348,6 @@ def _bucket_probabilities(move_bp: float, sigma_bp: float) -> tuple[float, float
     if total <= 0:
         return 0.0, 1.0, 0.0
     return cut / total, hold / total, hike / total
-
-
-def _live_fed_rows(
-    *, target_mid: float, implied_rate: float, meetings_limit: int
-) -> list[dict[str, Any]]:
-    """Build per-meeting cut/hold/hike rows from the live implied move.
-
-    The near-term implied move (implied_rate - target_mid) is the cumulative
-    move priced into roughly the next quarter. We scale it across the forward
-    FOMC calendar so the n-th meeting carries the move expected to have
-    accumulated by that meeting (linear in meeting index), then bucket each.
-    """
-    meetings = _forward_fomc_dates(meetings_limit)
-    if not meetings:
-        return []
-
-    total_move_bp = (implied_rate - target_mid) * 100.0
-    n = len(meetings)
-    rows: list[dict[str, Any]] = []
-    for idx, mdate in enumerate(meetings, start=1):
-        # Cumulative fraction of the priced move expected by meeting ``idx``.
-        frac = idx / n
-        meeting_move_bp = total_move_bp * frac
-        # Sigma widens with horizon (uncertainty compounds across meetings).
-        sigma = _PATH_SIGMA_BP * math.sqrt(idx)
-        cut, hold, hike = _bucket_probabilities(meeting_move_bp, sigma)
-        # Round cut/hike then derive hold as the exact remainder so the three
-        # always sum to 1.0 (independent 6 dp rounding can drift ~2e-6 and trip
-        # the wirp_probs_sum_to_one invariant).
-        cut_r = round(cut, 6)
-        hike_r = round(hike, 6)
-        hold_r = round(1.0 - cut_r - hike_r, 6)
-        rows.append({
-            "central_bank": "FED",
-            "date": mdate,
-            "cut_25bp": cut_r,
-            "hold": hold_r,
-            "hike_25bp": hike_r,
-            "implied_change_bp": round((-25 * cut_r) + (25 * hike_r), 2),
-            "source_mode": "live_fed_funds_futures",
-        })
-    return rows
-
-
-def _forward_fomc_dates(limit: int) -> list[str]:
-    """Return upcoming FOMC decision dates from today, capped at ``limit``.
-
-    HNT-18: the calendar is exhausted past its last entry — serving the
-    stale dates as "forward meetings" would mislabel past decisions as
-    upcoming. Return ``[]`` instead; ``execute()`` reports the empty
-    calendar with an explicit update warning.
-    """
-    today = datetime.now(timezone.utc).date()
-    upcoming = [d for d in _FOMC_CALENDAR_2026 if (_parse_date(d) is not None and _parse_date(d) >= today)]  # type: ignore[operator]
-    return upcoming[:limit]
-
-
-def _parse_date(text: str) -> date | None:
-    try:
-        return datetime.strptime(text, "%Y-%m-%d").date()
-    except (TypeError, ValueError):
-        return None
 
 
 # --------------------------------------------------------------------------- #

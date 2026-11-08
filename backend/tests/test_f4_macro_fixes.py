@@ -29,7 +29,7 @@ def _run(coro):
 # --------------------------------------------------------------------------- #
 # WIRP — top-level source_mode (pane classification input)
 # --------------------------------------------------------------------------- #
-def test_wirp_live_payload_exposes_top_level_source_mode(monkeypatch):
+def test_wirp_keyless_payload_exposes_top_level_honest_source_mode(monkeypatch):
     import showme.engine.functions.macro.wirp as wirp_mod
 
     async def _fake_fred(url: str, timeout: float = 8.0):
@@ -48,20 +48,20 @@ def test_wirp_live_payload_exposes_top_level_source_mode(monkeypatch):
     result = _run(wirp_mod.WIRPFunction(FunctionDeps()).execute(central_bank="FED", meetings=3))
     data = result.data
 
-    assert data["source_mode"] == "live_fed_funds_futures"
-    assert data["data_mode"] == "live_official"
+    # No CME adapter: no futures-implied probabilities exist, so no live label.
+    assert data["source_mode"] == "provider_unavailable"
+    assert data["data_mode"] == "provider_unavailable"
+    assert data["status"] == "provider_unavailable"
     # The mode fields are data-level values, not field_dictionary entries.
     assert "source_mode" not in data["field_dictionary"]
     assert "data_mode" not in data["field_dictionary"]
     assert "provenance" not in data["field_dictionary"]
-    assert data["provenance"]["sources"]
-    # Per-row source mode matches the live mode the pane classifies on.
-    assert data["rows"], "live path must build forward meeting rows"
-    assert {row["source_mode"] for row in data["rows"]} == {"live_fed_funds_futures"}
+    assert data["provenance"]["sources"] == ["fred", "yfinance"]
+    assert data["rows"] == []
     assert result.sources == ["fred", "yfinance"]
 
 
-def test_wirp_no_irx_fallback_is_still_labelled_live(monkeypatch):
+def test_wirp_no_irx_keyless_is_still_honest_unavailable(monkeypatch):
     import showme.engine.functions.macro.wirp as wirp_mod
 
     async def _fake_fred(url: str, timeout: float = 8.0):
@@ -78,9 +78,10 @@ def test_wirp_no_irx_fallback_is_still_labelled_live(monkeypatch):
     monkeypatch.setattr(wirp_mod, "_fetch_irx_implied_rate", _irx_down)
 
     result = _run(wirp_mod.WIRPFunction(FunctionDeps()).execute(central_bank="FED", meetings=2))
-    # Derived from live FRED, so the pane must NOT label it a reference table.
-    assert result.data["source_mode"] == "live_fred_target_no_irx"
-    assert result.data["rows"]
+    assert result.data["status"] == "provider_unavailable"
+    assert result.data["rows"] == []
+    assert result.data["anchor"]["current_target_mid"] == 4.375
+    assert result.data["anchor"]["tbill_13w_pct"] is None
 
 
 # --------------------------------------------------------------------------- #
