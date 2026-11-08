@@ -410,12 +410,18 @@ class CRPRFunction(BaseFunction):
         # (Apple: 78.114bn = 68.208bn noncurrent + 9.906bn current), so the current
         # portion is added only when the noncurrent figure or no long-term figure was used.
         term_debt_parts = [lt_debt[0]] if lt_debt is not None else []
+        # (concept, end) of every debt figure that is summed, so the debt date is labelled.
+        debt_components: list[tuple[str, str]] = [(lt_debt[2], lt_debt[1])] if lt_debt is not None else []
         if lt_debt_cur is not None and (lt_debt is None or lt_debt[2] != "LongTermDebt"):
             term_debt_parts.append(lt_debt_cur[0])
+            debt_components.append((lt_debt_cur[2], lt_debt_cur[1]))
+        if short_debt is not None:
+            debt_components.append((short_debt[2], short_debt[1]))
         # No debt concept at all is a missing input, not zero debt.
         gross_debt: float | None = None
         if term_debt_parts or short_debt is not None:
             gross_debt = sum(term_debt_parts) + (short_debt[0] if short_debt is not None else 0.0)
+        gross_debt_as_of = max((end for _, end in debt_components), default=None)
 
         # A missing input stays None. It is never read as zero.
         ebit = op_income[0] if op_income is not None else None
@@ -450,6 +456,14 @@ class CRPRFunction(BaseFunction):
                 "No debt concept (LongTermDebt, LongTermDebtNoncurrent or ShortTermBorrowings) reported; "
                 "gross debt and leverage are not computed, so no implied rating is derived."
             )
+        elif period_end is not None:
+            # Debt is a balance from its own concept, so a component can be older than the EBIT period.
+            for concept, end in debt_components:
+                if end < period_end:
+                    input_warnings.append(
+                        f"{concept} is as of {end}, which predates the EBIT period ending {period_end}; "
+                        "gross debt includes it at that older date."
+                    )
 
         if (gross_debt or 0.0) <= 0 and (ebitda or 0.0) <= 0:
             return FunctionResult(
@@ -493,6 +507,7 @@ class CRPRFunction(BaseFunction):
                         "leverage_x": leverage,
                         "interest_coverage_x": None,
                         "gross_debt_usd": gross_debt,
+                        "gross_debt_as_of": gross_debt_as_of,
                         "ebitda_proxy_usd": ebitda,
                         **interest_fields,
                         "source_mode": "sec_edgar",
@@ -510,7 +525,7 @@ class CRPRFunction(BaseFunction):
 
         rating, sp_like, bucket, outlook = _rating_bucket_from_coverage(leverage, coverage)
         rationale = (
-            f"Implied from SEC financials (as of {fin_date}): gross debt ${gross_debt/1e9:.2f}bn, "
+            f"Implied from SEC financials (as of {fin_date}; debt as of {gross_debt_as_of}): gross debt ${gross_debt/1e9:.2f}bn, "
             f"EBITDA proxy ${ebitda/1e9:.2f}bn, leverage {leverage if leverage is not None else 'n/a'}x, "
             f"interest coverage {coverage if coverage is not None else 'n/a'}x."
         )
@@ -531,6 +546,7 @@ class CRPRFunction(BaseFunction):
                     "leverage_x": leverage,
                     "interest_coverage_x": coverage,
                     "gross_debt_usd": gross_debt,
+                    "gross_debt_as_of": gross_debt_as_of,
                     "ebitda_proxy_usd": ebitda,
                     **interest_fields,
                     "source_mode": "model_implied_from_financials",
@@ -541,7 +557,7 @@ class CRPRFunction(BaseFunction):
                 "field_dictionary": self._FIELD_DICT,
             },
             sources=["sec_edgar"],
-            warnings=["CRPR rating is MODEL-IMPLIED from SEC financials, not a paid agency rating."],
+            warnings=["CRPR rating is MODEL-IMPLIED from SEC financials, not a paid agency rating.", *input_warnings],
             metadata={"latency_ms": latency_ms, "data_mode": "modeled", "as_of": fin_date},
         )
 
