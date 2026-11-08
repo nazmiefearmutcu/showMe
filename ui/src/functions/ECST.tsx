@@ -111,6 +111,7 @@ interface EcstPayload {
   compare_source_mode?: string;
   status?: string;
   reason?: string;
+  unhonoured_params?: string[];
 }
 
 export function ECSTPane({ code }: FunctionPaneProps) {
@@ -374,9 +375,15 @@ export function ECSTPane({ code }: FunctionPaneProps) {
             />
           ) : sortedRows.length === 0 ? (
             <Empty
-              title={unavailable ? "Series unavailable" : "No observations"}
+              title={
+                payload.status === "input_error"
+                  ? "Invalid request"
+                  : unavailable
+                    ? "Series unavailable"
+                    : "No observations"
+              }
               body={
-                unavailable
+                unavailable || payload.status === "input_error"
                   ? (payload.reason ?? `${seriesId} has no live source right now.`)
                   : `${seriesId} returned no rows.`
               }
@@ -388,6 +395,13 @@ export function ECSTPane({ code }: FunctionPaneProps) {
             />
           ) : (
             <div className="u-grid-gap-14">
+              {payload.unhonoured_params && payload.unhonoured_params.length > 0 ? (
+                <div role="note" aria-label="ECST request not applied" style={{ padding: 8, fontSize: "var(--font-size-sm)" }}>
+                  {payload.unhonoured_params.join(", ")} not applied: the keyless
+                  FRED source serves native frequency and latest vintage only.
+                  Showing {seriesId} at its native frequency ({frequency}).
+                </div>
+              ) : null}
               <KPIRibbon cards={cards} seriesId={seriesId} frequency={frequency} />
               {comparePairs.length >= 2 ? (
                 <CompareOverlay

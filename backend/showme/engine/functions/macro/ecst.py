@@ -3,13 +3,20 @@
 from __future__ import annotations
 
 import asyncio
+import calendar
+import datetime
+import re
 from typing import Any
 
 import pandas as pd
 
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from showme.engine.core.instrument import AssetClass, Instrument
-from showme.engine.functions._fred_csv import _KeylessFredCSV, fred_with_keyless_fallback
+from showme.engine.functions._fred_csv import (
+    _KeylessFredCSV,
+    fred_with_keyless_fallback,
+    keyless_ignored_request_params,
+)
 
 
 _SERIES_CATALOG: dict[str, dict[str, str]] = {
@@ -19,6 +26,43 @@ _SERIES_CATALOG: dict[str, dict[str, str]] = {
     "DGS10": {"label": "US 10Y Treasury yield", "unit": "%", "frequency": "daily"},
     "DGS2": {"label": "US 2Y Treasury yield", "unit": "%", "frequency": "daily"},
 }
+
+_WINDOW_RE = re.compile(r"^\s*(\d+)\s*([DMY])\s*$", re.IGNORECASE)
+
+
+def _window_start(date_range: str, today: datetime.date) -> str:
+    """Start date (YYYY-MM-DD) for a ``<n>D|M|Y`` window ending today.
+
+    The unit is part of the request: ``6M`` is six months, not six years.
+    Anything that is not a positive count with unit D, M or Y raises
+    ``ValueError`` so the caller can report an input error.
+    """
+    match = _WINDOW_RE.match(str(date_range))
+    if not match or int(match.group(1)) < 1:
+        raise ValueError(
+            f"unsupported date_range {date_range!r}: use a positive count with unit "
+            "D, M or Y (e.g. 30D, 6M, 10Y) or MAX"
+        )
+    count = int(match.group(1))
+    unit = match.group(2).upper()
+    if unit == "D":
+        start = today - datetime.timedelta(days=count)
+    elif unit == "M":
+        total = today.year * 12 + (today.month - 1) - count
+        year, month0 = divmod(total, 12)
+        month = month0 + 1
+        if year < 1:
+            raise ValueError(f"date_range {date_range!r} starts before year 1")
+        day = min(today.day, calendar.monthrange(year, month)[1])
+        start = datetime.date(year, month, day)
+    else:
+        if today.year - count < 1:
+            raise ValueError(f"date_range {date_range!r} starts before year 1")
+        try:
+            start = today.replace(year=today.year - count)
+        except ValueError:  # 29 Feb in a non-leap target year
+            start = today.replace(year=today.year - count, day=28)
+    return start.strftime("%Y-%m-%d")
 
 
 @FunctionRegistry.register
@@ -35,18 +79,15 @@ class ECSTFunction(BaseFunction):
         # Parse date range to calculate start date
         start_date = None
         date_range = params.get("date_range") or "10Y"
-        if date_range != "MAX":
-            import datetime
+        if str(date_range).strip().upper() != "MAX":
             # F4 fix: the window must track the real system date. A pinned
             # "today" silently skews the 10Y start and drifts further every
             # session.
-            today = datetime.date.today()
             try:
-                years = int(date_range[:-1])
-                start_date = today.replace(year=today.year - years).strftime("%Y-%m-%d")
-            except Exception:
-                start_date = (today - datetime.timedelta(days=3650)).strftime("%Y-%m-%d")
-                
+                start_date = _window_start(str(date_range), datetime.date.today())
+            except ValueError as exc:
+                return _window_input_error(self.code, instrument, sid, str(exc))
+
         # ECST#5: level (as published) or y/y % change. A y/y value needs the observation
         # one year earlier, so the fetch starts ~400 days before the window; the window
         # itself is applied after the transform.
@@ -92,6 +133,13 @@ class ECSTFunction(BaseFunction):
         # and is skipped by the existing except guard).
         fred = fred_with_keyless_fallback(
             self.deps.fred, client=getattr(self, "_http_client", None)
+        )
+        # HNT-20: the keyless CSV serves native frequency and latest vintage
+        # only. Record any other request so the response says it was not applied.
+        unhonoured = keyless_ignored_request_params(
+            fred,
+            frequency=params.get("frequency"),
+            vintage=params.get("vintage"),
         )
         if fred:
             try:
@@ -285,6 +333,15 @@ class ECSTFunction(BaseFunction):
                 f"{compare_sid} compare series was unavailable from the providers — "
                 "the overlay is omitted (no synthetic series is served)."
             )
+        if unhonoured:
+            requested = ", ".join(
+                f"{name}={params.get(name)!r}" for name in unhonoured
+            )
+            warnings.append(
+                f"ECST: {requested} not applied — the keyless FRED CSV source serves "
+                f"native frequency and latest vintage only; the series is returned at "
+                f"its native frequency ({frequency})."
+            )
 
         data_res = {
             "series_id": sid,
@@ -336,6 +393,8 @@ class ECSTFunction(BaseFunction):
                 "Retry ECST — FRED and World Bank may be momentarily unreachable.",
                 f"Confirm '{sid}' is a valid FRED series id.",
             ]
+        if unhonoured:
+            data_res["unhonoured_params"] = unhonoured
 
         if compare_sid:
             compare_catalog = _series_meta(compare_sid)
@@ -415,6 +474,30 @@ def _yoy_frame(frame: pd.DataFrame) -> pd.DataFrame:
 
 def _series_meta(series_id: str) -> dict[str, str]:
     return _SERIES_CATALOG.get(series_id, {"label": series_id, "unit": "value", "frequency": "unknown"})
+
+
+def _window_input_error(
+    code: str, instrument: Instrument | None, sid: str, reason: str
+) -> FunctionResult:
+    """Explicit input_error envelope: no provider call, no rows, no guessed window."""
+    return FunctionResult(
+        code=code,
+        instrument=instrument,
+        data={
+            "series_id": sid,
+            "series_name": _series_meta(sid)["label"],
+            "status": "input_error",
+            "data_state": "input_error",
+            "rows": [],
+            "history": [],
+            "cards": [{"label": "Series", "value": sid}],
+            "reason": reason,
+            "next_actions": ["Use a date range such as 1Y, 3Y, 5Y, 10Y, 20Y or MAX."],
+            "source_mode": "input_error",
+        },
+        sources=[],
+        warnings=[f"ECST: {reason}"],
+    )
 
 
 def _normalize_rows(
