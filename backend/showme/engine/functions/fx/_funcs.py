@@ -83,7 +83,7 @@ _OVDV_MANAGED_CCYS = frozenset(
 
 @FunctionRegistry.register
 class FXFCFunction(BaseFunction):
-    """FXFC - FX forecasts from forward carry plus volatility bands."""
+    """FXFC - FX forecasts from forward carry plus realized-vol bands."""
 
     code = "FXFC"
     name = "FX Forecasts"
@@ -95,14 +95,18 @@ class FXFCFunction(BaseFunction):
         spot, spot_source, source_mode = await _resolve_spot(self, pair, params)
         r_base = _rate_for(base, params.get("r_base"))
         r_quote = _rate_for(quote, params.get("r_quote"))
-        vol = float(params.get("vol_annualized", params.get("vol", 0.085)))
         tenors = _parse_tenors(params.get("tenors"), default=("1M", "3M", "6M", "12M"))
+        # Band vol per tenor: an explicit input, or live realized FX vol. No
+        # constant is substituted; with neither, the bands are null.
+        vol_curve, vol_source, rv_source, vol_warning = await _fxfc_vol_curve(
+            self, pair, tenors, params
+        )
         rows = []
-        for tenor in tenors:
+        for i, tenor in enumerate(tenors):
             t = tenor["years"]
             forward = _forward(spot, r_base, r_quote, t)
-            band = spot * vol * (t ** 0.5)
-            confidence = max(35.0, min(92.0, 78.0 - t * 9.0))
+            vol = vol_curve[i] if vol_curve is not None else None
+            band = spot * vol * (t ** 0.5) if vol is not None else None
             rows.append(
                 {
                     "pair": pair,
@@ -110,36 +114,61 @@ class FXFCFunction(BaseFunction):
                     "tenor_years": round(t, 6),
                     "spot": round(spot, 6),
                     "forecast": round(forward, 6),
-                    "lower_band": round(forward - band, 6),
-                    "upper_band": round(forward + band, 6),
+                    "lower_band": round(forward - band, 6) if band is not None else None,
+                    "upper_band": round(forward + band, 6) if band is not None else None,
                     "forward_points": round(forward - spot, 6),
-                    "confidence": round(confidence, 2),
+                    "vol_annualized": round(vol, 6) if vol is not None else None,
                     "source_mode": source_mode,
                 }
             )
+        now = _fxfc_now()
+        market_open = _fx_market_open(now)
+        warnings: list[str] = []
+        if source_mode == "reference_model":
+            warnings.append(f"live spot unavailable; using labelled reference spot (vintage {_REFERENCE_AS_OF})")
+        if vol_warning:
+            warnings.append(vol_warning)
+        if spot_source == "yfinance" and not market_open:
+            warnings.append(
+                "yfinance FX quote was fetched while the spot FX market is closed "
+                f"(weekend, fetched {now.isoformat()}); the level may be the last Friday print. "
+                "The adapter does not expose the quote's own timestamp."
+            )
         data = {
+            "status": "ok" if vol_curve is not None else "bands_unavailable",
+            "reason": vol_warning if vol_curve is None else None,
             "pair": pair,
             "base": base,
             "quote": quote,
             "spot": round(spot, 6),
+            "spot_fetched_at": now.isoformat(),
+            "fx_market_open_at_fetch": market_open,
             "base_rate": r_base,
             "quote_rate": r_quote,
-            "vol_annualized": vol,
+            "vol_annualized": _fxfc_headline_vol(tenors, vol_curve),
+            "vol_source": vol_source,
             "source_mode": source_mode,
             "forecast": rows,
             "curve": rows,
             "methodology": (
-                "FXFC uses covered-interest-parity forward carry as the deterministic forecast path. "
-                "Forecast = spot * (1 + quote_rate * T) / (1 + base_rate * T). "
-                "Bands are spot * annualized_vol * sqrt(T), so they are model bands, not vendor analyst forecasts."
+                "FXFC uses covered-interest-parity (CIP) forward carry as the deterministic forward path. "
+                "Forecast = spot * (1 + quote_rate * T) / (1 + base_rate * T). This is a no-arbitrage "
+                "forward level, not a consensus or predictive forecast. "
+                "Bands are spot * sigma_T * sqrt(T), where sigma_T is the live realized FX vol over a "
+                "trailing window sized to the tenor (yfinance daily closes), or an explicit vol_annualized "
+                "input. When neither is available the bands are null; no constant vol is substituted. "
+                "Bands are model bands, not vendor analyst forecasts."
             ),
             "field_dictionary": {
                 "spot": "Quote currency units per one base currency unit.",
-                "forecast": "Covered-interest-parity forward-implied level for the tenor.",
+                "spot_fetched_at": "UTC time the spot was fetched; the quote's own market time is not provided by the adapter.",
+                "fx_market_open_at_fetch": "Whether the approximate spot-FX session (Sun 22:00 to Fri 22:00 UTC) was open at fetch time.",
+                "forecast": "Covered-interest-parity forward-implied level for the tenor (a CIP forward, not a consensus forecast).",
                 "forward_points": "forecast - spot in quote currency units.",
-                "lower_band": "Model lower band using spot * vol * sqrt(T).",
-                "upper_band": "Model upper band using spot * vol * sqrt(T).",
-                "confidence": "Deterministic model confidence score; lower for longer tenors.",
+                "vol_annualized": "Annualized band vol for the tenor (decimal); null when no vol source is available.",
+                "vol_source": "live_realized_vol (yfinance daily closes), user_inputs, or none.",
+                "lower_band": "forecast - spot * vol_annualized * sqrt(T); null when no vol source is available.",
+                "upper_band": "forecast + spot * vol_annualized * sqrt(T); null when no vol source is available.",
                 "source_mode": "live_yfinance_quote when a fresh quote was fetched; reference_model otherwise.",
             },
         }
@@ -147,20 +176,77 @@ class FXFCFunction(BaseFunction):
             code=self.code,
             instrument=instrument or Instrument(symbol=pair, asset_class=AssetClass.FX),
             data=data,
-            sources=[spot_source, "covered_interest_parity_formula"],
-            # Only warn when the spot came from the static reference template
-            # — manual_input and any live_* source mode are real values.
-            warnings=(
-                []
-                if source_mode != "reference_model"
-                else [f"live spot unavailable; using labelled reference spot (vintage {_REFERENCE_AS_OF})"]
-            ),
+            sources=_unique([spot_source, "covered_interest_parity_formula", rv_source or ""]),
+            warnings=warnings,
             metadata=(
                 {"data_mode": "delayed_reference", "reference_as_of": _REFERENCE_AS_OF}
                 if source_mode == "reference_model"
                 else {"data_mode": source_mode}
             ),
         )
+
+
+async def _fxfc_vol_curve(
+    fn: BaseFunction,
+    pair: str,
+    tenors: list[dict[str, Any]],
+    params: dict[str, Any],
+) -> tuple[list[float] | None, str, str | None, str | None]:
+    """Band vol per tenor for FXFC: ``(curve, vol_source, rv_source, warning)``.
+
+    Precedence: an explicit ``vol_annualized`` / ``vol`` input (flat, labelled
+    user_inputs), then live realized vol from the shared ATM term structure.
+    ``curve`` is None when no vol can be sourced honestly.
+    """
+    explicit = params.get("vol_annualized", params.get("vol"))
+    if explicit not in (None, ""):
+        flat = max(0.0001, float(explicit))
+        return [flat for _ in tenors], "user_inputs", None, None
+    if not _truthy(params.get("live", True)):
+        return (
+            None,
+            "none",
+            None,
+            "live=false: realized-vol history not requested; supply vol_annualized to view model bands",
+        )
+    curve, vol_source, _data_mode, rv_source, warning = await _atm_term_structure(
+        fn, pair, tenors, params
+    )
+    if curve is None:
+        return None, "none", None, warning or "realized vol unavailable; no band vol substituted"
+    return curve, vol_source, rv_source, None
+
+
+def _fxfc_headline_vol(tenors: list[dict[str, Any]], curve: list[float] | None) -> float | None:
+    """The 1M band vol (or the first tenor when 1M is not requested), decimal."""
+    if not curve:
+        return None
+    for i, tenor in enumerate(tenors):
+        if str(tenor["label"]).upper() == "1M":
+            return round(curve[i], 6)
+    return round(curve[0], 6)
+
+
+def _fxfc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _fx_market_open(now: datetime) -> bool:
+    """Approximate spot-FX session: open Sun 22:00 UTC to Fri 22:00 UTC.
+
+    No holiday calendar. A quote fetched outside this window is a last print,
+    not a live market level.
+    """
+    utc = now.astimezone(timezone.utc)
+    weekday = utc.weekday()  # Mon=0 ... Sun=6
+    minutes = utc.hour * 60 + utc.minute
+    if weekday == 5:  # Saturday
+        return False
+    if weekday == 6:  # Sunday: opens at 22:00 UTC
+        return minutes >= 22 * 60
+    if weekday == 4:  # Friday: closes at 22:00 UTC
+        return minutes < 22 * 60
+    return True
 
 
 @FunctionRegistry.register
