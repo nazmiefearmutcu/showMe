@@ -32,7 +32,7 @@ _SPOT_DEPTH_URL = "https://api.binance.com/api/v3/depth"
 _SPOT_KLINES_URL = "https://api.binance.com/api/v3/klines"
 
 _FIELD_DICTIONARY: dict[str, str] = {
-    "as_of": "UTC time the depth request was sent. Binance depth has no server timestamp, so the snapshot was taken no earlier than this.",
+    "as_of": "UTC time the depth request was sent. Binance depth has no server timestamp, so the snapshot was taken no earlier than this. Null when no depth request was sent.",
     "symbol": "Canonical symbol with an L2 depth feed (Binance spot).",
     "bids[].price": "Bid level price (quote ccy), best first.",
     "bids[].size": "Bid level resting size (base ccy).",
@@ -135,6 +135,7 @@ class MICROFunction(BaseFunction):
                     status="provider_unavailable",
                     reason=f"binance depth request failed: {exc}",
                     next_action="Retry with a liquid Binance spot pair such as BTCUSDT.",
+                    as_of=request_started.isoformat(),
                 ),
                 sources=["binance"],
                 warnings=[f"binance depth request failed: {exc}"],
@@ -151,6 +152,7 @@ class MICROFunction(BaseFunction):
                     status="provider_unavailable",
                     reason=reason,
                     next_action="Retry with a Binance spot pair or lower the depth limit.",
+                    as_of=request_started.isoformat(),
                 ),
                 sources=["binance"],
                 warnings=[reason],
@@ -169,6 +171,7 @@ class MICROFunction(BaseFunction):
                     status="provider_unavailable",
                     reason="empty order book from Binance",
                     next_action="Retry with a liquid Binance spot symbol.",
+                    as_of=request_started.isoformat(),
                 ),
                 sources=["binance"],
                 warnings=["empty order book from Binance"],
@@ -394,12 +397,17 @@ def _unavailable_microstructure(
     status: str,
     reason: str,
     next_action: str,
+    as_of: str | None = None,
 ) -> dict[str, Any]:
-    """Honest empty payload — NO synthetic ladder is ever fabricated."""
+    """Honest empty payload — NO synthetic ladder is ever fabricated.
+
+    ``as_of`` is the depth request send time when a request was sent, and None
+    when no request was sent (MICRO#2-RQ: never the response or call time).
+    """
     return {
         "status": status,
         "data_mode": data_mode,
-        "as_of": datetime.now(timezone.utc).isoformat(),
+        "as_of": as_of,
         "symbol": symbol,
         "reason": reason,
         # Contract must-haves, all empty/None — never synthetic.

@@ -345,3 +345,77 @@ def test_micro_kyle_lambda_is_signed_flow_slope_with_intercept(monkeypatch: Any)
     assert abs(data["kyle_lambda_bps_per_1m_usd"] - lam * 1e6 * 1e4) < 1e-6
     assert data["kyle_lambda_r2"] > 0.999
     assert "signed" in data["kyle_lambda_equation"].lower()
+
+
+# --------------------------------------------------------------------------
+# MICRO#2-RQ — error payloads: as_of is the request time, or null if none sent
+# --------------------------------------------------------------------------
+
+
+class _SlowErrorAsyncClient(_FakeAsyncClient):
+    """Depth request is sent, answers 500 after a delay."""
+
+    async def get(self, url: str, params: dict[str, Any] | None = None, **_: Any) -> _Resp:
+        if "depth" in url:
+            self.__class__.sent_at.append(datetime.now(timezone.utc))
+            await asyncio.sleep(0.3)
+            self.__class__.received_at.append(datetime.now(timezone.utc))
+            return _Resp({}, status_code=500)
+        return _Resp(_kline_rows())
+
+
+class _SlowEmptyBookAsyncClient(_FakeAsyncClient):
+    """Depth request is sent, answers an empty order book after a delay."""
+
+    async def get(self, url: str, params: dict[str, Any] | None = None, **_: Any) -> _Resp:
+        if "depth" in url:
+            self.__class__.sent_at.append(datetime.now(timezone.utc))
+            await asyncio.sleep(0.3)
+            self.__class__.received_at.append(datetime.now(timezone.utc))
+            return _Resp({"bids": [], "asks": []})
+        return _Resp(_kline_rows())
+
+
+def _assert_as_of_is_send_time(data: dict[str, Any]) -> None:
+    as_of = datetime.fromisoformat(data["as_of"])
+    if as_of.tzinfo is None:
+        as_of = as_of.replace(tzinfo=timezone.utc)
+    sent = _FakeAsyncClient.sent_at[0]
+    received = _FakeAsyncClient.received_at[0]
+    assert (received - sent).total_seconds() >= 0.25
+    assert abs((as_of - sent).total_seconds()) < 0.05, (
+        f"error as_of {as_of.isoformat()} should be the depth send time {sent.isoformat()}, "
+        f"not response time {received.isoformat()}"
+    )
+
+
+def test_micro_error_as_of_is_request_time_on_http_failure(monkeypatch: Any) -> None:
+    from showme.engine.functions.screen import micro as micro_mod
+    from showme.engine.functions.screen.micro import MICROFunction
+
+    monkeypatch.setattr(micro_mod.httpx, "AsyncClient", _SlowErrorAsyncClient)
+    _reset_fake()
+    result = asyncio.run(MICROFunction(deps=None).execute(instrument=_btc(), depth_levels=20))
+    assert result.data["status"] == "provider_unavailable"
+    _assert_as_of_is_send_time(result.data)
+
+
+def test_micro_error_as_of_is_request_time_on_empty_book(monkeypatch: Any) -> None:
+    from showme.engine.functions.screen import micro as micro_mod
+    from showme.engine.functions.screen.micro import MICROFunction
+
+    monkeypatch.setattr(micro_mod.httpx, "AsyncClient", _SlowEmptyBookAsyncClient)
+    _reset_fake()
+    result = asyncio.run(MICROFunction(deps=None).execute(instrument=_btc(), depth_levels=20))
+    assert result.data["status"] == "provider_unavailable"
+    assert result.data["reason"] == "empty order book from Binance"
+    _assert_as_of_is_send_time(result.data)
+
+
+def test_micro_no_request_sent_has_null_as_of() -> None:
+    from showme.engine.functions.screen.micro import MICROFunction
+
+    # instrument=None and non-crypto never send a depth request: no snapshot exists.
+    result = asyncio.run(MICROFunction(deps=None).execute(instrument=None))
+    assert result.data["status"] == "empty"
+    assert result.data["as_of"] is None
