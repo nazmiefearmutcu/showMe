@@ -213,13 +213,12 @@ def mlsig() -> FunctionManifest:
         card_schema=CardSchema(
             slots=[
                 CardSlot(key="latest_prediction", label="Latest", kind="big_number"),
-                CardSlot(key="latest_confidence", label="Confidence", kind="kpi", unit="%"),
-                CardSlot(key="oos_score", label="OOS score", kind="kpi"),
-                CardSlot(key="label_horizon", label="Horizon", kind="kpi", unit="bars"),
-                CardSlot(key="model_family", label="Model", kind="badge"),
-                CardSlot(key="paper_mode", label="Safe", kind="badge"),
-                CardSlot(key="data_mode", label="Data", kind="mode_pill"),
-                CardSlot(key="as_of", label="As of", kind="timestamp"),
+                CardSlot(key="test_accuracy", label="Test accuracy", kind="kpi"),
+                CardSlot(key="strategy_sharpe", label="OOS Sharpe", kind="kpi"),
+                CardSlot(key="horizon_days", label="Horizon", kind="kpi", unit="days"),
+                CardSlot(key="backend", label="Model", kind="badge"),
+                CardSlot(key="source_mode", label="Data", kind="mode_pill"),
+                CardSlot(key="latest_bar", label="As of", kind="timestamp"),
             ],
         ),
         methodology=(
