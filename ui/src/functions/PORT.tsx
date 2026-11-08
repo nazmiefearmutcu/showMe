@@ -1005,9 +1005,15 @@ function PORTView({
   const totalMV = totals?.market_value ?? positions.reduce(
     (s, p) => s + (p.market_value ?? 0), 0,
   );
-  const maxPosition = positions.reduce(
-    (best, p) => ((p.weight ?? 0) > (best?.weight ?? -1) ? p : best),
-    null as Position | null,
+  // Only positions with a reported weight can be "largest": a missing weight
+  // is not a 0% weight.
+  const maxPosition = positions.reduce<Position | null>(
+    (best, p) =>
+      p.weight != null && Number.isFinite(p.weight) &&
+      (best == null || (best.weight as number) < p.weight)
+        ? p
+        : best,
+    null,
   );
   const topPositions = [...positions]
     .sort((a, b) => (b.weight ?? 0) - (a.weight ?? 0))
@@ -1102,7 +1108,7 @@ function PORTView({
           <PortfolioMetric label="Positions" value={formatNumber(positions.length)} />
           <PortfolioMetric
             label="Largest"
-            value={maxPosition ? `${maxPosition.symbol} ${formatPercent((maxPosition.weight ?? 0) * 100)}` : formatMissing}
+            value={maxPosition ? `${maxPosition.symbol} ${formatPercent(maxPosition.weight! * 100)}` : formatMissing}
           />
         </div>
         {/* Honest real metric replaces the former seeded fake sparkline
@@ -1407,6 +1413,8 @@ function positionColumns({
 function WeightFill({ pct }: { pct: number | null }) {
   if (pct == null || !Number.isFinite(pct))
     return <span className="u-text-mute">—</span>;
+  // The bar is clamped to 0..100 for drawing only; the label shows the real
+  // weight, so a leveraged or short-heavy 120% does not read as 100.0%.
   const clamped = Math.max(0, Math.min(100, pct));
   return (
     <span className="port-weight">
@@ -1416,7 +1424,7 @@ function WeightFill({ pct }: { pct: number | null }) {
         style={{ ["--u-empty" as string]: `${100 - clamped}%` }}
       />
       <span className="port-weight__label terminal-grid-numeric">
-        {formatPercent(clamped, { digits: 1 })}
+        {formatPercent(pct, { digits: 1 })}
       </span>
     </span>
   );
