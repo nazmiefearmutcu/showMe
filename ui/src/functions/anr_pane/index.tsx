@@ -4,8 +4,12 @@
  * Consensus-first view with explicit target-price provenance, stale-rule
  * accounting, broker-level table readiness, and local alert editing.
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  Card,
+  CardBody,
+  CardHeader,
+  DataGrid,
   Empty,
   Pane,
   PaneBody,
@@ -13,6 +17,7 @@ import {
   PaneHeader,
   Pill,
   Skeleton,
+  type DataGridColumn,
 } from "@/design-system";
 import { SymbolBar } from "@/shell/SymbolBar";
 import { useFunction } from "@/lib/useFunction";
@@ -37,6 +42,7 @@ import {
   VERYFINDER_LIVE_REFRESH_MS,
   type ANRData,
   type ANRScreen,
+  type TrendRow,
   type VeryfinderRunState,
 } from "./_types";
 import {
@@ -76,7 +82,8 @@ import {
 import { ANRAnalysisScreen } from "./analysis";
 
 export function ANRPane({ code, symbol }: FunctionPaneProps) {
-  const effectiveSymbol = symbol || "AMZN";
+  // No silent AMZN fallback (ANR#6): with no symbol the pane shows an empty state.
+  const effectiveSymbol = (symbol ?? "").trim();
   const recommendedTweetSample = recommendedVeryfinderSampleForSymbol(effectiveSymbol);
   const [veryfinderEnabled, setVeryfinderEnabled] = useState(true);
   const [veryfinderSource, setVeryfinderSource] = useState("auto");
@@ -244,8 +251,13 @@ export function ANRPane({ code, symbol }: FunctionPaneProps) {
     setVeryfinderTick((tick) => tick + 1);
   };
 
-  const body =
-    state === "loading" || state === "idle" ? (
+  const body = !effectiveSymbol ? (
+    <Empty
+      title="No symbol selected"
+      body="Enter an equity or ETF ticker in the symbol bar to load analyst consensus."
+      icon="∅"
+    />
+  ) : state === "loading" || state === "idle" ? (
       <div className="u-grid-gap-10">
         <Skeleton height={72} />
         <Skeleton height={160} />
@@ -299,7 +311,7 @@ export function ANRPane({ code, symbol }: FunctionPaneProps) {
       <Pane>
         <PaneHeader
           code={code}
-          title={`${effectiveSymbol} ${isCryptoSummary(summary) ? "Crypto Market Consensus" : "Analyst Consensus"}`}
+          title={`${effectiveSymbol ? `${effectiveSymbol} ` : ""}${isCryptoSummary(summary) ? "Crypto Market Consensus" : "Analyst Consensus"}`}
           subtitle={`${summary?.label ?? "loading"} · target: ${summary?.target_price_source ?? "—"}`}
           trailing={
             <FunctionControlGroup>
@@ -388,6 +400,59 @@ export function ANRPane({ code, symbol }: FunctionPaneProps) {
         </PaneFooter>
       </Pane>
     </div>
+  );
+}
+
+/** Bucket counts per provider period inside the lookback window (ANR#2). */
+function TrendCard({ data }: { data: ANRData }) {
+  const rows = data.trend ?? [];
+  const months = data.trend_months;
+  const oldest = data.trend_oldest_provider_months_back;
+  const cols = useMemo<DataGridColumn<TrendRow>[]>(
+    () => [
+      {
+        key: "period",
+        header: "Period",
+        width: "1fr",
+        render: (r) => (r.months_back === 0 ? "Current month" : `${r.months_back ?? "—"} mo back`),
+      },
+      { key: "strongBuy", header: "Str. Buy", width: 70, numeric: true },
+      { key: "buy", header: "Buy", width: 60, numeric: true },
+      { key: "hold", header: "Hold", width: 60, numeric: true },
+      { key: "sell", header: "Sell", width: 60, numeric: true },
+      { key: "strongSell", header: "Str. Sell", width: 70, numeric: true },
+      { key: "score", header: "Score", width: 70, numeric: true, render: (r) => formatScore(r.score) },
+      { key: "in_consensus", header: "Consensus", width: 90, render: (r) => (r.in_consensus ? "yes" : "no") },
+    ],
+    [],
+  );
+  return (
+    <Card>
+      <CardHeader
+        trailing={
+          <div className="u-flex u-gap-6 u-flex-wrap u-justify-end">
+            <Pill tone="muted" variant="soft" withDot={false}>
+              {months ?? "—"}-month window
+            </Pill>
+            {oldest != null ? (
+              <Pill tone="muted" variant="soft" withDot={false}>
+                provider history {oldest} mo back
+              </Pill>
+            ) : null}
+          </div>
+        }
+      >
+        Bucket trend
+      </CardHeader>
+      <CardBody>
+        <DataGrid
+          columns={cols}
+          rows={rows}
+          density="compact"
+          empty="no provider recommendation period inside the window"
+        />
+      </CardBody>
+    </Card>
   );
 }
 
@@ -481,11 +546,14 @@ function ANRView({
       {crypto ? (
         <SignalInputsTable rows={data.signal_rows ?? []} detailReason={data.analyst_detail_reason} />
       ) : (
-        <AnalystTable
-          rows={analystRows}
-          detailStatus={data.analyst_detail_status ?? summary.analyst_detail_status}
-          detailReason={data.analyst_detail_reason}
-        />
+        <>
+          <AnalystTable
+            rows={analystRows}
+            detailStatus={data.analyst_detail_status ?? summary.analyst_detail_status}
+            detailReason={data.analyst_detail_reason}
+          />
+          <TrendCard data={data} />
+        </>
       )}
       <div
         style={{
