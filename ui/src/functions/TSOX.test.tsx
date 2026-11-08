@@ -57,17 +57,37 @@ describe("TSOX pane — ticket input honesty", () => {
     expect(runFunctionMock).not.toHaveBeenCalled();
   });
 
-  it("sends real numbers and submit=false for a valid ticket", () => {
+  it("starts with no invented symbol or limit price (data policy: no placeholder inputs)", () => {
+    render(<TSOXPane code="TSOX" />);
+    expect(screen.getByLabelText("Symbol / CUSIP")).toHaveValue("");
+    expect(screen.getByLabelText("Limit price")).toHaveValue("");
+    fireEvent.change(screen.getByLabelText("Quantity (contracts)"), { target: { value: "2" } });
+    expect(previewButton()).toBeDisabled();
+    expect(runFunctionMock).not.toHaveBeenCalled();
+  });
+
+  it("blocks preview when no symbol is linked or entered, even with a price", () => {
     render(<TSOXPane code="TSOX" />);
     fireEvent.change(screen.getByLabelText("Quantity (contracts)"), { target: { value: "2" } });
+    fireEvent.change(screen.getByLabelText("Limit price"), { target: { value: "100.0625" } });
+    expect(previewButton()).toBeDisabled();
+    expect(runFunctionMock).not.toHaveBeenCalled();
+  });
+
+  it("sends real numbers and submit=false for a valid ticket", () => {
+    render(<TSOXPane code="TSOX" symbol="ZN=F" />);
+    fireEvent.change(screen.getByLabelText("Quantity (contracts)"), { target: { value: "2" } });
+    fireEvent.change(screen.getByLabelText("Limit price"), { target: { value: "100.0625" } });
     fireEvent.click(previewButton());
     expect(runFunctionMock).toHaveBeenCalledTimes(1);
-    const [, body] = runFunctionMock.mock.calls[0] as [string, { params: Record<string, unknown> }];
+    const [, body] = runFunctionMock.mock.calls[0] as [string, { symbol: string; params: Record<string, unknown> }];
+    expect(body.symbol).toBe("ZN=F");
     expect(body.params).toMatchObject({ quantity: 2, order_type: "LIMIT", submit: false, price: 100.0625 });
   });
 
   it("market orders need no limit price to preview", () => {
-    render(<TSOXPane code="TSOX" />);
+    render(<TSOXPane code="TSOX" symbol="ZN=F" />);
+    fireEvent.change(screen.getByLabelText("Quantity (contracts)"), { target: { value: "1" } });
     fireEvent.click(screen.getByRole("button", { name: "MARKET" }));
     fireEvent.change(screen.getByLabelText("Limit price"), { target: { value: "" } });
     expect(previewButton()).toBeEnabled();

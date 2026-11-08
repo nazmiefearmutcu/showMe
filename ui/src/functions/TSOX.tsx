@@ -55,12 +55,13 @@ const TENOR_PRESETS = [
 ] as const;
 
 export function TSOXPane({ code, symbol }: FunctionPaneProps) {
-  const [ticketSymbol, setTicketSymbol] = useState(symbol || "ZN=F");
+  // No placeholder instrument or price: an unlinked ticket stays blank until the user enters values.
+  const [ticketSymbol, setTicketSymbol] = useState(symbol || "");
   const [side, setSide] = useState<Side>("BUY");
   const [orderType, setOrderType] = useState<OrderType>("LIMIT");
   const [tif, setTif] = useState<Tif>("GTC");
   const [quantity, setQuantity] = useState("1");
-  const [price, setPrice] = useState("100.0625");
+  const [price, setPrice] = useState("");
   const [state, setState] = useState<"idle" | "loading" | "ok" | "error">("idle");
   const [result, setResult] = useState<FunctionCallResult<unknown> | null>(null);
   const [error, setError] = useState<Error | null>(null);
