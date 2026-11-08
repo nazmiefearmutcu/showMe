@@ -21,6 +21,11 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _fx_now_utc() -> datetime:
+    """Current UTC time for FX quote-age checks (a seam tests can pin)."""
+    return datetime.now(timezone.utc)
+
+
 def _select_broker(deps: Any, asset_class: AssetClass) -> Any:
     """Map asset class → broker adapter from deps."""
     pref = {
@@ -541,6 +546,10 @@ class FXGOFunction(EMSXFunction):
         "EURJPY", "GBPJPY",
     )
 
+    # A spot quote older than this is shown as a stale reference, never as a
+    # live price (e.g. a Friday-close quote read on the weekend).
+    _QUOTE_STALE_AFTER_SECONDS = 3600
+
     _BOARD_FIELD_DICTIONARY = {
         "pair": "FX pair (base/quote).",
         "bid": "Indicative bid (quote per base) — mid minus half a synthetic spread; not a quoted venue bid.",
@@ -553,6 +562,10 @@ class FXGOFunction(EMSXFunction):
         "change_pct": "Percent change vs the prior daily session close (one-day bar).",
         "previous_close": "Prior daily session close (the bar before the latest one), not the start of the 5-day window.",
         "previous_close_date": "UTC date of the prior daily session bar that previous_close comes from.",
+        "quote_time": "UTC time the provider printed the mid (regularMarketTime). Unknown when the provider omits it.",
+        "quote_age_seconds": "Seconds between the quote time and the request. Above the stale threshold the board is reference, not live.",
+        "as_of": "Quote time of the oldest quote on the board (null when the provider gave no quote time).",
+        "fetched_at": "When ShowMe fetched the board (not a market time).",
     }
 
     _BOARD_METHODOLOGY = (
@@ -632,10 +645,18 @@ class FXGOFunction(EMSXFunction):
         prev_date = None
         if len(bars) >= 2 and bars[-2][0] is not None:
             prev_date = datetime.fromtimestamp(int(bars[-2][0]), tz=timezone.utc).date().isoformat()
+        # regularMarketTime is when the quoted price printed; it is the honest
+        # as-of for the mid, not the moment we fetched it.
+        quote_time = None
+        try:
+            if meta.get("regularMarketTime") is not None:
+                quote_time = datetime.fromtimestamp(int(meta["regularMarketTime"]), tz=timezone.utc)
+        except (TypeError, ValueError, OverflowError, OSError):
+            quote_time = None
         return (
             float(mid) if mid is not None else None,
             float(prev) if prev is not None else None,
-            {"previous_close_date": prev_date},
+            {"previous_close_date": prev_date, "quote_time": quote_time},
         )
 
     def _board_row(self, pair: str) -> dict[str, Any] | None:
@@ -658,6 +679,10 @@ class FXGOFunction(EMSXFunction):
         except (TypeError, ValueError):
             change = None
             change_pct = None
+        quote_time = spot_meta.get("quote_time")
+        quote_age = None
+        if isinstance(quote_time, datetime):
+            quote_age = max(0, int((_fx_now_utc() - quote_time).total_seconds()))
         return {
             "pair": pair.upper(),
             "symbol": pair.upper(),
@@ -671,6 +696,8 @@ class FXGOFunction(EMSXFunction):
             "change_pct": change_pct,
             "previous_close": (round(float(prev), 6) if prev is not None else None),
             "previous_close_date": spot_meta.get("previous_close_date"),
+            "quote_time": quote_time.isoformat() if isinstance(quote_time, datetime) else None,
+            "quote_age_seconds": quote_age,
         }
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
@@ -736,7 +763,16 @@ class FXGOFunction(EMSXFunction):
             if result is not None:
                 rows.append(result)
 
-        as_of = _utc_now_iso()
+        fetched_at = _utc_now_iso()
+        # as_of is the OLDEST quote on the board (the honest freshness bound);
+        # None when the provider gave no quote time.
+        aged_rows = [r for r in rows if r.get("quote_age_seconds") is not None]
+        oldest = max(aged_rows, key=lambda r: r["quote_age_seconds"]) if aged_rows else None
+        as_of = oldest["quote_time"] if oldest else None
+        stale_rows = [
+            r for r in aged_rows
+            if r["quote_age_seconds"] > self._QUOTE_STALE_AFTER_SECONDS
+        ]
         if not rows:
             return FunctionResult(
                 code=self.code,
@@ -750,9 +786,10 @@ class FXGOFunction(EMSXFunction):
                     "order_type": "MARKET",
                     "tif": "GTC",
                     "rows": [],
-                    "cards": {"data_mode": "provider_unavailable", "as_of": as_of},
+                    "cards": {"data_mode": "provider_unavailable", "as_of": None},
                     "data_mode": "provider_unavailable",
-                    "as_of": as_of,
+                    "as_of": None,
+                    "fetched_at": fetched_at,
                     "methodology": self._BOARD_METHODOLOGY,
                     "field_dictionary": self._BOARD_FIELD_DICTIONARY,
                     "warning": "FX spot board unavailable from yfinance.",
@@ -779,16 +816,33 @@ class FXGOFunction(EMSXFunction):
                 f"Board degraded: {len(rows)}/{total_requested} pairs returned "
                 "quotes; the rest failed upstream and are NOT shown."
             )
+        elif stale_rows:
+            # The feed answered, but the newest quote is old (e.g. the FX
+            # market is closed): this is a reference price, not a live one.
+            board_mode = "delayed_reference"
+            board_warnings.append(
+                f"Stale quotes: {len(stale_rows)}/{len(rows)} pair(s) were last "
+                f"quoted more than {self._QUOTE_STALE_AFTER_SECONDS // 60} minutes "
+                f"before the request (oldest quote {as_of}). Shown as reference, "
+                "not a live price."
+            )
         else:
             # Yahoo spot quotes with an indicative spread - not a venue's
             # two-way board, so never "live_exchange".
             board_mode = "live_yfinance_quote"
+        unknown_time = [r["pair"] for r in rows if r.get("quote_time") is None]
+        if unknown_time:
+            board_warnings.append(
+                "Quote time not reported by the provider for: "
+                + ", ".join(unknown_time)
+                + "; freshness of these rows is unknown."
+            )
 
         # Card summary mirrors the EMSX/manifest card slots while reflecting the
         # live board: show the top pair's indicative two-way quote.
         top = rows[0]
         cards = {
-            "status": "live",
+            "status": "stale" if stale_rows else "ok",
             "broker": "indicative",
             "symbol": top["pair"],
             "side": "TWO_WAY",
@@ -820,6 +874,7 @@ class FXGOFunction(EMSXFunction):
                 "board_source": board_source,
                 "bid_ask_basis": "synthetic_indicative",
                 "as_of": as_of,
+                "fetched_at": fetched_at,
                 "methodology": self._BOARD_METHODOLOGY,
                 "field_dictionary": self._BOARD_FIELD_DICTIONARY,
                 "next_actions": [

@@ -130,3 +130,68 @@ def test_fxgo_previous_close_is_prior_session_not_five_sessions_back(monkeypatch
     assert row["change_pct"] == pytest.approx((1.1230 - 1.12349) / 1.12349 * 100, abs=1e-3)
     assert "Prior session close" in res.data["field_dictionary"]["previous_close"] or \
         "prior" in res.data["field_dictionary"]["previous_close"].lower()
+
+
+# --------------------------------------------------------------------------- #
+# FXGO#1 — as_of is the quote time; a stale quote is never labelled live
+# --------------------------------------------------------------------------- #
+_QUOTE_DAY = (6, 22, 29)  # 2026-11-06 22:29 UTC, a Friday-close quote
+
+
+def _quote_now(monkeypatch, offset_seconds: int) -> None:
+    from showme.engine.functions.trade import _funcs
+
+    base = datetime(2026, 11, 6, 22, 29, tzinfo=timezone.utc)
+    frozen = base + timedelta(seconds=offset_seconds)
+    monkeypatch.setattr(_funcs, "_fx_now_utc", lambda: frozen)
+
+
+def _install_quote(monkeypatch, *, with_time: bool = True):
+    payload = _chart_payload(
+        _FIVE_DAY_CLOSES,
+        regular_price=1.1230,
+        regular_time=_epoch(*_QUOTE_DAY) if with_time else None,
+        chart_prev=1.11569,
+    )
+    monkeypatch.setattr(requests, "get", lambda url, **kw: _Resp(payload))
+
+
+def test_fxgo_as_of_is_quote_time_not_fetch_time(monkeypatch):
+    _install_quote(monkeypatch)
+    _quote_now(monkeypatch, offset_seconds=600)  # ten minutes after the quote
+    res = _run(_mk_fxgo().execute(pairs="EURUSD"))
+    data = res.data
+    quote_iso = "2026-11-06T22:29:00+00:00"
+    assert data["as_of"] == quote_iso
+    assert data["cards"]["as_of"] == quote_iso
+    assert data["rows"][0]["quote_time"] == quote_iso
+    assert data["rows"][0]["quote_age_seconds"] == 600
+    assert data["fetched_at"] != quote_iso
+    assert data["data_mode"] == "live_yfinance_quote"
+    assert data["cards"]["status"] == "ok"
+
+
+def test_fxgo_stale_quote_is_not_labelled_live(monkeypatch):
+    """A Friday-close quote seen on Saturday is 26 h old: not a live price."""
+    _install_quote(monkeypatch)
+    _quote_now(monkeypatch, offset_seconds=26 * 3600)
+    res = _run(_mk_fxgo().execute(pairs="EURUSD"))
+    data = res.data
+    assert data["status"] == "ok"
+    assert data["data_mode"] == "delayed_reference"
+    assert data["cards"]["data_mode"] == "delayed_reference"
+    assert data["cards"]["status"] == "stale"
+    assert data["as_of"] == "2026-11-06T22:29:00+00:00"
+    assert data["rows"][0]["quote_age_seconds"] == 26 * 3600
+    assert any("stale" in w.lower() for w in res.warnings)
+
+
+def test_fxgo_missing_quote_time_is_flagged_not_stamped(monkeypatch):
+    """No regularMarketTime: as_of must not be filled with the fetch time."""
+    _install_quote(monkeypatch, with_time=False)
+    res = _run(_mk_fxgo().execute(pairs="EURUSD"))
+    data = res.data
+    assert data["as_of"] is None
+    assert data["rows"][0]["quote_time"] is None
+    assert data["fetched_at"]
+    assert any("quote time" in w.lower() for w in res.warnings)

@@ -204,7 +204,11 @@ def test_fxgo_default_board_live_or_graceful_real_network():
             assert key in first
         assert first["bid"] > 0 and first["ask"] > 0
         assert first["ask"] >= first["bid"]
-        assert data["data_mode"] == "live_yfinance_quote"
+        # A quote older than the stale threshold must NOT be labelled live.
+        if data["cards"]["status"] == "stale":
+            assert data["data_mode"] == "delayed_reference"
+        else:
+            assert data["data_mode"] == "live_yfinance_quote"
     else:
         # Offline / rate-limited: honest unavailable shape, no numbers.
         assert data["data_mode"] == "provider_unavailable"
