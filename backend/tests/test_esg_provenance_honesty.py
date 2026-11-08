@@ -187,3 +187,82 @@ def test_manifest_methodology_does_not_claim_a_paid_vendor_is_required():
     assert "live_official" in text, text
     assert "sec edgar" in text, text
     assert "filing" in text, text
+
+
+# ---- ESG#4: the Yahoo primary path is exercised and reports why it is unavailable ----
+
+
+class _FakeSustainability:
+    def __init__(self, flat: dict | None):
+        self._flat = flat
+
+    def to_dict(self) -> dict:
+        return dict(self._flat or {})
+
+
+def _fake_yfinance(monkeypatch, flat: dict | None) -> None:
+    import sys
+    import types
+
+    fake = types.ModuleType("yfinance")
+
+    class _Ticker:
+        def __init__(self, symbol):
+            self.sustainability = _FakeSustainability(flat)
+
+    fake.Ticker = _Ticker
+    monkeypatch.setitem(sys.modules, "yfinance", fake)
+
+
+def _no_proxy(monkeypatch) -> list:
+    calls: list = []
+
+    async def _get_client():
+        calls.append("sec")
+        raise RuntimeError("proxy must not run")
+
+    monkeypatch.setattr(http_mod, "get_client", _get_client)
+    return calls
+
+
+def test_yahoo_snapshot_drives_rows_without_proxy(monkeypatch):
+    from showme.engine.core.base_function import FunctionDeps as _Deps
+
+    _fake_yfinance(
+        monkeypatch,
+        {
+            "totalEsg": 16.84,
+            "environmentScore": 6.1,
+            "socialScore": 7.4,
+            "governanceScore": 8.8,
+            "highestControversy": 3.0,
+        },
+    )
+    calls = _no_proxy(monkeypatch)
+    result = _run(ESGFunction(_Deps(yfinance=object())).execute(instrument=_instrument()))
+    data = result.data
+    assert calls == []
+    assert data["status"] == "ok"
+    assert data["data_mode"] == "cached_snapshot"
+    assert data["totalEsg"] == 16.84
+    assert result.sources == ["yfinance"]
+    assert {r["source_mode"] for r in data["rows"]} == {"yahoo_sustainability_snapshot"}
+
+
+def test_empty_yahoo_frame_is_reported_as_unavailable_before_proxy(monkeypatch):
+    from showme.engine.core.base_function import FunctionDeps as _Deps
+
+    _fake_yfinance(monkeypatch, {})
+    _patch(monkeypatch, lambda q: _total(4))
+    result = _run(ESGFunction(_Deps(yfinance=object())).execute(instrument=_instrument()))
+    assert result.data["data_mode"] == "live_official"
+    errors = result.metadata.get("provider_errors", [])
+    assert any("yahoo sustainability" in e and "no pillar values" in e for e in errors), errors
+
+
+def test_unwired_yfinance_adapter_is_reported_as_unavailable(monkeypatch):
+    _patch(monkeypatch, lambda q: _total(4))
+    result = _run(ESGFunction(FunctionDeps()).execute(instrument=_instrument()))
+    assert result.data["data_mode"] == "live_official"
+    errors = result.metadata.get("provider_errors", [])
+    assert any("yfinance adapter not configured" in e for e in errors), errors

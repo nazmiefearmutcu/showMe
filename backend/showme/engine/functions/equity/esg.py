@@ -178,6 +178,7 @@ class ESGFunction(BaseFunction):
 
         # ---- Primary: Yahoo Finance sustainability (Sustainalytics) ----
         scores: dict[str, Any] = {}
+        yahoo_note: str | None = None  # why the Yahoo primary gave no pillar values
         try:
             if self.deps.yfinance:
                 import yfinance as yf
@@ -192,11 +193,18 @@ class ESGFunction(BaseFunction):
                 )
                 if sus is not None:
                     scores = sus.to_dict() if hasattr(sus, "to_dict") else dict(sus)
+            else:
+                yahoo_note = "yahoo sustainability: yfinance adapter not configured"
         except Exception as exc:  # network / parse failure -> try proxy next
-            warnings.append(f"yfinance esg: {exc}")
+            yahoo_note = f"yfinance esg: {exc}"
 
         flat = _flatten_sustainability(scores)
         rows = _build_rows_from_sustainability(flat) if flat else None
+        if rows is None:
+            # Record why the primary gave nothing, so provenance shows why the proxy answered.
+            warnings.append(
+                yahoo_note or "yahoo sustainability: Yahoo published no pillar values for this ticker"
+            )
         if rows is not None:
             data = {
                 "symbol": symbol,
