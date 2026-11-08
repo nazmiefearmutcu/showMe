@@ -357,7 +357,9 @@ export function defaultQueryForFunction(code: string, category?: string): string
     case "TRQA":
       return "What changed in guidance?";
     case "SAT":
-      return "-122.55,37.70,-122.30,37.85";
+      // No prefilled bbox: a San Francisco box would be a default location the
+      // user never chose. Empty lets the SAT handler apply its own labelled preset.
+      return "";
     case "ICX":
       return "SPX";
     case "SECF":
