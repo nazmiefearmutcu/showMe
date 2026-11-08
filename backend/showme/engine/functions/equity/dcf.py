@@ -332,13 +332,38 @@ class DCFFunction(BaseFunction):
                 "free_cash_flow: provider reported negative free cash flow; DCF surface compounds the negative base value — pass fcfe explicitly for a tradable model."
             )
         if wacc <= g_terminal:
-            return FunctionResult(code=self.code, instrument=instrument,
-                                  data={"error": "wacc must exceed terminal growth",
-                        "assumptions": {"wacc": wacc, "wacc_source": wacc_source,
-                                        "growth_high": g_high, "growth_terminal": g_terminal,
-                                        "years": N, "fcfe_source": fcfe_source,
-                                        "shares_source": None}},
-                                  warnings=["wacc ≤ g_terminal"])
+            # Explicit input_error state with the full must_have payload shape
+            # (DCF#3): the Gordon terminal value is undefined here, so no
+            # valuation is computed and no value is substituted.
+            reason = (
+                f"WACC ({wacc:.2%}) must exceed terminal growth ({g_terminal:.2%}); "
+                "the terminal value is undefined. Raise wacc or lower terminal growth."
+            )
+            warnings.append("wacc ≤ g_terminal")
+            return FunctionResult(
+                code=self.code, instrument=instrument,
+                data={"status": "input_error",
+                      "reason": reason,
+                      "next_actions": ["Raise wacc above terminal growth.",
+                                       "Or lower growth_terminal below wacc."],
+                      "error": "wacc must exceed terminal growth",
+                      "wacc": wacc, "wacc_source": wacc_source,
+                      "g_high": g_high, "g_terminal": g_terminal,
+                      "years": N, "starting_fcfe": fcfe,
+                      "fcfe_source": fcfe_source,
+                      "assumptions": {"wacc": wacc, "wacc_source": wacc_source,
+                                      "growth_high": g_high, "growth_terminal": g_terminal,
+                                      "years": N, "fcfe_source": fcfe_source,
+                                      "shares_source": None},
+                      "shares_source": None,
+                      "shares_outstanding": None,
+                      "pv_explicit": None, "terminal_value": None, "pv_terminal": None,
+                      "equity_value": None, "fair_value_per_share": None,
+                      "rows": [], "bridge": [],
+                      "methodology": "Two-stage FCFE DCF; the terminal value is undefined when wacc is not above terminal growth.",
+                      "field_dictionary": FIELD_DICTIONARIES["valuation"]},
+                sources=list(set(sources)), warnings=warnings,
+            )
         # Stage 1: explicit forecast
         cashflows = []
         cf = fcfe

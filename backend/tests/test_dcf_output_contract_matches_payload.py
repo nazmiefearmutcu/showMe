@@ -57,3 +57,20 @@ def test_table_columns_name_the_row_keys() -> None:
     row_keys = set(res.data["rows"][0])
     columns = {c.key for c in _spec().table_schema.columns}
     assert columns <= row_keys, columns - row_keys
+
+
+def test_must_have_keys_are_present_in_the_wacc_below_growth_payload() -> None:
+    """DCF#3 review: the wacc <= terminal growth branch must carry the full
+    must_have shape and an explicit status, not only error + assumptions."""
+    deps = FunctionDeps(yfinance=_Yf({"freeCashflow": 1.0e10}))
+    res = asyncio.run(DCFFunction(deps).execute(AAPL, wacc=0.02, growth_high=0.05,
+                                                growth_terminal=0.025, years=5))
+    assert res.data.get("status") == "input_error"
+    assert res.data.get("reason")
+    assert res.data.get("next_actions")
+    missing = [k for k in _spec().output_contract.must_have if k not in res.data]
+    assert missing == [], missing
+    assert res.data["wacc"] == 0.02
+    assert res.data["g_terminal"] == 0.025
+    assert res.data["fair_value_per_share"] is None
+    assert res.data["equity_value"] is None
