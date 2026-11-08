@@ -438,8 +438,10 @@ def _agent_function_params(entry: FunctionIndexEntry, candidate: dict[str, str])
     elif code == "SECF":
         params.update({"query": "technology"})
     elif code == "GREEKS":
-        # No injected demo book: an empty positions list is the honest
-        # input_required state (T10 offline audit, placeholder_value).
+        # No injected demo book or contract: strike, expiry, quantity and type
+        # are the position itself, so an empty book is the honest
+        # input_required state (T10 offline audit, placeholder_value). Caller
+        # positions arrive later via defaults.update(merged) and still win.
         params.pop("positions", None)
     elif category == "portfolio":
         params.setdefault("symbols", profile["peer_symbols"])

@@ -193,3 +193,14 @@ def test_btune_every_path_reports_measured_latency() -> None:
     for label, res in cases.items():
         latency = res.data.get("latency_ms")
         assert isinstance(latency, (int, float)) and latency >= 0, (label, latency)
+
+
+# ---------------------------------------------------------------- GREEKS route
+def test_greeks_route_injects_no_demo_contract() -> None:
+    """The agent route must not price a made-up option (spot 100, strike 105...)."""
+    from showme.server_routes import _agent_runtime as runtime
+
+    params = runtime._route_function_params("GREEKS", {"symbol": "SPY"})
+    for position in params.get("positions") or []:
+        for key in ("spot", "strike", "expiry", "vol", "rate"):
+            assert key not in position, (key, position)
