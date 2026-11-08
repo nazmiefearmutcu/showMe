@@ -187,6 +187,15 @@ def test_manifest_prose_does_not_claim_eia_world_bank_or_fred_forecasts() -> Non
     assert "trend" in text.lower()
 
 
+def test_manifest_series_id_field_does_not_call_the_id_a_fred_series() -> None:
+    # Residual of CPF#4/#9: the ids are benchmark ids served from Yahoo futures
+    # proxies, so the field description must not label them as FRED series.
+    entry = _cpf_entry()
+    description = (entry.field_dict or {})["series_id"].description or ""
+    assert "FRED" not in description
+    assert "proxy" in description.lower() or "benchmark" in description.lower()
+
+
 def test_manifest_does_not_offer_a_provider_mode_the_handler_never_reads() -> None:
     entry = _cpf_entry()
     assert "provider_mode" not in [i.name for i in entry.inputs]

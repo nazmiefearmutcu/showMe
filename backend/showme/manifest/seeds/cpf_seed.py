@@ -160,7 +160,7 @@ def cpf() -> FunctionManifest:
             ),
         },
         field_dict={
-            "series_id": FieldDef(description="FRED series identifier.", source="input"),
+            "series_id": FieldDef(description="Benchmark commodity id, served from a Yahoo futures proxy.", source="input"),
             "actual": FieldDef(description="Array of {date, value} daily futures-proxy closes.", source="yfinance"),
             "forecast": FieldDef(description="Array of {date, value} trend-extrapolated points.", source="derived"),
             "forecast_vintage": FieldDef(unit="iso8601", description="Last realized actual date the forecast is anchored to.", source="yfinance"),
