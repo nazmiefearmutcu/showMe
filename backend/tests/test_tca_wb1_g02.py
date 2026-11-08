@@ -473,3 +473,18 @@ def test_json_transactions_and_invalid_transactions(tmp_path, monkeypatch):
     bad = _run(fn.execute(transactions='[{"symbol": ', benchmark="VWAP")).data
     assert bad["status"] == "input_error"
     assert "transactions" in bad["reason"].lower()
+
+
+# ---------------------------------------------------------------------------
+# TCA#3 (review) — the slippage label and methodology must name the TWAP
+# benchmark that benchmark=TWAP actually selects, not only VWAP.
+# ---------------------------------------------------------------------------
+def test_slippage_label_and_methodology_name_the_twap_benchmark():
+    from showme.engine.functions.trade import tca
+
+    slip_desc = tca._FIELD_DICTIONARY["slippage_bps"].lower()
+    assert "twap" in slip_desc, slip_desc
+    assert "vwap" in slip_desc, slip_desc
+    method = tca._METHODOLOGY.lower()
+    assert "twap" in method, method
+    assert "live intraday vwap benchmark" not in method, method

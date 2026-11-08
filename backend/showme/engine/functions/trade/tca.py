@@ -33,9 +33,12 @@ _PROVIDER_UNAVAILABLE = "provider_unavailable"
 _METHODOLOGY = (
     "TCA loads executed fills from the autonomous bot fill ledger (bot_fills) "
     "and the manual order_history store, then joins each fill against a live "
-    "intraday VWAP benchmark sourced keyless (Binance klines for crypto, "
-    "yfinance intraday candles otherwise) over the fill's own session, i.e. the "
-    "UTC calendar day of the fill (TCA#2: never a window ending today). A fill "
+    "intraday benchmark sourced keyless (Binance klines for crypto, yfinance "
+    "intraday candles otherwise) over the fill's own session, i.e. the "
+    "UTC calendar day of the fill (TCA#2: never a window ending today). The "
+    "benchmark is the session VWAP (volume-weighted typical price) by default, "
+    "or the TWAP (equal-weight mean of bar typical prices) when benchmark=TWAP; "
+    "ARRIVAL and IMPLEMENTATION_SHORTFALL use the recorded arrival price. A fill "
     "without a timestamp, or whose session has no intraday bars, has no live "
     "benchmark and falls back to its arrival price. The optional transactions "
     "input (JSON or CSV) replaces the local store, and window keeps only fills "
@@ -62,7 +65,8 @@ _FIELD_DICTIONARY = {
     "benchmark_px": "Live intraday benchmark for the fill session: VWAP, or TWAP "
         "(equal-weight mean of bar typical prices) when benchmark=TWAP.",
     "arrival_px": "Reference (arrival/decision) price at order entry.",
-    "slippage_bps": "Signed slippage vs the VWAP benchmark, in basis points.",
+    "slippage_bps": "Signed slippage vs the live benchmark in basis points: the fill "
+        "session VWAP, or the TWAP (equal-weight typical price) when benchmark=TWAP.",
     "is_bps": "Implementation shortfall vs arrival price, in basis points.",
     "opportunity_bps": "Cost of unfilled quantity vs benchmark, in basis "
         "points. Always null in bot-fill rows: the fill ledgers do not record "
