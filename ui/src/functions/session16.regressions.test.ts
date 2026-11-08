@@ -60,7 +60,7 @@ describe("Session 16 — NI news-load surfaces use scrim tokens, not raw white/b
     // remain in place — they already track the active theme.
     expect(niSource).not.toMatch(/color-mix\(in srgb,\s*white\b/);
     expect(niSource).not.toMatch(/color-mix\(in srgb,\s*black\b/);
-    expect(niSource).toContain("var(--scrim-low)");
+    // 2026-11-08: NI was rebuilt on the shared Awareness story list (tokens only, no load shell).
   });
 });
 
