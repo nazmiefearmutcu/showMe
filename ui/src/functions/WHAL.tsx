@@ -416,7 +416,7 @@ export function WHALPane({ code, symbol }: FunctionPaneProps) {
             <>
               <StatusSection
                 label="covered"
-                value={`${payload.window.covered_hours.toFixed(1)}h of bars`}
+                value={`${payload.window.covered_hours.toFixed(1)}h of ${(payload.market ?? market) === "CRYPTO" ? "trades" : "bars"}`}
               />
               <StatusDivider />
             </>
