@@ -1,3 +1,4 @@
+import { foldSearchText } from "@/lib/search-fold";
 /**
  * DEBT — Sovereign debt board.
  *
@@ -742,7 +743,7 @@ function vintageYear(r: DebtRow): string {
 }
 
 function matchesRegion(r: DebtRow, region: RegionId): boolean {
-  return (r.region ?? "").toLowerCase().includes(region);
+  return foldSearchText(r.region ?? "").includes(region);
 }
 
 /** Severity color ramp keyed to the debt-to-GDP reading. */

@@ -1,3 +1,4 @@
+import { foldSearchText } from "@/lib/search-fold";
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Pill, Skeleton, Sparkline } from "@/design-system";
 import { navigate } from "@/lib/router";
@@ -762,11 +763,11 @@ export function Welcome() {
     }
   }, [quickCodes]);
   const quickMatches = useMemo(() => {
-    const q = quickQuery.trim().toLowerCase();
+    const q = foldSearchText(quickQuery.trim());
     const pool = index.filter((entry) => !quickCodes.includes(entry.code));
     const matches = q
       ? pool.filter((entry) =>
-          `${entry.code} ${entry.name} ${entry.category}`.toLowerCase().includes(q),
+          foldSearchText(`${entry.code} ${entry.name} ${entry.category}`).includes(q),
         )
       : pool;
     return matches.slice(0, 8);

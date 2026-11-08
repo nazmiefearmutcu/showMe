@@ -1,3 +1,4 @@
+import { foldSearchText } from "@/lib/search-fold";
 /**
  * showMe chart engine — React shell (milestone 1).
  *
@@ -1072,10 +1073,10 @@ export function Chart({
     setAlertRules((prev) => prev.filter((r) => r.id !== id));
 
   const pickerResults = useMemo(() => {
-    const q = pickerQuery.trim().toLowerCase();
+    const q = foldSearchText(pickerQuery.trim());
     const list = q
       ? INDICATORS.filter(
-          (d) => d.name.toLowerCase().includes(q) || d.category.toLowerCase().includes(q),
+          (d) => foldSearchText(d.name).includes(q) || foldSearchText(d.category).includes(q),
         )
       : INDICATORS;
     const byCat = new Map<string, IndicatorDef[]>();

@@ -1,3 +1,4 @@
+import { foldSearchText } from "@/lib/search-fold";
 import { useMemo } from "react";
 import {
   Card,
@@ -72,9 +73,9 @@ export function ConsensusCard({ summary, symbol }: { summary: ANRSummary; symbol
   const crypto = isCryptoSummary(summary);
   const count = crypto ? summary.signal_count ?? summary.analyst_count : summary.analyst_count;
   const countLabel = summary.count_label ?? (crypto ? "signals" : "analysts");
-  const tone = label.toLowerCase().includes("buy")
+  const tone = foldSearchText(label).includes("buy")
     ? "positive"
-    : label.toLowerCase().includes("sell")
+    : foldSearchText(label).includes("sell")
       ? "negative"
       : "neutral";
   return (

@@ -1,3 +1,4 @@
+import { foldSearchText } from "@/lib/search-fold";
 /**
  * TRAN — Earnings Transcript or Release.
  *
@@ -111,8 +112,9 @@ function safeHttpUrl(value: unknown): string | null {
  */
 function highlightMatches(text: string, query: string): ReactNode {
   if (!query) return text;
-  const haystack = text.toLowerCase();
-  const needle = query.toLowerCase();
+  // foldSearchText keeps the length, so the offsets below index the original text.
+  const haystack = foldSearchText(text);
+  const needle = foldSearchText(query);
   const nodes: ReactNode[] = [];
   let cursor = 0;
   let at = haystack.indexOf(needle, cursor);
@@ -212,8 +214,8 @@ export function TRANPane({ code, symbol }: FunctionPaneProps) {
   const searchQuery = search.trim();
   const visible = useMemo(() => {
     if (!searchQuery) return filtered;
-    const needle = searchQuery.toLowerCase();
-    return filtered.filter((r) => (r.utterance ?? "").toLowerCase().includes(needle));
+    const needle = foldSearchText(searchQuery);
+    return filtered.filter((r) => foldSearchText(r.utterance ?? "").includes(needle));
   }, [filtered, searchQuery]);
   const sections = useMemo(() => groupBySection(visible), [visible]);
 

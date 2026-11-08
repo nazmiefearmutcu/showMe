@@ -1,3 +1,4 @@
+import { foldSearchText } from "@/lib/search-fold";
 /**
  * STRA — Strategy editor. Sub-system E user surface.
  *
@@ -941,7 +942,7 @@ function dedupeOperands(operands: string[]): string[] {
  * future real-OHLCV source (e.g. "exchange_ohlcv") does NOT trip the warning.
  */
 function isSyntheticSource(source: string | undefined): boolean {
-  return typeof source === "string" && source.toLowerCase().includes("synthetic");
+  return typeof source === "string" && foldSearchText(source).includes("synthetic");
 }
 
 /**

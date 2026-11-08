@@ -1,3 +1,4 @@
+import { foldSearchText } from "@/lib/search-fold";
 /**
  * PaneChrome — small top strip on every leaf with split / close / target.
  *
@@ -765,8 +766,8 @@ function Picker({
     : options
         .filter(
           (o) =>
-            o.code.toLowerCase().includes(query.toLowerCase()) ||
-            o.name.toLowerCase().includes(query.toLowerCase()),
+            foldSearchText(o.code).includes(foldSearchText(query)) ||
+            foldSearchText(o.name).includes(foldSearchText(query)),
         )
         .slice(0, 30);
   // Reset the keyboard cursor whenever the filter changes so Enter always
