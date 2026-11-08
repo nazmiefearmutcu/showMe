@@ -94,6 +94,42 @@ class _EmptyBinance:
         return []
 
 
+def test_no_fills_cards_are_null_not_zero_means(tmp_path, monkeypatch):
+    from showme.engine.core.base_function import FunctionDeps
+    from showme.engine.functions.trade.tca import TCAFunction
+
+    _use_temp_home(tmp_path, monkeypatch)
+    res = _run(TCAFunction(deps=FunctionDeps()).execute(symbol="BTCUSDT", benchmark="VWAP"))
+    cards = res.data["cards"]
+
+    assert cards["data_mode"] == "no_fills"
+    assert cards["avg_slippage_bps"] is None, cards
+    assert cards["avg_is_bps"] is None, cards
+    assert cards["worst_slippage_bps"] is None, cards
+    assert cards["total_cost_usd"] is None, cards
+
+
+def test_timeout_cards_are_null_not_zero_means(tmp_path, monkeypatch):
+    from showme.engine.core.base_function import FunctionDeps
+    from showme.engine.functions.trade.tca import TCAFunction
+
+    _use_temp_home(tmp_path, monkeypatch)
+
+    async def _timeout(self, *args, **kwargs):
+        raise TimeoutError("simulated benchmark timeout")
+
+    monkeypatch.setattr(TCAFunction, "_execute_inner", _timeout)
+    res = _run(TCAFunction(deps=FunctionDeps()).execute(symbol="BTCUSDT", benchmark="VWAP"))
+    cards = res.data["cards"]
+
+    assert res.data["status"] == "provider_unavailable"
+    assert cards["data_mode"] == "provider_unavailable"
+    assert cards["avg_slippage_bps"] is None, cards
+    assert cards["avg_is_bps"] is None, cards
+    assert cards["worst_slippage_bps"] is None, cards
+    assert cards["total_cost_usd"] is None, cards
+
+
 def test_unbenchmarked_fill_is_not_plotted_as_zero_slippage(tmp_path, monkeypatch):
     from showme.engine.core.base_function import FunctionDeps
     from showme.engine.functions.trade.tca import TCAFunction

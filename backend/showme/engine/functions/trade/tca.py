@@ -927,10 +927,12 @@ class TCAFunction(BaseFunction):
                as_of: str, data_mode: str) -> dict[str, Any]:
         return {
             "fill_count": summary.get("fill_count", 0),
-            "avg_slippage_bps": summary.get("avg_slippage_bps", 0.0),
-            "avg_is_bps": summary.get("avg_is_bps", 0.0),
-            "worst_slippage_bps": summary.get("worst_slippage_bps", 0.0),
-            "total_cost_usd": summary.get("total_cost_usd", 0.0),
+            # TCA#6: a card mean that was never measured (empty, timeout) is
+            # null, never a 0.0 that reads as a perfect execution.
+            "avg_slippage_bps": summary.get("avg_slippage_bps"),
+            "avg_is_bps": summary.get("avg_is_bps"),
+            "worst_slippage_bps": summary.get("worst_slippage_bps"),
+            "total_cost_usd": summary.get("total_cost_usd"),
             "benchmark": benchmark,
             "data_mode": data_mode,
             "as_of": as_of,
