@@ -134,11 +134,13 @@ def _apply_runtime_window(query: BQLQuery, params: dict[str, Any]) -> None:
 
 
 def _limit_rows(rows: list[dict[str, Any]], limit: Any) -> list[dict[str, Any]]:
+    # BQL#4: a caller limit is honoured as given (1..1000); it is no longer
+    # raised to 10. An unreadable limit falls back to the 200-row default.
     try:
         n = int(limit)
     except Exception:
-        n = 250
-    n = max(10, min(n, 1000))
+        n = 200
+    n = max(1, min(n, 1000))
     if len(rows) <= n:
         return rows
     symbols = list(dict.fromkeys(str(row.get("symbol") or "") for row in rows))
