@@ -395,6 +395,29 @@ def _osa_finite_positive(value: Any) -> float | None:
     return number
 
 
+def _osa_rate_input(params: dict[str, Any], key: str, default: float) -> tuple[float | None, str, str]:
+    """A rate/yield fraction from ``params[key]``: ``(value, source, reason)``.
+
+    A missing or null value takes ``default`` (source ``default``). A supplied
+    value must be a finite number; otherwise ``value`` is None and ``reason``
+    says what is wrong. Never raises.
+    """
+    raw = params.get(key)
+    if raw is None:
+        return default, "default", ""
+    if not isinstance(raw, bool):
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            value = None
+        if value is not None and math.isfinite(value):
+            return value, "param", ""
+    return None, "", (
+        f"{key} must be a finite decimal fraction (for example 0.045 for 4.5%), "
+        f"got {raw!r}."
+    )
+
+
 async def _osa_live_spot(deps: Any, underlying: str, params: dict[str, Any]) -> tuple[float | None, str]:
     """Live last price for the OSA underlying from the yfinance QUOTE adapter.
 
@@ -461,18 +484,20 @@ def _osa_needs_input(
     *,
     status: str = "needs_input",
     underlying: str | None = None,
+    next_actions: list[str] | None = None,
 ) -> FunctionResult:
     """OSA input gap: no priced curve, no placeholder numbers, explicit reason."""
-    if status == "provider_unavailable":
-        next_actions = [
-            f"Retry the live quote for {underlying or 'the underlying'}, or enter a spot price.",
-        ]
-    else:
-        next_actions = [
-            "Enter a positive spot price, or an underlying ticker to take its live quote.",
-            "Give every leg a CALL/PUT type, positive strike, positive expiry in years, "
-            "signed qty and an implied vol (or a market_price to solve it).",
-        ]
+    if next_actions is None:
+        if status == "provider_unavailable":
+            next_actions = [
+                f"Retry the live quote for {underlying or 'the underlying'}, or enter a spot price.",
+            ]
+        else:
+            next_actions = [
+                "Enter a positive spot price, or an underlying ticker to take its live quote.",
+                "Give every leg a CALL/PUT type, positive strike, positive expiry in years, "
+                "signed qty and an implied vol (or a market_price to solve it).",
+            ]
     return FunctionResult(
         code="OSA",
         instrument=instrument,
@@ -515,6 +540,16 @@ class OSAFunction(BaseFunction):
                 "Add at least one option leg (side, type, strike, expiry, vol).",
                 instrument,
             )
+        # Rate and dividend yield are parsed before any network call: a bad
+        # value is an input gap, never an exception or a silent default.
+        r, rate_source, rate_reason = _osa_rate_input(params, "rate", 0.045)
+        q, div_source, div_reason = _osa_rate_input(params, "div_yield", 0.0)
+        if r is None or q is None:
+            return _osa_needs_input(
+                rate_reason or div_reason,
+                instrument,
+                next_actions=["Enter the rate and dividend yield as decimal fractions, or leave them blank for the defaults."],
+            )
         # OSA#2: spot is the caller's entered value, else the underlying's live
         # quote, else an explicit provider/input state. Never a default number.
         spot_source = "user_override"
@@ -536,8 +571,6 @@ class OSAFunction(BaseFunction):
                     underlying=underlying,
                 )
             spot_source = "live_quote"
-        r = float(params.get("rate", 0.045))
-        q = float(params.get("div_yield", 0.0))
         initial_premiums: list[dict[str, Any]] = []
         net_debit = 0.0
         # D03-2026-05-24 (H19): per-leg vol resolution — if a leg quotes a
@@ -657,7 +690,9 @@ class OSAFunction(BaseFunction):
                                   "spot": S,
                                   "spot_source": spot_source,
                                   "rate": r,
+                                  "rate_source": rate_source,
                                   "div_yield": q,
+                                  "div_yield_source": div_source,
                                   "strategy": params.get("strategy") or "custom",
                                   "rows": initial_premiums,
                                   "legs": initial_premiums,
