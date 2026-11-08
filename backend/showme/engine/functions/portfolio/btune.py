@@ -3,8 +3,10 @@
 Each parameter set is backtested twice on the same daily OHLCV history: on
 the in-sample (train) slice and on the out-of-sample (test) slice. The test
 slice keeps the train history as indicator warm-up, but only test-slice bars
-are scored. Configurations are ranked by the out-of-sample value of the chosen
-metric (as the BTUNE seed contract states); overfit_gap = in-sample − OOS.
+are scored. Configurations are ranked by the in-sample (train) value of the
+chosen metric, so the test slice never influences which parameter set is
+chosen. The reported best_metric_oos is that chosen set's own test-slice value;
+overfit_gap = in-sample − OOS.
 """
 
 from __future__ import annotations
@@ -173,9 +175,9 @@ class BTUNEFunction(BaseFunction):
                 warnings=warnings, sources=["yfinance"], live=True,
             )
 
-        ranked = sorted(rows, key=_oos_sort_key)
+        ranked = sorted(rows, key=_is_sort_key)
         top = ranked[: spec["top_n"]]
-        best = ranked[0] if ranked[0]["metric_oos"] is not None else None
+        best = ranked[0] if ranked[0]["metric_in_sample"] is not None else None
         if best is None:
             warnings.append(f"metric '{spec['metric']}' is not defined for any tested parameter set")
         overfit = _overfit_summary(top)
@@ -208,6 +210,7 @@ class BTUNEFunction(BaseFunction):
                     "test_end": str(test_index[-1])[:10],
                 },
                 "best_params": best["params"] if best else None,
+                "best_metric_in_sample": best["metric_in_sample"] if best else None,
                 "best_metric_oos": best["metric_oos"] if best else None,
                 "rows": top,
                 "top_n_results": top,
@@ -228,6 +231,7 @@ class BTUNEFunction(BaseFunction):
                     "combos_tested": len(rows),
                     "combos_skipped": len(skipped),
                     "best_params": best["params"] if best else None,
+                    "best_metric_in_sample": best["metric_in_sample"] if best else None,
                     "best_metric_oos": best["metric_oos"] if best else None,
                     "overfit_warning": overfit["warning"],
                     "source_mode": "live_yfinance",
@@ -237,14 +241,17 @@ class BTUNEFunction(BaseFunction):
                     f"backtested on the first {spec['train_pct']:.0%} of the daily OHLCV history "
                     "(in-sample) and on the remainder (out-of-sample, with the train history kept "
                     "as indicator warm-up). Configurations are ranked by the out-of-sample value of "
-                    f"'{spec['metric']}'. overfit_gap = in-sample minus out-of-sample; overfit_warning "
-                    f"is set when the median gap across the top-N exceeds {OVERFIT_GAP_THRESHOLD}. "
-                    "The out-of-sample figure is still a search result: the chosen set was selected "
-                    "from the grid, so confirm it on new data before relying on it."
+                    f"'{spec['metric']}' on the train slice; the test slice is not used to choose "
+                    "parameters. best_metric_oos is the chosen set's own test-slice value. overfit_gap = "
+                    f"in-sample minus out-of-sample; overfit_warning is set when the median gap across "
+                    f"the top-N exceeds {OVERFIT_GAP_THRESHOLD}. The out-of-sample figure is still a "
+                    "single post-selection check over one split: confirm it on new data before relying on it."
                 ),
                 "field_dictionary": {
-                    "metric_in_sample": "Selected metric on the train slice.",
-                    "metric_oos": "Selected metric on the test slice; the ranking key.",
+                    "metric_in_sample": "Selected metric on the train slice; the ranking key.",
+                    "metric_oos": "Selected metric on the test slice for the same parameter set; not used for ranking.",
+                    "best_metric_in_sample": "Train-slice metric of best_params.",
+                    "best_metric_oos": "Test-slice metric of best_params (the chosen set's own out-of-sample value).",
                     "overfit_gap": "metric_in_sample minus metric_oos.",
                     "sharpe": "Out-of-sample annualized return/risk score (sqrt(252) scaling).",
                     "cagr": "Out-of-sample compound annual growth rate as a fraction (not percent); null for windows under 0.25 years.",
@@ -338,8 +345,9 @@ def _row(cfg: dict[str, Any], is_m: dict[str, Any], oos_m: dict[str, Any], metri
     }
 
 
-def _oos_sort_key(row: dict[str, Any]) -> tuple[bool, float]:
-    value = row["metric_oos"]
+def _is_sort_key(row: dict[str, Any]) -> tuple[bool, float]:
+    """Rank by the train-slice metric only; the test slice never selects."""
+    value = row["metric_in_sample"]
     return (value is None, -value if value is not None else 0.0)
 
 

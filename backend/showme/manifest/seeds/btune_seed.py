@@ -136,6 +136,17 @@ def btune() -> FunctionManifest:
                 step=1,
             ),
             InputSpec(
+                name="fee_bps",
+                label="Commission (bps)",
+                control=ControlKind.NUMBER,
+                required=False,
+                description="Per-trade commission in basis points applied to every backtest slice.",
+                min=0,
+                max=500,
+                step=1,
+                unit="bps",
+            ),
+            InputSpec(
                 name="live_backtest",
                 label="Run live backtest",
                 control=ControlKind.BOOLEAN,
@@ -176,12 +187,10 @@ def btune() -> FunctionManifest:
             "provider_mode": DataMode.DELAYED_REFERENCE.value,
         },
         provider_chain=ProviderChain(
-            primary="internal",
-            fallbacks=["yfinance", "binance", "cached_snapshot"],
+            primary="yfinance",
+            fallbacks=[],
             acceptable_modes=[
                 DataMode.DELAYED_REFERENCE,
-                DataMode.MODELED,
-                DataMode.CACHED_SNAPSHOT,
             ],
         ),
         caching=CachingPolicy(ttl_seconds=3600, scope="per_input", persist=True),
@@ -218,8 +227,8 @@ def btune() -> FunctionManifest:
                 ColumnSpec(key="metric_oos", label="OOS metric", kind="number", format="%.3f"),
                 ColumnSpec(key="overfit_gap", label="Gap", kind="number", format="%.3f"),
                 ColumnSpec(key="sharpe", label="Sharpe", kind="number", format="%.2f"),
-                ColumnSpec(key="cagr", label="CAGR", kind="percent", unit="%", format="%.2f"),
-                ColumnSpec(key="max_drawdown", label="Max DD", kind="percent", unit="%", format="%.2f"),
+                ColumnSpec(key="cagr", label="CAGR (fraction)", kind="number", format="%.4f"),
+                ColumnSpec(key="max_drawdown", label="Max DD (fraction)", kind="number", format="%.4f"),
             ],
             sortable=True,
             filterable=True,
@@ -243,7 +252,9 @@ def btune() -> FunctionManifest:
             "the train slice (the strategy may be entirely deterministic, "
             "in which case 'fit' is a no-op), evaluate signals on both "
             "slices, and record metric_in_sample + metric_oos. Best_params "
-            "is ranked by metric_oos to discourage overfit selection. "
+            "is the set with the highest metric_in_sample (train slice); the "
+            "test slice is not used to choose parameters. best_metric_oos is "
+            "that chosen set's own metric_oos. "
             "overfit_gap = metric_in_sample − metric_oos; "
             "overfit_warning is raised when the median gap across the "
             "top-N exceeds a domain-specific threshold (e.g. ΔSharpe > 1.0). "
@@ -266,7 +277,8 @@ def btune() -> FunctionManifest:
             ),
         },
         field_dict={
-            "best_params": FieldDef(description="Parameter set with the best OOS metric.", source="computed"),
+            "best_params": FieldDef(description="Parameter set with the best in-sample (train) metric.", source="computed"),
+            "best_metric_oos": FieldDef(description="Test-slice metric of best_params; not used for selection.", source="computed"),
             "top_n_results[]": FieldDef(description="Top-N ranked by OOS metric.", source="computed"),
             "full_results[]": FieldDef(description="Complete grid eval — large; usually paginated.", source="computed"),
             "overfit_warning": FieldDef(description="True when median IS-OOS gap exceeds threshold.", source="computed"),
@@ -285,10 +297,13 @@ def btune() -> FunctionManifest:
                 assertions=["defaults.paper_mode == True"],
             ),
             SemanticTest(
-                name="btune_best_params_picked_on_oos_not_in_sample",
-                description="best_params is the row with highest metric_oos, not metric_in_sample.",
+                name="btune_best_params_picked_on_train_not_test",
+                description="best_params is the row with highest metric_in_sample; best_metric_oos is that row's own metric_oos.",
                 inputs={},
-                assertions=["best_params row.metric_oos == max(top_n_results.metric_oos)"],
+                assertions=[
+                    "best_params row.metric_in_sample == max(full_results.metric_in_sample)",
+                    "best_metric_oos == best_params row.metric_oos",
+                ],
             ),
             SemanticTest(
                 name="btune_full_grid_size_equals_product_of_values",

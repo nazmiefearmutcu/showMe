@@ -63,10 +63,64 @@ def test_btune_ranks_by_out_of_sample_metric(equity):
     rows = res.data["full_results"]
     assert len(rows) == 4
     best = res.data["best_params"]
-    top_oos = res.data["top_n_results"][0]
-    assert top_oos["params"] == best
-    assert top_oos["metric_oos"] == max(r["metric_oos"] for r in rows if r["metric_oos"] is not None)
+    top_is = res.data["top_n_results"][0]
+    assert top_is["params"] == best
+    assert top_is["metric_in_sample"] == max(r["metric_in_sample"] for r in rows if r["metric_in_sample"] is not None)
+    assert res.data["best_metric_oos"] == top_is["metric_oos"]
     assert all("metric_in_sample" in r and "overfit_gap" in r for r in rows)
+
+
+class _Stats:
+    def __init__(self, metrics):
+        self.metrics = metrics
+
+
+class _TaggedStrategy:
+    def __init__(self, params):
+        self.params = params
+
+    def __call__(self, bars, state):  # pragma: no cover - never executed by the fake
+        return None
+
+
+def _strategy_probe(name, params):  # noqa: ARG001 - mirrors _build_strategy signature
+    return _TaggedStrategy(dict(params))
+
+
+class _SplitAdversarialBacktest:
+    """Train slice favours large fast; test slice favours small fast (adversarial)."""
+
+    def __init__(self, df, strategy, initial_cash, fee_bps, eval_start=None):  # noqa: ARG002
+        self.strategy = strategy
+        self.eval_start = eval_start
+
+    def run(self):
+        p = self.strategy.params
+        is_value = p["fast"] * 10 + p["slow"] / 100
+        oos_value = -(p["fast"] * 10) + p["slow"] / 100
+        value = oos_value if self.eval_start is not None else is_value
+        metrics = {
+            "sharpe": value, "cagr": 0.1, "calmar": 1.0, "sortino": 1.0,
+            "total_return": 0.1, "max_drawdown": -0.1, "trades": 3,
+        }
+        return _Stats(metrics)
+
+
+def test_btune_selects_on_train_slice_not_test_slice(equity, monkeypatch):
+    monkeypatch.setattr(btune_mod, "_build_strategy", _strategy_probe)
+    monkeypatch.setattr(btune_mod, "Backtest", _SplitAdversarialBacktest)
+    res = _run(BTUNEFunction(_live_deps()).execute(
+        instrument=equity, live_backtest=True, grid={"fast": [5, 10, 30], "slow": [30, 50]},
+    ))
+    assert res.data["status"] == "ok"
+    # Chosen on the train slice: fast=30 has the best in-sample sharpe.
+    assert res.data["best_params"] == {"fast": 30, "slow": 50}
+    # The reported out-of-sample figure is the chosen set's own test-slice value,
+    # not the grid maximum on the test slice (which belongs to fast=5).
+    assert res.data["best_metric_oos"] == pytest.approx(-300 + 0.5)
+    assert res.data["top_n_results"][0]["params"] == {"fast": 30, "slow": 50}
+    assert res.data["top_n_results"][0]["metric_in_sample"] == pytest.approx(300.5)
+    assert max(r["metric_oos"] for r in res.data["full_results"]) == pytest.approx(-50 + 0.5)
 
 
 def test_btune_declared_inputs_are_honoured(equity):
@@ -136,3 +190,33 @@ def test_btune_seed_declares_only_supported_options():
     assert "profit_factor" not in (inputs["metric"].options or [])
     assert inputs["frequency"].options == ["1d"]
     assert set(inputs["strategy_id"].options or []) == {"sma_crossover", "rsi_meanrev"}
+
+
+def test_btune_seed_declares_fee_and_describes_train_selection():
+    from showme.manifest.seeds.btune_seed import btune
+
+    inputs = {i.name: i for i in btune.inputs}
+    assert "fee_bps" in inputs
+    assert "ranked by metric_oos" not in btune.methodology
+    assert "metric_in_sample" in btune.methodology
+    assert "test slice is not used" in btune.methodology
+    names = [t.name for t in btune.semantic_tests]
+    assert "btune_best_params_picked_on_oos_not_in_sample" not in names
+    assert "btune_best_params_picked_on_train_not_test" in names
+
+
+def test_btune_seed_provider_chain_matches_handler():
+    from showme.manifest.seeds.btune_seed import btune
+
+    assert btune.provider_chain.primary == "yfinance"
+    assert btune.provider_chain.fallbacks == []
+    assert "MODELED" not in [m.name for m in btune.provider_chain.acceptable_modes]
+
+
+def test_btune_seed_fraction_columns_are_not_percent_kind():
+    from showme.manifest.seeds.btune_seed import btune
+
+    cols = {c.key: c for c in btune.table_schema.columns}
+    for key in ("cagr", "max_drawdown"):
+        assert cols[key].kind != "percent"
+        assert cols[key].unit in (None, "")
