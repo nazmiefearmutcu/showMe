@@ -33,25 +33,7 @@ MARKET_TYPES = ("Equity", "Index", "FX", "Crypto", "Commodity", "Rates", "Credit
 CORRELATION_METHODS = ("pearson", "spearman", "kendall")
 DEFAULT_IMPACT_SYMBOLS = ["AAPL", "SPX", "EURUSD", "BTCUSDT", "GC=F", "US10Y", "CDXIG"]
 
-SAMPLE_MARKET_BETA = {
-    "Equity": 1.05,
-    "Index": 0.90,
-    "FX": -0.20,
-    "Crypto": 1.65,
-    "Commodity": 0.35,
-    "Rates": -0.55,
-    "Credit": -0.75,
-}
 
-SAMPLE_MARKET_VOL = {
-    "Equity": 0.015,
-    "Index": 0.011,
-    "FX": 0.005,
-    "Crypto": 0.035,
-    "Commodity": 0.018,
-    "Rates": 0.008,
-    "Credit": 0.006,
-}
 
 ASSET_NAMES = {
     "AAPL": "Apple Inc.",
@@ -181,7 +163,15 @@ class CORRFunction(BaseFunction):
         frequency = _normalize_frequency(raw_frequency)
         missing_policy = _normalize_missing_policy(params.get("missing_data_policy") or params.get("missing_policy"))
         min_overlap = _bounded_int(params.get("min_overlap", 30), 10, 500, 30)
-        live = _truthy(params.get("live_correlation") or params.get("live"))
+        # Live is the default (the pane always sends it); only an explicit
+        # false asks for the removed reference mode.
+        live_flags = [params.get(k) for k in ("live_correlation", "live") if params.get(k) not in (None, "")]
+        live = any(_truthy(v) for v in live_flags) if live_flags else True
+        if not live:
+            # Data policy: correlations are computed from real close series only.
+            # The old reference mode generated Gaussian price paths and published
+            # a correlation matrix of them; that path is gone.
+            return _live_required_result(symbols, days, instrument, frequency, return_method, missing_policy)
         sources = ["computed_return_model"]
         coverage_status: dict[str, dict[str, Any]] = {}
         dropped_live: list[str] = []
@@ -213,17 +203,6 @@ class CORRFunction(BaseFunction):
                     symbols, days, coverage_status, instrument, frequency,
                     return_method, missing_policy,
                 )
-        else:
-            price_series = _generate_sample_price_series(_build_assets(symbols), days)
-            coverage_status = {
-                symbol: {
-                    "status": "computed_reference",
-                    "source": "computed_return_model",
-                    "provider_symbol": _provider_symbol(symbol),
-                    "message": "Deterministic provider-independent reference series.",
-                }
-                for symbol in symbols
-            }
 
         frame = _build_return_frame(price_series, frequency, return_method, missing_policy)
         thin_symbols = [
@@ -261,47 +240,11 @@ class CORRFunction(BaseFunction):
                         symbols, days, coverage_status, instrument, frequency,
                         return_method, missing_policy,
                     )
-            else:
-                price_series = [
-                    series
-                    for series in price_series
-                    if series.get("asset", {}).get("symbol") not in set(thin_symbols)
-                ]
-                price_series.extend(_generate_sample_price_series(_build_assets(thin_symbols), days))
-                if "computed_return_model" not in sources:
-                    sources.append("computed_return_model")
-                for symbol in thin_symbols:
-                    previous = coverage_status.get(symbol, {})
-                    previous_source = previous.get("source") or "live_provider"
-                    previous_message = previous.get("message") or "live series did not produce two returns"
-                    coverage_status[symbol] = {
-                        "status": "computed_fallback",
-                        "source": f"{previous_source}+computed_return_model",
-                        "provider_symbol": previous.get("provider_symbol") or _provider_symbol(symbol),
-                        "message": (
-                            f"Live series produced fewer than two usable returns ({previous_message}); "
-                            "deterministic reference series used."
-                        ),
-                    }
-                frame = _build_return_frame(price_series, frequency, return_method, missing_policy)
         if frame.empty:
-            if live:
-                return _live_unavailable_result(
-                    symbols, days, coverage_status, instrument, frequency,
-                    return_method, missing_policy,
-                )
-            price_series = _generate_sample_price_series(_build_assets(symbols), days)
-            frame = _build_return_frame(price_series, frequency, return_method, missing_policy)
-            sources = ["computed_return_model"]
-            coverage_status = {
-                symbol: {
-                    "status": "computed_fallback",
-                    "source": "computed_return_model",
-                    "provider_symbol": _provider_symbol(symbol),
-                    "message": "Correlation frame was empty; reference series used.",
-                }
-                for symbol in symbols
-            }
+            return _live_unavailable_result(
+                symbols, days, coverage_status, instrument, frequency,
+                return_method, missing_policy,
+            )
 
         # B6: scrub NaN-dominant columns AFTER all fallbacks have populated
         # the frame so the matrix downstream stays finite. Surface the drop
@@ -503,6 +446,36 @@ def _provenance_sources(coverage_status: dict[str, dict[str, Any]], live: bool) 
         if source and source not in names:
             names.append(source)
     return names
+
+
+def _live_required_result(
+    symbols: list[str],
+    days: int,
+    instrument: Instrument | None,
+    frequency: str,
+    return_method: str,
+    missing_policy: str,
+) -> FunctionResult:
+    """live=false: no synthetic reference series is generated (data policy)."""
+    return FunctionResult(
+        code="CORR",
+        instrument=instrument,
+        data={
+            "status": "input_error",
+            "reason": ("CORR computes correlations from real close series only; live=false asked for a "
+                       "synthetic reference series, which is not offered. Set live=true."),
+            "symbols": list(symbols),
+            "pearson": {}, "spearman": {}, "downside": {}, "annualized_vol": {},
+            "surface": [], "rows": [], "samples": 0,
+            "next_actions": ["Run CORR with live=true (the default) to use real price history."],
+            "methodology": ("CORR runs on live close series; when they are unavailable the payload is "
+                            "an explicit state, never a generated series."),
+        },
+        sources=[],
+        metadata={"days": days, "symbols": list(symbols), "live": False,
+                  "return_method": return_method, "frequency": frequency,
+                  "missing_data_policy": missing_policy},
+    )
 
 
 def _live_unavailable_result(
@@ -1380,32 +1353,22 @@ def _build_return_frame(
     return _returns_from_prices(prices, return_method, missing_policy, frequency)
 
 
-def _generate_sample_price_series(assets: list[dict[str, Any]], days: int) -> list[dict[str, Any]]:
-    end = datetime.now(timezone.utc).date()
-    start = end - timedelta(days=max(days, 60))
-    dates = pd.bdate_range(start=start, end=end)
-    if len(dates) < 3:
-        dates = pd.bdate_range(end=end, periods=60)
-    global_returns = [0.00015 + _gaussian(index + 7) * 0.008 for index, _ in enumerate(dates)]
-    risk_off_returns = [_gaussian(index + 113) * 0.004 for index, _ in enumerate(dates)]
-    series: list[dict[str, Any]] = []
-    for asset_index, asset in enumerate(assets):
-        price = _base_price(asset)
-        symbol_seed = sum(ord(char) for char in asset["symbol"])
-        points: list[dict[str, Any]] = []
-        market = asset["market"]
-        for index, date in enumerate(dates):
-            beta = SAMPLE_MARKET_BETA[market]
-            vol = SAMPLE_MARKET_VOL[market]
-            idiosyncratic = _gaussian(symbol_seed + index * (asset_index + 3)) * vol
-            risk_off = risk_off_returns[index] if market in {"Rates", "Credit", "FX"} else -0.35 * risk_off_returns[index]
-            crypto_momentum = math.sin(index / 19) * 0.006 if market == "Crypto" else 0.0
-            commodity_cycle = math.sin(index / 31) * 0.004 if market == "Commodity" else 0.0
-            daily_return = beta * global_returns[index] + risk_off + idiosyncratic + crypto_momentum + commodity_cycle
-            price = max(price * math.exp(daily_return), 0.0001)
-            points.append({"date": date.date().isoformat(), "close": round(float(price), 6)})
-        series.append({"asset": asset, "points": points})
-    return series
+
+
+def _build_assets(symbols: list[str]) -> list[dict[str, Any]]:
+    assets: list[dict[str, Any]] = []
+    for symbol in symbols:
+        market = _infer_market(symbol)
+        assets.append(
+            {
+                "symbol": symbol,
+                "name": ASSET_NAMES.get(symbol, symbol),
+                "market": market,
+                "currency": _currency_for_market(symbol, market),
+                "venue": _venue_for_market(market),
+            }
+        )
+    return assets
 
 
 def _price_series_from_frame(symbol: str, frame: pd.DataFrame | None) -> dict[str, Any] | None:
@@ -1429,20 +1392,6 @@ def _price_series_from_frame(symbol: str, frame: pd.DataFrame | None) -> dict[st
     return {"asset": asset, "points": points}
 
 
-def _build_assets(symbols: list[str]) -> list[dict[str, Any]]:
-    assets: list[dict[str, Any]] = []
-    for symbol in symbols:
-        market = _infer_market(symbol)
-        assets.append(
-            {
-                "symbol": symbol,
-                "name": ASSET_NAMES.get(symbol, symbol),
-                "market": market,
-                "currency": _currency_for_market(symbol, market),
-                "venue": _venue_for_market(market),
-            }
-        )
-    return assets
 
 
 def _parse_symbols(raw: Any) -> list[str]:
@@ -1701,27 +1650,8 @@ def _venue_for_market(market: str) -> str:
     }.get(market, "US")
 
 
-def _base_price(asset: dict[str, Any]) -> float:
-    symbol = asset["symbol"]
-    market = asset["market"]
-    symbol_seed = sum(ord(char) for char in symbol)
-    if market == "FX":
-        return 1 + (symbol_seed % 30) / 50
-    if market == "Rates":
-        return 2 + (symbol_seed % 300) / 100
-    if market == "Credit":
-        return 50 + (symbol_seed % 80)
-    if market == "Crypto":
-        return 62000 if symbol.startswith("BTC") else 3200 if symbol.startswith("ETH") else 140
-    if market == "Commodity":
-        return 2300 if symbol in {"GC=F", "XAU", "XAUUSD", "GLD"} else 78
-    return 100 + (symbol_seed % 200)
 
 
-def _gaussian(seed: int | float) -> float:
-    u1 = max(_seeded_noise(seed), 0.0001)
-    u2 = max(_seeded_noise(float(seed) + 19.19), 0.0001)
-    return math.sqrt(-2 * math.log(u1)) * math.cos(2 * math.pi * u2)
 
 
 def _seeded_noise(seed: int | float) -> float:
@@ -1795,34 +1725,3 @@ def _avg_off_diagonal(matrix: dict[str, dict[str, float | None]], symbol: str) -
     return round(float(sum(values) / len(values)), 4)
 
 
-def _correlation_template(
-    symbols: list[str],
-    days: int,
-    return_method: str = "log",
-    frequency: str = "daily",
-    missing_policy: str = "pairwise",
-) -> dict[str, Any]:
-    selected = _parse_symbols(symbols) or list(DEFAULT_IMPACT_SYMBOLS)
-    price_series = _generate_sample_price_series(_build_assets(selected), days)
-    frame = _build_return_frame(price_series, frequency, return_method, missing_policy)
-    coverage_status = {
-        symbol: {
-            "status": "computed_reference",
-            "source": "computed_return_model",
-            "provider_symbol": _provider_symbol(symbol),
-            "message": "Deterministic provider-independent reference series.",
-        }
-        for symbol in selected
-    }
-    return _correlation_payload(
-        symbols=selected,
-        days=days,
-        price_series=price_series,
-        frame=frame,
-        return_method=return_method,
-        frequency=frequency,
-        missing_policy=missing_policy,
-        live=False,
-        sources=["computed_return_model"],
-        coverage_status=coverage_status,
-    )
