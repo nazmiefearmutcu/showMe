@@ -236,7 +236,7 @@ export function DARKPane({ code, symbol }: FunctionPaneProps) {
     />
   ) : venues.length === 0 ? (
     <Empty
-      title="FINRA ATS data unavailable"
+      title={payload?.status === "input_required" ? "Symbol needed" : "FINRA ATS data unavailable"}
       body={
         payload?.reason ??
         "No off-exchange ATS rows returned — this symbol may not be ATS-reported or FINRA is unreachable."
