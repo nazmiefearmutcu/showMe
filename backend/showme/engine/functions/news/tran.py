@@ -112,8 +112,39 @@ class TRANFunction(BaseFunction):
         section_filter = str(params.get("section") or "all").strip().lower()
         speaker_filter = _as_list(params.get("speaker_filter"))
 
+        # The requested quarter selects the filing / archive row. An unreadable
+        # label is an input error, never silently replaced by the latest filing.
+        requested_quarter: str | None = None
+        quarter_raw = str(params.get("quarter") or "").strip()
+        if quarter_raw:
+            requested_quarter = _normalize_quarter(quarter_raw)
+            if requested_quarter is None:
+                return FunctionResult(
+                    code=self.code,
+                    instrument=instrument,
+                    data={
+                        "symbol": symbol,
+                        "status": "input_error",
+                        "event": {"symbol": symbol, "quarter": None},
+                        "utterances": [],
+                        "rows": [],
+                        "whisper": None,
+                        "data_mode": "not_configured",
+                        "methodology": _METHODOLOGY,
+                        "field_dictionary": _FIELD_DICT,
+                        "next_actions": [
+                            "Use a quarter label such as Q3 FY26 (Q1-Q4, FY, and a two- or "
+                            "four-digit year), or leave the quarter empty for the latest filing.",
+                        ],
+                        "cards": _cards(symbol, {}, 0, 0, "not_configured"),
+                    },
+                    sources=["no_live_source"],
+                    warnings=[f"quarter '{quarter_raw}' is not a recognised quarter label"],
+                    metadata={"data_state": "input_error", "data_mode": "not_configured"},
+                )
+
         utterances: list[dict[str, Any]] = []
-        event: dict[str, Any] = {"symbol": symbol, "quarter": params.get("quarter") or None}
+        event: dict[str, Any] = {"symbol": symbol, "quarter": requested_quarter}
         data_mode = "not_configured"
         document_type = "transcript"
 
@@ -134,7 +165,14 @@ class TRANFunction(BaseFunction):
                 # transcripts_archive exposes list_for_symbol (not list_events);
                 # the old name raised AttributeError and silently killed this
                 # cached-transcript source via the broad except below.
-                events = archive.list_for_symbol(symbol, limit=1)
+                if requested_quarter:
+                    archived = archive.list_for_symbol(symbol, limit=50)
+                    events = [
+                        e for e in archived
+                        if _normalize_quarter(str(e.get("quarter") or "")) == requested_quarter
+                    ][:1]
+                else:
+                    events = archive.list_for_symbol(symbol, limit=1)
                 if events:
                     ev = events[0]
                     utterances = _coerce_archive_utterances(ev)
@@ -153,10 +191,14 @@ class TRANFunction(BaseFunction):
 
         # 3) DEFAULT keyless live source — SEC EDGAR 8-K earnings exhibit.
         sec_error: str | None = None
+        sec_unreachable = False
         if not utterances:
+            # Only pass the quarter when one was asked for, so the lookup keeps its
+            # default (newest filing) signature otherwise.
+            sec_kwargs: dict[str, Any] = {"quarter": requested_quarter} if requested_quarter else {}
             try:
                 ev_meta, body = await asyncio.wait_for(
-                    _fetch_sec_earnings_press_release(symbol, deps=self.deps),
+                    _fetch_sec_earnings_press_release(symbol, deps=self.deps, **sec_kwargs),
                     timeout=float(params.get("sec_timeout", 15) or 15),
                 )
                 if body:
@@ -171,10 +213,13 @@ class TRANFunction(BaseFunction):
                         warnings.append(_RELEASE_WARNING)
             except asyncio.TimeoutError:
                 sec_error = "SEC EDGAR request timed out"
+                sec_unreachable = True
             except _SecLookupError as e:
+                # The filing is not there (unknown ticker, quarter with no 8-K): not an outage.
                 sec_error = str(e)
             except Exception as e:  # noqa: BLE001 - record network failure honestly
                 sec_error = f"{type(e).__name__}: {e}"
+                sec_unreachable = True
         if sec_error:
             warnings.append(f"sec_edgar: {sec_error}")
 
@@ -231,13 +276,18 @@ class TRANFunction(BaseFunction):
 
         # No real source produced anything → honest provider_unavailable.
         if not rows:
-            network_failed = bool(sec_error)
+            network_failed = sec_unreachable
             status = "provider_unavailable" if network_failed else "empty"
-            reason = (
-                f"No earnings press release / transcript could be retrieved for {symbol}."
-                if not network_failed else
-                f"SEC EDGAR was unreachable for {symbol}: {sec_error}."
-            )
+            if network_failed:
+                reason = f"SEC EDGAR was unreachable for {symbol}: {sec_error}."
+            else:
+                quarter_note = f" for quarter {requested_quarter}" if requested_quarter else ""
+                reason = (
+                    f"No earnings press release / transcript could be retrieved for "
+                    f"{symbol}{quarter_note}."
+                )
+                if sec_error:
+                    reason = f"{reason} {sec_error}"
             next_actions = [
                 "Paste an earnings-call transcript via transcript_text to render it here.",
                 "Provide audio_url or audio_path so Whisper can transcribe the call.",
@@ -260,6 +310,7 @@ class TRANFunction(BaseFunction):
                     "rows": [],
                     "whisper": whisper_result,
                     "data_mode": "provider_unavailable" if network_failed else "not_configured",
+                    "reason": reason,
                     "methodology": _METHODOLOGY,
                     "field_dictionary": _FIELD_DICT,
                     "next_actions": next_actions,
@@ -349,8 +400,15 @@ async def _resolve_cik(symbol: str, deps: Any) -> str:
     return cik
 
 
-async def _fetch_sec_earnings_press_release(symbol: str, deps: Any) -> tuple[dict[str, Any], str]:
-    """Return (event_meta, press_release_text) for the latest 8-K earnings exhibit."""
+async def _fetch_sec_earnings_press_release(
+    symbol: str, deps: Any, quarter: str | None = None,
+) -> tuple[dict[str, Any], str]:
+    """Return (event_meta, press_release_text) for an 8-K earnings exhibit.
+
+    Without ``quarter`` this is the newest earnings 8-K. With ``quarter`` (a
+    normalised label such as ``Q3 FY26``) only 8-Ks whose report period falls in
+    that quarter are considered; none means a lookup error, not the latest filing.
+    """
     cik = await _resolve_cik(symbol, deps)
     cik_nozero = str(int(cik))
     client = await _http_client()
@@ -375,6 +433,16 @@ async def _fetch_sec_earnings_press_release(symbol: str, deps: Any) -> tuple[dic
             score = 2 if "2.02" in item_str else 1
             candidates.append((score, i))  # type: ignore[arg-type]
     candidates.sort(key=lambda x: (-x[0], x[1]))  # type: ignore[index]
+    if quarter:
+        candidates = [
+            c for c in candidates  # type: ignore[misc]
+            if _infer_quarter(dates[c[1]] if c[1] < len(dates) else None) == quarter
+        ]
+        if not candidates:
+            raise _SecLookupError(
+                f"No 8-K filing for {symbol} has a report period in quarter {quarter} "
+                f"among the recent filings (CIK {cik})."
+            )
     if not candidates:
         raise _SecLookupError(f"No recent 8-K filing found for {symbol} (CIK {cik}).")
 
@@ -623,6 +691,17 @@ def _html_to_text(raw: str) -> str:
     text = re.sub(r"\n[ \t]+", "\n", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
+
+
+_QUARTER_LABEL_RE = re.compile(r"^\s*Q([1-4])\s*(?:FY)?\s*'?\s*(\d{4}|\d{2})\s*$", re.IGNORECASE)
+
+
+def _normalize_quarter(text: str | None) -> str | None:
+    """'Q3 FY26' / 'q3 fy2026' / 'Q3 2026' / "Q3'26" -> 'Q3 FY26'; anything else -> None."""
+    m = _QUARTER_LABEL_RE.match(text or "")
+    if not m:
+        return None
+    return f"Q{m.group(1)} FY{m.group(2)[-2:]}"
 
 
 def _infer_quarter(report_date: str | None) -> str | None:
