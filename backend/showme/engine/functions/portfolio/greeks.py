@@ -236,8 +236,9 @@ class GREEKSFunction(BaseFunction):
             )
         if not positions:
             return FunctionResult(code=self.code, instrument=None,
-                                  data={"delta": 0, "gamma": 0, "vega": 0, "theta": 0,
-                                        "rho": 0, "positions": [], "n": 0,
+                                  data={# T10: an empty book has no Greeks to report, not zeros.
+                                        "delta": None, "gamma": None, "vega": None, "theta": None,
+                                        "rho": None, "positions": [], "n": 0,
                                         "rows": [],
                                         "status": "input_required",
                                         "reason": "No option positions were supplied or found in the local option book.",
