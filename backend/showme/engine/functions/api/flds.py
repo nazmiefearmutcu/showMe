@@ -90,6 +90,19 @@ _CATEGORIES = {
 # provider mapping here, so it is flagged bql_get=False.
 _BQL_GET_FIELDS = frozenset({"price", "open", "high", "low", "close", "volume"})
 
+# Provider mapping per catalog field. Only the OHLCV fields have a provider in
+# ShowMe (yfinance, through BQL live mode). Every other name has no provider
+# here and is reference-only: no value is returned for it anywhere in FLDS.
+_LIVE_PROVIDER = "yfinance"
+_AVAILABILITY_LIVE = "bql_live_ohlcv"
+_AVAILABILITY_REFERENCE = "reference_only"
+
+
+def _provider_for(field: str) -> tuple[str | None, str]:
+    if field in _BQL_GET_FIELDS:
+        return _LIVE_PROVIDER, _AVAILABILITY_LIVE
+    return None, _AVAILABILITY_REFERENCE
+
 # Examples name only functions that exist in the function index (EQS, SRCH,
 # MLSIG, BQL). MLSIG's model features are rsi_14 / macd_line / atr_14.
 _EXAMPLES = {
@@ -140,12 +153,15 @@ class FLDSFunction(BaseFunction):
             rank = _match_rank(field, description, category, prefix)
             if rank is None:
                 continue
+            provider, availability = _provider_for(field)
             ranked.append((rank, {
                 "field": field,
                 "category": category,
                 "description": description,
                 "example": _EXAMPLES.get(category, _DEFAULT_EXAMPLE),
                 "bql_get": field in _BQL_GET_FIELDS,
+                "provider": provider,
+                "availability": availability,
             }))
         # Name-prefix matches first; the stable sort keeps catalog order within a rank.
         ranked.sort(key=lambda pair: pair[0])
@@ -174,6 +190,8 @@ class FLDSFunction(BaseFunction):
                     "category": "Market, valuation, statement, technical, option, risk, or fixed-income grouping.",
                     "description": "Plain-language meaning of the field.",
                     "bql_get": "True only when BQL get() returns this field (live mode: OHLCV only).",
+                    "provider": "Data provider that returns this field in ShowMe (yfinance for OHLCV); null when none is mapped.",
+                    "availability": "bql_live_ohlcv when BQL live mode returns it; reference_only when no provider here returns it.",
                     "example": "One concrete place the field can be used, naming a function that exists in the index.",
                 },
             },

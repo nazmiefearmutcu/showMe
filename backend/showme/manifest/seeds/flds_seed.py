@@ -115,6 +115,8 @@ def flds() -> FunctionManifest:
                 ColumnSpec(key="field", label="Field", kind="text"),
                 ColumnSpec(key="category", label="Category", kind="tag"),
                 ColumnSpec(key="description", label="Description", kind="text"),
+                ColumnSpec(key="provider", label="Provider", kind="tag"),
+                ColumnSpec(key="availability", label="Availability", kind="tag"),
                 ColumnSpec(key="example", label="Example", kind="text"),
             ],
             sortable=True,
@@ -139,7 +141,9 @@ def flds() -> FunctionManifest:
             "starts with the query; name-prefix matches are ranked first. Companion to BQL and DAPI."
         ),
         field_dict={
-            "rows[].field": FieldDef(description="Canonical field name accepted by BQL/screeners/analytics.", source="catalog"),
+            "rows[].field": FieldDef(description="Canonical catalog field name (reference index); see bql_get and availability for whether any function returns it.", source="catalog"),
+            "rows[].provider": FieldDef(description="Provider that returns this field in ShowMe (yfinance for OHLCV); null when none is mapped.", source="catalog"),
+            "rows[].availability": FieldDef(description="bql_live_ohlcv when BQL live mode returns it; reference_only when no provider returns it.", source="catalog"),
             "rows[].category": FieldDef(description="market/valuation/statement/technical/option/risk/fixed_income/general.", source="catalog"),
             "rows[].description": FieldDef(description="Plain-language meaning of the field.", source="catalog"),
             "rows[].example": FieldDef(description="One concrete place the field can be used, naming a function in the index.", source="catalog"),
