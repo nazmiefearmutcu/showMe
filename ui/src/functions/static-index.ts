@@ -15,7 +15,7 @@ export const STATIC_FUNCTION_INDEX: FunctionEntry[] = [
   },
   {
     "code": "ALLQ",
-    "name": "Dealer Quotes (TRACE proxy)",
+    "name": "Dealer Quotes (indicative, modeled)",
     "category": "bond",
     "description": ""
   },

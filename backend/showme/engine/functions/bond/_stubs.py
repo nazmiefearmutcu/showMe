@@ -1129,7 +1129,7 @@ def _allq_observation_date(value: Any) -> str:
 @FunctionRegistry.register
 class ALLQFunction(BaseFunction):
     code = "ALLQ"
-    name = "Dealer Quotes (TRACE proxy)"
+    name = "Dealer Quotes (indicative, modeled)"
     asset_classes = (AssetClass.BOND,)
     category = "bond"
 
