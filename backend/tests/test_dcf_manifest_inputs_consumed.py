@@ -57,3 +57,13 @@ def test_growth_high_input_drives_stage_one_growth() -> None:
 def test_growth_terminal_input_drives_terminal_growth() -> None:
     res = _run(wacc=0.09, growth_high=0.05, growth_terminal=0.01, years=3)
     assert res.data["g_terminal"] == 0.01
+
+
+def test_handler_defaults_are_the_manifest_defaults() -> None:
+    """DCF#4: one set of defaults. The handler must run with the manifest's
+    declared defaults when the caller omits them (the pane and API agree)."""
+    manifest_defaults = REGISTRY.get("DCF").defaults
+    res = _run(wacc=0.09)
+    assert res.data["g_high"] == manifest_defaults["growth_high"]
+    assert res.data["g_terminal"] == manifest_defaults["growth_terminal"]
+    assert res.data["years"] == manifest_defaults["years"]

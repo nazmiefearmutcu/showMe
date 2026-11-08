@@ -221,8 +221,9 @@ class DCFFunction(BaseFunction):
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         if instrument is None:
             raise ValueError("DCF requires instrument")
-        N = int(params.get("years", 5))
-        g_high = float(params.get("growth_high", 0.10))
+        # Defaults mirror the manifest (dcf_seed.py defaults) and the pane (DCF.tsx).
+        N = int(params.get("years", 10))
+        g_high = float(params.get("growth_high", 0.08))
         g_terminal = float(params.get("growth_terminal", 0.025))
         wacc = params.get("wacc")
         # Review of DCF#1: say where WACC came from (caller input vs the WACC model).

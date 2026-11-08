@@ -97,7 +97,8 @@ export function DCFPane({ code, symbol }: FunctionPaneProps) {
   const [sharesM, setSharesM] = usePersistentString("showme.dcf.shares_override", "");
   const fcfeOverride = parseOverrideM(fcfeM);
   const sharesOverride = parseOverrideM(sharesM);
-  const [growthPct, setGrowthPct] = usePersistentNumber("showme.dcf.growth", 10);
+  // Defaults mirror the manifest (dcf_seed.py): stage-1 growth 8%, terminal 2.5%, 10y.
+  const [growthPct, setGrowthPct] = usePersistentNumber("showme.dcf.growth", 8);
   const [termPct, setTermPct] = usePersistentNumber("showme.dcf.gterm", 2.5);
   // Review of DCF#1: WACC is optional. Empty = the backend's WACC model
   // (labelled wacc_source); the old always-sent 8% default made that path
@@ -108,7 +109,7 @@ export function DCFPane({ code, symbol }: FunctionPaneProps) {
   const [years, setYears] = usePersistentOption<number>(
     "showme.dcf.years",
     YEARS_IDS,
-    5,
+    10,
   );
   const effectiveSymbol =
     symbol || defaultSymbolForFunction(code, ["EQUITY", "ETF"]);
