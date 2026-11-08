@@ -11,7 +11,9 @@
  * Data honesty: this is a model, not a quote — when the backend reports
  * needs_input (e.g. no provider FCFE) or a model error (wacc ≤ terminal
  * growth) the pane surfaces that state verbatim instead of dressing up
- * the numbers.
+ * the numbers. FCFE and shares are provider-sourced by default: the pane
+ * sends them only when the user types an override (manual override is
+ * labelled in the header and footer). No placeholder base is ever sent.
  */
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import {
@@ -39,6 +41,7 @@ import {
 import {
   usePersistentNumber,
   usePersistentOption,
+  usePersistentString,
 } from "./function-control-state";
 import type { FunctionPaneProps } from "./registry-types";
 
@@ -68,6 +71,9 @@ interface DCFData {
   equity_value?: number;
   fair_value_per_share?: number | null;
   shares_outstanding?: number | null;
+  fcfe_source?: string | null;
+  shares_source?: string | null;
+  reason?: string;
   rows?: DCFCashflowRow[];
   bridge?: DCFBridgeRow[];
   methodology?: string;
@@ -82,8 +88,11 @@ const YEARS_OPTIONS = [
 const YEARS_IDS = YEARS_OPTIONS.map((o) => o.value);
 
 export function DCFPane({ code, symbol }: FunctionPaneProps) {
-  const [fcfeM, setFcfeM] = usePersistentNumber("showme.dcf.fcfe", 10_000);
-  const [sharesM, setSharesM] = usePersistentNumber("showme.dcf.shares", 15_000);
+  // FCFE and shares are optional manual overrides ($M). Empty = provider.
+  const [fcfeM, setFcfeM] = usePersistentString("showme.dcf.fcfe", "");
+  const [sharesM, setSharesM] = usePersistentString("showme.dcf.shares", "");
+  const fcfeOverride = parseOverrideM(fcfeM);
+  const sharesOverride = parseOverrideM(sharesM);
   const [growthPct, setGrowthPct] = usePersistentNumber("showme.dcf.growth", 10);
   const [termPct, setTermPct] = usePersistentNumber("showme.dcf.gterm", 2.5);
   const [waccPct, setWaccPct] = usePersistentNumber("showme.dcf.wacc", 8);
@@ -99,8 +108,8 @@ export function DCFPane({ code, symbol }: FunctionPaneProps) {
     code,
     symbol: effectiveSymbol,
     params: {
-      fcfe: fcfeM * 1e6,
-      shares_outstanding: sharesM * 1e6,
+      ...(fcfeOverride != null ? { fcfe: fcfeOverride * 1e6 } : {}),
+      ...(sharesOverride != null ? { shares_outstanding: sharesOverride * 1e6 } : {}),
       growth_high: round6(growthPct / 100),
       growth_terminal: round6(termPct / 100),
       wacc: round6(waccPct / 100),
@@ -115,6 +124,8 @@ export function DCFPane({ code, symbol }: FunctionPaneProps) {
   const status = payload?.status ?? "—";
   const modelError = payload?.error ?? null;
   const needsInput = status === "needs_input";
+  const manualOverride =
+    payload?.fcfe_source === "user_override" || payload?.shares_source === "user_override";
 
   const fairValue = payload?.fair_value_per_share ?? null;
   const mark = markPct > 0 ? markPct : null;
@@ -204,7 +215,7 @@ export function DCFPane({ code, symbol }: FunctionPaneProps) {
         </button>
       }
     />
-  ) : cashflows.length === 0 ? (
+  ) : cashflows.length === 0 && !needsInput ? (
     <Empty
       title={modelError ? "Model error" : "No model output"}
       body={
@@ -221,21 +232,21 @@ export function DCFPane({ code, symbol }: FunctionPaneProps) {
   ) : (
     <div className="u-grid-gap-14">
       <section style={inputsRowStyle} aria-label="DCF model inputs">
-        <NumField
+        <OverrideField
           label="FCFE $M"
           ariaLabel="FCFE base in millions"
           value={fcfeM}
           onCommit={setFcfeM}
           step={500}
-          min={0}
+          placeholder="provider"
         />
-        <NumField
+        <OverrideField
           label="SHARES M"
           ariaLabel="Shares outstanding in millions"
           value={sharesM}
           onCommit={setSharesM}
           step={100}
-          min={0}
+          placeholder="provider"
         />
         <NumField
           label="GROWTH %"
@@ -280,7 +291,13 @@ export function DCFPane({ code, symbol }: FunctionPaneProps) {
         <div role="note" style={noticeStyle}>
           <strong>Needs input.</strong> The backend marked this run
           needs_input (typically missing provider FCFE) — override FCFE or
-          shares for a tradable model.
+          shares for a tradable model.{payload?.reason ? ` ${payload.reason}` : ""}
+        </div>
+      ) : null}
+      {manualOverride ? (
+        <div role="note" style={noticeStyle}>
+          <strong>Manual override.</strong> At least one input is your
+          override, not provider data (FCFE: {payload?.fcfe_source ?? "—"}, shares: {payload?.shares_source ?? "—"}).
         </div>
       ) : null}
       <section style={kpiGridStyle} aria-label="DCF headline">
@@ -311,6 +328,14 @@ export function DCFPane({ code, symbol }: FunctionPaneProps) {
           tone="neutral"
         />
       </section>
+      {cashflows.length === 0 ? (
+        <Empty
+          title="No valuation without FCFE"
+          body={payload?.reason ?? "Enter FCFE as an override to run the model."}
+          icon="∅"
+        />
+      ) : null}
+      {cashflows.length > 0 ? (
       <div>
         <div style={gridTitleStyle}>discounted FCFE forecast</div>
         <DataGrid
@@ -325,6 +350,8 @@ export function DCFPane({ code, symbol }: FunctionPaneProps) {
           keyboardNavigable
         />
       </div>
+      ) : null}
+      {bridge.length > 0 ? (
       <div>
         <div style={gridTitleStyle}>value bridge</div>
         <DataGrid
@@ -340,6 +367,7 @@ export function DCFPane({ code, symbol }: FunctionPaneProps) {
           keyboardNavigable
         />
       </div>
+      ) : null}
     </div>
   );
 
@@ -349,7 +377,7 @@ export function DCFPane({ code, symbol }: FunctionPaneProps) {
         <PaneHeader
           code={code}
           title={`DCF — ${effectiveSymbol ?? ""}`}
-          subtitle={`two-stage FCFE · ${payload?.years ?? years}y @ WACC ${fmtPct(payload?.wacc ?? round6(waccPct / 100))}`}
+          subtitle={`two-stage FCFE · ${payload?.years ?? years}y @ WACC ${fmtPct(payload?.wacc ?? round6(waccPct / 100))}${manualOverride ? " · manual override" : ""}`}
           trailing={
             <FunctionControlGroup>
               <Pill tone="muted" variant="soft" withDot={false}>
@@ -386,7 +414,11 @@ export function DCFPane({ code, symbol }: FunctionPaneProps) {
             value={`${data?.elapsed_ms?.toFixed(0) ?? "—"} ms`}
           />
           <StatusDivider />
-          <StatusSection label="fcfe" value={`${fcfeM}M`} tone="accent" />
+          <StatusSection
+            label="fcfe"
+            value={fcfeOverride != null ? `override ${fcfeM}M` : payload?.fcfe_source === "yfinance" ? "provider (yfinance)" : "provider"}
+            tone="accent"
+          />
         </PaneFooter>
       </Pane>
     </div>
@@ -437,7 +469,46 @@ function NumField({
   );
 }
 
+function OverrideField({
+  label,
+  ariaLabel,
+  value,
+  onCommit,
+  step,
+  placeholder,
+}: {
+  label: string;
+  ariaLabel: string;
+  value: string;
+  onCommit: (next: string) => void;
+  step: number;
+  placeholder: string;
+}) {
+  return (
+    <label style={fieldRowStyle}>
+      <span style={fieldLabelStyle}>{label}</span>
+      <input
+        type="number"
+        aria-label={ariaLabel}
+        value={value}
+        placeholder={placeholder}
+        step={step}
+        onChange={(e) => onCommit(e.target.value)}
+        style={numInputStyle}
+      />
+    </label>
+  );
+}
+
 /* ── helpers ───────────────────────────────────────────────────────── */
+
+/** Empty or non-numeric override means "use the provider" (null). */
+function parseOverrideM(raw: string): number | null {
+  if (raw.trim() === "") return null;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : null;
+}
+
 
 function round6(v: number): number {
   return Math.round(v * 1e6) / 1e6;
