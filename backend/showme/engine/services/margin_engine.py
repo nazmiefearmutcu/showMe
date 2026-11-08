@@ -232,6 +232,16 @@ def _position_margin(
     return (notional * ip, notional * mp)
 
 
+# MGN#6: model assumptions, named and documented (not venue rules).
+# A portfolio-margin account's maintenance requirement is its stress loss scaled by this
+# factor (a model choice, not a published rule).
+PORTFOLIO_MAINTENANCE_SCALE = 0.6
+# Buying power of a portfolio-margin account is its equity surplus over initial margin
+# times this multiple (a model choice; the Reg-T and rule-table paths divide by the
+# initial rate instead).
+PORTFOLIO_BUYING_POWER_MULTIPLE = 4.0
+
+
 def _portfolio_margin(positions: list[dict[str, Any]], rule: dict[str, Any]) -> tuple[float, float]:
     """Stress-based margin: max loss under ±stress_pct shock."""
     stress = float(rule.get("stress_pct", 0.15))
@@ -248,7 +258,7 @@ def _portfolio_margin(positions: list[dict[str, Any]], rule: dict[str, Any]) -> 
         pnl_dn += -nv * stress
     worst = -min(pnl_up, pnl_dn)
     floor = notional * minp
-    return max(worst, floor), max(worst * 0.6, floor * 0.6)
+    return max(worst, floor), max(worst * PORTFOLIO_MAINTENANCE_SCALE, floor * PORTFOLIO_MAINTENANCE_SCALE)
 
 
 def calc_account(
@@ -288,8 +298,13 @@ def calc_account(
     equity = cash + mv
     excess = equity - ip
     cushion = (equity - mp) / equity if equity else 0.0
-    buying_power = max(equity - ip, 0) / max(bp_rule.get("initial_long_pct", 0.5), 0.05) \
-        if margin_type != "portfolio" else max(equity - ip, 0) * 4
+    # MGN#6: no floor on the initial rate. An FX line at 2% is 50x buying power, not a
+    # 20x value produced by a 5% floor; a zero rate has no defined capacity, so it is 0.
+    if margin_type == "portfolio":
+        buying_power = max(equity - ip, 0) * PORTFOLIO_BUYING_POWER_MULTIPLE
+    else:
+        bp_rate = float(bp_rule.get("initial_long_pct", 0.5) or 0)
+        buying_power = max(equity - ip, 0) / bp_rate if bp_rate > 0 else 0.0
     return {
         "account": account_name,
         "margin_type": margin_type,
@@ -327,6 +342,8 @@ def calc_all_accounts(
         })
     # Auto-create accounts if missing. An inferred type is flagged and re-derived from
     # the current book, so a book that loses its derivative is not stuck as crypto_futures.
+    # MGN#6: this is an in-memory view only; a calculation never writes margin_config.json
+    # (only an explicit upsert/delete does).
     cfg_accts = cfg.setdefault("accounts", {})
     for name, positions in accts.items():
         inferred = infer_margin_type(positions)
@@ -338,7 +355,6 @@ def calc_all_accounts(
             }
         elif entry.get("inferred"):
             entry["margin_type"] = inferred
-    _save_config(cfg)
     out = []
     total = {
         "equity": 0.0, "initial_margin": 0.0, "maintenance_margin": 0.0,
