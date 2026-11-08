@@ -76,7 +76,6 @@ class WHALFunction(BaseFunction):
         if market == "CRYPTO":
             payload, sources, warnings = await _crypto_whales(
                 symbol=symbol,
-                chain=chain,
                 threshold_usd=threshold_usd,
                 row_limit=limit,
                 trade_limit=trade_limit,
@@ -133,15 +132,33 @@ class WHALFunction(BaseFunction):
 async def _crypto_whales(
     *,
     symbol: str,
-    chain: str,
     threshold_usd: float,
     row_limit: int,
     trade_limit: int,
     lookback_hours: int,
     timeout: float,
 ) -> tuple[dict[str, Any], list[str], list[str]]:
-    pair = _binance_pair(symbol, chain)
+    pair = _binance_pair(symbol)
     warnings: list[str] = []
+    if pair is None:
+        return (
+            {
+                "status": "provider_unavailable",
+                "provider": "binance_public",
+                "provider_symbol": None,
+                "rows": [],
+                "history": [],
+                "cards": [
+                    {"label": "Provider", "value": "Binance public"},
+                    {"label": "Rows", "value": 0},
+                    {"label": "Threshold hits", "value": 0},
+                ],
+                "summary": f"{symbol} is not a recognised Binance spot or USD-M pair, so no trades were requested.",
+                "next_actions": ["Pass the full Binance pair, for example PEPEUSDT or BTCUSDT."],
+            },
+            ["binance_public"],
+            [f"{symbol} is not a recognised Binance pair"],
+        )
     async with httpx.AsyncClient(timeout=timeout, headers={"User-Agent": USER_AGENT}) as client:
         for venue, base, trades_path, kline_path, ticker_path in (
             ("spot", BINANCE_SPOT, "/api/v3/aggTrades", "/api/v3/klines", "/api/v3/ticker/24hr"),
@@ -204,6 +221,9 @@ async def _crypto_whales(
                         "summary": (
                             f"{pair} latest Binance {venue} aggregate trades. "
                             f"{threshold_hits} trade(s) crossed ${threshold_usd:,.0f}."
+                            if threshold_usd > 0
+                            else f"{pair} latest Binance {venue} aggregate trades, largest first. "
+                            "No USD threshold was set, so no trade was tested against one."
                         ),
                     },
                     [f"binance_{venue}_public"],
@@ -329,10 +349,16 @@ def _shape_binance_trades(
             continue
         value = price * qty
         ts = _epoch_ms_to_iso(item.get("T"))
-        threshold_crossed = value >= threshold_usd if threshold_usd else True
+        if threshold_usd > 0:
+            threshold_crossed: bool | None = value >= threshold_usd
+            alert_type = "crypto_large_trade" if threshold_crossed else "crypto_top_trade"
+        else:
+            # No USD floor: nothing is tested, so no trade is "large" or "crossed".
+            threshold_crossed = None
+            alert_type = "crypto_trade"
         parsed.append(
             {
-                "alert_type": "crypto_large_trade" if threshold_crossed else "crypto_top_trade",
+                "alert_type": alert_type,
                 "market": "CRYPTO",
                 "symbol": pair,
                 "venue": f"binance_{venue}",
@@ -795,15 +821,20 @@ def _chain_from_symbol(symbol: str) -> str:
     return "BTC"
 
 
-def _binance_pair(symbol: str, chain: str) -> str:
+def _binance_pair(symbol: str) -> str | None:
+    """Binance pair for a symbol, or None when it is not a recognised quote pair.
+
+    An unknown base must not fall back to another instrument's pair (the old
+    chain-based fallback turned FOOBAR into BTCUSDT).
+    """
     clean = symbol.upper().replace("/", "").replace("-", "")
     if clean.endswith("USD") and not clean.endswith("USDT"):
         clean = f"{clean[:-3]}USDT"
     if clean in {"BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "ADA"}:
         return f"{clean}USDT"
-    if clean in {"BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"} or clean.endswith(("USDT", "USDC", "FDUSD")):
+    if clean.endswith(("USDT", "USDC", "FDUSD")) and len(clean) > 4:
         return clean
-    return f"{chain.upper()}USDT"
+    return None
 
 
 def _quote_currency(pair: str) -> str | None:
@@ -947,7 +978,8 @@ def _severity(value: float | None, threshold_usd: float) -> str:
     if value is None:
         return "medium"
     if threshold_usd <= 0:
-        return "high"
+        # Without a USD floor there is nothing to rate against.
+        return "unrated"
     if value >= threshold_usd * 5:
         return "critical"
     if value >= threshold_usd:
