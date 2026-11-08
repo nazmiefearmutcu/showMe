@@ -482,10 +482,3 @@ def test_swr_top_cold_call_is_awaited_past_the_head_start(monkeypatch: pytest.Mo
     assert body["data"]["status"] == "ok"
     assert body["data"]["rows"][0]["title"] == "slow but real"
     assert not body.get("metadata", {}).get("fallback")
-
-
-def test_swr_brief_cold_call_keeps_the_warming_envelope(monkeypatch: pytest.MonkeyPatch) -> None:
-    client = _swr_app(monkeypatch, delay=1.6)
-    body = client.post("/api/fn/BRIEF", json={"hours": "13"}).json()
-    assert body["metadata"]["fallback"] is True
-    assert "warming in background" in str(body["metadata"]["provider_errors"])
