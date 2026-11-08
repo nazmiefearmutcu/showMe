@@ -10,6 +10,7 @@ DATA PIPELINE:
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 from datetime import datetime, timezone
 from typing import Any
 
@@ -17,6 +18,13 @@ from showme.engine.core.base_data_source import DataKind, DataRequest
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from showme.engine.core.instrument import AssetClass, Instrument
 from showme.engine.functions.equity._common import EXCHANGE_LEGEND
+from showme.engine.reference.symbol_registry import is_known_etf
+
+# DES#4: Yahoo exchange codes the shared legend does not carry. SNP is the S&P index
+# exchange (for example ^GSPC). Kept here so the shared EXCHANGE_LEGEND is unchanged.
+_DES_EXCHANGE_NAMES = {
+    "SNP": "S&P Indices",
+}
 
 
 # yfinance ``info`` keys we promote onto the DES payload so the native pane
@@ -386,6 +394,11 @@ class DESFunction(BaseFunction):
         sources_used: list[str] = []
         attempted: list[str] = []
         rd: Any = None
+        # DES#4: the router classes every non-crypto symbol without an ETF branch, so a known
+        # ETF (SPY) arrives as EQUITY. Describe it with the registry's class instead.
+        etf_override = instrument.asset_class == AssetClass.EQUITY and is_known_etf(instrument.symbol)
+        if etf_override:
+            instrument = dataclasses.replace(instrument, asset_class=AssetClass.ETF)
         provider_timeout = max(
             1.0,
             min(float(params.get("refdata_timeout", params.get("yfinance_timeout", 2.5))), 4.0),
@@ -493,9 +506,13 @@ class DESFunction(BaseFunction):
                 data.pop("extras", None)
 
         if data.get("exchange"):
+            _code = str(data.get("exchange") or "")
             data["exchange_name"] = EXCHANGE_LEGEND.get(
-                str(data.get("exchange") or ""), data.get("exchange")
+                _code, _DES_EXCHANGE_NAMES.get(_code, data.get("exchange"))
             )
+        if etf_override:
+            # The describing class is the ETF the registry knows, whatever a provider echoed.
+            data["asset_class"] = AssetClass.ETF.value
 
         data["rows"] = _build_rows(data)
         data.setdefault(

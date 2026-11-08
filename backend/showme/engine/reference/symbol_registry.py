@@ -40,6 +40,12 @@ _KNOWN_ETFS = {
     "XLB","XLRE","ARKK","ARKW","ARKG","SOXX","SMH","XBI","KRE","KBE",
 }
 
+
+def is_known_etf(symbol: str | None) -> bool:
+    """True when the symbol is in the registry's ETF list (DES#4: the router's class has no ETF branch)."""
+    return str(symbol or "").strip().upper() in _KNOWN_ETFS
+
+
 _KNOWN_INDICES = {
     "^GSPC": ("S&P 500", "US"),
     "^DJI": ("Dow Jones", "US"),
