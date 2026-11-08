@@ -31,6 +31,10 @@ _ALIASES: dict[str, tuple[str, ...]] = {
 }
 _REALIZED_WINDOW = 30
 _TRADING_DAYS = 252
+#: A plain (unitless) rate above this magnitude is refused as ambiguous: a
+#: decimal rate of 20%+ is not a plausible risk-free rate, so a value in
+#: (0.2, 1] is most likely a percent typed without its unit.
+_MAX_PLAIN_DECIMAL_RATE = 0.2
 
 
 def _first(position: dict[str, Any], names: tuple[str, ...]) -> Any:
@@ -121,22 +125,46 @@ def normalize_position(position: dict[str, Any], today: date | None = None) -> t
             problems.append("vol must be a decimal in (0, 5] (0.25 = 25%)")
         else:
             out["vol"] = vol
-    if out.get("r") in (None, ""):
+    # Explicit units are unambiguous: rate_pct (4.5 = 4.5%) and rate_bps (450 = 4.5%).
+    explicit = [key for key in ("rate_pct", "rate_bps") if position.get(key) not in (None, "")]
+    if explicit and (len(explicit) > 1 or position.get("r") not in (None, "")):
+        problems.append("rate given more than once (use one of rate_pct, rate_bps or r)")
+    elif explicit:
+        key = explicit[0]
+        number = _number(position[key])
+        if number is None:
+            problems.append(f"{key} must be a number")
+        else:
+            out["r"] = number / 100.0 if key == "rate_pct" else number / 10000.0
+            out["rate_source"] = "input_percent" if key == "rate_pct" else "input_bps"
+    elif out.get("r") in (None, ""):
         out["_needs_rate"] = True
     else:
-        try:
-            rate = float(out["r"])
-            if not math.isfinite(rate):
-                raise ValueError
-        except (TypeError, ValueError):
+        rate = _number(out["r"])
+        if rate is None:
             problems.append("rate must be a number")
-        else:
-            if abs(rate) > 1:  # 4.5 means 4.5%; no real risk-free rate exceeds 100%
-                rate /= 100.0
-                out["rate_source"] = "input_percent"
+        elif abs(rate) > 1:  # 4.5 means 4.5%; no real risk-free rate exceeds 100%
+            rate /= 100.0
+            out["rate_source"] = "input_percent"
             out["r"] = rate
-            out.setdefault("rate_source", "input")
+        elif abs(rate) > _MAX_PLAIN_DECIMAL_RATE:
+            # 0.5 typed by a user who means 0.5 percent would be priced as 50%.
+            problems.append(
+                f"rate {rate:g} is ambiguous (decimal {rate:g} = {rate * 100:g}%): pass "
+                f"rate_pct={rate:g} for {rate:g}% or r={rate / 100:g} for a decimal rate")
+            out["r"] = rate
+        else:
+            out["r"] = rate
+            out["rate_source"] = "input_decimal"
     return out, problems
+
+
+def _number(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
 
 
 async def _risk_free_rate(deps: Any, client: Any = None) -> tuple[float, str] | None:
@@ -320,6 +348,9 @@ class GREEKSFunction(BaseFunction):
             for key in ("spot_source", "vol_source", "rate_source"):
                 if key in pos:
                     row[key] = pos[key]
+            # Echo the interpreted decimal rate so the unit actually used is visible.
+            if "r" in pos:
+                row["rate"] = pos["r"]
         totals = agg.get("totals") or {}
         warnings: list[str] = []
         data = {
@@ -349,7 +380,9 @@ def _methodology() -> str:
         "A missing spot uses the symbol's last daily close and a missing vol its 30-day realized "
         "volatility (log returns, annualized with 252 days), and a missing rate the live 3-month T-bill "
         "yield (FRED DGS3MO); each is labelled per row (spot_source / vol_source / rate_source). A rate "
-        "above 1 is read as a percent. Expiry is never assumed, and a position that cannot be priced "
+        "above 1 is read as a percent; a plain rate in (0.2, 1] is refused as ambiguous, and rate_pct or "
+        "rate_bps give an explicit unit (rate_source records which one was used). Expiry is never assumed, "
+        "and a position that cannot be priced "
         "fails the whole book instead of being left out of the totals."
     )
 
