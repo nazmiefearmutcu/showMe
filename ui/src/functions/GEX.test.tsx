@@ -412,3 +412,40 @@ describe("GEX pane — KPI + primary ladder", () => {
     expect(footer?.textContent).toContain("strikes");
   });
 });
+
+describe("GEX pane — FLIP tag on the ladder", () => {
+  // The flip is an interpolated spot level (e.g. 608.08), not a strike, so
+  // the ladder must tag the nearest displayed strike instead of comparing
+  // equality against the strike grid (which never matched).
+  it("tags the nearest displayed strike when the flip level falls between strikes", () => {
+    const payload = livePayload();
+    (payload.data.data as Record<string, unknown>).summary = {
+      ...liveSummary,
+      gamma_flip: 608.08,
+    };
+    setMockFn({ state: "ok", ...payload });
+    const { container } = render(<GEXPane code="GEX" symbol="SPY" />);
+    const flipRows = Array.from(container.querySelectorAll(".gex-ladder__row")).filter(
+      (row) => (row.getAttribute("aria-label") ?? "").includes("flip"),
+    );
+    expect(flipRows.length).toBe(1);
+    expect(flipRows[0].getAttribute("aria-label")).toMatch(/Strike 610(\.0+)?:/);
+    expect(
+      flipRows[0].querySelector('[data-testid="gex-row-tags"]')?.textContent,
+    ).toContain("FLIP");
+  });
+
+  it("does not tag any row when the flip lies outside the displayed ladder", () => {
+    const payload = livePayload();
+    (payload.data.data as Record<string, unknown>).summary = {
+      ...liveSummary,
+      gamma_flip: 700,
+    };
+    setMockFn({ state: "ok", ...payload });
+    const { container } = render(<GEXPane code="GEX" symbol="SPY" />);
+    const tagTexts = Array.from(
+      container.querySelectorAll('[data-testid="gex-row-tags"]'),
+    ).map((el) => el.textContent ?? "");
+    expect(tagTexts.some((text) => text.includes("FLIP"))).toBe(false);
+  });
+});
