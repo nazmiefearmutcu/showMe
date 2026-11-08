@@ -173,6 +173,26 @@ LOCATION_PRESETS: dict[str, dict[str, Any]] = {
         "lon": 13.4,
         "commodity_context": "European gas and heating demand",
     },
+    # WETR#1: the pane and manifest offer these regions; each needs its own
+    # coordinates (they previously fell back to New York weather).
+    "EU_NW": {
+        "label": "Northwest Europe (Rotterdam)",
+        "lat": 51.92,
+        "lon": 4.48,
+        "commodity_context": "European gas, power and heating demand",
+    },
+    "ASIA_EAST": {
+        "label": "East Asia (Shanghai)",
+        "lat": 31.23,
+        "lon": 121.47,
+        "commodity_context": "East Asian power and cooling demand",
+    },
+    "BRAZIL_SE": {
+        "label": "Southeast Brazil (Sao Paulo)",
+        "lat": -23.55,
+        "lon": -46.63,
+        "commodity_context": "coffee and sugar crop weather",
+    },
 }
 
 
@@ -1222,7 +1242,41 @@ class WETRFunction(BaseFunction):
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         days = _int_param(params, "days", 7, 3, 16)
         location_key = str(params.get("location") or "US_NORTHEAST").strip().upper()
-        preset = LOCATION_PRESETS.get(location_key, LOCATION_PRESETS["US_NORTHEAST"])
+        preset = LOCATION_PRESETS.get(location_key)
+        if preset is None:
+            # WETR#1: an unknown region is an explicit input error. It must not
+            # fall back to US Northeast weather labelled as the requested region.
+            supported = sorted(LOCATION_PRESETS)
+            return FunctionResult(
+                code=self.code,
+                instrument=None,
+                data={
+                    "status": "input_error",
+                    "reason": (
+                        f"{location_key} is not a supported WETR region; "
+                        "no other region's weather is substituted."
+                    ),
+                    "location": location_key,
+                    "lat": None,
+                    "lon": None,
+                    "commodity_context": None,
+                    "source_mode": "unsupported_region",
+                    "rows": [],
+                    "history": [],
+                    "risk_flags": [],
+                    "methodology": (
+                        "WETR serves only the curated regions listed in its "
+                        "preset table; each carries its own coordinates."
+                    ),
+                    "field_dictionary": {},
+                    "next_actions": [
+                        "Pick a supported region: " + ", ".join(supported) + ".",
+                    ],
+                },
+                sources=[],
+                warnings=[f"unsupported location {location_key}"],
+                metadata={"supported_locations": supported},
+            )
         lat = _finite(params.get("lat")) if params.get("lat") not in (None, "") else None
         lon = _finite(params.get("lon")) if params.get("lon") not in (None, "") else None
         lat = lat if lat is not None else float(preset["lat"])

@@ -118,6 +118,29 @@ describe("WETR pane — source honesty", () => {
     expect(screen.getByText(/Seasonal model rows/i)).toBeInTheDocument();
     expect(screen.getByText(/provider boom/i)).toBeInTheDocument();
   });
+
+  it("shows the explicit unsupported-region state with no rows and no live label (WETR#1)", () => {
+    mockFn.state = "ok";
+    mockFn.data = {
+      data: {
+        status: "input_error",
+        reason: "MARS_BASE is not a supported WETR region; no other region's weather is substituted.",
+        location: "MARS_BASE",
+        lat: null,
+        lon: null,
+        source_mode: "unsupported_region",
+        rows: [],
+        risk_flags: [],
+        next_actions: ["Pick a supported region: ASIA_EAST, BRAZIL_SE, EU_NW."],
+      },
+      sources: [],
+      elapsed_ms: 3,
+    };
+    render(<WETRPane code="WETR" />);
+    expect(screen.getAllByText(/not a supported WETR region/i).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/live ·/)).toBeNull();
+    expect(screen.queryByText("18.2°")).toBeNull();
+  });
 });
 
 describe("WETR pane — poll contract", () => {
