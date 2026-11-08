@@ -173,3 +173,31 @@ def test_tldr_non_finite_bullet_inputs_fall_back_to_defaults(
     assert data["bullet_limit"] == 5
     assert data["evidence_per_bullet"] == 2
     assert data["bullets"]
+
+
+def test_tldr_sources_name_only_the_quote_sources_that_answered(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Provenance (TLDR#4): sources come from quote_source, never a fixed 'yfinance' label."""
+    _patch(monkeypatch, top=_top_with_links(), eco=_eco_ok())
+    result = _run()
+    assert "yahoo_chart" in result.sources, result.sources
+    assert "yfinance" not in result.sources, result.sources
+
+
+def test_tldr_portfolio_failure_never_substitutes_a_sample_watchlist(monkeypatch: pytest.MonkeyPatch) -> None:
+    """TLDR#5: a failing portfolio read yields no symbols, never a fixed sample list."""
+    import showme.engine.portfolio.state as state_mod
+
+    class _BrokenPortfolio:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            raise RuntimeError("portfolio down")
+
+    monkeypatch.setattr(state_mod, "PortfolioState", _BrokenPortfolio)
+    _patch(monkeypatch, top=_top_with_links(), eco=_eco_ok())
+    result = asyncio.run(TLDRFunction(deps=FunctionDeps()).execute(
+        quote_timeout=2.0, news_timeout=2.0, eco_timeout=2.0, llm_timeout=0.1, timeout=9.0,
+    ))
+    assert result.data["symbols"] == []
+    assert result.data["watchlist"] == []
+    assert result.data["watchlist_source"] == "portfolio_unavailable"
+    assert not {"AAPL", "MSFT", "TSLA", "BTCUSDT", "EURUSD", "DGS10"} & set(result.data["symbols"])
+    assert any(str(w).startswith("portfolio:") for w in result.metadata.get("provider_errors", []))
