@@ -91,3 +91,50 @@ def test_fxh3_spot_shock_at_range_edge_is_accepted() -> None:
         base_rate=0.02, home_rate=0.03, spot_shock_pct=50.0,
     ))
     assert result.data["rows"][0]["scenario_usd_strengthens_pct"] == pytest.approx(50.0)
+
+
+# ── FXH#6: portfolio notionals are disclosed as historical cost basis ──────
+
+
+class _FakePortfolio:
+    def __init__(self, positions):
+        self.positions = positions
+
+    def import_legacy_crypto(self):
+        return 0
+
+
+def test_fxh6_portfolio_notional_basis_is_disclosed(monkeypatch) -> None:
+    """Was: notional = quantity * avg_cost (a historical cost basis) was not
+    disclosed, and the hedge does not follow price moves."""
+    import showme.engine.portfolio.state as state_mod
+    from showme.engine.core.instrument import AssetClass, Instrument
+    from showme.engine.portfolio.state import PortfolioPosition
+
+    eur_pos = PortfolioPosition(
+        instrument=Instrument(symbol="SAP.DE", asset_class=AssetClass.EQUITY),
+        quantity=10, avg_cost=150.0, currency="EUR",
+    )
+    monkeypatch.setattr(state_mod, "PortfolioState", lambda *a, **k: _FakePortfolio([eur_pos]))
+
+    class _Quote:
+        last = 1.08
+
+    class _YF:
+        async def fetch(self, req):
+            return _Quote()
+
+    result = _run(FXHFunction(deps=FunctionDeps(yfinance=_YF())).execute(
+        action="calc", pair="EURUSD", use_portfolio=True,
+    ))
+    assert result.data["notional_basis"] == "portfolio_historical_cost"
+    assert any("historical cost" in w for w in result.warnings)
+    assert "historical cost" in result.data["methodology"]
+
+
+def test_fxh6_explicit_exposure_notional_basis_is_user_supplied() -> None:
+    result = _run(_fn().execute(
+        action="calc", pair="EURUSD", spot_rate=1.08, notional=1_000_000,
+        base_rate=0.02, home_rate=0.03,
+    ))
+    assert result.data["notional_basis"] == "user_supplied"

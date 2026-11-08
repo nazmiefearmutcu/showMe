@@ -260,6 +260,16 @@ class FXHFunction(BaseFunction):
                 "Multi-currency book: spot, exposure and hedge notionals are per currency "
                 "in rows[] (foreign units are not summed); P&L and cost totals are in home currency."
             )
+        # Portfolio notionals are quantity * avg_cost: a historical cost basis,
+        # not market value. Disclose it so the hedge is not read as tracking price.
+        out["notional_basis"] = (
+            "portfolio_historical_cost" if source_mode == "portfolio_state" else "user_supplied"
+        )
+        if source_mode == "portfolio_state":
+            warnings.append(
+                "Portfolio notionals are quantity x average cost (historical cost basis, "
+                "not market value); the hedge does not follow later price moves."
+            )
         out["curve"] = _scenario_curve(objs, ratio, days)
         out["source_mode"] = effective_source
         out["assumed_defaults"] = assumed_defaults
@@ -269,6 +279,10 @@ class FXHFunction(BaseFunction):
             "Forward rate uses covered interest parity: F = S * (1 + home_rate*T) / (1 + base_rate*T). "
             "Hedged notional = exposure * hedge_ratio. Scenario P&L applies shocks to the unhedged residual plus locked-in carry."
         )
+        if source_mode == "portfolio_state":
+            out["methodology"] += (
+                " Notional basis: historical cost (quantity x avg_cost), not market value."
+            )
         out["field_dictionary"] = {
             "hedge_cost": "Hedge transaction cost in home currency: hedge_notional * bid_ask_pips * pip_size (pip 0.0001, JPY quote 0.01).",
             "pnl_unhedged": "Manifest scenario: sign(side) * exposure * spot * spot_shock; home currency.",
