@@ -28,6 +28,8 @@ with an honest warning and ``next_actions`` — it never fabricates rows.
 from __future__ import annotations
 
 import re
+from datetime import date, datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any
 
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
@@ -96,6 +98,27 @@ class AVFunction(BaseFunction):
         limit = max(1, min(int(params.get("limit", 25) or 25), 100))
         query = str(params.get("query") or "").strip()
         symbol = self._resolve_symbol(instrument, params)
+        _days, window_error = _date_window(params)
+        if window_error:
+            return FunctionResult(
+                code=self.code,
+                instrument=instrument,
+                data={
+                    "status": "input_error",
+                    "rows": [],
+                    "items": [],
+                    "query": query,
+                    "symbol": symbol,
+                    "methodology": _METHODOLOGY,
+                    "field_dictionary": _FIELD_DICTIONARY,
+                    "cards": _cards([], data_mode="not_configured"),
+                    "reason": window_error,
+                    "next_actions": ["Use date_range last_Nd (for example last_30d or last_365d), or all."],
+                },
+                sources=["sec_edgar" if symbol else "podcast_rss"],
+                metadata={"live": False, "data_mode": "not_configured"},
+                warnings=[window_error],
+            )
         try:
             import asyncio
             return await asyncio.wait_for(
@@ -197,12 +220,15 @@ class AVFunction(BaseFunction):
                 warnings=[reason],
             )
 
+        days, _err = _date_window(params)
+        cutoff = _window_start(days)
         for f in filings:
             row = self._filing_row(symbol, f)
             if row and _matches_query(row, query):
                 rows.append(row)
 
-        rows = _dedupe(rows)[:limit]
+        rows = [r for r in _dedupe(rows) if _in_window(r.get("event_date"), cutoff)][:limit]
+        window = _window_fields(days, cutoff)
         if not rows:
             return FunctionResult(
                 code=self.code,
@@ -213,12 +239,13 @@ class AVFunction(BaseFunction):
                     "items": [],
                     "query": query,
                     "symbol": symbol,
+                    **window,
                     "methodology": _METHODOLOGY,
                     "field_dictionary": _FIELD_DICTIONARY,
                     "cards": _cards([], data_mode="live_official"),
-                    "reason": f"No archive entries for {symbol} match these filters.",
+                    "reason": f"No archive entries for {symbol} match these filters{_window_note(days)}.",
                     "next_actions": [
-                        "Clear or broaden the media query.",
+                        "Widen date_range or clear the media query.",
                         "Try a different symbol with public SEC filings.",
                     ],
                 },
@@ -236,6 +263,7 @@ class AVFunction(BaseFunction):
                 "query": query,
                 "symbol": symbol,
                 "count": len(rows),
+                **window,
                 "methodology": _METHODOLOGY,
                 "field_dictionary": _FIELD_DICTIONARY,
                 "cards": _cards(rows, data_mode="live_official"),
@@ -393,6 +421,9 @@ class AVFunction(BaseFunction):
         items: list[dict[str, Any]] = []
         errors: list[str] = []
         parsed_feeds = 0
+        windowed_out = 0
+        days, _err = _date_window(params)
+        cutoff = _window_start(days)
         try:
             import asyncio
 
@@ -425,12 +456,44 @@ class AVFunction(BaseFunction):
                     # _media_row returns {} for entries with no openable
                     # play_url — skip them so every emitted row has a real link.
                     if row and _matches_query(row, query):
-                        items.append(row)
+                        if _in_window(row.get("event_date"), cutoff):
+                            items.append(row)
+                        else:
+                            windowed_out += 1
         except Exception as exc:  # noqa: BLE001
             errors.append(str(exc) or type(exc).__name__)
 
         items = _dedupe(items)[:limit]
         warnings = [note] if note else []
+        window = _window_fields(days, cutoff)
+        if not items and windowed_out:
+            # Feeds answered and matched, but every match is outside the window.
+            # That is an empty result, not a provider outage.
+            reason = (
+                f"No podcast episodes in the last {days} days match this query; "
+                "widen date_range to see older episodes."
+            )
+            return FunctionResult(
+                code=self.code,
+                instrument=instrument,
+                data={
+                    "status": "empty",
+                    "rows": [],
+                    "items": [],
+                    "query": query,
+                    "symbol": symbol,
+                    "feed_count": parsed_feeds,
+                    **window,
+                    "methodology": _METHODOLOGY,
+                    "field_dictionary": _FIELD_DICTIONARY,
+                    "cards": _cards([], data_mode="live_official"),
+                    "reason": reason,
+                    "next_actions": ["Widen date_range (for example last_365d or all)."],
+                },
+                sources=["podcast_rss"],
+                metadata={"provider_errors": errors, "live": True, "data_mode": "live_official"},
+                warnings=[*warnings, reason],
+            )
         if not items:
             return FunctionResult(
                 code=self.code,
@@ -442,6 +505,7 @@ class AVFunction(BaseFunction):
                     "query": query,
                     "symbol": symbol,
                     "feed_count": parsed_feeds,
+                    **window,
                     "methodology": _METHODOLOGY,
                     "field_dictionary": _FIELD_DICTIONARY,
                     "cards": _cards([], data_mode="not_configured"),
@@ -467,6 +531,7 @@ class AVFunction(BaseFunction):
                 "symbol": symbol,
                 "feed_count": parsed_feeds,
                 "count": len(items),
+                **window,
                 "methodology": _METHODOLOGY,
                 "field_dictionary": _FIELD_DICTIONARY,
                 "cards": _cards(items, data_mode="live_official"),
@@ -629,6 +694,76 @@ def _matches_query(row: dict[str, Any], query: str) -> bool:
                 return True
         return False
     return all(term in haystack for term in terms[:4])
+
+
+_DEFAULT_DATE_RANGE = "last_90d"
+_DATE_RANGE_RE = re.compile(r"last_(\d{1,4})d")
+
+
+def _date_window(params: dict[str, Any]) -> tuple[int | None, str | None]:
+    """Resolve ``date_range`` to a window in days.
+
+    Returns ``(days, None)`` for ``last_Nd``, ``(None, None)`` for ``all``. An
+    empty value takes the manifest default (last 90 days). Anything else
+    returns ``(0, reason)`` so the caller reports an input error.
+    """
+    supplied = params.get("date_range")
+    raw = str(supplied or "").strip().lower() or _DEFAULT_DATE_RANGE
+    if raw in {"all", "max"}:
+        return None, None
+    match = _DATE_RANGE_RE.fullmatch(raw)
+    if not match or int(match.group(1)) < 1:
+        return 0, (
+            f"Unsupported date_range {supplied!r}; use last_Nd (for example last_30d) or all."
+        )
+    return int(match.group(1)), None
+
+
+def _window_start(days: int | None) -> date | None:
+    if days is None:
+        return None
+    return datetime.now(timezone.utc).date() - timedelta(days=days)
+
+
+def _window_fields(days: int | None, cutoff: date | None) -> dict[str, Any]:
+    return {
+        "date_range": "all" if days is None else f"last_{days}d",
+        "window_start": cutoff.isoformat() if cutoff else None,
+    }
+
+
+def _window_note(days: int | None) -> str:
+    return "" if days is None else f" in the last {days} days"
+
+
+def _parse_event_date(value: Any) -> date | None:
+    """ISO date prefix (SEC filing dates) or RFC 2822 (RSS pubDate) -> date."""
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    match = re.match(r"(\d{4})-(\d{2})-(\d{2})", raw)
+    if match:
+        try:
+            return date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+        except ValueError:
+            return None
+    try:
+        parsed = parsedate_to_datetime(raw)
+    except Exception:  # noqa: BLE001 - malformed date means "unknown", not a crash
+        return None
+    if parsed is None:
+        return None
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(timezone.utc)
+    return parsed.date()
+
+
+def _in_window(value: Any, cutoff: date | None) -> bool:
+    """True when the row date is inside the window. Unknown dates fail a set window."""
+    if cutoff is None:
+        return True
+    row_date = _parse_event_date(value)
+    return row_date is not None and row_date >= cutoff
 
 
 def _dedupe(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
