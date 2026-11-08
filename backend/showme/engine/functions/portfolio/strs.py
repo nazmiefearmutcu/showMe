@@ -414,4 +414,6 @@ def _field_dictionary() -> dict[str, str]:
         "unpriced_positions": "Positions left unshocked because their measured window return was unavailable.",
         "price_source": "Valuation basis: portfolio_state_cost (average cost), live_quote (all positions quoted), or mixed (some positions fell back to average cost).",
         "price_basis": "Valuation basis of one position: portfolio_state_cost, live_quote, or avg_cost_fallback (live mode, no quote).",
+        "sector": "Sector in the scenario taxonomy (GICS-style key that the shock lookup matches). A normalized name, not the provider's label.",
+        "sector_provider_label": "The sector label the data provider returned, unchanged.",
     }

@@ -305,7 +305,11 @@ def apply_scenario(
     for p in positions:
         sym = p["symbol"]
         ac = resolve_shock_bucket(sym, p.get("asset_class", "EQUITY"))
-        sector = normalize_sector(p.get("sector") or sector_lookup.get(sym))
+        raw_sector = p.get("sector") or sector_lookup.get(sym)
+        # STRS#2: the shock lookup matches the normalized scenario key, but the row keeps
+        # the label the provider actually returned so the two are never confused.
+        sector = normalize_sector(raw_sector)
+        provider_label = str(raw_sector).strip() if raw_sector and str(raw_sector).strip() else None
         mv = float(p.get("market_value", 0) or 0)
         if measured is not None and ac == "BOND" and str(sym).upper() in BOND_ETF_SYMBOLS:
             shock: float | None = measured.get(sym)
@@ -349,6 +353,7 @@ def apply_scenario(
             warnings.append(f"{reason}; position left unshocked (not estimated)")
             rows.append({
                 "symbol": sym, "asset_class": ac, "sector": sector,
+                "sector_provider_label": provider_label,
                 "shock": None, "shock_unfloored": None, "floored": False,
                 "shock_source": source,
                 "market_value_pre": mv,
@@ -371,6 +376,7 @@ def apply_scenario(
         mv_post = mv * (1.0 + shock)
         rows.append({
             "symbol": sym, "asset_class": ac, "sector": sector,
+            "sector_provider_label": provider_label,
             "shock": shock, "shock_unfloored": raw_shock, "floored": floored,
             "shock_source": source,
             "market_value_pre": mv,
