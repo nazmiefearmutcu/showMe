@@ -46,7 +46,7 @@ def _realized_vol_1m(closes: list[float]) -> float:
 
 @pytest.fixture
 def live_spot(monkeypatch):
-    async def _spot(fn, pair, params):  # noqa: ARG001
+    async def _spot(fn, pair, params, quote_info=None):  # noqa: ARG001
         return 1.1143, "yfinance", "live_yfinance_quote"
 
     monkeypatch.setattr(fx, "_resolve_spot", _spot)

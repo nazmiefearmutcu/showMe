@@ -154,6 +154,20 @@ describe("FXFC pane — load states", () => {
 });
 
 describe("FXFC pane — data honesty", () => {
+  it("labels a yfinance spot whose quote is stale as stale, not live", () => {
+    const payload = livePayload();
+    setMockFn({
+      state: "ok",
+      data: {
+        ...payload,
+        data: { ...payload.data, spot_quote_status: "stale" },
+      },
+    });
+    render(<FXFCPane code="FXFC" symbol="USDJPY" />);
+    expect(screen.getByText("stale spot")).toBeInTheDocument();
+    expect(screen.queryByText("live spot")).toBeNull();
+  });
+
   it("shows the live-spot pill and no warning for a live payload", () => {
     setMockFn({ state: "ok", data: livePayload() });
     render(<FXFCPane code="FXFC" symbol="USDJPY" />);

@@ -212,7 +212,10 @@ def fxfc() -> FunctionManifest:
             "lower_band": FieldDef(unit="quote_ccy", description="Forecast − spot·vol·√T.", source="computed"),
             "upper_band": FieldDef(unit="quote_ccy", description="Forecast + spot·vol·√T.", source="computed"),
             "vol_annualized": FieldDef(unit="decimal", description="Band vol per tenor (live realized, user input, or null).", source="computed"),
-            "spot_fetched_at": FieldDef(description="UTC fetch time of the spot; the quote's market time is not provided.", source="provider"),
+            "spot_fetched_at": FieldDef(description="UTC fetch time of the spot (our clock, not the quote's market time).", source="provider"),
+            "spot_quote_time": FieldDef(description="Quote's own market time (UTC) when the provider supplied it; null otherwise.", source="provider"),
+            "spot_quote_age_minutes": FieldDef(unit="minutes", description="Age of the spot quote at fetch time; null when the quote time is unknown.", source="computed"),
+            "spot_quote_status": FieldDef(description="fresh / stale / off_session / quote_time_unavailable / not_applicable.", source="computed"),
             "source_mode": FieldDef(description="Spot tier label (live_* / manual_input / reference_model).", source="provider"),
         },
         provenance=ProvenanceSpec(

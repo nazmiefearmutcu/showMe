@@ -92,7 +92,10 @@ class FXFCFunction(BaseFunction):
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         base, quote, pair = _pair_from(instrument, params)
-        spot, spot_source, source_mode = await _resolve_spot(self, pair, params)
+        spot_quote_info: dict[str, Any] = {}
+        spot, spot_source, source_mode = await _resolve_spot(
+            self, pair, params, quote_info=spot_quote_info
+        )
         # FXFC#2: only explicit policy-rate inputs drive the forward. The
         # 2024-06 reference table is not used here (DATA POLICY).
         r_base = _fxfc_policy_rate(params.get("r_base"))
@@ -128,6 +131,7 @@ class FXFCFunction(BaseFunction):
             )
         now = _fxfc_now()
         market_open = _fx_market_open(now)
+        spot_quote = _fxfc_spot_quote(spot_source, spot_quote_info, now)
         warnings: list[str] = []
         if missing_rates:
             warnings.append(
@@ -138,12 +142,28 @@ class FXFCFunction(BaseFunction):
             warnings.append(f"live spot unavailable; using labelled reference spot (vintage {_REFERENCE_AS_OF})")
         if vol_warning:
             warnings.append(vol_warning)
-        if spot_source == "yfinance" and not market_open:
+        spot_quote_status = spot_quote["spot_quote_status"]
+        if spot_quote_status == "stale":
             warnings.append(
-                "yfinance FX quote was fetched while the spot FX market is closed "
-                f"(weekend, fetched {now.isoformat()}); the level may be the last Friday print. "
-                "The adapter does not expose the quote's own timestamp."
+                f"yfinance spot quote is stale: its market time {spot_quote['spot_quote_time']} is "
+                f"{spot_quote['spot_quote_age_minutes']} min before the fetch (threshold "
+                f"{int(_FXFC_QUOTE_STALE_AFTER.total_seconds() // 60)} min); treat the spot as stale."
             )
+        elif spot_quote_status == "off_session":
+            warnings.append(
+                f"yfinance spot quote time {spot_quote['spot_quote_time']} is outside the approximate "
+                "FX session (Sun 22:00 to Fri 22:00 UTC): it is a last print, not a live level."
+            )
+        elif spot_quote_status == "quote_time_unavailable":
+            warnings.append(
+                "yfinance spot carries no upstream quote time, so its market age is unknown "
+                f"(only the fetch time {now.isoformat()} is known)."
+            )
+            if not market_open:
+                warnings.append(
+                    "yfinance FX quote was fetched while the spot FX market is closed "
+                    f"(weekend, fetched {now.isoformat()}); the level may be the last Friday print."
+                )
         data = {
             "status": (
                 "needs_input"
@@ -161,6 +181,7 @@ class FXFCFunction(BaseFunction):
             "spot": round(spot, 6),
             "spot_fetched_at": now.isoformat(),
             "fx_market_open_at_fetch": market_open,
+            **spot_quote,
             "base_rate": r_base,
             "quote_rate": r_quote,
             "rate_source": rate_source,
@@ -180,7 +201,11 @@ class FXFCFunction(BaseFunction):
             ),
             "field_dictionary": {
                 "spot": "Quote currency units per one base currency unit.",
-                "spot_fetched_at": "UTC time the spot was fetched; the quote's own market time is not provided by the adapter.",
+                "spot_fetched_at": "UTC time the spot was fetched (our clock, not the quote's market time).",
+                "spot_quote_time": "The quote's own market time (UTC) when the provider supplied it; null otherwise.",
+                "spot_quote_time_source": "upstream_market_time when spot_quote_time comes from the provider; null when no quote time is known.",
+                "spot_quote_age_minutes": "Minutes between spot_quote_time and the fetch; null when spot_quote_time is unknown.",
+                "spot_quote_status": "fresh (quote within 60 min and inside the FX session), stale (older than 60 min), off_session (quote time outside the FX session), quote_time_unavailable (no provider quote time), or not_applicable (spot not from yfinance).",
                 "fx_market_open_at_fetch": "Whether the approximate spot-FX session (Sun 22:00 to Fri 22:00 UTC) was open at fetch time.",
                 "forecast": "Covered-interest-parity forward-implied level for the tenor (a CIP forward, not a consensus forecast); null until r_base and r_quote are supplied.",
                 "base_rate": "Base-currency annual rate (decimal) supplied as r_base; null when not supplied. No reference table is substituted.",
@@ -291,6 +316,41 @@ def _fx_market_open(now: datetime) -> bool:
     if weekday == 4:  # Friday: closes at 22:00 UTC
         return minutes < 22 * 60
     return True
+
+
+_FXFC_QUOTE_STALE_AFTER = timedelta(minutes=60)
+
+
+def _fxfc_spot_quote(spot_source: str, quote_info: dict[str, Any], now: datetime) -> dict[str, Any]:
+    """Quote-time state of the FXFC spot: provenance, age and a status flag.
+
+    Only a provider-supplied quote time counts as a quote time. A quote without
+    one reports ``quote_time_unavailable`` rather than the fetch time.
+    """
+    unknown: dict[str, Any] = {
+        "spot_quote_time": None,
+        "spot_quote_time_source": None,
+        "spot_quote_age_minutes": None,
+    }
+    if spot_source != "yfinance":
+        return {**unknown, "spot_quote_status": "not_applicable"}
+    ts = quote_info.get("timestamp")
+    if quote_info.get("timestamp_source") != "upstream_market_time" or not isinstance(ts, datetime):
+        return {**unknown, "spot_quote_status": "quote_time_unavailable"}
+    ts = ts.astimezone(timezone.utc)
+    age = max(now.astimezone(timezone.utc) - ts, timedelta(0))
+    if age > _FXFC_QUOTE_STALE_AFTER:
+        status = "stale"
+    elif not _fx_market_open(ts):
+        status = "off_session"
+    else:
+        status = "fresh"
+    return {
+        "spot_quote_time": ts.isoformat(),
+        "spot_quote_time_source": "upstream_market_time",
+        "spot_quote_age_minutes": round(age.total_seconds() / 60, 2),
+        "spot_quote_status": status,
+    }
 
 
 @FunctionRegistry.register
@@ -946,7 +1006,19 @@ def _rate_for(currency: str, explicit: Any = None) -> float:
     return float(_REFERENCE_RATES.get(currency.upper(), 0.04))
 
 
-async def _resolve_spot(fn: BaseFunction, pair: str, params: dict[str, Any]) -> tuple[float, str, str]:
+async def _resolve_spot(
+    fn: BaseFunction,
+    pair: str,
+    params: dict[str, Any],
+    quote_info: dict[str, Any] | None = None,
+) -> tuple[float, str, str]:
+    """Spot resolver shared by the FX functions.
+
+    ``quote_info`` is an optional output dict. When the yfinance quote is used,
+    it receives the quote's ``timestamp`` and ``timestamp_source`` so a caller
+    can tell an upstream quote time from a fetch time. Other callers pass
+    nothing and behave exactly as before.
+    """
     if params.get("spot") not in (None, ""):
         return float(params["spot"]), "manual_input", "manual_input"
     instrument = Instrument(symbol=pair, asset_class=AssetClass.FX)
@@ -965,6 +1037,9 @@ async def _resolve_spot(fn: BaseFunction, pair: str, params: dict[str, Any]) -> 
             )
             last = getattr(quote, "last", None)
             if last:
+                if quote_info is not None:
+                    quote_info["timestamp"] = getattr(quote, "timestamp", None)
+                    quote_info["timestamp_source"] = getattr(quote, "timestamp_source", None)
                 return float(last), "yfinance", "live_yfinance_quote"
         except Exception:
             pass

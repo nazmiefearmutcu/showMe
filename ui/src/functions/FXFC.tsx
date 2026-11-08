@@ -61,6 +61,9 @@ interface FXFCData {
   quote?: string;
   spot?: number;
   spot_fetched_at?: string;
+  spot_quote_time?: string | null;
+  spot_quote_age_minutes?: number | null;
+  spot_quote_status?: string;
   fx_market_open_at_fetch?: boolean;
   base_rate?: number;
   quote_rate?: number;
@@ -124,6 +127,9 @@ export function FXFCPane({ code, symbol }: FunctionPaneProps) {
   // envelope-level source_mode is preferred; per-row carries the fallback.
   const sourceMode = payload?.source_mode ?? rows[0]?.source_mode;
   const isLive = typeof sourceMode === "string" && sourceMode.startsWith("live_");
+  // Quote-time check from the backend: a yfinance quote older than the
+  // threshold is labelled stale, never live.
+  const isStaleSpot = payload?.spot_quote_status === "stale";
   const isManual = sourceMode === "manual_input";
   const spot = payload?.spot;
 
@@ -365,8 +371,17 @@ export function FXFCPane({ code, symbol }: FunctionPaneProps) {
           subtitle={`${rows.length} horizons · CIP carry path`}
           trailing={
             <FunctionControlGroup>
-              <Pill tone={isLive ? "positive" : "warn"} variant="soft">
-                {isLive ? "live spot" : isManual ? "manual spot" : "reference spot"}
+              <Pill
+                tone={isStaleSpot ? "warn" : isLive ? "positive" : "warn"}
+                variant="soft"
+              >
+                {isStaleSpot
+                  ? "stale spot"
+                  : isLive
+                    ? "live spot"
+                    : isManual
+                      ? "manual spot"
+                      : "reference spot"}
               </Pill>
               <SegmentedControl
                 label="PAIR"

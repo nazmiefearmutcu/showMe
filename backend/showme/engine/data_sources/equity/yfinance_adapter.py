@@ -80,6 +80,16 @@ def _dividends_on_bars(index: pd.DatetimeIndex, events: Any) -> pd.Series:
     return out
 
 
+def _epoch_to_utc(value: Any) -> datetime | None:
+    """Epoch seconds from a provider payload -> aware UTC datetime, or None."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        return datetime.fromtimestamp(float(value), tz=timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
 def _as_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
@@ -280,6 +290,7 @@ class YFinanceAdapter(BaseDataSource):
         return Quote(
             symbol=sym,
             timestamp=utcnow(),
+            timestamp_source="fetch_time",
             bid=info.get("bid"),
             ask=info.get("ask"),
             last=last,
@@ -299,9 +310,14 @@ class YFinanceAdapter(BaseDataSource):
             result = (((response.json() or {}).get("chart") or {}).get("result") or [None])[0] or {}
             meta = result.get("meta") or {}
             last = meta.get("regularMarketPrice") or meta.get("previousClose")
+            # The chart meta carries the quote's own market time (epoch
+            # seconds). Use it when present; otherwise only our fetch time is
+            # known and the provenance says so.
+            upstream_ts = _epoch_to_utc(meta.get("regularMarketTime"))
             return Quote(
                 symbol=sym,
-                timestamp=utcnow(),
+                timestamp=upstream_ts or utcnow(),
+                timestamp_source="upstream_market_time" if upstream_ts else "fetch_time",
                 last=last,
                 volume_24h=meta.get("regularMarketVolume"),
                 open_24h=meta.get("regularMarketOpen"),
@@ -372,6 +388,7 @@ class YFinanceAdapter(BaseDataSource):
             return Quote(
                 symbol=symbol.upper(),
                 timestamp=utcnow(),
+                timestamp_source="fetch_time",
                 last=close,
                 open_24h=_to_float(row.get("Open")),
                 high_24h=_to_float(row.get("High")),

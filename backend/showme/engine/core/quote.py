@@ -27,6 +27,10 @@ class Quote:
     low_24h: float | None = None
     close_prev: float | None = None      # previous session close (equity)
     source: str | None = None            # "binance_ws", "yfinance", "ecb"
+    # Provenance of ``timestamp``: "upstream_market_time" when the provider
+    # supplied the quote's own time, "fetch_time" when only our fetch time is
+    # known. None for producers that do not say.
+    timestamp_source: str | None = None
 
     @property
     def mid(self) -> float | None:
