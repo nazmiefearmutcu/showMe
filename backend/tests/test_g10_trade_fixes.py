@@ -100,7 +100,7 @@ def test_fxgo_user_pair_with_equals_x_reaches_yahoo_and_returns_board(monkeypatc
     assert seen[0].endswith("/GBPUSD=X"), seen[0]
     assert "GBPUSDX" not in seen[0]
     assert data["status"] == "ok"
-    assert data["data_mode"] == "live_exchange"
+    assert data["data_mode"] == "live_yfinance_quote"
     assert len(data["rows"]) == 1
     row = data["rows"][0]
     assert row["pair"] == "GBPUSD=X"
@@ -220,13 +220,13 @@ def test_tca_bot_placed_order_without_fill_price_is_not_a_fill(tmp_path, monkeyp
 
 
 # ---------------------------------------------------------------------------
-# TSOX#1 — treasury futures are bond instruments, so TSOX accepts its defaults.
+# TSOX#1 — treasury futures are rates derivatives, so TSOX accepts its defaults.
 # ---------------------------------------------------------------------------
 @pytest.mark.parametrize("symbol", ["ZN=F", "ZB=F", "ZF=F", "TU=F", "ZT=F", "TN=F", "UB=F"])
-def test_treasury_futures_classify_as_bond(symbol):
+def test_treasury_futures_classify_as_derivative(symbol):
     from showme import server
 
-    assert server.default_asset_class_name(symbol) == "BOND"
+    assert server.default_asset_class_name(symbol) == "DERIVATIVE"
 
 
 def test_tsox_default_symbol_is_supported_asset_class():

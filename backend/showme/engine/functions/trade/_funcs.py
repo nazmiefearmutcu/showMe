@@ -431,7 +431,8 @@ class TSOXFunction(EMSXFunction):
     """TSOX — Treasury / Bond order ticket."""
     code = "TSOX"
     name = "Treasury Order Entry"
-    asset_classes = (AssetClass.BOND,)
+    # Cash Treasuries (BOND) and CME Treasury futures (DERIVATIVE, e.g. ZN=F).
+    asset_classes = (AssetClass.BOND, AssetClass.DERIVATIVE)
 
 
 @FunctionRegistry.register
@@ -656,7 +657,9 @@ class FXGOFunction(EMSXFunction):
                 "quotes; the rest failed upstream and are NOT shown."
             )
         else:
-            board_mode = "live_exchange"
+            # Yahoo spot quotes with an indicative spread - not a venue's
+            # two-way board, so never "live_exchange".
+            board_mode = "live_yfinance_quote"
 
         # Card summary mirrors the EMSX/manifest card slots while reflecting the
         # live board: show the top pair's indicative two-way quote.
