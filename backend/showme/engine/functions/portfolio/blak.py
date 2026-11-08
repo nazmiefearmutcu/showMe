@@ -407,6 +407,10 @@ class BLAKFunction(BaseFunction):
         Qv = np.asarray(Q) if Q else None
         pi_bl, sigma_bl = posterior(cov, w_mkt, P, Qv, delta=delta, tau=tau)
         w_opt = implied_optimal_weights(pi_bl, sigma_bl, delta=delta)
+        # BLAK#7: optimal_weight is long-only (negatives clipped, then renormalized
+        # to sum 1). The raw solution is reported beside it so the transformation
+        # is visible rather than hidden.
+        w_raw = np.linalg.pinv(delta * sigma_bl) @ pi_bl
         rows = [
             {
                 "symbol": sym,
@@ -414,6 +418,7 @@ class BLAKFunction(BaseFunction):
                 "prior_return": float(pi[idx]),
                 "posterior_return": float(pi_bl[idx]),
                 "optimal_weight": float(w_opt[idx]),
+                "optimal_weight_unconstrained": float(w_raw[idx]),
                 "view_active": any(row[idx] != 0 for row in P_rows),
             }
             for idx, sym in enumerate(cols)
@@ -443,6 +448,8 @@ class BLAKFunction(BaseFunction):
                 "implied_returns_prior": dict(zip(cols, pi.tolist())),
                 "posterior_returns": dict(zip(cols, pi_bl.tolist())),
                 "implied_optimal_weights": dict(zip(cols, w_opt.tolist())),
+                "implied_optimal_weights_unconstrained": dict(zip(cols, w_raw.tolist())),
+                "optimal_weight_raw_sum": float(w_raw.sum()),
                 "market_cap_data_state": mcap_data_state,
                 "market_cap_coverage": {
                     "resolved": len(mcap_resolved),
@@ -477,13 +484,22 @@ class BLAKFunction(BaseFunction):
                 },
                 "methodology": (
                     "Black-Litterman starts with market-cap implied equilibrium returns pi = delta * covariance * market_weights, "
-                    "then blends optional investor views through posterior returns using tau-scaled covariance."
+                    "then blends optional investor views through posterior returns using tau-scaled covariance. "
+                    "optimal_weight is long-only: the unconstrained mean-variance solution (optimal_weight_unconstrained) "
+                    "is clipped at zero and renormalized to sum to 1."
                 ),
                 "field_dictionary": {
                     "market_weight": "Market-cap weight used as the prior portfolio (circulating supply x price; equal-weight fallback when unavailable).",
                     "prior_return": "Implied equilibrium return before applying views.",
                     "posterior_return": "Black-Litterman expected return after blending views.",
-                    "optimal_weight": "Mean-variance implied weight from posterior return and covariance.",
+                    "optimal_weight": (
+                        "Long-only implied weight: the posterior mean-variance solution with negatives clipped to zero "
+                        "and renormalized to sum to 1. With no active views it equals the market weight."
+                    ),
+                    "optimal_weight_unconstrained": (
+                        "Posterior mean-variance solution before clipping and renormalization; may be negative. "
+                        "Its sum is optimal_weight_raw_sum (equal to 1/(1+tau) when no views are active)."
+                    ),
                     "view_active": "Whether the symbol participates in at least one submitted view row.",
                     "market_cap_data_state": "'real' when every requested symbol has a market value, 'partial' or 'approximate' when the equal-weight fallback fires.",
                     "prior_covariance_estimator": "Estimator applied to the return series: sample_cov, ledoit_wolf (Ledoit-Wolf 2004 shrinkage toward mu*I) or exp_cov (EWMA, span 180 days).",
