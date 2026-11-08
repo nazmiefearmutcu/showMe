@@ -172,7 +172,9 @@ class TSARFunction(BaseFunction):
             if xsen_warn:
                 warnings.append(xsen_warn)
             else:
-                sources.append("xsen_roberta")
+                # wc3-g15 (TSAR#2): the "_model" suffix makes the source classify as a
+                # model reading; a bare "xsen_roberta" name is read as live data.
+                sources.append("xsen_roberta_model")
 
         # Build per-(utterance, model) rows. Every row carries a model id.
         utterances: list[dict[str, Any]] = []
