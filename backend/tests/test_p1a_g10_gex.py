@@ -77,6 +77,23 @@ def test_gamma_flip_none_when_no_crossing_in_range() -> None:
     assert out["gamma_flip"] is None
 
 
+def test_gamma_flip_none_when_total_gex_is_zero_everywhere() -> None:
+    # Zero open interest on every contract: total dealer GEX is exactly 0 on
+    # the whole grid. No sign change exists, so the flip must not be fabricated
+    # as the grid point nearest spot.
+    zero_calls = [_call(100, 0)]
+    zero_puts = [_put(100, 0)]
+    assert chain_gex(spot=SPOT, calls=[], puts=[])["gamma_flip"] is None
+    assert chain_gex(spot=SPOT, calls=zero_calls, puts=zero_puts)["gamma_flip"] is None
+
+
+def test_gamma_flip_none_when_total_gex_is_zero_on_one_side_only() -> None:
+    # Zero-valued puts plus call-only exposure: total GEX is negative across
+    # the whole grid (no crossing), and the zero-OI put side must not create one.
+    out = chain_gex(spot=SPOT, calls=[_call(100, 1000)], puts=[_put(100, 0)])
+    assert out["gamma_flip"] is None
+
+
 def test_gex_function_payload_reports_flip_method_and_per_side_walls() -> None:
     from showme.engine.core.base_function import FunctionDeps
     from showme.engine.functions.derivative.gex import GEXFunction

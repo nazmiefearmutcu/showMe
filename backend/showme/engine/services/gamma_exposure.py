@@ -55,13 +55,28 @@ def _gamma_flip_spot_grid(spot: float, total_gex_at: Any) -> float | None:
     steps = int(round(_FLIP_GRID_PCT / _FLIP_GRID_STEP))
     grid = [spot * (1.0 + _FLIP_GRID_STEP * i) for i in range(-steps, steps + 1)]
     values = [total_gex_at(s) for s in grid]
+    # Sign of each grid value (0 for exact zero). A crossing needs a strict
+    # sign change between the nearest non-zero values on either side, so a
+    # flat zero (no open interest) or a one-sided chain never yields a flip.
+    signs = [0 if v == 0 else (1 if v > 0 else -1) for v in values]
+    nonzero_idx = [i for i, s in enumerate(signs) if s != 0]
+    if not nonzero_idx:
+        return None
     best: float | None = None
     for i in range(len(grid) - 1):
         v0, v1 = values[i], values[i + 1]
-        if v0 == 0:
-            cross = grid[i]
-        elif v0 * v1 < 0:
+        if v0 * v1 < 0:
             cross = grid[i] + (grid[i + 1] - grid[i]) * v0 / (v0 - v1)
+        elif v0 == 0 and v1 != 0:
+            # Exact zero at grid[i]: genuine crossing only if the nearest
+            # non-zero value to the left and to the right differ in sign.
+            left = [j for j in nonzero_idx if j < i]
+            right = [j for j in nonzero_idx if j > i]
+            if not left or not right:
+                continue
+            if signs[left[-1]] == signs[right[0]]:
+                continue
+            cross = grid[i]
         else:
             continue
         if best is None or abs(cross - spot) < abs(best - spot):
