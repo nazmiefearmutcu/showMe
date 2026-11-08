@@ -18,7 +18,7 @@
  * pane into a specific branch without the real sidecar transport.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, render, within } from "@testing-library/react";
 import { FAPane } from "./FA";
 
 /* ── useFunction mock ──────────────────────────────────────────────── */

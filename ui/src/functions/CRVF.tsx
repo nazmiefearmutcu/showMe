@@ -196,6 +196,17 @@ export function CRVFPane({ code, symbol }: FunctionPaneProps) {
           </button>
         }
       />
+    ) : payload?.status === "empty" ? (
+      <Empty
+        title="No curve points for this selection"
+        body={payload.reason ?? "The tenor filter matches no curve point."}
+        icon="∅"
+        action={
+          <button type="button" onClick={() => setTenorPick([])} className="btn">
+            Clear tenor filter
+          </button>
+        }
+      />
     ) : rows.length === 0 ? (
       <Empty
         title="No curve returned"

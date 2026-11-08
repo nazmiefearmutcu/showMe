@@ -85,12 +85,6 @@ function modelPayload() {
   };
 }
 
-function fredPayload() {
-  const payload = modelPayload();
-  payload.data.data.summary.source_mode = "fred";
-  payload.data.sources = ["fred"];
-  return payload;
-}
 
 /* ── tests ─────────────────────────────────────────────────────────── */
 
@@ -158,5 +152,27 @@ describe("CRVF pane — tenor filter control (p2a-g04 CRVF#5)", () => {
     fireEvent.click(screen.getByRole("button", { name: "10Y" }));
     expect(lastParams).toEqual({ tenors: ["2Y", "10Y"] });
     expect(screen.getByRole("button", { name: "2Y" })).toHaveAttribute("aria-pressed", "true");
+  });
+});
+
+describe("CRVF pane — empty tenor selection (p2a-g04 CRVF#4)", () => {
+  it("shows the backend reason when the tenor filter matches no curve point", () => {
+    setMockFn({
+      state: "ok",
+      data: {
+        data: {
+          status: "empty",
+          reason: "No curve point matches tenors=40Y; the catalog covers 1M to 30Y.",
+          rows: [],
+          curve: [],
+          summary: { country: "US", tenors: 0, source_mode: "fred", tenor_filter: ["40Y"] },
+        },
+        sources: ["fred"],
+        warnings: ["no curve point matches tenors=40Y"],
+      },
+    });
+    render(<CRVFPane code="CRVF" symbol="US10Y" />);
+    expect(screen.getByText(/No curve point matches tenors=40Y/i)).toBeInTheDocument();
+    expect(screen.queryByText(/No curve returned/i)).toBeNull();
   });
 });

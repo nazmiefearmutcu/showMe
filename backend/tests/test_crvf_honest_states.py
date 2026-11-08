@@ -247,3 +247,23 @@ def test_keyless_failed_series_is_not_refetched_for_its_date():
     as_of = {row["tenor"]: row["as_of"] for row in res.data["rows"]}
     assert "2Y" not in as_of
     assert as_of["10Y"] == "2026-11-05"
+
+
+# ── A tenor filter that matches no point is an explicit empty state ──────
+
+
+def test_live_tenor_filter_with_no_match_is_empty_state():
+    res = _run(_client_fn(_FredCsvClient()).execute(country="US", tenors=["40Y"]))
+    assert res.data["status"] == "empty"
+    assert res.data["rows"] == []
+    assert "40Y" in res.data["reason"]
+    assert res.data["next_actions"]
+    assert any("40Y" in w for w in res.warnings)
+
+
+def test_reference_tenor_filter_with_no_match_is_empty_state():
+    res = _run(CRVFFunction(FunctionDeps()).execute(country="US", reference=True, tenors=["40Y"]))
+    assert res.data["status"] == "empty"
+    assert res.data["rows"] == []
+    assert "40Y" in res.data["reason"]
+    assert res.data["next_actions"]

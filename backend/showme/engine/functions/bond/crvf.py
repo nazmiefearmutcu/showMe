@@ -181,6 +181,24 @@ def _no_match_warnings(tenor_filter: list[str] | None, curve: dict[str, float]) 
     return []
 
 
+def _empty_selection(tenor_filter: list[str] | None, curve: dict[str, float]) -> dict[str, Any]:
+    """Explicit ``empty`` state when the tenor filter selects no curve point.
+
+    The data is not invented to fill the gap: the caller gets the reason and
+    the next step, and the pane shows them instead of a generic message.
+    """
+    if not (tenor_filter and not curve):
+        return {}
+    wanted = ",".join(tenor_filter)
+    return {
+        "status": "empty",
+        "reason": f"No curve point matches tenors={wanted}; the catalog covers 1M to 30Y.",
+        "next_actions": [
+            "Choose tenors from the catalog (1M to 30Y) or clear the tenor filter.",
+        ],
+    }
+
+
 async def _keyless_curve_with_dates(client: Any) -> tuple[dict[str, float], dict[str, str]]:
     """Latest value and FRED observation date per series, one fetch per series.
 
@@ -283,10 +301,12 @@ class CRVFFunction(BaseFunction):
             # Explicit opt-out (live_curve=false or reference=true): the
             # static model, labelled computed_model and never called live.
             curve = _filter_curve(_curve_model(), tenor_filter)
+            model_data = _curve_payload(country, curve, "computed_model", tenor_filter=tenor_filter)
+            model_data.update(_empty_selection(tenor_filter, curve))
             return FunctionResult(
                 code=self.code,
                 instrument=None,
-                data=_curve_payload(country, curve, "computed_model", tenor_filter=tenor_filter),
+                data=model_data,
                 sources=["curve_model"],
                 warnings=_no_match_warnings(tenor_filter, curve),
                 metadata={"country": country, "mode": "computed_model",
@@ -303,16 +323,18 @@ class CRVFFunction(BaseFunction):
             return self._unavailable(country, tenor_filter, reason, next_actions=_LIVE_UNAVAILABLE_NEXT)
         curve = _filter_curve(curve, tenor_filter)
         warnings = _no_match_warnings(tenor_filter, curve)
+        live_data = _curve_payload(
+            country,
+            curve,
+            "fred",
+            as_of_by_tenor=as_of_by_tenor,
+            tenor_filter=tenor_filter,
+        )
+        live_data.update(_empty_selection(tenor_filter, curve))
         return FunctionResult(
             code=self.code,
             instrument=None,
-            data=_curve_payload(
-                country,
-                curve,
-                "fred",
-                as_of_by_tenor=as_of_by_tenor,
-                tenor_filter=tenor_filter,
-            ),
+            data=live_data,
             sources=["fred"],
             warnings=warnings,
             metadata={"country": country, "mode": "fred",
