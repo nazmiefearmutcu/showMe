@@ -433,21 +433,43 @@ class AIMFunction(BaseFunction):
             text = str(value)
             return alias_to_key.get(text, text)
 
+        known_names = set(alias_to_key) | set(alias_to_key.values())
         seen_history: set[tuple[str, str]] = set()
         unique_history: list[dict[str, Any]] = []
+        # AIM#3-RQ: history_rows is newest-first, so the first row for an order wins.
+        dropped_labels: dict[str, set[str]] = {}
         for r in history_rows:
             if r.get("order_id") is None:
                 unique_history.append(r)
                 continue
-            key_pair = (_canon_broker(r.get("broker")), str(r.get("order_id")))
-            if key_pair in live_keys or key_pair in seen_history:
-                continue
+            oid = str(r.get("order_id"))
+            canon = _canon_broker(r.get("broker"))
+            if canon in known_names:
+                key_pair = (canon, oid)
+                if key_pair in live_keys or key_pair in seen_history:
+                    continue
+            else:
+                # The history store is written once per placement, so one order_id
+                # under labels no adapter resolves to is one order recorded twice:
+                # count it once, keyed by order_id alone.
+                key_pair = ("<unresolved>", oid)
+                if key_pair in seen_history:
+                    dropped_labels.setdefault(oid, set()).add(str(r.get("broker")))
+                    continue
             seen_history.add(key_pair)
             unique_history.append(r)
         history_rows = unique_history
-        # AIM#3-RQ: the same order_id under broker names no adapter resolves to
-        # cannot be proven to be one order. Both rows stay counted (they may be
-        # different venues), but the response must say so rather than stay silent.
+        for oid, labels in sorted(dropped_labels.items()):
+            kept = next(
+                str(r.get("broker")) for r in history_rows if str(r.get("order_id")) == oid
+            )
+            warnings.append(
+                f"Duplicate order_id {oid} recorded under unmatched broker name(s) "
+                + ", ".join(sorted(labels))
+                + f" was counted once, as '{kept}' (the newest record)."
+            )
+        # Any order_id still recorded under more than one resolved name is listed
+        # and counted separately, because the response cannot prove it is one order.
         names_by_order: dict[str, set[str]] = {}
         for r in history_rows:
             if r.get("order_id") is not None:
@@ -456,8 +478,7 @@ class AIMFunction(BaseFunction):
         if shared_ids:
             warnings.append(
                 "Possible duplicate order(s): order_id " + ", ".join(shared_ids)
-                + " recorded under different broker names that cannot be matched to one adapter; "
-                "each row is listed and counted separately."
+                + " recorded under different broker names; each row is listed and counted separately."
             )
         # The history store is written once at placement and never updated on
         # fills or closes, so no history row can prove a working order: it is

@@ -45,15 +45,31 @@ def _aim(deps: Any):
     return fn
 
 
-def test_aim_same_order_under_unresolved_broker_names_is_flagged(monkeypatch):
-    """AIM#3-RQ: an order_id recorded under two broker names that no adapter
-    resolves to is kept (it may be a different venue) but flagged as a possible
-    duplicate, so the indicative notional is not silently double counted."""
+def test_aim_same_order_under_unresolved_broker_names_is_counted_once(monkeypatch):
+    """AIM#3-RQ: the history store is written once per placement, so one order_id
+    under two broker labels that no adapter resolves is one order recorded twice.
+    It must be listed and counted once (newest row kept), and the response must
+    say which duplicate was dropped."""
     rows = [
-        _hist("ord-1", broker="recording_broker"),
-        _hist("ord-1", broker="rec"),
+        _hist("ord-1", broker="recording_broker", ts=1_700_000_200),
+        _hist("ord-1", broker="rec", ts=1_700_000_100),
     ]
     _install_history(monkeypatch, rows)
     res = _run(_aim(SimpleNamespace()).execute())
-    text = (" ".join(res.warnings) + " " + str(res.data.get("warning", ""))).lower()
-    assert "ord-1" in text and "possible duplicate" in text, res.warnings
+    assert len(res.data["rows"]) == 1, res.data["rows"]
+    assert res.data["rows"][0]["broker"] == "recording_broker"
+    assert res.data["cards"]["total_notional"] == 190.0, res.data["cards"]
+    text = " ".join(res.warnings).lower()
+    assert "ord-1" in text and "duplicate" in text and "rec" in text, res.warnings
+
+
+def test_aim_distinct_orders_under_unresolved_names_are_not_merged(monkeypatch):
+    """Different order_ids under unmatched labels are different orders: no merge."""
+    rows = [
+        _hist("ord-1", broker="recording_broker"),
+        _hist("ord-2", broker="rec"),
+    ]
+    _install_history(monkeypatch, rows)
+    res = _run(_aim(SimpleNamespace()).execute())
+    assert len(res.data["rows"]) == 2
+    assert res.data["cards"]["total_notional"] == 380.0
