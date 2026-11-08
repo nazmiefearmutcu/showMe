@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import re
+from datetime import date
 from typing import Any
 
 import httpx
@@ -21,6 +22,7 @@ from showme.engine.core.base_data_source import (
 
 
 _TICKER_IN_NAME = re.compile(r"\(([A-Z][A-Z0-9.\-]{0,9})\)")
+_EFTS_FLOOR_DATE = "2001-01-01"
 
 
 def _ticker_from_display_names(names: Any) -> str | None:
@@ -33,6 +35,42 @@ def _ticker_from_display_names(names: Any) -> str | None:
         m = _TICKER_IN_NAME.search(str(name or ""))
         if m:
             return m.group(1)
+    return None
+
+
+class EftsHits(list):
+    """Hit list that also carries the EFTS-reported total (``hits.total.value``).
+
+    ``total`` is None when the provider response did not report one.
+    """
+
+    total: int | None = None
+
+
+def _filing_index_url(cik: Any, accession: str | None) -> str | None:
+    """EDGAR filing index URL built from the filer CIK and accession number.
+
+    Pattern: ``/Archives/edgar/data/<CIK without zeros>/<accession without
+    dashes>/<accession>-index.htm`` (verified against live EFTS hits). Returns
+    None when either part is missing, so no link is invented.
+    """
+    cik_digits = re.sub(r"\D", "", str(cik or ""))
+    if not cik_digits or not accession or not re.fullmatch(r"\d{10}-\d{2}-\d{6}", accession):
+        return None
+    return (
+        f"https://www.sec.gov/Archives/edgar/data/{int(cik_digits)}/"
+        f"{accession.replace('-', '')}/{accession}-index.htm"
+    )
+
+
+def _total_hits(raw: Any) -> int | None:
+    """EFTS reports ``hits.total`` as ``{"value": n, "relation": "eq"}`` (or a bare int in old responses)."""
+    if isinstance(raw, dict):
+        raw = raw.get("value")
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, int):
+        return raw
     return None
 
 
@@ -80,10 +118,12 @@ class SECFullTextSearch(BaseDataSource):
         params: dict[str, Any] = {"q": query, "from": 0, "size": min(limit, 100)}
         if forms:
             params["forms"] = ",".join(forms)
-        if start and end:
+        if start or end:
+            # EDGAR full-text search covers filings from 2001 onward; an open
+            # side is bounded by that floor or by today, never by a guessed date.
             params["dateRange"] = "custom"
-            params["startdt"] = start
-            params["enddt"] = end
+            params["startdt"] = start or _EFTS_FLOOR_DATE
+            params["enddt"] = end or date.today().isoformat()
         if ciks:
             params["ciks"] = ",".join(c.zfill(10) for c in ciks)
         try:
@@ -91,19 +131,24 @@ class SECFullTextSearch(BaseDataSource):
             r.raise_for_status()
         except httpx.HTTPError as e:
             raise DataSourceError(f"SEC EFTS: {e}")
-        hits = ((r.json() or {}).get("hits") or {}).get("hits") or []
-        out: list[dict[str, Any]] = []
+        body = r.json() or {}
+        hits_block = body.get("hits") or {}
+        hits = hits_block.get("hits") or []
+        out = EftsHits()
+        out.total = _total_hits(hits_block.get("total"))
         for h in hits:
             src = h.get("_source") or {}
             adsh = (h.get("_id") or "").split(":")[0]
+            cik = (src.get("ciks") or [None])[0] if isinstance(src.get("ciks"), list) else None
             out.append({
                 "accession": adsh,
                 "form": src.get("forms", [None])[0] if isinstance(src.get("forms"), list) else src.get("form"),
                 "filing_date": src.get("file_date") or src.get("filing_date"),
                 "company": src.get("display_names", [None])[0] if isinstance(src.get("display_names"), list) else None,
-                "cik": (src.get("ciks") or [None])[0] if isinstance(src.get("ciks"), list) else None,
+                "cik": cik,
                 "ticker": ((src.get("tickers") or [None])[0] if isinstance(src.get("tickers"), list) else None)
                           or _ticker_from_display_names(src.get("display_names")),
+                "url": _filing_index_url(cik, adsh),
                 "score": h.get("_score"),
                 "snippet": _matched_text(src, h.get("highlight")),
             })

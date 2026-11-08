@@ -56,17 +56,27 @@ interface FTSData {
   query?: string;
   forms?: string[] | null;
   methodology?: string;
+  total_hits?: number | null;
+  date_from?: string | null;
+  date_to?: string | null;
 }
 
 const QUERY_STORAGE_KEY = "showme.fts.last";
 const FORMS_STORAGE_KEY = "showme.fts.forms";
+const FROM_STORAGE_KEY = "showme.fts.from";
+const TO_STORAGE_KEY = "showme.fts.to";
 const DEFAULT_QUERY = "risk factors";
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 export function FTSPane({ code }: FunctionPaneProps) {
   const [query, setQuery] = usePersistentString(QUERY_STORAGE_KEY, DEFAULT_QUERY);
   const [draftQuery, setDraftQuery] = useState<string>(query);
   const [forms, setForms] = usePersistentString(FORMS_STORAGE_KEY, "");
   const [draftForms, setDraftForms] = useState<string>(forms);
+  const [dateFrom, setDateFrom] = usePersistentString(FROM_STORAGE_KEY, "");
+  const [draftFrom, setDraftFrom] = useState<string>(dateFrom);
+  const [dateTo, setDateTo] = usePersistentString(TO_STORAGE_KEY, "");
+  const [draftTo, setDraftTo] = useState<string>(dateTo);
 
   const { state, data, error, refetch } = useFunction<FTSData>({
     code,
@@ -74,6 +84,8 @@ export function FTSPane({ code }: FunctionPaneProps) {
       query,
       live: true,
       ...(forms ? { forms } : {}),
+      ...(dateFrom ? { date_from: dateFrom } : {}),
+      ...(dateTo ? { date_to: dateTo } : {}),
       limit: 50,
       timeout: 12,
     },
@@ -82,13 +94,19 @@ export function FTSPane({ code }: FunctionPaneProps) {
   const payload = data?.data;
   const rows = useMemo(() => payload?.rows ?? [], [payload]);
   const status = payload?.status ?? "—";
+  const rangeLabel = dateFrom || dateTo ? ` · filed ${dateFrom || "…"} to ${dateTo || "today"}` : "";
 
   function applySearch(event: FormEvent) {
     event.preventDefault();
     const nextQuery = draftQuery.trim();
     const nextForms = draftForms.trim().toUpperCase();
+    // Only well-formed ISO dates are sent; a half-typed date is not forwarded.
+    const nextFrom = ISO_DATE.test(draftFrom) ? draftFrom : "";
+    const nextTo = ISO_DATE.test(draftTo) ? draftTo : "";
     setQuery(nextQuery || DEFAULT_QUERY);
     setForms(nextForms);
+    setDateFrom(nextFrom);
+    setDateTo(nextTo);
   }
 
   const COLS: DataGridColumn<FTSRow>[] = useMemo(
@@ -182,8 +200,16 @@ export function FTSPane({ code }: FunctionPaneProps) {
       />
     ) : rows.length === 0 ? (
       <Empty
-        title={`No filings matched "${payload?.query ?? query}"`}
-        body="EDGAR full-text search returned no hits for this query and form filter."
+        title={
+          status === "empty" && payload?.reason
+            ? "No search was run"
+            : `No filings matched "${payload?.query ?? query}"`
+        }
+        body={
+          status === "empty" && payload?.reason
+            ? payload.reason
+            : "EDGAR full-text search returned no hits for this query, form filter and date range."
+        }
         icon="⌕"
         action={
           <button onClick={refetch} className="btn">
@@ -194,9 +220,15 @@ export function FTSPane({ code }: FunctionPaneProps) {
     ) : (
       <div className="u-grid-gap-14">
         <div role="status" aria-label="FTS result count" style={countNoteStyle}>
-          {rows.length} filing hit{rows.length === 1 ? "" : "s"} for “
-          {payload?.query ?? query}”
-          {forms ? ` · forms ${forms}` : ""} · source {data?.sources?.join(", ") || "—"}
+          {typeof payload?.total_hits === "number"
+            ? `${payload.total_hits.toLocaleString("en-US")} EDGAR match${payload.total_hits === 1 ? "" : "es"} · showing ${rows.length}`
+            : `${rows.length} filing hit${rows.length === 1 ? "" : "s"} (EDGAR total not reported)`}
+          {` for “${payload?.query ?? query}”`}
+          {forms ? ` · forms ${forms}` : ""}
+          {payload?.date_from || payload?.date_to
+            ? ` · filed ${payload?.date_from || "…"} to ${payload?.date_to || "today"}`
+            : ""}
+          {` · source ${data?.sources?.join(", ") || "—"}`}
         </div>
         <DataGrid
           columns={COLS}
@@ -229,7 +261,7 @@ export function FTSPane({ code }: FunctionPaneProps) {
         <PaneHeader
           code={code}
           title="SEC Full-Text Search"
-          subtitle={`"${query}"${forms ? ` · forms ${forms}` : ""} · EDGAR live search`}
+          subtitle={`"${query}"${forms ? ` · forms ${forms}` : ""}${rangeLabel} · EDGAR live search`}
           trailing={
             <FunctionControlGroup>
               <form onSubmit={applySearch} style={searchFormStyle}>
@@ -257,6 +289,30 @@ export function FTSPane({ code }: FunctionPaneProps) {
                     placeholder="10-K, 8-K"
                     className="btmm-search-input"
                     style={{ ...searchInputStyle, width: 110 }}
+                  />
+                </label>
+                <label htmlFor="fts-from" style={searchLabelStyle}>
+                  From
+                  <input
+                    id="fts-from"
+                    type="date"
+                    aria-label="Filed from date"
+                    value={draftFrom}
+                    onChange={(event) => setDraftFrom(event.target.value)}
+                    className="btmm-search-input"
+                    style={{ ...searchInputStyle, width: 132 }}
+                  />
+                </label>
+                <label htmlFor="fts-to" style={searchLabelStyle}>
+                  To
+                  <input
+                    id="fts-to"
+                    type="date"
+                    aria-label="Filed to date"
+                    value={draftTo}
+                    onChange={(event) => setDraftTo(event.target.value)}
+                    className="btmm-search-input"
+                    style={{ ...searchInputStyle, width: 132 }}
                   />
                 </label>
                 <button type="submit" className="btn" title="Run search">

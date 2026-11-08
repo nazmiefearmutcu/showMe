@@ -28,7 +28,11 @@ interface MockFnState {
   error?: Error | null;
 }
 
-const mockFn: MockFnState = { state: "idle", data: undefined, error: null };
+const mockFn: MockFnState & { lastArgs?: { params?: Record<string, unknown> } } = {
+  state: "idle",
+  data: undefined,
+  error: null,
+};
 
 function setMockFn(next: MockFnState) {
   mockFn.state = next.state;
@@ -37,8 +41,8 @@ function setMockFn(next: MockFnState) {
 }
 
 vi.mock("@/lib/useFunction", () => ({
-  useFunction: () => ({
-    state: mockFn.state,
+  useFunction: (args: { params?: Record<string, unknown> }) => ({
+    state: ((mockFn.lastArgs = args), mockFn.state),
     data: mockFn.data,
     error: mockFn.error,
     refetch: vi.fn(),
@@ -89,6 +93,8 @@ function okPayload() {
 beforeEach(() => {
   localStorage.removeItem("showme.fts.last");
   localStorage.removeItem("showme.fts.forms");
+  localStorage.removeItem("showme.fts.from");
+  localStorage.removeItem("showme.fts.to");
   setMockFn({ state: "idle", data: undefined });
 });
 afterEach(() => {
@@ -138,7 +144,7 @@ describe("FTS pane — load states", () => {
   it("renders the results table + count note when ok", () => {
     setMockFn(okPayload());
     const { container } = render(<FTSPane code="FTS" />);
-    expect(screen.getByText(/2 filing hits for/i)).toBeInTheDocument();
+    expect(screen.getByText(/2 filing hits/i)).toBeInTheDocument();
     expect(screen.getByText("Apple Inc. (CIK 0000320193)")).toBeInTheDocument();
     expect(screen.getAllByText("10-K").length).toBeGreaterThan(0);
     expect(screen.getByText("2025-11-01")).toBeInTheDocument();
@@ -179,5 +185,61 @@ describe("FTS pane — search interaction", () => {
     expect(localStorage.getItem("showme.fts.last")).toBe("cybersecurity incident");
     expect(localStorage.getItem("showme.fts.forms")).toBe("8-K");
     expect(screen.getByText(/"cybersecurity incident"/)).toBeInTheDocument();
+  });
+});
+
+describe("FTS pane — totals, reasons and date bounds", () => {
+  it("shows the EDGAR match total and the returned count when the provider reports it", () => {
+    setMockFn({
+      state: "ok",
+      data: { data: { ...(okPayload().data.data), total_hits: 1775 } },
+    });
+    render(<FTSPane code="FTS" />);
+    expect(screen.getByText(/1,775 EDGAR matches · showing 2/)).toBeInTheDocument();
+  });
+
+  it("does not invent a total when the provider omits it", () => {
+    setMockFn(okPayload());
+    render(<FTSPane code="FTS" />);
+    expect(screen.getByText(/EDGAR total not reported/i)).toBeInTheDocument();
+  });
+
+  it("explains a skipped search with the provider reason instead of 'no filings'", () => {
+    setMockFn({
+      state: "ok",
+      data: {
+        data: {
+          status: "empty",
+          rows: [],
+          query: "risk factors",
+          reason: "live SEC full-text search skipped (live=false or reference=true); no provider call was made.",
+        },
+      },
+    });
+    render(<FTSPane code="FTS" />);
+    expect(screen.getByText(/no provider call was made/i)).toBeInTheDocument();
+    expect(screen.queryByText(/No filings matched/i)).toBeNull();
+  });
+
+  it("sends a well-formed date range to the function and shows it in the subtitle", () => {
+    setMockFn(okPayload());
+    render(<FTSPane code="FTS" />);
+    fireEvent.change(screen.getByLabelText(/filed from date/i), { target: { value: "2025-01-01" } });
+    fireEvent.change(screen.getByLabelText(/filed to date/i), { target: { value: "2025-03-31" } });
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+    expect(localStorage.getItem("showme.fts.from")).toBe("2025-01-01");
+    expect(localStorage.getItem("showme.fts.to")).toBe("2025-03-31");
+    const params = mockFn.lastArgs?.params ?? {};
+    expect(params.date_from).toBe("2025-01-01");
+    expect(params.date_to).toBe("2025-03-31");
+  });
+
+  it("drops a half-typed date instead of forwarding it", () => {
+    setMockFn(okPayload());
+    render(<FTSPane code="FTS" />);
+    fireEvent.change(screen.getByLabelText(/filed from date/i), { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+    expect(localStorage.getItem("showme.fts.from")).toBe("");
+    expect(mockFn.lastArgs?.params?.date_from).toBeUndefined();
   });
 });
