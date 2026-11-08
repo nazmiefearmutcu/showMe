@@ -156,3 +156,20 @@ def test_tldr_failed_sources_produce_no_bullet_without_evidence(monkeypatch: pyt
     assert not any(t.startswith("News themes") for t in texts), texts
     assert not any(t.startswith("Calendar items") for t in texts), texts
     assert any(t.startswith("Top movers up") for t in texts), texts
+
+
+@pytest.mark.parametrize("raw", [float("inf"), float("-inf"), "inf", "-inf", float("nan"), "nan"])
+def test_tldr_non_finite_bullet_inputs_fall_back_to_defaults(
+    monkeypatch: pytest.MonkeyPatch, raw: Any
+) -> None:
+    """Non-finite numbers must fall back to the default instead of raising OverflowError."""
+    from showme.engine.functions.news.tldr import _clamp_int
+
+    assert _clamp_int(raw, default=5, low=3, high=8) == 5
+    assert _clamp_int(raw, default=2, low=1, high=5) == 2
+
+    _patch(monkeypatch, top=_top_with_links(), eco=_eco_ok())
+    data = _run(bullets=raw, evidence_per_bullet=raw).data
+    assert data["bullet_limit"] == 5
+    assert data["evidence_per_bullet"] == 2
+    assert data["bullets"]

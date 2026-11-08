@@ -339,7 +339,8 @@ def _format_movers(quotes: list[dict[str, Any]], *, positive: bool) -> str:
 def _clamp_int(value: Any, *, default: int, low: int, high: int) -> int:
     try:
         number = int(float(value))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError: int(float("inf")) raises it, not ValueError.
         return default
     return max(low, min(high, number))
 
