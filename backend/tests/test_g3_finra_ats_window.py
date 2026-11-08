@@ -199,3 +199,49 @@ def test_dark_venue_label_is_not_a_tier_identifier(monkeypatch) -> None:
     assert data["status"] == "ok", data.get("reason")
     venues = {row["venue"] for row in data["venues"]}
     assert venues == {"ALL_ATS"}, venues
+
+
+def test_dpf_empty_finra_response_lists_no_provider(monkeypatch) -> None:
+    """DPF#1: FINRA returned zero rows, so FINRA supplied no data to list."""
+    monkeypatch.setattr(dpf_mod, "_weekly_total_volume", _no_yfinance)
+    adapter = _wire_adapter(FakeFinra([]))
+    result = _run(
+        DPFFunction(deps=FunctionDeps(finra=adapter)).execute(
+            instrument=Instrument(symbol="ZZZZ", asset_class=AssetClass.EQUITY),
+            weeks=12,
+        )
+    )
+
+    assert result.data["status"] in {"provider_unavailable", "empty"}
+    assert result.sources == [], result.sources
+
+
+def test_dpf_outage_lists_no_provider(monkeypatch) -> None:
+    """DPF#1: a FINRA exception supplied no data, so sources stays empty."""
+    monkeypatch.setattr(dpf_mod, "_weekly_total_volume", _no_yfinance)
+    result = _run(
+        DPFFunction(deps=FunctionDeps(finra=_BoomFinra())).execute(
+            instrument=Instrument(symbol="AAPL", asset_class=AssetClass.EQUITY),
+            weeks=12,
+        )
+    )
+
+    assert result.data["status"] == "provider_unavailable"
+    assert result.sources == [], result.sources
+
+
+def test_dpf_timeout_lists_no_provider(monkeypatch) -> None:
+    """DPF#1: the timeout path never received FINRA rows, so sources is empty."""
+
+    async def _slow(self, instrument, **params):  # noqa: ANN001
+        raise asyncio.TimeoutError("dpf slow")
+
+    monkeypatch.setattr(DPFFunction, "_execute_inner", _slow)
+    result = _run(
+        DPFFunction(deps=FunctionDeps()).execute(
+            instrument=Instrument(symbol="AAPL", asset_class=AssetClass.EQUITY),
+        )
+    )
+
+    assert result.data["status"] == "provider_unavailable"
+    assert result.sources == [], result.sources

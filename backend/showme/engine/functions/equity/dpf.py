@@ -115,7 +115,7 @@ class DPFFunction(BaseFunction):
             return FunctionResult(
                 code=self.code, instrument=instrument,
                 data=_unavailable_data(instrument.symbol, reason),
-                sources=["finra"],
+                sources=[],
                 warnings=[reason],
                 metadata={
                     "note": "Anonymous FINRA endpoint may rate-limit; OAuth recommended.",
@@ -133,7 +133,9 @@ class DPFFunction(BaseFunction):
                 # The adapter's limit counts published WEEKS and returns the newest
                 # ones with every row of each week (see FINRAAdapter.ats_weekly).
                 df = await self.deps.finra.ats_weekly(instrument.symbol, limit=weeks)
-                sources.append("finra")
+                # Only a provider that actually returned rows is a source.
+                if not df.empty:
+                    sources.append("finra")
             except Exception as e:
                 warnings.append(f"finra: {e}")
         # Aggregate by week & ATS code
@@ -183,7 +185,7 @@ class DPFFunction(BaseFunction):
             return FunctionResult(
                 code=self.code, instrument=instrument,
                 data=_unavailable_data(instrument.symbol, reason),
-                sources=sources or ["finra"],
+                sources=sources,
                 warnings=[reason],
                 metadata={
                     "note": "Anonymous FINRA endpoint may rate-limit; OAuth recommended.",

@@ -471,7 +471,7 @@ def test_dpf_degradation_is_labelled_and_ratio_is_null() -> None:
     result = _run(fn.execute(instrument=Instrument(symbol="AAPL", asset_class=AssetClass.EQUITY)))
     data = result.data
     assert data["status"] == "provider_unavailable"
-    assert "dark_pool_model" not in result.sources
+    assert result.sources == [], result.sources
     assert result.metadata.get("provider_errors")
     # No synthetic shape-model volumes: the table is empty and says why.
     assert data["rows"] == []
