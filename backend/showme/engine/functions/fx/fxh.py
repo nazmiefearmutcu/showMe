@@ -71,7 +71,13 @@ class FXHFunction(BaseFunction):
         if not _missing(params.get("usd_shock_pct")):
             shock = float(params["usd_shock_pct"])
         elif not _missing(params.get("spot_shock_pct")):
-            shock = float(params["spot_shock_pct"]) / 100.0
+            shock_pct = float(params["spot_shock_pct"])
+            if not -50.0 <= shock_pct <= 50.0:
+                return _input_error(
+                    self.code,
+                    f"spot_shock_pct {shock_pct:g} is outside the manifest range -50..50 percent.",
+                )
+            shock = shock_pct / 100.0
         else:
             shock = 0.05
         source_mode = "manual_exposure"
