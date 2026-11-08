@@ -97,3 +97,25 @@ def test_handler_refuses_missing_expiry_as_the_seed_now_states() -> None:
                            "vol": 0.3, "rate": 0.04}])
     assert res.data["status"] == "input_error"
     assert "expiry" in res.data["reason"]
+
+
+def test_seed_methodology_names_calc_error_for_unpriceable_book() -> None:
+    # GREEKS#4 (review): an unpriceable position is calc_error in the handler;
+    # only a refused input (e.g. missing expiry) is input_error.
+    text = _entry().methodology
+    assert "fails the whole book with input_error" not in text
+    assert "calc_error" in text
+    assert "input_error" in text
+
+
+def test_unpriceable_position_returns_calc_error_as_the_seed_states(monkeypatch) -> None:
+    def _boom(pos):
+        raise ValueError("forced pricing failure")
+
+    monkeypatch.setattr(svc, "position_greeks", _boom)
+    res = _run(positions=[{"symbol": "AAPL", "kind": "call", "quantity": 1,
+                           "spot": 100.0, "strike": 100.0, "expiry": (date.today() + timedelta(days=90)).isoformat(),
+                           "vol": 0.25, "rate": 0.04}])
+    assert res.data["status"] == "calc_error"
+    assert res.data["rows"] == []
+    assert "AAPL" in res.data["reason"]

@@ -139,7 +139,8 @@ def greeks() -> FunctionManifest:
             "and the portfolio delta/gamma/vega/theta/rho are the sums across positions. "
             "Trader-readable units: vega per 1% vol move, theta per calendar day, rho per "
             "1 bp rate move, delta/gamma per 1.0 underlying move. A position that cannot "
-            "be priced fails the whole book with input_error. An empty positions list "
+            "be priced fails the whole book with status calc_error (no partial totals); "
+            "a refused input such as a missing expiry is input_error. An empty positions list "
             "returns status=input_required with an empty positions array and zeroed "
             "totals; the handler never fabricates a book."
         ),
