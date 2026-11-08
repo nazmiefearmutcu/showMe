@@ -140,6 +140,25 @@ function studyFeedPill(mode: string): {
   return { label: "studies, mode unknown", tone: "muted" };
 }
 
+/**
+ * A regime label is only shown for a finite reading. A missing indicator
+ * reads "NO READING" instead of falling back to a threshold result (ADX
+ * missing is not RANGE-BOUND; RSI missing is not NEUTRAL).
+ */
+function regimeCaption(
+  value: unknown,
+  upper: number,
+  lower: number | null,
+  upperLabel: string,
+  lowerLabel: string | null,
+  middleLabel: string,
+): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "NO READING";
+  if (value >= upper) return upperLabel;
+  if (lower !== null && value <= lower && lowerLabel !== null) return lowerLabel;
+  return middleLabel;
+}
+
 export function CHGSPane({ code, symbol }: FunctionPaneProps) {
   const [days, setDays] = usePersistentOption<number>(
     "showme.chgs.days",
@@ -322,13 +341,7 @@ export function CHGSPane({ code, symbol }: FunctionPaneProps) {
         <StatCard
           label="RSI"
           value={fmtNum(summary?.rsi)}
-          caption={
-            (summary?.rsi ?? 50) >= 70
-              ? "OVERBOUGHT"
-              : (summary?.rsi ?? 50) <= 30
-                ? "OVERSOLD"
-                : "NEUTRAL"
-          }
+          caption={regimeCaption(summary?.rsi, 70, 30, "OVERBOUGHT", "OVERSOLD", "NEUTRAL")}
           tone="neutral"
         />
         <StatCard
@@ -340,7 +353,7 @@ export function CHGSPane({ code, symbol }: FunctionPaneProps) {
         <StatCard
           label="ADX"
           value={fmtNum(summary?.adx)}
-          caption={(summary?.adx ?? 0) >= 25 ? "TRENDING" : "RANGE-BOUND"}
+          caption={regimeCaption(summary?.adx, 25, null, "TRENDING", null, "RANGE-BOUND")}
           tone="neutral"
         />
       </section>
