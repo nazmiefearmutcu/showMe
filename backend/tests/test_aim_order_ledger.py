@@ -140,3 +140,33 @@ def test_broker_filter_with_no_matching_broker_returns_no_history(monkeypatch):
     res = _run(_aim(SimpleNamespace()).execute(broker_filter=["oanda_broker"]))
     assert res.data["rows"] == []
     assert res.data["status"] == "empty"
+
+
+# --------------------------------------------------------------------------- #
+# AIM#3 — the notional total must say what it left out and what it mixes.
+# --------------------------------------------------------------------------- #
+def test_notional_reports_unpriced_orders_and_basis(monkeypatch):
+    rows = [
+        _hist("p1", quantity=3.0, price=190.0),
+        _hist("p2", quantity=3.0, price=190.0),
+        _hist("p3", quantity=3.0, price=190.0, status="filled"),
+        _hist("m1", quantity=1.0, price=None, status="filled", type_="MARKET"),
+        _hist("m2", quantity=1.0, price=None, status="filled", type_="MARKET"),
+    ]
+    _install_history(monkeypatch, rows)
+    res = _run(_aim().execute())
+    cards = res.data["cards"]
+    assert cards["total_notional"] == pytest.approx(1710.0)
+    assert cards["priced_count"] == 3
+    assert cards["unpriced_count"] == 2
+    assert cards["notional_basis"] == "indicative_unconverted"
+    assert any("unpriced" in w for w in res.warnings)
+
+
+def test_notional_label_is_not_usd_when_nothing_is_priced(monkeypatch):
+    _install_history(monkeypatch, [_hist("m1", quantity=1.0, price=None, status="filled", type_="MARKET")])
+    res = _run(_aim().execute())
+    cards = res.data["cards"]
+    assert cards["total_notional"] == 0
+    assert cards["priced_count"] == 0
+    assert cards["unpriced_count"] == 1

@@ -404,15 +404,29 @@ class AIMFunction(BaseFunction):
             1 for r in rows if str(r.get("status") or "").lower() in {"filled", "partially_filled"}
         )
 
-        def _notional(r: dict[str, Any]) -> float:
+        def _notional(r: dict[str, Any]) -> float | None:
+            # None = not computable (market order with no price or fill price).
             try:
                 qty = float(r.get("quantity") or 0.0)
-                px = float(r.get("price") or r.get("avg_fill_px") or 0.0)
-                return qty * px
+                px_raw = r.get("price")
+                if px_raw in (None, ""):
+                    px_raw = r.get("avg_fill_px")
+                if px_raw in (None, ""):
+                    return None
+                return qty * float(px_raw)
             except (TypeError, ValueError):
-                return 0.0
+                return None
 
-        total_notional = round(sum(_notional(r) for r in rows), 2)
+        notionals = [_notional(r) for r in rows]
+        priced_count = sum(1 for n in notionals if n is not None)
+        unpriced_count = len(rows) - priced_count
+        # Quantities are base units and prices are quote units, and rows span
+        # several symbols, so the total is an indicative sum, not a USD figure.
+        total_notional = round(sum(n for n in notionals if n is not None), 2)
+        if unpriced_count:
+            warnings.append(
+                f"{unpriced_count} unpriced order(s) (no price or fill price) are excluded from the indicative notional total."
+            )
 
         data_mode = "live_exchange" if brokers_online else "not_configured"
         if not brokers_online and history_rows:
@@ -423,6 +437,9 @@ class AIMFunction(BaseFunction):
             "filled_today": filled_count,
             "brokers_online": len(brokers_online),
             "total_notional": total_notional,
+            "notional_basis": "indicative_unconverted",
+            "priced_count": priced_count,
+            "unpriced_count": unpriced_count,
             "unconfirmed_submitted_count": len(unconfirmed),
             "data_mode": data_mode,
             "as_of": _utc_now_iso(),

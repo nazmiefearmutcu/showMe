@@ -153,7 +153,9 @@ def aim() -> FunctionManifest:
                 # `filled_today` is kept for contract stability).
                 CardSlot(key="filled_today", label="Filled", kind="kpi"),
                 CardSlot(key="brokers_online", label="Brokers", kind="kpi"),
-                CardSlot(key="total_notional", label="Notional", kind="kpi", unit="USD"),
+                # Indicative only: sums qty x price across symbols/quote currencies
+                # without FX conversion; unpriced rows are excluded (see unpriced_count).
+                CardSlot(key="total_notional", label="Notional (indicative)", kind="kpi"),
                 CardSlot(key="data_mode", label="Mode", kind="mode_pill"),
                 CardSlot(key="as_of", label="As of", kind="timestamp"),
             ],
