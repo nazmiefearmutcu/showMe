@@ -37,7 +37,7 @@ class TAUCFunction(BaseFunction):
             else True
         )
         if reference or not live_requested:
-            items = _filter_security_type(_template_auctions(action, limit), security_filter)
+            items = _limit_rows(_filter_security_type(_template_auctions(action, None), security_filter), limit)
             return FunctionResult(
                 code=self.code,
                 instrument=None,
@@ -61,15 +61,18 @@ class TAUCFunction(BaseFunction):
                 warnings=["no treasury_auctions adapter"],
             )
         timeout = float(params.get("auction_timeout", params.get("timeout", 6)))
+        # The adapter is asked for the whole window: a row limit applied
+        # upstream would truncate before the security_type filter and could
+        # drop every row of the requested type. Filter first, then limit.
         try:
             if action == "recent":
                 items = await asyncio.wait_for(
-                    self.deps.treasury_auctions.recent(days=horizon, limit=limit),
+                    self.deps.treasury_auctions.recent(days=horizon, limit=None),
                     timeout=timeout,
                 )
             else:
                 items = await asyncio.wait_for(
-                    self.deps.treasury_auctions.upcoming(horizon_days=horizon, limit=limit),
+                    self.deps.treasury_auctions.upcoming(horizon_days=horizon, limit=None),
                     timeout=timeout,
                 )
         except Exception as exc:
@@ -83,7 +86,7 @@ class TAUCFunction(BaseFunction):
         # Rows the adapter returned are already inside the requested window, so
         # a non-zero raw count means the feed answered and the filter removed them.
         raw_count = len(items)
-        items = _filter_security_type(items, security_filter)
+        items = _limit_rows(_filter_security_type(items, security_filter), limit)
         payload = _auction_payload(action, horizon, items, "treasurydirect", security_filter)
         if not items:
             # The live feed answered but no row survives: say which of the two
@@ -173,6 +176,10 @@ def _template_auctions(action: str, limit: int | None) -> list[dict[str, Any]]:
         {"security_type": "Note", "term": "5-Year", "auction_date": (today + timedelta(days=sign * 8)).isoformat(), "offering_amount": 70_000_000_000},
         {"security_type": "Bond", "term": "30-Year", "auction_date": (today + timedelta(days=sign * 15)).isoformat(), "offering_amount": 25_000_000_000},
     ]
+    return rows[:limit] if limit else rows
+
+
+def _limit_rows(rows: list[dict[str, Any]], limit: int | None) -> list[dict[str, Any]]:
     return rows[:limit] if limit else rows
 
 
