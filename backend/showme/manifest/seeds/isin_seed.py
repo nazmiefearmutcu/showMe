@@ -70,35 +70,26 @@ def isin() -> FunctionManifest:
                 label="Max matches per ID",
                 control=ControlKind.NUMBER,
                 required=False,
-                description="Per-input cap on OpenFIGI matches; 1..100.",
+                description=(
+                    "Caps the flat rows view per identifier, 1..100. The match count and "
+                    "the per-identifier match groups (used for CSV export) keep every OpenFIGI match."
+                ),
                 min=1.0,
                 max=100.0,
                 step=5.0,
             ),
-            InputSpec(
-                name="provider_mode",
-                label="Data mode",
-                control=ControlKind.PROVIDER_MODE,
-                required=False,
-                description="Preferred provider mode; chain may downgrade and report it.",
-                options=[
-                    DataMode.LIVE_OFFICIAL.value,
-                    DataMode.CACHED_SNAPSHOT.value,
-                ],
-            ),
         ],
         defaults={
             "limit": 25,
-            "provider_mode": DataMode.LIVE_OFFICIAL.value,
         },
         # OpenFIGI is the declared primary — the manifest contract pins it
-        # so the rebuild cannot silently swap in a heuristic resolver.
+        # so the rebuild cannot silently swap in a heuristic resolver. No
+        # cache fallback is implemented, so none is declared.
         provider_chain=ProviderChain(
             primary="openfigi",
-            fallbacks=["cached_snapshot"],
+            fallbacks=[],
             acceptable_modes=[
                 DataMode.LIVE_OFFICIAL,
-                DataMode.CACHED_SNAPSHOT,
                 DataMode.NOT_CONFIGURED,
                 DataMode.PROVIDER_UNAVAILABLE,
             ],
@@ -123,7 +114,7 @@ def isin() -> FunctionManifest:
                 ColumnSpec(key="market_sector", label="Sector", kind="tag"),
                 ColumnSpec(key="security_type", label="Security", kind="tag"),
                 ColumnSpec(key="security_type2", label="Sub-type", kind="tag"),
-                ColumnSpec(key="exchange_code", label="Exchange", kind="tag"),
+                ColumnSpec(key="exchange", label="Exchange", kind="tag"),
             ],
             sortable=True,
             filterable=True,
@@ -142,7 +133,8 @@ def isin() -> FunctionManifest:
             "country code; CUSIP = 9 alnum with check digit; SEDOL = 7 alnum, last numeric, no "
             "vowels in first 6; otherwise TICKER) unless id_type forces a flavour. Each input is "
             "passed to the OpenFIGI lookup_by(id_type, id_value) call; up to `limit` matches per "
-            "input are returned with rank annotations. Per-input lookup failures are recorded as "
+            "input are listed in the flat rows view with rank annotations; every OpenFIGI match stays "
+            "in match_groups and the match count. Per-input lookup failures are recorded as "
             "warnings without dropping successful resolutions. When the OpenFIGI adapter is not "
             "configured, ISIN returns status=provider_unavailable with rows=[] and an actionable "
             "next-action rather than guessing or returning a ticker-only fallback. Resolved rows "
@@ -158,7 +150,7 @@ def isin() -> FunctionManifest:
             "rows[].market_sector": FieldDef(description="Market sector classifier (Equity, Corp, Govt, ...).", source="openfigi"),
             "rows[].security_type": FieldDef(description="OpenFIGI security type.", source="openfigi"),
             "rows[].security_type2": FieldDef(description="OpenFIGI sub-type.", source="openfigi"),
-            "rows[].exchange_code": FieldDef(description="MIC or OpenFIGI exchange code.", source="openfigi"),
+            "rows[].exchange": FieldDef(description="MIC or OpenFIGI exchange code.", source="openfigi"),
         },
         provenance=ProvenanceSpec(
             require_source_list=True,

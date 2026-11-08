@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from datetime import datetime, timezone
 from typing import Any
 
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
@@ -20,6 +21,12 @@ _MAX_PACING_WAIT_SECONDS = 8.0
 # latency). It sits under the 14 s function timeout with room for the rest of
 # the call. Batches that cannot finish inside it are reported per identifier.
 _CALL_WALL_BUDGET_SECONDS = 11.0
+
+
+def _looks_like_isin(s: str) -> bool:
+    """Structural ISIN shape: 2 letters, 9 alphanumerics, 1 digit (check not verified)."""
+    s = s.strip().upper()
+    return len(s) == 12 and s[:2].isalpha() and s[2:11].isalnum() and s[-1].isdigit()
 
 
 def _isin_check_digit(s: str) -> bool:
@@ -127,21 +134,43 @@ class ISINFunction(BaseFunction):
                     "reason": "OpenFIGI adapter is not configured.",
                     "next_actions": ["Configure the OpenFIGI adapter or use ticker-only local symbol search."],
                     "rows": [],
+                    "data_mode": "not_configured",
                 },
                 sources=["openfigi"],
                 warnings=["no openfigi adapter"],
             )
         id_type = (params.get("id_type") or "").upper()
+        if id_type and id_type not in _ID_TYPES:
+            return FunctionResult(
+                code=self.code,
+                instrument=None,
+                data={
+                    "status": "input_error",
+                    "reason": f"Unknown id_type {id_type!r}.",
+                    "next_actions": ["Use one of " + ", ".join(_ID_TYPES) + ", or leave ID type on AUTO."],
+                    "rows": [],
+                },
+                warnings=[f"unknown id_type {id_type!r}"],
+            )
         try:
             limit = max(1, min(int(params.get("limit") or 25), 100))
         except Exception:
             limit = 25
         jobs = [(id_type or _detect_id_type(v), v) for v in ids]
+        # A 12-character ISIN-shaped input with a wrong check digit is neither a
+        # valid ISIN nor a ticker: report it and never send it to OpenFIGI.
+        invalid: dict[int, str] = {
+            i: "invalid ISIN check digit (ISO 6166)"
+            for i, (t, v) in enumerate(jobs)
+            if not id_type and t == "TICKER" and _looks_like_isin(v)
+        }
+        query = [i for i in range(len(jobs)) if i not in invalid]
         adapter = self.deps.openfigi
         chunk_size = max(1, int(getattr(adapter, "max_jobs_per_request", 10) or 10))
         resolved: dict[int, dict[str, Any]] = {}
         failures: dict[int, str] = {}
-        warnings: list[str] = []
+        warnings: list[str] = [f"{jobs[i][1]}: {why}; not sent to OpenFIGI as a ticker" for i, why in invalid.items()]
+        failures.update(invalid)
         limited_reason: str | None = None
         # OpenFIGI takes up to max_jobs_per_request identifiers per POST, so one
         # call covers a whole batch. Anonymous budget: 10 jobs/request, 25 requests/min.
@@ -150,9 +179,9 @@ class ISINFunction(BaseFunction):
         pacing_deadline = time.monotonic() + _MAX_PACING_WAIT_SECONDS
         call_deadline = time.monotonic() + _CALL_WALL_BUDGET_SECONDS
         budget_label = f"{_CALL_WALL_BUDGET_SECONDS:g} s"
-        for start in range(0, len(jobs), chunk_size):
-            chunk = jobs[start:start + chunk_size]
-            idxs = range(start, start + len(chunk))
+        for start in range(0, len(query), chunk_size):
+            idxs = query[start:start + chunk_size]
+            chunk = [jobs[i] for i in idxs]
             if limited_reason is not None:
                 for i in idxs:
                     failures[i] = limited_reason
@@ -244,17 +273,25 @@ class ISINFunction(BaseFunction):
                 ],
             })
         unresolved = len(failures)
+        provider_failed = [i for i in failures if i not in invalid]
         if flat_rows and unresolved:
             status = "partial"
         elif flat_rows:
             status = "ok"
-        elif unresolved:
+        elif provider_failed:
             status = "provider_unavailable"
+        elif invalid:
+            status = "input_error"
         else:
             status = "empty"
         reason = None
         if unresolved and not flat_rows:
             reason = limited_reason or next(iter(failures.values()))
+        # Exchange-level total across every group (match_groups keep the full
+        # OpenFIGI list; only the flat ``rows`` view is capped by ``limit``).
+        exchange_total = sum(len(g.get("matches") or []) for g in out)
+        inputs_resolved = sum(1 for g in out if not g.get("error") and g.get("matches"))
+        inputs_failed = sum(1 for g in out if g.get("error"))
         return FunctionResult(
             code=self.code, instrument=instrument,
             data={
@@ -264,15 +301,22 @@ class ISINFunction(BaseFunction):
                 "match_groups": out,
                 "summary": {
                     "inputs": len(ids),
-                    "matches": len(flat_rows),
+                    "matches": exchange_total,
+                    "rows_returned": len(flat_rows),
                     "id_type": id_type or "auto",
                     "limit_per_input": limit,
                     "unresolved": unresolved,
                 },
+                "matches": exchange_total,
+                "inputs_resolved": inputs_resolved,
+                "inputs_failed": inputs_failed,
+                "data_mode": "live_official",
+                "as_of": datetime.now(timezone.utc).isoformat(),
                 "methodology": (
                     "ISIN maps the visible identifier to an OpenFIGI lookup type. "
-                    "If ID Type is AUTO, ShowMe detects ISIN/CUSIP/SEDOL by length and falls back to TICKER. "
-                    "Rows are flattened so each exchange-level OpenFIGI match can be inspected directly."
+                    "If ID Type is AUTO, ShowMe detects ISIN/CUSIP/SEDOL by length and falls back to TICKER; "
+                    "a 12-character ISIN-shaped input with a wrong check digit is reported as an error and not queried. "
+                    "The flat rows view is capped by limit per input; match_groups and the match count keep every OpenFIGI match."
                 ),
                 "field_dictionary": {
                     "input": "Identifier entered by the user.",
