@@ -673,7 +673,7 @@ class WEIFunction(BaseFunction):
                     "universe_size": len(indices),
                     "provider_errors": warnings or ["yfinance world index quotes unavailable"],
                 },
-                sources=["yfinance", "world_index_model"],
+                sources=["yfinance", "world_index_identity"],
                 warnings=warnings,
             )
         warnings = [] if not live else ["market data provider did not return world-index quotes within the latency budget"]
@@ -703,7 +703,7 @@ class WEIFunction(BaseFunction):
                 ],
             },
             metadata={"live": False, "fallback": True, "degraded": degraded, "universe_size": len(indices)},
-            sources=["showme_local_baseline"],
+            sources=["showme_world_index_identity"],
             warnings=warnings,
         )
 

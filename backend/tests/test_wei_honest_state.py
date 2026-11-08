@@ -113,3 +113,21 @@ def test_unknown_region_is_an_input_error_not_the_full_board() -> None:
     assert out.data["status"] == "input_error"
     assert out.data["rows"] == []
     assert out.data.get("reason")
+
+
+def test_source_labels_do_not_name_a_baseline_or_model_that_holds_no_data() -> None:
+    """WEI#3 follow-up: the template holds identity only, so its source label
+    must not claim a baseline table or a model that no longer exists."""
+    ref = asyncio.run(WEIFunction().execute(reference=True))
+    assert ref.sources == ["showme_world_index_identity"], ref.sources
+    assert all("baseline" not in s and "model" not in s for s in ref.sources)
+
+    class _EmptyProvider:
+        name = "yfinance"
+
+        async def fetch(self, request: object) -> None:
+            return None
+
+    down = asyncio.run(WEIFunction(deps=FunctionDeps(yfinance=_EmptyProvider())).execute())
+    assert "world_index_identity" in down.sources, down.sources
+    assert all("baseline" not in s and "model" not in s for s in down.sources), down.sources
