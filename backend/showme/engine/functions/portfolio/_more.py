@@ -629,14 +629,20 @@ class TRAFunction(BaseFunction):
 
 @FunctionRegistry.register
 class MARSFunction(BaseFunction):
-    """MARS — Multi-Asset Risk (Fama-French 5-factor regression)."""
+    """MARS — Multi-Asset Risk (ETF-proxy factor regression, not Fama-French)."""
     code = "MARS"
     name = "Multi-Asset Risk"
     category = "portfolio"
+    description = (
+        "Factor-risk screen: regresses a multi-asset return series on six ETF "
+        "total-return proxies (SPY, IWM, VLUE, MTUM, QUAL, USMV) and reports "
+        "factor betas, R-squared, volatility and 95% VaR / ETL."
+    )
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
-        # Build factor returns from live ETF proxies by default. Only
-        # ``reference=true`` serves the local multi-asset template series.
+        # Build factor returns from live ETF proxies by default. ``reference=true``
+        # or an explicit ``live=false`` (the PortfolioAnalytics toggle) serves the
+        # local multi-asset template series.
         proxies = {
             "MKT": "SPY",      # market
             "SMB": "IWM",      # small-cap
@@ -651,6 +657,10 @@ class MARSFunction(BaseFunction):
         # factor proxies by default; ``reference=true`` opts into the
         # labelled template series.
         live = not _truthy(params.get("reference"))
+        # ``live`` is sent by PortfolioAnalytics. The router injects live=true by
+        # default, so only an explicit falsy value switches to the template.
+        if params.get("live") is not None and not _truthy(params.get("live")):
+            live = False
 
         symbols = params.get("symbols") or []
         if isinstance(symbols, str):
