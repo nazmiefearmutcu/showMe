@@ -120,7 +120,7 @@ class ACCTFunction(BaseFunction):
                 ]
                 metadata["skipped_positions"] = skipped
             if unpriced_total:
-                metadata["stale_marks"] = cross["unpriced_symbols"]
+                metadata["unpriced_symbols"] = cross["unpriced_symbols"]
             return FunctionResult(code=self.code, instrument=None,
                                   data={"status": "partial" if unpriced_total else "ok",
                                         "accounts": list(accounts.values()),
@@ -231,7 +231,7 @@ class ACCTFunction(BaseFunction):
             )
         if price_errors:
             metadata["provider_errors"] = [f"ACCT: {sym}: {err}" for sym, err in sorted(price_errors.items())]
-            metadata["stale_marks"] = sorted(price_errors)
+            metadata["unpriced_symbols"] = sorted(price_errors)
         return FunctionResult(
             code=self.code, instrument=None,
             data={"status": "partial" if unpriced_total else "ok",
