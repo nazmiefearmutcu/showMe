@@ -133,8 +133,9 @@ async def test_plan_crypto_returns_real_slices_or_graceful_outage(fn, closed_fee
         # Benchmark + slippage are computed from real bars.
         assert any(r["benchmark_px"] is not None for r in rows)
         assert any(r["slip_bps"] is not None for r in rows)
-        # Pace is monotonic non-decreasing and ends near 100%.
-        paces = [r["pace_pct"] for r in rows]
+        # Schedule progress (EXEC#8: a plan reports schedule_pct, not pace_pct)
+        # is monotonic non-decreasing and ends near 100%.
+        paces = [r["schedule_pct"] for r in rows]
         assert paces == sorted(paces)
         assert paces[-1] == pytest.approx(100.0, abs=0.5)
         # Series + cards shipped for the chart grammar.

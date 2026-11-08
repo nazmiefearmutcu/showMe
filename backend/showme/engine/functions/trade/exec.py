@@ -58,7 +58,7 @@ def _error_result(code: str, action: str, reason: str, *, fields: list[str] | No
 # driving the real ``algos.{TWAP,VWAP,Iceberg,Sniper}`` schedulers against
 # *live* intraday OHLCV (Binance for crypto, Yahoo for listed assets), so each
 # slice carries the price/volume bar it would execute against plus an honest,
-# real-data interval-VWAP benchmark and pace curve.
+# real-data bar typical-price benchmark and schedule curve.
 
 _PLAN_DEFAULT_SYMBOL = {
     "CRYPTO": "BTCUSDT",
@@ -74,11 +74,12 @@ _FIELD_DICTIONARY = {
     "qty": "Quantity scheduled for this slice (algo-weighted).",
     "cum_qty": "Cumulative quantity scheduled through this slice.",
     "bar_close": "Close price of the historical bar in effect at the release instant (replayed reference from stored bars).",
-    "interval_vwap": "Typical-price VWAP of the bar = (H+L+C)/3 weighted by bar volume.",
-    "benchmark_px": "Per-slice benchmark = interval_vwap (slippage reference).",
+    # EXEC#5: the bar's TYPICAL price, not a volume-weighted VWAP. A true bar VWAP
+    # needs sub-bar trade data, which the intraday OHLCV feed does not carry.
+    "benchmark_px": "Per-slice benchmark = the bar's typical price (H+L+C)/3 (slippage reference; not volume-weighted).",
     "slip_bps": "(bar_close - benchmark_px)/benchmark_px * 1e4, in basis points.",
     "is_bps": "Implementation shortfall vs arrival for this slice, side-signed bps.",
-    "pace_pct": "Cumulative scheduled qty / target_qty * 100.",
+    "schedule_pct": "Cumulative scheduled qty / target_qty * 100 (schedule progress; a plan fills nothing).",
     "execution_mode": "'planned' — a hypothetical schedule replayed over historical interval bars; no order was sent.",
 }
 
@@ -149,7 +150,7 @@ def _bar_index_containing(times: list[float], instant_s: float, bar_s: float) ->
     return None
 
 
-def _bar_interval_vwap(row: dict[str, Any]) -> float | None:
+def _bar_typical_price(row: dict[str, Any]) -> float | None:
     high = row.get("high")
     low = row.get("low")
     close = row.get("close")
@@ -189,7 +190,7 @@ def _build_plan_rows(
         bar_idx = _bar_index_containing(times, release_s, bar_s)
         bar = bars[bar_idx] if bar_idx is not None else None
         close = bar.get("close") if bar is not None else None
-        bench = _bar_interval_vwap(bar) if bar is not None else None
+        bench = _bar_typical_price(bar) if bar is not None else None
         slip_bps: float | None = None
         if close is not None and bench:
             slip_bps = (float(close) - bench) / bench * 10_000.0
@@ -207,11 +208,12 @@ def _build_plan_rows(
                 "qty": round(qty, 8),
                 "cum_qty": round(cum_qty, 8),
                 "bar_close": float(close) if close is not None else None,
-                "interval_vwap": round(bench, 8) if bench is not None else None,
                 "benchmark_px": round(bench, 8) if bench is not None else None,
                 "slip_bps": round(slip_bps, 2) if slip_bps is not None else None,
                 "is_bps": round(is_bps, 2) if is_bps is not None else None,
-                "pace_pct": round(cum_qty / target_qty * 100.0, 2) if target_qty else None,
+                # EXEC#8: a plan executes nothing, so this is schedule progress
+                # (cumulative scheduled / target), never a fill ratio.
+                "schedule_pct": round(cum_qty / target_qty * 100.0, 2) if target_qty else None,
             }
         )
     return rows
@@ -377,7 +379,7 @@ class EXECFunction(BaseFunction):
         intraday OHLCV (Binance for crypto, Yahoo for listed assets).
 
         Returns real per-slice rows: each slice maps to an actual market bar and
-        carries an interval-VWAP benchmark + computed slippage / implementation
+        carries a bar typical-price benchmark + computed slippage / implementation
         shortfall / pace. On a genuine network outage it degrades to
         ``status="provider_unavailable"`` with an honest warning instead of
         fabricating numbers.
@@ -652,16 +654,18 @@ class EXECFunction(BaseFunction):
             "side": side,
             "algo": resolved_algo,
             "target_qty": round(target_qty, 8),
-            "filled_qty": round(filled_qty, 8),
+            # EXEC#8: nothing is executed in a plan, so nothing is filled.
+            "filled_qty": 0.0,
+            "scheduled_qty": round(filled_qty, 8),
             "avg_fill_px": round(avg_fill_px, 6) if avg_fill_px is not None else None,
             "arrival_price": round(arrival_price, 6) if arrival_price is not None else None,
             "is_bps": avg_is_bps,
-            "pace_pct": rows[-1]["pace_pct"] if rows else None,
+            "schedule_pct": rows[-1]["schedule_pct"] if rows else None,
             "status": "planned",
             "opened_at": schedule_start_s * 1000,
         }
 
-        # Series sit on the wall-clock release instants so the pace curve
+        # Series sit on the wall-clock release instants so the schedule curve
         # reflects the requested horizon.
         price_series = [
             {"t": r["release_ts_ms"], "v": r["bar_close"]} for r in rows
@@ -669,8 +673,8 @@ class EXECFunction(BaseFunction):
         slippage_series = [
             {"t": r["release_ts_ms"], "v": r["slip_bps"]} for r in rows
         ]
-        pace_series = [
-            {"t": r["release_ts_ms"], "v": r["pace_pct"]} for r in rows
+        schedule_series = [
+            {"t": r["release_ts_ms"], "v": r["schedule_pct"]} for r in rows
         ]
 
         return FunctionResult(
@@ -693,7 +697,7 @@ class EXECFunction(BaseFunction):
                 "series": {
                     "price": price_series,
                     "slippage": slippage_series,
-                    "pace": pace_series,
+                    "schedule": schedule_series,
                 },
                 "cards": {
                     # EXEC#4: report the monitor store, never a hard-coded parent.
@@ -740,8 +744,9 @@ class EXECFunction(BaseFunction):
             "5 minutes apart, otherwise 5m). Slice i releases at schedule_start + offset_s "
             "and is measured against the bar in effect at that instant. The default "
             "arrival is the open of the bar at schedule_start. Per-slice benchmark is that "
-            "bar's typical-price VWAP (H+L+C)/3, slippage = (close - benchmark)/benchmark "
-            "* 1e4 bps, and implementation shortfall = (close - arrival)/arrival * 1e4 * "
-            "sign(side). Pace is cumulative scheduled qty / target. No numbers are "
-            "fabricated: on a feed outage the function returns status=provider_unavailable."
+            "bar's typical price (H+L+C)/3, which is NOT volume-weighted; slippage = (close - "
+            "benchmark)/benchmark * 1e4 bps, and implementation shortfall = (close - arrival)/"
+            "arrival * 1e4 * sign(side). schedule_pct is cumulative scheduled qty / target; "
+            "a plan fills nothing. No numbers are fabricated: on a feed outage the function "
+            "returns status=provider_unavailable."
         )

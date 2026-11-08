@@ -209,7 +209,7 @@ def exec_() -> FunctionManifest:
             panes=[
                 PaneGrammar(name="price", series_kind="line", height_pct=50),
                 PaneGrammar(name="slippage", series_kind="bar", height_pct=25),
-                PaneGrammar(name="pace", series_kind="area", height_pct=25),
+                PaneGrammar(name="schedule", series_kind="area", height_pct=25),
             ],
             overlay_support=True,
             compare_support=False,
@@ -264,22 +264,24 @@ def exec_() -> FunctionManifest:
             ),
             "Slippage": Formula(
                 expression=r"slip_{bps} = \frac{avg\_px - benchmark\_px}{benchmark\_px} \times 10000",
-                variables={"benchmark_px": "Per-slice interval VWAP or arrival"},
+                variables={"benchmark_px": "Per-slice benchmark: plan uses the bar typical price (H+L+C)/3 (not volume-weighted); monitor uses the supplied benchmark or arrival"},
             ),
             "Pace": Formula(
                 expression=r"pace_{pct} = \frac{filled\_qty}{scheduled\_qty}",
-                variables={"scheduled_qty": "TWAP/VWAP target by current time"},
+                variables={"scheduled_qty": "TWAP/VWAP target by current time (monitor mode; plans report schedule_pct instead)"},
             ),
         },
         field_dict={
             "orders[].parent_id": FieldDef(description="Caller-assigned parent identifier.", source="exec_monitor"),
             "orders[].algo": FieldDef(description="Algo tag (TWAP/VWAP/ICEBERG/SNIPER).", source="exec_monitor"),
             "orders[].target_qty": FieldDef(unit="base", description="Total quantity to execute.", source="exec_monitor"),
-            "orders[].filled_qty": FieldDef(unit="base", description="Cumulative quantity filled.", source="exec_monitor"),
+            "orders[].filled_qty": FieldDef(unit="base", description="Cumulative quantity filled (0 for action=plan, which executes nothing).", source="exec_monitor"),
+            "orders[].scheduled_qty": FieldDef(unit="base", description="Cumulative quantity scheduled by the plan.", source="computed"),
             "orders[].avg_fill_px": FieldDef(unit="quote", description="VWAP of fills.", source="computed"),
             "orders[].arrival_price": FieldDef(unit="quote", description="Mid at parent arrival.", source="exec_monitor"),
             "orders[].is_bps": FieldDef(unit="bps", description="Implementation shortfall vs arrival.", source="computed"),
-            "orders[].pace_pct": FieldDef(unit="%", description="Filled vs schedule.", source="computed"),
+            "orders[].pace_pct": FieldDef(unit="%", description="Monitor mode only: filled vs schedule.", source="computed"),
+            "orders[].schedule_pct": FieldDef(unit="%", description="Plan mode: cumulative scheduled qty vs target (no fill implied).", source="computed"),
             "orders[].status": FieldDef(description="live / filled_not_closed / complete.", source="exec_monitor"),
         },
         provenance=ProvenanceSpec(

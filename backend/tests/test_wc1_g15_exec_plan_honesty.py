@@ -146,8 +146,9 @@ def test_benchmark_is_described_as_typical_price_not_volume_weighted(monkeypatch
     fd = data["field_dictionary"]
     assert "weighted by" not in fd["benchmark_px"].lower(), fd["benchmark_px"]
     assert "typical" in fd["benchmark_px"].lower(), fd["benchmark_px"]
-    assert "volume-weighted" not in data["methodology"].lower()
-    assert "volume-weighted" not in res.data["methodology"].lower()
+    # The methodology may say "NOT volume-weighted"; it must not claim weighting by volume.
+    assert "weighted by bar volume" not in data["methodology"].lower()
+    assert "not volume-weighted" in data["methodology"].lower()
     # The misleadingly named duplicate key is gone; benchmark_px is the one field.
     assert "interval_vwap" not in data["rows"][0]
     assert data["rows"][0]["benchmark_px"] is not None
