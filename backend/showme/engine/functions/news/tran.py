@@ -1,4 +1,4 @@
-"""TRAN — Earnings Call Transcript Viewer (keyless, SEC EDGAR primary).
+"""TRAN — Earnings Transcript or Release Viewer (keyless, SEC EDGAR primary).
 
 Reader pane for earnings-call / investor-event transcripts. The DEFAULT path
 fetches REAL, keyless data — there is no synthetic happy-path:
@@ -107,7 +107,7 @@ _OK_STATUSES = {"ok", "empty"}
 @FunctionRegistry.register
 class TRANFunction(BaseFunction):
     code = "TRAN"
-    name = "Earnings Call Transcripts"
+    name = "Earnings Transcript or Release"
     asset_classes = (AssetClass.EQUITY, AssetClass.ETF)
     category = "news"
 

@@ -680,7 +680,7 @@
   },
   {
     "code": "TRAN",
-    "name": "Earnings Call Transcripts",
+    "name": "Earnings Transcript or Release",
     "category": "news",
     "symbol": "AAPL",
     "url": "#/symbol/AAPL/TRAN"

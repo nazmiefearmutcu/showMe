@@ -1,4 +1,4 @@
-"""TRAN — Earnings Call Transcript Viewer.
+"""TRAN — Earnings Transcript or Release Viewer.
 
 Reader pane for earnings-call (and other investor-event) transcripts.
 Symbol → quarter lookup uses yfinance event metadata; the transcript
@@ -36,7 +36,7 @@ from ..spec import (
 def tran() -> FunctionManifest:
     return FunctionManifest(
         code="TRAN",
-        name="Earnings Call Transcript",
+        name="Earnings Transcript or Release",
         category=Category.NEWS_INTEL,
         intent=(
             "Reader pane for earnings-call (and other investor-event) transcripts. Symbol → "

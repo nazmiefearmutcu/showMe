@@ -1,7 +1,8 @@
 /**
- * TRAN — Earnings Call Transcript.
+ * TRAN — Earnings Transcript or Release.
  *
- * Renders the most recent earnings-call transcript harvested by the backend
+ * Renders the most recent earnings-call transcript harvested by the backend, or the
+ * 8-K earnings press release when no transcript exists (labelled as a release)
  * (SEC 8-K exhibit flow): sections (Prepared Remarks / Q&A) of speaker+role
  * utterances, a persisted speaker filter built from the payload's distinct
  * speakers, and jump-to-section anchors. Data honesty: when the provider is

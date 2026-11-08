@@ -777,7 +777,7 @@ export const STATIC_FUNCTION_INDEX: FunctionEntry[] = [
   },
   {
     "code": "TRAN",
-    "name": "Earnings Call Transcripts",
+    "name": "Earnings Transcript or Release",
     "category": "news",
     "description": ""
   },
