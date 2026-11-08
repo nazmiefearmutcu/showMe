@@ -222,6 +222,20 @@ describe("FXFC pane — data honesty", () => {
     expect(screen.queryByText(/3M forecast/)).toBeNull();
   });
 
+  it("does not show a 0.00% rate differential when the rates were not supplied", () => {
+    const payload = livePayload();
+    payload.data.base_rate = null as unknown as number;
+    payload.data.quote_rate = null as unknown as number;
+    payload.data.forecast = payload.data.forecast.map((r) => ({
+      ...r,
+      forecast: null as unknown as number,
+    }));
+    setMockFn({ state: "ok", data: payload });
+    render(<FXFCPane code="FXFC" symbol="USDJPY" />);
+    expect(screen.queryByText("0.00%")).toBeNull();
+    expect(screen.getByText(/rates not supplied/i)).toBeInTheDocument();
+  });
+
   it("drops the tenor-only confidence column", () => {
     setMockFn({ state: "ok", data: livePayload() });
     render(<FXFCPane code="FXFC" symbol="USDJPY" />);

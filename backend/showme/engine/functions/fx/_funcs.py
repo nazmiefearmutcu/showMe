@@ -93,8 +93,13 @@ class FXFCFunction(BaseFunction):
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         base, quote, pair = _pair_from(instrument, params)
         spot, spot_source, source_mode = await _resolve_spot(self, pair, params)
-        r_base = _rate_for(base, params.get("r_base"))
-        r_quote = _rate_for(quote, params.get("r_quote"))
+        # FXFC#2: only explicit policy-rate inputs drive the forward. The
+        # 2024-06 reference table is not used here (DATA POLICY).
+        r_base = _fxfc_policy_rate(params.get("r_base"))
+        r_quote = _fxfc_policy_rate(params.get("r_quote"))
+        rates_ready = r_base is not None and r_quote is not None
+        rate_source = "user_inputs" if rates_ready else "none"
+        missing_rates = [c for c, r in ((base, r_base), (quote, r_quote)) if r is None]
         tenors = _parse_tenors(params.get("tenors"), default=("1M", "3M", "6M", "12M"))
         # Band vol per tenor: an explicit input, or live realized FX vol. No
         # constant is substituted; with neither, the bands are null.
@@ -104,19 +109,19 @@ class FXFCFunction(BaseFunction):
         rows = []
         for i, tenor in enumerate(tenors):
             t = tenor["years"]
-            forward = _forward(spot, r_base, r_quote, t)
+            forward = _forward(spot, r_base, r_quote, t) if rates_ready else None
             vol = vol_curve[i] if vol_curve is not None else None
-            band = spot * vol * (t ** 0.5) if vol is not None else None
+            band = spot * vol * (t ** 0.5) if (vol is not None and forward is not None) else None
             rows.append(
                 {
                     "pair": pair,
                     "horizon": tenor["label"],
                     "tenor_years": round(t, 6),
                     "spot": round(spot, 6),
-                    "forecast": round(forward, 6),
+                    "forecast": round(forward, 6) if forward is not None else None,
                     "lower_band": round(forward - band, 6) if band is not None else None,
                     "upper_band": round(forward + band, 6) if band is not None else None,
-                    "forward_points": round(forward - spot, 6),
+                    "forward_points": round(forward - spot, 6) if forward is not None else None,
                     "vol_annualized": round(vol, 6) if vol is not None else None,
                     "source_mode": source_mode,
                 }
@@ -124,6 +129,11 @@ class FXFCFunction(BaseFunction):
         now = _fxfc_now()
         market_open = _fx_market_open(now)
         warnings: list[str] = []
+        if missing_rates:
+            warnings.append(
+                f"policy rate not supplied for {', '.join(missing_rates)}: the CIP forward and bands are withheld "
+                "(no reference-table or generic rate is substituted). Supply r_base and r_quote to compute them."
+            )
         if source_mode == "reference_model":
             warnings.append(f"live spot unavailable; using labelled reference spot (vintage {_REFERENCE_AS_OF})")
         if vol_warning:
@@ -135,8 +145,16 @@ class FXFCFunction(BaseFunction):
                 "The adapter does not expose the quote's own timestamp."
             )
         data = {
-            "status": "ok" if vol_curve is not None else "bands_unavailable",
-            "reason": vol_warning if vol_curve is None else None,
+            "status": (
+                "needs_input"
+                if not rates_ready
+                else ("ok" if vol_curve is not None else "bands_unavailable")
+            ),
+            "reason": (
+                f"policy rate not supplied for {', '.join(missing_rates)} (r_base / r_quote)"
+                if missing_rates
+                else (vol_warning if vol_curve is None else None)
+            ),
             "pair": pair,
             "base": base,
             "quote": quote,
@@ -145,6 +163,7 @@ class FXFCFunction(BaseFunction):
             "fx_market_open_at_fetch": market_open,
             "base_rate": r_base,
             "quote_rate": r_quote,
+            "rate_source": rate_source,
             "vol_annualized": _fxfc_headline_vol(tenors, vol_curve),
             "vol_source": vol_source,
             "source_mode": source_mode,
@@ -163,8 +182,11 @@ class FXFCFunction(BaseFunction):
                 "spot": "Quote currency units per one base currency unit.",
                 "spot_fetched_at": "UTC time the spot was fetched; the quote's own market time is not provided by the adapter.",
                 "fx_market_open_at_fetch": "Whether the approximate spot-FX session (Sun 22:00 to Fri 22:00 UTC) was open at fetch time.",
-                "forecast": "Covered-interest-parity forward-implied level for the tenor (a CIP forward, not a consensus forecast).",
-                "forward_points": "forecast - spot in quote currency units.",
+                "forecast": "Covered-interest-parity forward-implied level for the tenor (a CIP forward, not a consensus forecast); null until r_base and r_quote are supplied.",
+                "base_rate": "Base-currency annual rate (decimal) supplied as r_base; null when not supplied. No reference table is substituted.",
+                "quote_rate": "Quote-currency annual rate (decimal) supplied as r_quote; null when not supplied.",
+                "rate_source": "user_inputs when both r_base and r_quote are supplied, otherwise none.",
+                "forward_points": "forecast - spot in quote currency units; null when the forward is withheld.",
                 "vol_annualized": "Annualized band vol for the tenor (decimal); null when no vol source is available.",
                 "vol_source": "live_realized_vol (yfinance daily closes), user_inputs, or none.",
                 "lower_band": "forecast - spot * vol_annualized * sqrt(T); null when no vol source is available.",
@@ -176,7 +198,14 @@ class FXFCFunction(BaseFunction):
             code=self.code,
             instrument=instrument or Instrument(symbol=pair, asset_class=AssetClass.FX),
             data=data,
-            sources=_unique([spot_source, "covered_interest_parity_formula", rv_source or ""]),
+            sources=_unique(
+                [
+                    spot_source,
+                    "covered_interest_parity_formula",
+                    rv_source or "",
+                    "user_inputs_policy_rates" if rates_ready else "",
+                ]
+            ),
             warnings=warnings,
             metadata=(
                 {"data_mode": "delayed_reference", "reference_as_of": _REFERENCE_AS_OF}
@@ -225,6 +254,21 @@ def _fxfc_headline_vol(tenors: list[dict[str, Any]], curve: list[float] | None) 
         if str(tenor["label"]).upper() == "1M":
             return round(curve[i], 6)
     return round(curve[0], 6)
+
+
+def _fxfc_policy_rate(explicit: Any) -> float | None:
+    """FXFC policy rate: only an explicit input counts (FXFC#2).
+
+    The 2024-06 reference table and its 0.04 generic fallback are not used on
+    the FXFC forward path; a missing rate yields None so the forward is withheld.
+    """
+    if explicit in (None, ""):
+        return None
+    try:
+        value = float(explicit)
+    except (TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) else None
 
 
 def _fxfc_now() -> datetime:

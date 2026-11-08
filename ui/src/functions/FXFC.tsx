@@ -264,12 +264,22 @@ export function FXFCPane({ code, symbol }: FunctionPaneProps) {
           />
           <StatCard
             label="Rate diff"
-            value={`${fmtRate((payload?.quote_rate ?? 0) - (payload?.base_rate ?? 0))}%`}
-            caption={`${payload?.quote ?? "—"} vs ${payload?.base ?? "—"} RATES`}
+            value={
+              payload?.base_rate == null || payload?.quote_rate == null
+                ? "—"
+                : `${fmtRate(payload.quote_rate - payload.base_rate)}%`
+            }
+            caption={
+              payload?.base_rate == null || payload?.quote_rate == null
+                ? "rates not supplied (r_base / r_quote)"
+                : `${payload?.quote ?? "—"} vs ${payload?.base ?? "—"} RATES`
+            }
             tone={
-              (payload?.quote_rate ?? 0) >= (payload?.base_rate ?? 0)
-                ? "positive"
-                : "negative"
+              payload?.base_rate == null || payload?.quote_rate == null
+                ? "neutral"
+                : payload.quote_rate >= payload.base_rate
+                  ? "positive"
+                  : "negative"
             }
           />
           <StatCard

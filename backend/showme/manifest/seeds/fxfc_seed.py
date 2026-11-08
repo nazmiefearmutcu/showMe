@@ -1,8 +1,7 @@
 """FXFC — FX Forecasts (covered-interest-parity forward carry).
 
 CIP forward-path forecasts for one FX pair across a tenor ladder, with
-model volatility bands (spot · vol · √T) and a deterministic confidence
-score. Spot comes from the live tier chain (yfinance → ECB →
+model volatility bands (spot · vol · √T). Spot comes from the live tier chain (yfinance → ECB →
 Frankfurter keyless); when every tier fails the handler labels the
 fallback `reference_model` and warns, and the pane mirrors that instead
 of pretending the curve is live. The earlier manifest described a
@@ -95,7 +94,7 @@ def fxfc() -> FunctionManifest:
                 label="Base rate",
                 control=ControlKind.NUMBER,
                 required=False,
-                description="Base-currency policy rate override (decimal annual).",
+                description="Base-currency annual rate (decimal). Required for the CIP forward: no reference table is substituted, so the forecast is null until supplied.",
                 step=0.001,
                 unit="decimal",
             ),
@@ -104,7 +103,7 @@ def fxfc() -> FunctionManifest:
                 label="Quote rate",
                 control=ControlKind.NUMBER,
                 required=False,
-                description="Quote-currency policy rate override (decimal annual).",
+                description="Quote-currency annual rate (decimal). Required with r_base for the CIP forward; null until supplied.",
                 step=0.001,
                 unit="decimal",
             ),

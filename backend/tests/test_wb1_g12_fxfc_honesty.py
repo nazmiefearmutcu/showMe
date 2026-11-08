@@ -71,7 +71,7 @@ def no_history(monkeypatch):
 
 def test_confidence_score_is_not_emitted(live_spot, live_history):
     """FXFC#1: the tenor-only confidence heuristic is gone from rows and dictionary."""
-    result = _run(FXFCFunction().execute(pair="EURUSD"))
+    result = _run(FXFCFunction().execute(pair="EURUSD", r_base=0.035, r_quote=0.045))
     for row in result.data["forecast"]:
         assert "confidence" not in row
     assert "confidence" not in result.data["field_dictionary"]
@@ -79,7 +79,7 @@ def test_confidence_score_is_not_emitted(live_spot, live_history):
 
 def test_band_vol_is_live_realized_not_flat_default(live_spot, live_history):
     """FXFC#3: bands use realized vol for the tenor, not 0.085."""
-    result = _run(FXFCFunction().execute(pair="EURUSD"))
+    result = _run(FXFCFunction().execute(pair="EURUSD", r_base=0.035, r_quote=0.045))
     data = result.data
     assert data["vol_source"] == "live_realized_vol"
     assert data["status"] == "ok"
@@ -98,7 +98,7 @@ def test_band_vol_is_live_realized_not_flat_default(live_spot, live_history):
 
 def test_no_history_gives_null_bands_not_a_constant(live_spot, no_history):
     """FXFC#3: without realized vol the bands are null and say why; no 8.5% is used."""
-    result = _run(FXFCFunction().execute(pair="EURUSD"))
+    result = _run(FXFCFunction().execute(pair="EURUSD", r_base=0.035, r_quote=0.045))
     data = result.data
     assert data["status"] == "bands_unavailable"
     assert data["vol_source"] == "none"
@@ -113,7 +113,7 @@ def test_no_history_gives_null_bands_not_a_constant(live_spot, no_history):
 
 
 def test_explicit_vol_input_is_used_and_labelled(live_spot, no_history):
-    result = _run(FXFCFunction().execute(pair="EURUSD", vol_annualized=0.07))
+    result = _run(FXFCFunction().execute(pair="EURUSD", r_base=0.035, r_quote=0.045, vol_annualized=0.07))
     data = result.data
     assert data["vol_source"] == "user_inputs"
     assert data["vol_annualized"] == pytest.approx(0.07)
@@ -128,7 +128,7 @@ def test_live_false_does_not_fetch_realized_vol(live_spot, monkeypatch):
         return _closes()
 
     monkeypatch.setattr(fx, "_close_series", _close_series)
-    result = _run(FXFCFunction().execute(pair="EURUSD", live=False))
+    result = _run(FXFCFunction().execute(pair="EURUSD", r_base=0.035, r_quote=0.045, live=False))
     assert called["n"] == 0
     assert result.data["vol_annualized"] is None
     assert result.data["status"] == "bands_unavailable"
@@ -136,7 +136,7 @@ def test_live_false_does_not_fetch_realized_vol(live_spot, monkeypatch):
 
 def test_spot_fetch_time_is_returned(live_spot, live_history):
     """FXFC#4: the spot carries the time it was fetched."""
-    result = _run(FXFCFunction().execute(pair="EURUSD"))
+    result = _run(FXFCFunction().execute(pair="EURUSD", r_base=0.035, r_quote=0.045))
     stamp = result.data["spot_fetched_at"]
     assert datetime.fromisoformat(stamp).tzinfo is not None
     assert "fx_market_open_at_fetch" in result.data
@@ -146,7 +146,7 @@ def test_weekend_yfinance_spot_is_flagged(live_spot, live_history, monkeypatch):
     """FXFC#4: a Sunday pre-open yfinance quote is not presented as a live print."""
     sunday_early = datetime(2026, 11, 8, 0, 7, tzinfo=timezone.utc)  # Sunday, before 22:00 UTC
     monkeypatch.setattr(fx, "_fxfc_now", lambda: sunday_early)
-    result = _run(FXFCFunction().execute(pair="EURUSD"))
+    result = _run(FXFCFunction().execute(pair="EURUSD", r_base=0.035, r_quote=0.045))
     assert result.data["fx_market_open_at_fetch"] is False
     assert any("market is closed" in w for w in result.warnings), result.warnings
 
@@ -154,7 +154,7 @@ def test_weekend_yfinance_spot_is_flagged(live_spot, live_history, monkeypatch):
 def test_weekday_yfinance_spot_is_not_flagged(live_spot, live_history, monkeypatch):
     tuesday = datetime(2026, 11, 10, 14, 0, tzinfo=timezone.utc)
     monkeypatch.setattr(fx, "_fxfc_now", lambda: tuesday)
-    result = _run(FXFCFunction().execute(pair="EURUSD"))
+    result = _run(FXFCFunction().execute(pair="EURUSD", r_base=0.035, r_quote=0.045))
     assert result.data["fx_market_open_at_fetch"] is True
     assert all("market is closed" not in w for w in result.warnings)
 
@@ -172,3 +172,53 @@ def test_weekday_yfinance_spot_is_not_flagged(live_spot, live_history, monkeypat
 )
 def test_fx_market_session_helper(when, expected):
     assert fx._fx_market_open(when) is expected
+
+
+# FXFC#2: the CIP forward must not be computed from the 2024-06 reference
+# policy-rate table (or the 0.04 unknown-currency fallback). Without explicit
+# r_base / r_quote inputs the forward is null and the envelope says why.
+
+
+def test_default_run_has_no_forward_from_reference_rate_table(live_spot, live_history):
+    """FXFC#2: no policy rate supplied -> no CIP forward, no table constant."""
+    result = _run(FXFCFunction().execute(pair="EURUSD"))
+    data = result.data
+    assert data["status"] == "needs_input"
+    assert data["base_rate"] is None
+    assert data["quote_rate"] is None
+    assert data["rate_source"] == "none"
+    for row in data["forecast"]:
+        assert row["forecast"] is None
+        assert row["forward_points"] is None
+        assert row["lower_band"] is None
+        assert row["upper_band"] is None
+    assert any("r_base" in w or "policy rate" in w for w in result.warnings), result.warnings
+    assert "reference_policy_rate" not in result.sources
+
+
+def test_forward_uses_user_supplied_rates_and_is_labelled(live_spot, live_history):
+    """FXFC#2: explicit rates drive the CIP forward and are labelled user_inputs."""
+    result = _run(FXFCFunction().execute(pair="EURUSD", r_base=0.035, r_quote=0.045))
+    data = result.data
+    assert data["status"] == "ok"
+    assert data["rate_source"] == "user_inputs"
+    assert data["base_rate"] == pytest.approx(0.035)
+    assert data["quote_rate"] == pytest.approx(0.045)
+    row_3m = next(r for r in data["forecast"] if r["horizon"] == "3M")
+    expected = fx._forward(data["spot"], 0.035, 0.045, row_3m["tenor_years"])
+    assert row_3m["forecast"] == pytest.approx(round(expected, 6), abs=1e-6)
+    assert "user_inputs_policy_rates" in result.sources
+
+
+def test_one_missing_rate_still_gives_no_forward(live_spot, live_history):
+    """FXFC#2: a single supplied rate is not enough; no half-substituted forward."""
+    result = _run(FXFCFunction().execute(pair="EURUSD", r_quote=0.045))
+    assert result.data["status"] == "needs_input"
+    assert all(row["forecast"] is None for row in result.data["forecast"])
+
+
+def test_unknown_currency_gets_no_0_04_fallback(live_spot, live_history):
+    """FXFC#2: exotic pairs do not receive the 0.04 generic rate either."""
+    result = _run(FXFCFunction().execute(pair="USDMXN", r_base=0.045))
+    assert result.data["quote_rate"] is None
+    assert all(row["forecast"] is None for row in result.data["forecast"])
