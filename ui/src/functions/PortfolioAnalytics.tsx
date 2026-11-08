@@ -592,6 +592,7 @@ function PortfolioAnalyticsView({
     payload?.status === "ready_no_positions" ||
     payload?.status === "input_error" ||
     payload?.status === "input_required" ||
+    payload?.status === "needs_input" ||
     payload?.status === "empty" ||
     payload?.status === "empty_portfolio" ||
     payload?.status === "not_configured" ||
@@ -628,7 +629,7 @@ function PortfolioAnalyticsView({
       title = "Invalid Parameters";
       icon = "!";
       body = emptyReason ?? "Please check the input parameters and try again.";
-    } else if (payload?.status === "input_required") {
+    } else if (payload?.status === "input_required" || payload?.status === "needs_input") {
       title = "Input Required";
       icon = "⌖";
       body = emptyReason ?? "This function requires additional inputs to run.";

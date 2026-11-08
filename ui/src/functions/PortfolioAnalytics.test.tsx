@@ -576,3 +576,18 @@ describe("PORTX REBA live book + order CSV (G3)", () => {
     expect(mockArgs.current?.symbol).toBe("AAPL");
   });
 });
+
+describe("PORTX BLAK honest no-prior state (BLAK#6 / BLAK#3-RQ)", () => {
+  it("shows an Input Required state for needs_input and no prior rows", () => {
+    mockOk({
+      status: "needs_input",
+      reason: "Live market data is off. The Black-Litterman prior needs historical returns.",
+      next_actions: ["Turn Live on and run again to compute the prior from market returns."],
+      market_weights: { SPY: 0.5, QQQ: 0.5 },
+    });
+    render(<PortfolioAnalyticsPane code="BLAK" symbol="" />);
+    expect(screen.getByText("Input Required")).toBeInTheDocument();
+    expect(screen.getByText(/Live market data is off/)).toBeInTheDocument();
+    expect(screen.queryByText("No data available")).toBeNull();
+  });
+});
