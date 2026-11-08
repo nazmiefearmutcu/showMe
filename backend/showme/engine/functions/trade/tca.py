@@ -244,21 +244,26 @@ class TCAFunction(BaseFunction):
                 "filled_at": f.get("filled_at"),
                 "benchmark_source": bench_used,
             })
-            series.append({
-                "label": (f.get("order_id") or sym or "fill"),
-                "value": round(slip_bps, 2) if slip_bps is not None else 0.0,
-            })
+            # TCA#6: a fill without a benchmark has no slippage. It is left out
+            # of the series rather than plotted as a 0.0 bps execution.
+            if slip_bps is not None:
+                series.append({
+                    "label": (f.get("order_id") or sym or "fill"),
+                    "value": round(slip_bps, 2),
+                })
 
         n = len(rows)
-        avg_slip = sum(slip_bps_vals) / len(slip_bps_vals) if slip_bps_vals else 0.0
-        avg_is = sum(is_bps_vals) / len(is_bps_vals) if is_bps_vals else 0.0
-        worst_slip = max(slip_bps_vals, key=abs) if slip_bps_vals else 0.0
+        # No measured value means no mean: null, never a 0.0 that reads as a
+        # perfect execution.
+        avg_slip = sum(slip_bps_vals) / len(slip_bps_vals) if slip_bps_vals else None
+        avg_is = sum(is_bps_vals) / len(is_bps_vals) if is_bps_vals else None
+        worst_slip = max(slip_bps_vals, key=abs) if slip_bps_vals else None
         summary = {
             "benchmark": benchmark,
             "fill_count": n,
-            "avg_slippage_bps": round(avg_slip, 2),
-            "avg_is_bps": round(avg_is, 2),
-            "worst_slippage_bps": round(worst_slip, 2),
+            "avg_slippage_bps": round(avg_slip, 2) if avg_slip is not None else None,
+            "avg_is_bps": round(avg_is, 2) if avg_is is not None else None,
+            "worst_slippage_bps": round(worst_slip, 2) if worst_slip is not None else None,
             "total_cost_usd": round(total_cost_usd, 2),
         }
 

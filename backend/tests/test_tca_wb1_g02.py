@@ -83,3 +83,42 @@ def test_fx_pair_ending_in_usd_is_not_routed_to_binance(tmp_path, monkeypatch):
     assert binance.calls == [], binance.calls
     assert yf_calls == ["EURUSD"], yf_calls
     assert res.data["rows"][0]["benchmark_source"] == "arrival"
+
+
+# ---------------------------------------------------------------------------
+# TCA#6 — a fill with no benchmark (no live VWAP and no arrival price) has no
+# slippage. It must not be plotted as a 0.0 bps execution in the series.
+# ---------------------------------------------------------------------------
+class _EmptyBinance:
+    async def klines(self, symbol, interval="5m", limit=288, **kwargs):
+        return []
+
+
+def test_unbenchmarked_fill_is_not_plotted_as_zero_slippage(tmp_path, monkeypatch):
+    from showme.engine.core.base_function import FunctionDeps
+    from showme.engine.functions.trade.tca import TCAFunction
+    from showme.engine.services import order_history
+
+    _use_temp_home(tmp_path, monkeypatch)
+
+    async def _no_bars(self, symbol, *args, **kwargs):
+        return []
+
+    monkeypatch.setattr(TCAFunction, "_yfinance_intraday", _no_bars)
+    order_history.record_order(
+        broker="binance", order_id="ord-200", symbol="BTCUSDT", side="BUY",
+        quantity=2.0, asset_class="CRYPTO", price=190.0,
+        type="LIMIT", status="filled",
+        metadata={"fills": [{"px": 191.0, "qty": 2.0}], "filled_qty": 2.0},
+    )
+
+    res = _run(TCAFunction(deps=FunctionDeps(binance=_EmptyBinance())).execute(
+        symbol="BTCUSDT", benchmark="VWAP"))
+    data = res.data
+
+    assert data["rows"][0]["slippage_bps"] is None
+    assert data["series"] == [], data["series"]
+    # No slippage was measured, so the summary means must be null, not 0.0.
+    assert data["summary"]["avg_slippage_bps"] is None
+    assert data["summary"]["worst_slippage_bps"] is None
+    assert data["cards"]["avg_slippage_bps"] is None
