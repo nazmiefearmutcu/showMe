@@ -21,6 +21,11 @@ LOG = logging.getLogger("showme.alrt")
 # so two simultaneous `add`s on the same `/api/fn/ALRT` cannot drop one alert.
 _STORE_LOCK = threading.Lock()
 
+_NOT_ARMED_WARNING = (
+    "Alert stored but not armed: no background evaluator is wired in this build, "
+    "so this rule will not fire."
+)
+
 
 def _store():
     return runtime_path("alerts.json")
@@ -124,8 +129,18 @@ class ALRTFunction(BaseFunction):
                 )
                 alerts.append(a)
                 _save_alerts(alerts)
+                # ALRT#1: nothing evaluates stored rules in this build, so a
+                # successful add must not read as an armed alert.
                 return FunctionResult(
-                    code=self.code, instrument=None, data=asdict(a), warnings=warnings
+                    code=self.code,
+                    instrument=None,
+                    data={
+                        **asdict(a),
+                        "status": "stored_not_armed",
+                        "armed": False,
+                        "evaluator_status": "not_running",
+                    },
+                    warnings=warnings + [_NOT_ARMED_WARNING],
                 )
             if action == "remove":
                 alert_id = params.get("id")
