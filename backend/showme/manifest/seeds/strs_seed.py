@@ -63,22 +63,6 @@ def strs() -> FunctionManifest:
         ],
         inputs=[
             InputSpec(
-                name="portfolio_source",
-                label="Portfolio source",
-                control=ControlKind.SELECT,
-                required=True,
-                description="PORT (live broker positions) or custom basket.",
-                options=["port", "custom"],
-            ),
-            InputSpec(
-                name="positions",
-                label="Custom positions",
-                control=ControlKind.CONSTRAINT_SET,
-                required=False,
-                description="When portfolio_source=custom.",
-                depends_on=["portfolio_source"],
-            ),
-            InputSpec(
                 name="scenarios",
                 label="Scenarios",
                 control=ControlKind.MODEL_ASSUMPTION,
@@ -128,7 +112,10 @@ def strs() -> FunctionManifest:
                 label="Horizon",
                 control=ControlKind.NUMBER,
                 required=False,
-                description="Days over which the shock unfolds.",
+                description=(
+                    "Days over which a custom shock unfolds. Named scenarios keep "
+                    "the horizon in their catalog entry and ignore this control."
+                ),
                 min=1,
                 max=60,
                 step=1,
@@ -147,7 +134,6 @@ def strs() -> FunctionManifest:
             ),
         ],
         defaults={
-            "portfolio_source": "port",
             "propagation": "hand_set_lookup",
             "horizon_days": 5,
             "provider_mode": DataMode.DELAYED_REFERENCE.value,
