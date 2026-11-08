@@ -116,6 +116,14 @@ interface PortData {
     unrealized_pnl?: number;
     cash?: number;
     n_positions?: number;
+    /** Cash + market value; null/absent when cash is untracked or a row is unpriced. */
+    total_equity?: number | null;
+    /** Previous-close based day move; null when a previous close is missing. */
+    day_pnl?: number | null;
+    /** Realized P&L from closes dated this year. */
+    realized_pnl_ytd?: number | null;
+    /** Positions with no valued market value (no quote, no rate). */
+    n_unpriced?: number;
   };
   by_asset_class?: Record<string, number>;
   by_currency?: Record<string, number>;
@@ -538,6 +546,50 @@ function CredentialGroup({ g }: { g: PortfolioGroup }) {
   );
 }
 
+/**
+ * Apply live ticks to the snapshot positions and compute each weight.
+ *
+ * PORT#4: the weight denominator must be the same total the rows are valued
+ * against. With a live overlay that is the live-adjusted sum, so weights keep
+ * summing to 100% next to live marks. The guard matches `liveTotals`: a live
+ * sum more than 3x away from the snapshot is treated as bad data and the
+ * snapshot total is used for both the totals and the weights.
+ */
+export function overlayLivePositions(
+  positions: Position[],
+  live: Record<string, { price: number; ts: number }>,
+  totals: PortData["totals"] | undefined,
+): Position[] {
+  const overlaid = positions.map((p) => {
+    const tick = live[p.symbol];
+    if (!tick) return p;
+    const last = tick.price;
+    const qty = Number(p.quantity) || 0;
+    const cost = positionEntryPrice(p) ?? 0;
+    const market_value = qty * last;
+    const unrealized_pnl = market_value - qty * cost;
+    return {
+      ...p,
+      last,
+      market_value,
+      unrealized_pnl,
+      _live_ts: tick.ts,
+    };
+  });
+  const liveSum = overlaid.reduce((s, p) => s + (Number(p.market_value) || 0), 0);
+  const snapshotMv = totals?.market_value;
+  const hasOverlay = Object.keys(live).length > 0;
+  const guarded =
+    typeof snapshotMv === "number" &&
+    snapshotMv > 0 &&
+    (liveSum > snapshotMv * 3 || liveSum < snapshotMv / 3);
+  const total = hasOverlay && !guarded ? liveSum : (snapshotMv ?? liveSum);
+  return overlaid.map((p) => ({
+    ...p,
+    weight: total > 0 ? (Number(p.market_value) || 0) / total : undefined,
+  }));
+}
+
 export function PORTPane({ code }: FunctionPaneProps) {
   const portfolioGroups = usePortfolioStore((s) => s.groups);
   const credentialsCount = useExchangeStore((s) => s.credentials.length);
@@ -604,31 +656,10 @@ export function PORTPane({ code }: FunctionPaneProps) {
     };
   }, [symbolsKey]);
 
-  const enriched = useMemo<Position[]>(() => {
-    const overlaid = positions.map((p) => {
-      const tick = live[p.symbol];
-      if (!tick) return p;
-      const last = tick.price;
-      const qty = Number(p.quantity) || 0;
-      const cost = positionEntryPrice(p) ?? 0;
-      const market_value = qty * last;
-      const unrealized_pnl = market_value - qty * cost;
-      return {
-        ...p,
-        last,
-        market_value,
-        unrealized_pnl,
-        _live_ts: tick.ts,
-      };
-    });
-    const total = totals?.market_value ?? overlaid.reduce(
-      (s, p) => s + (Number(p.market_value) || 0), 0,
-    );
-    return overlaid.map((p) => ({
-      ...p,
-      weight: total > 0 ? (Number(p.market_value) || 0) / total : undefined,
-    }));
-  }, [positions, totals, live]);
+  const enriched = useMemo<Position[]>(
+    () => overlayLivePositions(positions, live, totals),
+    [positions, totals, live],
+  );
 
   const liveTotals = useMemo(() => {
     if (Object.keys(live).length === 0) return totals;
@@ -998,18 +1029,28 @@ function PORTView({
   // Live adoption (campaign 2026-09-11): the hero equity + unrealized P&L
   // pulse with the shared themed flash when a poll/broker tick moves them.
   // First render never flashes (nothing to compare against).
-  const equityFlash = useTickFlash(totalMV);
+  // PORT#2: the headline is total equity (cash + market value) when the backend
+  // provides it. Otherwise it is market value and the label says it excludes
+  // cash, so the number never claims to be equity.
+  const reportedEquity =
+    typeof totals?.total_equity === "number" && Number.isFinite(totals.total_equity)
+      ? totals.total_equity
+      : null;
+  const headlineValue = reportedEquity ?? totalMV;
+  const equityFlash = useTickFlash(headlineValue);
   const pnlFlash = useTickFlash(totals?.unrealized_pnl ?? null);
 
   return (
     <div className="showme-port__view showme-card-reveal port-view">
       <section className="port-terminal-summary" aria-label="Portfolio summary">
         <div className="port-terminal-summary__primary">
-          <span className="port-label">Local analytics equity</span>
+          <span className="port-label">
+            {reportedEquity != null ? "Total equity" : "Market value (excl. cash)"}
+          </span>
           <strong
             className={`terminal-grid-numeric${tickFlashClass(equityFlash) ? ` ${tickFlashClass(equityFlash)}` : ""}`}
           >
-            {fmt$(totalMV)}
+            {fmt$(headlineValue)}
           </strong>
           <span
             className={`port-terminal-summary__pnl port-terminal-summary__pnl--${pnlTone}${tickFlashClass(pnlFlash) ? ` ${tickFlashClass(pnlFlash)}` : ""}`}
