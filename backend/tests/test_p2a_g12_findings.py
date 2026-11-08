@@ -161,3 +161,42 @@ def test_erev_methodology_describes_recommendations_not_eps() -> None:
     for claim in ("EPS/revenue revisions", "EPS estimate trend", "EPS estimate revisions"):
         assert claim not in doc
         assert claim not in erev_mod.EREVFunction.description
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# DDM#5 — manifest output contract and inputs must match the handler
+# ─────────────────────────────────────────────────────────────────────────
+
+_SHELL_SLOTS = {"data_mode", "as_of"}
+
+
+def test_ddm_manifest_contract_matches_payload() -> None:
+    from showme.engine.functions.equity.dcf import DDMFunction
+
+    ddm_instr = Instrument(symbol="MSFT", asset_class=AssetClass.EQUITY)
+    res = asyncio.run(
+        DDMFunction(FunctionDeps()).execute(
+            instrument=ddm_instr, dividend_ttm=3.0, required_return=0.09, growth_rate=0.03
+        )
+    )
+    payload = res.data
+    assert payload["status"] == "ok"
+
+    ddm = _manifest("DDM")
+    missing = [k for k in ddm.output_contract.must_have if k not in payload]
+    assert not missing, f"DDM must_have not produced by handler: {missing}"
+    for slot in ddm.card_schema.slots:
+        if slot.key in _SHELL_SLOTS:
+            continue
+        assert slot.key in payload, f"DDM card slot {slot.key!r} has no matching payload key"
+    for name in ("upside_pct",):
+        assert name not in ddm.field_dict, "DDM does not compute upside_pct; the pane computes premium"
+
+
+def test_ddm_manifest_inputs_are_the_ones_the_handler_reads() -> None:
+    ddm = _manifest("DDM")
+    input_names = {spec.name for spec in ddm.inputs}
+    # The handler reads required_return and growth_rate (and the pane sends them).
+    assert "required_return" in input_names
+    assert "growth_rate" in input_names
+    assert "discount_rate" not in input_names, "discount_rate is silently ignored by the handler"

@@ -128,6 +128,7 @@ class DDMFunction(BaseFunction):
                    "dividend_ttm": d0, "next_dividend": d1,
                    "growth": g, "required_return": r,
                    "fair_value_per_share": fair_value,
+                   "assumptions": {"required_return": r, "growth": g, "dividend_ttm": d0},
                    "rows": rows,
                    "surface": sensitivity,
                    "methodology": "Gordon Growth DDM: P = D1 / (r - g), where D1 is next expected dividend, r is required return, and g is perpetual dividend growth. Required return defaults to WACC when not supplied.",
