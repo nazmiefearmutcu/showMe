@@ -159,3 +159,24 @@ def test_adapter_treats_us_and_united_states_as_the_same_country(tmp_path, monke
     erp, source = asyncio.run(adapter.get_erp_with_source("US"))
     assert erp == pytest.approx(0.042)
     assert not source.endswith("_country_unmatched")
+
+
+def test_erp_country_names_the_country_whose_premium_is_used() -> None:
+    res = _run(country="Germany", damo=_RecordingDamodaran())
+    assert res.data["erp_country"] == "Germany"
+
+
+def test_erp_country_is_null_when_no_country_premium_is_used() -> None:
+    res = _run(country=None, damo=_RecordingDamodaran())
+    assert res.data["erp_country"] is None
+
+
+def test_erp_country_is_null_for_an_unmatched_country() -> None:
+    class _UnmatchedDamo(_RecordingDamodaran):
+        async def get_erp_with_source(self, country):
+            self.calls.append(country)
+            return 0.046, "damodaran_snapshot_2025_01_country_unmatched"
+
+    res = _run(country="Zz", damo=_UnmatchedDamo())
+    assert res.data["erp_country"] is None
+    assert res.data["erp_source"].endswith("_country_unmatched")

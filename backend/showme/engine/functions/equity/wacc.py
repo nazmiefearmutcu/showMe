@@ -128,6 +128,9 @@ class WACCFunction(BaseFunction):
         erp_user = _first_set(params, "market_premium", "erp")
         erp: float | None = None
         erp_source: str
+        # The country whose Damodaran premium is used; None when the ERP is not
+        # a country's own premium (user input, assumption, or unmatched country).
+        erp_country: str | None = None
         if erp_user is not None:
             erp = float(erp_user)
             erp_source = "user_input"
@@ -170,6 +173,8 @@ class WACCFunction(BaseFunction):
                             )
                             erp_source = "damodaran"
                         sources.append("damodaran")
+                        if not erp_source.endswith("_country_unmatched"):
+                            erp_country = country
                         if erp_source.startswith("damodaran_snapshot"):
                             warnings.append(
                                 "Damodaran ERP table unavailable; the January 2025 snapshot is used "
@@ -555,6 +560,7 @@ class WACCFunction(BaseFunction):
                 "beta": float(beta) if beta is not None else None,
                 "erp": erp,
                 "erp_source": erp_source,
+                "erp_country": erp_country,
                 "rd": float(rd) if rd is not None else None,
                 "tax_rate": float(tax) if tax is not None else None,
                 "tax_source": tax_source,
@@ -571,6 +577,7 @@ class WACCFunction(BaseFunction):
                     "tax_source": "Where the tax rate came from: user_input, issuer_effective (latest annual income tax expense over pre-tax income), statutory_us_21pct (a 21% US default for US issuers only, not the issuer's rate) or unavailable (no rate for a non-US issuer; tax_rate is null).",
                     "tax_period": "Period-end date of the income statement behind issuer_effective; null otherwise.",
                     "erp_source": "Where the ERP came from: user_input, damodaran_cache, damodaran_live, damodaran_snapshot_2025_01 (stale, January 2025 table) or assumption_default_5pct (a 5.0% constant).",
+                    "erp_country": "Issuer country whose Damodaran premium is used; null when the ERP is a user input, the 5.0% assumption, or the mature-market value for an unmatched country.",
                     "rd": "Pre-tax cost of debt proxy.",
                     "equity_weight": "Equity share of capital structure.",
                     "debt_weight": "Debt share of capital structure.",
