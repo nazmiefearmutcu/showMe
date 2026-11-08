@@ -123,6 +123,20 @@ def _single_cashflow_metrics(face: float, price: float, coupon: float, years: fl
             "modified_duration": years / growth, "convexity": 2 * years * years / (growth * growth)}
 
 
+_AMBIGUOUS_RATE_LOW = 0.2  # matches portfolio/greeks _MAX_PLAIN_DECIMAL_RATE (XCON-2)
+
+
+def _ambiguous_rate(value: Any, assume_decimal: bool) -> bool:
+    """True for a caller rate in (0.2, 1] with no stated unit: percent or decimal?"""
+    if assume_decimal or value in (None, ""):
+        return False
+    try:
+        number = abs(float(value))
+    except (TypeError, ValueError):
+        return False
+    return _AMBIGUOUS_RATE_LOW < number <= 1.0
+
+
 def _rate_decimal(value: Any, fallback: float, *,
                   assume_decimal: bool = False) -> float:
     """Coerce a rate input to decimal form.
@@ -238,6 +252,23 @@ class YASFunction(BaseFunction):
             except (TypeError, ValueError):
                 bench_name = str(bench_raw)  # a name such as "UST10Y" or "DBR10Y"
                 bench_raw = None
+        # XCON-2: a rate in (0.2, 1] is ambiguous (0.5 is 0.5% or 50%). Refuse it with an
+        # explicit state unless the caller states the unit with assume_decimal.
+        user_assume = bool(params.get("assume_decimal", False))
+        for rate_name, rate_value in (("coupon", coupon_raw), ("benchmark", bench_raw)):
+            if _ambiguous_rate(rate_value, user_assume):
+                value = float(rate_value)
+                return FunctionResult(
+                    code=self.code, instrument=instrument,
+                    data={"status": "input_error",
+                          "reason": (f"{rate_name} {value:g} is ambiguous: as a percent it is {value:g}%, "
+                                     f"as a decimal it is {value * 100:g}%. Enter a percent above 1 "
+                                     f"(e.g. 4.25) or the decimal with assume_decimal=true (e.g. 0.005)."),
+                          "next_actions": [f"Restate the {rate_name} as a percent above 1, or pass the "
+                                           "decimal with assume_decimal=true."],
+                          "rows": []},
+                    warnings=[f"{rate_name} {value:g} is ambiguous; not priced"],
+                )
 
         sources: list[str] = []
         warnings: list[str] = []
@@ -297,39 +328,51 @@ class YASFunction(BaseFunction):
         if not sources:
             sources.append("yield_spread_model")
 
+        # YAS#2: every benchmark states what it is, so the pane never shows a bare "BENCH x%".
         benchmark = None
+        bench_series: str | None = None
         if bench_raw is not None:
             benchmark = _rate_decimal(bench_raw, 0.0, assume_decimal=bool(params.get("assume_decimal", False)))
             metadata["benchmark"] = "input"
+            bench_label = "custom rate"
         elif bench_name is not None:
             # A named benchmark is the series it names, never a silent US 10Y substitute.
             metadata["benchmark_requested"] = bench_name
             series = _benchmark_series(bench_name)
             if series is None:
                 metadata["benchmark"] = None
+                bench_label = f"{bench_name} · no live series"
                 warnings.append(
                     f"Benchmark {bench_name} has no live series in this build; the spread is not "
                     "reported (no US 10Y substitute is used)."
                 )
             else:
                 bench = await self._cmt(series, timeout)
+                bench_label = f"{bench_name.upper()} · FRED {series}"
                 if bench is None:
                     metadata["benchmark"] = None
+                    bench_label += " unavailable"
                     warnings.append(f"FRED {series} ({bench_name}) benchmark unavailable; the spread is not reported.")
                 else:
                     benchmark = bench[0]
+                    bench_series = series
                     metadata.update({"benchmark": series, "benchmark_date": bench[1]})
                     if "fred" not in sources:
                         sources.append("fred")
         else:
+            # No benchmark named: the 10Y CMT is used, and the label says it is the default.
             bench = await self._cmt(_BENCHMARK_SERIES, timeout)
+            bench_label = f"UST10Y (default) · FRED {_BENCHMARK_SERIES}"
             if bench is None:
+                bench_label += " unavailable"
                 warnings.append("Live 10Y benchmark (FRED DGS10) unavailable; the spread is not reported.")
             else:
                 benchmark = bench[0]
+                bench_series = _BENCHMARK_SERIES
                 metadata.update({"benchmark": _BENCHMARK_SERIES, "benchmark_date": bench[1]})
                 if "fred" not in sources:
                     sources.append("fred")
+        metadata["benchmark_label"] = bench_label
         spread = metrics["ytm"] - benchmark if benchmark is not None else None
         curve = []
         for offset_bps in [-100, -50, -25, 0, 25, 50, 100]:
@@ -370,6 +413,8 @@ class YASFunction(BaseFunction):
                     "frequency": freq,
                     "benchmark_rate": benchmark,
                     "benchmark_pct": None if benchmark is None else benchmark * 100,
+                    "benchmark_label": bench_label,
+                    "benchmark_series": bench_series,
                     "ytm": metrics["ytm"],
                     "ytm_pct": metrics["ytm"] * 100,
                     "spread_vs_benchmark": spread,
