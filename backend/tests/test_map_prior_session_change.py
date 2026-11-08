@@ -143,7 +143,8 @@ def test_map_1d_change_matches_the_prior_session_move(monkeypatch: pytest.Monkey
     _patch_chart(monkeypatch, _chart_payload())
     res = asyncio.run(wmap.MAPFunction(FunctionDeps()).execute(live=True, screen_timeout=4))
     rows = {row["etf"]: row for row in res.data["rows"]}
-    spy = rows["SPY"]
+    # The US row is EUSA (MSCI USA) since MAP#2; the chart stub stands in for its quote.
+    spy = rows["EUSA"]
     assert spy["quote_type"] == "live"
     assert spy["last"] == pytest.approx(735.29)
     assert spy["change_pct"] == pytest.approx(0.3124, abs=1e-3)

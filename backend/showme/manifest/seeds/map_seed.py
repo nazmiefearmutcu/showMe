@@ -1,7 +1,7 @@
 """MAP — World market heatmap (major country equity-index ETFs).
 
 Bloomberg ``MAP<GO>`` analogue over a curated set of single-country ETFs
-(SPY, VGK, EWG, …): each tile is colored by the delivered change and
+(EUSA, EWG, MCHI, …): each tile is colored by the delivered change and
 sized by |% change| magnitude (NOT market cap — the pane states this
 explicitly). Live mode quotes each ETF and computes the intraday change
 from last vs previous close; model mode returns a deterministic, labelled
@@ -44,7 +44,7 @@ def market_map() -> FunctionManifest:
         name="World Market Heatmap",
         category=Category.SCREENING,
         intent=(
-            "Render a heat grid of major country equity-index ETFs (US/EU/DE/GB/JP/CN/IN/BR …) "
+            "Render a heat grid of MSCI single-country equity ETFs (US/DE/GB/JP/CN/IN/BR …) "
             "colored by the delivered day change and sized by |% change| magnitude so an operator "
             "can read global market breadth in one glance. Live mode uses quote-provider intraday "
             "changes; model mode returns a deterministic, labelled country template — never a "
@@ -130,8 +130,9 @@ def market_map() -> FunctionManifest:
             ],
         ),
         methodology=(
-            "MAP quotes a curated map of single-country equity-index ETFs (SPY/VGK/EWG/EWU/EWQ/"
-            "EWI/EWP/EWJ/FXI/INDA/EWZ/EWW/TUR/EZA/EWA/EWC/EWY/EWT/EWH/EIDO/KSA/ARGT/VNM/EPOL/RSX). "
+            "MAP quotes one MSCI single-country ETF per market (EUSA for the US, MCHI for China, "
+            "EWG for Germany, and so on; the full map is wmap._COUNTRY_ETFS). Markets without a "
+            "single-country MSCI ETF in the map are omitted rather than substituted. "
             "For each ETF the intraday change_pct = last / previous_close - 1 (null when either "
             "leg is missing — never a phantom -100% drop). Rows carry quote_type='live' when the "
             "quote provider answered, 'unavailable' when a single ETF failed, and 'model' in the "

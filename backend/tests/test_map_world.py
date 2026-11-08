@@ -10,7 +10,8 @@ bounded semaphore (8) and keeps contract-level honesty:
     symbols that finished in time;
   * if no symbol produced a live last, the deterministic template fallback
     (status ``provider_unavailable``) ships instead — unchanged shape;
-  * BIST/İstanbul (``XU100.IS``) is part of the expanded market map.
+  * the map holds MSCI single-country ETFs only (wc1-g28 MAP#2): BIST
+    (``XU100.IS``, an index) is no longer quoted under a country label.
 """
 from __future__ import annotations
 
@@ -37,7 +38,7 @@ async def test_failed_symbols_still_render_as_unavailable_rows(monkeypatch: Any)
     ``unavailable`` and the metadata reports the count."""
 
     async def _fake(symbol: str) -> dict[str, Any]:
-        if symbol == "SPY":
+        if symbol == "EUSA":
             return _snapshot(105.0, 100.0)
         raise RuntimeError(f"provider down for {symbol}")
 
@@ -48,8 +49,8 @@ async def test_failed_symbols_still_render_as_unavailable_rows(monkeypatch: Any)
     rows = res.data["rows"]
     assert len(rows) == FULL_SIZE
     by_etf = {row["etf"]: row for row in rows}
-    assert by_etf["SPY"]["quote_type"] == "live"
-    assert by_etf["SPY"]["change_pct"] == pytest.approx(5.0)
+    assert by_etf["EUSA"]["quote_type"] == "live"
+    assert by_etf["EUSA"]["change_pct"] == pytest.approx(5.0)
     failed = by_etf["EWG"]
     assert failed["quote_type"] == "unavailable"
     assert failed["last"] is None
@@ -78,8 +79,9 @@ async def test_all_symbols_failing_ships_empty_rows(monkeypatch: Any) -> None:
     assert "world_market_model" not in res.sources
 
 
-async def test_bist_row_is_present_and_quotes_xu100(monkeypatch: Any) -> None:
-    """BIST (İstanbul) is a first-class market in the expanded map."""
+async def test_non_msci_markets_are_not_quoted(monkeypatch: Any) -> None:
+    """MAP#2: no ticker outside the MSCI single-country set is requested, and
+    the BIST index is no longer shown as a country."""
     seen: list[str] = []
 
     async def _fake(symbol: str) -> dict[str, Any]:
@@ -89,10 +91,11 @@ async def test_bist_row_is_present_and_quotes_xu100(monkeypatch: Any) -> None:
     monkeypatch.setattr(wmap, "fetch_quote_snapshot", _fake)
     res = await MAPFunction(FunctionDeps()).execute(live=True, screen_timeout=4)
 
-    assert len(wmap._COUNTRY_ETFS) >= 45
-    rows = {row["country"]: row for row in res.data["rows"]}
-    assert rows["BIST"]["etf"] == "XU100.IS"
-    assert "XU100.IS" in seen
+    assert len(wmap._COUNTRY_ETFS) >= 40
+    countries = {row["country"] for row in res.data["rows"]}
+    assert "BIST" not in countries
+    assert "XU100.IS" not in seen
+    assert {"SPY", "VGK", "FXI", "VNM", "EGPT"}.isdisjoint(seen)
 
 
 async def test_change_pct_sign_and_sort_for_stubbed_pairs(monkeypatch: Any) -> None:
@@ -101,10 +104,10 @@ async def test_change_pct_sign_and_sort_for_stubbed_pairs(monkeypatch: Any) -> N
 
     async def _fake(symbol: str) -> dict[str, Any]:
         quotes = {
-            "SPY": (110.0, 100.0),  # +10%
+            "EUSA": (110.0, 100.0),  # +10%
             "EWZ": (90.0, 100.0),   # -10%
             "EWJ": (100.0, 100.0),  # 0%
-            "VGK": (50.0, None),    # no prev leg -> null change
+            "EWU": (50.0, None),    # no prev leg -> null change
         }
         last, prev = quotes.get(symbol, (100.0, 100.0))
         return _snapshot(last, prev)
@@ -113,17 +116,17 @@ async def test_change_pct_sign_and_sort_for_stubbed_pairs(monkeypatch: Any) -> N
     res = await MAPFunction(FunctionDeps()).execute(live=True, screen_timeout=4)
 
     by_etf = {row["etf"]: row for row in res.data["rows"]}
-    assert by_etf["SPY"]["change_pct"] == pytest.approx(10.0)
+    assert by_etf["EUSA"]["change_pct"] == pytest.approx(10.0)
     assert by_etf["EWZ"]["change_pct"] == pytest.approx(-10.0)
     assert by_etf["EWJ"]["change_pct"] == pytest.approx(0.0)
-    assert by_etf["VGK"]["change_pct"] is None
+    assert by_etf["EWU"]["change_pct"] is None
     # A live last with an unknown change leg stays "live" (only the change is
     # withheld) — same provenance semantics as the pre-rewrite row contract.
-    assert by_etf["VGK"]["quote_type"] == "live"
+    assert by_etf["EWU"]["quote_type"] == "live"
 
     order = [row["etf"] for row in res.data["rows"]]
-    assert order.index("SPY") < order.index("EWJ") < order.index("EWZ")
-    assert order.index("EWZ") < order.index("VGK")
+    assert order.index("EUSA") < order.index("EWJ") < order.index("EWZ")
+    assert order.index("EWZ") < order.index("EWU")
 
 
 async def test_pending_symbols_still_render_a_row(monkeypatch: Any) -> None:
@@ -136,7 +139,7 @@ async def test_pending_symbols_still_render_a_row(monkeypatch: Any) -> None:
     """
 
     async def _fake(symbol: str) -> dict[str, Any]:
-        if symbol == "SPY":
+        if symbol == "EUSA":
             return _snapshot(110.0, 100.0)
         await asyncio.sleep(30)
         return _snapshot(100.0, 100.0)
@@ -157,9 +160,9 @@ async def test_pending_symbols_still_render_a_row(monkeypatch: Any) -> None:
     rows = res.data["rows"]
     assert len(rows) == FULL_SIZE
     by_etf = {row["etf"]: row for row in rows}
-    assert by_etf["SPY"]["quote_type"] == "live"
-    assert by_etf["SPY"]["change_pct"] == pytest.approx(10.0)
-    # Every non-SPY symbol missed the deadline — still rendered, never dropped.
+    assert by_etf["EUSA"]["quote_type"] == "live"
+    assert by_etf["EUSA"]["change_pct"] == pytest.approx(10.0)
+    # Every non-EUSA symbol missed the deadline — still rendered, never dropped.
     assert by_etf["EWZ"]["quote_type"] == "unavailable"
     assert by_etf["EWZ"]["last"] is None
     errors = res.metadata.get("provider_errors") or []

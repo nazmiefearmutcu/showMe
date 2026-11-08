@@ -16,9 +16,13 @@ from showme.quotes import fetch_quote_snapshot
 # (``monkeypatch.setattr(wmap, "fetch_quote_snapshot", ...)``).
 
 
+# Every entry is an MSCI single-country ETF (checked against the quote chart
+# endpoint, 2026-11-08). Markets with no such ETF here are left out instead of
+# being shown with a stand-in: EU (VGK is FTSE, not MSCI), BIST (XU100.IS is
+# an index), VN (VNM is MVIS, not MSCI) and EG (EGPT does not resolve).
 _COUNTRY_ETFS = {
     # Americas
-    "US": "SPY",
+    "US": "EUSA",
     "CA": "EWC",
     "MX": "EWW",
     "BR": "EWZ",
@@ -27,7 +31,6 @@ _COUNTRY_ETFS = {
     "CO": "GXG",
     "PE": "EPU",
     # Europe
-    "EU": "VGK",
     "GB": "EWU",
     "DE": "EWG",
     "FR": "EWQ",
@@ -46,16 +49,14 @@ _COUNTRY_ETFS = {
     "GR": "GREK",
     # EMEA
     "TR": "TUR",
-    "BIST": "XU100.IS",
     "ZA": "EZA",
-    "EG": "EGPT",
     "SA": "KSA",
     "QA": "QAT",
     "AE": "UAE",
     "IL": "EIS",
     # Asia-Pacific
     "IN": "INDA",
-    "CN": "FXI",
+    "CN": "MCHI",
     "HK": "EWH",
     "KR": "EWY",
     "TW": "EWT",
@@ -63,7 +64,6 @@ _COUNTRY_ETFS = {
     "ID": "EIDO",
     "TH": "THD",
     "PH": "EPHE",
-    "VN": "VNM",
     "SG": "EWS",
     "MY": "EWM",
     "AU": "EWA",
