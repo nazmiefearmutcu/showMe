@@ -160,7 +160,9 @@ class TRANFunction(BaseFunction):
                     timeout=float(params.get("sec_timeout", 15) or 15),
                 )
                 if body:
-                    utterances = _parse_transcript_text(body, default_section="document")
+                    utterances = _parse_transcript_text(
+                        body, default_section="document", allow_speaker_headers=False,
+                    )
                     if utterances:
                         data_mode = "live_official"
                         document_type = "earnings_press_release"
@@ -478,12 +480,19 @@ _SPEAKER_RE = re.compile(
 )
 
 
-def _parse_transcript_text(raw: str, *, default_section: str = "prepared_remarks") -> list[dict[str, Any]]:
+def _parse_transcript_text(
+    raw: str,
+    *,
+    default_section: str = "prepared_remarks",
+    allow_speaker_headers: bool = True,
+) -> list[dict[str, Any]]:
     """Split text into utterances. Speaker and role come only from explicit headers.
 
     Text before any header, or any text in a source with no headers at all, gets
     ``speaker=None`` and ``role=""``: nobody is invented. ``default_section`` is
-    the section label used until a Q&A marker appears.
+    the section label used until a Q&A marker appears. ``allow_speaker_headers``
+    must be False for sources that have no speaker headers by definition (an
+    earnings press release): then no line is parsed as a header at all.
     """
     text = _html_to_text(raw) if "<" in raw and ">" in raw else raw
     text = re.sub(r"\r\n?", "\n", text)
@@ -500,7 +509,7 @@ def _parse_transcript_text(raw: str, *, default_section: str = "prepared_remarks
         if any(m in low for m in _QA_MARKERS) and len(block) < 80:
             section = "qa"
             continue
-        m = _SPEAKER_RE.match(block)
+        m = _SPEAKER_RE.match(block) if allow_speaker_headers else None
         if m and _looks_like_name(m.group(1).strip()):
             head = m.group(1).strip()
             rest = m.group(2).strip()

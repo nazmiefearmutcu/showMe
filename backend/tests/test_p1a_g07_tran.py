@@ -125,6 +125,42 @@ def test_tran2_press_release_has_no_invented_speakers(monkeypatch) -> None:
     assert all(r["section"] == "document" for r in rows)
 
 
+def test_tran2_release_text_never_mints_speakers_from_labels(monkeypatch) -> None:
+    """Release text has no headers by definition, so header parsing is skipped.
+
+    Labels outside the _NON_NAME_TOKENS denylist ("Accounts Receivable",
+    "Apple Services --") must not become speakers when the source is a release.
+    """
+    release = (
+        "Apple reports results\n\n"
+        "Accounts Receivable: 1,000\n\n"
+        "Apple Services -- strong quarter for subscriptions\n\n"
+        "Accounts Payable: 2,000\n"
+    )
+
+    async def _fake_sec(symbol, deps=None):  # noqa: ARG001
+        return {"symbol": symbol, "form": "8-K", "source": "sec_edgar"}, release
+
+    from showme.engine.services import transcripts_archive as archive
+
+    monkeypatch.setattr(tran_mod, "_fetch_sec_earnings_press_release", _fake_sec)
+    monkeypatch.setattr(archive, "list_for_symbol", lambda *a, **k: [])
+    result = asyncio.run(TRANFunction().execute(_instrument()))
+    rows = result.data["utterances"]
+    assert rows
+    assert all(not r.get("speaker") for r in rows)
+    assert all(r.get("role") == "" for r in rows)
+    assert all(r["section"] == "document" for r in rows)
+
+
+def test_tran2_parser_without_header_mode_attributes_nobody() -> None:
+    text = "Accounts Receivable: 1,000\n\nApple Services -- strong quarter\n"
+    rows = _parse_transcript_text(text, default_section="document", allow_speaker_headers=False)
+    assert rows
+    assert all(r["speaker"] is None for r in rows)
+    assert all(r["section"] == "document" for r in rows)
+
+
 def test_tran2_transcript_headers_still_attribute_speakers_and_roles() -> None:
     rows = _parse_transcript_text(_SAMPLE_TRANSCRIPT)
     by_speaker = {}
