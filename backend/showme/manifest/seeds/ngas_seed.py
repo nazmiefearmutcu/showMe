@@ -59,23 +59,6 @@ def ngas() -> FunctionManifest:
                 options=["NG=F"],
             ),
             InputSpec(
-                name="range",
-                label="Range",
-                control=ControlKind.SELECT,
-                required=True,
-                description="Lookback window.",
-                options=["1M", "3M", "6M", "1Y", "5Y"],
-            ),
-            InputSpec(
-                name="interval",
-                label="Interval",
-                control=ControlKind.SELECT,
-                required=True,
-                description="Bar interval.",
-                options=["1h", "1d", "1wk"],
-                depends_on=["range"],
-            ),
-            InputSpec(
                 name="provider_mode",
                 label="Data mode",
                 control=ControlKind.PROVIDER_MODE,
@@ -89,8 +72,6 @@ def ngas() -> FunctionManifest:
         ],
         defaults={
             "contract": "NG=F",
-            "range": "6M",
-            "interval": "1d",
             "provider_mode": DataMode.DELAYED_REFERENCE.value,
         },
         provider_chain=ProviderChain(
