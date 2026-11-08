@@ -521,6 +521,32 @@ def _fetch_coingecko_quote(symbol: str) -> dict[str, Any]:
     )
 
 
+def _prior_session_close(
+    meta: dict[str, Any],
+    timestamps: list[float | None],
+    closes: list[float | None],
+) -> float | None:
+    """Close of the most recent daily bar before the current regular session.
+
+    Uses the bar timestamps against ``currentTradingPeriod.regular.start`` when
+    Yahoo publishes it, so today's bar (or a still-forming one) is never taken as
+    the baseline. Without a session boundary it falls back to the penultimate
+    non-null close, which is the prior session for a daily series.
+    """
+    trading = meta.get("currentTradingPeriod") or {}
+    regular = trading.get("regular") if isinstance(trading, dict) else None
+    regular_start = number(regular.get("start")) if isinstance(regular, dict) else None
+    if regular_start is not None and len(timestamps) == len(closes):
+        prior = [
+            close
+            for ts, close in zip(timestamps, closes)
+            if ts is not None and close is not None and ts < regular_start
+        ]
+        if prior:
+            return prior[-1]
+    return previous_non_null(closes)
+
+
 def _fetch_yahoo_chart_quote(symbol: str) -> dict[str, Any]:
     provider_symbol = yahoo_symbol(symbol)
     response = requests.get(
@@ -536,13 +562,14 @@ def _fetch_yahoo_chart_quote(symbol: str) -> dict[str, Any]:
     quote = (((result.get("indicators") or {}).get("quote") or [None])[0]) or {}
     closes = [number(v) for v in quote.get("close") or []]
     volumes = [number(v) for v in quote.get("volume") or []]
+    timestamps = [number(v) for v in result.get("timestamp") or []]
     last_close = last_non_null(closes)
     last = number(meta.get("regularMarketPrice")) or last_close
-    prev = (
-        number(meta.get("previousClose"))
-        or number(meta.get("chartPreviousClose"))
-        or previous_non_null(closes)
-    )
+    # MAP#1: the request is range=5d, so meta.chartPreviousClose is the close before the
+    # 5-day window, not the prior session. The prior-session close is the last daily bar
+    # before the current regular session started (or the penultimate bar when no session
+    # boundary is published).
+    prev = _prior_session_close(meta, timestamps, closes)
     volume = number(meta.get("regularMarketVolume")) or last_non_null(volumes)
     return normalized_snapshot(
         symbol=symbol,
