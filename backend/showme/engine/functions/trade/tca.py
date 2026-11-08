@@ -16,6 +16,9 @@ the network genuinely fails.
 from __future__ import annotations
 
 import asyncio
+import csv
+import io
+import json
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
@@ -34,7 +37,9 @@ _METHODOLOGY = (
     "yfinance intraday candles otherwise) over the fill's own session, i.e. the "
     "UTC calendar day of the fill (TCA#2: never a window ending today). A fill "
     "without a timestamp, or whose session has no intraday bars, has no live "
-    "benchmark and falls back to its arrival price. "
+    "benchmark and falls back to its arrival price. The optional transactions "
+    "input (JSON or CSV) replaces the local store, and window keeps only fills "
+    "whose filled_at lies inside the lookback (ALL or omitted: no lookback). "
     "Only real placed orders count: paper/shadow signals that never reached a "
     "broker are excluded, and rows without a positive executed size are "
     "skipped rather than defaulted. "
@@ -120,11 +125,143 @@ def _day_bounds_ms(day: date) -> tuple[int, int]:
 
 _EXCLUSION_LABELS = {
     "unfilled_no_execution": "no recorded execution",
-    "no_fill_price": "placed but no broker fill price",
+    "no_fill_price": "no broker fill price",
     "no_positive_qty": "no positive executed size",
     "outside_window": "outside the requested window",
     "timestamp_missing": "no timestamp to apply the window to",
+    "invalid_row": "malformed transaction row",
+    "missing_symbol": "no symbol",
+    "invalid_side": "side is not BUY/SELL",
 }
+
+# TCA#4: `window` is a lookback on filled_at. Omitted or ALL = no lookback filter.
+_WINDOW_DAYS = {"1D": 1, "1W": 7, "1M": 30, "3M": 90, "1Y": 365}
+
+_TX_ALIASES = {
+    "qty": "quantity", "size": "quantity",
+    "price": "avg_fill_px", "fill_price": "avg_fill_px", "fill_px": "avg_fill_px",
+    "avg_fill": "avg_fill_px",
+    "arrival": "arrival_px", "arrival_price": "arrival_px",
+    "time": "filled_at", "ts": "filled_at", "timestamp": "filled_at",
+    "filled": "filled_at",
+    "id": "order_id",
+}
+_TX_POSITIONAL = ["symbol", "side", "quantity", "avg_fill_px", "arrival_px",
+                  "filled_at", "order_id"]
+_SIDE_MAP = {"BUY": "BUY", "B": "BUY", "LONG": "BUY",
+             "SELL": "SELL", "S": "SELL", "SHORT": "SELL"}
+
+
+def _window_cutoff(window: Any, now: datetime) -> datetime | None:
+    """Earliest filled_at kept by ``window``; None means no lookback filter."""
+    if window is None:
+        return None
+    text = str(window).strip().upper()
+    if text in ("", "ALL"):
+        return None
+    if text == "YTD":
+        return datetime(now.year, 1, 1, tzinfo=timezone.utc)
+    days = _WINDOW_DAYS.get(text)
+    if days is None:
+        raise ValueError(
+            f"Unsupported window '{window}'; expected one of "
+            "1D, 1W, 1M, 3M, YTD, 1Y, ALL.")
+    return now - timedelta(days=days)
+
+
+def _window_skip(filled_at: Any, cutoff: datetime | None) -> str | None:
+    if cutoff is None:
+        return None
+    ts = _parse_ts(filled_at)
+    if ts is None:
+        return "timestamp_missing"
+    return "outside_window" if ts < cutoff else None
+
+
+def _has_inline_transactions(raw: Any) -> bool:
+    if raw is None:
+        return False
+    if isinstance(raw, (list, dict)):
+        return len(raw) > 0
+    return bool(str(raw).strip())
+
+
+def _parse_transactions_rows(raw: Any) -> list[Any]:
+    """Parse the inline `transactions` input (JSON or CSV) into raw row objects.
+
+    Raises ValueError when the text cannot be read as JSON or CSV at all; row
+    level problems are reported as exclusions later, not here.
+    """
+    if isinstance(raw, dict):
+        return [raw]
+    if isinstance(raw, list):
+        return raw
+    text = str(raw).strip()
+    if text[:1] in ("[", "{"):
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"transactions is not valid JSON ({exc.msg}).") from exc
+        if isinstance(parsed, dict):
+            return [parsed]
+        if isinstance(parsed, list):
+            return parsed
+        raise ValueError("transactions JSON must be an object or an array of objects.")
+    grid = [r for r in csv.reader(io.StringIO(text)) if any(c.strip() for c in r)]
+    if not grid:
+        return []
+    first = [c.strip().lower() for c in grid[0]]
+    if first and first[0] in ("symbol", "ticker", "instrument"):
+        header = [_TX_ALIASES.get(h, h) for h in first]
+        body = grid[1:]
+    else:
+        header = _TX_POSITIONAL
+        body = grid
+    return [dict(zip(header, [c.strip() for c in r])) for r in body]
+
+
+def _to_positive(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, str):
+        value = value.strip().replace(",", "")
+        if not value:
+            return None
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        return None
+    if num != num or num in (float("inf"), float("-inf")) or num <= 0:
+        return None
+    return num
+
+
+def _normalise_transaction(row: Any, index: int) -> tuple[dict[str, Any] | None, str | None]:
+    """Return (fill, None) for a usable row, or (None, exclusion_reason)."""
+    if not isinstance(row, dict):
+        return None, "invalid_row"
+    symbol = str(row.get("symbol") or "").strip().upper()
+    if not symbol:
+        return None, "missing_symbol"
+    side = _SIDE_MAP.get(str(row.get("side") or "").strip().upper())
+    if side is None:
+        return None, "invalid_side"
+    qty = _to_positive(row.get("quantity"))
+    if qty is None:
+        return None, "no_positive_qty"
+    px = _to_positive(row.get("avg_fill_px"))
+    if px is None:
+        return None, "no_fill_price"
+    return {
+        "order_id": str(row.get("order_id") or "").strip() or f"tx-{index}",
+        "symbol": symbol,
+        "broker": str(row.get("broker") or "").strip() or "inline",
+        "side": side,
+        "quantity": qty,
+        "avg_fill_px": px,
+        "arrival_px": _to_positive(row.get("arrival_px")),
+        "filled_at": str(row.get("filled_at") or "").strip() or None,
+    }, None
 
 
 def _excluded_payload(excluded: dict[str, int]) -> dict[str, Any]:
@@ -271,9 +408,28 @@ class TCAFunction(BaseFunction):
         except (TypeError, ValueError):
             limit = 200
 
-        # ---- 1) Load REAL fills (bot ledger first, then manual order_history).
+        # ---- 1) Load REAL fills: the inline transactions input when given (it
+        # replaces the local store), else the bot ledger + order_history.
+        try:
+            cutoff = _window_cutoff(params.get("window"), datetime.now(timezone.utc))
+        except ValueError as exc:
+            return self._input_error(instrument, benchmark, as_of, str(exc))
         excluded: dict[str, int] = {}
-        fills = self._load_fills(symbol=symbol, broker=broker, limit=limit, excluded=excluded)
+        tx_raw = params.get("transactions")
+        if _has_inline_transactions(tx_raw):
+            try:
+                tx_rows = _parse_transactions_rows(tx_raw)
+            except ValueError as exc:
+                return self._input_error(
+                    instrument, benchmark, as_of, f"Invalid transactions input: {exc}")
+            fills = self._fills_from_transactions(
+                tx_rows, symbol=symbol, broker=broker, cutoff=cutoff,
+                excluded=excluded)[:limit]
+            source_names = {"inline_transactions"}
+        else:
+            fills = self._load_fills(symbol=symbol, broker=broker, limit=limit,
+                                     excluded=excluded, cutoff=cutoff)
+            source_names = {"bot_fills", "order_history"}
         excluded_orders = _excluded_payload(excluded)
         exclusion_warnings = _exclusion_warnings(excluded_orders)
 
@@ -298,7 +454,7 @@ class TCAFunction(BaseFunction):
                         "Use EXEC to monitor parent orders before TCA.",
                     ],
                 },
-                sources=["bot_fills", "order_history"],
+                sources=sorted(source_names),
                 warnings=["No executed fills available for trade cost analysis.",
                           *exclusion_warnings],
             )
@@ -306,7 +462,7 @@ class TCAFunction(BaseFunction):
         # ---- 2) Resolve live VWAP benchmark per distinct symbol.
         benchmark_warnings: list[str] = list(exclusion_warnings)
         provider_failed = False
-        sources: set[str] = {"bot_fills", "order_history"}
+        sources: set[str] = set(source_names)
         # TCA#3: TWAP selects the time-weighted bar mean; every other live
         # benchmark (VWAP, and the VWAP fallback of ARRIVAL/IS) uses VWAP.
         bench_kind = "TWAP" if benchmark == "TWAP" else "VWAP"
@@ -479,9 +635,53 @@ class TCAFunction(BaseFunction):
 
     # -- helpers --------------------------------------------------------------
 
+    @staticmethod
+    def _input_error(instrument: Instrument | None, benchmark: str,
+                     as_of: str, reason: str) -> FunctionResult:
+        return FunctionResult(
+            code=TCAFunction.code, instrument=instrument,
+            data={
+                "status": "input_error",
+                "reason": reason,
+                "as_of": as_of,
+                "benchmark": benchmark,
+                "rows": [],
+                "series": [],
+                "summary": {"benchmark": benchmark, "fill_count": 0},
+                "next_actions": ["Correct the TCA input (window, transactions) and re-run."],
+            },
+            sources=[],
+            warnings=[reason],
+        )
+
+    @staticmethod
+    def _fills_from_transactions(
+        rows: list[Any], *, symbol: str | None, broker: str | None,
+        cutoff: datetime | None, excluded: dict[str, int],
+    ) -> list[dict[str, Any]]:
+        """Normalise inline transaction rows; malformed rows are counted, not dropped silently."""
+        want_sym = symbol.upper() if symbol else None
+        want_broker = broker.lower() if broker else None
+        out: list[dict[str, Any]] = []
+        for index, raw in enumerate(rows, start=1):
+            fill, reason = _normalise_transaction(raw, index)
+            if fill is None:
+                excluded[reason] = excluded.get(reason, 0) + 1
+                continue
+            if want_sym and fill["symbol"] != want_sym:
+                continue
+            if want_broker and fill["broker"].lower() != want_broker:
+                continue
+            skip = _window_skip(fill["filled_at"], cutoff)
+            if skip:
+                excluded[skip] = excluded.get(skip, 0) + 1
+                continue
+            out.append(fill)
+        return out
+
     def _load_fills(
         self, *, symbol: str | None, broker: str | None, limit: int,
-        excluded: dict[str, int] | None = None,
+        excluded: dict[str, int] | None = None, cutoff: datetime | None = None,
     ) -> list[dict[str, Any]]:
         """Return normalised real fills from the bot ledger + order_history.
 
@@ -547,6 +747,11 @@ class TCAFunction(BaseFunction):
                     # arrival/decision reference = the signal-bar close, which
                     # is distinct from the broker fill_price when slippage > 0.
                     arrival = entry.price if entry.fill_price else None
+                    filled_at = entry.bar_close_time or entry.timestamp
+                    skip = _window_skip(filled_at, cutoff)
+                    if skip:
+                        _skip(skip)
+                        continue
                     out.append({
                         "order_id": entry.order_id or f"{meta.id[:8]}-{entry.bar_index}",
                         "symbol": bot_sym or None,
@@ -555,7 +760,7 @@ class TCAFunction(BaseFunction):
                         "quantity": qty,
                         "avg_fill_px": float(fill_px),
                         "arrival_px": float(arrival) if arrival is not None else None,
-                        "filled_at": entry.bar_close_time or entry.timestamp,
+                        "filled_at": filled_at,
                     })
         except Exception:  # noqa: BLE001 — ledger optional / may not exist yet
             pass
@@ -580,6 +785,12 @@ class TCAFunction(BaseFunction):
                 # absent, arrival stays None and slippage/IS stay unset.
                 arrival = md.get("arrival_price")
                 ts = o.get("ts")
+                filled_at = (datetime.fromtimestamp(ts, timezone.utc).isoformat()
+                             if ts else None)
+                skip = _window_skip(filled_at, cutoff)
+                if skip:
+                    _skip(skip)
+                    continue
                 out.append({
                     "order_id": o.get("order_id") or f"ord-{o.get('id')}",
                     "symbol": (o.get("symbol") or "").upper() or None,
@@ -588,8 +799,7 @@ class TCAFunction(BaseFunction):
                     "quantity": float(filled_qty),
                     "avg_fill_px": float(avg_fill),
                     "arrival_px": float(arrival) if arrival is not None else None,
-                    "filled_at": (datetime.fromtimestamp(ts, timezone.utc).isoformat()
-                                  if ts else None),
+                    "filled_at": filled_at,
                 })
         except Exception:  # noqa: BLE001 — store optional
             pass

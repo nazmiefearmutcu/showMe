@@ -354,3 +354,86 @@ def test_excluded_unfilled_orders_are_counted_and_warned(tmp_path, monkeypatch):
         "unfilled_no_execution": 1, "no_fill_price": 1, "no_positive_qty": 1,
     }, data["excluded_orders"]
     assert any("Excluded 3" in w for w in res.warnings), res.warnings
+
+
+# ---------------------------------------------------------------------------
+# TCA#4 — the seed's `window` and `transactions` inputs must be honoured.
+# ---------------------------------------------------------------------------
+def test_window_excludes_fills_older_than_the_lookback(tmp_path, monkeypatch):
+    from showme.engine.core.base_function import FunctionDeps
+    from showme.engine.functions.trade.tca import TCAFunction
+
+    _use_temp_home(tmp_path, monkeypatch)
+    BotStore.fresh().save(BotRecord(
+        strategy_id="s1", credential_id="c1", exchange_id="binance",
+        symbol="BTCUSDT", timeframe="1h", mode="live", enabled=True,
+        signal_log=[
+            SignalEntry(bar_index=0, bar_time="2026-06-01T00:00:00Z", kind="entry",
+                        price=150.0, action="placed", order_id="old1",
+                        fill_price=160.0, qty=1.0, bar_close_time="2026-06-01T00:00:00Z"),
+            SignalEntry(bar_index=1, bar_time="2026-06-01T01:00:00Z", kind="entry",
+                        price=150.0, action="placed", order_id="new1",
+                        fill_price=160.0, qty=1.0),  # timestamp = now
+        ],
+    ))
+    fn = TCAFunction(deps=FunctionDeps(binance=_TwoBarBinance()))
+
+    windowed = _run(fn.execute(symbol="BTCUSDT", benchmark="VWAP", window="1M")).data
+    assert [r["order_id"] for r in windowed["rows"]] == ["new1"]
+    assert windowed["excluded_orders"]["reasons"] == {"outside_window": 1}
+
+    everything = _run(fn.execute(symbol="BTCUSDT", benchmark="VWAP", window="ALL")).data
+    assert everything["summary"]["fill_count"] == 2
+
+
+def test_inline_transactions_replace_the_local_store(tmp_path, monkeypatch):
+    from showme.engine.core.base_function import FunctionDeps
+    from showme.engine.functions.trade.tca import TCAFunction
+    from showme.engine.services import order_history
+
+    _use_temp_home(tmp_path, monkeypatch)
+
+    async def _no_bars(self, symbol, *args, **kwargs):
+        return []
+
+    monkeypatch.setattr(TCAFunction, "_yfinance_intraday", _no_bars)
+    order_history.record_order(
+        broker="ibkr", order_id="ord-500", symbol="AAPL", side="BUY",
+        quantity=3.0, asset_class="EQUITY", price=190.0, type="LIMIT",
+        status="filled",
+        metadata={"fills": [{"px": 191.0, "qty": 3.0}], "filled_qty": 3.0,
+                  "arrival_price": 190.0},
+    )
+    blotter = (
+        "symbol,side,quantity,avg_fill_px,arrival_px,filled_at\n"
+        "AAPL,BUY,10,190.5,190.0,2026-11-06T15:00:00Z\n"
+        "AAPL,SELL,5,0,190.0,2026-11-06T15:05:00Z\n"
+    )
+    res = _run(TCAFunction(deps=FunctionDeps()).execute(
+        transactions=blotter, benchmark="ARRIVAL"))
+    data = res.data
+
+    assert [r["order_id"] for r in data["rows"]] == ["tx-1"], data["rows"]
+    assert data["rows"][0]["quantity"] == pytest.approx(10.0)
+    assert data["excluded_orders"]["reasons"] == {"no_fill_price": 1}
+    assert "inline_transactions" in res.sources
+    assert "order_history" not in res.sources
+
+
+def test_json_transactions_and_invalid_transactions(tmp_path, monkeypatch):
+    from showme.engine.core.base_function import FunctionDeps
+    from showme.engine.functions.trade.tca import TCAFunction
+
+    _use_temp_home(tmp_path, monkeypatch)
+    fn = TCAFunction(deps=FunctionDeps(binance=_TwoBarBinance()))
+
+    ok = _run(fn.execute(
+        transactions='[{"symbol":"BTCUSDT","side":"buy","quantity":2,'
+                     '"avg_fill_px":101,"order_id":"j1"}]',
+        benchmark="VWAP")).data
+    assert [r["order_id"] for r in ok["rows"]] == ["j1"]
+    assert ok["rows"][0]["side"] == "BUY"
+
+    bad = _run(fn.execute(transactions='[{"symbol": ', benchmark="VWAP")).data
+    assert bad["status"] == "input_error"
+    assert "transactions" in bad["reason"].lower()
