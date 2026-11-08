@@ -306,11 +306,12 @@ class SECFFunction(BaseFunction):
             )
             page = result.data.get("rows") or []
             if live and self.deps.yfinance and page:
-                quotes, quote_warnings = await _quote_rows(
+                quotes, quote_warnings = await _secf_quote_rows(
                     self.deps.yfinance,
                     [str(row["symbol"]) for row in page],
                     timeout=quote_timeout,
                     screen_timeout=screen_timeout,
+                    concurrency=int(_float_param(params, "quote_concurrency", 8.0)),
                 )
                 if quotes:
                     result.data["rows"] = _merge_quote_rows(page, quotes)
@@ -329,11 +330,12 @@ class SECFFunction(BaseFunction):
         page = filtered[:limit]
         live_quotes = False
         if live and self.deps.yfinance and page:
-            quotes, warnings = await _quote_rows(
+            quotes, warnings = await _secf_quote_rows(
                 self.deps.yfinance,
                 [str(row["symbol"]) for row in page],
                 timeout=quote_timeout,
                 screen_timeout=screen_timeout,
+                concurrency=int(_float_param(params, "quote_concurrency", 8.0)),
             )
             if quotes:
                 page = _merge_quote_rows(page, quotes)
@@ -1425,6 +1427,50 @@ def _flag_curated_yield_matches(
             f"{count} matched row(s) carry a curated yield for a tenor no live provider "
             "answered (quote_type unavailable); the yield filter does not verify them."
         )
+
+
+async def _secf_quote_rows(
+    provider: Any,
+    symbols: list[str],
+    *,
+    timeout: float,
+    screen_timeout: float,
+    concurrency: int,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """SECF quote enrichment: one batched call, then a bounded fan-out for the rest.
+
+    SECF#3: the per-symbol fan-out alone let the provider's shared 2 rps bucket
+    eat the 3 s budget, so most of a 23-row page stayed unquoted. The batch
+    endpoint covers the whole page in a few calls. Symbols it does not return
+    (non-Yahoo tickers, batch errors) get the bounded burst fan-out on the
+    remaining screen budget. Rows neither path returns stay quote_state
+    "reference".
+    """
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    quotes: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    try:
+        quotes, warnings = await asyncio.wait_for(
+            _batch_quote_rows(provider, symbols),
+            timeout=screen_timeout,
+        )
+    except asyncio.TimeoutError:
+        warnings = [f"batch quote request exceeded {screen_timeout:.1f}s"]
+    got = {str(row.get("symbol") or "").upper() for row in quotes}
+    missing = [symbol for symbol in symbols if symbol.upper() not in got]
+    if missing:
+        remaining = max(0.5, screen_timeout - (loop.time() - started))
+        extra, extra_warnings = await _screen_quote_rows(
+            provider,
+            missing,
+            timeout=timeout,
+            screen_timeout=remaining,
+            concurrency=concurrency,
+        )
+        quotes = [*quotes, *extra]
+        warnings = [*warnings, *extra_warnings]
+    return quotes, warnings
 
 
 def _security_text_search(rows: list[dict[str, Any]], query: str) -> list[dict[str, Any]]:
