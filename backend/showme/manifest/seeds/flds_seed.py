@@ -56,9 +56,9 @@ def flds() -> FunctionManifest:
                 control=ControlKind.TEXT,
                 required=False,
                 description=(
-                    "Matches field names and words in names, descriptions and categories that start with "
-                    "the query (a multi-word query is a phrase). Name-prefix matches are listed first. "
-                    "Empty returns the full catalog."
+                    "Matches field names, ShowMe mnemonics (for example PX_LAST) and words in names, "
+                    "descriptions and categories that start with the query (a multi-word query is a phrase). "
+                    "Name or mnemonic prefix matches are listed first. Empty returns the full catalog."
                 ),
             ),
             InputSpec(
@@ -70,9 +70,11 @@ def flds() -> FunctionManifest:
                 options=[
                     "market",
                     "valuation",
+                    "fundamental",
                     "statement",
+                    "cash_flow",
                     "technical",
-                    "option",
+                    "options",
                     "risk",
                     "fixed_income",
                     "general",
@@ -113,8 +115,10 @@ def flds() -> FunctionManifest:
         table_schema=TableSchema(
             columns=[
                 ColumnSpec(key="field", label="Field", kind="text"),
+                ColumnSpec(key="mnemonic", label="Mnemonic", kind="text"),
                 ColumnSpec(key="category", label="Category", kind="tag"),
                 ColumnSpec(key="description", label="Description", kind="text"),
+                ColumnSpec(key="unit", label="Unit", kind="text"),
                 ColumnSpec(key="provider", label="Provider", kind="tag"),
                 ColumnSpec(key="availability", label="Availability", kind="tag"),
                 ColumnSpec(key="example", label="Example", kind="text"),
@@ -132,16 +136,19 @@ def flds() -> FunctionManifest:
             ],
         ),
         methodology=(
-            "FLDS searches the local ShowMe field catalog by field name, description, and category. "
-            "The catalog is an in-process reference index of field names. Only the OHLCV fields flagged "
+            "FLDS searches the local ShowMe field catalog by field name, mnemonic, description, and category. "
+            "The catalog is an in-process reference index of field names. Each row has a ShowMe mnemonic alias "
+            "(a lookup alias, not a vendor field ID) and the unit of its value. Only the OHLCV fields flagged "
             "bql_get=true are returned by BQL get() (live mode fetches OHLCV rows only); the other names "
-            "have no provider mapping in this catalog and are not implied to be BQL, screener or analytics "
-            "fields. It is not a live market-data request and never reaches any provider. Matching is "
-            "case-insensitive: a field matches when its name, or a word in its name, description or category, "
-            "starts with the query; name-prefix matches are ranked first. Companion to BQL and DAPI."
+            "have no provider mapping in this catalog, carry no value, and are not implied to be BQL, screener "
+            "or analytics fields. It is not a live market-data request and never reaches any provider. Matching "
+            "is case-insensitive: a field matches when its name or mnemonic, or a word in it, description or "
+            "category, starts with the query; name or mnemonic prefix matches are ranked first. Companion to BQL and DAPI."
         ),
         field_dict={
             "rows[].field": FieldDef(description="Canonical catalog field name (reference index); see bql_get and availability for whether any function returns it.", source="catalog"),
+            "rows[].mnemonic": FieldDef(description="ShowMe mnemonic alias for the field (for example PX_LAST). Not a vendor field ID.", source="catalog"),
+            "rows[].unit": FieldDef(description="Unit of the value: currency, shares, ratio (x), percent (%), years, index (0-100), and so on. Percent is in percent units.", source="catalog"),
             "rows[].provider": FieldDef(description="Provider that returns this field in ShowMe (yfinance for OHLCV); null when none is mapped.", source="catalog"),
             "rows[].availability": FieldDef(description="bql_live_ohlcv when BQL live mode returns it; reference_only when no provider returns it.", source="catalog"),
             "rows[].category": FieldDef(description="market/valuation/statement/technical/option/risk/fixed_income/general.", source="catalog"),
