@@ -12,7 +12,10 @@ WACC = (E/V × Re) + (D/V × Rd × (1 − T))
 from __future__ import annotations
 
 import asyncio
+import math
 from typing import Any
+
+import pandas as pd
 
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from showme.engine.core.instrument import AssetClass, Instrument
@@ -59,21 +62,43 @@ def _erp_quality(erp_source: str) -> str:
     return "live"
 
 
-def _issuer_effective_tax(raw: dict[str, Any]) -> float | None:
-    """Effective tax rate from the issuer's income tax expense over pre-tax income.
+# WACC#4: the 21% constant is the US federal statutory rate. It may stand in
+# only for a US issuer; any other issuer without its own effective rate has none.
+_US_COUNTRY_NAMES = frozenset({"US", "USA", "UNITED STATES", "UNITED STATES OF AMERICA"})
+_TAX_EXPENSE_LINES = ("Income Tax Expense", "Tax Provision")
+_PRETAX_LINES = ("Pretax Income", "Pre-Tax Income", "Income Before Tax")
 
-    None unless both figures are present, pre-tax income is positive and the
-    ratio is a plausible rate.
-    """
+
+def _finite_float(value: Any) -> float | None:
     try:
-        tax_expense = float(raw.get("incomeTaxExpense"))
-        pretax = float(raw.get("pretaxIncome"))
+        number = float(value)
     except (TypeError, ValueError):
         return None
-    if pretax <= 0:
+    return number if math.isfinite(number) else None
+
+
+def _effective_tax_from_income(income: Any) -> tuple[float, str] | None:
+    """Effective tax rate from an annual income statement, newest period first.
+
+    Returns (rate, period) for the most recent annual column that has both the
+    income tax expense and a positive pre-tax income and a plausible rate
+    (0 <= rate < 0.5). None when no column qualifies.
+    """
+    if not isinstance(income, pd.DataFrame) or income.empty:
         return None
-    rate = tax_expense / pretax
-    return rate if 0.0 <= rate < 0.5 else None
+    tax_line = next((line for line in _TAX_EXPENSE_LINES if line in income.index), None)
+    pretax_line = next((line for line in _PRETAX_LINES if line in income.index), None)
+    if tax_line is None or pretax_line is None:
+        return None
+    for column in income.columns:
+        tax_expense = _finite_float(income.at[tax_line, column])
+        pretax = _finite_float(income.at[pretax_line, column])
+        if tax_expense is None or pretax is None or pretax <= 0:
+            continue
+        rate = tax_expense / pretax
+        if 0.0 <= rate < 0.5:
+            return rate, str(getattr(column, "date", lambda: column)())
+    return None
 
 
 def _first_set(params: dict[str, Any], *names: str) -> Any:
@@ -312,6 +337,8 @@ class WACCFunction(BaseFunction):
         # Tax rate / E/V/D ratios — best-effort from yfinance. The tax rate is
         # resolved after this block, once the issuer's own figures are read.
         issuer_tax: float | None = None
+        tax_period: str | None = None
+        issuer_country = ""
         # Audit Q3 #16: capital-structure provenance. ``debt_value_source``
         # is "book" when sourced from totalDebt (yfinance balance sheet),
         # "market" when from a bond-price feed (not yet wired), or
@@ -332,7 +359,7 @@ class WACCFunction(BaseFunction):
                     timeout=float(params.get("yfinance_timeout", 8)),
                 )
                 raw = (rd_data.extras or {}).get("raw", {}) if hasattr(rd_data, "extras") else {}
-                issuer_tax = _issuer_effective_tax(raw)
+                issuer_country = str(getattr(rd_data, "country", None) or "").strip().upper()
                 mc = raw.get("marketCap") or 0
                 debt = raw.get("totalDebt") or 0
                 v = (mc or 0) + (debt or 0)
@@ -374,23 +401,51 @@ class WACCFunction(BaseFunction):
                 sources.append("yfinance")
         except Exception as e:
             warnings.append(f"yfinance ratios: {e}")
+        # WACC#4: the issuer's effective tax comes from its annual income statement
+        # (income tax expense over pre-tax income), the FUNDAMENTALS feed. The
+        # REFDATA info dict carries no statement lines.
+        try:
+            if self.deps.yfinance:
+                from showme.engine.core.base_data_source import DataKind, DataRequest
+                fundamentals = await asyncio.wait_for(
+                    self.deps.yfinance.fetch(DataRequest(
+                        kind=DataKind.FUNDAMENTALS, instrument=instrument,
+                        extra={"period": "annual"},
+                    )),
+                    timeout=float(params.get("yfinance_timeout", 8)),
+                )
+                income = fundamentals.get("income") if isinstance(fundamentals, dict) else None
+                found = _effective_tax_from_income(income)
+                if found is not None:
+                    issuer_tax, tax_period = found
+        except Exception as e:
+            warnings.append(f"yfinance income statement: {e}")
         # WACC#4: the tax rate is labelled with where it came from. A caller
         # value wins, then the issuer's own effective rate, then the 21% US
-        # statutory rate, which is flagged as a default.
+        # statutory rate for a US issuer (flagged as a default). Any other issuer
+        # with no rate of its own leaves the tax unknown.
         tax_user = _first_set(params, "tax_rate_override", "tax_rate")
-        tax: float
+        tax: float | None
         if tax_user is not None:
             tax = float(tax_user)
             tax_source = "user_input"
         elif issuer_tax is not None:
             tax = issuer_tax
             tax_source = "issuer_effective"
-        else:
+        elif issuer_country in _US_COUNTRY_NAMES:
             tax = 0.21
             tax_source = "statutory_us_21pct"
             warnings.append(
                 "effective tax rate not available from the provider; WACC uses the 21% US "
                 "statutory rate (tax_source statutory_us_21pct). Pass tax_rate_override to set it."
+            )
+        else:
+            tax = None
+            tax_source = "unavailable"
+            country_note = f"issuer country {issuer_country}" if issuer_country else "issuer country unknown"
+            warnings.append(
+                f"effective tax rate not available from the provider for {country_note}; the 21% "
+                "statutory rate applies to US issuers only. Pass tax_rate_override to set it."
             )
         re_capm: float | None = (
             rf + beta * erp if rf is not None and beta is not None else None
@@ -404,6 +459,8 @@ class WACCFunction(BaseFunction):
             missing.append("cost of debt (FRED BBB/AAA yield or issuer interest)")
         if ev_ratio is None and not financial_issuer:
             missing.append("capital structure (market cap and total debt)")
+        if tax is None:
+            missing.append("tax rate (issuer effective rate; the 21% statutory rate is US-only)")
         wacc: float | None = None
         if financial_issuer:
             warnings.append(
@@ -415,7 +472,9 @@ class WACCFunction(BaseFunction):
             wacc = ev_ratio * re_capm + dv_ratio * rd * (1 - tax)
         rows = [
             {"component": "Cost of equity", "value": re_capm, "formula": "Re = rf + beta * ERP"},
-            {"component": "After-tax cost of debt", "value": None if rd is None else rd * (1 - tax), "formula": "Rd * (1 - tax_rate)"},
+            {"component": "After-tax cost of debt",
+             "value": rd * (1 - tax) if rd is not None and tax is not None else None,
+             "formula": "Rd * (1 - tax_rate)"},
             {"component": "Equity weight", "value": ev_ratio, "formula": "E / (E + D)"},
             {"component": "Debt weight", "value": dv_ratio, "formula": "D / (E + D)"},
             {"component": "WACC", "value": wacc, "formula": "(E/V * Re) + (D/V * Rd * (1 - tax))"},
@@ -488,8 +547,9 @@ class WACCFunction(BaseFunction):
                 "erp": erp,
                 "erp_source": erp_source,
                 "rd": float(rd) if rd is not None else None,
-                "tax_rate": float(tax),
+                "tax_rate": float(tax) if tax is not None else None,
                 "tax_source": tax_source,
+                "tax_period": tax_period,
                 "equity_weight": ev_ratio, "debt_weight": dv_ratio,
                 "rows": rows,
                 "surface": surface,
@@ -499,7 +559,8 @@ class WACCFunction(BaseFunction):
                     "re_capm": "Cost of equity from CAPM.",
                     "rf": "Risk-free rate.",
                     "erp": "Equity risk premium as a decimal.",
-                    "tax_source": "Where the tax rate came from: user_input, issuer_effective (income tax expense over pre-tax income) or statutory_us_21pct (a 21% US default, not the issuer's rate).",
+                    "tax_source": "Where the tax rate came from: user_input, issuer_effective (latest annual income tax expense over pre-tax income), statutory_us_21pct (a 21% US default for US issuers only, not the issuer's rate) or unavailable (no rate for a non-US issuer; tax_rate is null).",
+                    "tax_period": "Period-end date of the income statement behind issuer_effective; null otherwise.",
                     "erp_source": "Where the ERP came from: user_input, damodaran_cache, damodaran_live, damodaran_snapshot_2025_01 (stale, January 2025 table) or assumption_default_5pct (a 5.0% constant).",
                     "rd": "Pre-tax cost of debt proxy.",
                     "equity_weight": "Equity share of capital structure.",

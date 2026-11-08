@@ -30,8 +30,9 @@ class _RefdataPayload:
 
 
 class _FakeYf:
-    def __init__(self, *, raw: dict[str, Any]) -> None:
+    def __init__(self, *, raw: dict[str, Any], income: pd.DataFrame | None = None) -> None:
         self._raw = raw
+        self._income = income
 
     async def fetch(self, request):
         from showme.engine.core.base_data_source import DataKind
@@ -41,6 +42,12 @@ class _FakeYf:
                 country=self._raw.get("country", "US"),
                 extras={"raw": dict(self._raw)},
             )
+        if request.kind == DataKind.FUNDAMENTALS:
+            # Mirrors YFinanceAdapter._fetch_fundamentals: income statement frame,
+            # line items as index, period-end dates (newest first) as columns.
+            if self._income is None:
+                raise RuntimeError("no statements")
+            return {"income": self._income}
         raise NotImplementedError
 
 
@@ -303,12 +310,18 @@ class _FakeDamodaran:
 # ---- WACC#4: the tax rate is labelled with its source ---------------------
 
 
-def _deps_with_raw(raw: dict[str, Any]) -> FunctionDeps:
+def _deps_with_raw(raw: dict[str, Any], income: pd.DataFrame | None = None) -> FunctionDeps:
     return FunctionDeps(
-        yfinance=_FakeYf(raw=raw),
+        yfinance=_FakeYf(raw=raw, income=income),
         fred=_FakeFred({"DGS10": 4.0, "BAMLC0A4CBBBEY": 5.93}),
         damodaran=_FakeDamodaran(),
     )
+
+
+def _income(pretax: float, tax: float, period: str = "2025-09-30") -> pd.DataFrame:
+    """Annual income statement as yfinance returns it: line items down, dates across."""
+    return pd.DataFrame({pd.Timestamp(period): [pretax, tax]},
+                        index=["Pretax Income", "Income Tax Expense"])
 
 
 def test_wacc4_default_tax_is_a_labelled_statutory_rate(monkeypatch) -> None:
@@ -335,23 +348,76 @@ def test_wacc4_tax_rate_param_is_user_input(monkeypatch) -> None:
 
 def test_wacc4_issuer_effective_tax_is_used_when_the_provider_gives_it(monkeypatch) -> None:
     monkeypatch.setattr(wacc_mod, "BetaFunction", _StubBetaOk)
+    raw = {"marketCap": 300.0, "totalDebt": 100.0, "sector": "Consumer Cyclical"}
+    res = _run(_deps_with_raw(raw, income=_income(pretax=150.0, tax=30.0)))
+    assert res.data["tax_rate"] == pytest.approx(0.20)
+    assert res.data["tax_source"] == "issuer_effective"
+    assert res.data["tax_period"] == "2025-09-30"
+
+
+def test_wacc4_info_dict_tax_keys_are_not_a_source(monkeypatch) -> None:
+    """yfinance info carries no income-statement keys; a raw info field is never the tax source."""
+    monkeypatch.setattr(wacc_mod, "BetaFunction", _StubBetaOk)
     raw = {"marketCap": 300.0, "totalDebt": 100.0, "sector": "Consumer Cyclical",
            "incomeTaxExpense": 30.0, "pretaxIncome": 150.0}
     res = _run(_deps_with_raw(raw))
-    assert res.data["tax_rate"] == pytest.approx(0.20)
+    assert res.data["tax_source"] == "statutory_us_21pct"
+    assert res.data["tax_rate"] == pytest.approx(0.21)
+
+
+def test_wacc4_negative_pretax_income_falls_back_to_the_us_statutory_rate(monkeypatch) -> None:
+    monkeypatch.setattr(wacc_mod, "BetaFunction", _StubBetaOk)
+    raw = {"marketCap": 300.0, "totalDebt": 100.0, "sector": "Consumer Cyclical"}
+    res = _run(_deps_with_raw(raw, income=_income(pretax=-50.0, tax=10.0)))
+    assert res.data["tax_source"] == "statutory_us_21pct"
+
+
+def test_wacc4_provider_statement_failure_is_warned_and_labelled(monkeypatch) -> None:
+    monkeypatch.setattr(wacc_mod, "BetaFunction", _StubBetaOk)
+    raw = {"marketCap": 300.0, "totalDebt": 100.0, "sector": "Consumer Cyclical"}
+    res = _run(_deps_with_raw(raw, income=None))
+    assert res.data["tax_source"] == "statutory_us_21pct"
+    assert any("income statement" in w for w in res.warnings)
+
+
+def test_wacc4_non_us_issuer_gets_no_us_statutory_rate(monkeypatch) -> None:
+    """The 21% US federal rate must not stand in for a non-US issuer's tax."""
+    monkeypatch.setattr(wacc_mod, "BetaFunction", _StubBetaOk)
+    raw = {"marketCap": 300.0, "totalDebt": 100.0, "sector": "Consumer Cyclical", "country": "Germany"}
+    res = _run(_deps_with_raw(raw))
+    assert res.data["tax_source"] == "unavailable"
+    assert res.data["tax_rate"] is None
+    assert res.data["wacc"] is None
+    assert res.data["status"] == "provider_unavailable"
+    assert "tax rate" in res.data["reason"]
+
+
+def test_wacc4_non_us_issuer_with_its_own_rate_is_computed(monkeypatch) -> None:
+    monkeypatch.setattr(wacc_mod, "BetaFunction", _StubBetaOk)
+    raw = {"marketCap": 300.0, "totalDebt": 100.0, "sector": "Consumer Cyclical", "country": "Germany"}
+    res = _run(_deps_with_raw(raw, income=_income(pretax=150.0, tax=30.0)))
     assert res.data["tax_source"] == "issuer_effective"
+    assert res.data["status"] == "ok"
+
+
+def test_wacc4_user_tax_rate_fills_a_non_us_issuer(monkeypatch) -> None:
+    monkeypatch.setattr(wacc_mod, "BetaFunction", _StubBetaOk)
+    raw = {"marketCap": 300.0, "totalDebt": 100.0, "sector": "Consumer Cyclical", "country": "Germany"}
+    res = _run(_deps_with_raw(raw), tax_rate_override=0.30)
+    assert res.data["tax_source"] == "user_input"
+    assert res.data["status"] == "ok"
 
 
 # ---- WACC#6: status and data_state reflect every input --------------------
 
 
 def _live_deps(**overrides: Any) -> FunctionDeps:
-    raw = {"marketCap": 300.0, "totalDebt": 100.0, "sector": "Consumer Cyclical",
-           "incomeTaxExpense": 30.0, "pretaxIncome": 150.0}
+    raw = {"marketCap": 300.0, "totalDebt": 100.0, "sector": "Consumer Cyclical"}
     raw.update(overrides.pop("raw", {}))
+    income = overrides.pop("income", _income(pretax=150.0, tax=30.0))
     fred = overrides.pop("fred", {"DGS10": 4.0, "BAMLC0A4CBBBEY": 5.93})
     damo = overrides.pop("damodaran", _FakeDamodaran(0.046, "damodaran_cache"))
-    return FunctionDeps(yfinance=_FakeYf(raw=raw), fred=_FakeFred(fred), damodaran=damo)
+    return FunctionDeps(yfinance=_FakeYf(raw=raw, income=income), fred=_FakeFred(fred), damodaran=damo)
 
 
 def test_wacc6_every_input_live_is_live(monkeypatch) -> None:
