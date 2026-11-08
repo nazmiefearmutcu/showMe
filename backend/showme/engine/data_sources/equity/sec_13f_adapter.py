@@ -228,7 +228,19 @@ class SEC13FAdapter(BaseDataSource):
             return pd.DataFrame()
         if not _db_path().exists():
             return pd.DataFrame()
-        sql = "SELECT filer_cik, report_date, SUM(value_x1000)*1000 AS value_usd, SUM(shares) AS shares FROM holdings WHERE 1=1"
+        # value_x1000 is the raw InfoTable <value>. Its unit follows the period:
+        # thousands of dollars before the SEC moved the table to whole dollars
+        # (periods after 2022-12-31), so only earlier periods are scaled by
+        # 1000. The 2022-12-31 period and rows without a period cannot be
+        # resolved and yield NULL rather than a 1000x-wrong dollar figure.
+        sql = (
+            "SELECT filer_cik, report_date, "
+            "CASE "
+            "WHEN report_date IS NULL OR report_date = '' OR report_date = '2022-12-31' THEN NULL "
+            "WHEN report_date < '2022-12-31' THEN SUM(value_x1000)*1000 "
+            "ELSE SUM(value_x1000) END AS value_usd, "
+            "SUM(shares) AS shares FROM holdings WHERE 1=1"
+        )
         params: list[Any] = []
         if cusip:
             sql += " AND cusip = ?"; params.append(cusip)
