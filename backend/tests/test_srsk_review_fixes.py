@@ -219,13 +219,32 @@ def test_partial_leg_row_reports_its_coverage(no_network: None) -> None:
     assert out.data["summary"]["partial_coverage_countries"] == 1
 
 
+class _PartialRiskyWorldBank:
+    """DE is a risky 3-leg row (no debt/GDP); TR is a moderate complete 4-leg row.
+
+    The 3-leg DE composite scores higher than the complete TR composite, so a card
+    that ranks by score (or by PD) without the coverage rule would lead with DE.
+    """
+
+    _BY_ISO3 = {
+        "TUR": {"GC.DOD.TOTL.GD.ZS": 34.0, "FI.RES.TOTL.MO": 3.5, "BN.CAB.XOKA.GD.ZS": -4.5, "FP.CPI.TOTL.ZG": 53.0},
+        "DEU": {"FI.RES.TOTL.MO": 0.6, "BN.CAB.XOKA.GD.ZS": -8.0, "FP.CPI.TOTL.ZG": 40.0},
+    }
+
+    async def indicator(self, iso3: str, indicator: str) -> Any:
+        value = self._BY_ISO3.get(iso3, {}).get(indicator)
+        return [{"page": 1, "total": 1}, [{"value": value, "date": "2024"}]]
+
+
 def test_partial_leg_row_never_leads_the_highest_pd_card(no_network: None) -> None:
-    # DE has the larger PD proxy from fewer legs; the card must use the full-coverage TR.
-    fn = SRSKFunction(FunctionDeps(worldbank=_NoDebtWorldBank(), fred=_SpreadFred()))
+    # DE has the larger composite and PD proxy from only 3 legs; the card must use the full-coverage TR.
+    fn = SRSKFunction(FunctionDeps(worldbank=_PartialRiskyWorldBank(), fred=_SpreadFred()))
     out = asyncio.run(fn.execute(countries="TR,DE"))
     rows = {r["country"]: r for r in out.data["rows"]}
-    assert rows["DE"]["pd_1y_pct"] > rows["TR"]["pd_1y_pct"]  # precondition
+    assert rows["DE"]["risk_score"] > rows["TR"]["risk_score"]  # precondition: score would pick DE
+    assert rows["DE"]["pd_1y_pct"] > rows["TR"]["pd_1y_pct"]  # precondition: PD would pick DE
     assert out.data["cards"]["highest_pd_country"] == "TR", out.data["cards"]
+    assert out.data["summary"]["highest_risk_country"] == "TR"
 
 
 # SRSK#3: one hung World Bank country must not take the whole Wide-12 call past
