@@ -1,18 +1,17 @@
 /**
- * EVTS — Corporate Events Calendar.
+ * EVTS — corporate events calendar (Awareness-backed).
  *
- * yfinance-gated dated corporate events (calendar entries, earnings dates,
- * actions, dividends, splits) per equity. Header: provider control
- * (persisted under `showme.evts.provider`) + status pill + refresh. Body:
- * events table (date, type chip, event, value) newest first. When the
- * calendar provider returns nothing the pane renders the backend's honest
- * reason — events are never invented.
+ * Rows come from awareness `/calendar/corporate` (earnings, dividends, splits,
+ * IPOs, filings) for one symbol. Upcoming events list first (soonest first),
+ * then recent events (newest first). Type chips filter client-side.
+ *
+ * Honesty: no events are invented. An unreachable awareness service renders
+ * AwarenessUnavailable; an empty window says so.
  */
 import { useMemo, useState, type CSSProperties } from "react";
 import {
   DataGrid,
   type DataGridColumn,
-  Empty,
   Pane,
   PaneBody,
   PaneFooter,
@@ -31,136 +30,147 @@ import {
 } from "@/design-system/grid-csv";
 import { useFunction } from "@/lib/useFunction";
 import { defaultSymbolForFunction } from "@/lib/symbols";
-import {
-  FunctionControlGroup,
-  LoadStatePill,
-  RefreshButton,
-  SegmentedControl,
-} from "./function-controls";
-import { usePersistentOption } from "./function-control-state";
+import { formatMissing } from "@/lib/format";
+import { FunctionControlGroup, LoadStatePill, RefreshButton } from "./function-controls";
 import type { FunctionPaneProps } from "./registry-types";
+import { AwarenessUnavailable } from "./awareness/AwarenessUnavailable";
+import { ProviderHealthStrip } from "./awareness/ProviderHealthStrip";
+import type { AwarenessMeta } from "./awareness/types";
+import type { ProvenanceSource } from "./awareness/ProvenanceButton";
 
-interface EVTSRow {
+export interface EvtsRow {
   date?: string | null;
-  event?: string;
-  value?: string | number | (string | number)[] | null;
-  source_section?: string;
-  symbol?: string;
+  datetime_utc?: string | null;
+  type?: string | null;
+  event?: string | null;
+  symbol?: string | null;
+  company?: string | null;
+  time_of_day?: string | null;
+  status?: string | null;
+  details?: Record<string, unknown> | null;
+  sources?: ProvenanceSource[] | null;
 }
 
-interface EVTSData {
+interface EvtsPayload {
   status?: string;
-  reason?: string;
-  rows?: EVTSRow[];
+  reason?: string | null;
   symbol?: string;
-  event_count?: number;
+  rows?: EvtsRow[];
+  upcoming?: EvtsRow[];
+  recent?: EvtsRow[];
+  meta?: AwarenessMeta;
   next_actions?: string[];
 }
 
-type ProviderValue = "yfinance" | "off";
-const PROVIDER_OPTIONS = [
-  { value: "yfinance" as ProviderValue, label: "yfinance" },
-  { value: "off" as ProviderValue, label: "off" },
-] as const;
-const PROVIDER_IDS = PROVIDER_OPTIONS.map((o) => o.value);
+const TYPE_FILTERS = ["all", "earnings", "dividend", "split", "ipo", "filing"] as const;
+type TypeFilter = (typeof TYPE_FILTERS)[number];
 
-function chipTone(section: string | undefined): "accent" | "positive" | "warn" | "muted" {
-  switch ((section ?? "").toLowerCase()) {
-    case "earnings": return "accent";
-    case "dividends": return "positive";
-    case "action": return "warn";
-    default: return "muted";
-  }
+interface DisplayRow extends EvtsRow {
+  group: "upcoming" | "recent";
 }
 
 export function EVTSPane({ code, symbol }: FunctionPaneProps) {
-  const [provider, setProvider] = usePersistentOption<ProviderValue>(
-    "showme.evts.provider",
-    PROVIDER_IDS,
-    "yfinance",
-  );
-  const [section, setSection] = useState("ALL");
+  const [typeFilter, setTypeFilter] = useState<TypeFilter>("all");
   const effectiveSymbol = symbol || defaultSymbolForFunction(code, ["EQUITY", "ETF"]);
-  const { state, data, error, refetch } = useFunction<EVTSData>({
+  const { state, data, error, refetch } = useFunction<EvtsPayload>({
     code,
     symbol: effectiveSymbol,
-    params: { reference: provider !== "yfinance" },
+    params: {},
     enabled: !!effectiveSymbol,
   });
 
-  const payload = data?.data;
-  const rows = useMemo(() => payload?.rows ?? [], [payload]);
-  const status = payload?.status ?? "—";
+  const payload = useMemo<EvtsPayload>(() => data?.data ?? {}, [data]);
+  const status = payload.status ?? "—";
   const unavailable = status === "provider_unavailable";
+  const meta: AwarenessMeta = payload.meta ?? {};
+  const todayIso = new Date().toISOString().slice(0, 10);
 
-  const sections = useMemo(() => {
-    const set = new Set<string>();
-    for (const row of rows) {
-      if (row.source_section) set.add(row.source_section);
-    }
-    return ["ALL", ...Array.from(set).sort()];
-  }, [rows]);
-
-  const visible = useMemo(
-    () => (section === "ALL" ? rows : rows.filter((r) => r.source_section === section)),
-    [rows, section],
+  const rows = useMemo<DisplayRow[]>(
+    () => orderRows(payload, todayIso),
+    [payload, todayIso],
   );
+  const visible = useMemo(
+    () => (typeFilter === "all" ? rows : rows.filter((r) => (r.type ?? "") === typeFilter)),
+    [rows, typeFilter],
+  );
+  const upcomingCount = rows.filter((r) => r.group === "upcoming").length;
+  const recentCount = rows.length - upcomingCount;
 
-  const COLS: DataGridColumn<EVTSRow>[] = useMemo(
+  const COLS: DataGridColumn<DisplayRow>[] = useMemo(
     () => [
       {
         key: "date",
         header: "Date",
-        width: 130,
-        sortable: true,
-        sortValue: (r) => r.date ?? "",
+        width: 116,
+        render: (r) => <span style={monoPrimaryStyle}>{fmtDate(r.date)}</span>,
+      },
+      {
+        key: "group",
+        header: "When",
+        width: 96,
         render: (r) => (
-          <span style={monoPrimaryStyle}>{fmtDate(r.date)}</span>
+          <Pill
+            tone={r.group === "upcoming" ? "warn" : "muted"}
+            variant="soft"
+            withDot={false}
+          >
+            {r.group}
+          </Pill>
         ),
       },
       {
         key: "type",
         header: "Type",
-        width: 110,
-        sortable: true,
-        sortValue: (r) => r.source_section ?? "",
+        width: 96,
         render: (r) => (
-          <Pill tone={chipTone(r.source_section)} variant="soft" withDot={false}>
-            {r.source_section ?? "event"}
+          <Pill tone={typeTone(r.type)} variant="soft" withDot={false}>
+            {r.type ?? "event"}
           </Pill>
         ),
       },
       {
         key: "event",
         header: "Event",
-        width: 240,
-        sortable: true,
-        sortValue: (r) => r.event ?? "",
-        render: (r) => <span style={titleStyle}>{r.event ?? "—"}</span>,
+        render: (r) => <span style={titleStyle}>{r.event ?? formatMissing}</span>,
       },
       {
-        key: "value",
-        header: "Value",
-        numeric: true,
-        width: 200,
-        sortable: true,
-        sortValue: (r) => sortableValue(r.value),
-        render: (r) => <span style={monoMutedStyle}>{fmtValue(r.value)}</span>,
+        key: "time",
+        header: "Time",
+        width: 92,
+        render: (r) => <span style={monoMutedStyle}>{fmtTime(r.time_of_day)}</span>,
+      },
+      {
+        key: "status",
+        header: "Status",
+        width: 96,
+        render: (r) => <span style={monoMutedStyle}>{r.status ?? formatMissing}</span>,
+      },
+      {
+        key: "details",
+        header: "Details",
+        render: (r) => <span style={monoMutedStyle}>{fmtDetails(r.details)}</span>,
+      },
+      {
+        key: "source",
+        header: "Source",
+        width: 150,
+        render: (r) => (
+          <span style={monoMutedStyle}>
+            {(r.sources ?? []).map((s) => s.provider).join(", ") || formatMissing}
+          </span>
+        ),
       },
     ],
     [],
   );
 
-  const csvColumns = useMemo<GridCsvColumn<EVTSRow>[]>(
+  const csvColumns = useMemo<GridCsvColumn<DisplayRow>[]>(
     () => [
       { key: "date", header: "Date", value: (r) => fmtDate(r.date) },
-      { key: "type", header: "Type", value: (r) => r.source_section ?? "" },
+      { key: "group", header: "When", value: (r) => r.group },
+      { key: "type", header: "Type", value: (r) => r.type ?? "" },
       { key: "event", header: "Event", value: (r) => r.event ?? "" },
-      {
-        key: "value",
-        header: "Value",
-        value: (r) => (Array.isArray(r.value) ? r.value.join(" / ") : r.value),
-      },
+      { key: "status", header: "Status", value: (r) => r.status ?? "" },
     ],
     [],
   );
@@ -171,60 +181,57 @@ export function EVTSPane({ code, symbol }: FunctionPaneProps) {
   };
 
   const body = !effectiveSymbol ? (
-    <Empty title="Pick a symbol" body="EVTS needs an equity / ETF ticker." icon="⌖" />
+    <div role="status">Pick a symbol: EVTS needs an equity or ETF ticker.</div>
+  ) : unavailable ? (
+    <AwarenessUnavailable
+      reason={payload.reason ?? null}
+      onRetry={refetch}
+      subject="corporate events"
+    />
   ) : (
     <PaneState
       state={state}
       error={error}
-      empty={unavailable || rows.length === 0}
-      emptyTitle={
-        unavailable ? "Events provider unavailable" : "No corporate events returned"
-      }
-      emptyBody={
-        unavailable
-          ? (payload?.reason ??
-            "The corporate-events provider returned nothing — no events are fabricated.")
-          : `The ${provider} events provider returned no dated events for ${effectiveSymbol}.`
-      }
-      emptyIcon={unavailable ? "!" : "∅"}
+      empty={rows.length === 0}
+      emptyTitle="No corporate events in this window"
+      emptyBody={`No dated corporate events for ${effectiveSymbol} (window: 90 days back, 180 days ahead). Nothing is estimated.`}
+      emptyIcon="∅"
       onRetry={refetch}
     >
       <div className="u-grid-gap-14">
         <section style={kpiGridStyle} aria-label="EVTS summary">
           <StatCard
             label="Events"
-            value={String(payload?.event_count ?? rows.length)}
-            caption={`PROVIDER ${provider.toUpperCase()} · NEWEST FIRST`}
+            value={String(rows.length)}
+            caption="IN WINDOW"
             tone="neutral"
           />
           <StatCard
-            label="Earnings rows"
-            value={String(rows.filter((r) => r.source_section === "earnings").length)}
-            caption="REPORT / ESTIMATE DATES"
+            label="Upcoming"
+            value={String(upcomingCount)}
+            caption="SOONEST FIRST"
             tone="neutral"
           />
           <StatCard
-            label="Dividends + splits"
-            value={String(
-              rows.filter((r) => r.source_section === "dividends" || r.source_section === "splits").length,
-            )}
-            caption="DISTRIBUTION EVENTS"
+            label="Recent"
+            value={String(recentCount)}
+            caption="NEWEST FIRST"
             tone="neutral"
           />
         </section>
         <div style={chipRowStyle} role="group" aria-label="Event type filter">
-          {sections.map((sec) => {
-            const active = section === sec;
+          {TYPE_FILTERS.map((t) => {
+            const active = typeFilter === t;
             return (
               <button
-                key={sec}
+                key={t}
                 type="button"
                 className={`fn-segmented__opt${active ? " fn-segmented__opt--active" : ""}`}
                 aria-pressed={active}
-                onClick={() => setSection(sec)}
-                title={`Filter event type ${sec}`}
+                onClick={() => setTypeFilter(t)}
+                title={`Filter event type ${t}`}
               >
-                {sec}
+                {t}
               </button>
             );
           })}
@@ -232,11 +239,9 @@ export function EVTSPane({ code, symbol }: FunctionPaneProps) {
         <DataGrid
           columns={COLS}
           rows={visible}
-          rowKey={(r, i) => `${r.date ?? ""}-${r.event ?? ""}-${i}`}
+          rowKey={(r, i) => `${r.group}-${r.date ?? ""}-${r.event ?? ""}-${i}`}
           density="compact"
           ariaLabel="EVTS corporate events"
-          defaultSortKey="date"
-          defaultSortDir="descending"
           empty="No events match this type filter"
         />
       </div>
@@ -249,7 +254,7 @@ export function EVTSPane({ code, symbol }: FunctionPaneProps) {
         <PaneHeader
           code={code}
           title={`Corporate Events — ${effectiveSymbol || ""}`}
-          subtitle={`${effectiveSymbol || "—"} · ${rows.length} events · ${provider}`}
+          subtitle={`${effectiveSymbol || "—"} · ${rows.length} events · awareness`}
           trailing={
             <FunctionControlGroup>
               <Pill tone="muted" variant="soft" withDot={false}>
@@ -265,13 +270,6 @@ export function EVTSPane({ code, symbol }: FunctionPaneProps) {
               >
                 CSV
               </button>
-              <SegmentedControl
-                label="PROVIDER"
-                value={provider}
-                options={PROVIDER_OPTIONS}
-                onChange={setProvider}
-                title="Corporate events provider"
-              />
               <LoadStatePill state={state} status={status} />
               <RefreshButton
                 loading={state === "loading"}
@@ -282,9 +280,14 @@ export function EVTSPane({ code, symbol }: FunctionPaneProps) {
             </FunctionControlGroup>
           }
         />
+        <ProviderHealthStrip
+          providers={meta.providers}
+          feedHealth={meta.feed_health}
+          generatedAt={meta.generated_at}
+        />
         <PaneBody>{body}</PaneBody>
         <PaneFooter>
-          <StatusSection label="sources" value={data?.sources?.join(", ") || "—"} />
+          <StatusSection label="sources" value={data?.sources?.join(", ") || "awareness"} />
           <StatusDivider />
           <StatusSection label="status" value={status} />
           <StatusDivider />
@@ -295,38 +298,80 @@ export function EVTSPane({ code, symbol }: FunctionPaneProps) {
             value={`${data?.elapsed_ms?.toFixed(0) ?? "—"} ms`}
           />
           <StatusDivider />
-          <StatusSection label="provider" value={provider} tone="accent" />
+          <StatusSection label="type" value={typeFilter} tone="accent" />
         </PaneFooter>
       </Pane>
     </div>
   );
 }
 
+/**
+ * Upcoming rows (date >= today) first, soonest first; then recent rows,
+ * newest first. Rows with no parseable date keep their backend order at the end.
+ */
+function orderRows(payload: EvtsPayload, todayIso: string): DisplayRow[] {
+  const source: EvtsRow[] = payload.rows ?? [
+    ...(payload.upcoming ?? []),
+    ...(payload.recent ?? []),
+  ];
+  const upcoming: DisplayRow[] = [];
+  const recent: DisplayRow[] = [];
+  const undated: DisplayRow[] = [];
+  for (const row of source) {
+    const day = String(row.date ?? "").slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) {
+      undated.push({ ...row, group: "recent" });
+    } else if (day >= todayIso) {
+      upcoming.push({ ...row, group: "upcoming" });
+    } else {
+      recent.push({ ...row, group: "recent" });
+    }
+  }
+  upcoming.sort((a, b) => (a.date ?? "").localeCompare(b.date ?? ""));
+  recent.sort((a, b) => (b.date ?? "").localeCompare(a.date ?? ""));
+  return [...upcoming, ...recent, ...undated];
+}
+
+function typeTone(
+  type: string | null | undefined,
+): "accent" | "positive" | "warn" | "muted" {
+  switch ((type ?? "").toLowerCase()) {
+    case "earnings":
+      return "accent";
+    case "dividend":
+      return "positive";
+    case "split":
+    case "ipo":
+      return "warn";
+    default:
+      return "muted";
+  }
+}
+
 function fmtDate(v: string | null | undefined): string {
   const s = String(v ?? "").trim();
-  if (!s) return "—";
+  if (!s) return formatMissing;
   return s.slice(0, 10);
 }
 
-function fmtValue(v: EVTSRow["value"]): string {
-  if (v == null) return "—";
-  if (Array.isArray(v)) return v.map((item) => fmtValue(item)).join(" / ");
-  if (typeof v === "number" && Number.isFinite(v)) {
-    return v.toLocaleString("en-US", { maximumFractionDigits: 4 });
-  }
-  const s = String(v).trim();
-  return s || "—";
+function fmtTime(v: string | null | undefined): string {
+  if (!v) return formatMissing;
+  if (v === "bmo") return "before open";
+  if (v === "amc") return "after close";
+  if (v === "dmh") return "market hours";
+  return v;
 }
 
-/** Sort accessor for the mixed value payload (numbers first, else text). */
-function sortableValue(v: EVTSRow["value"]): string | number {
-  if (v == null) return "";
-  if (Array.isArray(v)) return v.length > 0 ? sortableValue(v[0]) : "";
-  if (typeof v === "number") return Number.isFinite(v) ? v : "";
-  const s = String(v).trim();
-  if (!s) return "";
-  const n = Number(s);
-  return Number.isFinite(n) ? n : s;
+function fmtDetails(details: Record<string, unknown> | null | undefined): string {
+  if (!details) return formatMissing;
+  const parts = Object.entries(details)
+    .filter(([, v]) => v != null && v !== "")
+    .slice(0, 3)
+    .map(
+      ([k, v]) =>
+        `${k.replace(/_/g, " ")} ${typeof v === "number" ? v.toLocaleString("en-US", { maximumFractionDigits: 4 }) : String(v)}`,
+    );
+  return parts.join(" · ") || formatMissing;
 }
 
 const kpiGridStyle: CSSProperties = {

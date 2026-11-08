@@ -296,6 +296,12 @@ export const STATIC_FUNCTION_INDEX: FunctionEntry[] = [
     "description": "Analyst recommendation buckets month-over-month + revision velocity."
   },
   {
+    "code": "ERN",
+    "name": "Earnings Calendar",
+    "category": "equity",
+    "description": "Upcoming and recent earnings reports grouped by day, with reporting time, EPS estimate, estimate count and market cap."
+  },
+  {
     "code": "ESG",
     "name": "ESG Scores",
     "category": "equity",
@@ -462,6 +468,12 @@ export const STATIC_FUNCTION_INDEX: FunctionEntry[] = [
     "name": "Index Constituents",
     "category": "screen",
     "description": "Major equity index constituents (Wikipedia-backed cache)."
+  },
+  {
+    "code": "IPO",
+    "name": "IPO Calendar",
+    "category": "equity",
+    "description": "Priced, upcoming, filed and withdrawn IPOs with price or range, shares offered and deal size."
   },
   {
     "code": "ISIN",

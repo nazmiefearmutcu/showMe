@@ -1,73 +1,116 @@
 /**
- * ECO — Economic calendar (this week + this month).
+ * ECO — economic calendar, day-grouped timeline (Awareness-backed).
  *
- * Surfaces ShowMe's ECO function. Surprise vs forecast highlight + impact
- * pill, KPI ribbon for high-impact prints, calendar-shaped right rail.
+ * Data: awareness `/calendar/economic` + `/calendar/holidays` via the ECO function.
+ * The invented reference schedule is gone; every row is a sourced event. Each
+ * day lists its holidays first, then the events in local or UTC order.
+ *
+ * Honesty rules: unknown values render "—", surprise shows only for released
+ * prints, colour follows surprise direction (not good/bad), and an unreachable
+ * awareness service renders AwarenessUnavailable with no rows.
  */
-import { useMemo, type CSSProperties, type ReactNode } from "react";
+import { useMemo, type ReactNode } from "react";
 import {
-  DataGrid,
-  type DataGridColumn,
-  DeltaChip,
   Empty,
   Pane,
   PaneBody,
   PaneFooter,
   PaneHeader,
-  Pill,
   Skeleton,
-  StatCard,
   StatusDivider,
   StatusSection,
   Tabs,
 } from "@/design-system";
 import { useFunction } from "@/lib/useFunction";
 import { useVisibilityTick } from "@/lib/useVisibilityTick";
+import { formatMissing } from "@/lib/format";
 import {
   FunctionControlGroup,
   LoadStatePill,
   RefreshButton,
   SegmentedControl,
 } from "./function-controls";
-import { usePersistentOption } from "./function-control-state";
+import { usePersistentOption, usePersistentString } from "./function-control-state";
 import type { FunctionPaneProps } from "./registry-types";
-import { formatMissing, formatNumber } from "@/lib/format";
+import { AwarenessUnavailable } from "./awareness/AwarenessUnavailable";
+import { ProviderHealthStrip } from "./awareness/ProviderHealthStrip";
+import type { AwarenessMeta, AwarenessProvider } from "./awareness/types";
+import { ImportanceDots } from "./awareness/ImportanceDots";
+import { SurpriseCell, type SurpriseDirection } from "./awareness/SurpriseCell";
+import { ProvenanceButton, type ProvenanceSource } from "./awareness/ProvenanceButton";
 
-interface EcoEvent {
-  date?: string;
-  ts?: string;
-  time?: string;
-  country?: string;
-  region?: string;
-  event?: string;
-  name?: string;
-  importance?: string | number;
-  forecast?: number | string;
-  actual?: number | string;
-  previous?: number | string;
-  unit?: string;
-  surprise?: number;
+interface EconRow {
+  id?: string;
+  date?: string | null;
+  all_day?: boolean;
+  country?: string | null;
+  currency?: string | null;
+  event?: string | null;
+  category?: string | null;
+  importance?: number | null;
+  actual?: string | null;
+  forecast?: string | null;
+  previous?: string | null;
+  revised?: string | null;
+  actual_value?: number | null;
+  forecast_value?: number | null;
+  previous_value?: number | null;
+  unit?: string | null;
+  surprise?: number | null;
+  surprise_direction?: SurpriseDirection | null;
+  status?: string | null;
+  description?: string | null;
+  sources?: ProvenanceSource[] | null;
+  is_central_bank?: boolean;
+}
+
+interface HolidayRow {
+  date?: string | null;
+  country?: string | null;
+  exchange?: string | null;
+  name?: string | null;
+  kind?: string | null;
+  early_close_time?: string | null;
+  source?: string | null;
+}
+
+interface EcoPayload {
+  status?: string;
+  reason?: string | null;
+  rows?: EconRow[];
+  holidays?: HolidayRow[];
+  meta?: AwarenessMeta;
+  next_actions?: string[];
 }
 
 const RANGES = [
-  { id: "week", label: "This week", days: 7 },
-  { id: "month", label: "This month", days: 30 },
+  { id: "today", label: "Today", from: "today", days: 1 },
+  { id: "week", label: "This week", from: "monday", days: 7 },
+  { id: "next7", label: "Next 7d", from: "today", days: 7 },
+  { id: "next14", label: "Next 14d", from: "today", days: 14 },
 ] as const;
 type RangeId = (typeof RANGES)[number]["id"];
 const RANGE_IDS = RANGES.map((r) => r.id);
-const COUNTRIES = [
-  { value: "US", label: "US" },
-  { value: "EU", label: "EU" },
-  { value: "UK", label: "UK" },
-  { value: "TR", label: "TR" },
-] as const;
-const COUNTRY_IDS = COUNTRIES.map((item) => item.value);
+
 const IMPORTANCE = [
   { value: "all", label: "All" },
+  { value: "med", label: "Med+" },
   { value: "high", label: "High" },
-  { value: "medium", label: "Med" },
 ] as const;
-const IMPORTANCE_IDS = IMPORTANCE.map((item) => item.value);
+type ImportanceId = (typeof IMPORTANCE)[number]["value"];
+const IMPORTANCE_IDS = IMPORTANCE.map((o) => o.value);
+const IMPORTANCE_LEVEL: Record<ImportanceId, number> = { all: 1, med: 2, high: 3 };
+
+const COUNTRY_CODES = ["US", "EU", "GB", "DE", "JP", "CN", "TR"] as const;
+
+const TZ_OPTIONS = [
+  { value: "local", label: "Local" },
+  { value: "utc", label: "UTC" },
+] as const;
+type TzMode = (typeof TZ_OPTIONS)[number]["value"];
+const TZ_IDS = TZ_OPTIONS.map((o) => o.value);
+
+const DAY_MS = 86_400_000;
 
 export function ECOPane({ code }: FunctionPaneProps) {
   const [range, setRange] = usePersistentOption<RangeId>(
@@ -75,127 +118,248 @@ export function ECOPane({ code }: FunctionPaneProps) {
     RANGE_IDS,
     "week",
   );
-  const [country, setCountry] = usePersistentOption(
-    "showme.eco-country",
-    COUNTRY_IDS,
-    "US",
-  );
-  const [importance, setImportance] = usePersistentOption(
+  const [importance, setImportance] = usePersistentOption<ImportanceId>(
     "showme.eco-importance",
     IMPORTANCE_IDS,
     "all",
   );
-  const days = useMemo(() => RANGES.find((r) => r.id === range)!.days, [range]);
-  const { state, data, error, refetch } = useFunction<unknown>({
-    code,
-    params: {
-      days,
-      country,
-      importance: importance === "all" ? undefined : importance,
-      live_calendar: true,
-    },
-  });
+  const [countriesCsv, setCountriesCsv] = usePersistentString("showme.eco-countries", "US");
+  const [tz, setTz] = usePersistentOption<TzMode>("showme.eco-tz", TZ_IDS, "local");
 
-  const events = useMemo(
-    () => filterEvents(normalizeEvents(data?.data), days),
-    [data, days],
+  const selectedCountries = useMemo(
+    () =>
+      countriesCsv
+        .split(",")
+        .map((c) => c.trim())
+        .filter((c) => c.length > 0),
+    [countriesCsv],
   );
-  const stats = useMemo(() => deriveEcoStats(events), [events]);
-  // Honesty: the calendar is the hardcoded synthetic model when the backend
-  // flagged the source as "calendar_feed_model" (both live providers failed).
-  const isModel = useMemo(() => isModelData(data), [data]);
-  // Freshness: prefer the server-stamped `as_of` over the client wall clock so
-  // the header reflects REAL data age, not render time. Honest "—" when absent.
-  const asOf = useMemo(() => extractAsOf(data?.data), [data]);
-  const utcStamp = asOf ?? formatMissing;
-  const isLive = state === "ok" && !isModel;
+  const rangeDef = RANGES.find((r) => r.id === range) ?? RANGES[1];
+  const countryParam = selectedCountries.length ? selectedCountries.join(",") : "all";
+  const params = useMemo(
+    () => ({
+      from: fromDateFor(rangeDef.from),
+      days: rangeDef.days,
+      country: countryParam,
+      importance: IMPORTANCE_LEVEL[importance],
+    }),
+    [rangeDef, countryParam, importance],
+  );
 
-  const COLS: DataGridColumn<EcoEvent>[] = useMemo(
-    () => [
-      {
-        key: "date",
-        header: "When",
-        width: 142,
-        render: (e) => <WhenCell event={e} />,
-      },
-      {
-        key: "country",
-        header: "Region",
-        width: 88,
-        render: (e) => <CountryChip code={e.country ?? e.region ?? ""} />,
-      },
-      {
-        key: "event",
-        header: "Event",
-        render: (e) => (
-          <span style={{ color: "var(--text-primary)", fontWeight: 500 }}>
-            {e.event ?? e.name ?? "—"}
-          </span>
-        ),
-      },
-      {
-        key: "importance",
-        header: "Imp",
-        width: 64,
-        render: (e) => importanceBadge(e.importance),
-      },
-      {
-        key: "forecast",
-        header: "Fcst",
-        numeric: true,
-        width: 84,
-        render: (e) => (
-          <span style={mutedNumStyle}>{fmtVal(e.forecast, e.unit)}</span>
-        ),
-      },
-      {
-        key: "actual",
-        header: "Actual",
-        numeric: true,
-        width: 88,
-        render: (e) => {
-          const forecast = numeric(e.forecast);
-          const actual = numeric(e.actual);
-          return (
-            <span style={actualCellStyle}>
-              <span style={primaryNumStyle}>{fmtVal(e.actual, e.unit)}</span>
-              {/* Actual-vs-forecast compare bar — only when BOTH the consensus
-                  and the print exist. A missing actual (pending release) or a
-                  null forecast renders no bar at all: no fabricated compare. */}
-              {forecast != null && actual != null ? (
-                <ActualVsForecastBar
-                  forecast={forecast}
-                  actual={actual}
-                  unit={e.unit}
-                />
-              ) : null}
+  const { state, data, error, refetch } = useFunction<EcoPayload>({ code, params });
+  const payload: EcoPayload = data?.data ?? {};
+  const status = payload.status ?? "—";
+  const unavailable = status === "provider_unavailable";
+  const meta: AwarenessMeta = payload.meta ?? {};
+  const rows = useMemo(() => payload.rows ?? [], [payload.rows]);
+  const holidays = useMemo(() => payload.holidays ?? [], [payload.holidays]);
+
+  // Countdown and "now" re-read every second while the tab is visible.
+  const tick = useVisibilityTick(1000);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- tick re-reads the wall clock each visible second
+  const now = useMemo(() => Date.now(), [tick]);
+
+  const timed = useMemo(() => {
+    const out: { row: EconRow; t: number }[] = [];
+    for (const row of rows) {
+      const t = parseMs(row.date);
+      if (t != null) out.push({ row, t });
+    }
+    return out.sort((a, b) => a.t - b.t);
+  }, [rows]);
+
+  const nextHigh = useMemo(() => {
+    const hit = timed.find(
+      (x) => x.row.importance === 3 && x.row.status === "scheduled" && x.t >= now,
+    );
+    return hit ? hit.row : null;
+  }, [timed, now]);
+
+  const todayKey = dayKeyOf(now, tz);
+  const groups = useMemo(() => buildGroups(timed, holidays, tz), [timed, holidays, tz]);
+  const kpis = useMemo(
+    () => deriveKpis(timed, now, todayKey, tz),
+    [timed, now, todayKey, tz],
+  );
+  const ecoProviders = (meta.providers ?? []).filter((p) => p.provider.startsWith("econ."));
+
+  const toggleCountry = (code: string) => {
+    const set = new Set(selectedCountries);
+    if (set.has(code)) set.delete(code);
+    else set.add(code);
+    setCountriesCsv(COUNTRY_CODES.filter((c) => set.has(c)).join(","));
+  };
+
+  const body = (() => {
+    if (state === "loading" || state === "idle") {
+      return (
+        <div className="u-grid-gap-8">
+          <Skeleton height={56} />
+          <Skeleton height={20} />
+          <Skeleton height={20} />
+          <Skeleton height={20} width="80%" />
+        </div>
+      );
+    }
+    if (state === "error") {
+      return (
+        <div role="status">
+          <Empty
+            title="Function error"
+            body={error?.message ?? formatMissing}
+            icon="!"
+            action={
+              <button type="button" onClick={refetch} className="btn">
+                Retry
+              </button>
+            }
+          />
+        </div>
+      );
+    }
+    if (unavailable) {
+      return (
+        <AwarenessUnavailable
+          reason={payload.reason ?? null}
+          onRetry={refetch}
+          subject="economic calendar"
+        />
+      );
+    }
+    if (timed.length === 0 && holidays.length === 0) {
+      return (
+        <div className="aw-cal__empty">
+          <Empty
+            title="No events in this window"
+            body={`Countries ${countryParam} · importance ${IMPORTANCE.find((o) => o.value === importance)?.label} · ${rangeDef.label}. No sample events are substituted.`}
+          />
+          <div className="aw-cal__relaxers" role="group" aria-label="Widen the filters">
+            {importance !== "all" ? (
+              <button type="button" className="aw-btn" onClick={() => setImportance("all")}>
+                Include all importance
+              </button>
+            ) : null}
+            {range !== "next14" ? (
+              <button type="button" className="aw-btn" onClick={() => setRange("next14")}>
+                Widen to 14 days
+              </button>
+            ) : null}
+            {selectedCountries.length ? (
+              <button type="button" className="aw-btn" onClick={() => setCountriesCsv("")}>
+                All countries
+              </button>
+            ) : null}
+          </div>
+        </div>
+      );
+    }
+    return (
+      <div className="aw-cal">
+        <section className="aw-cal__kpis" aria-label="ECO summary">
+          <div className="aw-kpi">
+            <span className="aw-kpi__label">Next high-impact release</span>
+            {nextHigh ? (
+              <>
+                <span className="aw-kpi__value">{nextHigh.event ?? formatMissing}</span>
+                <span className="aw-kpi__caption">
+                  {formatWhen(parseMs(nextHigh.date), tz)} ·{" "}
+                  <span className="aw-countdown" aria-live="off">
+                    {formatCountdown(parseMs(nextHigh.date) ?? now, now)}
+                  </span>
+                </span>
+              </>
+            ) : (
+              <span className="aw-kpi__caption">None scheduled in this window</span>
+            )}
+          </div>
+          <div className="aw-kpi">
+            <span className="aw-kpi__label">Released today</span>
+            <span className="aw-kpi__value">{kpis.releasedToday}</span>
+            <span className="aw-kpi__caption">
+              {kpis.above} above · {kpis.below} below · {kpis.inline} inline
             </span>
-          );
-        },
-      },
-      {
-        key: "previous",
-        header: "Prev",
-        numeric: true,
-        width: 80,
-        render: (e) => (
-          <span style={mutedNumStyle}>{fmtVal(e.previous, e.unit)}</span>
-        ),
-      },
-      {
-        key: "surprise",
-        header: "Surprise",
-        numeric: true,
-        width: 96,
-        render: (e) => {
-          const surprise = computeSurprise(e);
-          if (surprise == null) return formatMissing;
-          return <DeltaChip value={surprise} format="raw" fractionDigits={2} />;
-        },
-      },
-    ],
-    [],
-  );
+          </div>
+          <div className="aw-kpi">
+            <span className="aw-kpi__label">Scheduled next 7 days</span>
+            <span className="aw-kpi__value">{kpis.scheduled7d}</span>
+            <span className="aw-kpi__caption">{kpis.high7d} high importance</span>
+          </div>
+          <div className="aw-kpi">
+            <span className="aw-kpi__label">Providers</span>
+            {ecoProviders.length === 0 ? (
+              <span className="aw-kpi__caption">No provider health reported</span>
+            ) : (
+              <ul className="aw-kpi__providers">
+                {ecoProviders.map((p) => (
+                  <ProviderLine key={p.provider} provider={p} nowMs={now} />
+                ))}
+              </ul>
+            )}
+          </div>
+        </section>
+        <div className="aw-cal__grid" role="table" aria-label="Economic calendar by day">
+          <div className="aw-cal__head" role="row">
+            <span role="columnheader">Time</span>
+            <span role="columnheader">Ctry</span>
+            <span role="columnheader">Imp</span>
+            <span role="columnheader">Event</span>
+            <span role="columnheader" className="aw-num">
+              Actual
+            </span>
+            <span role="columnheader" className="aw-num">
+              Forecast
+            </span>
+            <span role="columnheader" className="aw-num">
+              Previous
+            </span>
+            <span role="columnheader">Surprise</span>
+            <span role="columnheader">Src</span>
+          </div>
+          {groups.map((group) => (
+            <section
+              key={group.key}
+              className="aw-cal__day"
+              role="rowgroup"
+              aria-label={dayLabel(group.key, todayKey)}
+            >
+              <header className="aw-cal__dayhead" role="presentation">
+                <span className="aw-cal__daytitle">{dayLabel(group.key, todayKey)}</span>
+                <span className="aw-cal__daymeta">
+                  {group.rows.length} events,{" "}
+                  {group.rows.filter((r) => r.importance === 3).length} high
+                </span>
+              </header>
+              {group.holidays.map((h, i) => (
+                <div key={`h-${group.key}-${i}`} className="aw-cal__holiday" role="row">
+                  <span className="aw-cal__holiday-text" role="cell">
+                    <span aria-hidden="true">📅 </span>
+                    {holidayText(h)}
+                    {h.source ? (
+                      <span className="aw-cal__holiday-src"> · {h.source}</span>
+                    ) : null}
+                  </span>
+                </div>
+              ))}
+              {group.rows.map((row, i) => (
+                <EventRow
+                  key={row.id ?? `${group.key}-${i}`}
+                  row={row}
+                  tz={tz}
+                  now={now}
+                  isNextHigh={nextHigh != null && nextHigh === row}
+                />
+              ))}
+            </section>
+          ))}
+        </div>
+        <p className="aw-cal__legend">
+          Surprise = actual minus forecast in the same unit. ▲ above, ▼ below, = inline with
+          consensus. Colour shows direction only, not good or bad. Local = {localZoneName()}
+          {tz === "utc" ? " (showing UTC)" : ""}.
+        </p>
+      </div>
+    );
+  })();
 
   return (
     <div className="u-pane-host">
@@ -203,25 +367,9 @@ export function ECOPane({ code }: FunctionPaneProps) {
         <PaneHeader
           code={code}
           title="Economic calendar"
-          subtitle={`${events.length} prints · ${country} · next ${days} days`}
+          subtitle={`${countryParam} · ${rangeDef.label} · ${timed.length} events`}
           trailing={
             <FunctionControlGroup>
-              <Pill tone="muted" variant="soft" withDot={false}>
-                {events.length} events
-              </Pill>
-              <Pill tone="accent" variant="soft" withDot={false}>
-                {`Data: ${utcStamp === formatMissing ? formatMissing : `${utcStamp} UTC`}`}
-              </Pill>
-              <Pill tone={isModel ? "warn" : isLive ? "positive" : "warn"} variant="soft">
-                {isModel ? "sample" : isLive ? "live" : state}
-              </Pill>
-              <SegmentedControl
-                label="COUNTRY"
-                title="Country filter"
-                value={country}
-                options={COUNTRIES}
-                onChange={setCountry}
-              />
               <SegmentedControl
                 label="IMP"
                 title="Importance filter"
@@ -229,676 +377,354 @@ export function ECOPane({ code }: FunctionPaneProps) {
                 options={IMPORTANCE}
                 onChange={setImportance}
               />
+              <SegmentedControl
+                label="TZ"
+                title="Time zone"
+                value={tz}
+                options={TZ_OPTIONS}
+                onChange={setTz}
+              />
               <Tabs
                 variant="segmented"
-                ariaLabel="Time range"
+                ariaLabel="Date range"
                 items={RANGES.map((r) => ({ id: r.id, label: r.label }))}
                 active={range}
                 onChange={(id) => setRange(id as RangeId)}
               />
-              <LoadStatePill state={state} />
+              <LoadStatePill state={state} status={status} />
               <RefreshButton
                 loading={state === "loading"}
-                busy={state === "loading" || state === "refreshing"}
                 onClick={refetch}
-                title="Refresh the calendar"
+                title="Refresh the economic calendar"
               />
             </FunctionControlGroup>
           }
         />
-        <PaneBody>
-          {state === "loading" || state === "idle" ? (
-            <Skeleton height={300} />
-          ) : state === "error" ? (
-            <div role="status">
-              <Empty
-                title="Function error"
-                body={error?.message ?? formatMissing}
-                icon="!"
-                action={
-                  <button onClick={refetch} className="btn">
-                    Retry
-                  </button>
-                }
-              />
-            </div>
-          ) : events.length === 0 ? (
-            <div className="u-grid-gap-14">
-              {isModel ? <ModelCalendarBadge /> : null}
-              <Empty
-                title="Calendar empty"
-                body={`${country} · ${importance} · next ${days} days`}
-              />
-            </div>
-          ) : (
-            <div className="u-grid-gap-14">
-              {isModel ? <ModelCalendarBadge /> : null}
-              <KPIRibbon stats={stats} stamp={utcStamp} />
-              <div style={twoColLayout}>
-                <div className="u-grid-gap-8">
-                  <DataGrid
-                    columns={COLS}
-                    rows={events}
-                    rowKey={(e, i) => `${e.date ?? e.ts ?? ""}-${i}`}
-                    density="compact"
-                    ariaLabel="Economic calendar"
-                  />
-                  <span style={tzNoteStyle}>Times UTC</span>
-                </div>
-                <NextPrintsRail events={events} />
-              </div>
-            </div>
-          )}
-        </PaneBody>
+        <div className="aw-cal__toolbar" role="toolbar" aria-label="Country filter">
+          <span className="aw-cal__label">COUNTRY</span>
+          {COUNTRY_CODES.map((c) => {
+            const active = selectedCountries.includes(c);
+            return (
+              <button
+                key={c}
+                type="button"
+                aria-pressed={active}
+                className={`aw-chip${active ? " aw-chip--on" : ""}`}
+                onClick={() => toggleCountry(c)}
+              >
+                {c}
+              </button>
+            );
+          })}
+        </div>
+        <ProviderHealthStrip
+          providers={meta.providers}
+          feedHealth={meta.feed_health}
+          generatedAt={meta.generated_at}
+          nowMs={now}
+        />
+        <PaneBody>{body}</PaneBody>
         <PaneFooter>
-          <StatusSection
-            label="sources"
-            value={formatSourceLabel(data?.sources) || "showMe engine"}
-          />
+          <StatusSection label="sources" value={data?.sources?.join(", ") || "awareness"} />
           <StatusDivider />
-          <StatusSection label="filter" value={`${country}/${importance}`} />
+          <StatusSection label="status" value={status} />
           <StatusDivider />
-          <StatusSection label="rows" value={events.length} />
+          <StatusSection label="events" value={timed.length} />
           <StatusDivider />
           <StatusSection
             label="elapsed"
             value={`${data?.elapsed_ms?.toFixed(0) ?? "—"} ms`}
           />
           <StatusDivider />
-          <StatusSection label="range" value={range} tone="accent" />
+          <StatusSection label="range" value={rangeDef.label} tone="accent" />
         </PaneFooter>
       </Pane>
     </div>
   );
 }
 
-interface EcoStats {
-  total: number;
-  high: number;
-  medium: number;
-  countries: number;
-  surpriseAvg: number;
-  surpriseCount: number;
-  surpriseMax: { abs: number; signed: number; event: string } | null;
-  trendImpact: number[];
-}
-
-function deriveEcoStats(events: EcoEvent[]): EcoStats {
-  if (!events.length) {
-    return {
-      total: 0,
-      high: 0,
-      medium: 0,
-      countries: 0,
-      surpriseAvg: 0,
-      surpriseCount: 0,
-      surpriseMax: null,
-      trendImpact: [],
-    };
-  }
-  let high = 0;
-  let medium = 0;
-  let surpAcc = 0;
-  let surpN = 0;
-  let surpriseMax: EcoStats["surpriseMax"] = null;
-  const cset = new Set<string>();
-  const trend: number[] = [];
-  for (const e of events) {
-    const text = String(e.importance ?? "").toLowerCase();
-    if (text.includes("high") || text === "3" || Number(e.importance) >= 3) high += 1;
-    else if (text.includes("med") || text === "2" || Number(e.importance) === 2) medium += 1;
-    cset.add((e.country ?? e.region ?? "").toUpperCase());
-    const surprise = computeSurprise(e);
-    // HNT-03: eco.py's contract is surprise = actual − forecast in the
-    // EVENT's own unit, so % points must not be averaged with K/M counts.
-    // Surprise stats cover only %-unit prints; the caption discloses the
-    // scope.
-    if (surprise != null && Number.isFinite(surprise) && isPercentUnit(e)) {
-      surpAcc += surprise;
-      surpN += 1;
-      const abs = Math.abs(surprise);
-      if (!surpriseMax || abs > surpriseMax.abs) {
-        surpriseMax = {
-          abs,
-          signed: surprise,
-          event: e.event ?? e.name ?? "",
-        };
-      }
-      trend.push(surprise);
-    }
-  }
-  return {
-    total: events.length,
-    high,
-    medium,
-    countries: cset.size,
-    surpriseAvg: surpN ? surpAcc / surpN : 0,
-    surpriseCount: surpN,
-    surpriseMax,
-    trendImpact: trend.slice(-22),
-  };
-}
-
-function KPIRibbon({ stats, stamp }: { stats: EcoStats; stamp: string }) {
+function ProviderLine({ provider, nowMs }: { provider: AwarenessProvider; nowMs: number }) {
+  const ok = provider.status === "ok";
+  const ago = provider.last_ok_at ? minutesBetween(provider.last_ok_at, nowMs) : null;
+  const text =
+    provider.status === "ok"
+      ? `ok${ago !== null ? `, ${ago}m ago` : ""}`
+      : provider.status === "never"
+        ? "never fetched"
+        : provider.status;
   return (
-    <section style={kpiGridStyle} aria-label="ECO KPI ribbon">
-      <StatCard
-        label="Prints"
-        value={String(stats.total)}
-        caption={`AS OF ${stamp} UTC · ${stats.countries} ccy`}
-        tone="neutral"
-        trend={[]}
-      />
-      <StatCard
-        label="High impact"
-        value={String(stats.high)}
-        caption={`${stats.medium} med · ${stats.total - stats.high - stats.medium} low`}
-        tone={stats.high > 0 ? "negative" : "neutral"}
-        trend={[]}
-      />
-      <StatCard
-        label="Avg surprise"
-        value={
-          stats.surpriseCount
-            ? `${stats.surpriseAvg >= 0 ? "+" : ""}${stats.surpriseAvg.toFixed(2)}`
-            : "—"
-        }
-        caption="VS CONSENSUS · % PRINTS ONLY"
-        tone={
-          stats.surpriseCount
-            ? stats.surpriseAvg >= 0
-              ? "positive"
-              : "negative"
-            : "neutral"
-        }
-        trend={stats.surpriseCount ? stats.trendImpact : []}
-      />
-      <StatCard
-        label="Largest surprise"
-        value={
-          stats.surpriseMax
-            ? `${stats.surpriseMax.signed >= 0 ? "+" : ""}${stats.surpriseMax.signed.toFixed(2)}`
-            : "—"
-        }
-        caption={
-          stats.surpriseMax ? truncate(stats.surpriseMax.event, 22) : "—"
-        }
-        tone={
-          stats.surpriseMax
-            ? stats.surpriseMax.signed >= 0
-              ? "positive"
-              : "negative"
-            : "neutral"
-        }
-        trend={stats.trendImpact}
-      />
-    </section>
-  );
-}
-
-function NextPrintsRail({ events }: { events: EcoEvent[] }) {
-  // AUDIT A10 [L]: "Next prints" used a one-shot `Date.now()` inside a memo
-  // keyed only on `events`, so a release that had just passed stayed listed
-  // until the next manual refetch. A visibility-paused minute clock (tick NOT
-  // in fetch params) recomputes the upcoming set while the tab is visible.
-  const tick = useVisibilityTick(60_000);
-  // `tick` is the wall-clock re-render trigger; Date.now() itself is
-  // non-reactive, so the hook rule flags `tick` as an unnecessary dependency.
-  const now = useMemo(
-    () => Date.now(),
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- tick re-reads the wall clock each visible minute
-    [tick],
-  );
-  const upcoming = useMemo(() => {
-    return events
-      .map((e) => ({ e, t: parseTime(e) }))
-      .filter((x) => x.t != null && (x.t as number) >= now)
-      .sort((a, b) => (a.t as number) - (b.t as number))
-      .slice(0, 6);
-  }, [events, now]);
-  return (
-    <aside style={railStyle} aria-label="Upcoming prints">
-      <div style={railHeaderStyle}>
-        <span style={sectionTitleStyle}>Next prints</span>
-        <Pill tone="accent" variant="soft" withDot={false}>
-          {upcoming.length}
-        </Pill>
-      </div>
-      <div style={railListStyle}>
-        {upcoming.length === 0 ? (
-          <span className="u-text-mute u-text-11">
-            No upcoming prints in window.
-          </span>
-        ) : (
-          upcoming.map(({ e }, i) => {
-            const country = e.country ?? e.region ?? "—";
-            const surprise = computeSurprise(e);
-            return (
-              <div key={`${e.event ?? e.name}-${i}`} style={railRowStyle}>
-                <div style={railCountdownStyle}>
-                  <CountryChip code={country} />
-                  <span style={railTimeStyle}>{shortWhen(e)}</span>
-                </div>
-                <div style={railEventStyle}>
-                  {truncate(e.event ?? e.name ?? "—", 36)}
-                </div>
-                <div style={railMetaStyle}>
-                  {importanceBadge(e.importance)}
-                  {surprise != null ? (
-                    <DeltaChip value={surprise} format="raw" fractionDigits={2} />
-                  ) : (
-                    <span className="u-text-mute u-text-10">
-                      pending
-                    </span>
-                  )}
-                </div>
-              </div>
-            );
-          })
-        )}
-      </div>
-      <div style={railCaptionStyle}>
-        Sorted by next release. Surprise = actual minus forecast at print time.
-      </div>
-    </aside>
-  );
-}
-
-/**
- * Compact actual-vs-forecast compare: two stacked magnitude bars scaled
- * against the larger of the two absolute values (consensus = the base bar,
- * the print = the tinted bar). The print's tone follows the surprise sign —
- * positive/negative vs the consensus — with a neutral tint on an exact hit.
- *
- * Data honesty: the component is only reachable when `actual` AND `forecast`
- * are both finite numbers; null/absent prints never produce a bar.
- */
-function ActualVsForecastBar({
-  forecast,
-  actual,
-  unit,
-}: {
-  forecast: number;
-  actual: number;
-  unit?: string;
-}) {
-  const max = Math.max(Math.abs(forecast), Math.abs(actual));
-  if (!(max > 0)) return null;
-  const widthFor = (value: number) =>
-    Math.max(2, Math.round((Math.abs(value) / max) * AF_BAR_WIDTH));
-  const tone =
-    actual === forecast
-      ? "var(--text-mute)"
-      : actual > forecast
-        ? "var(--positive)"
-        : "var(--negative)";
-  const label = `forecast ${formatNumber(forecast, 2)}${unit ?? ""} vs actual ${formatNumber(actual, 2)}${unit ?? ""}`;
-  return (
-    <span
-      role="img"
-      aria-label={label}
-      data-testid="eco-afbar"
-      style={afBarWrapStyle}
-      title={label}
-    >
+    <li className="aw-kpi__provider">
       <span
-        data-testid="eco-afbar-forecast"
-        style={{ ...afBarStyle, width: widthFor(forecast) }}
+        className={`aw-dot ${ok ? "aw-dot--ok" : provider.status === "down" ? "aw-dot--down" : "aw-dot--warn"}`}
+        aria-hidden="true"
       />
-      <span
-        data-testid="eco-afbar-actual"
-        style={{ ...afBarStyle, width: widthFor(actual), background: tone }}
-      />
-    </span>
+      <span className="aw-kpi__pname">{provider.provider}</span>
+      <span className="aw-kpi__pstate">{text}</span>
+    </li>
   );
 }
 
-function WhenCell({ event }: { event: EcoEvent }): ReactNode {
-  const t = parseTime(event);
-  if (t == null) return <span className="u-text-mute">{String(event.date ?? event.ts ?? event.time ?? "—").slice(0, 16)}</span>;
-  const d = new Date(t);
-  const date = d.toISOString().slice(5, 10).replace("-", "/");
-  const time = d.toISOString().slice(11, 16);
+interface EventRowProps {
+  row: EconRow;
+  tz: TzMode;
+  now: number;
+  isNextHigh: boolean;
+}
+
+function EventRow({ row, tz, now, isNextHigh }: EventRowProps): ReactNode {
+  const t = parseMs(row.date);
+  const released = row.status === "released" || row.status === "revised";
+  const direction = row.surprise_direction ?? null;
+  const actualTone =
+    direction === "above"
+      ? "aw-eco__actual--above"
+      : direction === "below"
+        ? "aw-eco__actual--below"
+        : "";
+  const classes = ["aw-cal__row"];
+  if (row.is_central_bank) classes.push("aw-cal__row--cb");
+  if (isNextHigh) classes.push("aw-cal__row--next");
+  const title = row.event ?? "—";
+  const eventTone =
+    row.importance === 3 || row.is_central_bank ? "aw-cal__title--strong" : "";
+  const timeText = row.all_day ? "All day" : t != null ? formatClock(t, tz) : formatMissing;
   return (
-    <span style={whenCellStyle}>
-      <span style={whenDateStyle}>{date}</span>
-      <span style={whenTimeStyle}>{time}</span>
-    </span>
-  );
-}
-
-function CountryChip({ code }: { code: string }) {
-  const c = String(code ?? "").slice(0, 3).toUpperCase() || "—";
-  return (
-    <span style={countryChipStyle}>
-      <span aria-hidden style={countryDotStyle} />
-      {c}
-    </span>
-  );
-}
-
-function normalizeEvents(payload: unknown): EcoEvent[] {
-  if (!payload) return [];
-  if (Array.isArray(payload)) return payload as EcoEvent[];
-  if (typeof payload === "object") {
-    const o = payload as Record<string, unknown>;
-    const items = o.events ?? o.items ?? null;
-    if (Array.isArray(items)) return items as EcoEvent[];
-  }
-  return [];
-}
-
-function filterEvents(events: EcoEvent[], days: number): EcoEvent[] {
-  const start = Date.now() - 86_400_000;
-  const end = Date.now() + days * 86_400_000;
-  return events.filter((event) => {
-    const raw = event.date ?? event.ts ?? event.time;
-    if (!raw) return true;
-    const t = new Date(raw).getTime();
-    if (Number.isNaN(t)) return true;
-    return t >= start && t <= end;
-  });
-}
-
-function importanceBadge(value: string | number | undefined): ReactNode {
-  if (value == null) return formatMissing;
-  const text = String(value).toLowerCase();
-  const high = text.includes("high") || text === "3" || Number(value) >= 3;
-  const med = text.includes("med") || text === "2" || Number(value) === 2;
-  const tone: "negative" | "warn" | "muted" = high ? "negative" : med ? "warn" : "muted";
-  // a11y: never rely on colour alone. Keep the word AND add a non-colour
-  // triangle cue + an explicit aria-label, so screen-reader / colour-blind
-  // users still get the impact level.
-  const level = high ? "high" : med ? "medium" : "low";
-  const cue = high ? "▲▲▲" : med ? "▲▲" : "▲";
-  const label = high ? "high" : med ? "med" : "low";
-  return (
-    <Pill tone={tone} variant="soft" withDot={false} aria-label={`importance: ${level}`}>
-      <span aria-hidden style={impCueStyle}>
-        {cue}
+    <div className={classes.join(" ")} role="row" data-testid="eco-row">
+      <span className="aw-cal__time" role="cell">
+        <span>{timeText}</span>
+        {t != null && !row.all_day ? (
+          <span className="aw-cal__utc">{formatClock(t, "utc")}Z</span>
+        ) : null}
       </span>
-      {label}
-    </Pill>
-  );
-}
-
-function numeric(v: unknown): number | null {
-  if (typeof v === "number") return v;
-  if (typeof v === "string") {
-    const n = Number(v.replace(/[%,]/g, ""));
-    return Number.isFinite(n) ? n : null;
-  }
-  return null;
-}
-
-function computeSurprise(e: EcoEvent): number | null {
-  if (typeof e.surprise === "number" && Number.isFinite(e.surprise)) return e.surprise;
-  const f = numeric(e.forecast);
-  const a = numeric(e.actual);
-  if (f != null && a != null) return a - f;
-  return null;
-}
-
-/**
- * Percent-unit print? eco.py ships each event's own `unit` ("%", "K", …).
- * Only %-unit surprises share one scale, so those are the only rows the
- * surprise KPIs may aggregate (HNT-03).
- */
-function isPercentUnit(e: EcoEvent): boolean {
-  return String(e.unit ?? "").trim().toLowerCase().startsWith("%");
-}
-
-/**
- * Format an economic-calendar numeric cell using the app-wide
- * {@link formatNumber} (shared "—" sentinel via {@link formatMissing}), then
- * append the unit. Non-numeric strings pass through verbatim.
- */
-function fmtVal(v: unknown, unit?: string): string {
-  if (v == null || v === "") return formatMissing;
-  const n = numeric(v);
-  if (n == null) return String(v);
-  const u = unit ?? "";
-  return `${formatNumber(n, 2)}${u}`;
-}
-
-/** True when the payload is the hardcoded synthetic fallback calendar. */
-function isModelData(payload: unknown): boolean {
-  if (!payload || typeof payload !== "object") return false;
-  const o = payload as Record<string, unknown>;
-  const sources = Array.isArray(o.sources) ? o.sources : [];
-  if (sources[0] === "calendar_feed_model") return true;
-  const inner = (o.data && typeof o.data === "object" ? o.data : {}) as Record<string, unknown>;
-  const mode = String(inner.source_mode ?? inner.data_mode ?? "").toLowerCase();
-  return mode === "calendar_feed_model";
-}
-
-/** Extract server data-freshness (`as_of`) as an HH:MM UTC stamp, if present. */
-function extractAsOf(payload: unknown): string | undefined {
-  if (!payload || typeof payload !== "object") return undefined;
-  const raw = (payload as Record<string, unknown>).as_of;
-  if (typeof raw !== "string" || !raw) return undefined;
-  const d = new Date(raw);
-  if (Number.isNaN(d.getTime())) return undefined;
-  return d.toISOString().slice(11, 16);
-}
-
-/** Map raw backend source tokens to honest, user-facing labels. */
-function formatSourceLabel(sources: string[] | undefined): string {
-  if (!sources || sources.length === 0) return "";
-  return sources
-    .map((s) =>
-      s === "calendar_feed_model" ? "Sample calendar (not live)" : s,
-    )
-    .join(", ");
-}
-
-/** Prominent "this calendar is the synthetic sample, not live" banner. */
-function ModelCalendarBadge() {
-  return (
-    <div
-      className="wei-model-badge"
-      role="status"
-      data-testid="eco-model-badge"
-      aria-label="Sample calendar — no live data"
-    >
-      <span className="wei-model-badge__dot" aria-hidden />
-      <strong>SAMPLE CALENDAR — no live data</strong>
-      <span className="u-text-secondary">
-        Events and values in this calendar are illustrative sample data, not
-        real (live) economic releases.
+      <span className="aw-cal__ctry" role="cell">
+        <span className="aw-cal__cc">{row.country ?? "—"}</span>
+        {row.currency ? <span className="aw-cal__ccy">{row.currency}</span> : null}
+      </span>
+      <span role="cell">
+        <ImportanceDots importance={row.importance} />
+      </span>
+      <span className="aw-cal__event" role="cell">
+        <span className="aw-cal__eventline">
+          {row.is_central_bank ? <span className="aw-cb-badge">CB</span> : null}
+          <span className={eventTone || "aw-cal__title"}>{title}</span>
+        </span>
+        <span className="aw-cal__meta">
+          {row.category ? <span>{row.category.replace(/_/g, " ")}</span> : null}
+          <span className={`aw-cal__status${isNextHigh ? " aw-cal__status--warn" : ""}`}>
+            {statusLabel(row, t, now, isNextHigh)}
+          </span>
+        </span>
+      </span>
+      <span className={`aw-num aw-eco__actual ${actualTone}`} role="cell">
+        {displayValue(row.actual, row.actual_value, row.unit)}
+      </span>
+      <span className="aw-num aw-eco__forecast" role="cell">
+        {displayValue(row.forecast, row.forecast_value, row.unit)}
+      </span>
+      <span className="aw-num aw-eco__previous" role="cell">
+        {row.revised
+          ? `${displayValue(row.previous, row.previous_value, row.unit)} → ${row.revised}`
+          : displayValue(row.previous, row.previous_value, row.unit)}
+      </span>
+      <span role="cell">
+        <SurpriseCell
+          surprise={row.surprise}
+          unit={row.unit}
+          direction={direction}
+          released={released}
+        />
+      </span>
+      <span role="cell">
+        <ProvenanceButton sources={row.sources} subject={title} />
       </span>
     </div>
   );
 }
 
-function parseTime(e: EcoEvent): number | null {
-  const raw = e.date ?? e.ts ?? e.time ?? "";
+function statusLabel(
+  row: EconRow,
+  t: number | null,
+  now: number,
+  isNextHigh: boolean,
+): string {
+  if (row.status === "released" || row.status === "revised") return "released";
+  if (row.status === "cancelled") return "cancelled";
+  if (t != null && t > now && t - now <= DAY_MS) {
+    if (isNextHigh) return `next high · in ${formatShortCountdown(t - now)}`;
+    return `in ${formatShortCountdown(t - now)}`;
+  }
+  return row.status ?? "scheduled";
+}
+
+function displayValue(
+  text: string | null | undefined,
+  value: number | null | undefined,
+  unit: string | null | undefined,
+): string {
+  if (text != null && String(text).trim() !== "") return String(text);
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return `${value.toLocaleString("en-US", { maximumFractionDigits: 4 })}${unit ?? ""}`;
+  }
+  return formatMissing;
+}
+
+function holidayText(h: HolidayRow): string {
+  const name = h.name ?? "holiday";
+  const country = h.country ?? "";
+  if (h.kind === "market_closed") return `${h.exchange ?? country} closed: ${name}.`;
+  if (h.kind === "early_close") {
+    const at = h.early_close_time ? ` at ${h.early_close_time}` : "";
+    return `${h.exchange ?? country} early close${at}: ${name}.`;
+  }
+  return `${country} public holiday: ${name}.`;
+}
+
+function parseMs(raw: string | null | undefined): number | null {
+  if (!raw) return null;
   const t = new Date(String(raw)).getTime();
   return Number.isNaN(t) ? null : t;
 }
 
-function shortWhen(e: EcoEvent): string {
-  const t = parseTime(e);
-  if (t == null) return "—";
-  const d = new Date(t);
-  return `${d.toISOString().slice(5, 10).replace("-", "/")} ${d.toISOString().slice(11, 16)}`;
+function pad2(n: number): string {
+  return String(n).padStart(2, "0");
 }
 
-function truncate(s: string, n: number): string {
-  return s.length > n ? `${s.slice(0, n - 1)}…` : s;
+function dayKeyOf(ms: number, tz: TzMode): string {
+  if (tz === "utc") return new Date(ms).toISOString().slice(0, 10);
+  const d = new Date(ms);
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 }
 
-const kpiGridStyle: CSSProperties = {
-  display: "grid",
-  gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
-  gap: 10,
-};
+function fromDateFor(anchor: "today" | "monday"): string {
+  const now = Date.now();
+  if (anchor === "today") return new Date(now).toISOString().slice(0, 10);
+  const d = new Date(now);
+  const dow = (d.getUTCDay() + 6) % 7;
+  return new Date(now - dow * DAY_MS).toISOString().slice(0, 10);
+}
 
-const tzNoteStyle: CSSProperties = {
-  color: "var(--text-mute)",
-  fontSize: "var(--font-size-2xs)",
-  letterSpacing: "0.06em",
-  textTransform: "uppercase",
-  fontFamily: "JetBrains Mono, monospace",
-};
+function formatClock(ms: number, tz: TzMode): string {
+  const d = new Date(ms);
+  if (tz === "utc") return `${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())}`;
+  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+}
 
-const impCueStyle: CSSProperties = {
-  fontSize: "var(--font-size-xs)",
-  marginRight: 3,
-  letterSpacing: "-0.06em",
-};
+function formatWhen(ms: number | null, tz: TzMode): string {
+  if (ms == null) return formatMissing;
+  return `${dayLabelFromKey(dayKeyOf(ms, tz))} ${formatClock(ms, tz)}${tz === "utc" ? " UTC" : ""}`;
+}
 
-const twoColLayout: CSSProperties = {
-  display: "grid",
-  gridTemplateColumns: "minmax(0, 1.6fr) minmax(280px, 0.7fr)",
-  gap: 12,
-  alignItems: "start",
-};
+/** "Tue 10 Nov" for a calendar-date key; UTC noon keeps the date stable in every zone. */
+function dayLabelFromKey(key: string): string {
+  const d = new Date(`${key}T12:00:00Z`);
+  return d.toLocaleDateString("en-GB", {
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+    timeZone: "UTC",
+  });
+}
 
-const railStyle: CSSProperties = {
-  display: "grid",
-  gap: 10,
-  background: "var(--surface-2)",
-  border: "1px solid var(--border-card)",
-  borderRadius: "var(--radius-md)",
-  padding: 12,
-};
+function dayLabel(key: string, todayKey: string): string {
+  const base = dayLabelFromKey(key);
+  return key === todayKey ? `Today, ${base}` : base;
+}
 
-const railHeaderStyle: CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "space-between",
-  gap: 8,
-};
+function formatCountdown(targetMs: number, nowMs: number): string {
+  const diff = targetMs - nowMs;
+  if (diff <= 0) return "now";
+  const totalSec = Math.floor(diff / 1000);
+  const days = Math.floor(totalSec / 86_400);
+  const hh = pad2(Math.floor((totalSec % 86_400) / 3600));
+  const mm = pad2(Math.floor((totalSec % 3600) / 60));
+  const ss = pad2(totalSec % 60);
+  return days > 0 ? `in ${days}d ${hh}:${mm}:${ss}` : `in ${hh}:${mm}:${ss}`;
+}
 
-const sectionTitleStyle: CSSProperties = {
-  textTransform: "uppercase",
-  letterSpacing: "0.08em",
-  fontSize: "var(--font-size-2xs)",
-  color: "var(--text-mute)",
-  fontFamily: "JetBrains Mono, monospace",
-};
+function formatShortCountdown(diffMs: number): string {
+  const totalMin = Math.max(0, Math.floor(diffMs / 60_000));
+  const h = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
+  return `${h}h ${m}m`;
+}
 
-const railListStyle: CSSProperties = {
-  display: "grid",
-  gap: 8,
-};
+function minutesBetween(iso: string, nowMs: number): number | null {
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return null;
+  return Math.max(0, Math.round((nowMs - t) / 60_000));
+}
 
-const railRowStyle: CSSProperties = {
-  display: "grid",
-  gap: 4,
-  padding: "8px 10px",
-  background: "var(--surface-1)",
-  border: "1px solid var(--border-subtle)",
-  borderRadius: "var(--radius-sm)",
-  transition: "transform var(--motion-base), border-color var(--motion-base)",
-};
+function localZoneName(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || "local";
+  } catch {
+    return "local";
+  }
+}
 
-const railCountdownStyle: CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "space-between",
-  gap: 8,
-};
+interface DayGroup {
+  key: string;
+  rows: EconRow[];
+  holidays: HolidayRow[];
+}
 
-const railTimeStyle: CSSProperties = {
-  fontFamily: "JetBrains Mono, monospace",
-  fontSize: "var(--font-size-2xs)",
-  color: "var(--text-secondary)",
-};
+function buildGroups(
+  timed: { row: EconRow; t: number }[],
+  holidays: HolidayRow[],
+  tz: TzMode,
+): DayGroup[] {
+  const map = new Map<string, DayGroup>();
+  const get = (key: string) => {
+    let group = map.get(key);
+    if (!group) {
+      group = { key, rows: [], holidays: [] };
+      map.set(key, group);
+    }
+    return group;
+  };
+  for (const { row, t } of timed) get(dayKeyOf(t, tz)).rows.push(row);
+  for (const h of holidays) {
+    const key = String(h.date ?? "").slice(0, 10);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(key)) get(key).holidays.push(h);
+  }
+  return [...map.values()].sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+}
 
-const railEventStyle: CSSProperties = {
-  fontSize: "var(--font-size-md)",
-  color: "var(--text-primary)",
-};
+interface Kpis {
+  releasedToday: number;
+  above: number;
+  below: number;
+  inline: number;
+  scheduled7d: number;
+  high7d: number;
+}
 
-const railMetaStyle: CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  gap: 6,
-  marginTop: 2,
-};
-
-const railCaptionStyle: CSSProperties = {
-  color: "var(--text-mute)",
-  fontSize: "var(--font-size-2xs)",
-  letterSpacing: "0.04em",
-};
-
-const whenCellStyle: CSSProperties = {
-  display: "inline-flex",
-  alignItems: "baseline",
-  gap: 6,
-  fontFamily: "JetBrains Mono, monospace",
-  fontVariantNumeric: "tabular-nums",
-};
-
-const whenDateStyle: CSSProperties = {
-  color: "var(--text-primary)",
-  fontWeight: 500,
-};
-
-const whenTimeStyle: CSSProperties = {
-  color: "var(--text-mute)",
-  fontSize: "var(--font-size-sm)",
-};
-
-const countryChipStyle: CSSProperties = {
-  display: "inline-flex",
-  alignItems: "center",
-  gap: 5,
-  padding: "1px 7px",
-  height: 18,
-  borderRadius: 9,
-  background: "var(--surface-3)",
-  fontSize: "var(--font-size-2xs)",
-  fontFamily: "JetBrains Mono, monospace",
-  fontWeight: 600,
-  letterSpacing: "0.06em",
-  color: "var(--text-secondary)",
-  textTransform: "uppercase",
-};
-
-const countryDotStyle: CSSProperties = {
-  width: 5,
-  height: 5,
-  borderRadius: 3,
-  background: "var(--accent)",
-  boxShadow: "0 0 6px var(--accent)",
-};
-
-const mutedNumStyle: CSSProperties = {
-  fontFamily: "JetBrains Mono, monospace",
-  fontVariantNumeric: "tabular-nums",
-  color: "var(--text-secondary)",
-};
-
-const primaryNumStyle: CSSProperties = {
-  fontFamily: "JetBrains Mono, monospace",
-  fontVariantNumeric: "tabular-nums",
-  color: "var(--text-display)",
-  fontWeight: 600,
-};
-
-const actualCellStyle: CSSProperties = {
-  display: "inline-flex",
-  flexDirection: "column",
-  gap: 3,
-  alignItems: "flex-start",
-};
-
-const AF_BAR_WIDTH = 44;
-
-const afBarWrapStyle: CSSProperties = {
-  display: "inline-flex",
-  flexDirection: "column",
-  gap: 2,
-  width: AF_BAR_WIDTH,
-};
-
-const afBarStyle: CSSProperties = {
-  display: "block",
-  height: 3,
-  borderRadius: 2,
-  background: "var(--text-mute)",
-};
+function deriveKpis(
+  timed: { row: EconRow; t: number }[],
+  now: number,
+  todayKey: string,
+  tz: TzMode,
+): Kpis {
+  const out: Kpis = {
+    releasedToday: 0,
+    above: 0,
+    below: 0,
+    inline: 0,
+    scheduled7d: 0,
+    high7d: 0,
+  };
+  for (const { row, t } of timed) {
+    const released = row.status === "released" || row.status === "revised";
+    if (released && dayKeyOf(t, tz) === todayKey) {
+      out.releasedToday += 1;
+      if (row.surprise_direction === "above") out.above += 1;
+      else if (row.surprise_direction === "below") out.below += 1;
+      else if (row.surprise_direction === "inline") out.inline += 1;
+    }
+    if (row.status === "scheduled" && t >= now && t - now <= 7 * DAY_MS) {
+      out.scheduled7d += 1;
+      if (row.importance === 3) out.high7d += 1;
+    }
+  }
+  return out;
+}

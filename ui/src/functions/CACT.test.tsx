@@ -135,13 +135,18 @@ describe("CACT pane — load states", () => {
     expect(screen.getByText(/sidecar exploded/i)).toBeInTheDocument();
   });
 
-  it("renders the honest provider-unavailable state with the backend reason", () => {
+  it("renders the honest awareness-unavailable state with the backend reason", () => {
     setMockFn({ state: "ok", ...providerDownPayload() });
     render(<CACTPane code="CACT" symbol="AAPL" />);
+    expect(screen.getByRole("alert")).toBeInTheDocument();
+    expect(screen.getByText(/Awareness service is not running/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Nothing is estimated/i)).toBeNull();
+  });
+
+  it("says no corporate actions were returned for an empty ok payload", () => {
+    setMockFn({ state: "ok", data: { data: { status: "empty", rows: [] } } });
+    render(<CACTPane code="CACT" symbol="AAPL" />);
     expect(screen.getByText(/No corporate actions returned/i)).toBeInTheDocument();
-    expect(
-      screen.getByText(/No dividend, split, or dated 8-K corporate-action rows/i),
-    ).toBeInTheDocument();
   });
 });
 
@@ -162,9 +167,7 @@ describe("CACT pane — filter interactions", () => {
 
     fireEvent.click(screen.getByText("DIV"));
 
-    const table = container.querySelector(
-      '[aria-label="CACT corporate actions table"]',
-    );
+    const table = container.querySelector('[aria-label="CACT corporate actions table"]');
     expect(table?.textContent).toContain("2026-08-10");
     expect(table?.textContent).not.toContain("2027-01-15");
     expect(table?.textContent).not.toContain("0000320193-26-000042");
@@ -175,9 +178,7 @@ describe("CACT pane — filter interactions", () => {
     const { container } = render(<CACTPane code="CACT" symbol="AAPL" />);
 
     // The WINDOW segmented control carries a descriptive aria-label.
-    const windowGroup = container.querySelector(
-      '[aria-label="Past vs upcoming"]',
-    );
+    const windowGroup = container.querySelector('[aria-label="Past vs upcoming"]');
     expect(windowGroup).not.toBeNull();
     const upcomingBtn = Array.from(windowGroup!.querySelectorAll("button")).find(
       (b) => b.textContent === "UPCOMING",
@@ -185,33 +186,26 @@ describe("CACT pane — filter interactions", () => {
     expect(upcomingBtn).toBeDefined();
     fireEvent.click(upcomingBtn!);
 
-    const table = container.querySelector(
-      '[aria-label="CACT corporate actions table"]',
-    );
+    const table = container.querySelector('[aria-label="CACT corporate actions table"]');
     expect(table?.textContent).toContain("2027-01-15");
     expect(table?.textContent).not.toContain("2026-08-10");
   });
 
   it("states outright when no upcoming actions exist in provider data", () => {
     const pastOnly = mixedPayload();
-    (pastOnly.data.data as { rows: Array<{ event_date: string | null }> }).rows =
-      (pastOnly.data.data as { rows: Array<{ event_date: string | null }> }).rows.filter(
-        (r) => r.event_date !== "2027-01-15",
-      );
+    (pastOnly.data.data as { rows: Array<{ event_date: string | null }> }).rows = (
+      pastOnly.data.data as { rows: Array<{ event_date: string | null }> }
+    ).rows.filter((r) => r.event_date !== "2027-01-15");
     setMockFn({ state: "ok", ...pastOnly });
     const { container } = render(<CACTPane code="CACT" symbol="AAPL" />);
 
-    const windowGroup = container.querySelector(
-      '[aria-label="Past vs upcoming"]',
-    );
+    const windowGroup = container.querySelector('[aria-label="Past vs upcoming"]');
     const upcomingBtn = Array.from(windowGroup!.querySelectorAll("button")).find(
       (b) => b.textContent === "UPCOMING",
     );
     fireEvent.click(upcomingBtn!);
 
-    expect(
-      screen.getByText(/No upcoming actions in provider data/i),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/No upcoming actions in provider data/i)).toBeInTheDocument();
   });
 });
 
@@ -229,9 +223,7 @@ describe("CACT pane — actions grid sort + keyboard (lane B4)", () => {
     });
     expect(grid).toBeInTheDocument();
     // Roving keyboard cell: the first cell owns the tab stop.
-    expect(
-      grid.querySelector('td[data-cell="0-0"]')?.getAttribute("tabindex"),
-    ).toBe("0");
+    expect(grid.querySelector('td[data-cell="0-0"]')?.getAttribute("tabindex")).toBe("0");
 
     // event_date descending -> 2027-01-15 first, 2026-07-31 last.
     expect(container.querySelector('th[aria-sort="descending"]')).not.toBeNull();

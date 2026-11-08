@@ -1,17 +1,14 @@
 /**
- * TRDH — Trading Hours board.
+ * TRDH — trading-hours board (Awareness-backed exchange calendars).
  *
- * Backend defect note: the DEFAULT board (no `exchanges` param) returns only
- * BINANCE even though the registry holds ~50 venues, so this pane ALWAYS
- * sends an explicit `exchanges` list and offers the user a multi-select chip
- * row (the ten registry venues from the impl's own default list) persisted
- * under `showme.trdh.exchanges`. Body: open-now summary, a per-exchange
- * session table (local hours, timezone, OPEN/CLOSED tone, countdown to the
- * next state change) sorted open-first / soonest-change, and a server
- * now-UTC stamp.
+ * Sessions come from awareness `/calendar/sessions` and closures from
+ * `/calendar/holidays`. The pane sends an explicit MIC list (XNYS, XLON, ...),
+ * persisted under `showme.trdh.exchanges`. Venues that awareness does not
+ * calendar (crypto venues) are not offered.
  *
- * Honesty: countdowns come only from the payload's seconds_until_open /
- * seconds_until_close; a 24h venue with no next close renders "continuous".
+ * Countdowns are computed from the payload's next_open_utc / next_close_utc
+ * against the wall clock. A venue open with no next close is shown as
+ * "continuous" rather than given an invented close time.
  */
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import {
@@ -30,119 +27,126 @@ import {
 } from "@/design-system";
 import { useFunction } from "@/lib/useFunction";
 import { useVisibilityTick } from "@/lib/useVisibilityTick";
-import {
-  FunctionControlGroup,
-  LoadStatePill,
-  RefreshButton,
-} from "./function-controls";
+import { formatMissing } from "@/lib/format";
+import { FunctionControlGroup, LoadStatePill, RefreshButton } from "./function-controls";
 import type { FunctionPaneProps } from "./registry-types";
+import { AwarenessUnavailable } from "./awareness/AwarenessUnavailable";
+import type { AwarenessMeta } from "./awareness/types";
 
 // Countdowns fall as wall-clock advances, so the board re-fetches every
-// minute (visibility-paused). The tick stays OUT of the fetch params —
-// putting it in params would re-key the load and flash the skeleton.
+// minute (visibility-paused). The tick stays OUT of the fetch params.
 const REFRESH_MS = 60_000;
 
-interface TRDHRow {
-  exchange?: string;
-  name?: string;
-  country?: string;
-  currency?: string;
-  open_local?: string;
-  close_local?: string;
-  timezone?: string;
-  is_open_now?: boolean;
+export interface TrdhSession {
+  date?: string | null;
+  open_local?: string | null;
+  close_local?: string | null;
+  break_start_local?: string | null;
+  break_end_local?: string | null;
+  early_close?: boolean;
+  open_utc?: string | null;
+  close_utc?: string | null;
+}
+
+export interface TrdhClosure {
+  date?: string | null;
+  name?: string | null;
+  kind?: string | null;
+}
+
+export interface TrdhExchange {
+  mic: string;
+  name?: string | null;
+  timezone?: string | null;
+  today?: TrdhSession | null;
+  is_open_now: boolean;
   next_open_utc?: string | null;
   next_close_utc?: string | null;
-  seconds_until_open?: number | null;
-  seconds_until_close?: number | null;
-  hours_until_open?: number | null;
-  hours_until_close?: number | null;
-  value?: number | null;
+  sessions?: TrdhSession[];
+  closures?: TrdhClosure[];
 }
 
-interface TRDHData {
-  rows?: TRDHRow[];
-  surface?: Array<Record<string, unknown>>;
-  cards?: Array<{ label?: string; value?: unknown }>;
-  source_mode?: string;
+interface TrdhPayload {
+  status?: string;
+  reason?: string | null;
+  exchanges?: TrdhExchange[];
+  meta?: AwarenessMeta;
 }
 
-// The ten venues from the backend's own default list (impl constants).
+/** Venues awareness calendars today. Stored values are MIC codes. */
 const EXCHANGE_OPTIONS = [
-  "NYSE",
-  "NASDAQ",
-  "LSE",
-  "FWB",
-  "TYO",
-  "HKEX",
-  "ASX",
-  "BIST",
-  "BINANCE",
-  "DERIBIT",
+  { mic: "XNYS", label: "NYSE" },
+  { mic: "XNAS", label: "NASDAQ" },
+  { mic: "XLON", label: "LSE" },
+  { mic: "XETR", label: "XETRA" },
+  { mic: "XPAR", label: "EURONEXT" },
+  { mic: "XTKS", label: "TSE" },
+  { mic: "XHKG", label: "HKEX" },
+  { mic: "XASX", label: "ASX" },
+  { mic: "XIST", label: "BIST" },
+  { mic: "XSHG", label: "SSE" },
 ] as const;
+const ALL_MICS: string[] = EXCHANGE_OPTIONS.map((o) => o.mic);
 
 const EXCHANGES_STORAGE_KEY = "showme.trdh.exchanges";
 
 function readPersistedSelection(): string[] {
-  if (typeof localStorage === "undefined") return [...EXCHANGE_OPTIONS];
+  if (typeof localStorage === "undefined") return [...ALL_MICS];
   const raw = localStorage.getItem(EXCHANGES_STORAGE_KEY);
-  if (raw == null) return [...EXCHANGE_OPTIONS];
+  if (raw == null) return [...ALL_MICS];
   const picked = raw
     .split(",")
     .map((part) => part.trim().toUpperCase())
-    .filter((part): part is (typeof EXCHANGE_OPTIONS)[number] =>
-      (EXCHANGE_OPTIONS as readonly string[]).includes(part),
-    );
-  return picked.length ? picked : [...EXCHANGE_OPTIONS];
+    .filter((part) => ALL_MICS.includes(part));
+  return picked.length ? picked : [...ALL_MICS];
 }
 
 export function TRDHPane({ code }: FunctionPaneProps) {
   const [selected, setSelected] = useState<string[]>(readPersistedSelection);
   const tick = useVisibilityTick(REFRESH_MS);
 
-  const { state, data, error, refetch } = useFunction<TRDHData>({
+  const { state, data, error, refetch } = useFunction<TrdhPayload>({
     code,
-    // DEFECT WORKAROUND: the backend's default board returns only BINANCE,
-    // so the explicit exchanges list is always sent.
     params: { exchanges: selected.join(",") },
     enabled: selected.length > 0,
   });
 
-  // Poll-on-tick: countdowns ("closes in 1h 52m") must not freeze while the
-  // board sits open. Deps are [tick] ONLY — refetch is a new identity every
-  // render, so including it would re-run the effect forever.
+  // Poll-on-tick: countdowns must not freeze while the board sits open.
+  // Deps are [tick] ONLY; refetch changes identity each render.
   useEffect(() => {
     if (tick === 0) return;
     refetch();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- tick is the trigger
   }, [tick]);
 
-  function toggleExchange(exchange: string) {
-    const next = selected.includes(exchange)
-      ? selected.filter((item) => item !== exchange)
-      : EXCHANGE_OPTIONS.filter(
-          (option) => option === exchange || selected.includes(option),
-        );
+  function toggleExchange(mic: string) {
+    const next = selected.includes(mic)
+      ? selected.filter((item) => item !== mic)
+      : ALL_MICS.filter((option) => option === mic || selected.includes(option));
     setSelected(next);
     if (typeof localStorage !== "undefined") {
       localStorage.setItem(EXCHANGES_STORAGE_KEY, next.join(","));
     }
   }
 
-  const payload = data?.data;
+  const payload: TrdhPayload = data?.data ?? {};
+  const nowMs = Date.now();
+  const unavailable = payload.status === "provider_unavailable";
   const rows = useMemo(() => {
-    const raw = payload?.rows ?? [];
+    const raw = payload.exchanges ?? [];
     return [...raw].sort((a, b) => {
       const openDelta = (b.is_open_now ? 1 : 0) - (a.is_open_now ? 1 : 0);
       if (openDelta !== 0) return openDelta;
-      return (a.value ?? Number.MAX_SAFE_INTEGER) - (b.value ?? Number.MAX_SAFE_INTEGER);
+      return secondsUntilChange(a, nowMs) - secondsUntilChange(b, nowMs);
     });
-  }, [payload]);
+    // nowMs changes each render; sorting on the payload identity is enough.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [payload.exchanges]);
   const openNow = rows.filter((r) => r.is_open_now).length;
-  const nowUtc = typeof data?.metadata?.now_utc === "string" ? data.metadata.now_utc : null;
-  const isLive = state === "ok" && rows.length > 0;
+  const generatedAt = payload.meta?.generated_at ?? null;
+  const isLive = state === "ok" && rows.length > 0 && !unavailable;
 
-  const COLS: DataGridColumn<TRDHRow>[] = useMemo(
+  const COLS: DataGridColumn<TrdhExchange>[] = useMemo(
     () => [
       {
         key: "exchange",
@@ -150,38 +154,27 @@ export function TRDHPane({ code }: FunctionPaneProps) {
         width: 210,
         render: (r) => (
           <span>
-            <span style={monoStrongStyle}>{r.exchange ?? "—"}</span>
+            <span style={monoStrongStyle}>{r.mic}</span>
             <span style={venueSubStyle}>
               {r.name ?? ""}
-              {r.country ? ` · ${r.country}` : ""}
+              {r.timezone ? ` · ${r.timezone}` : ""}
             </span>
           </span>
         ),
       },
       {
         key: "session",
-        header: "Local session",
-        width: 190,
-        render: (r) => (
-          <span style={monoMutedStyle}>
-            {r.open_local || "—"}–{r.close_local || "—"}{" "}
-            {r.timezone ? `(${r.timezone})` : ""}
-          </span>
-        ),
+        header: "Local session today",
+        width: 230,
+        render: (r) => <span style={monoMutedStyle}>{fmtSession(r.today)}</span>,
       },
       {
         key: "state",
         header: "State",
         width: 110,
-        // Lane B4: 0 = open, 1 = closed so ascending keeps the component's
-        // open-first ordering; ties keep the soonest-change order below.
         sortValue: (r) => (r.is_open_now ? 0 : 1),
         render: (r) => (
-          <Pill
-            tone={r.is_open_now ? "positive" : "muted"}
-            variant="soft"
-            withDot
-          >
+          <Pill tone={r.is_open_now ? "positive" : "muted"} variant="soft" withDot>
             {r.is_open_now ? "open" : "closed"}
           </Pill>
         ),
@@ -190,33 +183,28 @@ export function TRDHPane({ code }: FunctionPaneProps) {
         key: "countdown",
         header: "Next change",
         width: 230,
+        render: (r) => <span style={monoPrimaryStyle}>{countdownText(r, nowMs)}</span>,
+      },
+      {
+        key: "closures",
+        header: "Closures in window",
+        width: 200,
         render: (r) => {
-          if (r.is_open_now) {
-            if (r.seconds_until_close == null) {
-              return <span style={monoMutedStyle}>continuous (24h)</span>;
-            }
-            return (
-              <span style={monoPrimaryStyle}>
-                closes in {fmtDuration(r.seconds_until_close)}
-                {r.next_close_utc
-                  ? ` · ${r.next_close_utc.slice(11, 16)} UTC`
-                  : ""}
-              </span>
-            );
-          }
-          if (r.seconds_until_open == null) {
-            return <span style={monoMutedStyle}>—</span>;
-          }
+          const list = r.closures ?? [];
+          if (list.length === 0) return <span style={monoMutedStyle}>none</span>;
+          const first = list[0];
           return (
-            <span style={monoPrimaryStyle}>
-              opens in {fmtDuration(r.seconds_until_open)}
-              {r.next_open_utc ? ` · ${r.next_open_utc.slice(11, 16)} UTC` : ""}
+            <span
+              style={monoMutedStyle}
+              title={list.map((c) => `${c.date ?? ""} ${c.name ?? ""}`).join("\n")}
+            >
+              {list.length} · {first.date ?? ""} {first.name ?? ""}
             </span>
           );
         },
       },
     ],
-    [],
+    [nowMs],
   );
 
   const body = !selected.length ? (
@@ -234,21 +222,27 @@ export function TRDHPane({ code }: FunctionPaneProps) {
   ) : state === "error" ? (
     <Empty
       title="Function error"
-      body={error?.message ?? "—"}
+      body={error?.message ?? formatMissing}
       icon="!"
       action={
-        <button onClick={refetch} className="btn">
+        <button type="button" onClick={refetch} className="btn">
           Retry
         </button>
       }
     />
+  ) : unavailable ? (
+    <AwarenessUnavailable
+      reason={payload.reason ?? null}
+      onRetry={refetch}
+      subject="trading calendars"
+    />
   ) : rows.length === 0 ? (
     <Empty
       title="No sessions returned"
-      body="The calendar registry returned no rows for the selected exchanges."
+      body="The calendar returned no rows for the selected exchanges. Nothing is estimated."
       icon="◷"
       action={
-        <button onClick={refetch} className="btn">
+        <button type="button" onClick={refetch} className="btn">
           Retry
         </button>
       }
@@ -270,7 +264,7 @@ export function TRDHPane({ code }: FunctionPaneProps) {
         />
         <StatCard
           label="Calendar"
-          value={payload?.source_mode ?? "registry"}
+          value="awareness"
           caption="EXCHANGE CALENDARS"
           tone="neutral"
         />
@@ -278,11 +272,9 @@ export function TRDHPane({ code }: FunctionPaneProps) {
       <DataGrid
         columns={COLS}
         rows={rows}
-        rowKey={(r, i) => `${r.exchange ?? ""}-${i}`}
+        rowKey={(r) => r.mic}
         density="compact"
         ariaLabel="Trading hours board"
-        // Lane B4: open venues first (stable ties preserve the component's
-        // soonest-change secondary order).
         defaultSortKey="state"
         defaultSortDir="ascending"
         keyboardNavigable
@@ -296,7 +288,7 @@ export function TRDHPane({ code }: FunctionPaneProps) {
         <PaneHeader
           code={code}
           title="Trading Hours"
-          subtitle={`${selected.length} venue${selected.length === 1 ? "" : "s"} · explicit exchange list (default board defect bypassed)`}
+          subtitle={`${selected.length} venue${selected.length === 1 ? "" : "s"} · MIC calendars from awareness`}
           trailing={
             <FunctionControlGroup>
               <Pill tone={isLive ? "positive" : "warn"} variant="soft">
@@ -313,24 +305,20 @@ export function TRDHPane({ code }: FunctionPaneProps) {
           }
         />
         <PaneBody>
-          <div
-            role="group"
-            aria-label="Exchange selection"
-            style={chipRowStyle}
-          >
+          <div role="group" aria-label="Exchange selection" style={chipRowStyle}>
             <span style={chipLabelStyle}>EXCHANGES</span>
             {EXCHANGE_OPTIONS.map((option) => {
-              const active = selected.includes(option);
+              const active = selected.includes(option.mic);
               return (
                 <button
-                  key={option}
+                  key={option.mic}
                   type="button"
                   aria-pressed={active}
-                  onClick={() => toggleExchange(option)}
-                  title={`${active ? "Remove" : "Add"} ${option} ${active ? "from" : "to"} the board`}
+                  onClick={() => toggleExchange(option.mic)}
+                  title={`${active ? "Remove" : "Add"} ${option.label} (${option.mic}) ${active ? "from" : "to"} the board`}
                   style={chipStyle(active)}
                 >
-                  {option}
+                  {option.label}
                 </button>
               );
             })}
@@ -346,14 +334,40 @@ export function TRDHPane({ code }: FunctionPaneProps) {
           <StatusDivider />
           <StatusSection
             label="as of"
-            value={nowUtc ? nowUtc.slice(11, 19) + " UTC" : "—"}
+            value={generatedAt ? `${generatedAt.slice(11, 19)} UTC` : "—"}
           />
           <StatusDivider />
-          <StatusSection label="sources" value={data?.sources?.join(", ") || "—"} />
+          <StatusSection label="sources" value={data?.sources?.join(", ") || "awareness"} />
         </PaneFooter>
       </Pane>
     </div>
   );
+}
+
+function secondsUntilChange(r: TrdhExchange, nowMs: number): number {
+  const target = r.is_open_now ? r.next_close_utc : r.next_open_utc;
+  if (!target) return Number.MAX_SAFE_INTEGER;
+  const t = Date.parse(target);
+  return Number.isNaN(t) ? Number.MAX_SAFE_INTEGER : (t - nowMs) / 1000;
+}
+
+function countdownText(r: TrdhExchange, nowMs: number): string {
+  if (r.is_open_now) {
+    if (!r.next_close_utc) return "continuous (24h)";
+    return `closes in ${fmtDuration(secondsUntilChange(r, nowMs))} · ${r.next_close_utc.slice(11, 16)} UTC`;
+  }
+  if (!r.next_open_utc) return formatMissing;
+  return `opens in ${fmtDuration(secondsUntilChange(r, nowMs))} · ${r.next_open_utc.slice(11, 16)} UTC`;
+}
+
+function fmtSession(s: TrdhSession | null | undefined): string {
+  if (!s || !s.open_local || !s.close_local) return "closed today";
+  const brk =
+    s.break_start_local && s.break_end_local
+      ? ` (break ${s.break_start_local}–${s.break_end_local})`
+      : "";
+  const early = s.early_close ? " · early close" : "";
+  return `${s.open_local}–${s.close_local}${brk}${early}`;
 }
 
 function fmtDuration(seconds: number): string {

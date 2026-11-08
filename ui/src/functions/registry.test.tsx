@@ -20,7 +20,7 @@ describe("function pane registry", () => {
     "DAPI", "DARK", "DCF", "DCFS", "DDM", "DDIS", "DEBT", "DINE", "DES",
     "DPF", "DVD",
     // E
-    "ECFC", "ECST", "ECO", "EE", "EMSX", "EQS", "EREV", "ESG", "EVTS",
+    "ECFC", "ECST", "ECO", "EE", "EMSX", "EQS", "EREV", "ERN", "ESG", "EVTS",
     "EXEC",
     // F
     "FA", "FLDS", "FLW", "FLY", "FORM4", "FRD", "FRH", "FTS", "FSRC",
@@ -30,7 +30,7 @@ describe("function pane registry", () => {
     // H
     "HDS", "HFS", "HP", "HVT",
     // I
-    "ICX", "INDX", "INSTANT", "ISIN", "IVOL",
+    "ICX", "INDX", "INSTANT", "IPO", "ISIN", "IVOL",
     // L
     "LANG", "LITM", "LOTS",
     // M
@@ -139,12 +139,12 @@ describe("158-function merged catalog invariant", () => {
   // index as a native pane. All are native panes with no backend-side stub fallback.
   const NATIVE_ONLY = ["AGENT", "ASK", "BDA", "BOT", "BOTS", "CONN", "INDX", "INSTANT", "MIS", "PERF", "STRA", "TMPL", "WATCH", "XSEN", "TXNS"];
 
-  it("static index is exactly 143 entries", () => {
-    expect(STATIC_FUNCTION_INDEX).toHaveLength(143);
+  it("static index is exactly 145 entries", () => {
+    expect(STATIC_FUNCTION_INDEX).toHaveLength(145);
   });
 
-  it("merged catalog is exactly 158 entries", () => {
-    expect(mergeNativeFunctionIndex(STATIC_FUNCTION_INDEX)).toHaveLength(158);
+  it("merged catalog is exactly 160 entries", () => {
+    expect(mergeNativeFunctionIndex(STATIC_FUNCTION_INDEX)).toHaveLength(160);
   });
 
   it("every native-only entry is appended after merge", () => {

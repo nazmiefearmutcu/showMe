@@ -1,1 +1,661 @@
-/* Awareness calendar panes (ECO, ERN, IPO, EVTS, DVD, CACT, TRDH, MEET) — owned by the calendars task. Prefix: aw- */
+/* Awareness calendar panes (ECO, ERN, IPO, EVTS, DVD, CACT, TRDH) — owned by the calendars UI task. Prefix: aw-
+   Tokens only (Desk Instrument brief): numbers mono + tabular, flat + hairline, radius <= 4px on data surfaces. */
+
+/* ---- shared controls ---- */
+.aw-chip {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--font-size-2xs);
+  font-weight: 600;
+  height: 20px;
+  padding: 0 7px;
+  border-radius: var(--radius-xs);
+  border: 1px solid var(--border-card);
+  background: transparent;
+  color: var(--text-mute);
+  cursor: pointer;
+}
+.aw-chip--on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--text-primary);
+}
+.aw-chip:focus-visible {
+  box-shadow: var(--focus-ring);
+  outline: none;
+}
+.aw-num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+/* ---- importance dots ---- */
+.aw-imp {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.aw-imp__dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+.aw-imp__dot--high {
+  background: var(--warn);
+}
+.aw-imp__dot--on {
+  background: var(--text-secondary);
+}
+.aw-imp__dot--off {
+  background: var(--border-strong);
+}
+
+/* ---- surprise ---- */
+.aw-surprise {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: var(--radius-xs);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--font-size-sm);
+  white-space: nowrap;
+}
+.aw-surprise--above {
+  color: var(--positive);
+  background: var(--positive-soft);
+}
+.aw-surprise--below {
+  color: var(--negative);
+  background: var(--negative-soft);
+}
+.aw-surprise--inline {
+  color: var(--text-secondary);
+  background: var(--surface-3);
+}
+
+/* ---- provenance ---- */
+.aw-prov {
+  position: relative;
+  display: inline-flex;
+}
+.aw-prov__btn {
+  width: 24px;
+  height: 24px;
+  border: 0;
+  background: transparent;
+  color: var(--text-mute);
+  cursor: pointer;
+  border-radius: var(--radius-xs);
+}
+.aw-prov__btn:focus-visible {
+  box-shadow: var(--focus-ring);
+  outline: none;
+}
+.aw-prov--none {
+  color: var(--text-mute);
+  font-family: var(--font-mono);
+}
+.aw-prov__pop {
+  position: absolute;
+  right: 0;
+  top: 26px;
+  z-index: 5;
+  min-width: 240px;
+  padding: var(--space-3);
+  background: var(--surface-1);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+}
+.aw-prov__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: var(--space-2);
+}
+.aw-prov__item {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: var(--space-3);
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+}
+.aw-prov__name {
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+}
+.aw-prov__time {
+  font-family: var(--font-mono);
+  color: var(--text-mute);
+}
+
+/* ---- ECO timeline ---- */
+.aw-cal__toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border-row);
+}
+.aw-cal__label {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-2xs);
+  color: var(--text-mute);
+  letter-spacing: 0.06em;
+  margin-right: var(--space-2);
+}
+.aw-cal__kpis {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  border: 1px solid var(--border-card);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+.aw-kpi {
+  display: grid;
+  gap: 2px;
+  padding: var(--space-3) var(--space-4);
+  border-left: 1px solid var(--border-row);
+  min-width: 0;
+}
+.aw-kpi:first-child {
+  border-left: 0;
+}
+.aw-kpi__label {
+  font-size: var(--font-size-2xs);
+  color: var(--text-mute);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.aw-kpi__value {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-lg);
+  color: var(--text-display);
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.aw-kpi__caption {
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+}
+.aw-kpi__providers {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 2px;
+}
+.aw-kpi__provider {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--font-size-sm);
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+}
+.aw-kpi__pname {
+  color: var(--text-primary);
+}
+.aw-kpi__pstate {
+  color: var(--text-mute);
+}
+.aw-countdown {
+  color: var(--warn);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.aw-cal {
+  display: grid;
+  gap: var(--space-4);
+}
+.aw-cal__grid {
+  display: grid;
+  border: 1px solid var(--border-card);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.aw-cal__head,
+.aw-cal__row {
+  display: grid;
+  grid-template-columns: 74px 62px 40px minmax(0, 1fr) 66px 66px 66px 84px 26px;
+  gap: var(--space-3);
+  align-items: center;
+  padding: 0 var(--space-4);
+}
+.aw-cal__head {
+  min-height: 24px;
+  font-size: var(--font-size-2xs);
+  color: var(--text-mute);
+  border-bottom: 1px solid var(--border-row);
+}
+.aw-cal__dayhead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+  min-height: 26px;
+  padding: 0 var(--space-4);
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--border-row);
+}
+.aw-cal__daytitle {
+  font-family: var(--font-display);
+  font-size: var(--font-size-md);
+  font-weight: 600;
+  color: var(--text-display);
+}
+.aw-cal__daymeta {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-2xs);
+  color: var(--text-mute);
+}
+.aw-cal__row {
+  min-height: 26px;
+  padding-top: var(--space-2);
+  padding-bottom: var(--space-2);
+  border-bottom: 1px solid var(--border-row);
+  font-size: var(--font-size-md);
+  color: var(--text-primary);
+}
+.aw-cal__row--cb {
+  background: var(--surface-2);
+}
+.aw-cal__row--next {
+  background: var(--warn-soft);
+}
+.aw-cal__holiday {
+  padding: 4px var(--space-4) 4px
+    calc(var(--space-4) + 74px + 62px + 40px + 2 * var(--space-3));
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border-row);
+}
+.aw-cal__holiday-src {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-2xs);
+  color: var(--text-mute);
+}
+.aw-cal__time,
+.aw-cal__ctry {
+  display: flex;
+  flex-direction: column;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+}
+.aw-cal__utc,
+.aw-cal__ccy {
+  font-size: var(--font-size-2xs);
+  color: var(--text-mute);
+}
+.aw-cal__cc {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.aw-cal__event {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.aw-cal__eventline {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.aw-cal__title--strong {
+  font-weight: 600;
+  color: var(--text-display);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.aw-cal__title {
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.aw-cal__meta {
+  display: flex;
+  gap: var(--space-3);
+  font-size: var(--font-size-2xs);
+  color: var(--text-mute);
+  font-family: var(--font-mono);
+}
+.aw-cal__status--warn {
+  color: var(--warn);
+  font-weight: 600;
+}
+.aw-cb-badge {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-2xs);
+  font-weight: 700;
+  padding: 0 4px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-xs);
+  color: var(--text-secondary);
+}
+.aw-eco__actual {
+  font-weight: 700;
+  color: var(--text-display);
+}
+.aw-eco__actual--above {
+  color: var(--positive);
+}
+.aw-eco__actual--below {
+  color: var(--negative);
+}
+.aw-eco__forecast {
+  color: var(--text-secondary);
+}
+.aw-eco__previous {
+  color: var(--text-mute);
+}
+.aw-cal__legend {
+  margin: 0;
+  font-size: var(--font-size-2xs);
+  color: var(--text-mute);
+  line-height: 1.5;
+}
+.aw-cal__relaxers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  padding: 0 var(--space-6) var(--space-4);
+}
+.aw-cal__empty {
+  display: grid;
+  gap: var(--space-3);
+}
+
+@media (max-width: 960px) {
+  .aw-cal__kpis {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .aw-cal__head {
+    display: none;
+  }
+  .aw-cal__row {
+    grid-template-columns: 64px minmax(0, 1fr) auto;
+    row-gap: var(--space-2);
+  }
+  .aw-cal__row > [role="cell"]:nth-child(n + 4) {
+    grid-column: 2 / -1;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .aw-cal__row {
+    transition: background var(--dur-fast) var(--ease-out);
+  }
+  .aw-cal__row:hover {
+    background: var(--surface-2);
+  }
+}
+
+/* ---- ERN earnings grid ---- */
+.aw-ern {
+  display: grid;
+  border: 1px solid var(--border-card);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.aw-ern__head,
+.aw-ern__row {
+  display: grid;
+  grid-template-columns: 52px 18px 64px minmax(0, 1fr) 70px 64px 40px 64px 72px 72px;
+  gap: var(--space-3);
+  align-items: center;
+  padding: 0 var(--space-4);
+}
+.aw-ern__head {
+  min-height: 24px;
+  font-size: var(--font-size-2xs);
+  color: var(--text-mute);
+  border-bottom: 1px solid var(--border-row);
+}
+.aw-ern__day {
+  display: grid;
+}
+.aw-ern__slothead {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  min-height: 26px;
+  padding: 0 var(--space-4);
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--border-row);
+}
+.aw-ern__daytitle {
+  font-family: var(--font-display);
+  font-size: var(--font-size-md);
+  font-weight: 600;
+  color: var(--text-display);
+}
+.aw-ern__slotlabel {
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+}
+.aw-ern__daymeta {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-2xs);
+  color: var(--text-mute);
+}
+.aw-ern__row {
+  min-height: 26px;
+  padding-top: var(--space-2);
+  padding-bottom: var(--space-2);
+  border-bottom: 1px solid var(--border-row);
+  font-size: var(--font-size-md);
+  color: var(--text-primary);
+}
+.aw-ern__badge {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-2xs);
+  font-weight: 700;
+  padding: 0 4px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-xs);
+  color: var(--text-secondary);
+}
+.aw-ern__star {
+  color: var(--accent-2);
+}
+.aw-ern__sym {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  color: var(--text-secondary);
+}
+.aw-ern__sym--watch {
+  color: var(--text-display);
+}
+.aw-ern__sym:focus-visible {
+  box-shadow: var(--focus-ring);
+  outline: none;
+}
+.aw-ern__company,
+.aw-ern__fq {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.aw-ern__mute {
+  color: var(--text-mute);
+}
+.aw-ern__est--pos {
+  color: var(--positive);
+}
+.aw-ern__est--neg {
+  color: var(--negative);
+}
+.aw-ern__week {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  color: var(--text-display);
+  min-width: 150px;
+  text-align: center;
+}
+.aw-ern__symbol {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.aw-ern__input {
+  font: inherit;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  width: 120px;
+  padding: 2px 6px;
+  background: var(--surface-2);
+  color: var(--text-primary);
+  border: 1px solid var(--border-card);
+  border-radius: var(--radius-xs);
+}
+.aw-ern__input:focus-visible {
+  box-shadow: var(--focus-ring);
+  outline: none;
+}
+.aw-ern__tabs {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 0;
+  border-bottom: 1px solid var(--border-row);
+}
+.aw-ern__tab {
+  display: grid;
+  gap: 2px;
+  padding: var(--space-2) var(--space-3);
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-right: 1px solid var(--border-row);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+.aw-ern__tab:focus-visible {
+  box-shadow: var(--focus-ring);
+  outline: none;
+}
+.aw-ern__tabday {
+  font-family: var(--font-display);
+  font-weight: 600;
+}
+.aw-ern__tabcount {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-2xs);
+  color: var(--text-mute);
+}
+
+/* ---- IPO sections ---- */
+.aw-ipo {
+  display: grid;
+  gap: var(--space-4);
+}
+.aw-ipo__section {
+  display: grid;
+  border: 1px solid var(--border-card);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.aw-ipo__sechead {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  min-height: 24px;
+  padding: 0 var(--space-4);
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--border-row);
+}
+.aw-ipo__secname {
+  font-family: var(--font-display);
+  font-weight: 600;
+  color: var(--text-display);
+}
+.aw-ipo__secmeta {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-2xs);
+  color: var(--text-mute);
+}
+.aw-ipo__none {
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--font-size-sm);
+  color: var(--text-mute);
+}
+.aw-ipo__head,
+.aw-ipo__row {
+  display: grid;
+  grid-template-columns: 78px 64px minmax(0, 1fr) 90px 96px 84px 90px 84px 26px;
+  gap: var(--space-3);
+  align-items: center;
+  padding: 0 var(--space-4);
+}
+.aw-ipo__head {
+  min-height: 24px;
+  font-size: var(--font-size-2xs);
+  color: var(--text-mute);
+  border-bottom: 1px solid var(--border-row);
+}
+.aw-ipo__row {
+  min-height: 26px;
+  padding-top: var(--space-2);
+  padding-bottom: var(--space-2);
+  border-bottom: 1px solid var(--border-row);
+  font-size: var(--font-size-md);
+  color: var(--text-primary);
+}
+.aw-ipo__row--withdrawn {
+  opacity: 0.75;
+}
+.aw-ipo__symbol {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  color: var(--text-display);
+}
+.aw-ipo__company {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.aw-ipo__status {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-2xs);
+  padding: 0 6px;
+  border-radius: var(--radius-xs);
+  border: 1px solid var(--border-card);
+  color: var(--text-secondary);
+}
+.aw-ipo__status--upcoming {
+  color: var(--warn);
+  background: var(--warn-soft);
+  border-color: var(--warn);
+}
+.aw-ipo__status--priced {
+  color: var(--text-display);
+  border-color: var(--border-strong);
+}
+.aw-ipo__status--filed {
+  color: var(--text-secondary);
+  border-color: var(--border-card);
+}
+.aw-ipo__status--withdrawn {
+  color: var(--text-mute);
+  border-style: dashed;
+}
