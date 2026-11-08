@@ -192,3 +192,37 @@ def test_highest_pd_card_picks_highest_pd_not_highest_score(no_network: None) ->
     assert out.data["cards"]["highest_pd_country"] == "DE", out.data["cards"]
     assert out.data["cards"]["highest_pd"] == pytest.approx(rows["DE"]["pd_1y_pct"], abs=1e-4)
     assert out.data["summary"]["highest_risk_country"] == "DE"
+
+
+# SRSK#6: a composite built from 3 of 4 legs is not comparable with a full
+# 4-leg score. The row must say how many legs it used, and a partial score must
+# not lead the highest-PD card over a full-coverage country.
+class _NoDebtWorldBank:
+    """DE has no debt/GDP observation (as in the live pull); TR is complete."""
+
+    _BY_ISO3 = {
+        "TUR": {"GC.DOD.TOTL.GD.ZS": 34.0, "FI.RES.TOTL.MO": 3.5, "BN.CAB.XOKA.GD.ZS": -4.5, "FP.CPI.TOTL.ZG": 53.0},
+        "DEU": {"FI.RES.TOTL.MO": 4.0, "BN.CAB.XOKA.GD.ZS": 2.0, "FP.CPI.TOTL.ZG": 2.3},
+    }
+
+    async def indicator(self, iso3: str, indicator: str) -> Any:
+        value = self._BY_ISO3.get(iso3, {}).get(indicator)
+        return [{"page": 1, "total": 1}, [{"value": value, "date": "2024"}]]
+
+
+def test_partial_leg_row_reports_its_coverage(no_network: None) -> None:
+    fn = SRSKFunction(FunctionDeps(worldbank=_NoDebtWorldBank()))
+    out = asyncio.run(fn.execute(countries="TR,DE"))
+    rows = {r["country"]: r for r in out.data["rows"]}
+    assert rows["TR"]["legs_present"] == 4 and rows["TR"]["legs_total"] == 4
+    assert rows["DE"]["legs_present"] == 3 and rows["DE"]["legs_total"] == 4, rows["DE"]
+    assert out.data["summary"]["partial_coverage_countries"] == 1
+
+
+def test_partial_leg_row_never_leads_the_highest_pd_card(no_network: None) -> None:
+    # DE has the larger PD proxy from fewer legs; the card must use the full-coverage TR.
+    fn = SRSKFunction(FunctionDeps(worldbank=_NoDebtWorldBank(), fred=_SpreadFred()))
+    out = asyncio.run(fn.execute(countries="TR,DE"))
+    rows = {r["country"]: r for r in out.data["rows"]}
+    assert rows["DE"]["pd_1y_pct"] > rows["TR"]["pd_1y_pct"]  # precondition
+    assert out.data["cards"]["highest_pd_country"] == "TR", out.data["cards"]

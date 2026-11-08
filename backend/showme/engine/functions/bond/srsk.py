@@ -105,6 +105,13 @@ def _leg_score(value: float | None, *, low: float, high: float, invert: bool) ->
     return round(_clamp(frac, 0.0, 1.0) * 100.0, 2)
 
 
+def _is_partial(row: dict[str, Any]) -> bool:
+    """True when a scored row used fewer macro legs than the full composite."""
+    present = row.get("legs_present")
+    total = row.get("legs_total")
+    return isinstance(present, int) and isinstance(total, int) and present < total
+
+
 def _year_sort_key(text: str) -> tuple[int, str]:
     """Sort World Bank date strings (usually a year) oldest first."""
     try:
@@ -386,6 +393,8 @@ class SRSKFunction(BaseFunction):
                     "source_mode": source_mode,
                     "as_of": macro.get("as_of"),
                     "as_of_by_leg": macro.get("as_of_by_leg", {}),
+                    "legs_present": len(present),
+                    "legs_total": len(legs),
                     "note": row_note,
                 }
             )
@@ -490,9 +499,13 @@ class SRSKFunction(BaseFunction):
         # even when a FRED differential gives them a spread and PD.
         # The card is "Highest PD": pick the largest PD among scored rows, not the
         # largest composite score (FRED spreads can reorder the two).
+        # Partial-coverage rows (fewer than all legs) are averaged over a different
+        # set of factors, so they never lead the card over a full-coverage country.
         scored = [
             r for r in rows
-            if r.get("risk_score") is not None and r.get("pd_1y_pct") is not None
+            if r.get("risk_score") is not None
+            and r.get("pd_1y_pct") is not None
+            and not _is_partial(r)
         ]
         highest = max(scored, key=lambda r: r["pd_1y_pct"]) if scored else None
 
@@ -524,6 +537,7 @@ class SRSKFunction(BaseFunction):
                     "formula": "PD ~= spread / (1 - recovery)",
                     "worldbank_countries": wb_success,
                     "unscored_countries": sum(1 for r in rows if r["risk_score"] is None),
+                    "partial_coverage_countries": sum(1 for r in rows if _is_partial(r)),
                     "highest_risk_country": highest["country"] if highest else None,
                 },
                 "methodology": (
@@ -569,6 +583,8 @@ class SRSKFunction(BaseFunction):
             "recovery": "Assumed recovery rate in the Hull reduced-form approximation.",
             "source_mode": "'worldbank' for the macro composite, 'fred'/'fred+worldbank' when a real yield differential refines it, 'unavailable' when no live macro data exists (score, spread and PD are null, row unranked).",
             "as_of": "Observation year of the OLDEST World Bank leg used for the row (a mixed-age row is labelled with its stalest leg).",
+            "legs_present": "How many of the four macro legs (debt, reserves, current account, inflation) fed this row's composite.",
+            "legs_total": "Number of macro legs in the composite (always 4).",
             "as_of_by_leg": "Observation year of the latest World Bank point for each macro leg (debt_to_gdp, reserves_months, current_account_gdp, inflation_pct).",
             "note": "Per-row caveat: missing macro legs, US benchmark note, or unscored (unavailable) row.",
         }
