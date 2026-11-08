@@ -207,3 +207,30 @@ def test_fxgo_methodology_does_not_claim_liquidity_scaled_spread(monkeypatch):
     assert "is scaled to liquidity" not in text
     assert "not scaled to liquidity" in text
     assert "fixed" in text
+
+
+# --------------------------------------------------------------------------- #
+# ASOF-12 — is_open: naive datetimes are UTC, and early closes are honoured
+# --------------------------------------------------------------------------- #
+def test_is_open_naive_datetime_is_utc_not_machine_local():
+    from showme.engine.reference.calendar_registry import CalendarRegistry
+
+    cal = CalendarRegistry()
+    aware = datetime(2026, 11, 9, 15, 0, tzinfo=timezone.utc)  # 10:00 ET, open
+    naive = datetime(2026, 11, 9, 15, 0)
+    assert cal.is_open("NYSE", aware) is True
+    assert cal.is_open("NYSE", naive) == cal.is_open("NYSE", aware)
+    assert cal.next_open("NYSE", naive) == cal.next_open("NYSE", aware)
+
+
+def test_is_open_honours_nyse_half_day_early_close():
+    """2026-11-27 (day after Thanksgiving) closes at 13:00 ET = 18:00 UTC."""
+    from showme.engine.reference.calendar_registry import CalendarRegistry
+
+    cal = CalendarRegistry()
+    if cal._ec is None:
+        pytest.skip("exchange_calendars not installed; early-close data unavailable")
+    before_close = datetime(2026, 11, 27, 17, 0, tzinfo=timezone.utc)  # 12:00 ET
+    after_early_close = datetime(2026, 11, 27, 18, 30, tzinfo=timezone.utc)  # 13:30 ET
+    assert cal.is_open("NYSE", before_close) is True
+    assert cal.is_open("NYSE", after_early_close) is False
