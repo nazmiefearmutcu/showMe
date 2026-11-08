@@ -42,12 +42,18 @@ class FAFunction(BaseFunction):
                     self.deps.sec_edgar.standard_fundamentals(instrument.symbol),
                     timeout=float(params.get("sec_timeout", 8)),
                 )
-                sources_used.append("sec_edgar")
         except Exception as e:
             warnings.append(f"sec_edgar: {e}")
+        # An empty SEC dict (no us-gaap facts, e.g. IFRS/ADR filers) is NOT usable
+        # statement data: it must fall through to yfinance rather than be shown.
+        sec_usable = _has_statement_payload(sec_data)
+        if sec_usable:
+            sources_used.append("sec_edgar")
+        elif sec_data is not None:
+            warnings.append(f"sec_edgar: no us-gaap statement facts for {instrument.symbol}")
 
         yfin_data = None
-        if not sec_data:
+        if not sec_usable:
             try:
                 if self.deps.yfinance:
                     yfin_data = await asyncio.wait_for(
@@ -61,7 +67,7 @@ class FAFunction(BaseFunction):
             except Exception as e:
                 warnings.append(f"yfinance: {e}")
 
-        if sec_data is not None and isinstance(sec_data, dict):
+        if sec_usable and isinstance(sec_data, dict):
             data = _normalise_fa_payload(
                 instrument.symbol,
                 period,
@@ -74,16 +80,6 @@ class FAFunction(BaseFunction):
                 sources=sources_used, warnings=[],
                 metadata={"period": period, "format": "canonical_fa"},
             )
-        def _has_statement_payload(payload: Any) -> bool:
-            if not isinstance(payload, dict):
-                return bool(payload)
-            for value in payload.values():
-                if hasattr(value, "empty"):
-                    if not value.empty:
-                        return True
-                elif value:
-                    return True
-            return False
 
         if _has_statement_payload(yfin_data):
             warnings = []
@@ -130,6 +126,19 @@ class FAFunction(BaseFunction):
                 rows.append(f"<tr><td>{k}</td><td>{latest}</td></tr>")
             rows.append("</tbody></table>")
         return f"<section class='showme-fn fn-fa'><h2>FA — {r.instrument and r.instrument.symbol}</h2>{''.join(rows)}</section>"
+
+
+def _has_statement_payload(payload: Any) -> bool:
+    """True when a provider returned at least one non-empty statement / series."""
+    if not isinstance(payload, dict):
+        return bool(payload)
+    for value in payload.values():
+        if hasattr(value, "empty"):
+            if not value.empty:
+                return True
+        elif value:
+            return True
+    return False
 
 
 def _financial_unavailable_payload(
