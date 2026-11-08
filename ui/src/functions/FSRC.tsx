@@ -57,6 +57,22 @@ interface FSRCRow {
   last?: number | null;
   change_pct?: number | null;
   quote_state?: string;
+  aum_state?: string;
+  ytd_state?: string;
+}
+
+/** Small marker for curated reference values (AUM / YTD have no as-of date). */
+function RefMark({ title }: { title: string }) {
+  return (
+    <span
+      className="u-text-mute"
+      title={title}
+      aria-label="curated reference value"
+      style={{ marginLeft: 4, fontSize: "0.8em" }}
+    >
+      ref
+    </span>
+  );
 }
 
 interface FSRCData {
@@ -248,9 +264,14 @@ export function FSRCPane({ code }: FunctionPaneProps) {
         numeric: true,
         width: 96,
         render: (r) => (
-          <span style={monoStrongStyle}>
-            {formatCurrency(r.aum_usd, { compact: true })}
-          </span>
+          <>
+            <span style={monoStrongStyle}>
+              {formatCurrency(r.aum_usd, { compact: true })}
+            </span>
+            {r.aum_state === "reference" ? (
+              <RefMark title="Curated reference AUM: no as-of date, not refreshed from a provider" />
+            ) : null}
+          </>
         ),
       },
       {
@@ -273,15 +294,20 @@ export function FSRCPane({ code }: FunctionPaneProps) {
           r.ytd_return_pct == null ? (
             <span className="u-text-mute">—</span>
           ) : (
-            <span
-              style={{
-                ...monoStrongStyle,
-                color:
-                  r.ytd_return_pct >= 0 ? "var(--positive)" : "var(--negative)",
-              }}
-            >
-              {formatPercent(r.ytd_return_pct, { signed: true })}
-            </span>
+            <>
+              <span
+                style={{
+                  ...monoStrongStyle,
+                  color:
+                    r.ytd_return_pct >= 0 ? "var(--positive)" : "var(--negative)",
+                }}
+              >
+                {formatPercent(r.ytd_return_pct, { signed: true })}
+              </span>
+              {r.ytd_state === "reference" ? (
+                <RefMark title="Curated reference YTD: no as-of date, not refreshed from a provider" />
+              ) : null}
+            </>
           ),
       },
       {

@@ -200,6 +200,25 @@ describe("FSRC pane — data honesty", () => {
   });
 });
 
+describe("FSRC pane — curated AUM / YTD are marked as reference (FSRC#1)", () => {
+  it("marks AUM and YTD cells as curated reference values", () => {
+    const payload = okPayload();
+    const rows = payload.data.data.rows.map((row) => ({
+      ...row,
+      aum_state: "reference",
+      ytd_state: "reference",
+    }));
+    setMockFn({
+      state: "ok",
+      data: { ...payload.data, data: { ...payload.data.data, rows } },
+    });
+    render(<FSRCPane code="FSRC" />);
+    expect(
+      screen.getAllByLabelText("curated reference value").length,
+    ).toBeGreaterThanOrEqual(rows.length * 2);
+  });
+});
+
 describe("FSRC pane — filter controls compose the server-side query", () => {
   it("composes a category predicate when a chip is clicked", () => {
     setMockFn({ state: "ok", ...okPayload() });

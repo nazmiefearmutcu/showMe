@@ -167,6 +167,11 @@ class FSRCFunction(BaseFunction):
                 sources = ["yfinance", "showme_fund_reference_universe"]
             else:
                 warnings = [*warnings, "quote provider returned no usable rows"]
+        # FSRC#1: AUM and YTD are curated reference values (no as-of date, never
+        # refreshed by the quote provider). Label them on every row and in the
+        # payload so they never read as current data beside a live price.
+        rows = _label_fund_reference_rows(rows)
+        warnings = [*warnings, _FUND_REFERENCE_WARNING]
         return _screen_result(
             self.code,
             rows,
@@ -696,9 +701,11 @@ _COMMODITY_FIELDS = [
 _FUND_FIELDS = [
     {"field": "symbol", "meaning": "ETF or fund ticker."},
     {"field": "category", "meaning": "Fund exposure bucket."},
-    {"field": "aum_usd", "meaning": "Assets under management in US dollars."},
+    {"field": "aum_usd", "meaning": "Curated reference AUM in US dollars: no as-of date and not refreshed from a provider."},
+    {"field": "aum_state", "meaning": "\"reference\" — aum_usd comes from the curated fund universe, never from a live quote."},
+    {"field": "ytd_state", "meaning": "\"reference\" — ytd_return_pct comes from the curated fund universe, never from a live quote."},
     {"field": "expenseRatio", "meaning": "Annual expense ratio as a decimal."},
-    {"field": "ytd_return_pct", "meaning": "Reference year-to-date return in percent."},
+    {"field": "ytd_return_pct", "meaning": "Curated reference year-to-date return in percent: no as-of date and not refreshed from a provider."},
     {"field": "last", "meaning": "Latest available traded price when live quotes are available."},
 ]
 
@@ -756,6 +763,17 @@ def _extract_predicate_columns(rewritten: str) -> list[str]:
             continue
         columns.append(token)
     return columns
+
+
+_FUND_REFERENCE_WARNING = (
+    "AUM and YTD are curated reference values with no as-of date; they are not "
+    "refreshed from a quote provider."
+)
+
+
+def _label_fund_reference_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """FSRC: tag curated AUM / YTD as reference on every row (copies, not in place)."""
+    return [{**row, "aum_state": "reference", "ytd_state": "reference"} for row in rows]
 
 
 def _screen_result(
