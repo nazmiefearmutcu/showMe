@@ -165,7 +165,6 @@ const TOOL_CONFIG: Record<string, ToolConfig> = {
     usesSymbol: true,
     title: "ML Signals",
     subtitle: "Next-day direction classifier for one symbol, scored against always-long",
-    defaultSymbol: "AAPL",
     usesHorizon: true,
     supportsLive: true,
   },

@@ -124,7 +124,7 @@ class TLHFunction(BaseFunction):
         base = {
             "as_of": now.isoformat(),
             "credential_id": None,
-            "data_mode": "local_portfolio",
+            "data_mode": "user_supplied",
             "paper_mode": True,
             "ccy": "native",
             "granularity": "position",

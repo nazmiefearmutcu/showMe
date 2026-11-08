@@ -376,7 +376,7 @@ def _input_required() -> dict[str, Any]:
         "status": "input_required",
         "next_actions": ["Provide an equity or ETF ticker in the symbol field or Params JSON."],
     })
-    payload["cards"] = {**payload["cards"], "data_mode": "input_required"}
+    payload["cards"] = {**payload["cards"], "data_mode": "empty"}
     payload["provider_errors"] = []
     return payload
 
