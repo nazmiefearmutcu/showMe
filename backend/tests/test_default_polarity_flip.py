@@ -326,7 +326,8 @@ def test_appl_default_live_with_mocked_provider():
     fn = APPLFunction(FunctionDeps(yfinance=_FakeYfinance(refdata)))
     result = _run(fn.execute(instrument=EQ))
     assert result.metadata.get("live") is True
-    assert result.sources == ["yfinance"]
+    # AAPL has a bundled GICS crosswalk, so the static source is named (APPL#4).
+    assert result.sources == ["yfinance", "taxonomy_crosswalk_static"]
     assert result.data["status"] == "ok"
     assert result.data["sector"] == "Technology"
 

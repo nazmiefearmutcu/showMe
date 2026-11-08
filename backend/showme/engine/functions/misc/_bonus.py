@@ -511,13 +511,15 @@ class APPLFunction(BaseFunction):
         # Default-polarity flip (2026-09-08): APPL resolves the live
         # provider taxonomy by default; ``reference=true`` serves the
         # bundled crosswalk.
-        live = not _truthy(params.get("reference"))
+        reference = _truthy(params.get("reference"))
+        live = (not reference) and _truthy(params.get("live", True))
         if not live or not self.deps.yfinance:
-            reason = (
-                "yfinance adapter not configured; taxonomy fell back to bundled defaults"
-                if not self.deps.yfinance
-                else "reference=true; serving bundled taxonomy crosswalk"
-            )
+            if reference:
+                reason = "reference=true; serving bundled taxonomy crosswalk"
+            elif not live:
+                reason = "live=false; serving bundled taxonomy template"
+            else:
+                reason = "yfinance adapter not configured; taxonomy fell back to bundled defaults"
             warnings = [reason] if (live and not self.deps.yfinance) else []
             return FunctionResult(
                 code=self.code,
@@ -550,6 +552,8 @@ class APPLFunction(BaseFunction):
             )
         profile = reference_profile(instrument.symbol)
         rows = _taxonomy_rows(instrument, rd.sector, rd.industry, rd.country, rd.currency, rd.exchange, profile)
+        crosswalk_used = any(r.get("source_mode") == "reference_taxonomy_crosswalk" for r in rows)
+        live_sources = ["yfinance"] + (["taxonomy_crosswalk_static"] if crosswalk_used else [])
         return FunctionResult(code=self.code, instrument=instrument,
                               data={"status": "ok",
                                      "sector": rd.sector, "industry": rd.industry,
@@ -564,7 +568,7 @@ class APPLFunction(BaseFunction):
                                          "classification": "Human-readable classification value.",
                                          "source_mode": "live_yfinance or labelled reference taxonomy crosswalk.",
                                      }},
-                              sources=["yfinance"],
+                              sources=live_sources,
                               metadata={"live": True, "data_mode": "live_yfinance"})
 
 
@@ -588,7 +592,9 @@ def _taxonomy_template(instrument: Instrument) -> dict[str, Any]:
         "currency": currency,
         "exchange": exchange,
         "exchange_name": EXCHANGE_LEGEND.get(exchange, exchange),
-        "rows": _taxonomy_rows(instrument, sector, industry, "Global", currency, exchange, reference_profile(instrument.symbol)),
+        "rows": _taxonomy_rows(instrument, sector, industry, "Global", currency, exchange,
+                               reference_profile(instrument.symbol),
+                               source_mode="reference_taxonomy_template"),
         "methodology": "Fallback taxonomy is labelled as a reference model when live provider classification is unavailable.",
         "field_dictionary": {
             "level": "Taxonomy level or provider field.",
@@ -606,13 +612,16 @@ def _taxonomy_rows(
     currency: Any,
     exchange: Any,
     profile: dict[str, Any],
+    source_mode: str = "live_yfinance",
 ) -> list[dict[str, Any]]:
+    # APPL#3: the provider-field rows carry the caller's source_mode, so the
+    # reference template is never labelled as a live yfinance value.
     rows = [
-        {"level": "Provider sector", "classification": sector, "source_mode": "live_yfinance"},
-        {"level": "Provider industry", "classification": industry, "source_mode": "live_yfinance"},
-        {"level": "Exchange", "classification": EXCHANGE_LEGEND.get(str(exchange or ""), exchange), "raw_code": exchange, "source_mode": "live_yfinance"},
-        {"level": "Country", "classification": country, "source_mode": "live_yfinance"},
-        {"level": "Currency", "classification": currency, "source_mode": "live_yfinance"},
+        {"level": "Provider sector", "classification": sector, "source_mode": source_mode},
+        {"level": "Provider industry", "classification": industry, "source_mode": source_mode},
+        {"level": "Exchange", "classification": EXCHANGE_LEGEND.get(str(exchange or ""), exchange), "raw_code": exchange, "source_mode": source_mode},
+        {"level": "Country", "classification": country, "source_mode": source_mode},
+        {"level": "Currency", "classification": currency, "source_mode": source_mode},
     ]
     for key, label in [
         ("gics_sector", "GICS sector"),
