@@ -203,6 +203,12 @@ class RPARFunction(BaseFunction):
             warnings.append(
                 f"RPAR live mode fell through to deterministic returns: {fallback_reason}"
             )
+        if info.get("converged") is False:
+            warnings.append(
+                f"RPAR ERC did not converge after {info.get('iterations')} iterations "
+                f"(max risk-share gap {float(info.get('residual', float('nan'))):.4g}); "
+                "the weights are not equal-risk and should not be used as ERC."
+            )
         return FunctionResult(
             code=self.code, instrument=None,
             data={
