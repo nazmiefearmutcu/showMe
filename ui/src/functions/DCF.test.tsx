@@ -269,7 +269,7 @@ describe("DCF pane — model inputs", () => {
       target: { value: "12000" },
     });
     expect(lastParams?.fcfe).toBe(12e9);
-    expect(localStorage.getItem("showme.dcf.fcfe")).toBe("12000");
+    expect(localStorage.getItem("showme.dcf.fcfe_override")).toBe("12000");
   });
 
   it("converts WACC percent to a decimal and persists it", () => {

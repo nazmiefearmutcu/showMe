@@ -89,8 +89,11 @@ const YEARS_IDS = YEARS_OPTIONS.map((o) => o.value);
 
 export function DCFPane({ code, symbol }: FunctionPaneProps) {
   // FCFE and shares are optional manual overrides ($M). Empty = provider.
-  const [fcfeM, setFcfeM] = usePersistentString("showme.dcf.fcfe", "");
-  const [sharesM, setSharesM] = usePersistentString("showme.dcf.shares", "");
+  // Keys are *_override: the pre-fix pane wrote placeholder defaults (10000 /
+  // 15000) to showme.dcf.fcfe / showme.dcf.shares, which must never be read
+  // back as user overrides.
+  const [fcfeM, setFcfeM] = usePersistentString("showme.dcf.fcfe_override", "");
+  const [sharesM, setSharesM] = usePersistentString("showme.dcf.shares_override", "");
   const fcfeOverride = parseOverrideM(fcfeM);
   const sharesOverride = parseOverrideM(sharesM);
   const [growthPct, setGrowthPct] = usePersistentNumber("showme.dcf.growth", 10);
