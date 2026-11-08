@@ -628,13 +628,13 @@ def _function_usage(
         return {
             "purpose": "Black-Litterman market-prior and posterior expected-return weights for a selected universe.",
             "scope": "portfolio model",
-            "inputs": ["symbols", "range", "tau", "delta", "views"],
+            "inputs": ["symbols", "window", "tau", "delta", "views"],
             "steps": [
-                "Edit the visible Universe field and Range, then Run.",
-                "Rows compare market weight, prior return, posterior return, and optimal weight by symbol.",
-                "Use Advanced only for custom views, tau, delta, or market-cap overrides.",
+                "Edit Universe, Window, Tau, Delta and Views (SYMBOL:percent), then Run.",
+                "Rows compare market weight, prior return, posterior return, and the long-only optimal weight by symbol; optimal_weight_unconstrained shows the raw solution.",
+                "A malformed tau, delta or view is refused with input_error rather than replaced by a default.",
             ],
-            "example": {"symbols": ["AAPL", "MSFT", "NVDA"], "days": 365, "live": True},
+            "example": {"symbols": ["AAPL", "MSFT", "NVDA"], "window": "1Y", "views_text": "AAPL:8", "live": True},
         }
     if upper == "BMTX":
         return {

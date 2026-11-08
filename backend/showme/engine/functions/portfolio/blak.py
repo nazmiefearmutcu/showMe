@@ -251,10 +251,46 @@ class BLAKFunction(BaseFunction):
         else:
             days = int(explicit_days)
             window_label = f"{days}d"
-        delta = float(params.get("delta", 2.5))
-        tau = float(params.get("tau", 0.05))
+        # BLAK#5: tau, delta and typed views come from the pane as text. A malformed
+        # value is refused with a reason; it is never replaced by a default.
+        try:
+            delta = float(params.get("delta", 2.5))
+            tau = float(params.get("tau", 0.05))
+        except (TypeError, ValueError):
+            return FunctionResult(
+                code=self.code, instrument=None,
+                data={
+                    "status": "input_error",
+                    "reason": "tau and delta must be numbers (tau in (0, 1], delta > 0)",
+                    "next_actions": ["Enter a numeric tau such as 0.05 and a numeric delta such as 2.5."],
+                },
+                warnings=["tau or delta is not a number"],
+            )
+        if not (0.0 < tau <= 1.0) or not (delta > 0.0) or not np.isfinite(delta) or not np.isfinite(tau):
+            return FunctionResult(
+                code=self.code, instrument=None,
+                data={
+                    "status": "input_error",
+                    "reason": f"tau must be in (0, 1] and delta > 0; got tau={tau}, delta={delta}",
+                    "next_actions": ["Use tau between 0.001 and 1 and a positive delta."],
+                },
+                warnings=["tau or delta out of range"],
+            )
         market_caps = params.get("market_caps") or {}  # symbol → mcap
-        views = params.get("views") or []
+        views = list(params.get("views") or [])
+        if params.get("views_text") is not None:
+            parsed_views, view_error = _parse_view_text(params.get("views_text"))
+            if view_error:
+                return FunctionResult(
+                    code=self.code, instrument=None,
+                    data={
+                        "status": "input_error",
+                        "reason": view_error,
+                        "next_actions": ["Write views as SYMBOL:percent, for example AAPL:8, SPY:5."],
+                    },
+                    warnings=[f"unparsable view: {view_error}"],
+                )
+            views.extend(parsed_views)
         live = _truthy(params.get("live_returns") or params.get("live"))
         # B4: Do NOT pre-claim ``yfinance`` as the source. We only know what
         # was actually used after the live fetch decides whether it has
@@ -434,6 +470,18 @@ class BLAKFunction(BaseFunction):
                 "symbols excluded from the prior (no aligned return rows): "
                 + ", ".join(excluded_no_returns)
             )
+        # BLAK#5: a view on a symbol outside the aligned universe used to be dropped
+        # without a word. Name it so the user sees the view did not apply.
+        view_symbols = {
+            s for v in views
+            for s in list(v.get("long", []) or []) + list(v.get("short", []) or [])
+        }
+        unmatched_views = sorted(s for s in view_symbols if s not in cols)
+        if unmatched_views:
+            warnings.append(
+                "views on " + ", ".join(unmatched_views)
+                + " ignored: symbol not in the aligned return universe"
+            )
         if live and live_fetch_errors:
             warnings.append(
                 f"{len(live_fetch_errors)} live fetch error(s); see live_fetch_errors for details"
@@ -468,6 +516,8 @@ class BLAKFunction(BaseFunction):
                 "return_data_state": "live",
                 "delta": delta, "tau": tau,
                 "n_views": len(P_rows),
+                # BLAK#5: the views the run received, so the pane can echo them.
+                "views_applied": views,
                 "samples": int(df.shape[0]),
                 # BLAK#1: the effective lookback is disclosed, not implied.
                 "window": window_label,
@@ -510,6 +560,35 @@ class BLAKFunction(BaseFunction):
             sources=sources,
             warnings=warnings,
         )
+
+
+def _parse_view_text(text: Any) -> tuple[list[dict[str, Any]], str | None]:
+    """BLAK#5: parse the pane's absolute views, "SYMBOL:percent" comma-separated.
+
+    Percent is the expected annual return (AAPL:8 means 8% a year). Returns
+    ``(views, None)`` or ``([], reason)`` for the first malformed token.
+    """
+    views: list[dict[str, Any]] = []
+    for token in str(text or "").split(","):
+        token = token.strip()
+        if not token:
+            continue
+        parts = [p.strip() for p in token.split(":")]
+        if len(parts) != 2 or not parts[0]:
+            return [], f"view {token!r} must be SYMBOL:percent, for example AAPL:8"
+        try:
+            pct = float(parts[1])
+        except ValueError:
+            return [], f"view {token!r} has a non-numeric expected return"
+        if not np.isfinite(pct):
+            return [], f"view {token!r} has a non-finite expected return"
+        views.append({
+            "long": [parts[0].upper()],
+            "short": [],
+            "expected": pct / 100.0,
+            "view_type": "absolute",
+        })
+    return views, None
 
 
 def _truthy(value: Any) -> bool:

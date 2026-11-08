@@ -253,6 +253,10 @@ export function PortfolioAnalyticsPane({ code, symbol }: FunctionPaneProps) {
   const [entry, setEntry] = useState(() => (isPsc || isWhatIf ? "" : "100"));
   const [stop, setStop] = useState("");
   const [target, setTarget] = useState("");
+  // BLAK#5: the prior's inputs were only reachable through the API. Window,
+  // tau, delta and views are sent as typed; the backend validates them and
+  // answers input_error for a malformed value instead of a silent default.
+  const [blak, setBlak] = useState<BlakInputs>({ window: "1Y", tau: "0.05", delta: "2.5", views: "" });
 
   const effectiveSymbol = config.usesSymbol
     ? (symbol || symbolInput || config.defaultSymbol)
@@ -271,8 +275,9 @@ export function PortfolioAnalyticsPane({ code, symbol }: FunctionPaneProps) {
         entry,
         stop,
         target,
+        blak,
       }),
-    [upper, symbols, targetText, live, mode, account, capital, entry, stop, target],
+    [upper, symbols, targetText, live, mode, account, capital, entry, stop, target, blak],
   );
   const { state, data, error, refetch } = useFunction<PortfolioPayload>({
     code: upper,
@@ -388,6 +393,8 @@ export function PortfolioAnalyticsPane({ code, symbol }: FunctionPaneProps) {
             setStop={setStop}
             target={target}
             setTarget={setTarget}
+            blak={blak}
+            setBlak={setBlak}
           />
           {body}
         </PaneBody>
@@ -439,6 +446,8 @@ function PortfolioControls({
   setStop,
   target,
   setTarget,
+  blak,
+  setBlak,
 }: {
   config: ToolConfig;
   code: string;
@@ -458,6 +467,8 @@ function PortfolioControls({
   setStop: (value: string) => void;
   target: string;
   setTarget: (value: string) => void;
+  blak: BlakInputs;
+  setBlak: (value: BlakInputs) => void;
 }) {
   if (!config.usesUniverse && !config.usesSymbol && code !== "REBA" && code !== "PSC") {
     return null;
@@ -490,6 +501,52 @@ function PortfolioControls({
             spellCheck={false}
           />
         </label>
+      ) : null}
+      {code === "BLAK" ? (
+        <>
+          <label className="portfolio-control-field" htmlFor={fid("window")}>
+            <span>Window</span>
+            <select
+              id={fid("window")}
+              value={blak.window}
+              onChange={(e) => setBlak({ ...blak, window: e.target.value })}
+            >
+              {BLAK_WINDOWS.map((w) => (
+                <option key={w} value={w}>
+                  {w}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="portfolio-control-field" htmlFor={fid("tau")}>
+            <span>Tau</span>
+            <input
+              id={fid("tau")}
+              value={blak.tau}
+              onChange={(e) => setBlak({ ...blak, tau: e.target.value })}
+              inputMode="decimal"
+            />
+          </label>
+          <label className="portfolio-control-field" htmlFor={fid("delta")}>
+            <span>Risk aversion (δ)</span>
+            <input
+              id={fid("delta")}
+              value={blak.delta}
+              onChange={(e) => setBlak({ ...blak, delta: e.target.value })}
+              inputMode="decimal"
+            />
+          </label>
+          <label className="portfolio-control-field portfolio-control-field--wide" htmlFor={fid("views")}>
+            <span>Views</span>
+            <input
+              id={fid("views")}
+              value={blak.views}
+              placeholder="AAPL:8, SPY:5 (expected annual %)"
+              onChange={(e) => setBlak({ ...blak, views: e.target.value.toUpperCase() })}
+              spellCheck={false}
+            />
+          </label>
+        </>
       ) : null}
       {code === "REBA" ? (
         <label className="portfolio-control-field portfolio-control-field--wide" htmlFor={fid("targets")}>
@@ -1001,12 +1058,20 @@ function buildParams(
     entry: string;
     stop: string;
     target: string;
+    blak: BlakInputs;
   },
 ): Record<string, unknown> {
   const symbols = splitSymbols(state.symbols);
   switch (code) {
     case "BLAK":
-      return { symbols, live: state.live };
+      return {
+        symbols,
+        live: state.live,
+        window: state.blak.window,
+        tau: state.blak.tau,
+        delta: state.blak.delta,
+        views_text: state.blak.views,
+      };
     case "MARS":
       return { symbols, live: state.live };
     case "BMTX":
@@ -1073,6 +1138,17 @@ function splitSymbols(raw: string): string[] {
     .map((s) => s.trim().toUpperCase())
     .filter(Boolean);
 }
+
+/** BLAK#5: the pane's typed prior inputs (strings until the backend validates them). */
+interface BlakInputs {
+  window: string;
+  tau: string;
+  delta: string;
+  views: string;
+}
+
+/** Lookback windows the BLAK seed declares (calendar days in blak.py). */
+const BLAK_WINDOWS = ["180d", "1Y", "2Y", "5Y"] as const;
 
 function parseTargets(raw: string): Record<string, number> {
   const out: Record<string, number> = {};

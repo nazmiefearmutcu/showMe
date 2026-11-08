@@ -591,3 +591,25 @@ describe("PORTX BLAK honest no-prior state (BLAK#6 / BLAK#3-RQ)", () => {
     expect(screen.queryByText("No data available")).toBeNull();
   });
 });
+
+describe("PORTX BLAK prior inputs reachable from the pane (BLAK#5)", () => {
+  it("exposes window, tau, delta and views controls and sends them", () => {
+    mockOk({ status: "ok", rows: LIVE_ROWS });
+    render(<PortfolioAnalyticsPane code="BLAK" symbol="" />);
+    expect((screen.getByLabelText("Window") as HTMLSelectElement).value).toBe("1Y");
+    expect((screen.getByLabelText("Tau") as HTMLInputElement).value).toBe("0.05");
+    expect((screen.getByLabelText("Risk aversion (δ)") as HTMLInputElement).value).toBe("2.5");
+    expect(mockArgs.current?.params).toMatchObject({
+      window: "1Y",
+      tau: "0.05",
+      delta: "2.5",
+      views_text: "",
+    });
+    fireEvent.change(screen.getByLabelText("Window"), { target: { value: "2Y" } });
+    fireEvent.change(screen.getByLabelText("Views"), { target: { value: "aapl:8, spy:5" } });
+    expect(mockArgs.current?.params).toMatchObject({
+      window: "2Y",
+      views_text: "AAPL:8, SPY:5",
+    });
+  });
+});
