@@ -54,6 +54,11 @@ _WB_INDICATORS: dict[str, str] = {
 
 _WB_BASE = "https://api.worldbank.org/v2"
 
+# Wall-clock budget for the World Bank fan-out (Wide-12 = 48 requests). It sits
+# under the 14 s function timeout so a slow country becomes an explicit
+# unavailable row instead of failing the whole call.
+_CALL_BUDGET_S = 9.0
+
 # Upper bound for the recovery input (matches the seed's max); R near 1 blows up the Hull PD.
 _MAX_RECOVERY = 0.95
 
@@ -309,7 +314,22 @@ class SRSKFunction(BaseFunction):
                     fred_err = exc
             return country, macro, macro_notes, wb_ok, wb_err, target_y, fred_err
 
-        results = await asyncio.gather(*(_fetch_one_country(c) for c in countries))
+        tasks = {c: asyncio.ensure_future(_fetch_one_country(c)) for c in countries}
+        await asyncio.wait(tasks.values(), timeout=_CALL_BUDGET_S)
+        results = []
+        timed_out: list[asyncio.Future] = []
+        for c in countries:
+            task = tasks[c]
+            if task.done():
+                results.append(task.result())
+            else:
+                task.cancel()
+                timed_out.append(task)
+                results.append((c, {}, [], False, _WBUnavailable(
+                    f"timed out: no answer within the {_CALL_BUDGET_S:g}s call budget"
+                ), None, None))
+        if timed_out:
+            await asyncio.gather(*timed_out, return_exceptions=True)
 
         for country, macro, macro_notes, wb_ok, wb_err, target_y, fred_err in results:
             if wb_err:

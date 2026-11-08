@@ -226,3 +226,30 @@ def test_partial_leg_row_never_leads_the_highest_pd_card(no_network: None) -> No
     rows = {r["country"]: r for r in out.data["rows"]}
     assert rows["DE"]["pd_1y_pct"] > rows["TR"]["pd_1y_pct"]  # precondition
     assert out.data["cards"]["highest_pd_country"] == "TR", out.data["cards"]
+
+
+# SRSK#3: one hung World Bank country must not take the whole Wide-12 call past
+# the function timeout. Countries that finish keep their real rows; the hung one
+# is an explicit unavailable row, never a fabricated value.
+class _HangingWorldBank:
+    _BY_ISO3 = _PartialWorldBank._BY_ISO3
+
+    async def indicator(self, iso3: str, indicator: str) -> Any:
+        if iso3 == "USA":
+            await asyncio.sleep(3600)
+        value = self._BY_ISO3.get(iso3, {}).get(indicator)
+        return [{"page": 1, "total": 1}, [{"value": value, "date": "2024"}]]
+
+
+def test_hung_country_is_bounded_and_others_keep_real_rows(no_network: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    from showme.engine.functions.bond import srsk as srsk_mod
+
+    monkeypatch.setattr(srsk_mod, "_CALL_BUDGET_S", 0.3, raising=False)
+    fn = SRSKFunction(FunctionDeps(worldbank=_HangingWorldBank()))
+    # Guard: without a call budget the hung fetch would run forever; cap the test itself.
+    out = asyncio.run(asyncio.wait_for(fn.execute(countries="TR,US"), timeout=5.0))
+    assert out.data["status"] == "ok", out.data
+    rows = {r["country"]: r for r in out.data["rows"]}
+    assert rows["TR"]["risk_score"] is not None
+    assert rows["US"]["risk_score"] is None and rows["US"]["pd_1y_pct"] is None
+    assert any("US" in w and "timed out" in w for w in out.warnings), out.warnings
