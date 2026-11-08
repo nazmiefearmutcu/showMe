@@ -113,9 +113,13 @@ export function DCFSPane({ code, symbol }: FunctionPaneProps) {
 
   const payload = data?.data;
   const status = payload?.status ?? "—";
-  const isLive = state === "ok" && status === "ok";
   const hasBase =
     typeof payload?.base_fair_value === "number" && payload.base_fair_value > 0;
+  // DCFS#1: a negative base value is never a live valuation, whatever status
+  // an older payload carries.
+  const isNegative =
+    typeof payload?.base_fair_value === "number" && payload.base_fair_value < 0;
+  const isLive = state === "ok" && status === "ok" && hasBase;
   const price = quote.price;
   const upsidePct =
     hasBase && typeof price === "number" && price > 0
@@ -168,6 +172,17 @@ export function DCFSPane({ code, symbol }: FunctionPaneProps) {
     <Empty
       title="Function error"
       body={error?.message ?? "—"}
+      icon="!"
+      action={
+        <button onClick={refetch} className="btn">
+          Retry
+        </button>
+      }
+    />
+  ) : isNegative ? (
+    <Empty
+      title="Negative fair value"
+      body={`The DCF implies ${fmtMoney(payload?.base_fair_value)} per share at these inputs, so the sensitivity grid is shown for diagnosis, not as a valuation.${warnings.length ? ` ${warnings.join(" ")}` : ""} Enter a wacc / fcfe override above to test other inputs.`}
       icon="!"
       action={
         <button onClick={refetch} className="btn">
