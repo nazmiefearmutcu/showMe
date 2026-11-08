@@ -179,9 +179,10 @@ describe("FXFC pane — data honesty", () => {
     expect(screen.getAllByText(/live_yfinance_quote/i).length).toBe(5);
   });
 
-  it("treats the keyless ECB/Frankfurter tiers as live, not reference", () => {
+  it("labels the keyless ECB/Frankfurter tiers as a daily fix, not reference", () => {
     // The default-on keyless spot chain ships live_official (Frankfurter) /
-    // live_ecb_reference; only reference_model is the labelled fallback.
+    // live_ecb_reference: real ECB data, but a once-a-day fixing (FXFC#4-RQ),
+    // so it is neither "live spot" nor the reference_model fallback.
     const payload = livePayload();
     payload.data.forecast = payload.data.forecast.map((r) => ({
       ...r,
@@ -189,12 +190,13 @@ describe("FXFC pane — data honesty", () => {
     }));
     setMockFn({ state: "ok", data: payload });
     render(<FXFCPane code="FXFC" symbol="USDJPY" />);
-    expect(screen.getByText("live spot")).toBeInTheDocument();
+    expect(screen.getByText("ECB daily fix")).toBeInTheDocument();
+    expect(screen.queryByText("live spot")).toBeNull();
     expect(screen.queryByText("reference spot")).toBeNull();
     expect(
       screen.queryByRole("status", { name: /data quality warning/i }),
     ).toBeNull();
-    expect(screen.getByText(/LIVE SPOT · live_official/i)).toBeInTheDocument();
+    expect(screen.getByText(/ECB DAILY FIX · live_official/i)).toBeInTheDocument();
   });
 
   it("downgrades to reference spot + warning banner for reference payloads", () => {

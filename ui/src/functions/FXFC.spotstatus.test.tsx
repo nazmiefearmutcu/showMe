@@ -79,4 +79,14 @@ describe("FXFC spot status pill", () => {
     render(<FXFCPane code="FXFC" symbol="EURUSD" />);
     expect(screen.getByText("stale spot")).toBeInTheDocument();
   });
+
+  it.each(["live_ecb_reference", "live_official"])(
+    "FXFC#4-RQ: an ECB-based %s spot is a daily fix, not live spot",
+    (mode) => {
+      h.data = payload("not_applicable", mode);
+      render(<FXFCPane code="FXFC" symbol="EURUSD" />);
+      expect(screen.queryByText("live spot")).toBeNull();
+      expect(screen.getByText("ECB daily fix")).toBeInTheDocument();
+    },
+  );
 });

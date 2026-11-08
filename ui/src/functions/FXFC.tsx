@@ -101,12 +101,18 @@ const CURVE_W = 320;
 const CURVE_H = 88;
 
 
-/** Spot pill label and tone; only a fresh (or non-yfinance live) spot reads as live. */
-function spotStatusPill(
+// ECB-based tiers are a once-a-day reference fixing, not a live spot
+// (FXFC#4-RQ): the ECB daily rate and Frankfurter, which republishes it.
+const DAILY_FIX_MODES = new Set(["live_ecb_reference", "live_official"]);
+
+/** Spot pill label and tone; only a fresh intraday spot reads as live. */
+export function spotStatusPill(
   status: string | null | undefined,
   isLive: boolean,
   isManual: boolean,
+  sourceMode?: string,
 ): { label: string; tone: "positive" | "warn" } {
+  if (sourceMode && DAILY_FIX_MODES.has(sourceMode)) return { label: "ECB daily fix", tone: "warn" };
   if (status === "stale") return { label: "stale spot", tone: "warn" };
   if (status === "off_session") return { label: "off-session print", tone: "warn" };
   if (status === "quote_time_unavailable") return { label: "spot time unknown", tone: "warn" };
@@ -145,8 +151,9 @@ export function FXFCPane({ code, symbol }: FunctionPaneProps) {
   // Quote-time check from the backend: a yfinance quote older than the
   // threshold is labelled stale, never live.
   const isManual = sourceMode === "manual_input";
+  const isDailyFix = typeof sourceMode === "string" && DAILY_FIX_MODES.has(sourceMode);
   // FXFC#4 follow-up: a yfinance spot that is not fresh is never called "live".
-  const spotPill = spotStatusPill(payload?.spot_quote_status, isLive, isManual);
+  const spotPill = spotStatusPill(payload?.spot_quote_status, isLive, isManual, sourceMode);
   const spot = payload?.spot;
 
   const stats = useMemo(() => deriveStats(rows), [rows]);
@@ -270,13 +277,15 @@ export function FXFCPane({ code, symbol }: FunctionPaneProps) {
             label={`Spot ${payload?.pair ?? effectivePair}`}
             value={fmtFx(spot)}
             caption={
-              isLive
+              isDailyFix
+                ? `ECB DAILY FIX · ${sourceMode}`
+                : isLive
                 ? `LIVE SPOT · ${sourceMode}`
                 : isManual
                   ? "MANUAL SPOT INPUT"
                   : "REFERENCE MODEL SPOT"
             }
-            tone={isLive ? "positive" : "neutral"}
+            tone={isLive && !isDailyFix ? "positive" : "neutral"}
           />
           <StatCard
             label={`${stats.horizon} CIP forward`}
