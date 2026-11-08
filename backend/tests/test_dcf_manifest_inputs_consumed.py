@@ -40,7 +40,9 @@ def test_declared_dcf_inputs_are_the_names_the_handler_reads() -> None:
 
 def test_wacc_input_reaches_the_discount_rate() -> None:
     res = _run(wacc=0.12, growth_high=0.05, growth_terminal=0.02, years=5)
-    assert res.data["wacc"] == 0.12
+    # The caller's wacc is the discount rate applied to FCFE; the WACC-model key stays null.
+    assert res.data["discount_rate"] == 0.12
+    assert res.data["wacc"] is None
 
 
 def test_years_input_sets_the_projection_length() -> None:

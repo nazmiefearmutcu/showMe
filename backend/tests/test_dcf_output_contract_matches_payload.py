@@ -70,7 +70,7 @@ def test_must_have_keys_are_present_in_the_wacc_below_growth_payload() -> None:
     assert res.data.get("next_actions")
     missing = [k for k in _spec().output_contract.must_have if k not in res.data]
     assert missing == [], missing
-    assert res.data["wacc"] == 0.02
+    assert res.data["discount_rate"] == 0.02
     assert res.data["g_terminal"] == 0.025
     assert res.data["fair_value_per_share"] is None
     assert res.data["equity_value"] is None
