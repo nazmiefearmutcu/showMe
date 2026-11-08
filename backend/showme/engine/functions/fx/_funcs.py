@@ -681,6 +681,9 @@ class FRDFunction(BaseFunction):
         for tenor in tenors:
             t = tenor["years"]
             fwd = _forward(spot, r_base, r_quote, t, _FRD_DAY_COUNT)
+            # Annualized carry implied by the forward, on the same ACT/360 accrual
+            # the forward uses: (F/S - 1) / (T x 365/360) x 100, in percent.
+            carry_pct = (fwd / spot - 1.0) / (t * 365.0 / 360.0) * 100.0 if spot else None
             rows.append(
                 {
                     "pair": pair,
@@ -690,23 +693,34 @@ class FRDFunction(BaseFunction):
                     "forward": round(fwd, 6),
                     "forward_points": round(fwd - spot, 6),
                     "forward_points_pips": round((fwd - spot) * pip_factor, 4),
+                    "implied_carry": round(carry_pct, 6) if carry_pct is not None else None,
                     "base_rate": r_base,
                     "quote_rate": r_quote,
                     "source_mode": source_mode,
                 }
             )
+        # Headline tenor: the 3M row when requested, else the last one. Every
+        # top-level figure below comes from this same row, so they agree.
+        headline = rows[2] if len(rows) > 2 else rows[-1]
         data = {
             "pair": pair,
             "base": base,
             "quote": quote,
             "S": round(spot, 6),
-            "F": rows[2]["forward"] if len(rows) > 2 else rows[-1]["forward"],
+            "spot": round(spot, 6),
+            "F": headline["forward"],
+            "forward_rate": headline["forward"],
+            "tenor": headline["tenor"],
+            "forward_points": headline["forward_points"],
+            "implied_carry": headline["implied_carry"],
+            "data_mode": source_mode,
+            "as_of": datetime.now(timezone.utc).isoformat(),
             "r_base": r_base,
             "r_quote": r_quote,
             "rate_sources": rate_sources,
             "rate_as_of": rate_as_of,
             "rate_units": "decimal annual",
-            "T": rows[2]["tenor_years"] if len(rows) > 2 else rows[-1]["tenor_years"],
+            "T": headline["tenor_years"],
             "day_count": _FRD_DAY_COUNT,
             "forward_points_unit": (
                 "price (quote currency per base); forward_points_pips gives pips "
@@ -731,8 +745,13 @@ class FRDFunction(BaseFunction):
                     "A leg with neither gives provider_unavailable (source 'unavailable')."
                 ),
                 "T": "Tenor in years.",
-                "forward_points": "Forward - spot, in price units (quote currency per base).",
+                "forward_rate": "Forward for the headline tenor (same value as F).",
+                "forward_points": "Forward - spot, in price units (quote currency per base), headline tenor.",
                 "forward_points_pips": "(Forward - spot) in pips: x10000, or x100 for a JPY quote.",
+                "implied_carry": "Annualized carry implied by the forward, in percent: (F/S - 1) / (T x 365/360) x 100.",
+                "tenor": "Headline tenor label (the row behind F).",
+                "data_mode": "Spot source mode for this forward (live_yfinance_quote, manual_input, reference_model, ...).",
+                "as_of": "UTC time this forward was computed (the spot's own time is in spot_source).",
                 "day_count": "Day-count convention applied to both rate legs.",
             },
         }

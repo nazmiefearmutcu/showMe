@@ -90,3 +90,28 @@ def test_fxh_and_frd_agree_for_the_same_number_of_days() -> None:
     fxh = forward_rate(spot=1.10, home_rate=0.035, base_rate=0.045, days=days)
     frd = fx._forward(1.10, 0.045, 0.035, days / 365.0, "ACT/360")
     assert fxh == pytest.approx(frd, abs=1e-12)
+
+
+# ── XCON-5-RQ: every FRD card slot has a producer in the handler output ───
+
+
+def test_frd_card_slots_all_have_producers_in_output() -> None:
+    from showme.manifest.seeds.frd_seed import frd as frd_manifest
+
+    slot_keys = [slot.key for slot in frd_manifest.card_schema.slots]
+    res = _run(fx.FRDFunction().execute(base="EUR", quote="USD", tenor="3M", spot=1.10, live=False,
+                                        r_base=0.035, r_quote=0.045))
+    missing = [key for key in slot_keys if key not in res.data]
+    assert missing == [], f"card slots without a producer: {missing}"
+
+
+def test_frd_implied_carry_is_annualized_percent_and_matches_forward() -> None:
+    res = _run(fx.FRDFunction().execute(base="EUR", quote="USD", tenor="3M", spot=1.10, live=False,
+                                        r_base=0.035, r_quote=0.045))
+    row = res.data["rows"][0]
+    t = 0.25
+    unrounded_fwd = fx._forward(1.10, 0.035, 0.045, t, "ACT/360")
+    expected = (unrounded_fwd / 1.10 - 1.0) / (t * 365.0 / 360.0) * 100.0
+    assert row["implied_carry"] == pytest.approx(expected, rel=1e-6)
+    assert res.data["implied_carry"] == pytest.approx(expected, rel=1e-6)
+    assert res.data["forward_points"] == pytest.approx(res.data["forward_rate"] - 1.10, abs=1e-6)
