@@ -17,6 +17,19 @@ from showme.engine.services.optimizer import (
 )
 
 
+_DEFAULT_DAYS = 365 * 3
+_MODES = frozenset({"frontier", "all", "max_sharpe", "min_vol", "risk_parity"})
+# Manifest objective -> solver mode. Other manifest objectives are not solved here.
+_OBJECTIVE_MODES = {"max_sharpe": "max_sharpe", "min_volatility": "min_vol"}
+# Manifest window labels -> calendar days.
+_WINDOW_DAYS = {"90d": 90, "180d": 180, "1y": 365, "2y": 730, "5y": 1825}
+# Declared manifest choices this optimizer really applies. Anything else is
+# reported in ``unapplied_inputs`` instead of being silently ignored.
+_APPLIED_RISK_MODELS = frozenset({"sample_cov"})
+_APPLIED_RETURN_MODELS = frozenset({"mean_historical"})
+_APPLIED_FREQUENCIES = frozenset({"1d"})
+
+
 @FunctionRegistry.register
 class PortOptFunction(BaseFunction):
     code = "PORT_OPT"
@@ -28,16 +41,68 @@ class PortOptFunction(BaseFunction):
         # Fix A7-C3: GET ?symbols=AAPL,MSFT,NVDA arrives as a string and used
         # to iterate character-by-character into ["A","P","S"]. Mirror the
         # guard BLAK/RPAR already implement.
-        symbols = params.get("symbols") or [
+        symbols = params.get("symbols") or params.get("universe") or [
             "SPY", "QQQ", "IWM", "TLT", "GLD", "EFA", "EEM", "VNQ", "DBC",
         ]
         if isinstance(symbols, str):
             symbols = [s.strip() for s in symbols.split(",") if s.strip()]
-        days = int(params.get("days", 365 * 3))
-        mode = (params.get("mode") or "frontier").lower()
-        rf = float(params.get("risk_free", 0.04))
         allow_short = bool(params.get("allow_short", False))
         live = _truthy(params.get("live_optimization") or params.get("live_returns") or params.get("live"))
+        unapplied: list[str] = []
+
+        # --- mode / objective -------------------------------------------------
+        objective = params.get("objective")
+        if params.get("mode"):
+            mode = str(params["mode"]).lower()
+            if objective is not None:
+                unapplied.append("objective")
+        elif objective is not None:
+            objective_key = str(objective).lower()
+            if objective_key not in _OBJECTIVE_MODES:
+                return _input_error(
+                    f"objective {objective!r} is not solved by PORT_OPT. "
+                    f"Supported: {', '.join(sorted(_OBJECTIVE_MODES))}.",
+                    next_actions=["Choose max_sharpe or min_volatility, or omit objective to get the frontier."],
+                )
+            mode = _OBJECTIVE_MODES[objective_key]
+        else:
+            mode = "frontier"
+        if mode not in _MODES:
+            return _input_error(
+                f"mode {mode!r} is not supported. Supported: {', '.join(sorted(_MODES))}.",
+                next_actions=["Pass mode as frontier, all, max_sharpe, min_vol or risk_parity."],
+            )
+
+        # --- lookback / rates / frontier size --------------------------------
+        if params.get("days") is not None:
+            days = int(params["days"])
+        elif params.get("window") is not None:
+            window_key = str(params["window"]).strip().lower()
+            if window_key not in _WINDOW_DAYS:
+                return _input_error(
+                    f"window {params['window']!r} is not supported. Supported: {', '.join(_WINDOW_DAYS)}.",
+                    next_actions=["Pass window as one of 90d, 180d, 1Y, 2Y, 5Y, or pass days."],
+                )
+            days = _WINDOW_DAYS[window_key]
+        else:
+            days = _DEFAULT_DAYS
+        rate_key = "risk_free" if params.get("risk_free") is not None else "risk_free_rate"
+        rf = float(params.get(rate_key, 0.04))
+        points = max(10, min(200, int(params.get("frontier_points", 40))))
+
+        risk_model = str(params.get("risk_model") or "sample_cov").lower()
+        if risk_model not in _APPLIED_RISK_MODELS:
+            unapplied.append("risk_model")
+        return_model = str(params.get("return_model") or "mean_historical").lower()
+        if return_model not in _APPLIED_RETURN_MODELS:
+            unapplied.append("return_model")
+        frequency = str(params.get("frequency") or "1d").lower()
+        if frequency not in _APPLIED_FREQUENCIES:
+            unapplied.append("frequency")
+        if params.get("constraints"):
+            unapplied.append("constraints")
+
+        # --- live returns -----------------------------------------------------
         async def _ret(s: str) -> tuple[str, pd.Series]:
             try:
                 if not self.deps.yfinance:
@@ -56,8 +121,10 @@ class PortOptFunction(BaseFunction):
                 return s, close_to_daily_returns(df)
             except Exception:
                 return s, pd.Series(dtype=float)
+        dropped: list[str] = []
         if live and self.deps.yfinance:
             results = await asyncio.gather(*(_ret(s) for s in symbols))
+            dropped = [s for s, series in results if series.empty]
             # Audit Q3 #7: pairwise for mean-variance optimization too —
             # mixed equity+crypto universes were losing 70% of rows.
             rets = align_return_series(results, policy="pairwise")
@@ -65,23 +132,63 @@ class PortOptFunction(BaseFunction):
             rets = pd.DataFrame()
         warnings: list[str] = []
         if rets.empty or len(rets.columns) < 2:
+            if live:
+                # Live returns were requested but are not available for enough
+                # symbols. Do not optimise on synthetic returns in their place.
+                return FunctionResult(
+                    code=self.code, instrument=None,
+                    data={
+                        "status": "provider_unavailable",
+                        "reason": (
+                            "Live yfinance returns are unavailable for at least two of the "
+                            "requested symbols, so no weights were computed."
+                        ),
+                        "dropped_symbols": dropped,
+                        "unapplied_inputs": unapplied,
+                        "next_actions": [
+                            "Retry once the market-data provider is reachable.",
+                            "Or turn LIVE off to optimise on labelled model returns (not market data).",
+                        ],
+                    },
+                    sources=[],
+                    warnings=[
+                        "Live yfinance returns unavailable: no weights were computed.",
+                        *_unapplied_warning(unapplied),
+                    ],
+                    metadata={"mode": mode, "days": days, "days_basis": "calendar_days",
+                              "risk_free": rf, "allow_short": allow_short,
+                              "live": False, "fallback": False},
+                )
             from showme.engine.functions.portfolio.rpar import _template_returns
             rets = _template_returns(symbols, days)
             sources = ["computed_return_model"]
             fallback = True
-            if live:
-                # Live returns were requested but unavailable: say so loudly so
-                # the optimizer weights are never read as market-data results.
-                warnings.append(
-                    "Live yfinance returns unavailable; weights come from labelled "
-                    "model returns (computed_return_model), not market data."
-                )
+            # Model returns are an explicit user choice (LIVE off); the weights
+            # must still never be read as market-data results.
+            warnings.append(
+                "Weights come from labelled model returns (computed_return_model), not market data."
+            )
         else:
             sources = ["yfinance"]
             fallback = False
-        out: dict[str, Any] = {"symbols": list(rets.columns), "samples": int(len(rets))}
+            if dropped:
+                warnings.append(
+                    f"Symbols with no live returns were dropped: {', '.join(dropped)}. "
+                    f"The optimum covers only {', '.join(str(c) for c in rets.columns)}."
+                )
+        warnings.extend(_unapplied_warning(unapplied))
+        status = "partial" if dropped else "ok"
+
+        # --- solvers ----------------------------------------------------------
+        out: dict[str, Any] = {
+            "status": status,
+            "symbols": list(rets.columns),
+            "samples": int(len(rets)),
+            "dropped_symbols": dropped,
+            "unapplied_inputs": unapplied,
+        }
         if mode in ("frontier", "all"):
-            ef = efficient_frontier(rets, allow_short=allow_short, risk_free=rf)
+            ef = efficient_frontier(rets, points=points, allow_short=allow_short, risk_free=rf)
             out["efficient_frontier"] = [
                 {"label": f"vol {p.volatility:.2%}", "return": p.expected_return, "vol": p.volatility,
                  "sharpe": p.sharpe, "weights": p.weights} for p in ef
@@ -145,6 +252,7 @@ class PortOptFunction(BaseFunction):
             "samples": int(len(rets)),
             "risk_free": rf,
             "allow_short": allow_short,
+            "lookback_calendar_days": days,
         }
         out["methodology"] = (
             "Estimate daily return covariance and annualized expected returns for the selected universe. "
@@ -156,11 +264,13 @@ class PortOptFunction(BaseFunction):
             "return": "Annualized expected portfolio return.",
             "sharpe": "(return - risk_free_rate) / volatility.",
             "weight_pct": "Optimizer allocation weight for a symbol.",
+            "samples": "Trading-day return observations used; the lookback itself is in calendar days.",
         }
         return FunctionResult(code=self.code, instrument=None, data=out,
                               sources=sources,
                               warnings=warnings,
                               metadata={"mode": mode, "days": days,
+                                         "days_basis": "calendar_days",
                                          "risk_free": rf,
                                          "allow_short": allow_short,
                                          # R2-F11: template rows must never
@@ -169,6 +279,25 @@ class PortOptFunction(BaseFunction):
                                          # thing keeping the pill honest.
                                          "live": live and not fallback,
                                          "fallback": fallback})
+
+
+def _unapplied_warning(unapplied: list[str]) -> list[str]:
+    if not unapplied:
+        return []
+    return [
+        "Inputs not applied by PORT_OPT (results do not reflect them): "
+        + ", ".join(unapplied) + "."
+    ]
+
+
+def _input_error(reason: str, *, next_actions: list[str]) -> FunctionResult:
+    return FunctionResult(
+        code="PORT_OPT",
+        instrument=None,
+        data={"status": "input_error", "reason": reason, "next_actions": next_actions},
+        sources=[],
+        warnings=[f"PORT_OPT was not computed: {reason}"],
+    )
 
 
 def _truthy(value: Any) -> bool:

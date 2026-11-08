@@ -145,16 +145,19 @@ class _RaisingYFinance:
         raise RuntimeError("yfinance offline (test)")
 
 
-def test_live_request_that_falls_back_to_model_returns_says_so() -> None:
-    """When live returns are requested but unavailable, the result must say the
-    weights come from labelled model returns, not market data."""
+def test_live_request_that_is_unavailable_reports_provider_state_not_weights() -> None:
+    """When live returns are requested but unavailable, no weights may be computed
+    on the synthetic model returns: the result is an honest provider_unavailable
+    state (PORT_OPT#5). Model returns are only used when LIVE is off."""
     fn = PortOptFunction(deps=FunctionDeps(yfinance=_RaisingYFinance()))
     result = asyncio.run(
         fn.execute(symbols=SYMBOLS, mode="risk_parity", live=True, days=756, risk_free=0.04)
     )
-    assert result.metadata["fallback"] is True
-    assert result.sources == ["computed_return_model"]
-    assert any("not market data" in w for w in result.warnings), result.warnings
+    assert result.data.get("status") == "provider_unavailable", result.data.get("status")
+    assert "risk_parity" not in result.data
+    assert result.sources == []
+    assert result.metadata["fallback"] is False
+    assert any("not computed" in w or "unavailable" in w for w in result.warnings), result.warnings
 
 
 def test_zero_variance_asset_reports_warning_and_no_risk_parity_weights() -> None:
