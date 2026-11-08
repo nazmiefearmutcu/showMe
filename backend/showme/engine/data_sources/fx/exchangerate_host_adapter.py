@@ -7,6 +7,7 @@ DATA PIPELINE:
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -16,6 +17,16 @@ from showme.engine.core.base_data_source import (
     BaseDataSource, DataKind, DataRequest, DataSourceError
 )
 from showme.engine.core.quote import Quote, utcnow
+
+
+def _rate_date_timestamp(value: Any) -> datetime | None:
+    """UTC midnight of an exchangerate.host ``YYYY-MM-DD`` rate date, or None."""
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.strptime(value.strip(), "%Y-%m-%d").replace(tzinfo=UTC)
+    except ValueError:
+        return None
 
 
 class ExchangerateHostAdapter(BaseDataSource):
@@ -38,14 +49,22 @@ class ExchangerateHostAdapter(BaseDataSource):
             )
         return self._client
 
-    async def latest(self, base: str, quotes: list[str] | None = None) -> dict[str, float]:
+    async def latest_with_date(
+        self, base: str, quotes: list[str] | None = None,
+    ) -> tuple[str | None, dict[str, float]]:
+        """Latest rates plus the response's own ``date`` (the rate's as-of day)."""
         client = await self._client_()
         params = {"base": base.upper()}
         if quotes:
             params["symbols"] = ",".join(q.upper() for q in quotes)
         r = await client.get("/latest", params=params)
         r.raise_for_status()
-        return r.json().get("rates", {})
+        body = r.json()
+        return body.get("date"), body.get("rates", {})
+
+    async def latest(self, base: str, quotes: list[str] | None = None) -> dict[str, float]:
+        _, rates = await self.latest_with_date(base, quotes)
+        return rates
 
     async def timeseries(
         self, base: str, quote: str, start: str, end: str
@@ -72,9 +91,14 @@ class ExchangerateHostAdapter(BaseDataSource):
             raise DataSourceError("exchangerate.host needs a 6-char FX pair")
         base, quote = sym[:3].upper(), sym[3:6].upper()
         if request.kind == DataKind.QUOTE:
-            rates = await self.latest(base, [quote])
+            rate_date, rates = await self.latest_with_date(base, [quote])
+            # ASOF-5: the rate is dated by the response's own `date`. Without
+            # it the age of the rate is unknown, so no value is reported
+            # rather than one stamped with the current time.
+            stamp = _rate_date_timestamp(rate_date)
+            last = rates.get(quote) if stamp is not None else None
             return Quote(
-                symbol=sym, timestamp=utcnow(), last=rates.get(quote),
+                symbol=sym, timestamp=stamp or utcnow(), last=last,
                 source=self.name,
             )
         if request.kind == DataKind.OHLCV:
