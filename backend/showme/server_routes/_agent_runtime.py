@@ -796,6 +796,11 @@ def _route_function_params(code: str, params: dict[str, Any]) -> dict[str, Any]:
     defaults = _agent_function_params(entry, {"symbol": symbol, "asset_class": asset_class})
     defaults.update(_standalone_function_defaults(code))
     defaults.update(merged)
+    if code.upper() == "PORT_OPT":
+        # The agent peer profile injects days=120, a peer universe, live=True
+        # and news-style keys. PORT_OPT must apply its own handler defaults
+        # (3-year lookback, ETF universe, live off), so only caller params pass.
+        defaults = dict(merged)
     if code.upper() in {"GP", "HP", "TECH", "CHGS"} and merged.get("range") and "days" not in merged:
         ranged_days = _days_from_range(merged.get("range"))
         if ranged_days is not None:
