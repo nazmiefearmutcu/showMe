@@ -62,7 +62,7 @@ def hds() -> FunctionManifest:
                 label="Live mode",
                 control=ControlKind.BOOLEAN,
                 required=False,
-                description="When true the handler calls SEC + yfinance live; otherwise a model template.",
+                description="When true the handler queries Yahoo holder tables and the local SEC 13F store; otherwise no rows are returned (needs_input).",
             ),
             InputSpec(
                 name="provider_mode",
@@ -124,20 +124,22 @@ def hds() -> FunctionManifest:
             ],
         ),
         methodology=(
-            "HDS resolves the issuer's CIK via SEC EDGAR, fetches the most-recent 10-Q / 10-K "
-            "holders tables, and joins them with yfinance institutional / major holders for "
-            "broader coverage. Each holder row is typed (institutional / insider / mutual_fund) "
-            "with shares + % of float + notional value. % institutional / insider are computed "
-            "from float shares, not total shares outstanding, so they match the broker convention. "
-            "When live=false the handler returns a template stub for offline panel rendering."
+            "HDS lists the issuer's institutional and mutual-fund holders from the Yahoo holder "
+            "tables (yfinance institutional_holders / mutualfund_holders) and, when the local SEC "
+            "13F store holds the issuer, from its per-filer 13F aggregate (filer CIK, shares, report "
+            "date). Each row is typed (institutional / mutual_fund / institutional_13f). pct_outstanding "
+            "is Yahoo's pctHeld: the holder's shares divided by shares outstanding, as a fraction "
+            "(0.08 = 8%); it is blank for 13F rows, which carry no percentage. 13F market value is not "
+            "shown because the InfoTable unit is unresolved. Yahoo major-holder percentages are a "
+            "summary block, not holder rows. When live=false no rows are returned (status needs_input); "
+            "no synthetic or reference rows are served."
         ),
         field_dict={
             "symbol": FieldDef(description="Equity ticker.", source="instrument"),
-            "holders": FieldDef(description="Ranked list of holders with shares + % held.", source="provider"),
-            "pct_institutional": FieldDef(unit="%", description="Aggregate institutional ownership.", source="computed"),
-            "pct_insider": FieldDef(unit="%", description="Aggregate insider ownership.", source="computed"),
-            "institutional_count": FieldDef(description="Distinct institutional holders in the table.", source="computed"),
-            "float_shares": FieldDef(description="Float-shares baseline used for % calculations.", source="provider"),
+            "holders": FieldDef(description="Ranked list of holder rows (rows) with shares and holder_type.", source="provider"),
+            "pct_outstanding": FieldDef(unit="fraction", description="Fraction from 0 to 1: holder shares divided by shares outstanding (Yahoo pctHeld); blank for 13F rows.", source="provider"),
+            "major_holders_summary": FieldDef(description="Yahoo major-holder summary block (not holder rows).", source="provider"),
+            "holder_type_filter": FieldDef(description="The holder_type filter that was applied to rows.", source="input"),
         },
         provenance=ProvenanceSpec(
             require_source_list=True,

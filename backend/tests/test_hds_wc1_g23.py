@@ -107,3 +107,25 @@ def test_unknown_holder_type_is_input_error():
     res = _run(fn, holder_type="whales")
     assert res.data["status"] == "input_error"
     assert res.data["rows"] == []
+
+
+# HDS#7 ---------------------------------------------------------------------
+
+def test_manifest_methodology_states_shares_outstanding_basis_not_float():
+    from showme.manifest.seeds.hds_seed import hds
+
+    text = hds.methodology.lower()
+    # RED before fix: the methodology said % was computed from float shares.
+    assert "float" not in text, text
+    assert "shares outstanding" in text
+    assert "template" not in text, "live=false returns needs_input, not a template"
+
+
+def test_manifest_field_dict_describes_emitted_pct_as_fraction():
+    from showme.manifest.seeds.hds_seed import hds
+
+    fd = hds.field_dict
+    # RED before fix: field_dict promised pct_institutional / float_shares, which the handler never returns.
+    assert "pct_institutional" not in fd and "float_shares" not in fd, sorted(fd)
+    assert "pct_outstanding" in fd
+    assert "fraction" in fd["pct_outstanding"].description.lower()
