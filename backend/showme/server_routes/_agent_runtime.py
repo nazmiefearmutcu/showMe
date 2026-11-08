@@ -1009,6 +1009,12 @@ def _route_function_params(code: str, params: dict[str, Any]) -> dict[str, Any]:
         # query, peer symbols, limit, timeouts) must not reach it, or the
         # envelope inputEcho shows values the handler never used (GRAB#3).
         defaults = {key: value for key, value in defaults.items() if key in merged}
+    if code.upper() == "ALRT":
+        # ALRT#6: ALRT reads only its own inputs (condition, symbol/field/direction/
+        # threshold, id, cooldown, actions, recipients, note). The generic agent
+        # defaults (news query, peer symbols, limit, days, range) must not reach it,
+        # or the envelope inputEcho shows values the handler never used.
+        defaults = {key: value for key, value in defaults.items() if key in merged}
     defaults["__explicit_symbol"] = explicit_symbol
     # Keys the route filled in that the caller did not send. The envelope
     # reports them as routeDefaults and keeps them out of inputEcho, so the
