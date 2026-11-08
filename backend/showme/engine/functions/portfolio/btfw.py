@@ -87,7 +87,7 @@ class BTFWFunction(BaseFunction):
         cash = float(params.get("initial_cash", 10_000))
         sources = ["yfinance"]
         warnings: list[str] = []
-        synthetic_history = False
+        fetch_error = ""
         if strategy_name not in STRATEGY_REGISTRY:
             return FunctionResult(code=self.code, instrument=instrument, data={},
                                   warnings=[f"unknown strategy {strategy_name}",
@@ -111,20 +111,23 @@ class BTFWFunction(BaseFunction):
                     start=datetime.now(timezone.utc) - timedelta(days=days),
                     interval=params.get("interval", "1d"),
                 ))
-            except Exception:
+            except Exception as exc:
+                fetch_error = f"{type(exc).__name__}: {exc}"
                 df = pd.DataFrame()
         else:
+            fetch_error = "no OHLCV provider configured"
             df = pd.DataFrame()
         if df.empty:
-            df = _template_history(days)
-            sources = ["local_backtest_model"]
-            synthetic_history = True
-            # Be explicit about the substitution: the walk-forward below is a
-            # real fit, but it runs on a synthetic sine ramp, not market data.
-            warnings.append(
-                "Live OHLCV was unavailable — walk-forward metrics below were "
-                "computed on a synthetic placeholder history (sine ramp), not "
-                "market data."
+            # DATA POLICY: no synthetic history is ever substituted for market
+            # data. The run is reported as unavailable, with no metrics.
+            reason = (
+                "Live OHLCV was unavailable for this symbol, so no walk-forward "
+                "backtest was run. No synthetic history is substituted."
+            )
+            if fetch_error:
+                reason += f" Provider error: {fetch_error}."
+            return _provider_unavailable(
+                instrument, strategy_name, cash, reason, days, fee_bps, allow_short,
             )
         walk_steps = int(params.get("walk_steps", params.get("n_splits", 5)))
         train_pct = float(params.get("train_pct", 0.7))
@@ -214,7 +217,7 @@ class BTFWFunction(BaseFunction):
             warnings=warnings,
             metadata={"days": days, "fee_bps": fee_bps, "allow_short": allow_short,
                       "walk_steps": res.summary["n_splits"], "walk_mode": walk_mode,
-                      "in_sample": False, "synthetic_history": synthetic_history},
+                      "in_sample": False, "synthetic_history": False},
         )
 
 
@@ -222,6 +225,29 @@ def _truthy(value: Any) -> bool:
     if isinstance(value, bool):
         return value
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _provider_unavailable(
+    instrument: Instrument, strategy: str, cash: float, reason: str,
+    days: int, fee_bps: float, allow_short: bool,
+) -> FunctionResult:
+    """Explicit no-data state: placeholder shape, no measured values."""
+    data = _walk_forward_template(instrument.symbol, strategy, cash)
+    data["status"] = "provider_unavailable"
+    data["reason"] = reason
+    data["next_actions"] = [
+        "Retry BTFW with live=true once OHLCV history for this symbol is reachable.",
+    ]
+    return FunctionResult(
+        code="BTFW",
+        instrument=instrument,
+        data=data,
+        sources=["provider_unavailable"],
+        warnings=[reason],
+        metadata={"days": days, "fee_bps": fee_bps, "allow_short": allow_short,
+                  "live": True, "is_placeholder": True, "synthetic_history": False,
+                  "provider_errors": [reason]},
+    )
 
 
 def _walk_forward_template(symbol: str, strategy: str, cash: float) -> dict[str, Any]:

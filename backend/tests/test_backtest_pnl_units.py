@@ -272,12 +272,28 @@ def test_btfw_reports_out_of_sample_not_in_sample():
     """
     import asyncio
 
+    import numpy as np
+
+    from showme.engine.core.base_function import FunctionDeps
     from showme.engine.core.instrument import AssetClass, Instrument
     from showme.engine.functions.portfolio.btfw import BTFWFunction
 
+    class _TestOHLCV:
+        """Test-only stub fetcher: a deterministic OHLCV series stands in for
+        the provider so the walk-forward runs offline."""
+
+        async def fetch(self, req):
+            idx = pd.bdate_range(end="2025-12-31", periods=600)
+            t = np.arange(len(idx), dtype=float)
+            close = 100 + t * 0.08 + np.sin(t / 9) * 2.5
+            return pd.DataFrame({
+                "open": close * 0.998, "high": close * 1.012,
+                "low": close * 0.988, "close": close, "volume": 1_000_000.0,
+            }, index=idx)
+
     inst = Instrument(symbol="TEST", asset_class=AssetClass.EQUITY)
-    res = asyncio.run(BTFWFunction().execute(instrument=inst, live=True,
-                                             strategy="sma_crossover"))
+    res = asyncio.run(BTFWFunction(FunctionDeps(yfinance=_TestOHLCV())).execute(
+        instrument=inst, live=True, strategy="sma_crossover"))
     d = res.data
     assert d["status"] == "ok"
     # The manifest's declared output contract, actually delivered.
