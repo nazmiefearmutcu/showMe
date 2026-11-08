@@ -47,15 +47,16 @@ class GRABFunction(BaseFunction):
             code=self.code,
             instrument=None,
             data={
-                # Mirrors the email step: a draft is only "prepared" when a
-                # recipient exists; without one nothing is drafted at all.
-                "status": "draft_only" if recipient else "not_configured",
+                # No draft object is ever created here, so the top-level status
+                # reports a plan: "planned" with a recipient, "not_configured"
+                # without one. The email row keeps its documented contract.
+                "status": "planned" if recipient else "not_configured",
                 "target": target,
                 "recipient": recipient or None,
                 "rows": rows,
                 "cards": [
                     {"label": "Capture", "value": "plan only"},
-                    {"label": "Email", "value": "draft only"},
+                    {"label": "Email", "value": "plan only" if recipient else "not configured"},
                 ],
                 "methodology": (
                     "GRAB prepares a local screenshot-capture plan and separates it from email delivery. "
