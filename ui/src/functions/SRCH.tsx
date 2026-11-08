@@ -1,7 +1,9 @@
 /**
- * SRCH — Bond Screener.
+ * SRCH — Sovereign curve screener (registry name: Bond Screener).
  *
- * Screen over the backend bond reference universe (backend
+ * The universe is benchmark curve points (sovereign and TIPS tenors), not
+ * issue-level bonds: there are no CUSIPs, coupons or issue yields. Screen over
+ * the backend bond reference universe (backend
  * screen/_funcs.py SRCHFunction, the EQS-pattern DSL filter). The pane
  * composes a server-side predicate from three persisted controls —
  * bond-type chips, a minimum-yield floor and a maximum-duration cap —
@@ -47,14 +49,19 @@ interface SRCHRow {
   duration?: number;
   rating?: string;
   // Live-path honesty labels (backend screen/_funcs.py SRCHFunction):
-  // live = refreshed from a keyless provider this cycle; unavailable = a
-  // configured live tenor no provider answered (curated value shown);
-  // reference = curated-only row (legacy payloads omit the field).
-  quote_type?: "live" | "reference" | "unavailable";
+  // live = refreshed from a keyless provider this cycle; monthly = a dated
+  // monthly provider observation (not live); unavailable = a configured live
+  // tenor no provider answered (curated value shown); reference = curated-only
+  // row (legacy payloads omit the field).
+  quote_type?: "live" | "monthly" | "reference" | "unavailable";
   yield_state?: "live" | "reference";
   yield_source?: string | null;
   yield_as_of?: string;
   yield_cadence?: string;
+  // duration_basis: par_bond_model_from_live_yield = a model value derived from
+  // the live yield; curated_reference = the curated duration.
+  duration_basis?: string;
+  duration_curated?: number;
 }
 
 interface SRCHData {
@@ -68,10 +75,14 @@ interface SRCHData {
   next_actions?: string[];
 }
 
-type QuoteType = "live" | "reference" | "unavailable";
+type QuoteType = "live" | "monthly" | "reference" | "unavailable";
 
 function quoteTypeOf(row: SRCHRow): QuoteType {
-  if (row.quote_type === "live" || row.quote_type === "unavailable") {
+  if (
+    row.quote_type === "live" ||
+    row.quote_type === "monthly" ||
+    row.quote_type === "unavailable"
+  ) {
     return row.quote_type;
   }
   return "reference";
@@ -175,38 +186,53 @@ export function SRCHPane({ code }: FunctionPaneProps) {
     const base = payload?.rows ?? [];
     const liveSources = new Set<string>();
     let live = 0;
+    let monthly = 0;
     let unavailable = 0;
     for (const row of base) {
       const kind = quoteTypeOf(row);
       if (kind === "live") {
         live += 1;
         if (row.yield_source) liveSources.add(row.yield_source);
+      } else if (kind === "monthly") {
+        monthly += 1;
       } else if (kind === "unavailable") {
         unavailable += 1;
       }
     }
-    return { live, unavailable, total: base.length, liveSources: [...liveSources] };
+    return {
+      live,
+      monthly,
+      unavailable,
+      total: base.length,
+      liveSources: [...liveSources],
+    };
   }, [payload]);
 
   const isFilterError =
     status === "unsupported_predicate" || status === "input_error";
 
   const coverageNote = useMemo(() => {
-    if (!coverage.total || coverage.live === 0) {
+    if (!coverage.total || (coverage.live === 0 && coverage.monthly === 0)) {
       return "reference bond universe (no live quotes)";
     }
     const via = coverage.liveSources.length
       ? ` via ${coverage.liveSources.join(", ")}`
       : "";
-    return coverage.unavailable > 0
-      ? `live yields ${coverage.live}/${coverage.total}${via} · ${coverage.unavailable} tenor(s) show curated reference values`
-      : `live yields${via}`;
+    const monthlyPart =
+      coverage.monthly > 0
+        ? ` · ${coverage.monthly} monthly observation(s), dated, not live`
+        : "";
+    const unavailablePart =
+      coverage.unavailable > 0
+        ? ` · ${coverage.unavailable} tenor(s) show curated reference values`
+        : "";
+    return `live yields ${coverage.live}/${coverage.total}${via}${monthlyPart}${unavailablePart}`;
   }, [coverage]);
 
   const coveragePill =
-    coverage.total === 0 ? null : coverage.live > 0 ? (
+    coverage.total === 0 ? null : coverage.live > 0 || coverage.monthly > 0 ? (
       <span data-testid="srch-coverage-pill">
-        {coverage.unavailable > 0 ? (
+        {coverage.unavailable > 0 || coverage.monthly > 0 ? (
           <Pill tone="warn" variant="soft" withDot={false}>
             PARTIAL {coverage.live}/{coverage.total} LIVE
           </Pill>
@@ -290,7 +316,13 @@ export function SRCHPane({ code }: FunctionPaneProps) {
         numeric: true,
         width: 96,
         render: (r) => (
-          <span style={monoMutedStyle}>{fmtYears(r.duration)}</span>
+          <span
+            style={monoMutedStyle}
+            title={durationTitle(r)}
+            data-testid={`srch-duration-${r.symbol ?? "row"}`}
+          >
+            {fmtYears(r.duration)}
+          </span>
         ),
       },
       {
@@ -418,7 +450,7 @@ export function SRCHPane({ code }: FunctionPaneProps) {
       <Pane>
         <PaneHeader
           code={code}
-          title="Bond Screener"
+          title="Sovereign Curve Screener"
           subtitle={`${payload?.matched ?? 0} matched · ${payload?.scanned ?? 0} scanned`}
           trailing={
             <FunctionControlGroup>
@@ -513,6 +545,19 @@ function QuoteSourceCell({ row }: { row: SRCHRow }) {
       </span>
     );
   }
+  if (kind === "monthly") {
+    const asOf = row.yield_as_of ? `, as of ${row.yield_as_of}` : "";
+    return (
+      <span
+        title={`monthly ${row.yield_source ?? "provider"} observation${asOf} — dated, not a live quote`}
+        data-testid={testId}
+      >
+        <Pill tone="muted" variant="soft" withDot={false}>
+          MTH
+        </Pill>
+      </span>
+    );
+  }
   if (kind === "unavailable") {
     return (
       <span
@@ -532,6 +577,22 @@ function QuoteSourceCell({ row }: { row: SRCHRow }) {
       </Pill>
     </span>
   );
+}
+
+/**
+ * Duration tooltip. A live-yield row shows a par-bond model duration derived
+ * from that yield (labelled as a model, with the curated value alongside);
+ * every other row shows the curated reference duration.
+ */
+function durationTitle(row: SRCHRow): string {
+  if (row.duration_basis === "par_bond_model_from_live_yield") {
+    const curated =
+      row.duration_curated != null && Number.isFinite(row.duration_curated)
+        ? `; curated ${formatNumber(row.duration_curated, 1)}y`
+        : "";
+    return `model: par-bond modified duration from the live yield${curated}`;
+  }
+  return "curated reference duration";
 }
 
 function fmtYears(value: number | null | undefined): string {
