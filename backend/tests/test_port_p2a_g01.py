@@ -73,3 +73,49 @@ def test_port_declares_description_and_rows_carry_currency(tmp_path: Path) -> No
 
     row = result.data["positions"][0]
     assert row["currency"] == "EUR"
+
+
+# --- PORT#3 / PORT#6 --------------------------------------------------------
+
+def test_failed_quote_without_recorded_price_is_not_marked_at_cost(tmp_path: Path) -> None:
+    book = _book(tmp_path, _eq("XYZ", 10, 50.0))
+    fn = PORTFunction(deps=FunctionDeps(yfinance=_Quotes({})))  # every quote raises
+
+    result = _run(fn, _portfolio_override=book)
+
+    row = result.data["positions"][0]
+    assert row["last"] is None
+    assert row["market_value"] is None
+    assert row["unrealized_pnl"] is None
+    assert row["quote_missing"] is True
+    assert row["price_source"] == "missing"
+    assert result.data["totals"]["n_unpriced"] == 1
+    assert any("XYZ" in w for w in result.warnings)
+    assert "yfinance" not in result.sources
+
+
+def test_failed_quote_uses_labelled_legacy_snapshot_price(tmp_path: Path) -> None:
+    book = _book(tmp_path, _eq("ABC", 2, 10.0, metadata={"current_price": 12.5,
+                                                         "legacy_source": "state.json"}))
+    fn = PORTFunction(deps=FunctionDeps(yfinance=_Quotes({})))
+
+    result = _run(fn, _portfolio_override=book)
+
+    row = result.data["positions"][0]
+    assert row["last"] == 12.5
+    assert row["price_source"] == "legacy_snapshot"
+    assert row["quote_missing"] is False
+    assert result.metadata["price_state"] != "live"
+    assert any("ABC" in w and "legacy" in w for w in result.warnings)
+
+
+def test_live_quotes_report_live_price_state(tmp_path: Path) -> None:
+    book = _book(tmp_path, _eq("AAPL", 1, 100.0))
+    fn = PORTFunction(deps=FunctionDeps(yfinance=_Quotes({"AAPL": (150.0, 149.0)})))
+
+    result = _run(fn, _portfolio_override=book)
+
+    assert result.data["positions"][0]["price_source"] == "yfinance"
+    assert result.metadata["price_state"] == "live"
+    assert result.metadata["price_sources"] == {"yfinance": 1, "legacy_snapshot": 0, "missing": 0}
+    assert result.sources == ["portfolio_state", "yfinance"]

@@ -53,6 +53,17 @@ def _cash_fields(cash_usd: float | None, cash_by_currency: dict[str, float]) -> 
     return out
 
 
+def _finite_positive(value: Any) -> float | None:
+    """A usable price: finite and strictly positive, otherwise ``None``."""
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) and number > 0 else None
+
+
 def historical_var(returns: pd.Series, alpha: float = 0.05) -> float:
     """Historical VaR as a POSITIVE LOSS (audit Q3 #13).
 
@@ -158,77 +169,120 @@ class PORTFunction(BaseFunction):
                                                    "unrealized_pnl": sum(r["unrealized_pnl"] for r in out_rows),
                                                    **_cash_fields(cash_usd, cash_by_currency)}},
                                   sources=["user_positions"])
-        # Best-effort: get live last prices via yfinance for *all* asset classes
-        # (crypto included — see note below), falling back to the runtime last
-        # price / avg_cost when no quote is available.
-        prices: dict[str, float] = {}
-        rows: list[dict[str, Any]] = []
+
+        # Live marks come from the quote adapter. A position with no live quote
+        # falls back to a recorded legacy snapshot price (reported as such); a
+        # position with neither is reported as unpriced and is never marked at
+        # its cost basis.
         used_sources = {"portfolio_state"}
 
-        # HNT-05: fetch quotes concurrently (ACCT's `_q` pattern). A
-        # sequential per-position fetch easily blew the 14 s worker budget
-        # on mid-sized books with a slow network.
-        async def _quote(pos: Any) -> float:
-            last = _position_last_price(pos)
-            try:
-                # Crypto is no longer excluded: the yfinance data source's
-                # `_yf_symbol` already maps crypto pairs (BTCUSDT / BTC/USDT)
-                # to Yahoo's "BTC-USD" spot form, so crypto positions can take
-                # a live mark instead of falling back to a stale avg_cost.
-                if self.deps.yfinance:
+        async def _quote(pos: Any) -> tuple[float | None, str, float | None]:
+            if self.deps.yfinance:
+                try:
                     from showme.engine.core.base_data_source import DataKind, DataRequest
                     q = await self.deps.yfinance.fetch(DataRequest(
                         kind=DataKind.QUOTE, instrument=pos.instrument
                     ))
-                    last = q.last or last
-                    used_sources.add("yfinance")
-            except Exception:
-                pass
-            return last
+                    last = _finite_positive(getattr(q, "last", None))
+                    if last is not None:
+                        return last, "yfinance", _finite_positive(getattr(q, "close_prev", None))
+                except Exception:
+                    pass
+            legacy = _legacy_last_price(pos)
+            if legacy is not None:
+                return legacy, "legacy_snapshot", None
+            return None, "missing", None
 
-        lasts = await asyncio.gather(*(_quote(pos) for pos in portfolio.positions))
-        for pos, last in zip(portfolio.positions, lasts):
+        # HNT-05: fetch quotes concurrently (ACCT's `_q` pattern). A
+        # sequential per-position fetch easily blew the 14 s worker budget
+        # on mid-sized books with a slow network.
+        quotes = await asyncio.gather(*(_quote(pos) for pos in portfolio.positions))
+
+        rows: list[dict[str, Any]] = []
+        warnings: list[str] = []
+        price_sources = {"yfinance": 0, "legacy_snapshot": 0, "missing": 0}
+        priced_mv = 0.0
+        priced_unrl = 0.0
+        # Cost basis is qty * avg_cost, a fact of the book that needs no price,
+        # so it covers every position (unpriced ones included).
+        total_cost = 0.0
+        by_class: dict[str, float] = {}
+        for pos, (last, price_source, _prev_close) in zip(portfolio.positions, quotes):
             sym = pos.instrument.symbol
-            prices[sym] = last
-            mv = pos.quantity * last
-            unrl = (last - pos.avg_cost) * pos.quantity
-            rows.append({
-                "symbol": sym, "asset_class": pos.instrument.asset_class.value,
+            qty = float(pos.quantity)
+            avg = float(pos.avg_cost)
+            price_sources[price_source] += 1
+            total_cost += avg * qty
+            if price_source == "yfinance":
+                used_sources.add("yfinance")
+            row: dict[str, Any] = {
+                "symbol": sym,
+                "asset_class": pos.instrument.asset_class.value,
                 "currency": pos.currency,
-                "quantity": pos.quantity, "avg_cost": pos.avg_cost,
-                "last": last, "market_value": mv,
-                "unrealized_pnl": unrl,
+                "quantity": qty,
+                "avg_cost": avg,
+                "last": last,
+                "price_source": price_source,
+                "quote_missing": last is None,
+                "market_value": None,
+                "unrealized_pnl": None,
                 "weight_pct": None,
-            })
-        df = pd.DataFrame(rows)
-        total_mv = float(df["market_value"].sum() or 0)
-        total_cost = float((df["quantity"] * df["avg_cost"]).sum() or 0)
-        if total_mv:
-            df["weight_pct"] = df["market_value"] / total_mv * 100
+            }
+            if last is None:
+                warnings.append(f"{sym}: no live quote and no recorded price; excluded from market value and P&L")
+            else:
+                mv = qty * last
+                unrl = (last - avg) * qty
+                row["market_value"] = mv
+                row["unrealized_pnl"] = unrl
+                priced_mv += mv
+                priced_unrl += unrl
+                cls = pos.instrument.asset_class.value
+                by_class[cls] = by_class.get(cls, 0.0) + mv
+                if price_source == "legacy_snapshot":
+                    warnings.append(f"{sym}: no live quote; using the recorded legacy snapshot price")
+            rows.append(row)
+        for row in rows:
+            if row["market_value"] is not None and priced_mv:
+                row["weight_pct"] = row["market_value"] / priced_mv * 100
+
+        n_rows = len(rows)
+        if n_rows and price_sources["yfinance"] == n_rows:
+            price_state = "live"
+        elif price_sources["yfinance"] == 0 and price_sources["missing"] == 0 and price_sources["legacy_snapshot"]:
+            price_state = "legacy_snapshot"
+        elif price_sources["missing"] == n_rows:
+            price_state = "unavailable"
+        else:
+            price_state = "partial"
+
         # VaR / ETL on (legacy) returns from state.json trade_history if available
         return FunctionResult(
             code=self.code, instrument=None,
             data={
-                "positions": df.to_dict(orient="records"),
+                "positions": rows,
                 "totals": {
-                    "market_value": total_mv,
+                    "market_value": priced_mv,
                     "cost_basis": total_cost,
-                    "unrealized_pnl": float(df["unrealized_pnl"].sum() or 0),
-                    "n_positions": int(len(df)),
+                    "unrealized_pnl": priced_unrl,
+                    "n_positions": n_rows,
+                    "n_unpriced": price_sources["missing"],
                     **_cash_fields(cash_usd, cash_by_currency),
                 },
-                "by_asset_class": df.groupby("asset_class")["market_value"].sum().to_dict(),
+                "by_asset_class": by_class,
             },
+            metadata={"price_state": price_state, "price_sources": dict(price_sources)},
             sources=sorted(used_sources),
+            warnings=warnings,
         )
 
 
-def _position_last_price(pos: Any) -> float:
+def _legacy_last_price(pos: Any) -> float | None:
+    """The recorded ``current_price`` from the legacy book, or ``None``.
+
+    This is a snapshot taken when the book was written, not a live quote; the
+    caller labels it ``legacy_snapshot``. There is deliberately no fallback to
+    ``avg_cost``: a missing price must stay missing.
+    """
     metadata = getattr(getattr(pos, "instrument", None), "metadata", {}) or {}
-    current = metadata.get("current_price")
-    if current not in (None, ""):
-        try:
-            return float(current)
-        except (TypeError, ValueError):
-            pass
-    return float(getattr(pos, "avg_cost", 0) or 0)
+    return _finite_positive(metadata.get("current_price"))
