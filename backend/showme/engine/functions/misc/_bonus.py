@@ -326,7 +326,8 @@ class MOSSFunction(BaseFunction):
                     rets = df["close"].pct_change().dropna()
                     if rets.empty:
                         return {"symbol": s, "error": "not enough returns"}
-                    vol = float(rets.std() * (252 ** 0.5))
+                    periods = _moss_periods_per_year(inst.asset_class if inst else None)
+                    vol = float(rets.std() * (periods ** 0.5))
                     return {
                         "row": {
                             "symbol": s,
@@ -334,12 +335,13 @@ class MOSSFunction(BaseFunction):
                             "vol_annualized": vol,
                             "vol": vol,
                             "vol_pct": vol * 100,
+                            "periods_per_year": periods,
                             "samples": int(len(rets)),
                             "last_close": float(df["close"].iloc[-1]),
                             "start": _date_label(df.index[0]),
                             "end": _date_label(df.index[-1]),
                         },
-                        "history": _moss_history(df, s),
+                        "history": _moss_history(df, s, periods),
                     }
                 except Exception as exc:  # noqa: BLE001
                     return {"symbol": s, "error": str(exc)}
@@ -719,7 +721,9 @@ def _moss_payload(
         "live": live,
         "methodology": (
             "Ranks the selected universe by annualized realized volatility: "
-            "std(daily close-to-close returns) * sqrt(252). The default universe is a "
+            "std(daily close-to-close returns) * sqrt(252) for equities, FX and commodities, "
+            "and * sqrt(365) for crypto (24/7 daily closes; each row carries periods_per_year). "
+            "The default universe is a "
             "liquid cross-asset sample (equities + crypto + FX + commodities); symbols the "
             "provider does not answer inside the scan budget are emitted with vol=null "
             "(state=unavailable) rather than dropped. The chart shows the rolling 20-session "
@@ -747,10 +751,22 @@ def _moss_unavailable(symbols: list[str], days: int, reason: str) -> dict[str, A
     }
 
 
-def _moss_history(df: Any, symbol: str) -> list[dict[str, Any]]:
+_MOSS_EXCHANGE_PERIODS = 252  # equity, FX and commodity exchange sessions
+_MOSS_CRYPTO_PERIODS = 365  # crypto trades every calendar day, so its daily closes run 365 a year
+
+
+def _moss_periods_per_year(asset_class: Any) -> int:
+    """Annualization factor for daily returns: 365 for 24/7 crypto, 252 otherwise."""
+    value = getattr(asset_class, "value", asset_class)
+    if str(value or "").upper() == AssetClass.CRYPTO.value.upper():
+        return _MOSS_CRYPTO_PERIODS
+    return _MOSS_EXCHANGE_PERIODS
+
+
+def _moss_history(df: Any, symbol: str, periods: int = _MOSS_EXCHANGE_PERIODS) -> list[dict[str, Any]]:
     rets = df["close"].pct_change().dropna()
     window = min(20, max(5, len(rets) // 2))
-    rolling = (rets.rolling(window=window).std() * (252 ** 0.5)).dropna()
+    rolling = (rets.rolling(window=window).std() * (periods ** 0.5)).dropna()
     rows: list[dict[str, Any]] = []
     for idx, value in rolling.tail(90).items():
         rows.append({
