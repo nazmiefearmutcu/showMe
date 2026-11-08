@@ -202,6 +202,47 @@ describe("COUN pane — source honesty", () => {
   });
 });
 
+describe("COUN pane — unavailable indicators are never live (G5 COUN#1)", () => {
+  it("renders an unavailable Real GDP as an em dash with an unavailable source, not live", () => {
+    setMockFn({
+      state: "ok",
+      data: {
+        data: {
+          country: "TR",
+          rows: [
+            {
+              section: "rates",
+              metric: "Policy rate",
+              value: 5.25,
+              unit: "%",
+              source_mode: "country_reference_profile",
+            },
+            {
+              section: "growth",
+              metric: "Real GDP",
+              value: null,
+              unit: "mn TRY (SA)",
+              as_of: null,
+              series_id: "NGDPRSAXDCTRQ",
+              source_mode: "provider_unavailable",
+            },
+          ],
+          cards: [{ label: "Policy rate", value: 5.25 }],
+          source_mode: "reference_country_profile",
+        },
+        sources: ["country_reference_profile"],
+      },
+    });
+    render(<COUNPane code="COUN" />);
+    expect(screen.queryByText("live+ref")).not.toBeInTheDocument();
+    expect(screen.getByText("unavailable")).toBeInTheDocument();
+    expect(screen.getByText("provider_unavailable")).toBeInTheDocument();
+    const gdpRow = screen.getByText("Real GDP").closest("tr");
+    expect(gdpRow?.textContent ?? "").toContain("—");
+    expect(gdpRow?.textContent ?? "").not.toMatch(/\b1\b/);
+  });
+});
+
 describe("COUN pane — country interaction", () => {
   it("switches country via the segmented control and persists it", () => {
     setMockFn(livePayload());

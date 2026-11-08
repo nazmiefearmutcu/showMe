@@ -80,6 +80,12 @@ function isReferenceMode(mode?: string): boolean {
   return normalized.includes("reference") || normalized.includes("baseline");
 }
 
+// `provider_unavailable`: the backend found no live observation for this
+// metric. It is neither live nor reference, and carries no value.
+function isUnavailableMode(mode?: string): boolean {
+  return (mode ?? "").toLowerCase().includes("unavailable");
+}
+
 export function COUNPane({ code }: FunctionPaneProps) {
   const [country, setCountry] = usePersistentOption<string>(
     "showme.coun.country",
@@ -110,10 +116,17 @@ export function COUNPane({ code }: FunctionPaneProps) {
     return out;
   }, [payload]);
 
+  // Live means a row with a value from a real provider; reference-profile and
+  // unavailable rows never make the pane live.
   const isLive =
     state === "ok" &&
-    rows.length > 0 &&
-    !rows.every((r) => isReferenceMode(r.source_mode));
+    rows.some(
+      (r) =>
+        r.value != null &&
+        !isReferenceMode(r.source_mode) &&
+        !isUnavailableMode(r.source_mode),
+    );
+  const hasUnavailable = rows.some((r) => isUnavailableMode(r.source_mode));
 
   // CSV export of the country metrics table — RAW payload values (a numeric
   // value stays numeric; string values pass through unchanged).
@@ -198,7 +211,13 @@ export function COUNPane({ code }: FunctionPaneProps) {
         render: (r) =>
           r.source_mode ? (
             <Pill
-              tone={isReferenceMode(r.source_mode) ? "muted" : "accent"}
+              tone={
+                isUnavailableMode(r.source_mode)
+                  ? "warn"
+                  : isReferenceMode(r.source_mode)
+                    ? "muted"
+                    : "accent"
+              }
               variant="soft"
               withDot={false}
             >
@@ -257,7 +276,7 @@ export function COUNPane({ code }: FunctionPaneProps) {
           trailing={
             <FunctionControlGroup>
               <Pill tone={isLive ? "positive" : "warn"} variant="soft">
-                {isLive ? "live+ref" : "reference"}
+                {isLive ? "live+ref" : hasUnavailable ? "unavailable" : "reference"}
               </Pill>
               <SegmentedControl
                 label="COUNTRY"
@@ -303,6 +322,7 @@ function cardCaption(card: COUNCard, rows: COUNRow[]): string {
     (r) => (r.metric ?? "").toLowerCase() === label || label.includes(String(r.metric ?? "\u0000").toLowerCase()),
   );
   if (!match) return "REFERENCE PROFILE";
+  if (isUnavailableMode(match.source_mode)) return "UNAVAILABLE";
   if (match.as_of) {
     return `${isReferenceMode(match.source_mode) ? "REF" : "LIVE"} · ${String(match.as_of).slice(0, 10)}`;
   }

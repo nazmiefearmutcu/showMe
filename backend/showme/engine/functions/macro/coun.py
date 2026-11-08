@@ -47,29 +47,38 @@ class COUNFunction(BaseFunction):
             "US": ["GDPC1", "CPIAUCSL", "UNRATE", "DGS10"],
             "EU": ["LRHUTTTTEZQ156S"],
             "GB": ["GBRCPIALLMINMEI"],
-            "TR": ["TURGDPRQDSMEI"],
+            # TURGDPRQDSMEI is not on FRED (HTTP 404); NGDPRSAXDCTRQ is the
+            # FRED id for Real GDP, Republic of Turkiye (verified 2026-11-08).
+            "TR": ["NGDPRSAXDCTRQ"],
         }
         series = series_per_country.get(country, [])
         indicator_rows: list[dict[str, Any]] = []
         history: list[dict[str, Any]] = []
+        indicator_warnings: list[str] = []
         for sid in series:
             try:
                 r = await ECSTFunction(self.deps).execute(series_id=sid, timeout=params.get("timeout", 4))
-                row, points = _indicator_from_ecst(country, sid, r.data, r.sources)
-                indicator_rows.append(row)
-                history.extend(points)
+                row, points = _indicator_from_ecst(country, sid, r.data, r.sources, r.warnings)
             except Exception as exc:
                 provider_errors.append(f"ecst.{sid}: {exc}")
+                row, points = _unavailable_indicator(sid, str(exc)), []
+            indicator_rows.append(row)
+            history.extend(points)
+            if row["value"] is None:
+                indicator_warnings.append(f"{sid}: {row['reason']}")
+        # Only live observations feed the cards, history and source list; an
+        # indicator without a live value stays an explicit unavailable row.
+        live_indicator_rows = [row for row in indicator_rows if row["value"] is not None]
         rows = _country_rows(country, profile, policy_row, indicator_rows)
-        # Honest source attribution: only include "fred" if we actually invoked
-        # any ECST series, and only include "btmm" if the policy row resolved.
+        # Honest source attribution: each provider is listed only when one of
+        # its rows is live ("fred"/"worldbank" from ECST, "btmm" for the policy row).
         live_sources: list[str] = []
         if policy_row:
             live_sources.append("btmm")
-        if indicator_rows and series:
-            live_sources.append("fred")
+        live_sources.extend(str(row["source_mode"]) for row in live_indicator_rows)
         live_sources.append("country_reference_profile")
-        all_warnings = baseline_warnings + provider_errors
+        has_live = bool(policy_row) or bool(live_indicator_rows)
+        all_warnings = baseline_warnings + provider_errors + indicator_warnings
         return FunctionResult(
             code=self.code,
             instrument=None,
@@ -77,7 +86,7 @@ class COUNFunction(BaseFunction):
                 "country": country,
                 "rows": rows,
                 "history": history[-80:],
-                "cards": _country_cards(country, profile, policy_row, indicator_rows),
+                "cards": _country_cards(country, profile, policy_row, live_indicator_rows),
                 "methodology": (
                     "COUN combines a country reference profile with the latest policy-rate "
                     "row from BTMM and normalized macro series from ECST. Values are shown "
@@ -89,7 +98,7 @@ class COUNFunction(BaseFunction):
                     "as_of": "Latest provider date when available.",
                     "source_mode": "Provider or reference layer used for the row.",
                 },
-                "source_mode": "live_macro" if indicator_rows or policy_row else "reference_country_profile",
+                "source_mode": "live_macro" if has_live else "reference_country_profile",
                 "country_known": country_is_known,
             },
             sources=_unique(live_sources),
@@ -137,13 +146,36 @@ def _country_profile_model(country: str) -> dict[str, Any]:
     }
 
 
-def _indicator_from_ecst(country: str, series_id: str, payload: Any, sources: list[str]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+# ECST row modes that are real provider observations. Anything else (a
+# constructed or unknown mode, or no rows at all) is not live data.
+_LIVE_ECST_MODES = frozenset({"fred", "worldbank"})
+
+
+def _indicator_from_ecst(
+    country: str,
+    series_id: str,
+    payload: Any,
+    sources: list[str],
+    warnings: list[str] | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     rows = payload.get("rows") if isinstance(payload, dict) else payload
     if not isinstance(rows, list):
         rows = []
-    latest = rows[-1] if rows else {}
     label, unit = _series_label(series_id)
-    source_mode = ",".join(sources or ["unknown"])
+    live_rows = [
+        row
+        for row in rows
+        if isinstance(row, dict)
+        and row.get("source_mode") in _LIVE_ECST_MODES
+        and row.get("date")
+        and row.get("value") is not None
+    ]
+    if not live_rows:
+        reason = payload.get("reason") if isinstance(payload, dict) else None
+        if not isinstance(reason, str) or not reason.strip():
+            reason = "; ".join(warnings or []) or "no live observations returned"
+        return _unavailable_indicator(series_id, reason), []
+    latest = live_rows[-1]
     points = [
         {
             "date": row.get("date"),
@@ -151,10 +183,9 @@ def _indicator_from_ecst(country: str, series_id: str, payload: Any, sources: li
             "value": row.get("value"),
             "unit": unit,
             "country": country,
-            "source_mode": row.get("source_mode") or source_mode,
+            "source_mode": row.get("source_mode"),
         }
-        for row in rows
-        if isinstance(row, dict) and row.get("date") and row.get("value") is not None
+        for row in live_rows
     ]
     return {
         "section": _series_section(series_id),
@@ -163,8 +194,23 @@ def _indicator_from_ecst(country: str, series_id: str, payload: Any, sources: li
         "unit": unit,
         "as_of": latest.get("date"),
         "series_id": series_id,
-        "source_mode": latest.get("source_mode") or source_mode,
+        "source_mode": latest.get("source_mode"),
     }, points
+
+
+def _unavailable_indicator(series_id: str, reason: str) -> dict[str, Any]:
+    """Explicit no-data row: no value, no as-of, never a placeholder number."""
+    label, unit = _series_label(series_id)
+    return {
+        "section": _series_section(series_id),
+        "metric": label,
+        "value": None,
+        "unit": unit,
+        "as_of": None,
+        "series_id": series_id,
+        "source_mode": "provider_unavailable",
+        "reason": reason,
+    }
 
 
 def _country_rows(country: str, profile: dict[str, Any], policy_row: dict[str, Any] | None, indicators: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -250,19 +296,19 @@ def _country_cards(country: str, profile: dict[str, Any], policy_row: dict[str, 
 
 def _series_label(series_id: str) -> tuple[str, str]:
     labels = {
-        "GDPC1": ("Real GDP", "index"),
+        "GDPC1": ("Real GDP", "bn chained USD"),
         "CPIAUCSL": ("Inflation proxy / CPI", "index"),
         "UNRATE": ("Unemployment rate", "%"),
         "DGS10": ("10Y government yield", "%"),
         "LRHUTTTTEZQ156S": ("Unemployment rate", "%"),
         "GBRCPIALLMINMEI": ("Consumer prices", "index"),
-        "TURGDPRQDSMEI": ("Real GDP", "index"),
+        "NGDPRSAXDCTRQ": ("Real GDP", "mn TRY (SA)"),
     }
     return labels.get(series_id, (series_id, "value"))
 
 
 def _series_section(series_id: str) -> str:
-    if series_id in {"GDPC1", "TURGDPRQDSMEI"}:
+    if series_id in {"GDPC1", "NGDPRSAXDCTRQ"}:
         return "growth"
     if series_id in {"CPIAUCSL", "GBRCPIALLMINMEI"}:
         return "prices"
