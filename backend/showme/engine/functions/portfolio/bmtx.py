@@ -175,14 +175,15 @@ class BMTXFunction(BaseFunction):
                 del bars_dict[sym]
                 oos_windows.pop(sym, None)
         if not bars_dict:
-            return _unavailable(
+            return _no_run_result(
                 instrument=instrument,
                 symbols=symbols,
                 strategies=strategies,
                 days=days,
                 fee_bps=fee_bps,
-                reason="No backtest completed for any requested symbol.",
                 failures=failures,
+                unknown_strategies=unknown_strategies,
+                strategy_errors=strategy_errors,
             )
         # Best per symbol
         best_per_symbol = {}
@@ -266,6 +267,71 @@ def _failure_warning(sym: str, reason: str) -> str:
     return f"BMTX: no usable live backtest for {sym} ({reason}); it is excluded from the matrix."
 
 
+_PROVIDER_NEXT_ACTIONS = [
+    "Check that the live OHLCV provider is configured and reachable.",
+    "Verify that each requested symbol is a valid ticker for that provider.",
+]
+_PROVIDER_METHODOLOGY = "No backtest was run: live OHLCV history was unavailable, and no substitute history is used."
+
+
+def _no_run_result(
+    *,
+    instrument: Instrument | None,
+    symbols: list[str],
+    strategies: list[str],
+    days: int,
+    fee_bps: float,
+    failures: dict[str, str],
+    unknown_strategies: list[str],
+    strategy_errors: dict[str, list[tuple[str, str]]],
+) -> FunctionResult:
+    """BMTX-R1: bars loaded, yet no backtest completed. The cause is named.
+
+    An unregistered strategy name is an input error, and a run that raised is
+    an empty result. Neither is a provider outage, so ``provider_unavailable``
+    is reserved for the case where no OHLCV history arrived.
+    """
+    raised: dict[str, str] = {}
+    for errs in strategy_errors.values():
+        for strat, msg in errs:
+            raised.setdefault(strat, msg)
+    parts = []
+    if unknown_strategies:
+        parts.append("not registered: " + ", ".join(unknown_strategies))
+    if raised:
+        parts.append("raised: " + "; ".join(f"{strat} ({msg})" for strat, msg in raised.items()))
+    detail = "; ".join(parts) or "no registered strategy produced a run"
+    if unknown_strategies and set(unknown_strategies) == set(strategies):
+        return _unavailable(
+            instrument=instrument,
+            symbols=symbols,
+            strategies=strategies,
+            days=days,
+            fee_bps=fee_bps,
+            reason=f"No backtest completed: none of the requested strategies is registered ({detail}).",
+            failures=failures,
+            status="input_error",
+            next_actions=[
+                "Request registered strategy names: " + ", ".join(sorted(STRATEGY_REGISTRY)) + ".",
+            ],
+            methodology="No backtest was run: no requested strategy is registered, so no metrics are shown.",
+        )
+    return _unavailable(
+        instrument=instrument,
+        symbols=symbols,
+        strategies=strategies,
+        days=days,
+        fee_bps=fee_bps,
+        reason=f"No backtest completed for any requested symbol ({detail}).",
+        failures=failures,
+        status="empty",
+        next_actions=[
+            "Read the warnings for the error behind each failed strategy run, then retry with other strategies or symbols.",
+        ],
+        methodology="No backtest completed on the loaded bars, so no metrics are shown and no substitute history is used.",
+    )
+
+
 def _unavailable(
     *,
     instrument: Instrument | None,
@@ -275,14 +341,18 @@ def _unavailable(
     fee_bps: float,
     reason: str,
     failures: dict[str, str],
+    status: str = "provider_unavailable",
+    next_actions: list[str] | None = None,
+    methodology: str = _PROVIDER_METHODOLOGY,
 ) -> FunctionResult:
-    """Honest live-mode outage: no cells, no template values, explicit reason."""
+    """Honest live-mode gap: no cells, no template values, explicit status and reason."""
+    is_provider = status == "provider_unavailable"
     warnings = [reason] + [_failure_warning(sym, why) for sym, why in failures.items()]
     return FunctionResult(
         code="BMTX",
         instrument=instrument,
         data={
-            "status": "provider_unavailable",
+            "status": status,
             "reason": reason,
             "symbols": [],
             "requested_symbols": list(symbols),
@@ -297,18 +367,16 @@ def _unavailable(
                 "strategies": len(strategies),
                 "runs": 0,
                 "best_sharpe": None,
-                "source_mode": "live_unavailable",
+                "source_mode": "live_unavailable" if is_provider else "live_no_run",
             },
-            "next_actions": [
-                "Check that the live OHLCV provider is configured and reachable.",
-                "Verify that each requested symbol is a valid ticker for that provider.",
-            ],
-            "methodology": "No backtest was run: live OHLCV history was unavailable, and no substitute history is used.",
+            "next_actions": list(next_actions) if next_actions is not None else list(_PROVIDER_NEXT_ACTIONS),
+            "methodology": methodology,
         },
         sources=["yfinance"],
         warnings=warnings,
         metadata={"days": days, "fee_bps": fee_bps, "live": True,
-                  "provider_errors": [reason], "unavailable_symbols": list(failures) or list(symbols)},
+                  "provider_errors": [reason] if is_provider else [],
+                  "unavailable_symbols": list(failures) or list(symbols)},
     )
 
 

@@ -94,7 +94,11 @@ def test_all_symbols_failing_every_strategy_is_provider_unavailable(monkeypatch:
     fn = BMTXFunction(FunctionDeps(yfinance=_Yf(frames={"AAPL": _ohlcv()})))
     res = _run(fn.execute(symbols=["AAPL"], strategies=["buy_and_hold"], live_backtest=True))
 
-    assert res.data["status"] == "provider_unavailable"
+    # The OHLCV history loaded; the backtest engine raised. That is an empty
+    # run with a named cause, not a provider outage.
+    assert res.data["status"] == "empty"
     assert res.data["cells"] == []
     assert res.data["symbols"] == []
+    assert "synthetic engine failure" in res.data["reason"]
+    assert res.metadata["provider_errors"] == []
     assert any("synthetic engine failure" in w for w in res.warnings)
