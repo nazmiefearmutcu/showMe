@@ -98,7 +98,7 @@ def csrc() -> FunctionManifest:
         ),
         caching=CachingPolicy(ttl_seconds=60, scope="per_input", persist=True),
         output_contract=OutputContract(
-            must_have=["as_of", "rows", "matched", "scanned", "sector", "data_mode"],
+            must_have=["as_of", "rows", "matched", "scanned"],
             rows=True,
             series=False,
             cards=True,
@@ -124,7 +124,6 @@ def csrc() -> FunctionManifest:
             slots=[
                 CardSlot(key="matched", label="Matched", kind="kpi"),
                 CardSlot(key="scanned", label="Scanned", kind="kpi"),
-                CardSlot(key="data_mode", label="Mode", kind="mode_pill"),
                 CardSlot(key="as_of", label="As of", kind="timestamp"),
             ],
         ),

@@ -66,3 +66,61 @@ def test_csrc_field_dictionary_has_no_agriculture_sector() -> None:
     meanings = " ".join(str(entry.get("meaning", "")) for entry in _COMMODITY_FIELDS)
     assert "Agriculture" not in meanings
     assert "Grains" in meanings and "Livestock" in meanings
+
+
+async def test_csrc_must_have_names_only_keys_the_payload_produces() -> None:
+    from showme.engine.core.base_function import FunctionDeps
+    from showme.engine.functions.screen._funcs import CSRCFunction
+
+    manifest = REGISTRY.get("CSRC")
+    result = await CSRCFunction(deps=FunctionDeps()).execute(reference=True)
+    missing = [key for key in manifest.output_contract.must_have if key not in result.data]
+    assert missing == [], f"CSRC must_have promises keys the payload does not carry: {missing}"
+    assert "sector" not in manifest.output_contract.must_have
+    assert "data_mode" not in manifest.output_contract.must_have
+
+
+async def test_csrc_reference_payload_as_of_is_null_not_request_time() -> None:
+    from showme.engine.core.base_function import FunctionDeps
+    from showme.engine.functions.screen._funcs import CSRCFunction
+
+    result = await CSRCFunction(deps=FunctionDeps()).execute(reference=True)
+    assert "as_of" in result.data
+    assert result.data["as_of"] is None
+
+
+async def test_csrc_live_rows_and_payload_carry_provider_quote_time(monkeypatch) -> None:
+    from datetime import datetime, timezone
+
+    from showme import quotes
+    from showme.engine.core.base_function import FunctionDeps
+    from showme.engine.functions.screen._funcs import CSRCFunction
+
+    quote_time = datetime(2026, 11, 6, 20, 0, tzinfo=timezone.utc)
+    quotes.quote_cache_clear()
+
+    async def _fake_fetch(symbol: str) -> dict:
+        return {
+            "symbol": symbol,
+            "last": 80.0,
+            "price": 80.0,
+            "previous_close": 79.0,
+            "change_pct": 1.26,
+            "volume": 1000.0,
+            "source": "yahoo_chart",
+            "raw": {"regular_market_time": quote_time.timestamp()},
+        }
+
+    monkeypatch.setattr(quotes, "fetch_quote_snapshot", _fake_fetch)
+
+    class _YFinanceLikeProvider:
+        name = "yfinance"
+
+    result = await CSRCFunction(deps=FunctionDeps(yfinance=_YFinanceLikeProvider())).execute(
+        live_screen=True, query='sector = "Energy"', limit=50,
+    )
+    live_rows = [row for row in result.data["rows"] if row.get("quote_state") == "live"]
+    assert live_rows, "the fake quote service must resolve at least one energy contract"
+    for row in live_rows:
+        assert row.get("quote_time") == quote_time.isoformat(), row["symbol"]
+    assert result.data["as_of"] == quote_time.isoformat()

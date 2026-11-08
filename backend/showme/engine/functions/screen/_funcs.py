@@ -210,7 +210,7 @@ class CSRCFunction(BaseFunction):
             # whole board resolves inside the latency budget (WEI pattern).
             # Symbols the provider does not return are kept in the payload as
             # explicit quote_state="reference" rows — never silently dropped.
-            quotes, warnings = await _screen_quote_rows(
+            quotes, warnings = await _csrc_screen_quote_rows(
                 self.deps.yfinance,
                 [str(row["symbol"]) for row in rows],
                 timeout=_float_param(params, "quote_timeout", 4.0),
@@ -226,7 +226,7 @@ class CSRCFunction(BaseFunction):
                         *warnings,
                         f"{unresolved} commodity quote(s) unavailable this cycle",
                     ]
-        return _screen_result(
+        result = _screen_result(
             self.code,
             rows,
             query=query,
@@ -235,6 +235,10 @@ class CSRCFunction(BaseFunction):
             field_dictionary=_COMMODITY_FIELDS,
             warnings=warnings,
         )
+        # wb1-g17 / CSRC#5: as_of is the newest provider quote time across the
+        # scanned contracts; null when no provider stamped one (reference rows).
+        result.data["as_of"] = _most_as_of(rows)
+        return result
 
 
 @FunctionRegistry.register
@@ -1845,6 +1849,79 @@ async def _quote_snapshot_rows(
     if pending:
         warnings.append(f"{len(pending)} quote request(s) exceeded {screen_timeout:.1f}s")
     return rows, [warning for warning in warnings if warning][:4]
+
+
+async def _csrc_quote_snapshot_rows(
+    symbols: list[str],
+    *,
+    screen_timeout: float,
+    concurrency: int,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """CSRC quote fan-out over the quote service that keeps each row's provider quote time.
+
+    Same bounded fan-out as :func:`_quote_snapshot_rows`; kept separate so the
+    shared helper's row shape stays unchanged for the other screens
+    (wb1-g17 / CSRC#5: commodity rows must carry the quote's own timestamp).
+    """
+    from showme.quotes import fetch_quote_snapshot, quote_cache_get, quote_cache_set
+
+    semaphore = asyncio.Semaphore(max(1, concurrency))
+
+    async def _run(symbol: str) -> dict[str, Any] | None:
+        async with semaphore:
+            snapshot = quote_cache_get(symbol)
+            if snapshot is None:
+                try:
+                    snapshot = await fetch_quote_snapshot(symbol)
+                except Exception:  # noqa: BLE001 — unresolved symbols are labelled upstream
+                    return None
+                quote_cache_set(symbol, snapshot)
+            row = _snapshot_to_quote_row(symbol, snapshot)
+            if row is not None:
+                row["quote_time"] = _most_snapshot_quote_time(snapshot)
+            return row
+
+    tasks = [asyncio.create_task(_run(symbol)) for symbol in symbols]
+    done, pending = await asyncio.wait(tasks, timeout=screen_timeout)
+    for task in pending:
+        task.cancel()
+    rows: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    for task in done:
+        try:
+            row = task.result()
+        except Exception as exc:  # noqa: BLE001
+            warnings.append(str(exc) or type(exc).__name__)
+            continue
+        if row:
+            rows.append(row)
+    if pending:
+        warnings.append(f"{len(pending)} quote request(s) exceeded {screen_timeout:.1f}s")
+    return rows, [warning for warning in warnings if warning][:4]
+
+
+async def _csrc_screen_quote_rows(
+    provider: Any,
+    symbols: list[str],
+    *,
+    timeout: float,
+    screen_timeout: float,
+    concurrency: int,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """CSRC quote fan-out: the quote service keeps quote times; an injected provider keeps its path."""
+    if _screen_uses_live_quote_service(provider):
+        return await _csrc_quote_snapshot_rows(
+            symbols,
+            screen_timeout=screen_timeout,
+            concurrency=concurrency,
+        )
+    return await _screen_quote_rows(
+        provider,
+        symbols,
+        timeout=timeout,
+        screen_timeout=screen_timeout,
+        concurrency=concurrency,
+    )
 
 
 async def _screen_quote_rows(
