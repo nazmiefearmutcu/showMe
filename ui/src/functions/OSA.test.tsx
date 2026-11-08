@@ -291,6 +291,39 @@ describe("OSA pane — spot and underlying (OSA#2)", () => {
   });
 });
 
+describe("OSA pane — extremes are labelled honestly (OSA#3)", () => {
+  function withSummary(extra: Record<string, unknown>) {
+    const fixture = bullCallPayload();
+    const data = fixture.data.data as Record<string, unknown>;
+    data.summary = { ...(data.summary as Record<string, unknown>), ...extra };
+    return fixture;
+  }
+
+  it("shows an unbounded max gain as Unlimited, not the grid edge value", () => {
+    // RED before fix: the KPI showed +6.41 with a grid-range caption.
+    setMockFn({ state: "ok", ...withSummary({ max_gain_state: "unbounded" }) });
+    render(<OSAPane code="OSA" symbol="SPY" />);
+    const kpis = within(screen.getByRole("region", { name: "Strategy statistics" }));
+    expect(kpis.getByText("Unlimited")).toBeInTheDocument();
+    expect(kpis.queryByText("+6.41")).toBeNull();
+    expect(kpis.getByText(/rises past range high/i)).toBeInTheDocument();
+  });
+
+  it("labels a best outcome at the grid low edge as possibly extending lower", () => {
+    setMockFn({ state: "ok", ...withSummary({ max_gain_state: "grid_edge" }) });
+    render(<OSAPane code="OSA" symbol="SPY" />);
+    const kpis = within(screen.getByRole("region", { name: "Strategy statistics" }));
+    expect(kpis.getByText(/may extend lower/i)).toBeInTheDocument();
+  });
+
+  it("states that a bounded extreme is only the visible grid's", () => {
+    setMockFn({ state: "ok", ...withSummary({ max_gain_state: "bounded", max_loss_state: "bounded" }) });
+    render(<OSAPane code="OSA" symbol="SPY" />);
+    const kpis = within(screen.getByRole("region", { name: "Strategy statistics" }));
+    expect(kpis.getAllByText(/within visible grid/i)).toHaveLength(2);
+  });
+});
+
 describe("OSA pane — interactions", () => {
   it("clicking a strategy preset swaps the legs and persists them", () => {
     setMockFn({ state: "ok", ...bullCallPayload() });

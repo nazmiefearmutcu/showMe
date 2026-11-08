@@ -76,6 +76,11 @@ interface OsaSummary {
   net_debit?: number;
   max_gain_visible?: number;
   max_loss_visible?: number;
+  /** bounded | grid_edge | unbounded (OSA#3): how the grid extreme relates to the payoff. */
+  max_gain_state?: "bounded" | "grid_edge" | "unbounded";
+  max_loss_state?: "bounded" | "grid_edge" | "unbounded";
+  grid_low?: number;
+  grid_high?: number;
   breakeven_count_visible?: number;
 }
 
@@ -317,6 +322,8 @@ export function OSAPane({ code }: FunctionPaneProps) {
   const netDebit = num(summary?.net_debit);
   const maxGain = num(summary?.max_gain_visible);
   const maxLoss = num(summary?.max_loss_visible);
+  const gainState = summary?.max_gain_state;
+  const lossState = summary?.max_loss_state;
 
   const profileRows = useMemo(
     () =>
@@ -422,14 +429,30 @@ export function OSAPane({ code }: FunctionPaneProps) {
           />
           <StatCard
             label="Max gain"
-            value={fmtSigned(maxGain)}
-            caption={maxGain == null ? undefined : "at range high"}
+            value={gainState === "unbounded" ? "Unlimited" : fmtSigned(maxGain)}
+            caption={
+              maxGain == null
+                ? undefined
+                : gainState === "unbounded"
+                  ? "rises past range high"
+                  : gainState === "grid_edge"
+                    ? "best at range low, may extend lower"
+                    : "best within visible grid"
+            }
             tone={maxGain != null && maxGain > 0 ? "positive" : "neutral"}
           />
           <StatCard
             label="Max loss"
-            value={fmtSigned(maxLoss)}
-            caption={maxLoss == null ? undefined : "at range low"}
+            value={lossState === "unbounded" ? "Unlimited" : fmtSigned(maxLoss)}
+            caption={
+              maxLoss == null
+                ? undefined
+                : lossState === "unbounded"
+                  ? "falls past range high"
+                  : lossState === "grid_edge"
+                    ? "worst at range low, may extend lower"
+                    : "worst within visible grid"
+            }
             tone={maxLoss != null && maxLoss < 0 ? "negative" : "neutral"}
           />
           <StatCard

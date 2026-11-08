@@ -424,6 +424,37 @@ async def _osa_live_spot(deps: Any, underlying: str, params: dict[str, Any]) -> 
     return value, ""
 
 
+# A payoff slope below this (P&L per unit of underlying) counts as flat: a limit
+# that is approached asymptotically, not a payoff that keeps growing.
+_OSA_FLAT_SLOPE = 1e-3
+
+
+def _osa_extreme_state(pnls: list[float], step: float, *, want_max: bool) -> str:
+    """Classify a grid extreme as ``bounded``, ``grid_edge`` or ``unbounded``.
+
+    ``unbounded``: the payoff still moves in the direction of the extreme at the
+    top of the grid, so the true extreme is beyond the range.
+    ``grid_edge``: the extreme sits at the bottom of the grid and the payoff is
+    still moving that way, so it may lie below the grid.
+    ``bounded``: the extreme is interior or on a flat plateau.
+    """
+    if len(pnls) < 2 or step <= 0:
+        return "bounded"
+    high_slope = (pnls[-1] - pnls[-2]) / step
+    low_slope = (pnls[1] - pnls[0]) / step
+    if want_max:
+        if high_slope > _OSA_FLAT_SLOPE:
+            return "unbounded"
+        if pnls.index(max(pnls)) == 0 and low_slope < -_OSA_FLAT_SLOPE:
+            return "grid_edge"
+        return "bounded"
+    if high_slope < -_OSA_FLAT_SLOPE:
+        return "unbounded"
+    if pnls.index(min(pnls)) == 0 and low_slope > _OSA_FLAT_SLOPE:
+        return "grid_edge"
+    return "bounded"
+
+
 def _osa_needs_input(
     reason: str,
     instrument: Instrument | None,
@@ -637,6 +668,13 @@ class OSAFunction(BaseFunction):
                                       "multi_expiry": len(set(leg_expiries)) > 1,
                                       "max_gain_visible": max(pnls),
                                       "max_loss_visible": min(pnls),
+                                      # OSA#3: the grid only samples a window. A
+                                      # payoff still moving at the grid edge is
+                                      # unbounded (or extends past it), not capped.
+                                      "max_gain_state": _osa_extreme_state(pnls, step, want_max=True),
+                                      "max_loss_state": _osa_extreme_state(pnls, step, want_max=False),
+                                      "grid_low": spot_low,
+                                      "grid_high": spot_high,
                                       "breakeven_count_visible": sum(
                                           1
                                           for prev, cur in zip(pnls, pnls[1:])

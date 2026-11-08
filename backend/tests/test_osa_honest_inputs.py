@@ -131,3 +131,43 @@ def test_underlying_without_quote_is_provider_unavailable_not_a_spot_guess() -> 
     assert res.data["spot"] is None
     assert not res.data.get("curve")
     assert "quote" in res.data["reason"].lower()
+
+
+# ---------------- OSA#3: unbounded extremes are labelled, not grid edges ----------------
+
+
+def _osa_summary(legs, spot=100.0):
+    res = _run_osa(spot=spot, legs=legs)
+    assert res.data["status"] == "ok"
+    return res.data["summary"]
+
+
+def test_long_call_max_gain_is_unbounded_not_a_grid_edge() -> None:
+    # RED before fix: max_gain_visible was the grid high edge and no state said so.
+    summary = _osa_summary([{"qty": 1, "strike": 100, "type": "CALL", "expiry": 0.25, "vol": 0.25}])
+    assert summary["max_gain_state"] == "unbounded"
+    assert summary["max_loss_state"] == "bounded"
+
+
+def test_short_call_max_loss_is_unbounded() -> None:
+    summary = _osa_summary([{"qty": -1, "strike": 100, "type": "CALL", "expiry": 0.25, "vol": 0.25}])
+    assert summary["max_loss_state"] == "unbounded"
+    assert summary["max_gain_state"] == "bounded"
+
+
+def test_bounded_call_spread_has_bounded_extremes() -> None:
+    summary = _osa_summary(CALL_SPREAD)
+    assert summary["max_gain_state"] == "bounded"
+    assert summary["max_loss_state"] == "bounded"
+
+
+def test_long_put_best_outcome_lies_below_the_grid() -> None:
+    # The put keeps paying as spot falls toward zero: the grid low edge is not the true max.
+    summary = _osa_summary([{"qty": 1, "strike": 100, "type": "PUT", "expiry": 0.25, "vol": 0.25}])
+    assert summary["max_gain_state"] == "grid_edge"
+    assert summary["max_loss_state"] == "bounded"
+
+
+def test_summary_reports_the_visible_grid_range() -> None:
+    summary = _osa_summary(CALL_SPREAD)
+    assert summary["grid_low"] < 100 < summary["grid_high"]
