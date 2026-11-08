@@ -1459,8 +1459,12 @@ async def _secf_quote_rows(
         warnings = [f"batch quote request exceeded {screen_timeout:.1f}s"]
     got = {str(row.get("symbol") or "").upper() for row in quotes}
     missing = [symbol for symbol in symbols if symbol.upper() not in got]
-    if missing:
-        remaining = max(0.5, screen_timeout - (loop.time() - started))
+    remaining = screen_timeout - (loop.time() - started)
+    if missing and remaining <= 0:
+        # The batch used the whole screen budget; a floor budget here would
+        # run past it, so the rest stay quote_state "reference" with a warning.
+        warnings = [*warnings, f"screen budget spent on batch quotes; {len(missing)} symbol(s) not fanned out"]
+    elif missing:
         extra, extra_warnings = await _screen_quote_rows(
             provider,
             missing,
