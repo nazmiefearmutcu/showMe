@@ -83,17 +83,25 @@ _CLASS_RULE: dict[str, str] = {
 }
 
 
+def _is_crypto_perpetual(symbol: str) -> bool:
+    """True for a crypto perpetual/swap symbol (``BTC-PERP``, ``BTC-SWAP``, ccxt ``BTC/USDT:USDT``)."""
+    s = str(symbol or "").upper()
+    return s.endswith(("-PERP", "-SWAP", "PERP")) or ":" in s
+
+
 def infer_margin_type(positions: list[dict[str, Any]]) -> str:
     """Account-level margin type implied by the products an account holds.
 
-    Only an account made purely of spot crypto is crypto_spot; a crypto account
-    that also holds derivatives keeps the crypto_futures rule. A mixed account is
-    reg_t, and each position is still priced under its own class rule.
+    Only an account made purely of spot crypto is crypto_spot. A crypto account that
+    also holds derivatives (CRYPTO and DERIVATIVE both present) is crypto_futures. A
+    DERIVATIVE-only book is futures: a DERIVATIVE is non-crypto futures/options, so it
+    must not take the crypto 10% rule. Each position is still priced under its own
+    class rule in calc_account.
     """
     classes = {str(p.get("asset_class") or "").upper() for p in positions}
     if classes and classes <= {"CRYPTO"}:
         return "crypto_spot"
-    if classes and classes <= {"CRYPTO", "DERIVATIVE"} and "DERIVATIVE" in classes:
+    if classes and classes <= {"CRYPTO", "DERIVATIVE"} and {"CRYPTO", "DERIVATIVE"} <= classes:
         return "crypto_futures"
     if classes & {"FX"}:
         return "fx"
@@ -103,14 +111,24 @@ def infer_margin_type(positions: list[dict[str, Any]]) -> str:
 
 
 def _position_rule(
-    asset_class: str, margin_type: str, account_rule: dict[str, Any], *, explicit: bool = True
+    asset_class: str,
+    margin_type: str,
+    account_rule: dict[str, Any],
+    *,
+    explicit: bool = True,
+    symbol: str = "",
 ) -> dict[str, Any]:
     """Rule for one position: the account rule, unless its class has its own rule.
 
     ``explicit`` is False when the account type was inferred from the book (MGN#2
     residual): an inferred crypto_futures account must not reprice spot CRYPTO lines.
+    In such an inferred account a non-perpetual DERIVATIVE (ES, options) takes the
+    futures rule; a crypto perpetual keeps the crypto_futures rate.
     """
     cls = str(asset_class or "").upper()
+    if (cls == "DERIVATIVE" and margin_type == "crypto_futures" and not explicit
+            and not _is_crypto_perpetual(symbol)):
+        return dict(DEFAULT_RULES["futures"])
     mapped = _CLASS_RULE.get(cls)
     if mapped is None or mapped == margin_type:
         return account_rule
@@ -236,7 +254,8 @@ def calc_account(
         per_pos = []
         biggest = -1.0
         for p in positions:
-            p_rule = _position_rule(p.get("asset_class", ""), margin_type, rule, explicit=explicit)
+            p_rule = _position_rule(p.get("asset_class", ""), margin_type, rule,
+                                    explicit=explicit, symbol=str(p.get("symbol") or ""))
             i, m = _position_margin(p, p_rule)
             ip += i
             mp += m
