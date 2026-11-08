@@ -5,8 +5,8 @@
  * WETRFunction): keyed OpenWeatherMap when configured, otherwise the
  * KEYLESS Open-Meteo adapter — so the default user gets genuinely live
  * daily forecast rows (`status: ok`, `source_mode: live_open_meteo`).
- * Only `reference=true` or a provider outage serves the labelled
- * seasonal-model rows (`source_mode: seasonal_model`,
+ * A provider outage serves no rows; the old labelled seasonal-model rows
+ * (`source_mode: seasonal_model`) are no longer served,
  * `status: provider_unavailable`). The pane labels the pill + notice from
  * that real backend `source_mode` so live rows are never called a model.
  */
@@ -80,13 +80,10 @@ const LOCATION_IDS = LOCATIONS.map((l) => l.id);
 const DAY_OPTIONS = ["3", "5", "10", "14"] as const;
 type DayOption = (typeof DAY_OPTIONS)[number];
 
-/** Data modes offered by the WETR manifest (`provider_mode` input). */
-const DATA_MODE_OPTIONS = [
-  { id: "live_official", label: "Live" },
-  { id: "modeled", label: "Modeled" },
-] as const;
-type DataModeOption = (typeof DATA_MODE_OPTIONS)[number]["id"];
-const DATA_MODE_IDS = DATA_MODE_OPTIONS.map((m) => m.id);
+// WETR serves live forecast rows only: the old "Modeled" seasonal model was a
+// generated sine curve and is gone (data policy), so there is no data-mode
+// switch and provider_mode is always live_official.
+const PROVIDER_MODE = "live_official";
 
 const REFRESH_MS = 60_000;
 
@@ -108,13 +105,6 @@ export function WETRPane({ code }: FunctionPaneProps) {
     DAY_OPTIONS,
     "10",
   );
-  // WETR#4-RQ: the manifest's provider_mode input is a real control (Live or
-  // the labelled Modeled seasonal model), not a hidden default.
-  const [providerMode, setProviderMode] = usePersistentOption<DataModeOption>(
-    "showme.wetr-provider-mode",
-    DATA_MODE_IDS,
-    "live_official",
-  );
   // Bundle D / PERF-04. Visibility-aware poll.
   const tick = useVisibilityTick(REFRESH_MS);
 
@@ -123,7 +113,7 @@ export function WETRPane({ code }: FunctionPaneProps) {
     // Audit A4-M: the tick must stay OUT of params — useFunction fingerprints
     // params into the fetch key, so a tick here re-keyed every poll into a
     // fresh load (skeleton flash + cleared rows). Poll via refetch() instead.
-    params: { location, days: Number(days), provider_mode: providerMode },
+    params: { location, days: Number(days), provider_mode: PROVIDER_MODE },
   });
   useEffect(() => {
     if (tick === 0) return; // initial mount handled by useFunction's own load
@@ -275,15 +265,6 @@ export function WETRPane({ code }: FunctionPaneProps) {
               items={DAY_OPTIONS.map((d) => ({ id: d, label: `${d}d` }))}
               active={days}
               onChange={(id) => setDays(id as DayOption)}
-            />
-          </div>
-          <div style={{ marginTop: 6 }}>
-            <Tabs
-              variant="segmented"
-              ariaLabel="Data mode"
-              items={DATA_MODE_OPTIONS.map((m) => ({ id: m.id, label: m.label }))}
-              active={providerMode}
-              onChange={(id) => setProviderMode(id as DataModeOption)}
             />
           </div>
         </div>

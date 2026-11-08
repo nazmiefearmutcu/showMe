@@ -7,7 +7,7 @@
  * `useFunction` is mocked via a mutable shared state + recorded calls.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 
 interface MockFnState {
   state: "idle" | "loading" | "ok" | "error" | "refreshing";
@@ -45,16 +45,11 @@ afterEach(() => {
 });
 
 describe("WETR pane — data mode control (WETR#4-RQ)", () => {
-  it("offers Live and Modeled and sends provider_mode, defaulting to live_official", () => {
+  it("sends provider_mode live_official and offers no synthetic Modeled mode", () => {
     render(<WETRPane code="WETR" />);
-    expect(screen.getByRole("tab", { name: "Live" })).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: "Modeled" })).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Modeled" })).toBeNull();
     expect(recordedCalls[recordedCalls.length - 1].params).toMatchObject({
       provider_mode: "live_official",
-    });
-    fireEvent.click(screen.getByRole("tab", { name: "Modeled" }));
-    expect(recordedCalls[recordedCalls.length - 1].params).toMatchObject({
-      provider_mode: "modeled",
     });
   });
 });

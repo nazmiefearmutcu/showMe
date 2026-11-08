@@ -164,10 +164,10 @@ def test_wetr_reference_true_skips_provider_and_serves_labelled_model() -> None:
         WETRFunction(FunctionDeps(open_meteo=fake)).execute(reference=True)
     )
     assert fake.calls == 0, "reference=true must not hit the live provider"
-    assert result.data["source_mode"] == "seasonal_model"
-    assert result.sources == ["seasonal_weather_model"]
-    assert result.metadata.get("fallback") is True
-    assert result.metadata.get("data_mode") == "modeled"
+    # No synthetic seasonal model is served: an explicit input_error, no rows.
+    assert result.data["status"] == "input_error"
+    assert result.data["rows"] == []
+    assert result.sources == []
     assert _body(result)["data_state"] != "live"
 
 

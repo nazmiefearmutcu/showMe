@@ -152,11 +152,10 @@ def test_wetr_reference_opt_in_still_serves_labelled_model_rows() -> None:
             raise AssertionError("reference=true must not query the provider")
 
     result = asyncio.run(WETRFunction(FunctionDeps(open_meteo=_Never())).execute(reference=True))
-    assert result.data["status"] == "reference_model"
-    assert result.data["source_mode"] == "seasonal_model"
-    assert result.data["rows"], "the explicit reference opt-in keeps its labelled rows"
-    assert all(row["source_mode"] == "seasonal_model" for row in result.data["rows"])
-    assert result.metadata.get("data_mode") == "modeled"
+    # The synthetic seasonal model is no longer served, even on request.
+    assert result.data["status"] == "input_error"
+    assert result.data["rows"] == []
+    assert result.sources == []
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -256,12 +255,11 @@ def test_wetr3_live_path_flags_hot_dry_day_like_the_model_path() -> None:
     assert rows[0]["risk_flag"] == "dry_heat_watch"
 
 
-def test_wetr3_model_rows_use_the_same_risk_helper() -> None:
-    from showme.engine.functions.commodity._funcs import _weather_model_rows, _wetr_risk_flag
+def test_wetr3_synthetic_model_rows_are_gone() -> None:
+    # The generated seasonal rows (and their risk flags) no longer exist.
+    from showme.engine.functions.commodity import _funcs
 
-    for row in _weather_model_rows(16, 40.0, -74.0, "US_NORTHEAST", "corn"):
-        expected = _wetr_risk_flag(row["temp_c"], row["precip_mm"])
-        assert row["risk_flag"] == expected
+    assert not hasattr(_funcs, "_weather_model_rows")
 
 
 # ─────────────────────────────────────────────────────────────────────────

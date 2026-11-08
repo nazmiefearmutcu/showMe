@@ -1891,7 +1891,7 @@ class WETRFunction(BaseFunction):
         # the live chain. Any other value is an explicit input error, never a
         # silent live or model fallback.
         provider_mode = str(params.get("provider_mode") or "").strip().lower()
-        allowed_modes = ("live_official", "modeled")
+        allowed_modes = ("live_official", "modeled")  # modeled is refused below (not offered)
         if provider_mode and provider_mode not in allowed_modes:
             return FunctionResult(
                 code=self.code,
@@ -1922,17 +1922,38 @@ class WETRFunction(BaseFunction):
                 metadata={"allowed_provider_modes": list(allowed_modes)},
             )
         reference = _truthy(params.get("reference")) or provider_mode == "modeled"
+        if reference:
+            # Data policy: the old "seasonal model" was a sine curve, not a
+            # measured or published normal. It is no longer served.
+            return FunctionResult(
+                code=self.code,
+                instrument=None,
+                data={
+                    "status": "input_error",
+                    "field": "provider_mode" if provider_mode == "modeled" else "reference",
+                    "reason": ("The synthetic seasonal weather model is not offered: WETR serves live "
+                               "forecast rows only (Open-Meteo keyless, or OpenWeather with a key)."),
+                    "location": location_key,
+                    "lat": lat,
+                    "lon": lon,
+                    "commodity_context": commodity,
+                    "source_mode": "not_offered",
+                    "rows": [],
+                    "history": [],
+                    "risk_flags": [],
+                    "methodology": "WETR serves live forecast rows only; no generated weather rows.",
+                    "field_dictionary": {},
+                    "next_actions": ["Use the Live data mode (the default)."],
+                },
+                sources=[],
+                warnings=["synthetic seasonal weather model is not offered"],
+                metadata={"live": False},
+            )
         provider, provider_name = self._live_weather_provider()
-        if reference or provider is None:
+        if provider is None:
             return self._seasonal_model_result(
                 days, lat, lon, location_key, commodity,
-                reason=(
-                    "Rows are a labelled seasonal weather model (reference), "
-                    "not live forecast data."
-                    if reference
-                    else "No live weather provider is wired; no weather rows are served."
-                ),
-                reference=reference,
+                reason="No live weather provider is wired; no weather rows are served.",
             )
         try:
             if provider_name == "open_meteo":
@@ -2021,44 +2042,24 @@ class WETRFunction(BaseFunction):
         warning: str | None = None,
         reference: bool = False,
     ) -> FunctionResult:
-        """Honest non-live result.
+        """Honest non-live result: a provider outage or an unwired provider.
 
-        ``reference=True`` is the explicit opt-in to the labelled seasonal model.
-        Any other call is a provider outage or an unwired provider: WETR-R1
-        serves no weather rows then, because the seasonal model is synthetic
-        and is not a measured or published normal.
+        No weather rows are served (the old synthetic seasonal model is gone);
+        ``reference`` is kept for call-site compatibility and is always False.
         """
-        if reference:
-            rows = _weather_model_rows(days, lat, lon, location_key, commodity)
-            status = "reference_model"
-            source_mode = "seasonal_model"
-            sources = ["seasonal_weather_model"]
-            data_mode = "modeled"
-            methodology = (
-                "WETR shows weather variables relevant to commodities. "
-                "HDD=max(18C-temp,0), CDD=max(temp-18C,0); risk flags map "
-                "dry/hot/cold/wet days to demand or crop-weather pressure. "
-                "These rows are a labelled seasonal model, not a live forecast."
-            )
-            next_actions = [
-                "Retry WETR without reference=true for live forecast rows.",
-                "Rows shown are a deterministic seasonal model, not live forecast data.",
-            ]
-        else:
-            rows = []
-            status = "provider_unavailable"
-            source_mode = "provider_unavailable"
-            sources = []
-            data_mode = "provider_unavailable"
-            methodology = (
-                "WETR serves weather rows only from a configured live provider. "
-                "During an outage no weather rows are served; the labelled "
-                "seasonal model is available only with reference=true."
-            )
-            next_actions = [
-                "Retry WETR after the public weather providers recover.",
-                "No weather rows are shown while the provider is unavailable.",
-            ]
+        rows: list[dict[str, Any]] = []
+        status = "provider_unavailable"
+        source_mode = "provider_unavailable"
+        sources: list[str] = []
+        data_mode = "provider_unavailable"
+        methodology = (
+            "WETR serves weather rows only from a configured live provider. "
+            "During an outage no weather rows are served."
+        )
+        next_actions = [
+            "Retry WETR after the public weather providers recover.",
+            "No weather rows are shown while the provider is unavailable.",
+        ]
         if warning:
             provider_errors = [warning]
         else:
@@ -2140,38 +2141,6 @@ def _wetr_risk_flag(temp: float, precip: float) -> str:
     return "normal"
 
 
-def _weather_model_rows(
-    days: int,
-    lat: float,
-    lon: float,
-    location: str,
-    commodity: str,
-) -> list[dict[str, Any]]:
-    start = datetime.now(timezone.utc).date()
-    warm_bias = 2.5 if lat < 35 else 0.0
-    rows: list[dict[str, Any]] = []
-    for i in range(days):
-        date = start + timedelta(days=i)
-        temp = 17.5 + warm_bias + math.sin(i / 2.2) * 3.0 + i * 0.15
-        precip = max(0.0, 2.4 - i * 0.12 + (0.8 if i % 5 == 0 else 0.0))
-        hdd = max(18.0 - temp, 0.0)
-        cdd = max(temp - 18.0, 0.0)
-        risk = _wetr_risk_flag(temp, precip)
-        rows.append({
-            "date": date.isoformat(),
-            "day": i + 1,
-            "location": location,
-            "lat": lat,
-            "lon": lon,
-            "temp_c": round(temp, 2),
-            "precip_mm": round(precip, 2),
-            "hdd": round(hdd, 2),
-            "cdd": round(cdd, 2),
-            "risk_flag": risk,
-            "commodity_impact": _weather_impact(risk, commodity),
-            "source_mode": "seasonal_model",
-        })
-    return rows
 
 
 def _normalise_weather_rows(
@@ -2187,7 +2156,7 @@ def _normalise_weather_rows(
 ) -> list[dict[str, Any]]:
     daily = data.get("daily") if isinstance(data, dict) else None
     if not isinstance(daily, list):
-        return _weather_model_rows(days, lat, lon, location, commodity) if allow_model_fallback else []
+        return []
     rows: list[dict[str, Any]] = []
     for i, item in enumerate(daily[:days]):
         if not isinstance(item, dict):
@@ -2230,7 +2199,7 @@ def _normalise_weather_rows(
             "source_mode": source_mode,
         })
     if not rows:
-        return _weather_model_rows(days, lat, lon, location, commodity) if allow_model_fallback else []
+        return []
     return rows
 
 
