@@ -160,19 +160,59 @@ def _finite(value: Any) -> float | None:
     return num
 
 
-def _surface_rows(calls: list[dict[str, Any]], puts: list[dict[str, Any]], *, spot: float) -> list[dict[str, Any]]:
+# A solver-failure IV is reported as ~0 (or 1e-5). Anything below this floor is
+# not a usable implied vol and must not reach the surface.
+_IV_FLOOR = 0.01
+
+
+def _first_present(row: dict[str, Any], *keys: str) -> Any:
+    """First non-null value among ``keys`` (keeps a legitimate 0.0)."""
+    for key in keys:
+        value = row.get(key)
+        if value is not None:
+            return value
+    return None
+
+
+def _surface_rows(
+    calls: list[dict[str, Any]],
+    puts: list[dict[str, Any]],
+    *,
+    spot: float,
+    dropped: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Build surface cells from option-chain rows.
+
+    A cell is dropped (and recorded in ``dropped`` when supplied) when its
+    implied vol is missing or below ``_IV_FLOOR`` (solver failure), or when its
+    quoted mid is below intrinsic value at spot. SPY options are American, so
+    the price must be at least intrinsic (``max(S-K,0)`` / ``max(K-S,0)``); a
+    mid below that has no real implied vol.
+    """
     rows: list[dict[str, Any]] = []
     for option_type, source_rows in (("CALL", calls), ("PUT", puts)):
         for row in source_rows:
             strike = _finite(row.get("strike"))
-            vol = _finite(row.get("impliedVolatility") or row.get("iv"))
-            if strike is None or vol is None:
+            vol = _finite(_first_present(row, "impliedVolatility", "iv"))
+            if strike is None:
                 continue
             expiry = str(row.get("expiry") or row.get("expiration") or row.get("expiration_date") or "-")
             bid = _finite(row.get("bid"))
             ask = _finite(row.get("ask"))
             last = _finite(row.get("lastPrice") or row.get("last"))
             mid = (bid + ask) / 2 if bid is not None and ask is not None and ask >= bid else last
+            if vol is None or vol < _IV_FLOOR:
+                if dropped is not None:
+                    dropped.append({"label": f"{expiry} {option_type[0]} {strike:g}",
+                                    "reason": "iv_missing_or_below_floor"})
+                continue
+            if spot > 0 and mid is not None:
+                intrinsic = max(spot - strike, 0.0) if option_type == "CALL" else max(strike - spot, 0.0)
+                if mid < intrinsic:
+                    if dropped is not None:
+                        dropped.append({"label": f"{expiry} {option_type[0]} {strike:g}",
+                                        "reason": "mid_below_intrinsic"})
+                    continue
             volume = _finite(row.get("volume"))
             open_interest = _finite(row.get("openInterest") or row.get("open_interest"))
             rows.append({
@@ -724,7 +764,8 @@ class IVOLFunction(BaseFunction):
             if puts is not None and hasattr(puts, "iterrows"):
                 for _, r in puts.iterrows():
                     raw_puts.append({"expiry": exp, **r.to_dict()})
-        surface_rows = _surface_rows(raw_calls, raw_puts, spot=spot)
+        dropped_cells: list[dict[str, Any]] = []
+        surface_rows = _surface_rows(raw_calls, raw_puts, spot=spot, dropped=dropped_cells)
         if not surface_rows:
             # Chains came back but carried no usable implied-vol rows. yfinance
             # is present, so fall back to the spot-anchored reference surface
@@ -752,9 +793,15 @@ class IVOLFunction(BaseFunction):
                                         "calls": sum(1 for row in surface_rows if row["option_type"] == "CALL"),
                                         "puts": sum(1 for row in surface_rows if row["option_type"] == "PUT"),
                                         "source_mode": "live_yfinance",
+                                        "dropped_invalid_iv": len(dropped_cells),
                                         **stats,
                                     },
-                                    "methodology": "Live implied volatility surface from option-chain impliedVolatility by expiry, strike, and option type.",
+                                    "dropped_cells": dropped_cells,
+                                    "methodology": (
+                                        "Live implied volatility surface from option-chain impliedVolatility by expiry, "
+                                        "strike, and option type. Cells with IV below 1 percent (solver failure) or a "
+                                        "quoted mid below intrinsic value are dropped and counted in summary.dropped_invalid_iv."
+                                    ),
                                     "field_dictionary": _IVOL_FIELDS},
                               sources=["yfinance"],
                               metadata={"live": True, "data_mode": "live_yfinance",
