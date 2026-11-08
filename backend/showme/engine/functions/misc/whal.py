@@ -257,6 +257,13 @@ async def _market_flow_proxy(
     sources = ["yahoo_chart_public"]
     if sec_rows:
         sources.append("sec_edgar_public")
+    window = _covered_window(bars, lookback_hours)
+    if window["covered_hours"] is not None and window["covered_hours"] < lookback_hours - 1:
+        warnings.append(
+            f"Only {window['covered_hours']:.1f}h of trading bars fall inside the "
+            f"{lookback_hours}h window (the market was closed for the rest); "
+            "the window is anchored on the last session."
+        )
     return (
         {
             "status": status,
@@ -265,6 +272,7 @@ async def _market_flow_proxy(
             "provider_symbol": yahoo_symbol,
             "rows": rows,
             "history": history,
+            "window": window,
             "cards": [
                 {"label": "Provider", "value": "Yahoo chart + SEC" if sec_rows else "Yahoo chart"},
                 {"label": "Rows", "value": len(rows)},
@@ -350,60 +358,111 @@ def _shape_binance_klines(klines: Any, pair: str, venue: str) -> list[dict[str, 
     return rows
 
 
+async def _chart_bars(
+    client: httpx.AsyncClient,
+    yahoo_symbol: str,
+    range_value: str,
+    interval_value: str,
+) -> list[dict[str, Any]]:
+    response = await client.get(
+        f"{YAHOO_CHART}/{yahoo_symbol}",
+        params={
+            "range": range_value,
+            "interval": interval_value,
+            "includePrePost": "true",
+            "events": "div,splits",
+        },
+    )
+    response.raise_for_status()
+    result = (((response.json() or {}).get("chart") or {}).get("result") or [None])[0]
+    if not isinstance(result, dict):
+        return []
+    timestamps = result.get("timestamp") or []
+    quote = (((result.get("indicators") or {}).get("quote") or [None])[0]) or {}
+    bars: list[dict[str, Any]] = []
+    for idx, ts in enumerate(timestamps):
+        close = _nth_float(quote.get("close"), idx)
+        if close is None:
+            continue
+        bars.append(
+            {
+                "timestamp": datetime.fromtimestamp(float(ts), tz=timezone.utc).isoformat(),
+                "open": _nth_float(quote.get("open"), idx),
+                "high": _nth_float(quote.get("high"), idx),
+                "low": _nth_float(quote.get("low"), idx),
+                "close": close,
+                "volume": _nth_float(quote.get("volume"), idx),
+                "interval": interval_value,
+                "range": range_value,
+            }
+        )
+    return bars
+
+
+def _span_seconds(bars: list[dict[str, Any]]) -> float:
+    stamps = [_iso_timestamp(row.get("timestamp")) for row in bars]
+    return (max(stamps) - min(stamps)) if stamps else 0.0
+
+
+def _covered_window(bars: list[dict[str, Any]], lookback_hours: int) -> dict[str, Any]:
+    """The span the returned bars really cover, reported next to the requested lookback."""
+    if not bars:
+        return {"lookback_hours": lookback_hours, "covered_from": None,
+                "covered_to": None, "covered_hours": None}
+    stamps = [_iso_timestamp(row.get("timestamp")) for row in bars]
+    first, last = min(stamps), max(stamps)
+    return {
+        "lookback_hours": lookback_hours,
+        "covered_from": datetime.fromtimestamp(first, tz=timezone.utc).isoformat(),
+        "covered_to": datetime.fromtimestamp(last, tz=timezone.utc).isoformat(),
+        "covered_hours": round((last - first) / 3600.0, 2),
+    }
+
+
+def _anchored_window(bars: list[dict[str, Any]], lookback_hours: int) -> list[dict[str, Any]]:
+    """Bars in the last ``lookback_hours``, anchored at the newest bar.
+
+    Anchoring on the newest bar rather than on wall-clock now keeps the window on
+    the last trading session when the market is closed (weekends, holidays).
+    """
+    newest = max(_iso_timestamp(row.get("timestamp")) for row in bars)
+    cutoff = newest - lookback_hours * 3600
+    return [row for row in bars if _iso_timestamp(row.get("timestamp")) >= cutoff]
+
+
 async def _fetch_yahoo_bars(
     client: httpx.AsyncClient,
     yahoo_symbol: str,
     interval: str,
     lookback_hours: int,
 ) -> list[dict[str, Any]]:
-    ranges = ["1d", "5d"] if lookback_hours <= 24 else ["5d", "1mo"]
+    # 1d returns only the newest session, which on a weekend ends too long ago
+    # for a 24h window to hold it. Use 5d history and take the first range whose
+    # bars span the whole lookback; otherwise keep the widest one returned.
+    ranges = ["5d", "1mo"]
     intervals = [interval, "5m", "15m", "1d"]
     last_error: Exception | None = None
+    widest: list[dict[str, Any]] = []
+    widest_span = -1.0
     for range_value in ranges:
+        bars: list[dict[str, Any]] = []
         for interval_value in intervals:
             try:
-                response = await client.get(
-                    f"{YAHOO_CHART}/{yahoo_symbol}",
-                    params={
-                        "range": range_value,
-                        "interval": interval_value,
-                        "includePrePost": "true",
-                        "events": "div,splits",
-                    },
-                )
-                response.raise_for_status()
-                result = (((response.json() or {}).get("chart") or {}).get("result") or [None])[0]
-                if not isinstance(result, dict):
-                    continue
-                timestamps = result.get("timestamp") or []
-                quote = (((result.get("indicators") or {}).get("quote") or [None])[0]) or {}
-                bars: list[dict[str, Any]] = []
-                for idx, ts in enumerate(timestamps):
-                    close = _nth_float(quote.get("close"), idx)
-                    if close is None:
-                        continue
-                    bars.append(
-                        {
-                            "timestamp": datetime.fromtimestamp(float(ts), tz=timezone.utc).isoformat(),
-                            "open": _nth_float(quote.get("open"), idx),
-                            "high": _nth_float(quote.get("high"), idx),
-                            "low": _nth_float(quote.get("low"), idx),
-                            "close": close,
-                            "volume": _nth_float(quote.get("volume"), idx),
-                            "interval": interval_value,
-                            "range": range_value,
-                        }
-                    )
-                if bars:
-                    cutoff = time.time() - lookback_hours * 3600
-                    fresh = [
-                        row for row in bars
-                        if _iso_timestamp(row.get("timestamp")) >= cutoff
-                    ]
-                    return fresh or bars[-120:]
+                bars = await _chart_bars(client, yahoo_symbol, range_value, interval_value)
             except Exception as exc:
                 last_error = exc
                 continue
+            if bars:
+                break
+        if not bars:
+            continue
+        span = _span_seconds(bars)
+        if span >= lookback_hours * 3600:
+            return _anchored_window(bars, lookback_hours)
+        if span > widest_span:
+            widest, widest_span = bars, span
+    if widest:
+        return _anchored_window(widest, lookback_hours)
     if last_error:
         raise last_error
     return []

@@ -75,6 +75,12 @@ interface WHALPayload {
   chain?: string | null;
   threshold_usd?: number;
   lookback_hours?: number;
+  window?: {
+    lookback_hours?: number;
+    covered_hours?: number | null;
+    covered_from?: string | null;
+    covered_to?: string | null;
+  };
   interval?: string;
   whale_alert_api?: string;
   native_transfer_feed?: string;
@@ -394,6 +400,15 @@ export function WHALPane({ code, symbol }: FunctionPaneProps) {
           <StatusDivider />
           <StatusSection label="lookback" value={`${payload.lookback_hours ?? 24}h`} />
           <StatusDivider />
+          {typeof payload.window?.covered_hours === "number" ? (
+            <>
+              <StatusSection
+                label="covered"
+                value={`${payload.window.covered_hours.toFixed(1)}h of bars`}
+              />
+              <StatusDivider />
+            </>
+          ) : null}
           <StatusSection
             label="transfer feed"
             value={payload.native_transfer_feed ?? "not_configured"}

@@ -297,3 +297,37 @@ describe("WHAL pane — symbol-less route convergence (P0 / X-02)", () => {
     expect(paramsNow().symbol).toBe("SOLUSDT");
   });
 });
+
+describe("WHAL pane — covered window in the footer (WHAL#1)", () => {
+  function equityPayload(window?: Record<string, unknown>) {
+    return {
+      data: {
+        data: {
+          status: "ok",
+          market: "EQUITY",
+          rows: [],
+          lookback_hours: 24,
+          ...(window ? { window } : {}),
+        },
+        sources: ["yahoo_chart_public"],
+      },
+    };
+  }
+
+  it("shows the bars actually covered next to the requested lookback", () => {
+    setMockFn({
+      state: "ok",
+      ...equityPayload({ lookback_hours: 24, covered_hours: 16.5 }),
+      refetch: vi.fn(),
+    });
+    render(<WHALPane code="WHAL" symbol="AAPL" />);
+    expect(screen.getByText("24h")).toBeInTheDocument();
+    expect(screen.getByText("16.5h of bars")).toBeInTheDocument();
+  });
+
+  it("omits the covered chip when the backend reports no window", () => {
+    setMockFn({ state: "ok", ...equityPayload(), refetch: vi.fn() });
+    render(<WHALPane code="WHAL" symbol="AAPL" />);
+    expect(screen.queryByText(/of bars/)).toBeNull();
+  });
+});
