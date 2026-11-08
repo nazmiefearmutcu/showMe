@@ -2,14 +2,10 @@
 
 Covers four observable bugs flagged during ShowMe BugHunt session 05:
 
-* B4 (ECO):  trading-economics returns ``country: "UK"``/``"United Kingdom"``
-  while the UI used to send ``GB``. Without alias folding, live UK calendar
-  prints were silently filtered out by the backend equality check. The
-  canonicaliser in ``eco._canonical_country`` must fold both the old "GB"
-  payloads and the canonical "UK"/"United Kingdom" provider strings onto
-  the same token. The full ``_normalize_events`` path must keep an event
-  whose ``country`` field reads ``"United Kingdom"`` when the request asks
-  for ``"UK"``.
+* B4 (ECO):  the UK/GB country token must reach the calendar as one ISO code.
+  Country normalisation moved to the Awareness service (2026-11); showme keeps
+  only the ``calendar._common.country_codes`` fold of the legacy UK/EZ tokens and
+  sends ISO-2 codes to Awareness.
 
 * B6 (EQS):  the backend used to default to a hard-coded 15-symbol stub
   but the UI footer continued to label the universe "SP500", over-stating
@@ -23,6 +19,7 @@ quietly come back.
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from pathlib import Path
 
@@ -36,82 +33,70 @@ if str(_BACKEND_DIR) not in sys.path:
 import pytest  # noqa: E402
 
 from showme.engine.functions.macro import eco as eco_mod  # noqa: E402
+from showme.engine.functions.calendar._common import country_codes  # noqa: E402
 from showme.engine.functions.equity import eqs as eqs_mod  # noqa: E402
 
 
 # ── B4 — ECO country alias folding ────────────────────────────────────────
 
 @pytest.mark.parametrize(
-    "raw, canonical",
+    "raw, iso",
     [
-        ("GB", "UK"),
-        ("gbr", "UK"),
-        ("United Kingdom", "UK"),
-        ("Britain", "UK"),
-        ("UK", "UK"),
-        ("EZ", "EU"),
-        ("Eurozone", "EU"),
-        ("European Union", "EU"),
-        ("USA", "US"),
-        ("United States", "US"),
-        ("us", "US"),
-        ("Türkiye", "TR"),
-        ("turkey", "TR"),
-        ("JP", "JP"),
-        ("Japan", "JP"),
-        ("", ""),
-        (None, ""),
-        ("ZZ", "ZZ"),  # unknown stays untouched, never normalised to a wrong neighbour
+        ("GB", ["GB"]),
+        ("UK", ["GB"]),  # legacy UI token folds onto the ISO-2 code Awareness keys on
+        ("gb", ["GB"]),
+        ("EZ", ["EU"]),
+        ("us", ["US"]),
+        ("JP", ["JP"]),
+        ("TR", ["TR"]),
+        ("ZZ", ["ZZ"]),  # unknown stays untouched, never normalised to a wrong neighbour
+        ("ALL", []),  # ALL means no country filter
+        ("", []),
+        (None, []),
     ],
 )
-def test_canonical_country_folds_known_aliases(raw, canonical):
-    assert eco_mod._canonical_country(raw) == canonical
+def test_country_codes_fold_legacy_tokens_and_pass_iso_through(raw, iso):
+    """Country-name normalisation now lives in Awareness (the calendar contract sends ISO codes).
+    showme only folds the legacy UK/EZ UI tokens; the long-form aliases such as 'United Kingdom'
+    are Awareness's job and are no longer mapped here."""
+    assert country_codes(raw) == iso
 
 
-def test_normalize_events_keeps_uk_event_when_request_is_uk_string():
-    """The exact scenario reported in B4: live provider tags the row as
-    ``country: 'United Kingdom'`` while the request asks for ``country: 'UK'``.
-    Without the alias, the row is silently dropped."""
-    events = [
-        {
-            "country": "United Kingdom",
-            "event": "BoE Rate Decision",
-            "date": None,
-            "importance": "high",
-            "forecast": 5.25,
-            "actual": 5.25,
-            "previous": 5.25,
-            "unit": "%",
-        },
-        {
-            "country": "US",
-            "event": "CPI",
-            "date": None,
-            "importance": "high",
-        },
-    ]
-    rows = eco_mod._normalize_events(
-        events, country="UK", importance=None, days=14,
-    )
-    countries = {r["country"] for r in rows}
-    assert "UK" in countries
-    assert "US" not in countries  # UK request must filter out US
-    boe = next(r for r in rows if r["event"] == "BoE Rate Decision")
-    assert boe["country"] == "UK"
+def test_eco_uk_request_is_sent_to_awareness_as_iso_gb_and_keeps_its_rows():
+    """Replaces the old _normalize_events UK/GB alias tests: the request's UK token reaches
+    Awareness as the ISO code GB, and the rows Awareness returns keep their country."""
+    from datetime import datetime, timedelta, timezone
 
+    from showme.engine.core.base_function import FunctionDeps
+    from showme.engine.data_sources.awareness import AwarenessResponse
 
-def test_normalize_events_legacy_gb_request_still_works():
-    """Older clients persisted ``country: 'GB'`` in localStorage. Backend
-    alias map must keep them working — the canonicaliser folds both onto
-    the same internal key."""
-    events = [
-        {"country": "UK", "event": "Retail Sales", "importance": "medium"},
-    ]
-    rows = eco_mod._normalize_events(
-        events, country="GB", importance=None, days=14,
-    )
-    assert len(rows) == 1
-    assert rows[0]["country"] == "UK"
+    tomorrow = (datetime.now(timezone.utc) + timedelta(days=1)).replace(hour=9, minute=0, second=0, microsecond=0)
+    event = {
+        "id": "gb-retail", "country": "GB", "currency": "GBP", "title": "Retail Sales",
+        "category": "retail", "scheduled_at": tomorrow.isoformat(), "all_day": False, "importance": 2,
+        "actual": None, "forecast": None, "previous": None, "revised": None, "actual_value": None,
+        "forecast_value": None, "previous_value": None, "unit": "%", "surprise": None,
+        "surprise_direction": None, "status": "scheduled", "description": None, "sources": [],
+    }
+
+    class _Fake:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict]] = []
+
+        async def get(self, path, params=None):
+            self.calls.append((path, dict(params or {})))
+            data = [event] if path == "/calendar/economic" else []
+            return AwarenessResponse(data=data, meta={"providers": [], "notes": [], "generated_at": None}, url=path)
+
+    fake = _Fake()
+    fn = eco_mod.ECOFunction(FunctionDeps())
+    fn._awareness = fake
+    result = asyncio.run(fn.execute(country="UK", days=14))
+
+    econ_params = next(params for path, params in fake.calls if path == "/calendar/economic")
+    assert econ_params["countries"] == "GB"
+    assert result.data["status"] == "ok"
+    assert [row["country"] for row in result.data["rows"]] == ["GB"]
 
 
 # ── B6 — EQS universe label honesty ───────────────────────────────────────

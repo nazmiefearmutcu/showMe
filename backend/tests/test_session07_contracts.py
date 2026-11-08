@@ -146,7 +146,8 @@ def test_fxgo_no_symbol_returns_live_board_not_opaque_error():
     assert data.get("methodology")
     if data["status"] == "ok":
         assert data["rows"], "live board must carry rows"
-        assert data["data_mode"] == "live_exchange"
+        # Yahoo spot with an indicative spread is never an exchange feed (commit 20f6e7e).
+        assert data["data_mode"] == "live_yfinance_quote"
     else:
         assert data["data_mode"] == "provider_unavailable"
         assert result.warnings or data.get("warning")

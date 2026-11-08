@@ -17,6 +17,7 @@ from __future__ import annotations
 import pytest
 
 from showme import server
+from showme.engine.data_sources.awareness import client as aw_client
 
 
 # ---- news routing timeouts -------------------------------------------------
@@ -25,7 +26,11 @@ from showme import server
 def test_news_category_defaults_get_ten_second_budget() -> None:
     params = server._route_function_params("TOP", {})
     assert params["timeout"] == 10
-    assert params["news_timeout"] == 10
+    # TOP reads the Awareness service, not the legacy RSS ``news_timeout`` budget, so the
+    # routed key is dropped (commit 0b9f28f). Its real budget is the Awareness HTTP timeout,
+    # which must stay inside the 10s news ceiling.
+    assert "news_timeout" not in params
+    assert aw_client.REQUEST_TIMEOUT <= params["timeout"]
 
 
 def test_brief_category_default_is_ten_seconds() -> None:

@@ -3,7 +3,7 @@
 Covers registration, schema-shape sanity, and the spec-mandated special
 assertions:
   * WIRP must declare a probs_sum_to_one semantic test (cut+hold+hike = 1)
-  * ECO must promise an ``events`` field in its output contract
+  * ECO must promise a ``rows`` field in its output contract (Awareness calendar)
   * ECST must lead the provider chain with ``fred``
 """
 from __future__ import annotations
@@ -51,11 +51,12 @@ def test_wirp_probs_sum_to_one_test_declared() -> None:
     )
 
 
-def test_eco_output_contract_must_have_events() -> None:
-    """ECO's deliverable is the events array; the output_contract must say so."""
+def test_eco_output_contract_must_have_rows() -> None:
+    """ECO's deliverable is the Awareness-backed ``rows`` array (plus ``holidays``); the output
+    contract must say so. The legacy ``events`` key was retired with the Awareness rewire."""
     eco = REGISTRY.get("ECO")
-    assert "events" in eco.output_contract.must_have, (
-        "ECO output_contract.must_have must include 'events'; "
+    assert "rows" in eco.output_contract.must_have, (
+        "ECO output_contract.must_have must include 'rows'; "
         f"got {eco.output_contract.must_have!r}"
     )
 

@@ -321,12 +321,13 @@ def test_blocklisted_source_payload_is_not_live() -> None:
 
 
 def test_blocklist_does_not_swallow_real_providers_or_model_names() -> None:
-    """Non-regression: real provider names stay live, and plain ``_model``
-    names without blocklist substrings keep their (non-live) model label —
-    including ``local_backtest_model``, whose 'test' substring now maps it
-    to synthetic instead of model (still non-live either way)."""
+    """Non-regression: real provider names stay live, and ``_model`` names keep
+    their (non-live) model label. ``local_backtest_model`` is a model run on
+    real history, so the word-start blocklist (``(?<![a-z])test``) must NOT
+    brand it synthetic (2026-11-08 classifier fix, commit 20f6e7e)."""
     assert server._classify_source_state("yfinance") == "live"
     assert server._classify_source_state("binance") == "live"
     assert server._classify_source_state("fred") == "live"
     assert server._classify_source_state("position_sizing_model") == "model"
-    assert server._classify_source_state("local_backtest_model") == "synthetic"
+    assert server._classify_source_state("local_backtest_model") == "model"
+    assert server._classify_source_state("test_data_feed") == "synthetic"
