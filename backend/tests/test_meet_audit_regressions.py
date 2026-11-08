@@ -106,8 +106,9 @@ def test_followed_symbol_headlines_respect_selected_time_window(monkeypatch):
         return [], "rss", None
 
     async def symbol_articles(*args, **kwargs):
+        # (articles, error) — the Awareness symbol-news contract.
         return [{"title": "Bitcoin ETF inflows", "url": "https://example.test/old",
-                 "published_at": (NOW - timedelta(days=5)).isoformat()}]
+                 "published_at": (NOW - timedelta(days=5)).isoformat()}], None
 
     monkeypatch.setattr(fn, "_world_headlines", headlines)
     monkeypatch.setattr(fn, "_symbol_articles", symbol_articles)

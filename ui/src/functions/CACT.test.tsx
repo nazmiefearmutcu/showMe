@@ -16,6 +16,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, fireEvent } from "@testing-library/react";
 import { CACTPane } from "./CACT";
+import { LIVE_8K_SAME_DAY } from "./__fixtures__/awareness-live";
 
 /* ── useFunction mock ──────────────────────────────────────────────── */
 
@@ -157,6 +158,40 @@ describe("CACT pane — actions table", () => {
     expect(container.textContent).toContain("2026-08-10");
     expect(container.textContent).toContain("2027-01-15");
     expect(container.textContent).toContain("0000320193-26-000042");
+  });
+
+  it("keeps two live 8-K filings filed on the same day as separate rows (F2 I2)", () => {
+    // Backend emits one row per accession; both live filings share a date and carry different items.
+    const rows = LIVE_8K_SAME_DAY.map((f) => ({
+      symbol: null,
+      action_type: "8-K",
+      event_date: f.date,
+      value: null,
+      unit: null,
+      accession: f.fields.accession,
+      url: f.fields.url,
+      items: f.fields.items,
+      source: "awareness:filings",
+    }));
+    setMockFn({
+      state: "ok",
+      data: {
+        data: {
+          status: "ok",
+          symbol: "AAPL",
+          rows,
+          timeline: rows,
+          events_8k: [],
+          counts: { dividend: 0, split: 0, "8-K": rows.length },
+          duplicates_dropped: 0,
+          meta: { providers: [], generated_at: null, notes: [], feed_health: null },
+        },
+      },
+    });
+    const { container } = render(<CACTPane code="CACT" symbol="AAPL" />);
+    expect(container.querySelectorAll("tbody tr").length).toBe(2);
+    expect(container.textContent).toContain(LIVE_8K_SAME_DAY[0].fields.accession);
+    expect(container.textContent).toContain(LIVE_8K_SAME_DAY[1].fields.accession);
   });
 });
 

@@ -484,6 +484,33 @@ describe("MEET pane — world-events body", () => {
     });
   }
 
+  it("reports a degraded Awareness provider next to the rows it fed (F2 I3)", () => {
+    const payload = worldPayload() as Record<string, unknown>;
+    setMockFn({
+      state: "ok",
+      data: {
+        data: {
+          ...payload,
+          data_mode: "cached_snapshot",
+          meta: {
+            providers: [
+              { provider: "news.feeds", status: "degraded", last_ok_at: null, last_error: "timeout" },
+            ],
+            generated_at: new Date(NOW).toISOString(),
+            notes: [],
+            feed_health: { ok: 1, degraded: 1, down: 0, never: 0 },
+          },
+        },
+        sources: ["awareness:econ", "awareness:news"],
+        elapsed_ms: 42,
+      },
+    });
+    render(<MEETPane code="MEET" />);
+    expect(screen.getAllByText(/news\.feeds/).length).toBeGreaterThan(0);
+    expect(document.querySelector(".aw-health--warn")).not.toBeNull();
+    expect(screen.getAllByText("TCMB Interest Rate Decision").length).toBeGreaterThanOrEqual(1);
+  });
+
   it("groups rows into UPCOMING and PAST with countdowns and SPOT pins", () => {
     okFixture();
     const { container } = render(<MEETPane code="MEET" />);

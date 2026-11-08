@@ -15,6 +15,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import { ECOPane } from "./ECO";
+import { LIVE_ECON_ROWS, LIVE_HOLIDAY_ROWS } from "./__fixtures__/awareness-live";
 
 interface MockFnState {
   state: "idle" | "loading" | "ok" | "error" | "refreshing";
@@ -221,5 +222,36 @@ describe("ECOPane ok payload", () => {
     expect(screen.queryByText(/reference/i)).toBeNull();
     expect(screen.queryByText(/live calendar/i)).toBeNull();
     expect(screen.queryByText(/sample/i)).toBeNull();
+  });
+});
+
+describe("ECO live-shaped payloads (F2 C1)", () => {
+  it("renders a live holiday whose source is a ProviderRef object as the provider name", () => {
+    const holidays = LIVE_HOLIDAY_ROWS.map((h) => ({ ...h, date: past(2).slice(0, 10) }));
+    setOk(okPayload({ holidays }));
+    const { container } = render(<ECOPane code="ECO" />);
+    expect(screen.getAllByText(/· nager/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/· exchange_calendars/).length).toBeGreaterThan(0);
+    expect(container.textContent).not.toContain("[object Object]");
+  });
+
+  it("renders a live economic row set alongside live holidays", () => {
+    const rows = LIVE_ECON_ROWS.map((r, i) => ({
+      id: `live-${i}`,
+      date: future(2 + i),
+      country: r.country,
+      event: r.title,
+      importance: r.importance,
+      status: r.status,
+      actual: null,
+      forecast: null,
+      previous: r.previous,
+      surprise_direction: null,
+      is_central_bank: false,
+      sources: [],
+    }));
+    setOk(okPayload({ rows, holidays: [...LIVE_HOLIDAY_ROWS.slice(0, 1)] }));
+    render(<ECOPane code="ECO" />);
+    expect(screen.getAllByText(/nager/).length).toBeGreaterThan(0);
   });
 });

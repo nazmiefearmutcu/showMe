@@ -197,7 +197,10 @@ def test_trdh_open_before_lunch_and_next_close_reported(monkeypatch):
                             "/calendar/holidays": []})
     block = _run(fn.execute(exchanges="XTKS")).data["exchanges"][0]
     assert block["is_open_now"] is True
-    assert block["next_close_utc"].startswith("2026-11-09T06:30")
+    # Before the 11:30 JST lunch break the next close is the break start (02:30 UTC), not the 06:30 UTC close.
+    assert block["next_close_utc"].startswith("2026-11-09T02:30")
+    # The next open event after the morning session is the lunch-break end (reopening), not tomorrow's open.
+    assert block["next_open_utc"].startswith("2026-11-09T03:30")
 
 
 def test_trdh_nyse_early_close_is_flagged_and_closure_listed(monkeypatch):
@@ -541,3 +544,232 @@ def test_routed_defaults_never_narrow_ern_to_a_peer_group() -> None:
     assert "symbols" not in routed and routed["days"] == 5
     explicit = _route_function_params("ERN", {"symbols": "NVDA,AAPL"})
     assert explicit["symbols"] == "NVDA,AAPL"
+
+
+# ── F2 regressions: live-shaped fixtures (captured from awareness-markets, 2026-11-08) ─────────
+
+_LIVE_DIR = Path(__file__).resolve().parent / "fixtures" / "awareness_live"
+
+
+def _live(name: str) -> Any:
+    """Live awareness ``data`` array or object, read from the captured fixture (UTF-8)."""
+    import json
+
+    return json.loads((_LIVE_DIR / name).read_text(encoding="utf-8"))["data"]
+
+
+def _live_meta(name: str) -> list[dict[str, Any]]:
+    import json
+
+    return json.loads((_LIVE_DIR / name).read_text(encoding="utf-8"))["meta"]["providers"]
+
+
+# C1: live holiday rows carry ``source`` as a ProviderRef object. ECO must hand out the provider name.
+def test_c1_eco_renders_live_holiday_source_as_provider_name():
+    import json
+
+    fn = eco_mod.ECOFunction(FunctionDeps())
+    # Both live shapes: nager public holidays (basis native) and exchange_calendars closures (basis derived).
+    live_holidays = _live("holidays_week.json") + _live("holidays_us.json")
+    fn._awareness = Routes({
+        "/calendar/economic": _live("economic_week.json")[:5],
+        "/calendar/holidays": live_holidays,
+    }, providers=_live_meta("economic_week.json"))
+    result = _run(fn.execute(country="all", days=7))
+    holidays = result.data["holidays"]
+    assert holidays, "the live holiday window has closures"
+    for holiday in holidays:
+        assert isinstance(holiday["source"], str) and holiday["source"] in {"nager", "exchange_calendars"}
+    assert {h["source"] for h in holidays} == {"nager", "exchange_calendars"}
+    assert holidays[0]["source_ref"]["provider"] == holidays[0]["source"]
+    json.dumps(result.data)  # the payload must serialise for the pane
+
+
+def test_c1_holiday_row_flattens_provider_ref_and_keeps_strings():
+    from showme.engine.functions.calendar._common import holiday_row
+
+    live = holiday_row({"date": "2026-11-26", "country": "US", "exchange": "XNYS", "name": "Thanksgiving",
+                        "kind": "market_closed", "source": {"provider": "exchange_calendars", "url": None,
+                                                              "fetched_at": "x", "basis": "derived"}})
+    assert live["source"] == "exchange_calendars"
+    assert live["source_ref"]["basis"] == "derived"
+    plain = holiday_row({"date": "2026-11-26", "country": "US", "name": "X", "source": "nager"})
+    assert plain["source"] == "nager" and plain["source_ref"] is None
+
+
+# I2: distinct 8-K filings on one date stay distinct; the same accession still collapses.
+def test_i2_two_same_day_8ks_with_different_items_are_both_kept():
+    fn = CACTFunction(FunctionDeps())
+    first = {"id": "f1", "type": "filing", "symbol": None, "company": "Acme", "date": _day(-15),
+             "time_of_day": None, "status": "filed",
+             "fields": {"form": "8-K", "accession": "0001493152-26-050546", "url": "https://sec.example/a",
+                        "items": [{"code": "1.03", "label": "Bankruptcy"}]}, "sources": []}
+    second = dict(first, id="f2", fields={"form": "8-K", "accession": "0001493152-26-050548",
+                                          "url": "https://sec.example/b",
+                                          "items": [{"code": "5.02", "label": "Departure of officers"}]})
+    fn._awareness = Routes({"/filings": [first, second], "/calendar/corporate": []})
+    result = _run(fn.execute(symbol="ACME"))
+    assert result.data["counts"]["8-K"] == 2
+    assert {r["accession"] for r in result.data["rows"]} == {"0001493152-26-050546", "0001493152-26-050548"}
+    assert {e["code"] for e in result.data["events_8k"]} == {"1.03", "5.02"}, "LITM keeps both litigation items"
+    assert result.data["duplicates_dropped"] == 0
+
+
+def test_i2_same_accession_twice_still_collapses():
+    fn = CACTFunction(FunctionDeps())
+    filing = {"id": "f1", "type": "filing", "symbol": None, "company": "Acme", "date": _day(-15),
+              "time_of_day": None, "status": "filed",
+              "fields": {"form": "8-K", "accession": "0001", "url": "https://sec.example/a", "items": []},
+              "sources": []}
+    fn._awareness = Routes({"/filings": [filing, dict(filing, id="copy")], "/calendar/corporate": []})
+    result = _run(fn.execute(symbol="ACME"))
+    assert result.data["counts"]["8-K"] == 1
+    assert result.data["duplicates_dropped"] == 1
+
+
+# I1: lunch-break boundaries, live XHKG sessions (12:00-13:00 HKT = 04:00-05:00 UTC).
+def test_i1_xhkg_during_lunch_next_open_is_break_end(monkeypatch):
+    _freeze_now(monkeypatch, trdh_mod, datetime(2026, 11, 9, 4, 30, tzinfo=UTC))
+    fn = trdh_mod.TRDHFunction(FunctionDeps())
+    fn._awareness = Routes({"/calendar/sessions": {"exchange": "XHKG", "timezone": "Asia/Hong_Kong",
+                                                    "regular_close_local": "16:00", "sessions": _live("sessions_xhkg.json")["sessions"]},
+                            "/calendar/holidays": []})
+    block = _run(fn.execute(exchanges="XHKG")).data["exchanges"][0]
+    assert block["is_open_now"] is False
+    assert block["next_open_utc"].startswith("2026-11-09T05:00")
+    assert block["next_close_utc"].startswith("2026-11-09T08:00")
+
+
+def test_i1_xhkg_before_lunch_next_close_is_break_start(monkeypatch):
+    _freeze_now(monkeypatch, trdh_mod, datetime(2026, 11, 9, 2, 0, tzinfo=UTC))
+    fn = trdh_mod.TRDHFunction(FunctionDeps())
+    fn._awareness = Routes({"/calendar/sessions": {"exchange": "XHKG", "timezone": "Asia/Hong_Kong",
+                                                    "regular_close_local": "16:00", "sessions": _live("sessions_xhkg.json")["sessions"]},
+                            "/calendar/holidays": []})
+    block = _run(fn.execute(exchanges="XHKG")).data["exchanges"][0]
+    assert block["is_open_now"] is True
+    assert block["next_close_utc"].startswith("2026-11-09T04:00")
+
+
+def test_i1_tokyo_during_lunch_next_open_is_break_end(monkeypatch):
+    _freeze_now(monkeypatch, trdh_mod, datetime(2026, 11, 9, 2, 45, tzinfo=UTC))
+    fn = trdh_mod.TRDHFunction(FunctionDeps())
+    fn._awareness = Routes({"/calendar/sessions": {"timezone": "Asia/Tokyo", "regular_close_local": "15:30",
+                                                    "sessions": _tokyo_sessions()},
+                            "/calendar/holidays": []})
+    block = _run(fn.execute(exchanges="XTKS")).data["exchanges"][0]
+    assert block["is_open_now"] is False
+    assert block["next_open_utc"].startswith("2026-11-09T03:30")
+    assert block["next_close_utc"].startswith("2026-11-09T06:30")
+
+
+# I3-I5: MEET provenance, stale providers, symbol-news errors, impact and methodology.
+def test_i3_meet_reports_stale_provider_as_cached_snapshot_with_meta():
+    stale = [{"provider": "news.feeds", "status": "degraded", "last_ok_at": None, "last_error": "timeout"}]
+    fn = meet_mod.MEETFunction(FunctionDeps())
+    fn._awareness = Routes({"/calendar/economic": [_econ()], "/calendar/holidays": [], "/news": []},
+                           providers=stale)
+    result = _run(fn.execute(limit=20))
+    assert result.metadata["data_mode"] == "cached_snapshot"
+    assert result.metadata["live"] is False
+    assert result.metadata["providers"] == stale
+    assert result.data["data_mode"] == "cached_snapshot"
+    assert result.data["meta"]["providers"] == stale
+    assert "generated_at" in result.data["meta"] and "notes" in result.data["meta"]
+
+
+def test_i3_meet_live_provenance_uses_sanctioned_mode():
+    fn = meet_mod.MEETFunction(FunctionDeps())
+    fn._awareness = Routes({"/calendar/economic": [_econ()], "/calendar/holidays": [], "/news": []})
+    result = _run(fn.execute(limit=20))
+    assert result.metadata["data_mode"] == "live_official"
+    assert result.metadata["live"] is True
+    assert result.data["data_mode"] == "live_official"
+    assert set(result.sources) <= {"awareness:econ", "awareness:holidays", "awareness:news"}
+
+
+def test_i5_meet_symbol_news_error_is_a_warning_not_silence():
+    fn = meet_mod.MEETFunction(FunctionDeps())
+    news_down = {"/calendar/economic": [_econ()], "/calendar/holidays": [], "/news": []}
+
+    class _NewsDown(Routes):
+        async def get(self, path, params=None):
+            if path == "/news" and "symbols" in (params or {}):
+                raise AwarenessUnavailable("awareness news is not answering")
+            return await super().get(path, params)
+
+    fn._awareness = _NewsDown(news_down)
+    result = _run(fn.execute(symbols="BTC", limit=20))
+    assert any(w.startswith("symbol_events: awareness news unavailable") for w in result.warnings)
+
+
+def test_i5_meet_urlless_headline_takes_awareness_impact_not_keywords():
+    # "war" in the title makes the keyword classifier say high; Awareness says low importance, no topics.
+    news = [{"id": "n9", "title": "War of words over a widget price", "url": "",
+             "publisher_name": "Trade", "published_at": datetime.now(UTC).isoformat(),
+             "summary": "", "topics": [], "symbols": [], "countries": [], "importance": 12,
+             "quality_label": "standard"}]
+    fn = meet_mod.MEETFunction(FunctionDeps())
+    fn._awareness = Routes({"/calendar/economic": [_econ()], "/calendar/holidays": [], "/news": news})
+    result = _run(fn.execute(limit=50))
+    row = next(r for r in result.data["rows"] if r.get("kind") == "world")
+    assert row["impact"] == "low"
+    assert row["details"]["impact_basis"] == "awareness_topics_importance"
+
+
+def test_i4_meet_methodology_describes_awareness_only():
+    fn = meet_mod.MEETFunction(FunctionDeps())
+    fn._awareness = Routes({"/calendar/economic": [_econ()], "/calendar/holidays": [], "/news": []})
+    text = _run(fn.execute(limit=20)).data["methodology"]
+    for stale in ("TradingEconomics", "Finnhub", "ForexFactory", "FinanceCalendar", "Nager", "GDELT", "Google News"):
+        assert stale not in text, stale
+    assert "/calendar/economic" in text and "/news" in text and "/calendar/holidays" in text
+
+
+# Stale (cached_snapshot, live False) per function: rows are kept, never presented as live.
+def _stale_case(fn_cls, params, table):
+    stale = [{"provider": "test.stale", "status": "down", "last_ok_at": None, "last_error": "timeout"}]
+    fn = fn_cls(FunctionDeps())
+    fn._awareness = Routes(table, providers=stale)
+    return _run(fn.execute(**params))
+
+
+def test_stale_providers_serve_cached_snapshot_for_every_calendar_function():
+    corp = {"id": "c1", "type": "dividend", "symbol": "AAPL", "company": "Apple", "date": _day(4),
+            "time_of_day": None, "status": "confirmed", "fields": {"amount": 0.27}, "sources": []}
+    cases = [
+        (eco_mod.ECOFunction, {"country": "US"}, {"/calendar/economic": [_econ()], "/calendar/holidays": []}),
+        (meet_mod.MEETFunction, {"limit": 20}, {"/calendar/economic": [_econ()], "/calendar/holidays": [], "/news": []}),
+        (EVTSFunction, {"symbol": "AAPL"}, {"/calendar/corporate": [corp], "/filings": []}),
+        (DVDFunction, {"symbol": "AAPL", "history": False}, {"/calendar/corporate": [corp]}),
+        (CACTFunction, {"symbol": "AAPL"}, {"/calendar/corporate": [corp], "/filings": []}),
+        (trdh_mod.TRDHFunction, {"exchanges": "XHKG"},
+         {"/calendar/sessions": {"timezone": "Asia/Hong_Kong", "sessions": _live("sessions_xhkg.json")["sessions"]},
+          "/calendar/holidays": []}),
+        (ern_mod.ERNFunction, {"days": 3}, {"/calendar/corporate": [_earn("AAPL", _day(1), 3e12)], "/watchlist": []}),
+        (ipo_mod.IPOFunction, {}, {"/calendar/corporate": [{"id": "p", "type": "ipo", "symbol": "NEWC",
+                                                            "company": "New Co", "date": _day(-2),
+                                                            "status": "priced", "fields": {"price": 18.0},
+                                                            "sources": []}]}),
+    ]
+    for fn_cls, params, table in cases:
+        result = _stale_case(fn_cls, params, table)
+        assert result.metadata.get("data_mode") == "cached_snapshot", fn_cls.__name__
+        assert result.metadata.get("live") is False, fn_cls.__name__
+        assert result.data.get("status") in {"ok", "empty"}, (fn_cls.__name__, result.data.get("status"))
+        assert result.metadata.get("providers") == [{"provider": "test.stale", "status": "down", "last_ok_at": None,
+                                                     "last_error": "timeout"}], fn_cls.__name__
+
+
+def test_m1_ipo_unknown_status_is_not_guessed_as_upcoming():
+    fn = ipo_mod.IPOFunction(FunctionDeps())
+    fn._awareness = Routes({"/calendar/corporate": [
+        {"id": "p1", "type": "ipo", "symbol": "PSTP", "company": "Postponed Co", "date": _day(20),
+         "status": "postponed", "fields": {}, "sources": []},
+        {"id": "p2", "type": "ipo", "symbol": "SOON", "company": "Soon Inc", "date": _day(20),
+         "status": "scheduled", "fields": {}, "sources": []},
+    ]})
+    result = _run(fn.execute(days_back=30, days_ahead=60))
+    assert [r["symbol"] for r in result.data["sections"]["upcoming"]] == ["SOON"]
+    assert all(r["symbol"] != "PSTP" for rows in result.data["sections"].values() for r in rows)
+    assert any("postponed" in w for w in result.warnings)

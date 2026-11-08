@@ -171,3 +171,35 @@ describe("TRDH exchange chips", () => {
     expect(window.localStorage.getItem("showme.trdh.exchanges")).not.toContain("XTKS");
   });
 });
+
+describe("TRDH lunch-break countdown (F2 I1, backend break-aware boundaries)", () => {
+  it("counts an XHKG venue on its lunch break down to the break end, not the next day's open", () => {
+    // Backend contract: during a break next_open_utc is the break end (12:00-13:00 HKT in the live feed).
+    const lunch = venue({
+      mic: "XHKG",
+      name: "Hong Kong Stock Exchange",
+      timezone: "Asia/Hong_Kong",
+      is_open_now: false,
+      next_open_utc: at(40 * MIN),
+      next_close_utc: at(4 * 60 * MIN),
+    });
+    setMockFn({ state: "ok", data: { data: { status: "ok", exchanges: [lunch] } } });
+    render(<TRDHPane code="TRDH" />);
+    expect(screen.getByText(/opens in 40m/)).toBeTruthy();
+    expect(screen.queryByText(/opens in 1[0-9]h|opens in [2-9][0-9]h/)).toBeNull();
+  });
+
+  it("shows the next close as the lunch-break start before the break", () => {
+    const morning = venue({
+      mic: "XHKG",
+      name: "Hong Kong Stock Exchange",
+      timezone: "Asia/Hong_Kong",
+      is_open_now: true,
+      next_close_utc: at(50 * MIN),
+      next_open_utc: null,
+    });
+    setMockFn({ state: "ok", data: { data: { status: "ok", exchanges: [morning] } } });
+    render(<TRDHPane code="TRDH" />);
+    expect(screen.getByText(/closes in 50m/)).toBeTruthy();
+  });
+});

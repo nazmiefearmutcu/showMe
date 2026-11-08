@@ -32,7 +32,7 @@ from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
 # Awareness news cache for followed-symbol headlines (local service, cheap to refetch).
-_SYMBOL_NEWS_CACHE: tuple[str, float, list[dict[str, Any]]] | None = None
+_SYMBOL_NEWS_CACHE: tuple[str, float, list[dict[str, Any]], AwarenessResponse] | None = None
 _SYMBOL_NEWS_TTL_S = 180.0
 # Lookback for world headlines and followed-symbol news (days, in hours for the API).
 _NEWS_LOOKBACK_HOURS = 168
@@ -46,8 +46,9 @@ def _utc_now() -> datetime:
 
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from showme.engine.core.instrument import Instrument
+from showme.engine.data_sources.awareness import AwarenessResponse
+from showme.engine.functions.calendar._common import aw_get, data_meta, parse_float, parse_int, provenance_metadata
 from showme.engine.functions.macro import eco as eco_mod
-from showme.engine.functions.calendar._common import aw_get, parse_float, parse_int
 from showme.engine.services import country_gates as cg
 from showme.engine.services import world_events as we
 
@@ -74,8 +75,8 @@ class MEETFunction(BaseFunction):
         data_filter = str(params.get("data_filter") or "all").strip().lower() or "all"
         if data_filter not in _DATA_FILTERS:
             data_filter = "all"
-        # Caller preference echo only (Task 1: the keyless chain is unchanged;
-        # the choice is surfaced via filters_applied + metadata.requested_mode).
+        # Caller preference echo only: the served mode is computed from the Awareness providers that
+        # answered; the choice is surfaced via filters_applied + metadata.requested_mode.
         provider_mode = str(params.get("provider_mode") or "live_official").strip().lower() or "live_official"
         # Backward-compat: an explicit mode wins over kind; without mode the
         # legacy kind implies the mode (economic->calendar, world->wire).
@@ -110,7 +111,7 @@ class MEETFunction(BaseFunction):
                             floor=2.0, ceiling=15.0)
         include_world = _truthy(params.get("include_world", True)) and effective_kind in {"", "all", "world"}
         if mode == "calendar":
-            # Calendar mode never touches the world wire (GDELT/RSS).
+            # Calendar mode never touches the news feed.
             include_world = False
 
         warnings: list[str] = []
@@ -123,6 +124,9 @@ class MEETFunction(BaseFunction):
         # unchanged.
         calendar_timeout = min(max(2.0, news_timeout), 12.0)
 
+        # Every Awareness answer MEET uses; provenance (stale providers, notes, generated_at) is read from these.
+        aw_responses: list[AwarenessResponse] = []
+
         async def _calendar_fetch() -> tuple[
             list[dict[str, Any]], list[str], list[str], list[str],
             list[dict[str, str]], int, int,
@@ -134,32 +138,34 @@ class MEETFunction(BaseFunction):
                 days_ahead=days_ahead,
                 days_back=days_back,
                 timeout=calendar_timeout,
+                responses=aw_responses,
             )
 
         async def _world_fetch() -> tuple[list[dict[str, Any]], str, str | None]:
             if not include_world:
                 return [], "", None
-            return await self._world_headlines(now=now, timeout=news_timeout, countries=countries)
+            return await self._world_headlines(
+                now=now, timeout=news_timeout, countries=countries, responses=aw_responses,
+            )
 
-        async def _symbol_fetch() -> list[dict[str, Any]]:
+        async def _symbol_fetch() -> tuple[list[dict[str, Any]], str | None]:
             if not (include_world and symbols):
-                return []
-            return await self._symbol_articles(symbols, now=now, timeout=news_timeout)
+                return [], None
+            return await self._symbol_articles(symbols, now=now, timeout=news_timeout, responses=aw_responses)
 
-        # Country gates (keyless per-country coverage): followed countries
-        # outside the ~10-currency keyless calendar set (TR, IN, BR, ...) used
-        # to render an empty pane. Holidays cover past+future for ~80
-        # countries; the GDELT country wire covers the past side; a stage-2
-        # Google News RSS pass fires below when a country is still short.
+        # Country gate: followed countries get their Awareness holidays and closures for the
+        # same past+future window. A country still short of the calendar floor is reported
+        # as a shortfall warning, never filled from another source.
         async def _gates_fetch() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
             if not countries or effective_kind == "world":
                 return [], []
             holiday_rows, holiday_status = await _holiday_gate(
                 self, countries, now=now, days_back=days_back, days_ahead=days_ahead,
+                responses=aw_responses,
             )
             return holiday_rows, [holiday_status]
 
-        calendar_bundle, (articles, world_source, world_error), extra, gate_bundle = await asyncio.gather(
+        calendar_bundle, (articles, world_source, world_error), (extra, symbol_news_error), gate_bundle = await asyncio.gather(
             _calendar_fetch(),
             _world_fetch(),
             _symbol_fetch(),
@@ -176,6 +182,8 @@ class MEETFunction(BaseFunction):
         ) = calendar_bundle
         warnings.extend(calendar_warnings)
         sources.extend(calendar_sources)
+        if symbol_news_error:
+            warnings.append(f"symbol_events: awareness news unavailable: {symbol_news_error}")
         gate_holiday_rows, gate_statuses = gate_bundle
         if gate_holiday_rows:
             # Holidays ride the calendar pipeline (kind=economic rows with a
@@ -196,7 +204,7 @@ class MEETFunction(BaseFunction):
         _attach_numerics(economic)
         rows_capped_at_limit = 0
 
-        # --- world headlines (keyless GDELT, RSS fallback) ---
+        # --- world headlines (Awareness news, topic-scoped) ---
         world: list[dict[str, Any]] = []
         if include_world:
             if world_error:
@@ -231,7 +239,7 @@ class MEETFunction(BaseFunction):
                         deduped_fresh, url_duplicates = _dedupe_articles(fresh)
                         row_stats = {}
                         full_symbol_world = we.world_rows(
-                            deduped_fresh, now=now, source="symbol_feed",
+                            deduped_fresh, now=now, source="awareness:news",
                             limit=len(deduped_fresh), stats=row_stats,
                         )
                         rows_capped_at_limit += row_stats.get("rows_capped_at_limit", 0)
@@ -240,8 +248,9 @@ class MEETFunction(BaseFunction):
                         duplicate_rows_dropped += url_duplicates + row_stats.get("duplicate_rows_dropped", 0)
                         if symbol_world:
                             world.extend(symbol_world)
-                            sources.append("symbol_feed")
-                            active_source_tiers.append("wire_symbol_feed")
+                            if "awareness:news" not in sources:
+                                sources.append("awareness:news")
+                            active_source_tiers.append("wire_awareness_symbol_news")
 
         gate_report: list[dict[str, Any]] = []
         rows = economic + world
@@ -313,6 +322,7 @@ class MEETFunction(BaseFunction):
                 data_quality=empty_quality, attributions=attributions,
             )
             empty_data["data_gates"] = gate_statuses
+            empty_data["meta"] = data_meta(aw_responses)
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
@@ -320,11 +330,11 @@ class MEETFunction(BaseFunction):
                 sources=sources or ["no_live_source"],
                 warnings=warnings + ([reason] if warnings else []),
                 metadata={
+                    **provenance_metadata(aw_responses, provider_errors=warnings),
                     "live": False,
                     "fallback": True,
                     "data_mode": "provider_unavailable" if warnings else "empty",
                     "requested_mode": provider_mode,
-                    "provider_errors": warnings,
                 },
             )
 
@@ -401,9 +411,11 @@ class MEETFunction(BaseFunction):
         delta_hash, delta_new, delta_removed = _delta(ordered, known_ids)
         # Built as a variable so the repo's data_mode literal scanner only
         # sees sanctioned values (``live_<source>`` follows ECO's convention).
-        live_mode = "live_" + "+".join(sources) if sources else "cached_snapshot"
-        if provider_mode == "cached_snapshot" and live_mode.startswith("live_"):
-            warnings.append(f"requested cached_snapshot, served {live_mode}")
+        # Served mode follows the providers that fed this response: any down/degraded provider makes it a
+        # cached_snapshot with live False (contract); otherwise live_official.
+        live_mode = str(provenance_metadata(aw_responses)["data_mode"])
+        if provider_mode == "cached_snapshot" and live_mode == "live_official":
+            warnings.append("requested cached_snapshot, served live_official")
         forward_economic = [row for row in upcoming if row.get("kind") == "economic"]
         payload = _shell(
             now=now,
@@ -447,6 +459,7 @@ class MEETFunction(BaseFunction):
         payload["symbol_rows"] = symbol_rows
         payload["symbols_requested"] = symbols
         payload["data_gates"] = gate_statuses
+        payload["meta"] = data_meta(aw_responses)
         payload["country_gate_report"] = {
             "min_events_per_7d": cg.MEET_GATE_MIN_EVENTS,
             "window_days": cg.MEET_GATE_WINDOW_DAYS,
@@ -458,23 +471,21 @@ class MEETFunction(BaseFunction):
             data=payload,
             sources=sources or ["no_live_source"],
             warnings=warnings,
-            metadata={
-                "live": bool(sources),
+            metadata=provenance_metadata(aw_responses, provider_errors=warnings, extra={
                 "fallback": not sources,
-                "data_mode": live_mode,
                 "requested_mode": provider_mode,
-                "provider_errors": warnings,
                 "counts": {
                     "rows": len(ordered),
                     "upcoming": len(upcoming),
                     "past": len(past),
                     "alerts": len(alerts),
                 },
-            },
+            }),
         )
 
     async def _calendar_events(
-        self, *, now: datetime, days_ahead: float, timeout: float, days_back: float = 0
+        self, *, now: datetime, days_ahead: float, timeout: float, days_back: float = 0,
+        responses: list[AwarenessResponse] | None = None,
     ) -> tuple[
         list[dict[str, Any]], list[str], list[str], list[str],
         list[dict[str, str]], int, int,
@@ -485,6 +496,8 @@ class MEETFunction(BaseFunction):
         resp, error = await aw_get(self, "/calendar/economic", {"from": start, "to": end})
         if resp is None:
             return [], [], [error or "awareness economic calendar unavailable"], [], [], 0, 0
+        if responses is not None:
+            responses.append(resp)
         rows: list[dict[str, Any]] = []
         rejected_no_time = 0
         for item in resp.data or []:
@@ -500,28 +513,38 @@ class MEETFunction(BaseFunction):
         return rows, sources, [], tiers, [], 0, rejected_no_time
 
     async def _symbol_articles(
-        self, symbols: list[str], *, now: datetime, timeout: float
-    ) -> list[dict[str, Any]]:
-        """Awareness news tagged with the followed tickers (cached for a few minutes)."""
+        self, symbols: list[str], *, now: datetime, timeout: float,
+        responses: list[AwarenessResponse] | None = None,
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        """Awareness news tagged with the followed tickers (cached for a few minutes).
+
+        Returns ``(articles, error)``. An Awareness failure is an error, never an empty list that
+        looks like "no news for this symbol".
+        """
         global _SYMBOL_NEWS_CACHE
         key = ",".join(sorted(symbols))
         cached = _SYMBOL_NEWS_CACHE
         if cached is not None and cached[0] == key and (time.monotonic() - cached[1]) < _SYMBOL_NEWS_TTL_S:
-            return list(cached[2])
-        resp, _error = await aw_get(self, "/news", {
+            if responses is not None:
+                responses.append(cached[3])
+            return list(cached[2]), None
+        resp, error = await aw_get(self, "/news", {
             "symbols": ",".join(symbols),
             "hours": _NEWS_LOOKBACK_HOURS,
             "min_quality": "standard",
             "limit": 100,
         })
         if resp is None:
-            return []
+            return [], error or "awareness news unavailable"
         articles = [_article_from_awareness(item) for item in resp.data or [] if isinstance(item, dict)]
-        _SYMBOL_NEWS_CACHE = (key, time.monotonic(), articles)
-        return list(articles)
+        _SYMBOL_NEWS_CACHE = (key, time.monotonic(), articles, resp)
+        if responses is not None:
+            responses.append(resp)
+        return list(articles), None
 
     async def _world_headlines(
-        self, *, now: datetime, timeout: float, countries: list[str] | None = None
+        self, *, now: datetime, timeout: float, countries: list[str] | None = None,
+        responses: list[AwarenessResponse] | None = None,
     ) -> tuple[list[dict[str, Any]], str, str | None]:
         """World headlines from Awareness news.
 
@@ -540,6 +563,8 @@ class MEETFunction(BaseFunction):
         resp, error = await aw_get(self, "/news", params)
         if resp is None:
             return [], "", error or "awareness news unavailable"
+        if responses is not None:
+            responses.append(resp)
         articles = [_article_from_awareness(item) for item in resp.data or [] if isinstance(item, dict)]
         return articles, "awareness:news", None
 
@@ -578,6 +603,7 @@ async def _holiday_gate(
     now: datetime,
     days_back: float,
     days_ahead: float,
+    responses: list[AwarenessResponse] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Public holidays and market closures for followed countries, from Awareness."""
     isos: list[str] = []
@@ -597,6 +623,8 @@ async def _holiday_gate(
     if resp is None:
         status["notes"].append(error or "awareness holidays unavailable")
         return [], status
+    if responses is not None:
+        responses.append(resp)
     rows: list[dict[str, Any]] = []
     for item in resp.data or []:
         if not isinstance(item, dict):
@@ -648,14 +676,26 @@ def _article_from_awareness(item: dict[str, Any]) -> dict[str, Any]:
 def _apply_awareness_impact(rows: list[dict[str, Any]], articles: list[dict[str, Any]]) -> None:
     """Set world-row impact from Awareness topics and importance (in place).
 
-    Geopolitics / sanctions / trade-tariff stories are high impact at Awareness importance
-    >= 70 and medium otherwise. Other stories follow Awareness importance alone.
+    Every headline row is keyed back to its Awareness article by URL, or by title when the article has
+    no URL. Geopolitics / sanctions / trade-tariff stories are high impact at Awareness importance
+    >= 70 and medium otherwise. Other stories follow Awareness importance alone. The keyword classifier's
+    impact is never kept for these rows; an unmatched row is low, with that basis recorded.
     """
-    by_url = {article["url"]: article for article in articles if article.get("url")}
+    by_key: dict[str, dict[str, Any]] = {}
+    for article in articles:
+        if article.get("url"):
+            by_key.setdefault(f"url:{article['url']}", article)
+        title = we._clean_text(article.get("title"))
+        if title:
+            by_key.setdefault(f"title:{title}", article)
     for row in rows:
         details = row.get("details") or {}
-        article = by_url.get(str(details.get("url") or ""))
+        article = by_key.get(f"url:{details.get('url')}") if details.get("url") else None
         if article is None:
+            article = by_key.get(f"title:{row.get('title')}")
+        if article is None:
+            row["impact"] = "low"
+            details["impact_basis"] = "awareness_unmatched"
             continue
         importance = article.get("aw_importance") or 0.0
         topics = set(article.get("topics") or [])
@@ -667,6 +707,7 @@ def _apply_awareness_impact(rows: list[dict[str, Any]], articles: list[dict[str,
             row["impact"] = "medium"
         else:
             row["impact"] = "low"
+        details["impact_basis"] = "awareness_topics_importance"
         details["awareness_topics"] = sorted(topics)
         details["awareness_importance"] = importance
 
@@ -797,26 +838,22 @@ def _shell(
             "limit": limit,
         },
         "methodology": (
-            "Scheduled rows prefer configured TradingEconomics, then configured "
-            "Finnhub, then the keyless ForexFactory weekly calendar. The keyless "
-            "FinanceCalendar.com supplements past/future coverage (92 days per request) "
-            "with required attribution and never replaces an overlapping primary row. "
-            "For followed countries the keyless country gates add coverage the shared "
-            "calendar cannot: Nager.Date public holidays (Google public-holiday ICS "
-            "fallback) for past+future, a country-scoped GDELT wire query over the "
-            "7-day lookback, and a Google News RSS pass when a country is still short "
-            "of the 20-events-per-7-days floor. Every country on the calendar is listed "
-            "with its UTC timestamp, impact and affected FX pairs (country → currency → "
-            "majors, e.g. TR → USDTRY/EURTRY). World rows come from the keyless "
-            "GDELT headline stream (English-language wire, RSS fallback) tagged with "
-            "a country gazetteer; "
-            "a headline may concern several countries and carries the exact matched "
-            "terms for audit. Countdowns are computed server-side from the provider "
-            "timestamp; nothing is shown at a guessed time and failed providers "
-            "surface as warnings instead of invented events. The scheduled "
-            "calendar includes the best available provider window plus the bounded "
-            "FinanceCalendar.com supplement. Country tags inferred from titles are "
-            "explicitly marked country_basis=title_inference."
+            "MEET reads three Awareness areas and nothing else. Calendar rows: the Awareness economic "
+            "calendar (/calendar/economic) for the requested window; one row per release, with its UTC "
+            "timestamp, importance and country; values pass through as Awareness reports them. Holidays: "
+            "Awareness public holidays and market closures for the followed countries (/calendar/holidays). "
+            "World headlines: Awareness news (/news) at the standard quality floor, limited to the "
+            "geopolitics, sanctions and trade-tariff topics, or to the followed countries when set. Followed "
+            "symbols: Awareness news tagged with each symbol. Headline impact comes from Awareness topics and "
+            "importance: geopolitics, sanctions and trade-tariff stories are high from importance 70 "
+            "(medium below it); other stories are high from 70, medium from 40, low below. The spot and "
+            "pinned flags still come from title keyword patterns for wars and rate decisions. Headline "
+            "country tags are matched from the title and summary text (a gazetteer), not supplied by "
+            "Awareness. Countdowns are computed server-side from the provider timestamp. When a provider "
+            "feeding the response is down or degraded, rows are kept with data_mode cached_snapshot and "
+            "live false, and the provider states are listed in meta.providers. When Awareness does not answer, "
+            "the status is provider_unavailable with the reason. An empty forward calendar is status empty. "
+            "Failures surface as warnings; nothing is invented or filled from another source."
         ),
         "field_dictionary": {
             "hash": "sha1 of the ordered row ids in this payload (realtime delta cursor).",
@@ -855,8 +892,8 @@ def _shell(
             "rows[].details.provider_tags": "Provider-carried tags unioned in, when present.",
             "rows[].details.url": "Source article URL (None when absent).",
             "rows[].details.article_url": "Original article URL for world headlines (None when absent).",
-            "rows[].details.publisher": "Publisher/feed name supplied by the RSS adapter.",
-            "rows[].details.feed_url": "RSS feed URL used to retrieve the article.",
+            "rows[].details.publisher": "Publisher name supplied by Awareness news.",
+            "rows[].details.feed_url": "Feed URL when one is supplied (null for Awareness news).",
             "rows[].details.provider": "Calendar provider that supplied the row.",
             "rows[].details.provider_event_url": "Provider event page when supplied.",
             "rows[].details.country_basis": "provider or title_inference; inferred country tags are never presented as provider facts.",
@@ -866,7 +903,9 @@ def _shell(
             "country_catalog[]": "Static country reference (ISO + name) so filters stay complete when a provider is down.",
             "country_index[].state": "live | imminent | soon | scheduled | quiet.",
             "alerts[]": "Upcoming spot/pinned rows with default lead times (minutes).",
-            "data_gates[]": "Per-country gate statuses: gate name, provider, rows added, failure notes (keyless holiday / country-wire / country-RSS gates).",
+            "data_gates[]": "Per-country gate statuses: gate name, Awareness provider, rows added, failure notes (holiday gate).",
+            "rows[].details.impact_basis": "awareness_topics_importance for headlines matched to an Awareness article; awareness_unmatched otherwise.",
+            "meta": "Provider health (providers, generated_at, notes, feed_health) for the Awareness responses used.",
             "country_gate_report.countries[]": "Past-7d and future-7d event counts per followed country against the 20-event floor (past_met / future_met).",
         },
     }

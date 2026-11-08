@@ -2,9 +2,10 @@
  * MEET — Meeting Briefings: world-events tracker.
  *
  * One list for everything market-moving in the world: every country's
- * scheduled calendar (rate decisions, CPI, GDP — keyless ForexFactory
- * backbone) plus country-tagged world headlines (wars, elections,
- * summits). Upcoming events run ascending with a live adaptive countdown
+ * scheduled calendar (rate decisions, CPI, GDP — from the Awareness economic
+ * calendar and holidays) plus country-tagged world headlines (geopolitics,
+ * sanctions, trade-tariff news from Awareness). Upcoming events run ascending
+ * with a live adaptive countdown
  * (days → hours → minutes → seconds), past events run descending; a
  * country sidebar shows every country's local state and next event; a
  * spot-alert engine fires toasts on configured lead times for rate
@@ -38,6 +39,8 @@ import {
 } from "@/design-system";
 import { useFunction } from "@/lib/useFunction";
 import { useVisibilityTick } from "@/lib/useVisibilityTick";
+import { ProviderHealthStrip } from "./awareness/ProviderHealthStrip";
+import type { AwarenessMeta } from "./awareness/types";
 import { useLiveQuote } from "@/lib/market-data";
 import { toast } from "@/lib/toast";
 import { formatPrice } from "@/lib/format";
@@ -385,6 +388,9 @@ export function MEETPane({ code }: FunctionPaneProps) {
     [rows, selectedId, symbolRows],
   );
   const status = payload?.status ?? "—";
+  // Provider health from the backend's data.meta (ProviderHealthStrip): stale or degraded Awareness
+  // providers stay visible next to the rows they fed.
+  const awarenessMeta = (payload as { meta?: AwarenessMeta } | null | undefined)?.meta;
   const droppedNoTime = typeof payload?.dropped_no_time === "number"
     ? payload.dropped_no_time
     : 0;
@@ -859,6 +865,11 @@ export function MEETPane({ code }: FunctionPaneProps) {
           }
         />
         <PaneBody>{body}</PaneBody>
+        <ProviderHealthStrip
+          providers={awarenessMeta?.providers}
+          feedHealth={awarenessMeta?.feed_health}
+          generatedAt={awarenessMeta?.generated_at}
+        />
         <PaneFooter>
           <StatusSection
             label="sources"
