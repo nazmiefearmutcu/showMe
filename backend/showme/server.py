@@ -113,6 +113,10 @@ FX_CURRENCIES = {
 COMMODITY_FUTURES = {"GC", "SI", "CL", "BZ", "NG", "HG", "PL", "ZC", "ZW", "ZS"}
 INDEX_SYMBOLS = {"SPX", "NDX", "DJI", "RUT", "VIX", "GSPC", "IXIC", "DJIA"}
 BOND_SYMBOLS = {"US1M", "US3M", "US6M", "US1Y", "US2Y", "US3Y", "US5Y", "US7Y", "US10Y", "US20Y", "US30Y"}
+# CME Treasury futures roots (Yahoo ``ZN=F`` style). These are bond
+# instruments: TSOX ("Treasury Order Entry") defaults to ZN=F and its quick
+# picks use TU/ZF/ZB, so they must classify as BOND, not EQUITY.
+TREASURY_FUTURES_ROOTS = {"ZT", "TU", "ZF", "ZN", "TN", "ZB", "UB"}
 RUNTIME_MIRROR_SUFFIXES = {".json", ".sqlite", ".db", ".duckdb"}
 RUNTIME_MIRROR_SKIP_PREFIXES = (
     "bot.log",
@@ -960,11 +964,14 @@ def looks_like_index_symbol(symbol: str | None) -> bool:
 
 
 def looks_like_bond_symbol(symbol: str | None) -> bool:
-    """Return True for known sovereign bond tickers (``US10Y``, ``DE10Y``)."""
+    """Return True for known sovereign bond tickers (``US10Y``, ``DE10Y``)
+    and CME Treasury futures (``ZN=F``, ``ZB=F``)."""
     if not symbol:
         return False
     value = symbol.upper().replace("-", "")
-    return value in BOND_SYMBOLS
+    if value in BOND_SYMBOLS:
+        return True
+    return value.endswith("=F") and value[:-2] in TREASURY_FUTURES_ROOTS
 
 
 # Per SEC-05: Pydantic request models live in `server_routes._models` so the
