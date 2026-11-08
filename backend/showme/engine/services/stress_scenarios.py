@@ -304,6 +304,7 @@ def apply_scenario(
     unpriced = 0
     for p in positions:
         sym = p["symbol"]
+        missing_class: str | None = None
         ac = resolve_shock_bucket(sym, p.get("asset_class", "EQUITY"))
         raw_sector = p.get("sector") or sector_lookup.get(sym)
         # STRS#2: the shock lookup matches the normalized scenario key, but the row keeps
@@ -340,10 +341,23 @@ def apply_scenario(
                     warnings.append(
                         f"{sym}: sector unknown; asset-class shock {ac} used, not a sector shock"
                     )
-                shock = scenario.asset_class_shocks.get(ac, 0.0)
+                if ac in scenario.asset_class_shocks:
+                    shock = scenario.asset_class_shocks[ac]
+                elif ac == "CASH":
+                    # Cash has no market move in any scenario: a real zero.
+                    shock = 0.0
+                    source = "cash"
+                else:
+                    # STRS#3-RQ: an asset class the scenario has no row for is not
+                    # a silent 0.0 move; it is left unshocked and reported.
+                    shock = None
+                    source = "unavailable"
+                    missing_class = ac
         if shock is None:
             unpriced += 1
-            if source == "unavailable" and measured is None:
+            if missing_class is not None:
+                reason = f"{sym}: scenario {scenario.name} has no shock for asset class {missing_class}"
+            elif source == "unavailable" and measured is None:
                 reason = (
                     f"{sym}: scenario {scenario.name} has no BOND shock, so the Treasury "
                     "fund shock is unavailable"
