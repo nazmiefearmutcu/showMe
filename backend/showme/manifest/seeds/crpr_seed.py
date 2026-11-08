@@ -63,14 +63,6 @@ def crpr() -> FunctionManifest:
                 ),
             ),
             InputSpec(
-                name="bucket",
-                label="Implied bucket",
-                control=ControlKind.SELECT,
-                required=False,
-                description="Coarse credit bucket label surfaced in the summary.",
-                options=["high_grade", "investment_grade", "crossover", "high_yield", "distressed"],
-            ),
-            InputSpec(
                 name="provider_mode",
                 label="Data mode",
                 control=ControlKind.PROVIDER_MODE,
@@ -84,7 +76,6 @@ def crpr() -> FunctionManifest:
             ),
         ],
         defaults={
-            "bucket": "high_grade",
             "provider_mode": DataMode.MODELED.value,
         },
         provider_chain=ProviderChain(
