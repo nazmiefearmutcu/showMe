@@ -82,3 +82,57 @@ def test_monte_carlo_request_is_not_silently_replaced_by_historical(monkeypatch)
     assert res.data["status"] == "input_error", res.data["status"]
     assert "monte_carlo" in str(res.data.get("reason", ""))
     assert res.data["var"] is None
+
+
+# ── PVAR#4: equity + crypto must share one return calendar ────────────────
+
+
+class _MixedBook:
+    def __init__(self, *_args, **_kwargs) -> None:
+        self.positions = [
+            _Pos("AAPL", 10.0, 100.0, AssetClass.EQUITY),
+            _Pos("BTCUSDT", 0.5, 50_000.0, AssetClass.CRYPTO),
+        ]
+
+    def import_legacy_crypto(self) -> int:
+        return 0
+
+
+def _mixed_download(symbol, days, timeout):
+    all_days = pd.date_range(end="2026-09-20", periods=80, freq="D")
+    if symbol == "AAPL":
+        # Equities trade on weekdays only.
+        idx = all_days[all_days.dayofweek < 5]
+    else:
+        idx = all_days
+    rng = np.random.default_rng(7)
+    vals = rng.normal(0.0, 0.01 if symbol == "AAPL" else 0.03, size=len(idx))
+    return pd.Series(vals, index=idx), 105.0
+
+
+def test_mixed_book_uses_common_return_dates_only(monkeypatch) -> None:
+    monkeypatch.setattr(pvar_mod, "PortfolioState", _MixedBook)
+    monkeypatch.setattr(pvar_mod, "_download_returns", _mixed_download)
+    res = _run(pvar_mod.PVARFunction().execute(method="historical", confidence=0.99))
+    all_days = pd.date_range(end="2026-09-20", periods=80, freq="D")
+    common = int((all_days.dayofweek < 5).sum())
+    # Red today: the sample is the union of dates (80) and equity weekend
+    # returns are zero-filled into the one-day P&L.
+    assert res.data["samples"] == common, res.data["samples"]
+    assert res.data["positions_analyzed"] == 2
+
+
+def test_too_few_common_dates_is_not_reported_as_var(monkeypatch) -> None:
+    class _Short(_MixedBook):
+        pass
+
+    def _short_download(symbol, days, timeout):
+        idx = pd.date_range(end="2026-09-20", periods=6, freq="D")
+        return pd.Series(np.linspace(-0.01, 0.01, len(idx)), index=idx), 105.0
+
+    monkeypatch.setattr(pvar_mod, "PortfolioState", _Short)
+    monkeypatch.setattr(pvar_mod, "_download_returns", _short_download)
+    res = _run(pvar_mod.PVARFunction().execute(method="historical", confidence=0.99))
+    assert res.data["status"] == "provider_unavailable", res.data["status"]
+    assert res.data["var"] is None
+    assert "common return dates" in str(res.data.get("reason", ""))

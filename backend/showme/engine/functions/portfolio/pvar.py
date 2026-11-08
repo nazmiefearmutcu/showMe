@@ -154,16 +154,26 @@ class PVARFunction(BaseFunction):
                 except Exception:
                     return p.instrument.symbol, pd.Series(dtype=float), None
             rs = await asyncio.gather(*(_ret(p) for p in eligible))
-            # Audit Q3 #7: pairwise covariance for mixed universes.
-            rets_df = align_return_series(
-                ((s, r) for s, r, _ in rs), policy="pairwise"
-            )
-            last_map = {s: px for s, _, px in rs if px is not None}
-            if rets_df.empty:
+            # PVAR#4: one common return calendar. Pairwise alignment on the union
+            # of dates zero-filled equity returns on crypto-only days, so the
+            # one-day P&L mixed a weekday and a weekend sample. Intersection keeps
+            # only the dates every position traded, and `samples` reports that count.
+            aligned_input = [(s, r) for s, r, _ in rs]
+            if not any(not r.empty for _, r in aligned_input):
                 # Genuine network/data outage — never fabricate numbers.
                 return _empty_pvar(
                     self.code, confidence, params, instrument,
                     "no live return history (yfinance returned no data)",
+                )
+            rets_df = align_return_series(aligned_input, policy="intersection")
+            last_map = {s: px for s, _, px in rs if px is not None}
+            if len(rets_df) < _MIN_COMMON_SAMPLES:
+                # Too few shared dates for a meaningful covariance; say so rather
+                # than reporting a VaR built on a handful of observations.
+                return _empty_pvar(
+                    self.code, confidence, params, instrument,
+                    f"only {len(rets_df)} common return dates across the price histories "
+                    f"(yfinance); at least {_MIN_COMMON_SAMPLES} are needed",
                 )
             # HNT-15: a symbol whose history failed to download silently
             # left the headline VaR/ES covering only a subset of the book —
@@ -315,6 +325,7 @@ class PVARFunction(BaseFunction):
                 "portfolio_daily_var_pct": -param_var_pct,
                 "portfolio_daily_var_dollar": -param_var_pct * total,
                 "samples": int(len(rets_df)),
+                "return_calendar": "common_return_dates",
                 "positions_analyzed": int(len(rets_df.columns)),
                 # HNT-15 / PVAR#1: analysed share of the FULL eligible book, so a
                 # subset VaR (from a cap or a failed download) is visible at a glance.
@@ -336,7 +347,8 @@ class PVARFunction(BaseFunction):
                     "expected_shortfall": es_dollar,
                 },
                 "methodology": (
-                    "Position-level VaR/ES from real daily returns. Parametric (variance-"
+                    "Position-level VaR/ES from real daily returns on one common return calendar "
+                    "(dates every position has a return for; see samples). Parametric (variance-"
                     "covariance) path estimates daily covariance Σ from yfinance OHLCV, computes "
                     "portfolio volatility sqrt(w'Σw), and reports VaR = -μΔt + z_α σ √Δt with ES = "
                     "μΔt + σ √Δt φ(z)/(1-α). Historical-simulation path takes the empirical loss "
@@ -376,6 +388,8 @@ _HORIZON_MAP = {"1d": 1, "5d": 5, "10d": 10, "20d": 20}
 # Must equal pvar_seed defaults["confidence_level"].
 _DEFAULT_CONFIDENCE = 0.99
 _SUPPORTED_METHODS = frozenset({"parametric", "historical"})
+# Minimum shared return dates before a covariance-based VaR is reported.
+_MIN_COMMON_SAMPLES = 20
 
 
 def _horizon_days(value: Any) -> int:
