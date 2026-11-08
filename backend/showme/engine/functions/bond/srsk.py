@@ -426,12 +426,27 @@ class SRSKFunction(BaseFunction):
                 elif target_y is not None:
                     # Same-month legs: the monthly sovereign average minus the
                     # DGS10 average over that month.
-                    proxy_spread = round(target_y["yield"] - target_y["ust_aligned"], 4)
+                    diff = round(target_y["yield"] - target_y["ust_aligned"], 4)
                     fred_leg = {
                         "fred_10y_pct": target_y["yield"],
                         "ust_10y_same_month_pct": target_y["ust_aligned"],
+                        "yield_diff_vs_ust_pct": diff,
                         "fred_as_of": target_y["as_of"],
                     }
+                    if diff <= 0:
+                        # A yield at or below UST (DE, JP, ...) is a currency and
+                        # rates gap, not a credit spread: it would give a negative
+                        # default probability. The differential is reported, the
+                        # spread/PD stay on the macro proxy (null when unscored).
+                        warnings.append(
+                            f"{country}: 10Y yield {target_y['yield']:.2f}% is not above the same-month "
+                            f"UST average {target_y['ust_aligned']:.2f}%; the differential is not used as a "
+                            "credit spread."
+                        )
+                        target_y = None
+                    else:
+                        proxy_spread = diff
+                if target_y is not None and country != "US":
                     source_mode = "fred+worldbank" if risk_score is not None else "fred"
                     if risk_score is None:
                         # The spread/PD now come from a real FRED differential, but

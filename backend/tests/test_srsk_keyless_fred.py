@@ -111,3 +111,21 @@ def test_month_without_ust_data_gives_no_differential(monkeypatch) -> None:
     assert all(r.get("proxy_spread_pct") is None for r in out.data["rows"])
     assert out.data["status"] in {"empty", "provider_unavailable"}
     assert any("no DGS10 observations" in w for w in out.warnings)
+
+
+def test_yield_below_ust_is_not_a_credit_spread(monkeypatch) -> None:
+    """A sovereign yielding less than the same-month UST (DE, JP) must not give a
+    negative spread or a negative default probability."""
+    class _LowCSV(_KeylessCSV):
+        async def series(self, series_id: str):
+            if series_id == "DGS10":
+                idx = pd.date_range("2026-09-01", "2026-09-30", freq="B")
+                return pd.DataFrame({"value": [5.0] * len(idx)}, index=idx)
+            return pd.DataFrame({"value": [3.5]}, index=pd.DatetimeIndex(["2026-09-01"]))
+
+    monkeypatch.setattr(srsk_mod, "fred_with_keyless_fallback", lambda fred, client=None: _LowCSV())
+    out = asyncio.run(SRSKFunction(FunctionDeps(worldbank=_NoWorldBank(), fred=_UnkeyedAdapter())).execute(countries="DE"))
+    for row in out.data["rows"]:
+        assert row.get("pd_1y_pct") is None or row["pd_1y_pct"] >= 0
+        assert row.get("proxy_spread_pct") is None or row["proxy_spread_pct"] >= 0
+    assert any("not used as a credit spread" in w for w in out.warnings)
