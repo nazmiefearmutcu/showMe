@@ -25,6 +25,11 @@ class PORTWhatIfFunction(BaseFunction):
     code = "PORT_WHATIF"
     name = "Portfolio What-If"
     category = "portfolio"
+    description = (
+        "Hypothetical buy or sell of one symbol at a typed cost: re-prices the book before "
+        "and after, debits or credits cash, merges into the held lot, and reports the change "
+        "in market value, unrealized P&L, total equity and position count. Research only."
+    )
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         if instrument is None:
@@ -53,20 +58,58 @@ class PORTWhatIfFunction(BaseFunction):
             / f"_showme_whatif_{os.getpid()}_{uuid.uuid4().hex}.json"
         )
         whatif = PortfolioState(path=whatif_path)
-        whatif.positions = list(baseline.positions) + [PortfolioPosition(
-            instrument=instrument, quantity=qty, avg_cost=cost,
-        )]
+        new_positions, trade_ccy, realized, problem = _whatif_apply_trade(
+            list(baseline.positions), instrument, qty, cost,
+        )
+        if problem is not None:
+            return FunctionResult(
+                code=self.code, instrument=instrument,
+                data={**problem, "rows": [], "methodology": _WHATIF_METHODOLOGY},
+                sources=[], warnings=[],
+            )
+        whatif.positions = new_positions
         whatif.cash = dict(baseline.cash)
+        # A book that tracks no cash cannot show a funded trade: no cash is
+        # invented, so the equity change is withheld and the gap is reported.
+        cash_tracked = bool(baseline.cash)
+        cash_delta: float | None = None
+        warnings: list[str] = []
+        if cash_tracked:
+            cash_delta = -qty * cost
+            cash_after = float(whatif.cash.get(trade_ccy) or 0.0) + cash_delta
+            whatif.cash[trade_ccy] = cash_after
+            if cash_after < 0:
+                warnings.append(
+                    f"scenario {trade_ccy} cash would be {cash_after:,.2f}: the trade costs more "
+                    "than the cash this book holds"
+                )
+        else:
+            warnings.append(
+                "this book does not track cash, so the trade is not funded and the "
+                "total equity change is not computed"
+            )
         from showme.engine.functions.portfolio.port import PORTFunction
-        port = PORTFunction(self.deps)
+        port_deps = self.deps
+        if self.deps is not None and self.deps.yfinance is not None:
+            # Both PORT runs price the same symbols: one quote fetch serves both.
+            import dataclasses
+            port_deps = dataclasses.replace(self.deps, yfinance=_MemoQuoteAdapter(self.deps.yfinance))
+        port = PORTFunction(port_deps)
         before = await port.execute(_portfolio_override=baseline)
         after = await port.execute(_portfolio_override=whatif)
         bt = (before.data or {}).get("totals") or {}
         at = (after.data or {}).get("totals") or {}
+        equity_before = bt.get("total_equity")
+        equity_after = at.get("total_equity")
+        total_equity_delta = (
+            equity_after - equity_before
+            if equity_before is not None and equity_after is not None else None
+        )
         delta = {
             "market_value": (at.get("market_value") or 0) - (bt.get("market_value") or 0),
             "unrealized_pnl": (at.get("unrealized_pnl") or 0) - (bt.get("unrealized_pnl") or 0),
             "n_positions": (at.get("n_positions") or 0) - (bt.get("n_positions") or 0),
+            "total_equity": total_equity_delta,
         }
         return FunctionResult(code=self.code, instrument=instrument,
                               data={"hypothetical_added": {"symbol": instrument.symbol,
@@ -81,19 +124,24 @@ class PORTWhatIfFunction(BaseFunction):
                                          "symbol": instrument.symbol,
                                          "quantity": qty,
                                          "cost": cost,
+                                         "trade_currency": trade_ccy,
                                          "market_value_delta": delta["market_value"],
                                          "unrealized_pnl_delta": delta["unrealized_pnl"],
+                                         "total_equity_delta": total_equity_delta,
+                                         "cash_delta": cash_delta,
+                                         "realized_pnl_of_trade": realized,
                                      },
-                                     "methodology": (
-                                         "Clone the current portfolio state, add the hypothetical position, "
-                                         "rerun portfolio analytics before and after, then display the delta."
-                                     ),
+                                     "methodology": _WHATIF_METHODOLOGY,
                                      "field_dictionary": {
                                          "market_value": "Change in portfolio market value after the hypothetical trade.",
-                                         "unrealized_pnl": "Change in unrealized P&L after adding the position.",
-                                         "n_positions": "Change in position count.",
+                                         "unrealized_pnl": "Change in unrealized P&L after the trade (merged lot at weighted cost).",
+                                         "n_positions": "Change in position count (a buy into a held symbol adds no position).",
+                                         "total_equity": "Change in cash plus market value; None when the book tracks no cash.",
+                                         "cash_delta": "Cash paid (negative) or received (positive) in the trade currency.",
+                                         "realized_pnl_of_trade": "P&L realized by a sell against the lot cost; 0 for a buy.",
                                      }},
-                              sources=list(set((before.sources or []) + (after.sources or []))))
+                              sources=list(set((before.sources or []) + (after.sources or []))),
+                              warnings=warnings)
 
 
 def _finite_number(raw: Any) -> float | None:
@@ -140,6 +188,106 @@ def _whatif_inputs(params: dict[str, Any]) -> tuple[float, float, dict[str, Any]
             ],
         }
     return float(qty), float(cost), None
+
+
+_WHATIF_METHODOLOGY = (
+    "Clone the current portfolio state, apply the hypothetical trade, rerun portfolio "
+    "analytics before and after, then display the delta. A buy merges into the held lot "
+    "of the same symbol at a weighted-average cost; a sell reduces the lot and realizes "
+    "P&L against its cost. Cash is debited (buy) or credited (sell) at the typed cost. "
+    "Shorts are not modelled: a sell larger than the holding is refused."
+)
+_QTY_EPS = 1e-9
+
+
+def _whatif_apply_trade(positions: list[Any], instrument: Instrument, qty: float,
+                        cost: float) -> tuple[list[Any], str, float, dict[str, Any] | None]:
+    """Return ``(positions, trade_currency, realized_pnl, problem)`` for one trade.
+
+    Lots match by symbol and currency. A buy adds to the first matching lot at a
+    weighted-average cost, or opens a lot when none is held. A sell reduces the
+    matching lots first-in-first-out and realizes ``(cost - lot cost)`` on the sold
+    quantity. A sell larger than the holding, or any trade on a held short lot, is
+    refused, so no negative lot is ever booked.
+    """
+    from dataclasses import replace
+
+    symbol = instrument.symbol
+    held_idx = [
+        i for i, pos in enumerate(positions)
+        if pos.instrument.symbol == symbol and abs(float(pos.quantity)) > _QTY_EPS
+    ]
+    trade_ccy = positions[held_idx[0]].currency if held_idx else "USD"
+    same = [i for i in held_idx if positions[i].currency == trade_ccy]
+    if any(float(positions[i].quantity) < 0 for i in same):
+        return positions, trade_ccy, 0.0, {
+            "status": "input_error",
+            "reason": f"{symbol} is held as a short lot; what-if trades on a short are not modelled.",
+            "missing": [],
+            "next_actions": ["Pick a symbol with a long holding or none."],
+        }
+    if qty > 0:
+        if not same:
+            new_lot = PortfolioPosition(instrument=instrument, quantity=qty, avg_cost=cost,
+                                        currency=trade_ccy)
+            return [*positions, new_lot], trade_ccy, 0.0, None
+        first = same[0]
+        lot = positions[first]
+        lot_qty = float(lot.quantity)
+        new_qty = lot_qty + qty
+        new_avg = (lot_qty * float(lot.avg_cost) + qty * cost) / new_qty
+        merged = list(positions)
+        merged[first] = replace(lot, quantity=new_qty, avg_cost=new_avg)
+        return merged, trade_ccy, 0.0, None
+    sell = -qty
+    held = sum(float(positions[i].quantity) for i in same)
+    if sell > held + _QTY_EPS:
+        return positions, trade_ccy, 0.0, {
+            "status": "input_error",
+            "reason": (f"selling {sell:g} {symbol} exceeds the {held:g} held; "
+                       "short sales are not modelled."),
+            "missing": ["quantity"],
+            "next_actions": [f"Enter a sell quantity of at most {held:g}."],
+        }
+    remaining = sell
+    realized = 0.0
+    updated = list(positions)
+    closed: set[int] = set()
+    for i in same:
+        if remaining <= _QTY_EPS:
+            break
+        lot = positions[i]
+        taken = min(float(lot.quantity), remaining)
+        realized += (cost - float(lot.avg_cost)) * taken
+        remaining -= taken
+        left = float(lot.quantity) - taken
+        if left <= _QTY_EPS:
+            closed.add(i)
+        else:
+            updated[i] = replace(lot, quantity=left)
+    kept = [pos for i, pos in enumerate(updated) if i not in closed]
+    return kept, trade_ccy, realized, None
+
+
+class _MemoQuoteAdapter:
+    """Serves repeat fetches of one identical request from memory within one what-if call.
+
+    PORT runs twice (before and after the trade), so without this every quote is
+    fetched twice. A failed fetch is not remembered, so the second run retries it.
+    """
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+        self._memo: dict[str, Any] = {}
+
+    async def fetch(self, request: Any) -> Any:
+        key = repr(request)
+        if key not in self._memo:
+            self._memo[key] = await self._inner.fetch(request)
+        return self._memo[key]
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
 
 
 def _twr(period_returns: list[float]) -> float:
