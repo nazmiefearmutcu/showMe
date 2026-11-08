@@ -95,9 +95,12 @@ class _DatedFred:
 def test_heston_source_says_fixed_defaults_when_none_supplied() -> None:
     res = _run(None, spot=100, strike=100, years_to_expiry=0.5, vol=0.25,
                model="heston", paths=2000, steps=20)
-    assert res.data["heston_params"]["source"] == (
-        "fixed illustrative defaults, not calibrated to market quotes"
+    hp = res.data["heston_params"]
+    assert hp["source"] == (
+        "handler default: kappa, theta, sigma, rho, v0, not calibrated to market quotes"
     )
+    assert "caller_supplied" not in hp["source"]
+    assert set(hp["parameter_sources"].values()) <= {"fixed_illustrative_default", "derived_from_vol"}
 
 
 def test_heston_source_names_caller_supplied_parameters() -> None:
@@ -105,8 +108,14 @@ def test_heston_source_names_caller_supplied_parameters() -> None:
                model="heston", paths=2000, steps=20, kappa=3.5)
     hp = res.data["heston_params"]
     assert hp["kappa"] == 3.5
-    assert hp["source"] == "caller_supplied, not calibrated to market quotes"
-    assert "illustrative" not in hp["source"]
+    # WC2-G06 (OVME#2-RQ): provenance is per parameter. Only kappa was supplied.
+    assert hp["parameter_sources"]["kappa"] == "caller_supplied"
+    assert hp["parameter_sources"]["rho"] == "fixed_illustrative_default"
+    assert hp["parameter_sources"]["theta"] == "derived_from_vol"
+    assert hp["parameter_sources"]["v0"] == "derived_from_vol"
+    assert hp["source"].startswith("caller_supplied: kappa;")
+    assert "caller_supplied: kappa, rho" not in hp["source"]
+    assert "rho" not in hp["source"].split("handler default:")[0]
 
 
 def test_live_rate_reports_the_observation_date() -> None:

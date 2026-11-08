@@ -116,6 +116,60 @@ def _bs_price(S: float, K: float, T: float, r: float, sigma: float, q: float, is
             "d1": d1, "d2": d2}
 
 
+_REQUIRED_INPUTS: tuple[tuple[str, str], ...] = (
+    ("spot", "underlying spot price"),
+    ("strike", "strike"),
+    ("years_to_expiry", "time to expiry in years"),
+    ("vol", "volatility"),
+)
+
+_METHOD = (
+    "Black-Scholes-Merton: price = S*e^(-qT)*N(d1) - K*e^(-rT)*N(d2) for calls; "
+    "puts use put-call parity form. d1 = [ln(S/K) + (r-q+0.5*sigma^2)T] / (sigma*sqrt(T)); d2 = d1 - sigma*sqrt(T)."
+)
+
+
+def _finite(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _input_result(
+    instrument: Instrument | None,
+    *,
+    status: str,
+    reason: list[str],
+    missing: list[str],
+    warnings: list[str],
+) -> FunctionResult:
+    """Honest empty envelope: no price, no Greeks, no curve."""
+    if status == "needs_input":
+        next_actions = [
+            "Enter the underlying spot price, the strike, the time to expiry in years and the volatility.",
+        ]
+    else:
+        next_actions = ["Enter spot, strike, expiry and volatility as plain numbers."]
+    return FunctionResult(
+        code="OVME",
+        instrument=instrument,
+        data={
+            "status": status,
+            "reason": "Option valuation needs: " + "; ".join(reason) + ".",
+            "missing_inputs": missing,
+            "next_actions": next_actions,
+            "rows": [],
+            "curve": [],
+            "sensitivity": [],
+            "methodology": _METHOD,
+        },
+        sources=["black_scholes_formula"],
+        warnings=list(warnings),
+    )
+
+
 def _observation_date(df: Any) -> str | None:
     """Date (YYYY-MM-DD) of the last FRED observation, or None when not dated."""
     try:
@@ -139,18 +193,44 @@ class OVMEFunction(BaseFunction):
     category = "derivative"
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
-        S = float(params.get("spot", 100))
-        K = float(params.get("strike", 100))
-        T = float(params.get("years_to_expiry", 0.25))
-        sigma = float(params.get("vol", 0.25))
+        # Spot, strike, expiry and volatility are the option itself: nothing
+        # is assumed for them. A missing one is a needs_input state and a
+        # non-numeric one is an input_error, so no demo price is ever priced.
+        missing: list[str] = []
+        bad: list[str] = []
+        numbers: dict[str, float] = {}
+        for key, label in _REQUIRED_INPUTS:
+            raw = params.get(key)
+            if raw in (None, ""):
+                missing.append(key)
+                continue
+            value = _finite(raw)
+            if value is None:
+                bad.append(f"{key} is not a number ({raw!r})")
+            else:
+                numbers[key] = value
+        if bad:
+            return _input_result(instrument, status="input_error", reason=bad, missing=[], warnings=bad)
+        if missing:
+            reason = [f"{key} is not supplied" for key in missing]
+            return _input_result(instrument, status="needs_input", reason=reason, missing=missing, warnings=[])
+        S = numbers["spot"]
+        K = numbers["strike"]
+        T = numbers["years_to_expiry"]
+        sigma = numbers["vol"]
         # D03-2026-05-24 (H11): r used to be hardcoded 0.045; optional FRED
         # hook lets callers pass `live_rate=true` to pull the Treasury yield
         # matching the option's maturity (OVME#2). A rate that was not supplied
         # and not read live is the 0.045 default, and is labelled as such.
-        r = float(params.get("rate", 0.045))
+        for key in ("rate", "div_yield", "r_domestic", "r_foreign"):
+            if params.get(key) not in (None, "") and _finite(params.get(key)) is None:
+                message = f"{key} is not a number ({params.get(key)!r})"
+                return _input_result(instrument, status="input_error", reason=[message],
+                                     missing=[], warnings=[message])
+        r = float(params["rate"]) if params.get("rate") not in (None, "") else 0.045
         rate_source = "input" if params.get("rate") not in (None, "") else "default_0.045"
         rate_as_of: str | None = None
-        q = float(params.get("div_yield", 0.0))
+        q = float(params["div_yield"]) if params.get("div_yield") not in (None, "") else 0.0
         sources_list = ["black_scholes_formula"]
         if _truthy(params.get("live_rate")) and getattr(self.deps, "fred", None) is not None:
             series_id, _tenor = _cmt_series_for(T)
@@ -211,31 +291,49 @@ class OVMEFunction(BaseFunction):
             # OVME#2: the Heston parameters are echoed with the price. They are
             # not calibrated to market quotes; the source says whether the
             # caller supplied them or the handler's illustrative defaults apply.
-            heston_supplied = any(
-                params.get(key) not in (None, "")
-                for key in ("kappa", "theta", "hsigma", "rho", "v0")
-            )
+            # Provenance is per parameter: a caller who supplies only kappa must
+            # not see the other four labelled as caller-supplied.
+            heston_inputs = {
+                "kappa": ("kappa", 2.0, "fixed_illustrative_default"),
+                "theta": ("theta", sigma * sigma, "derived_from_vol"),
+                "sigma": ("hsigma", 0.4, "fixed_illustrative_default"),
+                "rho": ("rho", -0.6, "fixed_illustrative_default"),
+                "v0": ("v0", sigma * sigma, "derived_from_vol"),
+            }
+            heston_values: dict[str, float] = {}
+            parameter_sources: dict[str, str] = {}
+            for name, (key, fallback, default_source) in heston_inputs.items():
+                if params.get(key) not in (None, ""):
+                    heston_values[name] = float(params[key])
+                    parameter_sources[name] = "caller_supplied"
+                else:
+                    heston_values[name] = float(fallback)
+                    parameter_sources[name] = default_source
+            supplied = [n for n, s in parameter_sources.items() if s == "caller_supplied"]
+            defaulted = [n for n, s in parameter_sources.items() if s != "caller_supplied"]
+            summary = []
+            if supplied:
+                summary.append(f"caller_supplied: {', '.join(supplied)}")
+            if defaulted:
+                summary.append(f"handler default: {', '.join(defaulted)}")
             result["heston_params"] = {
-                "kappa": float(params.get("kappa", 2.0)),
-                "theta": float(params.get("theta", sigma * sigma)),
-                "sigma": float(params.get("hsigma", 0.4)),
-                "rho": float(params.get("rho", -0.6)),
-                "v0": float(params.get("v0", sigma * sigma)),
+                "kappa": heston_values["kappa"],
+                "theta": heston_values["theta"],
+                "sigma": heston_values["sigma"],
+                "rho": heston_values["rho"],
+                "v0": heston_values["v0"],
+                "parameter_sources": parameter_sources,
                 "calibrated": False,
-                "source": (
-                    "caller_supplied, not calibrated to market quotes"
-                    if heston_supplied
-                    else "fixed illustrative defaults, not calibrated to market quotes"
-                ),
+                "source": "; ".join(summary) + ", not calibrated to market quotes",
             }
             try:
                 from showme.engine.functions.derivative.heston import HestonParams, heston_mc
                 hp = HestonParams(
-                    kappa=float(params.get("kappa", 2.0)),
-                    theta=float(params.get("theta", sigma * sigma)),
-                    sigma=float(params.get("hsigma", 0.4)),
-                    rho=float(params.get("rho", -0.6)),
-                    v0=float(params.get("v0", sigma * sigma)),
+                    kappa=heston_values["kappa"],
+                    theta=heston_values["theta"],
+                    sigma=heston_values["sigma"],
+                    rho=heston_values["rho"],
+                    v0=heston_values["v0"],
                 )
                 hr = heston_mc(S, K, T, r, q, hp, is_call=is_call,
                                 paths=int(params.get("paths", 30_000)),

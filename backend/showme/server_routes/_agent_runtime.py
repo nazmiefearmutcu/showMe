@@ -522,14 +522,10 @@ def _route_uses_symbol(entry: FunctionIndexEntry) -> bool:
 def _standalone_function_defaults(code: str) -> dict[str, Any]:
     upper = code.upper()
     if upper == "OVME":
-        return {
-            "spot": 100,
-            "strike": 105,
-            "years_to_expiry": 0.25,
-            "vol": 0.28,
-            "rate": 0.045,
-            "type": "CALL",
-        }
+        # Only the contract type is defaulted. Spot, strike, expiry and vol
+        # are the option itself: a route must not price a made-up contract
+        # (OVME returns needs_input when they are absent).
+        return {"type": "CALL"}
     if upper == "OSA":
         return {
             "spot": 100,

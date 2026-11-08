@@ -178,8 +178,10 @@ def test_route_params_do_not_inject_symbol_into_standalone_derivative(monkeypatc
     assert "symbol" not in params
     assert "topic" not in params
     assert "asset_class" not in params
-    assert params["spot"] == 100
-    assert params["strike"] == 105
+    # WC2-G06: the route no longer invents a demo option (spot/strike/expiry/vol);
+    # only the contract type is defaulted and the function reports needs_input.
+    for key in ("spot", "strike", "years_to_expiry", "vol"):
+        assert key not in params
     assert params["type"] == "CALL"
 
 
