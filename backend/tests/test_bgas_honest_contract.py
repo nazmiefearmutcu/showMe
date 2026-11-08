@@ -234,3 +234,31 @@ def test_catalog_description_is_real_text() -> None:
     assert description.strip()
     assert "function." not in description.lower()
     assert "natural gas" in description.lower()
+
+
+# ── BGAS residual: model row expiry follows the price vintage, not render date ──
+
+
+def test_model_row_expiry_matches_reference_vintage_not_render_date() -> None:
+    """The NG=F reference row is priced at its 2024-06 vintage. Its expiry must
+    be the front month as of that vintage (2024-07), not the front month of
+    today's render date, which would pair a 2024 price with a 2026 contract."""
+    fn = BGASFunction(deps=FunctionDeps())
+    result = _run(fn.execute(contract="NG=F", live=False))
+    row = result.data["rows"][0]
+    assert row["as_of"] == "2024-06"
+    assert row["expiry_month"] == "2024-07"
+    assert row["expiry_last_trade"] == "2024-06-26"
+    assert result.data["expiry_month"] == "2024-07"
+
+
+def test_model_row_with_unparseable_vintage_has_no_expiry() -> None:
+    from showme.engine.functions.commodity import _funcs
+
+    rows = _funcs._bgas_decorate_rows(
+        [{"symbol": "NG=F", "source_mode": "model", "source": "commodity_reference_model",
+          "as_of": "not-a-date"}],
+        as_of_day=date(2026, 11, 8),
+    )
+    assert rows[0]["expiry_month"] is None
+    assert rows[0]["expiry_basis"] == "unknown_price_vintage"

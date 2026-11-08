@@ -707,13 +707,29 @@ def _ng_front_month(today: Any) -> tuple[str, str]:
     raise RuntimeError("no NG delivery month found within 24 months")
 
 
+def _bgas_model_vintage_day(as_of: Any) -> Any:
+    """Day the reference model price was quoted, from its ``YYYY-MM`` vintage.
+
+    Returns None when the vintage cannot be parsed, so no expiry is invented.
+    """
+    from datetime import date
+
+    text = str(as_of or "").strip()
+    try:
+        year_text, month_text = text[:7].split("-")
+        return date(int(year_text), int(month_text), 1)
+    except (ValueError, TypeError):
+        return None
+
+
 def _bgas_decorate_rows(rows: list[dict[str, Any]], *, as_of_day: Any) -> list[dict[str, Any]]:
     """Add contract_unit, expiry and data_mode to every BGAS row.
 
-    Futures rows get the computed front-month delivery; the EIA spot series has
-    no delivery month, so its expiry is explicitly null.
+    Futures rows get the front-month delivery as of the day the price was
+    quoted: today for live rows, the reference vintage for the model row (so a
+    2024 price is never paired with a 2026 contract). The EIA spot series has no
+    delivery month, so its expiry is explicitly null.
     """
-    expiry_month, last_trade = _ng_front_month(as_of_day)
     out: list[dict[str, Any]] = []
     for row in rows:
         item = dict(row)
@@ -723,7 +739,19 @@ def _bgas_decorate_rows(rows: list[dict[str, Any]], *, as_of_day: Any) -> list[d
             item["expiry_month"] = None
             item["expiry_last_trade"] = None
             item["expiry_basis"] = "spot_no_delivery_month"
+        elif item.get("source_mode") == "model":
+            vintage_day = _bgas_model_vintage_day(item.get("reference_vintage") or item.get("as_of"))
+            if vintage_day is None:
+                item["expiry_month"] = None
+                item["expiry_last_trade"] = None
+                item["expiry_basis"] = "unknown_price_vintage"
+            else:
+                expiry_month, last_trade = _ng_front_month(vintage_day)
+                item["expiry_month"] = expiry_month
+                item["expiry_last_trade"] = last_trade
+                item["expiry_basis"] = "nymex_ng_rule_weekends_only_at_price_vintage"
         else:
+            expiry_month, last_trade = _ng_front_month(as_of_day)
             item["expiry_month"] = expiry_month
             item["expiry_last_trade"] = last_trade
             item["expiry_basis"] = "nymex_ng_rule_weekends_only"
