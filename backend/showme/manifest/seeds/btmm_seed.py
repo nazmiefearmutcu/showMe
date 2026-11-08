@@ -2,7 +2,7 @@
 
 Focused manifest for the central-bank policy-rate monitor. Renders the
 current policy rate, last move, and 3-month basis-point trend per bank,
-with an implied-path overlay from WIRP so the analyst sees today's
+with an implied-path block (WIRP-style) so the analyst sees today's
 policy stance against what the market is pricing forward.
 """
 from __future__ import annotations
@@ -80,7 +80,7 @@ def btmm() -> FunctionManifest:
                 label="Implied path overlay",
                 control=ControlKind.BOOLEAN,
                 required=False,
-                description="When true, overlay WIRP-style market-implied policy path on the rate history pane.",
+                description="When true, the response carries an implied-path block. No free market-implied path source is wired, so it reports provider_unavailable with no points.",
             ),
             InputSpec(
                 name="provider_mode",
@@ -167,9 +167,11 @@ def btmm() -> FunctionManifest:
             "roughly 90 calendar days earlier). Country/region filters narrow the universe to "
             "G10, EM, Americas, Europe, APAC, or MEA. The summary KPIs include the average policy "
             "rate, the fresh-only min/max range (rows older than ~6 months excluded so a stale "
-            "observation does not anchor the range), and a hike-vs-cut tilt. When "
-            "overlay_implied_path is true, the chart overlays a market-implied forward policy "
-            "path from the WIRP source so today's stance can be read against what futures price."
+            "observation does not anchor the range), and a hike-vs-cut tilt. The response reports "
+            "data_mode and requested_mode, so the mode actually served is visible. When "
+            "overlay_implied_path is true, the response carries an implied_path block; no free "
+            "market-implied path source is wired, so that block is provider_unavailable with no "
+            "points and no overlay is drawn."
         ),
         formula_dict={
             "change_bp": Formula(
@@ -233,13 +235,14 @@ def btmm() -> FunctionManifest:
                 assertions=["last_move_sign_matches_change_bp"],
             ),
             SemanticTest(
-                name="btmm_implied_path_overlay_present_when_requested",
+                name="btmm_implied_path_overlay_is_honest_when_requested",
                 description=(
-                    "When overlay_implied_path=true, the chart payload includes an implied_path "
-                    "series alongside the historical policy_rate."
+                    "When overlay_implied_path=true, the payload carries an implied_path block; "
+                    "with no free implied-path source it is status=provider_unavailable with no "
+                    "points, never a silently dropped or approximated series."
                 ),
                 inputs={"country": "US", "overlay_implied_path": True},
-                assertions=["payload_includes_implied_path_when_overlay_true"],
+                assertions=["implied_path_block_honest_when_overlay_true"],
             ),
             SemanticTest(
                 name="btmm_summary_range_excludes_stale_rows",

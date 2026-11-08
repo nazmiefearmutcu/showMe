@@ -24,6 +24,13 @@ CACHE_TTL_SECONDS = 60 * 60 * 6
 _CACHE_LOCK = threading.Lock()
 _CACHE_AT = 0.0
 _CACHE_ROWS: list[dict[str, Any]] | None = None
+# Data mode the in-process cache was filled with ("live_official" when the
+# rows came from a live BIS fetch, "cached_snapshot" when from the disk copy).
+_CACHE_ORIGIN: str | None = None
+# Per-thread record of where the last _load_bis_rows call got its rows.
+_ORIGIN = threading.local()
+
+_PROVIDER_MODES = ("live_official", "delayed_reference", "cached_snapshot")
 
 _COUNTRY_ALIASES = {
     "ALL": "ALL",
@@ -296,16 +303,37 @@ class BTMMFunction(BaseFunction):
         limit = _int_param(params.get("limit"), default=80, floor=1, ceiling=100)
         timeout = _float_param(params.get("timeout"), default=8.0, floor=2.0, ceiling=30.0)
         force_refresh = _truthy(params.get("refresh") or params.get("force_refresh"))
-
+        overlay_requested = _truthy(params.get("overlay_implied_path"))
         warnings: list[str] = []
+        requested_mode = _requested_mode(params.get("provider_mode"), warnings)
+
         try:
-            rows = await asyncio.to_thread(_load_bis_rows, timeout, force_refresh)
+            rows, data_mode = await asyncio.to_thread(_fetch_rows, timeout, force_refresh)
             sources = ["BIS CBPOL"]
         except Exception as exc:
             # DATA POLICY: no stored or hard-coded policy-rate snapshot is served
             # in place of the BIS feed. Report the outage explicitly instead.
             warnings.append(f"BIS CBPOL unavailable: {exc}")
-            return _unavailable_result(self.code, country=country, region=region, warnings=warnings)
+            return _unavailable_result(
+                self.code,
+                country=country,
+                region=region,
+                warnings=warnings,
+                requested_mode=requested_mode,
+            )
+
+        # BTMM#2: report the data mode actually served, not the one requested.
+        if data_mode and data_mode != requested_mode:
+            warnings.append(
+                f"provider_mode_differs: requested {requested_mode}, served {data_mode}; "
+                "the response reports the mode actually used"
+            )
+        implied_path = _implied_path_block(overlay_requested)
+        if overlay_requested:
+            warnings.append(
+                "implied_path_unavailable: no free market-implied policy-path source is wired; "
+                "only BIS CBPOL policy rates are shown"
+            )
 
         filtered = _filter_rows(rows, country=country, region=region)
         filtered = sorted(filtered, key=_sort_key)[:limit]
@@ -355,6 +383,9 @@ class BTMMFunction(BaseFunction):
                 "as_of": as_of_envelope,
                 "stale_seconds": stale_seconds,
                 "history": _history_for_rows(filtered),
+                "data_mode": data_mode,
+                "requested_mode": requested_mode,
+                "implied_path": implied_path,
                 "usage": {
                     "country": "Use ALL, US, EU, GB, JP, TR, or a BIS ISO country code.",
                     "region": "Use all, g10, em, americas, europe, asia_pacific, or mea.",
@@ -381,12 +412,59 @@ class BTMMFunction(BaseFunction):
                 "universe_count": len(rows),
                 "country": country,
                 "region": region,
+                "data_mode": data_mode,
+                "requested_mode": requested_mode,
             },
         )
 
 
+def _requested_mode(value: Any, warnings: list[str]) -> str:
+    if value is None or str(value).strip() == "":
+        return "live_official"
+    mode = str(value).strip().lower()
+    if mode in _PROVIDER_MODES:
+        return mode
+    warnings.append(
+        f"provider_mode_unrecognised: {value!r} is not one of {', '.join(_PROVIDER_MODES)}; "
+        "the request is treated as live_official"
+    )
+    return "live_official"
+
+
+def _implied_path_block(requested: bool) -> dict[str, Any]:
+    """Market-implied policy path (WIRP-style) block.
+
+    No free official feed for a market-implied path is wired into ShowMe, so a
+    requested overlay is reported as provider_unavailable with no points rather
+    than being silently dropped or approximated.
+    """
+    if not requested:
+        return {"status": "not_requested", "points": []}
+    return {
+        "status": "provider_unavailable",
+        "reason": "no_free_implied_path_source",
+        "points": [],
+        "source": None,
+        "next_actions": [
+            "A licensed market-implied policy-path feed (for example WIRP) is needed to draw the overlay",
+            "Policy-rate history from BIS CBPOL is shown without the overlay",
+        ],
+    }
+
+
+def _fetch_rows(timeout: float, force_refresh: bool = False) -> tuple[list[dict[str, Any]], str | None]:
+    """Run _load_bis_rows and return its rows with the data mode actually used."""
+    _ORIGIN.value = None
+    rows = _load_bis_rows(timeout, force_refresh)
+    return rows, getattr(_ORIGIN, "value", None)
+
+
+def _note_origin(origin: str | None) -> None:
+    _ORIGIN.value = origin
+
+
 def _load_bis_rows(timeout: float, force_refresh: bool = False) -> list[dict[str, Any]]:
-    global _CACHE_AT, _CACHE_ROWS
+    global _CACHE_AT, _CACHE_ROWS, _CACHE_ORIGIN
     now = time.time()
 
     # C6 fix: previously the module-level ``_CACHE_LOCK`` was held for the
@@ -397,6 +475,7 @@ def _load_bis_rows(timeout: float, force_refresh: bool = False) -> list[dict[str
     # then re-acquire to publish the result.
     with _CACHE_LOCK:
         if not force_refresh and _CACHE_ROWS and now - _CACHE_AT < CACHE_TTL_SECONDS:
+            _note_origin(_CACHE_ORIGIN)
             return [dict(row) for row in _CACHE_ROWS]
 
     # Try disk cache (lock-free — read_bytes is atomic on POSIX for our size).
@@ -407,6 +486,8 @@ def _load_bis_rows(timeout: float, force_refresh: bool = False) -> list[dict[str
         with _CACHE_LOCK:
             _CACHE_ROWS = rows
             _CACHE_AT = publish_at
+            _CACHE_ORIGIN = "cached_snapshot"
+        _note_origin("cached_snapshot")
         return [dict(row) for row in rows]
 
     import httpx
@@ -435,9 +516,12 @@ def _load_bis_rows(timeout: float, force_refresh: bool = False) -> list[dict[str
     if from_network:
         _write_disk_cache(payload)
     publish_at = now if from_network else (_disk_cache_mtime() or now)
+    origin = "live_official" if from_network else "cached_snapshot"
     with _CACHE_LOCK:
         _CACHE_ROWS = rows
         _CACHE_AT = publish_at
+        _CACHE_ORIGIN = origin
+    _note_origin(origin)
     return [dict(row) for row in rows]
 
 
@@ -710,6 +794,7 @@ def _unavailable_result(
     country: str,
     region: str,
     warnings: list[str],
+    requested_mode: str = "live_official",
 ) -> FunctionResult:
     """Explicit no-data state when the BIS CBPOL feed cannot be read.
 
@@ -729,6 +814,8 @@ def _unavailable_result(
             "as_of": None,
             "stale_seconds": None,
             "history": [],
+            "data_mode": "provider_unavailable",
+            "requested_mode": requested_mode,
             "next_actions": [
                 "Retry in a few minutes, or pass refresh=true to bypass the BIS cache",
                 "BIS CBPOL is a free public source; no API key is required",
