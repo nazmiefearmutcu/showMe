@@ -60,15 +60,13 @@ class HFSFunction(BaseFunction):
                 instrument=instrument,
                 data={
                     "status": "not_applicable",
-                    "rows": [{
-                        "filer": "not_applicable",
-                        "issuer": issuer,
-                        "shares": 0,
-                        "market_value": 0,
-                        "asset_class": instrument.asset_class.value,
-                    }],
+                    "rows": [],
                     "issuer": issuer,
                     "quarter": quarter or "latest",
+                    "reason": (
+                        f"Holder search applies to equity and ETF issuers only; "
+                        f"{instrument.asset_class.value} instruments have no 13F holders."
+                    ),
                     "methodology": _METHODOLOGY,
                     "field_dictionary": FIELD_DICTIONARIES["holders"],
                     "next_actions": [],
