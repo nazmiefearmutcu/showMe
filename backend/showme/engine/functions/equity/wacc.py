@@ -19,8 +19,18 @@ from showme.engine.core.instrument import AssetClass, Instrument
 from showme.engine.functions._fred_csv import fred_with_keyless_fallback
 from showme.engine.functions.equity.beta import BetaFunction
 
-# WACC#2: sector / industry tokens that mark a bank, insurer or other financial.
-_FINANCIAL_SECTOR_TOKENS = ("bank", "financ", "insurance")
+# WACC#2: industry tokens that mark a bank or insurer. yfinance files card
+# networks, exchanges and asset managers under the sector "Financial Services"
+# too; those keep an ordinary capital structure, so the sector alone is not
+# used. Insurance brokers are fee businesses, not insurers, and are excluded.
+_FINANCIAL_INDUSTRY_TOKENS = ("bank", "insurance")
+_NOT_AN_INSURER_TOKENS = ("broker",)
+
+
+def _is_bank_or_insurer(industry: str) -> bool:
+    if not any(token in industry for token in _FINANCIAL_INDUSTRY_TOKENS):
+        return False
+    return not ("insurance" in industry and any(t in industry for t in _NOT_AN_INSURER_TOKENS))
 
 
 @FunctionRegistry.register
@@ -256,8 +266,17 @@ class WACCFunction(BaseFunction):
                 debt = raw.get("totalDebt") or 0
                 v = (mc or 0) + (debt or 0)
                 sector = (raw.get("sector") or raw.get("industry") or "").lower()
+                industry = str(raw.get("industry") or "").lower()
                 sector_used = sector or None
-                if any(token in sector for token in _FINANCIAL_SECTOR_TOKENS):
+                # Classify on the industry; a provider that only supplies one
+                # label gives it as the sector, so that label is the fallback.
+                classifier_label = industry or sector
+                if not industry and "financ" in sector:
+                    warnings.append(
+                        "industry unavailable: cannot tell whether this financial issuer is a bank "
+                        "or insurer; book-debt weights are used"
+                    )
+                if _is_bank_or_insurer(classifier_label):
                     # WACC#2: a bank's or insurer's liabilities are operating
                     # funding (deposits, policy reserves), not capital-structure
                     # debt. Neither the book-debt weight nor a sector constant
