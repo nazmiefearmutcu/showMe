@@ -32,13 +32,16 @@ def _run(**params):
     return asyncio.run(DCFFunction(FunctionDeps(yfinance=_Yf())).execute(AAPL, **base))
 
 
-def test_failed_wacc_lookup_is_needs_input_not_eight_percent(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_failed_wacc_lookup_is_provider_unavailable_not_eight_percent(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A failing WACC provider is a provider outage (merged DCF#1 + WACC#1 fix),
+    # never a silent 8% discount rate.
     async def boom(self, instrument=None, **params):
         raise RuntimeError("wacc provider down")
 
     monkeypatch.setattr(WACCFunction, "execute", boom)
     result = _run()
-    assert result.data["status"] == "needs_input"
+    assert result.data["status"] == "provider_unavailable"
+    assert "wacc provider down" in result.data["reason"]
     assert result.data.get("wacc") is None
     assert result.data["fair_value_per_share"] is None
     assert result.data["rows"] == []

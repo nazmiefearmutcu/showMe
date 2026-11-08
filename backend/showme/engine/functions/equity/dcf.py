@@ -51,14 +51,52 @@ class DDMFunction(BaseFunction):
             )
         # Required return: WACC if not specified
         if r is None:
+            # Data policy: never substitute a constant required return. When
+            # WACC is not applicable or unavailable, report the explicit state.
             try:
                 from showme.engine.functions.equity.wacc import WACCFunction
                 wres = await WACCFunction(self.deps).execute(instrument)
-                r = float(wres.data.get("wacc") or 0.08)
                 sources += list(wres.sources or [])
+                wacc_value = (wres.data or {}).get("wacc")
+                if wacc_value is None:
+                    wacc_status = str((wres.data or {}).get("status") or "")
+                    reason = (wres.data or {}).get("reason") or (
+                        "WACC is not available for this issuer, so no required return can be derived. "
+                        "Pass required_return explicitly to value this DDM."
+                    )
+                    warnings.append(f"wacc: {reason}")
+                    return FunctionResult(
+                        code=self.code, instrument=instrument,
+                        data={
+                            "status": "not_applicable" if wacc_status == "not_applicable" else "needs_input",
+                            "reason": reason,
+                            "next_actions": [
+                                "Pass required_return explicitly (cost of equity) to value this DDM.",
+                            ],
+                            "dividend_ttm": d0, "growth": g,
+                            "required_return": None,
+                            "fair_value_per_share": None,
+                        },
+                        sources=list(set(sources)), warnings=warnings,
+                    )
+                r = float(wacc_value)
             except Exception as e:
                 warnings.append(f"wacc: {e}")
-                r = 0.08
+                return FunctionResult(
+                    code=self.code, instrument=instrument,
+                    data={
+                        "status": "provider_unavailable",
+                        "reason": f"WACC provider failed ({e}); required return is unknown.",
+                        "next_actions": [
+                            "Retry once the WACC provider is reachable.",
+                            "Or pass required_return explicitly.",
+                        ],
+                        "dividend_ttm": d0, "growth": g,
+                        "required_return": None,
+                        "fair_value_per_share": None,
+                    },
+                    sources=list(set(sources)), warnings=warnings,
+                )
         r = float(r)
         d1 = d0 * (1 + g)
         if r <= g:
@@ -125,36 +163,47 @@ class DCFFunction(BaseFunction):
         warnings: list[str] = []
         sources: list[str] = []
         if wacc is None:
+            # Data policy: never discount at a silent constant. When WACC is
+            # not applicable or unavailable, report the explicit state (merged
+            # from the DCF#1 and WACC#1 fixes: their state names, the full
+            # payload shape the pane expects).
+            def _no_wacc(status: str, reason: str, next_actions: list[str]) -> FunctionResult:
+                warnings.append(f"wacc: {reason}")
+                return FunctionResult(
+                    code=self.code, instrument=instrument,
+                    data={"status": status, "reason": reason, "next_actions": next_actions,
+                          "wacc": None, "wacc_source": None, "g_high": g_high, "g_terminal": g_terminal,
+                          "years": N, "starting_fcfe": None, "fcfe_source": None, "shares_source": None,
+                          "shares_outstanding": None, "equity_value": None, "fair_value_per_share": None,
+                          "rows": [], "bridge": [],
+                          "methodology": "Two-stage FCFE DCF; WACC is required and is never substituted with a constant.",
+                          "field_dictionary": FIELD_DICTIONARIES["valuation"]},
+                    sources=list(set(sources)), warnings=warnings,
+                )
+
             try:
                 from showme.engine.functions.equity.wacc import WACCFunction
                 w = await WACCFunction(self.deps).execute(instrument)
-                resolved = (w.data or {}).get("wacc")
-                if resolved is None:
-                    raise ValueError("WACC model returned no value")
-                wacc = float(resolved)
-                sources += list(w.sources or [])
-            except Exception as e:
-                warnings.append(f"wacc: {e}")
-                wacc = None
-        if wacc is None:
-            # No caller WACC and no WACC from the model: report it, never a constant.
-            warnings.append("wacc: no WACC from the caller or the WACC model; pass wacc to run the model.")
-            return FunctionResult(
-                code=self.code, instrument=instrument,
-                data={"status": "needs_input",
-                      "reason": "WACC is unavailable for this instrument; pass wacc to run the model.",
-                      "next_actions": ["Enter WACC (decimal, e.g. 0.08) as an input.",
-                                       "Retry once the WACC inputs recover."],
-                      "wacc": None, "wacc_source": None, "g_high": g_high, "g_terminal": g_terminal,
-                      "years": N, "starting_fcfe": None,
-                      "fcfe_source": None, "shares_source": None,
-                      "shares_outstanding": None,
-                      "fair_value_per_share": None,
-                      "rows": [], "bridge": [],
-                      "methodology": "Two-stage FCFE DCF; WACC is required and is never substituted with a constant.",
-                      "field_dictionary": FIELD_DICTIONARIES["valuation"]},
-                sources=list(set(sources)), warnings=warnings,
-            )
+            except Exception as e:  # noqa: BLE001 - reported as the provider state
+                return _no_wacc(
+                    "provider_unavailable",
+                    f"WACC provider failed ({str(e) or type(e).__name__}); discount rate is unknown.",
+                    ["Retry once the WACC provider is reachable.", "Or pass wacc explicitly."],
+                )
+            sources += list(w.sources or [])
+            wacc_value = (w.data or {}).get("wacc")
+            if wacc_value is None:
+                wacc_status = str((w.data or {}).get("status") or "")
+                reason = (w.data or {}).get("reason") or (
+                    "WACC is not available for this issuer, so no discount rate can be derived. "
+                    "Pass wacc explicitly to value this DCF."
+                )
+                return _no_wacc(
+                    "not_applicable" if wacc_status == "not_applicable" else "needs_input",
+                    reason,
+                    ["Pass wacc explicitly, or use a financials-specific model for this issuer."],
+                )
+            wacc = float(wacc_value)
         wacc = float(wacc)
         # Provenance of every model input: a caller value is a manual override,
         # a provider value is labelled with its source, and a missing value is
