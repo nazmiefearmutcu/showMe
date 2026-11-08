@@ -129,12 +129,11 @@ def test_ivol_marks_synthetic_anchor_when_no_quote():
     assert result.metadata.get("spot_source") == "synthetic_anchor"
 
 
-def test_ivol_yfinance_unavailable_branch_uses_live_quote_for_spot():
-    """When live_options is requested but yfinance is missing, the
-    fallback synthetic surface must STILL use the resolved spot (from
-    the quote adapter) — not 100. We exercise this with the live path
-    selected but yfinance forcibly None by passing the live flag and
-    no yfinance adapter."""
+def test_ivol_yfinance_unavailable_branch_reports_no_spot():
+    """When live_options is requested but yfinance is missing, there is no
+    live spot and no surface: the response reports spot None, not the
+    placeholder 100 and not a template. Exercised by passing the live flag
+    with no yfinance adapter."""
     fn = IVOLFunction(deps=_StubDeps(yfinance=None))
     result = asyncio.run(fn.execute(instrument=_spy(), live_options=True))
     # No yfinance → resolver returns synthetic_anchor; the placeholder is not
