@@ -219,7 +219,7 @@ def tca() -> FunctionManifest:
             "rows[].slippage_bps": FieldDef(unit="bps", description="Signed slippage vs benchmark.", source="computed"),
             "rows[].is_bps": FieldDef(unit="bps", description="Implementation shortfall vs arrival.", source="computed"),
             "rows[].opportunity_bps": FieldDef(unit="bps", description="Cost of unfilled quantity.", source="computed"),
-            "summary.avg_slippage_bps": FieldDef(unit="bps", description="Notional-weighted mean slippage.", source="computed"),
+            "summary.avg_slippage_bps": FieldDef(unit="bps", description="Count-weighted mean of per-fill slippage_bps across the analysed fills.", source="computed"),
             "summary.total_cost_usd": FieldDef(unit="USD", description="Total execution cost across fills.", source="computed"),
         },
         provenance=ProvenanceSpec(
