@@ -49,6 +49,8 @@ interface FXIPHistoryRow {
 
 interface FXIPData {
   status?: string;
+  reason?: string;
+  next_actions?: string[];
   pair?: string;
   base?: string;
   quote?: string;
@@ -216,6 +218,19 @@ export function FXIPPane({ code, symbol }: FunctionPaneProps) {
     />
   ) : (
     <div className="u-grid-gap-14">
+      {status === "needs_input" ? (
+        <div role="note" style={warnStyle} aria-label="FXIP needs input notice">
+          <strong>Needs input.</strong>{" "}
+          {payload.reason ?? "A policy rate is missing; forwards and carry are unavailable."}
+          {(payload.next_actions ?? []).length > 0 ? (
+            <ul style={nextActionsStyle}>
+              {(payload.next_actions ?? []).map((action) => (
+                <li key={action}>{action}</li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+      ) : null}
       {isReference ? (
         <div role="note" style={warnStyle} aria-label="FXIP reference notice">
           <strong>Reference spot.</strong> Live spot is unavailable for{" "}
@@ -415,6 +430,12 @@ const warnStyle: CSSProperties = {
   padding: "8px 10px",
   fontSize: "var(--font-size-md)",
   color: "var(--text-primary)",
+};
+
+const nextActionsStyle: CSSProperties = {
+  margin: "6px 0 0",
+  paddingLeft: 18,
+  color: "var(--text-mute)",
 };
 
 const bodyStyle: CSSProperties = {
