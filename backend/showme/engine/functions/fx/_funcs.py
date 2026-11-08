@@ -412,6 +412,10 @@ class FRDFunction(BaseFunction):
                 data={
                     "status": "provider_unavailable",
                     "reason": "a currency leg has no live policy rate and no labelled reference rate; no forward computed",
+                    "next_actions": [
+                        "Pass the policy rates explicitly as r_base and r_quote (decimal, e.g. 0.035 for 3.5%) to compute a forward.",
+                        "Retry when the FRED policy-rate series (DFF, ECBDFR and the other central bank series) are reachable.",
+                    ],
                     "pair": pair,
                     "base": base,
                     "quote": quote,

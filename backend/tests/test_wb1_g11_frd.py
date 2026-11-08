@@ -112,6 +112,11 @@ def test_frd_unknown_currency_is_unavailable_not_invented(fred_down) -> None:
     assert res.data["status"] == "provider_unavailable"
     assert res.data["rows"] == []
     assert any("XYZ" in w for w in res.warnings)
+    # DATA POLICY: an honest state carries a reason and next_actions.
+    assert isinstance(res.data.get("reason"), str) and res.data["reason"]
+    actions = res.data.get("next_actions")
+    assert isinstance(actions, list) and actions
+    assert all(isinstance(a, str) and a for a in actions)
 
 
 # ── FRD#2: manifest input names are honoured ──────────────────────────────
