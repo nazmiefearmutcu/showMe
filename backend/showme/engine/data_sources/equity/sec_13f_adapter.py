@@ -228,17 +228,17 @@ class SEC13FAdapter(BaseDataSource):
             return pd.DataFrame()
         if not _db_path().exists():
             return pd.DataFrame()
-        # value_x1000 is the raw InfoTable <value>. Its unit follows the period:
-        # thousands of dollars before the SEC moved the table to whole dollars
-        # (periods after 2022-12-31), so only earlier periods are scaled by
-        # 1000. The 2022-12-31 period and rows without a period cannot be
-        # resolved and yield NULL rather than a 1000x-wrong dollar figure.
+        # value_x1000 holds the raw InfoTable <value>, and the unit of that value
+        # is NOT established by this codebase: the older "thousands" reading and
+        # the newer "whole dollars" reading both depend on the filing date, which
+        # the local store does not keep (only report_date). Until a real InfoTable
+        # confirms the unit, no dollar figure is derived: value_usd is NULL, the
+        # raw sum is exposed as value_as_reported, and value_unit says so.
         sql = (
             "SELECT filer_cik, report_date, "
-            "CASE "
-            "WHEN report_date IS NULL OR report_date = '' OR report_date = '2022-12-31' THEN NULL "
-            "WHEN report_date < '2022-12-31' THEN SUM(value_x1000)*1000 "
-            "ELSE SUM(value_x1000) END AS value_usd, "
+            "CAST(NULL AS DOUBLE) AS value_usd, "
+            "SUM(value_x1000) AS value_as_reported, "
+            "'unresolved' AS value_unit, "
             "SUM(shares) AS shares FROM holdings WHERE 1=1"
         )
         params: list[Any] = []
@@ -251,7 +251,9 @@ class SEC13FAdapter(BaseDataSource):
             params.append(issuer_normalized)
         if quarter:
             sql += " AND report_date LIKE ?"; params.append(f"{quarter}%")
-        sql += " GROUP BY filer_cik, report_date ORDER BY value_usd DESC LIMIT ?"
+        # Ranked by shares: the dollar value is unresolved, and raw values from
+        # differently-scaled periods must not be ranked against each other.
+        sql += " GROUP BY filer_cik, report_date ORDER BY shares DESC NULLS LAST, filer_cik LIMIT ?"
         params.append(top_n)
         return await asyncio.to_thread(self._run_holdings_query, sql, params)
 

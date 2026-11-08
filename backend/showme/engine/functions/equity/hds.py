@@ -187,15 +187,17 @@ def _holder_rows(symbol: str, sec_top: list[dict[str, Any]], yahoo: dict[str, An
         rows = []
         for item in sec_top:
             # Field names follow SEC13FAdapter.query_holdings_by_security:
-            # filer_cik, report_date, value_usd, shares. The local store keeps
-            # no filer name, so the holder is labelled by its CIK.
+            # filer_cik, report_date, shares, and value_usd (always NULL: the
+            # InfoTable unit is unresolved, so no dollar value is shown).
+            # The local store keeps no filer name, so the holder is labelled by its CIK.
             filer_cik = item.get("filer_cik")
             rows.append({
                 "symbol": symbol,
                 "holder": f"CIK {filer_cik}" if filer_cik else (item.get("filer") or item.get("holder")),
                 "holder_type": "institutional_13f",
                 "shares": finite(item.get("shares")),
-                "market_value": finite(item.get("value_usd")),
+                "market_value": None,
+                "market_value_status": "unit_unresolved",
                 "quarter": item.get("report_date") or None,
                 "source_mode": "sec_13f",
             })

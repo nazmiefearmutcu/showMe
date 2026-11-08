@@ -127,7 +127,9 @@ def test_13f_lookup_resolves_ticker_to_issuer_and_keeps_fields():
     frame = pd.DataFrame({
         "filer_cik": ["0000102909"],
         "report_date": ["2026-06-30"],
-        "value_usd": [5.0e9],
+        "value_usd": [None],  # adapter: unit unresolved, so no dollar value
+        "value_as_reported": [5.0e9],
+        "value_unit": ["unresolved"],
         "shares": [2.5e7],
     })
     sec13f = _Sec13F(frame)
@@ -138,11 +140,28 @@ def test_13f_lookup_resolves_ticker_to_issuer_and_keeps_fields():
     assert call.get("issuer_normalized") == "APPLEINC", call
     assert call.get("issuer") in (None, ""), call
     row = res.data["rows"][0]
-    assert row["market_value"] == 5.0e9
+    # The InfoTable unit is unresolved, so the raw 13F value is never shown as dollars.
+    assert row["market_value"] is None
+    assert row["market_value_status"] == "unit_unresolved"
     assert row["shares"] == 2.5e7
     assert row["quarter"] == "2026-06-30"
     assert row["holder"] == "CIK 0000102909"
     assert res.sources == ["sec_13f"]
+
+
+def test_13f_handler_never_passes_a_dollar_value_through():
+    # Even if a source supplied a dollar-looking value_usd, the handler does not
+    # present it: the 13F InfoTable unit is unresolved.
+    frame = pd.DataFrame({
+        "filer_cik": ["0000102909"],
+        "report_date": ["2026-06-30"],
+        "value_usd": [5.0e9],
+        "shares": [2.5e7],
+    })
+    fn = _fn(sec_13f=_Sec13F(frame), sec_edgar=_SecEdgar("0000320193", "Apple Inc."))
+    res = _run(fn, AAPL, live=True)
+    assert res.data["rows"][0]["market_value"] is None
+    assert res.data["rows"][0]["shares"] == 2.5e7
 
 
 def test_13f_unknown_ticker_is_reported_not_guessed():
