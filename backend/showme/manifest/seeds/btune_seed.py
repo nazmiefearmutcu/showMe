@@ -168,10 +168,12 @@ def btune() -> FunctionManifest:
                 label="Data mode",
                 control=ControlKind.PROVIDER_MODE,
                 required=False,
-                description="Preferred data mode for OHLCV.",
+                description=(
+                    "Accepted for compatibility only: the handler always fetches daily OHLCV "
+                    "from yfinance and does not read this input."
+                ),
                 options=[
                     DataMode.DELAYED_REFERENCE.value,
-                    DataMode.CACHED_SNAPSHOT.value,
                 ],
             ),
         ],
@@ -203,7 +205,6 @@ def btune() -> FunctionManifest:
                 "top_n_results",
                 "full_results",
                 "overfit_warning",
-                "data_mode",
             ],
             rows=True,
             series=False,
@@ -258,8 +259,8 @@ def btune() -> FunctionManifest:
             "overfit_gap = metric_in_sample − metric_oos; "
             "overfit_warning is raised when the median gap across the "
             "top-N exceeds a domain-specific threshold (e.g. ΔSharpe > 1.0). "
-            "Search is fully parallelizable; the handler caps concurrency "
-            "to keep the sidecar responsive."
+            "The sweep runs sequentially in-process with no concurrency cap; the 9 s request "
+            "timeout applies only at await points and cannot interrupt the synchronous sweep."
         ),
         formula_dict={
             "GridSize": Formula(
@@ -279,7 +280,7 @@ def btune() -> FunctionManifest:
         field_dict={
             "best_params": FieldDef(description="Parameter set with the best in-sample (train) metric.", source="computed"),
             "best_metric_oos": FieldDef(description="Test-slice metric of best_params; not used for selection.", source="computed"),
-            "top_n_results[]": FieldDef(description="Top-N ranked by OOS metric.", source="computed"),
+            "top_n_results[]": FieldDef(description="Top-N ranked by the in-sample (train-slice) metric; metric_oos is shown per row but does not rank.", source="computed"),
             "full_results[]": FieldDef(description="Complete grid eval — large; usually paginated.", source="computed"),
             "overfit_warning": FieldDef(description="True when median IS-OOS gap exceeds threshold.", source="computed"),
         },
@@ -307,9 +308,9 @@ def btune() -> FunctionManifest:
             ),
             SemanticTest(
                 name="btune_full_grid_size_equals_product_of_values",
-                description="In grid mode, full_results length equals Cartesian product size.",
+                description="In grid mode, full_results plus combos_skipped equals the Cartesian product size.",
                 inputs={"search_mode": "grid"},
-                assertions=["len(full_results) == prod(len(v) for v in param_grid.values())"],
+                assertions=["len(full_results) + combos_skipped == prod(len(v) for v in param_grid.values())"],
             ),
             SemanticTest(
                 name="btune_overfit_warning_when_gap_high",

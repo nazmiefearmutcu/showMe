@@ -220,3 +220,53 @@ def test_btune_seed_fraction_columns_are_not_percent_kind():
     for key in ("cagr", "max_drawdown"):
         assert cols[key].kind != "percent"
         assert cols[key].unit in (None, "")
+
+
+# ── Review 2026-11-08: BTUNE seed and handler must agree (BTUNE#3) ───────
+
+
+def test_btune_seed_top_n_description_names_the_train_ranking():
+    from showme.manifest.seeds.btune_seed import btune
+
+    desc = btune.field_dict["top_n_results[]"].description
+    assert "OOS" not in desc
+    assert "in-sample" in desc.lower() or "train" in desc.lower()
+
+
+def test_btune_seed_provider_mode_lists_no_unserved_modes():
+    from showme.manifest.enums import DataMode
+    from showme.manifest.seeds.btune_seed import btune
+
+    inputs = {i.name: i for i in btune.inputs}
+    assert DataMode.CACHED_SNAPSHOT.value not in (inputs["provider_mode"].options or [])
+
+
+def test_btune_seed_full_grid_assertion_accounts_for_skipped_combinations():
+    from showme.manifest.seeds.btune_seed import btune
+
+    test = next(t for t in btune.semantic_tests if t.name == "btune_full_grid_size_equals_product_of_values")
+    assert "len(full_results) == prod(len(v) for v in param_grid.values())" not in test.assertions
+    assert any("combos_skipped" in a for a in test.assertions)
+
+
+def test_btune_seed_methodology_makes_no_concurrency_claim():
+    from showme.manifest.seeds.btune_seed import btune
+
+    assert "caps concurrency" not in btune.methodology
+    assert "parallelizable" not in btune.methodology
+    assert "sequential" in btune.methodology
+
+
+def test_btune_live_run_returns_every_output_contract_field(equity):
+    from showme.manifest.seeds.btune_seed import btune
+
+    res = _run(BTUNEFunction(_live_deps()).execute(
+        instrument=equity, live_backtest=True, grid={"fast": [5, 10], "slow": [30, 50]},
+    ))
+    assert res.data["status"] == "ok"
+    missing = [k for k in btune.output_contract.must_have if k not in res.data]
+    assert missing == []
+
+
+def test_btune_class_description_does_not_claim_oos_ranking():
+    assert "rank out-of-sample" not in BTUNEFunction.description

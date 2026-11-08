@@ -70,7 +70,7 @@ class BTUNEFunction(BaseFunction):
     name = "Backtest Auto-Tuner"
     asset_classes = (AssetClass.EQUITY, AssetClass.CRYPTO, AssetClass.ETF)
     category = "portfolio"
-    description = "Hyperparameter sweep over a strategy grid; rank out-of-sample by Sharpe / total return / Calmar."
+    description = "Hyperparameter sweep over a strategy grid; rank by the train-slice Sharpe / total return / Calmar and report the out-of-sample value."
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         if instrument is None:
@@ -192,6 +192,7 @@ class BTUNEFunction(BaseFunction):
             code=self.code, instrument=instrument,
             data={
                 "status": "ok",
+                "as_of": datetime.now(timezone.utc).isoformat(),
                 "symbol": instrument.symbol,
                 "strategy": spec["strategy"],
                 "strategy_id": spec["strategy"],
@@ -427,6 +428,7 @@ def _unavailable_result(
         instrument=instrument,
         data={
             "status": status,
+            "as_of": datetime.now(timezone.utc).isoformat(),
             "reason": reason,
             "strategy": strategy,
             "best_params": None,
