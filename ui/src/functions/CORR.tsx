@@ -137,7 +137,9 @@ interface PairRow {
 interface PairDetail extends PairRow {
   left_volatility?: number | null;
   right_volatility?: number | null;
-  annualization_factor?: number;
+  // CORR#2: each side is annualized on its own realized calendar.
+  left_annualized_volatility?: number | null;
+  right_annualized_volatility?: number | null;
   overlap_sample?: OverlapRow[];
 }
 
@@ -1213,8 +1215,12 @@ function PairDetailCard({
         />
         <PairKv label="obs" value={String(detail.observations ?? 0)} />
         <PairKv
-          label="ann fac"
-          value={formatNum(detail.annualization_factor ?? null, 3)}
+          label="left ann vol"
+          value={formatNum(detail.left_annualized_volatility ?? null, 6)}
+        />
+        <PairKv
+          label="right ann vol"
+          value={formatNum(detail.right_annualized_volatility ?? null, 6)}
         />
       </div>
     </div>
@@ -1398,7 +1404,8 @@ function detailForPair(
     covariance: cell.covariance,
     observations: cell.observations,
     overlap_sample: fallback?.overlap_sample ?? [],
-    annualization_factor: fallback?.annualization_factor,
+    left_annualized_volatility: fallback?.left_annualized_volatility,
+    right_annualized_volatility: fallback?.right_annualized_volatility,
     left_volatility: fallback?.left_volatility,
     right_volatility: fallback?.right_volatility,
   };
