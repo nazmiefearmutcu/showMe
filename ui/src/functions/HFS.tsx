@@ -478,14 +478,20 @@ function deriveStats(rows: HFSRow[]): HFSStats {
   };
 }
 
-/** Normalize a % outstanding figure: 13F reference rows report fractions. */
+/**
+ * HFS#3: `pct_outstanding` is a FRACTION of shares outstanding (0.087 = 8.7%).
+ * The holder rows and the backend field dictionary both state that unit, so
+ * the value is never guessed to be in percent units (the old magnitude check
+ * rescaled any |v| <= 1.5). A value outside [0, 1] cannot be a share of the
+ * outstanding shares, so it renders as missing rather than as a guessed %.
+ */
 function normalizePct(v: unknown): number | null {
   const n = finite(v);
-  if (n == null) return null;
-  return Math.abs(n) <= 1.5 ? n * 100 : n;
+  if (n == null || n < 0 || n > 1) return null;
+  return n * 100;
 }
 
-function fmtPctOut(v: unknown): string {
+export function fmtPctOut(v: unknown): string {
   const n = normalizePct(v);
   return n == null ? "—" : `${n.toFixed(2)}%`;
 }
