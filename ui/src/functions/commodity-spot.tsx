@@ -11,7 +11,7 @@
  * shows a prominent reference-model pill + inline notice for it, and an
  * honest empty state when the provider returns nothing usable.
  */
-import { useMemo, type CSSProperties } from "react";
+import { Fragment, useMemo, type CSSProperties } from "react";
 import {
   Empty,
   Pane,
@@ -230,18 +230,41 @@ export function CommoditySpotPane({ code, symbol, title }: CommoditySpotPaneProp
             tone="neutral"
           />
         ) : null}
-        <StatCard
-          label="Day range"
-          value={`${fmtPrice(primary?.low)} – ${fmtPrice(primary?.high)}`}
-          caption={`${primary?.symbol ?? ""} OPEN ${fmtPrice(primary?.open)}`}
-          tone="neutral"
-        />
-        <StatCard
-          label="Volume"
-          value={fmtCompact(primary?.volume)}
-          caption={primary?.exchange ?? ""}
-          tone="neutral"
-        />
+        {/* BOIL#4: a multi-leg pane reports each leg's own range and volume,
+            labelled by symbol; a single-leg pane keeps the plain cards. */}
+        {rows.length > 1
+          ? rows.map((row) => (
+              <Fragment key={`range-${row.symbol ?? row.name}`}>
+                <StatCard
+                  label={`${row.symbol ?? "Spot"} day range`}
+                  value={`${fmtPrice(row.low)} – ${fmtPrice(row.high)}`}
+                  caption={`${row.symbol ?? ""} OPEN ${fmtPrice(row.open)}`}
+                  tone="neutral"
+                />
+                <StatCard
+                  label={`${row.symbol ?? "Spot"} volume`}
+                  value={fmtCompact(row.volume)}
+                  caption={row.exchange ?? ""}
+                  tone="neutral"
+                />
+              </Fragment>
+            ))
+          : (
+            <>
+              <StatCard
+                label="Day range"
+                value={`${fmtPrice(primary?.low)} – ${fmtPrice(primary?.high)}`}
+                caption={`${primary?.symbol ?? ""} OPEN ${fmtPrice(primary?.open)}`}
+                tone="neutral"
+              />
+              <StatCard
+                label="Volume"
+                value={fmtCompact(primary?.volume)}
+                caption={primary?.exchange ?? ""}
+                tone="neutral"
+              />
+            </>
+          )}
       </section>
       {legCloses
         ? Object.entries(legCloses)

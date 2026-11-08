@@ -220,6 +220,21 @@ describe("BOIL pane — per-leg history (BOIL#1)", () => {
   });
 });
 
+describe("BOIL pane — per-leg day range and volume (BOIL#4)", () => {
+  it("shows each leg's own day range and volume under its symbol", () => {
+    setMockFn({ state: "ok", ...livePayload() });
+    const { container } = render(<BOILPane code="BOIL" symbol="CL=F" />);
+    // CL=F: low 90.58 (last − 0.9 = 90.58), high 92.08; Brent: low 95.38, high 96.88.
+    expect(container.textContent).toContain("CL=F day range");
+    expect(container.textContent).toContain("BZ=F day range");
+    expect(container.textContent).toContain("CL=F volume");
+    expect(container.textContent).toContain("BZ=F volume");
+    // Brent's own low/high reach the page, not WTI's duplicated under it.
+    expect(container.textContent).toContain("95.380");
+    expect(container.textContent).toContain("96.880");
+  });
+});
+
 describe("BOIL pane — interaction", () => {
   it("switches the history window via the segmented control", () => {
     setMockFn({ state: "ok", ...livePayload() });
