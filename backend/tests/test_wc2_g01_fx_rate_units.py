@@ -67,3 +67,26 @@ def test_fxh_percent_base_rate_is_input_error_not_a_hedge_book() -> None:
                                      tenor="3M"))
     assert res.data["status"] == "input_error", res.data
     assert "decimal" in res.data["reason"]
+
+
+# ── XCON-4: one day-count convention across FXH, FRD and FXFC ─────────────
+
+
+def test_fxh_forward_uses_act_360_like_frd_and_fxfc() -> None:
+    """A 360-day tenor at S=1, r_quote=10 %, r_base=0 is exactly 1.10 on ACT/360.
+
+    On the old ACT/365 basis (days/365) the same inputs give 1.0986, so FXH
+    undercounted the accrual against the USD/EUR money-market quote basis.
+    """
+    from showme.engine.services.fx_hedge import forward_rate
+
+    assert forward_rate(spot=1.0, home_rate=0.10, base_rate=0.0, days=360) == pytest.approx(1.10, abs=1e-12)
+
+
+def test_fxh_and_frd_agree_for_the_same_number_of_days() -> None:
+    from showme.engine.services.fx_hedge import forward_rate
+
+    days = 91
+    fxh = forward_rate(spot=1.10, home_rate=0.035, base_rate=0.045, days=days)
+    frd = fx._forward(1.10, 0.045, 0.035, days / 365.0, "ACT/360")
+    assert fxh == pytest.approx(frd, abs=1e-12)

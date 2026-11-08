@@ -10,7 +10,7 @@ Coverage analysis:
 - expected_carry_pnl (interest rate differential × notional × time)
 - pnl scenario at +x% USD strengthen / weaken
 
-Forward rate via covered interest parity:
+Forward rate via covered interest parity, T = days/360 (ACT/360):
     F = S × (1 + r_quote × T) / (1 + r_base × T)
 where:
     base = the currency you're hedging FROM
@@ -71,9 +71,16 @@ def decimal_rate_error(label: str, value: Any) -> str | None:
     return None
 
 
+#: Day-count for both rate legs: ACT/360, the house convention shared with FRD
+#: and FXFC (USD and EUR money-market quotes are ACT/360). XCON-4: FXH used
+#: days/365 here, so the same pair and tenor priced differently across panes.
+DAY_COUNT_BASIS = 360.0
+
+
 def forward_rate(*, spot: float, home_rate: float, base_rate: float,
                  days: int) -> float:
-    T = days / 365.0
+    """CIP forward, simple interest on ACT/360: F = S(1 + r_quote T)/(1 + r_base T)."""
+    T = days / DAY_COUNT_BASIS
     return spot * (1 + home_rate * T) / (1 + base_rate * T)
 
 

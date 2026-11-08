@@ -290,7 +290,7 @@ class FXHFunction(BaseFunction):
         _attach_assumed_values(out, assumed_defaults)
         out["methodology"] = (
             "FXH computes a forward overlay for foreign-currency exposure. "
-            "Forward rate uses covered interest parity: F = S * (1 + home_rate*T) / (1 + base_rate*T). "
+            "Forward rate uses covered interest parity: F = S * (1 + home_rate*T) / (1 + base_rate*T), with T = days/360 (ACT/360, shared with FRD and FXFC). "
             "Hedged notional = exposure * hedge_ratio. Scenario P&L applies shocks to the unhedged residual plus locked-in carry."
         )
         if source_mode == "portfolio_state":
