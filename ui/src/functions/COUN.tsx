@@ -71,6 +71,8 @@ interface COUNData {
   cards?: COUNCard[];
   source_mode?: string;
   country_known?: boolean;
+  // Explicit no-profile state for an uncurated country on the live path.
+  profile_state?: { status?: string; reason?: string };
 }
 
 const COUNTRY_OPTIONS = [
@@ -106,6 +108,15 @@ export function COUNPane({ code }: FunctionPaneProps) {
 
   const payload = data?.data;
   const rows = useMemo(() => payload?.rows ?? [], [payload]);
+  // Backend warnings (provider failures, missing curated profile, ignored
+  // metric names) plus the explicit profile_state reason, shown outside the
+  // body so they stay visible even when no rows come back.
+  const notices = useMemo(() => {
+    const out: string[] = [...(data?.warnings ?? [])];
+    const profileReason = payload?.profile_state?.reason;
+    if (profileReason && !out.includes(profileReason)) out.push(profileReason);
+    return out;
+  }, [data, payload]);
 
   // DEFECT WORKAROUND: the payload's cards duplicate the Policy rate (live
   // value prepended first, stale reference value later). Dedupe by label,
@@ -177,6 +188,8 @@ export function COUNPane({ code }: FunctionPaneProps) {
           <span>
             <span style={monoStrongStyle}>{r.metric || "—"}</span>
             <span style={sectionSubStyle}>{r.section ?? ""}</span>
+            {r.note ? <span style={sectionSubStyle}>{r.note}</span> : null}
+            {r.reason ? <span style={reasonStyle}>{r.reason}</span> : null}
           </span>
         ),
       },
@@ -316,7 +329,18 @@ export function COUNPane({ code }: FunctionPaneProps) {
             </FunctionControlGroup>
           }
         />
-        <PaneBody>{body}</PaneBody>
+        <PaneBody>
+          {notices.length > 0 ? (
+            <div role="note" aria-label="COUN warnings" style={noticeStyle}>
+              {notices.map((notice, i) => (
+                <span key={i} style={noticeLineStyle}>
+                  {notice}
+                </span>
+              ))}
+            </div>
+          ) : null}
+          {body}
+        </PaneBody>
         <PaneFooter>
           <StatusSection label="country" value={country} tone="accent" />
           <StatusDivider />
@@ -379,6 +403,28 @@ const monoMutedStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
   fontVariantNumeric: "tabular-nums",
   color: "var(--text-mute)",
+};
+
+const reasonStyle: CSSProperties = {
+  display: "block",
+  fontSize: "var(--font-size-2xs)",
+  color: "var(--text-mute)",
+  whiteSpace: "normal",
+};
+
+const noticeStyle: CSSProperties = {
+  display: "grid",
+  gap: 4,
+  margin: "0 0 10px",
+  padding: "8px 10px",
+  border: "1px solid var(--border-subtle)",
+  borderRadius: "var(--radius-sm)",
+  color: "var(--text-secondary)",
+  fontSize: "var(--font-size-2xs)",
+};
+
+const noticeLineStyle: CSSProperties = {
+  display: "block",
 };
 
 const sectionSubStyle: CSSProperties = {
