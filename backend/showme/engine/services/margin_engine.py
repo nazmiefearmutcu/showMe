@@ -102,12 +102,20 @@ def infer_margin_type(positions: list[dict[str, Any]]) -> str:
     return "reg_t"
 
 
-def _position_rule(asset_class: str, margin_type: str, account_rule: dict[str, Any]) -> dict[str, Any]:
-    """Rule for one position: the account rule, unless its class has its own rule."""
+def _position_rule(
+    asset_class: str, margin_type: str, account_rule: dict[str, Any], *, explicit: bool = True
+) -> dict[str, Any]:
+    """Rule for one position: the account rule, unless its class has its own rule.
+
+    ``explicit`` is False when the account type was inferred from the book (MGN#2
+    residual): an inferred crypto_futures account must not reprice spot CRYPTO lines.
+    """
     cls = str(asset_class or "").upper()
     mapped = _CLASS_RULE.get(cls)
+    if mapped is None or mapped == margin_type:
+        return account_rule
     # An account the user set to crypto_futures keeps its crypto rule (explicit choice).
-    if mapped is None or mapped == margin_type or (cls == "CRYPTO" and margin_type == "crypto_futures"):
+    if cls == "CRYPTO" and margin_type == "crypto_futures" and explicit:
         return account_rule
     return dict(DEFAULT_RULES[mapped])
 
@@ -216,6 +224,7 @@ def calc_account(
     cfg = cfg or _load_config()
     info = (cfg.get("accounts") or {}).get(account_name) or {}
     margin_type = info.get("margin_type", "reg_t")
+    explicit = not info.get("inferred")
     rule = {**_rule_for(margin_type), **(info.get("overrides") or {})}
     # Rule that sets buying power: the rule of the largest position by notional.
     bp_rule = rule
@@ -227,7 +236,7 @@ def calc_account(
         per_pos = []
         biggest = -1.0
         for p in positions:
-            p_rule = _position_rule(p.get("asset_class", ""), margin_type, rule)
+            p_rule = _position_rule(p.get("asset_class", ""), margin_type, rule, explicit=explicit)
             i, m = _position_margin(p, p_rule)
             ip += i
             mp += m
@@ -279,13 +288,19 @@ def calc_all_accounts(
             "quantity": p.quantity, "avg_cost": p.avg_cost, "last": px,
             "currency": p.currency,
         })
-    # Auto-create accounts if missing.
+    # Auto-create accounts if missing. An inferred type is flagged and re-derived from
+    # the current book, so a book that loses its derivative is not stuck as crypto_futures.
     cfg_accts = cfg.setdefault("accounts", {})
     for name, positions in accts.items():
-        cfg_accts.setdefault(name, {
-            "margin_type": infer_margin_type(positions), "cash": 0.0,
-            "currency": "USD", "overrides": {},
-        })
+        inferred = infer_margin_type(positions)
+        entry = cfg_accts.get(name)
+        if entry is None:
+            cfg_accts[name] = {
+                "margin_type": inferred, "cash": 0.0,
+                "currency": "USD", "overrides": {}, "inferred": True,
+            }
+        elif entry.get("inferred"):
+            entry["margin_type"] = inferred
     _save_config(cfg)
     out = []
     total = {

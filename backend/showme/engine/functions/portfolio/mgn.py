@@ -83,6 +83,8 @@ class MGNFunction(BaseFunction):
                         "cash": float(params.get("cash", 0) or 0),
                         "currency": params.get("currency", "USD"),
                         "overrides": params.get("overrides") or {},
+                        # Only a caller-chosen type is explicit; otherwise it is inferred.
+                        "inferred": not params.get("margin_type"),
                     }
                 }
             }
