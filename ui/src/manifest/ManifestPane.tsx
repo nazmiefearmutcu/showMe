@@ -135,6 +135,15 @@ export function ManifestPane(props: ManifestPaneProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [manifest]);
 
+  // UI-1: the terminal link owns the symbol. initialInputs only seeds the first
+  // render, so follow later link changes here; a non-empty linked symbol replaces
+  // the current one (the same rule HFS applies), and a cleared link keeps it.
+  const linkedSymbol = typeof initialInputs?.symbol === "string" ? initialInputs.symbol.trim() : "";
+  useEffect(() => {
+    if (!linkedSymbol) return;
+    setInputs((prev) => (prev.symbol === linkedSymbol ? prev : { ...prev, symbol: linkedSymbol }));
+  }, [linkedSymbol]);
+
   // Fetch data with the current inputs.
   const fnResult = useFunction<ManifestPanePayload>({
     code,
