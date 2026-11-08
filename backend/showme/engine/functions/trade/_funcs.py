@@ -959,6 +959,173 @@ class BBGTFunction(EMSXFunction):
     code = "BBGT"
     name = "Multi-Asset Trade Ticket"
 
+    # BBGT ticket vocabulary (manifest bbgt_seed.py). Validated here, before the
+    # shared EMSX engine, so EMSX / TSOX / FXGO keep their existing behaviour.
+    _SIDES = ("BUY", "SELL")
+    _ORDER_TYPES = ("MARKET", "LIMIT")
+    _TIFS = ("DAY", "GTC", "IOC", "FOK")
+
+    @staticmethod
+    def _ticket_text(params: dict[str, Any], keys: tuple[str, ...], default: str) -> str:
+        for key in keys:
+            value = params.get(key)
+            if value not in (None, ""):
+                return str(value).strip().upper()
+        return default
+
+    @staticmethod
+    def _limit_price(params: dict[str, Any]) -> float | None:
+        raw = params.get("price")
+        if raw in (None, ""):
+            return None
+        try:
+            price = float(raw)
+        except (TypeError, ValueError):
+            return None
+        if not (0.0 < price < float("inf")):
+            return None
+        return price
+
+    async def _indicative_last(self, instrument: Instrument) -> tuple[float | None, str | None, str | None, str | None]:
+        """Return (last, as_of, source, reason) from the keyless quote adapter, or a reason it is absent."""
+        yf = getattr(self.deps, "yfinance", None)
+        if yf is None:
+            return None, None, None, "No indicative quote adapter is wired, so a MARKET notional cannot be computed."
+        from showme.engine.core.base_data_source import DataKind, DataRequest
+
+        try:
+            quote = await asyncio.wait_for(
+                yf.fetch(DataRequest(
+                    kind=DataKind.QUOTE,
+                    instrument=instrument,
+                    extra={"timeout": 2.0},
+                )),
+                timeout=2.5,
+            )
+        except Exception as exc:  # noqa: BLE001 — quote is best-effort; degrade honestly
+            return None, None, None, f"Indicative quote unavailable ({type(exc).__name__}); MARKET notional not computed."
+        try:
+            last = float(getattr(quote, "last", None))
+        except (TypeError, ValueError):
+            last = None
+        if last is None or not (0.0 < last < float("inf")):
+            return None, None, None, "Indicative quote returned no usable last price; MARKET notional not computed."
+        ts = getattr(quote, "timestamp", None)
+        as_of = ts.isoformat() if hasattr(ts, "isoformat") else None
+        source = getattr(quote, "source", None) or "yfinance"
+        return last, as_of, str(source), None
+
+    async def _notional_fields(
+        self, instrument: Instrument, quantity: float, limit_price: float | None,
+    ) -> dict[str, Any]:
+        """Pre-trade notional = quantity x (limit price, else indicative last), never a fabricated value."""
+        currency = str(instrument.currency or "USD")
+        fee_note = "No commission or fee estimate: no free fee source is wired."
+        if limit_price is not None:
+            return {
+                "reference_price": limit_price,
+                "reference_price_basis": "limit_price",
+                "notional": round(quantity * limit_price, 6),
+                "notional_currency": currency,
+                "notional_basis": "limit_price",
+                "notional_indicative": False,
+                "notional_as_of": _utc_now_iso(),
+                "notional_source": None,
+                "notional_reason": None,
+                "notional_note": "quantity x limit price in quote currency; no contract multiplier applied. " + fee_note,
+            }
+        last, as_of, source, reason = await self._indicative_last(instrument)
+        if last is None:
+            return {
+                "reference_price": None,
+                "reference_price_basis": None,
+                "notional": None,
+                "notional_currency": currency,
+                "notional_basis": "unavailable",
+                "notional_indicative": None,
+                "notional_as_of": None,
+                "notional_source": None,
+                "notional_reason": reason,
+                "notional_note": fee_note,
+            }
+        return {
+            "reference_price": last,
+            "reference_price_basis": "indicative_last_quote",
+            "notional": round(quantity * last, 6),
+            "notional_currency": currency,
+            "notional_basis": "indicative_last_quote",
+            "notional_indicative": True,
+            "notional_as_of": as_of,
+            "notional_source": source,
+            "notional_reason": None,
+            "notional_note": "quantity x indicative last quote in quote currency; not an executable price. " + fee_note,
+        }
+
+    async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
+        if instrument is None:
+            return await super().execute(instrument=None, **params)
+        side = self._ticket_text(params, ("side",), "BUY")
+        order_type = self._ticket_text(params, ("type", "order_type"), "MARKET")
+        tif = self._ticket_text(params, ("tif", "time_in_force"), "GTC")
+        quantity = _float_param(params.get("quantity"))
+        common: dict[str, Any] = {
+            "broker": "paper",
+            "symbol": instrument.symbol,
+            "asset_class": instrument.asset_class.value,
+            "side": side,
+            "quantity": quantity,
+            "order_type": order_type,
+            "time_in_force": tif,
+            "tif": tif,
+        }
+        # Reject unknown enum values before anything is previewed or armed:
+        # previously "HOLD" / "FOO" were echoed back as a valid preview.
+        for field_name, value, allowed in (
+            ("side", side, self._SIDES),
+            ("order_type", order_type, self._ORDER_TYPES),
+            ("tif", tif, self._TIFS),
+        ):
+            if value not in allowed:
+                return FunctionResult(
+                    code=self.code,
+                    instrument=instrument,
+                    data={
+                        **common,
+                        "status": "input_error",
+                        "field": field_name,
+                        "value": value,
+                        "allowed": list(allowed),
+                        "reason": f"{field_name.upper()} '{value}' is not supported; use one of {', '.join(allowed)}.",
+                        "next_actions": ["Pick a supported value in the ticket controls and preview again."],
+                    },
+                    sources=["paper_ticket"],
+                    metadata={"preview_only": True},
+                )
+        limit_price = self._limit_price(params) if order_type == "LIMIT" else None
+        if order_type == "LIMIT" and limit_price is None:
+            # A LIMIT ticket without a positive price must not preview as valid
+            # or reach the broker with price=None.
+            return FunctionResult(
+                code=self.code,
+                instrument=instrument,
+                data={
+                    **common,
+                    "status": "input_required",
+                    "field": "price",
+                    "reason": "LIMIT order needs a limit price greater than zero before it can be previewed or submitted.",
+                    "next_actions": [
+                        "Enter a limit price in the ticket controls.",
+                        "Or set Type to MARKET.",
+                    ],
+                },
+                sources=["paper_ticket"],
+                metadata={"preview_only": True},
+            )
+        result = await super().execute(instrument=instrument, **params)
+        if isinstance(result.data, dict) and result.data.get("status") in {"preview", "submitted"}:
+            result.data.update(await self._notional_fields(instrument, quantity, limit_price))
+        return result
+
 
 # TCA is canonically registered via showme.engine.functions.trade.tca (TCAFunction).
 # The legacy stub here was deleted to avoid the duplicate-code drift flagged in
