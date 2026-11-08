@@ -111,6 +111,7 @@ function wikiPayload() {
         full_name: "Jensen Huang",
         role: "entrepreneur, engineer",
         company: "Nvidia",
+        company_source: "wikidata:P108",
         description: "Taiwanese and American businessman (born 1963)",
         summary:
           'Jen-Hsun "Jensen" Huang is a Taiwanese and American business executive.',
