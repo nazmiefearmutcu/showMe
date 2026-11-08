@@ -53,7 +53,7 @@ def regm() -> FunctionManifest:
                 name="regime_taxonomy",
                 label="Taxonomy",
                 control=ControlKind.SELECT,
-                required=True,
+                required=False,
                 description="Not wired in this build: no code reads it; the label is always the rule-based composite.",
                 options=["business_cycle", "risk_on_off", "inflation_growth"],
             ),
@@ -77,10 +77,13 @@ def regm() -> FunctionManifest:
             InputSpec(
                 name="window",
                 label="Smoothing window",
-                control=ControlKind.SELECT,
+                control=ControlKind.NUMBER,
                 required=False,
-                description="Not applied to the current payload; action=history reads it as an integer bar count, so the 1m-12m options do not apply.",
-                options=["1m", "3m", "6m", "12m"],
+                description="Integer bar count read by action=history only; not applied to action=current.",
+                min=20,
+                max=1000,
+                step=1,
+                unit="bars",
             ),
             InputSpec(
                 name="model_threshold",
@@ -108,7 +111,7 @@ def regm() -> FunctionManifest:
         defaults={
             "regime_taxonomy": "business_cycle",
             "features": [],
-            "window": "3m",
+            "window": 60,
             "model_threshold": 0.55,
             "provider_mode": DataMode.LIVE_OFFICIAL.value,
         },
@@ -116,7 +119,6 @@ def regm() -> FunctionManifest:
             primary="internal",
             fallbacks=["fred", "cached_snapshot"],
             acceptable_modes=[
-                DataMode.MODELED,
                 DataMode.LIVE_OFFICIAL,
                 DataMode.DELAYED_REFERENCE,
                 DataMode.CACHED_SNAPSHOT,
