@@ -121,3 +121,18 @@ def test_live_rows_carry_par_bond_duration_and_curated_rows_keep_basis(monkeypat
     assert rows["FR10Y"]["duration_basis"] == "curated_reference"
     assert rows["GB2Y"]["duration"] == pytest.approx(1.9)
     assert rows["GB2Y"]["duration_basis"] == "curated_reference"
+
+
+def test_non_yield_predicate_does_not_claim_curated_yield_matches(monkeypatch) -> None:
+    # SRCH#2 follow-up: a predicate on a non-yield column applies no yield
+    # filter, so the curated-yield warning must not fire for the matched rows.
+    monkeypatch.setattr(
+        screen_funcs, "fetch_fred_csv_series", _fred_fake({"DGS10": 4.97})
+    )
+    monkeypatch.setattr(screen_funcs, "fetch_quote_snapshot", _no_quote)
+
+    result = asyncio.run(SRCHFunction().execute(query="currency = EUR", limit=50))
+    assert result.data["rows"], "fixture must match rows on the currency predicate"
+    assert any(row.get("quote_type") == "unavailable" for row in result.data["rows"])
+    assert result.metadata.get("curated_yield_matches", 0) == 0
+    assert not any("does not verify" in warning for warning in result.warnings), result.warnings

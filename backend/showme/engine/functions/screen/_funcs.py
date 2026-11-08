@@ -1424,8 +1424,14 @@ def _flag_curated_yield_matches(
     """
     if result.data.get("status") in ("input_error", "unsupported_predicate"):
         return
+    rewritten = _rewrite_screen_query(query)
+    # SRCH#2 follow-up: only a predicate on the yield column makes a curated
+    # yield the basis of a match. Other predicates (e.g. currency) apply no
+    # yield filter, so there is nothing for this warning to qualify.
+    if not re.search(r"\byield\b", rewritten, re.I):
+        return
     try:
-        filtered = _apply_screen_query(rows, _rewrite_screen_query(query))
+        filtered = _apply_screen_query(rows, rewritten)
     except Exception:  # noqa: BLE001 — parse errors are reported by _screen_result
         return
     count = sum(1 for row in filtered if row.get("quote_type") == "unavailable")
