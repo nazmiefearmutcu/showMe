@@ -51,10 +51,18 @@ def _validate_maps(port: Any, port_ret: Any, bench: Any, bench_ret: Any) -> str 
         if abs(total - 1.0) > _WEIGHT_SUM_TOLERANCE:
             return (f"{name}_weights sum to {total * 100:.4f}%, not 100%; the attribution "
                     "effects would not reconcile to the active return.")
-    for name, weights, returns in (("port", port, port_ret), ("bench", bench, bench_ret)):
-        for sector, weight in weights.items():
-            if weight != 0 and sector not in returns:
-                return f"{sector} has a {name} weight but no {name}_returns entry."
+    # Every sector in either map needs a return on BOTH sides. A sector missing a return would
+    # otherwise be read as 0%, which is invented data (a benchmark-only sector has no portfolio
+    # return, and a held sector has no benchmark return, unless the caller supplies one).
+    universe = sorted(set(port) | set(bench))
+    missing = []
+    for name, returns in (("port", port_ret), ("bench", bench_ret)):
+        absent = [sector for sector in universe if sector not in returns]
+        if absent:
+            missing.append(f"{name}_returns has no entry for {', '.join(absent)}")
+    if missing:
+        return ("; ".join(missing) + ". Each sector in the weight maps needs a return on both sides; "
+                "a missing return is not treated as 0%.")
     return None
 
 
@@ -87,20 +95,23 @@ class PFAFunction(BaseFunction):
         problem = _validate_maps(port, port_ret, bench, bench_ret)
         if problem is not None:
             return _input_state("input_error", problem,
-                                ["Correct the sector weights/returns so each side sums to 100% "
-                                 "and every weighted sector has a return."])
+                                ["Correct the weights so each side sums to 100%, and give every sector that appears "
+                                 "in either weight map a return on both sides (for a sector the portfolio "
+                                 "does not hold, supply the sector return as the what-if portfolio return)."])
 
+        # _validate_maps guarantees a return on each side for every sector in the union, so the
+        # returns are read directly: a missing one can never reach the arithmetic as 0%.
         sectors = sorted(set(port) | set(bench))
         # Total benchmark return
-        rb_total = sum(bench.get(s, 0) * bench_ret.get(s, 0) for s in sectors)
-        rp_total = sum(port.get(s, 0) * port_ret.get(s, 0) for s in sectors)
+        rb_total = sum(bench.get(s, 0) * bench_ret[s] for s in sectors)
+        rp_total = sum(port.get(s, 0) * port_ret[s] for s in sectors)
         rows = []
         ae_total = se_total = ie_total = 0.0
         for s in sectors:
             wp = port.get(s, 0)
             wb = bench.get(s, 0)
-            rp = port_ret.get(s, 0)
-            rb = bench_ret.get(s, 0)
+            rp = port_ret[s]
+            rb = bench_ret[s]
             ae = (wp - wb) * (rb - rb_total)
             se = wb * (rp - rb)
             ie = (wp - wb) * (rp - rb)
@@ -116,6 +127,7 @@ class PFAFunction(BaseFunction):
         return FunctionResult(
             code=self.code, instrument=None,
             data={
+                "status": "ok",
                 "rows": rows,
                 "totals": {
                     "portfolio_return": rp_total,
