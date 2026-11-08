@@ -14,6 +14,11 @@
  * strength). Empty / error / degraded (warnings) states are explicit —
  * never fake numbers.
  *
+ * No interval or look-back control is exposed on this pane by design (wc1-g33
+ * TECH#5): the embedded chart owns timeframes, and the indicator request keeps
+ * the manifest defaults (interval 1d, 365 days). Callers of /api/fn/TECH can
+ * still pass `interval` and `days`; an unsupported interval is an input_error.
+ *
  * Study sub-panes (OPP wave 2026-09-11): the SAME family chips drive two
  * inline sub-panes — RSI(14) on a fixed 0–100 domain (true 70/30 guides) and
  * MACD (line + signal + sign-coloured histogram) — mirroring the HP study

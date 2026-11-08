@@ -103,9 +103,9 @@ def tech() -> FunctionManifest:
                 control=ControlKind.MULTISELECT,
                 required=True,
                 description=(
-                    "Indicator families to compute and return. Each family becomes its own"
+                    "Indicator families to return. Each family becomes its own"
                     " sub-pane (RSI/MACD/ATR/ADX/Stochastic/OBV) or price overlay"
-                    " (SMA/EMA/Bollinger/Ichimoku). Omit to compute every family."
+                    " (SMA/EMA/Bollinger/Ichimoku). Omit to return every family."
                 ),
                 options=[
                     "SMA", "EMA", "BB", "Ichimoku",

@@ -164,9 +164,9 @@ class TECHFunction(BaseFunction):
         if not self.deps.yfinance:
             return FunctionResult(code=self.code, instrument=instrument, data={},
                                   warnings=["no yfinance"])
-        # wc1-g33 (TECH#5): studies selects the families that are computed and
-        # returned; interval is validated against the supported list before any
-        # provider call (an unknown value used to reach yfinance unchecked).
+        # wc1-g33 (TECH#5): studies selects the families that are returned (every
+        # family is still computed, then filtered). interval is validated against
+        # the supported list before any provider call.
         try:
             wanted = _requested_families(params.get("studies"))
         except ValueError as exc:
