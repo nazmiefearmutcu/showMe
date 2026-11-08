@@ -445,6 +445,20 @@ class AIMFunction(BaseFunction):
             seen_history.add(key_pair)
             unique_history.append(r)
         history_rows = unique_history
+        # AIM#3-RQ: the same order_id under broker names no adapter resolves to
+        # cannot be proven to be one order. Both rows stay counted (they may be
+        # different venues), but the response must say so rather than stay silent.
+        names_by_order: dict[str, set[str]] = {}
+        for r in history_rows:
+            if r.get("order_id") is not None:
+                names_by_order.setdefault(str(r["order_id"]), set()).add(_canon_broker(r.get("broker")))
+        shared_ids = sorted(oid for oid, names in names_by_order.items() if len(names) > 1)
+        if shared_ids:
+            warnings.append(
+                "Possible duplicate order(s): order_id " + ", ".join(shared_ids)
+                + " recorded under different broker names that cannot be matched to one adapter; "
+                "each row is listed and counted separately."
+            )
         # The history store is written once at placement and never updated on
         # fills or closes, so no history row can prove a working order: it is
         # shown for the audit trail but never counted as open.
