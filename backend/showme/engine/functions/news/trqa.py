@@ -86,10 +86,13 @@ async def _fetch_transcript_text(
 @FunctionRegistry.register
 class TRQAFunction(BaseFunction):
     code = "TRQA"
-    name = "Transcript Q&A"
+    name = "Transcript & Press Release Q&A"
     asset_classes = (AssetClass.EQUITY,)
     category = "news"
-    description = "Run a list of questions against an earnings call transcript / audio."
+    description = (
+        "Run a list of questions against an earnings transcript, an audio transcript, or the latest "
+        "8-K earnings press release (labelled by document_type)."
+    )
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         sym = (getattr(instrument, "symbol", None) or params.get("symbol") or "AAPL").upper()
@@ -165,9 +168,12 @@ class TRQAFunction(BaseFunction):
         # ---- honest "no transcript" envelope --------------------------------
         if not transcript:
             reason = (
-                "Transcript Q&A could not transcribe the provided audio; check provider_errors."
+                "The provided audio could not be transcribed; check provider_errors."
                 if attempted_transcribe and transcribe_errors
-                else f"No earnings transcript found for {sym} via SEC 8-K and none was pasted."
+                else (
+                    f"No earnings transcript or 8-K earnings press release was found for {sym}, "
+                    "and no text was pasted."
+                )
             )
             return FunctionResult(
                 code=self.code,
@@ -352,7 +358,7 @@ async def _answer_questions(
             return {
                 "q": q,
                 "a": text_answer,
-                "stated": not text_answer.lower().startswith("not stated"),
+                "stated": not _is_not_stated_answer(text_answer),
                 "model": model,
                 "cost_usd": getattr(r, "cost_usd", 0),
                 "tokens": getattr(r, "tokens_in", 0) + getattr(r, "tokens_out", 0),
@@ -367,6 +373,29 @@ async def _answer_questions(
             }
 
     return list(await asyncio.gather(*(_answer(q) for q in questions)))
+
+
+_NOT_STATED_PATTERNS = (
+    re.compile(r"\b(?:does|do|did)\s+not\s+(?:\w+\s+){0,3}?(?:mention|state|say|specify|disclose|discuss|provide|address|include|cover|contain)\b"),
+    re.compile(r"\b(?:doesn't|don't|didn't)\s+(?:\w+\s+){0,3}?(?:mention|state|say|specify|disclose|discuss|provide|address|include|cover|contain)\b"),
+    re.compile(r"\bno\s+(?:mention|information|reference|statement|disclosure)\b"),
+    re.compile(r"\bnot\s+(?:mentioned|stated|disclosed|discussed|specified|provided|addressed|included|covered)\b"),
+)
+
+
+def _is_not_stated_answer(text: str) -> bool:
+    """True when an LLM answer says the document does not support the question.
+
+    Only the first sentence is inspected, so a supported answer that merely
+    mentions a missing detail later on is not reclassified.
+    """
+    cleaned = (text or "").strip().lower()
+    if not cleaned:
+        return False
+    first = re.split(r"(?<=[.!?])\s+", cleaned, maxsplit=1)[0]
+    if first.startswith("not stated"):
+        return True
+    return any(pattern.search(first) for pattern in _NOT_STATED_PATTERNS)
 
 
 _DEFAULT_MAX_TOKENS_PER_ANSWER = 512
@@ -415,7 +444,10 @@ _METHODOLOGY = (
 _FIELD_DICT = {
     "answer": "Primary answer grounded in the transcript (abstractive if an LLM is wired, else the best-matching passage).",
     "answers": "Per-question answers; model='local_extractive' marks the keyless fallback.",
-    "evidence": "Transcript passages ranked by relevance to the question.",
+    "evidence": (
+        "Passages from the source document (transcript, audio transcript or 8-K press release) "
+        "ranked by relevance to the question."
+    ),
     "score": "Fraction of query terms matched in the passage.",
 }
 
