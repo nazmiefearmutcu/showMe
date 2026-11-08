@@ -233,56 +233,99 @@ def _surface_rows(
     return rows
 
 
+_ATM_MAX_DISTANCE = 0.10
+
+
+def _ivol_atm_iv(cells: list[dict[str, Any]]) -> float | None:
+    """ATM IV for one expiry: mean of call and put IV at the listed strike nearest spot.
+
+    Only strikes quoted on BOTH sides qualify, so the value is never a single-side
+    IV passed off as the call/put average (IVOL#2). Same rule as the OMON pane.
+    No interpolation is used for ATM; no qualifying strike within
+    ``_ATM_MAX_DISTANCE`` of spot gives None.
+    """
+    by_strike: dict[float, dict[str, list[float]]] = {}
+    for cell in cells:
+        by_strike.setdefault(round(cell["moneyness"], 6), {}).setdefault(cell["side"], []).append(cell["vol"])
+    candidates = [
+        m for m, sides in by_strike.items()
+        if "CALL" in sides and "PUT" in sides and abs(m - 1.0) <= _ATM_MAX_DISTANCE
+    ]
+    if not candidates:
+        return None
+    nearest = min(candidates, key=lambda m: (abs(m - 1.0), m))
+    sides = by_strike[nearest]
+    call_iv = sum(sides["CALL"]) / len(sides["CALL"])
+    put_iv = sum(sides["PUT"]) / len(sides["PUT"])
+    return (call_iv + put_iv) / 2
+
+
+def _ivol_side_at(cells: list[dict[str, Any]], side: str, target: float) -> float | None:
+    """IV of one side at an exact moneyness, linearly interpolated between listed strikes.
+
+    Never extrapolates: a target outside the listed strike range of that side gives None (IVOL#3).
+    """
+    by_m: dict[float, list[float]] = {}
+    for cell in cells:
+        if cell["side"] == side:
+            by_m.setdefault(round(cell["moneyness"], 6), []).append(cell["vol"])
+    points = sorted((m, sum(vols) / len(vols)) for m, vols in by_m.items())
+    for m, vol in points:
+        if abs(m - target) < 1e-9:
+            return vol
+    for (m0, v0), (m1, v1) in zip(points, points[1:]):
+        if m0 < target < m1:
+            weight = (target - m0) / (m1 - m0)
+            return v0 + weight * (v1 - v0)
+    return None
+
+
 def _ivol_atm_term_and_skew(
     rows: list[dict[str, Any]],
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Derive the ATM term structure + front-expiry skew from real surface rows.
 
-    The pane's KPI ribbon (ATM IV front / Skew 90-110 / Term slope) used to be
-    permanently "—" because no handler branch emitted those fields. This is the
-    single honest source of truth for them: every value is read off the shipped
-    surface cells (no constants, nothing invented). Any expiry without usable
-    cells is skipped rather than fabricated.
+    Every value is read off the shipped surface cells (no constants, nothing invented).
+    Any expiry without usable cells is skipped rather than fabricated.
+
+    * ATM IV per expiry: see ``_ivol_atm_iv`` (call/put average at the nearest two-sided strike).
+    * Skew (90-110) = IV(OTM put at 90% moneyness) - IV(OTM call at 110% moneyness), on the
+      front expiry, each side interpolated on its own listed strikes.
 
     Returns ``(stats, series)`` where stats are DECIMALS (front/back ATM IV,
-    ``iv(90%) - iv(110%)`` skew, ``back - front`` slope) and ``series`` is the
+    skew, ``back - front`` slope, and the two skew legs) and ``series`` is the
     per-expiry ATM IV term structure consumed by the pane sparkline.
     """
-    by_expiry: dict[str, list[tuple[float, float]]] = {}
+    by_expiry: dict[str, list[dict[str, Any]]] = {}
     order: list[str] = []
     for row in rows:
         expiry = str(row.get("expiry") or "")
         vol = _finite(row.get("vol") if row.get("vol") is not None else row.get("iv"))
         moneyness = _finite(row.get("moneyness"))
-        if not expiry or vol is None or moneyness is None:
+        side = str(row.get("option_type") or "").upper()
+        if not expiry or vol is None or moneyness is None or side not in ("CALL", "PUT"):
             continue
         if expiry not in by_expiry:
             by_expiry[expiry] = []
             order.append(expiry)
-        by_expiry[expiry].append((moneyness, vol))
-
-    def _closest(cells: list[tuple[float, float]] | None, target: float) -> float | None:
-        best: tuple[float, float] | None = None
-        for moneyness, vol in cells or []:
-            distance = abs(moneyness - target)
-            if best is None or distance < best[0]:
-                best = (distance, vol)
-        return best[1] if best else None
+        by_expiry[expiry].append({"moneyness": moneyness, "vol": vol, "side": side})
 
     series: list[dict[str, Any]] = []
     for expiry in order:
-        atm = _closest(by_expiry[expiry], 1.0)
+        atm = _ivol_atm_iv(by_expiry[expiry])
         if atm is not None:
             series.append({"t": expiry, "v": round(atm, 6)})
     front = series[0]["v"] if series else None
     back = series[-1]["v"] if series else None
+    iv_put_90: float | None = None
+    iv_call_110: float | None = None
     skew: float | None = None
     if series:
-        front_cells = by_expiry.get(str(series[0]["t"]))
-        iv_90 = _closest(front_cells, 0.90)
-        iv_110 = _closest(front_cells, 1.10)
-        if iv_90 is not None and iv_110 is not None:
-            skew = round(iv_90 - iv_110, 6)
+        front_cells = by_expiry.get(str(series[0]["t"])) or []
+        iv_put_90 = _ivol_side_at(front_cells, "PUT", 0.90)
+        iv_call_110 = _ivol_side_at(front_cells, "CALL", 1.10)
+        if iv_put_90 is not None and iv_call_110 is not None:
+            skew = round(iv_put_90 - iv_call_110, 6)
     term_slope: float | None = None
     if front is not None and back is not None:
         term_slope = round(back - front, 6)
@@ -291,6 +334,8 @@ def _ivol_atm_term_and_skew(
         "atm_iv_back": back,
         "skew": skew,
         "term_slope": term_slope,
+        "skew_put_iv_90": iv_put_90,
+        "skew_call_iv_110": iv_call_110,
     }
     return stats, series
 
@@ -619,6 +664,76 @@ class HVTFunction(BaseFunction):
                               metadata={"live": True, "data_mode": "live_yfinance"})
 
 
+def _ivol_public_spot(spot: float | None, spot_state: str) -> float | None:
+    """A synthetic anchor is not a price: it is never reported as ``spot`` (placeholder 100)."""
+    return None if spot_state == "synthetic_anchor" else spot
+
+
+def _ivol_front_days(expiry: str | None, now: datetime) -> int | None:
+    if not expiry:
+        return None
+    try:
+        return (datetime.strptime(expiry, "%Y-%m-%d").date() - now.date()).days
+    except (TypeError, ValueError):
+        return None
+
+
+def _ivol_as_of(*row_sets: list[dict[str, Any]]) -> str | None:
+    """Newest option ``lastTradeDate`` across the fetched chains, as a snapshot-time proxy."""
+    newest: datetime | None = None
+    for rows in row_sets:
+        for row in rows:
+            raw = row.get("lastTradeDate")
+            if raw is None:
+                continue
+            try:
+                ts = raw if isinstance(raw, datetime) else datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+            except (TypeError, ValueError):
+                continue
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            if newest is None or ts > newest:
+                newest = ts
+    return newest.isoformat() if newest else None
+
+
+def _ivol_unavailable(
+    instrument: Instrument,
+    *,
+    spot: float,
+    spot_state: str,
+    reason: str,
+    next_actions: list[str],
+    sources: list[str],
+    provider_errors: list[str],
+    expiries: list[str] | None = None,
+) -> FunctionResult:
+    """Explicit empty state: no surface, no template, no placeholder spot."""
+    return FunctionResult(
+        code="IVOL",
+        instrument=instrument,
+        data={
+            "status": "provider_unavailable",
+            "reason": reason,
+            "symbol": instrument.symbol,
+            "spot": _ivol_public_spot(spot, spot_state),
+            "data_state": spot_state,
+            "expiries": expiries or [],
+            "rows": [],
+            "surface": [],
+            "series": [],
+            "summary": {"contracts": 0, "expiries": 0, "source_mode": "provider_unavailable"},
+            "methodology": "Live implied volatility surface from option-chain impliedVolatility by expiry, strike, and option type. No surface is shown without a live spot and a live chain.",
+            "field_dictionary": _IVOL_FIELDS,
+            "next_actions": next_actions,
+        },
+        sources=sources,
+        metadata={"live": False, "fallback": True,
+                  "spot_source": spot_state,
+                  "provider_errors": provider_errors},
+    )
+
+
 @FunctionRegistry.register
 class IVOLFunction(BaseFunction):
     """IVOL — Implied Vol Surface."""
@@ -627,46 +742,6 @@ class IVOLFunction(BaseFunction):
     asset_classes = (AssetClass.EQUITY, AssetClass.ETF, AssetClass.DERIVATIVE)
     category = "derivative"
 
-    def _reference_result(
-        self,
-        instrument: Instrument,
-        spot: float,
-        spot_state: str,
-        *,
-        provider_errors: list[str] | None = None,
-        **extra: Any,
-    ) -> FunctionResult:
-        """Spot-anchored reference surface fallback.
-
-        Used when the live option chain is unusable but the resolved spot is
-        still trustworthy. Emits the synthetic surface (``calls_grid`` /
-        ``puts_grid`` with strikes at 0.8x..1.2x ``spot``) plus ``surface`` and
-        ``rows`` so every downstream consumer has a coherent payload. The
-        ``data_state`` / ``spot_source`` labels keep it honest: this is NOT a
-        live implied-vol surface, only a skew template anchored on the real
-        underlying price.
-        """
-        synthetic = _surface_template(spot)
-        data = {**synthetic, "spot": spot, "data_state": spot_state}
-        if extra:
-            data.update(extra)
-        metadata = {
-            "fallback": True,
-            "data_mode": "modeled",
-            "spot_source": spot_state,
-            "calls": len(synthetic["calls_grid"]),
-            "puts": len(synthetic["puts_grid"]),
-        }
-        if provider_errors:
-            metadata["provider_errors"] = provider_errors
-        return FunctionResult(
-            code=self.code,
-            instrument=instrument,
-            data=data,
-            sources=["black_scholes_reference_formula"],
-            metadata=metadata,
-        )
-
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         if instrument is None:
             raise ValueError("IVOL requires a symbol")
@@ -674,17 +749,15 @@ class IVOLFunction(BaseFunction):
         # ``spot=100`` even when SPY traded at $525, which threw every
         # strike on the surface into bizarro-moneyness territory and
         # made the UI vol-surface anchor a lie. We now try to fill it
-        # from the live quote adapter first; only fall back to 100 (and
-        # label it ``synthetic_anchor``) when the quote is unavailable.
+        # from the live quote adapter first; a missing spot is reported
+        # as ``spot: null`` with ``data_state: synthetic_anchor``.
         spot, spot_state = await _resolve_ivol_spot(self.deps, instrument, params)
         # D04-2026-06-01 (de-garbage): the implied-vol surface is now pulled
-        # LIVE from the yfinance option chain by default. The old gate
-        # required an opt-in ``live_options`` flag and otherwise returned a
-        # Black-Scholes skew template (canned constants), which made the
-        # surface a fiction. Callers can still force the offline reference
-        # surface with ``reference=true`` (tests / air-gapped demos); genuine
-        # provider failure falls back to the labeled provider_unavailable
-        # shape below.
+        # LIVE from the yfinance option chain by default. Callers can still
+        # force the offline reference surface with ``reference=true`` (tests /
+        # air-gapped demos); it is labelled ``reference`` and never presented
+        # as live. Genuine provider failure returns the explicit
+        # provider_unavailable shape below, never a template.
         if _truthy(params.get("reference")):
             synthetic = _surface_template(spot)
             return FunctionResult(
@@ -698,25 +771,12 @@ class IVOLFunction(BaseFunction):
                           "spot_source": spot_state},
             )
         if not self.deps.yfinance:
-            return FunctionResult(
-                code=self.code,
-                instrument=instrument,
-                data={
-                    "status": "provider_unavailable",
-                    "reason": "yfinance option-chain adapter unavailable.",
-                    "symbol": instrument.symbol,
-                    "spot": spot,
-                    "data_state": spot_state,
-                    "rows": [],
-                    "surface": [],
-                    "methodology": "Requires a live option-chain provider with expirations, strikes, and implied volatility.",
-                    "field_dictionary": _IVOL_FIELDS,
-                    "next_actions": ["Configure the yfinance data adapter, then rerun."],
-                },
-                sources=[],
-                metadata={"live": False, "fallback": True,
-                          "spot_source": spot_state,
-                          "provider_errors": ["yfinance adapter unavailable"]})
+            return _ivol_unavailable(
+                instrument, spot=spot, spot_state=spot_state,
+                reason="yfinance option-chain adapter unavailable.",
+                next_actions=["Configure the yfinance data adapter, then rerun."],
+                sources=[], provider_errors=["yfinance adapter unavailable"],
+            )
         from showme.engine.core.base_data_source import DataKind, DataRequest
         timeout = max(1.0, min(float(params.get("yfinance_timeout", 4)), 6.0))
         spot_explicit = "spot" in params and params.get("spot") is not None
@@ -731,7 +791,7 @@ class IVOLFunction(BaseFunction):
         except Exception:
             meta = {}
         # Pull true underlying spot from the live chain so moneyness is
-        # calculated against the real price, not the 100 default. Caller can
+        # calculated against the real price, not a placeholder. Caller can
         # still override by passing explicit `spot` in params.
         if not spot_explicit and isinstance(meta, dict):
             for key in ("underlyingPrice", "underlying_price", "spot", "last", "regularMarketPrice"):
@@ -742,18 +802,26 @@ class IVOLFunction(BaseFunction):
                     candidate = None
                 if candidate is not None and math.isfinite(candidate) and candidate > 0:
                     spot = candidate
+                    spot_state = "live_chain" if spot_state == "synthetic_anchor" else spot_state
                     break
+        if spot_state == "synthetic_anchor":
+            # Neither the quote nor the chain gave a real underlying price, so
+            # strike moneyness (and every skew point) would be computed against
+            # an invented number. Report that instead of a surface.
+            return _ivol_unavailable(
+                instrument, spot=spot, spot_state=spot_state,
+                reason="No live underlying price was returned by the quote or option-chain adapters, so strike moneyness cannot be computed.",
+                next_actions=["Retry when the quote adapter responds, or pass an explicit spot."],
+                sources=["yfinance"], provider_errors=["no live underlying price"],
+            )
         expiries = meta.get("expiries", []) if isinstance(meta, dict) else []
         expiries = expiries or []
         if not expiries:
-            # The live chain yielded no expirations, but yfinance IS present so
-            # the resolved spot (live_quote / user_override / synthetic_anchor)
-            # is still trustworthy. Emit the spot-anchored reference surface —
-            # which carries ``calls_grid`` (strikes 0.8x..1.2x spot) — so the UI
-            # has something to render, labeled honestly via ``data_state``.
-            return self._reference_result(
-                instrument, spot, spot_state,
-                provider_errors=["yfinance options expiries empty"],
+            return _ivol_unavailable(
+                instrument, spot=spot, spot_state=spot_state,
+                reason=f"The option-chain provider returned no expirations for {instrument.symbol}.",
+                next_actions=["Retry during market hours; the provider listed no option expirations."],
+                sources=["yfinance"], provider_errors=["yfinance options expiries empty"],
             )
         max_expiries = max(1, min(int(params.get("max_expiries", 3)), 4))
         targets = expiries[:max_expiries]
@@ -851,11 +919,33 @@ class IVOLFunction(BaseFunction):
                           "provider_errors": ["yfinance implied volatility rows empty"]},
             )
         stats, series = _ivol_atm_term_and_skew(surface_rows)
+        now = datetime.now(timezone.utc)
+        front_expiry = str(series[0]["t"]) if series else None
+        front_days = _ivol_front_days(front_expiry, now)
+        warnings: list[str] = []
+        if front_days is not None and front_days < 3:
+            warnings.append(
+                f"Front expiry {front_expiry} is {front_days} calendar day(s) away; implied vol is very "
+                "sensitive to the time-to-expiry convention below about 3 days."
+            )
+        as_of = _ivol_as_of(raw_calls, raw_puts)
         return FunctionResult(code=self.code, instrument=instrument,
                               data={"status": "ok",
                                     "symbol": instrument.symbol,
                                     "spot": spot,
                                     "source_mode": "live_yfinance",
+                                    "as_of": as_of,
+                                    "as_of_basis": (
+                                        "Newest option lastTradeDate across the fetched chains; a proxy for the "
+                                        "snapshot time, which the provider does not publish."
+                                        if as_of else
+                                        "The provider supplied no lastTradeDate, so the snapshot time is unknown."
+                                    ),
+                                    "iv_convention": (
+                                        "Implied vols are taken as reported by yfinance impliedVolatility. The "
+                                        "provider's time-to-expiry and pricing model are not disclosed and are not recomputed here."
+                                    ),
+                                    "warnings": warnings,
                                     "expiries": targets,
                                     "rows": surface_rows,
                                     "surface": surface_rows,
@@ -867,13 +957,17 @@ class IVOLFunction(BaseFunction):
                                         "puts": sum(1 for row in surface_rows if row["option_type"] == "PUT"),
                                         "source_mode": "live_yfinance",
                                         "dropped_invalid_iv": len(dropped_cells),
+                                        "front_days_to_expiry": front_days,
                                         **stats,
                                     },
                                     "dropped_cells": dropped_cells,
                                     "methodology": (
                                         "Live implied volatility surface from option-chain impliedVolatility by expiry, "
                                         "strike, and option type. Cells with IV below 1 percent (solver failure) or a "
-                                        "quoted mid below intrinsic value are dropped and counted in summary.dropped_invalid_iv."
+                                        "quoted mid below intrinsic value are dropped and counted in summary.dropped_invalid_iv. "
+                                        "ATM IV = mean of call and put IV at the listed strike nearest spot quoted on both sides. "
+                                        "Skew (90-110) = IV(put at 90% moneyness) minus IV(call at 110% moneyness) on the front "
+                                        "expiry, each linearly interpolated on its own strikes; null when a point is outside the listed strikes."
                                     ),
                                     "field_dictionary": _IVOL_FIELDS},
                               sources=["yfinance"],
