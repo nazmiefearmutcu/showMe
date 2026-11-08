@@ -1462,14 +1462,42 @@ class GLCOFunction(BaseFunction):
     asset_classes = (AssetClass.COMMODITY,)
     category = "commodity"
 
+    # The keyless Yahoo chart feed GLCO reads publishes neither open interest
+    # nor a delivery month for a continuous ``=F`` series. Rows say so
+    # explicitly instead of carrying a blank column or the contract description.
+    _OI_UNPUBLISHED_REASON = (
+        "Open interest is not published by the keyless quote feed (Yahoo chart meta has no OI field)."
+    )
+    _CONTRACT_MONTH_UNPUBLISHED_REASON = (
+        "Yahoo =F symbol is a continuous front-month series; the delivery month is not published by the keyless feed."
+    )
+
+    @classmethod
+    def _mark_unpublished_fields(cls, row: dict[str, Any]) -> None:
+        row["open_interest"] = None
+        row["open_interest_reason"] = cls._OI_UNPUBLISHED_REASON
+        row["contract_month"] = None
+        row["contract_month_reason"] = cls._CONTRACT_MONTH_UNPUBLISHED_REASON
+
+    @staticmethod
+    def _bounded_timeout(params: dict[str, Any], key: str, default: float, lo: float, hi: float) -> float:
+        """Parse a timeout param; a non-numeric / non-finite value falls back to the default."""
+        try:
+            value = float(params.get(key, default))
+        except (TypeError, ValueError):
+            value = default
+        if not math.isfinite(value):
+            value = default
+        return max(lo, min(value, hi))
+
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         symbols = ["CL=F", "BZ=F", "NG=F", "RB=F", "HO=F", "GC=F", "SI=F", "HG=F", "ZC=F", "ZW=F", "ZS=F", "KC=F", "SB=F", "CT=F"]
         rows: list[dict[str, Any]] = []
         provider_errors: list[str] = []
         live = _truthy(params.get("live", True))
         if self.deps.yfinance:
-            quote_timeout = max(1.0, min(float(params.get("quote_timeout", 2.0)), 4.0))
-            screen_timeout = max(2.0, min(float(params.get("screen_timeout", 5.0)), 7.0))
+            quote_timeout = self._bounded_timeout(params, "quote_timeout", 2.0, 1.0, 4.0)
+            screen_timeout = self._bounded_timeout(params, "screen_timeout", 5.0, 2.0, 7.0)
 
             async def _one(sym: str) -> dict[str, Any] | None:
                 row, _history, errors = await _contract_snapshot(
@@ -1537,6 +1565,8 @@ class GLCOFunction(BaseFunction):
                         row["history_source"] = "yfinance_daily"
         if not rows:
             rows = [_model_row(sym) for sym in symbols]
+            for model in rows:
+                self._mark_unpublished_fields(model)
             rows = _filter_sector(rows, params.get("sector"))
             return FunctionResult(
                 code=self.code,
@@ -1562,6 +1592,8 @@ class GLCOFunction(BaseFunction):
                     "data_mode": "reference",
                 },
             )
+        for live_row in rows:
+            self._mark_unpublished_fields(live_row)
         rows = _filter_sector(rows, params.get("sector"))
         rows.sort(key=lambda row: abs(float(row.get("change_pct") or 0)), reverse=True)
         return FunctionResult(

@@ -50,12 +50,14 @@ interface CommodityRow {
   changePercent?: number;
   chg_pct?: number;
   unit?: string;
-  contract_month?: string;
+  contract_month?: string | null;
+  contract_month_reason?: string | null;
   contract?: string;
   source?: string;
   source_mode?: string;
   as_of?: string;
-  open_interest?: number;
+  open_interest?: number | null;
+  open_interest_reason?: string | null;
   history?: number[];
 }
 
@@ -231,7 +233,15 @@ export function GLCOPane({ code }: FunctionPaneProps) {
         header: "Contract",
         width: 158,
         render: (r) => (
-          <span style={mutedNumStyle}>{r.contract ?? r.contract_month ?? "—"}</span>
+          // Backend contract_month is null for the keyless continuous =F
+          // series; show n/a with its reason, never the contract description.
+          <span
+            style={mutedNumStyle}
+            title={r.contract_month_reason ?? undefined}
+            data-field="contract_month"
+          >
+            {r.contract_month ?? "n/a"}
+          </span>
         ),
       },
       {
@@ -240,7 +250,13 @@ export function GLCOPane({ code }: FunctionPaneProps) {
         numeric: true,
         width: 92,
         render: (r) => (
-          <span style={mutedNumStyle}>{fmtCompact(r.open_interest)}</span>
+          <span
+            style={mutedNumStyle}
+            title={r.open_interest_reason ?? undefined}
+            data-field="open_interest"
+          >
+            {r.open_interest == null ? "n/a" : fmtCompact(r.open_interest)}
+          </span>
         ),
       },
       {

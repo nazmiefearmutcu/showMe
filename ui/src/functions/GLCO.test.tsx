@@ -144,3 +144,35 @@ describe("GLCO pane — 5d sparkline honesty", () => {
     expect(synthRow.querySelector('[data-trend="none"]')).not.toBeNull();
   });
 });
+
+describe("GLCO pane — contract month and open interest are explicit", () => {
+  it("renders n/a with the backend reason instead of the contract description or a blank", () => {
+    mockFn.state = "ok";
+    mockFn.data = okData([
+      {
+        symbol: "NG=F",
+        name: "Henry Hub Natural Gas",
+        sector: "energy",
+        last: 3.1,
+        change_pct: 0.4,
+        contract: "NYMEX Henry Hub Natural Gas front month",
+        contract_month: null,
+        contract_month_reason: "continuous front-month series",
+        open_interest: null,
+        open_interest_reason: "not published by the keyless feed",
+      },
+    ]);
+    const { container } = render(<GLCOPane code="GLCO" />);
+
+    const table = screen.getByRole("table");
+    const row = within(table).getByText("NG=F").closest("tr")!;
+    const contractCell = row.querySelector('[data-field="contract_month"]')!;
+    const oiCell = row.querySelector('[data-field="open_interest"]')!;
+    expect(contractCell.textContent).toBe("n/a");
+    expect(contractCell.getAttribute("title")).toBe("continuous front-month series");
+    expect(oiCell.textContent).toBe("n/a");
+    expect(oiCell.getAttribute("title")).toBe("not published by the keyless feed");
+    // The description must not be presented as the contract month.
+    expect(container.textContent).not.toContain("NYMEX Henry Hub Natural Gas front month");
+  });
+});
