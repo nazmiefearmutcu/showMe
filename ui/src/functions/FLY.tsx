@@ -439,7 +439,7 @@ export function FLYPane({ code }: FunctionPaneProps) {
                   aria-expanded={alertsOpen}
                   aria-label="FLY alerts"
                   onClick={() => setAlertsOpen((open) => !open)}
-                  title="FLY alert rules: erratic path · crash risk · stale contact"
+                  title="FLY alert rules: erratic path · steep descent · stale contact"
                 >
                   Alerts{alertHistory.length > 0 ? ` · ${alertHistory.length}` : ""}
                 </button>

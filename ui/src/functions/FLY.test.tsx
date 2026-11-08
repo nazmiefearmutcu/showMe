@@ -298,11 +298,11 @@ describe("FLY pane — alert history", () => {
     render(<FLYPane code="FLY" />);
     const history = screen.getByTestId("fly-alert-history");
     expect(history).toHaveTextContent("THY6439");
-    expect(history).toHaveTextContent("FLY rule: crash risk — steep descent");
+    expect(history).toHaveTextContent("FLY rule: steep descent");
     expect(history).toHaveTextContent(/3,937 ft\/min/);
     expect(toastWarn).toHaveBeenCalledWith(
       "THY6439",
-      expect.stringContaining("FLY rule: crash risk — steep descent"),
+      expect.stringContaining("FLY rule: steep descent"),
     );
   });
 

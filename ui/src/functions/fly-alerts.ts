@@ -11,10 +11,13 @@
  *             vertical-rate sign reversal while the heading still swings.
  *             Needs: heading on the previous AND current poll (the zig-zag
  *             and vertical forms additionally need the poll before last).
- *  - CRASH    "düşme olasılığı": vertical rate ≤ −Y ft/min, or altitude
- *             below Z ft while descending. Needs vertical_rate (converted
- *             from m/s); the low-altitude form additionally needs
- *             altitude. Aircraft flagged on_ground are excluded.
+ *  - CRASH    rule id "crash" (kept for stored settings), shown as a
+ *             DESCENT observation, never as a crash risk: vertical rate
+ *             ≤ −Y ft/min, or altitude below Z ft while descending. Needs
+ *             vertical_rate (converted from m/s); the low-altitude form
+ *             additionally needs altitude. Aircraft flagged on_ground are
+ *             excluded. The rule sees only vertical rate and barometric
+ *             altitude, so it reports a descent state, not a risk.
  *  - STALE    "gecikme": last ADS-B contact older than N minutes for an
  *             airborne aircraft already seen in an earlier poll. This is
  *             DATA staleness — FLY has no flight-schedule provider, so the
@@ -62,7 +65,7 @@ export interface FlyAlert {
   id: string;
   callsign: string;
   rule: FlyAlertRuleId;
-  /** Honest rule label, e.g. "FLY rule: crash risk — steep descent". */
+  /** Honest rule label, e.g. "FLY rule: steep descent". */
   label: string;
   /** Threshold + measured value, e.g. "vertical rate −3,937 ft/min (…)". */
   detail: string;
@@ -245,14 +248,14 @@ function evaluateCrash(
 
   if (fpm != null && fpm <= -config.crash.verticalFpm) {
     return {
-      label: "FLY rule: crash risk — steep descent",
+      label: "FLY rule: steep descent",
       detail: `vertical rate ${fmtInt(fpm)} ft/min (threshold ≤ −${fmtInt(config.crash.verticalFpm)} ft/min)`,
     };
   }
   // "Descending" needs a real negative rate; altitude alone is never enough.
   if (fpm != null && fpm < 0 && altitude != null && altitude < config.crash.lowAltFt) {
     return {
-      label: "FLY rule: crash risk — low altitude + descending",
+      label: "FLY rule: low altitude + descending",
       detail: `${fmtInt(altitude)} ft while descending ${fmtInt(fpm)} ft/min (threshold < ${fmtInt(config.crash.lowAltFt)} ft)`,
     };
   }
