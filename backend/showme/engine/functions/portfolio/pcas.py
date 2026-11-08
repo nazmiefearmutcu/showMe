@@ -205,7 +205,10 @@ class PCASFunction(BaseFunction):
             code=self.code, instrument=None,
             data={
                 "status": "ok",
-                "as_of": datetime.now(timezone.utc).isoformat(),
+                # Vintage of the returns used: the last price bar date. The
+                # retrieval time is reported separately as fetched_at.
+                "as_of": _last_bar_date(df),
+                "fetched_at": datetime.now(timezone.utc).isoformat(),
                 "data_mode": data_mode,
                 "n_factors": len(indices),
                 "multi_factor": multi,
@@ -302,6 +305,16 @@ def _pca_failure(code: str, pc_index: int, k_sigma: float, error: Exception, df:
         sources=["portfolio_state"],
         metadata={"provider_errors": [f"pca: {error}"]},
     )
+
+
+def _last_bar_date(df: Any) -> str | None:
+    """ISO date of the last aligned return bar (None when the history is empty)."""
+    if df is None or getattr(df, "shape", (0,))[0] == 0:
+        return None
+    try:
+        return pd.Timestamp(df.index[-1]).date().isoformat()
+    except (TypeError, ValueError, AttributeError):
+        return None
 
 
 def _truthy(value: Any) -> bool:

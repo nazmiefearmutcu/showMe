@@ -252,3 +252,35 @@ def test_pcas_pc_index_alone_runs_the_single_component_stress(monkeypatch):
     assert d["multi_factor"] is False
     assert d["n_factors"] == 1
     assert [c["component"] for c in d["components"]] == ["PC2"]
+
+
+# ---------------------------------------------------------------- PCAS#4 follow-up: provenance stamp
+
+
+class _DatedYFinance:
+    """Deterministic OHLCV history that ends on a fixed past bar date."""
+
+    LAST_BAR = "2026-09-14"
+
+    async def fetch(self, req):
+        import numpy as np
+
+        n = 200
+        symbol = req.instrument.symbol
+        seed = sum(ord(c) for c in symbol)
+        rng = np.random.default_rng(seed)
+        vol = 0.008 + (seed % 7) * 0.002
+        closes = 100.0 * np.exp(np.cumsum(rng.normal(0.0003, vol, size=n)))
+        index = pd.date_range(end=self.LAST_BAR, periods=n, freq="D")
+        return pd.DataFrame({"close": closes}, index=index)
+
+
+def test_pcas_as_of_is_the_last_price_bar_not_the_request_clock(monkeypatch):
+    # PCAS#4 follow-up: as_of labels the vintage of the returns used. The fetch
+    # time belongs in fetched_at; as_of must be the last bar date.
+    monkeypatch.setattr(pcas_mod, "PortfolioState", lambda *a, **k: _FakeBook(("AAA", "BBB", "CCC", "DDD")))
+    fn = pcas_mod.PCASFunction(FunctionDeps(yfinance=_DatedYFinance()))
+    res = _pcas_run(fn, live="true", live_prices="true", n_factors=2)
+    assert res.data["status"] == "ok", res.data.get("reason")
+    assert res.data["as_of"] == _DatedYFinance.LAST_BAR, res.data["as_of"]
+    assert res.data.get("fetched_at"), "retrieval time must be labelled fetched_at"
