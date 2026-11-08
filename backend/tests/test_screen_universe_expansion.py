@@ -221,7 +221,8 @@ def test_most_pending_rows_are_emitted_with_nulls_not_dropped(monkeypatch) -> No
     assert result.data["unavailable"] == universe_size
     assert result.data["resolved"] == 0
     assert result.data["status"] == "provider_unavailable"
-    assert result.metadata.get("live") is True
+    # wb1-g17 / MOST#3: no row carries a live quote, so the board is not live.
+    assert result.metadata.get("live") is False
 
 
 # ──────────────────────────────────────────────────────────────────────────

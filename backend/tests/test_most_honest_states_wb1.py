@@ -80,6 +80,25 @@ async def test_payload_as_of_is_provider_quote_time_not_request_time(monkeypatch
     assert result.data["as_of"] != result.data["requested_at"]
 
 
+async def test_closed_session_payload_and_metadata_are_not_live(monkeypatch) -> None:
+    """wb1-g17 / MOST#3: the payload-level live flag follows the quote states, not the path taken."""
+    _patch_clock_and_quotes(monkeypatch, SUNDAY_UTC, FRIDAY_CLOSE_UTC.timestamp())
+    fn = MOSTFunction(deps=FunctionDeps(yfinance=_YFinanceLikeProvider()))
+    result = await fn.execute(asset_class="equities", live_screen=True, limit=10)
+    assert result.data["status"] == "ok"
+    assert result.data["live"] is False, "a closed-session run serves last closes, not a live board"
+    assert result.metadata["live"] is False
+
+
+async def test_open_session_payload_and_metadata_are_live(monkeypatch) -> None:
+    quote_epoch = MONDAY_OPEN_UTC.timestamp() - 60
+    _patch_clock_and_quotes(monkeypatch, MONDAY_OPEN_UTC, quote_epoch)
+    fn = MOSTFunction(deps=FunctionDeps(yfinance=_YFinanceLikeProvider()))
+    result = await fn.execute(asset_class="equities", live_screen=True, limit=10)
+    assert result.data["live"] is True
+    assert result.metadata["live"] is True
+
+
 async def test_open_session_fresh_quote_stays_live(monkeypatch) -> None:
     quote_epoch = MONDAY_OPEN_UTC.timestamp() - 60
     _patch_clock_and_quotes(monkeypatch, MONDAY_OPEN_UTC, quote_epoch)

@@ -462,6 +462,9 @@ class MOSTFunction(BaseFunction):
                 )
             ranked = _rank_most_active_rows(merged, sort_key)[:limit]
             scan_universe = [str(row.get("symbol") or "") for row in merged]
+            # The board is live only when at least one row is a live open-session
+            # quote; last_close and stale rows never make the payload live.
+            board_live = any(row.get("quote_state") == "live" for row in merged)
             return FunctionResult(
                 code=self.code,
                 instrument=None,
@@ -471,7 +474,7 @@ class MOSTFunction(BaseFunction):
                     limit=limit,
                     asset_class=asset_filter or "all",
                     sort=sort_key,
-                    live=True,
+                    live=board_live,
                     status="ok" if resolved else "provider_unavailable",
                     reason=(
                         None
@@ -483,7 +486,7 @@ class MOSTFunction(BaseFunction):
                     unavailable=unavailable,
                 ),
                 metadata={
-                    "live": True,
+                    "live": board_live,
                     "universe_size": len(scan_universe),
                     "scanned": len(merged),
                     "live_rows": resolved,
