@@ -33,6 +33,32 @@ def _is_bank_or_insurer(industry: str) -> bool:
     return not ("insurance" in industry and any(t in industry for t in _NOT_AN_INSURER_TOKENS))
 
 
+# WACC#6: how each input's source label is classified. "user" = caller supplied,
+# "live" = provider data, "partial" = labelled default or stale snapshot.
+_QUALITY_BY_SOURCE: dict[str, dict[str, str]] = {
+    "rf": {"user_input": "user", "fred_dgs10": "live"},
+    "rd": {"user_input": "user", "issuer_implied": "live", "fred_bbb_yield": "live", "fred_aaa": "partial"},
+    "tax": {"user_input": "user", "issuer_effective": "live", "statutory_us_21pct": "partial"},
+    "capital_structure": {"live": "live", "sector_default": "partial", "not_applicable_financial": "live"},
+}
+
+
+def _beta_quality(beta_source: str) -> str:
+    if beta_source == "user_input":
+        return "user"
+    if beta_source.startswith("beta_"):
+        return "live"
+    return "missing"
+
+
+def _erp_quality(erp_source: str) -> str:
+    if erp_source == "user_input":
+        return "user"
+    if erp_source == "assumption_default_5pct" or erp_source.startswith("damodaran_snapshot")             or erp_source.endswith("_country_unmatched"):
+        return "partial"
+    return "live"
+
+
 def _issuer_effective_tax(raw: dict[str, Any]) -> float | None:
     """Effective tax rate from the issuer's income tax expense over pre-tax income.
 
@@ -138,6 +164,7 @@ class WACCFunction(BaseFunction):
         # never replaced by a 4% constant; WACC then reports provider_unavailable.
         rf_user = params.get("rf") not in (None, "")
         rf: float | None = float(params.get("rf")) if rf_user else None
+        rf_source: str | None = "user_input" if rf_user else None
         if rf_user:
             sources.append("user_input")
         else:
@@ -155,6 +182,7 @@ class WACCFunction(BaseFunction):
                     warnings.append("fred DGS10: no observations; risk-free rate unavailable")
                 else:
                     rf = float(df["value"].iloc[-1]) / 100.0
+                    rf_source = "fred_dgs10"
                     sources.append("fred")
             except Exception as e:
                 warnings.append(f"fred: {e}")
@@ -167,7 +195,6 @@ class WACCFunction(BaseFunction):
         beta_window_used: str | None = None
         beta: float | None = None
         beta_source: str = "user_input"
-        beta_data_state: str = "live"
         if params.get("beta") not in (None, ""):
             beta = float(params.get("beta"))
             sources.append("user_input")
@@ -211,19 +238,16 @@ class WACCFunction(BaseFunction):
                     beta_source = f"beta_{beta_window_used.lower()}" if beta_window_used else "beta"
                     sources.append("beta")
                 elif beta_provider_failed:
-                    beta_data_state = "provider_unavailable"
                     warnings.append(
                         "beta unavailable: BetaFunction provider failed "
                         f"({beta_status or 'provider error'}); WACC cannot be computed without a live beta"
                     )
                 else:
-                    beta_data_state = "empty"
                     warnings.append(
                         "beta unavailable: BetaFunction returned no live window "
                         "(not enough price history); WACC cannot be computed without a beta"
                     )
             except Exception as e:
-                beta_data_state = "provider_unavailable"
                 warnings.append(f"beta: {e}; WACC cannot be computed without a live beta")
         # Cost of debt — audit Q3 #17:
         # 1) Prefer issuer-specific implied rate: interest_expense / total_debt
@@ -431,7 +455,27 @@ class WACCFunction(BaseFunction):
             }
         else:
             status = "ok"
-        data_state = "provider_unavailable" if status == "provider_unavailable" else beta_data_state
+        # WACC#6: data_state is the worst state over every input, not beta alone.
+        # "partial" when any input is a labelled default or stale snapshot,
+        # "user_input" when the caller supplied an input, else "live".
+        input_quality = {
+            "beta": _beta_quality(beta_source),
+            "rf": _QUALITY_BY_SOURCE["rf"].get(rf_source or "", "missing"),
+            "rd": _QUALITY_BY_SOURCE["rd"].get(rd_source or "", "missing"),
+            "erp": _erp_quality(erp_source),
+            "tax": _QUALITY_BY_SOURCE["tax"].get(tax_source, "missing"),
+            "capital_structure": _QUALITY_BY_SOURCE["capital_structure"].get(capital_data_state, "missing"),
+        }
+        partial_inputs = sorted(k for k, q in input_quality.items() if q == "partial")
+        user_inputs = sorted(k for k, q in input_quality.items() if q == "user")
+        if status == "provider_unavailable":
+            data_state = "provider_unavailable"
+        elif partial_inputs:
+            data_state = "partial"
+        elif user_inputs:
+            data_state = "user_input"
+        else:
+            data_state = "live"
         return FunctionResult(
             code=self.code, instrument=instrument,
             data={
@@ -467,6 +511,9 @@ class WACCFunction(BaseFunction):
                 "beta_source": beta_source,
                 "beta_window": beta_window_used,
                 "data_state": data_state,
+                "input_quality": input_quality,
+                "partial_inputs": partial_inputs,
+                "user_inputs": user_inputs,
                 # Audit Q3 #16-18 — provenance fields for the UI.
                 "rd_source": rd_source,
                 "debt_value_source": debt_value_source,
@@ -477,7 +524,7 @@ class WACCFunction(BaseFunction):
             metadata={
                 "beta_source": beta_source,
                 "beta_window": beta_window_used,
-                "data_state": beta_data_state,
+                "data_state": data_state,
                 "rd_source": rd_source,
                 "debt_value_source": debt_value_source,
                 "capital_structure_data_state": capital_data_state,

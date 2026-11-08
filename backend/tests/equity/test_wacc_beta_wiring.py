@@ -120,7 +120,10 @@ def test_wacc_uses_real_beta_above_1_10_not_hardcoded_one(monkeypatch) -> None:
     )
     assert payload["beta_source"] == "beta_5y"
     assert payload["beta_window"] == "5Y"
-    assert payload["data_state"] == "live"
+    # WACC#6: the ERP is an assumption and the tax a statutory default here,
+    # so the overall state is partial, not live.
+    assert payload["data_state"] == "partial"
+    assert payload["partial_inputs"] == ["erp", "tax"]
     assert "beta" in result.sources
     assert not any("synthetic" in w.lower() for w in result.warnings)
 

@@ -110,6 +110,8 @@ export function WACCPane({ code, symbol }: FunctionPaneProps) {
   const warnings = Array.isArray(data?.warnings) ? data?.warnings : [];
   const sources = Array.isArray(data?.sources) ? data?.sources : [];
   const fellBack = warnings.some((w) => /fred|damodaran|yfinance|beta/i.test(String(w)));
+  // WACC#6: a labelled default or stale snapshot input makes the result partial.
+  const partialInputs = payload.data_state === "partial";
   const syntheticBeta = payload.data_state === "synthetic_beta"
     || sources.some((s) => String(s).toLowerCase() === "synthetic_beta");
 
@@ -189,8 +191,12 @@ export function WACCPane({ code, symbol }: FunctionPaneProps) {
                   </Pill>
                 </span>
               ) : null}
-              <Pill tone={fellBack ? "warn" : "positive"} variant="soft">
-                {fellBack ? "fallback active" : "live"}
+              <Pill tone={partialInputs || fellBack ? "warn" : "positive"} variant="soft">
+                {partialInputs
+                  ? "partial inputs"
+                  : payload.data_state === "user_input"
+                    ? "user input"
+                    : fellBack ? "fallback active" : "live"}
               </Pill>
               <button
                 type="button"
@@ -216,6 +222,12 @@ export function WACCPane({ code, symbol }: FunctionPaneProps) {
             <Empty
               title="WACC not applicable"
               body={payload.reason ?? "WACC is not meaningful for this financial issuer; use the cost of equity."}
+              icon="!"
+            />
+          ) : payload.status === "provider_unavailable" ? (
+            <Empty
+              title="WACC not available"
+              body={payload.reason ?? "A required WACC input is unavailable from the providers, so no discount rate is reported."}
               icon="!"
             />
           ) : payload.wacc == null ? (

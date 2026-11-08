@@ -340,3 +340,69 @@ def test_wacc4_issuer_effective_tax_is_used_when_the_provider_gives_it(monkeypat
     res = _run(_deps_with_raw(raw))
     assert res.data["tax_rate"] == pytest.approx(0.20)
     assert res.data["tax_source"] == "issuer_effective"
+
+
+# ---- WACC#6: status and data_state reflect every input --------------------
+
+
+def _live_deps(**overrides: Any) -> FunctionDeps:
+    raw = {"marketCap": 300.0, "totalDebt": 100.0, "sector": "Consumer Cyclical",
+           "incomeTaxExpense": 30.0, "pretaxIncome": 150.0}
+    raw.update(overrides.pop("raw", {}))
+    fred = overrides.pop("fred", {"DGS10": 4.0, "BAMLC0A4CBBBEY": 5.93})
+    damo = overrides.pop("damodaran", _FakeDamodaran(0.046, "damodaran_cache"))
+    return FunctionDeps(yfinance=_FakeYf(raw=raw), fred=_FakeFred(fred), damodaran=damo)
+
+
+def test_wacc6_every_input_live_is_live(monkeypatch) -> None:
+    monkeypatch.setattr(wacc_mod, "BetaFunction", _StubBetaOk)
+    res = _run(_live_deps())
+    assert res.data["status"] == "ok"
+    assert res.data["data_state"] == "live"
+    assert res.data["partial_inputs"] == []
+    assert res.data["wacc"] is not None
+
+
+def test_wacc6_default_erp_and_tax_make_the_state_partial(monkeypatch) -> None:
+    monkeypatch.setattr(wacc_mod, "BetaFunction", _StubBetaOk)
+    res = _run(_deps())
+    assert res.data["status"] == "ok"
+    assert res.data["data_state"] == "partial"
+    assert res.data["partial_inputs"] == ["erp", "tax"]
+
+
+def test_wacc6_snapshot_erp_makes_the_state_partial(monkeypatch) -> None:
+    monkeypatch.setattr(wacc_mod, "BetaFunction", _StubBetaOk)
+    res = _run(_live_deps(damodaran=_FakeDamodaran(0.046, "damodaran_snapshot_2025_01")))
+    assert res.data["data_state"] == "partial"
+    assert "erp" in res.data["partial_inputs"]
+
+
+def test_wacc6_aaa_cost_of_debt_makes_the_state_partial(monkeypatch) -> None:
+    monkeypatch.setattr(wacc_mod, "BetaFunction", _StubBetaOk)
+    res = _run(_live_deps(fred={"DGS10": 4.0, "AAA": 4.8}))
+    assert res.data["rd_source"] == "fred_aaa"
+    assert res.data["data_state"] == "partial"
+    assert "rd" in res.data["partial_inputs"]
+
+
+def test_wacc6_sector_default_capital_structure_makes_the_state_partial(monkeypatch) -> None:
+    monkeypatch.setattr(wacc_mod, "BetaFunction", _StubBetaOk)
+    res = _run(_live_deps(raw={"marketCap": 0.0, "totalDebt": 0.0, "sector": "Technology"}))
+    assert res.data["capital_structure_data_state"] == "sector_default"
+    assert res.data["data_state"] == "partial"
+    assert "capital_structure" in res.data["partial_inputs"]
+
+
+def test_wacc6_user_supplied_beta_is_user_input(monkeypatch) -> None:
+    monkeypatch.setattr(wacc_mod, "BetaFunction", _StubBetaOk)
+    res = _run(_live_deps(), beta=1.1)
+    assert res.data["data_state"] == "user_input"
+    assert "beta" in res.data["user_inputs"]
+
+
+def test_wacc6_missing_input_is_provider_unavailable_state(monkeypatch) -> None:
+    monkeypatch.setattr(wacc_mod, "BetaFunction", _StubBetaOk)
+    res = _run(_live_deps(fred={"BAMLC0A4CBBBEY": 5.93}))
+    assert res.data["status"] == "provider_unavailable"
+    assert res.data["data_state"] == "provider_unavailable"
